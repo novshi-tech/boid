@@ -402,10 +402,21 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// regardless of whether it flips source_closed (SweepReopen decides that
 	// separately, on its own tick). See logAttrsSetOnDoneTriage's own doc
 	// comment (attrs_set_done.go) for why "log" was chosen over a queue
-	// surface. fromStatus/newTask.Status are BOTH "done" here precisely when
-	// resolveAttrsSetDoneTransition's guard (not the ordinary
+	// surface. action.FromStatus/newTask.Status are BOTH "done" here
+	// precisely when resolveAttrsSetDoneTransition's guard (not the ordinary
 	// preExecutionStatuses path) is what let this land.
-	if req.Type == "attrs_set" && fromStatus == orchestrator.TaskStatusDone && newTask.Status == orchestrator.TaskStatusDone {
+	//
+	// action.FromStatus, NOT the pre-Tx local `fromStatus` (2026-08-19 fix,
+	// Opus review N-5): for attrs_set (skipTaskUpdate==true), the in-Tx
+	// re-validation above overwrites action.FromStatus with the FRESH
+	// in-Tx read (`action.FromStatus = fresh.Status`) — which can legitimately
+	// differ from the pre-Tx snapshot's `fromStatus` when a concurrent
+	// triage_done commits in the gap between the pre-Tx read and this Tx
+	// opening (pre-Tx: triaged/working; in-Tx: done). Keying this check on
+	// the STALE pre-Tx `fromStatus` would silently skip the log exactly when
+	// I-5b's guard is what actually let the write through — the opposite of
+	// "every attrs_set that lands via the guard gets logged".
+	if req.Type == "attrs_set" && action.FromStatus == orchestrator.TaskStatusDone && newTask.Status == orchestrator.TaskStatusDone {
 		logAttrsSetOnDoneTriage(s.TaskTriage, newTask.ID)
 	}
 

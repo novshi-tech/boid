@@ -32,23 +32,34 @@ import (
 // Why "row exists" is safe as the判定 key, despite CreateTask technically
 // allowing ANY project to request initial_status=captured/triaged
 // (task_create.go's allowedCreateInitialStatuses is not scoped to the meta
-// project): attrs_set's OWN payload contract (parseAttrsSetPayload) rejects
-// an empty object, so every row this guard can ever see was seeded by a
-// call that wrote REAL content (urgency/kind/opaque attrs) — there is no
-// path that creates a truly empty "phantom" task_triage row via attrs_set
-// (contrast with `answered`, whose miss-case fix in PR-3 exists precisely
-// because ITS only effect is negative — stripping a key that can't be
-// present without a row already). A task that reaches "done" carrying such
-// a row got there via triage_done (machine.go), which itself only fires
-// from "working" — and nothing in the machine ever moves a task from
-// captured/triaged/parked/ready/working into executing/awaiting (the ONLY
-// statuses the ordinary Manual "done" rule accepts) — so a task created with
-// initial_status=pending (CreateTask's default, and what every ordinary dev
-// task actually uses) can never receive attrs_set at all, at any point in
-// its life: this guard is simply never reached for it. See the PR-5 report
-// for the full trace of why the one remaining theoretical path (someone
-// deliberately using initial_status=triaged/captured OUTSIDE a real triage
-// workflow) is accepted rather than closed.
+// project) AND despite the row NOT always starting out with real content —
+// CreateTask's own SeedTaskTriage call (task_create.go) and
+// ResolveOrCapture's tx.SeedTaskTriage (task_resolve_or_capture.go) both
+// insert an EMPTY sidecar row ({} detail, no attrs) up front, unconditional
+// on the caller ever sending an attrs_set at all (2026-08-19 correction,
+// Opus review — the previous text here claimed attrs_set's payload contract
+// makes an empty row impossible; that is not true, these two seed calls
+// prove it, and a careful reviewer will find them independently).
+//
+// The real argument is REACHABILITY, not row content: can a task carrying
+// such a row ever actually GET to "done" while that row is still empty?
+// machine.go's full rule table has exactly THREE rules whose ToStatus is
+// "done" — ① the ordinary Manual rule (executing→done / awaiting→done), ②
+// its auto-approval sibling (executing→done, machine.go's own Condition
+// check), and ③ triage_done (working→done). Rules ① and ② both require
+// FromStatus ∈ {executing, awaiting} — and nothing in the ENTIRE rule table
+// ever moves a task out of captured/triaged/parked/ready/working (a triage
+// card's own statuses) INTO executing or awaiting: `start` only fires from
+// pending, `answer` only fires from awaiting, `reopen`/`reopen_triaged` only
+// fire FROM done/aborted, never INTO executing. So a triage-carrying task
+// can reach "done" only through rule ③, triage_done — and triage_done only
+// fires when orchestrator.ShouldAutoDone(children, detail) is true, whose
+// first conjunct is SourceClosed(detail)==true (triage_done.go). By the
+// time a task_triage row's OWN task is sitting in "done", that row's detail
+// necessarily already reports source_closed — it cannot still be the empty
+// seed. This is what actually makes "row exists" safe here: not that the
+// row was written by attrs_set, but that an empty row's task structurally
+// cannot be the task this guard is even asked about.
 func resolveAttrsSetDoneTransition(sm *orchestrator.StateMachine, task *orchestrator.Task, action *orchestrator.Action, getTriage func(string) (*orchestrator.TaskTriage, error)) (*orchestrator.Task, *StatusError) {
 	if action.Type == "attrs_set" && task.Status == orchestrator.TaskStatusDone && getTriage != nil {
 		_, err := getTriage(task.ID)
@@ -98,6 +109,17 @@ func resolveAttrsSetDoneTransition(sm *orchestrator.StateMachine, task *orchestr
 // attrs_set is already a discrete, rare event by construction (bounded by
 // how often a workspace's ingestion tick runs), not a persistent state that
 // would otherwise re-log every sweep tick forever.
+//
+// slog.Warn, not slog.Info (2026-08-19 fix, Opus review N-1): the precedent
+// this comment cites — logCanonicalSourceBreaches — actually logs its real
+// breach case at Warn, not Info (queue_sweep.go). I-5c is doc'd as 決定16の
+// 契約違反ケースの防御 (the same class of "this card needs a human's
+// attention" signal), and boid's default log level is info today — but the
+// moment an operator sets `log.level: warn` (config-yaml.md), an Info line
+// disappears silently while every OTHER 決定16-class signal in this
+// codebase stays visible at Warn. See attrs_set_done_test.go's
+// TestLogAttrsSetOnDoneTriage_LogsAtWarnLevel, which fails against an
+// Info-level reimplementation.
 func logAttrsSetOnDoneTriage(taskTriage TaskTriageStore, taskID string) {
 	if taskTriage == nil {
 		return
@@ -107,6 +129,6 @@ func logAttrsSetOnDoneTriage(taskTriage TaskTriageStore, taskID string) {
 		slog.Warn("I-5c: attrs_set landed on a done triage task, but re-reading task_triage failed", "task_id", taskID, "error", err)
 		return
 	}
-	slog.Info("I-5c: attrs_set landed on a done triage task",
+	slog.Warn("I-5c: attrs_set landed on a done triage task",
 		"task_id", taskID, "source_closed", orchestrator.SourceClosed(tt.Detail))
 }

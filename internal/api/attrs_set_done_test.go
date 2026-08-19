@@ -1,13 +1,30 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+// captureSlog redirects the default slog logger to an in-memory buffer for
+// the duration of the test, restoring the previous default on cleanup.
+// Mirrors internal/config/config_test.go's own captureSlog helper — no
+// existing test in this package captured slog output before N-1's fix, so
+// this is a parallel (not shared) helper local to this test's need.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
 
 // ---- docs/plans/ingestion-identity.md PR-5 (B-6): I-5b の service 層ガード ----
 //
@@ -19,11 +36,19 @@ import (
 // sidecar row (12節 B-6 既定案の判定 key) — see
 // resolveAttrsSetDoneTransition's own doc comment (workflow_action.go).
 //
-// These tests do not assert on the I-5c log line itself (this codebase's
-// existing sweep tests — queue_sweep_test.go — likewise never assert on
-// slog output, only on returned/stored state): I-5c's visibility is pinned
-// structurally here by confirming the write actually lands (the log call is
-// unconditionally reached on that same success path).
+// Most of these tests do not assert on the I-5c log line itself (this
+// codebase's existing sweep tests — queue_sweep_test.go — likewise never
+// assert on slog output, only on returned/stored state): I-5c's visibility
+// is pinned structurally here by confirming the write actually lands (the
+// log call is unconditionally reached on that same success path).
+//
+// TestLogAttrsSetOnDoneTriage_LogsAtWarnLevel below is the one exception
+// (2026-08-19, Opus review N-1): the "write lands" pin above cannot detect
+// deleting the log call itself (workflow_action.go's own `if req.Type ==
+// "attrs_set" && ...` block around logAttrsSetOnDoneTriage) — the sidecar
+// fold and the log line are two independent statements on the same success
+// path, and only one of them is exercised by the state-based assertions
+// here. That test captures slog output directly to close the gap.
 
 // newDoneTriageWorkflowService is newTriageWorkflowService
 // (apply_action_phase1_test.go) plus TaskTriage wired to the SAME
@@ -173,5 +198,89 @@ func TestApplyAction_AttrsSet_Working_StillNonTransitioning_NoRegression(t *test
 	}
 	if result.Task.Status != orchestrator.TaskStatusWorking {
 		t.Fatalf("status = %q, want unchanged (working)", result.Task.Status)
+	}
+}
+
+// TestLogAttrsSetOnDoneTriage_LogsAtWarnLevel pins two things N-1 (Opus
+// review, 2026-08-19) found missing: (1) the log level is Warn, not Info —
+// matching the precedent this code's own doc comment cites
+// (logCanonicalSourceBreaches, queue_sweep.go, which logs its real breach
+// case at Warn) and mattering concretely because `log.level: warn`
+// (config-yaml.md) silently drops an Info line while every other
+// 決定16-class signal in this codebase stays visible; (2) the log call
+// itself actually fires on this path — deleting workflow_action.go's `if
+// req.Type == "attrs_set" && ...` block around logAttrsSetOnDoneTriage
+// entirely would not be caught by any of the state-based assertions above
+// (the sidecar fold and the log line are independent statements on the
+// same success path), so this test captures slog output directly instead.
+func TestLogAttrsSetOnDoneTriage_LogsAtWarnLevel(t *testing.T) {
+	buf := captureSlog(t)
+
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{
+		task:   task,
+		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
+	}
+	svc := newDoneTriageWorkflowService(task, txStore)
+
+	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "attrs_set",
+		Payload: []byte(`{"summary":"still closed, another update arrived"}`),
+	}); err != nil {
+		t.Fatalf("ApplyAction(attrs_set on done triage task): %v", err)
+	}
+
+	out := buf.String()
+	var logLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "I-5c") {
+			logLine = line
+			break
+		}
+	}
+	if logLine == "" {
+		t.Fatalf("no I-5c log line found; full output:\n%s", out)
+	}
+	if !strings.Contains(logLine, "level=WARN") {
+		t.Errorf("I-5c log line = %q, want level=WARN (not Info — it must survive log.level: warn)", logLine)
+	}
+}
+
+// TestApplyAction_AttrsSet_LogsUsingInTxStatus_NotStalePreTxSnapshot pins
+// N-5 (Opus review, 2026-08-19): workflow_action.go's I-5c log condition
+// must key on action.FromStatus (the IN-TX re-validated value) rather than
+// the pre-Tx local `fromStatus` snapshot.
+//
+// Race modeled here: ApplyAction's pre-Tx read (s.Tasks.GetTask, via the
+// separate stubTaskStore below) sees the task still "triaged" — a
+// concurrent triage_done (a DIFFERENT goroutine's SweepTriage tick)
+// committed working→done in the gap before this Tx opens. Since attrs_set
+// is in skipTaskUpdate, the code re-validates from a FRESH in-Tx read
+// (tx.GetTask, via txStore below, deliberately primed to "done" to model
+// that race) — I-5b's guard is what admits THIS attrs_set, and
+// action.FromStatus gets overwritten to "done" accordingly. The log must
+// fire based on THAT fresh value, not the stale pre-Tx "triaged" the old
+// `fromStatus`-keyed condition would have checked (which would have
+// wrongly skipped the log here).
+func TestApplyAction_AttrsSet_LogsUsingInTxStatus_NotStalePreTxSnapshot(t *testing.T) {
+	buf := captureSlog(t)
+
+	preTx := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	fresh := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{
+		task:   fresh, // tx.GetTask (in-Tx) sees the task as already done
+		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
+	}
+	svc := newDoneTriageWorkflowService(preTx, txStore) // s.Tasks (pre-Tx) sees "triaged"
+
+	if _, err := svc.ApplyAction(context.Background(), "t1", ApplyActionRequest{
+		Type:    "attrs_set",
+		Payload: []byte(`{"summary":"raced with a concurrent triage_done"}`),
+	}); err != nil {
+		t.Fatalf("ApplyAction(attrs_set, racing triage_done): %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "I-5c") {
+		t.Fatalf("expected an I-5c log line (action.FromStatus was re-validated to done in-Tx); got:\n%s", buf.String())
 	}
 }
