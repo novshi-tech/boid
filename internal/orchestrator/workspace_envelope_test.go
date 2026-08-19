@@ -190,6 +190,35 @@ spec:
 	}
 }
 
+// TestDecodeWorkspaceEnvelopeDocuments_RejectsTriggersField pins a deliberate
+// decision made in docs/plans/ingestion-identity.md PR-4 (B-5): `triggers:`
+// is a project.yaml-only field (J-1's "project.yaml のトップレベル"). It is
+// NOT added to workspaceEnvelopeSpecFields/WorkspaceEnvelopeSpec — a
+// workspace-level default `run:` command would point at a script path that
+// only exists inside ONE specific project's tracked tree, unlike
+// task_behaviors/base_branch/fork_point which generalize across every
+// project a workspace default applies to. A workspace envelope document
+// that tries to set spec.triggers must be rejected the same way any other
+// unknown spec field is (TestDecodeWorkspaceEnvelopeDocuments_
+// RejectsUnknownSpecField above) — not silently ignored.
+func TestDecodeWorkspaceEnvelopeDocuments_RejectsTriggersField(t *testing.T) {
+	data := []byte(`
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: default
+spec:
+  triggers:
+    - name: intake
+      every: 10m
+      run: python3 scripts/intake_tick.py
+`)
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil || !strings.Contains(err.Error(), "triggers") {
+		t.Fatalf("expected an unknown field error mentioning triggers, got %v", err)
+	}
+}
+
 // TestDecodeWorkspaceEnvelopeDocuments_RejectsUnknownProjectField pins the
 // PR-1d codex round-2 Major "strict decoding doesn't extend to
 // spec.projects[]" finding: a typo'd key inside a projects[] entry (here

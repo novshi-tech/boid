@@ -60,6 +60,7 @@ curl --unix-socket "$XDG_RUNTIME_DIR/boid.sock" http://localhost/api/health
 | GET | `/api/projects/{id}/commands` | このプロジェクトの `commands` 一覧 |
 | GET | `/api/projects/{id}/commands/{name}` | 特定 command の詳細 |
 | POST | `/api/projects/{id}/commands/{name}/execute` | 名前付きコマンドを実行 |
+| POST | `/api/projects/{id}/triggers/{name}/run` | project.yaml の `triggers[]` を手動で 1 回起動 (デバッグ用、`boid trigger run` が叩く)。`every` の経過は無視するが single-flight は尊重する — 実行中の run があれば `{"skipped": true, "reason": "..."}` を返す |
 | PUT | `/api/projects/{id}/workspace` | workspace への割り当てを更新 |
 
 詳細は [`project.yaml` リファレンス](project-yaml.md) と [CLI / project](cli.md#プロジェクト) を参照。

@@ -234,6 +234,148 @@ func TestGCTasks_AllDone(t *testing.T) {
 	}
 }
 
+// TestGCTriggerRuns_DeletesOnlyFinishedRows pins N-2 (Opus review): retention
+// only ever touches finished_at-set rows — an in-flight row (finished_at IS
+// NULL) is single-flight's own source of truth and must never be deleted
+// regardless of age.
+func TestGCTriggerRuns_DeletesOnlyFinishedRows(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	now := time.Now().UTC()
+
+	inFlight := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: now}
+	if err := orchestrator.CreateTriggerRun(d.Conn, inFlight); err != nil {
+		t.Fatalf("create in-flight run: %v", err)
+	}
+	finished := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", StartedAt: now}
+	if err := orchestrator.CreateTriggerRun(d.Conn, finished); err != nil {
+		t.Fatalf("create finished run: %v", err)
+	}
+	if err := orchestrator.CompleteTriggerRun(d.Conn, finished.ID, now, 0); err != nil {
+		t.Fatalf("complete run: %v", err)
+	}
+
+	n, err := orchestrator.GCTriggerRuns(d.Conn, 0, false)
+	if err != nil {
+		t.Fatalf("GCTriggerRuns: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("deleted = %d, want 1 (only the finished row)", n)
+	}
+
+	var count int
+	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM trigger_runs`).Scan(&count); err != nil {
+		t.Fatalf("count trigger_runs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("remaining trigger_runs rows = %d, want 1 (the in-flight one)", count)
+	}
+	remaining, err := orchestrator.ListInFlightTriggerRuns(d.Conn)
+	if err != nil {
+		t.Fatalf("ListInFlightTriggerRuns: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != inFlight.ID {
+		t.Fatalf("remaining in-flight = %+v, want exactly the original in-flight row", remaining)
+	}
+}
+
+// TestGCTriggerRuns_OlderThanFilter mirrors TestGCTasks_OlderThanFilter's
+// dry-run/real-run shape for the new retention filter (N-2).
+func TestGCTriggerRuns_OlderThanFilter(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	now := time.Now().UTC()
+
+	old := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: now.Add(-61 * 24 * time.Hour)}
+	if err := orchestrator.CreateTriggerRun(d.Conn, old); err != nil {
+		t.Fatalf("create old run: %v", err)
+	}
+	if err := orchestrator.CompleteTriggerRun(d.Conn, old.ID, now.Add(-60*24*time.Hour), 0); err != nil {
+		t.Fatalf("complete old run: %v", err)
+	}
+	recent := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", StartedAt: now}
+	if err := orchestrator.CreateTriggerRun(d.Conn, recent); err != nil {
+		t.Fatalf("create recent run: %v", err)
+	}
+	if err := orchestrator.CompleteTriggerRun(d.Conn, recent.ID, now, 0); err != nil {
+		t.Fatalf("complete recent run: %v", err)
+	}
+
+	// dry-run: 1 row older than 30 days.
+	n, err := orchestrator.GCTriggerRuns(d.Conn, 30*24*time.Hour, true)
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("dry-run count = %d, want 1", n)
+	}
+	var count int
+	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM trigger_runs`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("rows after dry-run = %d, want 2 (nothing actually deleted)", count)
+	}
+
+	// real run.
+	n, err = orchestrator.GCTriggerRuns(d.Conn, 30*24*time.Hour, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("deleted = %d, want 1", n)
+	}
+	remaining, err := orchestrator.LatestTriggerRun(d.Conn, "proj-1", "sweep")
+	if err != nil {
+		t.Fatalf("LatestTriggerRun: %v", err)
+	}
+	if remaining.ID != recent.ID {
+		t.Fatalf("remaining run = %q, want the recent one %q", remaining.ID, recent.ID)
+	}
+	if _, err := orchestrator.LatestTriggerRun(d.Conn, "proj-1", "intake"); err != orchestrator.ErrTriggerRunNotFound {
+		t.Fatalf("old run's LatestTriggerRun after GC: err = %v, want ErrTriggerRunNotFound", err)
+	}
+}
+
+// TestGC_TriggerRunsCleanup_ViaTaskGCStore pins that TaskGCStore.GC (the
+// path `boid gc` / POST /api/gc actually calls) purges trigger_runs in the
+// SAME pass as tasks/jobs/actions, reporting the count on GCResult.TriggerRuns
+// (N-2, Opus review).
+func TestGC_TriggerRunsCleanup_ViaTaskGCStore(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	now := time.Now().UTC()
+	old := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: now.Add(-60 * 24 * time.Hour)}
+	if err := orchestrator.CreateTriggerRun(d.Conn, old); err != nil {
+		t.Fatalf("create old run: %v", err)
+	}
+	if err := orchestrator.CompleteTriggerRun(d.Conn, old.ID, now.Add(-60*24*time.Hour), 0); err != nil {
+		t.Fatalf("complete old run: %v", err)
+	}
+
+	gcStore := orchestrator.NewTaskGCStore(d.Conn)
+	result, err := gcStore.GC(30*24*time.Hour, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.TriggerRuns != 1 {
+		t.Fatalf("result.TriggerRuns = %d, want 1", result.TriggerRuns)
+	}
+	var count int
+	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM trigger_runs`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("trigger_runs rows after gc = %d, want 0", count)
+	}
+}
+
 // makeRuntimeDir は runtimesDir 配下に fake の runtime ディレクトリを作成する。
 func makeRuntimeDir(t *testing.T, runtimesDir, runtimeID string) string {
 	t.Helper()

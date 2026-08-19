@@ -296,6 +296,7 @@ daemon が集約する `~/.config/boid/host_commands.yaml` (workspace 群の `ho
 | コマンド | 役割 |
 |---|---|
 | `boid exec -p <project-ref> [--name NAME] [--readonly] -- <argv...>` | サンドボックス内で任意の argv を実行。 project の `host_commands` / `env` を継承する (`additional_bindings` は Phase 4 PR4 で撤去済み、workspace home に依存)。 `--` 以降が sandbox 内の argv (旧 `commands:` 名前指定は Phase 3-d で廃止)。 `--name` でジョブの表示名、 `--readonly` でワークスペースを read-only に |
+| `boid trigger run -p <project-ref> <name>` | project.yaml の `triggers[]` (`docs/ja/reference/project-yaml.md#triggers` 参照) に定義したトリガを 1 回だけ即座に起動するデバッグ用の手動口。`every` の経過チェックは無視するが single-flight は無視しない — 実行中の run があれば `skipped: <reason>` を返す (強制二重起動の口ではない) |
 | `boid attach <job-id>` | 実行中のジョブの runtime に attach (interactive ジョブ向け)。 Ctrl-] で detach。 通信が切れた場合は自動で再接続する ([接続断と再接続](#接続断と再接続)) |
 | `boid fetch <url>` | URL のコンテンツをホスト側で取得して出力する (直接 HTTP アクセスが制限されているサンドボックス内から使用可) |
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -12,6 +13,18 @@ type ProjectHandler struct {
 	Service           ProjectService
 	SessionDispatcher SessionDispatcher // optional; nil disables the start-session endpoint
 	ExecDispatcher    ExecDispatcher    // optional; nil disables the exec endpoint
+	// TriggerRunner backs POST /api/projects/{id}/triggers/{name}/run —
+	// docs/plans/ingestion-identity.md PR-4 (B-5) 12 節「手動 1 巡の口」
+	// (`boid trigger run`, cmd/trigger.go). Optional; nil disables the
+	// endpoint, same convention as SessionDispatcher/ExecDispatcher above.
+	TriggerRunner TriggerRunner
+}
+
+// TriggerRunner fires one project.yaml trigger immediately, bypassing the
+// `every` elapsed check but NOT single-flight. Implemented by
+// *api.TaskWorkflowService.RunTriggerNow (trigger_loop.go).
+type TriggerRunner interface {
+	RunTriggerNow(ctx context.Context, projectID, triggerName string) (*TriggerRunNowResult, error)
 }
 
 type projectCandidate struct {
@@ -52,6 +65,7 @@ func (h *ProjectHandler) Routes() chi.Router {
 	r.Put("/{id}/workspace", h.SetWorkspace)
 	r.Post("/{id}/sessions", h.StartSession)
 	r.Post("/{id}/exec", h.StartExec)
+	r.Post("/{id}/triggers/{name}/run", h.RunTrigger)
 	r.Post("/{id}/fetch", h.Fetch)
 	r.Get("/{id}/explain", h.Explain)
 	r.Get("/{id}", h.Get)
@@ -279,6 +293,29 @@ func (h *ProjectHandler) StartExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, result)
+}
+
+// RunTrigger handles POST /api/projects/{id}/triggers/{name}/run —
+// docs/plans/ingestion-identity.md PR-4 (B-5) 12 節「手動 1 巡の口」. The
+// project is resolved from the URL ref the same way every other project
+// route does; {name} is the trigger's project.yaml `name:`.
+func (h *ProjectHandler) RunTrigger(w http.ResponseWriter, r *http.Request) {
+	if h.TriggerRunner == nil {
+		writeError(w, http.StatusNotImplemented, "trigger runner not wired")
+		return
+	}
+	ref := chi.URLParam(r, "id")
+	project := h.resolveRef(w, ref)
+	if project == nil {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	result, err := h.TriggerRunner.RunTriggerNow(r.Context(), project.ID, name)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *ProjectHandler) Reload(w http.ResponseWriter, r *http.Request) {

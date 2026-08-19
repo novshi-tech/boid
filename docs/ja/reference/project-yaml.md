@@ -35,6 +35,7 @@ task_behaviors:
 | `task_behaviors` | map (string → TaskBehavior) | はい | このプロジェクトで作れる「タスクの種類」一覧 |
 | `session_behaviors` | map (string → SessionBehavior) | いいえ | session (task を伴わない対話セッション) 起動時の既定 `harness_type`/`model` を用途キーごとに設定する辞書。`task_behaviors` とは別物 — 詳細は [`session_behaviors.<name>`](#session_behaviorsname) を参照 |
 | `default_task_behavior` | string | いいえ | `boid task create` で `--behavior` を省略したときに使う behavior の名前。未指定の場合は `task_behaviors` に `supervisor` があれば暗黙で使う (WARN あり)、なければエラー |
+| `triggers` | list of Trigger | いいえ | daemon が定期的に起こす readonly exec job の一覧 (docs/plans/ingestion-identity.md PR-4/B-5)。`task_behaviors` とは独立したトップレベルのフィールド。詳細は [`triggers[]`](#triggers) を参照 |
 | `kits` | — | **撤去** | ロード時に reject される (`project.yaml: top-level "kits" is no longer supported`)。 kit 機構自体は Phase 2.5 PR6 で退役済み、 *workspace* 側の `kits` フィールド (`WorkspaceMeta.Kits`) も Phase 2.5 PR7 でコードから完全撤去 (`docs/plans/workspace-db-consolidation.md` 参照)。 `host_commands` / `env` を workspace に直接設定すること (`additional_bindings` は Phase 4 PR4 で撤去済み — [workspace home の `init.sh`](../guide/workspace-home.md) を使う)。 詳細は下記 [`KitRef`](#kitref) と [Kit 作者向け概要](../kit-authoring/overview.md) を参照 |
 | `host_commands` | — | **撤去** | ロード時に reject される。 workspace に設定する (`boid workspace create/edit`) — ただし *workspace* の `host_commands:` は参照 **名前** のリストであり、 下記 [HostCommands](#hostcommands) で説明するマップ形式ではない点に注意 (そのマップ形式は `kit.yaml` と daemon-wide の `~/.config/boid/host_commands.yaml` レジストリで使われ、 workspace の名前はそのレジストリを参照して解決される)。 [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照 |
 | `additional_bindings` | — | **撤去** | `project.yaml` の top-level ではロード時に reject される。 **`workspace.yaml` 側の `additional_bindings` も `docs/plans/home-workspace-volume.md` Phase 4 PR4 で撤去済み** — key 自体はパースされる (エラーにはならない) が値は無視され、 サンドボックスに反映されない。 workspace 側でツールチェーンを永続化したい場合は [workspace home の `init.sh`](../guide/workspace-home.md) を使うこと。 詳細は [BindMount](#bindmount) 参照 |
@@ -218,6 +219,35 @@ session_behaviors:
 | `model` | string | (空 — harness の既定モデル) | session 起動時に harness へ渡すモデル指定 |
 
 > **注意:** `session_behaviors` は procedure (手順) を持ちません。ここで渡せるのは harness_type/model という data のみです — 「どうやって作業するか」は引き続き project 自身の CLAUDE.md / スキルの discovery に委ねられます。
+
+## `triggers[]`
+
+daemon が project.yaml から読み取り、周期的に readonly exec job として起こすコマンドの一覧です (docs/plans/ingestion-identity.md PR-4/B-5)。`task_behaviors` とは独立した**トップレベル**のフィールドで、workspace envelope 側 (`boid workspace apply` の `spec:`) には意図的に対応していません — `run:` は特定 1 project の tracked tree にしか存在しないスクリプトパスを指すことが普通で、workspace 内の複数 project へ機械的に共有できる保証が無いためです。
+
+```yaml
+triggers:
+  - name: intake
+    every: 10m
+    run: python3 scripts/intake_tick.py
+  - name: sweep
+    every: 1h
+    run: bash scripts/sweep_tick.sh
+```
+
+| キー | 型 | 必須 | 役割 |
+|---|---|---|---|
+| `name` | string | はい | このプロジェクト内でトリガを一意に識別する名前。空文字列・重複はロード時にエラー。`boid trigger run <name>` で参照する名前でもある |
+| `every` | string (`time.ParseDuration`) | はい | 前回の起動から次に起こすまでの最小間隔 (例: `10m`、`1h`)。`0` 以下は拒否。**実効下限は daemon の sweep 周期 (1 分)** — それより短い値 (例: `1s`) はロード時に拒否される。「毎秒」のように sweep 周期より高い頻度は表現できない |
+| `run` | string | はい | サンドボックス内で `sh -c` に渡されるコマンド文字列 (スクリプトパスではない)。sandbox の `/bin/sh` は dash なので bashism は `bash scripts/x.sh` のように明示すること。stdin は daemon 側が `exec 0</dev/null` 相当で閉じた状態で実行される (対話的な入力を待つスクリプトは書けない — attach するクライアントが存在しないため、閉じないと永久にハングする) |
+
+**実行の性質:**
+
+- 常に `Readonly: true` 固定の exec job として起動される (`boid exec --readonly` と同じ経路)。readonly でも `boid task create` / `boid task action-send` 等の boid op は通る (readonly はサンドボックスのファイルシステム書き込み可否だけを制御し、op の allowlist には影響しない)
+- **single-flight**: 同じ `(project, trigger)` の組は同時に 1 つしか走らない。前回がまだ実行中なら次の周期は見送られる (DB の部分 UNIQUE インデックスで強制される — 複数 daemon プロセスが同じ DB を共有する場合でも保証される)
+- 詰まり (`in-flight` が異常に長く続く) や連続失敗はログと通知でのみ検出される。**トリガ自身のコマンドにタイムアウトは無い** — 実行が返らないコマンドは daemon 側からは止められないので、`run:` に渡すコマンド自身がタイムアウトを持つこと (例: `timeout 300 python3 scripts/intake_tick.py`)
+- daemon は `run:` の中身を一切解釈しない。何個 task を作るか・どう判断するかはスクリプト側の責務
+
+デバッグ用の手動起動口は `boid trigger run -p <project-ref> <name>` (`every` の経過は無視するが single-flight は尊重する) — 詳細は [CLI リファレンス](cli.md#サンドボックス操作) を参照。
 
 ## 共通の構成要素
 

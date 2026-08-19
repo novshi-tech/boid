@@ -162,18 +162,23 @@ var expectedScopeAnnotations = map[string]string{
 	"boid task tree":          scopeRemote,
 	"boid task update":        scopeRemote,
 	"boid task watch":         scopeRemote,
-	"boid web devices":        scopeRemote,
-	"boid web pair":           scopeRemote,
-	"boid web revoke":         scopeRemote,
-	"boid web revoke-all":     scopeRemote,
-	"boid web set-addr":       scopeRemote,
-	"boid web set-url":        scopeRemote,
-	"boid workspace apply":    scopeRemote,
-	"boid workspace assign":   scopeRemote,
-	"boid workspace clear":    scopeRemote,
-	"boid workspace create":   scopeRemote,
-	"boid workspace edit":     scopeRemote,
-	"boid workspace export":   scopeRemote,
+	// docs/plans/ingestion-identity.md PR-4 (B-5): fires a trigger through
+	// POST /api/projects/{id}/triggers/{name}/run — same axis as `boid
+	// exec`/`boid action send` above, the daemon's HTTP API is the entire
+	// mechanism.
+	"boid trigger run":      scopeRemote,
+	"boid web devices":      scopeRemote,
+	"boid web pair":         scopeRemote,
+	"boid web revoke":       scopeRemote,
+	"boid web revoke-all":   scopeRemote,
+	"boid web set-addr":     scopeRemote,
+	"boid web set-url":      scopeRemote,
+	"boid workspace apply":  scopeRemote,
+	"boid workspace assign": scopeRemote,
+	"boid workspace clear":  scopeRemote,
+	"boid workspace create": scopeRemote,
+	"boid workspace edit":   scopeRemote,
+	"boid workspace export": scopeRemote,
 	// import-home reads a LOCAL directory to build its payload and is still
 	// scopeRemote, unlike `project reload`, which also reads a local path
 	// (a project's stored WorkDir) and is scopeLocal. The axis is whose

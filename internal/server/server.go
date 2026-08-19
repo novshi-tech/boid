@@ -228,6 +228,7 @@ type Server struct {
 	cliHandler     http.Handler
 	gcLoop         *orchestrator.GCLoop // nil if GC is disabled
 	queueSweepLoop *api.QueueSweepLoop  // cross-project-issue-triage Phase 1 PR-3: queue の決定論的評価 rule 1 (wake 評価)
+	triggerLoop    *api.TriggerLoop     // docs/plans/ingestion-identity.md PR-4 (B-5): トリガのスケジュール/single-flight/実行記録
 	workflow       *api.TaskWorkflowService
 
 	// hostCommands is the aggregated host_commands config assembled by
@@ -691,6 +692,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// Phase 1 PR-3, queue の決定論的評価 節 rule 1).
 	if s.queueSweepLoop != nil {
 		go s.queueSweepLoop.Run(ctx)
+	}
+
+	// Start the trigger sweep loop (docs/plans/ingestion-identity.md PR-4,
+	// B-5's「スケジューラ」section).
+	if s.triggerLoop != nil {
+		go s.triggerLoop.Run(ctx)
 	}
 
 	// Per-daemon internal CA (docs/plans/phase6-container-backend.md
