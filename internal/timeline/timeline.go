@@ -124,12 +124,44 @@ func IsAPIGatewayRequestAction(a *orchestrator.Action) bool {
 	return a.Type == ActionTypeAPIGatewayRequest
 }
 
+// IsAnsweredAction reports whether an action records a human's accept/
+// reject answer to a Web UI suggestion (J-6,
+// docs/plans/ingestion-identity.md PR-3). Consulted by Build to
+// deliberately ALLOW this one non-transitioning action type through, unlike
+// the general non-transitioning/non-progress exclusion just below (which
+// still applies to attrs_set / child_added / child_specced / noted — a
+// pre-existing gap, not a new one, that this PR does not touch: see Opus
+// review finding #6, 2026-08-19).
+//
+// The reason `answered` gets the exception where those others don't:
+// `answered` is the FIRST non-transitioning action a human directly
+// triggers by clicking a Web UI button (the task-detail page's Accept/
+// Reject pair). Without this, clicking Reject makes the suggestion card
+// disappear (applyAnsweredSideEffect strips detail.attrs.suggestion) with
+// literally no human-visible trace anywhere in the UI — the very "誰がいつ
+// 却下したか" question the design doc's script-facing action_list read口
+// answers programmatically had no answer for a person reading the task
+// detail page. attrs_set/child_added/child_specced/noted are daemon-
+// internal or khi-script-originated, not something a human clicks, so they
+// don't share this specific gap.
+func IsAnsweredAction(a *orchestrator.Action) bool {
+	return a.Type == "answered"
+}
+
 // BuildActionLabel returns the display label for a timeline action.
 // State transitions: "<type> → <to_status>".
 // Progress actions: "進捗: <message>" (extracted from JSON payload).
+// Answered actions: "answered: <accept|reject>" (falls back to the bare
+// "answered" type string if the payload is missing/malformed — Build
+// itself never lets a malformed answered payload land here in practice,
+// since parseAnsweredPayload validates it before CreateAction, but this
+// stays defensive rather than assuming that invariant).
 func BuildActionLabel(a *orchestrator.Action) string {
 	if IsStateTransition(a) {
 		return a.Type + " → " + string(a.ToStatus)
+	}
+	if IsAnsweredAction(a) {
+		return buildAnsweredLabel(a)
 	}
 	if IsProgressAction(a) {
 		return buildProgressLabel(a)
@@ -148,6 +180,23 @@ func buildProgressLabel(a *orchestrator.Action) string {
 		}
 	}
 	return "進捗"
+}
+
+// buildAnsweredLabel extracts the accept/reject decision from an answered
+// Action's JSON payload (answeredPayload's wire shape, internal/api's
+// workflow_triage.go: {"answer": "accept"|"reject", "verb": ..., "basis":
+// ...}). Falls back to the bare action type when the payload is missing or
+// doesn't parse — timeline must never fail to render over a malformed row.
+func buildAnsweredLabel(a *orchestrator.Action) string {
+	if len(a.Payload) > 0 {
+		var p struct {
+			Answer string `json:"answer"`
+		}
+		if err := json.Unmarshal(a.Payload, &p); err == nil && p.Answer != "" {
+			return "answered: " + p.Answer
+		}
+	}
+	return a.Type
 }
 
 // BuildJobLabel returns the display label for a job.
@@ -261,7 +310,11 @@ func Build(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobI
 		if IsAPIGatewayRequestAction(a) {
 			continue
 		}
-		if !IsStateTransition(a) && !IsProgressAction(a) {
+		// answered (J-6) is a deliberate, narrow exception to the
+		// non-transitioning exclusion below — see IsAnsweredAction's own
+		// doc comment for why (Opus review finding #6, 2026-08-19).
+		// attrs_set/child_added/child_specced/noted stay excluded.
+		if !IsStateTransition(a) && !IsProgressAction(a) && !IsAnsweredAction(a) {
 			continue
 		}
 		items = append(items, rawItem{t: a.CreatedAt, hasTime: !a.CreatedAt.IsZero(), action: a})
