@@ -111,6 +111,17 @@ func (s *sweepFakeStore) GetJob(id string) (*Job, error)               { return 
 func (s *sweepFakeStore) ListJobsByTask(taskID string) ([]*Job, error) { return nil, nil }
 func (s *sweepFakeStore) UpdateJob(job *Job) error                     { return nil }
 
+// LinkIdentity / UnlinkIdentity / UnlinkAllForTask / ResolveIdentity /
+// ListIdentitiesByTask: no queue-sweep test exercises the identity index —
+// trivial no-ops, kept only to satisfy TxStore.
+func (s *sweepFakeStore) LinkIdentity(projectID, identity, taskID string) error { return nil }
+func (s *sweepFakeStore) UnlinkIdentity(projectID, identity string) error       { return nil }
+func (s *sweepFakeStore) UnlinkAllForTask(taskID string) error                  { return nil }
+func (s *sweepFakeStore) ResolveIdentity(projectID, identity string) (*orchestrator.Task, error) {
+	return nil, orchestrator.ErrTaskNotFound
+}
+func (s *sweepFakeStore) ListIdentitiesByTask(taskID string) ([]string, error) { return nil, nil }
+
 func (s *sweepFakeStore) WithinTx(fn func(TxStore) error) error {
 	return fn(s)
 }

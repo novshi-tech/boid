@@ -338,6 +338,29 @@ type TaskTriageStore interface {
 	ParkedFrom(taskID string) (orchestrator.TaskStatus, error)
 }
 
+// TaskIdentityStore provides access to docs/plans/ingestion-identity.md
+// PR-1 (B-1)'s identity index (task_identities table): external key ->
+// task, scoped per project (I-1/I-2/I-3). Deliberately separate from
+// TaskStore for the same reason TaskTriageStore is: identity bindings are
+// not part of orchestrator.Task's own JSON shape.
+type TaskIdentityStore interface {
+	// LinkIdentity binds identity to taskID within projectID's scope.
+	// Re-linking the same task is idempotent; linking a DIFFERENT task
+	// already bound to identity returns orchestrator.ErrIdentityConflict.
+	LinkIdentity(projectID, identity, taskID string) error
+	// UnlinkIdentity removes one binding, if any (idempotent — not found is
+	// not an error).
+	UnlinkIdentity(projectID, identity string) error
+	// UnlinkAllForTask releases every identity bound to taskID (I-6: called
+	// from the drop side effect — see TaskWorkflowService.ApplyAction).
+	UnlinkAllForTask(taskID string) error
+	// ResolveIdentity looks up the task bound to (projectID, identity).
+	// Returns orchestrator.ErrTaskNotFound when no binding exists.
+	ResolveIdentity(projectID, identity string) (*orchestrator.Task, error)
+	// ListIdentitiesByTask returns every identity bound to taskID.
+	ListIdentitiesByTask(taskID string) ([]string, error)
+}
+
 type ProjectRepository interface {
 	CreateProject(project *orchestrator.Project) error
 	GetProject(id string) (*orchestrator.Project, error)
@@ -391,6 +414,12 @@ type TxStore interface {
 	ActionStore
 	TaskTriageStore
 	JobStore
+	// TaskIdentityStore is embedded so the drop side effect (I-6:
+	// TaskWorkflowService.ApplyAction's WithinTx switch) can release a
+	// dropped task's identity bindings atomically with the drop transition
+	// itself, the same way park/attrs_set/child_added/child_specced apply
+	// their own sidecar side effects inside the same transaction.
+	TaskIdentityStore
 }
 
 type Transactor interface {

@@ -96,6 +96,31 @@ func (s apiTxStore) ParkedFrom(taskID string) (orchestrator.TaskStatus, error) {
 	return s.tasks.ParkedFrom(taskID)
 }
 
+// LinkIdentity / UnlinkIdentity / UnlinkAllForTask / ResolveIdentity /
+// ListIdentitiesByTask back docs/plans/ingestion-identity.md PR-1 (B-1)'s
+// identity index (api.TaskIdentityStore). s.tasks already implements this
+// (orchestrator.TaskRepository, internal/orchestrator/repository.go) — same
+// object as every other apiTxStore delegation above.
+func (s apiTxStore) LinkIdentity(projectID, identity, taskID string) error {
+	return s.tasks.LinkIdentity(projectID, identity, taskID)
+}
+
+func (s apiTxStore) UnlinkIdentity(projectID, identity string) error {
+	return s.tasks.UnlinkIdentity(projectID, identity)
+}
+
+func (s apiTxStore) UnlinkAllForTask(taskID string) error {
+	return s.tasks.UnlinkAllForTask(taskID)
+}
+
+func (s apiTxStore) ResolveIdentity(projectID, identity string) (*orchestrator.Task, error) {
+	return s.tasks.ResolveIdentity(projectID, identity)
+}
+
+func (s apiTxStore) ListIdentitiesByTask(taskID string) ([]string, error) {
+	return s.tasks.ListIdentitiesByTask(taskID)
+}
+
 func (s apiTxStore) GetJob(id string) (*api.Job, error) {
 	job, err := s.jobs.GetJob(id)
 	if err != nil {

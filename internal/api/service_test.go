@@ -1812,6 +1812,17 @@ func (s *stubTx) ListJobsByTask(taskID string) ([]*Job, error) { return nil, nil
 func (s *stubTx) UpdateJob(job *Job) error                     { return nil }
 func (s *stubTx) WithinTx(fn func(TxStore) error) error        { return fn(s) }
 
+// LinkIdentity / UnlinkIdentity / UnlinkAllForTask / ResolveIdentity /
+// ListIdentitiesByTask: no stubTx-based test exercises the identity index —
+// trivial no-ops, kept only to satisfy TxStore.
+func (s *stubTx) LinkIdentity(projectID, identity, taskID string) error { return nil }
+func (s *stubTx) UnlinkIdentity(projectID, identity string) error       { return nil }
+func (s *stubTx) UnlinkAllForTask(taskID string) error                  { return nil }
+func (s *stubTx) ResolveIdentity(projectID, identity string) (*orchestrator.Task, error) {
+	return nil, orchestrator.ErrTaskNotFound
+}
+func (s *stubTx) ListIdentitiesByTask(taskID string) ([]string, error) { return nil, nil }
+
 type stubJobStore struct {
 	job         *Job
 	jobsByTask  map[string][]*Job

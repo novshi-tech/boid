@@ -376,6 +376,15 @@ func Apply(conn *sql.DB) error {
 			version: "0040_backfill_task_triage_rows",
 			path:    "migrations/0040_backfill_task_triage_rows.sql",
 		},
+		{
+			// docs/plans/ingestion-identity.md PR-1 (B-1): task_identities —
+			// the identity index (external key -> task, I-1/I-2/I-3).
+			version: "0041_add_task_identities",
+			path:    "migrations/0041_add_task_identities.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return tableExists(tx, "task_identities")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

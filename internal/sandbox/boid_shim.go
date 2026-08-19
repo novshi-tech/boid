@@ -180,6 +180,20 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskWake(args[2:])
 		case "triage":
 			return parseBoidTaskTriage(args[2:])
+		case "identity":
+			if len(args) < 3 {
+				return nil, fmt.Errorf("boid shim: missing boid task identity subcommand")
+			}
+			switch args[2] {
+			case "link":
+				return parseBoidTaskIdentityLink(args[3:])
+			case "unlink":
+				return parseBoidTaskIdentityUnlink(args[3:])
+			case "resolve":
+				return parseBoidTaskIdentityResolve(args[3:])
+			default:
+				return nil, fmt.Errorf("boid shim: unsupported boid task identity subcommand %q", args[2])
+			}
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -782,6 +796,112 @@ func parseBoidTaskTriage(args []string) (*BoidRequest, error) {
 	if req.Status != "" || req.ProjectID != "" || req.WorkspaceID != "" {
 		return nil, fmt.Errorf("boid shim: boid task triage <task-id> takes no filter flags (did you mean --list?)")
 	}
+	return req, nil
+}
+
+// parseBoidTaskIdentityLink builds the BoidRequest for
+// `boid task identity link <identity> <task-id> [--project-id P]`
+// (docs/plans/ingestion-identity.md PR-1, B-1). project_id is optional — the
+// broker defaults it from the token's own context when omitted, exactly
+// like `boid task create`.
+func parseBoidTaskIdentityLink(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpTaskIdentityLink}
+	var positional []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
+			value, next, err := takeStringFlagValue(args, i, "--project-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.ProjectID = value
+		case strings.HasPrefix(arg, "-"):
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task identity link", arg)
+		default:
+			positional = append(positional, arg)
+		}
+	}
+
+	if len(positional) < 2 {
+		return nil, fmt.Errorf("boid shim: boid task identity link requires an identity and a task id")
+	}
+	if len(positional) > 2 {
+		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid task identity link", positional[2])
+	}
+	req.Identity = positional[0]
+	req.TaskID = positional[1]
+	return req, nil
+}
+
+// parseBoidTaskIdentityUnlink builds the BoidRequest for
+// `boid task identity unlink <identity> [--project-id P]`.
+func parseBoidTaskIdentityUnlink(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpTaskIdentityUnlink}
+	var positional []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
+			value, next, err := takeStringFlagValue(args, i, "--project-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.ProjectID = value
+		case strings.HasPrefix(arg, "-"):
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task identity unlink", arg)
+		default:
+			positional = append(positional, arg)
+		}
+	}
+
+	if len(positional) == 0 {
+		return nil, fmt.Errorf("boid shim: boid task identity unlink requires an identity")
+	}
+	if len(positional) > 1 {
+		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid task identity unlink", positional[1])
+	}
+	req.Identity = positional[0]
+	return req, nil
+}
+
+// parseBoidTaskIdentityResolve builds the BoidRequest for
+// `boid task identity resolve <identity> [--project-id P]`. A miss is
+// represented by the executor as a distinct exit code
+// (sandbox.IdentityNotFoundExitCode), not a shim-level error — see
+// BoidOpTaskIdentityResolve's own doc comment in protocol.go.
+func parseBoidTaskIdentityResolve(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpTaskIdentityResolve}
+	var positional []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
+			value, next, err := takeStringFlagValue(args, i, "--project-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.ProjectID = value
+		case strings.HasPrefix(arg, "-"):
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task identity resolve", arg)
+		default:
+			positional = append(positional, arg)
+		}
+	}
+
+	if len(positional) == 0 {
+		return nil, fmt.Errorf("boid shim: boid task identity resolve requires an identity")
+	}
+	if len(positional) > 1 {
+		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid task identity resolve", positional[1])
+	}
+	req.Identity = positional[0]
 	return req, nil
 }
 

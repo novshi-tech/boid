@@ -112,6 +112,24 @@ func TestBroker_BoidTaskTriageList_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskTriageList})
 }
 
+// BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink / BoidOpTaskIdentityResolve
+// (docs/plans/ingestion-identity.md PR-1): scoping is broker-authoritative
+// (default from ctx, resolve, AllowsProject — see broker.go's cases and
+// TestBroker_BoidTaskIdentityLink_ProjectIDDenied /
+// TestBroker_BoidTaskIdentityResolve_ProjectIDDenied below); these three
+// close the plain policy-gate manifest entry point.
+func TestBroker_BoidTaskIdentityLink_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskIdentityLink, Identity: "jira:X-1", TaskID: "t1"})
+}
+
+func TestBroker_BoidTaskIdentityUnlink_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskIdentityUnlink, Identity: "jira:X-1"})
+}
+
+func TestBroker_BoidTaskIdentityResolve_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskIdentityResolve, Identity: "jira:X-1"})
+}
+
 // assertBoidOpRejectedByPolicy registers a boid policy that allows only an
 // unrelated op (job_done), then asserts the given request is rejected by the
 // policy gate — before any op-specific dispatch — and never reaches the
@@ -229,6 +247,19 @@ var opEscapeCoverage = map[string]opCoverage{
 	// entirely unchecked: an Opus-review High, since ListTasks' WorkspaceID
 	// filter INNER JOINs project_workspaces and really does cross workspaces).
 	"BoidOpTaskTriageList": {escapeTest: "TestBroker_BoidTaskTriageList_WorkspaceIDMismatchDenied"},
+
+	// BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink / BoidOpTaskIdentityResolve
+	// (docs/plans/ingestion-identity.md PR-1, B-1): scoping is
+	// broker-authoritative for project_id, matching BoidOpTaskCreate exactly
+	// (see protocol.go's doc comment on these ops for why — 3 prior review
+	// rounds caught this exact class of bug left executor-only). The
+	// project-id cross-workspace rejection is exercised end-to-end by
+	// TestBroker_BoidTaskIdentityLink_ProjectIDDenied and
+	// TestBroker_BoidTaskIdentityResolve_ProjectIDDenied; the plain
+	// policy-gate manifest entry points are below.
+	"BoidOpTaskIdentityLink":    {escapeTest: "TestBroker_BoidTaskIdentityLink_PolicyReject"},
+	"BoidOpTaskIdentityUnlink":  {escapeTest: "TestBroker_BoidTaskIdentityUnlink_PolicyReject"},
+	"BoidOpTaskIdentityResolve": {escapeTest: "TestBroker_BoidTaskIdentityResolve_PolicyReject"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly

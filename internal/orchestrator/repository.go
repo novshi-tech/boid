@@ -89,6 +89,30 @@ func (r *TaskRepository) ParkedFrom(taskID string) (TaskStatus, error) {
 	return ParkedFrom(r.db, taskID)
 }
 
+// LinkIdentity / UnlinkIdentity / UnlinkAllForTask / ResolveIdentity /
+// ListIdentitiesByTask back docs/plans/ingestion-identity.md PR-1 (B-1)'s
+// identity index (task_identity.go). Thin wrappers over the package-level
+// functions, mirroring every other TaskRepository method's shape.
+func (r *TaskRepository) LinkIdentity(projectID, identity, taskID string) error {
+	return LinkIdentity(r.db, projectID, identity, taskID)
+}
+
+func (r *TaskRepository) UnlinkIdentity(projectID, identity string) error {
+	return UnlinkIdentity(r.db, projectID, identity)
+}
+
+func (r *TaskRepository) UnlinkAllForTask(taskID string) error {
+	return UnlinkAllForTask(r.db, taskID)
+}
+
+func (r *TaskRepository) ResolveIdentity(projectID, identity string) (*Task, error) {
+	return ResolveIdentity(r.db, projectID, identity)
+}
+
+func (r *TaskRepository) ListIdentitiesByTask(taskID string) ([]string, error) {
+	return ListIdentitiesByTask(r.db, taskID)
+}
+
 type ProjectRepository struct {
 	db db.DBTX
 }

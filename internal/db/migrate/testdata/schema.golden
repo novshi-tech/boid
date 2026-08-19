@@ -2,6 +2,9 @@
 CREATE INDEX idx_project_workspaces_workspace_id
     ON project_workspaces(workspace_id);
 
+-- index: idx_task_identities_task_id
+CREATE INDEX idx_task_identities_task_id ON task_identities(task_id);
+
 -- index: idx_task_triage_wake_at
 CREATE INDEX idx_task_triage_wake_at
     ON task_triage(wake_at) WHERE wake_at IS NOT NULL;
@@ -68,6 +71,15 @@ CREATE TABLE "secrets" (
     created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at      DATETIME NOT NULL DEFAULT (datetime('now')),
     UNIQUE(namespace, key)
+);
+
+-- table: task_identities
+CREATE TABLE task_identities (
+    identity   TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    created_at DATETIME NOT NULL,
+    UNIQUE (project_id, identity)
 );
 
 -- table: task_triage

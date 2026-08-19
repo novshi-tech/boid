@@ -23,6 +23,10 @@ type recordingTxStore struct {
 	// looks up the PARENT task by id while the primary `task`/`updatedTask`
 	// fields track the child under test). Checked before task/updatedTask.
 	tasks map[string]*orchestrator.Task
+	// unlinkAllForTaskCalls records every UnlinkAllForTask(taskID) call — used
+	// by the ingestion-identity.md PR-1 drop-side-effect tests to pin that
+	// `drop` (and ONLY drop) releases a task's identity bindings.
+	unlinkAllForTaskCalls []string
 }
 
 func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error { return nil }
@@ -121,6 +125,23 @@ func (s *recordingTxStore) ListJobsByTask(taskID string) ([]*Job, error) {
 	return nil, nil
 }
 func (s *recordingTxStore) UpdateJob(job *Job) error { return nil }
+
+// LinkIdentity / UnlinkIdentity / ResolveIdentity / ListIdentitiesByTask are
+// not exercised by the drop-side-effect tests (only UnlinkAllForTask is
+// called from within ApplyAction) — trivial no-ops, kept just to satisfy
+// TxStore.
+func (s *recordingTxStore) LinkIdentity(projectID, identity, taskID string) error { return nil }
+func (s *recordingTxStore) UnlinkIdentity(projectID, identity string) error       { return nil }
+func (s *recordingTxStore) UnlinkAllForTask(taskID string) error {
+	s.unlinkAllForTaskCalls = append(s.unlinkAllForTaskCalls, taskID)
+	return nil
+}
+func (s *recordingTxStore) ResolveIdentity(projectID, identity string) (*orchestrator.Task, error) {
+	return nil, orchestrator.ErrTaskNotFound
+}
+func (s *recordingTxStore) ListIdentitiesByTask(taskID string) ([]string, error) {
+	return nil, nil
+}
 
 type recordingTransactor struct {
 	store *recordingTxStore

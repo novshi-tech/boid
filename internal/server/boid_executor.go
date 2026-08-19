@@ -699,6 +699,106 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
+	case sandbox.BoidOpTaskIdentityLink:
+		// docs/plans/ingestion-identity.md PR-1 (B-1). req.ProjectID is
+		// already broker-resolved and workspace-checked (broker.go); the
+		// TaskID it links to is a SEPARATE scope the broker cannot verify
+		// (no TaskStore there), so the GetTask + AllowsProject pattern below
+		// matches BoidOpActionSend/BoidOpTaskWake's own — EXCEPT that this
+		// op writes the task id straight into task_identities.task_id, an
+		// FK column, so it must pass LinkIdentity the GetTask call's
+		// RESOLVED existing.ID (which absorbs GetTask's own >=8-char prefix
+		// fallback, internal/orchestrator/store.go) rather than the raw
+		// req.TaskID a caller supplied — action_send/task_wake never write
+		// their TaskID anywhere, only re-look it up downstream, so a short
+		// prefix silently keeps working for them where it would hard-fail
+		// here with a raw SQLite FOREIGN KEY constraint error.
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link requires a task id"}
+		}
+		if req.Identity == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link requires an identity"}
+		}
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link unavailable"}
+		}
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link is restricted to the current workspace"}
+		}
+		// I-3: identity is scoped to a single project. AllowsProject above
+		// only checks the task's project is somewhere in the caller's
+		// workspace — it does NOT check the task's project matches the
+		// SPECIFIC req.ProjectID the identity is being linked under. Without
+		// this, a caller could bind proj-1's identity to a task that
+		// actually lives in proj-2 (same workspace, so AllowsProject alone
+		// never objects), and PR-2's resolve would then hand proj-1 an
+		// observation for a task it doesn't own.
+		if existing.ProjectID != req.ProjectID {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link: task belongs to a different project"}
+		}
+		if err := e.tasks.LinkIdentity(req.ProjectID, req.Identity, existing.ID); err != nil {
+			if errors.Is(err, orchestrator.ErrIdentityConflict) {
+				return &sandbox.ExecResponse{ExitCode: sandbox.IdentityConflictExitCode, Stderr: err.Error()}
+			}
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: fmt.Sprintf("linked: %s -> %s\n", req.Identity, existing.ID)}
+	case sandbox.BoidOpTaskIdentityUnlink:
+		if req.Identity == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink requires an identity"}
+		}
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink unavailable"}
+		}
+		if err := e.tasks.UnlinkIdentity(req.ProjectID, req.Identity); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: fmt.Sprintf("unlinked: %s\n", req.Identity)}
+	case sandbox.BoidOpTaskIdentityResolve:
+		// The design doc's explicit contract: "not found" is represented as
+		// a distinguished exit code (sandbox.IdentityNotFoundExitCode), NOT
+		// the generic ExitCode:1 error path — a get-or-create caller needs
+		// to tell the two apart without parsing stderr text. Only
+		// orchestrator.ErrTaskNotFound gets this treatment; every other
+		// error (store unavailable, DB failure, ...) stays generic.
+		if req.Identity == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve requires an identity"}
+		}
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve unavailable"}
+		}
+		resolved, err := e.tasks.ResolveIdentity(req.ProjectID, req.Identity)
+		if err != nil {
+			if errors.Is(err, orchestrator.ErrTaskNotFound) {
+				return &sandbox.ExecResponse{ExitCode: sandbox.IdentityNotFoundExitCode}
+			}
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		// Every other op that hands a task back to the caller re-checks
+		// AllowsProject on the task it actually got, not just the project it
+		// was asked about (BoidOpTaskGet/BoidOpTaskTriageGet/BoidOpActionSend/
+		// BoidOpTaskWake all do this). Resolve is no different — the broker
+		// only validated req.ProjectID itself; verify the task ResolveIdentity
+		// actually returned still belongs to it.
+		if !ctx.AllowsProject(resolved.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve is restricted to the current workspace"}
+		}
+		// Only the task's own ID and status — never the full task (the
+		// design doc is explicit: resolve is a delivery-address lookup, not
+		// a task-detail read; workspace already owns whatever more it needs
+		// via task_triage_get/BoidOpTaskGet).
+		out, err := json.Marshal(struct {
+			TaskID string `json:"task_id"`
+			Status string `json:"status"`
+		}{TaskID: resolved.ID, Status: string(resolved.Status)})
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: string(out) + "\n"}
 	case sandbox.BoidOpJobList:
 		if e.jobs == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list unavailable"}

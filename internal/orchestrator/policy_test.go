@@ -46,6 +46,9 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 		OpBoidTaskWake,
 		OpBoidTaskTriageGet,
 		OpBoidTaskTriageList,
+		OpBoidTaskIdentityLink,
+		OpBoidTaskIdentityUnlink,
+		OpBoidTaskIdentityResolve,
 	}
 	if !opsEqual(boidP.AllowedOps, wantOps) {
 		t.Errorf("hook×boid AllowedOps = %v, want %v", boidP.AllowedOps, wantOps)
