@@ -394,3 +394,98 @@ func TestResolveOrCapture_AlreadyResolved_DoesNotAttemptCreate(t *testing.T) {
 		t.Errorf("LinkIdentity called %d times, want 0", store.linkCalls)
 	}
 }
+
+// ---- real-DB rollback proof (review 推奨5) ----
+
+// failingLinkIdentityTxStore wraps the SAME real orchestrator.TaskRepository
+// (real sqlite tx) realTaskRepoTxStore does, and only overrides LinkIdentity
+// to force a failure. CreateTask / SeedTaskTriage / ResolveIdentity all run
+// for real against sqlite — unlike mockROCTxStore above (used only for the
+// conflict-propagation test), this exercises the ACTUAL rollback rather than
+// just proving WithinTx was called exactly once.
+type failingLinkIdentityTxStore struct {
+	realTaskRepoTxStore
+}
+
+func (failingLinkIdentityTxStore) LinkIdentity(projectID, identity, taskID string) error {
+	return fmt.Errorf("forced LinkIdentity failure for rollback test")
+}
+
+type failingLinkIdentityTransactor struct{ conn *sql.DB }
+
+func (t failingLinkIdentityTransactor) WithinTx(fn func(TxStore) error) error {
+	return db.InTxDB(t.conn, func(tx db.DBTX) error {
+		return fn(failingLinkIdentityTxStore{realTaskRepoTxStore{orchestrator.NewTaskRepository(tx)}})
+	})
+}
+
+// TestResolveOrCapture_LinkIdentityFailure_RollsBackCreateAndSeed pins the
+// doc's 検証項目 "新規作成に失敗したら identity も残らない (トランザクション
+// 境界)" against a REAL sqlite transaction, not just the structural
+// WithinTx-call-count proof TestResolveOrCapture_
+// ConflictingIdentity_PropagatesErrIdentityConflict gives (that test uses a
+// mock TxStore whose CreateTask/SeedTaskTriage are simple stubs with no
+// rollback semantics of their own — it proves ONE WithinTx call happened,
+// not that a real commit never landed).
+//
+// What this catches that the mock-based test can't: a regression where
+// db.InTxDB's rollback-on-error path silently breaks (e.g. a future change
+// that swallows fn's error before returning it, or calls tx.Commit()
+// unconditionally) would make the mock-based test still pass (WithinTx is
+// still called once, LinkIdentity is still called once) while this test
+// fails, because it would find the orphan task/task_triage rows actually
+// committed to disk.
+func TestResolveOrCapture_LinkIdentityFailure_RollsBackCreateAndSeed(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	svc := &TaskWorkflowService{
+		Tx: failingLinkIdentityTransactor{conn: d.Conn},
+		Meta: stubMetaStore{meta: &orchestrator.ProjectMeta{
+			DefaultTaskBehavior: "triage",
+			TaskBehaviors:       map[string]orchestrator.TaskBehavior{"triage": {}},
+		}},
+	}
+
+	_, err = svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
+		ProjectID: "proj-1", Identity: "jira:ROLLBACK-1", Title: "t", Description: "d",
+	})
+	if err == nil {
+		t.Fatal("ResolveOrCapture() error = nil, want the forced LinkIdentity failure to propagate")
+	}
+
+	var taskCount, triageCount, identityCount int
+	if err := d.Conn.QueryRow("SELECT COUNT(*) FROM tasks").Scan(&taskCount); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if err := d.Conn.QueryRow("SELECT COUNT(*) FROM task_triage").Scan(&triageCount); err != nil {
+		t.Fatalf("count task_triage: %v", err)
+	}
+	if err := d.Conn.QueryRow("SELECT COUNT(*) FROM task_identities").Scan(&identityCount); err != nil {
+		t.Fatalf("count task_identities: %v", err)
+	}
+	if taskCount != 0 {
+		t.Errorf("tasks rows = %d, want 0 (CreateTask must have been rolled back with LinkIdentity's failure)", taskCount)
+	}
+	if triageCount != 0 {
+		t.Errorf("task_triage rows = %d, want 0 (SeedTaskTriage must have been rolled back too)", triageCount)
+	}
+	if identityCount != 0 {
+		t.Errorf("task_identities rows = %d, want 0 (the forced-failing LinkIdentity itself must not have left a row)", identityCount)
+	}
+
+	// Also confirm via the public API: a second call sees an unresolved
+	// identity, exactly as if the first call never happened.
+	if _, err := orchestrator.ResolveIdentity(d.Conn, "proj-1", "jira:ROLLBACK-1"); !errors.Is(err, orchestrator.ErrTaskNotFound) {
+		t.Errorf("ResolveIdentity after rollback: err = %v, want ErrTaskNotFound (no trace of the rolled-back attempt)", err)
+	}
+}
