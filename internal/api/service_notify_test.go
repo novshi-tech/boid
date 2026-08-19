@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/notify"
@@ -353,6 +354,97 @@ func TestNotifyTask_FailMode_RecordsFailRequestActionNotApplyAction(t *testing.T
 	}
 	if len(workflow.stoppedAgentRuntimes) != 1 || workflow.stoppedAgentRuntimes[0] != "rt-running" {
 		t.Errorf("stopped agent runtimes = %v, want [rt-running]", workflow.stoppedAgentRuntimes)
+	}
+}
+
+// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: notify --progress /
+// --done / --fail all write actions.payload straight from an agent-supplied
+// string (task_notify.go), bypassing ApplyAction — one of the 4 mandatory
+// ValidateContentSize entry points (orchestrator.MaxContentBytes's own doc
+// comment). These messages are NOT a daemon-generated fixed format —
+// `boid task notify --progress/--done/--fail "<10MB string>"` reaches this
+// unfiltered — so they must be size-capped the same way action_send is.
+func TestNotifyTask_ProgressMode_OversizedMessage_RejectsAndDoesNotRecord(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+	}
+	actions := &capturingActionStore{}
+	svc := &TaskAppService{
+		Tasks:   &stubTaskStore{task: task},
+		Actions: actions,
+	}
+
+	oversized := strings.Repeat("a", orchestrator.MaxContentBytes+1)
+	err := svc.NotifyTask(context.Background(), "t1", "", "", "", oversized, "", "")
+	if err == nil {
+		t.Fatal("NotifyTask(--progress oversized) = nil error, want a rejection")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusBadRequest {
+		t.Fatalf("expected StatusBadRequest, got %v", err)
+	}
+	if actions.createdAction != nil {
+		t.Error("an oversized progress message must not reach CreateAction")
+	}
+}
+
+func TestNotifyTask_DoneMode_OversizedMessage_RejectsAndDoesNotRecord(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+	}
+	actions := &capturingActionStore{}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{task: task},
+		Actions:  actions,
+		Notify:   &capturingNotifier{},
+		Workflow: &stubWorkflowService{},
+	}
+
+	oversized := strings.Repeat("a", orchestrator.MaxContentBytes+1)
+	err := svc.NotifyTask(context.Background(), "t1", "headline", "", "", "", oversized, "")
+	if err == nil {
+		t.Fatal("NotifyTask(--done oversized) = nil error, want a rejection")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusBadRequest {
+		t.Fatalf("expected StatusBadRequest, got %v", err)
+	}
+	if actions.createdAction != nil {
+		t.Error("an oversized done message must not reach CreateAction")
+	}
+}
+
+func TestNotifyTask_FailMode_OversizedMessage_RejectsAndDoesNotRecord(t *testing.T) {
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "executor",
+	}
+	actions := &capturingActionStore{}
+	svc := &TaskAppService{
+		Tasks:    &stubTaskStore{task: task},
+		Actions:  actions,
+		Notify:   &capturingNotifier{},
+		Workflow: &stubWorkflowService{},
+	}
+
+	oversized := strings.Repeat("a", orchestrator.MaxContentBytes+1)
+	err := svc.NotifyTask(context.Background(), "t1", "headline", "", "", "", "", oversized)
+	if err == nil {
+		t.Fatal("NotifyTask(--fail oversized) = nil error, want a rejection")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusBadRequest {
+		t.Fatalf("expected StatusBadRequest, got %v", err)
+	}
+	if actions.createdAction != nil {
+		t.Error("an oversized fail message must not reach CreateAction")
 	}
 }
 
