@@ -167,6 +167,19 @@ func (l *QueueSweepLoop) runOnce(ctx context.Context) {
 	if len(reopenResult.Reopened) > 0 {
 		slog.Info("queue reopen sweep reopened tasks", "count", len(reopenResult.Reopened), "task_ids", reopenResult.Reopened)
 	}
+	// N-8 (Opus review, 2026-08-19): without this, a flapped card is
+	// invisible in the daemon log entirely when notify.command is unset —
+	// SweepReopen's own notifyNewlyFlapped call is a Notifier no-op in that
+	// case, and nothing else logs Flapped anywhere. Mirrors the Reopened
+	// line immediately above rather than change-fingerprinting like
+	// logCanonicalSourceBreaches: a flapped card's SweepReopen own tick-level
+	// notify already dedups per-episode (lastFlappedReopen, triage_done.go),
+	// so this line naturally repeats once per tick for as long as the card
+	// stays flapped — the same cadence SweepReopen's Reopened/Completed
+	// lines already accept.
+	if len(reopenResult.Flapped) > 0 {
+		slog.Info("queue reopen sweep found flapped tasks (auto-reopen blocked, needs human attention)", "count", len(reopenResult.Flapped), "task_ids", reopenResult.Flapped)
+	}
 }
 
 // logCanonicalSourceBreaches reports 決定16 breaches ONLY WHEN THE SET CHANGES.
