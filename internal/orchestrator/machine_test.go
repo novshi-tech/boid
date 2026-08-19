@@ -792,6 +792,47 @@ func TestDefaultMachine_TriageVocabulary_NonTransitioning(t *testing.T) {
 	}
 }
 
+// TestDefaultMachine_CanApplyManualAction_Answered pins Opus review finding
+// #3 (2026-08-19 revisit of PR-3): CanApplyManualAction("answered", status)
+// must agree with what sm.Apply actually accepts/rejects for every status —
+// this is the check the Web UI's Accept/Reject buttons gate on BEFORE
+// rendering, so it must never say "yes" for a status Apply would then
+// reject.
+func TestDefaultMachine_CanApplyManualAction_Answered(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	answerable := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusCaptured,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusReady,
+		orchestrator.TaskStatusWorking,
+	}
+	notAnswerable := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+		orchestrator.TaskStatusDropped,
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusAwaiting,
+	}
+	for _, status := range answerable {
+		if !sm.CanApplyManualAction("answered", status) {
+			t.Errorf("CanApplyManualAction(answered, %s) = false, want true", status)
+		}
+		if _, err := sm.Apply(&orchestrator.Task{Status: status}, &orchestrator.Action{Type: "answered"}); err != nil {
+			t.Errorf("sanity: Apply(answered) from %s unexpectedly errored: %v", status, err)
+		}
+	}
+	for _, status := range notAnswerable {
+		if sm.CanApplyManualAction("answered", status) {
+			t.Errorf("CanApplyManualAction(answered, %s) = true, want false", status)
+		}
+		if _, err := sm.Apply(&orchestrator.Task{Status: status}, &orchestrator.Action{Type: "answered"}); err == nil {
+			t.Errorf("sanity: Apply(answered) from %s unexpectedly succeeded (CanApplyManualAction and Apply must agree)", status)
+		}
+	}
+}
+
 // ---- Phase 1 PR-2: ready → working (逆輸入2: dispatch) ----
 
 func TestDefaultMachine_Dispatch_ReadyToWorking(t *testing.T) {

@@ -117,6 +117,37 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 	return actions
 }
 
+// CanApplyManualAction reports whether actionType has a Manual:true rule
+// matching status — regardless of whether that rule transitions the task
+// (ToStatus != "") or not (ToStatus == "") and regardless of whether it
+// would be a self-loop. Unlike AvailableActions, which deliberately EXCLUDES
+// non-transitioning and self-loop rules because those don't fit the
+// generic "action button" UI (see AvailableActions' own doc comment), this
+// is the check a caller uses to gate a DEDICATED button for one specific
+// non-transitioning manual action — e.g. the Web UI's `answered`
+// Accept/Reject buttons, which have their own bespoke rendering (verb
+// badge, reason, basis) and their own POST target, not the generic
+// available_actions button row.
+//
+// Added for Opus review finding #3 (2026-08-19 revisit of PR-3): sm.Apply
+// already rejects `answered` from done/dropped/aborted (see
+// TestDefaultMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard),
+// but nothing let the Web UI ask "would this actually be accepted" BEFORE
+// rendering the button — so a triage task's Accept/Reject buttons kept
+// showing after it auto-advanced to done, and clicking them redirected to
+// an opaque `no transition for action "answered" from status "done"` error.
+func (sm *StateMachine) CanApplyManualAction(actionType string, status TaskStatus) bool {
+	for _, r := range sm.Rules {
+		if r.Condition != nil || !r.Manual {
+			continue
+		}
+		if r.Action == actionType && (r.FromStatus == "*" || r.FromStatus == string(status)) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsManualAction reports whether actionType has at least one Manual:true
 // rule anywhere in the machine, regardless of the task's current status.
 // This is the single source of truth for "is this action name allowed
