@@ -1476,6 +1476,20 @@ upstream (this seam is about `Action.Actor` being *correct*; #22 is about the wr
   `Action` — grep every existing case in the same switch/file for its `WithActor`/`ActorDaemon`
   pattern before assuming yours doesn't need one, and add a test asserting the actor, not just
   the action `Type`/status transition.
+- **Behavioral read added (2026-08-19, docs/plans/ingestion-identity.md PR-5, I-5 auto-reopen)**:
+  until this PR, every reader of `Action.Actor` was AUDIT-ONLY — a wrong value made a log/timeline
+  entry misleading, nothing more. `orchestrator.CountAutoReopens` (`internal/orchestrator/
+  auto_reopen.go`) is the first BEHAVIORAL reader: it filters a task's own action history for
+  `Type=="reopen_triaged" && Actor==ActorDaemon` (scoped to the task's current done episode — see
+  the function's own doc comment) to decide whether `SweepReopen`'s フラップ対策 fires. A
+  mis-attributed Actor here doesn't just dirty a log line — it directly mis-spends or
+  under-spends the フラップ budget: an `ActorDaemon` reopen wrongly stamped `ActorHuman` (or vice
+  versa via a future new caller of `reopen_triaged`) changes whether the NEXT flip auto-reopens
+  or gets silently blocked/notified-only. Any future code path that writes a `reopen_triaged`
+  Action — or a `triage_done`/`done` Action, since those bound the episode boundary
+  (`isDoneEntryAction`) — inherits this seam's existing origin/construction discipline (End
+  A/End B above) with higher stakes than before: get the Actor wrong here and the bug is a
+  behavior change (budget consumed or not), not just an audit-trail cosmetic.
 
 ---
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -286,10 +287,24 @@ func TestSweepDone_MissingCanonicalSourceIsReported(t *testing.T) {
 
 // fakeSweepStore records which sweeps QueueSweepLoop.runOnce invoked.
 type fakeSweepStore struct {
-	wakeCalls int
-	doneCalls int
-	wakeErr   error
+	wakeCalls   int
+	doneCalls   int
+	reopenCalls int
+	wakeErr     error
+	// triageErr (2026-08-19, Opus review N-3): SweepTriage's own failure
+	// path, distinct from wakeErr. Before this field existed,
+	// TestQueueSweepLoop_RunOnce_TriageFailureDoesNotStopReopenSweep's name
+	// promised "a SweepTriage failure doesn't stop reopen" but its body set
+	// wakeErr instead (the only error fakeSweepStore had) — so a mutation
+	// reverting runOnce's SweepTriage error handling from "log and
+	// continue" back to "log and return" went completely undetected by any
+	// test.
+	triageErr error
+	reopenErr error
 	breaches  []CanonicalSourceBreach
+	// flapped (N-8, 2026-08-19): lets tests drive ReopenSweepResult.Flapped
+	// through runOnce without a real SweepReopen/フラップ fixture.
+	flapped []string
 }
 
 func (f *fakeSweepStore) SweepWake(context.Context, time.Time) ([]string, error) {
@@ -299,7 +314,16 @@ func (f *fakeSweepStore) SweepWake(context.Context, time.Time) ([]string, error)
 
 func (f *fakeSweepStore) SweepTriage(context.Context, time.Time) (TriageSweepResult, error) {
 	f.doneCalls++
-	return TriageSweepResult{Breaches: f.breaches}, nil
+	return TriageSweepResult{Breaches: f.breaches}, f.triageErr
+}
+
+// reopenCalls / SweepReopen: docs/plans/ingestion-identity.md PR-5 (B-6) —
+// fakeSweepStore must implement QueueSweepStore's new third method so the
+// existing loop-level tests below keep compiling; TestQueueSweepLoop_
+// RunOnce_RunsEverySweep is extended to assert this ticks too.
+func (f *fakeSweepStore) SweepReopen(context.Context, time.Time) (ReopenSweepResult, error) {
+	f.reopenCalls++
+	return ReopenSweepResult{Flapped: f.flapped}, f.reopenErr
 }
 
 // TestQueueSweepLoop_RunOnce_RunsEverySweep pins that 決定15's periodic
@@ -310,8 +334,46 @@ func TestQueueSweepLoop_RunOnce_RunsEverySweep(t *testing.T) {
 	loop := &QueueSweepLoop{Store: store}
 	loop.runOnce(context.Background())
 
-	if store.wakeCalls != 1 || store.doneCalls != 1 {
-		t.Fatalf("wake=%d triage=%d, want 1 each", store.wakeCalls, store.doneCalls)
+	if store.wakeCalls != 1 || store.doneCalls != 1 || store.reopenCalls != 1 {
+		t.Fatalf("wake=%d triage=%d reopen=%d, want 1 each", store.wakeCalls, store.doneCalls, store.reopenCalls)
+	}
+}
+
+// TestQueueSweepLoop_RunOnce_TriageFailureDoesNotStopReopenSweep mirrors
+// TestQueueSweepLoop_RunOnce_WakeFailureDoesNotStopDoneSweep one level down:
+// docs/plans/ingestion-identity.md PR-5 (B-6) added a THIRD independent
+// sweep to this tick, and a triage-sweep failure must not silently skip
+// reopen evaluation either — same "each sweep's failure is its own concern"
+// posture the wake/triage split already established.
+//
+// Sets store.triageErr (2026-08-19, Opus review N-3 fix) — NOT wakeErr. The
+// original version of this test set wakeErr instead, because
+// fakeSweepStore had no error field for SweepTriage at all; that left this
+// test's own name a false promise (it actually re-tested the wake-failure
+// path, already covered by TestQueueSweepLoop_RunOnce_WakeFailureDoesNotStopDoneSweep)
+// and meant no test anywhere would notice runOnce's SweepTriage error
+// handling regressing from "log and continue" back to "log and return".
+func TestQueueSweepLoop_RunOnce_TriageFailureDoesNotStopReopenSweep(t *testing.T) {
+	store := &fakeSweepStore{}
+	loop := &QueueSweepLoop{Store: store}
+	store.triageErr = errors.New("boom")
+	loop.runOnce(context.Background())
+
+	if store.reopenCalls != 1 {
+		t.Fatalf("reopen sweep ran %d times after a triage-sweep failure, want 1", store.reopenCalls)
+	}
+}
+
+// TestQueueSweepLoop_RunOnce_ReopenFailureIsLoggedNotFatal pins that a
+// reopen-sweep failure surfaces as a warning (like every other sweep here)
+// rather than panicking or wedging the loop.
+func TestQueueSweepLoop_RunOnce_ReopenFailureIsLoggedNotFatal(t *testing.T) {
+	store := &fakeSweepStore{reopenErr: errors.New("boom")}
+	loop := &QueueSweepLoop{Store: store}
+	loop.runOnce(context.Background()) // must not panic
+
+	if store.reopenCalls != 1 {
+		t.Fatalf("reopen sweep ran %d times, want 1 (called once despite failing)", store.reopenCalls)
 	}
 }
 
@@ -325,6 +387,27 @@ func TestQueueSweepLoop_RunOnce_WakeFailureDoesNotStopDoneSweep(t *testing.T) {
 
 	if store.doneCalls != 1 {
 		t.Fatalf("triage sweep ran %d times after a wake failure, want 1", store.doneCalls)
+	}
+}
+
+// TestQueueSweepLoop_RunOnce_LogsFlappedTasks pins N-8 (Opus review,
+// 2026-08-19): before this fix, a flapped card (auto-reopen blocked,
+// フラップ対策) was visible ONLY through SweepReopen's own Notifier call —
+// completely invisible in the daemon log when notify.command is unset
+// (config-yaml.md's `notify` section is optional). Reopened already gets a
+// log line right above this one; Flapped needs the same treatment so an
+// operator without notify configured can still see "this card needs a
+// human" in `boid daemon logs` / journalctl.
+func TestQueueSweepLoop_RunOnce_LogsFlappedTasks(t *testing.T) {
+	buf := captureSlog(t)
+	store := &fakeSweepStore{flapped: []string{"card-1"}}
+	loop := &QueueSweepLoop{Store: store}
+
+	loop.runOnce(context.Background())
+
+	out := buf.String()
+	if !strings.Contains(out, "flapped") || !strings.Contains(out, "card-1") {
+		t.Fatalf("expected a log line naming the flapped task card-1; got:\n%s", out)
 	}
 }
 

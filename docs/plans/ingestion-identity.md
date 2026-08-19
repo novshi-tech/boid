@@ -609,6 +609,21 @@ identity モデルにすると、 この規則を「索引からフィルタす�
 done は握り続ける (I-5)、 drop は解放する (I-6) という **binding のライフサイクル**として
 表現され、 `ref` の unique 制約と衝突しない。
 
+#### 訂正 (PR-5 実装時, 2026-08-19): I-6 の手動 reopen は identity を復元しない
+
+PR-1 レビューで判明していた事実を、 実装時に明文化しておく。 `drop` は `tx.UnlinkAllForTask` で
+その task の identity binding を **全部消す** (I-6)。 誤って `drop` した task を手動
+`reopen` (dropped→triaged、 `machine.go:355`) で救っても、 **binding は戻らない** —
+`reopen` (dropped→triaged) は状態を戻すだけで、 identity を再 link する処理を一切持たない。
+
+結果として、 誤破棄から回復した task は「見た目は triaged に戻ったが、 元の外部キーとは
+もう紐づいていない」状態になる。 その外部キーは (I-6 の設計通り) 別の新規 task が
+自由に link できる状態でもあるので、 **回復が遅れるほど「別の task に奪われている」
+可能性が上がる**。 回復させるには workspace 側が identity link op を再度呼んで
+明示的に再 link する必要がある — daemon 側でこれを自動化する経路は無い
+(そもそも「どの identity を戻すべきか」は drop 時点の履歴からしか分からず、 それを
+読むのは意味の判断に近づくため、 P-1 の線引き上も daemon には向かない)。
+
 ### 副産物: 暗黙則が不変条件になる
 
 `match_card.py: build_key_index()` の既知の制約 —「複数の active card が同じ issue を参照する
@@ -1226,8 +1241,10 @@ per-trigger fail-open dispatch 失敗経路が既にカバーしており、 ト
 - 判定材料は `attrs.observed.source_closed` の **true → false 反転だけ**。 読むキーは増えない
 - 遷移は既存の `reopen_triaged` (routing は `internal/api/triage_done.go` に実装済み)
 - 評価契機は QueueSweepLoop — 決定 15 の `SweepDone` と同じ場所に並べる
-- **フラップ対策**: 自動 reopen は 1 回だけで、 2 回目以降は通知して人に見せる (仕分け B)。
-  回数は actions から数える (決定 13: state は導出、 専用カウンタ列を作らない)
+- **フラップ対策**: 自動 reopen は **1 つの done エピソードにつき 1 回**で、
+  同一エピソード内の 2 回目以降は通知して人に見せる (仕分け B)。
+  回数は actions から数える (決定 13: state は導出、 専用カウンタ列を作らない)。
+  エピソード単位である理由・生涯合計にしなかった理由は「実装時の決定」を参照
 
 **I-5c の可視化** — canonical source は closed のまま Slack にだけ続報が来た、 のような
 「配送はされたが reopen しない」着地を**必ず可視化する**。 決定 16 の
@@ -1250,6 +1267,172 @@ per-trigger fail-open dispatch 失敗経路が既にカバーしており、 ト
 - 2 回目のフラップでは自動 reopen せず、 通知に落ちる
 - triage 行を持たない done の task では発火しない
 - done への `attrs_set` が、 triage 行を持つ task でだけ通る
+
+#### 実装時の決定 (PR-5 実装, 2026-08-19)
+
+**I-5b のガードの実装位置**: machine.go の rule には触れず、 `internal/api/workflow_action.go`
+の `ApplyAction` が `sm.Apply` を呼ぶ**手前**で割り込む形にした
+(`resolveAttrsSetDoneTransition`、 `internal/api/attrs_set_done.go`)。 判定は
+`task_triage` 行の有無 (`GetTaskTriage` が `sql.ErrNoRows` を返すかどうか) で、
+pre-Tx の読み (`s.TaskTriage`) と in-Tx の再検証 (`tx.GetTaskTriage`) の**両方**で同じ
+関数を通す — park/attrs_set の他の分岐が持つ「pre-Tx で仮判定 → in-Tx で fresh 再検証」
+の二段構えをそのまま踏襲した。 行が無い場合・ store 未配線の場合はどちらも
+**素通りして `sm.Apply` の既存の reject に委ねる** (安全な方向へ倒す — 誤って通してしまう
+方が危険なので)。 lookup 自体が失敗した場合 (`sql.ErrNoRows` 以外のエラー) は 500 として
+呼び出し元に伝える — reject 扱いに握り潰さない。
+
+**発見 1 (PR-1〜4 レビュー由来) への回答**: `answered` と違い `attrs_set` は今も
+「行が無ければ作る」ままにした。 調べた結果、 これは穴にならないと判断した —
+理由は 3 つ:
+
+1. `attrs_set` の FromStatus 列挙 (`preExecutionStatuses`) には `pending`/`executing`/
+   `awaiting`/`aborted` が無い。 `CreateTask` の既定 (`initial_status` 省略時) は
+   `pending` なので、 **普通に作られた通常 task は `attrs_set` を一度も浴びずに一生を終える**
+   — machine.go 上、 captured/triaged/parked/ready/working のどこにも入る遷移が無い
+2. `parseAttrsSetPayload` は空オブジェクトを拒否するので、 `attrs_set` が作る行は
+   **常に実データ入り** — `answered` の miss-case 修正が対処した「何も残さない空行」とは
+   性質が違う
+3. 唯一の理論的な穴は `CreateTask` の `initial_status=captured`/`triaged` が **project を
+   問わず誰でも呼べる**ことに由来する — これを意図的に使えば「本当の triage task ではない」
+   task を triage 語彙に乗せられる。 しかし乗せた瞬間からその task は `task_triage` 行に
+   実データを持ち、 daemon 視点では「triage task として振る舞っている」以外に区別する
+   材料が無い。 これは決定 13 (state は導出) の帰結として **受け入れる** — 行の有無以外の
+   判定キー (project の allowlist 等) を足すことは、 P-1/逆輸入 3 が禁じる
+   「daemon がプロジェクトの意味を知る」方向の越境になるため選ばなかった
+
+**I-5c は log 側を選んだ**。 決定 16 の `MissingCanonicalSourceGuidance` が確立した
+「提示面が無いので sweep から log に留める」前例と**同じ結論**だが、 評価するタイミングは
+違う。 `MissingCanonicalSourceGuidance` は sweep ごとに再評価する**持続的な状態**なので
+`logCanonicalSourceBreaches` の fingerprint-on-change が要るが、 I-5c は「この
+`attrs_set` が着地した」という**離散イベント**そのものなので、 `attrs_set` が
+実際に done task へ着地した瞬間 (`ApplyAction` の Tx コミット後、 `logAttrsSetOnDoneTriage`、
+`internal/api/attrs_set_done.go`) に 1 回ログを出せば十分で、 fingerprint 機構は要らない
+(イベントの発生頻度自体が workspace の取り込み周期で自然に絞られる)。 SweepReopen 側は
+`source_closed==true` のケースを候補にすら入れない (何もしないので)。
+
+**フラップ回数は actions から数える**。 専用カウンタ列は作らず、
+`orchestrator.CountAutoReopens` (`internal/orchestrator/auto_reopen.go`) が
+`task_id` の action 履歴を `Type=="reopen_triaged" && Actor==ActorDaemon` で filter
+するだけの純関数。 **人間による手動 reopen (`Actor=human`) はカウントしない** — 人が
+何度 reopen し直しても「フラップ」ではなく人の判断だから。 `SweepReopen` の外側ループが
+やる pre-Tx の判定は `source_closed==false` かどうかだけ (Tx を開く価値があるかの安価な
+足切り) — フラップ回数そのものの計算は `autoReopen` (`internal/api/triage_done.go`) の
+中で `tx.ListActionsByTask` を呼んで **Tx 内 1 箇所だけ**で行う (`autoDone` の
+「task_triage を fresh に読み直して判定を再実行する」という再検証の考え方は踏襲しつつ、
+フラップ回数自体は pre-Tx 側で二重に計算していない)。
+
+**フラップ通知の重複抑止**: `notify.command` は呼ぶたびに外部プロセスを実行する副作用の
+ある操作なので、 `logCanonicalSourceBreaches` と同じ fingerprint-on-change が要る
+(1 分ごとの sweep で同じ task が毎回通知を吐き続けたら実害が大きい)。
+`TaskWorkflowService.lastFlappedReopen`
+(`Notifier` と同じ構造体に置いた — sweep loop 側ではなく) が「今 flap 中の task 集合」を
+保持し、 集合に**新しく入った** task だけ通知する。 QueueSweepLoop からの逐次呼び出し
+1 本という前提 (`lastBreachFingerprint` と同じ前提) の上でのみ mutex 無しで安全。
+
+**評価契機は既存の QueueSweepLoop に相乗り** — 新しいループは足していない。 doc の指定通り
+`SweepReopen` を `SweepWake`/`SweepTriage` と同じ `runOnce` に並べただけで、
+`InitialDelay`/`Interval` の新規調整は不要だった (10s/20s/30s の stagger 慣行に
+新規エントリを足す判断そのものが発生しなかった)。
+
+#### Opus review 対応 (2026-08-19)
+
+PR-5 マージ前レビューで見つかった 2 件の修正必須と、 フラップ対策の意味論の見直し。
+
+- **`SweepReopen` の O(N) 全件フルスキャン修正**: `Status: string(TaskStatusDone)` は
+  汎用フォールバック (`t.status = ?`、 LIMIT 無し) に落ち、 全 done task (dev task の
+  子孫含む最大の status 集合) を毎分フルロード + task 1 行ごとに `GetTaskTriage` していた。
+  `ListTasks` に **`done_triage` フィルタ** (`t.status='done' INNER JOIN task_triage`) を
+  1 本足し、 O(全 done) → O(triage card 数) にした — `queue_next` フィルタが既に持つ
+  「JOIN で候補集合そのものを絞る」のと同じ形。 実測 (500 件のダミー done task + 20 件の
+  triage card、 `ANALYZE` 後): 旧クエリは `SCAN t` (tasks 全件を先頭に置く) → 520 行返す。
+  新クエリは planner が `task_triage` (小さい方) を先頭に置き直し `SCAN tt` →
+  `SEARCH t USING INDEX (id=?)` → 20 行だけ返す。 相関サブクエリ (子カウント 4 本) も
+  20 回しか走らない。
+- **auto-reopen 通知欠落の修正**: `autoDone` は 2026-08-14 に一度直した「headless sweep は
+  `boid task notify` を一度も経由しないので明示 notify が要る」対応
+  (`notifyTriageAutoDone`) を持つが、 `autoReopen` には対応物が無く無音だった。
+  `autoDone`/`autoReopen` は鏡像の関係 (done↔triaged) なので、 通知も鏡像にした —
+  `autoReopen` のコミット後に `notifyQueueEntryIfUrgent(ctx, newTask, TaskStatusDone)`
+  (rule 4 の既存経路) を呼ぶだけで済む: `newTask.Status` は必ず `triaged`
+  (queueMemberStatus)、 渡す `fromStatus` は必ず `done` (queueMemberStatus ではない) なので
+  「エントリ遷移」判定に自然に乗る。 新規関数を足さなかった。
+
+他の細部 (ログレベル、コメントの根拠誤り、テストの中身と名前の不一致、`sql.ErrNoRows` の
+扱い、`nil` ガード漏れ、flap のログ欠落など) は該当コミットのコメントを参照。
+
+#### フラップ対策は「done エピソード単位」(2026-08-19, nose 判断)
+
+当初の実装 (上の「フラップ回数は actions から数える」節) は `CountAutoReopens` が
+**task の生涯全体**の action 履歴を舐めていた。 これは誤りだと判明した:
+
+`SweepReopen` が列挙する候補は `Status=="done"` の task だけで、 auto-reopen した card は
+必ず `triaged` に着地する。 つまり **reopen された瞬間、 その card は構造上二度と
+`SweepReopen` の対象にならない** — 次に候補になるのは
+`triaged→ready→working→auto-done(triage_done)` と 1 周回りきって再び `done` に落ちた後
+だけ。 生涯合計で数えると、 この「2 周目の正当な自動 reopen」まで機械的に止めてしまう —
+長生きする Jira 課題の card が「2 周目からは必ず人が押す」運用になる実バグだった。
+
+止めたかったのは「**同一 done エピソード内で 2 回**」という、 本来のフラップだけ。 修正後の
+`orchestrator.CountAutoReopens` (`internal/orchestrator/auto_reopen.go`) は、 task の
+action 履歴のうち **最後に "done" へ入った action より後**だけを数える対象にする
+(「done エピソード」の境界 = 最後の `triage_done`、 または機械的には到達しないが将来のため
+念のため含めた通常 Manual `done` ルール)。 `attrs_set` が done task に着地する I-5b/I-5c の
+noop (done→done、 非遷移) は境界として扱わない — 扱うと「configured を続ける続報」が来る
+たびにフラップ予算がリセットされてしまう。
+
+**エピソードの切り出し方**: `Action.Type=="triage_done"`、 または
+(`Action.Type=="done" && Action.ToStatus==done`) を「エピソード開始」の目印とし、
+action 履歴 (`ListActionsByTask` の `ORDER BY created_at` 結果) の中でこれが**最後に
+現れた位置より後**の行だけを数える。 同着 (`created_at` が同一) の扱い:
+`ListActionsByTask` が返す 1 回分の結果の**並び順をそのまま信じる** — created_at を
+自前で再比較・再ソートすることはしない。 実際の同着源
+(`internal/dispatcher/store.go` の `markStaleTasksAborted`、 ループ外で `now` を 1 回だけ
+取って複数 task にまたがって書く一括 abort 経路) は `executing`/`awaiting` にしか触れず、
+triage card はそもそもそこに到達しないので、 同一 triage card の複数 action が同着する
+心配は無い。
+
+**判断 3 点**:
+
+1. **同着時の扱い** — 上記の通り、 クエリが返した順序をそのまま信じる (再ソートしない)
+2. **`triage_done` が 1 本も無い task** — 履歴全体を数える (フォールバック)。
+   `CountAutoReopens` は「現在 `Status==done`」の task に対してしか呼ばれず、 triage
+   card が `done` に到達できる経路は上記の 2 ルールしか無いので、 この分岐は実運用では
+   到達しない — 空/欠損した履歴が黙って「生涯 0 回」に誤魔化されるより、 素直に「全部
+   数える」側に倒した
+3. **手動 `done` (`executing→done`/`awaiting→done`, Manual ルール) でエピソードが
+   切れるか** — **切れる、として扱う**。 triage card は `executing`/`awaiting` に
+   到達する遷移ルールが存在しない (machine.go 全走査で確認済み — attrs_set_done.go の
+   コメント参照) ので今日この分岐が実際に踏まれることは無いが、 `ToStatus` を見るだけの
+   安い防御なので、 将来 machine.go が変わってもこの境界検出が黙って壊れないように含めた
+
+**30 日 GC でカウントがリセットされる懸念は成立しない** (レビュアー確認済み):
+`GCTasks` は削除対象の task と同じ集合の action しか消さず、 task 自身も同じ Tx で消える
+ので、 「task は残るが古い action だけ消えてカウントが狂う」ことは起きない。 加えて
+reopen のたびに `updated_at` が更新されるので、 動いている card はそもそも 30 日ルールに
+引っかからない。
+
+#### khi 側 (段階 2/3) の実装者への申し送り
+
+1. **done の card に押せる action は `attrs_set` 1 種類だけ**。 `noted`/`answered`/
+   `child_added`/`child_specced` は `preExecutionStatuses` のままで、 I-5b のガードは
+   `action.Type=="attrs_set"` に限定 (`attrs_set_done.go`)。 **khi が done の card に
+   `noted` を押すと 409 になる** — 「見たが変えなかった」の記録が done の card では
+   残せない契約
+2. **空の `attrs_set` は 400** (`parseAttrsSetPayload`)。 差分 reconcile で「変化なし」の
+   ときに空 payload を投げないこと
+3. **`aborted` の triage card は完全に袋小路**。 (a) I-5b のガードは done のみなので
+   aborted への `attrs_set` は 409、 (b) `SweepReopen` は `Status: done` (実装上は
+   `done_triage` フィルタ) しか列挙しないので auto-reopen 対象外、 (c) `drop` と違って
+   identity の unlink も走らない (`workflow_action.go` の unlink は `case "drop"` のみ)。
+   **identity を握ったまま観測も届かず自動 reopen もされない**。 → **khi は triage card
+   に `abort` を使わず `drop` を使う規律を持つべき**
+4. **「自動 reopen は 1 回だけ」は task の生涯で 1 回ではなく、「1 つの done エピソードに
+   つき 1 回」** (2026-08-19 修正、 上の「フラップ対策は『done エピソード単位』」節参照)。
+   `triaged→ready→working→triage_done` と 1 周回りきって再び `done` に落ちるたびに
+   予算はリセットされる。 khi が想定しておくべきなのは「同一エピソード内で 2 回目の
+   flip をすると、 その回だけは人が reopen ボタンを押す必要がある」ことであって、
+   「2 周目以降は永久に人が押す」ではない。 30 日 GC でカウントがリセットされる心配も
+   無い (上記参照、 動いている card は 30 日ルールに引っかからないので GC 自体が起きない)
 
 ---
 
@@ -1367,7 +1550,7 @@ per-trigger fail-open dispatch 失敗経路が既にカバーしており、 ト
 
 | 項目 | 既定案 |
 |---|---|
-| auto-reopen のフラップ対策 | **自動 reopen は 1 回だけ**。 2 回目以降は通知して人に見せる |
+| auto-reopen のフラップ対策 | **自動 reopen は「1 つの done エピソードにつき 1 回」**。 2 回目以降 (同一エピソード内) は通知して人に見せる。 **生涯で 1 回ではない** — 2026-08-19 nose 判断、詳細は PR-5 実装時の決定を参照 |
 | I-5b の置き場所 | **service 層のガード** (`task_triage` 行の有無を見る)。 machine の `attrs_set` に done を足すと論点 6-3 (通常 task の done に発火させない) を壊す |
 
 #### 段階 2 全体で

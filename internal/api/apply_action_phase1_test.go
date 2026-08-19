@@ -71,8 +71,22 @@ func (s *recordingTxStore) CreateAction(action *orchestrator.Action) error {
 	s.actions = append(s.actions, action)
 	return nil
 }
+
+// ListActionsByTask filters s.actions (both pre-seeded fixture rows and any
+// CreateAction'd during the test) by taskID — docs/plans/ingestion-identity.md
+// PR-5 (B-6)'s autoReopen (triage_done.go) reads this inside its own Tx to
+// derive the フラップ count (orchestrator.CountAutoReopens), so this stub
+// returning an unconditional nil (its pre-PR-5 shape — no existing test
+// asserted on its return value) would silently make every フラップ test pass
+// for the wrong reason.
 func (s *recordingTxStore) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) {
-	return nil, nil
+	var out []*orchestrator.Action
+	for _, a := range s.actions {
+		if a.TaskID == taskID {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 func (s *recordingTxStore) SeedTaskTriage(taskID string) error {
 	if s.triage == nil {

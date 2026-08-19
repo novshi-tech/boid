@@ -527,3 +527,68 @@ func TestListTasks_Triage_ReturnsPreExecutionPlusWorking(t *testing.T) {
 		}
 	}
 }
+
+// TestListTasks_DoneTriage_ReturnsOnlyDoneTasksWithTriageSidecar pins
+// SweepReopen's candidate set (Opus review — 修正必須1, docs/plans/
+// ingestion-identity.md PR-5 B-6): a done task is a "done_triage" candidate
+// ONLY when it carries a task_triage sidecar row — an ordinary done dev
+// task (no row at all) must never be scanned by the INNER JOIN, and a
+// triage card sitting in any OTHER status (working, aborted, ...) must not
+// leak in either, exactly like queue_next's own INNER JOIN narrows to
+// ready/triaged.
+//
+// Before this filter existed, SweepReopen listed EVERY done task in the
+// system (`Status: string(orchestrator.TaskStatusDone)`, the generic
+// `t.status = ?` fallback below) and filtered client-side with a
+// GetTaskTriage call per row — a full scan of every done dev task AND its
+// children (unbounded, no LIMIT, taskSelectCols' full
+// description/payload/instructions columns plus taskChildCountCols' 4
+// correlated subqueries per row) on a tick that fires every minute. This
+// pin exists specifically so that generic fallback behavior can never
+// silently come back as "done_triage"'s own behavior.
+func TestListTasks_DoneTriage_ReturnsOnlyDoneTasksWithTriageSidecar(t *testing.T) {
+	d := createTestProject(t)
+
+	doneTriage := &orchestrator.Task{ProjectID: "proj-1", Title: "done triage card", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, doneTriage); err != nil {
+		t.Fatalf("create done triage card: %v", err)
+	}
+	if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.TaskTriage{TaskID: doneTriage.ID}); err != nil {
+		t.Fatalf("upsert task_triage (done): %v", err)
+	}
+
+	doneOrdinary := &orchestrator.Task{ProjectID: "proj-1", Title: "done ordinary dev task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, doneOrdinary); err != nil {
+		t.Fatalf("create done ordinary task: %v", err)
+	}
+	// Deliberately no task_triage row for doneOrdinary — an ordinary dev
+	// task never gets one; this is the row this filter exists to exclude.
+
+	workingTriage := &orchestrator.Task{ProjectID: "proj-1", Title: "still-working triage card", Behavior: "dev", Status: orchestrator.TaskStatusWorking}
+	if err := orchestrator.CreateTask(d.Conn, workingTriage); err != nil {
+		t.Fatalf("create working triage card: %v", err)
+	}
+	if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.TaskTriage{TaskID: workingTriage.ID}); err != nil {
+		t.Fatalf("upsert task_triage (working): %v", err)
+	}
+
+	abortedTriage := &orchestrator.Task{ProjectID: "proj-1", Title: "aborted triage card", Behavior: "dev", Status: orchestrator.TaskStatusAborted}
+	if err := orchestrator.CreateTask(d.Conn, abortedTriage); err != nil {
+		t.Fatalf("create aborted triage card: %v", err)
+	}
+	if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.TaskTriage{TaskID: abortedTriage.ID}); err != nil {
+		t.Fatalf("upsert task_triage (aborted): %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "done_triage"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != doneTriage.ID {
+		gotIDs := make([]string, len(got))
+		for i, tk := range got {
+			gotIDs[i] = tk.ID + ":" + tk.Title
+		}
+		t.Fatalf(`ListTasks(Status: "done_triage") = %v, want exactly [%s (done triage card)]`, gotIDs, doneTriage.ID)
+	}
+}

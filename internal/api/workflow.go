@@ -67,6 +67,13 @@ type TaskWorkflowService struct {
 	// at the assignment site.
 	Exec ExecDispatcher
 
+	// lastFlappedReopen tracks docs/plans/ingestion-identity.md PR-5 (B-6)'s
+	// フラップ通知 dedup set — see notifyNewlyFlapped's own doc comment
+	// (triage_done.go) for why this is safe unguarded (SweepReopen has
+	// exactly one caller: QueueSweepLoop.runOnce, sequential by
+	// construction) and why it lives here rather than on the loop.
+	lastFlappedReopen map[string]bool
+
 	dispatchCtx    context.Context
 	dispatchCancel context.CancelFunc
 	dispatchWG     sync.WaitGroup

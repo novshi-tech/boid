@@ -334,6 +334,29 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		// 行が無い ready/triaged task (urgency 未設定) は自然に除外される。
 		joins = append(joins, "INNER JOIN task_triage tt ON tt.task_id = t.id")
 		conditions = append(conditions, "t.status IN ('ready','triaged') AND tt.urgency IN ('now','today','week')")
+	} else if filter.Status == "done_triage" {
+		// docs/plans/ingestion-identity.md PR-5 (B-6), I-5: SweepReopen's
+		// candidate set (Opus review — 修正必須1). Before this branch,
+		// SweepReopen listed `Status: "done"` (the generic `t.status = ?`
+		// fallback below) and then called GetTaskTriage per row to find the
+		// handful that are actually triage cards — a full scan of EVERY done
+		// task in the system (dev tasks AND their children, unbounded, no
+		// LIMIT, taskSelectCols' full description/payload/instructions
+		// columns plus taskChildCountCols' 4 correlated subqueries PER ROW)
+		// on a tick that fires every minute (QueueSweepLoop.Interval,
+		// wire.go), to find a candidate set that is only ever "how many
+		// triage cards exist" (tens, not hundreds/thousands of dev tasks).
+		//
+		// INNER JOIN narrows the scan to done tasks that actually carry a
+		// task_triage sidecar row BEFORE taskSelectCols/taskChildCountCols
+		// ever run against them — same "let the JOIN do the filtering
+		// instead of a GetTaskTriage per candidate row" idiom "queue_next"
+		// above already established. Unlike queue_next this doesn't need any
+		// tt.* column (SweepReopen re-reads the sidecar itself, same as it
+		// always has), so the JOIN exists purely to shrink the candidate set
+		// — the query never SELECTs anything from tt.
+		joins = append(joins, "INNER JOIN task_triage tt ON tt.task_id = t.id")
+		conditions = append(conditions, "t.status = 'done'")
 	} else if filter.Status != "" {
 		conditions = append(conditions, "t.status = ?")
 		args = append(args, filter.Status)
