@@ -110,6 +110,18 @@ func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*Proj
 		}
 	}
 
+	// docs/plans/ingestion-identity.md PR-4 (B-5): same load-time posture as
+	// the hook validation loop above — a malformed `triggers[]` entry (empty
+	// name/run, unparseable/non-positive every, duplicate name) must fail
+	// `boid project add`/`boid project fetch` loudly rather than silently
+	// never firing at runtime. An OLDER daemon binary (pre-PR-4) parses
+	// project.yaml non-strictly (yaml.Unmarshal above has no KnownFields) and
+	// has no Triggers field to decode into at all, so it ignores `triggers:`
+	// with no warning — accepted (see spec_types.go's Trigger doc comment).
+	if err := ValidateTriggers(meta.Triggers); err != nil {
+		return nil, err
+	}
+
 	// docs/plans/workspace-default-project.md 論点h 案1 (PR7): `id:` is
 	// optional. project.yaml declaring one is validated no further here
 	// (the PK-uniqueness / id-drift checks live at the registration/reload

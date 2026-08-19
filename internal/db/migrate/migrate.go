@@ -395,6 +395,14 @@ func Apply(conn *sql.DB) error {
 			version: "0042_add_actions_created_at_id_index",
 			path:    "migrations/0042_add_actions_created_at_id_index.sql",
 		},
+		{
+			// docs/plans/ingestion-identity.md PR-4 (B-5): トリガの
+			// single-flight/実行記録の台帳 (trigger_runs). No skip function,
+			// same reasoning as 0042 above — a brand-new table with no
+			// pre-migration-system state to guard against.
+			version: "0043_add_trigger_runs",
+			path:    "migrations/0043_add_trigger_runs.sql",
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

@@ -400,10 +400,50 @@ type Capabilities struct {
 	Docker *DockerCapability `yaml:"docker,omitempty" json:"docker,omitempty"`
 }
 
+// Trigger is one project.yaml `triggers[]` entry (docs/plans/
+// ingestion-identity.md PR-4 / B-5, J-1/J-2). It declares WHEN a command
+// runs (Every) and WHAT command runs (Run) — nothing else. daemon reads
+// only these three fields; it never interprets Run's contents (J-2, this
+// PR's own 不変条件: daemon は run の中身を知らない).
+type Trigger struct {
+	// Name identifies this trigger within its project (single-flight and
+	// trigger_runs history are scoped by (project_id, trigger_name) — 12
+	// 節 B-5 "single-flight の粒度は trigger 単位"). Must be non-empty and
+	// unique within a project's Triggers slice — see ValidateTriggers.
+	Name string `yaml:"name" json:"name"`
+	// Every is a Go time.ParseDuration string (e.g. "10m", "1h") — the
+	// minimum wall-clock gap between two starts of this trigger. There is
+	// deliberately no time-of-day window (12 節 B-5 既定案「トリガの時間帯窓
+	// はスクリプトが時刻で自制する」— J-4's「daemon はドメインに依存しない」).
+	Every string `yaml:"every" json:"every"`
+	// Run is a command string passed to `sh -c` inside the project's
+	// sandbox — NOT a script path daemon resolves (J-2: 撤廃済みの script
+	// hook 外部参照と同じ轍を踏まない). sandbox の /bin/sh は dash: bashism は
+	// `bash scripts/x.sh` と明示する側 (スクリプト作者) の責任で、daemon の
+	// 責任ではない。
+	Run string `yaml:"run" json:"run"`
+}
+
 type ProjectMeta struct {
 	ID            string                  `yaml:"id" json:"id"`
 	Name          string                  `yaml:"name" json:"name"`
 	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
+	// Triggers is a TOP-LEVEL project.yaml field (J-1) — deliberately NOT
+	// nested under any TaskBehavior. 「いつ始まるか」は task_behaviors の
+	// 関心 (「どう実行するか」) とは異なる性質であり、混ぜると器の概念的な
+	// 強度が落ちる (6 節「なぜ task_behaviors に入れないか」)。omitempty:
+	// triggers を持たない project.yaml (大多数) は export/apply の往復で
+	// `triggers: []` のノイズを出さない。
+	//
+	// workspace envelope の spec.* allowlist (workspace_envelope.go の
+	// workspaceEnvelopeSpecFields) には**意図的に載せていない** — 理由は
+	// このフィールドと同じ PR の報告を参照 (workspace-level のデフォルト
+	// `run:` は特定 1 project の tracked tree にしか存在しないスクリプト
+	// パスを指すことになり、workspace 内の複数 project へ一般化できる
+	// task_behaviors/base_branch/fork_point とは性質が違う)。`triggers:`
+	// を書けるのは project.yaml だけであり、workspace_envelope.go の
+	// decodeStrictNode は今後も unknown field として拒否し続ける。
+	Triggers []Trigger `yaml:"triggers,omitempty" json:"triggers,omitempty"`
 	// SessionBehaviors is a free-naming dictionary (same "any key name"
 	// model as TaskBehaviors) from a use-case key (e.g. "shape") to a
 	// default harness_type/model for sessions launched for that use case.

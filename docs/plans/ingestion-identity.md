@@ -415,6 +415,21 @@ daemon の述語として持たせる案だった。 当時の論拠は「反応
 `probe` は第 3 版で Fable レビューを受けて足したものだが、 トリガがスクリプトを起こす形なら
 **周期スクリプトがそのまま probe になる**ので、 別建てにする理由が無くなった。
 
+#### 訂正 (PR-4 実装時, 2026-08-19): `action_list` には穴が 1 つある
+
+上の論証 (「`action_list` があればスクリプトが反応型の判定を書ける」) には、 PR-1〜3 のレビューで
+判明した穴が 1 つある。 **`task_create` / `BoidOpTaskResolveOrCapture` の新規作成は action を
+1 本も残さない** (`action_list.go` 冒頭のコメントが明言している通り、 captured task の誕生
+そのものは actions テーブルに何も書かない)。 したがって `action_list` だけでは「新しい
+captured task が来た」を検出できず、 **`task_triage_list --status captured` の併用が必須**
+である — `action_list` は「既存 task に何が起きたか」の読み口であって、 「task の存在そのものの
+変化」の読み口ではない。
+
+この穴は上の結論 (v1 は反応型を daemon に置かない) を変えない — スクリプトは
+`action_list` **と** `task_triage_list` の 2 つを組み合わせれば反応型の判定を書けるので、
+「daemon の述語が要る」という第 3 版の論拠には戻らない。 変わるのは「`action_list` 1 つで足りる」
+という前提の精度だけである。
+
 #### P-3 の縮小
 
 以上により P-3 は「daemon が判断のトリガを全部持つ」から
@@ -495,6 +510,23 @@ answered { answer: "accept" | "reject", verb: "...", basis: "..." }
 **却下履歴の突合 (`verb` / `basis` の一致) は daemon に置かない。** それは suggestion の中身を
 読むことになり境界を越える。 トリガのスクリプトか、 起こされた判断 task が `action_list` で
 履歴を読んで自己抑制する。
+
+#### 訂正 (PR-4 実装時, 2026-08-19): `answered` は sandbox からも撃てる
+
+`Manual: true` の action は `boid action send --type answered` で **sandbox 内 (= task agent)
+からも書ける**。 J-6 が想定していた「書き手は Web UI (= daemon 側)」は運用上の意図であって、
+**boid op レベルでは強制されていない** — daemon は `answered` の書き手が人か機械かを検証しない。
+
+`Action.Actor` を見れば `human` (Web UI 経由) と `task:<id>` (sandbox 経由) は区別できるので
+監査上の実害は無いが、 **この PR (トリガ) で起こす判断 task が自分で `answered` を書き始めると、
+J-7 の「却下履歴で自己抑制する」の履歴に人と機械が混ざる**。 判断 task が「自分が却下された」
+ことを表現したいなら `noted` (payload 不透明、 J-5) を使うべきで、 `answered` を使うべきではない
+— 使ってしまうと、 人が Web UI で本当に却下した履歴と機械が自己申告した履歴が同じ verb の下で
+見分けがつかなくなる。
+
+**`answered` の消費者 (khi のスクリプトや判断 task 自身) は `Actor` でフィルタする必要がある**
+— `Actor == "human"` の `answered` だけを「人の却下履歴」として扱い、 それ以外
+(`task:<id>` 等) は無視するか、 別の意味 (機械の自己申告) として扱うこと。
 
 ### 提案 (`proposed`) は v1 では足さない
 
@@ -965,6 +997,28 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 - 旧 daemon は project.yaml を非 strict にパースするので `triggers` を**無警告で無視する**。
   受容する (`triggers` を書く project.yaml は新 daemon 前提)
 
+**決定 (PR-4 実装時, 2026-08-19): workspace envelope には足さない。** `triggers` は
+`workspaceEnvelopeSpecFields` / `WorkspaceEnvelopeSpec` に加えず、 workspace レベルでの
+`triggers:` 記述は今後も unknown field として拒否され続ける。 理由:
+
+- `task_behaviors` / `base_branch` / `fork_point` が workspace レベルのデフォルトとして意味を
+  持つのは、 それらが「どの project に対しても一般化できるワークフローの形」だからである
+  (`docs/plans/workspace-default-project.md`)。 一方 `trigger.run` は
+  `python3 scripts/intake_tick.py` のような、 **特定 1 project の tracked tree にしか存在
+  しないスクリプトパス**を指す。 workspace 内の複数 project が同じ `run:` を共有できる保証は
+  何も無く、 むしろ「同じ workspace の別 project にたまたま同名のスクリプトが無い」ケースの方が
+  普通である
+- 同じ `run:` コマンドを複数 project へ機械的に展開すると、 撤廃済みの script hook 外部参照
+  (`.boid/hooks/*.sh`) が「project によって存在したりしなかったりする」問題を起こしていたのと
+  同じ形の契約問題を再現する — J-2 が「船着き場を daemon に持たせない」ために避けたかったのは
+  まさにこの種の暗黙依存である
+- 実需が無い: khi の実例 (`intake` / `sweep`) はどちらも project 固有のスクリプトであり、
+  「複数 project で同じトリガ定義を使いたい」というユースケースが今のところ観測されていない
+
+もし将来 workspace レベルでの共有が必要になったら、 `run:` をコマンド文字列のまま共有する
+のではなく、 「workspace 内のどの project にも存在するスクリプト」という前提を明示的に検証
+する仕組みとセットで再検討すること。
+
 **スケジューラ** (`internal/api/trigger_loop.go`)
 
 - `QueueSweepLoop` (`internal/api/queue_sweep.go:107`) と同型 — `Run(ctx)` が ticker を回し、
@@ -1013,6 +1067,35 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 - コマンドが非ゼロで落ちても次の巡が回り、 exit code が記録に残る
 - **readonly の trigger job から `task_create` が通る** (この PR の前提そのものなので、
   推論ではなく実際に通して pin する)
+
+#### 実装時に見つかった懸念 (PR-4 実装時, 2026-08-19): `noted` の頻度と dispatch loop
+
+`TaskWorkflowService.ApplyAction` は **非遷移 action (`attrs_set` / `child_added` /
+`child_specced` / `noted`) でも `s.runDispatchLoop` を goroutine で起動する**
+(`internal/api/workflow_action.go`)。 `attrs_set` で既にそうなっていたので新規の問題ではないが、
+このトリガ機構が 10 分周期でトリガを回すようになると、 各巡のトリガスクリプトが「見たが変えな
+かった」を記録するために押す `noted` (J-5) の本数だけ、 このゴルーチンが追加で立つ —
+「10 分周期 × triage task 数」のオーダーで hook 再評価が呼ばれる形になる。
+
+**実測ではなくコードを読んで確認した内容**: `Evaluator.Evaluate` (`evaluator.go`) は
+`task.Status != TaskStatusExecuting` なら即 `nil` を返す。 `noted` の対象になる triage task
+(`captured`/`triaged`/`parked`/`ready`) は **どれも `executing` ではない**ので、 マッチする
+hook は 0 件で確定し、 CPU コストはほぼ無視できる。 ただし `runDispatchLoop` は 0 件マッチでも
+**`s.Tx.WithinTx` を最低 1 回 (GetTask + 条件付き UpdateTask) 実行する** — daemon の DB 接続は
+`SetMaxOpenConns(1)` で完全直列化されているため、 `noted` を撃つたびに追加のラウンドトリップが
+その直列化されたキューに 1 つ乗ることになる。
+
+**判断 (2026-08-19)**: 「非遷移 action は dispatch loop をスキップする」という修正は
+**この PR ではやらない**。 理由:
+
+- `attrs_set` / `child_added` / `child_specced` の挙動まで一緒に変わるため、 hook が非遷移
+  action で発火することに依存している経路が無いかを実物で確認する必要があり、 それは本 PR の
+  スコープ (トリガ実行機構) を超える横断的な検証になる
+- コストの実体は「hook 0 件確定 + 空の WithinTx 1 回」であり、 10 分周期という頻度を踏まえると
+  実害が出るとは考えにくい (実測はしていない — 判断根拠はコードの読解のみ)
+
+問題になった時点 (実際に daemon の応答が悪化した、 等) で「非遷移 action は dispatch loop を
+スキップする」を再検討すること。 その際は `attrs_set` 等の既存経路への影響を先に実物で検証する。
 
 ---
 

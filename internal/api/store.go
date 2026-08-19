@@ -384,6 +384,22 @@ type ActionListStore interface {
 	ListActionsSince(filter orchestrator.ActionListFilter) ([]*orchestrator.Action, string, error)
 }
 
+// TriggerRunStore backs docs/plans/ingestion-identity.md PR-4 (B-5)'s
+// trigger_runs ledger read/writes — narrowed from *orchestrator.
+// TaskRepository the same way ActionListStore/TaskTriageStore are (workflow.go).
+// Deliberately non-transactional (unlike TxStore's WithinTx-scoped methods):
+// each call is a standalone statement, matching this table's actual access
+// pattern in trigger_loop.go (no create+link atomicity requirement the way
+// PR-2's ResolveOrCapture has — a trigger_runs row's create and its later
+// complete are two separate ticks by construction, so there is nothing to
+// wrap in one transaction).
+type TriggerRunStore interface {
+	CreateTriggerRun(run *orchestrator.TriggerRun) error
+	CompleteTriggerRun(id string, finishedAt time.Time, exitCode int) error
+	ListInFlightTriggerRuns() ([]*orchestrator.TriggerRun, error)
+	LatestTriggerRun(projectID, triggerName string) (*orchestrator.TriggerRun, error)
+}
+
 type ProjectRepository interface {
 	CreateProject(project *orchestrator.Project) error
 	GetProject(id string) (*orchestrator.Project, error)

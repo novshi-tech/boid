@@ -50,6 +50,22 @@ type TaskWorkflowService struct {
 	// and "week = 日次 digest のみ" are explicitly PR-4+ (see queue_notify.go
 	// doc comment) — this is a deliberate scope-down, not an oversight.
 	Notifier Notifier
+	// Triggers backs docs/plans/ingestion-identity.md PR-4 (B-5)'s
+	// trigger_runs single-flight/execution-record read+write
+	// (SweepTriggers/RunTriggerNow, trigger_loop.go). Nil is tolerated —
+	// SweepTriggers/RunTriggerNow no-op (matching Notifier/TaskCreator's own
+	// convention above) rather than panicking, since a daemon built without
+	// this dependency wired should simply run no triggers, not crash.
+	Triggers TriggerRunStore
+	// Exec dispatches the exec job (api.ExecDispatcher.StartExec) a due
+	// trigger's `run` command executes as (PR-4's "実行" section — daemon
+	// starts an exec job through the SAME Runner.Dispatch() path `boid exec`
+	// uses). Nil is tolerated the same way Triggers above is: wire.go can
+	// only assign this once sessionDispatcherAdapter exists (mountRoutes,
+	// after buildRuntime constructs this TaskWorkflowService), so a
+	// construction-order gap must not be fatal — see wire.go's own comment
+	// at the assignment site.
+	Exec ExecDispatcher
 
 	dispatchCtx    context.Context
 	dispatchCancel context.CancelFunc

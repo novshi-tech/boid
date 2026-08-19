@@ -1273,6 +1273,16 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// interface for docs/plans/ingestion-identity.md PR-3 (B-3)'s
 		// BoidOpActionList read.
 		Actions: taskRepo,
+		// Triggers: taskRepo already implements TriggerRunStore (see
+		// internal/orchestrator/repository.go's CreateTriggerRun /
+		// CompleteTriggerRun / ListInFlightTriggerRuns / LatestTriggerRun) —
+		// same object as Tasks/TaskTriage/Actions above, viewed through a
+		// narrower interface for docs/plans/ingestion-identity.md PR-4
+		// (B-5)'s trigger_runs single-flight/execution-record read+write.
+		// Exec (api.ExecDispatcher) is deliberately NOT set here — see the
+		// assignment at sessionAdapter's construction below (mountRoutes)
+		// for why it can't be until then.
+		Triggers: taskRepo,
 		// TaskCreator is wired below, once taskSvc (*api.TaskAppService) is
 		// constructed — see the comment there for why this can't be set here.
 	}
@@ -2041,12 +2051,38 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	}
 
 	sessionAdapter := &sessionDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner}
+	// docs/plans/ingestion-identity.md PR-4 (B-5): the trigger sweep loop's
+	// "実行" section — daemon dispatches a due trigger's exec job through
+	// the SAME api.ExecDispatcher.StartExec `boid exec` uses. This can only
+	// be wired here, not alongside workflow's other fields above
+	// (buildRuntime), because sessionAdapter does not exist until this
+	// point — see TaskWorkflowService.Exec's own doc comment.
+	runtime.workflow.Exec = sessionAdapter
 	projectHandler := &api.ProjectHandler{
 		Service:           runtime.projectSvc,
 		SessionDispatcher: sessionAdapter,
 		ExecDispatcher:    sessionAdapter,
+		// TriggerRunner backs 12 節「手動 1 巡の口」(`boid trigger run`,
+		// cmd/trigger.go) — runtime.workflow satisfies api.TriggerRunner via
+		// RunTriggerNow (trigger_loop.go).
+		TriggerRunner: runtime.workflow,
 	}
 	r.Mount("/api/projects", projectHandler.Routes())
+
+	// Wire up the periodic trigger sweep loop (docs/plans/
+	// ingestion-identity.md PR-4, B-5's「スケジューラ」section — same
+	// InitialDelay-then-Interval idiom as srv.queueSweepLoop (buildRuntime)
+	// and srv.gcLoop (below), just constructed here instead because it
+	// needs runtime.workflow.Exec, only just assigned above. InitialDelay
+	// is staggered after gcLoop's 10s and queueSweepLoop's 20s so all three
+	// startup sweeps don't contend for the single DB connection at once
+	// (db.go's SetMaxOpenConns(1)).
+	srv.triggerLoop = &api.TriggerLoop{
+		Store:        runtime.workflow,
+		Interval:     1 * time.Minute,
+		InitialDelay: 30 * time.Second,
+		Notifier:     srv.notifySvc,
+	}
 
 	sessionHandler := &api.SessionHandler{
 		Service:    runtime.projectSvc,

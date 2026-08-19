@@ -120,6 +120,29 @@ func (r *TaskRepository) ListIdentitiesByTask(taskID string) ([]string, error) {
 	return ListIdentitiesByTask(r.db, taskID)
 }
 
+// CreateTriggerRun / CompleteTriggerRun / ListInFlightTriggerRuns /
+// LatestTriggerRun back docs/plans/ingestion-identity.md PR-4 (B-5)'s
+// trigger_runs ledger (trigger_run.go). Thin wrappers over the
+// package-level functions, same shape as the identity methods above — not
+// task-scoped data, but taskRepo is the object wire.go already threads into
+// TaskWorkflowService's narrow-interface fields (Actions/TaskTriage follow
+// the same precedent).
+func (r *TaskRepository) CreateTriggerRun(run *TriggerRun) error {
+	return CreateTriggerRun(r.db, run)
+}
+
+func (r *TaskRepository) CompleteTriggerRun(id string, finishedAt time.Time, exitCode int) error {
+	return CompleteTriggerRun(r.db, id, finishedAt, exitCode)
+}
+
+func (r *TaskRepository) ListInFlightTriggerRuns() ([]*TriggerRun, error) {
+	return ListInFlightTriggerRuns(r.db)
+}
+
+func (r *TaskRepository) LatestTriggerRun(projectID, triggerName string) (*TriggerRun, error) {
+	return LatestTriggerRun(r.db, projectID, triggerName)
+}
+
 type ProjectRepository struct {
 	db db.DBTX
 }
