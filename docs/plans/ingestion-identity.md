@@ -713,7 +713,7 @@ daemon 側に残る懸念は 2 つだけになった。 残りは workspace の�
 | 懸念 | どちらが持つか | 対策 | 現行 khi の実装 |
 |---|---|---|---|
 | トリガの重複起動 | **daemon** | single-flight (J-4) | flock + 実行中 `[cycle]` task の確認 |
-| トリガのコマンドが落ちる / 返らない | **daemon** | 実行結果の記録とタイムアウト。 落ち続けたことが見えること | preflight の step ごとのフェイルオープン / クローズ |
+| トリガのコマンドが落ちる / 返らない | **daemon** | 実行結果の記録。 落ち続けたことが見えること。 **タイムアウトは実装しなかった** (PR-4 実装後の Opus レビュー N-4、意識的な先送り — 12 節 B-5 の「実装時に見つかった懸念」節を参照。stdin を閉じない場合の永久ハングだけは別問題として直した) | preflight の step ごとのフェイルオープン / クローズ |
 | 呼び直しの抑止 | workspace | `noted` を読んで判定 | `speech_index()` |
 | 流量とコスト・ task を何個作るか | workspace | スクリプトが決める | 「note-suggest の fork は 1 巡 5 枚まで」 |
 | 判断 task が `noted` を押さずに死ぬ | workspace | 次の巡でスクリプトが検出する | — |
@@ -1031,12 +1031,15 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
   既にあり、 `BuildExecJobSpec` → `runner.Dispatch` を通る。 **新規なのは daemon 内のループから
   これを呼ぶ配線だけ**で、 job の組み立ても broker 登録も gateway 配線も既存経路に乗る
   (B-5 の表の「daemon 自身が exec job を起こす経路は新規」は、 正確にはこの配線を指す)
-- `Argv` は `["sh", "-c", trigger.Run]`。 sandbox の `/bin/sh` は dash なので bashism は
-  `bash scripts/x.sh` と明示する側の責任
+- `Argv` は `["sh", "-c", "exec 0</dev/null; " + trigger.Run]`。 sandbox の `/bin/sh` は dash
+  なので bashism は `bash scripts/x.sh` と明示する側の責任。 `exec 0</dev/null; ` prefix は
+  Opus レビュー N-4 対応 (2026-08-19) — container backend は `OpenStdin`/`AttachStdin` を
+  無条件で立てるが daemon 発の trigger job には attach するクライアントが居ないため、 これが
+  無いと stdin を読むコマンドが永久にハングする (実 podman で確認済み、 詳細は同節末尾)
 - `Readonly: true` 固定 (仕分け B)。 boid op の allowlist は role にも readonly にも依存しない
   ので、 readonly のまま `task_create` / `action_send` が打てる
 
-**single-flight と実行記録** (migration 0042)
+**single-flight と実行記録** (migration 0043)
 
 - `trigger_runs` — `project_id` / `trigger_name` / `job_id` / `started_at` / `finished_at` /
   `exit_code`
@@ -1096,6 +1099,117 @@ hook は 0 件で確定し、 CPU コストはほぼ無視できる。 ただし
 
 問題になった時点 (実際に daemon の応答が悪化した、 等) で「非遷移 action は dispatch loop を
 スキップする」を再検討すること。 その際は `attrs_set` 等の既存経路への影響を先に実物で検証する。
+
+#### Opus レビュー対応 (PR-4 実装後, 2026-08-19): single-flight のレース・詰まり検出の誤発火・その他
+
+マージ前レビューで Blocker 2 件・要修正 10 件が見つかり、 同じブランチに追加コミットで直した。
+判断が要った論点だけここに残す (機械的な直しは省略)。
+
+**Blocker 1 (single-flight の check-then-act レース)**: 「列挙 (`ListInFlightTriggerRuns`) →
+dispatch (`StartExec`、実機で数秒) → 記録 (`CreateTriggerRun`)」がすべて別トランザクションで、
+`SetMaxOpenConns(1)` は個々の SQL 文を直列化するだけでこの Go 関数レベルの並びは一切守らない
+— sweep tick と手動実行、 手動実行 2 連打、 daemon 2 プロセスのいずれでも実際に二重 dispatch した
+(検証は実際の repro テストで固定、後述)。 **直し方**: `trigger_runs(project_id, trigger_name)` への
+部分 UNIQUE インデックス (`WHERE finished_at IS NULL`) を追加し、`fireTrigger`
+(`internal/api/trigger_loop.go`) を「行を先に INSERT (claim) → dispatch → job_id を UPDATE で
+埋める」の順に並び替えた。 INSERT が UNIQUE 制約で弾かれたら `ErrTriggerRunInFlight`
+(`internal/orchestrator/trigger_run.go`) を返し、 呼び出し側は通常の busy skip と同じ扱いにする —
+これで J-4 が主張していた「workspace 側の flock はホスト単位でしか効かないが、 DB 行方式は
+複数プロセスでも効く」が実装で裏付けられた (`TestSweepTriggers_TwoDaemonProcesses_OnlyOneDispatches`
+が 2 つの独立した `*sql.DB` 接続で同じ DB ファイルを共有する形で実際に確認する)。
+`job_id` は dispatch 前は空文字列を許容する形に変えた (`NOT NULL DEFAULT ''`、nullable 化ではなく
+空文字列許容を選んだ — Go 側で `sql.NullString` を扱わずに済む)。
+**dispatch 失敗時の後始末**は「行を CLOSE (exit code を入れて finished_at を埋める)」ではなく
+**DELETE** にした — CLOSE すると `started_at` が実の値として残ってしまい、
+既存の「dispatch 失敗はフェイルオープンで同一 tick に即リトライできる」
+(`TestSweepTriggers_DispatchFailure_FailsOpenAndRetriesImmediately`、
+このテストは今回も pin し続けている) という不変条件が壊れる (`triggerIsDue` が
+`now.Sub(latest.StartedAt) >= every` を見るため、 CLOSE した行が残っていると elapsed=0 で
+即リトライできなくなる)。
+**migration の扱い**: 0043 は書き換えた (0044 を新設しなかった)。理由は、この PR 自体がまだ
+どのタグにも入っておらず (`git describe` で確認、直近タグ `v0.3.11` より後ろの未タグコミット)、
+main にもマージされていない 1 コミットの feature branch であるため — 0043 を適用した DB は
+存在しえない。0044 を新設すると「未リリースの機能が未リリースのバグを踏んだまま出荷され、
+別 migration で直された」という誤解を招く記録が残る。
+
+**Blocker 2 (詰まり検出通知の誤発火)**: `due` を見る前に `busy` を見て `Skipped` に積んでいたため、
+「`every` がまだ来ていないが前回がまだ走っている」 (`Interval=1m` で頻繁に起きる、 `every` が
+sweep interval よりずっと長いと尚更) も見送りとしてカウントしていた。
+`Interval=1m` / `every=10m` / 実行 5 分のケースで 3 分目に誤通知することを実測で確認した。
+**直し方 (i)**: `SweepTriggers` の per-trigger ループで `triggerIsDue` を `busy` 判定より先に評価する
+よう並び替えた (`due` が false ならそもそも `Skipped` に積まない)。
+**(ii) 閾値を `every` 相対にするかどうか**: **やった**。
+`TriggerStuckSkipThreshold` (生の sweep tick カウント) を撤去し、
+`TriggerStuckOverrunMultiplier` (既定 3、`in-flight の継続時間 > 3 × trigger 自身の every` で通知) に
+置き換えた。 理由: (i) だけでも報告されたケースは解消するが、 `Interval` と `every` の比が
+崩れる (例 1m/10m) 限り、 「毎分 1 tick ずつ生カウントする」設計は同じ形の問題を再現しうる
+(`every` が短いトリガと長いトリガで同じ生カウント閾値を使うのは無意味)。 継続時間ベースにすれば
+トリガごとの `every` に自動的にスケールし、 かつ `TriggerLoop.trackSkipStreak` が in-memory
+map (mutex 無し、単一ゴルーチン前提) のままで済む (tick カウンタを維持したまま `every` 相対に
+するより shape がシンプルになった)。
+`TestTriggerLoop_SkipStreak_NoFalsePositive_ExecutionShorterThanEvery` が
+レビュアーの実測シナリオ (`Interval=1m`/`every=10m`/実行 5 分) を直接再現し、
+通知 0 件であることを pin する。
+
+**N-1 (job 行が引けない状態からの自己回復)**: `jobTerminalState` のエラー (job 行が GC で消えた等)
+は今までどおり「次 tick に持ち越す」だけで、 自己回復経路が無かった (migration のコメントは
+「フェイルクローズする」と書いていたが実装と矛盾していた — コメントを実装に合わせて直した)。
+**直し方**: `reconcileInFlight` に `selfHealStaleTriggerRun` を足し、
+`now.Sub(run.StartedAt) >= TriggerRunSelfHealGrace` (3 分、`TriggerStuckSkipThreshold` 時代の
+「3 連続 tick」慣習を elapsed time で踏襲) が成立したら `CompleteTriggerRun` で
+`TriggerRunSelfHealExitCode` (-1) を記録して強制終端する。
+**tick カウンタではなく elapsed time にした理由**: `reconcileInFlight` は periodic sweep だけでなく
+`RunTriggerNow` (HTTP ハンドラのゴルーチン) からも呼ばれるため、 tick カウンタを共有 map で持つと
+mutex が要る (`TriggerLoop.skipStreak/failStreak` が mutex 無しで安全なのは、 それらが唯一の
+sweep goroutine からしか触られないからで、 同じ前提は `reconcileInFlight` には無い)。
+`run.JobID == ""` (SetTriggerRunJobID がまだ/決して届いていない) も同じ機構で救う。
+
+**N-4 (コマンドのタイムアウト)**: **実装しない (意識的に先送り)**。 理由: トリガの `run:`
+自体を daemon 側から強制終了する仕組みは、 コンテナの kill/reap や `every` との相互作用まで
+含めた別スコープの設計判断になり、 この PR (single-flight/詰まり検出のバグ修正) の範囲を超える。
+project.yaml のトリガ節に「daemon はタイムアウトを課さない、 `run:` 側で `timeout` コマンド等を
+使うこと」を明記した (`docs/ja/reference/project-yaml.md` の `triggers[]` 節)。
+**stdin wedge は事実だったので、 これは直した** (タイムアウト機構そのものとは別問題): 実 podman
+コンテナで `OpenStdin:true/AttachStdin:true` かつ誰も書き込み/close しない stdin を再現したところ、
+`cat` が SIGTERM でも止まらず永久にハングすることを確認した (`podman run -d -i ... sh -c
+'cat'` を 5 秒後に inspect → `running` のまま)。`exec 0</dev/null; ` をコマンドの先頭に足すと
+即座に正常終了することも確認した。`internal/api/trigger_loop.go` の `triggerRunArgv` で全トリガ
+job のコマンドをこの prefix でラップするよう修正した。
+
+**N-6 (`every` の実効解像度)**: **下限バリデーションを入れた**。
+`orchestrator.TriggerSweepResolution` (= `time.Minute`) を新設し、 `ValidateTriggers` が
+`every < TriggerSweepResolution` を project.yaml load 時に reject するようにした。
+`internal/server/wire.go` の `TriggerLoop.Interval` もこの同じ定数を参照するようにして、
+「実効下限」と「実際の sweep interval」が別々の値として drift しないようにした。
+
+**N-2 (retention/index 不在)**: `idx_trigger_runs_inflight_unique` (Blocker 1 の部分 UNIQUE) に加え、
+`ListInFlightTriggerRuns` の実クエリ形 (`WHERE finished_at IS NULL ORDER BY started_at, id`) を
+専用にカバーする部分 index `idx_trigger_runs_inflight_started` も追加した (前者だけでは
+`ORDER BY started_at` を効率よく満たせない)。 既存 30 日 GC (`orchestrator.GCTasks` を呼ぶ
+`TaskGCStore.GC`) に `GCTriggerRuns` (`finished_at < cutoff` の DELETE、in-flight 行は年齢に
+関わらず対象外) を同じトランザクションで追加した。
+
+**N-3 (notify のタイムアウト)**: `TriggerLoop.notify` を `queue_notify.go`/`triage_done.go` と同じ
+`context.WithTimeout(ctx, notifyTimeout)` でラップした。
+
+**N-5/N-8 (テスト/コメントの実態訂正)**: `trigger_loop.go:193` 付近のコメントが指す存在しない
+テスト名を実物 (`TestBoidBuiltinExecutor_TaskCreate_SucceedsFromWhatATriggerJobsSandboxWouldSend`,
+`internal/server/trigger_readonly_task_create_test.go`) に直した。 そのテスト自身のコメントも
+「本番の broker/executor 経路そのもの」という書き方を、 実際にカバーしているのは
+`ExecuteBoidBuiltin` の単体呼び出しのみ (broker 登録・`validateBoidBuiltinCwd`・`boid_shim`
+経由の実配線は通っていない) という実態に合わせて訂正した。 結論 (readonly は allowlist に
+伝播しない) 自体はレビュアーが独立に確認しており正しいので実害は無い。
+
+**N-9 (`started_at` の UTC 不整合)**: `CreateTriggerRun`/`CompleteTriggerRun` が呼び出し元の
+`time.Time` をそのまま (タイムゾーン付きで) 保存していた (`StartedAt` は zero のときだけ `.UTC()`
+していた) ため、 `TriggerLoop.runOnce`/`RunTriggerNow` の `time.Now()` (ローカル) がそのまま
+DB に入っていた。 両関数とも呼び出し元の値に関わらず常に `.UTC()` する形に直し、 加えて
+呼び出し側 (`runOnce`/`RunTriggerNow`) の `time.Now()` も `.UTC()` に揃えた (二重の防御)。
+
+**N-10 (nil ガードの非対称)**: `SweepTriggers` の no-op ガードに `s.Jobs == nil` を追加した
+(`Triggers`/`Projects`/`Meta` と同じ扱い)。`s.Exec == nil` は追加していない — こちらは既存の
+per-trigger fail-open dispatch 失敗経路が既にカバーしており、 トップレベルガードに含めると
+`reconcileInFlight` (既存の in-flight 行の解消) まで止まってしまうため。
 
 ---
 
