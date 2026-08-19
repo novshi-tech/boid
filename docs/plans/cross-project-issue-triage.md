@@ -1615,10 +1615,13 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   受け取れない (action は `task_id` 必須) (2) actions の履歴を読む口が無い (`action_send` は
   あるが `action_list` が無い)。
   検討の過程で、 **「daemon は決定論」「取り込みは workspace」を同時に立てると「判断のトリガは
-  daemon が出す」が強制される** (判断の起動条件を判断で決めると循環する) ことが分かり、
-  daemon を**判断のスケジューラ**、 workspace を**判断の実装**とする To-Be に整理した。
-  `judge:` を予約した behavior 名前空間とし、 述語は反応型 / 周期型の 2 形、 判断の記録は
-  `judged { kind, outcome }` action。 外部キーは task の **identity** として多対一で持たせ、
+  daemon が出す」**という線が出てきた。 daemon を**トリガの出所**、 workspace を**判断の実装**と
+  する To-Be に整理し、 `project.yaml` の**トップレベルに `triggers`** を新設する
+  (`task_behaviors` は変更しない — trigger は「どう実行するか」ではなく「いつ始まるか」の
+  性質なので器が違う)。 daemon が持つのは **スケジュール / single-flight / 実行結果の記録**の
+  3 つだけで、 走らせるのは workspace のコマンド (`run: python3 scripts/x.py`)。
+  「LLM に用があるか」の判定は workspace のスクリプトが持つ (決定論なので決定 12 と衝突しない)。
+  判断の記録は payload 不透明の汎用注記 action。 外部キーは task の **identity** として多対一で持たせ、
   未着キーは専用 inbox ではなく **`captured` な triage task** として着地させる (篩いが
   workspace 側に残るので daemon 側の流量は今と変わらない)。 詳細は
   [ingestion-identity.md](ingestion-identity.md)。 決定 16 の `ref` を一般化し、 論点 g の
@@ -1723,9 +1726,10 @@ Phase 1 完了後の khi 実機と daemon 側 main を再突合し、 **決定 1
 
 - 本編の変更は論点 k の追加のみ。 決定の新設・ 変更は行っていない (実装前のため)
 - 同 doc は「daemon は決定論 / LLM 判断は workspace / **トリガは daemon**」の 3 原則から
-  出発し、 daemon を判断のスケジューラとして再定義する。 判断の種類は `judge:` 予約
-  名前空間の behavior として workspace が宣言し、 daemon は `trigger` だけを読む (kind の
-  意味は知らない) ので、 **判断の場を増やしても daemon は無変更**という拡張性を持つ
+  出発する。 判断の起動は `project.yaml` トップレベルの `triggers` が宣言し、 daemon は
+  「いつ、 どのコマンドを走らせるか」しか知らない (走らせた先で何が起きるかは関知しない) ので、
+  **判断の場を増やしても daemon は無変更**という拡張性を持つ。 論点 b (定期起動の機構) は
+  内蔵側へ倒れ、 workspace 側に cron は残らない
 - 決定 16 (`ref` = canonical source のキー) を「登録に使った 1 本目の identity」へ一般化し、
   論点 g の dedup 案を多対一の identity 索引 + binding のライフサイクルへ置き換える
 - 決定 17 (`reopen_triaged`) に**引き金**を与える: 第 12 版は「done を探す経路は既に
