@@ -111,7 +111,7 @@ func TestResolveOrCapture_UnregisteredIdentity_CreatesCapturedTaskAndLinks(t *te
 		t.Fatalf("GetTask: %v", err)
 	}
 	if task.Status != orchestrator.TaskStatusCaptured {
-		t.Errorf("Status = %q, want %q (I-4/J-9: new tasks always land captured)", task.Status, orchestrator.TaskStatusCaptured)
+		t.Errorf("Status = %q, want %q (I-4/J-9: new tasks land captured by default)", task.Status, orchestrator.TaskStatusCaptured)
 	}
 	if task.Title != "ROOKPF-1: something broke" || task.Description != "the body" {
 		t.Errorf("Title/Description not carried through: %q / %q", task.Title, task.Description)
@@ -225,9 +225,9 @@ func TestResolveOrCapture_DescriptionOverLimit_RejectsAndCreatesNothing(t *testi
 	}
 }
 
-// ---- landing status choice (docs/plans/khi-task-collector rebuild.md §11,
-// partial retraction of ingestion-identity.md J-9 — see that doc's PR-2 節
-// addendum for the "いつ・なぜ" record) ----
+// ---- landing status choice (`docs/plans/rebuild.md` §5.6/§11,
+// khi-task-collector リポジトリ側, partial retraction of ingestion-identity.md
+// J-9 — see that doc's PR-2 節 addendum for the "いつ・なぜ" record) ----
 
 // TestResolveOrCapture_StatusTriaged_CreatesTriagedTaskAndLinks pins the new
 // opt-in landing status: a caller that has already filtered (khi's own

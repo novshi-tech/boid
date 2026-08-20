@@ -135,6 +135,53 @@ func TestParseBoidTaskResolveOrCapture_StatusNotValidatedByShim(t *testing.T) {
 	}
 }
 
+// TestParseBoidTaskResolveOrCapture_StatusExplicitEmpty_Rejected pins a
+// narrow input-hygiene check that is NOT the vocabulary validation covered
+// by TestParseBoidTaskResolveOrCapture_StatusNotValidatedByShim above: when
+// the caller writes `--status` (or `--status=`) on the command line at all,
+// an empty value must be rejected right here in the shim, before it ever
+// reaches req.Status.
+//
+// Why here and not downstream in api.resolveLandingStatus: by the time the
+// value reaches BoidRequest.Status, "flag omitted entirely" (backward-
+// compatible default, must keep meaning captured) and "flag explicitly
+// passed but empty" (almost certainly a caller bug, e.g. `--status
+// "$LANDING"` with $LANDING unset) both collapse to the same Go zero value
+// "" — resolveLandingStatus cannot tell them apart, and "" is a valid key
+// in allowedResolveOrCaptureStatuses (maps to captured) precisely so the
+// omitted case keeps working. Only the shim still knows, at parse time,
+// that the `--status` token was actually present in argv, so this is the
+// one place capable of drawing the distinction.
+func TestParseBoidTaskResolveOrCapture_StatusExplicitEmpty_Rejected(t *testing.T) {
+	cases := map[string][]string{
+		"space form, empty value": {"task", "resolve-or-capture", "jira:X-1", "--status", ""},
+		"equals form, no value":   {"task", "resolve-or-capture", "jira:X-1", "--status="},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseBoidRequest(args); err == nil {
+				t.Fatalf("%s: parse succeeded, want a rejection of the explicit empty --status value", name)
+			}
+		})
+	}
+}
+
+// TestParseBoidTaskResolveOrCapture_StatusOmitted_StillDefaultsToCaptured
+// re-confirms (alongside TestParseBoidTaskResolveOrCapture_
+// StatusOmitted_LeavesFieldEmpty above) that the empty-value rejection
+// above is scoped to an EXPLICITLY passed `--status`: omitting the flag
+// entirely must keep parsing successfully with req.Status == "" (the
+// backward-compatible captured default), unaffected by this change.
+func TestParseBoidTaskResolveOrCapture_StatusOmitted_StillDefaultsToCaptured(t *testing.T) {
+	req, err := parseBoidRequest([]string{"task", "resolve-or-capture", "jira:X-1"})
+	if err != nil {
+		t.Fatalf("parse: %v, want --status omission to still succeed", err)
+	}
+	if req.Status != "" {
+		t.Fatalf("status = %q, want empty (flag not given)", req.Status)
+	}
+}
+
 func TestParseBoidTaskResolveOrCapture_RequiresIdentity(t *testing.T) {
 	cases := map[string][]string{
 		"no arguments":     {"task", "resolve-or-capture"},

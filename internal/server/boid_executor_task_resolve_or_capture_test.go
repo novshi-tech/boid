@@ -6,7 +6,7 @@ package server
 // these pin the store-error -> ExecResponse translation (the shared
 // IdentityConflictExitCode with BoidOpTaskIdentityLink, and the generic
 // ExitCode:1 path for everything else), the request forwarding (Title/
-// Description/ProjectID/Identity all reach TaskWorkflowService.
+// Description/ProjectID/Identity/Status all reach TaskWorkflowService.
 // ResolveOrCapture unmodified), and the "unavailable" guard when the
 // workflow value doesn't implement resolveOrCaptureService.
 

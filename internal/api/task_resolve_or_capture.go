@@ -8,15 +8,33 @@ package api
 // いない task が残ると、次の巡で同じキーがもう1枚作られてしまうため
 // (PR-2 節)。
 //
-// 着地 status は既定 `captured`（従来どおり、後方互換）だが、khi-task-collector
-// rebuild.md §11/§5.6 を受けて `triaged` も選べる（ingestion-identity.md の
-// J-9「daemon が triaged まで進めることはない」の部分撤回 — 同 doc PR-2 節の
-// 訂正セクションに「いつ・なぜ」の記録がある）。既存 CreateTask
-// (task_create.go: allowedCreateInitialStatuses) と同じ「許可語彙は
+// 着地 status は既定 `captured`（従来どおり、後方互換）だが、`docs/plans/rebuild.md`
+// §5.6/§11（khi-task-collector リポジトリ側）を受けて `triaged` も選べる
+// （ingestion-identity.md の J-9「daemon が triaged まで進めることはない」の
+// 部分撤回 — 同 doc PR-2 節の訂正セクションに「いつ・なぜ」の記録がある）。既存
+// CreateTask (task_create.go: allowedCreateInitialStatuses) と同じ「許可語彙は
 // map で明示、許可外は明示的エラー」パターンを踏襲する。ready/working/pending
-// のような「進めてよい」を含意する状態は意図的に許可しない — workspace 側が
-// state を押し返す経路を開けない (I-4 の「daemon に届く時点で既に起票に値する
-// と判断済み」という前提の外に出る要求は拒否する)。
+// のような「進めてよい」を含意する状態は意図的に許可しない。
+//
+// ただし、この禁止を「workspace 側が state を押し返す経路を塞ぐ enforcement」と
+// 読むのは誤り（レビューで判明・実測済み）。その経路はこの op を経由せず既に
+// 開いている:
+//   - `boid action send --type <任意文字列>` は type を検証しない
+//     (internal/sandbox/boid_shim.go:1156-1162)
+//   - internal/server/boid_executor.go:621-627 は `child_specced` の project
+//     検査以外に type の allowlist を持たない
+//   - internal/api/workflow_action.go:42 のゲートは `IsManualAction` だけ
+//   - internal/orchestrator/machine.go:417-427 で ready/park/drop/triage は
+//     全て `Manual: true`（`DefaultMachine().IsManualAction()` で実測済み。
+//     false なのは dispatch/wake_ready のみ）
+//   - `boid task create` も `initial_status: triaged` を既に受け付けている
+//     (boid_shim.go:355-384 → boid_executor.go:237-256 → task_create.go:73-77)
+//
+// つまりサンドボックス内のジョブは今日でも `boid action send --task X --type
+// ready` を押せる。ここでの禁止は「この op が state 遷移の器にならないための
+// 衛生 (hygiene)」であり、押し返し自体を塞ぐのはこの op の役目ではない — I-4 の
+// 「daemon に届く時点で既に起票に値すると判断済み」という前提の外に出る**新規
+// 作成要求**だけを、この op に限って拒否している。
 //
 // 既存の action_send (ApplyAction) とは意図的に別 op のまま — 「解決と記録を
 // 1 op に混ぜない」(PR-2 節)。created:false のとき、workspace は続けて
@@ -65,8 +83,8 @@ type ResolveOrCaptureResult struct {
 }
 
 // allowedResolveOrCaptureStatuses is the landing-status allowlist for a
-// freshly created task (docs/plans/khi-task-collector rebuild.md §11,
-// partial retraction of ingestion-identity.md J-9 — see that doc's PR-2 節
+// freshly created task (`docs/plans/rebuild.md` §5.6/§11, khi-task-collector
+// リポジトリ側, partial retraction of ingestion-identity.md J-9 — see that doc's PR-2 節
 // 訂正セクション for the "いつ・なぜ・どこまで" record). Deliberately NOT
 // task_create.go's allowedCreateInitialStatuses:
 //   - "pending" is excluded — resolve-or-capture only ever creates
@@ -74,10 +92,15 @@ type ResolveOrCaptureResult struct {
 //     track; there is no auto_start-equivalent concept here
 //   - every status at or past `ready` (ready/working/executing/awaiting/
 //     done/aborted/dropped/parked/...) is excluded — accepting one would
-//     let a workspace caller push a task straight into a state that
-//     implies "go", reopening the exact state-pushback hole flagged by
-//     rebuild.md §3.2 and khi's own daemon_sync.py:161-165 incident ("Web
-//     UI 操作が次巡で巻き戻る")
+//     let a workspace caller push a freshly CREATED task straight into a
+//     state that implies "go" without this op's own I-4 judgment ever
+//     applying. This is hygiene for this op's own vocabulary, not an
+//     enforcement boundary against pushback in general — that door is
+//     already open via action_send regardless of this allowlist (see this
+//     file's package-level doc comment above for the evidence). The
+//     concrete cost of getting a similar vocabulary check wrong is
+//     `docs/plans/rebuild.md` §3.2 (khi-task-collector リポジトリ側) and
+//     khi's own daemon_sync.py:161-165 incident ("Web UI 操作が次巡で巻き戻る")
 //
 // "" (unset) keeps the pre-change behavior (captured), so every existing
 // caller (khi's daemon_sync.py ensure_task, as of this change) is
@@ -99,6 +122,21 @@ var allowedResolveOrCaptureStatuses = map[string]orchestrator.TaskStatus{
 // unchecked) — so the vocabulary lockdown stays authoritative regardless of
 // entry point, rather than being a shim-only check a future caller could
 // route around.
+//
+// The map+"許可語彙は明示、許可外は明示的エラー" idiom follows task_create.go's
+// resolveInitialStatus (see this file's package doc comment), but the error
+// TYPE deliberately does not: resolveInitialStatus wraps its rejection in
+// *StatusError{Code: 400} because it backs an HTTP handler that reads
+// StatusError.Code. resolveLandingStatus returns a plain error because
+// ResolveOrCapture today has exactly one caller — boid_executor.go's
+// BoidOpTaskResolveOrCapture case — which only ever does err.Error() into
+// ExecResponse.Stderr with ExitCode:1 (any error type collapses to the same
+// exit-1 shape there); there is no HTTP handler on this path to read a
+// Code off. Same reasoning task_identity.go's package comment gives for
+// PR-1's identity methods (LinkIdentity/UnlinkIdentity) staying unwrapped.
+// If ResolveOrCapture ever grows an HTTP entry point, switch this to
+// *StatusError then — not preemptively, since a dead Code field is its own
+// kind of misleading comment.
 func resolveLandingStatus(status string) (orchestrator.TaskStatus, error) {
 	resolved, ok := allowedResolveOrCaptureStatuses[status]
 	if !ok {

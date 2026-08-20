@@ -925,11 +925,17 @@ func parseBoidTaskIdentityResolve(args []string) (*BoidRequest, error) {
 // --status is forwarded on req.Status (reusing the same field `boid task
 // list --status` / `boid task triage --status` already use — each op
 // interprets it independently, no collision since only one op processes a
-// given request) with NO validation here: the allowlist (""/"captured"/
-// "triaged" only) is enforced exactly once, in
+// given request) with NO VOCABULARY validation here: the allowlist
+// (""/"captured"/"triaged" only) is enforced exactly once, in
 // api.TaskWorkflowService.ResolveOrCapture (resolveLandingStatus) — see
 // that function's doc comment for why shim-level validation would be
-// insufficient (bypassable by any other caller of the same op).
+// insufficient (bypassable by any other caller of the same op). The one
+// exception is a narrow parse-time hygiene check, NOT a vocabulary check:
+// an explicitly passed empty value ("--status=" / "--status ''") is
+// rejected right here, because by the time it reaches req.Status it would
+// be indistinguishable from the flag being omitted entirely (both are "",
+// and "" is itself a valid allowlist key meaning "default to captured") —
+// see the rejection site below for the full reasoning.
 func parseBoidTaskResolveOrCapture(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpTaskResolveOrCapture}
 	var positional []string
@@ -975,6 +981,19 @@ func parseBoidTaskResolveOrCapture(args []string) (*BoidRequest, error) {
 				return nil, err
 			}
 			i = next
+			// An explicitly passed empty value ("--status=" or "--status
+			// ''") is rejected right here, NOT left to fall through to
+			// api.resolveLandingStatus's "" => captured default. Once
+			// req.Status reaches that function, "flag omitted" and "flag
+			// passed empty" are indistinguishable (both are the Go zero
+			// value ""), and "" is a legitimate allowlist key there
+			// (backward-compatible default). Only this parse site still
+			// knows the token was actually present in argv — a caller that
+			// writes `--status "$LANDING"` with an unset $LANDING would
+			// otherwise silently land captured instead of failing loudly.
+			if value == "" {
+				return nil, fmt.Errorf("boid shim: --status requires a non-empty value (omit the flag entirely for the default captured landing)")
+			}
 			req.Status = value
 		case strings.HasPrefix(arg, "-"):
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task resolve-or-capture", arg)

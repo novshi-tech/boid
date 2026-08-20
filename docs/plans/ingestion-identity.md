@@ -1,6 +1,6 @@
 # トリガと取り込み identity (設計メモ)
 
-2026-08-18 起案、 2026-08-19 更新 (第 4 版。 同日、 未確定 26 件を仕分けて着手前の 5 件を決定 → I-7 / I-8 / I-9 / J-9 / J-10)。 **まだ実装しない。** `cross-project-issue-triage.md` (以下「本編」) の Phase 1
+2026-08-18 起案、 2026-08-19 更新 (第 4 版。 同日、 未確定 26 件を仕分けて着手前の 5 件を決定 → I-7 / I-8 / I-9 / J-9 / J-10)、 2026-08-20 追記 (PR-2 実装時の訂正2件: J-9「daemon が `triaged` まで進めることはない」の部分撤回、 および `triaged` 着地が Web UI のどのタブにも出ない可視性ギャップ — 詳細は PR-2 節「訂正」参照)。 **まだ実装しない。** `cross-project-issue-triage.md` (以下「本編」) の Phase 1
 完了後に見つかった構造的な積み残しを、 独立した subsystem として切り出した検討。
 
 workspace 側の対になる memo は khi-task-collector リポジトリの
@@ -596,7 +596,7 @@ opt-in は **project 単位**。 最初から全部を自動にしない。
 | J-6 | `answered { answer, verb, basis }` は専用 verb のまま。 副作用で `suggestion` を落とす | 人の操作は daemon 自身の UI から出る daemon の出来事であり、 他の人手操作と同じ語彙の並びに置きたい |
 | J-7 | 却下履歴の突合は daemon に置かず、 スクリプトか判断 task が `action_list` で自己抑制する | `verb` / `basis` の一致判定は suggestion の中身を読むことになり境界を越える |
 | J-8 | 自律 Go は **決定論 gate + project 単位 opt-in**。 判断は LLM、 通してよいかは daemon | 決定 15 (auto-done) の対称。 監査は `Action.Actor` で既存台帳に乗る。 gate が読む形の第一級化は段階 4 で決める |
-| J-9 | **`captured` → `triaged` は LLM が提案し、 人が Web UI で押す**。 将来は J-8 と同じ器で自動化する | 「最初の時点では」人が押す (2026-08-19、 nose)。 提案は `description` 経由で人に見えるので **daemon は何も解釈せず**、 統合の窓も `captured` のまま残る。 自動化は J-8 の決定論 gate を再利用する形になり、 別系統を作らない |
+| J-9 | **`captured` → `triaged` は LLM が提案し、 人が Web UI で押す**。 将来は J-8 と同じ器で自動化する（2026-08-20 部分撤回 → PR-2 節「訂正」参照。 撤回範囲は「新規作成時に呼び出し元が着地 status を `captured`/`triaged` から選べる」ことだけで、 既存 `captured` task を daemon が勝手に `triaged` へ進める経路は今も未実装） | 「最初の時点では」人が押す (2026-08-19、 nose)。 提案は `description` 経由で人に見えるので **daemon は何も解釈せず**、 統合の窓も `captured` のまま残る。 自動化は J-8 の決定論 gate を再利用する形になり、 別系統を作らない。 **有効性 (2026-08-20 追記)**: 「統合の窓も `captured` のまま残る」は `--status` 省略（既定 `captured`）で着地する呼び出し元については今も有効。 ただし `--status triaged` を使う呼び出し元（この撤回の動機そのものである khi 再設計後の judge）は `captured` を経由しないので、 その task についてはこの統合の窓がそもそも存在しない — 撤回時に許容した意図的なトレードオフであり、 未解決の矛盾ではない |
 | J-10 | `description` と action payload に**サイズ上限**を置き、 超えたら切り詰めずに**エラー**にする。 **値は 64 KiB (65,536B)** — description 側 (khi note 本文 32 枚実測、 max 15,584B) は約 4.2 倍、 action payload 側 (khi claims/attrs 実測、 畳んだ attrs 全体 max 22,572B) は約 2.9 倍のマージン。 実測の全文は §13 A-5 を参照 | 決定 3 改訂の帰結 — daemon が機械的に効かせられる開示の枠はサイズとフィールド粒度だけになった。 head / agent 発の source は外部に正本が無く daemon の写しが唯一なので、 黙って切ると復元できない。 エラーなら workspace が要約か分割かを選べる (2026-08-19、 nose)。 値は description / payload 両方を別々に実測した上で、 同じ定数を共用する判断込みで PR-2 実装時 (2026-08-19) に確定させた |
 
 ### I-5 は workspace 側の現行ルールの意図的な反転
@@ -950,10 +950,27 @@ khi が作る task は必ず一度 `captured` に着地してから、 誰か（
   「daemon が既存の `captured` task を勝手に `triaged` へ進める」経路（J-9 の段階 2 が
   指していたもの、 上記「やらないこと」）は今回も追加していない — 依然として未実装
 - 受け付ける値は `captured`/`triaged` の 2 つだけ。 `ready`/`working`/`pending` のような
-  「進めてよい」を含意する状態は明示的に拒否する — workspace 側が state を押し返す経路を
-  開けないため。 根拠は `docs/plans/rebuild.md` §3.2（khi-task-collector リポジトリ側）と、
-  khi 側 `daemon_sync.py:161-165`
-  が実際に踏んだ「Web UI 操作が次巡で巻き戻る」事故
+  「進めてよい」を含意する状態は明示的に拒否する。 **ただしこれは「workspace 側が state を
+  押し返す経路を塞ぐ enforcement」ではない**（2026-08-20 レビューで判明・実測済み。
+  訂正: 当初この段落は enforcement だと書いていたが事実に反していた） — その経路はこの op
+  を通らずに既に開いている: `boid action send --type <任意文字列>` は語彙制限なし
+  (`internal/sandbox/boid_shim.go:1156-1162`)、 `internal/server/boid_executor.go:621-627`
+  も `child_specced` の project 検査以外に type の allowlist を持たない、
+  `internal/api/workflow_action.go:42` のゲートは `IsManualAction` だけ、
+  `internal/orchestrator/machine.go:417-427` で ready/park/drop/triage は全て
+  `Manual: true`（`DefaultMachine().IsManualAction()` を実際に叩いて
+  `triage=true, ready=true, park=true, drop=true` を確認済み。 false なのは
+  dispatch/wake_ready のみ）。 `boid task create` も `initial_status: triaged` を
+  既に受け付ける (`boid_shim.go:355-384` → `boid_executor.go:237-256` →
+  `task_create.go:73-77`)。 つまりサンドボックス内のジョブは今日でも
+  `boid action send --task X --type ready` を押せる。 この禁止の実体は
+  「この op が新規作成の瞬間に state 遷移の器にならないための衛生 (hygiene)」で
+  あり、 押し返しを塞ぐこと自体はこの op の役目ではない — 根拠として引いていた
+  `docs/plans/rebuild.md` §3.2（khi-task-collector リポジトリ側）と khi 側
+  `daemon_sync.py:161-165` の「Web UI 操作が次巡で巻き戻る」事故は、 この op の
+  語彙を絞る動機としては今も有効（「新規作成時に誤って go 相当の状態を選んで
+  しまう」事故の再発防止）だが、 「他の経路を含めた push-back 全体を塞ぐ」根拠
+  としては引用できない
 - 既定値は変えていない。 `--status` を渡さない既存の全呼び出し元（khi の
   `daemon_sync.py ensure_task` を含む、 この変更時点のもの）は無変更で動く
 - 検証はサンドボックスの受け口 (shim/broker/executor) のどこでもなく、
@@ -971,6 +988,58 @@ khi が作る task は必ず一度 `captured` に着地してから、 誰か（
 `SeedTaskTriage` は `urgency` を設定しないので、 `--status triaged` で着地した直後の task は
 （`captured` 着地のときと同様） urgency 未設定のまま queue には出ない — workspace が
 別途 `attrs_set` で urgency を押すまでは、 queue への露出は無い。
+
+#### 訂正 (2026-08-20 レビュー実測): `triaged` 着地の card は Web UI のどのタブにも出ない
+
+上の queue 非露出はすでに書いていたが、 レビューが実 DB プローブで確認した範囲はもっと広い —
+**Open / Closed / Parked を含む 4 タブ全部**を対象にした:
+
+```
+tab open        -> [captured landing]
+tab closed      -> []
+tab queue_next  -> []
+tab parked      -> []
+```
+
+根拠:
+
+- `web/templates/components/filters.templ:78-81` — Web UI のタブは
+  `open`/`closed`/`queue_next`/`parked` の 4 つだけ
+- `internal/orchestrator/store.go:44-61` — `notOpenSelfStatusSQLList` は
+  terminal ∪ (pre-execution − `captured`)。 **`captured` だけが Open から除外されない
+  よう明示的に彫り抜かれている**（上の「`captured` の可視化」節が入れた穴）。
+  `triaged` は彫り抜かれていないので、 pre-execution な `triaged` はこの除外リストに
+  そのまま含まれ、 Open タブの自 status 条件を満たさない
+- `internal/orchestrator/store.go:329-336` (`queue_next`) — `t.status IN
+  ('ready','triaged') AND tt.urgency IN ('now','today','week')` の INNER JOIN 必須。
+  urgency 未設定の `triaged` は落ちる（上の queue 非露出の記述と同じ理由）
+- `parked` タブは `filter.Status == "parked"` の汎用フォールバック
+  (`internal/orchestrator/store.go:360-363`、 `t.status = ?`) を通るので、
+  `triaged` の task は当然 `parked` の task 一覧にも出ない
+
+**コードは変えていない** — Open の彫り抜き (`notOpenSelfStatusSQLList`) を `captured` から
+`triaged` にも広げれば直るが、 それは nose が今見ている Open タブの中身を変える判断であり、
+このレビュー対応の範囲では踏み込まない。
+
+**受け入れ基準への影響**: 上の「検証」節にある「`captured` な task が Web UI の一覧に出る」
+（本 doc 933 行目）は **`captured` 着地についての記述であり、 `triaged` 着地には適用されない**。
+`--status triaged` で着地させた card は、 urgency を別途押さない限り、 上記 4 タブのいずれにも
+現れない。
+
+**未決**。 選択肢を 3 つ併記する:
+
+- (a) urgency 無しの `triaged` を Open の彫り抜き (`notOpenSelfStatusSQLList`) に `captured`
+  と同様に追加する — Open タブの「素の pre-execution task はここに出す」という現行方針を
+  `triaged` にも一貫させる。 ただし Open タブの中身が変わる (nose の判断が要る)
+- (b) `--status triaged` を呼ぶ側に、 同一トランザクションで urgency も必須にする —
+  `BoidOpTaskResolveOrCapture` の I/O 契約を広げる必要がある（現状 urgency は
+  `attrs_set` 経由の別呼び出し）
+- (c) 呼び出し側 (khi) が「`--status triaged` で着地させたら必ず同じ巡で urgency を押す」
+  という運用を守る前提を受け入れる — daemon 側は何も変えない
+
+**`--status triaged` を実際に使い始める前にこの決着が要る** — 決着しないまま khi が
+`--status triaged` を使い始めると、 urgency が付くまでの間 card がどのタブにも見えない
+「サイレントな取りこぼし」窓が実運用で生じる。
 
 ---
 
