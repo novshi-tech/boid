@@ -913,14 +913,23 @@ func parseBoidTaskIdentityResolve(args []string) (*BoidRequest, error) {
 
 // parseBoidTaskResolveOrCapture builds the BoidRequest for
 // `boid task resolve-or-capture <identity> [--title T]
-// [--description D | --description-file F] [--project-id P]`
-// (docs/plans/ingestion-identity.md PR-2, B-2). --description-file supports
-// "-" for stdin (readFlagContent, same convention as `boid task update
-// --patch-file`) since description can carry a full Jira issue body / Slack
-// thread transcript — too large to pass comfortably as a single argv value.
-// Title/description are only used by the executor when Identity is
-// unresolved; a caller that only wants to check for an existing binding can
-// omit both.
+// [--description D | --description-file F] [--project-id P] [--status S]`
+// (docs/plans/ingestion-identity.md PR-2, B-2, 追記: J-9 partial
+// retraction). --description-file supports "-" for stdin (readFlagContent,
+// same convention as `boid task update --patch-file`) since description can
+// carry a full Jira issue body / Slack thread transcript — too large to
+// pass comfortably as a single argv value. Title/description/status are
+// only used by the executor when Identity is unresolved; a caller that only
+// wants to check for an existing binding can omit all three.
+//
+// --status is forwarded on req.Status (reusing the same field `boid task
+// list --status` / `boid task triage --status` already use — each op
+// interprets it independently, no collision since only one op processes a
+// given request) with NO validation here: the allowlist (""/"captured"/
+// "triaged" only) is enforced exactly once, in
+// api.TaskWorkflowService.ResolveOrCapture (resolveLandingStatus) — see
+// that function's doc comment for why shim-level validation would be
+// insufficient (bypassable by any other caller of the same op).
 func parseBoidTaskResolveOrCapture(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpTaskResolveOrCapture}
 	var positional []string
@@ -960,6 +969,13 @@ func parseBoidTaskResolveOrCapture(args []string) (*BoidRequest, error) {
 				return nil, fmt.Errorf("boid shim: read description file: %w", err)
 			}
 			req.Description = string(data)
+		case arg == "--status" || strings.HasPrefix(arg, "--status="):
+			value, next, err := takeStringFlagValue(args, i, "--status")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Status = value
 		case strings.HasPrefix(arg, "-"):
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task resolve-or-capture", arg)
 		default:

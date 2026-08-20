@@ -80,6 +80,61 @@ func TestParseBoidTaskResolveOrCapture_WithProjectID(t *testing.T) {
 	}
 }
 
+// TestParseBoidTaskResolveOrCapture_WithStatus pins `--status` parsing
+// (docs/plans/ingestion-identity.md PR-2 追記, J-9 partial retraction): the
+// shim just carries the raw value through on req.Status — it does NOT
+// validate it (see TestParseBoidTaskResolveOrCapture_StatusNotValidatedByShim
+// below; the allowlist check lives in api.resolveLandingStatus, the single
+// authoritative place per the spec).
+func TestParseBoidTaskResolveOrCapture_WithStatus(t *testing.T) {
+	req, err := parseBoidRequest([]string{"task", "resolve-or-capture", "jira:X-1", "--status", "triaged"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if req.Status != "triaged" {
+		t.Fatalf("status = %q, want %q", req.Status, "triaged")
+	}
+
+	req2, err := parseBoidRequest([]string{"task", "resolve-or-capture", "jira:X-1", "--status=triaged"})
+	if err != nil {
+		t.Fatalf("parse (=form): %v", err)
+	}
+	if req2.Status != "triaged" {
+		t.Fatalf("status (=form) = %q, want %q", req2.Status, "triaged")
+	}
+}
+
+// TestParseBoidTaskResolveOrCapture_StatusOmitted_LeavesFieldEmpty pins the
+// backward-compatible default: omitting --status entirely leaves req.Status
+// empty, which api.resolveLandingStatus treats as "captured" — unchanged
+// pre-existing behavior for every caller that doesn't pass the new flag.
+func TestParseBoidTaskResolveOrCapture_StatusOmitted_LeavesFieldEmpty(t *testing.T) {
+	req, err := parseBoidRequest([]string{"task", "resolve-or-capture", "jira:X-1"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if req.Status != "" {
+		t.Fatalf("status = %q, want empty (not given)", req.Status)
+	}
+}
+
+// TestParseBoidTaskResolveOrCapture_StatusNotValidatedByShim confirms the
+// shim parses ANY --status value without rejecting it — vocabulary
+// validation is deliberately NOT duplicated here (spec requirement:
+// 検証は api 層で必ず効くようにする — shim だけの検証は迂回されうる). A
+// caller passing garbage still gets rejected, just downstream in
+// TaskWorkflowService.ResolveOrCapture (internal/api/task_resolve_or_capture.go),
+// not here.
+func TestParseBoidTaskResolveOrCapture_StatusNotValidatedByShim(t *testing.T) {
+	req, err := parseBoidRequest([]string{"task", "resolve-or-capture", "jira:X-1", "--status", "bogus"})
+	if err != nil {
+		t.Fatalf("parse: %v, want the shim to pass an unrecognized status through unchecked", err)
+	}
+	if req.Status != "bogus" {
+		t.Fatalf("status = %q, want the raw unvalidated value %q", req.Status, "bogus")
+	}
+}
+
 func TestParseBoidTaskResolveOrCapture_RequiresIdentity(t *testing.T) {
 	cases := map[string][]string{
 		"no arguments":     {"task", "resolve-or-capture"},

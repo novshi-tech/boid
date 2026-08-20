@@ -902,13 +902,16 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 
 - 解決と新規作成は同一トランザクション (上記)
 - 新規は必ず `captured` で着地する。 daemon が `triaged` まで進めることはない (J-9)
+  （2026-08-20 部分撤回。 下記「訂正」参照）
 - daemon が opaque blob から読むキーは `attrs.observed.source_closed` の**ままで増えない**
 
 **やらないこと**
 
 - 提案の解釈 (J-9)。 `suggestion` は今までどおり不透明
 - `captured` の TTL / 自動 drop (仕分け B: 可視化のみ)
-- `triaged` への自動遷移 (J-9 の段階 2 以降)
+- `triaged` への自動遷移 (J-9 の段階 2 以降) — これは今回も**やらないまま**。 下記「訂正」で
+  部分撤回したのは「新規作成時に呼び出し元が着地 status を選べる」ことだけで、 既存の
+  `captured` task を daemon が勝手に `triaged` へ進める経路は今回も追加していない
 - 統合 (「index が外れたが実は既存の task と同じ件」) の判断。 workspace 側の LLM の仕事
 - root task の `ref` を空にすること (次の migration)
 
@@ -928,6 +931,46 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 - 新規作成に失敗したら identity も残らない (トランザクション境界)
 - 上限超過 → エラーになり、 **切り詰められた行が残らない**
 - `captured` な task が Web UI の一覧に出る
+
+#### 訂正 (2026-08-20 実装): J-9「daemon が `triaged` まで進めることはない」を部分撤回
+
+`BoidOpTaskResolveOrCapture` に **`--status captured|triaged`**（省略時は既定 `captured`、
+後方互換）を足した。 khi-task-collector をゼロベースで作り直す設計
+(`docs/plans/rebuild.md` §5.6/§11、 khi-task-collector リポジトリ側) で、 khi の judge
+母集合が **`triaged ∪ parked ∪ working`** に決まり、 「`captured` は khi では発生させない
+（khi が daemon へ押すのは篩い済みのものだけ）」という設計になった。 旧契約のままだと、
+khi が作る task は必ず一度 `captured` に着地してから、 誰か（人か将来の自動化）が
+`triaged` へ押し直すという**空の中間工程**を経由することになる — その中間状態には
+もう対応する消費者がいない。 これが「撤回してよい」と判断した理由。
+
+**撤回した範囲は狭い**。 変わったのは「新規作成時、 呼び出し元が着地 status を
+`captured`/`triaged` の 2 択から選べる」ことだけ:
+
+- 選べるのは **`BoidOpTaskResolveOrCapture` が新規作成する瞬間の着地 status だけ**。
+  「daemon が既存の `captured` task を勝手に `triaged` へ進める」経路（J-9 の段階 2 が
+  指していたもの、 上記「やらないこと」）は今回も追加していない — 依然として未実装
+- 受け付ける値は `captured`/`triaged` の 2 つだけ。 `ready`/`working`/`pending` のような
+  「進めてよい」を含意する状態は明示的に拒否する — workspace 側が state を押し返す経路を
+  開けないため。 根拠は `docs/plans/rebuild.md` §3.2（khi-task-collector リポジトリ側）と、
+  khi 側 `daemon_sync.py:161-165`
+  が実際に踏んだ「Web UI 操作が次巡で巻き戻る」事故
+- 既定値は変えていない。 `--status` を渡さない既存の全呼び出し元（khi の
+  `daemon_sync.py ensure_task` を含む、 この変更時点のもの）は無変更で動く
+- 検証はサンドボックスの受け口 (shim/broker/executor) のどこでもなく、
+  **`internal/api/task_resolve_or_capture.go` の `resolveLandingStatus` 1 箇所**でのみ行う
+  （shim だけの検証は迂回されうるため）。 実装は
+  `internal/api/task_resolve_or_capture.go`（`ResolveOrCaptureRequest.Status` /
+  `resolveLandingStatus`）、 `internal/sandbox/protocol.go` / `boid_shim.go`
+  （`--status` の受け渡し、 検証はしない）、 `internal/server/boid_executor.go`
+  （素通し）。 pin は `internal/api/task_resolve_or_capture_test.go`
+
+`triaged` 着地でも create + link の同一トランザクション・ `task_triage` サイドカー行の
+同時作成・ identity 衝突時の `ErrIdentityConflict` 伝播という不変条件はすべて維持している
+（`captured` 着地と分岐しているのは着地 `Status` 列の値だけ）。 また `queue.go` の
+`QueueEligible` は `urgency` が `now`/`today`/`week` のいずれかでなければ真にならず、
+`SeedTaskTriage` は `urgency` を設定しないので、 `--status triaged` で着地した直後の task は
+（`captured` 着地のときと同様） urgency 未設定のまま queue には出ない — workspace が
+別途 `attrs_set` で urgency を押すまでは、 queue への露出は無い。
 
 ---
 
