@@ -151,10 +151,26 @@ LABEL boid.runner_protocol="v1"
 # version string apt expects) rather than floating on latest.
 # Note that GitHub's apt repo keeps ONLY the current release — it does not
 # archive older ones. A pin therefore stops building the moment upstream
-# publishes the next version (2.96.0 vanished on 2026-07-31 and broke the
-# image build on every branch, main included), so this needs a deliberate
-# bump on that cadence rather than only when we want a newer gh.
-ARG GH_VERSION=2.97.0
+# publishes the next version, so this needs a deliberate bump on that cadence
+# rather than only when we want a newer gh. It has now happened twice:
+#
+#   - 2.96.0 vanished on 2026-07-31
+#   - 2.97.0 vanished on 2026-08-21, hours after upstream published 2.98.0
+#     (2026-08-20 22:15 UTC) — every branch including main stopped building
+#
+# This bump is deliberate stopgap, not the fix. nose の判断 (2026-08-21):
+# **gh はこのイメージから退役させ、GitHub API は API gateway (`services:` に
+# github-api を足す) に倒す** —— pin が腐る問題ごと無くなる。順序があるので
+# 分けてある: 先に Dockerfile から消すと、サンドボックス内で PR を作る経路
+# (internal/skills/data/boid-task の PR 手順、dev-pr-flow スキル) が死ぬ。
+# gateway 側の service 追加とスキルの書き換えが済んでから削る。
+#
+# もし退役より先にまた apt から消えたら、その場しのぎで bump するより
+# GitHub Releases の tarball
+# (https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_$(dpkg --print-architecture).tar.gz)
+# へ切り替える方が安い —— Releases は古いバージョンを永続保持するので pin が
+# 腐らず、pin 本来の目的 (再現性) は apt より強く満たされる。
+ARG GH_VERSION=2.98.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git curl gpg jq \
