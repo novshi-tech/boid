@@ -393,8 +393,51 @@ pre {
 
 .detail-children-item {
   display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.detail-children-head {
+  display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+.detail-children-project {
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.badge-child-behavior {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.detail-children-spec {
+  margin-left: var(--space-2);
+}
+
+.detail-children-spec-toggle {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.detail-children-spec-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: var(--space-1);
+}
+
+.detail-children-spec-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.8125rem;
+  margin: 0;
+  padding: var(--space-1);
+  background: var(--surface);
+  border-radius: 4px;
 }
 
 .detail-children-title {
