@@ -477,7 +477,7 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	errorMsg := r.URL.Query().Get("error")
 	timelineGroups := detailTimelineGroups(detail)
 	triage := h.loadTriage(id)
-	children := childrenOf(triage)
+	children := h.resolveChildProjects(childrenOf(triage))
 	suggestion := suggestionOf(triage)
 	hasTriage := triage != nil
 	if r.Header.Get("HX-Request") == "true" {
@@ -505,6 +505,45 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 // whether any child had actually been specced (2026-08-14).
 func (h *WebHandler) triageChildrenFor(id string) []orchestrator.TaskTriageChild {
 	return childrenOf(h.loadTriage(id))
+}
+
+// triageChildrenForDisplay is triageChildrenFor plus the one substitution the
+// Web UI needs: a child's spec.Project is stored as a boid project **id**
+// (orchestrator.TaskTriageChildSpec's doc comment makes that the contract —
+// "Project is assumed to already be a resolved boid project ID"), which tells
+// a reader nothing about where pressing Go would run the child. Resolve it to
+// the project name.
+//
+// The substitution is deliberately confined to a display-only copy. Dispatch
+// decides where a child runs from Spec.Project, so writing a NAME back into
+// the parsed spec would hand a later caller a value the storage contract says
+// is an id — the failure mode there is a plain "project not found" at
+// task-creation time, far from this code.
+func (h *WebHandler) triageChildrenForDisplay(id string) []orchestrator.TaskTriageChild {
+	return h.resolveChildProjects(h.triageChildrenFor(id))
+}
+
+// resolveChildProjects is triageChildrenForDisplay's body, split out because
+// the full-page render already holds the parsed triage row and would
+// otherwise re-read it.
+func (h *WebHandler) resolveChildProjects(children []orchestrator.TaskTriageChild) []orchestrator.TaskTriageChild {
+	for i := range children {
+		spec := children[i].Spec
+		if spec == nil || spec.Project == "" {
+			continue
+		}
+		name := h.lookupProjectName(spec.Project)
+		if name == "" {
+			// Removed project or a typo'd id: keep the raw value. Blanking it
+			// would hide where the child would run, which is the exact
+			// question this section exists to answer.
+			continue
+		}
+		shown := *spec
+		shown.Project = name
+		children[i].Spec = &shown
+	}
+	return children
 }
 
 // triageSuggestionFor is triageChildrenFor's counterpart for
@@ -597,7 +636,7 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 		templates.TaskDetailTimelineSection(detail.Task, detailTimelineGroups(detail)).Render(r.Context(), w)
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
-		children := h.triageChildrenFor(id)
+		children := h.triageChildrenForDisplay(id)
 		suggestion := h.triageSuggestionFor(id)
 		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName, children, suggestion).Render(r.Context(), w)
 	case "jobs":

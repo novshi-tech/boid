@@ -345,12 +345,24 @@ templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus,
 }
 
 // TaskDetailChildrenSection lists a triage card's task_triage.detail.children
-// (id/title/status/spec presence) right under the status row, so "is this
-// card actually dispatch-ready" is answerable before pressing Go — nose hit
-// this blind after the Shape launcher's first real dispatch: no child had
-// been specced yet, and the Web UI gave no signal
-// (cross-project-issue-triage 実地テスト, 2026-08-14). Renders nothing for
-// the (overwhelming majority of) tasks with no children.
+// right under the status row, so the two questions a reader has before
+// pressing Go are answerable from the card:
+//
+//  1. "is this card actually dispatch-ready" — nose hit this blind after the
+//     Shape launcher's first real dispatch: no child had been specced yet,
+//     and the Web UI gave no signal (cross-project-issue-triage 実地テスト,
+//     2026-08-14). The status badge (+ "no spec yet") answers it.
+//  2. "what will actually happen" — the 2026-08-14 version stopped at
+//     title+status, so a card with two specced children (a Bitbucket reply
+//     task and a leftover verification stub) looked identical to one with
+//     two real ones (2026-08-21). The behavior badge, project, and the
+//     collapsed spec body answer it.
+//
+// Project is shown as a NAME: the stored value is a project id
+// (WebHandler.triageChildrenForDisplay resolves it), which on its own tells
+// the reader nothing about where the child would run.
+//
+// Renders nothing for the (overwhelming majority of) tasks with no children.
 templ TaskDetailChildrenSection(children []orchestrator.TaskTriageChild) {
 	if len(children) > 0 {
 		<div class="detail-children">
@@ -358,19 +370,40 @@ templ TaskDetailChildrenSection(children []orchestrator.TaskTriageChild) {
 			<ul class="detail-children-list">
 				for _, child := range children {
 					<li class="detail-children-item">
-						<span class={ "badge", "badge-" + child.Status }>{ child.Status }</span>
-						<span class="detail-children-title">
-							if child.Title != "" {
-								{ child.Title }
-							} else {
-								{ child.ID }
+						<div class="detail-children-head">
+							<span class={ "badge", "badge-" + child.Status }>{ child.Status }</span>
+							if child.Spec != nil && child.Spec.Behavior != "" {
+								<span class="badge badge-child-behavior">{ child.Spec.Behavior }</span>
 							}
-						</span>
-						if child.Status == orchestrator.TaskTriageChildStatusOpen {
-							<span class="detail-children-hint">(no spec yet)</span>
-						}
-						if child.TaskRef != "" {
-							<a href={ templ.SafeURL("/tasks/" + child.TaskRef) } class="detail-children-link">→ task</a>
+							<span class="detail-children-title">
+								if child.Title != "" {
+									{ child.Title }
+								} else {
+									{ child.ID }
+								}
+							</span>
+							if child.Spec != nil && child.Spec.Project != "" {
+								<span class="detail-children-project">{ child.Spec.Project }</span>
+							}
+							if child.Status == orchestrator.TaskTriageChildStatusOpen {
+								<span class="detail-children-hint">(no spec yet)</span>
+							}
+							if child.TaskRef != "" {
+								<a href={ templ.SafeURL("/tasks/" + child.TaskRef) } class="detail-children-link">→ task</a>
+							}
+						</div>
+						if child.Spec != nil && (child.Spec.Description != "" || child.Spec.Instruction != "") {
+							<details class="detail-children-spec">
+								<summary class="detail-children-spec-toggle">spec</summary>
+								if child.Spec.Description != "" {
+									<div class="detail-children-spec-label">description</div>
+									<pre class="detail-children-spec-body">{ child.Spec.Description }</pre>
+								}
+								if child.Spec.Instruction != "" {
+									<div class="detail-children-spec-label">instruction</div>
+									<pre class="detail-children-spec-body">{ child.Spec.Instruction }</pre>
+								}
+							</details>
 						}
 					</li>
 				}
