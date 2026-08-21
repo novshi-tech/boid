@@ -223,11 +223,18 @@ const (
 	BoidOpTaskIdentityResolve BoidOp = "task_identity_resolve"
 
 	// BoidOpTaskResolveOrCapture backs `boid task resolve-or-capture
-	// <identity> [--title T] [--description D|--description-file F]` from
-	// inside the sandbox (docs/plans/ingestion-identity.md PR-2, B-2): the
+	// <identity> [--title T] [--description D|--description-file F]
+	// [--status captured|triaged]` from inside the sandbox
+	// (docs/plans/ingestion-identity.md PR-2, B-2, 追記 for --status): the
 	// destination-resolution half of I-4 — resolve Identity to an existing
-	// task, or atomically create a new `captured` triage task and link
-	// Identity to it when unresolved. This is deliberately a SEPARATE op
+	// task, or atomically create a new triage task and link Identity to it
+	// when unresolved. The new task's landing status defaults to `captured`
+	// (unchanged, backward compatible) but a caller that already screens
+	// everything it pushes (khi) can request `triaged` instead — a partial
+	// retraction of J-9's "daemon never advances past captured", recorded
+	// in ingestion-identity.md's own PR-2 節 訂正セクション. No other status
+	// is accepted (see api.resolveLandingStatus, the sole enforcement
+	// point). This is deliberately a SEPARATE op
 	// from BoidOpTaskIdentityLink/BoidOpActionSend, not a variant of either
 	// — "解決と記録を 1 op に混ぜない" (PR-2 節): the record vocabulary
 	// (attrs_set / child_added / …) already exists on action_send, and
@@ -344,7 +351,14 @@ type BoidRequest struct {
 	ImportTasks           []json.RawMessage `json:"import_tasks,omitempty"`
 	ImportProjectOverride string            `json:"import_project_override,omitempty"`
 
-	// task list fields
+	// task list fields. Status is ALSO reused by BoidOpTaskResolveOrCapture's
+	// `--status` landing-status choice (docs/plans/ingestion-identity.md
+	// PR-2 追記) — a raw string forwarded unchecked to
+	// api.ResolveOrCaptureRequest.Status; the allowlist ("" default /
+	// captured / triaged) is enforced once, downstream, in
+	// api.resolveLandingStatus, not here. No collision with task
+	// list/triage's own use of this field: each BoidOp interprets it
+	// independently and only one op ever processes a given request.
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	Status      string `json:"status,omitempty"`
 	Limit       int    `json:"limit,omitempty"`
@@ -399,7 +413,8 @@ type BoidRequest struct {
 
 	// Title / Description carry BoidOpTaskResolveOrCapture's new-task fields
 	// (docs/plans/ingestion-identity.md PR-2, B-2) — used ONLY when Identity
-	// is unresolved and a fresh `captured` task is created; ignored when the
+	// is unresolved and a fresh task is created (landing status per Status
+	// above, captured by default); ignored when the
 	// identity already resolves to an existing task. Deliberately plain
 	// strings rather than a CreatePatch (unlike BoidOpTaskCreate) — the
 	// design doc scopes this op's input to "project + identity + 新規時の

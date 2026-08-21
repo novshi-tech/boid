@@ -6,7 +6,7 @@ package server
 // these pin the store-error -> ExecResponse translation (the shared
 // IdentityConflictExitCode with BoidOpTaskIdentityLink, and the generic
 // ExitCode:1 path for everything else), the request forwarding (Title/
-// Description/ProjectID/Identity all reach TaskWorkflowService.
+// Description/ProjectID/Identity/Status all reach TaskWorkflowService.
 // ResolveOrCapture unmodified), and the "unavailable" guard when the
 // workflow value doesn't implement resolveOrCaptureService.
 
@@ -95,6 +95,34 @@ func TestBoidBuiltinExecutor_ResolveOrCapture_ForwardsRequestAndReturnsCreated(t
 	want := api.ResolveOrCaptureRequest{ProjectID: "proj-1", Identity: "jira:X-1", Title: "something broke", Description: "the body"}
 	if got != want {
 		t.Errorf("forwarded request = %+v, want %+v", got, want)
+	}
+}
+
+// TestBoidBuiltinExecutor_ResolveOrCapture_ForwardsStatus pins that
+// req.Status (the `--status` flag's raw value) reaches
+// TaskWorkflowService.ResolveOrCapture UNMODIFIED — the executor does no
+// validation or defaulting of its own (docs/plans/ingestion-identity.md
+// PR-2 追記, J-9 partial retraction: the allowlist check happens exactly
+// once, downstream, in api.resolveLandingStatus).
+func TestBoidBuiltinExecutor_ResolveOrCapture_ForwardsStatus(t *testing.T) {
+	fake := &fakeResolveOrCaptureService{result: &api.ResolveOrCaptureResult{TaskID: "t1", Created: true}}
+	exec := &boidBuiltinExecutor{resolveOrCapture: fake}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpTaskResolveOrCapture,
+		ProjectID: "proj-1",
+		Identity:  "jira:X-1",
+		Status:    "triaged",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("service calls = %d, want 1", len(fake.calls))
+	}
+	if fake.calls[0].Status != "triaged" {
+		t.Errorf("forwarded Status = %q, want %q", fake.calls[0].Status, "triaged")
 	}
 }
 
