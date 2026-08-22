@@ -140,21 +140,59 @@ func BuildQueueItems(tasks []*orchestrator.Task, projectNames map[string]string,
 	return result
 }
 
-// triageSummary extracts the "summary" string field from a task_triage
-// detail JSON blob (docs/plans/cross-project-issue-triage.md データモデル節).
-// Returns "" on any parse failure or when the field is absent — never
-// panics, never partially-fabricates a value.
+// triageSummary extracts the "summary" string from a task_triage detail JSON
+// blob (docs/plans/cross-project-issue-triage.md データモデル節), preferring the
+// top-level key and falling back to detail.attrs.summary.
+//
+// The fallback is the one actually exercised: a workspace's only writer into
+// detail is the attrs_set action, and that folds into detail.ATTRS
+// (orchestrator.FoldDetailAttrs) — it can never place a key at the top level.
+// Reading only the top level therefore meant this badge could never show
+// anything a workspace wrote, and in practice it was empty for every row.
+// Found while wiring khi's summary path (2026-08-22), where the design's
+// "keep writing the one-line summary separately; the queue row badge reads it"
+// turned out not to be satisfiable at all. This mirrors DetailSuggestion
+// (internal/orchestrator/task_triage.go), which already reads top-level first
+// and falls back to attrs for exactly the same reason.
+//
+// Each candidate is decoded independently so a malformed or wrong-shaped value
+// in one location cannot blank out a well-formed value in the other (the Opus
+// review finding, 2026-08-18, that shaped decodeSuggestion's own structure).
+// Returns "" on any parse failure or when the field is absent — never panics,
+// never partially-fabricates a value.
 func triageSummary(detail []byte) string {
 	if len(detail) == 0 {
 		return ""
 	}
-	var v struct {
-		Summary string `json:"summary"`
-	}
-	if err := json.Unmarshal(detail, &v); err != nil {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(detail, &top); err != nil {
 		return ""
 	}
-	return v.Summary
+	if s := decodeSummaryString(top["summary"]); s != "" {
+		return s
+	}
+	raw, ok := top["attrs"]
+	if !ok || len(raw) == 0 {
+		return ""
+	}
+	var attrs map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &attrs); err != nil {
+		return ""
+	}
+	return decodeSummaryString(attrs["summary"])
+}
+
+// decodeSummaryString reads one candidate location's value as a plain string,
+// yielding "" for absent/null/wrong-typed values rather than erroring.
+func decodeSummaryString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // projectNameMap builds an id→display-name lookup from a project list.
