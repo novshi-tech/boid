@@ -927,6 +927,95 @@ func TestBroker_TaskAsk_RejectsEmptyQuestion(t *testing.T) {
 	}
 }
 
+// A task_notify carrying only --progress (no --message) must reach the
+// executor. Every other layer already allows that shape:
+//
+//   - the shim's own gate is exactly `Message == "" && Progress == ""`
+//     (boid_shim.go's parseBoidTaskNotify) — ask/done/fail do not enter it,
+//     so `--done "x"` with no -m is rejected there too
+//   - the service layer's own gate is `message == "" && progress == ""`
+//     (internal/api/task_notify.go), and its progress branch ignores message
+//     entirely — it writes a timeline Action whose payload is just the
+//     progress string
+//   - boid's own bundled skill doc teaches the message-less form
+//     (internal/skills/data/boid-task/SKILL.md: `boid task notify "$BOID_TASK_ID"
+//     --progress "<note>"`)
+//
+// The broker was the one layer that had drifted to the stricter rule, so the
+// documented form failed with exit=1 for every sandboxed caller. Found while
+// implementing khi's new record path, whose only place to record "candidates
+// with no task of their own" is a progress action on the sweep task itself.
+func TestBroker_TaskNotify_AllowsProgressWithoutMessage(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	hookCtx := sandbox.TokenContext{
+		JobID:      "j1",
+		TaskID:     "t1",
+		ProjectID:  "p1",
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	}
+	policies := map[string]sandbox.BuiltinPolicy{
+		"boid": {AllowedOps: map[string]struct{}{string(sandbox.BoidOpTaskNotify): {}}},
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, policies, hookCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskNotify, TaskID: "t1", Progress: "khi-record v1 {}"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("progress-only notify should be accepted, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor should be called once, got %d calls", len(exec.calls))
+	}
+	// Assert the payload survives, not just that a call happened: a broker that
+	// blanked Progress on the way through would still pass the count check while
+	// delivering an empty timeline entry.
+	if exec.calls[0].Progress != "khi-record v1 {}" {
+		t.Errorf("progress = %q, want it forwarded verbatim", exec.calls[0].Progress)
+	}
+	if exec.calls[0].Message != "" {
+		t.Errorf("message = %q, want empty (the caller sent none)", exec.calls[0].Message)
+	}
+}
+
+// A task_notify with neither message nor progress is still refused — there is
+// nothing to deliver.
+func TestBroker_TaskNotify_RejectsEmptyMessageAndProgress(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	hookCtx := sandbox.TokenContext{
+		JobID:      "j1",
+		TaskID:     "t1",
+		ProjectID:  "p1",
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	}
+	policies := map[string]sandbox.BuiltinPolicy{
+		"boid": {AllowedOps: map[string]struct{}{string(sandbox.BoidOpTaskNotify): {}}},
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, policies, hookCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskNotify, TaskID: "t1"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "requires a message") {
+		t.Fatalf("empty notify should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not be called for an invalid notify, got %d calls", len(exec.calls))
+	}
+}
+
 // ctxBlockingExecutor mimics the blocking AskTaskBlocking handler: it blocks
 // until its context is cancelled, signalling start and release so a test can
 // observe the broker's per-connection cancellation.

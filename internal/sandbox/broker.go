@@ -405,8 +405,17 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task notify requires a task id"}
 		}
-		if boidReq.Message == "" {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid task notify requires a message"}
+		// --progress carries its own text and is delivered without a message:
+		// NotifyTask's progress branch writes a timeline Action whose payload is
+		// just the progress string and returns before touching message at all
+		// (internal/api/task_notify.go). Its own gate is `message == "" &&
+		// progress == ""`, and the shim likewise parses --progress without
+		// requiring --message — this broker check had drifted to the stricter
+		// rule, so the form boid's own skill doc teaches (`boid task notify
+		// "$BOID_TASK_ID" --progress "<note>"`, internal/skills/data/boid-task/
+		// SKILL.md) failed with exit=1 for every sandboxed caller.
+		if boidReq.Message == "" && boidReq.Progress == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task notify requires a message or --progress"}
 		}
 		// project 検証は boid_executor 側で行う (TaskStore 経由で task の project_id を引く)
 	case BoidOpTaskAnswer:

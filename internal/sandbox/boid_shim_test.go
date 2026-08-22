@@ -1142,6 +1142,40 @@ func TestRunBoidShim_TaskNotify_AskMode(t *testing.T) {
 	}
 }
 
+// The shim must accept `boid task notify <id> --progress "<note>"` with no
+// --message: that is the form boid's own skill doc teaches, and the only place
+// a workspace can record something about a candidate that has no task of its
+// own. The broker used to reject it (fixed alongside this test); pinning the
+// shim too means a regression there cannot reopen the same hole from the layer
+// a sandboxed caller hits first.
+func TestRunBoidShim_TaskNotify_ProgressOnly(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerSingle(t)
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-notify-progress")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "notify", "task-xyz", "--progress", "swept 3 signals"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%s)", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskNotify {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskNotify)
+	}
+	if req.Boid.Progress != "swept 3 signals" {
+		t.Errorf("progress = %q, want it carried verbatim", req.Boid.Progress)
+	}
+	if req.Boid.Message != "" {
+		t.Errorf("message = %q, want empty", req.Boid.Message)
+	}
+}
+
 func TestRunBoidShim_TaskNotify_NormalMode_NoAsk(t *testing.T) {
 	sockPath, reqCh := newFakeBrokerSingle(t)
 	t.Setenv("BOID_BROKER_SOCKET", sockPath)
