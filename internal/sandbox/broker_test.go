@@ -930,9 +930,9 @@ func TestBroker_TaskAsk_RejectsEmptyQuestion(t *testing.T) {
 // A task_notify carrying only --progress (no --message) must reach the
 // executor. Every other layer already allows that shape:
 //
-//   - the shim parses --progress without requiring --message
-//     (boid_shim.go's parseBoidTaskNotify: it only rejects when all of
-//     ask/progress/done/fail AND message are empty)
+//   - the shim's own gate is exactly `Message == "" && Progress == ""`
+//     (boid_shim.go's parseBoidTaskNotify) — ask/done/fail do not enter it,
+//     so `--done "x"` with no -m is rejected there too
 //   - the service layer's own gate is `message == "" && progress == ""`
 //     (internal/api/task_notify.go), and its progress branch ignores message
 //     entirely — it writes a timeline Action whose payload is just the
@@ -972,6 +972,15 @@ func TestBroker_TaskNotify_AllowsProgressWithoutMessage(t *testing.T) {
 	}
 	if len(exec.calls) != 1 {
 		t.Fatalf("executor should be called once, got %d calls", len(exec.calls))
+	}
+	// Assert the payload survives, not just that a call happened: a broker that
+	// blanked Progress on the way through would still pass the count check while
+	// delivering an empty timeline entry.
+	if exec.calls[0].Progress != "khi-record v1 {}" {
+		t.Errorf("progress = %q, want it forwarded verbatim", exec.calls[0].Progress)
+	}
+	if exec.calls[0].Message != "" {
+		t.Errorf("message = %q, want empty (the caller sent none)", exec.calls[0].Message)
 	}
 }
 
