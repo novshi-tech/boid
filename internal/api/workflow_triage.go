@@ -143,6 +143,56 @@ func applyChildAddedSideEffect(tx TxStore, taskID string, p *childAddedPayload) 
 	return nil
 }
 
+// childDroppedPayload is the shape of the "child_dropped" action's payload:
+// {"id": "<child id>", "reason": "<optional>"}. The reason lives in the
+// action row only — it is why khi withdrew this child, which the person
+// reading the timeline needs and nothing downstream reads.
+type childDroppedPayload struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+func parseChildDroppedPayload(payload json.RawMessage) (*childDroppedPayload, error) {
+	if len(payload) == 0 {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "child_dropped requires a payload with at least id"}
+	}
+	var p childDroppedPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "invalid child_dropped payload: " + err.Error()}
+	}
+	if p.ID == "" {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "child_dropped payload requires id"}
+	}
+	return &p, nil
+}
+
+// applyChildDroppedSideEffect closes a child khi decided not to pursue.
+// A 409 covers both refusals orchestrator.DropDetailChild makes: an unknown
+// id (nothing to drop) and a dispatched child (its task is running — that is
+// the daemon's lifecycle to finish, 論点9). An already-closed child is an
+// idempotent no-op so a resend after a lost ack stays harmless.
+func applyChildDroppedSideEffect(tx TxStore, taskID string, p *childDroppedPayload) error {
+	tt, err := tx.GetTaskTriage(taskID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("child_dropped: get task_triage: %w", err)
+		}
+		tt = &orchestrator.TaskTriage{TaskID: taskID}
+	}
+	newDetail, changed, derr := orchestrator.DropDetailChild(tt.Detail, p.ID)
+	if derr != nil {
+		return &StatusError{Code: http.StatusConflict, Message: "child_dropped: " + derr.Error()}
+	}
+	if !changed {
+		return nil
+	}
+	tt.Detail = newDetail
+	if err := tx.UpsertTaskTriage(tt); err != nil {
+		return fmt.Errorf("child_dropped: upsert task_triage: %w", err)
+	}
+	return nil
+}
+
 // childSpeccedPayload is the shape of the "child_specced" action's payload:
 // the child id plus its execution recipe (orchestrator.TaskTriageChildSpec's
 // fields). Phase 1 PR-4.

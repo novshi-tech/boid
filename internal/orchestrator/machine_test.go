@@ -692,7 +692,7 @@ func TestDefaultMachine_Reopen_StillWorksForDoneAndAborted(t *testing.T) {
 // 覚えている必要が無い設計にする。
 func TestDefaultMachine_IsManualAction(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
-	manual := []string{"start", "done", "fail", "reopen", "ask", "answer", "abort", "triage", "ready", "park", "drop", "attrs_set", "child_added", "child_specced", "noted", "answered"}
+	manual := []string{"start", "done", "fail", "reopen", "ask", "answer", "abort", "triage", "ready", "park", "drop", "attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered"}
 	// child_dispatched/child_closed are Phase 1 PR-4's daemon-self-record-only
 	// actions (論点9): they must stay non-manual so ApplyAction/
 	// BoidOpActionSend reject any khi-pushed attempt to send them directly —
@@ -760,7 +760,7 @@ func TestDefaultMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard(t *tes
 		orchestrator.TaskStatusAborted,
 		orchestrator.TaskStatusDropped,
 	}
-	for _, actionType := range []string{"attrs_set", "child_added", "child_specced", "noted", "answered"} {
+	for _, actionType := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered"} {
 		for _, status := range allowed {
 			task := &orchestrator.Task{Status: status}
 			if _, err := sm.Apply(task, &orchestrator.Action{Type: actionType}); err != nil {
@@ -780,7 +780,7 @@ func TestDefaultMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard(t *tes
 // (ToStatus==""): applying them must leave task.Status unchanged.
 func TestDefaultMachine_TriageVocabulary_NonTransitioning(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
-	for _, actionType := range []string{"attrs_set", "child_added", "child_specced", "noted", "answered"} {
+	for _, actionType := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered"} {
 		task := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
 		next, err := sm.Apply(task, &orchestrator.Action{Type: actionType})
 		if err != nil {

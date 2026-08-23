@@ -608,3 +608,46 @@ func MarkDetailChildClosed(detail json.RawMessage, childTaskID string) (out json
 	}
 	return detail, false, nil
 }
+
+// DropDetailChild closes the child with the given id because khi decided not
+// to pursue it — a wrong project baked into the spec, a duplicate of another
+// child, or a stray left behind while the subagent was exploring the write
+// CLI. Idempotent: an already-closed child returns changed=false so a resend
+// after a lost ack does not append a duplicate action.
+//
+// This is the counterpart MarkDetailChildClosed cannot be: that one matches
+// on TaskRef, which only exists once a child has been task-ified, so a child
+// still sitting at "open" or "specced" can never reach "closed" through it.
+// Without this function such a child is unclosable, and since ShouldAutoDone
+// requires EVERY child closed, one stray entry keeps its whole card from
+// ever finishing (the failure mode task_triage's child docs already warn
+// about, hit in production 2026-08-21).
+//
+// A "dispatched" child is refused. That status is the daemon's own
+// mechanical fact (論点9) and its task is still running: closing it here
+// would let ShouldAutoDone fire while real work is in flight. Withdrawing
+// live work is an abort of the child's task, not a triage-detail edit.
+func DropDetailChild(detail json.RawMessage, id string) (out json.RawMessage, changed bool, err error) {
+	children, err := DetailChildren(detail)
+	if err != nil {
+		return nil, false, err
+	}
+	for i := range children {
+		if children[i].ID != id {
+			continue
+		}
+		switch children[i].Status {
+		case TaskTriageChildStatusClosed:
+			return detail, false, nil
+		case TaskTriageChildStatusDispatched:
+			return nil, false, fmt.Errorf("child %q is dispatched; abort its task instead of dropping the entry", id)
+		}
+		children[i].Status = TaskTriageChildStatusClosed
+		newDetail, serr := SetDetailChildren(detail, children)
+		if serr != nil {
+			return nil, false, serr
+		}
+		return newDetail, true, nil
+	}
+	return nil, false, fmt.Errorf("child %q not found in task_triage detail", id)
+}
