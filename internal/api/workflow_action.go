@@ -220,6 +220,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		"attrs_set":     true,
 		"child_added":   true,
 		"child_specced": true,
+		"child_dropped": true,
 		"noted":         true,
 		"answered":      true,
 	}
@@ -242,6 +243,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	var attrsSetParsed *attrsSetPatch
 	var childAddedParsed *childAddedPayload
 	var childSpeccedParsed *childSpeccedPayload
+	var childDroppedParsed *childDroppedPayload
 	switch req.Type {
 	case "park":
 		var perr error
@@ -264,6 +266,12 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	case "child_specced":
 		var perr error
 		childSpeccedParsed, perr = parseChildSpeccedPayload(req.Payload)
+		if perr != nil {
+			return nil, perr
+		}
+	case "child_dropped":
+		var perr error
+		childDroppedParsed, perr = parseChildDroppedPayload(req.Payload)
 		if perr != nil {
 			return nil, perr
 		}
@@ -306,7 +314,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// sideEffectConsumesPayload above) — an unconditional UpdateTask(newTask)
 	// here would risk the same stale-status-stomp race for them too.
 	skipTaskUpdate := req.Type == "attrs_set" || req.Type == "child_added" || req.Type == "child_specced" ||
-		req.Type == "noted" || req.Type == "answered"
+		req.Type == "child_dropped" || req.Type == "noted" || req.Type == "answered"
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		if skipTaskUpdate {
@@ -359,6 +367,8 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 			return applyChildAddedSideEffect(tx, newTask.ID, childAddedParsed)
 		case "child_specced":
 			return applyChildSpeccedSideEffect(tx, newTask.ID, childSpeccedParsed)
+		case "child_dropped":
+			return applyChildDroppedSideEffect(tx, newTask.ID, childDroppedParsed)
 		case "answered":
 			// docs/plans/ingestion-identity.md PR-3 (J-6): drops
 			// detail.attrs.suggestion — see applyAnsweredSideEffect's own doc

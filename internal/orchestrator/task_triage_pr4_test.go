@@ -187,3 +187,71 @@ func TestMarkDetailChildClosed_NoMatchingChild(t *testing.T) {
 		}
 	}
 }
+
+// --- child_dropped (khi による取り下げ) -----------------------------------
+//
+// khi が「この子は追わない」と決めたときの経路。child_closed が daemon 専用で
+// TaskRef 照合なので、**Go されていない子には構造的に届かない** —— その穴を埋める。
+
+func TestDropDetailChild_ClosesOpenAndSpecced(t *testing.T) {
+	for _, status := range []string{orchestrator.TaskTriageChildStatusOpen, orchestrator.TaskTriageChildStatusSpecced} {
+		detail, err := orchestrator.AddDetailChild(nil, orchestrator.TaskTriageChild{ID: "c1", Status: status})
+		if err != nil {
+			t.Fatalf("AddDetailChild: %v", err)
+		}
+		out, changed, derr := orchestrator.DropDetailChild(detail, "c1")
+		if derr != nil {
+			t.Fatalf("DropDetailChild(%s): %v", status, derr)
+		}
+		if !changed {
+			t.Fatalf("DropDetailChild(%s): changed=false, want true", status)
+		}
+		children, err := orchestrator.DetailChildren(out)
+		if err != nil {
+			t.Fatalf("DetailChildren: %v", err)
+		}
+		if len(children) != 1 || children[0].Status != orchestrator.TaskTriageChildStatusClosed {
+			t.Fatalf("DropDetailChild(%s) = %+v, want closed", status, children)
+		}
+	}
+}
+
+// TestDropDetailChild_RefusesDispatched pins the contract boundary: a child
+// that has already been task-ified is the daemon's to finish. Letting khi
+// close it would make ShouldAutoDone fire while the child's own task is
+// still running.
+func TestDropDetailChild_RefusesDispatched(t *testing.T) {
+	detail, err := orchestrator.AddDetailChild(nil, orchestrator.TaskTriageChild{
+		ID: "c1", Status: orchestrator.TaskTriageChildStatusDispatched, TaskRef: "task-x",
+	})
+	if err != nil {
+		t.Fatalf("AddDetailChild: %v", err)
+	}
+	if _, _, derr := orchestrator.DropDetailChild(detail, "c1"); derr == nil {
+		t.Fatal("expected an error for a dispatched child")
+	}
+}
+
+// TestDropDetailChild_AlreadyClosedIsNoop keeps a resend after a lost ack
+// from appending a duplicate action (same posture as MarkDetailChildClosed).
+func TestDropDetailChild_AlreadyClosedIsNoop(t *testing.T) {
+	detail, err := orchestrator.AddDetailChild(nil, orchestrator.TaskTriageChild{
+		ID: "c1", Status: orchestrator.TaskTriageChildStatusClosed,
+	})
+	if err != nil {
+		t.Fatalf("AddDetailChild: %v", err)
+	}
+	_, changed, derr := orchestrator.DropDetailChild(detail, "c1")
+	if derr != nil {
+		t.Fatalf("DropDetailChild: %v", derr)
+	}
+	if changed {
+		t.Fatal("changed=true for an already-closed child, want false")
+	}
+}
+
+func TestDropDetailChild_UnknownIDErrors(t *testing.T) {
+	if _, _, err := orchestrator.DropDetailChild(nil, "missing"); err == nil {
+		t.Fatal("expected error for unknown child id")
+	}
+}

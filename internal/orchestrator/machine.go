@@ -508,7 +508,14 @@ func NewMachine() *StateMachine {
 	// answered is the Web UI's accept/reject record (its `suggestion`-drop
 	// side effect lives in workflow_triage.go's applyAnsweredSideEffect,
 	// mirroring applyAttrsSetSideEffect — see workflow_action.go's switch).
-	for _, action := range []string{"attrs_set", "child_added", "child_specced", "noted", "answered"} {
+	//
+	// child_dropped joins the same loop: khi withdrawing a child it decided
+	// not to pursue. It stays on khi's side of 論点9's split because it is a
+	// JUDGEMENT ("this child should not be pursued"), not a machine fact —
+	// child_closed remains daemon-only and keeps meaning "the child's task
+	// terminated". DropDetailChild refuses a dispatched child, so the two
+	// never overlap.
+	for _, action := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered"} {
 		for _, status := range preExecutionStatuses {
 			rules = append(rules, Rule{Action: action, FromStatus: status, Manual: true})
 		}

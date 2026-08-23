@@ -375,3 +375,95 @@ func TestFinalizeTerminal_NonChildTask_NoOp(t *testing.T) {
 		t.Fatalf("expected no actions recorded, got %+v", txStore.actions)
 	}
 }
+
+// ---- child_dropped (khi による子の取り下げ) ------------------------------
+
+// TestApplyAction_ChildDropped_ClosesSpeccedChild pins the gap child_closed
+// structurally cannot fill: that one matches on TaskRef, which a child only
+// gets once it is task-ified, so an unwanted open/specced child had no route
+// to "closed" — and ShouldAutoDone requires EVERY child closed.
+func TestApplyAction_ChildDropped_ClosesSpeccedChild(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{"existing":"keep"}`)}
+	txStore := &recordingTxStore{task: task}
+	svc := newTriageWorkflowService(task, txStore)
+
+	for _, req := range []ApplyActionRequest{
+		{Type: "child_added", Payload: []byte(`{"id":"c1","title":"wrong project baked in"}`)},
+		{Type: "child_specced", Payload: []byte(`{"id":"c1","project":"proj-2"}`)},
+	} {
+		if _, err := svc.ApplyAction(context.Background(), task.ID, req); err != nil {
+			t.Fatalf("ApplyAction(%s): %v", req.Type, err)
+		}
+	}
+
+	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "child_dropped",
+		Payload: []byte(`{"id":"c1","reason":"project が khi 自身を指していた"}`),
+	})
+	if err != nil {
+		t.Fatalf("ApplyAction(child_dropped): %v", err)
+	}
+	if result.Task.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("status = %q, want unchanged (working) — child_dropped is non-transitioning", result.Task.Status)
+	}
+	if string(result.Task.Payload) != `{"existing":"keep"}` {
+		t.Fatalf("task.Payload = %s, want untouched (the reason belongs in the action row only)", result.Task.Payload)
+	}
+	if txStore.updatedTask != nil {
+		t.Fatalf("child_dropped wrote the task row (updatedTask=%+v), want no write", txStore.updatedTask)
+	}
+	children, err := orchestrator.DetailChildren(txStore.triage["t1"].Detail)
+	if err != nil {
+		t.Fatalf("DetailChildren: %v", err)
+	}
+	if len(children) != 1 || children[0].Status != orchestrator.TaskTriageChildStatusClosed {
+		t.Fatalf("children after child_dropped = %+v, want single closed child", children)
+	}
+}
+
+// TestApplyAction_ChildDropped_RefusesDispatched keeps khi from closing work
+// that is actually running: ShouldAutoDone would then fire while the child's
+// own task is still in flight.
+func TestApplyAction_ChildDropped_RefusesDispatched(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{task: task}
+	detail, err := orchestrator.AddDetailChild(nil, orchestrator.TaskTriageChild{
+		ID: "c1", Status: orchestrator.TaskTriageChildStatusDispatched, TaskRef: "child-task",
+	})
+	if err != nil {
+		t.Fatalf("AddDetailChild: %v", err)
+	}
+	txStore.triage = map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}}
+	svc := newTriageWorkflowService(task, txStore)
+
+	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "child_dropped",
+		Payload: []byte(`{"id":"c1"}`),
+	}); err == nil {
+		t.Fatal("expected an error dropping a dispatched child")
+	}
+}
+
+func TestApplyAction_ChildDropped_UnknownChildRejected(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
+
+	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "child_dropped",
+		Payload: []byte(`{"id":"missing"}`),
+	}); err == nil {
+		t.Fatal("expected error dropping an unknown child id")
+	}
+}
+
+func TestApplyAction_ChildDropped_MissingIDRejected(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
+
+	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "child_dropped",
+		Payload: []byte(`{"reason":"id が無い"}`),
+	}); err == nil {
+		t.Fatal("expected 400 for a child_dropped payload without id")
+	}
+}
