@@ -99,6 +99,15 @@ func IsTerminalStatus(status TaskStatus) bool {
 // IsPreExecutionStatus は task が「まだ実行タスクとして動いていない」triage 段階かを返す
 // (captured/triaged/parked/ready)。既存の pending/executing/awaiting とは区別し、デフォルトの
 // open ビューを汚さないために使う。
+//
+// captured/triaged/ready are legacy-only under card machine v2 (docs/plans/
+// suggestion-as-state-transition-impl.md): no rule anywhere in
+// NewCardMachine ever produces them anymore (a fresh card starts, and stays,
+// in parked until a human/khi-accepted transition moves it). They remain in
+// this predicate purely so a pre-cutover DB row still carrying one of them is
+// filtered/edited the same way it always was, not silently reclassified —
+// see IsPreDispatchEditableStatus's own doc comment for the identical
+// reasoning applied to editability specifically.
 func IsPreExecutionStatus(status TaskStatus) bool {
 	switch status {
 	case TaskStatusCaptured, TaskStatusTriaged, TaskStatusParked, TaskStatusReady:
@@ -110,12 +119,27 @@ func IsPreExecutionStatus(status TaskStatus) bool {
 
 // IsPreDispatchEditableStatus reports whether title/project/instructions can
 // still be edited in the given status: pending (unchanged, execution not yet
-// started) plus captured/triaged/ready (triage task not yet dispatched — a
-// 整形セッション, UC-3, needs to edit these). parked is deliberately excluded
-// — a parked task is set aside and not the target of active editing.
+// started) plus parked (a card's main resting/undecided state — a 整形
+// セッション, UC-3, needs to edit these) and the legacy captured/triaged/
+// ready statuses (kept editable too, purely so a pre-cutover DB row is not
+// newly locked out of editing by this same change; card machine v2 has no
+// rule reaching any of the three).
+//
+// parked WAS deliberately excluded pre-v2 ("a parked task is set aside and
+// not the target of active editing") — that premise broke when card machine
+// v2 (docs/plans/suggestion-as-state-transition-impl.md §3.5) folded
+// captured/triaged into parked: parked is now a card's INITIAL state (not
+// just a later "set aside" one), so excluding it made every fresh card
+// permanently uneditable (title/project/instructions), with only
+// description slipping through (UpdateTask's status guard only covers
+// those three fields) — a real regression the v1→v2 status collapse
+// introduced silently (PR #987 review, HIGH 7). working is unchanged:
+// once a card has specced/dispatched children or manual work underway,
+// re-editing its title/project out from under that is still the wrong
+// default.
 func IsPreDispatchEditableStatus(status TaskStatus) bool {
 	switch status {
-	case TaskStatusPending, TaskStatusCaptured, TaskStatusTriaged, TaskStatusReady:
+	case TaskStatusPending, TaskStatusParked, TaskStatusCaptured, TaskStatusTriaged, TaskStatusReady:
 		return true
 	default:
 		return false

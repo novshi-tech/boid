@@ -19,6 +19,7 @@ package api
 // which only sees what actually made it into the row.
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
@@ -113,6 +114,76 @@ func TestTaskAppServiceUpdateTask_ProjectID_PersistsToRealDB(t *testing.T) {
 	}
 	if got.ProjectID != "proj-2" {
 		t.Fatalf("ProjectID after re-fetch = %q, want %q", got.ProjectID, "proj-2")
+	}
+}
+
+// TestTaskAppServiceUpdateTask_Title_ParkedCard_PersistsToRealDB is the
+// regression test for PR #987 review's HIGH 7: card machine v2 folds
+// captured/triaged into parked as a card's initial/main resting status
+// (docs/plans/suggestion-as-state-transition-impl.md §3.5), so
+// orchestrator.IsPreDispatchEditableStatus must include parked — v1's
+// blanket "parked is set-aside, not editable" exclusion silently locked
+// every fresh card's title/project/instructions out of editing (only
+// description slipped through, since UpdateTask's status guard covers just
+// those three fields) the moment captured/triaged stopped being reachable.
+func TestTaskAppServiceUpdateTask_Title_ParkedCard_PersistsToRealDB(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+
+	task := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "original title",
+		Behavior:  "dev",
+		Status:    orchestrator.TaskStatusParked,
+	}
+	if err := tasks.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Title: "edited while parked"}); err != nil {
+		t.Fatalf("UpdateTask() on a parked card must succeed, got error: %v", err)
+	}
+
+	got, err := tasks.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Title != "edited while parked" {
+		t.Fatalf("Title after re-fetch = %q, want %q", got.Title, "edited while parked")
+	}
+}
+
+// TestTaskAppServiceUpdateTask_Title_WorkingCard_StillRejected pins the
+// other half of HIGH 7's fix: only parked (not working) joined the editable
+// set — a card with specced/dispatched children or manual work underway
+// must still reject a title edit, exactly as before.
+func TestTaskAppServiceUpdateTask_Title_WorkingCard_StillRejected(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+
+	task := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "original title",
+		Behavior:  "dev",
+		Status:    orchestrator.TaskStatusWorking,
+	}
+	if err := tasks.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Title: "should not land"})
+	if err == nil {
+		t.Fatal("UpdateTask() on a working card: expected rejection, got success")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+
+	got, gErr := tasks.GetTask(task.ID)
+	if gErr != nil {
+		t.Fatalf("GetTask: %v", gErr)
+	}
+	if got.Title != "original title" {
+		t.Fatalf("Title after rejected edit = %q, want unchanged %q", got.Title, "original title")
 	}
 }
 
