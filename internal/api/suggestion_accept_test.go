@@ -330,33 +330,15 @@ func TestApplyAction_Answered_Accept_AllVerbStatusCombinations(t *testing.T) {
 	}
 }
 
-// TestAvailableCardActionsHint_MatchesAvailableActions pins that the hint
-// text is built FROM orchestrator.NewCardMachine().AvailableActions (not a
-// hand-copied literal) for every one of the 4 reachable card statuses — the
-// exact "derive from the rule table" requirement, checked independently of
-// the end-to-end accept test above.
-func TestAvailableCardActionsHint_MatchesAvailableActions(t *testing.T) {
-	for _, status := range []orchestrator.TaskStatus{
-		orchestrator.TaskStatusParked,
-		orchestrator.TaskStatusWorking,
-		orchestrator.TaskStatusDone,
-		orchestrator.TaskStatusDropped,
-	} {
-		hint := availableCardActionsHint(status)
-		available := orchestrator.NewCardMachine().AvailableActions(status)
-		if len(available) == 0 {
-			t.Fatalf("status=%s: AvailableActions is empty — no card status should have zero available actions (test fixture assumption broken)", status)
-		}
-		for _, a := range available {
-			if !strings.Contains(hint, a) {
-				t.Errorf("status=%s: hint %q missing available action %q", status, hint, a)
-			}
-		}
-		if !strings.Contains(hint, string(status)) {
-			t.Errorf("status=%s: hint %q should name the status", status, hint)
-		}
-	}
-}
+// AvailableActionsHint's own pin (TestCardMachineV2_AvailableActionsHint_
+// MatchesAvailableActions) now lives in internal/orchestrator/
+// machine_card_test.go — review LOW 4 moved the hint-building itself from
+// this package's local availableCardActionsHint into
+// orchestrator.StateMachine.AvailableActionsHint (a single source shared
+// with the Web UI's inapplicable-suggestion notice), so its own content pin
+// belongs next to the method, not duplicated here. This package's own
+// coverage of the hint is the end-to-end 409-message assertions in
+// TestApplyAction_Answered_Accept_AllVerbStatusCombinations above.
 
 // TestApplyAction_Answered_Reject_AllVerbStatusCombinations_AlwaysSucceeds
 // pins the PR-3 decision to keep an inapplicable suggestion in the queue

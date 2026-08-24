@@ -175,6 +175,15 @@ func TestTaskTreeRow_InapplicableVerbStatus_ShowsNotApplicableBadge(t *testing.T
 	if !strings.Contains(html, "done") || !strings.Contains(html, "parked") {
 		t.Errorf("tooltip should name the verb and the status, got: %s", html)
 	}
+	// Review LOW 4: the tooltip must also say what CAN be applied from
+	// parked (go/working/drop), not stop at a bare "cannot be applied" —
+	// same content the API's 409 message carries, both sourced from
+	// orchestrator.StateMachine.AvailableActionsHint.
+	for _, want := range []string{"go", "working", "drop"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("tooltip should name every action available from parked (%q missing), got: %s", want, html)
+		}
+	}
 }
 
 // TestTaskTreeRow_ApplicableVerbStatus_NoNotApplicableBadge is the positive

@@ -105,9 +105,19 @@ func SuggestionInapplicable(verb string, status orchestrator.TaskStatus) bool {
 // SuggestionInapplicableReason is the reader-facing "why is Accept hidden /
 // why is this verb badge marked inapplicable" text, naming both the verb and
 // the current status plainly (rule 5, 隠さない — never a bare "cannot apply"
-// with no context to act on).
+// with no context to act on). Review LOW 4: a bare "cannot be applied" is
+// exactly the kind of context-free rejection this function's own OLD
+// (pre-fix) text was — it named the verb and the status but never said what
+// WOULD have worked, unlike the API's 409 message
+// (internal/api/suggestion_accept.go), which already appended that. Now both
+// pull the "what CAN be applied" clause from the SAME single source —
+// orchestrator.StateMachine.AvailableActionsHint — so the Web UI and the API
+// can never say two different things about the same status.
 func SuggestionInapplicableReason(verb string, status orchestrator.TaskStatus) string {
-	return fmt.Sprintf("This suggestion (verb=%s) cannot be applied from the current status (status=%s).", verb, status)
+	return fmt.Sprintf(
+		"This suggestion (verb=%s) cannot be applied from the current status (status=%s); %s.",
+		verb, status, orchestrator.NewCardMachine().AvailableActionsHint(status),
+	)
 }
 
 // childrenPreviewLabel summarizes a queue row's children into a compact

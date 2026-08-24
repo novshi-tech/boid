@@ -1,6 +1,7 @@
 package orchestrator_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -532,5 +533,52 @@ func TestIsCardTransitionAction(t *testing.T) {
 		if orchestrator.IsCardTransitionAction(a) {
 			t.Errorf("IsCardTransitionAction(%q) = true, want false", a)
 		}
+	}
+}
+
+// TestCardMachineV2_AvailableActionsHint_MatchesAvailableActions pins that
+// AvailableActionsHint's text is built FROM AvailableActions (not a
+// hand-copied literal) for every one of the 4 reachable card statuses — the
+// exact "derive from the rule table" requirement. Moved here from
+// internal/api's own suggestion_accept_test.go (fix/unapplicable-suggestion-
+// guard PR review, LOW 4): the hint-building itself moved from an
+// api-package-local function into this single orchestrator-side method
+// (shared by internal/api's 409 messages AND the Web UI's inapplicable-
+// suggestion notice — components.SuggestionInapplicableReason), so its pin
+// belongs next to the method it tests, not duplicated in a downstream
+// package.
+func TestCardMachineV2_AvailableActionsHint_MatchesAvailableActions(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+	for _, status := range v2CardStatuses {
+		hint := sm.AvailableActionsHint(status)
+		available := sm.AvailableActions(status)
+		if len(available) == 0 {
+			t.Fatalf("status=%s: AvailableActions is empty — no card status should have zero available actions (test fixture assumption broken)", status)
+		}
+		for _, a := range available {
+			if !strings.Contains(hint, a) {
+				t.Errorf("status=%s: hint %q missing available action %q", status, hint, a)
+			}
+		}
+		if !strings.Contains(hint, string(status)) {
+			t.Errorf("status=%s: hint %q should name the status", status, hint)
+		}
+	}
+}
+
+// TestStateMachine_AvailableActionsHint_EmptyStatusFallback pins the
+// zero-available-actions branch (AvailableActions(status) returns nil/empty
+// — e.g. a genuinely terminal status like "aborted" on the card machine,
+// which has no rule reaching or leaving it at all): the hint must still say
+// something self-explanatory rather than an empty "from status=X you can
+// apply: " with nothing after the colon.
+func TestStateMachine_AvailableActionsHint_EmptyStatusFallback(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+	hint := sm.AvailableActionsHint(orchestrator.TaskStatusAborted)
+	if !strings.Contains(hint, string(orchestrator.TaskStatusAborted)) {
+		t.Errorf("hint %q should name the status", hint)
+	}
+	if !strings.Contains(hint, "no further transitions") {
+		t.Errorf("hint %q should say plainly that nothing is available, not a bare empty list", hint)
 	}
 }

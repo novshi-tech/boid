@@ -577,6 +577,14 @@ func TestTaskDetailSuggestionSection_InapplicableVerb_HidesAcceptShowsMessageAnd
 	if !strings.Contains(html, "done") || !strings.Contains(html, "parked") {
 		t.Errorf("inapplicable message should name the verb and the status; got: %s", html)
 	}
+	// Review LOW 4: a bare "cannot be applied" is not enough — the message
+	// must also say what CAN be applied instead, same as the API's 409
+	// (both now pull from orchestrator.StateMachine.AvailableActionsHint).
+	for _, want := range []string{"go", "working", "drop"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("inapplicable message should name every action available from parked (%q missing); got: %s", want, html)
+		}
+	}
 	if !strings.Contains(html, `name="answer" value="reject"`) || !strings.Contains(html, ">Reject<") {
 		t.Errorf("Reject must still render for an inapplicable suggestion (it must remain dismissible); got: %s", html)
 	}

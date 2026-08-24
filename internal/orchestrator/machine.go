@@ -89,6 +89,7 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // CardMachineName / ExecutionMachineName are the StateMachine.Name values
@@ -213,6 +214,30 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 		}
 	}
 	return actions
+}
+
+// AvailableActionsHint returns a human-readable clause naming which manual
+// actions CAN be applied from status right now — e.g. "from status=parked
+// you can apply: go, working, drop" — or a "status=X has no further
+// transitions available" fallback when AvailableActions(status) is empty.
+//
+// Single source for "this didn't work, but here's what would have", used
+// by every caller that needs to turn a failed/inapplicable action into a
+// self-explanatory message instead of a bare rejection: internal/api's
+// suggestion-accept 409 (applyAnswered, acceptGo) and the Web UI's
+// inapplicable-suggestion notice (components.SuggestionInapplicableReason,
+// task_tree.templ) both call THIS method rather than each re-deriving the
+// list by hand — added specifically because they used to duplicate the
+// same AvailableActions(status)-based string-building logic in two places
+// (fix/unapplicable-suggestion-guard PR review, LOW 4), which could drift
+// apart (e.g. one side's wording updated, the other's forgotten) with no
+// test able to catch it.
+func (sm *StateMachine) AvailableActionsHint(status TaskStatus) string {
+	available := sm.AvailableActions(status)
+	if len(available) == 0 {
+		return fmt.Sprintf("status=%s has no further transitions available", status)
+	}
+	return fmt.Sprintf("from status=%s you can apply: %s", status, strings.Join(available, ", "))
 }
 
 // CanApplyManualAction reports whether actionType has a Manual:true rule
