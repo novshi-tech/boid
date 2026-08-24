@@ -559,10 +559,34 @@ func (s *TaskWorkflowService) RunTriggerNow(ctx context.Context, projectID, trig
 // COMPLETED runs with a non-zero exit code, one data point per actual
 // execution regardless of sweep interval — there is no analogous
 // tick-vs-every mismatch for it to correct.
+//
+// The multiplier moved 3 → 1.5 on 2026-08-24 (nose). At 3 the threshold for
+// khi's sweep (`every: 10m`) was 30 minutes, and both stalls that actually
+// happened that day — 25 and 26 minutes, an agent that ended its turn without
+// calling a tool, then one that forked a subagent and ended its turn waiting
+// for a reply — were resolved by a human noticing before the notification
+// would have fired. A detector that never fires because people are faster
+// than it is not a detector. Healthy runs of that sweep finished in 1–8
+// minutes, so 1.5× (15m) still clears them comfortably.
+//
+// It is deliberately still a multiple of `every` rather than a wall-clock
+// constant: the reason for the relative form (each trigger's own schedule
+// setting its own sense of "too long") did not change, only the constant did.
 const (
-	TriggerStuckOverrunMultiplier   = 3
+	TriggerStuckOverrunMultiplier   = 1.5
 	TriggerStuckFailStreakThreshold = 3
 )
+
+// stuckThreshold is how long a run may stay continuously in flight before
+// trackSkipStreak calls it stuck.
+//
+// The float64 round-trip is load-bearing: TriggerStuckOverrunMultiplier is
+// fractional, and `every * time.Duration(1.5)` would convert the multiplier
+// to an integer Duration of 1ns first, making the threshold 1ns and firing
+// on every tick.
+func stuckThreshold(every time.Duration) time.Duration {
+	return time.Duration(float64(every) * TriggerStuckOverrunMultiplier)
+}
 
 // TriggerLoopStore is TriggerLoop's dependency, narrowed from
 // *TaskWorkflowService — same idiom as QueueSweepStore (queue_sweep.go).
@@ -675,7 +699,7 @@ func (l *TriggerLoop) trackSkipStreak(ctx context.Context, now time.Time, skippe
 			// meaningless zero threshold.
 			continue
 		}
-		threshold := skip.Every * time.Duration(TriggerStuckOverrunMultiplier)
+		threshold := stuckThreshold(skip.Every)
 		overrun := now.Sub(skip.Since)
 		multiple := int(overrun / threshold)
 		if multiple < 1 {
@@ -685,9 +709,12 @@ func (l *TriggerLoop) trackSkipStreak(ctx context.Context, now time.Time, skippe
 			continue // already notified for this multiple (or a later one)
 		}
 		l.skipStreak[skip.TriggerKey] = multiple
+		// multiple counts crossings of THRESHOLD, not of `every` — naming the
+		// threshold here (and `every` beside it) keeps the two apart now that
+		// they differ by a fraction rather than a whole number.
 		l.notify(ctx, skip.TriggerKey, fmt.Sprintf(
-			"trigger %s/%s: single-flight で %s 詰まっています (`every` %s の %d 倍以上)",
-			skip.ProjectID, skip.TriggerName, overrun.Round(time.Second), skip.Every, multiple))
+			"trigger %s/%s: single-flight で %s 詰まっています (`every` %s、詰まり閾値 %s の %d 倍以上)",
+			skip.ProjectID, skip.TriggerName, overrun.Round(time.Second), skip.Every, threshold, multiple))
 	}
 	for key := range l.skipStreak {
 		if !skippedThisTick[key] {
