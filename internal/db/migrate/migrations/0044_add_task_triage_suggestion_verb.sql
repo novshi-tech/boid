@@ -31,8 +31,19 @@ ALTER TABLE task_triage ADD COLUMN suggestion_verb TEXT NOT NULL DEFAULT '';
 -- fold 側 (applyAttrsSetSideEffect) が両方を同じ書き込みで揃え続けるので
 -- drift しない — urgency/kind の「昇格したら blob 側は除去する」規律とは
 -- ここが異なる。
+-- PR #988 review, MEDIUM 2: 終端 (done/dropped/aborted) な card は backfill 対象から
+-- 除外する。カットオーバー runbook (docs/plans/suggestion-as-state-transition-impl.md
+-- §6) の手順2は「現 daemon (= PR-1/PR-2 より前、suggestion strip が無い) のまま全 card
+-- を drop/done へ終端させる」であり、その時点の直接 drop/done は
+-- detail.attrs.suggestion を消さない (strip は PR-1 以降の新機能)。終端させた後の
+-- 手順4でこの migration が新 daemon と一緒に初めて走るため、除外しないと「終端させた
+-- はずの card が stale な suggestion を理由に suggestion_verb を得て、status 不問に
+-- なった queue_next (store.go) の Queue タブに永久に (Reject されるか 30 日 GC される
+-- まで) 居座り続ける」という事故になる — 設計 doc §3.6 の「機械が人に判断を求めている
+-- ものだけが並ぶ」を初日から破ることになるため、確実に防ぐ。
 UPDATE task_triage
 SET suggestion_verb = json_extract(detail, '$.attrs.suggestion.verb')
 WHERE suggestion_verb = ''
   AND json_valid(detail)
-  AND json_extract(detail, '$.attrs.suggestion.verb') IN ('go', 'working', 'park', 'drop', 'done', 'reopen');
+  AND json_extract(detail, '$.attrs.suggestion.verb') IN ('go', 'working', 'park', 'drop', 'done', 'reopen')
+  AND task_id IN (SELECT id FROM tasks WHERE status NOT IN ('done', 'dropped', 'aborted'));
