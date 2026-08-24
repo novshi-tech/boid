@@ -111,7 +111,7 @@ func TestResolveOrCapture_UnregisteredIdentity_CreatesCapturedTaskAndLinks(t *te
 		t.Fatalf("GetTask: %v", err)
 	}
 	if task.Status != orchestrator.TaskStatusCaptured {
-		t.Errorf("Status = %q, want %q (I-4/J-9: new tasks always land captured)", task.Status, orchestrator.TaskStatusCaptured)
+		t.Errorf("Status = %q, want %q (I-4/J-9: new tasks land captured by default)", task.Status, orchestrator.TaskStatusCaptured)
 	}
 	if task.Title != "ROOKPF-1: something broke" || task.Description != "the body" {
 		t.Errorf("Title/Description not carried through: %q / %q", task.Title, task.Description)
@@ -222,6 +222,142 @@ func TestResolveOrCapture_DescriptionOverLimit_RejectsAndCreatesNothing(t *testi
 	}
 	if _, err := orchestrator.ResolveIdentity(svc.Tx.(realTransactor).conn, "proj-1", "jira:BIG-1"); !errors.Is(err, orchestrator.ErrTaskNotFound) {
 		t.Errorf("identity got linked despite the size rejection: err = %v", err)
+	}
+}
+
+// ---- landing status choice (`docs/plans/rebuild.md` §5.6/§11,
+// khi-task-collector リポジトリ側, partial retraction of ingestion-identity.md
+// J-9 — see that doc's PR-2 節 addendum for the "いつ・なぜ" record) ----
+
+// TestResolveOrCapture_StatusTriaged_CreatesTriagedTaskAndLinks pins the new
+// opt-in landing status: a caller that has already filtered (khi's own
+// judge stage) can request `triaged` directly instead of always landing
+// `captured` and needing a separate transition.
+func TestResolveOrCapture_StatusTriaged_CreatesTriagedTaskAndLinks(t *testing.T) {
+	svc := newResolveOrCaptureTestService(t)
+
+	result, err := svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
+		ProjectID:   "proj-1",
+		Identity:    "jira:TRIAGED-1",
+		Title:       "already screened",
+		Description: "the body",
+		Status:      "triaged",
+	})
+	if err != nil {
+		t.Fatalf("ResolveOrCapture() error = %v", err)
+	}
+	if !result.Created {
+		t.Error("Created = false, want true for an unregistered identity")
+	}
+
+	task, err := orchestrator.GetTask(svc.Tx.(realTransactor).conn, result.TaskID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.Status != orchestrator.TaskStatusTriaged {
+		t.Errorf("Status = %q, want %q (Status: \"triaged\" was requested)", task.Status, orchestrator.TaskStatusTriaged)
+	}
+
+	// task_triage sidecar is still seeded for a triaged landing, same as
+	// captured — the sidecar membership is unconditional regardless of
+	// which pre-execution status the task lands in.
+	tt, err := orchestrator.GetTaskTriage(svc.Tx.(realTransactor).conn, result.TaskID)
+	if err != nil {
+		t.Fatalf("GetTaskTriage: %v (task_triage row was not seeded)", err)
+	}
+	if tt.TaskID != result.TaskID {
+		t.Errorf("task_triage.TaskID = %q, want %q", tt.TaskID, result.TaskID)
+	}
+	// A freshly created triaged task must NOT carry an urgency by itself —
+	// SeedTaskTriage never sets one, so it stays outside QueueEligible
+	// (queue.go) until the workspace separately pushes an attrs_set for
+	// urgency. This is what keeps a bare `--status triaged` landing from
+	// silently surfacing in the queue with no urgency judgment behind it.
+	if tt.Urgency != "" {
+		t.Errorf("task_triage.Urgency = %q, want empty (no urgency set at creation time)", tt.Urgency)
+	}
+	if orchestrator.QueueEligible(task.Status, tt.Urgency) {
+		t.Error("QueueEligible(triaged, \"\") = true, want false — a fresh triaged landing must not appear in the queue with no urgency")
+	}
+}
+
+// TestResolveOrCapture_StatusCapturedExplicit_SameAsDefault pins that
+// explicitly passing Status: "captured" behaves identically to leaving it
+// unset (both keep the pre-change default).
+func TestResolveOrCapture_StatusCapturedExplicit_SameAsDefault(t *testing.T) {
+	svc := newResolveOrCaptureTestService(t)
+
+	result, err := svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
+		ProjectID: "proj-1", Identity: "jira:EXPLICIT-CAPTURED-1", Title: "t", Status: "captured",
+	})
+	if err != nil {
+		t.Fatalf("ResolveOrCapture() error = %v", err)
+	}
+	task, err := orchestrator.GetTask(svc.Tx.(realTransactor).conn, result.TaskID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.Status != orchestrator.TaskStatusCaptured {
+		t.Errorf("Status = %q, want %q", task.Status, orchestrator.TaskStatusCaptured)
+	}
+}
+
+// TestResolveOrCapture_InvalidStatus_RejectsAndCreatesNothing pins the
+// vocabulary lockdown: only "" (default)/"captured"/"triaged" are accepted.
+// In particular "ready"/"working"/"pending" must be rejected even though
+// they are otherwise-valid orchestrator.TaskStatus values — a workspace
+// caller must never be able to push a task straight into a state that
+// implies "go" (rebuild.md §3.2 / khi's daemon_sync.py:161-165 "Web UI 操作
+// が次巡で巻き戻る" incident is the concrete cost of getting this wrong).
+func TestResolveOrCapture_InvalidStatus_RejectsAndCreatesNothing(t *testing.T) {
+	cases := []string{"ready", "working", "pending", "executing", "done", "bogus"}
+	for _, status := range cases {
+		t.Run(status, func(t *testing.T) {
+			svc := newResolveOrCaptureTestService(t)
+			identity := "jira:INVALID-" + status
+
+			_, err := svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
+				ProjectID: "proj-1", Identity: identity, Title: "t", Status: status,
+			})
+			if err == nil {
+				t.Fatalf("ResolveOrCapture() with status %q = nil error, want a rejection", status)
+			}
+
+			tasks, err := orchestrator.ListTasks(svc.Tx.(realTransactor).conn, orchestrator.TaskFilter{ProjectID: "proj-1"})
+			if err != nil {
+				t.Fatalf("ListTasks: %v", err)
+			}
+			if len(tasks) != 0 {
+				t.Errorf("tasks created despite the status rejection: %d", len(tasks))
+			}
+			if _, err := orchestrator.ResolveIdentity(svc.Tx.(realTransactor).conn, "proj-1", identity); !errors.Is(err, orchestrator.ErrTaskNotFound) {
+				t.Errorf("identity got linked despite the status rejection: err = %v", err)
+			}
+		})
+	}
+}
+
+// TestResolveOrCapture_InvalidStatus_AlreadyResolved_StillRejects pins a
+// deliberate judgment call: the status vocabulary check runs unconditionally
+// up front, even on the resolve-only path where Status would otherwise be
+// inert (identity already resolves to an existing task, so no task would be
+// created either way). This keeps the check's behavior independent of
+// unrelated data state (whether the identity happens to already be
+// registered) rather than only failing sometimes for the same bad input.
+func TestResolveOrCapture_InvalidStatus_AlreadyResolved_StillRejects(t *testing.T) {
+	existing := &orchestrator.Task{ID: "existing-task", ProjectID: "proj-1", Status: orchestrator.TaskStatusTriaged}
+	store := &mockROCTxStore{resolveIdentityTask: existing}
+	tx := &countingTransactor{store: store}
+	svc := &TaskWorkflowService{Tx: tx}
+
+	_, err := svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
+		ProjectID: "proj-1", Identity: "jira:EXISTS-1", Status: "bogus",
+	})
+	if err == nil {
+		t.Fatal("ResolveOrCapture() error = nil, want a rejection even though the identity already resolves")
+	}
+	if tx.withinTxN != 0 {
+		t.Errorf("WithinTx called %d times, want 0 — invalid status must be rejected before opening a transaction", tx.withinTxN)
 	}
 }
 

@@ -859,8 +859,13 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// docs/plans/ingestion-identity.md PR-2 (B-2): resolves req.Identity
 		// (scoped to req.ProjectID, already broker-resolved+workspace-
 		// checked — see the op's own doc comment in protocol.go) to an
-		// existing task, or atomically creates a new `captured` triage task
-		// and links it when unresolved (I-4). No separate AllowsProject
+		// existing task, or atomically creates a new triage task (landing
+		// status per req.Status — captured by default, triaged if
+		// requested; J-9 partial retraction) and links it when unresolved
+		// (I-4). req.Status is forwarded verbatim, UNVALIDATED — the
+		// allowlist check happens exactly once, downstream, in
+		// api.resolveLandingStatus (called from
+		// TaskWorkflowService.ResolveOrCapture). No separate AllowsProject
 		// re-check on the result is needed here the way
 		// BoidOpTaskIdentityResolve does one — every task this call can
 		// return or create is scoped to req.ProjectID by construction (see
@@ -876,6 +881,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			Identity:    req.Identity,
 			Title:       req.Title,
 			Description: req.Description,
+			Status:      req.Status,
 		})
 		if err != nil {
 			// PR-2 節: identity 衝突時は PR-1 の ErrIdentityConflict をその
