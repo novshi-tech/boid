@@ -165,56 +165,84 @@ func TestCardMachineV2_DeletedV1Rules(t *testing.T) {
 	}
 }
 
-// TestCardMachineV2_TriageVocabulary_FromStatusIsParkedOrWorking pins that
-// the non-transitioning Manual vocabulary (attrs_set/child_added/
-// child_specced/child_dropped/noted/answered) FromStatus enumeration shrank
-// from the old five-status preExecutionStatuses set down to exactly
-// {parked, working} — captured/triaged/ready/done/dropped must all reject.
-func TestCardMachineV2_TriageVocabulary_FromStatusIsParkedOrWorking(t *testing.T) {
+// TestCardMachineV2_TriageVocabulary_PerActionFromStatus pins each
+// non-transitioning action's OWN FromStatus enumeration (PR #987 review,
+// BLOCKER 3 — replacing a single shared cardActiveStatuses set, which broke
+// accept(reopen) from done/dropped entirely: design doc §3.2 requires
+// `done/dropped → parked : reopen (直接 or accept)` as a real edge, so
+// "answered" must be reachable from done/dropped too, or a suggestion khi
+// legitimately places there — e.g. "reopen" — can never be answered at
+// all). See NewCardMachine's own doc comment for why each action's set is
+// what it is; this test is the exhaustive cross-product pin of that design.
+//
+//   - attrs_set / child_added / child_specced / child_dropped:
+//     {parked, working} only — done is attrs_set's own service-layer
+//     special case (resolveAttrsSetDoneTransition, NOT this table), and
+//     none of the four make sense once a card is terminal.
+//   - noted / answered: {parked, working, done, dropped} — both must
+//     reach a terminal card.
+func TestCardMachineV2_TriageVocabulary_PerActionFromStatus(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	allowed := []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking}
-	disallowed := []orchestrator.TaskStatus{
+	universallyDisallowed := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusCaptured,
 		orchestrator.TaskStatusTriaged,
 		orchestrator.TaskStatusReady,
-		orchestrator.TaskStatusDropped,
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusAwaiting,
 		orchestrator.TaskStatusAborted,
 	}
-	for _, action := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered"} {
-		for _, status := range allowed {
-			task := &orchestrator.Task{Status: status}
-			next, err := sm.Apply(task, &orchestrator.Action{Type: action})
-			if err != nil {
-				t.Errorf("%s from %s: unexpected error: %v", action, status, err)
-				continue
-			}
-			if next.Status != status {
-				t.Errorf("%s from %s: non-transitioning action changed status to %s", action, status, next.Status)
-			}
+
+	applyNonTransitioning := func(action string, status orchestrator.TaskStatus) {
+		t.Helper()
+		task := &orchestrator.Task{Status: status}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: action})
+		if err != nil {
+			t.Errorf("%s from %s: unexpected error: %v", action, status, err)
+			return
 		}
-		// done is handled separately — see TestCardMachineV2_AttrsSetOnDone_
-		// StillNonTransitioning_ViaServiceLayerGuard (attrs_set_done.go's
-		// guard, NOT a machine.go rule) for why "done" is deliberately not
-		// listed in `disallowed` for attrs_set specifically. It IS listed
-		// here for the other five verbs, which have no such service-layer
-		// exception.
-		for _, status := range disallowed {
-			task := &orchestrator.Task{Status: status}
-			if _, err := sm.Apply(task, &orchestrator.Action{Type: action}); err == nil {
-				t.Errorf("%s from %s: expected rejection, got success", action, status)
-			}
+		if next.Status != status {
+			t.Errorf("%s from %s: non-transitioning action changed status to %s", action, status, next.Status)
 		}
 	}
-	// done: attrs_set alone is out of scope for machine.go (I-5b's
-	// service-layer guard, attrs_set_done.go); the other five verbs still
-	// reject it here.
-	for _, action := range []string{"child_added", "child_specced", "child_dropped", "noted", "answered"} {
-		task := &orchestrator.Task{Status: orchestrator.TaskStatusDone}
+	rejectFrom := func(action string, status orchestrator.TaskStatus) {
+		t.Helper()
+		task := &orchestrator.Task{Status: status}
 		if _, err := sm.Apply(task, &orchestrator.Action{Type: action}); err == nil {
-			t.Errorf("%s from done: expected rejection, got success", action)
+			t.Errorf("%s from %s: expected rejection, got success", action, status)
+		}
+	}
+
+	// attrs_set is out of scope for "done" here — that path belongs to
+	// resolveAttrsSetDoneTransition's service-layer guard (attrs_set_done.go),
+	// not this rule table (see NewCardMachine's own doc comment) — so it is
+	// deliberately excluded from BOTH the parked/working-only group's
+	// universal-disallow loop below.
+	for _, action := range []string{"child_added", "child_specced", "child_dropped"} {
+		for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking} {
+			applyNonTransitioning(action, status)
+		}
+		for _, status := range append(universallyDisallowed, orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped) {
+			rejectFrom(action, status)
+		}
+	}
+	for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking} {
+		applyNonTransitioning("attrs_set", status)
+	}
+	rejectFrom("attrs_set", orchestrator.TaskStatusDropped)
+	for _, status := range universallyDisallowed {
+		rejectFrom("attrs_set", status)
+	}
+
+	for _, action := range []string{"noted", "answered"} {
+		for _, status := range []orchestrator.TaskStatus{
+			orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking,
+			orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped,
+		} {
+			applyNonTransitioning(action, status)
+		}
+		for _, status := range universallyDisallowed {
+			rejectFrom(action, status)
 		}
 	}
 }
@@ -295,21 +323,27 @@ func TestCardMachineV2_JobFailed_NotRegistered(t *testing.T) {
 	}
 }
 
-// TestCardMachineV2_CanApplyManualAction_Answered mirrors the shrunk
-// preExecutionStatuses set (renamed cardNonTransitionStatuses in v2) for the
-// dedicated Web UI Accept/Reject gate.
+// TestCardMachineV2_CanApplyManualAction_Answered pins the dedicated Web UI
+// Accept/Reject gate's FromStatus set: {parked, working, done, dropped}
+// (PR #987 review, BLOCKER 3 — done/dropped joined this set so a
+// done/dropped card carrying a suggestion, e.g. a khi-suggested "reopen",
+// can actually be answered; see NewCardMachine's own doc comment).
 func TestCardMachineV2_CanApplyManualAction_Answered(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	answerable := []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking}
-	notAnswerable := []orchestrator.TaskStatus{
+	answerable := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusWorking,
 		orchestrator.TaskStatusDone,
 		orchestrator.TaskStatusDropped,
+	}
+	notAnswerable := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusCaptured,
 		orchestrator.TaskStatusTriaged,
 		orchestrator.TaskStatusReady,
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusAwaiting,
+		orchestrator.TaskStatusAborted,
 	}
 	for _, status := range answerable {
 		if !sm.CanApplyManualAction("answered", status) {
@@ -319,6 +353,38 @@ func TestCardMachineV2_CanApplyManualAction_Answered(t *testing.T) {
 	for _, status := range notAnswerable {
 		if sm.CanApplyManualAction("answered", status) {
 			t.Errorf("CanApplyManualAction(answered, %s) = true, want false", status)
+		}
+	}
+}
+
+// TestCardMachineV2_Reopen_ReachableViaAcceptFromDoneAndDropped is the
+// end-to-end pin (machine-rule level) for BLOCKER 3: a suggestion on a
+// done/dropped card must be answerable, and specifically its "reopen" verb
+// must actually apply from BOTH terminal statuses — the exact edges design
+// doc §3.2 lists. This only proves the machine-rule half (answered is
+// admitted, AND reopen itself still fires from done/dropped, which
+// TestCardMachineV2_AllEdges already covers independently); the api-layer
+// half (suggestion_accept.go actually wiring answered's accept branch
+// through to this rule for a real done/dropped card) has its own dedicated
+// test in internal/api.
+func TestCardMachineV2_Reopen_ReachableViaAcceptFromDoneAndDropped(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+	for _, from := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped} {
+		// Step 1: answered must be admitted from this status (the gate
+		// BLOCKER 3 fixes).
+		if !sm.CanApplyManualAction("answered", from) {
+			t.Fatalf("CanApplyManualAction(answered, %s) = false, want true (a suggestion here could never be answered)", from)
+		}
+		// Step 2: the verb the suggestion names (reopen) must itself still
+		// apply from this status — this is the actual transition
+		// accept(reopen) fires after answered is admitted.
+		task := &orchestrator.Task{Status: from}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"})
+		if err != nil {
+			t.Fatalf("reopen from %s: %v", from, err)
+		}
+		if next.Status != orchestrator.TaskStatusParked {
+			t.Fatalf("reopen from %s: status = %q, want parked", from, next.Status)
 		}
 	}
 }

@@ -126,22 +126,59 @@ func NewCardMachine() *StateMachine {
 		{Action: "fail_request", FromStatus: "*"},
 	}
 
-	// Non-transitioning Manual:true vocabulary (attrs_set/child_added/
-	// child_specced/child_dropped/noted/answered) — one rule per status in
-	// cardNonTransitionStatuses (論点6-3: explicit enumeration, never "*").
-	// v1 called this set preExecutionStatuses and enumerated FIVE statuses
-	// (captured/triaged/parked/ready/working); v2 shrinks it to exactly TWO
-	// (parked/working) because captured/triaged/ready no longer exist as
-	// reachable card statuses at all. See cardNonTransitionStatuses' own doc
-	// comment for the rename rationale.
+	// Non-transitioning Manual:true vocabulary — one rule per status in EACH
+	// action's own FromStatus set (論点6-3: explicit enumeration, never "*").
+	// v1 shared ONE set (preExecutionStatuses, five statuses: captured/
+	// triaged/parked/ready/working) across all six actions. v2 initially
+	// also shared one set (cardNonTransitionStatuses, {parked, working}) —
+	// but that broke accept(reopen) from done/dropped entirely (PR #987
+	// review, BLOCKER 3): "answered" needs done/dropped too, since design
+	// doc §3.2 explicitly lists `done → parked : reopen (直接 or accept)` /
+	// `dropped → parked : reopen (直接 or accept)` as required edges, and a
+	// suggestion CAN legitimately exist on a done/dropped card (khi is
+	// allowed to suggest "reopen" there — see resolveAttrsSetDoneTransition,
+	// internal/api/attrs_set_done.go, I-5b, which is exactly how a
+	// done card's attrs_set/suggestion write lands). Sharing one set across
+	// all six actions is no longer correct — each action below gets its own,
+	// with the reason spelled out per action:
 	//
-	// done is handled separately and is NOT in this loop: attrs_set landing
-	// on a done card is a service-layer special case
-	// (resolveAttrsSetDoneTransition, internal/api/attrs_set_done.go, I-5b/
-	// I-5c) that this PR keeps unchanged — khi's terminal-card observation
-	// writes still land, just via that guard rather than a machine.go rule.
-	for _, action := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered"} {
-		for _, status := range cardNonTransitionStatuses {
+	//   - answered: {parked, working, done, dropped}. The ONLY action that
+	//     must reach done/dropped — without it, a done/dropped card carrying
+	//     a suggestion (reopen or otherwise) can never be accepted OR
+	//     rejected: PR-2's future `suggestion_verb IS NOT NULL` queue
+	//     predicate would then show an unanswerable entry forever.
+	//   - noted: {parked, working, done, dropped}. "見たが変えなかった" (J-5)
+	//     is meaningful on a terminal card too — a workspace script noting
+	//     that it observed a done/dropped card is not a data-integrity
+	//     violation the way attrs_set's queue-predicate columns would be.
+	//   - attrs_set: {parked, working, dropped}. done is DELIBERATELY
+	//     excluded here — that path is owned exclusively by the
+	//     service-layer guard (resolveAttrsSetDoneTransition,
+	//     internal/api/attrs_set_done.go, I-5b/I-5c), which runs BEFORE this
+	//     rule table is even consulted and has its own row-existence-based
+	//     admission check. Adding "done" here too would create two
+	//     authorities deciding the same (attrs_set, done) admission
+	//     question — the guard's own doc comment already reasons in detail
+	//     about exactly which done tasks may receive attrs_set, and
+	//     duplicating that reasoning as a blanket machine.go rule would let
+	//     the two silently drift out of sync. dropped IS included: unlike
+	//     done, a dropped card has no equivalent service-layer guard, and
+	//     khi legitimately wants to attrs_set a reopen suggestion onto one
+	//     (the mirror of the done→reopen case, with no guard needed because
+	//     dropped carries no analogous "which done tasks" ambiguity — any
+	//     task_triage-carrying dropped card is unambiguously a card).
+	//   - child_added / child_specced / child_dropped: {parked, working}
+	//     unchanged. A terminal card's children list is frozen — there is
+	//     nothing left to specc, add, or withdraw once a card is done or
+	//     dropped, and card machine v2 does not need those three reachable
+	//     there the way it needs answered/noted to be.
+	for _, action := range []string{"attrs_set", "child_added", "child_specced", "child_dropped"} {
+		for _, status := range cardActiveStatuses {
+			rules = append(rules, Rule{Action: action, FromStatus: status, Manual: true})
+		}
+	}
+	for _, action := range []string{"noted", "answered"} {
+		for _, status := range cardActiveAndTerminalStatuses {
 			rules = append(rules, Rule{Action: action, FromStatus: status, Manual: true})
 		}
 	}
@@ -152,23 +189,52 @@ func NewCardMachine() *StateMachine {
 	}
 }
 
-// cardNonTransitionStatuses is the explicit FromStatus enumeration the
-// non-transitioning card vocabulary (attrs_set/child_added/child_specced/
-// child_dropped/noted/answered) uses (論点6-3: never "*"). Renamed from v1's
-// preExecutionStatuses — that name stopped describing anything real once
-// captured/triaged/ready dropped out of the reachable set (they were never
-// "pre-execution" vs "in-progress" in v2's sense; there is no execution
-// concept on the card side at all). What the set actually means now: the two
-// statuses where khi is still actively watching a card and may write to it.
-var cardNonTransitionStatuses = []string{"parked", "working"}
+// cardActiveStatuses is the FromStatus enumeration for the non-transitioning
+// card vocabulary that only makes sense while a card is still "live"
+// (attrs_set/child_added/child_specced/child_dropped — 論点6-3: never "*").
+// Renamed from v1's preExecutionStatuses — that name stopped describing
+// anything real once captured/triaged/ready dropped out of the reachable
+// set (they were never "pre-execution" vs "in-progress" in v2's sense; there
+// is no execution concept on the card side at all). What the set actually
+// means now: the two statuses where khi is still actively watching a card
+// and may write to it.
+var cardActiveStatuses = []string{"parked", "working"}
+
+// cardActiveAndTerminalStatuses extends cardActiveStatuses with done/dropped
+// — the FromStatus enumeration for noted/answered specifically (see
+// NewCardMachine's own doc comment for why these two, and not the other
+// four non-transitioning actions, need to reach a terminal card).
+var cardActiveAndTerminalStatuses = []string{"parked", "working", "done", "dropped"}
 
 // cardTransitionActions is the closed set of the six human-only
 // card-lifecycle verbs — every Manual:true rule on NewCardMachine whose
 // ToStatus != "". This is the exact set api.ApplyAction's push-down defense
 // (穴11) restricts to actor==human; see NewCardMachine's own doc comment for
 // the full rationale.
-var cardTransitionActions = map[string]bool{
-	"go": true, "working": true, "park": true, "drop": true, "done": true, "reopen": true,
+//
+// DERIVED from NewCardMachine's own rule table (deriveCardTransitionActions,
+// below), not a hand-copied literal (PR #987 review, MEDIUM 5): a
+// hand-maintained list here and the actual rule table generating it could
+// silently drift apart if a future edit changed one without remembering to
+// update the other — TestCardMachineV2_AllEdges and
+// TestIsCardTransitionAction each test one side independently, so neither
+// existing test would catch the other half changing. Deriving this set
+// directly from sm.Rules at package init makes that class of drift
+// structurally impossible instead of relying on a reviewer remembering.
+var cardTransitionActions = deriveCardTransitionActions()
+
+// deriveCardTransitionActions walks NewCardMachine's own rule table and
+// returns the set of every Manual:true action whose ToStatus != "" — see
+// cardTransitionActions' own doc comment for why this replaces a
+// hand-maintained literal.
+func deriveCardTransitionActions() map[string]bool {
+	set := map[string]bool{}
+	for _, r := range NewCardMachine().Rules {
+		if r.Manual && r.ToStatus != "" {
+			set[r.Action] = true
+		}
+	}
+	return set
 }
 
 // IsCardTransitionAction reports whether actionType is one of the six
