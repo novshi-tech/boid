@@ -425,16 +425,36 @@ func TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges(t *testing
 // FromStatus) pairs are Manual AND status-changing (ToStatus != "") — the
 // exact predicate CanApplyTransitionAction's own implementation applies —
 // and asserts CanApplyTransitionAction agrees with that derivation for every
-// verb/status combination. A future edit to NewCardMachine's rule table
-// (e.g. adding an eighth edge) automatically updates this test's
-// expectations; only the OTHER test (hardcoded seven edges) would need a
-// human to also update the design-doc-level pin.
+// combination. A future edit to NewCardMachine's rule table (e.g. adding an
+// eighth edge) automatically updates this test's expectations; only the
+// OTHER test (hardcoded seven edges) would need a human to also update the
+// design-doc-level pin.
+//
+// Review LOW 2 (fix/unapplicable-suggestion-guard PR): the loop's OUTER
+// action set is now derived from sm.Rules too (every distinct Action name
+// appearing anywhere in the table — transitioning or not, Manual or not),
+// not the hand-written v2CardTransitionActions this test used before. That
+// earlier version's "auto-follows the rule table" doc-comment claim didn't
+// actually hold for an EIGHTH verb: derived's inner map would gain the new
+// key correctly, but the outer `for _, verb := range v2CardTransitionActions`
+// loop would never visit it, so CanApplyTransitionAction's behavior on that
+// new verb would go entirely unprobed by this test. Deriving allActions from
+// sm.Rules directly closes that gap, and — as a bonus — also now probes every
+// NON-transitioning action (attrs_set, noted, answered, wake_due, ...),
+// pinning that CanApplyTransitionAction correctly says false for all of them
+// at every status (they have no entry in `derived` at all, so `want` is
+// always the zero value, false).
 func TestCardMachineV2_CanApplyTransitionAction_DerivedFromRuleTable_NoDrift(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
 
 	derived := map[string]map[orchestrator.TaskStatus]bool{}
+	allActions := map[string]bool{}
 	for _, r := range sm.Rules {
-		if r.Condition != nil || !r.Manual || r.ToStatus == "" {
+		if r.Condition != nil {
+			continue
+		}
+		allActions[r.Action] = true
+		if !r.Manual || r.ToStatus == "" {
 			continue
 		}
 		if derived[r.Action] == nil {
@@ -448,13 +468,16 @@ func TestCardMachineV2_CanApplyTransitionAction_DerivedFromRuleTable_NoDrift(t *
 		}
 		derived[r.Action][orchestrator.TaskStatus(r.FromStatus)] = true
 	}
+	if len(allActions) == 0 {
+		t.Fatal("derived zero actions from sm.Rules — test fixture assumption broken")
+	}
 
-	for _, verb := range v2CardTransitionActions {
+	for action := range allActions {
 		for _, status := range v2CardStatuses {
-			want := derived[verb][status]
-			got := sm.CanApplyTransitionAction(verb, status)
+			want := derived[action][status]
+			got := sm.CanApplyTransitionAction(action, status)
 			if got != want {
-				t.Errorf("CanApplyTransitionAction(%s, %s) = %v, want %v (derived from sm.Rules)", verb, status, got, want)
+				t.Errorf("CanApplyTransitionAction(%s, %s) = %v, want %v (derived from sm.Rules)", action, status, got, want)
 			}
 		}
 	}

@@ -238,3 +238,47 @@ func TestCardMachine_Reopen_ExecutionFromStatusNotHandled(t *testing.T) {
 		t.Error("NewCardMachine: reopen from aborted unexpectedly succeeded")
 	}
 }
+
+// TestStateMachine_CanApplyTransitionAction_IgnoresNonTransitioningRuleForSameAction
+// pins CanApplyTransitionAction's own `|| r.ToStatus == ""` filter (review
+// LOW 1, fix/unapplicable-suggestion-guard PR): no action on the REAL card
+// machine today has both a Manual transitioning rule AND a Manual
+// non-transitioning rule under the same name, so that filter's removal would
+// not fail any existing test against NewCardMachine() — this hand-built
+// machine manufactures exactly that situation so the filter's own behavior
+// is pinned independently of whether the real rule table happens to need it
+// yet.
+//
+// "hybrid" has two rules: a transitioning one (parked→working) and a
+// non-transitioning one (done, ToStatus=="") — same action name, disjoint
+// FromStatus. From "done", CanApplyManualAction correctly says yes (SOME
+// Manual rule matches, transitioning or not — its own doc comment), but
+// CanApplyTransitionAction must say no: applying "hybrid" from "done" would
+// NOT actually flip the task's status (sm.Apply's ToStatus=="" branch leaves
+// status unchanged), so a caller asking "would this fire a real transition"
+// must get false here even though CanApplyManualAction says true.
+func TestStateMachine_CanApplyTransitionAction_IgnoresNonTransitioningRuleForSameAction(t *testing.T) {
+	sm := &orchestrator.StateMachine{
+		Name: "synthetic-hybrid",
+		Rules: []orchestrator.Rule{
+			{Action: "hybrid", FromStatus: "parked", ToStatus: "working", Manual: true},
+			{Action: "hybrid", FromStatus: "done", Manual: true}, // ToStatus == "": non-transitioning
+		},
+	}
+
+	if !sm.CanApplyManualAction("hybrid", orchestrator.TaskStatusDone) {
+		t.Fatal("CanApplyManualAction(hybrid, done) = false, want true (a Manual rule matches, non-transitioning or not)")
+	}
+	if sm.CanApplyTransitionAction("hybrid", orchestrator.TaskStatusDone) {
+		t.Error("CanApplyTransitionAction(hybrid, done) = true, want false — the only matching rule from done is non-transitioning (ToStatus==\"\"), so applying it would not change status")
+	}
+
+	// From "parked" both must agree: the OTHER rule under the same action
+	// name is a real transition here.
+	if !sm.CanApplyManualAction("hybrid", orchestrator.TaskStatusParked) {
+		t.Fatal("CanApplyManualAction(hybrid, parked) = false, want true")
+	}
+	if !sm.CanApplyTransitionAction("hybrid", orchestrator.TaskStatusParked) {
+		t.Error("CanApplyTransitionAction(hybrid, parked) = false, want true — parked->working is a real transitioning rule")
+	}
+}
