@@ -39,27 +39,47 @@ func hasTaskTriageRow(store TaskTriageStore, taskID string) (bool, error) {
 	}
 }
 
-// isCardLifecycleStatus reports whether status is one of the five statuses
-// that exist ONLY on the card side of the split — captured/triaged/parked/
-// ready/working (machine_card.go's own preExecutionStatuses set, unexported
-// there). machineFor uses this as a STATUS-based fallback for a task with no
-// CONFIRMED sidecar row (PR #986 review, Blocker 1 — see machineFor's own
-// doc comment for why).
+// isCardLifecycleStatus reports whether status is one of the SIX statuses
+// that are unambiguously card-only — captured/triaged/parked/ready/working
+// (machine_card.go's own preExecutionStatuses set, unexported there) plus
+// dropped. machineFor uses this as a STATUS-based fallback for a task with
+// no CONFIRMED sidecar row (PR #986 review, Blocker 1 — see machineFor's own
+// doc comment for the full reasoning; this comment covers only which
+// statuses belong in the set and why).
+//
+// The dividing line is NOT "pre-execution" — it is "unambiguous": can this
+// status ever belong to an ordinary (non-card) task? done/aborted are the
+// ONLY two that can, which is exactly why machineFor excludes just those two
+// from this fallback (see its own doc comment) rather than excluding
+// anything wider. dropped belongs on the "unambiguous" side of that line
+// despite being a terminal status like done/aborted: grepping the full rule
+// table confirms every rule with ToStatus "dropped" lives in NewCardMachine
+// (the four `drop` rules) — NewExecutionMachine has none — and
+// task_create.go's allowedCreateInitialStatuses cannot create a task
+// directly into "dropped" either. So a dropped task is never an ordinary
+// one, the same way captured/triaged/parked/ready/working never are; leaving
+// it out here (as an earlier version of this fix did) reopened Blocker 1's
+// exact gap for exactly one status; see the regression test this fix adds
+// (a rowless dropped card's `reopen` used to 409 against
+// NewExecutionMachine, which has no dropped→anything rule, instead of
+// reaching NewCardMachine's `reopen: dropped→triaged` "recovery from a
+// mistaken drop" rule).
 //
 // Deliberately NOT orchestrator.IsPreExecutionStatus, which excludes
-// "working" on purpose — but for an UNRELATED reason (model.go's own doc
-// comment: working is closer in kind to executing/awaiting for open-list/
-// queue filtering purposes, since a working card has already been through
-// Go). That exclusion does not apply here: a card reaches "working" via
-// Dispatch (workflow_triage.go) without ever needing a task_triage row to
-// exist first (Dispatch tolerates sql.ErrNoRows as "no children" — see its
-// own doc comment), so a working card missing its row is exactly as
-// plausible as a captured/triaged one, and excluding "working" here would
-// silently reopen Blocker 1's gap for it.
+// "working" (and doesn't cover "dropped" at all) on purpose — but for an
+// UNRELATED reason (model.go's own doc comment: working is closer in kind to
+// executing/awaiting for open-list/queue filtering purposes, since a working
+// card has already been through Go). That exclusion does not apply here: a
+// card reaches "working" via Dispatch (workflow_triage.go) without ever
+// needing a task_triage row to exist first (Dispatch tolerates
+// sql.ErrNoRows as "no children" — see its own doc comment), so a working
+// card missing its row is exactly as plausible as a captured/triaged one,
+// and excluding "working" here would silently reopen Blocker 1's gap for it.
 func isCardLifecycleStatus(status orchestrator.TaskStatus) bool {
 	switch status {
 	case orchestrator.TaskStatusCaptured, orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusParked, orchestrator.TaskStatusReady, orchestrator.TaskStatusWorking:
+		orchestrator.TaskStatusParked, orchestrator.TaskStatusReady, orchestrator.TaskStatusWorking,
+		orchestrator.TaskStatusDropped:
 		return true
 	default:
 		return false
@@ -90,7 +110,8 @@ func isCardLifecycleStatus(status orchestrator.TaskStatus) bool {
 //     genuinely rowless. Before this fallback, such a task was routed to
 //     NewExecutionMachine, which has no rule for ANY card verb (attrs_set/
 //     child_added/child_specced/child_dropped/noted/answered/triage/ready/
-//     park/drop/wake_*) NOR for any of its five statuses — every one of
+//     park/drop/wake_*) NOR for any of its six statuses (isCardLifecycleStatus
+//     — captured/triaged/parked/ready/working/dropped) — every one of
 //     those verbs 400s at the IsManualAction gate before ever reaching the
 //     applyAttrsSetSideEffect/applyParkSideEffect ErrNoRows-creates-row path
 //     task_create.go's comment promises as the recovery. The card became

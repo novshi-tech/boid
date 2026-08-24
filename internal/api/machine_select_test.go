@@ -87,24 +87,36 @@ func TestMachineFor_LookupError_ReturnsServiceUnavailable(t *testing.T) {
 	}
 }
 
-// TestMachineFor_NoConfirmedRow_PreExecutionStatus_FallsBackToCardMachine is
-// the regression test for PR #986 review Blocker 1: task_create.go's
-// SeedTaskTriage is deliberately best-effort at creation time, so a task can
-// legitimately sit in captured/triaged/parked/ready/working with NO
-// task_triage row yet. Before this fix, machineFor collapsed "no confirmed
-// row" straight to NewExecutionMachine, which has no rule for ANY of these
-// five statuses or ANY card verb — permanently stranding such a task (every
-// card action 400s, delete is the only way out). machineFor must instead
-// fall back to NewCardMachine by STATUS in this case, covering BOTH ways "no
-// confirmed row" can arise: a nil store, and a non-nil store that genuinely
-// has no row (sql.ErrNoRows).
-func TestMachineFor_NoConfirmedRow_PreExecutionStatus_FallsBackToCardMachine(t *testing.T) {
+// TestMachineFor_NoConfirmedRow_UnambiguousCardStatus_FallsBackToCardMachine
+// is the regression test for PR #986 review Blocker 1 (and its follow-up
+// review round, which caught that "dropped" was missing from the fallback
+// set): task_create.go's SeedTaskTriage is deliberately best-effort at
+// creation time, so a task can legitimately sit in captured/triaged/parked/
+// ready/working/dropped with NO task_triage row yet. Before this fix,
+// machineFor collapsed "no confirmed row" straight to NewExecutionMachine,
+// which has no rule for ANY of these six statuses or ANY card verb —
+// permanently stranding such a task (every card action 400s, delete is the
+// only way out). machineFor must instead fall back to NewCardMachine by
+// STATUS in this case, covering BOTH ways "no confirmed row" can arise: a
+// nil store, and a non-nil store that genuinely has no row (sql.ErrNoRows).
+//
+// "dropped" belongs in this set for the same reason the other five do (see
+// isCardLifecycleStatus's own doc comment): it is unambiguously card-only —
+// grepping the rule tables shows every `ToStatus: "dropped"` rule lives in
+// NewCardMachine, and task_create.go's allowedCreateInitialStatuses cannot
+// create a task directly into "dropped" either. Leaving it out (an earlier
+// version of this fix did) reopened Blocker 1's exact gap for a rowless
+// dropped card's `reopen`: NewExecutionMachine has no dropped→anything rule,
+// so the request 409'd instead of reaching NewCardMachine's
+// `reopen: dropped→triaged` "recovery from a mistaken drop" rule.
+func TestMachineFor_NoConfirmedRow_UnambiguousCardStatus_FallsBackToCardMachine(t *testing.T) {
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusCaptured,
 		orchestrator.TaskStatusTriaged,
 		orchestrator.TaskStatusParked,
 		orchestrator.TaskStatusReady,
 		orchestrator.TaskStatusWorking,
+		orchestrator.TaskStatusDropped,
 	}
 	for _, status := range statuses {
 		task := &orchestrator.Task{ID: "t1", Status: status}
@@ -253,6 +265,42 @@ func TestApplyAction_AttrsSet_NoTaskTriageRow_PreExecutionStatus_LazilyCreatesRo
 	}
 	if got.Urgency != "now" {
 		t.Fatalf("Urgency = %q, want %q (the side effect must actually have run, not just been permitted)", got.Urgency, "now")
+	}
+}
+
+// TestApplyAction_Reopen_NoTaskTriageRow_DroppedStatus_RestoresToTriaged is
+// the exact reproduction the PR #986 follow-up review gave for "dropped"
+// being missing from isCardLifecycleStatus's fallback set: a rowless card
+// (SeedTaskTriage failed at creation) gets dropped (now reachable end to end
+// per TestApplyAction_AttrsSet_NoTaskTriageRow_PreExecutionStatus_LazilyCreatesRow's
+// sibling coverage of "drop" itself), leaving it rowless AND dropped. Before
+// this fix, `reopen` on that task fell to NewExecutionMachine (dropped is
+// not in isCardLifecycleStatus yet), whose `reopen` rule only covers
+// done/aborted→executing — no rule matches FromStatus "dropped", so
+// sm.Apply 409'd. NewCardMachine's own `reopen: dropped→triaged` rule
+// ("recovery from a mistaken drop") was reachable in the pre-split unified
+// machine and must stay reachable now.
+func TestApplyAction_Reopen_NoTaskTriageRow_DroppedStatus_RestoresToTriaged(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDropped, Behavior: "dev", Payload: []byte(`{}`)}
+	// txStore.triage is deliberately left nil/empty — the row was never
+	// seeded (or was lost) before this card was dropped.
+	txStore := &recordingTxStore{task: task}
+	svc := &TaskWorkflowService{
+		Tasks:      &stubTaskStore{task: task},
+		Tx:         recordingTransactor{store: txStore},
+		Meta:       stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+		TaskTriage: txStore,
+	}
+
+	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "reopen"})
+	if err != nil {
+		t.Fatalf("ApplyAction(reopen) on a rowless dropped card: %v (the undo-a-mistaken-drop path must not be lost)", err)
+	}
+	if result.Task.Status != orchestrator.TaskStatusTriaged {
+		t.Fatalf("status = %q, want triaged", result.Task.Status)
+	}
+	if result.Action.Type != "reopen" {
+		t.Fatalf("action type = %q, want reopen (card machine's own rule, not reopen_triaged — that variant is done/aborted-only)", result.Action.Type)
 	}
 }
 
