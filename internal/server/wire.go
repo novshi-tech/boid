@@ -1720,6 +1720,11 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		TaskSvc:    taskSvc,
 		Hooks:      workflow,
 		Answerer:   taskSvc,
+		// Backs machineFor's card-vs-ordinary-task discriminator (PR-B,
+		// docs/plans/suggestion-as-state-transition-impl.md §2) for
+		// GetTaskDetail's AvailableActions. Same taskRepo taskSvc.TaskTriage
+		// already uses above.
+		TaskTriage: taskRepo,
 	}
 
 	authStore := auth.NewStore(srv.db)

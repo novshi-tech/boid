@@ -20,6 +20,13 @@ type WebAppService struct {
 	TaskSvc    TaskService
 	Hooks      HookService
 	Answerer   TaskAnswerService // optional: enables POST /tasks/{id}/answer
+	// TaskTriage backs machineFor's card-vs-ordinary-task discriminator
+	// (PR-B, docs/plans/suggestion-as-state-transition-impl.md §2) for
+	// GetTaskDetail's AvailableActions — same TaskTriageStore narrowing over
+	// taskRepo every other service in this package already wires (see
+	// TaskAppService.TaskTriage's own doc comment). Nil is tolerated:
+	// machineFor falls back to NewExecutionMachine.
+	TaskTriage TaskTriageStore
 }
 
 func (s *WebAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
@@ -75,11 +82,19 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	}
 	jobs := rawJobs
 
+	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): task
+	// detail is a generic per-task view (any task, card or ordinary), so the
+	// governing machine is resolved dynamically via machineFor.
+	sm, err := machineFor(s.TaskTriage, task)
+	if err != nil {
+		return nil, err
+	}
+
 	return &TaskDetailView{
 		Task:             task,
 		Actions:          actions,
 		Jobs:             jobs,
-		AvailableActions: orchestrator.DefaultMachine().AvailableActions(task.Status),
+		AvailableActions: sm.AvailableActions(task.Status),
 	}, nil
 }
 

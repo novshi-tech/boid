@@ -48,7 +48,14 @@ func (s *TaskWorkflowService) ReplayHook(ctx context.Context, taskID string, req
 		}
 	}
 
-	sm := orchestrator.DefaultMachine()
+	// ReplayHook is a generic per-task endpoint (any task ID, including a
+	// card's), so — unlike Wake/Dispatch/autoDone/autoReopen/CompleteJob,
+	// each of which only ever runs against one definite side of the split —
+	// the governing machine must be resolved dynamically per task (PR-B).
+	sm, err := machineFor(s.TaskTriage, task)
+	if err != nil {
+		return nil, err
+	}
 	replay, err := s.Coordinator.ReplayHook(ctx, task, meta, sm, req.HookID)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}

@@ -476,7 +476,13 @@ func (s syncedTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, er
 // "ready" commits.
 func TestTaskWorkflowServiceApplyAction_Ready_AutoChainsToWorking(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{task: task}
+	txStore := &recordingTxStore{
+		task: task,
+		// PR-B: machineFor needs a task_triage row to pick NewCardMachine
+		// (which is where "ready" lives) — see newTriageWorkflowService's
+		// own doc comment for the same requirement.
+		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}},
+	}
 	creator := &fakeTaskCreator{}
 	svc := &TaskWorkflowService{
 		Tasks:       syncedTaskStore{tx: txStore},

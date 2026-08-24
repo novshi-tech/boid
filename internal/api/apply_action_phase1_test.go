@@ -250,14 +250,67 @@ func TestTaskWorkflowServiceApplyAction_BackgroundDispatchMustOutliveRequestCont
 
 // ---- Pre-execution actions (cross-project-issue-triage Phase 1 PR-1) ----
 
+// isPreExecutionCardStatus reports whether status is one of the five
+// statuses that exist ONLY on the card side of the split (PR-B,
+// machine_card.go's preExecutionStatuses) — captured/triaged/parked/ready/
+// working. done/aborted/dropped (and every execution-lifecycle status) are
+// deliberately excluded: those are either shared between both machines or
+// execution-only, so "does this task have a sidecar row" is genuinely
+// ambiguous/test-scenario-dependent there, unlike the five pre-execution
+// statuses where production always seeds one at creation (see
+// newTriageWorkflowService's own doc comment).
+func isPreExecutionCardStatus(status orchestrator.TaskStatus) bool {
+	switch status {
+	case orchestrator.TaskStatusCaptured, orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusParked, orchestrator.TaskStatusReady, orchestrator.TaskStatusWorking:
+		return true
+	default:
+		return false
+	}
+}
+
+// newTriageWorkflowService builds a TaskWorkflowService for a card (triage)
+// task under test. PR-B (docs/plans/suggestion-as-state-transition-impl.md
+// §2): machineFor now picks NewCardMachine vs NewExecutionMachine by
+// checking whether the task carries a task_triage sidecar row, so — for a
+// task whose status is one of the five pre-execution-only statuses — this
+// helper seeds an empty row for task.ID when the caller's txStore doesn't
+// already carry one, and wires TaskTriage to see it. This mirrors
+// production's own invariant (task_create.go's CreateTask /
+// task_resolve_or_capture.go's ResolveOrCapture both seed an empty
+// task_triage row up front for any pre-execution initial_status,
+// unconditional on the caller ever sending a park/attrs_set). Without this,
+// every test built on this helper for those five statuses would have
+// machineFor fall back to NewExecutionMachine (no row = "not a card"), which
+// has no rule at all for triage/ready/park/drop/etc. and would reject them
+// with a spurious 400.
+//
+// Deliberately NOT extended to done/aborted/dropped/pending/executing/
+// awaiting: several tests built on this helper (attrs_set_done_test.go's
+// TaskTriageStoreNotWired/NoTaskTriageRow cases, triage_done_pr5_test.go's
+// reopen-routing cases) construct a task in one of THOSE statuses
+// specifically to exercise TaskTriage being nil, empty, or erroring — auto-
+// wiring/seeding for them would silently defeat those tests' own premise.
+// Each such test wires (or deliberately leaves unwired) TaskTriage itself,
+// same as before this helper existed.
 func newTriageWorkflowService(task *orchestrator.Task, txStore *recordingTxStore) *TaskWorkflowService {
-	return &TaskWorkflowService{
+	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
 		Tx:    recordingTransactor{store: txStore},
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 		// Coordinator intentionally nil: pre-execution transitions have no
 		// hooks to dispatch (no runtime exists for a triage task).
 	}
+	if isPreExecutionCardStatus(task.Status) {
+		if txStore.triage == nil {
+			txStore.triage = map[string]*orchestrator.TaskTriage{}
+		}
+		if _, ok := txStore.triage[task.ID]; !ok {
+			txStore.triage[task.ID] = &orchestrator.TaskTriage{TaskID: task.ID}
+		}
+		svc.TaskTriage = txStore
+	}
+	return svc
 }
 
 func TestTaskWorkflowServiceApplyAction_Triage_CapturedToTriaged(t *testing.T) {
@@ -487,8 +540,8 @@ func TestTaskWorkflowServiceApplyAction_RejectsNonManualActions(t *testing.T) {
 // break the legitimate internal one, which builds its own orchestrator.Action
 // and calls sm.Apply directly (internal/api/workflow_job.go), never going
 // through ApplyAction at all.
-func TestDefaultMachine_JobFailed_StillApplicableDirectlyViaSmApply(t *testing.T) {
-	sm := orchestrator.DefaultMachine()
+func TestExecutionMachine_JobFailed_StillApplicableDirectlyViaSmApply(t *testing.T) {
+	sm := orchestrator.NewExecutionMachine()
 	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
 	next, err := sm.Apply(task, &orchestrator.Action{Type: "job_failed"})
 	if err != nil {
@@ -608,10 +661,10 @@ func TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch(t *tes
 
 // TestTaskWorkflowService_Wake_ResolvesAllParkOrigins is the api-side half of
 // the BD-9 recurrence guard (internal/orchestrator's
-// TestDefaultMachine_ParkOrigins_AllHaveWakeRule pins the machine-rule half).
+// TestCardMachine_ParkOrigins_AllHaveWakeRule pins the machine-rule half).
 // The named tests above (TriagedThenReady / FromWorking_ReturnsToWorking)
 // pin today's three origins by name; this one instead derives the origin set
-// from DefaultMachine().Rules — deliberately not a hardcoded
+// from NewCardMachine().Rules — deliberately not a hardcoded
 // []orchestrator.TaskStatus{"triaged","ready","working"} literal — and
 // end-to-end pins that Wake resolves ALL of them without error. A fourth
 // park origin added without a matching case in Wake's ParkedFrom switch
@@ -633,7 +686,7 @@ func TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch(t *tes
 // chain — which is what lets one assertion shape cover every origin
 // generically instead of needing a per-origin special case.
 func TestTaskWorkflowService_Wake_ResolvesAllParkOrigins(t *testing.T) {
-	sm := orchestrator.DefaultMachine()
+	sm := orchestrator.NewCardMachine()
 	var origins []orchestrator.TaskStatus
 	for _, r := range sm.Rules {
 		if r.Action == "park" && r.ToStatus == string(orchestrator.TaskStatusParked) {
@@ -641,7 +694,7 @@ func TestTaskWorkflowService_Wake_ResolvesAllParkOrigins(t *testing.T) {
 		}
 	}
 	if len(origins) == 0 {
-		t.Fatal("no park rules found in DefaultMachine().Rules — did the rule table's shape change?")
+		t.Fatal("no park rules found in NewCardMachine().Rules — did the rule table's shape change?")
 	}
 
 	for _, origin := range origins {
@@ -708,7 +761,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenPe
 		context.Background(),
 		task,
 		&orchestrator.ProjectMeta{},
-		orchestrator.DefaultMachine(),
+		orchestrator.NewExecutionMachine(),
 	)
 
 	if txStore.updatedTask == nil {
@@ -758,7 +811,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenAd
 		context.Background(),
 		task,
 		&orchestrator.ProjectMeta{},
-		orchestrator.DefaultMachine(),
+		orchestrator.NewExecutionMachine(),
 	)
 
 	if txStore.updatedTask == nil {
@@ -818,7 +871,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_ClearsPendingAnswerAfterDispatch(t *
 		context.Background(),
 		task,
 		&orchestrator.ProjectMeta{},
-		orchestrator.DefaultMachine(),
+		orchestrator.NewExecutionMachine(),
 	)
 
 	if txStore.updatedTask == nil {
@@ -879,7 +932,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_MidHookAsk_PreservesNewAwaiting(t *t
 		context.Background(),
 		task,
 		&orchestrator.ProjectMeta{},
-		orchestrator.DefaultMachine(),
+		orchestrator.NewExecutionMachine(),
 	)
 
 	if txStore.updatedTask == nil {

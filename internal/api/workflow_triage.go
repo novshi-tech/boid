@@ -646,7 +646,10 @@ func (s *TaskWorkflowService) Wake(ctx context.Context, taskID string) (*ActionA
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "wake: Transactor not configured"}
 	}
 
-	sm := orchestrator.DefaultMachine()
+	// Wake only ever fires against a parked task — a status that exists
+	// solely on the card side of the split (PR-B) — so NewCardMachine is
+	// unambiguous here without a machineFor lookup.
+	sm := orchestrator.NewCardMachine()
 	var newTask *orchestrator.Task
 	var action *orchestrator.Action
 
@@ -901,7 +904,10 @@ func (s *TaskWorkflowService) Dispatch(ctx context.Context, taskID string) (*Act
 		newlyDispatched = append(newlyDispatched, children[i])
 	}
 
-	sm := orchestrator.DefaultMachine()
+	// Dispatch only ever fires against a ready task — a status that exists
+	// solely on the card side of the split (PR-B) — so NewCardMachine is
+	// unambiguous here without a machineFor lookup.
+	sm := orchestrator.NewCardMachine()
 	action := &orchestrator.Action{TaskID: taskID, Type: "dispatch", Actor: orchestrator.ActorFromContext(ctx)}
 	var newTask *orchestrator.Task
 

@@ -300,15 +300,19 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 //
 // status gates the Accept/Reject buttons specifically (Opus review finding
 // #3, 2026-08-19 revisit): `answered` is only a valid transition from
-// preExecutionStatuses (captured/triaged/parked/ready/working, machine.go).
-// A triage task that carries a stale, never-answered suggestion into
-// done/dropped/aborted (auto-done, or nobody clicked before it advanced)
-// used to still render live-looking buttons that redirected to an opaque
-// `no transition for action "answered" from status "done"` error on click.
-// orchestrator.DefaultMachine().CanApplyManualAction is the single source
-// of truth for "would answered actually be accepted from this status" —
-// the suggestion's own text still renders either way; only the buttons
-// hide.
+// preExecutionStatuses (captured/triaged/parked/ready/working,
+// machine_card.go). A triage task that carries a stale, never-answered
+// suggestion into done/dropped/aborted (auto-done, or nobody clicked before
+// it advanced) used to still render live-looking buttons that redirected to
+// an opaque `no transition for action "answered" from status "done"` error
+// on click. orchestrator.NewCardMachine().CanApplyManualAction is the single
+// source of truth for "would answered actually be accepted from this
+// status" — the suggestion's own text still renders either way; only the
+// buttons hide. NewCardMachine (not machineFor's dynamic task-based
+// selection, PR-B) is correct here specifically because this section only
+// ever renders when suggestion.Verb != "" — a suggestion only ever exists on
+// a task_triage sidecar row (a card) in the first place, so which machine
+// applies is never actually ambiguous at this call site.
 templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus, suggestion orchestrator.Suggestion) {
 	if suggestion.Verb != "" {
 		<div class="detail-suggestion">
@@ -324,7 +328,7 @@ templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus,
 			if suggestion.Basis != "" {
 				<div class="detail-suggestion-basis">basis: { suggestion.Basis }</div>
 			}
-			if orchestrator.DefaultMachine().CanApplyManualAction("answered", status) {
+			if orchestrator.NewCardMachine().CanApplyManualAction("answered", status) {
 				<div class="detail-suggestion-answer">
 					<form method="post" action={ templ.SafeURL("/tasks/" + taskID + "/suggestion") } class="detail-suggestion-answer-form">
 						<input type="hidden" name="answer" value="accept"/>

@@ -439,10 +439,18 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		enrichJobDisplayName(j, task.Behavior, s.Meta)
 	}
 
+	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): task
+	// detail is a generic per-task view (any task, card or ordinary), so the
+	// governing machine is resolved dynamically via machineFor.
+	sm, err := machineFor(s.TaskTriage, task)
+	if err != nil {
+		return nil, err
+	}
+
 	return &TaskDetailView{
 		Task:             task,
 		Actions:          actions,
 		Jobs:             jobs,
-		AvailableActions: orchestrator.DefaultMachine().AvailableActions(task.Status),
+		AvailableActions: sm.AvailableActions(task.Status),
 	}, nil
 }

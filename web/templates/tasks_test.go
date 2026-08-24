@@ -259,9 +259,10 @@ func TestTaskDetailSuggestionSection_RendersAcceptRejectButtons(t *testing.T) {
 // Opus review finding #3 (2026-08-19 revisit of PR-3): a triage task that
 // carries a stale, never-answered suggestion into done (auto-done, or
 // simply nobody clicked before it advanced) must NOT render clickable
-// Accept/Reject buttons — the state machine rejects `answered` from done
-// (TestDefaultMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard),
-// so clicking used to redirect to an opaque
+// Accept/Reject buttons — the card machine rejects `answered` from done
+// (TestCardMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard,
+// internal/orchestrator/machine_card_test.go), so clicking used to redirect
+// to an opaque
 // `no transition for action "answered" from status "done"` error. The
 // suggestion's own text (verb/reason/basis) still renders — only the
 // buttons are gated — so the historical record stays visible.

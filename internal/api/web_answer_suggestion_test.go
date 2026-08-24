@@ -112,6 +112,12 @@ func TestWebAnswerSuggestion_Reject_RecordsAnsweredAction(t *testing.T) {
 	if err := taskRepo.CreateTask(task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
+	// PR-B: machineFor needs this to pick NewCardMachine for the attrs_set/
+	// answered actions below — see TestListActions_NotedRoundTrips's own
+	// comment (action_list_read_test.go) for why this seed is needed.
+	if err := taskRepo.SeedTaskTriage(task.ID); err != nil {
+		t.Fatalf("seed task_triage: %v", err)
+	}
 	// Seed a suggestion the reject answers, via a real attrs_set — this is
 	// the same fold path note-suggest's push uses in production.
 	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{

@@ -55,7 +55,7 @@ func TestRunDispatchLoop_HookFiredActionsRecorded(t *testing.T) {
 		Coordinator: coord,
 	}
 
-	svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
+	svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.NewExecutionMachine())
 
 	actionTypes := make(map[string]int)
 	for _, a := range txStore.actions {
@@ -91,7 +91,7 @@ func TestRunDispatchLoop_HookFiredAction_PayloadContents(t *testing.T) {
 		Coordinator: coord,
 	}
 
-	svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
+	svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.NewExecutionMachine())
 
 	var hookFiredAction *orchestrator.Action
 	for _, a := range txStore.actions {
@@ -156,7 +156,7 @@ func TestRunDispatchLoop_PersistsFiredEventsOnFailedDispatch(t *testing.T) {
 		Coordinator: coord,
 	}
 
-	svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.DefaultMachine())
+	svc.runDispatchLoop(context.Background(), task, &orchestrator.ProjectMeta{}, orchestrator.NewExecutionMachine())
 
 	actionTypes := make(map[string]int)
 	for _, a := range txStore.actions {

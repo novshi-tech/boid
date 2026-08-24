@@ -23,13 +23,50 @@ func isShutdownErr(ctx context.Context, err error) bool {
 }
 
 func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error) {
-	// Only Manual:true rules are reachable through this public entry point
-	// (HTTP API / brokered action_send / `boid action send` CLI all funnel
-	// through ApplyAction). Manual:false rules — job_failed (event-driven,
-	// applied directly by CompleteJob), progress/done_request/fail_request
-	// (non-transitioning records NotifyTask writes directly), and
-	// wake_triaged/wake_ready (resolved internally by Wake via ParkedFrom) —
-	// must never be settable by an external caller.
+	// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: action payload
+	// size cap. This is action_send's single implementation — HTTP API, Web
+	// UI, brokered action_send (boid_executor.go's BoidOpActionSend), and
+	// `boid action send` all funnel through ApplyAction, so checking here
+	// once covers all of them (one of the 4 mandatory entry points; see
+	// orchestrator.ValidateContentSize's own doc comment). Deliberately
+	// ahead of the task load below (unlike the IsManualAction check, PR-B
+	// moved that one, not this one) — it needs neither the task nor a
+	// machine, so there is no reason to make an oversized-payload caller pay
+	// for a DB round trip first.
+	if err := orchestrator.ValidateContentSize("action payload", req.Payload); err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+
+	task, err := s.Tasks.GetTask(taskID)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+
+	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): the
+	// machine itself is now selected PER TASK (NewCardMachine vs
+	// NewExecutionMachine, machineFor) rather than being one fixed unified
+	// object, so it can only be resolved once the task is loaded — moving
+	// this below the GetTask call above (it used to run before it). This is
+	// a deliberate, documented behavior change: a request naming BOTH a
+	// nonexistent task ID AND an action name that is not Manual on either
+	// machine used to 400 ("action not available through this endpoint")
+	// before ever touching the task store; it now 404s ("task not found")
+	// instead, since the task load happens first and the IsManualAction
+	// check below can no longer run without it. See this PR's own
+	// description for the full list of call sites this reordering touches.
+	sm, err := machineFor(s.TaskTriage, task)
+	if err != nil {
+		return nil, err
+	}
+
+	// Only Manual:true rules (on the machine just resolved above) are
+	// reachable through this public entry point (HTTP API / brokered
+	// action_send / `boid action send` CLI all funnel through ApplyAction).
+	// Manual:false rules — job_failed (event-driven, applied directly by
+	// CompleteJob), progress/done_request/fail_request (non-transitioning
+	// records NotifyTask writes directly), and wake_triaged/wake_ready
+	// (resolved internally by Wake via ParkedFrom) — must never be settable
+	// by an external caller.
 	//
 	// This used to be a hand-maintained blocklist naming wake_triaged/
 	// wake_ready specifically; codex review round 2 found it had missed
@@ -38,27 +75,11 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// the ready-gate (決定9/逆輸入2) entirely without ever calling "ready" or
 	// Go. Checking the machine's own Manual flag instead of a separate list
 	// means a future non-manual rule can't be forgotten the same way.
-	sm := orchestrator.DefaultMachine()
 	if !sm.IsManualAction(req.Type) {
 		return nil, &StatusError{
 			Code:    http.StatusBadRequest,
 			Message: fmt.Sprintf("action %q is not available through this endpoint", req.Type),
 		}
-	}
-
-	// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: action payload
-	// size cap. This is action_send's single implementation — HTTP API, Web
-	// UI, brokered action_send (boid_executor.go's BoidOpActionSend), and
-	// `boid action send` all funnel through ApplyAction, so checking here
-	// once covers all of them (one of the 4 mandatory entry points; see
-	// orchestrator.ValidateContentSize's own doc comment).
-	if err := orchestrator.ValidateContentSize("action payload", req.Payload); err != nil {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
-	}
-
-	task, err := s.Tasks.GetTask(taskID)
-	if err != nil {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 
 	// 決定17 (PR-5b): route `reopen` on a done/aborted TRIAGE task to the

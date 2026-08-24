@@ -218,8 +218,8 @@ func TestBoidBuiltinExecutor_ActionSend_ChildSpecced_AllowsProjectWithinWorkspac
 // still routes through unmodified — the ONLY way to wake a parked task from
 // inside the sandbox is BoidOpTaskWake.
 func TestBoidBuiltinExecutor_ActionSend_RoutesWakeActionsThroughApplyAction(t *testing.T) {
-	if orchestrator.DefaultMachine().IsManualAction("wake_triaged") || orchestrator.DefaultMachine().IsManualAction("wake_ready") {
-		t.Fatal("wake_triaged/wake_ready must stay Manual:false in the real machine (see machine.go)")
+	if orchestrator.NewCardMachine().IsManualAction("wake_triaged") || orchestrator.NewCardMachine().IsManualAction("wake_ready") {
+		t.Fatal("wake_triaged/wake_ready must stay Manual:false in the card machine (see machine_card.go)")
 	}
 	for _, actionType := range []string{"wake_triaged", "wake_ready"} {
 		store := &capturingTaskStore{created: []*orchestrator.Task{

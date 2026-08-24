@@ -102,8 +102,22 @@ func TestApplyAction_AttrsSet_Done_WithTaskTriageRow_Allowed(t *testing.T) {
 // path: pending→executing→done never touches attrs_set at all, so it would
 // never actually reach this branch in production — this test exercises the
 // GUARD directly, regardless of how such a task could arrive here) must be
-// rejected exactly like sm.Apply's existing "no transition" error, not
-// silently admitted.
+// rejected, not silently admitted.
+//
+// PR-B behavior change (docs/plans/suggestion-as-state-transition-impl.md
+// §2): the expected status code moved from 409 to 400. Before the machine
+// split, "done" always went to the one unified machine (attrs_set IS
+// Manual:true somewhere in it, for the preExecutionStatuses statuses), so
+// the request passed ApplyAction's IsManualAction gate and only failed
+// later, inside resolveAttrsSetDoneTransition's own guard, as a 409
+// ("no transition"). Now machineFor performs THE SAME task_triage lookup
+// (no row = not a card) even earlier than that, right after the task loads
+// — and routes a rowless "done" task to NewExecutionMachine, which has no
+// "attrs_set" rule AT ALL (attrs_set is card-only). So the request is
+// rejected at the IsManualAction gate itself, as a 400, before
+// resolveAttrsSetDoneTransition's own guard is ever reached. The invariant
+// itself ("no row ⇒ attrs_set does not fire") is unchanged; only the code
+// and the code path that enforces it are.
 func TestApplyAction_AttrsSet_Done_NoTaskTriageRow_Rejected(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task} // triage map left empty: no row for t1
@@ -120,8 +134,8 @@ func TestApplyAction_AttrsSet_Done_NoTaskTriageRow_Rejected(t *testing.T) {
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("error type = %T, want *StatusError", err)
 	}
-	if statusErr.Code != http.StatusConflict {
-		t.Fatalf("status code = %d, want 409 (matches sm.Apply's ordinary 'no transition' rejection)", statusErr.Code)
+	if statusErr.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400 (PR-B: machineFor's own task_triage lookup now rejects this before resolveAttrsSetDoneTransition's guard is ever reached — see this test's own doc comment)", statusErr.Code)
 	}
 }
 
@@ -131,6 +145,14 @@ func TestApplyAction_AttrsSet_Done_NoTaskTriageRow_Rejected(t *testing.T) {
 // indeterminate answer must not accidentally ADMIT the write. Uses the
 // ordinary (unmodified) newTriageWorkflowService, which deliberately leaves
 // TaskTriage nil.
+//
+// PR-B behavior change: same reasoning as
+// TestApplyAction_AttrsSet_Done_NoTaskTriageRow_Rejected above — machineFor
+// ALSO reads s.TaskTriage (the same nil field), and machineFor's OWN nil-store
+// handling falls back to NewExecutionMachine (a softer default than
+// resolveAttrsSetDoneTransition's — see machineFor's own doc comment for why
+// that asymmetry is safe), so the request is rejected earlier, as a 400, not
+// a 409.
 func TestApplyAction_AttrsSet_Done_TaskTriageStoreNotWired_Rejected(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
@@ -147,17 +169,25 @@ func TestApplyAction_AttrsSet_Done_TaskTriageStoreNotWired_Rejected(t *testing.T
 		t.Fatal("ApplyAction(attrs_set on done, TaskTriage store not wired) succeeded, want rejection")
 	}
 	var statusErr *StatusError
-	if !errors.As(err, &statusErr) || statusErr.Code != http.StatusConflict {
-		t.Fatalf("error = %v, want *StatusError{Code: 409}", err)
+	if !errors.As(err, &statusErr) || statusErr.Code != http.StatusBadRequest {
+		t.Fatalf("error = %v, want *StatusError{Code: 400} (PR-B: machineFor's nil-store fallback rejects this earlier than resolveAttrsSetDoneTransition's own guard — see this test's own doc comment)", err)
 	}
 }
 
-// TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns500 pins that a
+// TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns503 pins that a
 // GENUINE lookup failure (not sql.ErrNoRows) is surfaced as a real error
 // rather than silently reinterpreted as "no row, reject" — the same
 // ErrNoRows-vs-other split statusErrorForGetTaskErr and
 // applyAttrsSetSideEffect already use elsewhere in this file.
-func TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns500(t *testing.T) {
+//
+// PR-B behavior change: the expected status code moved from 500 to 503, and
+// the failure now originates in machineFor rather than
+// resolveAttrsSetDoneTransition — machineFor performs the identical
+// s.TaskTriage.GetTaskTriage lookup EARLIER (right after the task loads),
+// hits the same transient error first, and reports it the way
+// resolveReopenVariant already does for an indeterminate sidecar lookup
+// (503, not 500) — see machineFor's own doc comment.
+func TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns503(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task, getTaskTriageErr: errors.New("db unavailable")}
 	svc := newDoneTriageWorkflowService(task, txStore)
@@ -173,8 +203,8 @@ func TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns500(t *testing.T
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("error type = %T, want *StatusError", err)
 	}
-	if statusErr.Code != http.StatusInternalServerError {
-		t.Fatalf("status code = %d, want 500 (a genuine lookup failure must not be silently treated as rejection)", statusErr.Code)
+	if statusErr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want 503 (a genuine lookup failure must not be silently treated as rejection; PR-B moved the failing lookup into machineFor — see this test's own doc comment)", statusErr.Code)
 	}
 }
 

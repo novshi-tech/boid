@@ -69,7 +69,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_PreservesMidHookRPCWrite_ReopenScena
 		context.Background(),
 		task,
 		&orchestrator.ProjectMeta{},
-		orchestrator.DefaultMachine(),
+		orchestrator.NewExecutionMachine(),
 	)
 
 	if txStore.updatedTask == nil {
@@ -130,7 +130,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_MergesNonEmptyPayloadDeltaOntoFreshR
 		context.Background(),
 		task,
 		&orchestrator.ProjectMeta{},
-		orchestrator.DefaultMachine(),
+		orchestrator.NewExecutionMachine(),
 	)
 
 	if txStore.updatedTask == nil {

@@ -37,10 +37,20 @@ func TestTaskWorkflowServiceApplyAction_Drop_ReleasesIdentityBindings(t *testing
 // done) reachable through this same ApplyAction entry point, so it is the
 // most direct way to prove the wiring in workflow_action.go's WithinTx
 // switch calls UnlinkAllForTask for drop ONLY.
+//
+// Deliberately NOT newTriageWorkflowService here (unlike every other test in
+// this file): that helper seeds a task_triage row so machineFor picks
+// NewCardMachine (PR-B) — correct for drop (a card action) above, but wrong
+// for this test's ordinary EXECUTING task, whose "done" belongs to
+// NewExecutionMachine (NewCardMachine has no "done" rule at all).
 func TestTaskWorkflowServiceApplyAction_Done_DoesNotReleaseIdentityBindings(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
-	svc := newTriageWorkflowService(task, txStore)
+	svc := &TaskWorkflowService{
+		Tasks: &stubTaskStore{task: task},
+		Tx:    recordingTransactor{store: txStore},
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+	}
 
 	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "done"})
 	if err != nil {
