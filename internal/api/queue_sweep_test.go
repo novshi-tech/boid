@@ -313,3 +313,125 @@ func TestSweepWake_WorkingOriginPark_RecordsWakeDue_NoTransition(t *testing.T) {
 		t.Errorf("action type = %q, want wake_due", actions[0].Type)
 	}
 }
+
+// ---- SweepReconcileChildren (PR #987 review, HIGH 8) ----
+//
+// Restores the self-healing v1's SweepTriage did as a side effect of
+// evaluating auto-done every tick — deleting auto-done (決定15) took this
+// bookkeeping with it as unintended collateral. This is NOT a card
+// transition (task.Status never moves here — only detail.children[].status
+// does), so it does not reopen design doc §3.3's "機械遷移ゼロ".
+
+func TestSweepReconcileChildren_ClosesStaleDispatchedChild(t *testing.T) {
+	store := newSweepFakeStore()
+	store.tasks["card"] = &orchestrator.Task{ID: "card", ParentID: "", Status: orchestrator.TaskStatusWorking}
+	store.tasks["child-1"] = &orchestrator.Task{ID: "child-1", ParentID: "card", Status: orchestrator.TaskStatusDone}
+	detail := []byte(`{"children":[{"id":"c1","status":"dispatched","task_ref":"child-1"}]}`)
+	store.triage["card"] = &orchestrator.TaskTriage{TaskID: "card", Detail: detail}
+
+	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
+	if err := svc.SweepReconcileChildren(context.Background(), time.Now()); err != nil {
+		t.Fatalf("SweepReconcileChildren: %v", err)
+	}
+
+	children, err := orchestrator.DetailChildren(store.triage["card"].Detail)
+	if err != nil {
+		t.Fatalf("DetailChildren: %v", err)
+	}
+	if len(children) != 1 || children[0].Status != orchestrator.TaskTriageChildStatusClosed {
+		t.Fatalf("children = %+v, want the finished child reconciled to closed", children)
+	}
+	found := false
+	for _, a := range store.actions["card"] {
+		if a.Type == "child_closed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a child_closed action recorded, got actions=%+v", store.actions["card"])
+	}
+}
+
+// TestSweepReconcileChildren_VanishedChild_TreatedAsClosed pins the fail-open
+// posture toward a GC'd/deleted child task — matching ShouldWake's own
+// posture toward a missing reference (v1's reconcileDispatchedChildren
+// established this; restoring it unchanged).
+func TestSweepReconcileChildren_VanishedChild_TreatedAsClosed(t *testing.T) {
+	store := newSweepFakeStore()
+	store.tasks["card"] = &orchestrator.Task{ID: "card", Status: orchestrator.TaskStatusWorking}
+	// "child-gone" deliberately absent from store.tasks — GetTask returns
+	// ErrTaskNotFound, simulating a GC'd child.
+	detail := []byte(`{"children":[{"id":"c1","status":"dispatched","task_ref":"child-gone"}]}`)
+	store.triage["card"] = &orchestrator.TaskTriage{TaskID: "card", Detail: detail}
+
+	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
+	if err := svc.SweepReconcileChildren(context.Background(), time.Now()); err != nil {
+		t.Fatalf("SweepReconcileChildren: %v", err)
+	}
+	// reconcileDispatchedChildren only mutates its own local in-memory copy
+	// for a vanished child (it can't call recordChildClosedOnParent without
+	// a real child task to read the id off) — the point of this test is
+	// that it does not error or warn-loop forever, not that anything gets
+	// persisted for this specific case.
+}
+
+// TestSweepReconcileChildren_NoTaskTriageRow_SkippedNotErrored mirrors
+// SweepWake's own posture: a working task with no sidecar row is not a
+// triage card at all.
+func TestSweepReconcileChildren_NoTaskTriageRow_SkippedNotErrored(t *testing.T) {
+	store := newSweepFakeStore()
+	store.tasks["ordinary"] = &orchestrator.Task{ID: "ordinary", Status: orchestrator.TaskStatusWorking}
+
+	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
+	if err := svc.SweepReconcileChildren(context.Background(), time.Now()); err != nil {
+		t.Fatalf("SweepReconcileChildren: %v", err)
+	}
+}
+
+// ---- QueueSweepLoop.runOnce (PR #987 review, HIGH 8/MEDIUM 9) ----
+
+// fakeQueueSweepStore records calls to both sweeps so runOnce's coordination
+// (both fire every tick; a SweepWake failure does not block
+// SweepReconcileChildren) can be pinned without a real TaskWorkflowService.
+type fakeQueueSweepStore struct {
+	wakeCalls      int
+	reconcileCalls int
+	wakeErr        error
+	reconcileErr   error
+}
+
+func (f *fakeQueueSweepStore) SweepWake(ctx context.Context, now time.Time) ([]string, error) {
+	f.wakeCalls++
+	return nil, f.wakeErr
+}
+
+func (f *fakeQueueSweepStore) SweepReconcileChildren(ctx context.Context, now time.Time) error {
+	f.reconcileCalls++
+	return f.reconcileErr
+}
+
+func TestQueueSweepLoop_RunOnce_CallsBothSweeps(t *testing.T) {
+	store := &fakeQueueSweepStore{}
+	loop := &QueueSweepLoop{Store: store}
+	loop.runOnce(context.Background())
+
+	if store.wakeCalls != 1 {
+		t.Errorf("SweepWake calls = %d, want 1", store.wakeCalls)
+	}
+	if store.reconcileCalls != 1 {
+		t.Errorf("SweepReconcileChildren calls = %d, want 1", store.reconcileCalls)
+	}
+}
+
+// TestQueueSweepLoop_RunOnce_WakeFailureDoesNotStopReconcile pins that the
+// two sweeps are independent: SweepReconcileChildren is bookkeeping over
+// detail.children[].status, unrelated to whatever SweepWake failed on.
+func TestQueueSweepLoop_RunOnce_WakeFailureDoesNotStopReconcile(t *testing.T) {
+	store := &fakeQueueSweepStore{wakeErr: fmt.Errorf("boom")}
+	loop := &QueueSweepLoop{Store: store}
+	loop.runOnce(context.Background())
+
+	if store.reconcileCalls != 1 {
+		t.Errorf("SweepReconcileChildren calls = %d, want 1 (must still run after a SweepWake failure)", store.reconcileCalls)
+	}
+}

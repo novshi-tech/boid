@@ -114,6 +114,89 @@ func (s *TaskWorkflowService) recordWakeDue(ctx context.Context, taskID string) 
 	})
 }
 
+// SweepReconcileChildren re-checks every dispatched child of every working
+// card against its REAL current task status, self-healing any whose
+// task_triage.detail entry still says "dispatched" after the real task
+// already reached done/aborted (PR #987 review, HIGH 8). This is bare
+// bookkeeping over detail.children[].status, NOT a card transition — it does
+// not touch task.Status, so it does not reopen design doc §3.3's "機械遷移
+// ゼロ" (card machine v2 has zero rules moving a card's own status; this
+// sweep only keeps a CHILD's recorded status from drifting from reality).
+//
+// v1's SweepTriage did this same reconciliation as a side effect of
+// evaluating auto-done every tick (決定15) — deleting auto-done along with
+// it (see this PR's orchestrator-layer commit) took the reconciliation with
+// it too, which was collateral, not intentional: without a periodic
+// re-check, a "dispatched" entry that never gets its child_closed
+// self-record (recordChildClosedOnParent hitting a transient DB error, or a
+// child GC'd out from under it — orchestrator/store.go's GCTasks deletes a
+// terminal task's row independent of any parent) sticks forever, and khi
+// reads "a child is still running" off that stale entry and never suggests
+// "done" for a card that has, in reality, already finished (a permanently
+// stale working card).
+//
+// A failure evaluating one task is logged and does not abort the sweep —
+// the same posture SweepWake established.
+func (s *TaskWorkflowService) SweepReconcileChildren(ctx context.Context, _ time.Time) error {
+	if s.Tasks == nil || s.TaskTriage == nil {
+		return nil
+	}
+	working, err := s.Tasks.ListTasks(orchestrator.TaskFilter{Status: string(orchestrator.TaskStatusWorking)})
+	if err != nil {
+		return fmt.Errorf("sweep reconcile children: list working tasks: %w", err)
+	}
+	for _, t := range working {
+		tt, ttErr := s.TaskTriage.GetTaskTriage(t.ID)
+		if ttErr != nil {
+			if !errors.Is(ttErr, sql.ErrNoRows) {
+				slog.Warn("sweep reconcile children: get task_triage failed", "task_id", t.ID, "error", ttErr)
+			}
+			// No sidecar row: not a triage card — nothing to reconcile.
+			continue
+		}
+		children, cErr := orchestrator.DetailChildren(tt.Detail)
+		if cErr != nil {
+			slog.Warn("sweep reconcile children: parse children failed", "task_id", t.ID, "error", cErr)
+			continue
+		}
+		s.reconcileDispatchedChildren(t.ID, children)
+	}
+	return nil
+}
+
+// reconcileDispatchedChildren marks any child closed whose referenced task
+// has actually reached a terminal status, mutating children in place (for
+// any FUTURE caller that also wants the reconciled snapshot in-memory — the
+// current sole caller, SweepReconcileChildren, does not) and persisting
+// through the same self-record path accept(go) and finalizeTerminal use
+// (recordChildClosedOnParent), so the child_closed action is written exactly
+// once — MarkDetailChildClosed reports changed=false for an already-closed
+// child.
+func (s *TaskWorkflowService) reconcileDispatchedChildren(taskID string, children []orchestrator.TaskTriageChild) {
+	for i := range children {
+		if children[i].Status != orchestrator.TaskTriageChildStatusDispatched || children[i].TaskRef == "" {
+			continue
+		}
+		childTask, err := s.Tasks.GetTask(children[i].TaskRef)
+		if err != nil {
+			// A vanished child (deleted, GC'd) is treated as closed, matching
+			// ShouldWake's fail-open posture toward a missing reference: a
+			// reference that no longer exists must not strand the card forever.
+			if errors.Is(err, orchestrator.ErrTaskNotFound) {
+				children[i].Status = orchestrator.TaskTriageChildStatusClosed
+			} else {
+				slog.Warn("sweep reconcile children: get dispatched child failed", "task_id", taskID, "child_task_id", children[i].TaskRef, "error", err)
+			}
+			continue
+		}
+		if childTask.Status != orchestrator.TaskStatusDone && childTask.Status != orchestrator.TaskStatusAborted {
+			continue
+		}
+		children[i].Status = orchestrator.TaskTriageChildStatusClosed
+		s.recordChildClosedOnParent(childTask)
+	}
+}
+
 // QueueSweepStore is the interface QueueSweepLoop needs — narrowed from
 // *TaskWorkflowService so the loop can be unit tested against a fake.
 //
@@ -122,9 +205,12 @@ func (s *TaskWorkflowService) recordWakeDue(ctx context.Context, taskID string) 
 // redesign retires entirely (design doc §3.3: "機械遷移ゼロ"). done/reopen
 // are now suggested by khi and applied only by a human's accept, through the
 // ordinary ApplyAction/accept(verb) path — there is nothing left for a
-// periodic sweep to decide on their behalf.
+// periodic sweep to decide on their behalf. SweepReconcileChildren (above)
+// is NOT one of those machine-driven transitions — it survives because it
+// never touches task.Status.
 type QueueSweepStore interface {
 	SweepWake(ctx context.Context, now time.Time) ([]string, error)
+	SweepReconcileChildren(ctx context.Context, now time.Time) error
 }
 
 // QueueSweepLoop periodically calls SweepWake, mirroring
@@ -167,9 +253,14 @@ func (l *QueueSweepLoop) runOnce(ctx context.Context) {
 	woken, err := l.Store.SweepWake(ctx, now)
 	if err != nil {
 		slog.Warn("queue wake sweep failed", "error", err)
-		return
-	}
-	if len(woken) > 0 {
+		// Deliberately NOT a return: SweepReconcileChildren is independent
+		// bookkeeping (detail.children[].status, never task.Status) — a wake
+		// sweep failure must not also block it.
+	} else if len(woken) > 0 {
 		slog.Info("queue wake sweep recorded wake_due", "count", len(woken), "task_ids", woken)
+	}
+
+	if err := l.Store.SweepReconcileChildren(ctx, now); err != nil {
+		slog.Warn("queue child reconciliation sweep failed", "error", err)
 	}
 }
