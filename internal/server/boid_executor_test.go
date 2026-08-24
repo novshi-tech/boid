@@ -1130,7 +1130,7 @@ func TestBoidBuiltinExecutor_TaskList_AcceptsKnownStatusesAndKeywords(t *testing
 	}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
 
-	for _, status := range []string{"", "open", "closed", "queue", "triaged", "pending", "dropped"} {
+	for _, status := range []string{"", "open", "closed", "queue_next", "triage", "triaged", "pending", "dropped"} {
 		resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 			Op:        sandbox.BoidOpTaskList,
 			ProjectID: "proj-1",
@@ -1139,6 +1139,36 @@ func TestBoidBuiltinExecutor_TaskList_AcceptsKnownStatusesAndKeywords(t *testing
 		if resp.ExitCode != 0 {
 			t.Errorf("status %q: exit code = %d, want 0 (stderr=%q)", status, resp.ExitCode, resp.Stderr)
 		}
+	}
+}
+
+// TestBoidBuiltinExecutor_TaskList_RejectsRemovedQueueKeyword pins PR-2's
+// removal of the "queue" keyword (docs/plans/suggestion-as-state-transition-impl.md
+// §4.1): it was a broad pre-execution-status superset the Web UI never
+// actually used (only "queue_next"/"parked"/"open"/"closed" ever reach
+// web.go's TaskList) and store.go's ListTasks has no dedicated branch for it
+// anymore. Rejecting it outright — rather than silently falling through to
+// the generic `t.status = 'queue'` literal match, which can never match any
+// real row — surfaces the removal as a clear error instead of a silently
+// empty list.
+func TestBoidBuiltinExecutor_TaskList_RejectsRemovedQueueKeyword(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpTaskList,
+		ProjectID: "proj-1",
+		Status:    "queue",
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf(`status "queue": exit code = %d, want 1 (stderr=%q)`, resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stderr, "unknown status") {
+		t.Fatalf(`status "queue": stderr = %q, want mention of unknown status`, resp.Stderr)
 	}
 }
 

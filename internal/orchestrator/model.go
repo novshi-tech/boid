@@ -40,9 +40,15 @@ const (
 	//     notOpenSelfStatusSQLList's own doc comment — so "pre-execution
 	//     statuses are excluded" is no longer true of the whole group;
 	//     triaged/parked/ready remain the excluded ones.)
-	//   - does NOT appear in the "queue" filter (preExecutionStatusSQLList) —
-	//     queue is for things nose still needs to respond to (決定9); a
-	//     working task has already been responded to (Go'd).
+	//   - historically did NOT appear in the "queue" filter
+	//     (preExecutionStatusSQLList) — queue was for things nose still
+	//     needed to respond to (決定9), and a working task has already been
+	//     responded to (Go'd). That broad "queue" superset filter was removed
+	//     in PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1,
+	//     unused by the Web UI); its replacement, "queue_next", is now
+	//     suggestion-driven (store.go) — a working card DOES appear there if
+	//     it carries a suggestion (e.g. khi suggesting "done" or "park" on
+	//     in-progress work), unlike the old status-based exclusion.
 	//   - is NOT GC'd via the pre-execution "keep forever" carve-out; it
 	//     follows the same non-terminal "never auto-GC'd" rule executing/
 	//     awaiting already get, which is the correct default until PR-3's

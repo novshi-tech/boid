@@ -45,8 +45,10 @@ func (h *TriageHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 // List returns the projections of the triage tasks matching the query
 // filters. project_id and status are passed straight through to the same
-// orchestrator.TaskFilter the task listing uses, so "queue"/"queue_next" and
-// any concrete status value all work here too.
+// orchestrator.TaskFilter the task listing uses, so "triage"/"queue_next"
+// and any concrete status value all work here too ("queue", the old broad
+// pre-execution-status superset, was removed in PR-2 — docs/plans/
+// suggestion-as-state-transition-impl.md §4.1).
 func (h *TriageHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	views, err := h.Service.ListTriage(orchestrator.TaskFilter{

@@ -258,8 +258,9 @@ func applyChildSpeccedSideEffect(tx TxStore, taskID string, p *childSpeccedPaylo
 // suggestion-as-state-transition-impl.md §4.1).
 //
 // Why these are not opaque like every other attrs key: each one IS a queue
-// predicate. ListTasks("queue_next") INNER JOINs task_triage and filters/orders
-// on tt.urgency and (since PR-2) tt.suggestion_verb (store.go) — so a value
+// predicate. ListTasks("queue_next") INNER JOINs task_triage, filters on
+// tt.suggestion_verb (the membership gate since PR-2) and orders by
+// tt.urgency (an ordering-only attribute since PR-2 — store.go) — so a value
 // that only ever reaches detail.attrs can never affect the queue. Before
 // PR-5a nothing wrote the urgency column at all, which left the queue view
 // permanently empty; the same gap existed for suggestion_verb before PR-2.

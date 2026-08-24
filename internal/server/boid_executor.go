@@ -160,12 +160,21 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 // validateTaskListStatus rejects status values ListTasks doesn't understand
 // before they reach the DB layer, where they were previously passed through
 // unvalidated (docs/plans/cross-project-issue-triage.md Phase 1 実測結果 項10).
-// Empty (no filter), the special keywords ("open"/"closed"/"queue"/
-// "queue_next" — PR-3's narrower urgency-aware queue membership predicate,
-// see store.go's ListTasks), and any exact orchestrator.TaskStatus value are
-// accepted.
+// Empty (no filter), the special keywords ("open"/"closed"/"queue_next" —
+// now a suggestion_verb-driven predicate, PR-2, docs/plans/
+// suggestion-as-state-transition-impl.md §4.1, see store.go's ListTasks —
+// /"triage"), and any exact orchestrator.TaskStatus value are accepted.
+//
+// "queue" (the old broad pre-execution-status superset, PR-1 of
+// cross-project-issue-triage.md) is REMOVED as of PR-2: the Web UI never
+// used it (only queue_next/parked/open/closed reach web.go's TaskList) and
+// store.go's ListTasks no longer has a dedicated branch for it. Rejecting it
+// here surfaces the removal as a clear "unknown status" error rather than
+// silently falling through to the generic `t.status = 'queue'` literal
+// match, which can never match any real row and would otherwise look like a
+// permanently-empty list instead of an error.
 func validateTaskListStatus(status string) error {
-	if status == "" || status == "open" || status == "closed" || status == "queue" || status == "queue_next" || status == "triage" {
+	if status == "" || status == "open" || status == "closed" || status == "queue_next" || status == "triage" {
 		return nil
 	}
 	if _, ok := orchestrator.ParseTaskStatus(status); ok {
