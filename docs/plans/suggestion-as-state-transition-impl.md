@@ -221,12 +221,20 @@ card 機械の遷移 action (go/working/park/drop/done/reopen) は Manual:true �
 
 1. **事前確認**: `podman ps --filter name=boid-job` — デプロイは実行中 job を全 reap
    する。動いていたら待つか止める
-2. **旧 card の手仕舞い（drop で終端することを推奨）**: 現 daemon のまま、全 card
-   (~9 枚) を終端させる。**drop で終端させるのが手数が少ない** — 理由は手順3参照。
-   working の card は先に park してから drop するか、直接 drop する
-   （card machine v2 は drop を parked からしか受け付けないため、working の
-   card は一度 park を挟む）。done で終端させることも機構としては可能だが、
-   その場合は手順3の unlink が**必須**になる（省くと洗い替えが壊れる）。
+2. **旧 card の手仕舞い（drop で終端することを推奨）**: **この手順は現 daemon
+   （手順4でまだデプロイされていない、今動いている v1）のまま実行する** —
+   つまりここで操作対象になる card 状態機械は v2 (`machine_card.go`) ではなく
+   旧・統合機械 (旧 `machine.go`、PR-B で分離される前のもの) であることに
+   注意。全 card (~9 枚) を終端させる。**drop で終端させるのが手数が少ない**
+   — 理由は手順3参照。working の card は**先に park してから drop する**
+   （working から直接 drop はできない — v1 の drop rule は
+   captured/triaged/parked/ready からしか登録されておらず working は無い。
+   v2 の card machine v2 も drop は parked からのみで、working からは
+   打てない点は同じ制約。park は working→parked の Manual rule として v1 に
+   既に存在し、Web UI の `AvailableActions` に「Park」ボタンとして出るので、
+   working の card は Park → Drop の2クリックで手仕舞いできる）。done で
+   終端させることも機構としては可能だが、その場合は手順3の unlink が
+   **必須**になる（省くと洗い替えが壊れる）。
 3. **identity の扱い（手順2でどちらを選んだかに依存）**:
    - **drop で終端させた場合**: `UnlinkAllForTask` が drop 適用と同じ Tx で
      identity を自動解放する — 直接 drop
