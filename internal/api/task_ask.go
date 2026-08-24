@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -261,11 +262,21 @@ func (s *TaskAppService) answerBlocking(ctx context.Context, task *orchestrator.
 
 // fireUserAskNotification sends the user-facing Q&A notification for a blocking
 // ask. Mirrors NotifyTask's ask branch but is deliberately separate so the
-// blocking path never calls StopAgent (the agent must stay alive). Child tasks
-// (parent_id != "") never page the user — their supervisor's monitoring loop
-// notices the awaiting transition — matching the lifecycle-accountability gate.
+// blocking path never calls StopAgent (the agent must stay alive).
+//
+// A child task is silenced only when its parent still has a live agent that
+// could notice the awaiting transition itself. The rule used to be the blunter
+// `task.ParentID != "" → never notify`, on the stated grounds that "their
+// supervisor's monitoring loop notices" — but that assumed every parent runs
+// such a loop. A triage card does not run an agent at all, so its children's
+// asks were unpageable: on 2026-08-24 four of them in a row went out with no
+// notification, and were answered only because a human was watching the task
+// list at the time.
 func (s *TaskAppService) fireUserAskNotification(ctx context.Context, task *orchestrator.Task, question, questionID string) {
-	if task.ParentID != "" || s.Notify == nil {
+	if s.Notify == nil {
+		return
+	}
+	if task.ParentID != "" && s.parentHasLiveAgent(task.ParentID) {
 		return
 	}
 	ev := notify.Event{
@@ -283,6 +294,33 @@ func (s *TaskAppService) fireUserAskNotification(ctx context.Context, task *orch
 	if err := s.Notify.Notify(ctx, ev); err != nil {
 		slog.Warn("blocking ask: user notification failed", "task_id", task.ID, "error", err)
 	}
+}
+
+// parentHasLiveAgent reports whether parentID still has a running job — the
+// only thing that can make "the parent's own loop will notice" true.
+//
+// Every failure mode answers false, i.e. notify. An unreadable parent is the
+// same shape as khi's behaviors_of returning None: it means "could not tell",
+// not "there is a watcher". Guessing wrong toward silence recreates the bug
+// this function exists to close (an ask nobody is told about, reaped 30
+// minutes later by the disconnect grace); guessing wrong toward noise costs
+// one redundant notification.
+func (s *TaskAppService) parentHasLiveAgent(parentID string) bool {
+	if s.Jobs == nil {
+		return false
+	}
+	jobs, err := s.Jobs.ListJobsByTask(parentID)
+	if err != nil {
+		slog.Warn("blocking ask: could not read parent's jobs; notifying the user",
+			"parent_id", parentID, "error", err)
+		return false
+	}
+	for _, j := range jobs {
+		if j != nil && j.Status == apiwire.JobStatusRunning {
+			return true
+		}
+	}
+	return false
 }
 
 // abortDanglingAsk transitions a task out of awaiting to aborted when its

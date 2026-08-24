@@ -2126,6 +2126,15 @@ func TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.Status
 // TaskDetailAwaitingBanner is the call-to-action shown at the top of the
 // timeline tab when the task is in the awaiting state. It links to the
 // dedicated Q&A page for the current question turn so the user can answer.
+//
+// Child tasks get the banner too. It used to be gated on `task.ParentID ==
+// ""`, mirroring the ask notification's own "a supervisor will notice this"
+// assumption — but a triage card runs no agent, so its children's questions
+// had neither a notification nor a link. QuestionPage and POST
+// /tasks/{id}/answer never carried the restriction, so the answer was always
+// reachable by typing the URL; only the way in was missing. Whether anyone is
+// watching decides whether to PAGE the user (fireUserAskNotification), not
+// whether a page the user already opened should offer the form.
 func TaskDetailAwaitingBanner(task *orchestrator.Task) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -2148,7 +2157,7 @@ func TaskDetailAwaitingBanner(task *orchestrator.Task) templ.Component {
 		}
 		ctx = templ.ClearChildren(ctx)
 		ap := orchestrator.GetAwaitingPayload(task.Payload)
-		if ap.QuestionID != "" && task.ParentID == "" {
+		if ap.QuestionID != "" {
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 149, "<a class=\"awaiting-banner\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -2156,7 +2165,7 @@ func TaskDetailAwaitingBanner(task *orchestrator.Task) templ.Component {
 			var templ_7745c5c3_Var98 templ.SafeURL
 			templ_7745c5c3_Var98, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + task.ID + "/questions/" + ap.QuestionID))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 797, Col: 102}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 806, Col: 102}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var98))
 			if templ_7745c5c3_Err != nil {
@@ -2235,7 +2244,7 @@ func TaskDetailJobsSection(task *orchestrator.Task, jobs []*JobView) templ.Compo
 				var templ_7745c5c3_Var100 templ.SafeURL
 				templ_7745c5c3_Var100, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/jobs/" + job.ID))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 844, Col: 50}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 853, Col: 50}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var100))
 				if templ_7745c5c3_Err != nil {
@@ -2248,7 +2257,7 @@ func TaskDetailJobsSection(task *orchestrator.Task, jobs []*JobView) templ.Compo
 				var templ_7745c5c3_Var101 string
 				templ_7745c5c3_Var101, templ_7745c5c3_Err = templ.JoinStringErrs(shortID(job.ID))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 844, Col: 85}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 853, Col: 85}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var101))
 				if templ_7745c5c3_Err != nil {
@@ -2283,7 +2292,7 @@ func TaskDetailJobsSection(task *orchestrator.Task, jobs []*JobView) templ.Compo
 				var templ_7745c5c3_Var104 string
 				templ_7745c5c3_Var104, templ_7745c5c3_Err = templ.JoinStringErrs(displayStatus)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 845, Col: 70}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 854, Col: 70}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var104))
 				if templ_7745c5c3_Err != nil {
@@ -2296,7 +2305,7 @@ func TaskDetailJobsSection(task *orchestrator.Task, jobs []*JobView) templ.Compo
 				var templ_7745c5c3_Var105 string
 				templ_7745c5c3_Var105, templ_7745c5c3_Err = templ.JoinStringErrs(job.Role)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 846, Col: 24}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 855, Col: 24}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var105))
 				if templ_7745c5c3_Err != nil {
@@ -2314,7 +2323,7 @@ func TaskDetailJobsSection(task *orchestrator.Task, jobs []*JobView) templ.Compo
 					var templ_7745c5c3_Var106 string
 					templ_7745c5c3_Var106, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%d", job.ExitCode))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 848, Col: 72}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 857, Col: 72}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var106))
 					if templ_7745c5c3_Err != nil {
@@ -2332,7 +2341,7 @@ func TaskDetailJobsSection(task *orchestrator.Task, jobs []*JobView) templ.Compo
 				var templ_7745c5c3_Var107 string
 				templ_7745c5c3_Var107, templ_7745c5c3_Err = templ.JoinStringErrs(job.CreatedAt.Local().Format("2006-01-02 15:04:05"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 851, Col: 87}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 860, Col: 87}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var107))
 				if templ_7745c5c3_Err != nil {
@@ -2345,7 +2354,7 @@ func TaskDetailJobsSection(task *orchestrator.Task, jobs []*JobView) templ.Compo
 				var templ_7745c5c3_Var108 string
 				templ_7745c5c3_Var108, templ_7745c5c3_Err = templ.JoinStringErrs(job.UpdatedAt.Local().Format("15:04:05"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 851, Col: 136}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 860, Col: 136}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var108))
 				if templ_7745c5c3_Err != nil {
@@ -2363,7 +2372,7 @@ func TaskDetailJobsSection(task *orchestrator.Task, jobs []*JobView) templ.Compo
 					var templ_7745c5c3_Var109 string
 					templ_7745c5c3_Var109, templ_7745c5c3_Err = templ.JoinStringErrs(job.Output)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 855, Col: 26}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 864, Col: 26}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var109))
 					if templ_7745c5c3_Err != nil {
@@ -2427,7 +2436,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 		var templ_7745c5c3_Var111 string
 		templ_7745c5c3_Var111, templ_7745c5c3_Err = templ.JoinStringErrs(task.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 873, Col: 43}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 882, Col: 43}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var111))
 		if templ_7745c5c3_Err != nil {
@@ -2488,7 +2497,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 				var templ_7745c5c3_Var112 string
 				templ_7745c5c3_Var112, templ_7745c5c3_Err = templ.JoinStringErrs(yamlStr)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 977, Col: 40}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 986, Col: 40}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var112))
 				if templ_7745c5c3_Err != nil {
@@ -2523,7 +2532,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 					var templ_7745c5c3_Var113 string
 					templ_7745c5c3_Var113, templ_7745c5c3_Err = templ.JoinStringErrs(entry.Label)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 988, Col: 43}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 997, Col: 43}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var113))
 					if templ_7745c5c3_Err != nil {
@@ -2536,7 +2545,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 					var templ_7745c5c3_Var114 string
 					templ_7745c5c3_Var114, templ_7745c5c3_Err = templ.JoinStringErrs(inst.Agent)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 990, Col: 77}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 999, Col: 77}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var114))
 					if templ_7745c5c3_Err != nil {
@@ -2554,7 +2563,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 						var templ_7745c5c3_Var115 string
 						templ_7745c5c3_Var115, templ_7745c5c3_Err = templ.JoinStringErrs(inst.Model)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 992, Col: 78}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1001, Col: 78}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var115))
 						if templ_7745c5c3_Err != nil {
@@ -2573,7 +2582,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 						var templ_7745c5c3_Var116 string
 						templ_7745c5c3_Var116, templ_7745c5c3_Err = templ.JoinStringErrs(inst.Name)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 995, Col: 76}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1004, Col: 76}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var116))
 						if templ_7745c5c3_Err != nil {
@@ -2596,7 +2605,7 @@ func TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Statu
 						var templ_7745c5c3_Var117 string
 						templ_7745c5c3_Var117, templ_7745c5c3_Err = templ.JoinStringErrs(inst.Message)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 999, Col: 62}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1008, Col: 62}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var117))
 						if templ_7745c5c3_Err != nil {
@@ -2722,7 +2731,7 @@ func detailTabLink(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var121 templ.SafeURL
 		templ_7745c5c3_Var121, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + taskID + "?tab=" + tab))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1056, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1065, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var121))
 		if templ_7745c5c3_Err != nil {
@@ -2735,7 +2744,7 @@ func detailTabLink(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var122 string
 		templ_7745c5c3_Var122, templ_7745c5c3_Err = templ.JoinStringErrs("/tasks/" + taskID + "?tab=" + tab)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1057, Col: 45}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1066, Col: 45}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var122))
 		if templ_7745c5c3_Err != nil {
@@ -2748,7 +2757,7 @@ func detailTabLink(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var123 string
 		templ_7745c5c3_Var123, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1061, Col: 9}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1070, Col: 9}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var123))
 		if templ_7745c5c3_Err != nil {
@@ -2808,7 +2817,7 @@ func detailMoreItem(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var127 templ.SafeURL
 		templ_7745c5c3_Var127, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + taskID + "?tab=" + tab))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1067, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1076, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var127))
 		if templ_7745c5c3_Err != nil {
@@ -2821,7 +2830,7 @@ func detailMoreItem(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var128 string
 		templ_7745c5c3_Var128, templ_7745c5c3_Err = templ.JoinStringErrs("/tasks/" + taskID + "?tab=" + tab)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1068, Col: 45}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1077, Col: 45}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var128))
 		if templ_7745c5c3_Err != nil {
@@ -2834,7 +2843,7 @@ func detailMoreItem(taskID, tab, label, activeTab string) templ.Component {
 		var templ_7745c5c3_Var129 string
 		templ_7745c5c3_Var129, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1072, Col: 9}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1081, Col: 9}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var129))
 		if templ_7745c5c3_Err != nil {
@@ -2913,7 +2922,7 @@ func TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.St
 		var templ_7745c5c3_Var133 templ.SafeURL
 		templ_7745c5c3_Var133, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + task.ID + "?tab=" + subTab))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1089, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1098, Col: 65}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var133))
 		if templ_7745c5c3_Err != nil {
@@ -2926,7 +2935,7 @@ func TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.St
 		var templ_7745c5c3_Var134 string
 		templ_7745c5c3_Var134, templ_7745c5c3_Err = templ.JoinStringErrs("/tasks/" + task.ID + "?tab=" + subTab)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1090, Col: 52}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1099, Col: 52}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var134))
 		if templ_7745c5c3_Err != nil {
@@ -2939,7 +2948,7 @@ func TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.St
 		var templ_7745c5c3_Var135 string
 		templ_7745c5c3_Var135, templ_7745c5c3_Err = templ.JoinStringErrs(subLabel)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1094, Col: 15}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1103, Col: 15}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var135))
 		if templ_7745c5c3_Err != nil {
@@ -3080,7 +3089,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 				var templ_7745c5c3_Var140 string
 				templ_7745c5c3_Var140, templ_7745c5c3_Err = templ.JoinStringErrs(errorMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1125, Col: 39}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1134, Col: 39}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var140))
 				if templ_7745c5c3_Err != nil {
@@ -3098,7 +3107,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 			var templ_7745c5c3_Var141 templ.SafeURL
 			templ_7745c5c3_Var141, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + task.ID + "/edit"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1128, Col: 96}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1137, Col: 96}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var141))
 			if templ_7745c5c3_Err != nil {
@@ -3111,7 +3120,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 			var templ_7745c5c3_Var142 string
 			templ_7745c5c3_Var142, templ_7745c5c3_Err = templ.JoinStringErrs(task.Title)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1131, Col: 55}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1140, Col: 55}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var142))
 			if templ_7745c5c3_Err != nil {
@@ -3130,7 +3139,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 					var templ_7745c5c3_Var143 string
 					templ_7745c5c3_Var143, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1139, Col: 28}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1148, Col: 28}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var143))
 					if templ_7745c5c3_Err != nil {
@@ -3143,7 +3152,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 					var templ_7745c5c3_Var144 string
 					templ_7745c5c3_Var144, templ_7745c5c3_Err = templ.JoinStringErrs(projectOptionLabel(p))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1139, Col: 63}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1148, Col: 63}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var144))
 					if templ_7745c5c3_Err != nil {
@@ -3161,7 +3170,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 					var templ_7745c5c3_Var145 string
 					templ_7745c5c3_Var145, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1141, Col: 28}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1150, Col: 28}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var145))
 					if templ_7745c5c3_Err != nil {
@@ -3174,7 +3183,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 					var templ_7745c5c3_Var146 string
 					templ_7745c5c3_Var146, templ_7745c5c3_Err = templ.JoinStringErrs(projectOptionLabel(p))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1141, Col: 54}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1150, Col: 54}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var146))
 					if templ_7745c5c3_Err != nil {
@@ -3193,7 +3202,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 			var templ_7745c5c3_Var147 string
 			templ_7745c5c3_Var147, templ_7745c5c3_Err = templ.JoinStringErrs(task.RemoteID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1148, Col: 100}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1157, Col: 100}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var147))
 			if templ_7745c5c3_Err != nil {
@@ -3206,7 +3215,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 			var templ_7745c5c3_Var148 string
 			templ_7745c5c3_Var148, templ_7745c5c3_Err = templ.JoinStringErrs(task.Description)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1152, Col: 80}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1161, Col: 80}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var148))
 			if templ_7745c5c3_Err != nil {
@@ -3224,7 +3233,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 			var templ_7745c5c3_Var149 string
 			templ_7745c5c3_Var149, templ_7745c5c3_Err = templ.JoinStringErrs(instrActiveField(active, "message"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1157, Col: 149}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1166, Col: 149}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var149))
 			if templ_7745c5c3_Err != nil {
@@ -3237,7 +3246,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 			var templ_7745c5c3_Var150 string
 			templ_7745c5c3_Var150, templ_7745c5c3_Err = templ.JoinStringErrs(instrActiveField(active, "model"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1161, Col: 133}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1170, Col: 133}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var150))
 			if templ_7745c5c3_Err != nil {
@@ -3250,7 +3259,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 			var templ_7745c5c3_Var151 string
 			templ_7745c5c3_Var151, templ_7745c5c3_Err = templ.JoinStringErrs(instrActiveField(active, "agent"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1165, Col: 123}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1174, Col: 123}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var151))
 			if templ_7745c5c3_Err != nil {
@@ -3263,7 +3272,7 @@ func TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, err
 			var templ_7745c5c3_Var152 templ.SafeURL
 			templ_7745c5c3_Var152, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + task.ID))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1172, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1181, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var152))
 			if templ_7745c5c3_Err != nil {
