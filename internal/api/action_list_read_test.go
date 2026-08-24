@@ -45,10 +45,10 @@ func newActionListTestService(t *testing.T) (*TaskWorkflowService, *orchestrator
 			BaseBranch:          "main",
 		}},
 		// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2):
-		// machineFor needs this to pick NewCardMachine for the
-		// captured-status card tasks these tests create — same taskRepo,
-		// which already implements TaskTriageStore (wire.go wires it
-		// identically in production).
+		// machineFor needs this to pick NewCardMachine for the parked-status
+		// card tasks these tests create — same taskRepo, which already
+		// implements TaskTriageStore (wire.go wires it identically in
+		// production).
 		TaskTriage: taskRepo,
 	}
 	return svc, taskRepo
@@ -70,7 +70,7 @@ func TestListActions_Unscoped_Rejected(t *testing.T) {
 // verification item, exercised end to end rather than at either layer alone.
 func TestListActions_NotedRoundTrips(t *testing.T) {
 	svc, taskRepo := newActionListTestService(t)
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusCaptured, Behavior: "triage"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusParked, Behavior: "triage"}
 	if err := taskRepo.CreateTask(task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestListActions_NotedRoundTrips(t *testing.T) {
 // proj-2's actions, even when both exist in the same daemon.
 func TestListActions_ProjectScoping_NeverLeaksOtherProject(t *testing.T) {
 	svc, taskRepo := newActionListTestService(t)
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Status: orchestrator.TaskStatusCaptured, Behavior: "triage"}
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Status: orchestrator.TaskStatusParked, Behavior: "triage"}
 	if err := taskRepo.CreateTask(task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestListActions_ProjectScoping_NeverLeaksOtherProject(t *testing.T) {
 	if err := taskRepo.SeedTaskTriage(task1.ID); err != nil {
 		t.Fatalf("seed task_triage for task1: %v", err)
 	}
-	task2 := &orchestrator.Task{ProjectID: "proj-2", Title: "T2", Status: orchestrator.TaskStatusCaptured, Behavior: "triage"}
+	task2 := &orchestrator.Task{ProjectID: "proj-2", Title: "T2", Status: orchestrator.TaskStatusParked, Behavior: "triage"}
 	if err := taskRepo.CreateTask(task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestListActions_ProjectScoping_NeverLeaksOtherProject(t *testing.T) {
 // path (multiple ApplyAction calls, not hand-inserted rows).
 func TestListActions_CursorMonotonic_AcrossRealApplyActionCalls(t *testing.T) {
 	svc, taskRepo := newActionListTestService(t)
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusCaptured, Behavior: "triage"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusParked, Behavior: "triage"}
 	if err := taskRepo.CreateTask(task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}

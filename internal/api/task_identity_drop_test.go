@@ -15,11 +15,13 @@ import (
 )
 
 func TestTaskWorkflowServiceApplyAction_Drop_ReleasesIdentityBindings(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
-	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "drop"})
+	// drop is a card-lifecycle transition (穴11 push-down defense,
+	// workflow_action.go) — actor must be human.
+	result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "drop"})
 	if err != nil {
 		t.Fatalf("ApplyAction(drop): %v", err)
 	}
@@ -42,7 +44,12 @@ func TestTaskWorkflowServiceApplyAction_Drop_ReleasesIdentityBindings(t *testing
 // this file): that helper seeds a task_triage row so machineFor picks
 // NewCardMachine (PR-B) — correct for drop (a card action) above, but wrong
 // for this test's ordinary EXECUTING task, whose "done" belongs to
-// NewExecutionMachine (NewCardMachine has no "done" rule at all).
+// NewExecutionMachine. Card machine v2 DOES have its own "done" rule
+// (working→done, orchestrator.IsCardTransitionAction) — the two "done"s are
+// disjoint by FromStatus (executing vs working), which is exactly why this
+// test must stay on the execution-machine wiring to prove the identity-drop
+// side effect is keyed off the ACTION being "drop" specifically, not off
+// "which machine happened to be selected".
 func TestTaskWorkflowServiceApplyAction_Done_DoesNotReleaseIdentityBindings(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}

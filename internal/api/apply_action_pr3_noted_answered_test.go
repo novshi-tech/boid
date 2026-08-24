@@ -34,7 +34,7 @@ func TestApplyAction_Noted_PassesThroughArbitraryJSONPayloadUnvalidated(t *testi
 		`null`,            // null
 	}
 	for _, payload := range shapes {
-		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 		txStore := &recordingTxStore{task: task}
 		svc := newTriageWorkflowService(task, txStore)
 
@@ -45,8 +45,8 @@ func TestApplyAction_Noted_PassesThroughArbitraryJSONPayloadUnvalidated(t *testi
 		if err != nil {
 			t.Fatalf("ApplyAction(noted) payload=%s: unexpected error: %v", payload, err)
 		}
-		if result.Task.Status != orchestrator.TaskStatusTriaged {
-			t.Fatalf("payload=%s: status = %q, want unchanged (triaged)", payload, result.Task.Status)
+		if result.Task.Status != orchestrator.TaskStatusParked {
+			t.Fatalf("payload=%s: status = %q, want unchanged (parked)", payload, result.Task.Status)
 		}
 		if len(txStore.actions) != 1 {
 			t.Fatalf("payload=%s: actions recorded = %d, want 1", payload, len(txStore.actions))
@@ -58,7 +58,7 @@ func TestApplyAction_Noted_PassesThroughArbitraryJSONPayloadUnvalidated(t *testi
 }
 
 func TestApplyAction_Noted_RejectsInvalidJSON(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -75,7 +75,7 @@ func TestApplyAction_Noted_RejectsInvalidJSON(t *testing.T) {
 }
 
 func TestApplyAction_Noted_EmptyPayloadIsAccepted(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -114,7 +114,7 @@ func TestApplyAction_Noted_DoesNotWriteTaskRowOrPollutePayload(t *testing.T) {
 func TestApplyAction_Answered_RequiresValidAnswer(t *testing.T) {
 	cases := []string{"", "maybe", "ACCEPT", "accept "}
 	for _, answer := range cases {
-		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 		txStore := &recordingTxStore{task: task}
 		svc := newTriageWorkflowService(task, txStore)
 
@@ -130,7 +130,7 @@ func TestApplyAction_Answered_RequiresValidAnswer(t *testing.T) {
 }
 
 func TestApplyAction_Answered_MissingPayloadRejected(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -140,20 +140,46 @@ func TestApplyAction_Answered_MissingPayloadRejected(t *testing.T) {
 	}
 }
 
-// TestApplyAction_Answered_VerbBasisRecordedButNotValidated pins J-7: verb
-// and basis are recorded verbatim (even nonsense values) — the daemon never
-// cross-checks them against anything.
+// TestApplyAction_Answered_VerbBasisRecordedButNotValidated pins J-7: the
+// answered PAYLOAD's own verb/basis fields (what the Web UI's hidden form
+// fields last displayed) are recorded verbatim, even when they don't match
+// the CARD's real current suggestion — the daemon never cross-checks them.
+// Unlike v1 (where accept never applied anything, so the payload's verb was
+// pure metadata), v2's accept(verb) actually decides what transition fires
+// by reading the REAL suggestion from task_triage.detail (§3.1) — never from
+// this payload — so this test sets up a real suggestion (verb="drop") that
+// disagrees with the payload's fabricated verb to prove which one wins.
 func TestApplyAction_Answered_VerbBasisRecordedButNotValidated(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{task: task}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{
+		task: task,
+		triage: map[string]*orchestrator.TaskTriage{
+			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"drop"}}}`)},
+		},
+	}
 	svc := newTriageWorkflowService(task, txStore)
 
 	payload := []byte(`{"answer":"accept","verb":"totally-made-up-verb","basis":""}`)
-	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload}); err != nil {
-		t.Fatalf("ApplyAction(answered): unexpected error for an unvetted verb: %v", err)
+	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
+	result, err := svc.ApplyAction(ctx, task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+	if err != nil {
+		t.Fatalf("ApplyAction(answered): unexpected error for an unvetted payload verb: %v", err)
 	}
-	if len(txStore.actions) != 1 || string(txStore.actions[0].Payload) != string(payload) {
-		t.Errorf("recorded action payload = %s, want verbatim %s", txStore.actions[0].Payload, payload)
+	if result.Task.Status != orchestrator.TaskStatusDropped {
+		t.Fatalf("status = %q, want dropped (driven by the REAL suggestion's verb, not the payload's fabricated one)", result.Task.Status)
+	}
+
+	var found bool
+	for _, a := range txStore.actions {
+		if a.Type == "answered" {
+			found = true
+			if string(a.Payload) != string(payload) {
+				t.Errorf("recorded answered action payload = %s, want verbatim %s", a.Payload, payload)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected an \"answered\" action recorded, got actions=%+v", txStore.actions)
 	}
 }
 
@@ -174,7 +200,7 @@ func TestApplyAction_Answered_StripsSuggestion_Reject(t *testing.T) {
 
 func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	t.Helper()
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.TaskTriage{
@@ -187,12 +213,23 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	svc := newTriageWorkflowService(task, txStore)
 
 	payload, _ := json.Marshal(map[string]string{"answer": answer, "verb": "go", "basis": "issue #42"})
-	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
+	result, err := svc.ApplyAction(ctx, task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
 	if err != nil {
 		t.Fatalf("ApplyAction(answered, answer=%s): %v", answer, err)
 	}
-	if result.Task.Status != orchestrator.TaskStatusTriaged {
-		t.Fatalf("status = %q, want unchanged (triaged)", result.Task.Status)
+
+	// reject never transitions (unchanged from v1); accept applies the
+	// suggestion's own verb ("go": parked->working, no specced children in
+	// this fixture so acceptGo needs no TaskCreator) BEFORE stripping it
+	// (design doc §3.1) — a real behavior change from v1, where accept was a
+	// no-op besides the strip.
+	wantStatus := orchestrator.TaskStatusParked
+	if answer == answeredAnswerAccept {
+		wantStatus = orchestrator.TaskStatusWorking
+	}
+	if result.Task.Status != wantStatus {
+		t.Fatalf("answer=%s: status = %q, want %q", answer, result.Task.Status, wantStatus)
 	}
 
 	tt := txStore.triage["t1"]
@@ -210,8 +247,11 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	if _, present := m["attrs"]["kept_key"]; !present {
 		t.Errorf("answer=%s: unrelated attrs key was dropped too, want only suggestion removed: %s", answer, tt.Detail)
 	}
-	if txStore.updatedTask != nil {
-		t.Fatalf("answered called tx.UpdateTask (updatedTask=%+v), want no task-row write", txStore.updatedTask)
+	if answer == answeredAnswerReject && txStore.updatedTask != nil {
+		t.Fatalf("reject called tx.UpdateTask (updatedTask=%+v), want no task-row write (reject never transitions)", txStore.updatedTask)
+	}
+	if answer == answeredAnswerAccept && (txStore.updatedTask == nil || txStore.updatedTask.Status != orchestrator.TaskStatusWorking) {
+		t.Fatalf("accept must commit the go transition via tx.UpdateTask, got updatedTask=%+v", txStore.updatedTask)
 	}
 	if string(result.Task.Payload) != `{}` {
 		t.Fatalf("task.Payload = %s, want untouched (answered must not merge into task.Payload)", result.Task.Payload)
@@ -242,7 +282,7 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 // applyAnsweredSideEffect's own no-op-on-miss behavior means no phantom row
 // gets created either.
 func TestApplyAction_Answered_NoTaskTriageRow_PreExecutionStatus_StillSucceeds(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},

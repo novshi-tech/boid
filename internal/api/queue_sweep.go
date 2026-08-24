@@ -6,31 +6,33 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// SweepWake implements queue の決定論的評価 節 rule 1 (wake 評価) as a
-// periodic, decision-only sweep (決定12: no agent judgment — clock + task DB
-// only). For every parked task it evaluates orchestrator.ShouldWake against
-// wall-clock now and (when wake_task_id is set) that task's current status,
-// and calls Wake for any that qualify.
+// SweepWake implements 決定12's wake evaluation as a periodic, decision-only
+// sweep (clock + task DB only, no agent judgment) — REDUCED, as of card
+// machine v2 (docs/plans/suggestion-as-state-transition-impl.md §3.4, §C),
+// to a pure fact-recording role. v1's SweepWake resolved a parked task's
+// origin (via ParkedFrom) and applied the matching wake_triaged/wake_ready/
+// wake_working transition itself — the daemon deciding, on its own, what a
+// re-surfaced card should become. Design doc §3.3's "機械遷移ゼロ" retires
+// that: v2's card machine has exactly one park origin (working) and no
+// wake_* rules at all, so there is nothing left to resolve. SweepWake now
+// only records that orchestrator.ShouldWake fired (recordWakeDue) — a
+// wake_due action, no transition, no suggestion. khi reads wake_due off the
+// action log and decides what (if anything) to suggest.
 //
-// A failure evaluating or waking one task is logged and does not abort the
-// sweep — a single malformed task_triage row or a transient Wake conflict
-// (e.g. concurrent park/wake racing with a direct nose action) must not
-// block wake evaluation for every other parked task. Returns the ids of
-// tasks that were successfully woken.
+// A failure evaluating or recording one task is logged and does not abort
+// the sweep — the same posture v1 established. Returns the ids of tasks
+// wake_due was recorded for this tick.
 func (s *TaskWorkflowService) SweepWake(ctx context.Context, now time.Time) (woken []string, err error) {
-	if s.Tasks == nil || s.TaskTriage == nil {
+	if s.Tasks == nil || s.TaskTriage == nil || s.Tx == nil {
 		return nil, nil
 	}
 	// 論点11: this is the machine-driven wake sweep (決定12, no human in the
-	// loop) — must never be confused with a human pressing Wake
-	// (web_service.go's WebAppService.Wake stamps ActorHuman).
+	// loop) — must never be confused with a human action.
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
 	parked, err := s.Tasks.ListTasks(orchestrator.TaskFilter{Status: string(orchestrator.TaskStatusParked)})
 	if err != nil {
@@ -67,8 +69,8 @@ func (s *TaskWorkflowService) SweepWake(ctx context.Context, now time.Time) (wok
 		if !orchestrator.ShouldWake(now, tt, wakeTaskFound, wakeTaskStatus) {
 			continue
 		}
-		if _, wakeErr := s.Wake(ctx, t.ID); wakeErr != nil {
-			slog.Warn("queue sweep: wake failed", "task_id", t.ID, "error", wakeErr)
+		if recErr := s.recordWakeDue(ctx, t.ID); recErr != nil {
+			slog.Warn("queue sweep: record wake_due failed", "task_id", t.ID, "error", recErr)
 			continue
 		}
 		woken = append(woken, t.ID)
@@ -76,20 +78,53 @@ func (s *TaskWorkflowService) SweepWake(ctx context.Context, now time.Time) (wok
 	return woken, nil
 }
 
+// recordWakeDue is SweepWake's actual write: a non-transitioning "wake_due"
+// action, self-recorded the same way child_dispatched/child_closed are
+// (tx.CreateAction directly — never routed through sm.Apply/ApplyAction; see
+// machine_card.go's own doc comment for why wake_due is registered Manual:false,
+// FromStatus "*" purely so IsManualAction/Apply still treat the name as
+// "known"). Clears tt.WakeAt/WakeTaskID in the SAME transaction — the fields
+// that made orchestrator.ShouldWake return true in the first place — which is
+// what stops this from firing every tick forever: with no transition to rely
+// on (v1's wake_* rules consumed the condition implicitly, by moving the task
+// OUT of parked), consuming the condition here is the only mechanism left.
+func (s *TaskWorkflowService) recordWakeDue(ctx context.Context, taskID string) error {
+	return s.Tx.WithinTx(func(tx TxStore) error {
+		tt, err := tx.GetTaskTriage(taskID)
+		if err != nil {
+			return fmt.Errorf("record wake_due: get task_triage: %w", err)
+		}
+		tt.WakeAt = nil
+		tt.WakeTaskID = ""
+		if err := tx.UpsertTaskTriage(tt); err != nil {
+			return fmt.Errorf("record wake_due: upsert task_triage: %w", err)
+		}
+		fresh, ferr := tx.GetTask(taskID)
+		if ferr != nil {
+			return fmt.Errorf("record wake_due: get task: %w", ferr)
+		}
+		action := &orchestrator.Action{
+			TaskID:     taskID,
+			Type:       "wake_due",
+			FromStatus: fresh.Status,
+			ToStatus:   fresh.Status,
+			Actor:      orchestrator.ActorFromContext(ctx),
+		}
+		return tx.CreateAction(action)
+	})
+}
+
 // QueueSweepStore is the interface QueueSweepLoop needs — narrowed from
 // *TaskWorkflowService so the loop can be unit tested against a fake.
+//
+// SweepTriage (決定15/16) and SweepReopen (I-5) are GONE as of card machine
+// v2 — both were machine-driven transitions (auto-done, auto-reopen) the
+// redesign retires entirely (design doc §3.3: "機械遷移ゼロ"). done/reopen
+// are now suggested by khi and applied only by a human's accept, through the
+// ordinary ApplyAction/accept(verb) path — there is nothing left for a
+// periodic sweep to decide on their behalf.
 type QueueSweepStore interface {
 	SweepWake(ctx context.Context, now time.Time) ([]string, error)
-	// SweepTriage is 決定15/16's periodic evaluation (PR-5b, triage_done.go).
-	// It shares this loop rather than getting a timer of its own: both are
-	// decision-only passes over the same task set, and running them on one
-	// tick keeps "when does the queue re-evaluate itself" a single answer.
-	SweepTriage(ctx context.Context, now time.Time) (TriageSweepResult, error)
-	// SweepReopen is I-5's periodic evaluation (docs/plans/ingestion-identity.md
-	// PR-5, B-6). Shares this SAME loop rather than a timer of its own per the
-	// design doc's own placement instruction ("評価契機は QueueSweepLoop —
-	// 決定15のSweepDoneと同じ場所に並べる").
-	SweepReopen(ctx context.Context, now time.Time) (ReopenSweepResult, error)
 }
 
 // QueueSweepLoop periodically calls SweepWake, mirroring
@@ -100,11 +135,6 @@ type QueueSweepLoop struct {
 	Store        QueueSweepStore
 	Interval     time.Duration
 	InitialDelay time.Duration
-
-	// lastBreachFingerprint is the previously-reported 決定16 breach set, so
-	// the report fires on change instead of on every tick. Only touched from
-	// runOnce, which the loop calls sequentially.
-	lastBreachFingerprint string
 }
 
 // Run blocks until ctx is done. It waits InitialDelay before the first
@@ -137,76 +167,9 @@ func (l *QueueSweepLoop) runOnce(ctx context.Context) {
 	woken, err := l.Store.SweepWake(ctx, now)
 	if err != nil {
 		slog.Warn("queue wake sweep failed", "error", err)
-		// Deliberately NOT a return: the done sweep and the canonical-source
-		// report are independent of wake evaluation, and a wake failure must
-		// not silently stop cards from finishing.
-	} else if len(woken) > 0 {
-		slog.Info("queue wake sweep woke tasks", "count", len(woken), "task_ids", woken)
-	}
-
-	result, err := l.Store.SweepTriage(ctx, now)
-	if err != nil {
-		slog.Warn("queue triage sweep failed", "error", err)
-	} else {
-		if len(result.Completed) > 0 {
-			slog.Info("queue triage sweep completed tasks", "count", len(result.Completed), "task_ids", result.Completed)
-		}
-		l.logCanonicalSourceBreaches(result.Breaches)
-	}
-
-	// docs/plans/ingestion-identity.md PR-5 (B-6): I-5's auto-reopen, on the
-	// SAME tick as the two sweeps above — deliberately NOT gated behind
-	// either of their errors (Opus review pattern already established for
-	// wake vs triage above): a reopen sweep failure must not depend on the
-	// unrelated done/breach sweep having succeeded, and vice versa.
-	reopenResult, reopenErr := l.Store.SweepReopen(ctx, now)
-	if reopenErr != nil {
-		slog.Warn("queue reopen sweep failed", "error", reopenErr)
 		return
 	}
-	if len(reopenResult.Reopened) > 0 {
-		slog.Info("queue reopen sweep reopened tasks", "count", len(reopenResult.Reopened), "task_ids", reopenResult.Reopened)
+	if len(woken) > 0 {
+		slog.Info("queue wake sweep recorded wake_due", "count", len(woken), "task_ids", woken)
 	}
-	// N-8 (Opus review, 2026-08-19): without this, a flapped card is
-	// invisible in the daemon log entirely when notify.command is unset —
-	// SweepReopen's own notifyNewlyFlapped call is a Notifier no-op in that
-	// case, and nothing else logs Flapped anywhere. Mirrors the Reopened
-	// line immediately above rather than change-fingerprinting like
-	// logCanonicalSourceBreaches: a flapped card's SweepReopen own tick-level
-	// notify already dedups per-episode (lastFlappedReopen, triage_done.go),
-	// so this line naturally repeats once per tick for as long as the card
-	// stays flapped — the same cadence SweepReopen's Reopened/Completed
-	// lines already accept.
-	if len(reopenResult.Flapped) > 0 {
-		slog.Info("queue reopen sweep found flapped tasks (auto-reopen blocked, needs human attention)", "count", len(reopenResult.Flapped), "task_ids", reopenResult.Flapped)
-	}
-}
-
-// logCanonicalSourceBreaches reports 決定16 breaches ONLY WHEN THE SET CHANGES.
-//
-// Two reasons, both about this loop's one-minute tick. A breach persists until
-// someone fixes the card (queue 節 rule 7's 「解消されるまで出し続ける」 is about
-// the queue 案内 card, not about a log line), so a per-tick line would emit
-// 1,440 times a day per unfixed card. Worse, until khi starts delivering
-// observed.source_closed — future work in the same 決定14 cutover — EVERY card
-// is a breach, so an unconditional line would bury every other daemon log from
-// the moment this ships (Opus review round 2, Medium). Logging on change keeps
-// the signal (a new breach appears, or the last one clears) without the flood.
-func (l *QueueSweepLoop) logCanonicalSourceBreaches(breaches []CanonicalSourceBreach) {
-	ids := make([]string, 0, len(breaches))
-	for _, b := range breaches {
-		ids = append(ids, b.TaskID)
-	}
-	sort.Strings(ids)
-	fingerprint := strings.Join(ids, ",")
-	if fingerprint == l.lastBreachFingerprint {
-		return
-	}
-	l.lastBreachFingerprint = fingerprint
-	if len(breaches) == 0 {
-		slog.Info("triage tasks with no canonical source: すべて解消しました (決定16)")
-		return
-	}
-	slog.Warn("triage tasks with no canonical source (決定16): これらは done 自動落ちに到達できません",
-		"count", len(breaches), "task_ids", ids, "guidance", breaches[0].Guidance)
 }

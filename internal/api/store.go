@@ -233,13 +233,6 @@ type WebService interface {
 	ListBehaviors() ([]string, error)
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	ApplyAction(taskID string, actionType string) error
-	// Wake revives a parked triage task (cross-project-issue-triage Phase 1
-	// PR-3, queue の決定論的評価 節 rule 1) — a dedicated entry point rather
-	// than a generic ApplyAction("wake_...") POST because wake_triaged/
-	// wake_ready/wake_working are Manual:false in the state machine (see
-	// StateMachine.IsManualAction) and TaskWorkflowService.Wake resolves
-	// which of the three applies internally via ParkedFrom.
-	Wake(taskID string) error
 	DuplicateTask(id string) (string, error)
 	DeleteTask(id string, force bool) error
 	ListJobs(status string) ([]JobWithContext, error)
@@ -255,7 +248,7 @@ type WebService interface {
 	// "既に開いている穴" this PR closes (決定14 moved judgment to the Web UI,
 	// but the Web UI had no path to RECORD a reject, so re-suggestion was
 	// never suppressed). A dedicated method rather than routing through
-	// ApplyAction (like Wake/ReopenTask above): the generic
+	// ApplyAction (like ReopenTask above): the generic
 	// WebService.ApplyAction(taskID, actionType) signature has no payload
 	// parameter, and `answered` needs one ({answer, verb, basis}).
 	AnswerSuggestion(taskID string, req AnswerSuggestionRequest) error
@@ -266,10 +259,6 @@ type WebService interface {
 
 type WorkflowService interface {
 	ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error)
-	// Wake is TaskWorkflowService.Wake (workflow_triage.go) — see
-	// WebService.Wake's own doc comment for why this needs a separate method
-	// rather than routing through ApplyAction.
-	Wake(ctx context.Context, taskID string) (*ActionApplication, error)
 	// GetTriage / ListTriage are the task_triage read surface (triage_read.go,
 	// Phase 1 PR-5a). Part of WorkflowService because the brokered ops that
 	// expose them to the sandbox reach the daemon through this same interface.

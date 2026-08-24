@@ -34,29 +34,36 @@ func TestCreateTask_InitialStatus_DefaultsToPending(t *testing.T) {
 	}
 }
 
-func TestCreateTask_InitialStatus_CapturedAndTriaged(t *testing.T) {
-	for _, want := range []orchestrator.TaskStatus{orchestrator.TaskStatusCaptured, orchestrator.TaskStatusTriaged} {
-		svc := newInitialStatusTestService()
-		task, err := svc.CreateTask(CreateTaskRequest{
-			ProjectID:     "proj-1",
-			Title:         "t",
-			Behavior:      "triage",
-			InitialStatus: string(want),
-		})
-		if err != nil {
-			t.Fatalf("InitialStatus=%q: CreateTask() error = %v", want, err)
-		}
-		if task.Status != want {
-			t.Fatalf("InitialStatus=%q: Status = %q, want %q", want, task.Status, want)
-		}
+// docs/plans/suggestion-as-state-transition-impl.md §3.5: card machine v2
+// has no captured/triaged statuses to create INTO at all (a card is born
+// directly into parked — see machine_card.go's doc comment). captured/
+// triaged remain legacy KnownTaskStatuses values for READING pre-cutover DB
+// rows, but resolveInitialStatus's allowlist (task_create.go) no longer
+// admits either as a CREATE-time value — see TestCreateTask_InitialStatus_
+// RejectsDisallowedValues below for the negative pin.
+func TestCreateTask_InitialStatus_Parked(t *testing.T) {
+	svc := newInitialStatusTestService()
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:     "proj-1",
+		Title:         "t",
+		Behavior:      "triage",
+		InitialStatus: "parked",
+	})
+	if err != nil {
+		t.Fatalf("InitialStatus=parked: CreateTask() error = %v", err)
+	}
+	if task.Status != orchestrator.TaskStatusParked {
+		t.Fatalf("InitialStatus=parked: Status = %q, want parked", task.Status)
 	}
 }
 
-// InitialStatus の allowlist は KnownTaskStatuses 全部ではなく
-// pending/captured/triaged だけ (Opus指摘: 呼び出し側が最初から
-// executing/done/parked 等を偽装できてはいけない)。
+// InitialStatus の allowlist は KnownTaskStatuses 全部ではなく pending/parked
+// だけ (Opus指摘: 呼び出し側が最初から executing/done/等を偽装できてはいけない)。
+// captured/triaged are included here as of card machine v2 — they are
+// legacy READ-only statuses now (KnownTaskStatuses), no longer valid
+// CREATE-time values (a caller must use "parked" instead).
 func TestCreateTask_InitialStatus_RejectsDisallowedValues(t *testing.T) {
-	for _, bad := range []string{"executing", "done", "aborted", "parked", "ready", "dropped", "garbage"} {
+	for _, bad := range []string{"executing", "done", "aborted", "captured", "triaged", "ready", "dropped", "garbage"} {
 		svc := newInitialStatusTestService()
 		_, err := svc.CreateTask(CreateTaskRequest{
 			ProjectID:     "proj-1",
@@ -84,7 +91,7 @@ func TestCreateTask_InitialStatus_RejectsAutoStartCombination(t *testing.T) {
 		ProjectID:     "proj-1",
 		Title:         "t",
 		Behavior:      "triage",
-		InitialStatus: "captured",
+		InitialStatus: "parked",
 		AutoStart:     true,
 	})
 	if err == nil {

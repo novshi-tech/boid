@@ -248,21 +248,22 @@ func TestTaskWorkflowServiceApplyAction_BackgroundDispatchMustOutliveRequestCont
 	}
 }
 
-// ---- Pre-execution actions (cross-project-issue-triage Phase 1 PR-1) ----
+// ---- card machine v2 actions (docs/plans/suggestion-as-state-transition-impl.md §3) ----
 
-// isPreExecutionCardStatus reports whether status is one of the five
-// statuses that exist ONLY on the card side of the split (PR-B,
-// machine_card.go's preExecutionStatuses) — captured/triaged/parked/ready/
-// working. done/aborted/dropped (and every execution-lifecycle status) are
-// deliberately excluded: those are either shared between both machines or
-// execution-only, so "does this task have a sidecar row" is genuinely
-// ambiguous/test-scenario-dependent there, unlike the five pre-execution
-// statuses where production always seeds one at creation (see
-// newTriageWorkflowService's own doc comment).
+// isPreExecutionCardStatus reports whether status is one of the TWO
+// statuses that exist ONLY on the card side of the split (PR-B) and are
+// non-terminal — parked/working. Renamed-in-spirit from v1 (which had FIVE:
+// captured/triaged/parked/ready/working) but the identifier itself is left
+// alone across the many test files that already call it, to keep this PR's
+// test-file diffs about BEHAVIOR, not a mechanical rename. done/aborted/
+// dropped (and every execution-lifecycle status) are deliberately excluded:
+// those are either shared between both machines or execution-only, so "does
+// this task have a sidecar row" is genuinely ambiguous/test-scenario-dependent
+// there, unlike parked/working where production always seeds one at creation
+// (see newTriageWorkflowService's own doc comment).
 func isPreExecutionCardStatus(status orchestrator.TaskStatus) bool {
 	switch status {
-	case orchestrator.TaskStatusCaptured, orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusParked, orchestrator.TaskStatusReady, orchestrator.TaskStatusWorking:
+	case orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking:
 		return true
 	default:
 		return false
@@ -273,26 +274,24 @@ func isPreExecutionCardStatus(status orchestrator.TaskStatus) bool {
 // task under test. PR-B (docs/plans/suggestion-as-state-transition-impl.md
 // §2): machineFor now picks NewCardMachine vs NewExecutionMachine by
 // checking whether the task carries a task_triage sidecar row, so — for a
-// task whose status is one of the five pre-execution-only statuses — this
-// helper seeds an empty row for task.ID when the caller's txStore doesn't
-// already carry one, and wires TaskTriage to see it. This mirrors
-// production's own invariant (task_create.go's CreateTask /
-// task_resolve_or_capture.go's ResolveOrCapture both seed an empty
-// task_triage row up front for any pre-execution initial_status,
-// unconditional on the caller ever sending a park/attrs_set). Without this,
-// every test built on this helper for those five statuses would have
-// machineFor fall back to NewExecutionMachine (no row = "not a card"), which
-// has no rule at all for triage/ready/park/drop/etc. and would reject them
-// with a spurious 400.
+// task whose status is parked or working — this helper seeds an empty row
+// for task.ID when the caller's txStore doesn't already carry one, and wires
+// TaskTriage to see it. This mirrors production's own invariant
+// (task_create.go's CreateTask / task_resolve_or_capture.go's
+// ResolveOrCapture both seed an empty task_triage row up front for any
+// card-lifecycle initial_status, unconditional on the caller ever sending a
+// park/attrs_set). Without this, every test built on this helper for those
+// statuses would have machineFor fall back to NewExecutionMachine (no row =
+// "not a card"), which has no rule at all for go/working/park/drop/etc. and
+// would reject them with a spurious 400.
 //
 // Deliberately NOT extended to done/aborted/dropped/pending/executing/
 // awaiting: several tests built on this helper (attrs_set_done_test.go's
-// TaskTriageStoreNotWired/NoTaskTriageRow cases, triage_done_pr5_test.go's
-// reopen-routing cases) construct a task in one of THOSE statuses
-// specifically to exercise TaskTriage being nil, empty, or erroring — auto-
-// wiring/seeding for them would silently defeat those tests' own premise.
-// Each such test wires (or deliberately leaves unwired) TaskTriage itself,
-// same as before this helper existed.
+// TaskTriageStoreNotWired/NoTaskTriageRow cases) construct a task in one of
+// THOSE statuses specifically to exercise TaskTriage being nil, empty, or
+// erroring — auto-wiring/seeding for them would silently defeat those tests'
+// own premise. Each such test wires (or deliberately leaves unwired)
+// TaskTriage itself, same as before this helper existed.
 func newTriageWorkflowService(task *orchestrator.Task, txStore *recordingTxStore) *TaskWorkflowService {
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
@@ -313,27 +312,39 @@ func newTriageWorkflowService(task *orchestrator.Task, txStore *recordingTxStore
 	return svc
 }
 
-func TestTaskWorkflowServiceApplyAction_Triage_CapturedToTriaged(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusCaptured, Behavior: "dev", Payload: []byte(`{}`)}
+// humanCtx returns a ctx stamped ActorHuman — the Web UI / CLI's own
+// convention (action.go, web_service.go). Card-lifecycle transition actions
+// (go/working/park/drop/done/reopen) require this since 穴11's push-down
+// defense (workflow_action.go); every other test in this file that drives
+// one of those six verbs directly (not via accept(verb)) must use this
+// instead of a bare context.Background().
+func humanCtx() context.Context {
+	return orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
+}
+
+func TestTaskWorkflowServiceApplyAction_Working_ParkedToWorking(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
-	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "triage"})
+	result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "working"})
 	if err != nil {
-		t.Fatalf("ApplyAction(triage): %v", err)
+		t.Fatalf("ApplyAction(working): %v", err)
 	}
-	if result.Task.Status != orchestrator.TaskStatusTriaged {
-		t.Fatalf("status = %q, want triaged", result.Task.Status)
+	if result.Task.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("status = %q, want working", result.Task.Status)
 	}
 }
 
 // TestTaskWorkflowServiceApplyAction_StampsActorFromContext verifies
 // ApplyAction reads orchestrator.ActorFromContext(ctx) and stamps it onto the
-// recorded Action — the propagation path 論点11「代行タスク」 depends on: the
-// HTTP/Web/CLI human path wraps ctx with ActorHuman (action.go, web_service.go),
-// the brokered sandbox path (boid_executor.go, task_notify.go) wraps it with
-// ActorTask(callingTaskID). A caller that forgets to wrap ctx gets "" — no
-// actor is silently fabricated.
+// recorded Action — the propagation path 論点11「代行タスク」 depends on.
+// Uses attrs_set (non-transitioning) rather than a card-lifecycle transition
+// verb specifically so the "task"/"unset" cases below reach the same code
+// path instead of being rejected by 穴11's push-down defense — see
+// TestApplyAction_CardTransitions_RejectedForNonHumanActor for that negative
+// pin, and TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion
+// for the escape-hatch positive pin.
 func TestTaskWorkflowServiceApplyAction_StampsActorFromContext(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusCaptured, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 
 	cases := []struct {
 		name string
@@ -348,8 +359,8 @@ func TestTaskWorkflowServiceApplyAction_StampsActorFromContext(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			txStore := &recordingTxStore{task: task}
 			svc := newTriageWorkflowService(task, txStore)
-			if _, err := svc.ApplyAction(tc.ctx, task.ID, ApplyActionRequest{Type: "triage"}); err != nil {
-				t.Fatalf("ApplyAction(triage): %v", err)
+			if _, err := svc.ApplyAction(tc.ctx, task.ID, ApplyActionRequest{Type: "attrs_set", Payload: []byte(`{"summary":"x"}`)}); err != nil {
+				t.Fatalf("ApplyAction(attrs_set): %v", err)
 			}
 			if len(txStore.actions) != 1 {
 				t.Fatalf("expected 1 recorded action, got %d", len(txStore.actions))
@@ -361,12 +372,106 @@ func TestTaskWorkflowServiceApplyAction_StampsActorFromContext(t *testing.T) {
 	}
 }
 
+// TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion is the
+// escape-hatch pin design doc §3.2 explicitly requires: "人の直接操作は常に
+// 全遷移で可能であることを担保する" — every one of card machine v2's seven
+// edges must be reachable directly by a human (Web UI / CLI, ActorHuman),
+// with NO suggestion involved anywhere in the fixture. suggestion is one
+// entry point into these transitions, never the only one.
+func TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion(t *testing.T) {
+	cases := []struct {
+		from   orchestrator.TaskStatus
+		action string
+		want   orchestrator.TaskStatus
+	}{
+		{orchestrator.TaskStatusParked, "go", orchestrator.TaskStatusWorking},
+		{orchestrator.TaskStatusParked, "working", orchestrator.TaskStatusWorking},
+		{orchestrator.TaskStatusParked, "drop", orchestrator.TaskStatusDropped},
+		{orchestrator.TaskStatusWorking, "park", orchestrator.TaskStatusParked},
+		{orchestrator.TaskStatusWorking, "done", orchestrator.TaskStatusDone},
+		{orchestrator.TaskStatusDone, "reopen", orchestrator.TaskStatusParked},
+		{orchestrator.TaskStatusDropped, "reopen", orchestrator.TaskStatusParked},
+	}
+	for _, c := range cases {
+		t.Run(c.action+"_from_"+string(c.from), func(t *testing.T) {
+			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: c.from, Behavior: "dev", Payload: []byte(`{}`)}
+			txStore := &recordingTxStore{
+				task:   task,
+				triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}},
+			}
+			svc := &TaskWorkflowService{
+				Tasks:      &stubTaskStore{task: task},
+				Tx:         recordingTransactor{store: txStore},
+				Meta:       stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+				TaskTriage: txStore,
+			}
+			result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: c.action})
+			if err != nil {
+				t.Fatalf("%s from %s (human, no suggestion): %v", c.action, c.from, err)
+			}
+			if result.Task.Status != c.want {
+				t.Fatalf("%s from %s: status = %q, want %q", c.action, c.from, result.Task.Status, c.want)
+			}
+			// no suggestion ever existed in this fixture at all — proving the
+			// transition did not secretly depend on one being present/absent.
+			if got := txStore.triage["t1"]; got != nil {
+				if _, ok := orchestrator.DetailSuggestionRaw(got.Detail); ok {
+					t.Fatalf("%s from %s: unexpected suggestion present, want none (this fixture never wrote one)", c.action, c.from)
+				}
+			}
+		})
+	}
+}
+
+// TestApplyAction_CardTransitions_RejectedForNonHumanActor is 穴11's negative
+// pin: khi (or any non-human actor, including an unset one) may never apply
+// a card-lifecycle transition action DIRECTLY — only accept(verb)
+// (applyAnswered, suggestion_accept.go) or a human's own click may. Includes
+// ActorTask("") specifically — the literal actor string khi's trigger-job
+// path stamps (empty TaskID, per the brief's "着手前確定事項 A") — to pin
+// that the check is an exact `!= ActorHuman` comparison, not a prefix match
+// that could special-case an empty task id differently.
+func TestApplyAction_CardTransitions_RejectedForNonHumanActor(t *testing.T) {
+	actorCases := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"khi_trigger_job_empty_task_id", orchestrator.WithActor(context.Background(), orchestrator.ActorTask(""))},
+		{"khi_via_task", orchestrator.WithActor(context.Background(), orchestrator.ActorTask("some-task-id"))},
+		{"daemon", orchestrator.WithActor(context.Background(), orchestrator.ActorDaemon)},
+		{"unset", context.Background()},
+	}
+	for _, verb := range []string{"go", "working", "park", "drop", "done", "reopen"} {
+		for _, a := range actorCases {
+			t.Run(verb+"_"+a.name, func(t *testing.T) {
+				// A status the verb is at least NAME-valid from (the guard
+				// fires on the action name alone, before FromStatus is even
+				// checked, so the exact status doesn't matter for this test —
+				// parked is used uniformly for simplicity).
+				task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+				txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}}}
+				svc := newTriageWorkflowService(task, txStore)
+				svc.TaskTriage = txStore
+
+				_, err := svc.ApplyAction(a.ctx, task.ID, ApplyActionRequest{Type: verb})
+				if err == nil {
+					t.Fatalf("%s: expected rejection for actor %q pushing a card transition directly", verb, a.name)
+				}
+				se, ok := err.(*StatusError)
+				if !ok || se.Code != http.StatusForbidden {
+					t.Fatalf("%s: expected 403 StatusError, got %v", verb, err)
+				}
+			})
+		}
+	}
+}
+
 // TestTaskWorkflowServiceApplyAction_Park_UpsertsWakeCondition verifies the
 // park-specific post-processing writes wake_at/wake_task_id into task_triage,
-// preserving any existing kind/urgency/detail on the sidecar row (Opus指摘
-// #1's "give park a real writer" resolution).
+// preserving any existing kind/urgency/detail on the sidecar row. park's
+// only FromStatus in v2 is working (design doc §3.2's edge table).
 func TestTaskWorkflowServiceApplyAction_Park_UpsertsWakeCondition(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.TaskTriage{
@@ -376,7 +481,7 @@ func TestTaskWorkflowServiceApplyAction_Park_UpsertsWakeCondition(t *testing.T) 
 	svc := newTriageWorkflowService(task, txStore)
 
 	payload := []byte(`{"wake_at":"2026-09-01T00:00:00Z","wake_task_id":"blocking-task"}`)
-	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "park", Payload: payload})
+	result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "park", Payload: payload})
 	if err != nil {
 		t.Fatalf("ApplyAction(park): %v", err)
 	}
@@ -400,16 +505,13 @@ func TestTaskWorkflowServiceApplyAction_Park_UpsertsWakeCondition(t *testing.T) 
 	}
 }
 
-// park with no payload still creates a sidecar row (WakeAt/WakeTaskID empty)
-// so ParkedFrom has a stable place to be read from later, even for a task
-// that never had a task_triage row before (e.g. created via a path that
-// predates this feature, or a test fixture).
+// park with no payload still creates a sidecar row (WakeAt/WakeTaskID empty).
 func TestTaskWorkflowServiceApplyAction_Park_NoPayload_CreatesEmptySidecarRow(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusReady, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
-	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "park"}); err != nil {
+	if _, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "park"}); err != nil {
 		t.Fatalf("ApplyAction(park): %v", err)
 	}
 	got := txStore.triage["t1"]
@@ -427,11 +529,11 @@ func TestTaskWorkflowServiceApplyAction_Park_NoPayload_CreatesEmptySidecarRow(t 
 // fresh sidecar", which on a transient DB error would silently blow away an
 // existing row's kind/urgency/detail instead of surfacing the failure.
 func TestTaskWorkflowServiceApplyAction_Park_PropagatesNonNotFoundTriageError(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task, getTaskTriageErr: fmt.Errorf("db connection reset")}
 	svc := newTriageWorkflowService(task, txStore)
 
-	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "park"})
+	_, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "park"})
 	if err == nil {
 		t.Fatal("expected the transient GetTaskTriage error to propagate, got nil")
 	}
@@ -440,90 +542,21 @@ func TestTaskWorkflowServiceApplyAction_Park_PropagatesNonNotFoundTriageError(t 
 	}
 }
 
-// TestTaskWorkflowService_Wake_NeverReadsOutsideTransaction pins down the
-// codex review round 1 Major fix: Wake must resolve GetTask/ParkedFrom
-// entirely from within the WithinTx closure, not from a pre-tx read of
-// s.Tasks, so there is no window between reading the park origin and
-// writing the resolved transition for a concurrent park/wake cycle to land
-// in. Setting Tasks to nil proves Wake never touches it — if it did, this
-// would panic on the nil interface.
-func TestTaskWorkflowService_Wake_NeverReadsOutsideTransaction(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{
-		task:         task,
-		parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return orchestrator.TaskStatusTriaged, nil },
-	}
-	svc := &TaskWorkflowService{
-		Tasks: nil, // deliberately nil — Wake must never dereference this
-		Tx:    recordingTransactor{store: txStore},
-	}
-
-	result, err := svc.Wake(context.Background(), task.ID)
-	if err != nil {
-		t.Fatalf("Wake: %v", err)
-	}
-	if result.Task.Status != orchestrator.TaskStatusTriaged {
-		t.Fatalf("status = %q, want triaged", result.Task.Status)
-	}
-}
-
-func TestTaskWorkflowService_Wake_RoundTrip_TriagedThenReady(t *testing.T) {
-	cases := []struct {
-		name       string
-		parkedFrom orchestrator.TaskStatus
-		want       orchestrator.TaskStatus
-	}{
-		{"from triaged", orchestrator.TaskStatusTriaged, orchestrator.TaskStatusTriaged},
-		{"from ready", orchestrator.TaskStatusReady, orchestrator.TaskStatusReady},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-			txStore := &recordingTxStore{
-				task:         task,
-				parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return c.parkedFrom, nil },
-			}
-			svc := newTriageWorkflowService(task, txStore)
-
-			result, err := svc.Wake(context.Background(), task.ID)
-			if err != nil {
-				t.Fatalf("Wake: %v", err)
-			}
-			if result.Task.Status != c.want {
-				t.Fatalf("status = %q, want %q", result.Task.Status, c.want)
-			}
-		})
-	}
-}
-
-func TestTaskWorkflowService_Wake_RejectsNonParkedTask(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
-	svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
-	if _, err := svc.Wake(context.Background(), task.ID); err == nil {
-		t.Fatal("expected error waking a non-parked task")
-	}
-}
-
-// TestTaskWorkflowServiceApplyAction_RejectsInternalOnlyWakeActions is the
-// regression test for codex review round 1's Blocker: wake_triaged/
-// wake_ready were Manual:false (hidden from AvailableActions/UI) but still
-// directly reachable via the generic public ApplyAction path — i.e. the
-// same route the HTTP API / brokered action_send / `boid action send` CLI
-// all funnel through — letting a caller promote a parked task straight to
-// ready without going through Wake's ParkedFrom-based origin check
-// (bypassing the Go-gate 決定9/逆輸入2 protects).
 // TestTaskWorkflowServiceApplyAction_RejectsNonManualActions is the
-// regression test for codex review round 2's Blocker: a hand-maintained
+// regression test for codex review round 2's Blocker (v1): a hand-maintained
 // blocklist of "internal-only" action names had missed job_failed, letting
 // triaged →(job_failed)→aborted →(reopen)→executing bypass the ready-gate
-// entirely. ApplyAction now derives rejection generically from each rule's
-// own Manual flag (StateMachine.IsManualAction) instead of a separate list.
+// entirely. ApplyAction derives rejection generically from each rule's own
+// Manual flag (StateMachine.IsManualAction) instead of a separate list.
+// wake_due replaces v1's wake_triaged/wake_ready/wake_working (all three
+// deleted along with the Wake mechanism itself — card machine v2 has no park
+// origin left to disambiguate; see machine_card.go's own doc comment).
 func TestTaskWorkflowServiceApplyAction_RejectsNonManualActions(t *testing.T) {
-	for _, actionType := range []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "wake_working"} {
-		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	for _, actionType := range []string{"job_failed", "progress", "done_request", "fail_request", "wake_due"} {
+		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 		svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
 
-		_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: actionType})
+		_, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: actionType})
 		if err == nil {
 			t.Fatalf("action %q: expected rejection via public ApplyAction, got nil error", actionType)
 		}
@@ -534,12 +567,12 @@ func TestTaskWorkflowServiceApplyAction_RejectsNonManualActions(t *testing.T) {
 	}
 }
 
-// TestJobFailedStillReachesAbortedViaCompleteJob confirms job_failed's real
-// (non-ApplyAction) caller, TaskWorkflowService.CompleteJob, still works —
-// the fix must reject job_failed only from the PUBLIC ApplyAction path, not
-// break the legitimate internal one, which builds its own orchestrator.Action
-// and calls sm.Apply directly (internal/api/workflow_job.go), never going
-// through ApplyAction at all.
+// TestExecutionMachine_JobFailed_StillApplicableDirectlyViaSmApply confirms
+// job_failed's real (non-ApplyAction) caller, TaskWorkflowService.CompleteJob,
+// still works — job_failed is rejected only from the PUBLIC ApplyAction path,
+// not from the legitimate internal one, which builds its own
+// orchestrator.Action and calls sm.Apply directly (internal/api/workflow_job.go),
+// never going through ApplyAction at all.
 func TestExecutionMachine_JobFailed_StillApplicableDirectlyViaSmApply(t *testing.T) {
 	sm := orchestrator.NewExecutionMachine()
 	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
@@ -549,171 +582,6 @@ func TestExecutionMachine_JobFailed_StillApplicableDirectlyViaSmApply(t *testing
 	}
 	if next.Status != orchestrator.TaskStatusAborted {
 		t.Fatalf("status = %q, want aborted", next.Status)
-	}
-}
-
-func TestTaskWorkflowServiceApplyAction_RejectsInternalOnlyWakeActions(t *testing.T) {
-	for _, actionType := range []string{"wake_triaged", "wake_ready", "wake_working"} {
-		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-		svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
-
-		_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: actionType})
-		if err == nil {
-			t.Fatalf("action %q: expected rejection via public ApplyAction, got nil error", actionType)
-		}
-		se, ok := err.(*StatusError)
-		if !ok || se.Code != http.StatusBadRequest {
-			t.Fatalf("action %q: expected 400 StatusError, got %v", actionType, err)
-		}
-	}
-}
-
-func TestTaskWorkflowService_Wake_ErrorsWhenParkedFromUnknown(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{
-		task:         task,
-		parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return "", fmt.Errorf("no park action") },
-	}
-	svc := newTriageWorkflowService(task, txStore)
-	if _, err := svc.Wake(context.Background(), task.ID); err == nil {
-		t.Fatal("expected error when ParkedFrom cannot be resolved")
-	}
-}
-
-// TestTaskWorkflowService_Wake_FromReady_ChainsIntoDispatch is the regression
-// test for codex review round 1's Major finding on PR-3: a task parked FROM
-// ready (i.e. already Go'd once) that gets woken must not be stranded in
-// ready — Wake has to chain into Dispatch exactly like ApplyAction("ready")
-// does, or the task has no forward path at all (no UI button targets ready,
-// and SweepWake only re-evaluates parked tasks). Deliberately uses txStore
-// itself as s.Tasks (not the newTriageWorkflowService helper's separate
-// stubTaskStore, which doesn't observe the transaction's write and so
-// wouldn't actually exercise Dispatch's ready-status precondition check).
-func TestTaskWorkflowService_Wake_FromReady_ChainsIntoDispatch(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{
-		task:         task,
-		parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return orchestrator.TaskStatusReady, nil },
-	}
-	svc := &TaskWorkflowService{
-		Tasks:      txStore,
-		TaskTriage: txStore,
-		Tx:         recordingTransactor{store: txStore},
-		Meta:       stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
-	}
-
-	result, err := svc.Wake(context.Background(), task.ID)
-	if err != nil {
-		t.Fatalf("Wake: %v", err)
-	}
-	if result.Task.Status != orchestrator.TaskStatusWorking {
-		t.Fatalf("status = %q, want working (wake_ready must chain into Dispatch, same as ApplyAction(\"ready\"))", result.Task.Status)
-	}
-}
-
-// TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch is the
-// BD-9 regression test (穴1): before this fix, Wake's ParkedFrom switch had
-// no case for TaskStatusWorking and fell into `default`, 500ing with
-// `wake: unexpected park origin "working"` — exactly the failure the real
-// khi workspace card (633c4bd9-...) hit. A working-origin park is the 論点8
-// "sequential PR consumption" pattern (park + wake_task_id, re-surfaced by
-// QueueSweepLoop when the dispatched child terminates), so waking it must
-// land back on working, not error.
-//
-// It also pins that Wake's ready→working Dispatch chain (guarded by
-// `newTask.Status == TaskStatusReady`, see Wake's doc comment) must NOT fire
-// for this origin: unlike a ready-origin park, a working-origin park's child
-// is already dispatched, so there is nothing left to (re-)dispatch. The
-// spy's getCalls counter proves s.Dispatch (whose first call is
-// s.Tasks.GetTask) was never even attempted — checking only the final status
-// would not catch a regression here, because Dispatch's own ready-only
-// precondition guard would silently no-op (log-only error) against a
-// "working" task even if Wake's chain condition were mistakenly widened to
-// include working.
-func TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{
-		task:         task,
-		parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return orchestrator.TaskStatusWorking, nil },
-	}
-	taskSpy := &stubTaskStore{task: task}
-	svc := &TaskWorkflowService{
-		Tasks:      taskSpy,
-		TaskTriage: txStore,
-		Tx:         recordingTransactor{store: txStore},
-		Meta:       stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
-	}
-
-	result, err := svc.Wake(context.Background(), task.ID)
-	if err != nil {
-		t.Fatalf("Wake: %v", err)
-	}
-	if result.Task.Status != orchestrator.TaskStatusWorking {
-		t.Fatalf("status = %q, want working", result.Task.Status)
-	}
-	if result.Action.Type != "wake_working" {
-		t.Fatalf("action type = %q, want wake_working", result.Action.Type)
-	}
-	if taskSpy.getCalls != 0 {
-		t.Fatalf("s.Tasks.GetTask was called %d time(s); Dispatch must never be attempted for a working-origin wake", taskSpy.getCalls)
-	}
-}
-
-// TestTaskWorkflowService_Wake_ResolvesAllParkOrigins is the api-side half of
-// the BD-9 recurrence guard (internal/orchestrator's
-// TestCardMachine_ParkOrigins_AllHaveWakeRule pins the machine-rule half).
-// The named tests above (TriagedThenReady / FromWorking_ReturnsToWorking)
-// pin today's three origins by name; this one instead derives the origin set
-// from NewCardMachine().Rules — deliberately not a hardcoded
-// []orchestrator.TaskStatus{"triaged","ready","working"} literal — and
-// end-to-end pins that Wake resolves ALL of them without error. A fourth
-// park origin added without a matching case in Wake's ParkedFrom switch
-// falls into that switch's `default:` branch and surfaces here as a
-// StatusError, by name, instead of only surfacing as a 500 in production the
-// way BD-9 did.
-//
-// It reuses newTriageWorkflowService (Coordinator intentionally nil), the
-// same harness TestTaskWorkflowService_Wake_RoundTrip_TriagedThenReady uses.
-// Under this harness, Wake's ready→working Dispatch chain always fails
-// (logged, not surfaced — see Wake's doc comment): sm.Apply operates on a
-// COPY of the task (machine.go's Apply: `newTask := *task`), so the
-// underlying stubTaskStore still holds the pre-wake "parked" task when
-// Dispatch's own ready-only precondition guard reads it back
-// (workflow_triage.go's Dispatch: `if task.Status != TaskStatusReady`) and
-// rejects with a 409 the caller never sees. That leaves status at "ready",
-// so under this harness every origin's resulting status equals the origin
-// itself regardless of whether that origin also triggers the Dispatch
-// chain — which is what lets one assertion shape cover every origin
-// generically instead of needing a per-origin special case.
-func TestTaskWorkflowService_Wake_ResolvesAllParkOrigins(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	var origins []orchestrator.TaskStatus
-	for _, r := range sm.Rules {
-		if r.Action == "park" && r.ToStatus == string(orchestrator.TaskStatusParked) {
-			origins = append(origins, orchestrator.TaskStatus(r.FromStatus))
-		}
-	}
-	if len(origins) == 0 {
-		t.Fatal("no park rules found in NewCardMachine().Rules — did the rule table's shape change?")
-	}
-
-	for _, origin := range origins {
-		t.Run(string(origin), func(t *testing.T) {
-			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-			txStore := &recordingTxStore{
-				task:         task,
-				parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return origin, nil },
-			}
-			svc := newTriageWorkflowService(task, txStore)
-
-			result, err := svc.Wake(context.Background(), task.ID)
-			if err != nil {
-				t.Fatalf("Wake from park origin %q: %v (Wake's ParkedFrom switch is likely missing a case for this origin — BD-9 recurrence)", origin, err)
-			}
-			if result.Task.Status != origin {
-				t.Fatalf("Wake from park origin %q: status = %q, want %q", origin, result.Task.Status, origin)
-			}
-		})
 	}
 }
 

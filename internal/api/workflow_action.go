@@ -82,17 +82,62 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		}
 	}
 
-	// 決定17 (PR-5b): route `reopen` on a done/aborted TRIAGE task to the
-	// triage variant (→ triaged) instead of the ordinary one (→ executing).
-	// Done here, right after the task load and before anything downstream
-	// keys off req.Type, so every caller — HTTP, Web UI button, brokered
-	// task.reopen, CLI — gets it with no wiring of its own. See
-	// resolveReopenVariant's doc comment.
-	resolvedType, resolveErr := s.resolveReopenVariant(task, req.Type)
-	if resolveErr != nil {
-		return nil, resolveErr
+	// docs/plans/suggestion-as-state-transition-impl.md §3: v1's 決定17 routing
+	// (resolveReopenVariant, rewriting "reopen" to "reopen_triaged" on a
+	// done/aborted triage task) is GONE. machineFor above already selected
+	// the correct machine object (NewCardMachine for a card, NewExecutionMachine
+	// otherwise), and each machine now owns its OWN "reopen" rule with its own
+	// FromStatus/ToStatus (card: done/dropped→parked; execution: done/aborted→
+	// executing) — there is no longer a name collision needing a rewrite to
+	// disambiguate. See this PR's description for why the rename-based routing
+	// became unnecessary once the machine split itself decides which rule
+	// table "reopen" is looked up against.
+
+	// 穴11 push-down defense (docs/plans/suggestion-as-state-transition.md
+	// §3.2/§3.8): a card-lifecycle TRANSITION action (go/working/park/drop/
+	// done/reopen — orchestrator.IsCardTransitionAction) may only be applied
+	// by a human. accept(verb)'s own internal re-entry into ApplyAction
+	// (WebAppService.AnswerSuggestion) reuses the SAME request ctx the
+	// human's accept click established, so it is never blocked by this check.
+	// Non-transitioning card actions (attrs_set/child_added/child_specced/
+	// child_dropped/noted/answered) are untouched — khi may still send those
+	// directly, exactly as before. escape hatch (design doc §3.2's explicit
+	// requirement) is pinned by
+	// TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion.
+	if sm.Name == orchestrator.CardMachineName && orchestrator.IsCardTransitionAction(req.Type) && orchestrator.ActorFromContext(ctx) != orchestrator.ActorHuman {
+		return nil, &StatusError{
+			Code:    http.StatusForbidden,
+			Message: fmt.Sprintf("action %q is a card-lifecycle transition and may only be applied by a human (Web UI / CLI) or via accepting a suggestion", req.Type),
+		}
 	}
-	req.Type = resolvedType
+
+	// "go" bypasses the rest of this generic pipeline entirely: unlike the
+	// other five card-lifecycle verbs (working/park/drop/done/reopen), which
+	// are plain transitions the generic Tx flow below already handles fine,
+	// go must task-ify any specced children BEFORE its parked→working
+	// transition can commit (acceptGo's own doc comment,
+	// workflow_triage.go — that ordering cannot fit inside the one Tx this
+	// function opens further down: SetMaxOpenConns(1) deadlocks a nested
+	// TaskCreator.CreateTask call). This applies identically whether "go"
+	// arrived as a direct human click (this line) or via accept(go)
+	// (applyAnswered below, which calls acceptGo the same way) — both are the
+	// SAME verb with the SAME meaning, design doc §3.2's table makes no
+	// distinction between them.
+	if req.Type == "go" {
+		return s.acceptGo(ctx, taskID)
+	}
+	// "answered" also bypasses this pipeline entirely — its own accept path
+	// needs the identical non-Tx-then-Tx shape whenever the accepted verb is
+	// "go", plus the read-then-apply-then-strip sequencing design doc §3.1
+	// requires for every other verb. See applyAnswered's own doc comment
+	// (suggestion_accept.go) for the full accept/reject implementation,
+	// including the SEPARATE actor==human check on accept specifically (this
+	// guard above does not cover it: "answered" itself is non-transitioning
+	// and not in IsCardTransitionAction's set, since reject must stay
+	// reachable from any actor).
+	if req.Type == "answered" {
+		return s.applyAnswered(ctx, taskID, req.Payload)
+	}
 
 	// Hydrate with workspace.yaml so kit-supplied hooks / env / capabilities
 	// — and, since docs/plans/workspace-default-project.md PR4, the
@@ -189,15 +234,12 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// new entry to the task's instruction history. The instruction is recorded
 	// only on the action (audit trail) and not merged into task.payload.
 	//
-	// reopen_triaged is included (Opus review, Medium): 決定17's routing rewrote
-	// req.Type BEFORE this point, so keying on "reopen" alone would drop the
-	// message a caller passed to `boid task reopen <card> -m "..."` (or the Web
-	// UI reopen dialog) AND — because reopen_triaged is not in
-	// sideEffectConsumesPayload either — fall through to MergePayload, polluting
-	// task.Payload with the raw {"instruction":...} object. That is precisely the
-	// pollution PR-4 called a real regression (see the comment below).
+	// reopen_triaged is GONE (v1's 決定17 name-rewrite routing — see this
+	// function's own note above where the push-down guard now lives): both
+	// machines' "reopen" rules keep their own name, so keying on plain
+	// "reopen" alone is sufficient in v2.
 	var reopenPayloadConsumed bool
-	if (req.Type == "reopen" || req.Type == "reopen_triaged") && len(req.Payload) > 0 {
+	if req.Type == "reopen" && len(req.Payload) > 0 {
 		var p struct {
 			Instruction *orchestrator.Instruction `json:"instruction,omitempty"`
 		}
@@ -228,14 +270,15 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// implementing this PR, per 論点6-2's "ついでに確認する" instruction) even
 	// though nothing downstream reads it from there.
 	//
-	// noted/answered (docs/plans/ingestion-identity.md PR-3) join this set
-	// for the SAME reason even though neither has a task_triage side effect
-	// that "consumes" the payload the way attrs_set's fold does: noted's
-	// payload is an opaque workspace-defined blob with no relationship to
-	// task.Payload at all, and answered's ({answer,verb,basis}) belongs in
-	// the action log + the suggestion-drop side effect only. Merging either
-	// into task.Payload would be exactly the pollution bug this map already
-	// exists to prevent for the other four.
+	// noted (docs/plans/ingestion-identity.md PR-3) joins this set for the
+	// SAME reason even though it has no task_triage side effect that
+	// "consumes" the payload the way attrs_set's fold does: noted's payload
+	// is an opaque workspace-defined blob with no relationship to
+	// task.Payload at all. Merging it into task.Payload would be exactly the
+	// pollution bug this map already exists to prevent for the other four.
+	// ("answered" used to be in this map too — it now bypasses this entire
+	// function via applyAnswered, workflow_action.go's own early redirect
+	// above, so it never reaches this point at all.)
 	sideEffectConsumesPayload := map[string]bool{
 		"park":          true,
 		"attrs_set":     true,
@@ -243,7 +286,6 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		"child_specced": true,
 		"child_dropped": true,
 		"noted":         true,
-		"answered":      true,
 	}
 
 	if !reopenPayloadConsumed && !sideEffectConsumesPayload[req.Type] {
@@ -303,16 +345,6 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		if perr := parseNotedPayload(req.Payload); perr != nil {
 			return nil, perr
 		}
-	case "answered":
-		// The parsed value isn't needed downstream — applyAnsweredSideEffect
-		// (below) strips detail.attrs.suggestion unconditionally regardless
-		// of answer/verb/basis (J-7: the daemon does not act on their
-		// content). parseAnsweredPayload is still called here so a malformed
-		// payload surfaces as 400 before the transaction opens, matching
-		// every other pre-Tx validation above.
-		if _, perr := parseAnsweredPayload(req.Payload); perr != nil {
-			return nil, perr
-		}
 	}
 
 	// attrs_set/child_added/child_specced are non-transitioning (ToStatus==""
@@ -329,13 +361,14 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// same Tx. park is NOT in this set — it genuinely transitions status, so
 	// it still needs the write.
 	//
-	// noted/answered (docs/plans/ingestion-identity.md PR-3) join this set
-	// for the identical reason: both are non-transitioning and their payload
-	// is fully consumed (never merged into task.Payload, per
-	// sideEffectConsumesPayload above) — an unconditional UpdateTask(newTask)
-	// here would risk the same stale-status-stomp race for them too.
+	// noted (docs/plans/ingestion-identity.md PR-3) joins this set for the
+	// identical reason: non-transitioning, payload fully consumed (never
+	// merged into task.Payload) — an unconditional UpdateTask(newTask) here
+	// would risk the same stale-status-stomp race. ("answered" no longer
+	// reaches this function at all — see the sideEffectConsumesPayload
+	// comment above.)
 	skipTaskUpdate := req.Type == "attrs_set" || req.Type == "child_added" || req.Type == "child_specced" ||
-		req.Type == "child_dropped" || req.Type == "noted" || req.Type == "answered"
+		req.Type == "child_dropped" || req.Type == "noted"
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		if skipTaskUpdate {
@@ -390,14 +423,6 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 			return applyChildSpeccedSideEffect(tx, newTask.ID, childSpeccedParsed)
 		case "child_dropped":
 			return applyChildDroppedSideEffect(tx, newTask.ID, childDroppedParsed)
-		case "answered":
-			// docs/plans/ingestion-identity.md PR-3 (J-6): drops
-			// detail.attrs.suggestion — see applyAnsweredSideEffect's own doc
-			// comment (workflow_triage.go) for why this runs unconditionally
-			// for both accept and reject. "noted" has NO case here (falls
-			// through to the default `return nil` below): its payload lives
-			// only in the action row itself (J-5, daemon never interprets it).
-			return applyAnsweredSideEffect(tx, newTask.ID)
 		case "drop":
 			// docs/plans/ingestion-identity.md PR-1 (B-1), I-6: drop releases
 			// every identity bound to this task, atomically with the drop
@@ -462,22 +487,18 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// successfully, and per the state machine's own doc comment "working
 	// deliberately has NO exit rule yet" a task stuck in ready is the
 	// intended, visible failure mode (機構の不調のサイン) rather than a lost
-	// Go.
-	if req.Type == "ready" && newTask.Status == orchestrator.TaskStatusReady {
-		dispatched, dispatchErr := s.Dispatch(ctx, newTask.ID)
-		if dispatchErr != nil {
-			slog.Error("ready: machine dispatch (ready->working) failed", "task_id", newTask.ID, "error", dispatchErr)
-		} else if dispatched != nil {
-			newTask = dispatched.Task
-		}
-	}
+	// Go. (v1's "ready" Manual action + machine-internal "dispatch" chain
+	// that used to live here is gone — v2 has neither a "ready" status nor a
+	// "dispatch" verb; accept(go) / a direct "go" action bypasses this whole
+	// function via acceptGo, see the early redirect above.)
 
 	// queue の決定論的評価 節 rule 4 (notify, PR-3 scoped-down slice — see
-	// queue_notify.go's doc comment). Checked against newTask AFTER the
-	// ready->working auto-dispatch above: if dispatch succeeded, newTask.Status
-	// is "working" (not a queue-member status), so no spurious notify fires
-	// for a task nose already Go'd through to execution — only a task that
-	// genuinely RESTS in triaged/ready notifies.
+	// queue_notify.go's doc comment). queueMemberStatus (queue_notify.go)
+	// still keys off the legacy ready/triaged statuses — PR-2 owns updating
+	// the queue predicate itself to the new suggestion-driven definition (out
+	// of scope here per this PR's brief) — so in practice this fires for
+	// neither v2 card verb today; left wired rather than removed since it is
+	// otherwise inert, not actively wrong.
 	s.notifyQueueEntryIfUrgent(ctx, newTask, fromStatus)
 	// rule 4's other entry point: urgency arriving on a card that is already a
 	// queue member (see notifyUrgencyRaised's doc comment for why the

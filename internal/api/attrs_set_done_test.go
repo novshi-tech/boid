@@ -282,32 +282,32 @@ func TestLogAttrsSetOnDoneTriage_LogsAtWarnLevel(t *testing.T) {
 // the pre-Tx local `fromStatus` snapshot.
 //
 // Race modeled here: ApplyAction's pre-Tx read (s.Tasks.GetTask, via the
-// separate stubTaskStore below) sees the task still "triaged" — a
-// concurrent triage_done (a DIFFERENT goroutine's SweepTriage tick)
+// separate stubTaskStore below) sees the task still "working" — a
+// concurrent "done" (a different actor's accept(done), or a direct click)
 // committed working→done in the gap before this Tx opens. Since attrs_set
 // is in skipTaskUpdate, the code re-validates from a FRESH in-Tx read
 // (tx.GetTask, via txStore below, deliberately primed to "done" to model
 // that race) — I-5b's guard is what admits THIS attrs_set, and
 // action.FromStatus gets overwritten to "done" accordingly. The log must
-// fire based on THAT fresh value, not the stale pre-Tx "triaged" the old
+// fire based on THAT fresh value, not the stale pre-Tx "working" the old
 // `fromStatus`-keyed condition would have checked (which would have
 // wrongly skipped the log here).
 func TestApplyAction_AttrsSet_LogsUsingInTxStatus_NotStalePreTxSnapshot(t *testing.T) {
 	buf := captureSlog(t)
 
-	preTx := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	preTx := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
 	fresh := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task:   fresh, // tx.GetTask (in-Tx) sees the task as already done
 		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
 	}
-	svc := newDoneTriageWorkflowService(preTx, txStore) // s.Tasks (pre-Tx) sees "triaged"
+	svc := newDoneTriageWorkflowService(preTx, txStore) // s.Tasks (pre-Tx) sees "working"
 
 	if _, err := svc.ApplyAction(context.Background(), "t1", ApplyActionRequest{
 		Type:    "attrs_set",
-		Payload: []byte(`{"summary":"raced with a concurrent triage_done"}`),
+		Payload: []byte(`{"summary":"raced with a concurrent done"}`),
 	}); err != nil {
-		t.Fatalf("ApplyAction(attrs_set, racing triage_done): %v", err)
+		t.Fatalf("ApplyAction(attrs_set, racing done): %v", err)
 	}
 
 	if !strings.Contains(buf.String(), "I-5c") {

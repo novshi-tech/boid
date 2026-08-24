@@ -105,7 +105,6 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks/{id}/edit", h.PostEdit)
 	r.Post("/tasks/{id}/action", h.PostAction)
 	r.Post("/tasks/{id}/suggestion", h.PostAnswerSuggestion)
-	r.Post("/tasks/{id}/wake", h.PostWake)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Post("/tasks/{id}/rerun", h.PostRerun)
 	r.Get("/tasks/{id}/reopen", h.ReopenForm)
@@ -689,18 +688,6 @@ func (h *WebHandler) PostAnswerSuggestion(w http.ResponseWriter, r *http.Request
 	redirectTask(w, r, id)
 }
 
-// PostWake handles the dedicated Wake button (cross-project-issue-triage
-// Phase 1 PR-3) — wake_triaged/wake_ready are Manual:false so they cannot go
-// through PostAction's generic form; see WebService.Wake's doc comment.
-func (h *WebHandler) PostWake(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if err := h.Service.Wake(id); err != nil {
-		redirectTaskErr(w, r, id, err)
-		return
-	}
-	redirectTask(w, r, id)
-}
-
 func (h *WebHandler) GetTaskEdit(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	detail, err := h.Service.GetTaskDetail(id)
@@ -805,8 +792,11 @@ func (h *WebHandler) ReopenForm(w http.ResponseWriter, r *http.Request) {
 		redirectTaskErr(w, r, id, err)
 		return
 	}
-	if detail.Task.Status != orchestrator.TaskStatusDone && detail.Task.Status != orchestrator.TaskStatusAborted {
-		redirectTaskErr(w, r, id, errors.New("reopen is only available for done or aborted tasks"))
+	if detail.Task.Status != orchestrator.TaskStatusDone && detail.Task.Status != orchestrator.TaskStatusAborted && detail.Task.Status != orchestrator.TaskStatusDropped {
+		// card machine v2 (docs/plans/suggestion-as-state-transition.md §3.2)
+		// adds dropped→parked as a second reopen edge, alongside the
+		// execution machine's own done/aborted→executing.
+		redirectTaskErr(w, r, id, errors.New("reopen is only available for done, aborted, or dropped tasks"))
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

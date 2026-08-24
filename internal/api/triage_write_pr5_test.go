@@ -23,7 +23,7 @@ import (
 // via attrs_set lands in the queue predicate's column, not only in the opaque
 // blob.
 func TestApplyAction_AttrsSet_PromotesUrgencyToColumn(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -76,7 +76,7 @@ func TestApplyAction_AttrsSet_RejectsUnknownUrgency(t *testing.T) {
 		`{"urgency":123}`,
 		`{"kind":"epic"}`,
 	} {
-		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 		txStore := &recordingTxStore{task: task}
 		svc := newTriageWorkflowService(task, txStore)
 
@@ -105,7 +105,7 @@ func TestApplyAction_AttrsSet_RejectsUnknownUrgency(t *testing.T) {
 // expressible — otherwise urgency would be a one-way ratchet at the daemon
 // level, which is policy the daemon deliberately does not own).
 func TestApplyAction_AttrsSet_UrgencyNullClears(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.TaskTriage{
 		"t1": {TaskID: "t1", Urgency: "now"},
 	}}
@@ -126,7 +126,8 @@ func TestApplyAction_AttrsSet_UrgencyNullClears(t *testing.T) {
 // predicate rests on: a task created directly into a pre-execution status IS a
 // triage task and gets its sidecar row at birth. Without this, khi's freshly
 // ingested cards would be invisible to ListTriage until their first attrs_set
-// happened to land.
+// happened to land. v2 (docs/plans/suggestion-as-state-transition-impl.md §3.5)
+// folds captured/triaged into a single "parked" initial_status value.
 func TestCreateTask_PreExecutionSeedsTriageRow(t *testing.T) {
 	triage := &stubTriageStore{}
 	svc := newInitialStatusTestService()
@@ -136,13 +137,13 @@ func TestCreateTask_PreExecutionSeedsTriageRow(t *testing.T) {
 		ProjectID:     "proj-1",
 		Title:         "見積もり依頼",
 		Behavior:      "triage",
-		InitialStatus: "triaged",
+		InitialStatus: "parked",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 	if triage.rows[task.ID] == nil {
-		t.Fatalf("no task_triage row seeded for a triaged task (rows=%v)", triage.rows)
+		t.Fatalf("no task_triage row seeded for a parked task (rows=%v)", triage.rows)
 	}
 }
 
