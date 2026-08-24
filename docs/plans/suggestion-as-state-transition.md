@@ -198,6 +198,9 @@ reject は「その提案は採らない」。カードは動かず、suggestion
   daemon の固定式から khi の instruction に移り、**workspace ごとに柔軟に定義できる**
 - **drop は parked からだけ**: 「Go を過ぎた card は drop できない」現行規律を維持。
   working の card を捨てたければ park → drop の 2 手
+- **人の直接操作は常に全遷移で可能であることを担保する** (nose レビュー: escape hatch)。
+  suggestion は入口の一つにすぎず、最悪 khi が何も提案しなくても人手だけで card を
+  一周させられること。穴 11 の防御設計はこの担保を塞がないこと
 
 ### 3.3 機械遷移ゼロ: sweep 3 兄弟の行方
 
@@ -227,7 +230,7 @@ daemon は suggestion を書かない (事実の記録まで)。書き手が khi
 boid コアは機構だけを持ち、判断は全部 workspace 側 — boid の設計スタンス
 (ポリシーと enforcement の分離) とも一致する。
 
-### 3.5 canonical source は必須契約から workspace 運用へ降格
+### 3.5 canonical source は廃止する
 
 canonical source の存在理由は auto-done ただ 1 本だった。因果鎖はこう:
 auto-done の式 (決定 15) が `observed.source_closed` を要求 → 終了概念を持たない source
@@ -246,15 +249,16 @@ auto-done を落とすとこの鎖は丸ごと崩れる:
   task → canonical。シグナルの紐付け・重複排除は **ingestion identity** の仕事
   (identity は task に複数ぶら下がる、canonical は 1 つ — S-15 link)。
   **identity 機構は本再設計のスコープ外・現状維持**
-- **canonical は「外部チケットを立てる workspace 運用」として optional 化。** 対人可視性
-  (チームの他者が見られる Jira issue) は auto-done と無関係の価値で、立てる運用なら
-  done 判断の強い証拠にも、identity link 経由の signal routing にも使える。
-  「あれば使える」に降格し、「無いと壊れる」ではなくなる
+- **khi 側の `canonical` verb / S-10 起票モジュールも削除する。** 当初案は「外部チケット
+  を立てる workspace 運用」への降格だったが、レビューで「あえて残す意味が無い」(nose)
+  となり完全削除に倒した。対人可視性のための外部チケットが将来欲しくなったら、それは
+  通常の khi instruction (外部書き込みスキル) + `link` identity で実現でき、boid core
+  にも khi の専用 verb にも支えは要らない
 
 実証: 本番は 2026-08-24 時点で **canonical 全カード欠落のまま**回っており、決定 16 の
 契約は一度も履行されていない。実害は「auto-done が一度も発火しない」だけ
 (ROOKPF-306/307 が queue に居座った症状の根の一つ)。suggest-done 化は理想の放棄では
-なく現実の追認である。
+なく現実の追認であり、canonical を消して失うデータも無い。
 
 ### 3.6 一覧は suggestion で駆動する
 
@@ -263,6 +267,13 @@ queue を「suggestion が付いているカード」の一覧に置き換える
 
 suggestion が付いていないカードは出ない。それは「khi がまだ何も言えていない」ことを
 意味し、出ないこと自体が情報になる (ただし穴 7 の 3 類型に注意)。
+
+リスクは自覚している (nose レビュー): 当初 queue に機械的条件 (状態 × urgency) を
+置いたのは「必要なものに必ず気づける」ためで、suggestion 駆動には khi が提案しない
+ものが目に止まらない盲点がある。だが機械的条件は実運用でうまく機能しなかった上に
+全体を複雑にした (§2.4)。状態機械が 4 状態まで単純になった今、**見落としの確認は
+人が parked を直接見に行けば足りる**と見る。queue は唯一の窓ではなく、suggestion の
+無い card を眺める面 (parked / working の一覧) は残す。
 
 `urgency` は可視性を失い、**並び順だけの属性**になる。`someday` が「どこからも見えない」
 になる問題も、captured を someday 置き場に使う workaround も消える。
@@ -278,7 +289,7 @@ suggestion が付いていないカードは出ない。それは「khi がま�
 | (新設) | **`reopen` を suggest** (auto-reopen の置き換え) |
 | `park` | `park` を suggest (現行は即時実行 → 提案型に揃える) |
 | `wake` | **廃止** (park から出る提案は wake_due 事実を見て khi が決める — §3.3) |
-| `canonical` | **必須でなくなる** (§3.5)。起票運用を選ぶ workspace のみ残す |
+| `canonical` | **廃止** (§3.5) |
 | `spec` / `drop-child` | children 側の提案。suggestion ではない (現状維持) |
 | `summary` / `urgency` / `observed` / `link` / `skip` / `done-signal` | 機械が黙って書く記録・分類 (現状維持。done-signal は done suggest の判断材料になる) |
 
@@ -334,8 +345,8 @@ B により §2.5 の場外規律が原理的に消える:
 
 ## 4. 穴
 
-レビューと深堀り 3 巡で、初版の穴 8 個のうち 4 個は解けた。解けたものは解き方ごと
-残し、開いているものに続番を振る。
+レビューと深堀り 3 巡 + artifact レビュー (nose) で、初版の穴 8 個のうち 5 個は解けた。
+解けたものは解き方ごと残し、開いているものに続番を振る。
 
 **解けた穴:**
 
@@ -349,19 +360,25 @@ B により §2.5 の場外規律が原理的に消える:
    (auto-done の評価器と wake の行き先決定) が両方消えたため、machine-readable にする
    必要ごと消滅 (§3.2–3.3)。khi は自分が working を提案した文脈を覚えており、人は UI で
    子の有無を見れば足りる
+5. ~~既存データの移行~~ → 状態の写像はしない。**既存データから card を生成し直す
+   (洗い替え、nose レビュー)**。本番 card は少数なので、旧 card を終端させて khi に
+   再取り込みさせる形。identity の付け替えと旧 card の扱いは実装時に詰める。
+   triage_done の action 履歴は改名せずそのまま (§3.8)
 
 **開いている穴:**
 
-5. **既存データの移行。** 本番の captured / triaged / ready / aborted の card を
-   parked / working へ写像する規則。triage_done の action 履歴は改名せずそのまま (§3.8)
 6. **queue 定義変更の棚卸し。** 対象は `QueueEligible` (production 未使用) ではなく
    store.go の status フィルタ族 — `"queue"` (superset、テストが pin)、`"triage"`、
    `"queue_next"`、`"done_triage"` — と Web UI タブ・queue_notify
 7. **suggestion の付かないカードの不可視。** 3 類型ある: (a) khi がまだ何も言えていない
    parked (意図どおり、出ないこと自体が情報)、(b) 閉じ忘れの stale working (auto-done
    廃止で新たに増える)、(c) wake 条件なしの初期 parked (khi の park verb は wake_at /
-   wake_task_id 必須という現行不変量 [write.py] と衝突する)。(b)(c) を拾う棚卸し (UC-5)
-   の守備範囲を設計すること
+   wake_task_id 必須という現行不変量 [write.py] と衝突する)。
+   nose の判断 (レビュー): 状態機械が単純になったので、人が parked / working を直接
+   見に行くコストは低く、見落としはそれで受ける (楽観)。棚卸し (UC-5) は重い機構では
+   なく「suggestion の無い card を眺める面がある」ことの担保に縮む。前提は §3.2 の
+   escape hatch 担保 (人の直接操作が常に可能) が守られていること。(c) の park verb
+   不変量の緩和だけ設計が残る
 8. **完了検知そのものは未解決のまま。** khi が外の完了に気づく問題 (シグナル駆動 sweep
    の限界) は workspace 側の別課題。ただし契約が「canonical を立てて source_closed を
    観測」から「任意の証拠で done を suggest」に緩和され、達成しやすくはなった
@@ -390,4 +407,8 @@ B により §2.5 の場外規律が原理的に消える:
   自動 accept (決定層) に置く。穴 4 はこれで消滅した
 - 3 巡目 (nose): auto-done が消えるなら canonical source の必須理由も消えるのでは、
   という仮説。調査で「一意特定キーの役割は最初から identity のもの (依存の向きは
-  task → canonical)」と確認し、canonical は workspace 運用に降格した
+  task → canonical)」と確認した
+- artifact 整形版レビュー (nose、4 点): 移行は写像でなく洗い替え (穴 5) /
+  canonical は optional 残しではなく完全削除 (§3.5) / 人の直接操作が常に可能なことを
+  担保する escape hatch 要件 (§3.2) / suggestion 盲点は「人が parked を直接見る」で
+  受ける (§3.6)
