@@ -77,14 +77,24 @@ func TestApplyAction_AttrsSet_DoesNotWriteTaskRow(t *testing.T) {
 // TestApplyAction_AttrsSet_RejectsWhenConcurrentTransitionRacedAhead pins the
 // codex review round 2 Major fix: attrs_set/child_added/child_specced
 // re-validate against a FRESH in-Tx read of the task, not the pre-Tx
-// snapshot. Here the pre-Tx read sees "triaged" (still eligible for
-// attrs_set), but a concurrent "drop" has already committed "dropped" by the
-// time this Tx opens — "dropped" is NOT in attrs_set's FromStatus
+// snapshot. Here the pre-Tx read sees "parked" (still eligible for
+// attrs_set), but a concurrent transition has already committed "captured"
+// by the time this Tx opens (a legacy status — TestCardMachineV2_
+// LegacyStatuses_NoRules pins that it carries zero v2 rules, so this is a
+// deliberately synthetic race target purely to exercise the in-Tx
+// re-validation mechanism, not a claim that anything actually transitions a
+// card INTO captured). "captured" is NOT in attrs_set's FromStatus
 // enumeration, so the action must be rejected (409), and neither the action
 // row nor the task_triage side-effect may be recorded.
+//
+// "dropped" no longer works as this test's race target (PR #987 review round
+// 2, BLOCKER N1): attrs_set's FromStatus set grew to include "dropped" (khi
+// must be able to attrs_set a "reopen" suggestion onto a dropped card), so a
+// race landing on "dropped" would now legitimately succeed instead of being
+// rejected — this test's whole point is a race landing somewhere illegal.
 func TestApplyAction_AttrsSet_RejectsWhenConcurrentTransitionRacedAhead(t *testing.T) {
-	staleTask := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
-	racedTask := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDropped, Behavior: "dev", Payload: []byte(`{}`)}
+	staleTask := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	racedTask := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusCaptured, Behavior: "dev", Payload: []byte(`{}`)}
 	// seedTriage is a pre-existing task_triage row (PR-B: machineFor needs
 	// one to pick NewCardMachine for "t1" — without it attrs_set would 400
 	// ("not available") before ever reaching the concurrency-race logic this
@@ -247,22 +257,27 @@ func TestApplyAction_AttrsSet_RejectsEmptyObjectAndNull(t *testing.T) {
 	}
 }
 
-// ---- 論点8: working からの出口3本 ----
+// ---- card 機械 v2: working からの出口2本 (park/done) ----
+//
+// v1 had three working exits (ready/triage/park, 論点8); card machine v2
+// (docs/plans/suggestion-as-state-transition-impl.md §3) drops ready/triage
+// entirely (no such statuses exist any more) and adds "done" as working's
+// OTHER exit — so v2's working has exactly two, not three.
 
-func TestApplyAction_Working_ThreeExits(t *testing.T) {
+func TestApplyAction_Working_TwoExits(t *testing.T) {
 	cases := []struct {
 		action string
 		want   orchestrator.TaskStatus
 	}{
-		{"ready", orchestrator.TaskStatusReady},
-		{"triage", orchestrator.TaskStatusTriaged},
 		{"park", orchestrator.TaskStatusParked},
+		{"done", orchestrator.TaskStatusDone},
 	}
 	for _, c := range cases {
 		t.Run(c.action, func(t *testing.T) {
 			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
 			svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
-			result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: c.action})
+			ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
+			result, err := svc.ApplyAction(ctx, task.ID, ApplyActionRequest{Type: c.action})
 			if err != nil {
 				t.Fatalf("ApplyAction(%s) from working: %v", c.action, err)
 			}
@@ -282,7 +297,8 @@ func TestApplyAction_Working_Park_DoesNotPollutePayload(t *testing.T) {
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
-	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
+	_, err := svc.ApplyAction(ctx, task.ID, ApplyActionRequest{
 		Type:    "park",
 		Payload: []byte(`{"wake_task_id":"child-1"}`),
 	})

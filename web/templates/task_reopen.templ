@@ -2,12 +2,16 @@ package templates
 
 import "github.com/novshi-tech/boid/internal/orchestrator"
 
-// TaskReopen renders the reopen form for a done task.
+// TaskReopen renders the reopen form for a done/aborted/dropped task.
 // Submitting the form calls POST /tasks/{id}/reopen with an optional message
-// that is appended to the task's instruction history.
+// that is appended to the task's instruction history. The resulting status
+// depends on which machine governs the task (internal/api's machineFor): an
+// ordinary done/aborted task goes back to executing; a done/dropped CARD
+// (card machine v2, docs/plans/suggestion-as-state-transition.md §3.2) goes
+// back to parked instead — a card never re-executes as a job.
 templ TaskReopen(task *orchestrator.Task) {
 	@Layout("Reopen Task", "/tasks/"+task.ID) {
-		<p class="form-hint">Reopen moves a done task back to executing and appends an optional message as a new instruction.</p>
+		<p class="form-hint">Reopen moves this task back to an active state (executing for an ordinary task, parked for a card) and appends an optional message as a new instruction.</p>
 		<div class="task-form-body">
 			<form id="task-reopen-form" method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/reopen") }>
 				<div class="form-group">

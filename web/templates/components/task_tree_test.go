@@ -73,7 +73,7 @@ func makeTreeTestTask(id string) *orchestrator.Task {
 func TestTaskTreeRow_RendersSuggestionVerbBadgeAndReason(t *testing.T) {
 	item := TreeItem{
 		Task:       makeTreeTestTask("t1"),
-		Suggestion: orchestrator.Suggestion{Verb: "wake", Reason: "source event fired"},
+		Suggestion: orchestrator.Suggestion{Verb: "reopen", Reason: "source event fired"},
 	}
 
 	var buf bytes.Buffer
@@ -82,11 +82,11 @@ func TestTaskTreeRow_RendersSuggestionVerbBadgeAndReason(t *testing.T) {
 	}
 	html := buf.String()
 
-	if !strings.Contains(html, `class="badge badge-verb-wake"`) {
-		t.Errorf("expected verb badge with class badge-verb-wake, got: %s", html)
+	if !strings.Contains(html, `class="badge badge-verb-reopen"`) {
+		t.Errorf("expected verb badge with class badge-verb-reopen, got: %s", html)
 	}
-	if !strings.Contains(html, `>wake<`) {
-		t.Errorf("expected visible verb label \"wake\", got: %s", html)
+	if !strings.Contains(html, `>reopen<`) {
+		t.Errorf("expected visible verb label \"reopen\", got: %s", html)
 	}
 	if !strings.Contains(html, "source event fired") {
 		t.Errorf("expected reason text, got: %s", html)
@@ -110,13 +110,15 @@ func TestTaskTreeRow_NoSuggestion_RendersNoVerbBadge(t *testing.T) {
 	}
 }
 
-// TestVerbBadgeClass_KnownVerbs pins each of the six vocabulary words
-// (suggestion.verb — orchestrator.Suggestion's doc comment: go/shape/
-// manual/park/drop/wake) to its own class. Deliberately does not derive the
+// TestVerbBadgeClass_KnownVerbs pins each of card machine v2's six
+// transition verbs (orchestrator.IsCardTransitionAction; docs/plans/
+// suggestion-as-state-transition.md §3.1 — suggestion.verb is boid's own
+// state-machine vocabulary now, not the old free-form go/shape/manual/park/
+// drop/wake set) to its own class. Deliberately does not derive the
 // expected list from knownSuggestionVerbs itself — a test that reads the
 // same map it's checking can't catch a typo inside that map.
 func TestVerbBadgeClass_KnownVerbs(t *testing.T) {
-	for _, verb := range []string{"go", "shape", "manual", "park", "drop", "wake"} {
+	for _, verb := range []string{"go", "working", "park", "drop", "done", "reopen"} {
 		got := VerbBadgeClass(verb)
 		want := "badge-verb-" + verb
 		if got != want {

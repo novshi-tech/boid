@@ -349,11 +349,11 @@ pre {
    TaskDetailChildrenSection's badge-<status>), so restore the filled look
    here specifically. */
 .detail-suggestion-header .badge-verb-go      { background: #dcfce7; }
-.detail-suggestion-header .badge-verb-wake    { background: #fef9c3; }
-.detail-suggestion-header .badge-verb-shape   { background: #cffafe; }
+.detail-suggestion-header .badge-verb-reopen  { background: #fef9c3; }
+.detail-suggestion-header .badge-verb-done    { background: #cffafe; }
 .detail-suggestion-header .badge-verb-park    { background: #ede9fe; }
 .detail-suggestion-header .badge-verb-drop    { background: #fee2e2; }
-.detail-suggestion-header .badge-verb-manual  { background: #f1f5f9; }
+.detail-suggestion-header .badge-verb-working { background: #f1f5f9; }
 /* badge-verb-unknown (BD-8 残件4): an un-vetted suggestion.verb value falls
    back here (components.VerbBadgeClass) — neutral gray, not one of the six
    known-verb hues, so it never masquerades as a real verb. */
@@ -361,11 +361,11 @@ pre {
 
 @media (prefers-color-scheme: dark) {
   .detail-suggestion-header .badge-verb-go      { background: #052e16; }
-  .detail-suggestion-header .badge-verb-wake    { background: #422006; }
-  .detail-suggestion-header .badge-verb-shape   { background: #164e63; }
+  .detail-suggestion-header .badge-verb-reopen  { background: #422006; }
+  .detail-suggestion-header .badge-verb-done    { background: #164e63; }
   .detail-suggestion-header .badge-verb-park    { background: #4c1d95; }
   .detail-suggestion-header .badge-verb-drop    { background: #450a0a; }
-  .detail-suggestion-header .badge-verb-manual  { background: #1e293b; }
+  .detail-suggestion-header .badge-verb-working { background: #1e293b; }
   .detail-suggestion-header .badge-verb-unknown { background: #3f3f46; }
 }
 
@@ -697,17 +697,17 @@ pre {
    stripped chrome as every other list badge (.task-row-meta .badge above:
    transparent bg, no padding/radius) — the list conveys state via colored
    text, not filled chips, and this must not be the one exception. Colors
-   echo the closest-meaning status hue (go≈working, wake≈awaiting/parked's
-   attention-needed hue, shape≈triaged/specced, drop≈aborted, manual≈pending)
+   echo the closest-meaning status hue (go≈working, reopen≈awaiting/parked's
+   attention-needed hue, done≈done/specced, drop≈aborted, working≈pending)
    so a nose scanning verbs recognizes the hue before reading the word.
    Reason reuses .task-row-summary (own line, same muted/ellipsis style) —
    see task_tree.templ's taskTreeRow. */
 .badge-verb-go      { color: #15803d; }
-.badge-verb-wake    { color: #854d0e; }
-.badge-verb-shape   { color: #0e7490; }
+.badge-verb-reopen  { color: #854d0e; }
+.badge-verb-done    { color: #0e7490; }
 .badge-verb-park    { color: #6d28d9; }
 .badge-verb-drop    { color: #b91c1c; }
-.badge-verb-manual  { color: #475569; }
+.badge-verb-working { color: #475569; }
 /* badge-verb-unknown (BD-8 残件4): unrecognized suggestion.verb — text
    still renders (rule 5, 隠さない), only the color drops to neutral gray. */
 .badge-verb-unknown { color: #76716a; }
@@ -732,11 +732,11 @@ pre {
   .badge-urgency-week  { color: #60a5fa; }
 
   .badge-verb-go      { color: #4ade80; }
-  .badge-verb-wake    { color: #fbbf24; }
-  .badge-verb-shape   { color: #67e8f9; }
+  .badge-verb-reopen  { color: #fbbf24; }
+  .badge-verb-done    { color: #67e8f9; }
   .badge-verb-park    { color: #c4b5fd; }
   .badge-verb-drop    { color: #f87171; }
-  .badge-verb-manual  { color: #94a3b8; }
+  .badge-verb-working { color: #94a3b8; }
   .badge-verb-unknown { color: #9b958a; }
 }
 

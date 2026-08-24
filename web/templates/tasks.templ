@@ -418,27 +418,23 @@ templ TaskDetailChildrenSection(children []orchestrator.TaskTriageChild) {
 
 // detailPrimaryAction picks the single state-aware "primary" action for the
 // bottom bar. Mirrors TUI semantics:
-//   - pending          → start  (forward, primary)
-//   - executing        → abort  (the only safe manual move; done is intentionally hidden)
-//   - done             → reopen+rerun (both primary; see TaskActionBar)
-//   - aborted          → reopen+rerun (both primary; see TaskActionBar)
-//   - captured         → triage (cross-project-issue-triage Phase 1 PR-3)
-//   - triaged          → ready  (= Go, 逆輸入2: 「triage task を ready にする判断」)
-//   - working          → ready  (= Go。2026-08-16 follow-up: triage カードが
-//     working に入った後も子を specced にして Go できるようにする。machine.go
-//     は working→ready の Manual 遷移を既に持っている — 欠けていたのは配線だけ)
+//   - pending   → start  (forward, primary)
+//   - executing → abort  (the only safe manual move; done is intentionally hidden)
+//   - done      → reopen+rerun (both primary; see TaskActionBar) — for an
+//     ordinary task; a done CARD is handled by TaskActionBar's own
+//     hasTriage branch before this function is ever called
+//   - aborted   → reopen+rerun (both primary; see TaskActionBar)
+//   - parked    → go (card machine v2, docs/plans/
+//     suggestion-as-state-transition.md §3.2: parked's forward edge —
+//     dispatches any specced children, then working)
+//   - working   → done (card machine v2: the natural forward edge once work
+//     is underway; park is the lighter "not yet, set aside" move and stays
+//     in the kebab menu instead of competing for the primary slot)
 //
-// ready itself has no primary action here: the ready→working transition is
-// machine-driven (TaskWorkflowService.Dispatch, PR-2) immediately after Go
-// commits, so a task resting in ready with no forward button is the
-// intended "stuck" signal (機構の不調のサイン — see machine.go's NewMachine
-// doc comment), not a missing feature.
-//
-// parked is deliberately absent from this switch — Wake is not reachable
-// through the generic action-send form this function backs (wake_triaged/
-// wake_ready are Manual:false; TaskWorkflowService.Wake is its own
-// endpoint). TaskActionBar renders parked's Wake button directly instead of
-// routing it through detailPrimaryAction/actionPrimaryClass.
+// dropped is deliberately absent from this switch — TaskActionBar's own
+// hasTriage branch (mirroring done above) renders a Reopen link for it
+// directly, the same way done/aborted already get theirs, without ever
+// reaching detailPrimaryAction.
 //
 // Returns ("", "") when no primary action applies.
 func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (action, label string) {
@@ -457,16 +453,16 @@ func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (ac
 		}
 	case orchestrator.TaskStatusAborted:
 		return "rerun", "Rerun"
-	case orchestrator.TaskStatusCaptured:
+	case orchestrator.TaskStatusParked:
 		for _, a := range availableActions {
-			if a == "triage" {
-				return "triage", "Triage"
+			if a == "go" {
+				return "go", "Go"
 			}
 		}
-	case orchestrator.TaskStatusTriaged, orchestrator.TaskStatusWorking:
+	case orchestrator.TaskStatusWorking:
 		for _, a := range availableActions {
-			if a == "ready" {
-				return "ready", "Go"
+			if a == "done" {
+				return "done", "Done"
 			}
 		}
 	}
@@ -474,12 +470,11 @@ func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (ac
 }
 
 // actionPrimaryClass picks the visual variant for the primary bottom-bar
-// button: blue for forward (start/ready=Go), red for destructive (abort),
-// neutral for re-execute (rerun) / triage (a judgment call, not a
-// forward-committing one — kept visually lighter than Go).
+// button: blue for forward (start/go/done), red for destructive (abort),
+// neutral for re-execute (rerun).
 func actionPrimaryClass(action string) string {
 	switch action {
-	case "start", "ready":
+	case "start", "go", "done":
 		return "btn btn-primary"
 	case "abort":
 		return "btn btn-danger"
@@ -496,19 +491,19 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 	if activeTab == "timeline" {
 		<div class="action-bar">
 			<div class="action-bar-inner">
-				if task.Status == orchestrator.TaskStatusDone || task.Status == orchestrator.TaskStatusAborted {
+				if task.Status == orchestrator.TaskStatusAborted || (task.Status == orchestrator.TaskStatusDone && !hasTriage) {
+					// Ordinary (non-card) done/aborted task: reopen re-executes
+					// it (execution machine's own reopen: done/aborted→executing).
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/reopen") } class="btn btn-primary action-bar-primary-form">Reopen</a>
 					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('Rerun this task?')">
 						<button type="submit" class="btn btn-secondary">Rerun</button>
 					</form>
-				} else if task.Status == orchestrator.TaskStatusParked {
-					// wake_triaged/wake_ready are Manual:false (not in
-					// availableActions) — Wake is its own dedicated endpoint,
-					// not the generic action-send form (see WebService.Wake's
-					// doc comment, internal/api/store.go).
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/wake") } class="action-bar-primary-form">
-						<button type="submit" class="btn btn-primary">Wake</button>
-					</form>
+				} else if hasTriage && (task.Status == orchestrator.TaskStatusDone || task.Status == orchestrator.TaskStatusDropped) {
+					// card machine v2 (docs/plans/suggestion-as-state-transition.md
+					// §3.2): a done/dropped CARD reopens to parked, never
+					// executing — no Rerun here, "re-executing a card as a job"
+					// is not a real concept (a card never runs its own session).
+					<a href={ templ.SafeURL("/tasks/" + task.ID + "/reopen") } class="btn btn-primary action-bar-primary-form">Reopen</a>
 				} else {
 					{{ action, label := detailPrimaryAction(task, availableActions) }}
 					if action == "rerun" {
@@ -532,20 +527,18 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 				if task.Status == orchestrator.TaskStatusPending {
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit") } class="btn btn-secondary">Edit</a>
 				}
-				if task.Status == orchestrator.TaskStatusTriaged || (task.Status == orchestrator.TaskStatusWorking && hasTriage) {
+				if (task.Status == orchestrator.TaskStatusParked || task.Status == orchestrator.TaskStatusWorking) && hasTriage {
 					// Shape (UC-3 shaping session launcher, cross-project-issue-triage
 					// plan doc — 整形 in the plan doc's Japanese). Secondary to Go:
 					// shaping is for cards still too fuzzy to Go on directly, not
-					// the default path. Also offered on working (2026-08-14
-					// follow-up), gated on hasTriage (a task_triage sidecar row
-					// exists) rather than an open child already being present —
-					// the overwhelming majority of working tasks are ordinary
-					// dev/impl tasks with no sidecar at all and get no button, but
-					// a working triage card's children list keeps needing shaping
-					// work after Go: an existing open child may need its spec
-					// defined, or a brand-new child may need to be added — the
-					// latter needs Shape precisely because no child exists yet, so
-					// this is deliberately not gated on an open child being present.
+					// the default path. Card machine v2 (docs/plans/
+					// suggestion-as-state-transition.md §3.2) folds captured/
+					// triaged into parked, so parked is now the "still needs
+					// shaping" resting state Shape targets — working keeps its
+					// own offer (2026-08-14 follow-up) since a dispatched card's
+					// children list keeps needing shaping work after Go: an
+					// existing open child may need its spec defined, or a
+					// brand-new child may need to be added.
 					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/shape") } class="action-bar-primary-form">
 						<button type="submit" class="btn btn-secondary">Shape</button>
 					</form>
@@ -559,38 +552,34 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 						// abort is gated on availableActions rather than the
 						// old blanket "not done/aborted/pending" exclusion,
 						// since machine.go now scopes it to the
-						// execution-lifecycle statuses only — the
-						// pre-execution statuses (captured/triaged/parked/
-						// ready/working) use drop instead
-						// (cross-project-issue-triage Phase 1 PR-3, PR-1's
-						// Phase 1 実測結果 項11: 「AvailableActions... UI 配線は
-						// ここに乗せる」). pending is still excluded explicitly
-						// — machine.go DOES have a pending→aborted rule, but
-						// pending already has its own Edit affordance and
-						// hiding abort there predates this PR; not touching
-						// that existing product choice.
+						// execution-lifecycle statuses only — a card (parked/
+						// working) uses drop/park/reopen instead (card machine
+						// v2 has no abort rule at all — docs/plans/
+						// suggestion-as-state-transition.md §3.2: "card は
+						// aborted にも到達しなくなる"). pending is still
+						// excluded explicitly — machine.go DOES have a
+						// pending→aborted rule, but pending already has its
+						// own Edit affordance and hiding abort there predates
+						// this PR; not touching that existing product choice.
 						if hasAction(availableActions, "abort") && task.Status != orchestrator.TaskStatusPending {
 							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Abort this task?')">
 								<input type="hidden" name="type" value="abort"/>
 								<button type="submit" class="action-menu-item action-menu-item-danger">abort</button>
 							</form>
 						}
-						// triage (working → triaged。working に入った後で
-						// 「やっぱり整形し直す」判断のための巻き戻し —
-						// 2026-08-16 follow-up。machine.go の working→triaged
-						// 遷移は既存、欠けていたのはこのメニュー配線のみ。
-						// 破壊的ではないので confirm も danger class も不要。
-						// working に限定するのは、captured は既に
-						// detailPrimaryAction で同じ triage を primary
-						// ボタンとして出しており、ここでも出すと重複表示に
-						// なるため — Opus レビュー指摘 (2026-08-16))。
-						if task.Status == orchestrator.TaskStatusWorking && hasAction(availableActions, "triage") {
+						// working (parked → working, card machine v2: declares
+						// manual work without dispatching any specced children —
+						// the lighter alternative to Go, which is the bottom
+						// bar's primary action instead. Only ever available from
+						// parked, so no extra status gate is needed beyond
+						// hasAction.
+						if hasAction(availableActions, "working") {
 							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
-								<input type="hidden" name="type" value="triage"/>
-								<button type="submit" class="action-menu-item">triage</button>
+								<input type="hidden" name="type" value="working"/>
+								<button type="submit" class="action-menu-item">working</button>
 							</form>
 						}
-						// park (触れる pre-execution 状態 → parked, queue から
+						// park (working → parked, card machine v2, queue から
 						// 一時的に外す — 決定9の「後回し」)。
 						if hasAction(availableActions, "park") {
 							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Park this task (set aside for later)?')">
@@ -598,7 +587,7 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 								<button type="submit" class="action-menu-item">park</button>
 							</form>
 						}
-						// drop (pre-execution 状態 → dropped, 必ず nose の判断
+						// drop (parked → dropped, 必ず nose の判断
 						// でのみ入る終端 — 逆輸入2: 「終わった件と捨てた件を区別
 						// できないと成功の定義が測れない」)。
 						if hasAction(availableActions, "drop") {

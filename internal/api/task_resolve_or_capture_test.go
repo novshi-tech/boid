@@ -110,8 +110,8 @@ func TestResolveOrCapture_UnregisteredIdentity_CreatesCapturedTaskAndLinks(t *te
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if task.Status != orchestrator.TaskStatusCaptured {
-		t.Errorf("Status = %q, want %q (I-4/J-9: new tasks always land captured)", task.Status, orchestrator.TaskStatusCaptured)
+	if task.Status != orchestrator.TaskStatusParked {
+		t.Errorf("Status = %q, want %q (I-4/J-9: new tasks always land parked — card machine v2 folds captured into parked, docs/plans/suggestion-as-state-transition-impl.md §3.5)", task.Status, orchestrator.TaskStatusParked)
 	}
 	if task.Title != "ROOKPF-1: something broke" || task.Description != "the body" {
 		t.Errorf("Title/Description not carried through: %q / %q", task.Title, task.Description)

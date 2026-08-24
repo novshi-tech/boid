@@ -34,7 +34,6 @@ func TestOpConstantsMirror(t *testing.T) {
 		{orchestrator.OpBoidTaskUpdatePayloadPatch, string(sandbox.BoidOpTaskUpdatePayloadPatch)},
 		{orchestrator.OpBoidProjectBehaviors, string(sandbox.BoidOpProjectBehaviors)},
 		{orchestrator.OpBoidProjectList, string(sandbox.BoidOpProjectList)},
-		{orchestrator.OpBoidTaskWake, string(sandbox.BoidOpTaskWake)},
 		{orchestrator.OpBoidTaskTriageGet, string(sandbox.BoidOpTaskTriageGet)},
 		{orchestrator.OpBoidTaskTriageList, string(sandbox.BoidOpTaskTriageList)},
 		{orchestrator.OpBoidTaskIdentityLink, string(sandbox.BoidOpTaskIdentityLink)},

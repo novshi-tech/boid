@@ -631,31 +631,6 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("action applied: %s\n", req.ActionType),
 		}
-	case sandbox.BoidOpTaskWake:
-		// docs/plans/cross-project-issue-triage.md Phase 1 PR-4, 論点10: thin
-		// brokered wrapper around api.WorkflowService.Wake (see
-		// sandbox.BoidOpTaskWake's own doc comment for why this is not a
-		// bypass of the wake_triaged/wake_ready IsManualAction guard).
-		if req.TaskID == "" {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wake requires a task id"}
-		}
-		if e.tasks == nil || e.workflow == nil {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wake unavailable"}
-		}
-		existing, err := e.tasks.GetTask(req.TaskID)
-		if err != nil {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
-		}
-		if !ctx.AllowsProject(existing.ProjectID) {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wake is restricted to the current workspace"}
-		}
-		app, err := e.workflow.Wake(orchestrator.WithActor(context.Background(), orchestrator.ActorTask(ctx.TaskID)), req.TaskID)
-		if err != nil {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
-		}
-		return &sandbox.ExecResponse{
-			Stdout: fmt.Sprintf("task woken: %s (%s)\n", app.Task.ID, app.Task.Status),
-		}
 	case sandbox.BoidOpTaskTriageGet:
 		// docs/plans/cross-project-issue-triage.md Phase 1 PR-5a: the read
 		// half of 決定14 (daemon が state の唯一の正). Same scoping pattern as
@@ -760,12 +735,12 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// already broker-resolved and workspace-checked (broker.go); the
 		// TaskID it links to is a SEPARATE scope the broker cannot verify
 		// (no TaskStore there), so the GetTask + AllowsProject pattern below
-		// matches BoidOpActionSend/BoidOpTaskWake's own — EXCEPT that this
+		// matches BoidOpActionSend's own — EXCEPT that this
 		// op writes the task id straight into task_identities.task_id, an
 		// FK column, so it must pass LinkIdentity the GetTask call's
 		// RESOLVED existing.ID (which absorbs GetTask's own >=8-char prefix
 		// fallback, internal/orchestrator/store.go) rather than the raw
-		// req.TaskID a caller supplied — action_send/task_wake never write
+		// req.TaskID a caller supplied — action_send never writes
 		// their TaskID anywhere, only re-look it up downstream, so a short
 		// prefix silently keeps working for them where it would hard-fail
 		// here with a raw SQLite FOREIGN KEY constraint error.
@@ -836,8 +811,8 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		// Every other op that hands a task back to the caller re-checks
 		// AllowsProject on the task it actually got, not just the project it
-		// was asked about (BoidOpTaskGet/BoidOpTaskTriageGet/BoidOpActionSend/
-		// BoidOpTaskWake all do this). Resolve is no different — the broker
+		// was asked about (BoidOpTaskGet/BoidOpTaskTriageGet/BoidOpActionSend
+		// all do this). Resolve is no different — the broker
 		// only validated req.ProjectID itself; verify the task ResolveIdentity
 		// actually returned still belongs to it.
 		if !ctx.AllowsProject(resolved.ProjectID) {

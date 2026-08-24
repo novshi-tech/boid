@@ -71,13 +71,44 @@ func TestStateMachine_Apply_IgnoresConditionRules(t *testing.T) {
 // itself, on top of each machine's own behavioral tests
 // (machine_execution_test.go / machine_card_test.go). ----
 
-// sharedKnownActions are the six action names both machine.go doc comments
-// say are deliberately duplicated onto BOTH machines (job_failed/progress/
-// done_request/fail_request/child_dispatched/child_closed): the real writers
-// bypass sm.Apply and call tx.CreateAction directly, so registering them on
-// both is only about StateMachine.Apply/IsManualAction treating the name as
-// "known" regardless of which machine a caller happens to be holding.
-var sharedKnownActions = []string{"job_failed", "progress", "done_request", "fail_request", "child_dispatched", "child_closed"}
+// sharedKnownActions are the five action names both machine.go doc comments
+// say are deliberately duplicated onto BOTH machines (progress/done_request/
+// fail_request/child_dispatched/child_closed): the real writers bypass
+// sm.Apply and call tx.CreateAction directly, so registering them on both is
+// only about StateMachine.Apply/IsManualAction treating the name as "known"
+// regardless of which machine a caller happens to be holding.
+//
+// job_failed is NOT in this list as of card machine v2 (docs/plans/
+// suggestion-as-state-transition-impl.md §3): it targets "aborted", the one
+// status v2's card machine deliberately never reaches again (design doc
+// §3.2's "card は aborted にも到達しなくなる... card 機械は4状態で本当に閉じる")
+// — see TestCardMachineV2_JobFailed_NotRegistered
+// (machine_card_test.go) for the dedicated pin, and
+// TestJobFailed_ExecutionOnly below for the negative half.
+var sharedKnownActions = []string{"progress", "done_request", "fail_request", "child_dispatched", "child_closed"}
+
+// TestJobFailed_ExecutionOnly pins job_failed's post-v2 asymmetry: registered
+// (Manual:false, "known") on NewExecutionMachine only, absent entirely from
+// NewCardMachine.
+func TestJobFailed_ExecutionOnly(t *testing.T) {
+	exec := orchestrator.NewExecutionMachine()
+	if exec.IsManualAction("job_failed") {
+		t.Error("NewExecutionMachine: IsManualAction(\"job_failed\") = true, want false")
+	}
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
+	if _, err := exec.Apply(task, &orchestrator.Action{Type: "job_failed"}); err != nil {
+		t.Errorf("NewExecutionMachine: Apply(job_failed) unexpectedly errored: %v", err)
+	}
+
+	card := orchestrator.NewCardMachine()
+	if card.IsManualAction("job_failed") {
+		t.Error("NewCardMachine: IsManualAction(\"job_failed\") = true, want false")
+	}
+	cardTask := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
+	if _, err := card.Apply(cardTask, &orchestrator.Action{Type: "job_failed"}); err == nil {
+		t.Error("NewCardMachine: Apply(job_failed) unexpectedly succeeded — job_failed must not be a card rule in v2")
+	}
+}
 
 func TestSharedActions_RegisteredOnBothMachines(t *testing.T) {
 	for _, name := range sharedKnownActions {
@@ -130,10 +161,15 @@ func TestExecutionMachine_HasNoCardVocabulary(t *testing.T) {
 // TestCardMachine_HasNoExecutionVocabulary is the symmetric negation for the
 // card machine (abort is checked separately below since it also needs an
 // AvailableActions-level pin per the PR's own "abort は card 機械に入れない"
-// requirement).
+// requirement). "done"/"reopen" are deliberately EXCLUDED from this list as
+// of card machine v2: both are now legitimate card verbs too (working→done,
+// done/dropped→parked) — they share a NAME with an execution-only rule
+// without sharing its FromStatus/ToStatus, exactly like "reopen" always did
+// (see TestCardMachine_Reopen_ExecutionFromStatusNotHandled below for the
+// FromStatus-level pin covering both).
 func TestCardMachine_HasNoExecutionVocabulary(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	executionOnly := []string{"start", "done", "fail", "ask", "answer"}
+	executionOnly := []string{"start", "fail", "ask", "answer"}
 	for _, name := range executionOnly {
 		if sm.IsManualAction(name) {
 			t.Errorf("NewCardMachine: IsManualAction(%q) = true, want false (execution-only action leaked into the card machine)", name)
@@ -186,17 +222,19 @@ func TestExecutionMachine_Reopen_DroppedStatusNotHandled(t *testing.T) {
 	}
 }
 
-// TestCardMachine_Reopen_DoneAbortedNotHandled is the mirror: NewCardMachine's
-// reopen rule only covers dropped→triaged — done/aborted→executing belongs
-// exclusively to NewExecutionMachine (a done/aborted CARD is reopened via
-// reopen_triaged instead, resolved by api.resolveReopenVariant, not by this
-// "reopen" rule).
-func TestCardMachine_Reopen_DoneAbortedNotHandled(t *testing.T) {
+// TestCardMachine_Reopen_ExecutionFromStatusNotHandled is the mirror of
+// TestExecutionMachine_Reopen_DroppedStatusNotHandled: NewCardMachine's own
+// "reopen" rule covers done/dropped→parked (see machine_card_test.go's
+// TestCardMachineV2_AllEdges for the positive pin — done→parked is one of
+// v2's seven core edges, a deliberate departure from v1 where a done/aborted
+// card's reopen routed to the DIFFERENT "reopen_triaged" name via
+// api.resolveReopenVariant). "aborted" is NOT a v2 card status at all — see
+// TestCardMachineV2_JobFailed_NotRegistered — so reopen from aborted must
+// still fail here exactly as it always did.
+func TestCardMachine_Reopen_ExecutionFromStatusNotHandled(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted} {
-		task := &orchestrator.Task{Status: status}
-		if _, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"}); err == nil {
-			t.Errorf("NewCardMachine: reopen from %s unexpectedly succeeded", status)
-		}
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusAborted}
+	if _, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"}); err == nil {
+		t.Error("NewCardMachine: reopen from aborted unexpectedly succeeded")
 	}
 }

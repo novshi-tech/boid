@@ -10,9 +10,13 @@ import templruntime "github.com/a-h/templ/runtime"
 
 import "github.com/novshi-tech/boid/internal/orchestrator"
 
-// TaskReopen renders the reopen form for a done task.
+// TaskReopen renders the reopen form for a done/aborted/dropped task.
 // Submitting the form calls POST /tasks/{id}/reopen with an optional message
-// that is appended to the task's instruction history.
+// that is appended to the task's instruction history. The resulting status
+// depends on which machine governs the task (internal/api's machineFor): an
+// ordinary done/aborted task goes back to executing; a done/dropped CARD
+// (card machine v2, docs/plans/suggestion-as-state-transition.md §3.2) goes
+// back to parked instead — a card never re-executes as a job.
 func TaskReopen(task *orchestrator.Task) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -46,14 +50,14 @@ func TaskReopen(task *orchestrator.Task) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<p class=\"form-hint\">Reopen moves a done task back to executing and appends an optional message as a new instruction.</p><div class=\"task-form-body\"><form id=\"task-reopen-form\" method=\"post\" action=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<p class=\"form-hint\">Reopen moves this task back to an active state (executing for an ordinary task, parked for a card) and appends an optional message as a new instruction.</p><div class=\"task-form-body\"><form id=\"task-reopen-form\" method=\"post\" action=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var3 templ.SafeURL
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + task.ID + "/reopen"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_reopen.templ`, Line: 12, Col: 100}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_reopen.templ`, Line: 16, Col: 100}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {

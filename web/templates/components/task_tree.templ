@@ -47,21 +47,26 @@ func treeStatusClass(s string) string {
 }
 
 // knownSuggestionVerbs is the single source of truth for suggestion.verb's
-// UI vocabulary (go/shape/manual/park/drop/wake — nose's own response
-// words, orchestrator.Suggestion's doc comment). Deliberately NOT
+// UI vocabulary — card machine v2's own six transition verbs
+// (orchestrator.IsCardTransitionAction; docs/plans/
+// suggestion-as-state-transition.md §3.1: suggestion.verb is boid's own
+// state-machine vocabulary now, not a free-form workspace word like the old
+// go/shape/manual/park/drop/wake set). Deliberately NOT
 // orchestrator.promotedAttrVocabulary: that guard exists so the daemon can
 // trust its own SQL predicates against attrs_set writes (see its doc
 // comment) — verb is neither a stored column nor a query target, and the
-// daemon does not interpret/judge suggestions at all (決定12). An unknown
-// verb is therefore a UI-only rendering concern, handled by VerbBadgeClass
-// below rather than by validating/rejecting the value anywhere upstream.
+// daemon does not interpret/judge suggestions at all beyond validating the
+// verb itself (attrs_set's own validateSuggestionAttr, internal/api). An
+// unknown verb is therefore a UI-only rendering concern, handled by
+// VerbBadgeClass below rather than by validating/rejecting the value
+// anywhere upstream.
 var knownSuggestionVerbs = map[string]bool{
-	"go":     true,
-	"shape":  true,
-	"manual": true,
-	"park":   true,
-	"drop":   true,
-	"wake":   true,
+	"go":      true,
+	"working": true,
+	"park":    true,
+	"drop":    true,
+	"done":    true,
+	"reopen":  true,
 }
 
 // VerbBadgeClass maps a suggestion.verb to its badge CSS class (style.css).

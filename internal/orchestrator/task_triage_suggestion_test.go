@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -165,5 +166,108 @@ func TestDetailSuggestion_EmptyTopLevelObjectFallsBackToAttrs(t *testing.T) {
 				t.Errorf("DetailSuggestion.Verb = %q, want %q (must fall back to attrs, not stop at the empty-decoding top-level object)", got.Verb, "wake")
 			}
 		})
+	}
+}
+
+// ---- DetailSuggestionRaw (PR #987 review, MEDIUM 9 — this function had no
+// dedicated test at all before). accept(verb) (internal/api/
+// suggestion_accept.go) is DetailSuggestionRaw's one caller: it needs MORE
+// than Suggestion's four fixed fields expose (specifically park's
+// params.wake_at/wake_task_id), so it reads the raw bytes of whichever
+// candidate DetailSuggestion itself would have picked, rather than the
+// decoded-and-narrowed Suggestion struct. ----
+
+// TestDetailSuggestionRaw_TopLevel mirrors TestDetailSuggestion_TopLevel:
+// same candidate, but the caller gets the raw bytes back (including a key
+// Suggestion's fixed struct doesn't have — "params" here).
+func TestDetailSuggestionRaw_TopLevel(t *testing.T) {
+	detail := json.RawMessage(`{"suggestion":{"verb":"park","params":{"wake_at":"2026-09-01T00:00:00Z"}}}`)
+
+	raw, ok := orchestrator.DetailSuggestionRaw(detail)
+	if !ok {
+		t.Fatal("DetailSuggestionRaw: ok = false, want true")
+	}
+	var got struct {
+		Verb   string `json:"verb"`
+		Params struct {
+			WakeAt string `json:"wake_at"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if got.Verb != "park" || got.Params.WakeAt != "2026-09-01T00:00:00Z" {
+		t.Errorf("decoded raw = %+v, want verb=park params.wake_at=2026-09-01T00:00:00Z", got)
+	}
+}
+
+// TestDetailSuggestionRaw_FromAttrs mirrors TestDetailSuggestion_FromAttrs —
+// the attrs_set fold path is where a suggestion actually lands in practice.
+func TestDetailSuggestionRaw_FromAttrs(t *testing.T) {
+	detail := json.RawMessage(`{"attrs":{"suggestion":{"verb":"reopen"}}}`)
+
+	raw, ok := orchestrator.DetailSuggestionRaw(detail)
+	if !ok {
+		t.Fatal("DetailSuggestionRaw: ok = false, want true")
+	}
+	if !strings.Contains(string(raw), `"verb":"reopen"`) {
+		t.Errorf("raw = %s, want it to contain verb=reopen", raw)
+	}
+}
+
+// TestDetailSuggestionRaw_TopLevelWinsOverAttrs mirrors DetailSuggestion's
+// own priority order — both functions must agree on WHICH candidate wins,
+// or a caller reading Suggestion for display and DetailSuggestionRaw for
+// the real params could disagree about which suggestion is "current".
+func TestDetailSuggestionRaw_TopLevelWinsOverAttrs(t *testing.T) {
+	detail := json.RawMessage(`{
+		"suggestion": {"verb": "go"},
+		"attrs": {"suggestion": {"verb": "drop"}}
+	}`)
+
+	raw, ok := orchestrator.DetailSuggestionRaw(detail)
+	if !ok {
+		t.Fatal("DetailSuggestionRaw: ok = false, want true")
+	}
+	var got struct {
+		Verb string `json:"verb"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if got.Verb != "go" {
+		t.Errorf("raw = %s, want the top-level suggestion (verb=go) to win", raw)
+	}
+}
+
+// TestDetailSuggestionRaw_EmptyOrAbsent mirrors DetailSuggestion's own
+// "nothing to accept" case.
+func TestDetailSuggestionRaw_EmptyOrAbsent(t *testing.T) {
+	for _, detail := range []json.RawMessage{nil, []byte(""), []byte("null"), []byte("{}"), []byte(`{"summary":"x"}`)} {
+		raw, ok := orchestrator.DetailSuggestionRaw(detail)
+		if ok {
+			t.Errorf("DetailSuggestionRaw(%q): ok = true, want false", detail)
+		}
+		if raw != nil {
+			t.Errorf("DetailSuggestionRaw(%q) = %q, want nil", detail, raw)
+		}
+	}
+}
+
+// TestDetailSuggestionRaw_MalformedJSON_ReturnsFalseNotError mirrors
+// DetailSuggestion's own best-effort contract: never error, so a malformed
+// blob can never sink a caller reading it (rule 5, 隠さない).
+func TestDetailSuggestionRaw_MalformedJSON_ReturnsFalseNotError(t *testing.T) {
+	for _, detail := range []json.RawMessage{
+		[]byte(`not json`),
+		[]byte(`{"suggestion": "not an object"}`),
+	} {
+		raw, ok := orchestrator.DetailSuggestionRaw(detail)
+		if ok {
+			t.Errorf("DetailSuggestionRaw(%q): ok = true, want false", detail)
+		}
+		if raw != nil {
+			t.Errorf("DetailSuggestionRaw(%q) = %q, want nil", detail, raw)
+		}
 	}
 }

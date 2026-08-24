@@ -12,18 +12,18 @@ import (
 // TestMachineFor_SidecarRowExists_PicksCardMachine pins machineFor's core
 // discriminator (PR-B, docs/plans/suggestion-as-state-transition-impl.md
 // §2): a task carrying a task_triage sidecar row is a card, so machineFor
-// must return a machine that knows card-vocabulary rules (triage/park/drop/
-// etc.) and does NOT know execution-only rules (start/ask/answer/abort).
+// must return a machine that knows card-vocabulary rules (go/park/drop/etc.)
+// and does NOT know execution-only rules (start/ask/answer/abort).
 func TestMachineFor_SidecarRowExists_PicksCardMachine(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusTriaged}
+	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
 	store := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}}}
 
 	sm, err := machineFor(store, task)
 	if err != nil {
 		t.Fatalf("machineFor: %v", err)
 	}
-	if !sm.IsManualAction("triage") {
-		t.Error("expected the card machine (IsManualAction(\"triage\") = true)")
+	if !sm.IsManualAction("go") {
+		t.Error("expected the card machine (IsManualAction(\"go\") = true)")
 	}
 	if sm.IsManualAction("start") || sm.IsManualAction("abort") {
 		t.Error("expected the card machine to NOT know execution-only actions (start/abort)")
@@ -229,15 +229,14 @@ func TestHasTaskTriageRow_SharedBySelectorAndReopenRouting(t *testing.T) {
 
 // TestApplyAction_AttrsSet_NoTaskTriageRow_PreExecutionStatus_LazilyCreatesRow
 // is Blocker 1's full-stack regression: not just that machineFor PICKS the
-// card machine for a rowless captured/triaged/parked/ready/working task
-// (machine_select_test.go's unit tests above), but that a REAL ApplyAction
-// call for a card verb against such a task actually SUCCEEDS end to end and
-// lazily creates the task_triage row via the side effect
-// (applyAttrsSetSideEffect) — restoring the exact recovery path
-// task_create.go's SeedTaskTriage doc comment promises when the seed at
-// creation time fails.
+// card machine for a rowless parked/working task (machine_select_test.go's
+// unit tests above), but that a REAL ApplyAction call for a card verb
+// against such a task actually SUCCEEDS end to end and lazily creates the
+// task_triage row via the side effect (applyAttrsSetSideEffect) — restoring
+// the exact recovery path task_create.go's SeedTaskTriage doc comment
+// promises when the seed at creation time fails.
 func TestApplyAction_AttrsSet_NoTaskTriageRow_PreExecutionStatus_LazilyCreatesRow(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusCaptured, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	// txStore.triage is deliberately left nil/empty — simulating a
 	// SeedTaskTriage failure at task-creation time (task_create.go logs and
 	// continues rather than failing the create).
@@ -254,10 +253,10 @@ func TestApplyAction_AttrsSet_NoTaskTriageRow_PreExecutionStatus_LazilyCreatesRo
 		Payload: []byte(`{"urgency":"now"}`),
 	})
 	if err != nil {
-		t.Fatalf("ApplyAction(attrs_set) on a rowless captured task: %v (Blocker 1: the task must not be permanently stuck)", err)
+		t.Fatalf("ApplyAction(attrs_set) on a rowless parked task: %v (Blocker 1: the task must not be permanently stuck)", err)
 	}
-	if result.Task.Status != orchestrator.TaskStatusCaptured {
-		t.Fatalf("status = %q, want unchanged (captured; attrs_set is non-transitioning)", result.Task.Status)
+	if result.Task.Status != orchestrator.TaskStatusParked {
+		t.Fatalf("status = %q, want unchanged (parked; attrs_set is non-transitioning)", result.Task.Status)
 	}
 	got := txStore.triage["t1"]
 	if got == nil {
@@ -277,10 +276,13 @@ func TestApplyAction_AttrsSet_NoTaskTriageRow_PreExecutionStatus_LazilyCreatesRo
 // this fix, `reopen` on that task fell to NewExecutionMachine (dropped is
 // not in isCardLifecycleStatus yet), whose `reopen` rule only covers
 // done/aborted→executing — no rule matches FromStatus "dropped", so
-// sm.Apply 409'd. NewCardMachine's own `reopen: dropped→triaged` rule
+// sm.Apply 409'd. NewCardMachine's own `reopen: dropped→parked` rule
 // ("recovery from a mistaken drop") was reachable in the pre-split unified
-// machine and must stay reachable now.
-func TestApplyAction_Reopen_NoTaskTriageRow_DroppedStatus_RestoresToTriaged(t *testing.T) {
+// machine and must stay reachable now — v2 keeps the same edge, just with
+// "parked" as the destination instead of v1's "triaged" (card machine v2
+// has no "triaged" status at all — docs/plans/
+// suggestion-as-state-transition-impl.md §3.2).
+func TestApplyAction_Reopen_NoTaskTriageRow_DroppedStatus_RestoresToParked(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDropped, Behavior: "dev", Payload: []byte(`{}`)}
 	// txStore.triage is deliberately left nil/empty — the row was never
 	// seeded (or was lost) before this card was dropped.
@@ -292,15 +294,16 @@ func TestApplyAction_Reopen_NoTaskTriageRow_DroppedStatus_RestoresToTriaged(t *t
 		TaskTriage: txStore,
 	}
 
-	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "reopen"})
+	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
+	result, err := svc.ApplyAction(ctx, task.ID, ApplyActionRequest{Type: "reopen"})
 	if err != nil {
 		t.Fatalf("ApplyAction(reopen) on a rowless dropped card: %v (the undo-a-mistaken-drop path must not be lost)", err)
 	}
-	if result.Task.Status != orchestrator.TaskStatusTriaged {
-		t.Fatalf("status = %q, want triaged", result.Task.Status)
+	if result.Task.Status != orchestrator.TaskStatusParked {
+		t.Fatalf("status = %q, want parked", result.Task.Status)
 	}
 	if result.Action.Type != "reopen" {
-		t.Fatalf("action type = %q, want reopen (card machine's own rule, not reopen_triaged — that variant is done/aborted-only)", result.Action.Type)
+		t.Fatalf("action type = %q, want reopen (card machine's own rule — v2 no longer needs a separate reopen_triaged name, see NewCardMachine's doc comment)", result.Action.Type)
 	}
 }
 

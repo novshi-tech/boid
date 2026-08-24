@@ -108,7 +108,7 @@ var errFakeConflict = &StatusError{Code: http.StatusConflict, Message: "not answ
 // accept.
 func TestWebAnswerSuggestion_Reject_RecordsAnsweredAction(t *testing.T) {
 	svc, taskRepo := newActionListTestService(t)
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusTriaged, Behavior: "triage"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusParked, Behavior: "triage"}
 	if err := taskRepo.CreateTask(task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}

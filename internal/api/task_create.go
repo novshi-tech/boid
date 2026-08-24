@@ -64,16 +64,25 @@ func (s *TaskAppService) validateParentlessExecutorBase(req CreateTaskRequest, b
 	return nil
 }
 
-// allowedCreateInitialStatuses is the allowlist for CreateTaskRequest.InitialStatus
-// (docs/plans/cross-project-issue-triage.md Phase 1 PR-1). Deliberately does
-// NOT include every orchestrator.TaskStatus value — a caller must not be able
-// to fabricate a task that's already "done"/"executing"/etc; only the two
-// entry points a triage task can legitimately start from are allowed.
+// allowedCreateInitialStatuses is the allowlist for CreateTaskRequest.InitialStatus.
+// Deliberately does NOT include every orchestrator.TaskStatus value — a
+// caller must not be able to fabricate a task that's already
+// "done"/"executing"/etc; only the two entry points a task can legitimately
+// start from are allowed.
+//
+// docs/plans/suggestion-as-state-transition-impl.md §3.5: card machine v2 has
+// no "captured"/"triaged" statuses at all (see machine_card.go's doc
+// comment) — a card is born directly into "parked" now (§3.2's capture rule).
+// captured/triaged are dropped from this allowlist and replaced by "parked".
+// This is a deliberate breaking change to the initial_status vocabulary
+// (khi is cut over to the same vocabulary in the same release, per the
+// impl plan's PR sequencing — a captured/triaged request from an
+// un-upgraded caller now 400s instead of silently creating a legacy-shaped
+// card no rule in v2 can ever move again).
 var allowedCreateInitialStatuses = map[string]orchestrator.TaskStatus{
-	"":         orchestrator.TaskStatusPending, // unchanged default
-	"pending":  orchestrator.TaskStatusPending,
-	"captured": orchestrator.TaskStatusCaptured,
-	"triaged":  orchestrator.TaskStatusTriaged,
+	"":        orchestrator.TaskStatusPending, // unchanged default
+	"pending": orchestrator.TaskStatusPending,
+	"parked":  orchestrator.TaskStatusParked,
 }
 
 // resolveInitialStatus validates req.InitialStatus and returns the
@@ -86,7 +95,7 @@ func resolveInitialStatus(req CreateTaskRequest) (orchestrator.TaskStatus, error
 	if !ok {
 		return "", &StatusError{
 			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("initial_status: unknown value %q (allowed: pending, captured, triaged)", req.InitialStatus),
+			Message: fmt.Sprintf("initial_status: unknown value %q (allowed: pending, parked)", req.InitialStatus),
 		}
 	}
 	if req.AutoStart && status != orchestrator.TaskStatusPending {

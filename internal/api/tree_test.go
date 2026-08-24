@@ -397,7 +397,7 @@ func TestWebTaskList_ParkedStatus_RendersSuggestion(t *testing.T) {
 	}
 	svc := &stubWebService{tasks: []*orchestrator.Task{task}}
 	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
-		"t1": {TaskID: "t1", Detail: []byte(`{"suggestion":{"verb":"wake","reason":"source event fired"}}`)},
+		"t1": {TaskID: "t1", Detail: []byte(`{"suggestion":{"verb":"reopen","reason":"source event fired"}}`)},
 	}}
 	h := &WebHandler{Service: svc, TaskTriage: triage}
 	r := chi.NewRouter()
@@ -414,7 +414,7 @@ func TestWebTaskList_ParkedStatus_RendersSuggestion(t *testing.T) {
 		t.Errorf("Status passed to ListTasks = %q, want %q", svc.capturedFilter.Status, "parked")
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "badge-verb-wake") {
+	if !strings.Contains(body, "badge-verb-reopen") {
 		t.Errorf("parked list should render the suggestion verb badge, got: %s", body)
 	}
 	if !strings.Contains(body, "source event fired") {

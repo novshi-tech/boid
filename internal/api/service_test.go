@@ -559,12 +559,18 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 		}
 	})
 
+	// working joined this rejected set as of card machine v2 (PR #987
+	// review, HIGH 7): once a card has specced/dispatched children or manual
+	// work underway, re-editing its title out from under that is still the
+	// wrong default — this is the one card status that stays excluded now
+	// that parked (below) no longer is.
 	t.Run("title update rejected when not pending", func(t *testing.T) {
 		for _, status := range []orchestrator.TaskStatus{
 			orchestrator.TaskStatusExecuting,
 			orchestrator.TaskStatusAwaiting,
 			orchestrator.TaskStatusDone,
 			orchestrator.TaskStatusAborted,
+			orchestrator.TaskStatusWorking,
 		} {
 			task := &orchestrator.Task{ID: "task-x", Title: "old", Status: status}
 			store := &stubTaskStore{task: task}
@@ -581,11 +587,17 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 		}
 	})
 
-	// cross-project-issue-triage Phase 1 PR-1: captured/triaged/ready を編集
-	// 可能に広げたが parked は除外 (整形セッション UC-3 のため触れるが、
-	// 後回し中は編集対象外)。
-	t.Run("title update allowed for pre-execution statuses", func(t *testing.T) {
+	// cross-project-issue-triage Phase 1 PR-1 originally widened this to
+	// captured/triaged/ready but excluded parked ("後回し中は編集対象外").
+	// Card machine v2 (docs/plans/suggestion-as-state-transition-impl.md
+	// §3.5) folds captured/triaged into parked as a card's initial/main
+	// resting status, so excluding parked now locks every fresh card's
+	// title out of editing — PR #987 review, HIGH 7 moves parked into this
+	// allowed set (captured/triaged/ready stay too, read-only legacy
+	// statuses that must not newly become uneditable).
+	t.Run("title update allowed for parked and legacy pre-execution statuses", func(t *testing.T) {
 		for _, status := range []orchestrator.TaskStatus{
+			orchestrator.TaskStatusParked,
 			orchestrator.TaskStatusCaptured,
 			orchestrator.TaskStatusTriaged,
 			orchestrator.TaskStatusReady,
@@ -601,21 +613,6 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 			if got.Title != "new" {
 				t.Fatalf("status=%s: Title = %q, want %q", status, got.Title, "new")
 			}
-		}
-	})
-
-	t.Run("title update rejected for parked", func(t *testing.T) {
-		task := &orchestrator.Task{ID: "task-x", Title: "old", Status: orchestrator.TaskStatusParked}
-		store := &stubTaskStore{task: task}
-		svc := &TaskAppService{Tasks: store}
-
-		_, err := svc.UpdateTask("task-x", UpdateTaskRequest{Title: "new"})
-		if err == nil {
-			t.Fatal("expected conflict error for parked task, got nil")
-		}
-		se, ok := err.(*StatusError)
-		if !ok || se.Code != http.StatusConflict {
-			t.Fatalf("expected StatusConflict, got %v", err)
 		}
 	})
 

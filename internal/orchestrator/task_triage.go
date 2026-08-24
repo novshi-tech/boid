@@ -395,6 +395,37 @@ func decodeSuggestion(raw json.RawMessage) (Suggestion, bool) {
 	return s, true
 }
 
+// DetailSuggestionRaw returns the raw JSON bytes of task_triage.detail's
+// current suggestion (same top-level-then-attrs precedence as
+// DetailSuggestion above — see its own doc comment), for a caller that needs
+// MORE than the fixed Suggestion struct's four fields expose. accept(verb)
+// (docs/plans/suggestion-as-state-transition-impl.md §3,
+// internal/api/suggestion_accept.go) is the concrete reason this exists:
+// park's params.wake_at/wake_task_id are a WRITE-side addition Suggestion
+// itself does not carry (Suggestion is the stable read/display-side
+// projection this PR does not otherwise touch). Reuses decodeSuggestion
+// purely as the "is this candidate non-empty and well-formed" check, so the
+// two functions can never disagree about WHICH candidate wins.
+func DetailSuggestionRaw(detail json.RawMessage) (json.RawMessage, bool) {
+	if len(detail) == 0 || string(detail) == "null" {
+		return nil, false
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(detail, &top); err != nil {
+		return nil, false
+	}
+	if _, ok := decodeSuggestion(top["suggestion"]); ok {
+		return top["suggestion"], true
+	}
+	var attrs map[string]json.RawMessage
+	if err := json.Unmarshal(top["attrs"], &attrs); err == nil {
+		if _, ok := decodeSuggestion(attrs["suggestion"]); ok {
+			return attrs["suggestion"], true
+		}
+	}
+	return nil, false
+}
+
 // parseDetailMap round-trips a task_triage.Detail blob through a
 // map[string]json.RawMessage so callers can replace a single top-level key
 // (children, attrs, ...) without disturbing keys they don't know about

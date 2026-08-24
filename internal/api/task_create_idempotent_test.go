@@ -58,14 +58,14 @@ func TestCreateTask_GetOrCreate_HitSkipsAutoStart(t *testing.T) {
 // TestCreateTask_GetOrCreate_RootTask_HitReturnsExisting pins Phase 1 PR-4
 // 論点7: the get-or-create dedup now also covers root tasks (ParentID ==
 // ""), which is what makes an ingestion push idempotent — a resend of
-// `task_create --initial-status triaged --ref BGO-214` (no parent) must
+// `task_create --initial-status parked --ref BGO-214` (no parent) must
 // return the existing card task, not create a duplicate.
 func TestCreateTask_GetOrCreate_RootTask_HitReturnsExisting(t *testing.T) {
 	existing := &orchestrator.Task{
 		ID:       "existing-card-1",
 		Ref:      "BGO-214",
 		ParentID: "",
-		Status:   orchestrator.TaskStatusTriaged,
+		Status:   orchestrator.TaskStatusParked,
 		Behavior: "dev",
 	}
 	store := &stubTaskStore{
@@ -86,7 +86,7 @@ func TestCreateTask_GetOrCreate_RootTask_HitReturnsExisting(t *testing.T) {
 		Title:         "BGO-214 (resend)",
 		Behavior:      "dev",
 		Ref:           "BGO-214",
-		InitialStatus: "triaged",
+		InitialStatus: "parked",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)

@@ -202,7 +202,7 @@ hook が宣言を持たない behavior では、 `default_instruction` から vi
 
 session は task 作成時に解決される `ResolveBehavior` を経由しません — session と task は daemon 内部で別概念として扱われるため、`task_behaviors.<name>.default_instruction.model` のような値を session が参照することはありません。session が harness/model の既定値を project.yaml から得たい場合は、この `session_behaviors` を使います。
 
-用途キー (map のキー) は呼び出し元が決める識別子です。現在参照しているのは Web UI の Shape ボタン (triaged task から整形セッションを起動する機能) のみで、キーは `shape` です。`task_behaviors` の `supervisor`/`executor` のような canonical name はありません — 今後別の呼び出し元が新しい用途キーを参照するようになった場合も、このセクションではなくその機能自身のドキュメントを参照してください。
+用途キー (map のキー) は呼び出し元が決める識別子です。現在参照しているのは Web UI の Shape ボタン (parked または working のカードから整形セッションを起動する機能。card machine v2 以降、triaged という状態自体が存在しない) のみで、キーは `shape` です。`task_behaviors` の `supervisor`/`executor` のような canonical name はありません — 今後別の呼び出し元が新しい用途キーを参照するようになった場合も、このセクションではなくその機能自身のドキュメントを参照してください。
 
 ```yaml
 session_behaviors:

@@ -494,11 +494,6 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			return &ExecResponse{ExitCode: 1, Stderr: "boid action send requires a type"}
 		}
 		// project 検証は boid_executor 側で行う (task_notify と同じパターン)
-	case BoidOpTaskWake:
-		if boidReq.TaskID == "" {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid task wake requires a task id"}
-		}
-		// project 検証は boid_executor 側で行う (action_send と同じパターン)
 	case BoidOpTaskTriageGet:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task triage requires a task id"}
@@ -554,7 +549,7 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity link is restricted to the current workspace"}
 		}
 		// task_id が実際にこの workspace に属するかの検証は boid_executor 側で
-		// 行う (action_send/task_wake と同じパターン — broker には TaskStore が
+		// 行う (action_send と同じパターン — broker には TaskStore が
 		// 無いため task_id から project を引けない)。
 	case BoidOpTaskIdentityUnlink:
 		if boidReq.Identity == "" {

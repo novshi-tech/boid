@@ -47,9 +47,10 @@ type ResolveOrCaptureResult struct {
 }
 
 // ResolveOrCapture resolves Identity (scoped to ProjectID, I-3) to an
-// existing task, or — when unresolved — atomically creates a new `captured`
-// triage task (I-4, J-9: daemon never advances it past captured) and links
-// Identity to it.
+// existing task, or — when unresolved — atomically creates a new `parked`
+// card (I-4, J-9: daemon never advances a card past capture — card machine
+// v2, docs/plans/suggestion-as-state-transition-impl.md §3.5, folds the old
+// `captured` status into `parked` directly) and links Identity to it.
 //
 // Invariants pinned by task_resolve_or_capture_test.go:
 //   - resolve-then-create-and-link happens inside a single
@@ -139,17 +140,17 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 		// verbatim, never resolved, never validated, even when RemoteID
 		// would already be available.
 		//
-		// This is acceptable only because a captured/triaged task's own
-		// BaseBranch is dead data while it stays in ingestion-owned
-		// pre-execution status: machine.go's transition table has no rule
-		// from captured/triaged/parked/ready/working to executing — the
-		// ONLY paths to executing are pending→(start) and
+		// This is acceptable only because a card's own BaseBranch is dead
+		// data while it lives on the card machine: NewCardMachine (card
+		// machine v2, docs/plans/suggestion-as-state-transition-impl.md §3)
+		// has no rule reaching executing at all — the ONLY paths to
+		// executing are NewExecutionMachine's pending→(start) and
 		// done/aborted→(reopen) — so nothing ever reads this literal
-		// template to build a clone. If a future change lets a triage task
-		// reach executing directly (bypassing pending), this landmine
-		// becomes reachable and must be revisited then — either expand here
-		// (accepting the git-shell-out-in-tx cost) or validate/reject a
-		// templated meta.BaseBranch before it ever reaches this path.
+		// template to build a clone. If a future change lets a card reach
+		// executing directly, this landmine becomes reachable and must be
+		// revisited then — either expand here (accepting the
+		// git-shell-out-in-tx cost) or validate/reject a templated
+		// meta.BaseBranch before it ever reaches this path.
 		res, err := orchestrator.ResolveBehavior(meta, orchestrator.BehaviorResolveRequest{})
 		if err != nil {
 			return fmt.Errorf("resolve or capture: resolve behavior: %w", err)
@@ -159,7 +160,7 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 			ProjectID:    req.ProjectID,
 			Title:        req.Title,
 			Description:  req.Description,
-			Status:       orchestrator.TaskStatusCaptured,
+			Status:       orchestrator.TaskStatusParked,
 			Behavior:     res.BehaviorName,
 			Traits:       res.Traits,
 			Readonly:     res.Readonly,

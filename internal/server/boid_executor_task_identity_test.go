@@ -5,7 +5,7 @@ package server
 // (project_id) is covered separately (internal/sandbox's
 // TestBroker_BoidTaskIdentity*_ProjectIDDenied) — these pin the
 // executor-side task_id ownership check (Link only, mirroring
-// BoidOpActionSend/BoidOpTaskWake's own GetTask+AllowsProject pattern), the
+// BoidOpActionSend's own GetTask+AllowsProject pattern), the
 // store-error -> ExecResponse translation (including
 // BoidOpTaskIdentityResolve's distinguished "not found" exit code and
 // BoidOpTaskIdentityLink's distinguished "conflict" exit code), and the
@@ -113,7 +113,7 @@ func TestBoidBuiltinExecutor_TaskIdentityLink_CallsStore(t *testing.T) {
 // the executor-side defense-in-depth check on TaskID's OWN project — the
 // broker only validates the ProjectID field itself, not what project the
 // caller-supplied TaskID actually belongs to (it has no TaskStore to look
-// that up with). Mirrors BoidOpActionSend/BoidOpTaskWake exactly.
+// that up with). Mirrors BoidOpActionSend exactly.
 func TestBoidBuiltinExecutor_TaskIdentityLink_RejectsTaskOutsideWorkspace(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
 		{ID: "t1", ProjectID: "proj-outside", Status: orchestrator.TaskStatusCaptured},
@@ -250,8 +250,8 @@ func TestBoidBuiltinExecutor_TaskIdentityLink_RejectsCrossProjectTaskWithinWorks
 
 // TestBoidBuiltinExecutor_TaskIdentityResolve_RejectsTaskOutsideWorkspace
 // pins the third Opus review finding: every OTHER op that hands a task back
-// to the caller (BoidOpTaskGet / BoidOpTaskTriageGet / BoidOpActionSend /
-// BoidOpTaskWake) re-checks AllowsProject on the task it actually got, not
+// to the caller (BoidOpTaskGet / BoidOpTaskTriageGet / BoidOpActionSend)
+// re-checks AllowsProject on the task it actually got, not
 // just the project the caller asked about — resolve was the one op that
 // didn't.
 func TestBoidBuiltinExecutor_TaskIdentityResolve_RejectsTaskOutsideWorkspace(t *testing.T) {
