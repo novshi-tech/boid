@@ -375,6 +375,91 @@ func TestCardMachineV2_CanApplyManualAction_Answered(t *testing.T) {
 // half (suggestion_accept.go actually wiring answered's accept branch
 // through to this rule for a real done/dropped card) has its own dedicated
 // test in internal/api.
+// ---- PR-3 (suggestion 状態遷移化 follow-up): CanApplyTransitionAction ----
+//
+// The bug this guards against: card machine v2 admits exactly ONE status per
+// verb (go/working/drop only from parked; park/done only from working;
+// reopen only from done/dropped — NewCardMachine's own doc comment), but
+// nothing let a caller ask "would VERB actually apply from the task's
+// CURRENT status" before this PR — CanApplyManualAction("answered", status)
+// alone says yes for any of the four card statuses regardless of the
+// suggestion's own verb, so a suggestion whose verb didn't match the card's
+// status still rendered a live-looking Accept button that 409'd on click.
+
+// cardTransitionEdges is the exact seven (verb, fromStatus) pairs
+// TestCardMachineV2_AllEdges already pins as the network's entire edge list
+// — reused here as CanApplyTransitionAction's own hardcoded expectation, so
+// this test also serves as an explicit, human-readable pin of "exactly these
+// seven combinations answer applicable" (as opposed to the drift-proof
+// rule-table-derived test right below it, which reads no hardcoded list at
+// all).
+var cardTransitionEdges = map[string]map[orchestrator.TaskStatus]bool{
+	"go":      {orchestrator.TaskStatusParked: true},
+	"working": {orchestrator.TaskStatusParked: true},
+	"drop":    {orchestrator.TaskStatusParked: true},
+	"park":    {orchestrator.TaskStatusWorking: true},
+	"done":    {orchestrator.TaskStatusWorking: true},
+	"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
+}
+
+// TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges is the
+// exhaustive 6-verb × 4-status (24 combination) cross-product pin: exactly
+// the seven edges in cardTransitionEdges answer true, every other
+// combination answers false.
+func TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+	for _, verb := range v2CardTransitionActions {
+		for _, status := range v2CardStatuses {
+			want := cardTransitionEdges[verb][status]
+			got := sm.CanApplyTransitionAction(verb, status)
+			if got != want {
+				t.Errorf("CanApplyTransitionAction(%s, %s) = %v, want %v", verb, status, got, want)
+			}
+		}
+	}
+}
+
+// TestCardMachineV2_CanApplyTransitionAction_DerivedFromRuleTable_NoDrift is
+// the drift-proof twin: rather than comparing against a hardcoded list (the
+// test above), it reads sm.Rules DIRECTLY to compute which (action,
+// FromStatus) pairs are Manual AND status-changing (ToStatus != "") — the
+// exact predicate CanApplyTransitionAction's own implementation applies —
+// and asserts CanApplyTransitionAction agrees with that derivation for every
+// verb/status combination. A future edit to NewCardMachine's rule table
+// (e.g. adding an eighth edge) automatically updates this test's
+// expectations; only the OTHER test (hardcoded seven edges) would need a
+// human to also update the design-doc-level pin.
+func TestCardMachineV2_CanApplyTransitionAction_DerivedFromRuleTable_NoDrift(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+
+	derived := map[string]map[orchestrator.TaskStatus]bool{}
+	for _, r := range sm.Rules {
+		if r.Condition != nil || !r.Manual || r.ToStatus == "" {
+			continue
+		}
+		if derived[r.Action] == nil {
+			derived[r.Action] = map[orchestrator.TaskStatus]bool{}
+		}
+		if r.FromStatus == "*" {
+			for _, status := range v2CardStatuses {
+				derived[r.Action][status] = true
+			}
+			continue
+		}
+		derived[r.Action][orchestrator.TaskStatus(r.FromStatus)] = true
+	}
+
+	for _, verb := range v2CardTransitionActions {
+		for _, status := range v2CardStatuses {
+			want := derived[verb][status]
+			got := sm.CanApplyTransitionAction(verb, status)
+			if got != want {
+				t.Errorf("CanApplyTransitionAction(%s, %s) = %v, want %v (derived from sm.Rules)", verb, status, got, want)
+			}
+		}
+	}
+}
+
 func TestCardMachineV2_Reopen_ReachableViaAcceptFromDoneAndDropped(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
 	for _, from := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped} {
