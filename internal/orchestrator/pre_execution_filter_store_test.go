@@ -428,23 +428,24 @@ func TestListTasks_QueueNext_MembershipAndOrdering(t *testing.T) {
 	for _, tk := range got {
 		gotIDs = append(gotIDs, tk.ID)
 	}
-	// Ordering: now (oldest first) > today > week > no-urgency (someday/empty
-	// sort last, same as UrgencyRank's fallback).
+	// Ordering: now (oldest-created first — the created_at ASC tiebreak
+	// store.go's ORDER BY comment calls out as "古いものを腐らせない") > today >
+	// week > no-urgency (someday/empty sort last, same as UrgencyRank's
+	// fallback). PR #988 review, LOW 5: this must assert the EXACT position
+	// of all six rows, not just set membership within the first three —
+	// nowOlder/nowNewer/doneReopen were deliberately created oldest-first
+	// specifically so a store.go regression that dropped "t.created_at ASC"
+	// from the ORDER BY (leaving only urgency-rank, with whatever order
+	// sqlite happens to return ties in) would go undetected by a
+	// membership-only check.
 	want := []string{nowOlder.ID, nowNewer.ID, doneReopen.ID, today.ID, week.ID, noUrgency.ID}
 	if len(gotIDs) != len(want) {
 		t.Fatalf("queue_next returned %d tasks, want %d: got %v", len(gotIDs), len(want), gotIDs)
 	}
-	// nowOlder/nowNewer/doneReopen are all urgency=now, created in that
-	// order — only their relative order (created_at ASC) matters among the
-	// three; the block as a whole must sort before today/week/noUrgency.
-	nowBlock := map[string]bool{nowOlder.ID: true, nowNewer.ID: true, doneReopen.ID: true}
-	for i, id := range gotIDs[:3] {
-		if !nowBlock[id] {
-			t.Errorf("position %d: got %s, want one of the urgency=now tasks (order so far: %v)", i, id, gotIDs)
+	for i := range want {
+		if gotIDs[i] != want[i] {
+			t.Errorf("position %d: got task id %s, want %s (full order: got=%v want=%v)", i, gotIDs[i], want[i], gotIDs, want)
 		}
-	}
-	if gotIDs[3] != today.ID || gotIDs[4] != week.ID || gotIDs[5] != noUrgency.ID {
-		t.Errorf("tail ordering = %v, want [today, week, noUrgency] = [%s, %s, %s]", gotIDs[3:], today.ID, week.ID, noUrgency.ID)
 	}
 }
 
