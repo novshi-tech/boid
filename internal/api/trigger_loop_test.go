@@ -915,7 +915,7 @@ func TestTriggerLoop_SkipStreak_NotifiesWhenOverrunExceedsMultipleOfEvery(t *tes
 	loop := &TriggerLoop{Notifier: notifier}
 
 	every := 10 * time.Minute
-	threshold := every * time.Duration(TriggerStuckOverrunMultiplier) // 30m
+	threshold := stuckThreshold(every) // 10m × 1.5 = 15m
 	since := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
 
 	// Just under the threshold: no notification yet.
@@ -951,6 +951,47 @@ func TestTriggerLoop_SkipStreak_NotifiesWhenOverrunExceedsMultipleOfEvery(t *tes
 	loop.trackSkipStreak(context.Background(), newSince.Add(time.Minute), []TriggerSkip{{TriggerKey: key, Since: newSince, Every: every}})
 	if len(notifier.messages) != 2 {
 		t.Fatalf("messages after reset + a fresh sub-threshold skip = %v, want still exactly 2 (streak was reset)", notifier.messages)
+	}
+}
+
+// TestTriggerLoop_SkipStreak_ThresholdScalesWithEvery pins that the
+// threshold stays PROPORTIONAL to each trigger's own `every` after the
+// multiplier moved 3 → 1.5 (nose 2026-08-24). The fractional multiplier is
+// the part worth pinning: an int conversion of 1.5 truncates to 1ns, so a
+// naive `every * time.Duration(TriggerStuckOverrunMultiplier)` would fire on
+// literally every tick.
+func TestTriggerLoop_SkipStreak_ThresholdScalesWithEvery(t *testing.T) {
+	for _, tc := range []struct{ every, want time.Duration }{
+		{10 * time.Minute, 15 * time.Minute},
+		{time.Hour, 90 * time.Minute},
+		{30 * time.Second, 45 * time.Second},
+	} {
+		if got := stuckThreshold(tc.every); got != tc.want {
+			t.Errorf("stuckThreshold(%s) = %s, want %s", tc.every, got, tc.want)
+		}
+	}
+}
+
+// TestTriggerLoop_SkipStreak_FifteenMinuteStallNotifies pins the case this
+// change exists for: khi's sweep (`every: 10m`) stalled twice on 2026-08-24
+// for 25 and 26 minutes each, and neither episode notified — the old 3×
+// threshold was 30m and a human noticed first both times. At 1.5× the same
+// stalls cross the line at 15m.
+func TestTriggerLoop_SkipStreak_FifteenMinuteStallNotifies(t *testing.T) {
+	key := TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"}
+	notifier := &fakeTriggerNotifier{}
+	loop := &TriggerLoop{Notifier: notifier}
+
+	every := 10 * time.Minute
+	since := time.Date(2026, 8, 24, 1, 37, 34, 0, time.UTC) // the real stall's StartedAt
+
+	loop.trackSkipStreak(context.Background(), since.Add(14*time.Minute), []TriggerSkip{{TriggerKey: key, Since: since, Every: every}})
+	if len(notifier.messages) != 0 {
+		t.Fatalf("notified at 14m: %v, want none yet", notifier.messages)
+	}
+	loop.trackSkipStreak(context.Background(), since.Add(15*time.Minute), []TriggerSkip{{TriggerKey: key, Since: since, Every: every}})
+	if len(notifier.messages) != 1 {
+		t.Fatalf("messages at 15m = %v, want exactly 1", notifier.messages)
 	}
 }
 

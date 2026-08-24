@@ -3,6 +3,7 @@ package templates
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -321,5 +322,63 @@ func TestTaskDetailSuggestionSection_UnknownVerb_StillRendersTextWithNeutralClas
 	}
 	if !strings.Contains(html, ">mystery<") {
 		t.Errorf("expected the unknown verb's literal text to still render, got: %s", html)
+	}
+}
+
+// awaitingTask builds a task parked on a question, optionally as someone's
+// child.
+func awaitingTask(t *testing.T, id, parentID, qid string) *orchestrator.Task {
+	t.Helper()
+	ap, err := json.Marshal(orchestrator.AwaitingPayload{Question: "send this?", QuestionID: qid})
+	if err != nil {
+		t.Fatalf("marshal awaiting: %v", err)
+	}
+	payload, err := json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): ap})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	return &orchestrator.Task{ID: id, ParentID: parentID, Status: orchestrator.TaskStatusAwaiting, Payload: payload}
+}
+
+// The banner is the only in-page route to the answer form, and it used to be
+// suppressed for every child task (`ap.QuestionID != "" && task.ParentID ==
+// ""`). That left a triage card's child answerable only by hand-assembling
+// /tasks/<id>/questions/<qid> — which is what happened four times on
+// 2026-08-24. The Q&A page and POST /tasks/{id}/answer never had the
+// restriction, so only the affordance was missing.
+func TestTaskDetailAwaitingBanner_ChildTaskLinksToItsQuestion(t *testing.T) {
+	task := awaitingTask(t, "child-1", "parent-1", "q-1")
+
+	var buf bytes.Buffer
+	if err := TaskDetailAwaitingBanner(task).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, `href="/tasks/child-1/questions/q-1"`) {
+		t.Errorf("child task banner missing its answer link, got:\n%s", got)
+	}
+}
+
+func TestTaskDetailAwaitingBanner_RootTaskLinksToItsQuestion(t *testing.T) {
+	task := awaitingTask(t, "root-1", "", "q-9")
+
+	var buf bytes.Buffer
+	if err := TaskDetailAwaitingBanner(task).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, `href="/tasks/root-1/questions/q-9"`) {
+		t.Errorf("root task banner missing its answer link, got:\n%s", got)
+	}
+}
+
+// No question id means there is no answer page to link to.
+func TestTaskDetailAwaitingBanner_NoQuestionID_RendersNothing(t *testing.T) {
+	task := &orchestrator.Task{ID: "child-1", ParentID: "parent-1", Status: orchestrator.TaskStatusAwaiting}
+
+	var buf bytes.Buffer
+	if err := TaskDetailAwaitingBanner(task).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "" {
+		t.Errorf("banner without a question id should render nothing, got: %s", got)
 	}
 }

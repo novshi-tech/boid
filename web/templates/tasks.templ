@@ -791,9 +791,18 @@ templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.Statu
 // TaskDetailAwaitingBanner is the call-to-action shown at the top of the
 // timeline tab when the task is in the awaiting state. It links to the
 // dedicated Q&A page for the current question turn so the user can answer.
+//
+// Child tasks get the banner too. It used to be gated on `task.ParentID ==
+// ""`, mirroring the ask notification's own "a supervisor will notice this"
+// assumption — but a triage card runs no agent, so its children's questions
+// had neither a notification nor a link. QuestionPage and POST
+// /tasks/{id}/answer never carried the restriction, so the answer was always
+// reachable by typing the URL; only the way in was missing. Whether anyone is
+// watching decides whether to PAGE the user (fireUserAskNotification), not
+// whether a page the user already opened should offer the form.
 templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
 	{{ ap := orchestrator.GetAwaitingPayload(task.Payload) }}
-	if ap.QuestionID != "" && task.ParentID == "" {
+	if ap.QuestionID != "" {
 		<a class="awaiting-banner" href={ templ.SafeURL("/tasks/" + task.ID + "/questions/" + ap.QuestionID) }>
 			<span class="awaiting-banner-icon" aria-hidden="true">?</span>
 			<span class="awaiting-banner-body">
