@@ -10,71 +10,62 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+// card machine v2 (docs/plans/suggestion-as-state-transition.md §3.2):
+// working's primary bottom-bar action is "done" (the forward edge once work
+// is underway) — parked's is "go" (see TestApplyAction_CardTransitions_
+// HumanCanApplyEveryEdge_NoSuggestion, internal/api, for the machine-level
+// pin of the same edges these render buttons for).
 func TestDetailPrimaryAction_Working(t *testing.T) {
 	task := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
 
-	action, label := detailPrimaryAction(task, []string{"ready", "triage", "park"})
-	if action != "ready" || label != "Go" {
-		t.Fatalf("detailPrimaryAction(working) = (%q, %q), want (\"ready\", \"Go\")", action, label)
+	action, label := detailPrimaryAction(task, []string{"park", "done"})
+	if action != "done" || label != "Done" {
+		t.Fatalf("detailPrimaryAction(working) = (%q, %q), want (\"done\", \"Done\")", action, label)
 	}
 }
 
-func TestDetailPrimaryAction_WorkingWithoutReady(t *testing.T) {
+func TestDetailPrimaryAction_WorkingWithoutDone(t *testing.T) {
 	task := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
 
 	action, label := detailPrimaryAction(task, []string{"park"})
 	if action != "" || label != "" {
-		t.Fatalf("detailPrimaryAction(working, no ready) = (%q, %q), want (\"\", \"\")", action, label)
+		t.Fatalf("detailPrimaryAction(working, no done) = (%q, %q), want (\"\", \"\")", action, label)
 	}
 }
 
-func TestTaskActionBar_WorkingHasTriageMenuItem(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusWorking}
+// TestTaskActionBar_ParkedHasWorkingMenuItem: "working" (parked→working,
+// card machine v2's lighter alternative to Go) only ever appears in
+// availableActions for a PARKED task — see machine_card.go's rule table —
+// so, unlike v1's "triage" item (which was gated on task.Status==Working),
+// this menu item's gate is hasAction alone.
+func TestTaskActionBar_ParkedHasWorkingMenuItem(t *testing.T) {
+	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusParked}
 
 	var buf bytes.Buffer
-	if err := TaskActionBar(task, []string{"ready", "triage", "park"}, "timeline", false).Render(context.Background(), &buf); err != nil {
+	if err := TaskActionBar(task, []string{"go", "working", "drop"}, "timeline", false).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 
-	if !strings.Contains(html, `value="triage"`) {
-		t.Error("working status action bar should contain a triage action menu item")
+	if !strings.Contains(html, `value="working"`) {
+		t.Error("parked status action bar should contain a working action menu item")
 	}
-	if !strings.Contains(html, `>triage<`) {
-		t.Error("working status action bar should have a visible \"triage\" label")
+	if !strings.Contains(html, `>working<`) {
+		t.Error("parked status action bar should have a visible \"working\" label")
 	}
 }
 
-func TestTaskActionBar_WorkingWithoutTriageAction(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusWorking}
+func TestTaskActionBar_ParkedWithoutWorkingAction(t *testing.T) {
+	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusParked}
 
 	var buf bytes.Buffer
-	if err := TaskActionBar(task, []string{"park"}, "timeline", false).Render(context.Background(), &buf); err != nil {
+	if err := TaskActionBar(task, []string{"go", "drop"}, "timeline", false).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 
-	if strings.Contains(html, `value="triage"`) {
-		t.Error("triage menu item should not render when triage is not in availableActions")
-	}
-}
-
-// TestTaskActionBar_CapturedTriageNotDuplicated guards against the menu's
-// triage item repeating the primary "Triage" button that detailPrimaryAction
-// already renders for captured (Opus review finding, 2026-08-16): the menu
-// item is scoped to working only, so a captured card's single triage
-// affordance stays the primary button.
-func TestTaskActionBar_CapturedTriageNotDuplicated(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusCaptured}
-
-	var buf bytes.Buffer
-	if err := TaskActionBar(task, []string{"triage", "park"}, "timeline", false).Render(context.Background(), &buf); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	html := buf.String()
-
-	if strings.Count(html, `value="triage"`) != 1 {
-		t.Errorf("captured status action bar should have exactly one triage action, got %d", strings.Count(html, `value="triage"`))
+	if strings.Contains(html, `value="working"`) {
+		t.Error("working menu item should not render when working is not in availableActions")
 	}
 }
 
@@ -203,19 +194,19 @@ func TestTaskListFragment_EmptyNonOpenTabWithFilter_ShowsFilterCopy(t *testing.T
 // action, then reason and basis on their own lines.
 func TestTaskDetailSuggestionSection_RendersVerbActionReasonBasis(t *testing.T) {
 	suggestion := orchestrator.Suggestion{
-		Verb:   "wake",
-		Action: "re-triage now",
+		Verb:   "park",
+		Action: "set aside for later",
 		Reason: "source event fired",
 		Basis:  "issue #42 reopened",
 	}
 
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusTriaged, suggestion).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusWorking, suggestion).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 
-	for _, want := range []string{"badge-verb-wake", "wake", "re-triage now", "source event fired", "issue #42 reopened"} {
+	for _, want := range []string{"badge-verb-park", "park", "set aside for later", "source event fired", "issue #42 reopened"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("suggestion section missing %q; got: %s", want, html)
 		}
@@ -230,7 +221,7 @@ func TestTaskDetailSuggestionSection_RendersAcceptRejectButtons(t *testing.T) {
 	suggestion := orchestrator.Suggestion{Verb: "go", Basis: "issue #42"}
 
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection("task-7", orchestrator.TaskStatusTriaged, suggestion).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-7", orchestrator.TaskStatusParked, suggestion).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
