@@ -85,6 +85,41 @@ func VerbBadgeClass(verb string) string {
 	return "badge-verb-" + verb
 }
 
+// SuggestionInapplicable reports whether a suggestion's own verb cannot fire
+// a card transition from status right now — orchestrator.StateMachine.
+// CanApplyTransitionAction (PR-3, suggestion 状態遷移化 follow-up), which
+// reads card machine v2's own rule table (each of the six verbs admits
+// exactly ONE FromStatus — e.g. "done" only fires from "working",
+// machine_card.go's own doc comment). Shared between the task detail page's
+// dedicated suggestion card (tasks.templ's TaskDetailSuggestionSection,
+// which uses it to hide a doomed-to-409 Accept button) and this file's own
+// taskTreeRow (the queue/Parked row's compact badge) — one predicate, not
+// two to keep in sync. NewCardMachine (not machineFor's dynamic task-based
+// selection) is correct here for the same reason TaskDetailSuggestionSection
+// already establishes: a Suggestion only ever exists on a task_triage
+// sidecar row (a card) in the first place.
+func SuggestionInapplicable(verb string, status orchestrator.TaskStatus) bool {
+	return verb != "" && !orchestrator.NewCardMachine().CanApplyTransitionAction(verb, status)
+}
+
+// SuggestionInapplicableReason is the reader-facing "why is Accept hidden /
+// why is this verb badge marked inapplicable" text, naming both the verb and
+// the current status plainly (rule 5, 隠さない — never a bare "cannot apply"
+// with no context to act on). Review LOW 4: a bare "cannot be applied" is
+// exactly the kind of context-free rejection this function's own OLD
+// (pre-fix) text was — it named the verb and the status but never said what
+// WOULD have worked, unlike the API's 409 message
+// (internal/api/suggestion_accept.go), which already appended that. Now both
+// pull the "what CAN be applied" clause from the SAME single source —
+// orchestrator.StateMachine.AvailableActionsHint — so the Web UI and the API
+// can never say two different things about the same status.
+func SuggestionInapplicableReason(verb string, status orchestrator.TaskStatus) string {
+	return fmt.Sprintf(
+		"This suggestion (verb=%s) cannot be applied from the current status (status=%s); %s.",
+		verb, status, orchestrator.NewCardMachine().AvailableActionsHint(status),
+	)
+}
+
 // childrenPreviewLabel summarizes a queue row's children into a compact
 // "N specced, M open" string for the queue list — a preview of what
 // pressing Go actually dispatches (only specced children task-ify;
@@ -227,6 +262,15 @@ templ taskTreeRow(item TreeItem) {
 				}
 				if item.Suggestion.Verb != "" {
 					<span class={ "badge", VerbBadgeClass(item.Suggestion.Verb) }>{ item.Suggestion.Verb }</span>
+					if SuggestionInapplicable(item.Suggestion.Verb, item.Task.Status) {
+						// PR-3: a queue-list preview of "clicking through to Accept
+						// would 409" — the row itself has no Accept button (it's a
+						// link to the detail page), so this is the ONLY signal
+						// visible before navigating there. title carries the full
+						// reason as a tooltip; the visible text stays short to fit
+						// the row.
+						<span class="badge badge-suggestion-inapplicable" title={ SuggestionInapplicableReason(item.Suggestion.Verb, item.Task.Status) }>not applicable</span>
+					}
 				}
 				if label := childrenPreviewLabel(item.Children); label != "" {
 					<span class="task-row-children" title="What Go dispatches: only specced children task-ify">{ label }</span>

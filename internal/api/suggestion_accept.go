@@ -208,7 +208,19 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 		verbAction := &orchestrator.Action{TaskID: taskID, Type: sugg.Verb, Actor: orchestrator.ActorFromContext(ctx)}
 		verbApplied, vaerr := sm.Apply(applied, verbAction)
 		if vaerr != nil {
-			return &StatusError{Code: http.StatusConflict, Message: vaerr.Error()}
+			// PR-3: replace sm.Apply's raw `no transition for action %q from
+			// status %q` (vaerr.Error(), still logged nowhere — this message IS
+			// the only trace) with one that also says what WOULD have worked,
+			// via orchestrator.StateMachine.AvailableActionsHint's own doc
+			// comment (single source shared with the Web UI's inapplicable-
+			// suggestion notice — review LOW 4).
+			return &StatusError{
+				Code: http.StatusConflict,
+				Message: fmt.Sprintf(
+					"suggestion (verb=%s) cannot be applied from status=%s; %s",
+					sugg.Verb, applied.Status, sm.AvailableActionsHint(applied.Status),
+				),
+			}
 		}
 		verbAction.FromStatus = applied.Status
 		verbAction.ToStatus = verbApplied.Status

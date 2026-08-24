@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,5 +226,164 @@ func TestApplyAction_Answered_AcceptDone(t *testing.T) {
 	suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
 	if ok || suggestion.Verb != "" {
 		t.Errorf("suggestion still present after accept: %+v", suggestion)
+	}
+}
+
+// ---- PR-3 (suggestion 状態遷移化 follow-up): 適用不能な suggestion の防御 ----
+//
+// The bug: card machine v2 admits exactly one status per verb (go/working/
+// drop only from parked; park/done only from working; reopen only from
+// done/dropped — NewCardMachine's own doc comment). Before this PR,
+// accept(verb) on a mismatched status either 409'd with sm.Apply's raw
+// `no transition for action %q from status %q` (every verb except go) or,
+// for go specifically, acceptGo's own pre-existing "(must be parked)"
+// check — neither said what WOULD have worked. This test exercises every
+// one of the 6 verbs × 4 card statuses = 24 combinations: exactly 7 succeed
+// (cardTransitionAcceptEdges), the other 17 must 409 with a message naming
+// the verb, the status, and (for the 5 non-go verbs, whose failure comes
+// from the SAME generic sm.Apply path applyAnswered's own code shares) what
+// CAN be applied instead — mirroring
+// orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges
+// at the machine-rule level.
+var cardTransitionAcceptEdges = map[string]map[orchestrator.TaskStatus]bool{
+	"go":      {orchestrator.TaskStatusParked: true},
+	"working": {orchestrator.TaskStatusParked: true},
+	"drop":    {orchestrator.TaskStatusParked: true},
+	"park":    {orchestrator.TaskStatusWorking: true},
+	"done":    {orchestrator.TaskStatusWorking: true},
+	"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
+}
+
+func TestApplyAction_Answered_Accept_AllVerbStatusCombinations(t *testing.T) {
+	verbs := []string{"go", "working", "park", "drop", "done", "reopen"}
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusWorking,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusDropped,
+	}
+
+	for _, verb := range verbs {
+		for _, status := range statuses {
+			verb, status := verb, status
+			t.Run(fmt.Sprintf("%s_from_%s", verb, status), func(t *testing.T) {
+				task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: status, Behavior: "dev", Payload: []byte(`{}`)}
+				detail := []byte(fmt.Sprintf(`{"attrs":{"suggestion":{"verb":%q}}}`, verb))
+				txStore := &recordingTxStore{
+					task:   task,
+					triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+				}
+				svc := newAcceptGoWorkflowService(task, txStore, nil)
+
+				payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": verb})
+				result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+
+				if cardTransitionAcceptEdges[verb][status] {
+					// ---- regression: an applicable accept must still work ----
+					if err != nil {
+						t.Fatalf("expected success (regression), got error: %v", err)
+					}
+					if result == nil || result.Task == nil {
+						t.Fatalf("expected a resulting task, got nil")
+					}
+					suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
+					if ok || suggestion.Verb != "" {
+						t.Errorf("suggestion still present after a valid accept: %+v", suggestion)
+					}
+					return
+				}
+
+				// ---- the fix: an inapplicable accept must 409 with a helpful message ----
+				if err == nil {
+					t.Fatalf("expected rejection for verb=%s status=%s, got success", verb, status)
+				}
+				se, ok := err.(*StatusError)
+				if !ok || se.Code != http.StatusConflict {
+					t.Fatalf("expected 409 StatusError, got %v", err)
+				}
+				if !strings.Contains(se.Message, verb) {
+					t.Errorf("message should name the verb %q; got %q", verb, se.Message)
+				}
+				if !strings.Contains(se.Message, string(status)) {
+					t.Errorf("message should name the status %q; got %q", status, se.Message)
+				}
+				// The 5 non-go verbs all fail via applyAnswered's shared generic
+				// sm.Apply path (orchestrator.StateMachine.AvailableActionsHint) —
+				// the message must name every action that CAN be applied from
+				// this status, derived from the same rule table (never
+				// hand-copied).
+				if verb != "go" {
+					for _, a := range orchestrator.NewCardMachine().AvailableActions(status) {
+						if !strings.Contains(se.Message, a) {
+							t.Errorf("verb=%s status=%s: message should mention available action %q; got %q", verb, status, a, se.Message)
+						}
+					}
+				}
+				// A failed accept must not discard the suggestion it failed to
+				// apply (design doc §3.1) — it must stay in the queue so a human
+				// can still Reject it.
+				suggestion, ok2 := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
+				if !ok2 || suggestion.Verb != verb {
+					t.Errorf("suggestion should remain present after a failed accept; got %+v (present=%v)", suggestion, ok2)
+				}
+			})
+		}
+	}
+}
+
+// AvailableActionsHint's own pin (TestCardMachineV2_AvailableActionsHint_
+// MatchesAvailableActions) now lives in internal/orchestrator/
+// machine_card_test.go — review LOW 4 moved the hint-building itself from
+// this package's local availableCardActionsHint into
+// orchestrator.StateMachine.AvailableActionsHint (a single source shared
+// with the Web UI's inapplicable-suggestion notice), so its own content pin
+// belongs next to the method, not duplicated here. This package's own
+// coverage of the hint is the end-to-end 409-message assertions in
+// TestApplyAction_Answered_Accept_AllVerbStatusCombinations above.
+
+// TestApplyAction_Answered_Reject_AllVerbStatusCombinations_AlwaysSucceeds
+// pins the PR-3 decision to keep an inapplicable suggestion in the queue
+// (docs/plans's own §4/§5 discussion, this PR's description "queue に載せ続
+// けるか" section): if Reject were also blocked by verb/status applicability,
+// an inapplicable suggestion could never be cleared at all. Unlike Accept,
+// Reject applies NO verb-specific transition (workflow_triage.go's
+// applyAnsweredSideEffect just strips the suggestion), so it must succeed
+// for every one of the 24 verb×status combinations — including all 17
+// where Accept is rejected above.
+func TestApplyAction_Answered_Reject_AllVerbStatusCombinations_AlwaysSucceeds(t *testing.T) {
+	verbs := []string{"go", "working", "park", "drop", "done", "reopen"}
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusWorking,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusDropped,
+	}
+
+	for _, verb := range verbs {
+		for _, status := range statuses {
+			verb, status := verb, status
+			t.Run(fmt.Sprintf("%s_from_%s", verb, status), func(t *testing.T) {
+				task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: status, Behavior: "dev", Payload: []byte(`{}`)}
+				detail := []byte(fmt.Sprintf(`{"attrs":{"suggestion":{"verb":%q}}}`, verb))
+				txStore := &recordingTxStore{
+					task:   task,
+					triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+				}
+				svc := newAcceptGoWorkflowService(task, txStore, nil)
+
+				payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerReject, "verb": verb})
+				result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+				if err != nil {
+					t.Fatalf("reject must always succeed regardless of verb/status applicability, got: %v", err)
+				}
+				if result.Task.Status != status {
+					t.Errorf("reject must never change status; got %q, want %q", result.Task.Status, status)
+				}
+				suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
+				if ok || suggestion.Verb != "" {
+					t.Errorf("suggestion still present after reject: %+v", suggestion)
+				}
+			})
+		}
 	}
 }

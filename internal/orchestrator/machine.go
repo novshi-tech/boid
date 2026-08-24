@@ -89,6 +89,7 @@ package orchestrator
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // CardMachineName / ExecutionMachineName are the StateMachine.Name values
@@ -215,6 +216,30 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 	return actions
 }
 
+// AvailableActionsHint returns a human-readable clause naming which manual
+// actions CAN be applied from status right now — e.g. "from status=parked
+// you can apply: go, working, drop" — or a "status=X has no further
+// transitions available" fallback when AvailableActions(status) is empty.
+//
+// Single source for "this didn't work, but here's what would have", used
+// by every caller that needs to turn a failed/inapplicable action into a
+// self-explanatory message instead of a bare rejection: internal/api's
+// suggestion-accept 409 (applyAnswered, acceptGo) and the Web UI's
+// inapplicable-suggestion notice (components.SuggestionInapplicableReason,
+// task_tree.templ) both call THIS method rather than each re-deriving the
+// list by hand — added specifically because they used to duplicate the
+// same AvailableActions(status)-based string-building logic in two places
+// (fix/unapplicable-suggestion-guard PR review, LOW 4), which could drift
+// apart (e.g. one side's wording updated, the other's forgotten) with no
+// test able to catch it.
+func (sm *StateMachine) AvailableActionsHint(status TaskStatus) string {
+	available := sm.AvailableActions(status)
+	if len(available) == 0 {
+		return fmt.Sprintf("status=%s has no further transitions available", status)
+	}
+	return fmt.Sprintf("from status=%s you can apply: %s", status, strings.Join(available, ", "))
+}
+
 // CanApplyManualAction reports whether actionType has a Manual:true rule
 // matching status — regardless of whether that rule transitions the task
 // (ToStatus != "") or not (ToStatus == "") and regardless of whether it
@@ -237,6 +262,48 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 func (sm *StateMachine) CanApplyManualAction(actionType string, status TaskStatus) bool {
 	for _, r := range sm.Rules {
 		if r.Condition != nil || !r.Manual {
+			continue
+		}
+		if r.Action == actionType && (r.FromStatus == "*" || r.FromStatus == string(status)) {
+			return true
+		}
+	}
+	return false
+}
+
+// CanApplyTransitionAction reports whether actionType has a Manual:true,
+// STATUS-CHANGING (ToStatus != "") rule matching status — i.e. whether
+// sm.Apply(task-in-status, {Type: actionType}) would actually succeed right
+// now. This is CanApplyManualAction's narrower sibling: CanApplyManualAction
+// also returns true for a non-transitioning rule (attrs_set/noted/answered/
+// ...) matching the same action+status pair, which is exactly right for
+// gating a dedicated non-transitioning button (its own doc comment's
+// example) but wrong for answering "would ACCEPTING this specific verb
+// actually flip the task's status from here" — the question a suggestion's
+// own verb (orchestrator.IsCardTransitionAction's six-verb set) always
+// raises, since every one of those verbs names a real transition, never a
+// non-transitioning fact.
+//
+// Added for PR-3 (docs/plans/suggestion-as-state-transition-impl.md's
+// follow-up: the card machine rule table admits exactly one status per verb
+// — e.g. "done" only fires from "working" — but nothing let a caller ask
+// "would this verb actually apply from the task's CURRENT status" before
+// rendering a live Accept button or accepting a suggestion. Without this,
+// api.applyAnswered's accept(verb) branch had to let sm.Apply itself reject
+// with an opaque `no transition for action %q from status %q`, and the Web
+// UI had no way to know in advance that clicking Accept would 409.
+//
+// Deliberately does NOT exclude self-loop rules (ToStatus == FromStatus) the
+// way AvailableActions does: a self-loop rule still makes sm.Apply SUCCEED
+// (no functional status change, but no error either), so hiding it here
+// would make this method say "cannot apply" for something that would, in
+// fact, apply cleanly. AvailableActions' self-loop filter exists purely for
+// its own different job — deciding whether a generic action-bar BUTTON has
+// "and then the status changes" a story to tell — not for this method's job
+// of predicting sm.Apply's success/failure.
+func (sm *StateMachine) CanApplyTransitionAction(actionType string, status TaskStatus) bool {
+	for _, r := range sm.Rules {
+		if r.Condition != nil || !r.Manual || r.ToStatus == "" {
 			continue
 		}
 		if r.Action == actionType && (r.FromStatus == "*" || r.FromStatus == string(status)) {

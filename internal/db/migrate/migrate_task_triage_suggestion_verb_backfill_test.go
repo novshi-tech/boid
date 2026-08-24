@@ -122,3 +122,73 @@ func TestApply_0044_BackfillExcludesTerminalCards(t *testing.T) {
 	assertVerb("dropped-card", "")
 	assertVerb("aborted-card", "")
 }
+
+// TestApply_0044_BackfillExcludesLegacyStatuses is the fix/unapplicable-
+// suggestion-guard PR review's LOW 3: 0044's backfill predicate switched from
+// an exclusion list (`status NOT IN ('done','dropped','aborted')`) to an
+// allow list (`status IN ('parked','working')`) specifically because the
+// exclusion list let a legacy-status card (captured/triaged/ready — none of
+// which card machine v2 has ANY rule for; they're pre-cutover statuses kept
+// only so old DB rows stay readable, see orchestrator's KnownTaskStatuses
+// doc comment) through. That card would get suggestion_verb backfilled,
+// appear in the status-agnostic queue_next Queue tab with an "inapplicable"
+// badge (this PR's own Web UI fix), yet render NEITHER Accept NOR Reject —
+// web/templates/tasks.templ's CanApplyManualAction("answered", status) gate
+// only admits parked/working/done/dropped — leaving it stuck until 30-day
+// GC. The allow list closes this off structurally: legacy statuses are never
+// backfilled at all, matching that they have no future under card machine v2
+// (a 洗い替え recreates them as fresh parked cards instead).
+func TestApply_0044_BackfillExcludesLegacyStatuses(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	if _, err := d.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('p1', '/tmp/p1')`); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	insertTask := func(id, status string) {
+		t.Helper()
+		if _, err := d.Conn.Exec(
+			`INSERT INTO tasks (id, project_id, title, status, behavior) VALUES (?, 'p1', 't', ?, 'dev')`,
+			id, status,
+		); err != nil {
+			t.Fatalf("insert task %s: %v", id, err)
+		}
+	}
+	insertTask("captured-card", "captured")
+	insertTask("triaged-card", "triaged")
+	insertTask("ready-card", "ready")
+
+	insertSidecar := func(taskID string) {
+		t.Helper()
+		if _, err := d.Conn.Exec(
+			`INSERT INTO task_triage (task_id, detail) VALUES (?, ?)`,
+			taskID, `{"attrs":{"suggestion":{"verb":"go","reason":"stale, pre-cutover"}}}`,
+		); err != nil {
+			t.Fatalf("insert sidecar %s: %v", taskID, err)
+		}
+	}
+	insertSidecar("captured-card")
+	insertSidecar("triaged-card")
+	insertSidecar("ready-card")
+
+	if _, err := d.Conn.Exec(backfillOnlySQL(t)); err != nil {
+		t.Fatalf("re-run 0044 backfill: %v", err)
+	}
+
+	for _, taskID := range []string{"captured-card", "triaged-card", "ready-card"} {
+		var got string
+		if err := d.Conn.QueryRow(`SELECT suggestion_verb FROM task_triage WHERE task_id = ?`, taskID).Scan(&got); err != nil {
+			t.Fatalf("read suggestion_verb %s: %v", taskID, err)
+		}
+		if got != "" {
+			t.Errorf("task %s (legacy status): suggestion_verb = %q, want empty — legacy-status cards must never be backfilled (they'd be stuck in the Queue tab with no Accept or Reject affordance)", taskID, got)
+		}
+	}
+}

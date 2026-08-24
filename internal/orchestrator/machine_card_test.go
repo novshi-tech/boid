@@ -1,6 +1,7 @@
 package orchestrator_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -375,6 +376,114 @@ func TestCardMachineV2_CanApplyManualAction_Answered(t *testing.T) {
 // half (suggestion_accept.go actually wiring answered's accept branch
 // through to this rule for a real done/dropped card) has its own dedicated
 // test in internal/api.
+// ---- PR-3 (suggestion 状態遷移化 follow-up): CanApplyTransitionAction ----
+//
+// The bug this guards against: card machine v2 admits exactly ONE status per
+// verb (go/working/drop only from parked; park/done only from working;
+// reopen only from done/dropped — NewCardMachine's own doc comment), but
+// nothing let a caller ask "would VERB actually apply from the task's
+// CURRENT status" before this PR — CanApplyManualAction("answered", status)
+// alone says yes for any of the four card statuses regardless of the
+// suggestion's own verb, so a suggestion whose verb didn't match the card's
+// status still rendered a live-looking Accept button that 409'd on click.
+
+// cardTransitionEdges is the exact seven (verb, fromStatus) pairs
+// TestCardMachineV2_AllEdges already pins as the network's entire edge list
+// — reused here as CanApplyTransitionAction's own hardcoded expectation, so
+// this test also serves as an explicit, human-readable pin of "exactly these
+// seven combinations answer applicable" (as opposed to the drift-proof
+// rule-table-derived test right below it, which reads no hardcoded list at
+// all).
+var cardTransitionEdges = map[string]map[orchestrator.TaskStatus]bool{
+	"go":      {orchestrator.TaskStatusParked: true},
+	"working": {orchestrator.TaskStatusParked: true},
+	"drop":    {orchestrator.TaskStatusParked: true},
+	"park":    {orchestrator.TaskStatusWorking: true},
+	"done":    {orchestrator.TaskStatusWorking: true},
+	"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
+}
+
+// TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges is the
+// exhaustive 6-verb × 4-status (24 combination) cross-product pin: exactly
+// the seven edges in cardTransitionEdges answer true, every other
+// combination answers false.
+func TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+	for _, verb := range v2CardTransitionActions {
+		for _, status := range v2CardStatuses {
+			want := cardTransitionEdges[verb][status]
+			got := sm.CanApplyTransitionAction(verb, status)
+			if got != want {
+				t.Errorf("CanApplyTransitionAction(%s, %s) = %v, want %v", verb, status, got, want)
+			}
+		}
+	}
+}
+
+// TestCardMachineV2_CanApplyTransitionAction_DerivedFromRuleTable_NoDrift is
+// the drift-proof twin: rather than comparing against a hardcoded list (the
+// test above), it reads sm.Rules DIRECTLY to compute which (action,
+// FromStatus) pairs are Manual AND status-changing (ToStatus != "") — the
+// exact predicate CanApplyTransitionAction's own implementation applies —
+// and asserts CanApplyTransitionAction agrees with that derivation for every
+// combination. A future edit to NewCardMachine's rule table (e.g. adding an
+// eighth edge) automatically updates this test's expectations; only the
+// OTHER test (hardcoded seven edges) would need a human to also update the
+// design-doc-level pin.
+//
+// Review LOW 2 (fix/unapplicable-suggestion-guard PR): the loop's OUTER
+// action set is now derived from sm.Rules too (every distinct Action name
+// appearing anywhere in the table — transitioning or not, Manual or not),
+// not the hand-written v2CardTransitionActions this test used before. That
+// earlier version's "auto-follows the rule table" doc-comment claim didn't
+// actually hold for an EIGHTH verb: derived's inner map would gain the new
+// key correctly, but the outer `for _, verb := range v2CardTransitionActions`
+// loop would never visit it, so CanApplyTransitionAction's behavior on that
+// new verb would go entirely unprobed by this test. Deriving allActions from
+// sm.Rules directly closes that gap, and — as a bonus — also now probes every
+// NON-transitioning action (attrs_set, noted, answered, wake_due, ...),
+// pinning that CanApplyTransitionAction correctly says false for all of them
+// at every status (they have no entry in `derived` at all, so `want` is
+// always the zero value, false).
+func TestCardMachineV2_CanApplyTransitionAction_DerivedFromRuleTable_NoDrift(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+
+	derived := map[string]map[orchestrator.TaskStatus]bool{}
+	allActions := map[string]bool{}
+	for _, r := range sm.Rules {
+		if r.Condition != nil {
+			continue
+		}
+		allActions[r.Action] = true
+		if !r.Manual || r.ToStatus == "" {
+			continue
+		}
+		if derived[r.Action] == nil {
+			derived[r.Action] = map[orchestrator.TaskStatus]bool{}
+		}
+		if r.FromStatus == "*" {
+			for _, status := range v2CardStatuses {
+				derived[r.Action][status] = true
+			}
+			continue
+		}
+		derived[r.Action][orchestrator.TaskStatus(r.FromStatus)] = true
+	}
+	if len(allActions) == 0 {
+		t.Fatal("derived zero actions from sm.Rules — test fixture assumption broken")
+	}
+
+	for action := range allActions {
+		for _, status := range v2CardStatuses {
+			want := derived[action][status]
+			got := sm.CanApplyTransitionAction(action, status)
+			if got != want {
+				t.Errorf("CanApplyTransitionAction(%s, %s) = %v, want %v (derived from sm.Rules)", action, status, got, want)
+			}
+		}
+	}
+}
+
 func TestCardMachineV2_Reopen_ReachableViaAcceptFromDoneAndDropped(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
 	for _, from := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped} {
@@ -424,5 +533,52 @@ func TestIsCardTransitionAction(t *testing.T) {
 		if orchestrator.IsCardTransitionAction(a) {
 			t.Errorf("IsCardTransitionAction(%q) = true, want false", a)
 		}
+	}
+}
+
+// TestCardMachineV2_AvailableActionsHint_MatchesAvailableActions pins that
+// AvailableActionsHint's text is built FROM AvailableActions (not a
+// hand-copied literal) for every one of the 4 reachable card statuses — the
+// exact "derive from the rule table" requirement. Moved here from
+// internal/api's own suggestion_accept_test.go (fix/unapplicable-suggestion-
+// guard PR review, LOW 4): the hint-building itself moved from an
+// api-package-local function into this single orchestrator-side method
+// (shared by internal/api's 409 messages AND the Web UI's inapplicable-
+// suggestion notice — components.SuggestionInapplicableReason), so its pin
+// belongs next to the method it tests, not duplicated in a downstream
+// package.
+func TestCardMachineV2_AvailableActionsHint_MatchesAvailableActions(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+	for _, status := range v2CardStatuses {
+		hint := sm.AvailableActionsHint(status)
+		available := sm.AvailableActions(status)
+		if len(available) == 0 {
+			t.Fatalf("status=%s: AvailableActions is empty — no card status should have zero available actions (test fixture assumption broken)", status)
+		}
+		for _, a := range available {
+			if !strings.Contains(hint, a) {
+				t.Errorf("status=%s: hint %q missing available action %q", status, hint, a)
+			}
+		}
+		if !strings.Contains(hint, string(status)) {
+			t.Errorf("status=%s: hint %q should name the status", status, hint)
+		}
+	}
+}
+
+// TestStateMachine_AvailableActionsHint_EmptyStatusFallback pins the
+// zero-available-actions branch (AvailableActions(status) returns nil/empty
+// — e.g. a genuinely terminal status like "aborted" on the card machine,
+// which has no rule reaching or leaving it at all): the hint must still say
+// something self-explanatory rather than an empty "from status=X you can
+// apply: " with nothing after the colon.
+func TestStateMachine_AvailableActionsHint_EmptyStatusFallback(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+	hint := sm.AvailableActionsHint(orchestrator.TaskStatusAborted)
+	if !strings.Contains(hint, string(orchestrator.TaskStatusAborted)) {
+		t.Errorf("hint %q should name the status", hint)
+	}
+	if !strings.Contains(hint, "no further transitions") {
+		t.Errorf("hint %q should say plainly that nothing is available, not a bare empty list", hint)
 	}
 }

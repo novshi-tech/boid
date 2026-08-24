@@ -164,13 +164,34 @@ reject は「その提案は採らない」。カードは動かず、suggestion
 | working | parked | park (wake 条件付き、直接 or accept) | 人 |
 | working | done | accept(done) / 直接 done | 人 |
 | done | parked | reopen (直接 or accept) | 人 |
-| dropped | parked | reopen (直接 or accept) | 人 |
+| dropped | parked | reopen (直接のみ — accept 経路は通常到達不能、下記注記) | 人 |
 
 不変量: **機械が起こせる遷移は capture だけ。機械は仕事を始めない (working に入れない)
 し、捨てない (dropped に入れない) し、閉じもしない。** 前進 (parked → working) は必ず
 人の accept を通る — Go ゲートはこの 1 本の辺に凝縮される。wake の 3 分岐が消える理由も
 この表で自明になる: parked の出口は人の accept だけで、行き先は suggestion の verb が
 決めるから、機械が park の起点を記憶する必要が構造ごと消える。
+
+**注記 (2026-08-25、khi 側実装で判明): `dropped → parked` の accept 半分は原理上
+ほぼ到達不能。** `drop` は card の identity を全解放する — `internal/orchestrator/
+task_identity.go` の `UnlinkAllForTask` を、直接 drop (`workflow_action.go` の
+`case "drop"`) と accept(drop) (`suggestion_accept.go` の `case "drop"`) の**両方**が
+呼ぶ。`done` からは呼ばれない (`UnlinkAllForTask` 自身の doc comment: 「never from
+done (I-5: done holds identities)」)。khi が card に到達できる経路は 2 つしかない —
+ingestion identity 経由の `resolve_identity` (identity が解放済みなので何も返らない)
+と `boid task triage --list` (= boid の `"triage"` フィルタ、dropped を落とす) —
+いずれも dropped card には届かない。つまり **dropped card に suggestion を書ける主体が
+存在せず**、`dropped → parked` の reopen は実質**人の直接操作 (Web UI / CLI) 専用**に
+なる。これは設計から外れた欠陥ではなく、本節末尾の「人の直接操作は常に全遷移で可能で
+あることを担保する」(escape hatch) がまさにこの edge を生かしている、という繋がりで
+読むべき挙動。
+
+**ただし例外が1つある**: `LinkIdentity` (`internal/orchestrator/task_identity.go`) は
+task の status を検査しない。drop で該当 identity の行自体が削除済みなので衝突も
+起きず、`boid task identity link <identity> <dropped-card-id>` は今日でも成功する —
+カットオーバー runbook (`docs/plans/suggestion-as-state-transition-impl.md` §6 手順3)
+がまさにこの操作を使う。再 link すれば khi の `resolve_identity` からその card に
+再度到達できるようになり、通常の accept 経路が生き返る。
 
 | 状態 | 意味 |
 |---|---|
