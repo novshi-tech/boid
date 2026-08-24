@@ -358,6 +358,53 @@ func TestApplyAction_Answered_NoTaskTriageRow_PreExecutionStatus_StillSucceeds(t
 	}
 }
 
+// TestApplyAction_Answered_AcceptReopen_FromDoneAndDropped is the api-layer
+// end-to-end pin for PR #987 review's BLOCKER 3: a done/dropped card
+// carrying a khi-suggested "reopen" must actually be acceptable — before
+// this fix, "answered" was rejected from done/dropped entirely (a shared
+// FromStatus set with attrs_set/child_added/etc that never reached a
+// terminal card), so a card stuck in this exact situation could never be
+// answered at all, accept or reject.
+func TestApplyAction_Answered_AcceptReopen_FromDoneAndDropped(t *testing.T) {
+	for _, from := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped} {
+		t.Run(string(from), func(t *testing.T) {
+			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: from, Behavior: "dev", Payload: []byte(`{}`)}
+			txStore := &recordingTxStore{
+				task: task,
+				triage: map[string]*orchestrator.TaskTriage{
+					"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"reopen","reason":"issue reopened"}}}`)},
+				},
+			}
+			// Deliberately NOT newTriageWorkflowService: done/dropped are
+			// excluded from isPreExecutionCardStatus's auto-seed set (that
+			// helper's own doc comment — machineFor needs a CONFIRMED row
+			// for done/aborted specifically, not the status-based fallback),
+			// so TaskTriage must be wired by hand here, matching the fixture
+			// that actually exercises the confirmed-row path.
+			svc := &TaskWorkflowService{
+				Tasks:      &stubTaskStore{task: task},
+				Tx:         recordingTransactor{store: txStore},
+				Meta:       stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+				TaskTriage: txStore,
+			}
+
+			payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": "reopen"})
+			ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
+			result, err := svc.ApplyAction(ctx, task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+			if err != nil {
+				t.Fatalf("ApplyAction(answered, accept reopen) from %s: %v", from, err)
+			}
+			if result.Task.Status != orchestrator.TaskStatusParked {
+				t.Fatalf("status = %q, want parked", result.Task.Status)
+			}
+			suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
+			if ok || suggestion.Verb != "" {
+				t.Errorf("suggestion still present after accept: %+v", suggestion)
+			}
+		})
+	}
+}
+
 // TestApplyAnsweredSideEffect_NoExistingTriageRow_NoOp pins Opus review
 // finding #4 (2026-08-19 revisit of PR-3), decoupled from ApplyAction's own
 // routing (see the PR-B note on

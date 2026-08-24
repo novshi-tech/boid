@@ -246,36 +246,69 @@ func TestTaskDetailSuggestionSection_RendersAcceptRejectButtons(t *testing.T) {
 	}
 }
 
-// TestTaskDetailSuggestionSection_DoneStatus_HidesAcceptRejectButtons pins
-// Opus review finding #3 (2026-08-19 revisit of PR-3): a triage task that
-// carries a stale, never-answered suggestion into done (auto-done, or
-// simply nobody clicked before it advanced) must NOT render clickable
-// Accept/Reject buttons — the card machine rejects `answered` from done
-// (TestCardMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard,
-// internal/orchestrator/machine_card_test.go), so clicking used to redirect
-// to an opaque
-// `no transition for action "answered" from status "done"` error. The
-// suggestion's own text (verb/reason/basis) still renders — only the
-// buttons are gated — so the historical record stays visible.
-func TestTaskDetailSuggestionSection_DoneStatus_HidesAcceptRejectButtons(t *testing.T) {
+// TestTaskDetailSuggestionSection_DoneAndDroppedStatus_ShowsAcceptRejectButtons
+// pins PR #987 review's BLOCKER 3 fix: card machine v2's "answered" rule now
+// reaches done/dropped (NewCardMachine's own doc comment) specifically so a
+// suggestion khi legitimately places there — e.g. "reopen" — can actually be
+// accepted or rejected. This INVERTS what used to be
+// TestTaskDetailSuggestionSection_DoneStatus_HidesAcceptRejectButtons (Opus
+// review finding #3, 2026-08-19 revisit of PR-3, back when v1's "answered"
+// FromStatus set was {captured,triaged,parked,ready,working} and a
+// done/dropped card's suggestion — reachable via the SAME I-5b service-layer
+// guard that still lets attrs_set land there — could be displayed but never
+// answered at all). This template only renders what CanApplyManualAction
+// says; the machine-rule assertion itself is pinned in internal/orchestrator's
+// TestCardMachineV2_CanApplyManualAction_Answered.
+func TestTaskDetailSuggestionSection_DoneAndDroppedStatus_ShowsAcceptRejectButtons(t *testing.T) {
+	suggestion := orchestrator.Suggestion{Verb: "reopen", Reason: "issue reopened", Basis: "issue #42"}
+
+	for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped} {
+		var buf bytes.Buffer
+		if err := TaskDetailSuggestionSection("task-9", status, suggestion).Render(context.Background(), &buf); err != nil {
+			t.Fatalf("render (%s): %v", status, err)
+		}
+		html := buf.String()
+
+		if !strings.Contains(html, "<form") {
+			t.Errorf("%s task must render the answer form; got: %s", status, html)
+		}
+		if !strings.Contains(html, ">Accept<") || !strings.Contains(html, ">Reject<") {
+			t.Errorf("%s task must render Accept/Reject buttons; got: %s", status, html)
+		}
+		for _, want := range []string{"reopen", "issue reopened", "issue #42"} {
+			if !strings.Contains(html, want) {
+				t.Errorf("%s task should show suggestion content %q; got: %s", status, want, html)
+			}
+		}
+	}
+}
+
+// TestTaskDetailSuggestionSection_AbortedStatus_HidesAcceptRejectButtons pins
+// that the gate still correctly hides the buttons for a status genuinely
+// outside "answered"'s FromStatus set. aborted is not a status a real card
+// ever reaches (card machine v2 has no rule targeting it at all — a card's
+// only terminal statuses are done/dropped), so this is defense-in-depth
+// coverage for "the gate still says no for something," not a realistic
+// production scenario.
+func TestTaskDetailSuggestionSection_AbortedStatus_HidesAcceptRejectButtons(t *testing.T) {
 	suggestion := orchestrator.Suggestion{Verb: "go", Reason: "issue reopened", Basis: "issue #42"}
 
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection("task-9", orchestrator.TaskStatusDone, suggestion).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-9", orchestrator.TaskStatusAborted, suggestion).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 
 	if strings.Contains(html, "<form") {
-		t.Errorf("done task must not render the answer form at all; got: %s", html)
+		t.Errorf("aborted task must not render the answer form at all; got: %s", html)
 	}
 	if strings.Contains(html, ">Accept<") || strings.Contains(html, ">Reject<") {
-		t.Errorf("done task must not render Accept/Reject buttons; got: %s", html)
+		t.Errorf("aborted task must not render Accept/Reject buttons; got: %s", html)
 	}
 	// The suggestion's own content is still shown — only the buttons hide.
 	for _, want := range []string{"go", "issue reopened", "issue #42"} {
 		if !strings.Contains(html, want) {
-			t.Errorf("done task should still show suggestion content %q; got: %s", want, html)
+			t.Errorf("aborted task should still show suggestion content %q; got: %s", want, html)
 		}
 	}
 }
