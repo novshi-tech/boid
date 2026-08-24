@@ -753,7 +753,7 @@ func (l *TriggerLoop) trackFailStreak(ctx context.Context, completed []TriggerCo
 // unbounded ctx (this is the TriggerLoop's own long-lived server ctx) would
 // let a hanging notify command wedge runOnce, and therefore every future
 // sweep tick, until daemon shutdown. queue_notify.go's
-// notifyIfUrgencyNow and triage_done.go's own notify call already wrap
+// notifySuggestionArrived and triage_done.go's own notify call already wrap
 // their Notify calls the same way; this makes trigger_loop.go's the third,
 // not an exception.
 func (l *TriggerLoop) notify(ctx context.Context, key TriggerKey, message string) {

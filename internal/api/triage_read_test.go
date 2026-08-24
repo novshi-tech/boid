@@ -120,27 +120,9 @@ func (s *multiTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestra
 		if filter.ProjectID != "" && t.ProjectID != filter.ProjectID {
 			continue
 		}
-		// "queue" mirrors ListTasks' pre-execution branch (store.go) so callers
-		// that use it — SweepCanonicalSourceBreaches — are exercised for real
-		// rather than silently matching nothing.
-		if filter.Status == "queue" {
-			if !orchestrator.IsPreExecutionStatus(t.Status) {
-				continue
-			}
-		} else if filter.Status == "triage" {
+		if filter.Status == "triage" {
 			// pre-execution ∪ working — ListTriage's default floor (store.go).
 			if !orchestrator.IsPreExecutionStatus(t.Status) && t.Status != orchestrator.TaskStatusWorking {
-				continue
-			}
-		} else if filter.Status == "done_triage" {
-			// SweepReopen's candidate set (store.go's real "done_triage"
-			// branch INNER JOINs task_triage too — this fake has no sidecar
-			// awareness at the filter level, so it narrows only on status,
-			// same as every SweepReopen test already relies on: a task with
-			// no task_triage row is still returned here, then correctly
-			// skipped downstream via s.TaskTriage.GetTaskTriage's own
-			// sql.ErrNoRows branch, exactly like production).
-			if t.Status != orchestrator.TaskStatusDone {
 				continue
 			}
 		} else if filter.Status != "" && string(t.Status) != filter.Status {
@@ -174,11 +156,12 @@ func TestGetTriage_ReturnsStoredAndDerivedFields(t *testing.T) {
 	triage := &stubTriageStore{
 		rows: map[string]*orchestrator.TaskTriage{
 			"t1": {
-				TaskID:  "t1",
-				Kind:    "issue",
-				Urgency: "today",
-				WakeAt:  &wakeAt,
-				Detail:  json.RawMessage(`{"attrs":{"summary":"見積もり"},"children":[{"id":"ch_00","status":"open"}]}`),
+				TaskID:         "t1",
+				Kind:           "issue",
+				Urgency:        "today",
+				WakeAt:         &wakeAt,
+				SuggestionVerb: "park",
+				Detail:         json.RawMessage(`{"attrs":{"summary":"見積もり"},"children":[{"id":"ch_00","status":"open"}]}`),
 			},
 		},
 		parkedFrom: map[string]orchestrator.TaskStatus{"t1": orchestrator.TaskStatusReady},
@@ -197,6 +180,12 @@ func TestGetTriage_ReturnsStoredAndDerivedFields(t *testing.T) {
 	}
 	if view.Kind != "issue" || view.Urgency != "today" {
 		t.Fatalf("sidecar columns not carried through: %+v", view)
+	}
+	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1):
+	// suggestion_verb is a promoted column like Kind/Urgency, so the read
+	// projection carries it through the same way.
+	if view.SuggestionVerb != "park" {
+		t.Fatalf("suggestion_verb not carried through: %+v", view)
 	}
 	if view.WakeAt == nil || !view.WakeAt.Equal(wakeAt) {
 		t.Fatalf("wake_at = %v, want %v", view.WakeAt, wakeAt)

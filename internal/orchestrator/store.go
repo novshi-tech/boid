@@ -313,55 +313,38 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 			`t.id IN (SELECT id FROM open_ancestors))`)
 	} else if filter.Status == "closed" {
 		conditions = append(conditions, "t.status IN ("+terminalStatusSQLList+")")
-	} else if filter.Status == "queue" {
-		// PR-3 の Web UI queue タブが束ねる予定の集合を backend に先出し
-		// (Opus指摘#8): PR-1〜PR-3 の間も `?status=queue` で pre-execution
-		// な triage task が見えるようにする安価な保険。
-		//
-		// PR-3 では意図的にこの意味を変えない (TestListTasks_Queue_
-		// ReturnsExactlyPreExecutionSet がこの広い superset を pin 済み)。
-		// 実際の Web UI queue タブ・queue の決定論的評価 (決定12) の対象は
-		// 下の "queue_next" — urgency を伴う狭い述語 (queue 節 rule 2/3) —
-		// を新設して使う。
-		conditions = append(conditions, "t.status IN ("+preExecutionStatusSQLList+")")
 	} else if filter.Status == "triage" {
-		// Phase 1 PR-5a: 「今生きている triage task」= pre-execution ∪ working。
-		// ListTriage の既定フィルタ (無指定でのフルスキャン防止) であり、
-		// 「queue」(pre-execution のみ) では working の card が読めず、無条件では
-		// 全 task 行を走査してしまうため、この 1 本を足す。done/dropped は
-		// 明示 status で引く。
+		// Phase 1 PR-5a, unchanged by PR-2: 「今生きている triage task」=
+		// pre-execution ∪ working = captured/triaged/parked/ready/working.
+		// ListTriage's default filter (`boid task triage --list` with no
+		// status — the exact call khi's open_triage_task_ids, app/trigger.py,
+		// makes), so this predicate directly decides which cards khi's
+		// signal detection considers on every sweep (docs/plans/
+		// suggestion-as-state-transition-impl.md §4.1's khi 対象軸 note).
+		//
+		// done is DELIBERATELY excluded (a decision made here, not just
+		// inherited): non-boid signal sources (Slack/Jira/Bitbucket) do not
+		// drop a done card from their own re-detection (khi's detect.py
+		// NO_RECORD_STATUSES is dropped/aborted only), so a source reopening
+		// a done card is already handled outside this filter. Including done
+		// here would mean every done triage card stays a signal candidate
+		// until 30-day GC sweeps it — unbounded work for no additional
+		// coverage.
 		conditions = append(conditions, "t.status IN ("+preExecutionStatusSQLList+", 'working')")
 	} else if filter.Status == "queue_next" {
-		// queue の決定論的評価 節 rule 2 (queue 所属): state ∈ {ready, triaged}
-		// かつ urgency ∈ {now, today, week}。captured は UC-4 の専用確認
-		// セクション行き (QueueEligible の doc comment参照)、someday/空 urgency
-		// は棚卸し (UC-5) でのみ動く (決定9)。INNER JOIN なので task_triage
-		// 行が無い ready/triaged task (urgency 未設定) は自然に除外される。
+		// design doc §3.6 (「一覧は suggestion で駆動する」), docs/plans/
+		// suggestion-as-state-transition-impl.md §4.1: queue membership is now
+		// `suggestion_verb != ''` — ANY status (parked/working/done/dropped,
+		// even a legacy captured/triaged/ready row) qualifies the moment it
+		// carries a suggestion. The old state ∈ {ready,triaged} ∧ urgency ∈
+		// {now,today,week} predicate (Phase 1 PR-3) is gone entirely; urgency
+		// demotes from a membership gate to an ORDER BY tie-breaker only (a
+		// suggested card with no urgency still shows, just sorted last).
+		// INNER JOIN still narrows the scan to rows with a task_triage
+		// sidecar (a bare task_triage-less task can never carry a
+		// suggestion).
 		joins = append(joins, "INNER JOIN task_triage tt ON tt.task_id = t.id")
-		conditions = append(conditions, "t.status IN ('ready','triaged') AND tt.urgency IN ('now','today','week')")
-	} else if filter.Status == "done_triage" {
-		// docs/plans/ingestion-identity.md PR-5 (B-6), I-5: SweepReopen's
-		// candidate set (Opus review — 修正必須1). Before this branch,
-		// SweepReopen listed `Status: "done"` (the generic `t.status = ?`
-		// fallback below) and then called GetTaskTriage per row to find the
-		// handful that are actually triage cards — a full scan of EVERY done
-		// task in the system (dev tasks AND their children, unbounded, no
-		// LIMIT, taskSelectCols' full description/payload/instructions
-		// columns plus taskChildCountCols' 4 correlated subqueries PER ROW)
-		// on a tick that fires every minute (QueueSweepLoop.Interval,
-		// wire.go), to find a candidate set that is only ever "how many
-		// triage cards exist" (tens, not hundreds/thousands of dev tasks).
-		//
-		// INNER JOIN narrows the scan to done tasks that actually carry a
-		// task_triage sidecar row BEFORE taskSelectCols/taskChildCountCols
-		// ever run against them — same "let the JOIN do the filtering
-		// instead of a GetTaskTriage per candidate row" idiom "queue_next"
-		// above already established. Unlike queue_next this doesn't need any
-		// tt.* column (SweepReopen re-reads the sidecar itself, same as it
-		// always has), so the JOIN exists purely to shrink the candidate set
-		// — the query never SELECTs anything from tt.
-		joins = append(joins, "INNER JOIN task_triage tt ON tt.task_id = t.id")
-		conditions = append(conditions, "t.status = 'done'")
+		conditions = append(conditions, "tt.suggestion_verb != ''")
 	} else if filter.Status != "" {
 		conditions = append(conditions, "t.status = ?")
 		args = append(args, filter.Status)
@@ -396,14 +379,17 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	if filter.Status == "closed" {
 		query += " ORDER BY t.updated_at DESC"
 	} else if filter.Status == "queue_next" {
-		// queue の決定論的評価 節 rule 3 (並び順、全順序): urgency (now > today
-		// > week) → state (ready が先) → created_at 昇順 (古いものを腐らせない)
-		// → id。 orchestrator.UrgencyRank / StateRank express the same rule as
-		// pure Go functions (queue.go) for unit testing; this CASE expression
-		// must stay in lockstep with them.
+		// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1,
+		// design doc §3.6): urgency は可視性を失い並び順だけの属性になった —
+		// membership はもう urgency と無関係 (上の WHERE 参照) なので、ORDER BY
+		// は urgency (now > today > week > someday/空) → created_at 昇順
+		// (古いものを腐らせない) → id だけになる。v1 の「state (ready が先)」
+		// tier は card 機械 v2 に ready/triaged という現役状態が無くなった
+		// ため削除 (StateRank ごと queue.go から削除済み — もう対応する SQL
+		// が無い pure-Go 関数を残すと逆に誤解を招く)。orchestrator.UrgencyRank
+		// は urgency tier だけの pure-Go 版として引き続き lockstep を保つ。
 		query += " ORDER BY " +
 			"CASE tt.urgency WHEN 'now' THEN 0 WHEN 'today' THEN 1 WHEN 'week' THEN 2 ELSE 3 END, " +
-			"CASE t.status WHEN 'ready' THEN 0 ELSE 1 END, " +
 			"t.created_at ASC, t.id ASC"
 	} else {
 		query += " ORDER BY t.created_at DESC"

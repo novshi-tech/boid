@@ -12,36 +12,20 @@ const (
 	UrgencySomeday = "someday"
 )
 
-// queueUrgencies is the set of urgency values eligible for queue membership
-// (queue 節 rule 2). someday (and empty/unset urgency) is deliberately
-// excluded — 決定9: someday only resurfaces via the periodic 棚卸し (UC-5),
-// never via the queue itself.
-var queueUrgencies = map[string]bool{
-	UrgencyNow:   true,
-	UrgencyToday: true,
-	UrgencyWeek:  true,
-}
-
-// QueueEligible reports whether a (status, urgency) pair belongs in the
-// queue view per queue 節 rule 2: 「state ∈ {ready, triaged} かつ urgency ∈
-// {now, today, week}」。
+// UrgencyRank backs the queue_next view's ordering (store.go): urgency now >
+// today > week, someday/unrecognized sort last. Lower rank sorts first. This
+// is a pure-Go mirror of the CASE expression in store.go's "queue_next"
+// ORDER BY, kept for unit testing the ranking in isolation — the CASE
+// expression itself must stay in lockstep with this function.
 //
-// captured is deliberately excluded even though it is a pre-execution
-// status: per UC-4 (head-capture), a captured triage task has not been
-// triaged into an urgency yet and gets its own confirmation section, not
-// the main queue. parked/someday/dropped/working and the execution-lifecycle
-// statuses are excluded by construction — none of them are ready/triaged.
-func QueueEligible(status TaskStatus, urgency string) bool {
-	if status != TaskStatusReady && status != TaskStatusTriaged {
-		return false
-	}
-	return queueUrgencies[urgency]
-}
-
-// UrgencyRank / StateRank back queue 節 rule 3's ordering (urgency: now >
-// today > week; state: ready before triaged — 「Go 一発で捌けるものを上に」)。
-// Lower rank sorts first. Unrecognized urgency values sort last (rank 3),
-// same treatment as someday.
+// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1) removed this
+// file's QueueEligible and StateRank: queue membership is no longer a
+// (status, urgency) predicate at all (it's `suggestion_verb != ”`, any
+// status — design doc §3.6, 「一覧は suggestion で駆動する」), and the v1
+// "state (ready が先)" ordering tier StateRank backed has no SQL counterpart
+// left to mirror — card machine v2 has no "ready" status to rank. Keeping
+// either function around describing a rule store.go no longer implements
+// would be actively misleading, not merely unused.
 func UrgencyRank(urgency string) int {
 	switch urgency {
 	case UrgencyNow:
@@ -53,14 +37,6 @@ func UrgencyRank(urgency string) int {
 	default:
 		return 3
 	}
-}
-
-// StateRank implements the "state (ready が先)" half of rule 3.
-func StateRank(status TaskStatus) int {
-	if status == TaskStatusReady {
-		return 0
-	}
-	return 1
 }
 
 // ShouldWake evaluates queue 節 rule 1 (wake 評価) for a parked task: wake

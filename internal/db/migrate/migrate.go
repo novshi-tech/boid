@@ -403,6 +403,15 @@ func Apply(conn *sql.DB) error {
 			version: "0043_add_trigger_runs",
 			path:    "migrations/0043_add_trigger_runs.sql",
 		},
+		{
+			// docs/plans/suggestion-as-state-transition-impl.md §4.1 (PR-2):
+			// suggestion_verb promoted to a real task_triage column (the queue
+			// predicate reads it — same "queue述語になる値は列にする" reasoning
+			// as urgency/kind, migration 0040). No skip function: an ADD
+			// COLUMN + backfill UPDATE, same shape as 0040 itself.
+			version: "0044_add_task_triage_suggestion_verb",
+			path:    "migrations/0044_add_task_triage_suggestion_verb.sql",
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

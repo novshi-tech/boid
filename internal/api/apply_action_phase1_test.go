@@ -119,7 +119,19 @@ func (s *recordingTxStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriag
 	if !ok {
 		return nil, fmt.Errorf("task_triage not found: %s: %w", taskID, sql.ErrNoRows)
 	}
-	return tt, nil
+	// Return a COPY, not the map's own pointer (PR #988 review, LOW 4): the
+	// real orchestrator.GetTaskTriage does a fresh DB scan on every call, so
+	// a caller mutating the struct it got back has no effect until
+	// UpsertTaskTriage is called again. Handing back the map's own pointer
+	// let a caller's field mutation silently "commit" through this fake
+	// WITHOUT ever calling UpsertTaskTriage — which made the
+	// suggestion_verb-clearing regression tests (suggestion_discard_test.go,
+	// apply_action_pr3_noted_answered_test.go, accept_go_test.go) pass even
+	// with the production tx.UpsertTaskTriage(tt) call they exist to pin
+	// deleted, since the earlier `tt.SuggestionVerb = ""` mutation had
+	// already aliased into this map before Upsert ever ran.
+	cp := *tt
+	return &cp, nil
 }
 func (s *recordingTxStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
 	out := map[string]*orchestrator.TaskTriage{}

@@ -105,7 +105,7 @@ CREATE TABLE task_triage (
     wake_at      DATETIME,                   -- parked復帰の日時条件。NULL = 日時wakeなし
     wake_task_id TEXT NOT NULL DEFAULT '',   -- 事象wake: このtaskが終端に達したら復帰
     detail       TEXT NOT NULL DEFAULT '{}'  -- summary/source/content_ref/children/suggestion/observed
-);
+, suggestion_verb TEXT NOT NULL DEFAULT '');
 
 -- table: tasks
 CREATE TABLE tasks (

@@ -12,9 +12,9 @@ import (
 // ---- Phase 1 PR-5a (docs/plans/cross-project-issue-triage.md) ----
 //
 // The queue predicates (queue の決定論的評価 節 rule 2/3) read
-// task_triage.urgency as a REAL COLUMN — ListTasks("queue_next") INNER JOINs
-// on it and orders by it, and notifyQueueEntryIfUrgent reads it for rule 4.
-// Before PR-5a nothing in the daemon ever wrote that column: attrs_set folded
+// task_triage.urgency as a REAL COLUMN — ListTasks("queue_next") orders by it
+// (PR-2 demoted it from a membership gate to an ORDER BY tie-breaker, see
+// store.go). Before PR-5a nothing in the daemon ever wrote that column: attrs_set folded
 // everything, urgency included, into the opaque detail.attrs blob. The queue
 // view was therefore permanently empty and notify could never fire. These
 // tests pin the promotion that closes it.
@@ -119,6 +119,96 @@ func TestApplyAction_AttrsSet_UrgencyNullClears(t *testing.T) {
 	}
 	if got := txStore.triage["t1"].Urgency; got != "" {
 		t.Fatalf("urgency = %q after explicit null, want cleared", got)
+	}
+}
+
+// ---- PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1) ----
+//
+// suggestion_verb is promoted to a real task_triage column the same way
+// urgency/kind were in Phase 1 PR-5a above: the queue predicate
+// (store.go's "queue_next" branch) now reads suggestion_verb directly, so a
+// suggestion that only ever reached the opaque blob would be invisible to
+// the queue — exactly the bug PR-5a fixed for urgency.
+
+// TestApplyAction_AttrsSet_PromotesSuggestionVerbToColumn pins that a
+// suggestion sent via attrs_set lands in the promoted column, while the full
+// suggestion object (verb+reason+params) stays in the opaque blob too —
+// unlike urgency/kind, suggestion is NOT removed from the blob (display
+// still reads orchestrator.DetailSuggestion off the blob; the column exists
+// purely for the SQL predicate, see applyAttrsSetSideEffect's doc comment).
+func TestApplyAction_AttrsSet_PromotesSuggestionVerbToColumn(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{task: task}
+	svc := newTriageWorkflowService(task, txStore)
+
+	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "attrs_set",
+		Payload: []byte(`{"suggestion":{"verb":"park","reason":"blocked on review"}}`),
+	}); err != nil {
+		t.Fatalf("ApplyAction(attrs_set): %v", err)
+	}
+
+	tt := txStore.triage["t1"]
+	if tt == nil {
+		t.Fatal("expected a task_triage row")
+	}
+	if tt.SuggestionVerb != "park" {
+		t.Fatalf("suggestion_verb column = %q, want %q (queue_next reads this column)", tt.SuggestionVerb, "park")
+	}
+	suggestion, ok := orchestrator.DetailSuggestion(tt.Detail)
+	if !ok || suggestion.Verb != "park" || suggestion.Reason != "blocked on review" {
+		t.Fatalf("blob suggestion = %+v (ok=%v), want the full object still readable off the blob", suggestion, ok)
+	}
+}
+
+// TestApplyAction_AttrsSet_RejectsUnknownSuggestionVerb mirrors
+// TestApplyAction_AttrsSet_RejectsUnknownUrgency: suggestion.verb is boid's
+// own closed state-machine vocabulary (orchestrator.IsCardTransitionAction),
+// not an opaque workspace value, so an unrecognized verb must 400 rather
+// than silently writing a column the queue predicate can never match on
+// (this end-to-end path already had unit coverage via
+// TestValidateSuggestionAttr_UnknownVerbRejected — this pins the same
+// rejection through the full ApplyAction/attrs_set entry point).
+func TestApplyAction_AttrsSet_RejectsUnknownSuggestionVerb(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{task: task}
+	svc := newTriageWorkflowService(task, txStore)
+
+	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "attrs_set",
+		Payload: []byte(`{"suggestion":{"verb":"manual"}}`),
+	})
+	if err == nil {
+		t.Fatal("expected a 400, got success")
+	}
+	var se *StatusError
+	if !errors.As(err, &se) || se.Code != 400 {
+		t.Fatalf("err = %v, want a 400 StatusError", err)
+	}
+	if tt := txStore.triage["t1"]; tt != nil && tt.SuggestionVerb != "" {
+		t.Fatalf("rejected suggestion still wrote suggestion_verb: %+v", tt)
+	}
+}
+
+// TestApplyAction_AttrsSet_SuggestionNullClearsColumn mirrors
+// TestApplyAction_AttrsSet_UrgencyNullClears: an explicit JSON null clears
+// suggestion_verb the same way it already clears the blob's suggestion key
+// (validateSuggestionAttr's own null-clears convention).
+func TestApplyAction_AttrsSet_SuggestionNullClearsColumn(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.TaskTriage{
+		"t1": {TaskID: "t1", SuggestionVerb: "go", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go"}}}`)},
+	}}
+	svc := newTriageWorkflowService(task, txStore)
+
+	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "attrs_set",
+		Payload: []byte(`{"suggestion":null}`),
+	}); err != nil {
+		t.Fatalf("ApplyAction(attrs_set): %v", err)
+	}
+	if got := txStore.triage["t1"].SuggestionVerb; got != "" {
+		t.Fatalf("suggestion_verb = %q after explicit null, want cleared", got)
 	}
 }
 

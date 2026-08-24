@@ -196,47 +196,34 @@ func TestListTasks_Closed_IncludesDropped(t *testing.T) {
 	}
 }
 
-func TestListTasks_Queue_ReturnsExactlyPreExecutionSet(t *testing.T) {
+// TestListTasks_Open_ExcludesBareParkedTask pins PR-2's review conclusion on
+// notOpenSelfStatusSQLList's captured carve-out (docs/plans/
+// suggestion-as-state-transition-impl.md §4.1's "Open タブに何が出るべきか"
+// question): under card machine v2, EVERY new card lands directly in
+// "parked" (task_resolve_or_capture.go / task_create.go, PR-1) — captured is
+// legacy-only now. Unlike captured circa ingestion-identity.md PR-2 (which
+// had NO dedicated tab at all, hence the Open carve-out), parked already has
+// its own first-class tab (Parked, filters.templ). So a bare (childless)
+// parked task must stay excluded from Open the same way triaged/ready
+// already are — the carve-out does not need widening to parked, because
+// design doc §3.6's "queue は唯一の窓ではない" requirement is already met by
+// the Parked tab. This is a NEW pin (no prior test exercised a bare parked
+// task against the "open" filter) confirming the decision to leave
+// notOpenSelfStatusSQLList's shape unchanged.
+func TestListTasks_Open_ExcludesBareParkedTask(t *testing.T) {
 	d := createTestProject(t)
-	included := []orchestrator.TaskStatus{
-		orchestrator.TaskStatusCaptured,
-		orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusParked,
-		orchestrator.TaskStatusReady,
-	}
-	excluded := []orchestrator.TaskStatus{
-		orchestrator.TaskStatusPending,
-		orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusAwaiting,
-		orchestrator.TaskStatusDone,
-		orchestrator.TaskStatusAborted,
-		orchestrator.TaskStatusDropped,
-	}
-	ids := map[orchestrator.TaskStatus]string{}
-	for _, s := range append(append([]orchestrator.TaskStatus{}, included...), excluded...) {
-		task := &orchestrator.Task{ProjectID: "proj-1", Title: "task-" + string(s), Behavior: "dev", Status: s}
-		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
-			t.Fatalf("create %s: %v", s, err)
-		}
-		ids[s] = task.ID
+	parked := &orchestrator.Task{ProjectID: "proj-1", Title: "Parked, no children", Behavior: "dev", Status: orchestrator.TaskStatusParked}
+	if err := orchestrator.CreateTask(d.Conn, parked); err != nil {
+		t.Fatalf("create: %v", err)
 	}
 
-	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "queue"})
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
 	if err != nil {
 		t.Fatalf("ListTasks: %v", err)
 	}
-	gotIDs := map[string]bool{}
 	for _, tk := range got {
-		gotIDs[tk.ID] = true
-	}
-	for _, s := range included {
-		if !gotIDs[ids[s]] {
-			t.Errorf("queue view must include status %q", s)
-		}
-	}
-	for _, s := range excluded {
-		if gotIDs[ids[s]] {
-			t.Errorf("queue view must not include status %q", s)
+		if tk.ID == parked.ID {
+			t.Fatalf("open view must not include a bare parked task (%s) — Parked tab is its home now", parked.ID)
 		}
 	}
 }
@@ -388,52 +375,25 @@ func TestListTasks_Open_IncludesWorking(t *testing.T) {
 	}
 }
 
-func TestListTasks_Queue_ExcludesWorking(t *testing.T) {
-	d := createTestProject(t)
-	working := &orchestrator.Task{ProjectID: "proj-1", Title: "Working", Behavior: "dev", Status: orchestrator.TaskStatusWorking}
-	if err := orchestrator.CreateTask(d.Conn, working); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	ready := &orchestrator.Task{ProjectID: "proj-1", Title: "Ready", Behavior: "dev", Status: orchestrator.TaskStatusReady}
-	if err := orchestrator.CreateTask(d.Conn, ready); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-
-	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "queue"})
-	if err != nil {
-		t.Fatalf("ListTasks: %v", err)
-	}
-	ids := map[string]bool{}
-	for _, tk := range got {
-		ids[tk.ID] = true
-	}
-	if ids[working.ID] {
-		t.Errorf("queue view must not include a working task — it has already been Go'd")
-	}
-	if !ids[ready.ID] {
-		t.Errorf("queue view must still include a ready (pre-execution) task")
-	}
-}
-
-// TestListTasks_QueueNext_MembershipAndOrdering pins down PR-3's queue の決定論的評価
-// rules 2/3: state ∈ {ready, triaged} かつ urgency ∈ {now, today, week}
-// (someday/empty excluded), ordered by urgency (now>today>week) then state
-// (ready before triaged) then created_at ascending then id. This is
-// deliberately a NEW filter value ("queue_next"), distinct from the existing
-// "queue" keyword (PR-1's preExecutionStatusSQLList-based broader superset,
-// pinned by TestListTasks_Queue_ReturnsExactlyPreExecutionSet above) — see
-// docs/plans/cross-project-issue-triage.md PR-3 scoping notes for why "queue"
-// itself is left unchanged.
+// TestListTasks_QueueNext_MembershipAndOrdering pins PR-2's redefinition of
+// "queue_next" (docs/plans/suggestion-as-state-transition-impl.md §4.1,
+// design doc §3.6 "一覧は suggestion で駆動する"): membership is now
+// `suggestion_verb != ”` regardless of status — the old state ∈ {ready,
+// triaged} ∧ urgency ∈ {now,today,week} predicate (Phase 1 PR-3) is GONE.
+// Any status (parked/working/done/dropped, even legacy ones) shows up here
+// the moment it carries a suggestion; urgency drops from a membership gate
+// to an ORDER BY tie-breaker only (a suggested card with no urgency at all
+// still appears, just sorted last).
 func TestListTasks_QueueNext_MembershipAndOrdering(t *testing.T) {
 	d := createTestProject(t)
 
-	mk := func(title string, status orchestrator.TaskStatus, urgency string) *orchestrator.Task {
+	mk := func(title string, status orchestrator.TaskStatus, verb, urgency string) *orchestrator.Task {
 		task := &orchestrator.Task{ProjectID: "proj-1", Title: title, Behavior: "dev", Status: status}
 		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 			t.Fatalf("create %s: %v", title, err)
 		}
-		if urgency != "" {
-			if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.TaskTriage{TaskID: task.ID, Urgency: urgency}); err != nil {
+		if verb != "" || urgency != "" {
+			if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.TaskTriage{TaskID: task.ID, SuggestionVerb: verb, Urgency: urgency}); err != nil {
 				t.Fatalf("upsert task_triage %s: %v", title, err)
 			}
 		}
@@ -441,19 +401,23 @@ func TestListTasks_QueueNext_MembershipAndOrdering(t *testing.T) {
 		return task
 	}
 
-	// Created oldest-first as triaged, then ready, then today, then week — so
-	// the assertions below only pass if state-rank (ready before triaged)
-	// wins over created_at, and urgency-rank wins over both.
-	triagedNowOlder := mk("triaged-now-older", orchestrator.TaskStatusTriaged, orchestrator.UrgencyNow)
-	readyNow := mk("ready-now", orchestrator.TaskStatusReady, orchestrator.UrgencyNow)
-	triagedToday := mk("triaged-today", orchestrator.TaskStatusTriaged, orchestrator.UrgencyToday)
-	readyWeek := mk("ready-week", orchestrator.TaskStatusReady, orchestrator.UrgencyWeek)
-	_ = mk("triaged-someday", orchestrator.TaskStatusTriaged, orchestrator.UrgencySomeday)
-	_ = mk("ready-no-urgency", orchestrator.TaskStatusReady, "")
-	_ = mk("parked-now", orchestrator.TaskStatusParked, orchestrator.UrgencyNow)
-	_ = mk("captured-now", orchestrator.TaskStatusCaptured, orchestrator.UrgencyNow)
-	_ = mk("working-now", orchestrator.TaskStatusWorking, orchestrator.UrgencyNow)
-	_ = mk("done-now", orchestrator.TaskStatusDone, orchestrator.UrgencyNow)
+	// Created oldest-first, deliberately out of urgency order, so the
+	// assertions below only pass if urgency-rank actually wins over
+	// created_at ordering.
+	nowOlder := mk("suggested-now-older", orchestrator.TaskStatusParked, "park", orchestrator.UrgencyNow)
+	nowNewer := mk("suggested-now-newer", orchestrator.TaskStatusWorking, "done", orchestrator.UrgencyNow)
+	today := mk("suggested-today", orchestrator.TaskStatusParked, "go", orchestrator.UrgencyToday)
+	week := mk("suggested-week", orchestrator.TaskStatusParked, "drop", orchestrator.UrgencyWeek)
+	noUrgency := mk("suggested-no-urgency", orchestrator.TaskStatusParked, "working", "")
+	// A verb on a done/dropped card (khi suggesting reopen) is a real edge —
+	// design doc §3.2's done/dropped→parked reopen edges — so it must appear
+	// too, not just parked/working.
+	doneReopen := mk("done-card-reopen-suggested", orchestrator.TaskStatusDone, "reopen", orchestrator.UrgencyNow)
+
+	_ = mk("parked-no-suggestion", orchestrator.TaskStatusParked, "", orchestrator.UrgencyNow)
+	_ = mk("working-no-suggestion", orchestrator.TaskStatusWorking, "", "")
+	_ = mk("done-no-suggestion", orchestrator.TaskStatusDone, "", "")
+	_ = mk("dropped-no-suggestion", orchestrator.TaskStatusDropped, "", "")
 
 	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "queue_next"})
 	if err != nil {
@@ -464,14 +428,23 @@ func TestListTasks_QueueNext_MembershipAndOrdering(t *testing.T) {
 	for _, tk := range got {
 		gotIDs = append(gotIDs, tk.ID)
 	}
-	// Ordering: now (ready first, then triaged, oldest first) > today > week.
-	want := []string{readyNow.ID, triagedNowOlder.ID, triagedToday.ID, readyWeek.ID}
+	// Ordering: now (oldest-created first — the created_at ASC tiebreak
+	// store.go's ORDER BY comment calls out as "古いものを腐らせない") > today >
+	// week > no-urgency (someday/empty sort last, same as UrgencyRank's
+	// fallback). PR #988 review, LOW 5: this must assert the EXACT position
+	// of all six rows, not just set membership within the first three —
+	// nowOlder/nowNewer/doneReopen were deliberately created oldest-first
+	// specifically so a store.go regression that dropped "t.created_at ASC"
+	// from the ORDER BY (leaving only urgency-rank, with whatever order
+	// sqlite happens to return ties in) would go undetected by a
+	// membership-only check.
+	want := []string{nowOlder.ID, nowNewer.ID, doneReopen.ID, today.ID, week.ID, noUrgency.ID}
 	if len(gotIDs) != len(want) {
 		t.Fatalf("queue_next returned %d tasks, want %d: got %v", len(gotIDs), len(want), gotIDs)
 	}
 	for i := range want {
 		if gotIDs[i] != want[i] {
-			t.Errorf("position %d: got task id %s, want %s (order: %v)", i, gotIDs[i], want[i], gotIDs)
+			t.Errorf("position %d: got task id %s, want %s (full order: got=%v want=%v)", i, gotIDs[i], want[i], gotIDs, want)
 		}
 	}
 }
@@ -525,70 +498,5 @@ func TestListTasks_Triage_ReturnsPreExecutionPlusWorking(t *testing.T) {
 		if gotIDs[ids[s]] {
 			t.Errorf("status %q must not appear in the triage filter", s)
 		}
-	}
-}
-
-// TestListTasks_DoneTriage_ReturnsOnlyDoneTasksWithTriageSidecar pins
-// SweepReopen's candidate set (Opus review — 修正必須1, docs/plans/
-// ingestion-identity.md PR-5 B-6): a done task is a "done_triage" candidate
-// ONLY when it carries a task_triage sidecar row — an ordinary done dev
-// task (no row at all) must never be scanned by the INNER JOIN, and a
-// triage card sitting in any OTHER status (working, aborted, ...) must not
-// leak in either, exactly like queue_next's own INNER JOIN narrows to
-// ready/triaged.
-//
-// Before this filter existed, SweepReopen listed EVERY done task in the
-// system (`Status: string(orchestrator.TaskStatusDone)`, the generic
-// `t.status = ?` fallback below) and filtered client-side with a
-// GetTaskTriage call per row — a full scan of every done dev task AND its
-// children (unbounded, no LIMIT, taskSelectCols' full
-// description/payload/instructions columns plus taskChildCountCols' 4
-// correlated subqueries per row) on a tick that fires every minute. This
-// pin exists specifically so that generic fallback behavior can never
-// silently come back as "done_triage"'s own behavior.
-func TestListTasks_DoneTriage_ReturnsOnlyDoneTasksWithTriageSidecar(t *testing.T) {
-	d := createTestProject(t)
-
-	doneTriage := &orchestrator.Task{ProjectID: "proj-1", Title: "done triage card", Behavior: "dev", Status: orchestrator.TaskStatusDone}
-	if err := orchestrator.CreateTask(d.Conn, doneTriage); err != nil {
-		t.Fatalf("create done triage card: %v", err)
-	}
-	if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.TaskTriage{TaskID: doneTriage.ID}); err != nil {
-		t.Fatalf("upsert task_triage (done): %v", err)
-	}
-
-	doneOrdinary := &orchestrator.Task{ProjectID: "proj-1", Title: "done ordinary dev task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
-	if err := orchestrator.CreateTask(d.Conn, doneOrdinary); err != nil {
-		t.Fatalf("create done ordinary task: %v", err)
-	}
-	// Deliberately no task_triage row for doneOrdinary — an ordinary dev
-	// task never gets one; this is the row this filter exists to exclude.
-
-	workingTriage := &orchestrator.Task{ProjectID: "proj-1", Title: "still-working triage card", Behavior: "dev", Status: orchestrator.TaskStatusWorking}
-	if err := orchestrator.CreateTask(d.Conn, workingTriage); err != nil {
-		t.Fatalf("create working triage card: %v", err)
-	}
-	if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.TaskTriage{TaskID: workingTriage.ID}); err != nil {
-		t.Fatalf("upsert task_triage (working): %v", err)
-	}
-
-	abortedTriage := &orchestrator.Task{ProjectID: "proj-1", Title: "aborted triage card", Behavior: "dev", Status: orchestrator.TaskStatusAborted}
-	if err := orchestrator.CreateTask(d.Conn, abortedTriage); err != nil {
-		t.Fatalf("create aborted triage card: %v", err)
-	}
-	if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.TaskTriage{TaskID: abortedTriage.ID}); err != nil {
-		t.Fatalf("upsert task_triage (aborted): %v", err)
-	}
-
-	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "done_triage"})
-	if err != nil {
-		t.Fatalf("ListTasks: %v", err)
-	}
-	if len(got) != 1 || got[0].ID != doneTriage.ID {
-		gotIDs := make([]string, len(got))
-		for i, tk := range got {
-			gotIDs[i] = tk.ID + ":" + tk.Title
-		}
-		t.Fatalf(`ListTasks(Status: "done_triage") = %v, want exactly [%s (done triage card)]`, gotIDs, doneTriage.ID)
 	}
 }

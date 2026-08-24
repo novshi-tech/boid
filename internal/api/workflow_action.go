@@ -315,6 +315,14 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	var childAddedParsed *childAddedPayload
 	var childSpeccedParsed *childSpeccedPayload
 	var childDroppedParsed *childDroppedPayload
+	// suggestionVerbChanged (PR #988 review, MEDIUM 3) is set inside the Tx
+	// below by applyAttrsSetSideEffect's own return value — declared here,
+	// at function scope, so it survives past the switch's `return` inside
+	// the Tx closure for the post-commit notifySuggestionArrived gate
+	// further down (notifySuggestionArrived's own doc comment,
+	// queue_notify.go, explains why "did the verb actually change" — not
+	// merely "was a verb present" — is the correct notify trigger).
+	var suggestionVerbChanged bool
 	switch req.Type {
 	case "park":
 		var perr error
@@ -438,7 +446,9 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		case "park":
 			return applyParkSideEffect(tx, newTask.ID, parkPayloadParsed)
 		case "attrs_set":
-			return applyAttrsSetSideEffect(tx, newTask.ID, attrsSetParsed)
+			var saErr error
+			suggestionVerbChanged, saErr = applyAttrsSetSideEffect(tx, newTask.ID, attrsSetParsed)
+			return saErr
 		case "child_added":
 			return applyChildAddedSideEffect(tx, newTask.ID, childAddedParsed)
 		case "child_specced":
@@ -514,20 +524,23 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// "dispatch" verb; accept(go) / a direct "go" action bypasses this whole
 	// function via acceptGo, see the early redirect above.)
 
-	// queue の決定論的評価 節 rule 4 (notify, PR-3 scoped-down slice — see
-	// queue_notify.go's doc comment). queueMemberStatus (queue_notify.go)
-	// still keys off the legacy ready/triaged statuses — PR-2 owns updating
-	// the queue predicate itself to the new suggestion-driven definition (out
-	// of scope here per this PR's brief) — so in practice this fires for
-	// neither v2 card verb today; left wired rather than removed since it is
-	// otherwise inert, not actively wrong.
-	s.notifyQueueEntryIfUrgent(ctx, newTask, fromStatus)
-	// rule 4's other entry point: urgency arriving on a card that is already a
-	// queue member (see notifyUrgencyRaised's doc comment for why the
-	// entry-transition detector above cannot see this, and why the order it
-	// misses is the natural one).
-	if req.Type == "attrs_set" {
-		s.notifyUrgencyRaised(ctx, newTask, attrsSetParsed)
+	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.2): rule 4
+	// (queue の決定論的評価 節, notify) is now "a suggestion attached" — see
+	// notifySuggestionArrived's own doc comment (queue_notify.go) for why
+	// this replaces BOTH of v1's entry points (notifyQueueEntryIfUrgent's
+	// status-transition detector and notifyUrgencyRaised's
+	// already-a-member companion) outright rather than keeping either
+	// around. attrs_set's own patch is the only write path for a
+	// suggestion, so this is the only call site needed.
+	//
+	// Gated on suggestionVerbChanged (PR #988 review, MEDIUM 3): without
+	// this, a resend of the SAME verb (khi's _write_suggestion, write.py,
+	// sends unconditionally on every judge cycle, unlike its own
+	// _do_summary/_do_urgency/_do_observed siblings, which all diff-guard)
+	// would re-notify on every single new signal even though nothing nose
+	// needs to decide has actually changed.
+	if req.Type == "attrs_set" && suggestionVerbChanged {
+		s.notifySuggestionArrived(ctx, newTask, attrsSetParsed)
 	}
 
 	if s.Coordinator != nil {

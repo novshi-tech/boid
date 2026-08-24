@@ -27,12 +27,23 @@ import (
 // below), not duplicated into a second write path that could go stale
 // (決定13: event 追記を正、state は導出).
 type TaskTriage struct {
-	TaskID     string          `json:"task_id"`
-	Kind       string          `json:"kind,omitempty"`    // signal|issue|theme
-	Urgency    string          `json:"urgency,omitempty"` // now|today|week|someday
-	WakeAt     *time.Time      `json:"wake_at,omitempty"` // 日時wake条件。nil = 無し
-	WakeTaskID string          `json:"wake_task_id,omitempty"`
-	Detail     json.RawMessage `json:"detail,omitempty"`
+	TaskID     string     `json:"task_id"`
+	Kind       string     `json:"kind,omitempty"`    // signal|issue|theme
+	Urgency    string     `json:"urgency,omitempty"` // now|today|week|someday
+	WakeAt     *time.Time `json:"wake_at,omitempty"` // 日時wake条件。nil = 無し
+	WakeTaskID string     `json:"wake_task_id,omitempty"`
+	// SuggestionVerb is the promoted queue predicate (docs/plans/
+	// suggestion-as-state-transition-impl.md §4.1, migration 0044): one of
+	// go/working/park/drop/done/reopen (orchestrator.IsCardTransitionAction),
+	// or "" when the card carries no current suggestion. Mirrors Kind/Urgency
+	// — a real column because store.go's "queue_next" filter reads it
+	// directly ("一覧は suggestion で駆動する", 設計 doc §3.6) — but unlike
+	// Kind/Urgency the full suggestion (reason/params) stays in Detail's JSON
+	// blob too; only the verb is duplicated into this column (see
+	// applyAttrsSetSideEffect's doc comment, internal/api/workflow_triage.go,
+	// for why that duplication is intentional and does not drift).
+	SuggestionVerb string          `json:"suggestion_verb,omitempty"`
+	Detail         json.RawMessage `json:"detail,omitempty"`
 }
 
 // UpsertTaskTriage inserts or updates the sidecar row for TaskID.
@@ -45,15 +56,16 @@ func UpsertTaskTriage(dbtx db.DBTX, tt *TaskTriage) error {
 		detail = json.RawMessage("{}")
 	}
 	_, err := dbtx.Exec(
-		`INSERT INTO task_triage (task_id, kind, urgency, wake_at, wake_task_id, detail)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO task_triage (task_id, kind, urgency, wake_at, wake_task_id, suggestion_verb, detail)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(task_id) DO UPDATE SET
 		   kind = excluded.kind,
 		   urgency = excluded.urgency,
 		   wake_at = excluded.wake_at,
 		   wake_task_id = excluded.wake_task_id,
+		   suggestion_verb = excluded.suggestion_verb,
 		   detail = excluded.detail`,
-		tt.TaskID, tt.Kind, tt.Urgency, nullableTime(tt.WakeAt), tt.WakeTaskID, string(detail),
+		tt.TaskID, tt.Kind, tt.Urgency, nullableTime(tt.WakeAt), tt.WakeTaskID, tt.SuggestionVerb, string(detail),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert task_triage: %w", err)
@@ -89,13 +101,13 @@ func SeedTaskTriage(dbtx db.DBTX, taskID string) error {
 // wrapping sql.ErrNoRows when no row exists.
 func GetTaskTriage(dbtx db.DBTX, taskID string) (*TaskTriage, error) {
 	row := dbtx.QueryRow(
-		`SELECT task_id, kind, urgency, wake_at, wake_task_id, detail FROM task_triage WHERE task_id = ?`,
+		`SELECT task_id, kind, urgency, wake_at, wake_task_id, suggestion_verb, detail FROM task_triage WHERE task_id = ?`,
 		taskID,
 	)
 	var tt TaskTriage
 	var wakeAt sql.NullTime
 	var detail string
-	if err := row.Scan(&tt.TaskID, &tt.Kind, &tt.Urgency, &wakeAt, &tt.WakeTaskID, &detail); err != nil {
+	if err := row.Scan(&tt.TaskID, &tt.Kind, &tt.Urgency, &wakeAt, &tt.WakeTaskID, &tt.SuggestionVerb, &detail); err != nil {
 		return nil, fmt.Errorf("get task_triage %q: %w", taskID, err)
 	}
 	if wakeAt.Valid {
@@ -170,7 +182,7 @@ func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*TaskTr
 		}
 		func() {
 			rows, err := dbtx.Query(
-				`SELECT task_id, kind, urgency, wake_at, wake_task_id, detail FROM task_triage WHERE task_id IN (`+placeholders+`)`,
+				`SELECT task_id, kind, urgency, wake_at, wake_task_id, suggestion_verb, detail FROM task_triage WHERE task_id IN (`+placeholders+`)`,
 				args...,
 			)
 			if err != nil {
@@ -182,7 +194,7 @@ func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*TaskTr
 				var tt TaskTriage
 				var wakeAt sql.NullTime
 				var detail string
-				if err := rows.Scan(&tt.TaskID, &tt.Kind, &tt.Urgency, &wakeAt, &tt.WakeTaskID, &detail); err != nil {
+				if err := rows.Scan(&tt.TaskID, &tt.Kind, &tt.Urgency, &wakeAt, &tt.WakeTaskID, &tt.SuggestionVerb, &detail); err != nil {
 					noteErr(fmt.Errorf("list task_triage by task_ids: scan: %w", err))
 					continue
 				}

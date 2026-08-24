@@ -241,9 +241,180 @@ func TestTaskDetailSuggestionSection_RendersAcceptRejectButtons(t *testing.T) {
 	if !strings.Contains(html, `name="basis" value="issue #42"`) {
 		t.Errorf("missing hidden basis field carrying the suggestion's own basis; got: %s", html)
 	}
-	if !strings.Contains(html, ">Accept<") || !strings.Contains(html, ">Reject<") {
+	if !strings.Contains(html, ">Accept: go<") || !strings.Contains(html, ">Reject<") {
 		t.Errorf("missing Accept/Reject button labels; got: %s", html)
 	}
+}
+
+// TestTaskDetailSuggestionSection_GoVerb_AcceptButtonMatchesPrimaryGoWeight
+// pins PR-2's UI requirement (docs/plans/suggestion-as-state-transition-impl.md
+// §4.3, design doc §3.2): accept(go) actually dispatches specced children and
+// starts real work, the same consequence as clicking the bottom action bar's
+// own primary "Go" button (actionPrimaryClass(action)'s "btn btn-primary" for
+// action=="go", tasks.templ) — so accepting a "go" suggestion must look as
+// weighty as that button, not like the compact "read and dismiss" Accept
+// used for every other verb. Asserted as "carries btn-primary but NOT
+// btn-sm" rather than an exact string match, so this stays robust to any
+// future class reordering.
+func TestTaskDetailSuggestionSection_GoVerb_AcceptButtonMatchesPrimaryGoWeight(t *testing.T) {
+	suggestion := orchestrator.Suggestion{Verb: "go", Reason: "children are specced"}
+
+	var buf bytes.Buffer
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusParked, suggestion).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	acceptButton := extractAcceptButtonTag(t, html, "go")
+	if !strings.Contains(acceptButton, "btn-primary") {
+		t.Errorf("go accept button must carry btn-primary; got: %s", acceptButton)
+	}
+	if strings.Contains(acceptButton, "btn-sm") {
+		t.Errorf("go accept button must NOT be the compact btn-sm variant (must match the primary Go button's weight); got: %s", acceptButton)
+	}
+}
+
+// TestTaskDetailSuggestionSection_NonGoVerb_AcceptButtonStaysCompact is the
+// negative twin: every non-go, non-drop verb's accept keeps the original
+// compact styling — only "go" carries the "this dispatches real work"
+// weight and "drop" carries the danger weight (its own dedicated test,
+// TestTaskDetailSuggestionSection_DropVerb_AcceptButtonIsDangerAndConfirms,
+// PR #988 review MEDIUM 1) — working/park/done/reopen suggestions never
+// task-ify or release identities on accept.
+func TestTaskDetailSuggestionSection_NonGoVerb_AcceptButtonStaysCompact(t *testing.T) {
+	for _, verb := range []string{"working", "park", "done", "reopen"} {
+		suggestion := orchestrator.Suggestion{Verb: verb}
+		var buf bytes.Buffer
+		if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusWorking, suggestion).Render(context.Background(), &buf); err != nil {
+			t.Fatalf("render (%s): %v", verb, err)
+		}
+		html := buf.String()
+		acceptButton := extractAcceptButtonTag(t, html, verb)
+		if !strings.Contains(acceptButton, "btn-sm") {
+			t.Errorf("verb=%s: accept button should stay compact (btn-sm); got: %s", verb, acceptButton)
+		}
+		if strings.Contains(acceptButton, "btn-danger") {
+			t.Errorf("verb=%s: accept button must not be danger-colored; got: %s", verb, acceptButton)
+		}
+	}
+}
+
+// TestTaskDetailSuggestionSection_DropVerb_AcceptButtonIsDangerAndConfirms
+// pins PR #988 review's MEDIUM 1 fix: accept("drop") is a second entry
+// point to the SAME identity-releasing transition (tx.UnlinkAllForTask) the
+// kebab menu's direct "drop" item reaches — that direct item is
+// danger-colored (action-menu-item-danger) and gated behind
+// confirm('Drop this task? This discards it — a dropped task does not
+// resume.') (TaskActionBar, this file). Before this fix, accept("drop") was
+// the SAME compact, confirm-less "btn btn-primary btn-sm" every other verb
+// used — the most destructive of the six verbs rendered with the least
+// friction of all of them.
+func TestTaskDetailSuggestionSection_DropVerb_AcceptButtonIsDangerAndConfirms(t *testing.T) {
+	suggestion := orchestrator.Suggestion{Verb: "drop", Reason: "duplicate of #41"}
+
+	var buf bytes.Buffer
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusParked, suggestion).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	acceptButton := extractAcceptButtonTag(t, html, "drop")
+	if !strings.Contains(acceptButton, "btn-danger") {
+		t.Errorf("drop accept button must be danger-colored; got: %s", acceptButton)
+	}
+
+	acceptForm := extractAcceptFormTag(t, html, "drop")
+	wantConfirm := `confirm('Drop this task? This discards it — a dropped task does not resume.')`
+	if !strings.Contains(acceptForm, wantConfirm) {
+		t.Errorf("drop accept form must confirm with the SAME text as the direct kebab drop item; got form: %s", acceptForm)
+	}
+}
+
+// TestTaskDetailSuggestionSection_ParkVerb_AcceptButtonConfirms is drop's
+// twin for "park": the kebab menu's direct "park" item is gated behind
+// confirm('Park this task (set aside for later)?') (TaskActionBar, this
+// file) but is NOT danger-colored (park is reversible — reopen/wake bring
+// the card back). accept("park") must match both halves: same confirm text,
+// still non-danger styling.
+func TestTaskDetailSuggestionSection_ParkVerb_AcceptButtonConfirms(t *testing.T) {
+	suggestion := orchestrator.Suggestion{Verb: "park", Reason: "waiting on upstream"}
+
+	var buf bytes.Buffer
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusWorking, suggestion).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	acceptButton := extractAcceptButtonTag(t, html, "park")
+	if strings.Contains(acceptButton, "btn-danger") {
+		t.Errorf("park accept button must NOT be danger-colored (park is reversible); got: %s", acceptButton)
+	}
+
+	acceptForm := extractAcceptFormTag(t, html, "park")
+	wantConfirm := `confirm('Park this task (set aside for later)?')`
+	if !strings.Contains(acceptForm, wantConfirm) {
+		t.Errorf("park accept form must confirm with the SAME text as the direct kebab park item; got form: %s", acceptForm)
+	}
+}
+
+// TestTaskDetailSuggestionSection_NonConfirmingVerbs_NoConfirmDialog is the
+// negative twin of the two tests above: go/working/done/reopen's direct
+// kebab/action-bar counterparts have no confirm() dialog either (only
+// abort/rerun/drop/park/delete do, none of which apply here), so their
+// accept forms must not gain one just because they arrived via a
+// suggestion.
+func TestTaskDetailSuggestionSection_NonConfirmingVerbs_NoConfirmDialog(t *testing.T) {
+	for _, verb := range []string{"go", "working", "done", "reopen"} {
+		suggestion := orchestrator.Suggestion{Verb: verb}
+		var buf bytes.Buffer
+		if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusWorking, suggestion).Render(context.Background(), &buf); err != nil {
+			t.Fatalf("render (%s): %v", verb, err)
+		}
+		html := buf.String()
+		acceptForm := extractAcceptFormTag(t, html, verb)
+		if strings.Contains(acceptForm, "confirm(") {
+			t.Errorf("verb=%s: accept form must not confirm; got form: %s", verb, acceptForm)
+		}
+	}
+}
+
+// extractAcceptButtonTag pulls out the <button ...>Accept: <verb></button>
+// tag from rendered HTML, for asserting on its class attribute specifically
+// (as opposed to the Reject button, which sits right next to it in the same
+// markup).
+func extractAcceptButtonTag(t *testing.T, html, verb string) string {
+	t.Helper()
+	label := ">Accept: " + verb + "<"
+	idx := strings.Index(html, label)
+	if idx == -1 {
+		t.Fatalf("no Accept button found for verb %q in: %s", verb, html)
+	}
+	start := strings.LastIndex(html[:idx], "<button")
+	if start == -1 {
+		t.Fatalf("no opening <button tag before Accept in: %s", html)
+	}
+	return html[start : idx+len(label)]
+}
+
+// extractAcceptFormTag pulls out the <form ...>...</form> block that wraps
+// the accept button for the given verb, for asserting on the FORM's
+// onsubmit attribute (the confirm() dialog lives there, not on the button).
+func extractAcceptFormTag(t *testing.T, html, verb string) string {
+	t.Helper()
+	label := ">Accept: " + verb + "<"
+	labelIdx := strings.Index(html, label)
+	if labelIdx == -1 {
+		t.Fatalf("no Accept button found for verb %q in: %s", verb, html)
+	}
+	start := strings.LastIndex(html[:labelIdx], "<form")
+	if start == -1 {
+		t.Fatalf("no opening <form tag before Accept button in: %s", html)
+	}
+	end := strings.Index(html[labelIdx:], "</form>")
+	if end == -1 {
+		t.Fatalf("no closing </form> tag after Accept button in: %s", html)
+	}
+	return html[start : labelIdx+end+len("</form>")]
 }
 
 // TestTaskDetailSuggestionSection_DoneAndDroppedStatus_ShowsAcceptRejectButtons
@@ -272,7 +443,7 @@ func TestTaskDetailSuggestionSection_DoneAndDroppedStatus_ShowsAcceptRejectButto
 		if !strings.Contains(html, "<form") {
 			t.Errorf("%s task must render the answer form; got: %s", status, html)
 		}
-		if !strings.Contains(html, ">Accept<") || !strings.Contains(html, ">Reject<") {
+		if !strings.Contains(html, ">Accept: reopen<") || !strings.Contains(html, ">Reject<") {
 			t.Errorf("%s task must render Accept/Reject buttons; got: %s", status, html)
 		}
 		for _, want := range []string{"reopen", "issue reopened", "issue #42"} {
@@ -302,7 +473,7 @@ func TestTaskDetailSuggestionSection_AbortedStatus_HidesAcceptRejectButtons(t *t
 	if strings.Contains(html, "<form") {
 		t.Errorf("aborted task must not render the answer form at all; got: %s", html)
 	}
-	if strings.Contains(html, ">Accept<") || strings.Contains(html, ">Reject<") {
+	if strings.Contains(html, ">Accept: go<") || strings.Contains(html, ">Reject<") {
 		t.Errorf("aborted task must not render Accept/Reject buttons; got: %s", html)
 	}
 	// The suggestion's own content is still shown — only the buttons hide.

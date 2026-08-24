@@ -259,8 +259,9 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 		task: task,
 		triage: map[string]*orchestrator.TaskTriage{
 			"t1": {
-				TaskID: "t1",
-				Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","basis":"issue #42"},"kept_key":"kept_value"}}`),
+				TaskID:         "t1",
+				SuggestionVerb: "go",
+				Detail:         json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","basis":"issue #42"},"kept_key":"kept_value"}}`),
 			},
 		},
 	}
@@ -293,6 +294,14 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	suggestion, ok := orchestrator.DetailSuggestion(tt.Detail)
 	if ok || suggestion.Verb != "" {
 		t.Errorf("answer=%s: suggestion still present after answered: %+v", answer, suggestion)
+	}
+	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1):
+	// applyAnsweredSideEffect must clear the promoted suggestion_verb column
+	// on BOTH accept and reject, mirroring the blob strip above — otherwise
+	// the queue predicate (suggestion_verb != '') keeps showing an
+	// already-answered card.
+	if tt.SuggestionVerb != "" {
+		t.Errorf("answer=%s: suggestion_verb column = %q, want cleared", answer, tt.SuggestionVerb)
 	}
 	var m map[string]map[string]json.RawMessage
 	if err := json.Unmarshal(tt.Detail, &m); err != nil {

@@ -22,7 +22,7 @@ func TestApplyAction_Drop_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.TaskTriage{
-			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"working","reason":"still active"}}}`)},
+			"t1": {TaskID: "t1", SuggestionVerb: "working", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"working","reason":"still active"}}}`)},
 		},
 	}
 	svc := newTriageWorkflowService(task, txStore)
@@ -38,6 +38,14 @@ func TestApplyAction_Drop_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
 	suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
 	if ok || suggestion.Verb != "" {
 		t.Errorf("suggestion still present after direct drop: %+v", suggestion)
+	}
+	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1): every
+	// path that strips the blob suggestion must also clear the promoted
+	// suggestion_verb column, or the queue predicate (store.go's
+	// "queue_next" branch, suggestion_verb != '') keeps showing a card whose
+	// suggestion was already discarded.
+	if got := txStore.triage["t1"].SuggestionVerb; got != "" {
+		t.Errorf("suggestion_verb column = %q after direct drop, want cleared", got)
 	}
 
 	discard := findAction(txStore.actions, "suggestion_discarded")
@@ -62,7 +70,7 @@ func TestApplyAction_Park_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.TaskTriage{
-			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"done","reason":"all children closed"}}}`)},
+			"t1": {TaskID: "t1", SuggestionVerb: "done", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"done","reason":"all children closed"}}}`)},
 		},
 	}
 	svc := newTriageWorkflowService(task, txStore)
@@ -78,6 +86,9 @@ func TestApplyAction_Park_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
 	suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
 	if ok || suggestion.Verb != "" {
 		t.Errorf("suggestion still present after direct park: %+v", suggestion)
+	}
+	if got := txStore.triage["t1"].SuggestionVerb; got != "" {
+		t.Errorf("suggestion_verb column = %q after direct park, want cleared", got)
 	}
 	discard := findAction(txStore.actions, "suggestion_discarded")
 	if discard == nil {
@@ -109,7 +120,7 @@ func TestTaskWorkflowService_AcceptGo_DiscardsAndRecordsExistingSuggestion(t *te
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.TaskTriage{
-			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"park","reason":"blocked on review"}}}`)},
+			"t1": {TaskID: "t1", SuggestionVerb: "park", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"park","reason":"blocked on review"}}}`)},
 		},
 	}
 	svc := newAcceptGoWorkflowService(task, txStore, nil)
@@ -125,6 +136,9 @@ func TestTaskWorkflowService_AcceptGo_DiscardsAndRecordsExistingSuggestion(t *te
 	suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
 	if ok || suggestion.Verb != "" {
 		t.Errorf("suggestion still present after direct go: %+v", suggestion)
+	}
+	if got := txStore.triage["t1"].SuggestionVerb; got != "" {
+		t.Errorf("suggestion_verb column = %q after direct go, want cleared", got)
 	}
 	discard := findAction(txStore.actions, "suggestion_discarded")
 	if discard == nil {

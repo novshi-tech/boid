@@ -7,33 +7,6 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func TestQueueEligible(t *testing.T) {
-	cases := []struct {
-		name    string
-		status  orchestrator.TaskStatus
-		urgency string
-		want    bool
-	}{
-		{"ready+now", orchestrator.TaskStatusReady, orchestrator.UrgencyNow, true},
-		{"triaged+today", orchestrator.TaskStatusTriaged, orchestrator.UrgencyToday, true},
-		{"triaged+week", orchestrator.TaskStatusTriaged, orchestrator.UrgencyWeek, true},
-		{"triaged+someday", orchestrator.TaskStatusTriaged, orchestrator.UrgencySomeday, false},
-		{"triaged+empty", orchestrator.TaskStatusTriaged, "", false},
-		{"captured+now", orchestrator.TaskStatusCaptured, orchestrator.UrgencyNow, false},
-		{"parked+now", orchestrator.TaskStatusParked, orchestrator.UrgencyNow, false},
-		{"working+now", orchestrator.TaskStatusWorking, orchestrator.UrgencyNow, false},
-		{"done+now", orchestrator.TaskStatusDone, orchestrator.UrgencyNow, false},
-		{"dropped+now", orchestrator.TaskStatusDropped, orchestrator.UrgencyNow, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := orchestrator.QueueEligible(c.status, c.urgency); got != c.want {
-				t.Errorf("QueueEligible(%s, %s) = %v, want %v", c.status, c.urgency, got, c.want)
-			}
-		})
-	}
-}
-
 func TestUrgencyRank_Ordering(t *testing.T) {
 	if !(orchestrator.UrgencyRank(orchestrator.UrgencyNow) < orchestrator.UrgencyRank(orchestrator.UrgencyToday)) {
 		t.Error("now must rank before today")
@@ -46,12 +19,6 @@ func TestUrgencyRank_Ordering(t *testing.T) {
 	}
 	if !(orchestrator.UrgencyRank(orchestrator.UrgencyWeek) < orchestrator.UrgencyRank("garbage")) {
 		t.Error("unrecognized urgency must rank last, same as someday")
-	}
-}
-
-func TestStateRank_ReadyBeforeTriaged(t *testing.T) {
-	if !(orchestrator.StateRank(orchestrator.TaskStatusReady) < orchestrator.StateRank(orchestrator.TaskStatusTriaged)) {
-		t.Error("ready must rank before triaged")
 	}
 }
 

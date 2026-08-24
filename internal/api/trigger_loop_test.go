@@ -1099,7 +1099,7 @@ func TestTriggerLoop_FailStreak_NotifiesAndResetsOnSuccess(t *testing.T) {
 // exec.CommandContext SYNCHRONOUSLY, so notify() must never hand it the
 // TriggerLoop's own long-lived server ctx unbounded — a hanging notify
 // command would otherwise wedge runOnce (and therefore every future sweep
-// tick) until daemon shutdown. queue_notify.go's notifyIfUrgencyNow and
+// tick) until daemon shutdown. queue_notify.go's notifySuggestionArrived and
 // triage_done.go's own notify call are both already wrapped in
 // context.WithTimeout(ctx, notifyTimeout); this pins trigger_loop.go's
 // notify matching that.
