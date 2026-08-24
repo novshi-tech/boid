@@ -434,7 +434,7 @@ func TestApplyAction_Answered_AcceptGo_DoesNotRecordSuggestionDiscarded(t *testi
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.TaskTriage{
-			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","reason":"children are specced"}}}`)},
+			"t1": {TaskID: "t1", SuggestionVerb: "go", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","reason":"children are specced"}}}`)},
 		},
 	}
 	svc := newAcceptGoWorkflowService(task, txStore, nil)
@@ -454,6 +454,13 @@ func TestApplyAction_Answered_AcceptGo_DoesNotRecordSuggestionDiscarded(t *testi
 	suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
 	if ok || suggestion.Verb != "" {
 		t.Errorf("suggestion still present after accept(go): %+v", suggestion)
+	}
+	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1): the
+	// viaAccept=true strip (applyAnsweredSideEffect) must clear
+	// suggestion_verb too, same as the viaAccept=false discard path
+	// (suggestion_discard_test.go's AcceptGo test).
+	if got := txStore.triage["t1"].SuggestionVerb; got != "" {
+		t.Errorf("suggestion_verb column = %q after accept(go), want cleared", got)
 	}
 	if answered := findAction(txStore.actions, "answered"); answered == nil {
 		t.Fatal("expected an \"answered\" action recording the accept — audit trail must not be empty")

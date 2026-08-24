@@ -55,6 +55,12 @@ type TaskTriageView struct {
 	Urgency    string     `json:"urgency,omitempty"`
 	WakeAt     *time.Time `json:"wake_at,omitempty"`
 	WakeTaskID string     `json:"wake_task_id,omitempty"`
+	// SuggestionVerb mirrors Kind/Urgency: a promoted task_triage column
+	// (PR-2, docs/plans/suggestion-as-state-transition-impl.md §4.1), carried
+	// through verbatim for the same reason those two are — a caller reading
+	// this view should not have to re-parse Detail's blob to learn what
+	// store.go's own queue predicate already keys on.
+	SuggestionVerb string `json:"suggestion_verb,omitempty"`
 
 	// ParkedFrom is only populated for a parked task: it answers "which side
 	// will this wake back to (triaged, ready, or — since BD-9's wake_working
@@ -172,6 +178,7 @@ func (s *TaskWorkflowService) triageViewFor(task *orchestrator.Task, tt *orchest
 	view.Urgency = tt.Urgency
 	view.WakeAt = tt.WakeAt
 	view.WakeTaskID = tt.WakeTaskID
+	view.SuggestionVerb = tt.SuggestionVerb
 	view.Detail = tt.Detail
 
 	if task.Status == orchestrator.TaskStatusParked {

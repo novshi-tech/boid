@@ -81,6 +81,72 @@ func TestTaskTriage_UpsertAndGet(t *testing.T) {
 	}
 }
 
+// TestTaskTriage_SuggestionVerb_RoundTrips pins suggestion_verb's promotion
+// to a real task_triage column (docs/plans/suggestion-as-state-transition-impl.md
+// §4.1, migration 0044): UpsertTaskTriage/GetTaskTriage must round-trip it
+// exactly like kind/urgency do — the queue predicate (store.go's
+// "queue_next" branch) reads this column directly, so a write that silently
+// dropped it would make every suggestion invisible to the queue.
+func TestTaskTriage_SuggestionVerb_RoundTrips(t *testing.T) {
+	conn := newTestDB(t)
+	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
+
+	tt := &orchestrator.TaskTriage{TaskID: "t1", SuggestionVerb: "go"}
+	if err := orchestrator.UpsertTaskTriage(conn, tt); err != nil {
+		t.Fatalf("UpsertTaskTriage: %v", err)
+	}
+
+	got, err := orchestrator.GetTaskTriage(conn, "t1")
+	if err != nil {
+		t.Fatalf("GetTaskTriage: %v", err)
+	}
+	if got.SuggestionVerb != "go" {
+		t.Fatalf("SuggestionVerb = %q, want %q", got.SuggestionVerb, "go")
+	}
+}
+
+// TestTaskTriage_SuggestionVerb_DefaultsToEmpty pins the column's "no
+// suggestion" representation: an empty string, the same TEXT NOT NULL
+// DEFAULT '' convention urgency/kind already use (NOT a nullable column —
+// see migration 0044's own doc comment for why this PR chose that over the
+// brief's literal "IS NOT NULL" wording).
+func TestTaskTriage_SuggestionVerb_DefaultsToEmpty(t *testing.T) {
+	conn := newTestDB(t)
+	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
+
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: "t1"}); err != nil {
+		t.Fatalf("UpsertTaskTriage: %v", err)
+	}
+	got, err := orchestrator.GetTaskTriage(conn, "t1")
+	if err != nil {
+		t.Fatalf("GetTaskTriage: %v", err)
+	}
+	if got.SuggestionVerb != "" {
+		t.Fatalf("SuggestionVerb = %q, want empty", got.SuggestionVerb)
+	}
+}
+
+// TestListTaskTriageByTaskIDs_IncludesSuggestionVerb pins the batch-fetch
+// path (the one the Queue/Parked Web UI views and khi's ListTriage actually
+// use) alongside the single-row GetTaskTriage coverage above — a column
+// present in one query and forgotten in the other would silently blank the
+// verb badge specifically on list views.
+func TestListTaskTriageByTaskIDs_IncludesSuggestionVerb(t *testing.T) {
+	conn := newTestDB(t)
+	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: "t1", SuggestionVerb: "park"}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	got, err := orchestrator.ListTaskTriageByTaskIDs(conn, []string{"t1"})
+	if err != nil {
+		t.Fatalf("ListTaskTriageByTaskIDs: %v", err)
+	}
+	if got["t1"] == nil || got["t1"].SuggestionVerb != "park" {
+		t.Fatalf("got[t1] = %+v, want SuggestionVerb=park", got["t1"])
+	}
+}
+
 func TestTaskTriage_UpsertUpdatesExistingRow(t *testing.T) {
 	conn := newTestDB(t)
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)

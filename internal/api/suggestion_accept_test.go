@@ -11,13 +11,22 @@ import (
 )
 
 // ---- validateSuggestionAttr (PR #987 review, MEDIUM 9 — this function had
-// no dedicated test at all before). ----
+// no dedicated test at all before). PR-2 (docs/plans/
+// suggestion-as-state-transition-impl.md §4.1) changed its signature from
+// `error` to `(string, error)`: the returned verb is what parseAttrsSetPayload
+// promotes into task_triage.suggestion_verb, so the one caller that already
+// validates the FULL suggestion object (verb + params.wake_at) is also the
+// single source of the promoted scalar — no second parse/validate pass. ----
 
 func TestValidateSuggestionAttr_KnownVerbsAccepted(t *testing.T) {
 	for _, verb := range []string{"go", "working", "park", "drop", "done", "reopen"} {
 		payload, _ := json.Marshal(map[string]string{"verb": verb})
-		if err := validateSuggestionAttr(payload); err != nil {
+		got, err := validateSuggestionAttr(payload)
+		if err != nil {
 			t.Errorf("verb=%q: unexpected error: %v", verb, err)
+		}
+		if got != verb {
+			t.Errorf("verb=%q: returned verb = %q, want %q", verb, got, verb)
 		}
 	}
 }
@@ -25,7 +34,7 @@ func TestValidateSuggestionAttr_KnownVerbsAccepted(t *testing.T) {
 func TestValidateSuggestionAttr_UnknownVerbRejected(t *testing.T) {
 	for _, verb := range []string{"manual", "shape", "wake", "canonical", "totally-made-up"} {
 		payload, _ := json.Marshal(map[string]string{"verb": verb})
-		err := validateSuggestionAttr(payload)
+		_, err := validateSuggestionAttr(payload)
 		if err == nil {
 			t.Fatalf("verb=%q: expected rejection, got success", verb)
 		}
@@ -37,7 +46,7 @@ func TestValidateSuggestionAttr_UnknownVerbRejected(t *testing.T) {
 }
 
 func TestValidateSuggestionAttr_MissingVerbRejected(t *testing.T) {
-	err := validateSuggestionAttr([]byte(`{"reason":"no verb here"}`))
+	_, err := validateSuggestionAttr([]byte(`{"reason":"no verb here"}`))
 	if err == nil {
 		t.Fatal("expected rejection for a suggestion with no verb, got success")
 	}
@@ -50,15 +59,21 @@ func TestValidateSuggestionAttr_MissingVerbRejected(t *testing.T) {
 // TestValidateSuggestionAttr_NullClearsWithoutValidation mirrors
 // parsePromotedAttr's own null-clears-the-column convention
 // (workflow_triage.go) — an explicit JSON null clearing the suggestion key
-// must not be rejected just because it carries no verb to validate.
+// must not be rejected just because it carries no verb to validate, and
+// must report the cleared ("") verb so the caller can clear the promoted
+// column too.
 func TestValidateSuggestionAttr_NullClearsWithoutValidation(t *testing.T) {
-	if err := validateSuggestionAttr([]byte(`null`)); err != nil {
+	verb, err := validateSuggestionAttr([]byte(`null`))
+	if err != nil {
 		t.Errorf("null: unexpected error: %v", err)
+	}
+	if verb != "" {
+		t.Errorf("null: verb = %q, want empty", verb)
 	}
 }
 
 func TestValidateSuggestionAttr_MalformedJSONRejected(t *testing.T) {
-	if err := validateSuggestionAttr([]byte(`not json`)); err == nil {
+	if _, err := validateSuggestionAttr([]byte(`not json`)); err == nil {
 		t.Fatal("expected rejection for malformed JSON, got success")
 	}
 }
@@ -68,12 +83,12 @@ func TestValidateSuggestionAttr_MalformedJSONRejected(t *testing.T) {
 // requires for a direct park action (workflow_triage.go).
 func TestValidateSuggestionAttr_ParkWakeAt(t *testing.T) {
 	valid := []byte(`{"verb":"park","params":{"wake_at":"2026-09-01T00:00:00Z"}}`)
-	if err := validateSuggestionAttr(valid); err != nil {
+	if _, err := validateSuggestionAttr(valid); err != nil {
 		t.Errorf("valid wake_at: unexpected error: %v", err)
 	}
 
 	invalid := []byte(`{"verb":"park","params":{"wake_at":"not-a-date"}}`)
-	err := validateSuggestionAttr(invalid)
+	_, err := validateSuggestionAttr(invalid)
 	if err == nil {
 		t.Fatal("expected rejection for an invalid wake_at, got success")
 	}
@@ -88,7 +103,7 @@ func TestValidateSuggestionAttr_ParkWakeAt(t *testing.T) {
 // are independently optional (suggestionParams' own doc comment).
 func TestValidateSuggestionAttr_ParkWakeTaskIDWithoutWakeAt(t *testing.T) {
 	payload := []byte(`{"verb":"park","params":{"wake_task_id":"blocking-task"}}`)
-	if err := validateSuggestionAttr(payload); err != nil {
+	if _, err := validateSuggestionAttr(payload); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

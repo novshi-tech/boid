@@ -50,26 +50,37 @@ type suggestionAttr struct {
 // a JSON object with a verb from the closed set; params.wake_at, if present,
 // must parse as RFC3339 (the same format applyParkSideEffect's own
 // parseParkPayload already requires for a direct park action's wake_at).
-func validateSuggestionAttr(raw json.RawMessage) error {
+//
+// Returns the validated verb (""  for a null/clearing payload) alongside the
+// error — PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1):
+// this is now the single parse/validate pass parseAttrsSetPayload's
+// "suggestion" case reuses to populate attrsSetPatch.Verb/HasVerb, the value
+// applyAttrsSetSideEffect promotes into task_triage.suggestion_verb. Before
+// this PR the only caller discarded the verb after validating it and
+// parseAttrsSetPayload just folded the raw value into the opaque blob — a
+// second parse of the same JSON to extract the verb for the column would
+// have been genuinely redundant (and risked drifting from this function's
+// own validation if the two ever disagreed on what counts as "known").
+func validateSuggestionAttr(raw json.RawMessage) (string, error) {
 	if string(raw) == "null" {
-		return nil
+		return "", nil
 	}
 	var s suggestionAttr
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return &StatusError{Code: http.StatusBadRequest, Message: "invalid attrs_set payload: suggestion: " + err.Error()}
+		return "", &StatusError{Code: http.StatusBadRequest, Message: "invalid attrs_set payload: suggestion: " + err.Error()}
 	}
 	if !orchestrator.IsCardTransitionAction(s.Verb) {
-		return &StatusError{
+		return "", &StatusError{
 			Code:    http.StatusBadRequest,
 			Message: fmt.Sprintf("invalid attrs_set payload: suggestion.verb %q is not a known card transition (allowed: go, working, park, drop, done, reopen)", s.Verb),
 		}
 	}
 	if s.Params.WakeAt != "" {
 		if _, err := time.Parse(time.RFC3339, s.Params.WakeAt); err != nil {
-			return &StatusError{Code: http.StatusBadRequest, Message: "invalid attrs_set payload: suggestion.params.wake_at: " + err.Error()}
+			return "", &StatusError{Code: http.StatusBadRequest, Message: "invalid attrs_set payload: suggestion.params.wake_at: " + err.Error()}
 		}
 	}
-	return nil
+	return s.Verb, nil
 }
 
 // applyParkSideEffectFromSuggestion applies accept(park)'s wake condition

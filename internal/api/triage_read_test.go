@@ -174,11 +174,12 @@ func TestGetTriage_ReturnsStoredAndDerivedFields(t *testing.T) {
 	triage := &stubTriageStore{
 		rows: map[string]*orchestrator.TaskTriage{
 			"t1": {
-				TaskID:  "t1",
-				Kind:    "issue",
-				Urgency: "today",
-				WakeAt:  &wakeAt,
-				Detail:  json.RawMessage(`{"attrs":{"summary":"見積もり"},"children":[{"id":"ch_00","status":"open"}]}`),
+				TaskID:         "t1",
+				Kind:           "issue",
+				Urgency:        "today",
+				WakeAt:         &wakeAt,
+				SuggestionVerb: "park",
+				Detail:         json.RawMessage(`{"attrs":{"summary":"見積もり"},"children":[{"id":"ch_00","status":"open"}]}`),
 			},
 		},
 		parkedFrom: map[string]orchestrator.TaskStatus{"t1": orchestrator.TaskStatusReady},
@@ -197,6 +198,12 @@ func TestGetTriage_ReturnsStoredAndDerivedFields(t *testing.T) {
 	}
 	if view.Kind != "issue" || view.Urgency != "today" {
 		t.Fatalf("sidecar columns not carried through: %+v", view)
+	}
+	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1):
+	// suggestion_verb is a promoted column like Kind/Urgency, so the read
+	// projection carries it through the same way.
+	if view.SuggestionVerb != "park" {
+		t.Fatalf("suggestion_verb not carried through: %+v", view)
 	}
 	if view.WakeAt == nil || !view.WakeAt.Equal(wakeAt) {
 		t.Fatalf("wake_at = %v, want %v", view.WakeAt, wakeAt)

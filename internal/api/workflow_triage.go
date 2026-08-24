@@ -251,28 +251,43 @@ func applyChildSpeccedSideEffect(tx TxStore, taskID string, p *childSpeccedPaylo
 	return nil
 }
 
-// promotedAttrVocabulary lists the two attrs_set keys the daemon promotes out
+// promotedAttrVocabulary lists the attrs_set keys the daemon promotes out
 // of the opaque detail blob into real task_triage columns, together with the
 // closed vocabulary each accepts (docs/plans/cross-project-issue-triage.md
-// Phase 1 PR-5a).
+// Phase 1 PR-5a; suggestion added by PR-2, docs/plans/
+// suggestion-as-state-transition-impl.md §4.1).
 //
-// Why these two are not opaque like every other attrs key: urgency IS a queue
+// Why these are not opaque like every other attrs key: each one IS a queue
 // predicate. ListTasks("queue_next") INNER JOINs task_triage and filters/orders
-// on tt.urgency (store.go), and notifyQueueEntryIfUrgent reads it for rule 4 —
-// so a value that only ever reaches detail.attrs can never affect the queue.
-// Before PR-5a nothing wrote the column at all, which left the queue view
-// permanently empty and notify unable to fire. kind rides along because it is
-// the same shape (a real column, daemon vocabulary, no channel knowledge).
+// on tt.urgency and (since PR-2) tt.suggestion_verb (store.go) — so a value
+// that only ever reaches detail.attrs can never affect the queue. Before
+// PR-5a nothing wrote the urgency column at all, which left the queue view
+// permanently empty; the same gap existed for suggestion_verb before PR-2.
+// kind rides along because it is the same shape (a real column, daemon
+// vocabulary, no channel knowledge).
+//
+// suggestion differs from urgency/kind in one respect worth flagging here:
+// its promoted list ({go, working, park, drop, done, reopen}) is
+// orchestrator.IsCardTransitionAction's own six-verb set restated for this
+// map's doc-comment/error-message purposes — the actual gate suggestion
+// values pass through is validateSuggestionAttr (suggestion_accept.go),
+// which calls IsCardTransitionAction directly (the raw suggestion value is a
+// JSON OBJECT {verb, reason, params}, not the plain scalar
+// parsePromotedAttr's null/string handling expects, so suggestion is never
+// routed through parsePromotedAttr the way urgency/kind are — see
+// parseAttrsSetPayload's switch below). Keep this list in sync with
+// IsCardTransitionAction if the card machine's transition verbs ever change.
 //
 // Validating the vocabulary here is NOT the policy 逆輸入3/論点6 keep out of the
 // daemon (that is "should urgency only ever increase", which stays khi's
 // evaluate-side call). This is the daemon defending its own SQL predicate: a
-// typo'd urgency silently drops the card out of the queue forever with no
-// error surfaced anywhere, which is exactly the class of silent failure the
-// queue's trust story cannot afford.
+// typo'd urgency (or an unknown suggestion.verb) silently drops the card out
+// of the queue forever with no error surfaced anywhere, which is exactly the
+// class of silent failure the queue's trust story cannot afford.
 var promotedAttrVocabulary = map[string][]string{
-	"urgency": {"now", "today", "week", "someday"},
-	"kind":    {"signal", "issue", "theme"},
+	"urgency":    {"now", "today", "week", "someday"},
+	"kind":       {"signal", "issue", "theme"},
+	"suggestion": {"go", "working", "park", "drop", "done", "reopen"},
 }
 
 // attrsSetPatch is the parsed attrs_set payload, split into the opaque keys
@@ -281,13 +296,22 @@ type attrsSetPatch struct {
 	// Attrs are the opaque keys, folded verbatim (may be empty when the
 	// payload carried only promoted keys).
 	Attrs map[string]json.RawMessage
-	// Urgency/Kind are set when the payload carried that key; the bool
+	// Urgency/Kind/Verb are set when the payload carried that key; the bool
 	// distinguishes "absent" (leave the column alone) from "explicit null"
 	// (clear it).
 	Urgency    string
 	HasUrgency bool
 	Kind       string
 	HasKind    bool
+	// Verb is task_triage.suggestion_verb's promoted value (PR-2, docs/plans/
+	// suggestion-as-state-transition-impl.md §4.1) — extracted from the
+	// "suggestion" key's {verb, reason, params} object by
+	// validateSuggestionAttr, NOT via parsePromotedAttr (that helper expects
+	// a plain scalar; suggestion's raw value is a JSON object). Only the verb
+	// is promoted — reason/params stay blob-only (see applyAttrsSetSideEffect's
+	// doc comment for why the two representations do not drift).
+	Verb    string
+	HasVerb bool
 }
 
 // parsePromotedAttr validates one promoted key's value: a string from the
@@ -340,20 +364,24 @@ func parseAttrsSetPayload(payload json.RawMessage) (*attrsSetPatch, error) {
 			}
 			patch.Kind, patch.HasKind = value, true
 		case "suggestion":
-			// docs/plans/suggestion-as-state-transition-impl.md §3: verb ∈
-			// {go, working, park, drop, done, reopen} is validated HERE, at
-			// attrs_set time, not left opaque like every other attrs key.
-			// Unlike urgency/kind this is NOT promoted to a column in this PR
-			// (suggestion_verb's promotion is PR-2 scope) — the value still
-			// folds into detail.attrs.suggestion via the default case below,
-			// this case exists only to reject an unknown verb before it ever
-			// lands in the blob. See validateSuggestionAttr's own doc comment
-			// for why validating verb specifically does not cross the
+			// docs/plans/suggestion-as-state-transition-impl.md §3/§4.1: verb
+			// ∈ {go, working, park, drop, done, reopen} is validated HERE, at
+			// attrs_set time, not left opaque like every other attrs key. The
+			// verb is ALSO promoted to task_triage.suggestion_verb (PR-2) —
+			// unlike urgency/kind, the full object still folds into
+			// detail.attrs.suggestion via patch.Attrs too (reason/params have
+			// no column of their own, and the display side keeps reading the
+			// blob), so this key is deliberately written to BOTH places, not
+			// promoted-instead-of-folded the way urgency/kind are. See
+			// validateSuggestionAttr's own doc comment for why validating
+			// (and, now, extracting) verb specifically does not cross the
 			// workspace-vocabulary boundary J-7 otherwise protects.
-			if verr := validateSuggestionAttr(v); verr != nil {
+			verb, verr := validateSuggestionAttr(v)
+			if verr != nil {
 				return nil, verr
 			}
 			patch.Attrs[k] = v
+			patch.Verb, patch.HasVerb = verb, true
 		default:
 			patch.Attrs[k] = v
 		}
@@ -384,9 +412,22 @@ func parseAttrsSetObject(payload json.RawMessage) (map[string]json.RawMessage, e
 // keys to their real columns. Follows applyParkSideEffect's established
 // pattern.
 //
-// A promoted key is written to its column and NOT also folded into the blob:
-// two copies of the same value could drift, and the column is the one the
-// queue SQL actually reads.
+// urgency/kind are written to their column and NOT also folded into the
+// blob: two copies of the same value could drift, and the column is the one
+// the queue SQL actually reads.
+//
+// suggestion_verb (PR-2, docs/plans/suggestion-as-state-transition-impl.md
+// §4.1) is the one deliberate exception to that rule: only the VERB is
+// promoted to a column (the queue predicate only ever needs to know
+// "does this card have a suggestion", store.go's "queue_next" branch), while
+// the full suggestion object — including that same verb — stays in
+// detail.attrs.suggestion via patch.Attrs (parseAttrsSetPayload's switch
+// folds it there too). This is safe from drift because there is exactly ONE
+// writer for both copies (this function, in the same call, from the same
+// parsed patch) — unlike urgency/kind, which used to have exactly this
+// two-copies problem BEFORE PR-5a promoted them out of the blob entirely.
+// verb never needs the same treatment because its blob copy is never
+// written independently of the column.
 func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) error {
 	tt, err := tx.GetTaskTriage(taskID)
 	if err != nil {
@@ -418,6 +459,9 @@ func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) er
 	}
 	if patch.HasKind {
 		tt.Kind = patch.Kind
+	}
+	if patch.HasVerb {
+		tt.SuggestionVerb = patch.Verb
 	}
 	if err := tx.UpsertTaskTriage(tt); err != nil {
 		return fmt.Errorf("attrs_set: upsert task_triage: %w", err)
@@ -534,6 +578,12 @@ func applyAnsweredSideEffect(tx TxStore, taskID string) error {
 		return fmt.Errorf("answered: strip suggestion: %w", sErr)
 	}
 	tt.Detail = stripped
+	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1): clear
+	// the promoted column alongside the blob key. Every path that strips a
+	// suggestion must clear both representations, or the queue predicate
+	// (store.go's "queue_next" branch, suggestion_verb != '') would keep
+	// showing a card whose suggestion was already answered.
+	tt.SuggestionVerb = ""
 	if err := tx.UpsertTaskTriage(tt); err != nil {
 		return fmt.Errorf("answered: upsert task_triage: %w", err)
 	}
@@ -597,6 +647,10 @@ func recordAndStripSuggestionIfPresent(tx TxStore, taskID string, transition *or
 		return fmt.Errorf("record discarded suggestion: strip suggestion: %w", sErr)
 	}
 	tt.Detail = stripped
+	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1): clear
+	// the promoted column too — same reasoning as applyAnsweredSideEffect's
+	// own clear, immediately above in this file.
+	tt.SuggestionVerb = ""
 	if err := tx.UpsertTaskTriage(tt); err != nil {
 		return fmt.Errorf("record discarded suggestion: upsert task_triage: %w", err)
 	}
