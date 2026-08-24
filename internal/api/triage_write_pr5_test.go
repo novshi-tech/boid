@@ -12,9 +12,9 @@ import (
 // ---- Phase 1 PR-5a (docs/plans/cross-project-issue-triage.md) ----
 //
 // The queue predicates (queue の決定論的評価 節 rule 2/3) read
-// task_triage.urgency as a REAL COLUMN — ListTasks("queue_next") INNER JOINs
-// on it and orders by it, and notifyQueueEntryIfUrgent reads it for rule 4.
-// Before PR-5a nothing in the daemon ever wrote that column: attrs_set folded
+// task_triage.urgency as a REAL COLUMN — ListTasks("queue_next") orders by it
+// (PR-2 demoted it from a membership gate to an ORDER BY tie-breaker, see
+// store.go). Before PR-5a nothing in the daemon ever wrote that column: attrs_set folded
 // everything, urgency included, into the opaque detail.attrs blob. The queue
 // view was therefore permanently empty and notify could never fire. These
 // tests pin the promotion that closes it.

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -11,92 +12,61 @@ import (
 
 // notifyTimeout bounds notify.Service.Notify's exec.CommandContext call
 // (internal/notify/notify.go) so a hung/misbehaving `notify.command` cannot
-// stall a caller indefinitely. This matters most for QueueSweepLoop
-// (queue_sweep.go): SweepWake's ctx is the long-lived daemon context with no
-// deadline of its own, so without this timeout the FIRST urgency=now wake
-// in a sweep batch that hits a hanging notify command would hang the whole
-// sweep — every other parked task's wake evaluation, and every future
-// sweep tick, forever (codex review round 1, Major). ApplyAction's HTTP
-// request path benefits the same way (a slow notify command no longer
-// stalls the response).
+// stall a caller indefinitely. This matters most for ApplyAction's HTTP
+// request path (a slow notify command must not stall the response) and, for
+// the same reason, every other notify call site in this package
+// (trigger_loop.go's own notify, triage_done.go's) wraps the same way.
 const notifyTimeout = 10 * time.Second
 
-// queueMemberStatus reports whether status is one of the two queue-member
-// statuses queue の決定論的評価 節 rule 2 defines (state ∈ {ready, triaged});
-// urgency is checked separately.
-func queueMemberStatus(status orchestrator.TaskStatus) bool {
-	return status == orchestrator.TaskStatusReady || status == orchestrator.TaskStatusTriaged
-}
-
-// notifyQueueEntryIfUrgent implements queue 節 rule 4 (notify) — PR-3's
-// scoped-down slice of it. The full rule is: now = immediate, today = 朝の
-// digest + 到着時, week = 日次 digest のみ, with configurable times. Building
-// the digest-scheduling half (batching "today"/"week" arrivals into a single
-// scheduled notification) is out of PR-3's scope — it needs a scheduler
-// primitive this PR doesn't otherwise need, and no caller (ingestion,
-// PR-4) exists yet to observe real digest volume against. This function
-// implements only the "now = immediate" tier concretely; a task entering
-// the queue with urgency=today/week gets no notify from this PR (it's still
-// visible in the queue view itself — rule 5, 隠さない, is unaffected).
+// notifySuggestionArrived is PR-2's replacement for rule 4 (queue の決定論的評価
+// 節, docs/plans/suggestion-as-state-transition-impl.md §4.2): a suggestion
+// attaching to a card IS the queue-entry event now, full stop. v1's two
+// functions this replaces — notifyQueueEntryIfUrgent (a status-transition
+// detector keyed on entering ready/triaged) and notifyUrgencyRaised (its
+// urgency="now"-on-an-already-member-card companion) — are both DELETED, not
+// just superseded:
 //
-// "Entry" is detected as a transition INTO a queue-member status (ready or
-// triaged) FROM a non-member status — a within-queue transition (e.g.
-// triaged->ready, which auto-chains into Dispatch and often never rests at
-// "ready" long enough to matter) does not re-fire. Both ApplyAction (the
-// "triage"/"ready" actions) and Wake (parked->triaged/ready/working) call
-// this after their state transition commits — a working-origin wake simply
-// produces no notify, since "working" is not a queueMemberStatus (BD-9).
-func (s *TaskWorkflowService) notifyQueueEntryIfUrgent(ctx context.Context, task *orchestrator.Task, fromStatus orchestrator.TaskStatus) {
-	if s.Notifier == nil || s.TaskTriage == nil || task == nil {
-		return
-	}
-	if !queueMemberStatus(task.Status) || queueMemberStatus(fromStatus) {
-		return
-	}
-	s.notifyIfUrgencyNow(ctx, task)
-}
-
-// notifyUrgencyRaised is rule 4's other entry point: urgency arriving on a
-// card that is ALREADY a queue member (Opus review round 3).
+//   - notifyQueueEntryIfUrgent was already dead code under card machine v2
+//     (PR-1's review flagged this explicitly): it keyed off transitions INTO
+//     TaskStatusReady/TaskStatusTriaged, which nothing in the v2 rule table
+//     (machine_card.go) ever produces for a new card.
+//   - notifyUrgencyRaised is deleted, not merely renamed, because its entire
+//     premise no longer holds: it existed to catch "urgency reached the
+//     'now' tier on a card already sitting in the queue", but queue
+//     membership is no longer urgency-gated at all (design doc §3.6 —
+//     urgency demoted to an ORDER BY-only attribute, store.go's "queue_next"
+//     branch). Keeping an urgency-gated notify would smuggle urgency back in
+//     as a decision-relevant field the queue predicate itself no longer
+//     treats that way, and — concretely — could notify about urgency="now"
+//     on a card with NO suggestion at all (urgency and suggestion are
+//     independent attrs_set keys), pointing nose at the Queue tab for a card
+//     that will not actually be there.
 //
-// The entry-transition detector above cannot cover this, and the order it
-// misses is the natural one: khi creates a card as captured, sends `triage`
-// (captured→triaged — a real entry, but urgency is still empty so nothing
-// fires), then sends `attrs_set {"urgency":"now"}`. attrs_set is
-// non-transitioning, so fromStatus == task.Status and the entry check returns
-// early — leaving a now-urgency card sitting in the queue with nose never
-// told, contrary to rule 4's 「now は即時」. Only the reverse order (attrs_set
-// first) used to fire.
+// This function is deliberately urgency-agnostic: ANY attrs_set that sets a
+// verb notifies, regardless of urgency (including no urgency at all) — a
+// suggestion is by definition something the queue predicate now surfaces and
+// a human eventually has to accept/reject, so "a suggestion exists" is
+// already the whole signal. There is no separate "arrived but not urgent
+// enough to tell nose yet" tier: unlike v1's rule 4, which explicitly scoped
+// down to "now = immediate" and left today/week digest-batching as future
+// work never built, this function does not need that distinction — it fires
+// once per verb-setting attrs_set, and khi's own suggest cadence (design doc
+// §3.9: 1 枚 1 提案・最新が勝つ) is what controls how often that happens in
+// practice.
 //
-// Deliberately narrow: it fires only when the action actually SET urgency to
-// "now", so a repeated attrs_set that leaves urgency unchanged does not
-// re-notify on every khi sweep.
-func (s *TaskWorkflowService) notifyUrgencyRaised(ctx context.Context, task *orchestrator.Task, patch *attrsSetPatch) {
-	if patch == nil || !patch.HasUrgency || patch.Urgency != orchestrator.UrgencyNow {
+// A null-clearing patch (attrs_set {"suggestion": null} — patch.HasVerb=true
+// but patch.Verb=="") does not notify: a suggestion was withdrawn, not
+// attached: nothing new for nose to look at.
+func (s *TaskWorkflowService) notifySuggestionArrived(ctx context.Context, task *orchestrator.Task, patch *attrsSetPatch) {
+	if patch == nil || !patch.HasVerb || patch.Verb == "" {
 		return
 	}
-	if s.Notifier == nil || s.TaskTriage == nil || task == nil {
-		return
-	}
-	if !queueMemberStatus(task.Status) {
-		return
-	}
-	s.notifyIfUrgencyNow(ctx, task)
-}
-
-// notifyIfUrgencyNow sends rule 4's immediate notification when the task's
-// recorded urgency is "now".
-func (s *TaskWorkflowService) notifyIfUrgencyNow(ctx context.Context, task *orchestrator.Task) {
-	tt, err := s.TaskTriage.GetTaskTriage(task.ID)
-	if err != nil {
-		return // no sidecar row => no urgency recorded => nothing to notify
-	}
-	if tt.Urgency != orchestrator.UrgencyNow {
+	if s.Notifier == nil || task == nil {
 		return
 	}
 	ev := notify.Event{
 		TaskID:  task.ID,
-		Message: "queue: 今すぐ対応が必要な triage task が届きました",
+		Message: fmt.Sprintf("queue: %s の提案が届きました", patch.Verb),
 		URLPath: "/tasks/" + task.ID,
 	}
 	if task.Title != "" {
@@ -105,6 +75,6 @@ func (s *TaskWorkflowService) notifyIfUrgencyNow(ctx context.Context, task *orch
 	notifyCtx, cancel := context.WithTimeout(ctx, notifyTimeout)
 	defer cancel()
 	if err := s.Notifier.Notify(notifyCtx, ev); err != nil {
-		slog.Warn("queue notify failed", "task_id", task.ID, "error", err)
+		slog.Warn("suggestion notify failed", "task_id", task.ID, "verb", patch.Verb, "error", err)
 	}
 }

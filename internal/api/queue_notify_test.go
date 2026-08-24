@@ -17,14 +17,23 @@ func (n *recordingNotifier) Notify(ctx context.Context, ev notify.Event) error {
 	return nil
 }
 
-func TestNotifyQueueEntryIfUrgent_FiresOnEntryWithUrgencyNow(t *testing.T) {
-	store := newSweepFakeStore()
-	store.triage["t1"] = &orchestrator.TaskTriage{TaskID: "t1", Urgency: orchestrator.UrgencyNow}
-	notifier := &recordingNotifier{}
-	svc := &TaskWorkflowService{TaskTriage: store, Notifier: notifier}
+// ---- notifySuggestionArrived (PR-2, docs/plans/
+// suggestion-as-state-transition-impl.md §4.2): replaces v1's rule 4
+// ("queue 入り通知") entirely. Queue membership itself is now
+// suggestion-driven (store.go's "queue_next" branch, suggestion_verb != ''
+// — design doc §3.6), so "a suggestion attached" IS "entered the queue" —
+// there is no separate urgency-gated "entered but not urgent enough to tell
+// nose yet" tier the way v1's notifyQueueEntryIfUrgent/notifyUrgencyRaised
+// had. Fires whenever attrs_set's patch actually SETS a verb, regardless of
+// urgency (urgency is order-only now, design doc §3.6 — gating notify on it
+// would smuggle urgency back in as a decision-relevant field). ----
 
-	task := &orchestrator.Task{ID: "t1", Title: "urgent thing", Status: orchestrator.TaskStatusTriaged}
-	svc.notifyQueueEntryIfUrgent(context.Background(), task, orchestrator.TaskStatusCaptured)
+func TestNotifySuggestionArrived_FiresWhenVerbSet(t *testing.T) {
+	notifier := &recordingNotifier{}
+	svc := &TaskWorkflowService{Notifier: notifier}
+	task := &orchestrator.Task{ID: "t1", Title: "見積もり依頼", Status: orchestrator.TaskStatusParked}
+
+	svc.notifySuggestionArrived(context.Background(), task, &attrsSetPatch{HasVerb: true, Verb: "park"})
 
 	if len(notifier.events) != 1 {
 		t.Fatalf("events = %v, want 1 notify call", notifier.events)
@@ -34,105 +43,73 @@ func TestNotifyQueueEntryIfUrgent_FiresOnEntryWithUrgencyNow(t *testing.T) {
 	}
 }
 
-func TestNotifyQueueEntryIfUrgent_SkipsNonUrgent(t *testing.T) {
-	store := newSweepFakeStore()
-	store.triage["t2"] = &orchestrator.TaskTriage{TaskID: "t2", Urgency: orchestrator.UrgencyToday}
-	notifier := &recordingNotifier{}
-	svc := &TaskWorkflowService{TaskTriage: store, Notifier: notifier}
+// TestNotifySuggestionArrived_FiresRegardlessOfUrgency pins the design
+// decision explicitly: unlike v1's urgency=="now"-gated notify, ANY urgency
+// (including none at all) still notifies once a suggestion attaches — the
+// gate is "does this patch carry a verb", full stop.
+func TestNotifySuggestionArrived_FiresRegardlessOfUrgency(t *testing.T) {
+	for _, urgency := range []string{"", orchestrator.UrgencyToday, orchestrator.UrgencyWeek, orchestrator.UrgencySomeday, orchestrator.UrgencyNow} {
+		notifier := &recordingNotifier{}
+		svc := &TaskWorkflowService{Notifier: notifier}
+		task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
 
-	task := &orchestrator.Task{ID: "t2", Status: orchestrator.TaskStatusTriaged}
-	svc.notifyQueueEntryIfUrgent(context.Background(), task, orchestrator.TaskStatusCaptured)
+		svc.notifySuggestionArrived(context.Background(), task, &attrsSetPatch{HasVerb: true, Verb: "go", HasUrgency: urgency != "", Urgency: urgency})
 
-	if len(notifier.events) != 0 {
-		t.Errorf("events = %v, want none (today is PR-4+ digest scope, not immediate)", notifier.events)
+		if len(notifier.events) != 1 {
+			t.Errorf("urgency=%q: events = %v, want 1 notify call", urgency, notifier.events)
+		}
 	}
 }
 
-func TestNotifyQueueEntryIfUrgent_SkipsWhenNotAGenuineEntry(t *testing.T) {
-	store := newSweepFakeStore()
-	store.triage["t3"] = &orchestrator.TaskTriage{TaskID: "t3", Urgency: orchestrator.UrgencyNow}
+// TestNotifySuggestionArrived_SkipsWhenNoVerbSet pins the narrowness: a
+// patch that doesn't carry a suggestion at all (urgency/kind-only
+// attrs_set, or a nil patch) must not notify.
+func TestNotifySuggestionArrived_SkipsWhenNoVerbSet(t *testing.T) {
 	notifier := &recordingNotifier{}
-	svc := &TaskWorkflowService{TaskTriage: store, Notifier: notifier}
-
-	// triaged -> ready is a within-queue transition (both already queue member
-	// statuses), not a fresh entry — must not re-notify.
-	task := &orchestrator.Task{ID: "t3", Status: orchestrator.TaskStatusReady}
-	svc.notifyQueueEntryIfUrgent(context.Background(), task, orchestrator.TaskStatusTriaged)
-
-	if len(notifier.events) != 0 {
-		t.Errorf("events = %v, want none (not a genuine queue-entry transition)", notifier.events)
-	}
-}
-
-func TestNotifyQueueEntryIfUrgent_NilNotifierIsNoop(t *testing.T) {
-	store := newSweepFakeStore()
-	store.triage["t4"] = &orchestrator.TaskTriage{TaskID: "t4", Urgency: orchestrator.UrgencyNow}
-	svc := &TaskWorkflowService{TaskTriage: store}
-
-	task := &orchestrator.Task{ID: "t4", Status: orchestrator.TaskStatusTriaged}
-	// Must not panic.
-	svc.notifyQueueEntryIfUrgent(context.Background(), task, orchestrator.TaskStatusCaptured)
-}
-
-// TestNotifyUrgencyRaised_FiresForAlreadyQueueMember pins rule 4's second
-// entry point. The order khi actually uses — create captured → `triage` →
-// `attrs_set {"urgency":"now"}` — puts the urgency on a card that is ALREADY a
-// queue member, which the entry-transition detector cannot see (attrs_set is
-// non-transitioning, so fromStatus == status). Without this the natural
-// ingestion order silently produced no notification at all.
-func TestNotifyUrgencyRaised_FiresForAlreadyQueueMember(t *testing.T) {
-	store := newSweepFakeStore()
-	store.triage["t1"] = &orchestrator.TaskTriage{TaskID: "t1", Urgency: orchestrator.UrgencyNow}
-	notifier := &recordingNotifier{}
-	svc := &TaskWorkflowService{TaskTriage: store, Notifier: notifier}
-
-	task := &orchestrator.Task{ID: "t1", Title: "urgent thing", Status: orchestrator.TaskStatusTriaged}
-
-	// The entry detector stays silent for a within-queue "transition".
-	svc.notifyQueueEntryIfUrgent(context.Background(), task, orchestrator.TaskStatusTriaged)
-	if len(notifier.events) != 0 {
-		t.Fatalf("entry detector fired for a non-entry: %v", notifier.events)
-	}
-
-	svc.notifyUrgencyRaised(context.Background(), task, &attrsSetPatch{HasUrgency: true, Urgency: orchestrator.UrgencyNow})
-	if len(notifier.events) != 1 {
-		t.Fatalf("events = %v, want 1 notify call", notifier.events)
-	}
-}
-
-// TestNotifyUrgencyRaised_SkipsUnrelatedPatches pins the narrowness: an
-// attrs_set that doesn't set urgency to "now" must not re-notify on every khi
-// sweep.
-func TestNotifyUrgencyRaised_SkipsUnrelatedPatches(t *testing.T) {
-	store := newSweepFakeStore()
-	store.triage["t1"] = &orchestrator.TaskTriage{TaskID: "t1", Urgency: orchestrator.UrgencyNow}
-	notifier := &recordingNotifier{}
-	svc := &TaskWorkflowService{TaskTriage: store, Notifier: notifier}
-	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusTriaged}
+	svc := &TaskWorkflowService{Notifier: notifier}
+	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
 
 	for _, patch := range []*attrsSetPatch{
 		nil,
-		{}, // summary-only attrs_set
-		{HasUrgency: true, Urgency: orchestrator.UrgencyToday}, // not the "now" tier
+		{},
+		{HasUrgency: true, Urgency: orchestrator.UrgencyNow},
 	} {
-		svc.notifyUrgencyRaised(context.Background(), task, patch)
+		svc.notifySuggestionArrived(context.Background(), task, patch)
 	}
 	if len(notifier.events) != 0 {
 		t.Fatalf("events = %v, want none", notifier.events)
 	}
 }
 
-// TestNotifyUrgencyRaised_SkipsNonQueueMember pins that a working card (past
-// the queue) does not notify.
-func TestNotifyUrgencyRaised_SkipsNonQueueMember(t *testing.T) {
-	store := newSweepFakeStore()
-	store.triage["t1"] = &orchestrator.TaskTriage{TaskID: "t1", Urgency: orchestrator.UrgencyNow}
+// TestNotifySuggestionArrived_SkipsExplicitNullClear pins that clearing a
+// suggestion (attrs_set {"suggestion": null}, which still sets
+// patch.HasVerb=true but with an empty Verb) does not notify — nothing new
+// arrived, a suggestion was withdrawn.
+func TestNotifySuggestionArrived_SkipsExplicitNullClear(t *testing.T) {
 	notifier := &recordingNotifier{}
-	svc := &TaskWorkflowService{TaskTriage: store, Notifier: notifier}
-	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusWorking}
+	svc := &TaskWorkflowService{Notifier: notifier}
+	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
 
-	svc.notifyUrgencyRaised(context.Background(), task, &attrsSetPatch{HasUrgency: true, Urgency: orchestrator.UrgencyNow})
+	svc.notifySuggestionArrived(context.Background(), task, &attrsSetPatch{HasVerb: true, Verb: ""})
+
 	if len(notifier.events) != 0 {
-		t.Fatalf("events = %v, want none for a working card", notifier.events)
+		t.Fatalf("events = %v, want none for a null-clearing patch", notifier.events)
+	}
+}
+
+func TestNotifySuggestionArrived_NilNotifierIsNoop(t *testing.T) {
+	svc := &TaskWorkflowService{}
+	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
+	// Must not panic.
+	svc.notifySuggestionArrived(context.Background(), task, &attrsSetPatch{HasVerb: true, Verb: "go"})
+}
+
+func TestNotifySuggestionArrived_NilTaskIsNoop(t *testing.T) {
+	notifier := &recordingNotifier{}
+	svc := &TaskWorkflowService{Notifier: notifier}
+	// Must not panic.
+	svc.notifySuggestionArrived(context.Background(), nil, &attrsSetPatch{HasVerb: true, Verb: "go"})
+	if len(notifier.events) != 0 {
+		t.Fatalf("events = %v, want none for a nil task", notifier.events)
 	}
 }

@@ -43,12 +43,12 @@ type TaskWorkflowService struct {
 	// signal.Notify handler intercepts. Adapter remains optional; when nil,
 	// usage / future per-harness queries become no-ops.
 	Adapter adapters.HarnessAdapter
-	// Notifier fires queue の決定論的評価 節 rule 4 (notify) for urgency=now
-	// queue entries — see notifyQueueEntryIfUrgent in queue_notify.go. Nil is
-	// tolerated (no-op), same as TaskAppService.Notify's contract. PR-3 only
-	// implements the "now = immediate" tier; "today = 朝の digest + 到着時"
-	// and "week = 日次 digest のみ" are explicitly PR-4+ (see queue_notify.go
-	// doc comment) — this is a deliberate scope-down, not an oversight.
+	// Notifier fires queue の決定論的評価 節 rule 4 (notify) whenever a
+	// suggestion attaches to a card — see notifySuggestionArrived in
+	// queue_notify.go (PR-2, docs/plans/suggestion-as-state-transition-impl.md
+	// §4.2, replacing v1's urgency=now-gated notifyQueueEntryIfUrgent /
+	// notifyUrgencyRaised entirely). Nil is tolerated (no-op), same as
+	// TaskAppService.Notify's contract.
 	Notifier Notifier
 	// Triggers backs docs/plans/ingestion-identity.md PR-4 (B-5)'s
 	// trigger_runs single-flight/execution-record read+write
