@@ -91,6 +91,18 @@ import (
 	"fmt"
 )
 
+// CardMachineName / ExecutionMachineName are the StateMachine.Name values
+// NewCardMachine/NewExecutionMachine stamp. PR-1 (docs/plans/
+// suggestion-as-state-transition-impl.md §3.2) needs a way to tell, from
+// api.ApplyAction, which machine a task resolved to WITHOUT re-deriving the
+// sidecar-row judgment machineFor already made — comparing sm.Name against
+// this constant is that check (see the push-down defense discussion in
+// machine_card.go's own doc comment).
+const (
+	CardMachineName      = "card"
+	ExecutionMachineName = "execution"
+)
+
 // TransitionCondition evaluates whether a condition-based transition should fire.
 type TransitionCondition func(payload json.RawMessage) bool
 

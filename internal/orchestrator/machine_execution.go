@@ -145,7 +145,7 @@ func NewExecutionMachine() *StateMachine {
 	}
 
 	return &StateMachine{
-		Name:  "execution",
+		Name:  ExecutionMachineName,
 		Rules: rules,
 	}
 }

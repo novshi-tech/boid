@@ -43,7 +43,6 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 		OpBoidTaskUpdatePayloadPatch,
 		OpBoidProjectBehaviors,
 		OpBoidProjectList,
-		OpBoidTaskWake,
 		OpBoidTaskTriageGet,
 		OpBoidTaskTriageList,
 		OpBoidTaskIdentityLink,

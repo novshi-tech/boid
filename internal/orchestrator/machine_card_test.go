@@ -1,238 +1,268 @@
 package orchestrator_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// ---- Pre-execution states (cross-project-issue-triage Phase 1) ----
+// ---- card 機械 v2 (docs/plans/suggestion-as-state-transition.md §3.2) ----
+//
+// Four statuses: parked/working/done/dropped. Manual transitions:
+//
+//	go      : parked  → working
+//	working : parked  → working
+//	drop    : parked  → dropped
+//	park    : working → parked
+//	done    : working → done
+//	reopen  : done    → parked
+//	reopen  : dropped → parked
+//
+// This is the network's complete edge list — TestCardMachineV2_AllEdges below
+// walks the full status × action cross product and asserts EXACTLY these
+// seven edges succeed, everything else (including every old v1 verb —
+// triage/ready/wake_*/dispatch/triage_done/reopen_triaged) is rejected.
 
-func TestCardMachine_Captured_Triage_ToTriaged(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusCaptured}
-	next, err := sm.Apply(task, &orchestrator.Action{Type: "triage"})
-	if err != nil {
-		t.Fatalf("triage: %v", err)
-	}
-	if next.Status != orchestrator.TaskStatusTriaged {
-		t.Fatalf("expected triaged, got %s", next.Status)
-	}
+// v2CardStatuses is every status the v2 card machine actually reaches
+// (excludes the legacy captured/triaged/ready statuses, which v2 has zero
+// rules for at all — see TestCardMachineV2_LegacyStatuses_NoRules).
+var v2CardStatuses = []orchestrator.TaskStatus{
+	orchestrator.TaskStatusParked,
+	orchestrator.TaskStatusWorking,
+	orchestrator.TaskStatusDone,
+	orchestrator.TaskStatusDropped,
 }
 
-func TestCardMachine_Triaged_Ready_ToReady(t *testing.T) {
+// v2CardTransitionActions is the closed set of the six human-only
+// card-lifecycle verbs (穴11's push-down defense keys off this exact set —
+// see orchestrator.IsCardTransitionAction).
+var v2CardTransitionActions = []string{"go", "working", "park", "drop", "done", "reopen"}
+
+func TestCardMachineV2_AllEdges(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusTriaged}
-	next, err := sm.Apply(task, &orchestrator.Action{Type: "ready"})
-	if err != nil {
-		t.Fatalf("ready: %v", err)
-	}
-	if next.Status != orchestrator.TaskStatusReady {
-		t.Fatalf("expected ready, got %s", next.Status)
-	}
-}
-
-func TestCardMachine_Park_FromTriagedAndReady(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	for _, from := range []orchestrator.TaskStatus{orchestrator.TaskStatusTriaged, orchestrator.TaskStatusReady} {
-		task := &orchestrator.Task{Status: from}
-		next, err := sm.Apply(task, &orchestrator.Action{Type: "park"})
-		if err != nil {
-			t.Fatalf("park from %s: %v", from, err)
-		}
-		if next.Status != orchestrator.TaskStatusParked {
-			t.Fatalf("park from %s: expected parked, got %s", from, next.Status)
-		}
-	}
-}
-
-func TestCardMachine_Park_InvalidFromPending(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending}
-	if _, err := sm.Apply(task, &orchestrator.Action{Type: "park"}); err == nil {
-		t.Fatal("expected error: pending tasks (execution lifecycle) must not be parkable")
-	}
-}
-
-func TestCardMachine_WakeTriagedAndWakeReady(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusParked}
-	next, err := sm.Apply(task, &orchestrator.Action{Type: "wake_triaged"})
-	if err != nil {
-		t.Fatalf("wake_triaged: %v", err)
-	}
-	if next.Status != orchestrator.TaskStatusTriaged {
-		t.Fatalf("wake_triaged: expected triaged, got %s", next.Status)
+	want := map[orchestrator.TaskStatus]map[string]orchestrator.TaskStatus{
+		orchestrator.TaskStatusParked: {
+			"go":      orchestrator.TaskStatusWorking,
+			"working": orchestrator.TaskStatusWorking,
+			"drop":    orchestrator.TaskStatusDropped,
+		},
+		orchestrator.TaskStatusWorking: {
+			"park": orchestrator.TaskStatusParked,
+			"done": orchestrator.TaskStatusDone,
+		},
+		orchestrator.TaskStatusDone: {
+			"reopen": orchestrator.TaskStatusParked,
+		},
+		orchestrator.TaskStatusDropped: {
+			"reopen": orchestrator.TaskStatusParked,
+		},
 	}
 
-	task = &orchestrator.Task{Status: orchestrator.TaskStatusParked}
-	next, err = sm.Apply(task, &orchestrator.Action{Type: "wake_ready"})
-	if err != nil {
-		t.Fatalf("wake_ready: %v", err)
-	}
-	if next.Status != orchestrator.TaskStatusReady {
-		t.Fatalf("wake_ready: expected ready, got %s", next.Status)
-	}
-}
-
-// TestCardMachine_WakeWorking is the BD-9 regression pin: PR-4 (論点8) added
-// a third park origin (working, via the "park: working → parked" exit) but
-// PR-3's Wake vocabulary only ever had wake_triaged/wake_ready — a
-// working-origin park had no matching internal action to resolve to and
-// 500'd. This confirms the machine rule itself (the api.TaskWorkflowService.Wake
-// switch-case wiring is pinned separately in internal/api).
-func TestCardMachine_WakeWorking(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusParked}
-	next, err := sm.Apply(task, &orchestrator.Action{Type: "wake_working"})
-	if err != nil {
-		t.Fatalf("wake_working: %v", err)
-	}
-	if next.Status != orchestrator.TaskStatusWorking {
-		t.Fatalf("wake_working: expected working, got %s", next.Status)
-	}
-}
-
-// wake_triaged/wake_ready/wake_working は Manual:false — 機構内部専用
-// （TaskWorkflowService.Wake が ParkedFrom を見てどれを送るか選ぶ）。誤操作で
-// 「起点と違う方に wake する」事故を AvailableActions に出さないことで構造的に防ぐ。
-func TestCardMachine_AvailableActions_Parked_ExcludesWakeActions(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	actions := sm.AvailableActions(orchestrator.TaskStatusParked)
-	for _, a := range actions {
-		if a == "wake_triaged" || a == "wake_ready" || a == "wake_working" {
-			t.Errorf("wake_triaged/wake_ready/wake_working must not appear in AvailableActions(parked), got %v", actions)
-		}
-	}
-	want := map[string]bool{"drop": true}
-	if len(actions) != len(want) {
-		t.Fatalf("AvailableActions(parked) = %v, want %v", actions, want)
-	}
-	for _, a := range actions {
-		if !want[a] {
-			t.Errorf("unexpected action %q in AvailableActions(parked)", a)
+	for _, from := range v2CardStatuses {
+		for _, action := range v2CardTransitionActions {
+			task := &orchestrator.Task{Status: from}
+			next, err := sm.Apply(task, &orchestrator.Action{Type: action})
+			wantTo, ok := want[from][action]
+			if ok {
+				if err != nil {
+					t.Errorf("%s: %s -> ? : unexpected error: %v", action, from, err)
+					continue
+				}
+				if next.Status != wantTo {
+					t.Errorf("%s: %s -> got %s, want %s", action, from, next.Status, wantTo)
+				}
+			} else if err == nil {
+				t.Errorf("%s: %s -> %s : expected rejection (not a v2 edge), got success", action, from, next.Status)
+			}
 		}
 	}
 }
 
-func TestCardMachine_AvailableActions_Captured(t *testing.T) {
+// TestCardMachineV2_AvailableActions pins the exact button set per status —
+// this is what api.ApplyAction's response and the Web UI's AvailableActions
+// rendering key off.
+func TestCardMachineV2_AvailableActions(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	actions := sm.AvailableActions(orchestrator.TaskStatusCaptured)
-	want := map[string]bool{"triage": true, "drop": true}
-	if len(actions) != len(want) {
-		t.Fatalf("AvailableActions(captured) = %v, want %v", actions, want)
+	cases := []struct {
+		status orchestrator.TaskStatus
+		want   map[string]bool
+	}{
+		{orchestrator.TaskStatusParked, map[string]bool{"go": true, "working": true, "drop": true}},
+		{orchestrator.TaskStatusWorking, map[string]bool{"park": true, "done": true}},
+		{orchestrator.TaskStatusDone, map[string]bool{"reopen": true}},
+		{orchestrator.TaskStatusDropped, map[string]bool{"reopen": true}},
 	}
-	for _, a := range actions {
-		if !want[a] {
-			t.Errorf("unexpected action %q in AvailableActions(captured)", a)
+	for _, c := range cases {
+		actions := sm.AvailableActions(c.status)
+		if len(actions) != len(c.want) {
+			t.Fatalf("AvailableActions(%s) = %v, want exactly %v", c.status, actions, c.want)
+		}
+		for _, a := range actions {
+			if !c.want[a] {
+				t.Errorf("AvailableActions(%s) contains unexpected action %q (full list: %v)", c.status, a, actions)
+			}
 		}
 	}
 }
 
-func TestCardMachine_AvailableActions_Triaged(t *testing.T) {
+// TestCardMachineV2_LegacyStatuses_NoRules pins that captured/triaged/ready
+// (KnownTaskStatuses' legacy carve-out, kept only for reading pre-cutover DB
+// rows — docs/plans/suggestion-as-state-transition-impl.md §3.5) have ZERO
+// rules anywhere in v2's rule table: no verb, old or new, transitions a task
+// sitting in one of these statuses. A pre-cutover card stuck in one of these
+// is unstuck only by direct DB/ops intervention (the 洗い替え runbook), not
+// through this machine.
+func TestCardMachineV2_LegacyStatuses_NoRules(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	actions := sm.AvailableActions(orchestrator.TaskStatusTriaged)
-	want := map[string]bool{"ready": true, "park": true, "drop": true}
-	if len(actions) != len(want) {
-		t.Fatalf("AvailableActions(triaged) = %v, want %v", actions, want)
-	}
-	for _, a := range actions {
-		if !want[a] {
-			t.Errorf("unexpected action %q in AvailableActions(triaged)", a)
-		}
-	}
-}
-
-func TestCardMachine_AvailableActions_Ready(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	actions := sm.AvailableActions(orchestrator.TaskStatusReady)
-	want := map[string]bool{"park": true, "drop": true}
-	if len(actions) != len(want) {
-		t.Fatalf("AvailableActions(ready) = %v, want %v", actions, want)
-	}
-	for _, a := range actions {
-		if !want[a] {
-			t.Errorf("unexpected action %q in AvailableActions(ready)", a)
-		}
-	}
-}
-
-// drop は wildcard (*→dropped) にしない — pending/executing 等の実行中タスクに
-// 破壊的ボタンが生えるのを避ける (Opus レビュー指摘)。pre-execution 4状態限定。
-// PR-B 以降は pending/executing/awaiting/done/aborted はそもそもこの機械の
-// rule テーブルに登場しないので、drop に限らずどんな action でも
-// 「no transition」で拒否される。
-func TestCardMachine_Drop_OnlyFromPreExecutionStates(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	for _, from := range []orchestrator.TaskStatus{
+	legacy := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusCaptured,
 		orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusParked,
 		orchestrator.TaskStatusReady,
-	} {
-		task := &orchestrator.Task{Status: from}
-		next, err := sm.Apply(task, &orchestrator.Action{Type: "drop"})
-		if err != nil {
-			t.Fatalf("drop from %s: %v", from, err)
+	}
+	// wake_due is deliberately excluded from this list: its FromStatus is "*"
+	// by design (a pure fact-record, unrelated to which status a card sits
+	// in — see NewCardMachine's own doc comment), so it succeeds from a
+	// legacy status too. That is harmless (nothing ever routes SweepWake at
+	// a captured/triaged/ready card in practice) and not a rule-table bug.
+	allActions := append([]string{
+		"triage", "ready", "wake_triaged", "wake_ready", "wake_working", "dispatch",
+		"triage_done", "reopen_triaged", "attrs_set", "child_added", "child_specced",
+		"child_dropped", "noted", "answered",
+	}, v2CardTransitionActions...)
+	for _, status := range legacy {
+		if got := sm.AvailableActions(status); len(got) != 0 {
+			t.Errorf("AvailableActions(%s) = %v, want empty (legacy status has no v2 rules)", status, got)
 		}
-		if next.Status != orchestrator.TaskStatusDropped {
-			t.Fatalf("drop from %s: expected dropped, got %s", from, next.Status)
+		for _, action := range allActions {
+			task := &orchestrator.Task{Status: status}
+			if _, err := sm.Apply(task, &orchestrator.Action{Type: action}); err == nil {
+				t.Errorf("%s from legacy status %s: expected rejection, got success", action, status)
+			}
 		}
 	}
-	for _, from := range []orchestrator.TaskStatus{
+}
+
+// TestCardMachineV2_DeletedV1Rules pins that every v1-only verb (triage/
+// ready/wake_triaged/wake_ready/wake_working/dispatch/triage_done/
+// reopen_triaged) is gone from v2 entirely — IsManualAction and Apply must
+// both refuse it from EVERY status, not just the legacy ones.
+func TestCardMachineV2_DeletedV1Rules(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+	deleted := []string{
+		"triage", "ready", "wake_triaged", "wake_ready", "wake_working",
+		"dispatch", "triage_done", "reopen_triaged",
+	}
+	for _, action := range deleted {
+		if sm.IsManualAction(action) {
+			t.Errorf("IsManualAction(%q) = true, want false (v1 rule must be deleted)", action)
+		}
+		for _, status := range append(v2CardStatuses, orchestrator.TaskStatusCaptured, orchestrator.TaskStatusTriaged, orchestrator.TaskStatusReady) {
+			task := &orchestrator.Task{Status: status}
+			if _, err := sm.Apply(task, &orchestrator.Action{Type: action}); err == nil {
+				t.Errorf("%s from %s: expected rejection (v1 rule deleted), got success", action, status)
+			}
+		}
+	}
+}
+
+// TestCardMachineV2_TriageVocabulary_FromStatusIsParkedOrWorking pins that
+// the non-transitioning Manual vocabulary (attrs_set/child_added/
+// child_specced/child_dropped/noted/answered) FromStatus enumeration shrank
+// from the old five-status preExecutionStatuses set down to exactly
+// {parked, working} — captured/triaged/ready/done/dropped must all reject.
+func TestCardMachineV2_TriageVocabulary_FromStatusIsParkedOrWorking(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+	allowed := []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking}
+	disallowed := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusCaptured,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusReady,
+		orchestrator.TaskStatusDropped,
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusAwaiting,
-		orchestrator.TaskStatusDone,
 		orchestrator.TaskStatusAborted,
-	} {
-		task := &orchestrator.Task{Status: from}
-		if _, err := sm.Apply(task, &orchestrator.Action{Type: "drop"}); err == nil {
-			t.Fatalf("drop from %s: expected error, drop must not apply to execution-lifecycle statuses", from)
+	}
+	for _, action := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered"} {
+		for _, status := range allowed {
+			task := &orchestrator.Task{Status: status}
+			next, err := sm.Apply(task, &orchestrator.Action{Type: action})
+			if err != nil {
+				t.Errorf("%s from %s: unexpected error: %v", action, status, err)
+				continue
+			}
+			if next.Status != status {
+				t.Errorf("%s from %s: non-transitioning action changed status to %s", action, status, next.Status)
+			}
+		}
+		// done is handled separately — see TestCardMachineV2_AttrsSetOnDone_
+		// StillNonTransitioning_ViaServiceLayerGuard (attrs_set_done.go's
+		// guard, NOT a machine.go rule) for why "done" is deliberately not
+		// listed in `disallowed` for attrs_set specifically. It IS listed
+		// here for the other five verbs, which have no such service-layer
+		// exception.
+		for _, status := range disallowed {
+			task := &orchestrator.Task{Status: status}
+			if _, err := sm.Apply(task, &orchestrator.Action{Type: action}); err == nil {
+				t.Errorf("%s from %s: expected rejection, got success", action, status)
+			}
+		}
+	}
+	// done: attrs_set alone is out of scope for machine.go (I-5b's
+	// service-layer guard, attrs_set_done.go); the other five verbs still
+	// reject it here.
+	for _, action := range []string{"child_added", "child_specced", "child_dropped", "noted", "answered"} {
+		task := &orchestrator.Task{Status: orchestrator.TaskStatusDone}
+		if _, err := sm.Apply(task, &orchestrator.Action{Type: action}); err == nil {
+			t.Errorf("%s from done: expected rejection, got success", action)
 		}
 	}
 }
 
-func TestCardMachine_Reopen_DroppedToTriaged(t *testing.T) {
+// TestCardMachineV2_WakeDue pins the new wake_due rule (docs/plans/
+// suggestion-as-state-transition-impl.md §C): a non-transitioning,
+// Manual:false, FromStatus "*" fact-recording action. Registering it means
+// IsManualAction rejects any khi-pushed direct send (same protection
+// child_dispatched/child_closed already get), while queue_sweep.go's
+// SweepWake can still self-record it via tx.CreateAction directly (which
+// never routes through sm.Apply's rule table at all) or, if it chooses to
+// route through Apply, gets a clean non-transitioning no-op.
+func TestCardMachineV2_WakeDue(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusDropped}
-	next, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"})
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
+	if sm.IsManualAction("wake_due") {
+		t.Fatal("IsManualAction(wake_due) = true, want false (machine-internal, daemon self-record only)")
 	}
-	if next.Status != orchestrator.TaskStatusTriaged {
-		t.Fatalf("expected triaged, got %s", next.Status)
+	for _, status := range append(v2CardStatuses, orchestrator.TaskStatusCaptured, orchestrator.TaskStatusTriaged, orchestrator.TaskStatusReady) {
+		task := &orchestrator.Task{Status: status}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: "wake_due"})
+		if err != nil {
+			t.Errorf("wake_due from %s: unexpected error: %v", status, err)
+			continue
+		}
+		if next.Status != status {
+			t.Errorf("wake_due from %s: non-transitioning action changed status to %s", status, next.Status)
+		}
 	}
-}
-
-func TestCardMachine_AvailableActions_Dropped(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	actions := sm.AvailableActions(orchestrator.TaskStatusDropped)
-	want := map[string]bool{"reopen": true}
-	if len(actions) != len(want) {
-		t.Fatalf("AvailableActions(dropped) = %v, want %v", actions, want)
-	}
-	for _, a := range actions {
-		if !want[a] {
-			t.Errorf("unexpected action %q in AvailableActions(dropped)", a)
+	for _, a := range sm.AvailableActions(orchestrator.TaskStatusParked) {
+		if a == "wake_due" {
+			t.Fatal(`AvailableActions(parked) must not contain "wake_due" (non-transitioning + Manual:false)`)
 		}
 	}
 }
 
-// IsManualAction は「公開 ApplyAction から呼んでよい action か」を機械側から
-// 判定する唯一の情報源。card 機械の Manual 語彙は execution 機械と disjoint
-// (reopen だけは名前を共有するが FromStatus が違う — dropped→triaged のみ)。
-func TestCardMachine_IsManualAction(t *testing.T) {
+// TestCardMachineV2_IsManualAction pins the full Manual/non-Manual split.
+func TestCardMachineV2_IsManualAction(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	manual := []string{"triage", "ready", "park", "reopen", "drop", "attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered"}
-	// child_dispatched/child_closed are Phase 1 PR-4's daemon-self-record-only
-	// actions (論点9): they must stay non-manual so ApplyAction/
-	// BoidOpActionSend reject any khi-pushed attempt to send them directly —
-	// see TestApplyAction_ChildDispatchedAndChildClosed_RejectedWhenPushed
-	// in internal/api for the end-to-end version of this guarantee.
-	nonManual := []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "wake_working", "dispatch", "child_dispatched", "child_closed", "garbage"}
+	manual := append([]string{
+		"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered",
+	}, v2CardTransitionActions...)
+	nonManual := []string{
+		"job_failed", "progress", "done_request", "fail_request",
+		"child_dispatched", "child_closed", "wake_due", "garbage",
+		// v1 verbs, fully deleted:
+		"triage", "ready", "wake_triaged", "wake_ready", "wake_working", "dispatch",
+		"triage_done", "reopen_triaged",
+	}
 	for _, a := range manual {
 		if !sm.IsManualAction(a) {
 			t.Errorf("IsManualAction(%q) = false, want true", a)
@@ -245,105 +275,38 @@ func TestCardMachine_IsManualAction(t *testing.T) {
 	}
 }
 
-// ---- Phase 1 PR-4: working からの出口3本 (論点8) ----
-
-func TestCardMachine_Working_ThreeExits(t *testing.T) {
+// TestCardMachineV2_JobFailed_NotRegistered pins a deliberate departure from
+// v1 (which duplicated job_failed onto both machines purely for "Apply
+// treats the name as known" parity): design doc §3.2 states a v2 card
+// "reaches aborted never again... card 機械は4状態で本当に閉じる" — keeping
+// job_failed's `* → aborted` rule on the card machine would reopen exactly
+// the fifth status the redesign closes, even though nothing in production
+// ever fires it against a card (a card never runs a job of its own). See
+// this PR's description for the full rationale.
+func TestCardMachineV2_JobFailed_NotRegistered(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	cases := []struct {
-		action string
-		want   orchestrator.TaskStatus
-	}{
-		{"ready", orchestrator.TaskStatusReady},
-		{"triage", orchestrator.TaskStatusTriaged},
-		{"park", orchestrator.TaskStatusParked},
-	}
-	for _, c := range cases {
-		task := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
-		next, err := sm.Apply(task, &orchestrator.Action{Type: c.action})
-		if err != nil {
-			t.Fatalf("%s from working: %v", c.action, err)
+	for _, r := range sm.Rules {
+		if r.Action == "job_failed" {
+			t.Fatalf("job_failed must not be a rule on NewCardMachine in v2 (found FromStatus=%q ToStatus=%q) — it would reopen the aborted status the 4-state closure explicitly retires", r.FromStatus, r.ToStatus)
 		}
-		if next.Status != c.want {
-			t.Fatalf("%s from working: got %s, want %s", c.action, next.Status, c.want)
+		if r.ToStatus == string(orchestrator.TaskStatusAborted) {
+			t.Fatalf("no rule may target aborted on the v2 card machine (found Action=%q FromStatus=%q)", r.Action, r.FromStatus)
 		}
 	}
 }
 
-// ---- Phase 1 PR-4: attrs_set/child_added/child_specced FromStatus is an
-// explicit enumeration, never "*" (論点6-3) ----
-//
-// docs/plans/ingestion-identity.md PR-3 adds noted/answered to the SAME loop
-// (machine_card.go) that generates these rules, so both lists below include
-// them too — pinning that the shared generator, not a hand-copied rule,
-// produced their FromStatus set.
-
-func TestCardMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard(t *testing.T) {
+// TestCardMachineV2_CanApplyManualAction_Answered mirrors the shrunk
+// preExecutionStatuses set (renamed cardNonTransitionStatuses in v2) for the
+// dedicated Web UI Accept/Reject gate.
+func TestCardMachineV2_CanApplyManualAction_Answered(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	allowed := []orchestrator.TaskStatus{
-		orchestrator.TaskStatusCaptured,
-		orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusParked,
-		orchestrator.TaskStatusReady,
-		orchestrator.TaskStatusWorking,
-	}
-	disallowed := []orchestrator.TaskStatus{
-		orchestrator.TaskStatusPending,
-		orchestrator.TaskStatusExecuting,
-		orchestrator.TaskStatusAwaiting,
-		orchestrator.TaskStatusDone,
-		orchestrator.TaskStatusAborted,
-		orchestrator.TaskStatusDropped,
-	}
-	for _, actionType := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered"} {
-		for _, status := range allowed {
-			task := &orchestrator.Task{Status: status}
-			if _, err := sm.Apply(task, &orchestrator.Action{Type: actionType}); err != nil {
-				t.Errorf("%s from %s: unexpected error: %v", actionType, status, err)
-			}
-		}
-		for _, status := range disallowed {
-			task := &orchestrator.Task{Status: status}
-			if _, err := sm.Apply(task, &orchestrator.Action{Type: actionType}); err == nil {
-				t.Errorf("%s from %s: expected error (must not fire on non-triage/ordinary-lifecycle statuses), got none", actionType, status)
-			}
-		}
-	}
-}
-
-// attrs_set/child_added/child_specced/noted/answered are non-transitioning
-// (ToStatus==""): applying them must leave task.Status unchanged.
-func TestCardMachine_TriageVocabulary_NonTransitioning(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	for _, actionType := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered"} {
-		task := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
-		next, err := sm.Apply(task, &orchestrator.Action{Type: actionType})
-		if err != nil {
-			t.Fatalf("%s: %v", actionType, err)
-		}
-		if next.Status != orchestrator.TaskStatusWorking {
-			t.Fatalf("%s: status changed to %s, want unchanged (working)", actionType, next.Status)
-		}
-	}
-}
-
-// TestCardMachine_CanApplyManualAction_Answered pins Opus review finding #3
-// (2026-08-19 revisit of PR-3): CanApplyManualAction("answered", status) must
-// agree with what sm.Apply actually accepts/rejects for every status — this
-// is the check the Web UI's Accept/Reject buttons gate on BEFORE rendering,
-// so it must never say "yes" for a status Apply would then reject.
-func TestCardMachine_CanApplyManualAction_Answered(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	answerable := []orchestrator.TaskStatus{
-		orchestrator.TaskStatusCaptured,
-		orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusParked,
-		orchestrator.TaskStatusReady,
-		orchestrator.TaskStatusWorking,
-	}
+	answerable := []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking}
 	notAnswerable := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusDone,
-		orchestrator.TaskStatusAborted,
 		orchestrator.TaskStatusDropped,
+		orchestrator.TaskStatusCaptured,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusReady,
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusAwaiting,
@@ -352,128 +315,40 @@ func TestCardMachine_CanApplyManualAction_Answered(t *testing.T) {
 		if !sm.CanApplyManualAction("answered", status) {
 			t.Errorf("CanApplyManualAction(answered, %s) = false, want true", status)
 		}
-		if _, err := sm.Apply(&orchestrator.Task{Status: status}, &orchestrator.Action{Type: "answered"}); err != nil {
-			t.Errorf("sanity: Apply(answered) from %s unexpectedly errored: %v", status, err)
-		}
 	}
 	for _, status := range notAnswerable {
 		if sm.CanApplyManualAction("answered", status) {
 			t.Errorf("CanApplyManualAction(answered, %s) = true, want false", status)
 		}
-		if _, err := sm.Apply(&orchestrator.Task{Status: status}, &orchestrator.Action{Type: "answered"}); err == nil {
-			t.Errorf("sanity: Apply(answered) from %s unexpectedly succeeded (CanApplyManualAction and Apply must agree)", status)
-		}
 	}
 }
 
-// ---- Phase 1 PR-2: ready → working (逆輸入2: dispatch) ----
-
-func TestCardMachine_Dispatch_ReadyToWorking(t *testing.T) {
+// TestCardMachineV2_MachineName pins sm.Name == orchestrator.CardMachineName,
+// which api.ApplyAction's push-down defense (穴11) keys off to decide
+// whether to apply the actor==human check at all.
+func TestCardMachineV2_MachineName(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusReady}
-	next, err := sm.Apply(task, &orchestrator.Action{Type: "dispatch"})
-	if err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-	if next.Status != orchestrator.TaskStatusWorking {
-		t.Fatalf("dispatch: expected working, got %s", next.Status)
+	if sm.Name != orchestrator.CardMachineName {
+		t.Fatalf("NewCardMachine().Name = %q, want %q", sm.Name, orchestrator.CardMachineName)
 	}
 }
 
-// dispatch is machine-internal (Manual:false, mirrors wake_triaged/wake_ready):
-// it must never appear as a button in AvailableActions(ready), and any
-// non-ready FromStatus must be rejected the same way an unknown action is.
-func TestCardMachine_Dispatch_NotManualNotFromOtherStatuses(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	if sm.IsManualAction("dispatch") {
-		t.Fatal("dispatch must not be a Manual action")
-	}
-	for _, from := range []orchestrator.TaskStatus{
-		orchestrator.TaskStatusPending,
-		orchestrator.TaskStatusCaptured,
-		orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusParked,
-		orchestrator.TaskStatusWorking,
-		orchestrator.TaskStatusDone,
-	} {
-		task := &orchestrator.Task{Status: from}
-		if _, err := sm.Apply(task, &orchestrator.Action{Type: "dispatch"}); err == nil {
-			t.Errorf("dispatch from %s: expected error, got none", from)
+// TestIsCardTransitionAction pins the exact closed set the push-down defense
+// (穴11, api.ApplyAction) restricts to actor==human.
+func TestIsCardTransitionAction(t *testing.T) {
+	for _, a := range v2CardTransitionActions {
+		if !orchestrator.IsCardTransitionAction(a) {
+			t.Errorf("IsCardTransitionAction(%q) = false, want true", a)
 		}
 	}
-}
-
-// TestCardMachine_AvailableActions_Working_HasThreeExits pins Phase 1
-// PR-4's 論点8 fix: working now has three manual exits (ready/triage/park),
-// reusing the pre-execution verbs. This replaces the former "known PR-3 gap"
-// assertion (working had zero exits) that PR-4 explicitly closes. attrs_set/
-// child_added/child_specced/child_dispatched/child_closed must NOT appear
-// here even though attrs_set/child_added/child_specced are Manual:true from
-// working — they are non-transitioning (ToStatus=="") and AvailableActions
-// filters those out (論点6-1).
-func TestCardMachine_AvailableActions_Working_HasThreeExits(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	actions := sm.AvailableActions(orchestrator.TaskStatusWorking)
-	want := map[string]bool{"ready": true, "triage": true, "park": true}
-	if len(actions) != len(want) {
-		t.Fatalf("AvailableActions(working) = %v, want exactly %v", actions, want)
+	nonTransition := []string{
+		"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered",
+		"wake_due", "job_failed", "progress", "done_request", "fail_request",
+		"child_dispatched", "child_closed", "start", "abort", "ask", "answer", "garbage",
 	}
-	for _, a := range actions {
-		if !want[a] {
-			t.Fatalf("AvailableActions(working) contains unexpected action %q (full list: %v)", a, actions)
-		}
-	}
-}
-
-// TestCardMachine_ParkOrigins_AllHaveWakeRule is the BD-9 recurrence
-// guard: the bug's actual mechanism was that PR-4 added a third "park: X →
-// parked" rule (working) without PR-3's Wake vocabulary growing a matching
-// "wake_X: parked → X" rule to resolve it, so a working-origin park 500'd
-// (TestCardMachine_WakeWorking / TestTaskWorkflowService_Wake_
-// FromWorking_ReturnsToWorking_NoDispatch in internal/api pin that specific
-// case by name, but a name-pinned test does not stop a FOURTH park origin
-// from reproducing the same class of bug later).
-//
-// This test derives the set of park origins directly from
-// NewCardMachine().Rules — deliberately NOT a hardcoded
-// []string{"triaged","ready","working"} literal, since a hardcoded list
-// would silently stop covering a newly-added origin instead of catching it.
-// For every "park" rule's FromStatus, it asserts a "parked → FromStatus"
-// rule (i.e. the corresponding wake_* rule) exists somewhere in the same
-// rule table. If a future PR adds a fourth park origin without adding its
-// wake counterpart, this fails by name instead of waiting for a 500 in
-// production the way BD-9 did.
-func TestCardMachine_ParkOrigins_AllHaveWakeRule(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-
-	var parkOrigins []string
-	for _, r := range sm.Rules {
-		if r.Action == "park" && r.ToStatus == string(orchestrator.TaskStatusParked) {
-			parkOrigins = append(parkOrigins, r.FromStatus)
-		}
-	}
-	if len(parkOrigins) == 0 {
-		t.Fatal("no park rules found in NewCardMachine().Rules — did the rule table's shape change?")
-	}
-
-	for _, origin := range parkOrigins {
-		found := false
-		for _, r := range sm.Rules {
-			// Require an actual wake_* action rule, not merely any
-			// parked→origin transition (e.g. "drop" also starts from parked
-			// but to "dropped", not to a park origin, so it wouldn't match
-			// here anyway — this guards against a hypothetical future
-			// non-wake_* rule that happens to land on the same ToStatus,
-			// which would satisfy "a transition exists" without actually
-			// being what TaskWorkflowService.Wake's ParkedFrom switch
-			// dispatches to).
-			if r.FromStatus == string(orchestrator.TaskStatusParked) && r.ToStatus == origin && strings.HasPrefix(r.Action, "wake_") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("park origin %q has no matching wake rule (parked → %s) in NewCardMachine().Rules — TaskWorkflowService.Wake's ParkedFrom switch cannot resolve this origin without one (BD-9 recurrence)", origin, origin)
+	for _, a := range nonTransition {
+		if orchestrator.IsCardTransitionAction(a) {
+			t.Errorf("IsCardTransitionAction(%q) = true, want false", a)
 		}
 	}
 }

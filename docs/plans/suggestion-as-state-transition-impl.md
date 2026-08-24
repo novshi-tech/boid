@@ -242,18 +242,43 @@ card 機械の遷移 action (go/working/park/drop/done/reopen) は Manual:true �
 8. **監視**: 最初の数日は queue と parked / working 一覧を毎日目視
    (穴 7 の楽観の検証。破れたら棚卸し面の設計に戻る)
 
-## 7. 着手前に確定させる点 (実装セッションの最初の仕事)
+## 7. 着手前に確定させる点 (PR-1 実装セッションで確定・実装済み)
 
-1. **gateway 経由 action_send の actor 値** — 押し込み防御 (§3.2) の実装方式が決まる
-2. **ResolveOrCapture の terminal-task 挙動** — 終端 card の identity でも resolve を
-   返すなら runbook 手順 3 (unlink) が必須、返さないなら不要
-3. **wake_due が khi のトリガを起こす配線** — トリガは取り込みシグナルで発火する
-   機構 (trigger_loop.go)。daemon self-record の action が既存トリガを起こすのか、
-   起こさないなら wake_due を取り込み経路に流すのか。ここが通らないと §3.4 の
-   「事実記録係」が khi に届かない
-4. **accept(go) の Tx / 補償方式** (§3.3) — 同一 Tx か補償順か
-5. **suggestion_verb 列の fold 書き込み点の網羅** — attrs_set 以外に suggestion を
-   書き消しする経路が無いか (answered / 洗い替え)
+1. **gateway 経由 action_send の actor 値** — `internal/server/boid_executor.go`
+   の `BoidOpActionSend` は常に `orchestrator.ActorTask(TokenContext.TaskID)` を
+   スタンプする（`ActorHuman` にはならない）。khi は trigger job 経由で呼ぶため
+   `TaskID` が空になり、actor は文字列 `"task:"` になる — prefix ではなく
+   `actor == orchestrator.ActorHuman` の等値判定で防御できる（§3.2 実装済み、
+   `internal/api/workflow_action.go` の押し込み防御）。
+2. **ResolveOrCapture の terminal-task 挙動** — 本 PR のスコープでは未確認のまま。
+   `ResolveIdentity` が終端(done/dropped) card の identity をどう扱うかは
+   カットオーバー runbook 実施時（§6 手順3）に確認する。PR-1 は
+   `ResolveOrCapture` の初期 status を `captured` → `parked` に変えただけで、
+   identity 解決ロジック自体には手を入れていない。
+3. **wake_due が khi のトリガを起こす配線** — **事実誤認だった箇所を訂正**:
+   khi のトリガは取り込みシグナルで発火するのではなく、`internal/api/trigger_loop.go`
+   が `now - 直近 run の started_at >= every` の経過時間だけで判定するポーリング型
+   （イベント購読の口は存在しない）。したがって `wake_due` 側からトリガを能動的に
+   起こす配線は不要 — khi は自分のポーリング周期の中で `wake_due` action
+   （またはそれが記録された card の状態）を読みに来る。PR-K 側の対応も不要。
+   §3.4 の「事実記録係」は `wake_due` action を記録するところまでが daemon の
+   責務で、それを khi がいつ読みに来るかは khi 側のポーリング頻度に委ねられる。
+4. **accept(go) の Tx / 補償方式** (§3.3) — **補償順を採用**（同一 Tx にはしない）。
+   `TaskCreator.CreateTask` が自前で `*sql.DB` を掴んで末尾で `ApplyAction("start")`
+   の別 Tx を開くため、`db.go` の `SetMaxOpenConns(1)` の下でネストした Tx を
+   開くとデッドロックする。実装は `internal/api/workflow_triage.go` の
+   `acceptGo`: ① 子タスクの作成 + auto-start（非トランザクショナル）→
+   ② 成功したら 1 つの Tx で parked→working 遷移 + child_dispatched 記録を
+   コミット → ③ 子作成失敗時は card を parked のまま・suggestion 温存・
+   `dispatch_error` action 記録・同期エラー返却 → ④ 遷移 Tx 失敗時は作成済みの
+   子を best-effort abort + `dispatch_error` 記録 + 同期エラー。
+5. **suggestion_verb 列の fold 書き込み点の網羅** — PR-1 では suggestion を列に
+   昇格しない（列昇格は PR-2 のスコープ）。JSON blob (`detail.attrs.suggestion`)
+   のままなので書き込み点は従来通り 2 箇所のみ: 書く側は `attrs_set` の fold
+   （`orchestrator.FoldDetailAttrs`、`validateSuggestionAttr` で verb を検証
+   してから）、消す側は `applyAnsweredSideEffect`
+   （`orchestrator.StripDetailAttrs(..., "suggestion")`）。他に書き/消しする
+   経路は無い。
 
 ## 8. スコープ外 (この一気実装に含めない)
 

@@ -110,7 +110,6 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidTaskUpdatePayloadPatch,
 			OpBoidProjectBehaviors,
 			OpBoidProjectList,
-			OpBoidTaskWake,
 			OpBoidTaskTriageGet,
 			OpBoidTaskTriageList,
 			OpBoidTaskIdentityLink,
