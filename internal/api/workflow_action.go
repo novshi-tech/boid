@@ -64,17 +64,22 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// action_send / `boid action send` CLI all funnel through ApplyAction).
 	// Manual:false rules — job_failed (event-driven, applied directly by
 	// CompleteJob), progress/done_request/fail_request (non-transitioning
-	// records NotifyTask writes directly), and wake_triaged/wake_ready
-	// (resolved internally by Wake via ParkedFrom) — must never be settable
-	// by an external caller.
+	// records NotifyTask writes directly), child_dispatched/child_closed
+	// (self-recorded bookkeeping), and wake_due (recorded internally by
+	// SweepWake — card machine v2, docs/plans/suggestion-as-state-transition-impl.md
+	// §3.3; a pure non-transitioning fact, not a resolved transition the way
+	// v1's wake_triaged/wake_ready were) — must never be settable by an
+	// external caller.
 	//
-	// This used to be a hand-maintained blocklist naming wake_triaged/
+	// This used to be a hand-maintained blocklist naming v1's wake_triaged/
 	// wake_ready specifically; codex review round 2 found it had missed
 	// job_failed, which (now that pre-execution statuses exist) opened
 	// triaged →(job_failed)→aborted →(reopen)→executing as a way to bypass
 	// the ready-gate (決定9/逆輸入2) entirely without ever calling "ready" or
-	// Go. Checking the machine's own Manual flag instead of a separate list
-	// means a future non-manual rule can't be forgotten the same way.
+	// Go (v1-era statuses; the same reasoning holds under v2's parked/
+	// working/done/dropped). Checking the machine's own Manual flag instead
+	// of a separate list means a future non-manual rule can't be forgotten
+	// the same way.
 	if !sm.IsManualAction(req.Type) {
 		return nil, &StatusError{
 			Code:    http.StatusBadRequest,
@@ -412,6 +417,20 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		if err := tx.CreateAction(action); err != nil {
 			return err
 		}
+		// PR #987 review, LOW 10: a direct human card transition landing here
+		// (working/park/drop/done/reopen — "go" bypasses this whole function
+		// via acceptGo above, and carries the identical call itself; see
+		// recordAndStripSuggestionIfPresent's own doc comment) must not
+		// silently discard a still-pending suggestion of a DIFFERENT verb.
+		// Guarded by sm.Name, not IsCardTransitionAction alone, for the same
+		// reason the push-down defense check above is: "done"/"reopen" are
+		// also execution-machine verb names (machine_execution.go), and
+		// IsCardTransitionAction's backing set is keyed on name only.
+		if sm.Name == orchestrator.CardMachineName && orchestrator.IsCardTransitionAction(req.Type) {
+			if err := recordAndStripSuggestionIfPresent(tx, newTask.ID, action); err != nil {
+				return err
+			}
+		}
 		switch req.Type {
 		case "park":
 			return applyParkSideEffect(tx, newTask.ID, parkPayloadParsed)
@@ -686,12 +705,33 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 	slog.Warn("dispatch loop max cycles reached", "task_id", current.ID, "max", maxCycles)
 }
 
-func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orchestrator.TaskStatus, err error) {
+// orphanedChildTaskIDs is optional: PR #987 review's BLOCKER 4 fix. acceptGo
+// (workflow_triage.go) used to compensate a failed parked→working commit by
+// best-effort ABORTING every child it had already created and auto-started
+// in this call — but CreateTask's own (ref, parent_id) get-or-create dedup
+// (task_create.go) means "a child THIS call created" is not actually
+// guaranteed: a concurrent second accept(go) racing the same card (a Go
+// button double-click, or an accept racing a direct "go" click) can observe
+// the SAME already-running child via that dedup and then, if ITS OWN
+// transition Tx is the one that loses the race, abort a child the OTHER
+// caller's Tx already committed successfully — killing in-flight work with
+// no error surfaced to the caller whose accept actually succeeded. Losing a
+// child to a genuinely-failed transition is a real (if rare) gap already
+// accepted for step 3 (task_ification failures); accidentally killing a
+// DIFFERENT accept's already-succeeded work is a categorically worse
+// failure mode this fix trades away in favor of leaving the children
+// running and recording their ids here for a human to inspect and
+// hand-abort if the transition really did fail for everyone.
+func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orchestrator.TaskStatus, err error, orphanedChildTaskIDs ...string) {
 	if s.Tx == nil || taskID == "" || err == nil {
 		return
 	}
 
-	payload, marshalErr := json.Marshal(map[string]string{"error": err.Error()})
+	payloadFields := map[string]any{"error": err.Error()}
+	if len(orphanedChildTaskIDs) > 0 {
+		payloadFields["orphaned_child_task_ids"] = orphanedChildTaskIDs
+	}
+	payload, marshalErr := json.Marshal(payloadFields)
 	if marshalErr != nil {
 		slog.Error("marshal dispatch error payload failed", "task_id", taskID, "error", marshalErr)
 		return

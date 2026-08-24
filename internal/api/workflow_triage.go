@@ -540,6 +540,69 @@ func applyAnsweredSideEffect(tx TxStore, taskID string) error {
 	return nil
 }
 
+// recordAndStripSuggestionIfPresent implements PR #987 review's LOW 10: a
+// direct human card transition (go/working/park/drop/done/reopen — every verb
+// IsCardTransitionAction admits) that lands while task_triage still carries an
+// existing suggestion must not silently discard it. Before this fix, only
+// "go" ever stripped an existing suggestion at all (acceptGo's unconditional
+// applyAnsweredSideEffect call below), and even there with no audit trail —
+// working/park/drop/done/reopen left a now-stale suggestion sitting in
+// detail.attrs untouched. Applied symmetrically to every direct verb now:
+// whichever verb the suggestion recommended, a DIFFERENT verb committing
+// directly (bypassing accept/reject entirely, e.g. a human clicking "drop"
+// while a "park" suggestion is pending) supersedes it, and that supersession
+// gets the same audit trail accept/reject already record via the "answered"
+// action — a new "suggestion_discarded" action, carrying the discarded verb/
+// reason and the transition that superseded it.
+//
+// A GetTaskTriage miss (sql.ErrNoRows) and an absent/malformed suggestion are
+// both silent no-ops — mirrors applyAnsweredSideEffect's own miss handling
+// immediately above (see its doc comment for why creating a phantom row here
+// would be wrong: `transition` is Manual:true on the card machine, reachable
+// against any card-carrying task, and a card with no task_triage row has
+// nothing to discard).
+func recordAndStripSuggestionIfPresent(tx TxStore, taskID string, transition *orchestrator.Action) error {
+	tt, err := tx.GetTaskTriage(taskID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("record discarded suggestion: get task_triage: %w", err)
+	}
+	suggestion, ok := orchestrator.DetailSuggestion(tt.Detail)
+	if !ok || suggestion.Verb == "" {
+		return nil
+	}
+	payload, mErr := json.Marshal(map[string]string{
+		"verb":               suggestion.Verb,
+		"reason":             suggestion.Reason,
+		"superseding_action": transition.Type,
+	})
+	if mErr != nil {
+		return fmt.Errorf("record discarded suggestion: marshal payload: %w", mErr)
+	}
+	discard := &orchestrator.Action{
+		TaskID:     taskID,
+		Type:       "suggestion_discarded",
+		FromStatus: transition.FromStatus,
+		ToStatus:   transition.ToStatus,
+		Payload:    payload,
+		Actor:      transition.Actor,
+	}
+	if err := tx.CreateAction(discard); err != nil {
+		return fmt.Errorf("record discarded suggestion: create action: %w", err)
+	}
+	stripped, sErr := orchestrator.StripDetailAttrs(tt.Detail, "suggestion")
+	if sErr != nil {
+		return fmt.Errorf("record discarded suggestion: strip suggestion: %w", sErr)
+	}
+	tt.Detail = stripped
+	if err := tx.UpsertTaskTriage(tt); err != nil {
+		return fmt.Errorf("record discarded suggestion: upsert task_triage: %w", err)
+	}
+	return nil
+}
+
 // recordChildClosedOnParent is the daemon's own self-record of 論点9's
 // child_closed vocabulary entry: when a task that is itself a dispatched
 // triage child (i.e. some triage parent's task_triage.detail.children[i]
@@ -633,6 +696,7 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 //  1. Task-ify every `specced` child in task_triage.detail.children
 //     (TaskCreator.CreateTask + auto-start) — NON-transactional, exactly the
 //     same constraint v1's Dispatch had.
+//
 //  2. On success, ONE transaction: re-check the task is still parked, apply
 //     the "go" transition (parked→working), record child_dispatched actions,
 //     persist the children's dispatched status, and — ONLY NOW, having
@@ -640,23 +704,39 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 //     (applyAnsweredSideEffect). This is the literal reading of design doc
 //     §3.1's "遷移を適用してから suggestion を消す": accept never discards a
 //     suggestion it failed to act on.
+//
 //  3. A failure task-ifying a child (step 1): the card stays parked, the
 //     suggestion is left untouched (nothing above ever touched it), a
 //     dispatch_error action is recorded, and the caller gets a synchronous
 //     error. No compensation for any EARLIER child already created in this
 //     same loop — same accepted gap v1's Dispatch documented (a retry is
-//     safe: every child's Ref makes CreateTask idempotent). This is
-//     deliberately narrower than step 4's compensation: the brief separates
-//     "child creation failed" (no abort called for) from "the transition
-//     commit failed after every child already succeeded" (abort called for)
-//     — see this method's own step 4.
+//     safe: every child's Ref makes CreateTask idempotent).
+//
 //  4. A failure in the transition Tx itself, AFTER every child already
-//     task-ified successfully: best-effort abort of every child created in
-//     step 1 (logged, not surfaced — an abort failure here must not mask the
-//     original transition failure), a dispatch_error action, and a
-//     synchronous error. The card is left parked (the failed Tx never
-//     committed), suggestion intact — this is the ONE case this PR's
-//     compensation logic actually unwinds already-started work.
+//     task-ified successfully: the card stays parked (the failed Tx never
+//     committed), suggestion intact, a dispatch_error action is recorded
+//     (its payload folds in every already-created child's task id —
+//     "orphaned_child_task_ids" — for a human to inspect and hand-abort if
+//     warranted), and the caller gets a synchronous error.
+//
+//     PR #987 review, BLOCKER 4: an EARLIER version of this step
+//     best-effort-ABORTED every child created in step 1, on the theory that
+//     a failed transition means they must not be left running unowned. That
+//     compensation was removed — CreateTask's own (ref, parent_id)
+//     get-or-create dedup (task_create.go) means "a child THIS call
+//     created" is not actually a reliable fact: a concurrent SECOND
+//     accept(go) racing the SAME card (a Go button double-click, or an
+//     accept racing a direct "go" click) can observe the SAME
+//     already-running child via that dedup, and if THIS call's own
+//     transition Tx is the one that loses the race (the other caller's
+//     already committed), aborting here kills the OTHER caller's
+//     successfully-dispatched, actually-running child with no error ever
+//     surfacing to the caller whose accept genuinely won. That failure mode
+//     — silently killing someone else's already-succeeded work — is worse
+//     than the orphan this compensation was trying to prevent, so recording
+//     the child ids for a human to act on replaces auto-aborting them. See
+//     recordDispatchError's own doc comment for the same reasoning in
+//     code-adjacent form.
 //
 // This is also the concrete improvement over v1's known gap (workflow_action.go's
 // old "ready" chain): a v1 Dispatch failure only ever reached slog.Error, with
@@ -831,22 +911,40 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string) (*Act
 				return err
 			}
 		}
-		// design doc §3.1/§3.3: strip the suggestion ONLY here, now that the
-		// "go" transition has actually committed successfully within this
-		// same Tx.
-		if err := applyAnsweredSideEffect(tx, taskID); err != nil {
+		// design doc §3.1/§3.3, refined by PR #987 review LOW 10: discard (and
+		// now RECORD, see recordAndStripSuggestionIfPresent's own doc comment)
+		// any existing suggestion ONLY here, now that the "go" transition has
+		// actually committed successfully within this same Tx. A direct "go"
+		// click racing an unrelated suggestion (e.g. task_triage still carries
+		// a "park" suggestion nobody has accepted/rejected yet) supersedes it
+		// exactly like every other direct card-transition verb now does —
+		// this is no longer "go"-specific special casing.
+		if err := recordAndStripSuggestionIfPresent(tx, taskID, action); err != nil {
 			return err
 		}
 		newTask = applied
 		return nil
 	})
 	if txErr != nil {
-		s.recordDispatchError(taskID, task.Status, txErr)
-		// Step 4's compensation: every child above was ALREADY successfully
-		// created and auto-started before this Tx failed, so they must not
-		// be left running unowned against a card that never actually
-		// reached working.
-		s.abortChildrenBestEffort(ctx, newlyDispatched)
+		// Step 4 (PR #987 review, BLOCKER 4 — this PR no longer compensates
+		// by aborting): every child above was ALREADY successfully created
+		// and auto-started before this Tx failed, so their task ids are
+		// folded into the dispatch_error payload for a human to inspect —
+		// see recordDispatchError's own doc comment for why aborting them
+		// here was removed rather than kept (a concurrent accept(go) racing
+		// the same card can, via CreateTask's get-or-create dedup, end up
+		// "owning" a child a DIFFERENT caller's Tx actually committed
+		// successfully; best-effort-aborting it then kills real in-flight
+		// work with no error surfaced to the caller whose accept actually
+		// won the race). The card is left parked (this Tx never committed),
+		// suggestion intact — same as before.
+		var orphanedChildTaskIDs []string
+		for _, c := range newlyDispatched {
+			if c.TaskRef != "" {
+				orphanedChildTaskIDs = append(orphanedChildTaskIDs, c.TaskRef)
+			}
+		}
+		s.recordDispatchError(taskID, task.Status, txErr, orphanedChildTaskIDs...)
 		var statusErr *StatusError
 		if errors.As(txErr, &statusErr) {
 			return nil, statusErr
@@ -881,22 +979,4 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string) (*Act
 	}
 
 	return &ActionApplication{Task: newTask, Action: action}, nil
-}
-
-// abortChildrenBestEffort aborts every already-created-and-started child in
-// children — accept(go)'s step-4 compensation (this file's own doc comment
-// above): the parked→working transition failed to commit AFTER these
-// children were already running, so they must not be left orphaned against a
-// card that never actually reached working. Best-effort: one child's abort
-// failing is logged, not surfaced — it must not mask the original transition
-// failure the caller is already returning.
-func (s *TaskWorkflowService) abortChildrenBestEffort(ctx context.Context, children []orchestrator.TaskTriageChild) {
-	for _, c := range children {
-		if c.TaskRef == "" {
-			continue
-		}
-		if _, err := s.ApplyAction(ctx, c.TaskRef, ApplyActionRequest{Type: "abort"}); err != nil {
-			slog.Error("accept(go): best-effort abort of orphaned child failed", "child_task_id", c.TaskRef, "error", err)
-		}
-	}
 }

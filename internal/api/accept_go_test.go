@@ -444,6 +444,91 @@ func TestApplyAction_Go_DispatchFailure_ReturnsSyncErrorAndRecordsDispatchError(
 	assertDispatchErrorRecorded(t, txStore, task.ID)
 }
 
+// TestTaskWorkflowService_AcceptGo_TransitionFailure_RecordsOrphanedChildIDs_DoesNotAbort
+// is step 4's dedicated regression test (PR #987 review, BLOCKER 4 — this
+// exact branch had ZERO test coverage before). It simulates the transition
+// Tx failing AFTER the child was already created and auto-started
+// (s.Tasks's pre-Tx read sees "parked", but the in-Tx tx.GetTask read sees a
+// DIFFERENT status — modeling a concurrent transition that landed in the
+// gap between acceptGo's pre-Tx child creation and its own Tx opening,
+// exactly the scenario acceptGo's "task status changed to ... before the
+// parked->working transition could commit" guard exists to catch).
+//
+// Asserts the CURRENT (fixed) contract: a synchronous error, a dispatch_error
+// action whose payload carries the created child's task id under
+// "orphaned_child_task_ids" (for a human to inspect/hand-abort), and —
+// the actual regression this test guards — no attempt to abort the child
+// task. The removed abortChildrenBestEffort used to call
+// ApplyAction("abort") against the child's own task id; this test's
+// s.Tasks is scoped to ONLY the card's own task ("t1"), so if any code
+// path still tried to look up/mutate the child task ("child-1") through
+// it, that would surface as an unrelated "task not found" error path
+// rather than the clean dispatch_error this test expects — a structural
+// tripwire against the old behavior silently coming back, in addition to
+// the explicit acceptGo doc comment on why it was removed (BLOCKER 4:
+// aborting a child this call did not necessarily "own" — CreateTask's own
+// get-or-create dedup means a concurrent accept(go) could have created and
+// already be relying on the SAME child).
+func TestTaskWorkflowService_AcceptGo_TransitionFailure_RecordsOrphanedChildIDs_DoesNotAbort(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	detail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	txStore := &recordingTxStore{
+		// The in-Tx read sees the card already "working" — simulating a
+		// concurrent transition that committed in the window between the
+		// child being created (below) and this Tx opening.
+		task:   &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusWorking},
+		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+	}
+	creator := &fakeTaskCreator{}
+	svc := &TaskWorkflowService{
+		Tasks:       &stubTaskStore{task: task}, // pre-Tx read: parked
+		Tx:          recordingTransactor{store: txStore},
+		TaskTriage:  txStore,
+		TaskCreator: creator,
+	}
+
+	_, err := svc.acceptGo(context.Background(), task.ID)
+	if err == nil {
+		t.Fatal("expected an error when the transition Tx fails after the child was already created")
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("expected the child to have been created before the Tx failure, got %d CreateTask calls", len(creator.calls))
+	}
+
+	var dispatchErrorAction *orchestrator.Action
+	for _, a := range txStore.actions {
+		if a.TaskID == task.ID && a.Type == "dispatch_error" {
+			dispatchErrorAction = a
+		}
+	}
+	if dispatchErrorAction == nil {
+		t.Fatalf("expected a dispatch_error action recorded, got actions=%+v", txStore.actions)
+	}
+	var payload struct {
+		Error                string   `json:"error"`
+		OrphanedChildTaskIDs []string `json:"orphaned_child_task_ids"`
+	}
+	if err := json.Unmarshal(dispatchErrorAction.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal dispatch_error payload: %v", err)
+	}
+	if len(payload.OrphanedChildTaskIDs) != 1 || payload.OrphanedChildTaskIDs[0] != "child-1" {
+		t.Fatalf("orphaned_child_task_ids = %v, want [child-1]", payload.OrphanedChildTaskIDs)
+	}
+
+	// The card itself must stay parked (this Tx never committed).
+	if txStore.updatedTask != nil {
+		t.Fatalf("card must stay parked when the transition Tx fails, got updatedTask=%+v", txStore.updatedTask)
+	}
+	// No "abort" (or any other) action was ever recorded against the CHILD
+	// task id — the removed compensation used to record exactly that via
+	// ApplyAction("abort").
+	for _, a := range txStore.actions {
+		if a.TaskID == "child-1" {
+			t.Fatalf("no action should ever be recorded against the child task (compensation abort was removed, BLOCKER 4), got %+v", a)
+		}
+	}
+}
+
 // assertDispatchErrorRecorded is the shared assertion every acceptGo failure
 // test above uses: a dispatch_error action must be in the audit trail
 // regardless of which stage failed (child creation vs. the transition Tx).
