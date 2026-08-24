@@ -55,14 +55,22 @@ func TestParseTaskCreateSpec_ReadonlyOmitted(t *testing.T) {
 // path the same way readonly does — no CLI-side wiring needed for a brokered
 // build-team YAML spec, since parseTaskCreateSpec uses DisallowUnknownFields
 // against apiwire.CreateTaskRequest's JSON tags directly.
+//
+// "parked", not "captured" (PR #987 review, LOW 12): parseTaskCreateSpec
+// itself is parse-only and does not validate against
+// allowedCreateInitialStatuses (internal/api/task_create.go), so "captured"
+// would not have failed THIS test either way — but card machine v2 dropped
+// captured/triaged from the server's allowlist entirely (a request now 400s),
+// and this fixture using a value the real server rejects would mislead a
+// reader into thinking it is still a legitimate initial_status to create with.
 func TestParseTaskCreateSpec_InitialStatus(t *testing.T) {
-	input := "project_id: p\ntitle: t\nbehavior: triage\ninitial_status: captured\n"
+	input := "project_id: p\ntitle: t\nbehavior: triage\ninitial_status: parked\n"
 	req, err := parseTaskCreateSpec([]byte(input))
 	if err != nil {
 		t.Fatalf("parseTaskCreateSpec() error = %v", err)
 	}
-	if req.InitialStatus != "captured" {
-		t.Errorf("InitialStatus = %q, want %q", req.InitialStatus, "captured")
+	if req.InitialStatus != "parked" {
+		t.Errorf("InitialStatus = %q, want %q", req.InitialStatus, "parked")
 	}
 }
 

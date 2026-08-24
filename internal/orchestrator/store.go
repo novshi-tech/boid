@@ -54,6 +54,11 @@ var (
 	// a fresh task landed" (I-4) — closer in spirit to an ordinary open task
 	// awaiting attention than to triaged/parked/ready's "already triaged,
 	// waiting on a Go decision" — so it belongs in Open, not left invisible.
+	//
+	// captured/triaged/ready are all legacy-only under card machine v2 — see
+	// IsPreExecutionStatus's own doc comment. This filter still needs to keep
+	// treating them correctly for any pre-cutover row that still carries one;
+	// it is not evidence that new tasks still flow through them.
 	notOpenSelfStatusSQLList = sqlStatusInList(append(
 		append([]TaskStatus{}, filterTaskStatuses(IsTerminalStatus)...),
 		filterTaskStatuses(func(s TaskStatus) bool {

@@ -253,15 +253,23 @@ func (sm *StateMachine) CanApplyManualAction(actionType string, status TaskStatu
 // machine" (internal/api's HTTP handler / brokered action_send / `boid
 // action send` CLI all funnel through ApplyAction, which first resolves the
 // task's machine via machineFor, then checks IsManualAction against THAT
-// machine — see workflow_action.go). Event-driven rules (job_failed) and
-// internal-only manual transitions a different method resolves and applies
-// on the caller's behalf (wake_triaged/wake_ready/wake_working, dispatch,
-// triage_done, reopen_triaged) must return false here — codex review round 2
-// found job_failed missing from a hand-maintained blocklist in internal/api,
-// which let triaged→(job_failed)→aborted→(reopen)→executing bypass the
-// ready-gate entirely. A per-name blocklist requires remembering to update
-// it every time a new non-manual rule is added; checking the Rule's own
-// Manual flag here removes that whole class of omission.
+// machine — see workflow_action.go). Event-driven and daemon-recorded facts
+// (job_failed, wake_due, child_dispatched, child_closed, progress,
+// done_request, fail_request — all Manual:false, "*" FromStatus where
+// applicable) must return false here — codex review round 2 found job_failed
+// missing from a hand-maintained blocklist in internal/api, which let
+// triaged→(job_failed)→aborted→(reopen)→executing bypass the ready-gate
+// entirely (v1-era statuses; the same reasoning holds under card machine v2's
+// parked/working/done/dropped). A per-name blocklist requires remembering to
+// update it every time a new non-manual rule is added; checking the Rule's
+// own Manual flag here removes that whole class of omission.
+//
+// (v1's wake_triaged/wake_ready/wake_working/dispatch/triage_done/
+// reopen_triaged — internal-only manual transitions a separate Wake/Dispatch
+// method used to resolve and apply on the caller's behalf — are gone
+// entirely under card machine v2, docs/plans/suggestion-as-state-transition-impl.md
+// §3.3: wake_due is now a pure non-transitioning fact SweepWake records,
+// dispatch/triage_done/reopen_triaged have no v2 equivalent at all.)
 func (sm *StateMachine) IsManualAction(actionType string) bool {
 	for _, r := range sm.Rules {
 		if r.Action == actionType && r.Manual {
