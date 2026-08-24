@@ -221,12 +221,33 @@ card 機械の遷移 action (go/working/park/drop/done/reopen) は Manual:true �
 
 1. **事前確認**: `podman ps --filter name=boid-job` — デプロイは実行中 job を全 reap
    する。動いていたら待つか止める
-2. **旧 card の手仕舞い**: 現 daemon のまま、全 card (~9 枚) を drop / done へ終端
-   させる。working の card は done 経由
-3. **identity の解放**: 旧 card に link された identity を unlink する
-   (`boid identity unlink` — shim の help に出ないが実在する。link は上書きを拒む)。
-   ※ResolveOrCapture が terminal task の identity をどう扱うか次第で不要になる —
-   §7 で実装前に確定させる
+2. **旧 card の手仕舞い（drop で終端することを推奨）**: 現 daemon のまま、全 card
+   (~9 枚) を終端させる。**drop で終端させるのが手数が少ない** — 理由は手順3参照。
+   working の card は先に park してから drop するか、直接 drop する
+   （card machine v2 は drop を parked からしか受け付けないため、working の
+   card は一度 park を挟む）。done で終端させることも機構としては可能だが、
+   その場合は手順3の unlink が**必須**になる（省くと洗い替えが壊れる）。
+3. **identity の扱い（手順2でどちらを選んだかに依存）**:
+   - **drop で終端させた場合**: `UnlinkAllForTask` が drop 適用と同じ Tx で
+     identity を自動解放する — 直接 drop
+     (`internal/api/workflow_action.go` の `case "drop"`) と accept(drop)
+     (`internal/api/suggestion_accept.go` の `case "drop"`) の両方がこれを呼ぶ。
+     **本手順は不要**（何もしなくてよい）。
+   - **done で終端させた場合**: done は identity を解放しない
+     (`internal/orchestrator/task_identity.go` の `UnlinkAllForTask` 自身の
+     doc comment: 「never from done (I-5: done holds identities)」)。
+     このケースでは本手順（`boid identity unlink` — shim の help に出ないが
+     実在する。link は上書きを拒むため、再 link の前に必ず unlink が要る）が
+     **必須**。理由（実装前は未確認だったが、実装時に確定した）:
+     `ResolveOrCapture` (`internal/api/task_resolve_or_capture.go` の
+     `ResolveIdentity` 呼び出し、98-103行) は identity が生きている限り
+     task の status を一切見ず、resolve 成功で即 return する
+     （`internal/orchestrator/task_identity.go` の解決 SQL
+     `queryIdentityTaskID` にも status 述語が無い）。つまり **done で
+     終端させた card の identity を unlink し忘れると、洗い替え後の
+     再取り込みは「新規 parked card」ではなく「その done card への
+     resolve」になり、旧 card がそのまま復活してしまう**（洗い替えの
+     意図そのものが崩れる）。
 4. **boid デプロイ**: `deploy-container.sh` 直接実行の 3 点セット
    (COMPOSE_ROOT / CLI_TOKEN / --build) を忘れない
 5. **khi デプロイ**: workspace 側の反映。project.yaml を変えた場合は push +
@@ -241,6 +262,15 @@ card 機械の遷移 action (go/working/park/drop/done/reopen) は Manual:true �
    - khi actor の遷移 action 直打ちが拒否される
 8. **監視**: 最初の数日は queue と parked / working 一覧を毎日目視
    (穴 7 の楽観の検証。破れたら棚卸し面の設計に戻る)
+   - **「done であるべき card が dropped になっていないか」も見る。** `drop` は
+     `parked` からなら機械的に常に valid（「やらない」の正当な経路なので状態機械
+     でもテストでも塞げない）一方、khi の instruction は「外で既に完了済みの
+     案件は working → 次の巡で done」という 2 手を指示している。LLM が「1 手で
+     済ませたい」と判断して誤って `drop` を選ぶ余地が残っており、これは boid
+     側には正当な drop としか見えない — identity が黙って解放される
+     (`UnlinkAllForTask`) ため、間違えると次の再取り込みで**別の新しい card**が
+     生まれ、旧 card との連続性が失われる。機械的な検出手段は無く、khi の skill
+     文面の精度と人の目視だけが頼り。
 
 ## 7. 着手前に確定させる点 (PR-1 実装セッションで確定・実装済み)
 
@@ -250,11 +280,20 @@ card 機械の遷移 action (go/working/park/drop/done/reopen) は Manual:true �
    `TaskID` が空になり、actor は文字列 `"task:"` になる — prefix ではなく
    `actor == orchestrator.ActorHuman` の等値判定で防御できる（§3.2 実装済み、
    `internal/api/workflow_action.go` の押し込み防御）。
-2. **ResolveOrCapture の terminal-task 挙動** — 本 PR のスコープでは未確認のまま。
-   `ResolveIdentity` が終端(done/dropped) card の identity をどう扱うかは
-   カットオーバー runbook 実施時（§6 手順3）に確認する。PR-1 は
-   `ResolveOrCapture` の初期 status を `captured` → `parked` に変えただけで、
-   identity 解決ロジック自体には手を入れていない。
+2. **ResolveOrCapture の terminal-task 挙動 — 確定した (2026-08-25)**: `ResolveIdentity`
+   （`internal/orchestrator/task_identity.go` の `queryIdentityTaskID`）は
+   status 述語を一切持たず、`ResolveOrCapture`
+   （`internal/api/task_resolve_or_capture.go` 98-103行）は resolve 成功で即
+   return するため、**identity が生きている限り task の status（done/dropped 問わず）
+   を見ない**。つまり done で終端させた card は identity を保持したまま
+   (`UnlinkAllForTask` は drop からしか呼ばれない) なので、unlink し忘れると
+   洗い替え後の再取り込みでその done card そのものに resolve され、**復活して
+   しまう**。drop で終端させた card は `UnlinkAllForTask` が同じ Tx で identity を
+   解放済みなので、この問題自体が起きない。カットオーバー runbook §6 手順2/3は
+   この結論を踏まえて「drop で終端させるのを推奨、done を選んだ場合のみ手順3の
+   unlink が必須」と書き直し済み。PR-1 は `ResolveOrCapture` の初期 status を
+   `captured` → `parked` に変えただけで、identity 解決ロジック自体には手を
+   入れていない。
 3. **wake_due が khi のトリガを起こす配線** — **事実誤認だった箇所を訂正**:
    khi のトリガは取り込みシグナルで発火するのではなく、`internal/api/trigger_loop.go`
    が `now - 直近 run の started_at >= every` の経過時間だけで判定するポーリング型
