@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -209,13 +210,77 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChild_PassesDescriptionSeparatelyFr
 	}
 }
 
-func TestTaskWorkflowService_AcceptGo_RejectsNonParkedTask(t *testing.T) {
+// TestTaskWorkflowService_AcceptGo_RejectsNonParkedTask_ErrorMessageHint pins
+// review MEDIUM 1 (fix/unapplicable-suggestion-guard PR): before this test
+// existed, only `err != nil` was asserted here — a mutation that reverted the
+// error message back to the PR's pre-fix bare "(must be parked)" text (no
+// availableCardActionsHint suffix) still passed `go test ./internal/api/...`
+// in full. This is the ONLY call site that exercises acceptGo's own
+// non-parked branch (the exhaustive verb×status combination test,
+// suggestion_accept_test.go, deliberately skips asserting "go"'s hint content
+// since it goes through this separate branch rather than applyAnswered's
+// generic sm.Apply path — see that test's own comment). Exercises BOTH
+// callers that share this one message: a direct "go" click (viaAccept=false,
+// this test) and accept(go) (viaAccept=true, the companion test below).
+func TestTaskWorkflowService_AcceptGo_RejectsNonParkedTask_ErrorMessageHint(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
 	svc := newAcceptGoWorkflowService(task, txStore, nil)
 
-	if _, err := svc.acceptGo(context.Background(), task.ID, false); err == nil {
+	_, err := svc.acceptGo(context.Background(), task.ID, false)
+	if err == nil {
 		t.Fatal("expected error accepting go on a non-parked task")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected a 409 StatusError, got %v", err)
+	}
+	if !strings.Contains(se.Message, "go") || !strings.Contains(se.Message, "working") {
+		t.Errorf("message should name the verb and the current status; got %q", se.Message)
+	}
+	// working's own available actions (park/done — machine_card.go) must be
+	// named, mirroring applyAnswered's generic-path hint (same
+	// orchestrator.StateMachine.AvailableActionsHint source, review LOW 4).
+	for _, want := range []string{"park", "done"} {
+		if !strings.Contains(se.Message, want) {
+			t.Errorf("message should name available action %q; got %q", want, se.Message)
+		}
+	}
+}
+
+// TestApplyAction_Answered_AcceptGo_InapplicableStatus_ErrorMessageHint is
+// TestTaskWorkflowService_AcceptGo_RejectsNonParkedTask_ErrorMessageHint's
+// twin for the viaAccept=true (accept(go) via the "answered" action) path —
+// the exhaustive verb×status test (suggestion_accept_test.go) deliberately
+// skips this content check for "go" because it 409s through this DIFFERENT
+// branch (acceptGo's own early status check, not applyAnswered's generic
+// sm.Apply failure). Both callers share the SAME message-building code, but
+// only a dedicated test on each actually proves it.
+func TestApplyAction_Answered_AcceptGo_InapplicableStatus_ErrorMessageHint(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{
+		task: task,
+		triage: map[string]*orchestrator.TaskTriage{
+			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","reason":"stale"}}}`)},
+		},
+	}
+	svc := newAcceptGoWorkflowService(task, txStore, nil)
+
+	payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": "go"})
+	_, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+	if err == nil {
+		t.Fatal("expected error accepting go on a done task")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected a 409 StatusError, got %v", err)
+	}
+	if !strings.Contains(se.Message, "go") || !strings.Contains(se.Message, "done") {
+		t.Errorf("message should name the verb and the current status; got %q", se.Message)
+	}
+	// done's own available action (reopen — machine_card.go) must be named.
+	if !strings.Contains(se.Message, "reopen") {
+		t.Errorf("message should name available action %q; got %q", "reopen", se.Message)
 	}
 }
 
