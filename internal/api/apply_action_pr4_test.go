@@ -78,14 +78,23 @@ func TestApplyAction_AttrsSet_DoesNotWriteTaskRow(t *testing.T) {
 // codex review round 2 Major fix: attrs_set/child_added/child_specced
 // re-validate against a FRESH in-Tx read of the task, not the pre-Tx
 // snapshot. Here the pre-Tx read sees "parked" (still eligible for
-// attrs_set, and a real "drop" origin — card machine v2's drop rule is
-// parked→dropped), but a concurrent "drop" has already committed "dropped"
-// by the time this Tx opens — "dropped" is NOT in attrs_set's FromStatus
+// attrs_set), but a concurrent transition has already committed "captured"
+// by the time this Tx opens (a legacy status — TestCardMachineV2_
+// LegacyStatuses_NoRules pins that it carries zero v2 rules, so this is a
+// deliberately synthetic race target purely to exercise the in-Tx
+// re-validation mechanism, not a claim that anything actually transitions a
+// card INTO captured). "captured" is NOT in attrs_set's FromStatus
 // enumeration, so the action must be rejected (409), and neither the action
 // row nor the task_triage side-effect may be recorded.
+//
+// "dropped" no longer works as this test's race target (PR #987 review round
+// 2, BLOCKER N1): attrs_set's FromStatus set grew to include "dropped" (khi
+// must be able to attrs_set a "reopen" suggestion onto a dropped card), so a
+// race landing on "dropped" would now legitimately succeed instead of being
+// rejected — this test's whole point is a race landing somewhere illegal.
 func TestApplyAction_AttrsSet_RejectsWhenConcurrentTransitionRacedAhead(t *testing.T) {
 	staleTask := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-	racedTask := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDropped, Behavior: "dev", Payload: []byte(`{}`)}
+	racedTask := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusCaptured, Behavior: "dev", Payload: []byte(`{}`)}
 	// seedTriage is a pre-existing task_triage row (PR-B: machineFor needs
 	// one to pick NewCardMachine for "t1" — without it attrs_set would 400
 	// ("not available") before ever reaching the concurrency-race logic this

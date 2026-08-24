@@ -172,7 +172,23 @@ func NewCardMachine() *StateMachine {
 	//     nothing left to specc, add, or withdraw once a card is done or
 	//     dropped, and card machine v2 does not need those three reachable
 	//     there the way it needs answered/noted to be.
-	for _, action := range []string{"attrs_set", "child_added", "child_specced", "child_dropped"} {
+	// PR #987 review round 2, BLOCKER N1: attrs_set is NOT like
+	// child_added/child_specced/child_dropped — this doc comment's own
+	// attrs_set bullet above already says {parked, working, dropped}, but an
+	// earlier version of this loop folded attrs_set in with the three
+	// child_* actions under cardActiveStatuses ({parked, working} only),
+	// silently dropping "dropped" and making the doc comment wrong. Without
+	// this, a dropped card can never receive an attrs_set-carried suggestion
+	// (e.g. khi's "reopen" recommendation) at all, and — compounded by LOW
+	// 10's direct-drop strip — a card that reaches "dropped" is GUARANTEED to
+	// have no suggestion, making design doc §3.2's `dropped → parked : reopen
+	// (via accept)` edge permanently unreachable through its real production
+	// path (attrs_set → accept), even though the machine-level rule and the
+	// direct Reopen button both work fine.
+	for _, status := range cardActiveAndDroppedStatuses {
+		rules = append(rules, Rule{Action: "attrs_set", FromStatus: status, Manual: true})
+	}
+	for _, action := range []string{"child_added", "child_specced", "child_dropped"} {
 		for _, status := range cardActiveStatuses {
 			rules = append(rules, Rule{Action: action, FromStatus: status, Manual: true})
 		}
@@ -191,14 +207,25 @@ func NewCardMachine() *StateMachine {
 
 // cardActiveStatuses is the FromStatus enumeration for the non-transitioning
 // card vocabulary that only makes sense while a card is still "live"
-// (attrs_set/child_added/child_specced/child_dropped — 論点6-3: never "*").
-// Renamed from v1's preExecutionStatuses — that name stopped describing
-// anything real once captured/triaged/ready dropped out of the reachable
-// set (they were never "pre-execution" vs "in-progress" in v2's sense; there
-// is no execution concept on the card side at all). What the set actually
-// means now: the two statuses where khi is still actively watching a card
-// and may write to it.
+// (child_added/child_specced/child_dropped — 論点6-3: never "*"). attrs_set is
+// NOT one of this set's users (see cardActiveAndDroppedStatuses below and
+// NewCardMachine's own doc comment, BLOCKER N1). Renamed from v1's
+// preExecutionStatuses — that name stopped describing anything real once
+// captured/triaged/ready dropped out of the reachable set (they were never
+// "pre-execution" vs "in-progress" in v2's sense; there is no execution
+// concept on the card side at all). What the set actually means now: the two
+// statuses where a card's children can still be specced/added/withdrawn.
 var cardActiveStatuses = []string{"parked", "working"}
+
+// cardActiveAndDroppedStatuses is attrs_set's own FromStatus enumeration —
+// cardActiveStatuses plus "dropped" (PR #987 review round 2, BLOCKER N1: an
+// earlier version of NewCardMachine folded attrs_set into cardActiveStatuses
+// alongside child_added/child_specced/child_dropped, silently excluding
+// dropped despite this file's own doc comment already documenting dropped as
+// included). done is deliberately still excluded — see NewCardMachine's own
+// doc comment for why that path belongs exclusively to
+// resolveAttrsSetDoneTransition (internal/api/attrs_set_done.go).
+var cardActiveAndDroppedStatuses = []string{"parked", "working", "dropped"}
 
 // cardActiveAndTerminalStatuses extends cardActiveStatuses with done/dropped
 // — the FromStatus enumeration for noted/answered specifically (see

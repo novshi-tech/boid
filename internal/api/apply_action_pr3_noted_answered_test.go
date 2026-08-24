@@ -405,6 +405,83 @@ func TestApplyAction_Answered_AcceptReopen_FromDoneAndDropped(t *testing.T) {
 	}
 }
 
+// TestApplyAction_Drop_ThenKhiSuggestsReopenViaAttrsSet_ThenHumanAccepts_RestoresToParked
+// is PR #987 review round 2's BLOCKER N1 production-path regression test —
+// deliberately NOT fixture-direct-inserting a suggestion into task_triage
+// (the prior TestApplyAction_Answered_AcceptReopen_FromDoneAndDropped test
+// above does that, which is why round 2 flagged it as "not a reproduction of
+// the real path"). Every step here is a real ApplyAction call:
+//
+//  1. a human directly drops a parked card
+//  2. khi attrs_sets a "reopen" suggestion onto the now-dropped card — this
+//     used to 409 before dropped was added to attrs_set's own FromStatus set
+//     (an earlier version of NewCardMachine's rule generation loop folded
+//     attrs_set in with child_added/child_specced/child_dropped under
+//     cardActiveStatuses={parked,working}, silently excluding dropped even
+//     though this file's own doc comment already described dropped as
+//     included)
+//  3. a human accepts it, which must apply the suggested "reopen" transition
+//     for real and restore the card to parked
+//
+// Without step 2 actually succeeding, design doc §3.2's `dropped → parked :
+// reopen (via accept)` edge is unreachable through its real production path
+// (attrs_set → accept) even though the machine-level rule and the direct
+// Reopen button both work fine on their own.
+func TestApplyAction_Drop_ThenKhiSuggestsReopenViaAttrsSet_ThenHumanAccepts_RestoresToParked(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{task: task}
+	svc := newTriageWorkflowService(task, txStore)
+
+	// Step 1: a human drops the card.
+	dropResult, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "drop"})
+	if err != nil {
+		t.Fatalf("ApplyAction(drop): %v", err)
+	}
+	if dropResult.Task.Status != orchestrator.TaskStatusDropped {
+		t.Fatalf("status after drop = %q, want dropped", dropResult.Task.Status)
+	}
+	// newTriageWorkflowService wires Tasks (stubTaskStore, the pre-Tx reader)
+	// and Tx/TaskTriage (txStore) as two SEPARATE fakes — sm.Apply returns a
+	// copy, never mutating the original *Task in place, so stubTaskStore's
+	// pointer would otherwise keep reporting the pre-drop "parked" snapshot
+	// on the next call. A real DB has only one row, so keep this in sync the
+	// way a real GetTask would reflect the just-committed transition.
+	task.Status = dropResult.Task.Status
+
+	// Step 2: khi attrs_sets a "reopen" suggestion onto the dropped card —
+	// ActorTask("") matches khi's real actor stamp exactly (a gateway-brokered
+	// action_send call, machine_card.go's own doc comment).
+	khiCtx := orchestrator.WithActor(context.Background(), orchestrator.ActorTask(""))
+	suggestResult, err := svc.ApplyAction(khiCtx, task.ID, ApplyActionRequest{
+		Type:    "attrs_set",
+		Payload: []byte(`{"suggestion":{"verb":"reopen","reason":"issue reopened upstream"}}`),
+	})
+	if err != nil {
+		t.Fatalf("ApplyAction(attrs_set, reopen suggestion) on dropped card: %v", err)
+	}
+	if suggestResult.Task.Status != orchestrator.TaskStatusDropped {
+		t.Fatalf("attrs_set must not transition the card; status = %q, want dropped", suggestResult.Task.Status)
+	}
+	suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
+	if !ok || suggestion.Verb != "reopen" {
+		t.Fatalf("expected a real reopen suggestion folded into task_triage via attrs_set, got %+v (ok=%v)", suggestion, ok)
+	}
+
+	// Step 3: a human accepts it.
+	payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": "reopen"})
+	acceptResult, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+	if err != nil {
+		t.Fatalf("ApplyAction(answered, accept reopen): %v", err)
+	}
+	if acceptResult.Task.Status != orchestrator.TaskStatusParked {
+		t.Fatalf("status after accept = %q, want parked", acceptResult.Task.Status)
+	}
+	finalSuggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
+	if ok || finalSuggestion.Verb != "" {
+		t.Errorf("suggestion still present after accept: %+v", finalSuggestion)
+	}
+}
+
 // TestApplyAnsweredSideEffect_NoExistingTriageRow_NoOp pins Opus review
 // finding #4 (2026-08-19 revisit of PR-3), decoupled from ApplyAction's own
 // routing (see the PR-B note on

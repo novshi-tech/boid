@@ -175,10 +175,15 @@ func TestCardMachineV2_DeletedV1Rules(t *testing.T) {
 // all). See NewCardMachine's own doc comment for why each action's set is
 // what it is; this test is the exhaustive cross-product pin of that design.
 //
-//   - attrs_set / child_added / child_specced / child_dropped:
-//     {parked, working} only — done is attrs_set's own service-layer
-//     special case (resolveAttrsSetDoneTransition, NOT this table), and
-//     none of the four make sense once a card is terminal.
+//   - attrs_set: {parked, working, dropped} — done is attrs_set's own
+//     service-layer special case (resolveAttrsSetDoneTransition, NOT this
+//     table); dropped IS included (PR #987 review round 2, BLOCKER N1) so
+//     khi can attrs_set a "reopen" suggestion onto a dropped card, the
+//     production path design doc §3.2's `dropped → parked : reopen (via
+//     accept)` edge actually depends on.
+//   - child_added / child_specced / child_dropped: {parked, working} only —
+//     none of the three make sense once a card is terminal (its children
+//     are frozen).
 //   - noted / answered: {parked, working, done, dropped} — both must
 //     reach a terminal card.
 func TestCardMachineV2_TriageVocabulary_PerActionFromStatus(t *testing.T) {
@@ -216,8 +221,9 @@ func TestCardMachineV2_TriageVocabulary_PerActionFromStatus(t *testing.T) {
 	// attrs_set is out of scope for "done" here — that path belongs to
 	// resolveAttrsSetDoneTransition's service-layer guard (attrs_set_done.go),
 	// not this rule table (see NewCardMachine's own doc comment) — so it is
-	// deliberately excluded from BOTH the parked/working-only group's
-	// universal-disallow loop below.
+	// deliberately excluded from the child_* group's universal-disallow loop
+	// below, and handled in its own block (it DOES reach "dropped", unlike
+	// child_added/child_specced/child_dropped — BLOCKER N1).
 	for _, action := range []string{"child_added", "child_specced", "child_dropped"} {
 		for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking} {
 			applyNonTransitioning(action, status)
@@ -226,10 +232,12 @@ func TestCardMachineV2_TriageVocabulary_PerActionFromStatus(t *testing.T) {
 			rejectFrom(action, status)
 		}
 	}
-	for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking} {
+	for _, status := range []orchestrator.TaskStatus{
+		orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking, orchestrator.TaskStatusDropped,
+	} {
 		applyNonTransitioning("attrs_set", status)
 	}
-	rejectFrom("attrs_set", orchestrator.TaskStatusDropped)
+	rejectFrom("attrs_set", orchestrator.TaskStatusDone)
 	for _, status := range universallyDisallowed {
 		rejectFrom("attrs_set", status)
 	}
