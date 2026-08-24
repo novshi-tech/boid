@@ -429,18 +429,35 @@ func parseAttrsSetObject(payload json.RawMessage) (map[string]json.RawMessage, e
 // two-copies problem BEFORE PR-5a promoted them out of the blob entirely.
 // verb never needs the same treatment because its blob copy is never
 // written independently of the column.
-func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) error {
+//
+// Returns verbChanged (PR #988 review, MEDIUM 3): whether the promoted
+// column's value actually differs from what it held before this call — this
+// function is the ONLY place that reads the OLD value before overwriting it,
+// so it is the natural (and only reliable) place to answer "should this
+// write also trigger a fresh notifySuggestionArrived". false covers both "no
+// verb in this patch at all" (HasVerb==false) and "the new verb equals the
+// one already stored" — the latter is the mechanism-level guard the review
+// asked for: khi's own _write_suggestion (write.py) sends unconditionally on
+// every judge cycle, unlike its _do_summary/_do_urgency/_do_observed
+// siblings, which all diff-guard themselves before writing (the
+// _do_observed comment there names the exact 2026-08-20 incident this same
+// class of unconditional-rewrite caused). Guarding it here, in boid, means
+// neither khi's own fix nor any FUTURE non-khi writer needs to remember to
+// diff-guard — the daemon owns the "did anything actually change" answer for
+// its own notify trigger.
+func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) (verbChanged bool, err error) {
 	tt, err := tx.GetTaskTriage(taskID)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("attrs_set: get task_triage: %w", err)
+			return false, fmt.Errorf("attrs_set: get task_triage: %w", err)
 		}
 		tt = &orchestrator.TaskTriage{TaskID: taskID}
 	}
+	oldVerb := tt.SuggestionVerb
 	if len(patch.Attrs) > 0 {
 		newDetail, ferr := orchestrator.FoldDetailAttrs(tt.Detail, patch.Attrs)
 		if ferr != nil {
-			return fmt.Errorf("attrs_set: fold detail attrs: %w", ferr)
+			return false, fmt.Errorf("attrs_set: fold detail attrs: %w", ferr)
 		}
 		tt.Detail = newDetail
 	}
@@ -452,7 +469,7 @@ func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) er
 	// regardless.
 	stripped, sErr := orchestrator.StripDetailAttrs(tt.Detail, "urgency", "kind")
 	if sErr != nil {
-		return fmt.Errorf("attrs_set: strip promoted attrs: %w", sErr)
+		return false, fmt.Errorf("attrs_set: strip promoted attrs: %w", sErr)
 	}
 	tt.Detail = stripped
 	if patch.HasUrgency {
@@ -465,9 +482,9 @@ func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) er
 		tt.SuggestionVerb = patch.Verb
 	}
 	if err := tx.UpsertTaskTriage(tt); err != nil {
-		return fmt.Errorf("attrs_set: upsert task_triage: %w", err)
+		return false, fmt.Errorf("attrs_set: upsert task_triage: %w", err)
 	}
-	return nil
+	return patch.HasVerb && patch.Verb != oldVerb, nil
 }
 
 // parseNotedPayload validates ONLY that the "noted" action's payload is
