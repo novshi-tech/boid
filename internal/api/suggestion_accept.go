@@ -246,7 +246,13 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 	}
 
 	if acceptGoRequested {
-		applied, goErr := s.acceptGo(ctx, taskID)
+		// viaAccept=true (PR #987 review round 2, MEDIUM N2): the suggestion
+		// this call fulfills was already recorded as accepted by the
+		// "answered" action just committed above — acceptGo must strip it
+		// without ALSO recording a misleading "suggestion_discarded" audit
+		// entry for the very suggestion that was just accepted, not thrown
+		// away. See acceptGo's own doc comment.
+		applied, goErr := s.acceptGo(ctx, taskID, true)
 		if goErr != nil {
 			// The "answered" action itself already committed above (決定13:
 			// the accept-attempt is a real audit fact regardless of whether

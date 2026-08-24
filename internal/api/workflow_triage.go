@@ -743,7 +743,20 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 // the "ready" action having already committed and the caller already getting
 // an HTTP 200. accept(go) failing now ALWAYS surfaces as a synchronous error
 // to the caller, with a dispatch_error action in the audit trail either way.
-func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string) (*ActionApplication, error) {
+//
+// viaAccept distinguishes the two callers (PR #987 review round 2, MEDIUM
+// N2): workflow_action.go's direct `req.Type=="go"` early-redirect passes
+// false, applyAnswered's accept(go) deferred call (suggestion_accept.go)
+// passes true. When true, the suggestion this call is fulfilling was ALREADY
+// recorded as accepted by applyAnswered's own "answered" action (committed in
+// a separate, earlier Tx, before this function ever runs) — so stripping it
+// here must NOT also emit a "suggestion_discarded" audit action the way a
+// genuinely superseded (different-verb) suggestion would under LOW 10: doing
+// so recorded the accepted suggestion as if it had been thrown away instead,
+// on the single most common accept path in the whole feature. See
+// recordAndStripSuggestionIfPresent's own doc comment for the discard-and-
+// record behavior this deliberately bypasses when viaAccept is true.
+func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAccept bool) (*ActionApplication, error) {
 	if s.Tx == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "accept(go): Transactor not configured"}
 	}
@@ -855,6 +868,18 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string) (*Act
 	sm := orchestrator.NewCardMachine()
 	action := &orchestrator.Action{TaskID: taskID, Type: "go", Actor: orchestrator.ActorFromContext(ctx)}
 	var newTask *orchestrator.Task
+	// concurrentTransitionWon distinguishes step 4's ONE specific failure mode
+	// (PR #987 review round 2, LOW N4) from every other Tx failure below: this
+	// exact branch means another accept(go)/direct "go" already committed the
+	// parked->working transition before THIS Tx opened. In that specific
+	// case, newlyDispatched must NOT be reported as orphaned_child_task_ids
+	// (see the txErr handling below) — CreateTask's own (ref, parent_id)
+	// get-or-create dedup means these task ids may be the OTHER caller's
+	// legitimately-running children, not orphans THIS caller created and
+	// abandoned. Any OTHER Tx failure (a genuine write error, not "someone
+	// else already won") keeps reporting them, since those really are this
+	// call's own unclaimed children.
+	var concurrentTransitionWon bool
 
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
 		fresh, ferr := tx.GetTask(taskID)
@@ -862,6 +887,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string) (*Act
 			return statusErrorForGetTaskErr(ferr)
 		}
 		if fresh.Status != orchestrator.TaskStatusParked {
+			concurrentTransitionWon = true
 			return &StatusError{
 				Code: http.StatusConflict,
 				Message: fmt.Sprintf(
@@ -911,15 +937,30 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string) (*Act
 				return err
 			}
 		}
-		// design doc §3.1/§3.3, refined by PR #987 review LOW 10: discard (and
-		// now RECORD, see recordAndStripSuggestionIfPresent's own doc comment)
-		// any existing suggestion ONLY here, now that the "go" transition has
-		// actually committed successfully within this same Tx. A direct "go"
-		// click racing an unrelated suggestion (e.g. task_triage still carries
-		// a "park" suggestion nobody has accepted/rejected yet) supersedes it
-		// exactly like every other direct card-transition verb now does —
-		// this is no longer "go"-specific special casing.
-		if err := recordAndStripSuggestionIfPresent(tx, taskID, action); err != nil {
+		// design doc §3.1/§3.3, refined by PR #987 review LOW 10 and round 2's
+		// MEDIUM N2: discard any existing suggestion ONLY here, now that the
+		// "go" transition has actually committed successfully within this same
+		// Tx. Two distinct cases, per viaAccept (this function's own doc
+		// comment):
+		//
+		//   - viaAccept==false (a direct "go" click): a DIFFERENT, unrelated
+		//     suggestion may still be sitting in task_triage (e.g. a "park"
+		//     suggestion nobody has accepted/rejected yet) — that gets
+		//     superseded exactly like every other direct card-transition verb
+		//     does under LOW 10, strip AND record (recordAndStripSuggestionIfPresent).
+		//   - viaAccept==true (accept(go)): the suggestion THIS call is
+		//     fulfilling was already recorded as accepted by applyAnswered's
+		//     own "answered" action in an earlier, separate Tx — recording it
+		//     again here as "suggestion_discarded" would mislabel the single
+		//     most common accept path as a discard (MEDIUM N2). Strip only,
+		//     no audit record — applyAnsweredSideEffect is the same
+		//     strip-without-recording primitive "answered" itself already
+		//     uses for both its accept and reject branches.
+		if viaAccept {
+			if err := applyAnsweredSideEffect(tx, taskID); err != nil {
+				return err
+			}
+		} else if err := recordAndStripSuggestionIfPresent(tx, taskID, action); err != nil {
 			return err
 		}
 		newTask = applied
@@ -938,10 +979,23 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string) (*Act
 		// work with no error surfaced to the caller whose accept actually
 		// won the race). The card is left parked (this Tx never committed),
 		// suggestion intact — same as before.
+		//
+		// PR #987 review round 2, LOW N4: when concurrentTransitionWon is
+		// true specifically, newlyDispatched is deliberately NOT folded into
+		// orphaned_child_task_ids. This losing Tx cannot tell whether these
+		// task ids are genuinely THIS call's unclaimed children, or the
+		// OTHER (winning) accept's own legitimately-running children that
+		// CreateTask's get-or-create dedup happened to hand back to this
+		// call too — reporting them here would hand an operator a false
+		// lead to hand-abort real, successful work. Every OTHER Tx failure
+		// (a genuine write error, not "someone else already won the race")
+		// still reports them, since those really are this call's own.
 		var orphanedChildTaskIDs []string
-		for _, c := range newlyDispatched {
-			if c.TaskRef != "" {
-				orphanedChildTaskIDs = append(orphanedChildTaskIDs, c.TaskRef)
+		if !concurrentTransitionWon {
+			for _, c := range newlyDispatched {
+				if c.TaskRef != "" {
+					orphanedChildTaskIDs = append(orphanedChildTaskIDs, c.TaskRef)
+				}
 			}
 		}
 		s.recordDispatchError(taskID, task.Status, txErr, orphanedChildTaskIDs...)

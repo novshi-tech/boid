@@ -125,11 +125,14 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// function opens further down: SetMaxOpenConns(1) deadlocks a nested
 	// TaskCreator.CreateTask call). This applies identically whether "go"
 	// arrived as a direct human click (this line) or via accept(go)
-	// (applyAnswered below, which calls acceptGo the same way) — both are the
-	// SAME verb with the SAME meaning, design doc §3.2's table makes no
-	// distinction between them.
+	// (applyAnswered below, which calls acceptGo too) — both are the SAME
+	// verb with the SAME meaning, design doc §3.2's table makes no
+	// distinction between them. The `false` here is acceptGo's own viaAccept
+	// param (PR #987 review round 2, MEDIUM N2) — a direct click, unlike
+	// accept(go), still needs to strip AND audit-record an unrelated stale
+	// suggestion it happens to supersede (LOW 10).
 	if req.Type == "go" {
-		return s.acceptGo(ctx, taskID)
+		return s.acceptGo(ctx, taskID, false)
 	}
 	// "answered" also bypasses this pipeline entirely — its own accept path
 	// needs the identical non-Tx-then-Tx shape whenever the accepted verb is

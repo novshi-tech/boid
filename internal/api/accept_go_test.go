@@ -85,7 +85,7 @@ func TestTaskWorkflowService_AcceptGo_NoChildren_ParkedToWorking(t *testing.T) {
 	txStore := &recordingTxStore{task: task}
 	svc := newAcceptGoWorkflowService(task, txStore, nil)
 
-	result, err := svc.acceptGo(context.Background(), task.ID)
+	result, err := svc.acceptGo(context.Background(), task.ID, false)
 	if err != nil {
 		t.Fatalf("acceptGo: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChildren_CreatesTasksAndMarksDispat
 	creator := &fakeTaskCreator{}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
-	result, err := svc.acceptGo(context.Background(), task.ID)
+	result, err := svc.acceptGo(context.Background(), task.ID, false)
 	if err != nil {
 		t.Fatalf("acceptGo: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChild_PassesDescriptionSeparatelyFr
 	creator := &fakeTaskCreator{}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
-	if _, err := svc.acceptGo(context.Background(), task.ID); err != nil {
+	if _, err := svc.acceptGo(context.Background(), task.ID, false); err != nil {
 		t.Fatalf("acceptGo: %v", err)
 	}
 
@@ -214,7 +214,7 @@ func TestTaskWorkflowService_AcceptGo_RejectsNonParkedTask(t *testing.T) {
 	txStore := &recordingTxStore{task: task}
 	svc := newAcceptGoWorkflowService(task, txStore, nil)
 
-	if _, err := svc.acceptGo(context.Background(), task.ID); err == nil {
+	if _, err := svc.acceptGo(context.Background(), task.ID, false); err == nil {
 		t.Fatal("expected error accepting go on a non-parked task")
 	}
 }
@@ -230,7 +230,7 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChildWithoutSpec_Errors(t *testing.
 	}
 	svc := newAcceptGoWorkflowService(task, txStore, &fakeTaskCreator{})
 
-	if _, err := svc.acceptGo(context.Background(), task.ID); err == nil {
+	if _, err := svc.acceptGo(context.Background(), task.ID, false); err == nil {
 		t.Fatal("expected error for a specced child with no spec")
 	}
 	if txStore.updatedTask != nil {
@@ -252,7 +252,7 @@ func TestTaskWorkflowService_AcceptGo_UnrecognizedChildStatus_Errors(t *testing.
 	creator := &fakeTaskCreator{}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
-	if _, err := svc.acceptGo(context.Background(), task.ID); err == nil {
+	if _, err := svc.acceptGo(context.Background(), task.ID, false); err == nil {
 		t.Fatal("expected error for an unrecognized child status")
 	}
 	if len(creator.calls) != 0 {
@@ -281,7 +281,7 @@ func TestTaskWorkflowService_AcceptGo_ChildAutoStartFails_TreatedAsDispatchFailu
 	}}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
-	if _, err := svc.acceptGo(context.Background(), task.ID); err == nil {
+	if _, err := svc.acceptGo(context.Background(), task.ID, false); err == nil {
 		t.Fatal("expected error when a created child's auto-start silently failed")
 	}
 	if txStore.updatedTask != nil {
@@ -318,7 +318,7 @@ func TestTaskWorkflowService_AcceptGo_ChildFinishesBeforeCommit_ReconciledAsClos
 		}(),
 	}
 
-	if _, err := svc.acceptGo(context.Background(), task.ID); err != nil {
+	if _, err := svc.acceptGo(context.Background(), task.ID, false); err != nil {
 		t.Fatalf("acceptGo: %v", err)
 	}
 
@@ -374,11 +374,11 @@ func TestTaskWorkflowService_AcceptGo_RetryAfterPartialFailure_DoesNotDuplicateE
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
 	// First attempt: fails on the second child.
-	if _, err := svc.acceptGo(context.Background(), task.ID); err == nil {
+	if _, err := svc.acceptGo(context.Background(), task.ID, false); err == nil {
 		t.Fatal("expected the first acceptGo attempt to fail on the second child")
 	}
 	// Second attempt (simulating a retry): must not create a second "child-1".
-	if _, err := svc.acceptGo(context.Background(), task.ID); err == nil {
+	if _, err := svc.acceptGo(context.Background(), task.ID, false); err == nil {
 		t.Fatal("expected the retry to fail again on the second child")
 	}
 
@@ -411,6 +411,52 @@ func TestApplyAction_Go_DelegatesToAcceptGo(t *testing.T) {
 	}
 	if result.Task.Status != orchestrator.TaskStatusWorking {
 		t.Fatalf("status = %q, want working", result.Task.Status)
+	}
+}
+
+// TestApplyAction_Answered_AcceptGo_DoesNotRecordSuggestionDiscarded is PR
+// #987 review round 2's MEDIUM N2 regression test. Before this fix, khi
+// suggesting "go" and a human accepting it produced this action log:
+//
+//	answered              {"answer":"accept","verb":"go"}
+//	go
+//	suggestion_discarded  {"reason":"...","superseding_action":"go","verb":"go"}
+//
+// — the ACCEPTED suggestion recorded as "discarded", on the single most
+// common accept path in the whole feature (design doc §3.9 treats this
+// action-log history as future auto-accept-policy evaluation data, so this
+// mislabeling would have polluted it from day one). acceptGo's viaAccept
+// param (workflow_triage.go) now suppresses the suggestion_discarded record
+// specifically for accept-originated "go", while still stripping the
+// suggestion (it must not linger after being consumed).
+func TestApplyAction_Answered_AcceptGo_DoesNotRecordSuggestionDiscarded(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{
+		task: task,
+		triage: map[string]*orchestrator.TaskTriage{
+			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","reason":"children are specced"}}}`)},
+		},
+	}
+	svc := newAcceptGoWorkflowService(task, txStore, nil)
+
+	payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": "go"})
+	result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+	if err != nil {
+		t.Fatalf("ApplyAction(answered, accept go): %v", err)
+	}
+	if result.Task.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("status = %q, want working", result.Task.Status)
+	}
+
+	if discard := findAction(txStore.actions, "suggestion_discarded"); discard != nil {
+		t.Fatalf("suggestion_discarded recorded for the ACCEPTED suggestion itself: %+v (full action log: %+v)", discard, txStore.actions)
+	}
+	suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
+	if ok || suggestion.Verb != "" {
+		t.Errorf("suggestion still present after accept(go): %+v", suggestion)
+	}
+	if answered := findAction(txStore.actions, "answered"); answered == nil {
+		t.Fatal("expected an \"answered\" action recording the accept — audit trail must not be empty")
 	}
 }
 
@@ -469,7 +515,19 @@ func TestApplyAction_Go_DispatchFailure_ReturnsSyncErrorAndRecordsDispatchError(
 // aborting a child this call did not necessarily "own" — CreateTask's own
 // get-or-create dedup means a concurrent accept(go) could have created and
 // already be relying on the SAME child).
-func TestTaskWorkflowService_AcceptGo_TransitionFailure_RecordsOrphanedChildIDs_DoesNotAbort(t *testing.T) {
+// TestTaskWorkflowService_AcceptGo_ConcurrentTransitionWon_DoesNotRecordOrphanedChildIDs
+// is PR #987 review round 2's LOW N4 regression test: BLOCKER 4 removed the
+// unsafe compensation-abort for this exact race (a concurrent transition
+// already committed the card out of "parked" before this Tx opened), but the
+// replacement dispatch_error payload used to still fold newlyDispatched into
+// orphaned_child_task_ids even here — misleadingly, since a Tx that LOST this
+// specific race cannot tell whether those task ids are its own unclaimed
+// children or the WINNING caller's own legitimately-running children
+// (CreateTask's get-or-create dedup can hand back the same task id to both
+// callers). Reporting them as "orphaned" would give an operator a false lead
+// to hand-abort real, successful work. This is the one case where NOTHING
+// should be reported.
+func TestTaskWorkflowService_AcceptGo_ConcurrentTransitionWon_DoesNotRecordOrphanedChildIDs(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	detail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
@@ -487,7 +545,7 @@ func TestTaskWorkflowService_AcceptGo_TransitionFailure_RecordsOrphanedChildIDs_
 		TaskCreator: creator,
 	}
 
-	_, err := svc.acceptGo(context.Background(), task.ID)
+	_, err := svc.acceptGo(context.Background(), task.ID, false)
 	if err == nil {
 		t.Fatal("expected an error when the transition Tx fails after the child was already created")
 	}
@@ -511,8 +569,8 @@ func TestTaskWorkflowService_AcceptGo_TransitionFailure_RecordsOrphanedChildIDs_
 	if err := json.Unmarshal(dispatchErrorAction.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal dispatch_error payload: %v", err)
 	}
-	if len(payload.OrphanedChildTaskIDs) != 1 || payload.OrphanedChildTaskIDs[0] != "child-1" {
-		t.Fatalf("orphaned_child_task_ids = %v, want [child-1]", payload.OrphanedChildTaskIDs)
+	if len(payload.OrphanedChildTaskIDs) != 0 {
+		t.Fatalf("orphaned_child_task_ids = %v, want none (this Tx lost the race — it cannot tell these ids apart from the winner's own legitimate children, LOW N4)", payload.OrphanedChildTaskIDs)
 	}
 
 	// The card itself must stay parked (this Tx never committed).
@@ -526,6 +584,56 @@ func TestTaskWorkflowService_AcceptGo_TransitionFailure_RecordsOrphanedChildIDs_
 		if a.TaskID == "child-1" {
 			t.Fatalf("no action should ever be recorded against the child task (compensation abort was removed, BLOCKER 4), got %+v", a)
 		}
+	}
+}
+
+// TestTaskWorkflowService_AcceptGo_GenuineTxFailure_StillRecordsOrphanedChildIDs
+// is LOW N4's other half: a Tx failure that is NOT "someone else already won
+// the race" (fresh.Status was still "parked" — this call was not racing
+// anyone) must keep reporting orphaned_child_task_ids exactly as BLOCKER 4
+// established. Simulated via updateTaskErr: the transition Tx fails on
+// tx.UpdateTask itself, AFTER fresh.Status==parked was confirmed (so
+// concurrentTransitionWon stays false) and after the child was already
+// created — a genuine write failure, not a race loss.
+func TestTaskWorkflowService_AcceptGo_GenuineTxFailure_StillRecordsOrphanedChildIDs(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	detail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	txStore := &recordingTxStore{
+		task:          &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}, // still parked: no race
+		triage:        map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		updateTaskErr: fmt.Errorf("simulated write failure"),
+	}
+	creator := &fakeTaskCreator{}
+	svc := &TaskWorkflowService{
+		Tasks:       &stubTaskStore{task: task},
+		Tx:          recordingTransactor{store: txStore},
+		TaskTriage:  txStore,
+		TaskCreator: creator,
+	}
+
+	_, err := svc.acceptGo(context.Background(), task.ID, false)
+	if err == nil {
+		t.Fatal("expected an error when tx.UpdateTask itself fails")
+	}
+
+	var dispatchErrorAction *orchestrator.Action
+	for _, a := range txStore.actions {
+		if a.TaskID == task.ID && a.Type == "dispatch_error" {
+			dispatchErrorAction = a
+		}
+	}
+	if dispatchErrorAction == nil {
+		t.Fatalf("expected a dispatch_error action recorded, got actions=%+v", txStore.actions)
+	}
+	var payload struct {
+		Error                string   `json:"error"`
+		OrphanedChildTaskIDs []string `json:"orphaned_child_task_ids"`
+	}
+	if err := json.Unmarshal(dispatchErrorAction.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal dispatch_error payload: %v", err)
+	}
+	if len(payload.OrphanedChildTaskIDs) != 1 || payload.OrphanedChildTaskIDs[0] != "child-1" {
+		t.Fatalf("orphaned_child_task_ids = %v, want [child-1] (a genuine failure, not a lost race, must still report this call's own unclaimed child)", payload.OrphanedChildTaskIDs)
 	}
 }
 

@@ -19,6 +19,9 @@ type recordingTxStore struct {
 	triage           map[string]*orchestrator.TaskTriage
 	parkedFromFn     func(taskID string) (orchestrator.TaskStatus, error)
 	getTaskTriageErr error // when set, GetTaskTriage returns this instead of the usual not-found
+	updateTaskErr    error // when set, UpdateTask returns this instead of succeeding — used to
+	// simulate a genuine (non-race) Tx failure, PR #987 review round 2, LOW N4's
+	// "any OTHER Tx failure still reports orphaned_child_task_ids" coverage.
 	// tasks backs multi-task scenarios (e.g. recordChildClosedOnParent, which
 	// looks up the PARENT task by id while the primary `task`/`updatedTask`
 	// fields track the child under test). Checked before task/updatedTask.
@@ -54,6 +57,9 @@ func (s *recordingTxStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchest
 	return nil, nil
 }
 func (s *recordingTxStore) UpdateTask(task *orchestrator.Task) error {
+	if s.updateTaskErr != nil {
+		return s.updateTaskErr
+	}
 	s.updatedTask = task
 	return nil
 }

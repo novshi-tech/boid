@@ -114,7 +114,7 @@ func TestTaskWorkflowService_AcceptGo_DiscardsAndRecordsExistingSuggestion(t *te
 	}
 	svc := newAcceptGoWorkflowService(task, txStore, nil)
 
-	result, err := svc.acceptGo(context.Background(), task.ID)
+	result, err := svc.acceptGo(context.Background(), task.ID, false)
 	if err != nil {
 		t.Fatalf("acceptGo: %v", err)
 	}
