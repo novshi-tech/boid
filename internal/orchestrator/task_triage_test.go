@@ -107,7 +107,7 @@ func TestTaskTriage_SuggestionVerb_RoundTrips(t *testing.T) {
 
 // TestTaskTriage_SuggestionVerb_DefaultsToEmpty pins the column's "no
 // suggestion" representation: an empty string, the same TEXT NOT NULL
-// DEFAULT '' convention urgency/kind already use (NOT a nullable column —
+// DEFAULT ” convention urgency/kind already use (NOT a nullable column —
 // see migration 0044's own doc comment for why this PR chose that over the
 // brief's literal "IS NOT NULL" wording).
 func TestTaskTriage_SuggestionVerb_DefaultsToEmpty(t *testing.T) {

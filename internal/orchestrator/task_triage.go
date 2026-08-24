@@ -27,11 +27,11 @@ import (
 // below), not duplicated into a second write path that could go stale
 // (決定13: event 追記を正、state は導出).
 type TaskTriage struct {
-	TaskID     string          `json:"task_id"`
-	Kind       string          `json:"kind,omitempty"`    // signal|issue|theme
-	Urgency    string          `json:"urgency,omitempty"` // now|today|week|someday
-	WakeAt     *time.Time      `json:"wake_at,omitempty"` // 日時wake条件。nil = 無し
-	WakeTaskID string          `json:"wake_task_id,omitempty"`
+	TaskID     string     `json:"task_id"`
+	Kind       string     `json:"kind,omitempty"`    // signal|issue|theme
+	Urgency    string     `json:"urgency,omitempty"` // now|today|week|someday
+	WakeAt     *time.Time `json:"wake_at,omitempty"` // 日時wake条件。nil = 無し
+	WakeTaskID string     `json:"wake_task_id,omitempty"`
 	// SuggestionVerb is the promoted queue predicate (docs/plans/
 	// suggestion-as-state-transition-impl.md §4.1, migration 0044): one of
 	// go/working/park/drop/done/reopen (orchestrator.IsCardTransitionAction),
