@@ -330,12 +330,46 @@ templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus,
 			}
 			if orchestrator.NewCardMachine().CanApplyManualAction("answered", status) {
 				<div class="detail-suggestion-answer">
-					<form method="post" action={ templ.SafeURL("/tasks/" + taskID + "/suggestion") } class="detail-suggestion-answer-form">
-						<input type="hidden" name="answer" value="accept"/>
-						<input type="hidden" name="verb" value={ suggestion.Verb }/>
-						<input type="hidden" name="basis" value={ suggestion.Basis }/>
-						<button type="submit" class={ acceptButtonClass(suggestion.Verb) }>Accept</button>
-					</form>
+					// PR #988 review, MEDIUM 1: accept is a SECOND entry point to the
+					// exact same transition TaskActionBar's kebab menu reaches directly
+					// (park/drop, below) — it must carry the identical warning, not a
+					// lighter one just because it arrived via a suggestion instead of a
+					// direct click. templ requires "on*" attributes to be static script
+					// literals (isScriptAttribute, a-h/templ generator), so the
+					// verb-specific onsubmit text is branched here rather than built from
+					// a Go string expression — three near-duplicate <form> bodies, same
+					// idiom TaskActionBar itself already uses for its own per-action
+					// onsubmit variants just above.
+					if suggestion.Verb == "drop" {
+						// Mirrors the kebab menu's direct "drop" item: SAME confirm text
+						// (tx.UnlinkAllForTask releases every identity bound to this card —
+						// this is exactly as irreversible via accept as via a direct click)
+						// and a danger-colored button, not the plain primary every other
+						// verb's accept keeps.
+						<form method="post" action={ templ.SafeURL("/tasks/" + taskID + "/suggestion") } class="detail-suggestion-answer-form" onsubmit="return confirm('Drop this task? This discards it — a dropped task does not resume.')">
+							<input type="hidden" name="answer" value="accept"/>
+							<input type="hidden" name="verb" value={ suggestion.Verb }/>
+							<input type="hidden" name="basis" value={ suggestion.Basis }/>
+							<button type="submit" class={ acceptButtonClass(suggestion.Verb) }>{ acceptButtonLabel(suggestion.Verb) }</button>
+						</form>
+					} else if suggestion.Verb == "park" {
+						// Mirrors the kebab menu's direct "park" item: same confirm text.
+						// Not danger-colored (park is reversible — wake/reopen brings the
+						// card back), just the same "are you sure" prompt.
+						<form method="post" action={ templ.SafeURL("/tasks/" + taskID + "/suggestion") } class="detail-suggestion-answer-form" onsubmit="return confirm('Park this task (set aside for later)?')">
+							<input type="hidden" name="answer" value="accept"/>
+							<input type="hidden" name="verb" value={ suggestion.Verb }/>
+							<input type="hidden" name="basis" value={ suggestion.Basis }/>
+							<button type="submit" class={ acceptButtonClass(suggestion.Verb) }>{ acceptButtonLabel(suggestion.Verb) }</button>
+						</form>
+					} else {
+						<form method="post" action={ templ.SafeURL("/tasks/" + taskID + "/suggestion") } class="detail-suggestion-answer-form">
+							<input type="hidden" name="answer" value="accept"/>
+							<input type="hidden" name="verb" value={ suggestion.Verb }/>
+							<input type="hidden" name="basis" value={ suggestion.Basis }/>
+							<button type="submit" class={ acceptButtonClass(suggestion.Verb) }>{ acceptButtonLabel(suggestion.Verb) }</button>
+						</form>
+					}
 					<form method="post" action={ templ.SafeURL("/tasks/" + taskID + "/suggestion") } class="detail-suggestion-answer-form">
 						<input type="hidden" name="answer" value="reject"/>
 						<input type="hidden" name="verb" value={ suggestion.Verb }/>
@@ -483,19 +517,46 @@ func actionPrimaryClass(action string) string {
 	}
 }
 
-// acceptButtonClass picks the suggestion Accept button's visual weight
-// (PR-2, docs/plans/suggestion-as-state-transition-impl.md §4.3, design doc
-// §3.2): accept("go") dispatches specced children and starts real work — the
-// same consequence as the bottom action bar's own primary Go button
-// (actionPrimaryClass("go") above) — so it must look equally weighty, not
-// like the compact "read and dismiss" Accept every other verb still uses.
-// Every other verb (working/park/drop/done/reopen) never task-ifies
-// anything on accept, so they keep the original compact styling.
+// acceptButtonClass picks the suggestion Accept button's visual weight per
+// verb (PR-2, docs/plans/suggestion-as-state-transition-impl.md §4.3, design
+// doc §3.2; drop/park weighting added per PR #988 review, MEDIUM 1):
+//
+//   - "go" dispatches specced children and starts real work — the same
+//     consequence as the bottom action bar's own primary Go button
+//     (actionPrimaryClass("go") above) — so it gets that same full-weight
+//     "btn btn-primary" class, not the compact variant every other verb uses.
+//   - "drop" releases every identity bound to the card
+//     (tx.UnlinkAllForTask, workflow_action.go) — exactly as irreversible as
+//     the kebab menu's direct "drop" item, which is danger-colored
+//     (action-menu-item-danger). Accept("drop") gets the matching
+//     "btn btn-danger" treatment instead of the plain primary every other
+//     verb keeps — MEDIUM 1 flagged that the MOST destructive verb was
+//     previously rendered with the LIGHTEST styling of all six.
+//   - working/park/done/reopen never task-ify or release identities on
+//     accept, so they keep the original compact "btn btn-primary btn-sm".
+//     park additionally gets a confirm() dialog (see the caller,
+//     TaskDetailSuggestionSection) matching its own kebab item, but does not
+//     need danger coloring — park is reversible (reopen/wake bring the card
+//     back).
 func acceptButtonClass(verb string) string {
-	if verb == "go" {
+	switch verb {
+	case "go":
 		return "btn btn-primary"
+	case "drop":
+		return "btn btn-danger btn-sm"
+	default:
+		return "btn btn-primary btn-sm"
 	}
-	return "btn btn-primary btn-sm"
+}
+
+// acceptButtonLabel makes the Accept button itself read "what am I
+// accepting" (PR #988 review, MEDIUM 1 — implementation plan §4.3's "accept
+// が『何を承認するのか』が読める形" requirement): the verb badge already shows
+// this, but the review flagged that the BUTTON text said only "Accept"
+// regardless of verb, leaving the actual consequence readable only from a
+// separate badge a click could miss.
+func acceptButtonLabel(verb string) string {
+	return "Accept: " + verb
 }
 
 // TaskActionBar renders the sticky bottom action bar.
