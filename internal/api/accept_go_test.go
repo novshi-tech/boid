@@ -214,8 +214,9 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChild_PassesDescriptionSeparatelyFr
 // review MEDIUM 1 (fix/unapplicable-suggestion-guard PR): before this test
 // existed, only `err != nil` was asserted here — a mutation that reverted the
 // error message back to the PR's pre-fix bare "(must be parked)" text (no
-// availableCardActionsHint suffix) still passed `go test ./internal/api/...`
-// in full. This is the ONLY call site that exercises acceptGo's own
+// orchestrator.StateMachine.AvailableActionsHint suffix) still passed
+// `go test ./internal/api/...` in full. This is the ONLY call site that
+// exercises acceptGo's own
 // non-parked branch (the exhaustive verb×status combination test,
 // suggestion_accept_test.go, deliberately skips asserting "go"'s hint content
 // since it goes through this separate branch rather than applyAnswered's

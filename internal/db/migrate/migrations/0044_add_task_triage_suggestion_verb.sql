@@ -24,6 +24,13 @@ ALTER TABLE task_triage ADD COLUMN suggestion_verb TEXT NOT NULL DEFAULT '';
 -- 書き込みで毎回列へ書く) は internal/api/workflow_triage.go の
 -- applyAttrsSetSideEffect が担当する。
 --
+-- なぜ backfill が要るか: カットオーバー runbook (§6) どおりに全 card を
+-- 終端させていれば、この migration が実際に走る時点で parked/working の
+-- card は本来ゼロのはず。backfill は手順2で終端させ損ねた card への安全網
+-- (取りこぼし1枚でも suggestion_verb が空のままだと queue_next に一生現れ
+-- ない)、および runbook を通らない別の DB (開発環境の再作成など) のために
+-- 存在する。
+--
 -- urgency/kind と異なり、verb は blob からは取り除かない: suggestion 本体の
 -- 表示 (orchestrator.Suggestion.Verb 経由のバッジ描画等) は今後も blob の
 -- suggestion オブジェクト全体を読み続けるため、そこから verb だけを消すと

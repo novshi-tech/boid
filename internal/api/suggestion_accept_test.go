@@ -308,9 +308,10 @@ func TestApplyAction_Answered_Accept_AllVerbStatusCombinations(t *testing.T) {
 					t.Errorf("message should name the status %q; got %q", status, se.Message)
 				}
 				// The 5 non-go verbs all fail via applyAnswered's shared generic
-				// sm.Apply path (availableCardActionsHint) — the message must
-				// name every action that CAN be applied from this status, derived
-				// from the same rule table (never hand-copied).
+				// sm.Apply path (orchestrator.StateMachine.AvailableActionsHint) —
+				// the message must name every action that CAN be applied from
+				// this status, derived from the same rule table (never
+				// hand-copied).
 				if verb != "go" {
 					for _, a := range orchestrator.NewCardMachine().AvailableActions(status) {
 						if !strings.Contains(se.Message, a) {
