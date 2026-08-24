@@ -1020,33 +1020,35 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // PostStartShapingSession launches the "整形" (shaping) session for a
-// triaged task card (docs/plans/cross-project-issue-triage.md UC-3). Unlike
-// PostStartSession (a blank session the operator configures by hand), this
-// is a one-click launcher: the triage task's own project supplies the
-// workspace context (a triage task always lives in the workspace's meta
-// project — 決定5's "対象 project の確定は整形セッションの仕事", not the
-// caller's), and the card's id/title/description/kind/urgency are folded
-// into the bootstrap instruction so the agent has the card in hand at
-// turn one instead of the operator re-typing it.
+// triage card (docs/plans/cross-project-issue-triage.md UC-3, updated for
+// card machine v2 — docs/plans/suggestion-as-state-transition-impl.md §3.5).
+// Unlike PostStartSession (a blank session the operator configures by
+// hand), this is a one-click launcher: the triage task's own project
+// supplies the workspace context (a triage task always lives in the
+// workspace's meta project — 決定5's "対象 project の確定は整形セッションの
+// 仕事", not the caller's), and the card's id/title/description/kind/
+// urgency are folded into the bootstrap instruction so the agent has the
+// card in hand at turn one instead of the operator re-typing it.
 //
-// Reachable from a triaged card (mirrors detailPrimaryAction's
-// triaged→ready gating in tasks.templ) OR a working card that has a
-// task_triage sidecar row — shaping a card that already has no open
-// question, or one still in captured, is not a state this button is
-// offered from. working is included alongside triaged (2026-08-14
-// follow-up) because a working triage task's children
-// (task_triage.detail.children) keep needing shaping-session work after
-// Go: an existing open child may need its spec defined (filing a Jira
-// issue, deciding what work it covers), or a brand-new child may need to
-// be added altogether — the set of children is not fixed at dispatch time.
-// Gated on the triage row existing (not just status=working) because the
-// overwhelming majority of working tasks are ordinary dev/impl tasks with
-// no task_triage sidecar at all (triageChildrenFor's doc comment); the
-// button is meaningless — there's no children list to add to or shape —
-// without that sidecar. It is deliberately NOT gated on hasOpenChild
-// (2026-08-14 second follow-up): requiring an open child already present
-// would block the "add a brand-new child" use case, which needs a Shape
-// session precisely because no child exists yet.
+// Reachable from a parked card OR a working card that has a task_triage
+// sidecar row. v1 gated this on triaged (PR #987 review, BLOCKER 1: card
+// machine v2 has no "triaged" status at all — captured/triaged folded into
+// parked — so a triaged-only gate made Shape permanently unreachable from
+// every card's own main resting state). working is included alongside
+// parked (2026-08-14 follow-up, unchanged by v2) because a working triage
+// task's children (task_triage.detail.children) keep needing
+// shaping-session work after Go: an existing open child may need its spec
+// defined (filing a Jira issue, deciding what work it covers), or a
+// brand-new child may need to be added altogether — the set of children is
+// not fixed at dispatch time. Gated on the triage row existing (not just
+// status=working) because the overwhelming majority of working tasks are
+// ordinary dev/impl tasks with no task_triage sidecar at all
+// (triageChildrenFor's doc comment); the button is meaningless — there's no
+// children list to add to or shape — without that sidecar. It is
+// deliberately NOT gated on hasOpenChild (2026-08-14 second follow-up):
+// requiring an open child already present would block the "add a brand-new
+// child" use case, which needs a Shape session precisely because no child
+// exists yet.
 func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if h.SessionDispatcher == nil {
@@ -1059,8 +1061,8 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	task := detail.Task
-	if task.Status != orchestrator.TaskStatusTriaged && task.Status != orchestrator.TaskStatusWorking {
-		redirectTaskErr(w, r, id, fmt.Errorf("shaping session requires a triaged or working task (status = %s)", task.Status))
+	if task.Status != orchestrator.TaskStatusParked && task.Status != orchestrator.TaskStatusWorking {
+		redirectTaskErr(w, r, id, fmt.Errorf("shaping session requires a parked or working task (status = %s)", task.Status))
 		return
 	}
 	triage := h.loadTriage(id) // best-effort — a missing sidecar row is not fatal, see triage_read.go's GetTriage doc comment
@@ -1141,8 +1143,13 @@ func shapingSessionDefaults(svc WebService, projectID string) (harnessType, mode
 // write path — that's exactly the "channel-specific knowledge stays on the
 // workspace side" boundary (triage_read.go's TaskTriageView doc comment)
 // applied to procedure, not just data. This function now states boid's own
-// contract (bring the card to ready) and defers everything about "how" to
-// the target project's own CLAUDE.md / skills, discovered the same way any
+// contract (record child_specced/child_added — NEVER a card-level state
+// transition; card machine v2 removed "ready" from the vocabulary entirely,
+// docs/plans/suggestion-as-state-transition-impl.md §3.5, and even before
+// that removal the design intent was that only a human's accept or khi's
+// own suggest ever advances a card, not a shaping session — PR #987 review,
+// BLOCKER 2) and defers everything about "how" to the target project's own
+// CLAUDE.md / skills, discovered the same way any
 // other session in that project's sandbox would discover them — no
 // project.yaml schema field, no reserved behavior name (see 2026-08-14
 // session's design discussion for the rejected alternatives: a reserved
@@ -1165,7 +1172,7 @@ func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskT
 			"対応が必要な作業を新たに見つけた場合は子タスクとして追加してください（必要なら Jira 起票を含む）。" +
 			"子タスクが1件もない状態から追加を始めても構いません。\n\n")
 	} else {
-		b.WriteString("整形セッション: 以下の triage カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")
+		b.WriteString("整形セッション: 以下の parked カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")
 	}
 	fmt.Fprintf(&b, "task_id: %s\n", task.ID)
 	fmt.Fprintf(&b, "title: %s\n", task.Title)
@@ -1190,13 +1197,19 @@ func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskT
 	if task.Status == orchestrator.TaskStatusWorking {
 		b.WriteString("\n\n対話で子タスクの対象 project・実行内容・完了条件を固めたら、既存の子タスクは specced に更新し、" +
 			"新たに追加した子タスクも同じ形で children に加えてください" +
-			"（このカード自身を ready に戻す必要はありません — working のまま子タスクの追加・整形だけを行います）。" +
+			"（`child_specced` を打つだけです — このカード自身の状態遷移は行いません。working のまま子タスクの追加・整形だけを行います）。" +
+			"card を進める・閉じる・戻す判断は行わないこと — それは人の accept、または khi の suggest 経由でのみ行われます" +
+			"（card machine v2, docs/plans/suggestion-as-state-transition.md §3.2）。" +
 			"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
 			"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
 			"それに従ってください。" +
 			"整形の結果「やらない」と分かった子タスクについては、このセッションでは何もせず運用者に破棄の判断を委ねてください。")
 	} else {
-		b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、card を ready に更新してください。" +
+		b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、既存の子タスクは specced に更新し、" +
+			"新たに追加した子タスクも同じ形で children に加えてください" +
+			"（`child_specced` を打つだけです — このカード自身の状態遷移は行いません。card には `ready` 状態も `ready` action も存在しません）。" +
+			"card を進める・閉じる判断は行わないこと — それは人の accept、または khi の suggest 経由でのみ行われます" +
+			"（card machine v2, docs/plans/suggestion-as-state-transition.md §3.2）。" +
 			"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
 			"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
 			"それに従ってください。" +

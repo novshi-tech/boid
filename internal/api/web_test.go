@@ -505,13 +505,20 @@ func TestWebHandlerPostStartSession_EmptyInstructionOK(t *testing.T) {
 	}
 }
 
+// TestWebHandlerPostStartShapingSession_Success pins the parked case — card
+// machine v2's main resting/undecided status (docs/plans/
+// suggestion-as-state-transition-impl.md §3.5 folds captured/triaged into
+// parked). PR #987 review, BLOCKER 1: this fixture used to sit in the now
+// entirely unreachable "triaged" status, which meant Shape from a card's own
+// initial state had zero test coverage — and, worse, was actually broken in
+// production (the handler's gate hadn't been updated to match).
 func TestWebHandlerPostStartShapingSession_Success(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 		ID:          "task-1",
 		ProjectID:   "meta-proj",
 		Title:       "運用が回っていない気配",
 		Description: "詳細不明のsummaryのみ",
-		Status:      orchestrator.TaskStatusTriaged,
+		Status:      orchestrator.TaskStatusParked,
 	}}}
 	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
 	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{TaskID: "task-1", Kind: "issue", Urgency: "week"}}
@@ -536,10 +543,17 @@ func TestWebHandlerPostStartShapingSession_Success(t *testing.T) {
 	if dispatcher.lastReq.HarnessType != "claude" {
 		t.Errorf("HarnessType = %q, want claude", dispatcher.lastReq.HarnessType)
 	}
-	for _, want := range []string{"task-1", "運用が回っていない気配", "issue", "week", "詳細不明のsummaryのみ"} {
+	for _, want := range []string{"task-1", "運用が回っていない気配", "issue", "week", "詳細不明のsummaryのみ", "状態遷移は行いません"} {
 		if !strings.Contains(dispatcher.lastReq.Instruction, want) {
 			t.Errorf("Instruction missing %q; got:\n%s", want, dispatcher.lastReq.Instruction)
 		}
+	}
+	// BLOCKER 2 (PR #987 review): card machine v2 has no "ready" status/verb
+	// at all — the instruction must never tell the agent to move the card
+	// there. Advancing the card is a human's accept or khi's own suggest,
+	// never the shaping session's job.
+	if strings.Contains(dispatcher.lastReq.Instruction, "card を ready に更新してください") {
+		t.Errorf("parked-task instruction should not tell the agent to move the card to ready (that status no longer exists); got:\n%s", dispatcher.lastReq.Instruction)
 	}
 }
 
@@ -568,7 +582,7 @@ func TestWebHandlerPostStartShapingSession_WorkingWithOpenChild(t *testing.T) {
 	if !dispatcher.callable {
 		t.Fatal("StartSession was not called for a working task with an open child")
 	}
-	for _, want := range []string{"ch_00", "サブ課題A", "specced"} {
+	for _, want := range []string{"ch_00", "サブ課題A", "specced", "状態遷移は行いません"} {
 		if !strings.Contains(dispatcher.lastReq.Instruction, want) {
 			t.Errorf("Instruction missing %q; got:\n%s", want, dispatcher.lastReq.Instruction)
 		}
@@ -635,7 +649,7 @@ func TestWebHandlerPostStartShapingSession_UsesSessionBehaviorsDefaults(t *testi
 			ID:        "task-1",
 			ProjectID: "meta-proj",
 			Title:     "運用が回っていない気配",
-			Status:    orchestrator.TaskStatusTriaged,
+			Status:    orchestrator.TaskStatusParked,
 		}},
 		projectByID: &orchestrator.Project{
 			ID: "meta-proj",
@@ -670,7 +684,7 @@ func TestWebHandlerPostStartShapingSession_FallsBackWhenNoSessionBehaviors(t *te
 			ID:        "task-1",
 			ProjectID: "meta-proj",
 			Title:     "運用が回っていない気配",
-			Status:    orchestrator.TaskStatusTriaged,
+			Status:    orchestrator.TaskStatusParked,
 		}},
 		projectByID: &orchestrator.Project{ID: "meta-proj"},
 	}
@@ -698,7 +712,7 @@ func TestWebHandlerPostStartShapingSession_FallsBackOnInvalidHarnessType(t *test
 			ID:        "task-1",
 			ProjectID: "meta-proj",
 			Title:     "運用が回っていない気配",
-			Status:    orchestrator.TaskStatusTriaged,
+			Status:    orchestrator.TaskStatusParked,
 		}},
 		projectByID: &orchestrator.Project{
 			ID: "meta-proj",
@@ -736,7 +750,7 @@ func TestWebHandlerPostStartShapingSession_FallsBackOnEmptyHarnessType(t *testin
 			ID:        "task-1",
 			ProjectID: "meta-proj",
 			Title:     "運用が回っていない気配",
-			Status:    orchestrator.TaskStatusTriaged,
+			Status:    orchestrator.TaskStatusParked,
 		}},
 		projectByID: &orchestrator.Project{
 			ID: "meta-proj",
@@ -767,9 +781,14 @@ func TestWebHandlerPostStartShapingSession_FallsBackOnEmptyHarnessType(t *testin
 	}
 }
 
-func TestWebHandlerPostStartShapingSession_NotTriaged(t *testing.T) {
+// TestWebHandlerPostStartShapingSession_NotParkedOrWorking (renamed from
+// v1's _NotTriaged, PR #987 review LOW 12: card machine v2 has no "triaged"
+// status to name a rejection test after). done is a status Shape has never
+// been offered from in either version — a finished card has nothing left to
+// shape.
+func TestWebHandlerPostStartShapingSession_NotParkedOrWorking(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
-		ID: "task-1", Status: orchestrator.TaskStatusReady,
+		ID: "task-1", Status: orchestrator.TaskStatusDone,
 	}}}
 	dispatcher := &stubSessionDispatcher{}
 	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
@@ -785,13 +804,13 @@ func TestWebHandlerPostStartShapingSession_NotTriaged(t *testing.T) {
 		t.Errorf("Location = %q, want error param", loc)
 	}
 	if dispatcher.callable {
-		t.Error("StartSession should not be called for a non-triaged task")
+		t.Error("StartSession should not be called for a done task")
 	}
 }
 
 func TestWebHandlerPostStartShapingSession_DispatcherError(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
-		ID: "task-1", ProjectID: "meta-proj", Status: orchestrator.TaskStatusTriaged,
+		ID: "task-1", ProjectID: "meta-proj", Status: orchestrator.TaskStatusParked,
 	}}}
 	dispatcher := &stubSessionDispatcher{err: fmt.Errorf("no sandbox capacity")}
 	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
@@ -811,7 +830,7 @@ func TestWebHandlerPostStartShapingSession_DispatcherError(t *testing.T) {
 
 func TestWebHandlerPostStartShapingSession_NoDispatcher(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
-		ID: "task-1", Status: orchestrator.TaskStatusTriaged,
+		ID: "task-1", Status: orchestrator.TaskStatusParked,
 	}}}
 	r := newTestWebHandlerWithShaping(svc, nil, nil)
 
@@ -837,7 +856,7 @@ func TestWebHandler_TaskDetail_ShowsTriageChildren(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 		ID:     "task-1",
 		Title:  "card title",
-		Status: orchestrator.TaskStatusTriaged,
+		Status: orchestrator.TaskStatusParked,
 	}}}
 	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{TaskID: "task-1", Detail: detail}}
 	h := &WebHandler{Service: svc, TaskTriage: triage}
