@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -180,6 +181,59 @@ func TestApplyAction_Answered_VerbBasisRecordedButNotValidated(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected an \"answered\" action recorded, got actions=%+v", txStore.actions)
+	}
+}
+
+// TestApplyAction_Answered_Accept_RejectedForNonHumanActor pins 穴11's OTHER
+// half (suggestion_accept.go's own doc comment): a non-human actor cannot
+// bypass the direct-verb push-down defense
+// (apply_action_phase1_test.go's TestApplyAction_CardTransitions_
+// RejectedForNonHumanActor) by wrapping the same verb inside
+// answered{accept} instead — "answered" itself is non-transitioning and not
+// in orchestrator.IsCardTransitionAction's set, so the generic
+// ApplyAction-level guard alone would let it through; applyAnswered must
+// enforce this independently. reject is deliberately NOT covered here (it
+// never transitions, so it stays reachable from any actor — see
+// TestApplyAction_Answered_StripsSuggestion_Reject).
+func TestApplyAction_Answered_Accept_RejectedForNonHumanActor(t *testing.T) {
+	actorCases := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"khi_trigger_job_empty_task_id", orchestrator.WithActor(context.Background(), orchestrator.ActorTask(""))},
+		{"khi_via_task", orchestrator.WithActor(context.Background(), orchestrator.ActorTask("some-task-id"))},
+		{"daemon", orchestrator.WithActor(context.Background(), orchestrator.ActorDaemon)},
+		{"unset", context.Background()},
+	}
+	for _, a := range actorCases {
+		t.Run(a.name, func(t *testing.T) {
+			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+			txStore := &recordingTxStore{
+				task: task,
+				triage: map[string]*orchestrator.TaskTriage{
+					"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go"}}}`)},
+				},
+			}
+			svc := newTriageWorkflowService(task, txStore)
+
+			payload := []byte(`{"answer":"accept","verb":"go"}`)
+			_, err := svc.ApplyAction(a.ctx, task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+			if err == nil {
+				t.Fatalf("%s: expected rejection of answered{accept} from a non-human actor", a.name)
+			}
+			se, ok := err.(*StatusError)
+			if !ok || se.Code != http.StatusForbidden {
+				t.Fatalf("%s: expected 403 StatusError, got %v", a.name, err)
+			}
+			if txStore.updatedTask != nil {
+				t.Fatalf("%s: the go transition must not have committed, got updatedTask=%+v", a.name, txStore.updatedTask)
+			}
+			for _, act := range txStore.actions {
+				if act.Type == "answered" {
+					t.Fatalf("%s: the answered action must not be recorded either — rejected before any Tx opens, got %+v", a.name, act)
+				}
+			}
+		})
 	}
 }
 
