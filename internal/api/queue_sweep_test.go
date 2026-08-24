@@ -356,6 +356,17 @@ func TestSweepReconcileChildren_ClosesStaleDispatchedChild(t *testing.T) {
 // posture toward a GC'd/deleted child task — matching ShouldWake's own
 // posture toward a missing reference (v1's reconcileDispatchedChildren
 // established this; restoring it unchanged).
+// TestSweepReconcileChildren_VanishedChild_TreatedAsClosed pins PR #987
+// review round 2's MEDIUM N3: the vanished-child mapping must actually be
+// PERSISTED to task_triage, not just mutated on a local in-memory slice that
+// the caller discards. Before this fix, reconcileDispatchedChildren's
+// vanished-child branch only did `children[i].Status = closed` on its own
+// parameter — SweepReconcileChildren never wrote that slice back anywhere,
+// so the sweep silently re-derived (and re-discarded) the identical no-op
+// result every single tick, forever: a card whose specced child got GC'd
+// would show "dispatched" in task_triage.detail permanently, and khi (which
+// reads that field, not this function's return value) would never see it as
+// closed and never suggest "done" for a card that has, in reality, finished.
 func TestSweepReconcileChildren_VanishedChild_TreatedAsClosed(t *testing.T) {
 	store := newSweepFakeStore()
 	store.tasks["card"] = &orchestrator.Task{ID: "card", Status: orchestrator.TaskStatusWorking}
@@ -368,11 +379,29 @@ func TestSweepReconcileChildren_VanishedChild_TreatedAsClosed(t *testing.T) {
 	if err := svc.SweepReconcileChildren(context.Background(), time.Now()); err != nil {
 		t.Fatalf("SweepReconcileChildren: %v", err)
 	}
-	// reconcileDispatchedChildren only mutates its own local in-memory copy
-	// for a vanished child (it can't call recordChildClosedOnParent without
-	// a real child task to read the id off) — the point of this test is
-	// that it does not error or warn-loop forever, not that anything gets
-	// persisted for this specific case.
+
+	persisted, ok := store.triage["card"]
+	if !ok {
+		t.Fatal("expected card's task_triage row to still exist")
+	}
+	children, cErr := orchestrator.DetailChildren(persisted.Detail)
+	if cErr != nil {
+		t.Fatalf("DetailChildren: %v", cErr)
+	}
+	if len(children) != 1 || children[0].Status != orchestrator.TaskTriageChildStatusClosed {
+		t.Fatalf("persisted children = %+v, want c1 status=closed", children)
+	}
+
+	var found *orchestrator.Action
+	for _, a := range store.actions["card"] {
+		if a.Type == "child_closed" {
+			found = a
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a child_closed action recorded on parent %q, got actions: %+v", "card", store.actions["card"])
+	}
 }
 
 // TestSweepReconcileChildren_NoTaskTriageRow_SkippedNotErrored mirrors

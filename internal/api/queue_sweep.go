@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -183,7 +184,18 @@ func (s *TaskWorkflowService) reconcileDispatchedChildren(taskID string, childre
 			// ShouldWake's fail-open posture toward a missing reference: a
 			// reference that no longer exists must not strand the card forever.
 			if errors.Is(err, orchestrator.ErrTaskNotFound) {
+				// PR #987 review round 2, MEDIUM N3: mutating children[i] here
+				// alone is NOT enough — this local slice is discarded by
+				// SweepReconcileChildren's caller (it never calls
+				// UpsertTaskTriage with it), so without this persistence call
+				// the "closed" mapping never survives past this one function
+				// call, and the sweep re-derives (and re-discards) the exact
+				// same no-op result every single tick forever. v1's
+				// ShouldAutoDone consumed this same in-memory mutation within
+				// the SAME tick it was made — v2 has no such consumer, so the
+				// mutation must persist itself now.
 				children[i].Status = orchestrator.TaskTriageChildStatusClosed
+				s.recordVanishedChildClosedOnParent(taskID, children[i].TaskRef)
 			} else {
 				slog.Warn("sweep reconcile children: get dispatched child failed", "task_id", taskID, "child_task_id", children[i].TaskRef, "error", err)
 			}
@@ -194,6 +206,57 @@ func (s *TaskWorkflowService) reconcileDispatchedChildren(taskID string, childre
 		}
 		children[i].Status = orchestrator.TaskTriageChildStatusClosed
 		s.recordChildClosedOnParent(childTask)
+	}
+}
+
+// recordVanishedChildClosedOnParent persists a vanished child's "closed"
+// mapping onto its parent's task_triage sidecar (PR #987 review round 2,
+// MEDIUM N3) — the vanished-child sibling of recordChildClosedOnParent
+// (workflow_triage.go), which cannot be reused directly here since it takes
+// a real child *orchestrator.Task (task.ID/task.ParentID/task.Status), and a
+// vanished child has none of those available — only the parent's own task ID
+// and the dangling TaskRef string survive in task_triage.detail.children.
+func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, childTaskRef string) {
+	if s.Tx == nil {
+		return
+	}
+	if err := s.Tx.WithinTx(func(tx TxStore) error {
+		tt, err := tx.GetTaskTriage(parentTaskID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				// Parent's row vanished too (or never existed) between the
+				// read above and this Tx opening — nothing left to record.
+				return nil
+			}
+			return fmt.Errorf("sweep reconcile children: get parent task_triage: %w", err)
+		}
+		newDetail, changed, merr := orchestrator.MarkDetailChildClosed(tt.Detail, childTaskRef)
+		if merr != nil {
+			return fmt.Errorf("sweep reconcile children: mark detail child closed: %w", merr)
+		}
+		if !changed {
+			return nil
+		}
+		tt.Detail = newDetail
+		if err := tx.UpsertTaskTriage(tt); err != nil {
+			return fmt.Errorf("sweep reconcile children: upsert parent task_triage: %w", err)
+		}
+		parentTask, gErr := tx.GetTask(parentTaskID)
+		if gErr != nil {
+			return fmt.Errorf("sweep reconcile children: get parent task: %w", gErr)
+		}
+		payload, _ := json.Marshal(map[string]string{"child_task_id": childTaskRef, "child_status": "vanished"})
+		action := &orchestrator.Action{
+			TaskID:     parentTaskID,
+			Type:       "child_closed",
+			FromStatus: parentTask.Status,
+			ToStatus:   parentTask.Status,
+			Payload:    payload,
+			Actor:      orchestrator.ActorDaemon,
+		}
+		return tx.CreateAction(action)
+	}); err != nil {
+		slog.Error("vanished child_closed self-record failed", "task_id", parentTaskID, "child_task_id", childTaskRef, "error", err)
 	}
 }
 
