@@ -42,8 +42,9 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 // is pinned structurally here by confirming the write actually lands (the
 // log call is unconditionally reached on that same success path).
 //
-// TestLogAttrsSetOnDoneTriage_LogsAtWarnLevel below is the one exception
-// (2026-08-19, Opus review N-1): the "write lands" pin above cannot detect
+// TestLogAttrsSetOnDoneTriage_LogsAtDebugLevel below is the one exception
+// (2026-08-19, Opus review N-1; level downgraded to Debug in PR #987 review
+// MEDIUM 11): the "write lands" pin above cannot detect
 // deleting the log call itself (workflow_action.go's own `if req.Type ==
 // "attrs_set" && ...` block around logAttrsSetOnDoneTriage) — the sidecar
 // fold and the log line are two independent statements on the same success
@@ -231,19 +232,19 @@ func TestApplyAction_AttrsSet_Working_StillNonTransitioning_NoRegression(t *test
 	}
 }
 
-// TestLogAttrsSetOnDoneTriage_LogsAtWarnLevel pins two things N-1 (Opus
-// review, 2026-08-19) found missing: (1) the log level is Warn, not Info —
-// matching the precedent this code's own doc comment cites
-// (logCanonicalSourceBreaches, queue_sweep.go, which logs its real breach
-// case at Warn) and mattering concretely because `log.level: warn`
-// (config-yaml.md) silently drops an Info line while every other
-// 決定16-class signal in this codebase stays visible; (2) the log call
-// itself actually fires on this path — deleting workflow_action.go's `if
-// req.Type == "attrs_set" && ...` block around logAttrsSetOnDoneTriage
-// entirely would not be caught by any of the state-based assertions above
-// (the sidecar fold and the log line are independent statements on the
-// same success path), so this test captures slog output directly instead.
-func TestLogAttrsSetOnDoneTriage_LogsAtWarnLevel(t *testing.T) {
+// TestLogAttrsSetOnDoneTriage_LogsAtDebugLevel pins two things (PR #987
+// review, MEDIUM 11 — downgraded from Warn to Debug, since a done card
+// receiving khi's observations/suggestions is now the ORDINARY expected
+// path once card machine v2 retires auto-reopen, not a signal needing an
+// operator's attention): (1) the log level is Debug, not Warn — Warn would
+// flood the daemon log with an entry for every routine done-card write once
+// khi's real ingestion volume hits it; (2) the log call itself actually
+// fires on this path — deleting workflow_action.go's `if req.Type ==
+// "attrs_set" && ...` block around logAttrsSetOnDoneTriage entirely would
+// not be caught by any of the state-based assertions above (the sidecar
+// fold and the log line are independent statements on the same success
+// path), so this test captures slog output directly instead.
+func TestLogAttrsSetOnDoneTriage_LogsAtDebugLevel(t *testing.T) {
 	buf := captureSlog(t)
 
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
@@ -263,23 +264,23 @@ func TestLogAttrsSetOnDoneTriage_LogsAtWarnLevel(t *testing.T) {
 	out := buf.String()
 	var logLine string
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "I-5c") {
+		if strings.Contains(line, "attrs_set landed on a done triage task") {
 			logLine = line
 			break
 		}
 	}
 	if logLine == "" {
-		t.Fatalf("no I-5c log line found; full output:\n%s", out)
+		t.Fatalf("no attrs_set-on-done log line found; full output:\n%s", out)
 	}
-	if !strings.Contains(logLine, "level=WARN") {
-		t.Errorf("I-5c log line = %q, want level=WARN (not Info — it must survive log.level: warn)", logLine)
+	if !strings.Contains(logLine, "level=DEBUG") {
+		t.Errorf("log line = %q, want level=DEBUG (not Warn — a done card receiving khi's observations is the ordinary path now, not an attention signal)", logLine)
 	}
 }
 
 // TestApplyAction_AttrsSet_LogsUsingInTxStatus_NotStalePreTxSnapshot pins
-// N-5 (Opus review, 2026-08-19): workflow_action.go's I-5c log condition
-// must key on action.FromStatus (the IN-TX re-validated value) rather than
-// the pre-Tx local `fromStatus` snapshot.
+// N-5 (Opus review, 2026-08-19): workflow_action.go's logAttrsSetOnDoneTriage
+// log condition must key on action.FromStatus (the IN-TX re-validated value)
+// rather than the pre-Tx local `fromStatus` snapshot.
 //
 // Race modeled here: ApplyAction's pre-Tx read (s.Tasks.GetTask, via the
 // separate stubTaskStore below) sees the task still "working" — a
@@ -310,7 +311,7 @@ func TestApplyAction_AttrsSet_LogsUsingInTxStatus_NotStalePreTxSnapshot(t *testi
 		t.Fatalf("ApplyAction(attrs_set, racing done): %v", err)
 	}
 
-	if !strings.Contains(buf.String(), "I-5c") {
-		t.Fatalf("expected an I-5c log line (action.FromStatus was re-validated to done in-Tx); got:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "attrs_set landed on a done triage task") {
+		t.Fatalf("expected an attrs_set-on-done log line (action.FromStatus was re-validated to done in-Tx); got:\n%s", buf.String())
 	}
 }

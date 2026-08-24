@@ -41,25 +41,26 @@ import (
 // makes an empty row impossible; that is not true, these two seed calls
 // prove it, and a careful reviewer will find them independently).
 //
-// The real argument is REACHABILITY, not row content: can a task carrying
-// such a row ever actually GET to "done" while that row is still empty?
-// machine.go's full rule table has exactly THREE rules whose ToStatus is
-// "done" — ① the ordinary Manual rule (executing→done / awaiting→done), ②
-// its auto-approval sibling (executing→done, machine.go's own Condition
-// check), and ③ triage_done (working→done). Rules ① and ② both require
-// FromStatus ∈ {executing, awaiting} — and nothing in the ENTIRE rule table
-// ever moves a task out of captured/triaged/parked/ready/working (a triage
-// card's own statuses) INTO executing or awaiting: `start` only fires from
-// pending, `answer` only fires from awaiting, `reopen`/`reopen_triaged` only
-// fire FROM done/aborted, never INTO executing. So a triage-carrying task
-// can reach "done" only through rule ③, triage_done — and triage_done only
-// fires when orchestrator.ShouldAutoDone(children, detail) is true, whose
-// first conjunct is SourceClosed(detail)==true (triage_done.go). By the
-// time a task_triage row's OWN task is sitting in "done", that row's detail
-// necessarily already reports source_closed — it cannot still be the empty
-// seed. This is what actually makes "row exists" safe here: not that the
-// row was written by attrs_set, but that an empty row's task structurally
-// cannot be the task this guard is even asked about.
+// PR #987 review (LOW 12) correction, superseding this section's original
+// "reachability" argument: card machine v2 (docs/plans/
+// suggestion-as-state-transition-impl.md §3.3) deleted triage_done and its
+// ShouldAutoDone/SourceClosed auto-approval condition entirely — NewCardMachine
+// now has exactly ONE rule reaching "done" (working→done, Manual:true, no
+// Condition at all), reachable by a plain human click OR accept("done") on a
+// khi-suggested "done" verb. Neither path requires source_closed, or any
+// task_triage content at all, to be true first. So — unlike the ORIGINAL
+// (v1) version of this argument, which is now WRONG and must not be
+// trusted — a triage-carrying task CAN legitimately reach "done" while its
+// task_triage row is still the pristine empty seed (e.g. a human clicks
+// go→working→done on a card nobody ever ran attrs_set/park/note against).
+// That is fine: "row exists" was ALWAYS safe here for the reason given above
+// (lines 32-42) alone — a task_triage row is created ONLY by a genuine
+// triage/card-creation path (SeedTaskTriage / ResolveOrCapture's
+// tx.SeedTaskTriage), never by accident on an ordinary task — and that fact
+// does not depend on WHEN or via WHICH rule the task later reaches "done".
+// The row's mere existence, empty or not, already proves this is a real
+// triage card; there was never a need to additionally prove it is non-empty
+// by the time done arrives.
 //
 // PR-B reachability note (docs/plans/suggestion-as-state-transition-impl.md
 // §2, PR #986 review): api.machineFor (machine_select.go) now performs THIS
@@ -113,44 +114,34 @@ func resolveAttrsSetDoneTransition(sm *orchestrator.StateMachine, task *orchestr
 }
 
 // logAttrsSetOnDoneTriage is I-5c's visibility half: EVERY attrs_set that
-// lands on a done triage task via the guard above gets a log line, whether
-// or not it flips source_closed to false (a flip additionally becomes a
-// SweepReopen candidate on the next queue-sweep tick; a non-flip — the
-// "canonical source は closed のままで Slack にだけ続報が来た" case I-5c
-// names explicitly — would otherwise never be visible anywhere at all,
-// since nothing else reacts to it).
+// lands on a done triage task via the guard above gets a log line.
 //
-// Chosen form (this PR's own decision, per the design doc's "同じ形にする
-// か queue へ出すかをこの PR で決める"): log only, matching the precedent
-// 決定16's MissingCanonicalSourceGuidance already set (queue_sweep.go's
-// logCanonicalSourceBreaches) — there is no queue-presentation surface for
-// a "guidance" kind of entry yet, and inventing one for a single new kind
-// here would be scope creep the design doc itself defers ("キューへの提示
-// は両方の kind をまとめて着地させる" — see 12節 B-5/B-6's own framing).
-// Unlike the breach report, this does NOT need change-fingerprinting: each
-// attrs_set is already a discrete, rare event by construction (bounded by
-// how often a workspace's ingestion tick runs), not a persistent state that
-// would otherwise re-log every sweep tick forever.
-//
-// slog.Warn, not slog.Info (2026-08-19 fix, Opus review N-1): the precedent
-// this comment cites — logCanonicalSourceBreaches — actually logs its real
-// breach case at Warn, not Info (queue_sweep.go). I-5c is doc'd as 決定16の
-// 契約違反ケースの防御 (the same class of "this card needs a human's
-// attention" signal), and boid's default log level is info today — but the
-// moment an operator sets `log.level: warn` (config-yaml.md), an Info line
-// disappears silently while every OTHER 決定16-class signal in this
-// codebase stays visible at Warn. See attrs_set_done_test.go's
-// TestLogAttrsSetOnDoneTriage_LogsAtWarnLevel, which fails against an
-// Info-level reimplementation.
+// slog.Debug, NOT slog.Warn (PR #987 review, MEDIUM 11 — downgraded from
+// v1's Warn): when this log line was introduced (I-5c, docs/plans/
+// ingestion-identity.md PR-5), a done card receiving attrs_set was
+// specifically the signal that SweepReopen (I-5, auto-reopen) might have a
+// candidate on its next tick — a "this card needs a human's attention"
+// event worth Warn, mirroring 決定16's MissingCanonicalSourceGuidance
+// precedent (queue_sweep.go's now-also-deleted logCanonicalSourceBreaches).
+// Card machine v2 (docs/plans/suggestion-as-state-transition-impl.md §3.3)
+// retires auto-reopen entirely: khi writing observed/suggestion data onto a
+// done card (most commonly a "reopen" suggestion for a human to accept, see
+// NewCardMachine's own doc comment on why "answered" reaches done/dropped)
+// is now the ORDINARY, EXPECTED way a done card receives new information —
+// not a signal anything is wrong or needs attention. Keeping this at Warn
+// would flood the daemon log with an entry for every routine done-card
+// observation once khi's real ingestion volume hits it. The line survives
+// at Debug purely as an ops trace (did an attrs_set actually land here,
+// and was the source reported closed at the time) — not a call to action.
 func logAttrsSetOnDoneTriage(taskTriage TaskTriageStore, taskID string) {
 	if taskTriage == nil {
 		return
 	}
 	tt, err := taskTriage.GetTaskTriage(taskID)
 	if err != nil {
-		slog.Warn("I-5c: attrs_set landed on a done triage task, but re-reading task_triage failed", "task_id", taskID, "error", err)
+		slog.Debug("attrs_set landed on a done triage task, but re-reading task_triage failed", "task_id", taskID, "error", err)
 		return
 	}
-	slog.Warn("I-5c: attrs_set landed on a done triage task",
+	slog.Debug("attrs_set landed on a done triage task",
 		"task_id", taskID, "source_closed", orchestrator.SourceClosed(tt.Detail))
 }
