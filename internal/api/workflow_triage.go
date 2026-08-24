@@ -838,9 +838,16 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		return nil, statusErrorForGetTaskErr(err)
 	}
 	if task.Status != orchestrator.TaskStatusParked {
+		// PR-3 (suggestion 状態遷移化 follow-up): append the same
+		// rule-table-derived "what CAN be applied from here" hint
+		// applyAnswered's generic verb-apply-failure path uses
+		// (availableCardActionsHint, suggestion_accept.go) — this early
+		// status check is go's own equivalent of that generic path (go never
+		// reaches sm.Apply directly; see this function's own doc comment),
+		// and both a direct "go" click and accept(go) share this message.
 		return nil, &StatusError{
 			Code:    http.StatusConflict,
-			Message: fmt.Sprintf("accept(go): cannot dispatch task in status %q (must be parked)", task.Status),
+			Message: fmt.Sprintf("accept(go): cannot dispatch task in status %q (must be parked); %s", task.Status, availableCardActionsHint(task.Status)),
 		}
 	}
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -93,6 +94,29 @@ func validateSuggestionAttr(raw json.RawMessage) (string, error) {
 func applyParkSideEffectFromSuggestion(tx TxStore, taskID string, params suggestionParams) error {
 	p := &parkPayload{WakeAt: params.WakeAt, WakeTaskID: params.WakeTaskID}
 	return applyParkSideEffect(tx, taskID, p)
+}
+
+// availableCardActionsHint returns a human-readable clause naming which
+// card-lifecycle verbs CAN be applied from status right now — e.g. "from
+// status=parked you can apply: go, working, drop" — or a "no further
+// transitions available" fallback when AvailableActions(status) is empty.
+//
+// PR-3 (suggestion 状態遷移化 follow-up): before this, an accept whose verb
+// didn't match the card's current status (e.g. accept(done) on a parked
+// card) surfaced orchestrator.StateMachine.Apply's own raw `no transition for
+// action %q from status %q` — accurate but useless to whoever clicked
+// Accept, since it says nothing about what WOULD have worked. Reusing
+// AvailableActions(status) — the exact same rule-table-derived list the Web
+// UI's action bar (TaskActionBar) already renders as buttons for this status
+// — means this hint can never claim something the UI itself would not also
+// offer, and can never drift from the rule table by hand-copying a verb list
+// into an error-message template.
+func availableCardActionsHint(status orchestrator.TaskStatus) string {
+	available := orchestrator.NewCardMachine().AvailableActions(status)
+	if len(available) == 0 {
+		return fmt.Sprintf("status=%s has no further transitions available", status)
+	}
+	return fmt.Sprintf("from status=%s you can apply: %s", status, strings.Join(available, ", "))
 }
 
 // noSuggestionToAcceptErr is applyAnswered's signal for "answer:accept was
@@ -208,7 +232,17 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 		verbAction := &orchestrator.Action{TaskID: taskID, Type: sugg.Verb, Actor: orchestrator.ActorFromContext(ctx)}
 		verbApplied, vaerr := sm.Apply(applied, verbAction)
 		if vaerr != nil {
-			return &StatusError{Code: http.StatusConflict, Message: vaerr.Error()}
+			// PR-3: replace sm.Apply's raw `no transition for action %q from
+			// status %q` (vaerr.Error(), still logged nowhere — this message IS
+			// the only trace) with one that also says what WOULD have worked,
+			// via availableCardActionsHint's own doc comment.
+			return &StatusError{
+				Code: http.StatusConflict,
+				Message: fmt.Sprintf(
+					"suggestion (verb=%s) cannot be applied from status=%s; %s",
+					sugg.Verb, applied.Status, availableCardActionsHint(applied.Status),
+				),
+			}
 		}
 		verbAction.FromStatus = applied.Status
 		verbAction.ToStatus = verbApplied.Status
