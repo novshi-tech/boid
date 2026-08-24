@@ -274,6 +274,23 @@ func TestTaskDetailSuggestionSection_GoVerb_AcceptButtonMatchesPrimaryGoWeight(t
 	}
 }
 
+// verbApplicableStatus is card machine v2's own single valid FromStatus per
+// verb (machine_card.go's rule table — go/working/drop only from parked,
+// park/done only from working, reopen only from done). PR-3 added
+// components.SuggestionInapplicable, which hides the Accept button entirely
+// when a suggestion's verb doesn't match the task's CURRENT status — so
+// every render test below that wants to see a LIVE Accept button (as opposed
+// to the dedicated inapplicable-message tests, further down) must pass the
+// one status each verb actually applies from, not an arbitrary card status.
+var verbApplicableStatus = map[string]orchestrator.TaskStatus{
+	"go":      orchestrator.TaskStatusParked,
+	"working": orchestrator.TaskStatusParked,
+	"drop":    orchestrator.TaskStatusParked,
+	"park":    orchestrator.TaskStatusWorking,
+	"done":    orchestrator.TaskStatusWorking,
+	"reopen":  orchestrator.TaskStatusDone,
+}
+
 // TestTaskDetailSuggestionSection_NonGoVerb_AcceptButtonStaysCompact is the
 // negative twin: every non-go, non-drop verb's accept keeps the original
 // compact styling — only "go" carries the "this dispatches real work"
@@ -285,7 +302,7 @@ func TestTaskDetailSuggestionSection_NonGoVerb_AcceptButtonStaysCompact(t *testi
 	for _, verb := range []string{"working", "park", "done", "reopen"} {
 		suggestion := orchestrator.Suggestion{Verb: verb}
 		var buf bytes.Buffer
-		if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusWorking, suggestion).Render(context.Background(), &buf); err != nil {
+		if err := TaskDetailSuggestionSection("task-1", verbApplicableStatus[verb], suggestion).Render(context.Background(), &buf); err != nil {
 			t.Fatalf("render (%s): %v", verb, err)
 		}
 		html := buf.String()
@@ -367,7 +384,7 @@ func TestTaskDetailSuggestionSection_NonConfirmingVerbs_NoConfirmDialog(t *testi
 	for _, verb := range []string{"go", "working", "done", "reopen"} {
 		suggestion := orchestrator.Suggestion{Verb: verb}
 		var buf bytes.Buffer
-		if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusWorking, suggestion).Render(context.Background(), &buf); err != nil {
+		if err := TaskDetailSuggestionSection("task-1", verbApplicableStatus[verb], suggestion).Render(context.Background(), &buf); err != nil {
 			t.Fatalf("render (%s): %v", verb, err)
 		}
 		html := buf.String()
@@ -518,6 +535,94 @@ func TestTaskDetailSuggestionSection_UnknownVerb_StillRendersTextWithNeutralClas
 	}
 	if !strings.Contains(html, ">mystery<") {
 		t.Errorf("expected the unknown verb's literal text to still render, got: %s", html)
+	}
+}
+
+// ---- PR-3 (suggestion 状態遷移化 follow-up): 適用不能な suggestion の防御 ----
+//
+// cardVerbApplicableStatuses is every status a verb's own card-machine rule
+// (machine_card.go) actually fires from — the exhaustive twin of
+// verbApplicableStatus above (which only names ONE status per verb; "reopen"
+// alone has two, done AND dropped).
+var cardVerbApplicableStatuses = map[string]map[orchestrator.TaskStatus]bool{
+	"go":      {orchestrator.TaskStatusParked: true},
+	"working": {orchestrator.TaskStatusParked: true},
+	"drop":    {orchestrator.TaskStatusParked: true},
+	"park":    {orchestrator.TaskStatusWorking: true},
+	"done":    {orchestrator.TaskStatusWorking: true},
+	"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
+}
+
+// TestTaskDetailSuggestionSection_InapplicableVerb_HidesAcceptShowsMessageAndReject
+// is the fix's core render pin: accept("done") on a card that is currently
+// "parked" (done only fires from "working" — machine_card.go) used to render
+// a live Accept button that 409'd on click with an opaque `no transition for
+// action "done" from status "parked"`. Now: no Accept button, a
+// plain-language explanation naming both the verb and the status, and
+// Reject still present (an inapplicable suggestion must remain dismissible —
+// this PR's own description covers why the queue predicate itself keeps
+// showing it).
+func TestTaskDetailSuggestionSection_InapplicableVerb_HidesAcceptShowsMessageAndReject(t *testing.T) {
+	suggestion := orchestrator.Suggestion{Verb: "done", Reason: "looks finished"}
+
+	var buf bytes.Buffer
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusParked, suggestion).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if strings.Contains(html, ">Accept: done<") {
+		t.Errorf("Accept button must not render for an inapplicable verb/status combo; got: %s", html)
+	}
+	if !strings.Contains(html, "done") || !strings.Contains(html, "parked") {
+		t.Errorf("inapplicable message should name the verb and the status; got: %s", html)
+	}
+	if !strings.Contains(html, `name="answer" value="reject"`) || !strings.Contains(html, ">Reject<") {
+		t.Errorf("Reject must still render for an inapplicable suggestion (it must remain dismissible); got: %s", html)
+	}
+	// The suggestion's own content (badge/reason) still renders regardless —
+	// only the Accept affordance is what's gated.
+	if !strings.Contains(html, "badge-verb-done") || !strings.Contains(html, "looks finished") {
+		t.Errorf("suggestion content should still render even when inapplicable; got: %s", html)
+	}
+}
+
+// TestTaskDetailSuggestionSection_AllVerbStatusCombinations_AcceptOnlyWhenApplicable
+// is the exhaustive 6-verb × 4-status (24 combination) render-level twin of
+// orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges:
+// Accept renders for exactly the 7 applicable combinations,
+// never for the other 17 — and Reject renders for ALL 24, since an
+// inapplicable suggestion must still be dismissible.
+func TestTaskDetailSuggestionSection_AllVerbStatusCombinations_AcceptOnlyWhenApplicable(t *testing.T) {
+	verbs := []string{"go", "working", "park", "drop", "done", "reopen"}
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusWorking,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusDropped,
+	}
+
+	for _, verb := range verbs {
+		for _, status := range statuses {
+			suggestion := orchestrator.Suggestion{Verb: verb}
+			var buf bytes.Buffer
+			if err := TaskDetailSuggestionSection("task-1", status, suggestion).Render(context.Background(), &buf); err != nil {
+				t.Fatalf("render (verb=%s status=%s): %v", verb, status, err)
+			}
+			html := buf.String()
+
+			wantAccept := cardVerbApplicableStatuses[verb][status]
+			hasAccept := strings.Contains(html, ">Accept: "+verb+"<")
+			if hasAccept != wantAccept {
+				t.Errorf("verb=%s status=%s: Accept button present=%v, want %v", verb, status, hasAccept, wantAccept)
+			}
+			if !strings.Contains(html, `name="answer" value="reject"`) {
+				t.Errorf("verb=%s status=%s: Reject must always render; got: %s", verb, status, html)
+			}
+			if !wantAccept && !strings.Contains(html, "detail-suggestion-inapplicable") {
+				t.Errorf("verb=%s status=%s: expected an inapplicable message in place of Accept; got: %s", verb, status, html)
+			}
+		}
 	}
 }
 

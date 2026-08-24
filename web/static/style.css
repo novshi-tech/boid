@@ -343,6 +343,29 @@ pre {
   display: inline-flex;
 }
 
+/* PR-3 (suggestion 状態遷移化 follow-up): shown IN PLACE OF the Accept form
+   when the suggestion's own verb cannot apply from the task's current status
+   (components.SuggestionInapplicable) — Reject (detail-suggestion-answer-form
+   above) still renders alongside this, so it is deliberately not styled as an
+   error/danger — an inapplicable suggestion is an expected state (the card
+   moved on since khi last wrote it), not a fault. */
+.detail-suggestion-inapplicable {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  align-self: center;
+}
+
+/* Queue/Parked row's compact twin of .detail-suggestion-inapplicable above —
+   taskTreeRow (task_tree.templ) has no Accept button to hide (the whole row
+   is a link to the detail page), so this badge is the only pre-click signal
+   that the verb shown won't actually apply. Full reason lives in the title
+   attribute (tooltip). */
+.badge-suggestion-inapplicable {
+  color: var(--muted);
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+
 /* The detail card is not the task list — .badge-verb-* is color-only there
    (task list policy: no heavy chips, see .task-row-meta .badge above), but
    the detail page already renders every other badge filled (status badge,

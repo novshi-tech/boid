@@ -142,6 +142,110 @@ func TestVerbBadgeClass_UnknownVerbFallsBackToNeutral(t *testing.T) {
 	}
 }
 
+// ---- PR-3 (suggestion 状態遷移化 follow-up): 適用不能な suggestion の防御 ----
+
+// TestTaskTreeRow_InapplicableVerbStatus_ShowsNotApplicableBadge pins the
+// queue/Parked row's half of the fix: unlike the task detail page (which has
+// a real Accept button to hide), this row is a link to the detail page with
+// no button at all — the only way to warn a reader BEFORE they click through
+// is a visible marker next to the verb badge. A suggestion whose verb
+// doesn't match the task's CURRENT status (done only fires from working,
+// machine_card.go — this task sits on parked) gets a "not applicable" badge
+// carrying the full reason as a tooltip (title attribute).
+func TestTaskTreeRow_InapplicableVerbStatus_ShowsNotApplicableBadge(t *testing.T) {
+	task := makeTreeTestTask("t1")
+	task.Status = orchestrator.TaskStatusParked
+	item := TreeItem{
+		Task:       task,
+		Suggestion: orchestrator.Suggestion{Verb: "done"},
+	}
+
+	var buf bytes.Buffer
+	if err := TaskTree([]TreeItem{item}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if !strings.Contains(html, "badge-suggestion-inapplicable") {
+		t.Errorf("expected the not-applicable badge for verb=done on a parked task, got: %s", html)
+	}
+	if !strings.Contains(html, "not applicable") {
+		t.Errorf("expected visible \"not applicable\" text, got: %s", html)
+	}
+	if !strings.Contains(html, "done") || !strings.Contains(html, "parked") {
+		t.Errorf("tooltip should name the verb and the status, got: %s", html)
+	}
+}
+
+// TestTaskTreeRow_ApplicableVerbStatus_NoNotApplicableBadge is the positive
+// twin: a suggestion whose verb DOES match the task's current status (go
+// fires from parked) renders no inapplicable marker at all.
+func TestTaskTreeRow_ApplicableVerbStatus_NoNotApplicableBadge(t *testing.T) {
+	task := makeTreeTestTask("t1")
+	task.Status = orchestrator.TaskStatusParked
+	item := TreeItem{
+		Task:       task,
+		Suggestion: orchestrator.Suggestion{Verb: "go"},
+	}
+
+	var buf bytes.Buffer
+	if err := TaskTree([]TreeItem{item}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if strings.Contains(html, "badge-suggestion-inapplicable") {
+		t.Errorf("expected no not-applicable badge for verb=go on a parked task, got: %s", html)
+	}
+}
+
+// TestSuggestionInapplicable_AllVerbStatusCombinations mirrors
+// orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges
+// at the components-package level: exactly 7 of the 24 (verb, status)
+// combinations are applicable.
+func TestSuggestionInapplicable_AllVerbStatusCombinations(t *testing.T) {
+	applicable := map[string]map[orchestrator.TaskStatus]bool{
+		"go":      {orchestrator.TaskStatusParked: true},
+		"working": {orchestrator.TaskStatusParked: true},
+		"drop":    {orchestrator.TaskStatusParked: true},
+		"park":    {orchestrator.TaskStatusWorking: true},
+		"done":    {orchestrator.TaskStatusWorking: true},
+		"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
+	}
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusWorking,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusDropped,
+	}
+
+	for verb, byStatus := range applicable {
+		for _, status := range statuses {
+			wantInapplicable := !byStatus[status]
+			got := SuggestionInapplicable(verb, status)
+			if got != wantInapplicable {
+				t.Errorf("SuggestionInapplicable(%s, %s) = %v, want %v", verb, status, got, wantInapplicable)
+			}
+		}
+	}
+}
+
+// TestSuggestionInapplicable_EmptyVerb_NeverInapplicable pins that an empty
+// verb (the zero-value "no suggestion" case) never counts as inapplicable —
+// callers gate on Suggestion.Verb != "" separately (taskTreeRow,
+// TaskDetailSuggestionSection) and must not ALSO get an inapplicable badge
+// for a task with no suggestion at all.
+func TestSuggestionInapplicable_EmptyVerb_NeverInapplicable(t *testing.T) {
+	for _, status := range []orchestrator.TaskStatus{
+		orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking,
+		orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped,
+	} {
+		if SuggestionInapplicable("", status) {
+			t.Errorf("SuggestionInapplicable(\"\", %s) = true, want false", status)
+		}
+	}
+}
+
 // TestTaskTreeRow_UnknownVerb_StillRendersTextWithNeutralClass is the
 // render-level regression for the queue/Parked row half of BD-8 残件4: an
 // unrecognized verb must still show its literal text (rule 5, 隠さない) —

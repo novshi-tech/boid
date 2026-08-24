@@ -313,6 +313,26 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 // ever renders when suggestion.Verb != "" — a suggestion only ever exists on
 // a task_triage sidecar row (a card) in the first place, so which machine
 // applies is never actually ambiguous at this call site.
+//
+// PR-3 (suggestion 状態遷移化 follow-up) adds a SECOND, narrower gate inside
+// the block CanApplyManualAction("answered", status) admits: card machine v2
+// pins exactly one status per VERB (e.g. "done" only fires from "working",
+// machine_card.go's own doc comment), but CanApplyManualAction("answered",
+// status) alone says yes for ALL FOUR card statuses regardless of the
+// suggestion's own verb — it only asks "can the answered ACTION apply here",
+// never "would THIS VERB actually transition from here". Before this PR, a
+// suggestion whose verb didn't match the card's current status (e.g. a
+// stale "done" suggestion sitting on a card a direct park click already
+// moved back to parked) still rendered a live-looking Accept button that
+// 409'd on click with `no transition for action "done" from status
+// "parked"`. components.SuggestionInapplicable (orchestrator.StateMachine.
+// CanApplyTransitionAction) is the single source of truth for "would this
+// SPECIFIC verb actually apply from this SPECIFIC status" — when it says no,
+// Accept is replaced by a plain-language explanation
+// (components.SuggestionInapplicableReason) but Reject still renders: an
+// inapplicable suggestion must remain dismissible, or it lingers in the
+// queue forever with no way to clear it (this PR's own description covers
+// why the queue predicate itself is NOT changed to hide it instead).
 templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus, suggestion orchestrator.Suggestion) {
 	if suggestion.Verb != "" {
 		<div class="detail-suggestion">
@@ -340,7 +360,15 @@ templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus,
 					// a Go string expression — three near-duplicate <form> bodies, same
 					// idiom TaskActionBar itself already uses for its own per-action
 					// onsubmit variants just above.
-					if suggestion.Verb == "drop" {
+					//
+					// PR-3: the whole three-way Accept branch is now gated on
+					// components.SuggestionInapplicable — see this templ's own doc
+					// comment above for why. Reject (below) is NOT inside this gate:
+					// it must always render here, or an inapplicable suggestion could
+					// never be cleared from the queue.
+					if components.SuggestionInapplicable(suggestion.Verb, status) {
+						<div class="detail-suggestion-inapplicable">{ components.SuggestionInapplicableReason(suggestion.Verb, status) }</div>
+					} else if suggestion.Verb == "drop" {
 						// Mirrors the kebab menu's direct "drop" item: SAME confirm text
 						// (tx.UnlinkAllForTask releases every identity bound to this card —
 						// this is exactly as irreversible via accept as via a direct click)
