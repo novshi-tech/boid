@@ -109,8 +109,10 @@ package orchestrator
 // triage_done is DELIBERATELY NOT named "done", even though the split (PR-B)
 // removed the ORIGINAL reason for that (the unified machine's shared
 // IsManualAction namespace, where reusing "done" would have collided with
-// NewExecutionMachine's own Manual:true done rules and let khi push a
-// completion `boid action send --type done` was never evaluating). Renaming
+// NewExecutionMachine's own Manual:true done rules and let khi push
+// `boid action send --type done` from working, asserting a completion
+// without the daemon ever evaluating 決定15's 「全子 closed ∧
+// observed.source_closed」). Renaming
 // action HISTORY is out of scope for this refactor regardless (docs/plans/
 // suggestion-as-state-transition-impl.md §0's "action 履歴の rename はやらない"
 // — existing `triage_done` rows stay `triage_done`); only a later PR that

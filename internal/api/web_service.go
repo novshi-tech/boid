@@ -84,11 +84,12 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 
 	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): task
 	// detail is a generic per-task view (any task, card or ordinary), so the
-	// governing machine is resolved dynamically via machineFor.
-	sm, err := machineFor(s.TaskTriage, task)
-	if err != nil {
-		return nil, err
-	}
+	// governing machine is resolved dynamically. machineForDisplay (not
+	// machineFor) — this is a pure read whose only use of the result is
+	// AvailableActions for display; a transient task_triage lookup failure
+	// must not turn "show me this task" into a 503 (PR #986 review,
+	// Blocker 2 — see machineForDisplay's own doc comment).
+	sm := machineForDisplay(s.TaskTriage, task)
 
 	return &TaskDetailView{
 		Task:             task,

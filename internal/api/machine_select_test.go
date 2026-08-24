@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -86,6 +87,103 @@ func TestMachineFor_LookupError_ReturnsServiceUnavailable(t *testing.T) {
 	}
 }
 
+// TestMachineFor_NoConfirmedRow_PreExecutionStatus_FallsBackToCardMachine is
+// the regression test for PR #986 review Blocker 1: task_create.go's
+// SeedTaskTriage is deliberately best-effort at creation time, so a task can
+// legitimately sit in captured/triaged/parked/ready/working with NO
+// task_triage row yet. Before this fix, machineFor collapsed "no confirmed
+// row" straight to NewExecutionMachine, which has no rule for ANY of these
+// five statuses or ANY card verb — permanently stranding such a task (every
+// card action 400s, delete is the only way out). machineFor must instead
+// fall back to NewCardMachine by STATUS in this case, covering BOTH ways "no
+// confirmed row" can arise: a nil store, and a non-nil store that genuinely
+// has no row (sql.ErrNoRows).
+func TestMachineFor_NoConfirmedRow_PreExecutionStatus_FallsBackToCardMachine(t *testing.T) {
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusCaptured,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusReady,
+		orchestrator.TaskStatusWorking,
+	}
+	for _, status := range statuses {
+		task := &orchestrator.Task{ID: "t1", Status: status}
+
+		t.Run(string(status)+"/nil store", func(t *testing.T) {
+			sm, err := machineFor(nil, task)
+			if err != nil {
+				t.Fatalf("machineFor: %v", err)
+			}
+			if !sm.IsManualAction("triage") && !sm.IsManualAction("park") && !sm.IsManualAction("drop") && !sm.IsManualAction("attrs_set") {
+				t.Errorf("status %s, nil store: expected the card machine, got one with no card verbs", status)
+			}
+		})
+
+		t.Run(string(status)+"/store present but no row", func(t *testing.T) {
+			store := &stubTriageStore{} // empty: GetTaskTriage returns errNoTriageRow
+			sm, err := machineFor(store, task)
+			if err != nil {
+				t.Fatalf("machineFor: %v", err)
+			}
+			if !sm.IsManualAction("attrs_set") {
+				t.Errorf("status %s, rowless store: expected the card machine (attrs_set manual), got the execution machine", status)
+			}
+		})
+	}
+}
+
+// TestMachineFor_NoConfirmedRow_DoneOrAborted_StillPicksExecutionMachine is
+// the safety-net half of the Blocker 1 fix: done/aborted must NOT get the
+// same status-based fallback, because a done card and a done ordinary task
+// are indistinguishable by status alone — only a CONFIRMED sidecar row may
+// decide for those two statuses (same reasoning resolveReopenVariant already
+// applies). This pins that the fix does not overreach into guessing on the
+// genuinely ambiguous statuses.
+func TestMachineFor_NoConfirmedRow_DoneOrAborted_StillPicksExecutionMachine(t *testing.T) {
+	for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted} {
+		task := &orchestrator.Task{ID: "t1", Status: status}
+		store := &stubTriageStore{} // no row
+		sm, err := machineFor(store, task)
+		if err != nil {
+			t.Fatalf("machineFor: %v", err)
+		}
+		if !sm.IsManualAction("reopen") || sm.IsManualAction("triage") {
+			t.Errorf("status %s: expected the execution machine (unconfirmed row must not fall back by status for done/aborted), got %+v", status, sm)
+		}
+	}
+}
+
+// TestMachineForDisplay_LookupError_FallsBackByStatus is the regression test
+// for PR #986 review Blocker 2: a genuine (non-ErrNoRows) task_triage lookup
+// failure must not propagate out of a read-only call site — machineForDisplay
+// swallows the error and guesses by status instead, same fallback rule
+// machineFor's own "no confirmed row" branch uses.
+func TestMachineForDisplay_LookupError_FallsBackByStatus(t *testing.T) {
+	failingStore := &stubTriageStore{getErr: errors.New("db unavailable")}
+
+	t.Run("pre-execution status falls back to card machine", func(t *testing.T) {
+		task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusTriaged}
+		sm := machineForDisplay(failingStore, task)
+		if sm == nil {
+			t.Fatal("machineForDisplay returned nil, want a usable machine")
+		}
+		if !sm.IsManualAction("attrs_set") {
+			t.Error("expected the card machine for a pre-execution-status task")
+		}
+	})
+
+	t.Run("done status falls back to execution machine", func(t *testing.T) {
+		task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusDone}
+		sm := machineForDisplay(failingStore, task)
+		if sm == nil {
+			t.Fatal("machineForDisplay returned nil, want a usable machine")
+		}
+		if !sm.IsManualAction("reopen") || sm.IsManualAction("triage") {
+			t.Error("expected the execution machine for a done-status task (ambiguous statuses never guess by status)")
+		}
+	})
+}
+
 // TestHasTaskTriageRow_SharedBySelectorAndReopenRouting pins that
 // hasTaskTriageRow (the primitive machineFor and resolveReopenVariant both
 // now share) reports the correct bool/error split across all three of a
@@ -113,4 +211,91 @@ func TestHasTaskTriageRow_SharedBySelectorAndReopenRouting(t *testing.T) {
 			t.Fatalf("isCard=%v err=%v, want false/non-nil", isCard, err)
 		}
 	})
+}
+
+// ---- End-to-end regression tests for PR #986 review's two Blockers ----
+
+// TestApplyAction_AttrsSet_NoTaskTriageRow_PreExecutionStatus_LazilyCreatesRow
+// is Blocker 1's full-stack regression: not just that machineFor PICKS the
+// card machine for a rowless captured/triaged/parked/ready/working task
+// (machine_select_test.go's unit tests above), but that a REAL ApplyAction
+// call for a card verb against such a task actually SUCCEEDS end to end and
+// lazily creates the task_triage row via the side effect
+// (applyAttrsSetSideEffect) — restoring the exact recovery path
+// task_create.go's SeedTaskTriage doc comment promises when the seed at
+// creation time fails.
+func TestApplyAction_AttrsSet_NoTaskTriageRow_PreExecutionStatus_LazilyCreatesRow(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusCaptured, Behavior: "dev", Payload: []byte(`{}`)}
+	// txStore.triage is deliberately left nil/empty — simulating a
+	// SeedTaskTriage failure at task-creation time (task_create.go logs and
+	// continues rather than failing the create).
+	txStore := &recordingTxStore{task: task}
+	svc := &TaskWorkflowService{
+		Tasks:      &stubTaskStore{task: task},
+		Tx:         recordingTransactor{store: txStore},
+		Meta:       stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+		TaskTriage: txStore,
+	}
+
+	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "attrs_set",
+		Payload: []byte(`{"urgency":"now"}`),
+	})
+	if err != nil {
+		t.Fatalf("ApplyAction(attrs_set) on a rowless captured task: %v (Blocker 1: the task must not be permanently stuck)", err)
+	}
+	if result.Task.Status != orchestrator.TaskStatusCaptured {
+		t.Fatalf("status = %q, want unchanged (captured; attrs_set is non-transitioning)", result.Task.Status)
+	}
+	got := txStore.triage["t1"]
+	if got == nil {
+		t.Fatal("expected the task_triage row to be lazily created by applyAttrsSetSideEffect")
+	}
+	if got.Urgency != "now" {
+		t.Fatalf("Urgency = %q, want %q (the side effect must actually have run, not just been permitted)", got.Urgency, "now")
+	}
+}
+
+// TestTaskAppServiceGetTaskDetail_TaskTriageLookupError_StillSucceeds is
+// Blocker 2's regression: TaskAppService.GetTaskDetail is a pure read, so a
+// genuine (non-ErrNoRows) task_triage lookup failure must not fail the whole
+// call — machineForDisplay's fallback keeps the page rendering.
+func TestTaskAppServiceGetTaskDetail_TaskTriageLookupError_StillSucceeds(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev"}
+	svc := &TaskAppService{
+		Tasks:      &stubTaskStore{task: task},
+		Actions:    stubActionStore{},
+		Jobs:       &stubJobStore{},
+		TaskTriage: &stubTriageStore{getErr: errors.New("db unavailable")},
+	}
+
+	got, err := svc.GetTaskDetail(task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskDetail() error = %v, want nil (a transient task_triage lookup failure must not fail a pure read)", err)
+	}
+	if got.Task.ID != task.ID {
+		t.Fatalf("task id = %q, want %q", got.Task.ID, task.ID)
+	}
+}
+
+// TestWebAppServiceGetTaskDetail_TaskTriageLookupError_StillSucceeds is the
+// Web UI's half of the same Blocker 2 regression: before the fix,
+// WebHandler.TaskDetail would have rendered this as an opaque "Task not
+// found" 404 for what is actually just a transient DB blip.
+func TestWebAppServiceGetTaskDetail_TaskTriageLookupError_StillSucceeds(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev"}
+	svc := &WebAppService{
+		Tasks:      &stubTaskStore{task: task},
+		Actions:    stubActionStore{},
+		Jobs:       &stubJobStore{},
+		TaskTriage: &stubTriageStore{getErr: errors.New("db unavailable")},
+	}
+
+	got, err := svc.GetTaskDetail(task.ID)
+	if err != nil {
+		t.Fatalf("GetTaskDetail() error = %v, want nil (a transient task_triage lookup failure must not fail a pure read)", err)
+	}
+	if got.Task.ID != task.ID {
+		t.Fatalf("task id = %q, want %q", got.Task.ID, task.ID)
+	}
 }

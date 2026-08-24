@@ -19,7 +19,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -219,28 +218,30 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	}
 }
 
-// TestApplyAction_Answered_NoTaskTriageRow_RejectedByMachineFor pins a PR-B
-// behavior change (docs/plans/suggestion-as-state-transition-impl.md §2):
-// before the machine split, `answered` was reachable via the public
-// ApplyAction path against ANY task sitting in a preExecutionStatuses status
-// (`boid action send --type answered`), regardless of whether that task
-// actually carried a task_triage sidecar row — the unified machine matched
-// purely on FromStatus, never checking the sidecar for ELIGIBILITY (only
-// applyAnsweredSideEffect's own side-effect checked it, and tolerated a
-// miss). Now that machineFor picks NewCardMachine vs NewExecutionMachine by
-// sidecar existence, a task with no row is routed to NewExecutionMachine —
-// which has no "triaged" status or "answered" rule at all — so the request
-// is rejected with 400 before ever reaching applyAnsweredSideEffect. In
-// practice every real card gets its sidecar row seeded at creation
-// (task_create.go's CreateTask / task_resolve_or_capture.go's
-// ResolveOrCapture both call SeedTaskTriage unconditionally for any
-// pre-execution initial_status), so this only affects a task manufactured
-// directly into a pre-execution status with no sidecar — not a real
-// production path today. See TestApplyAnsweredSideEffect_NoExistingTriageRow_NoOp
-// below for the (still-preserved) invariant this test used to pin: the
-// side-effect function ITSELF, called directly, still tolerates a missing
-// row without creating a phantom one.
-func TestApplyAction_Answered_NoTaskTriageRow_RejectedByMachineFor(t *testing.T) {
+// TestApplyAction_Answered_NoTaskTriageRow_PreExecutionStatus_StillSucceeds
+// pins the FULL round trip of PR #986 review's Blocker 1 fix, for the
+// `answered` verb specifically: `answered` is Manual:true, so (pre-PR-B) it
+// was reachable via the public ApplyAction path against ANY task sitting in
+// a preExecutionStatuses status (`boid action send --type answered`),
+// regardless of whether that task actually carried a task_triage sidecar
+// row — the unified machine matched purely on FromStatus, never checking
+// the sidecar for ELIGIBILITY (only applyAnsweredSideEffect's own
+// side-effect checked it, and tolerated a miss).
+//
+// An EARLIER version of PR-B's machineFor collapsed "no confirmed sidecar
+// row" straight to NewExecutionMachine — which has no "triaged" status or
+// "answered" rule at all — so this exact scenario 400'd before ever reaching
+// applyAnsweredSideEffect (a real, if narrow, regression the PR #986 review
+// caught as part of Blocker 1: a task in a pre-execution status can
+// legitimately have no row yet, since task_create.go's SeedTaskTriage is
+// deliberately best-effort at creation time). machineFor's Blocker-1 fix
+// (machine_select.go's isCardLifecycleStatus fallback) restores
+// NewCardMachine for exactly this case, which restores this original
+// behavior: the request succeeds, and — per
+// TestApplyAnsweredSideEffect_NoExistingTriageRow_NoOp below —
+// applyAnsweredSideEffect's own no-op-on-miss behavior means no phantom row
+// gets created either.
+func TestApplyAction_Answered_NoTaskTriageRow_PreExecutionStatus_StillSucceeds(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{
@@ -248,31 +249,29 @@ func TestApplyAction_Answered_NoTaskTriageRow_RejectedByMachineFor(t *testing.T)
 		Tx:    recordingTransactor{store: txStore},
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 		// TaskTriage deliberately wired (not nil) so machineFor performs a
-		// REAL lookup and finds no row — as opposed to falling back on a nil
-		// store, which would be a different (and less interesting) reason
-		// to land on NewExecutionMachine.
+		// REAL lookup and confirms no row — as opposed to falling back on a
+		// nil store, which would be a different (and less interesting)
+		// reason to land on the same isCardLifecycleStatus fallback.
 		TaskTriage: txStore,
 	}
 
 	payload, _ := json.Marshal(map[string]string{"answer": "reject"})
-	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
-	if err == nil {
-		t.Fatal("expected rejection: a task with no task_triage row is routed to NewExecutionMachine, which has no \"answered\" rule")
-	}
-	se, ok := err.(*StatusError)
-	if !ok || se.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 StatusError, got %v", err)
+	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload}); err != nil {
+		t.Fatalf("ApplyAction(answered) with no pre-existing task_triage row: %v", err)
 	}
 	if txStore.triage["t1"] != nil {
-		t.Fatalf("expected NO task_triage row to be created, got: %+v", txStore.triage["t1"])
+		t.Fatalf("expected NO task_triage row to be created (applyAnsweredSideEffect's own no-op-on-miss behavior), got: %+v", txStore.triage["t1"])
 	}
 }
 
 // TestApplyAnsweredSideEffect_NoExistingTriageRow_NoOp pins Opus review
 // finding #4 (2026-08-19 revisit of PR-3), decoupled from ApplyAction's own
 // routing (see the PR-B note on
-// TestApplyAction_Answered_NoTaskTriageRow_RejectedByMachineFor above for why
-// that decoupling is now necessary): applyAnsweredSideEffect's
+// TestApplyAction_Answered_NoTaskTriageRow_PreExecutionStatus_StillSucceeds
+// above — the two now assert compatible things at different layers, but are
+// kept as separate tests so a future regression in EITHER machineFor's
+// routing OR the side effect's own no-op-on-miss behavior fails by name):
+// applyAnsweredSideEffect's
 // GetTaskTriage-miss path (sql.ErrNoRows) must NOT create an empty
 // task_triage row. Unlike applyAttrsSetSideEffect (which keeps creating an
 // empty row on miss — see its own doc comment) `answered` has nothing
