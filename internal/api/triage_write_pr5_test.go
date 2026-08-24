@@ -88,8 +88,14 @@ func TestApplyAction_AttrsSet_RejectsUnknownUrgency(t *testing.T) {
 		if !errors.As(err, &se) || se.Code != 400 {
 			t.Fatalf("payload %s: err = %v, want a 400 StatusError", payload, err)
 		}
-		if txStore.triage["t1"] != nil {
-			t.Fatalf("payload %s: rejected attrs_set still wrote a sidecar row", payload)
+		// PR-B: newTriageWorkflowService now seeds an EMPTY task_triage row
+		// up front (machineFor needs one present to pick NewCardMachine), so
+		// a nil check can no longer distinguish "rejected before any write"
+		// from "row existed all along" — assert the row's fold-relevant
+		// fields are still at their zero value instead (still nothing
+		// written), which is what this test actually cares about.
+		if tt := txStore.triage["t1"]; tt == nil || tt.Urgency != "" || tt.Kind != "" || len(tt.Detail) != 0 {
+			t.Fatalf("payload %s: rejected attrs_set wrote into the sidecar row, got %+v", payload, tt)
 		}
 	}
 }

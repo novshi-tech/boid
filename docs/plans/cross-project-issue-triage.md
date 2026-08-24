@@ -1074,7 +1074,9 @@ action (event) であり、 「新しい state をまるごと PATCH で上書�
 ApplyAction` → `sm.Apply()` → `CreateAction` (`actions` テーブル、 `ParkedFrom` が読むのと
 同じイベントログ)。 workspace scoping も既にかかっている。 足りないのは:
 
-1. `internal/orchestrator/machine.go` の `DefaultMachine()` Rules に khi の decisions 語彙
+1. `internal/orchestrator/machine.go` の `DefaultMachine()` Rules（2026-08-24 PR-B で
+   `machine_card.go` の `NewCardMachine()` に分割・改名済み — 歴史記録として当時の名前を残す）
+   に khi の decisions 語彙
    (`attrs_set` / `child_added` / `child_specced` / `child_dispatched` / `child_closed`) を
    非遷移 action (`ToStatus` 空、`Manual: true`) として追加する
 2. 各 action type ごとに `task_triage.detail` を更新する side-effect 関数を書く。 先例は

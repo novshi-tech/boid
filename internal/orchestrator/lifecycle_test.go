@@ -189,7 +189,7 @@ func TestLifecycleToStateMachine_DoneRequest_AutoAdvancesWithMessage(t *testing.
 	// does (via the exported types JSON-tagged fields) so we exercise the same
 	// shape the state machine will see at runtime.
 	payload := []byte(`{"lifecycle":{"executed":true,"done":{"message":"PR #439 merged"}}}`)
-	sm := orchestrator.DefaultMachine()
+	sm := orchestrator.NewExecutionMachine()
 	outcome := sm.AdvanceFull(&orchestrator.Task{
 		Status:  orchestrator.TaskStatusExecuting,
 		Payload: payload,
@@ -229,7 +229,7 @@ func TestLifecycleToStateMachine_DoneRequestAloneDoesNotAdvance(t *testing.T) {
 	}
 
 	payload := []byte(`{"lifecycle":{"executed":false,"done":{"message":"x"}}}`)
-	sm := orchestrator.DefaultMachine()
+	sm := orchestrator.NewExecutionMachine()
 	if outcome := sm.AdvanceFull(&orchestrator.Task{
 		Status: orchestrator.TaskStatusExecuting, Payload: payload,
 	}); outcome != nil {

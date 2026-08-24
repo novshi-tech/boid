@@ -60,6 +60,28 @@ import (
 // seed. This is what actually makes "row exists" safe here: not that the
 // row was written by attrs_set, but that an empty row's task structurally
 // cannot be the task this guard is even asked about.
+//
+// PR-B reachability note (docs/plans/suggestion-as-state-transition-impl.md
+// §2, PR #986 review): api.machineFor (machine_select.go) now performs THIS
+// SAME getTriage lookup even earlier than this function does, to pick
+// NewCardMachine vs NewExecutionMachine for the whole ApplyAction call. For
+// the PRE-Tx call site (workflow_action.go, right after the task loads), a
+// "done"-status task only ever reaches this function on NewCardMachine —
+// which machineFor only selects for "done" when its OWN lookup found a row
+// (err == nil; done/aborted are deliberately excluded from machineFor's
+// status-based fallback, see machineFor's own doc comment). So the
+// sql.ErrNoRows branch and the `default:` genuine-error branch below are, via
+// that call site, reachable ONLY if this function's getTriage call disagrees
+// with the lookup machineFor just made moments earlier for the identical
+// task/store — i.e. a flaky store returning two different answers back to
+// back, not a real state change (nothing in this codebase deletes a
+// task_triage row once created — DeleteTaskTriage, orchestrator/task_triage.go,
+// currently has no production caller). The IN-Tx re-validation call
+// (workflow_action.go's skipTaskUpdate branch, using tx.GetTaskTriage) is the
+// one place these two branches remain meaningfully reachable: a genuine race
+// between the pre-Tx read and this Tx opening could still surface a
+// transient lookup error there, even though a real concurrent row deletion
+// is not something any current caller performs.
 func resolveAttrsSetDoneTransition(sm *orchestrator.StateMachine, task *orchestrator.Task, action *orchestrator.Action, getTriage func(string) (*orchestrator.TaskTriage, error)) (*orchestrator.Task, *StatusError) {
 	if action.Type == "attrs_set" && task.Status == orchestrator.TaskStatusDone && getTriage != nil {
 		_, err := getTriage(task.ID)

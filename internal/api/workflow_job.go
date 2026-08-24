@@ -90,7 +90,12 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + job.ProjectID}
 	}
 
-	sm := orchestrator.DefaultMachine()
+	// A Job's TaskID never refers to a card (a card never runs its own agent
+	// session — see machine.go's package doc comment; only its dispatched
+	// CHILDREN, which are ordinary tasks, ever have jobs), so
+	// NewExecutionMachine is unambiguous here without a machineFor lookup
+	// (PR-B).
+	sm := orchestrator.NewExecutionMachine()
 
 	jobFailedFrom := task.Status
 	action := &orchestrator.Action{TaskID: task.ID, Type: "job_failed", Actor: orchestrator.ActorTask(task.ID)}

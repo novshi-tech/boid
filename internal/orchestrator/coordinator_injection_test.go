@@ -31,7 +31,7 @@ func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_OnExitZero(t *testing.
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "main-hook"},
 	})
-	sm := orchestrator.DefaultMachine()
+	sm := orchestrator.NewExecutionMachine()
 
 	result, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err != nil {
@@ -70,7 +70,7 @@ func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_NotSetOnJobFailure(t *
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "main-hook"},
 	})
-	sm := orchestrator.DefaultMachine()
+	sm := orchestrator.NewExecutionMachine()
 
 	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
 	if err == nil {

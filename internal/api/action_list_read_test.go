@@ -44,6 +44,12 @@ func newActionListTestService(t *testing.T) (*TaskWorkflowService, *orchestrator
 			TaskBehaviors:       map[string]orchestrator.TaskBehavior{"triage": {}},
 			BaseBranch:          "main",
 		}},
+		// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2):
+		// machineFor needs this to pick NewCardMachine for the
+		// captured-status card tasks these tests create — same taskRepo,
+		// which already implements TaskTriageStore (wire.go wires it
+		// identically in production).
+		TaskTriage: taskRepo,
 	}
 	return svc, taskRepo
 }
@@ -67,6 +73,14 @@ func TestListActions_NotedRoundTrips(t *testing.T) {
 	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusCaptured, Behavior: "triage"}
 	if err := taskRepo.CreateTask(task); err != nil {
 		t.Fatalf("create task: %v", err)
+	}
+	// PR-B: seeds the task_triage row a real captured-status card always has
+	// by the time it exists (task_create.go's CreateTask does this at the
+	// app layer; this test calls the bare repository directly) — without it
+	// machineFor falls back to NewExecutionMachine, which has no "noted"
+	// rule at all.
+	if err := taskRepo.SeedTaskTriage(task.ID); err != nil {
+		t.Fatalf("seed task_triage: %v", err)
 	}
 
 	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
@@ -100,9 +114,17 @@ func TestListActions_ProjectScoping_NeverLeaksOtherProject(t *testing.T) {
 	if err := taskRepo.CreateTask(task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
+	// PR-B: see TestListActions_NotedRoundTrips's own comment for why this
+	// seed is needed (machineFor's card discriminator).
+	if err := taskRepo.SeedTaskTriage(task1.ID); err != nil {
+		t.Fatalf("seed task_triage for task1: %v", err)
+	}
 	task2 := &orchestrator.Task{ProjectID: "proj-2", Title: "T2", Status: orchestrator.TaskStatusCaptured, Behavior: "triage"}
 	if err := taskRepo.CreateTask(task2); err != nil {
 		t.Fatalf("create task2: %v", err)
+	}
+	if err := taskRepo.SeedTaskTriage(task2.ID); err != nil {
+		t.Fatalf("seed task_triage for task2: %v", err)
 	}
 	if _, err := svc.ApplyAction(context.Background(), task1.ID, ApplyActionRequest{Type: "noted", Payload: []byte(`{"p":1}`)}); err != nil {
 		t.Fatalf("ApplyAction task1: %v", err)
@@ -128,6 +150,11 @@ func TestListActions_CursorMonotonic_AcrossRealApplyActionCalls(t *testing.T) {
 	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusCaptured, Behavior: "triage"}
 	if err := taskRepo.CreateTask(task); err != nil {
 		t.Fatalf("create task: %v", err)
+	}
+	// PR-B: see TestListActions_NotedRoundTrips's own comment for why this
+	// seed is needed (machineFor's card discriminator).
+	if err := taskRepo.SeedTaskTriage(task.ID); err != nil {
+		t.Fatalf("seed task_triage: %v", err)
 	}
 	for i := 0; i < 3; i++ {
 		if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "noted", Payload: []byte(`{"i":` + strconv.Itoa(i) + `}`)}); err != nil {

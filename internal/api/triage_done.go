@@ -163,7 +163,11 @@ func (s *TaskWorkflowService) autoDone(ctx context.Context, taskID string) (*Act
 	if s.Tx == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "auto done: Transactor not configured"}
 	}
-	sm := orchestrator.DefaultMachine()
+	// autoDone only ever runs against a triage card (SweepTriage/
+	// recordChildClosedOnParent's caller already found a task_triage row
+	// before calling in here), so NewCardMachine is unambiguous — no
+	// machineFor lookup needed (PR-B).
+	sm := orchestrator.NewCardMachine()
 	var newTask *orchestrator.Task
 	action := &orchestrator.Action{TaskID: taskID, Type: "triage_done", Actor: orchestrator.ActorFromContext(ctx)}
 
@@ -314,18 +318,21 @@ func (s *TaskWorkflowService) resolveReopenVariant(task *orchestrator.Task, acti
 			Message: fmt.Sprintf("reopen: cannot determine whether task %s is a triage task (no task_triage store wired)", task.ID),
 		}
 	}
-	_, err := s.TaskTriage.GetTaskTriage(task.ID)
-	switch {
-	case err == nil:
-		return "reopen_triaged", nil
-	case errors.Is(err, sql.ErrNoRows):
-		return actionType, nil
-	default:
+	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): the
+	// sidecar-existence judgment itself now lives in hasTaskTriageRow
+	// (machine_select.go), shared with machineFor — this function's own
+	// nil-store / error-message behavior is otherwise unchanged.
+	isCard, err := hasTaskTriageRow(s.TaskTriage, task.ID)
+	if err != nil {
 		return "", &StatusError{
 			Code:    http.StatusServiceUnavailable,
 			Message: fmt.Sprintf("reopen: cannot determine whether task %s is a triage task: %v", task.ID, err),
 		}
 	}
+	if isCard {
+		return "reopen_triaged", nil
+	}
+	return actionType, nil
 }
 
 // CanonicalSourceBreach is one 決定16 violation: a triage task that has
@@ -483,7 +490,11 @@ func (s *TaskWorkflowService) autoReopen(ctx context.Context, taskID string) (*A
 	if s.Tx == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "auto reopen: Transactor not configured"}
 	}
-	sm := orchestrator.DefaultMachine()
+	// autoReopen only ever runs against a triage card (SweepReopen's
+	// "done_triage" filter already INNER JOINs task_triage before calling in
+	// here), so NewCardMachine is unambiguous — no machineFor lookup needed
+	// (PR-B).
+	sm := orchestrator.NewCardMachine()
 	var newTask *orchestrator.Task
 	action := &orchestrator.Action{TaskID: taskID, Type: "reopen_triaged", Actor: orchestrator.ActorFromContext(ctx)}
 

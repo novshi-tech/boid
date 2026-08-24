@@ -85,14 +85,27 @@ func TestApplyAction_AttrsSet_DoesNotWriteTaskRow(t *testing.T) {
 func TestApplyAction_AttrsSet_RejectsWhenConcurrentTransitionRacedAhead(t *testing.T) {
 	staleTask := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
 	racedTask := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDropped, Behavior: "dev", Payload: []byte(`{}`)}
+	// seedTriage is a pre-existing task_triage row (PR-B: machineFor needs
+	// one to pick NewCardMachine for "t1" — without it attrs_set would 400
+	// ("not available") before ever reaching the concurrency-race logic this
+	// test actually pins). Its Kind is a sentinel this test checks is still
+	// present, byte-for-byte, afterward — proof that the rejected attrs_set
+	// never called UpsertTaskTriage — since the row's mere existence can no
+	// longer be the "no side effect happened" signal once PR-B requires one
+	// to exist up front for machineFor's own sake.
+	seedTriage := &orchestrator.TaskTriage{TaskID: "t1", Kind: "unchanged-sentinel"}
 	txStore := &recordingTxStore{
 		task:  racedTask, // what the in-Tx GetTask sees (post-race)
 		tasks: map[string]*orchestrator.Task{"t1": racedTask},
+		triage: map[string]*orchestrator.TaskTriage{
+			"t1": seedTriage,
+		},
 	}
 	svc := &TaskWorkflowService{
-		Tasks: &stubTaskStore{task: staleTask}, // what the pre-Tx read sees (stale)
-		Tx:    recordingTransactor{store: txStore},
-		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+		Tasks:      &stubTaskStore{task: staleTask}, // what the pre-Tx read sees (stale)
+		Tx:         recordingTransactor{store: txStore},
+		Meta:       stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+		TaskTriage: txStore,
 	}
 
 	_, err := svc.ApplyAction(context.Background(), "t1", ApplyActionRequest{
@@ -109,15 +122,15 @@ func TestApplyAction_AttrsSet_RejectsWhenConcurrentTransitionRacedAhead(t *testi
 	if len(txStore.actions) != 0 {
 		t.Fatalf("expected no action recorded, got %+v", txStore.actions)
 	}
-	if txStore.triage["t1"] != nil {
-		t.Fatalf("expected no task_triage side-effect recorded, got %+v", txStore.triage["t1"])
+	if txStore.triage["t1"] != seedTriage || txStore.triage["t1"].Kind != "unchanged-sentinel" {
+		t.Fatalf("expected the pre-existing task_triage row untouched (no side-effect recorded), got %+v", txStore.triage["t1"])
 	}
 }
 
 // TestApplyAction_AttrsSet_NotAvailableAction pins S1 step 5: attrs_set must
 // not appear in AvailableActions for the status it fired from (論点6-1).
 func TestApplyAction_AttrsSet_NotAvailableAction(t *testing.T) {
-	sm := orchestrator.DefaultMachine()
+	sm := orchestrator.NewCardMachine()
 	for _, status := range []orchestrator.TaskStatus{
 		orchestrator.TaskStatusCaptured,
 		orchestrator.TaskStatusTriaged,
