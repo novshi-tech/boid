@@ -334,7 +334,7 @@ templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus,
 						<input type="hidden" name="answer" value="accept"/>
 						<input type="hidden" name="verb" value={ suggestion.Verb }/>
 						<input type="hidden" name="basis" value={ suggestion.Basis }/>
-						<button type="submit" class="btn btn-primary btn-sm">Accept</button>
+						<button type="submit" class={ acceptButtonClass(suggestion.Verb) }>Accept</button>
 					</form>
 					<form method="post" action={ templ.SafeURL("/tasks/" + taskID + "/suggestion") } class="detail-suggestion-answer-form">
 						<input type="hidden" name="answer" value="reject"/>
@@ -483,6 +483,20 @@ func actionPrimaryClass(action string) string {
 	}
 }
 
+// acceptButtonClass picks the suggestion Accept button's visual weight
+// (PR-2, docs/plans/suggestion-as-state-transition-impl.md §4.3, design doc
+// §3.2): accept("go") dispatches specced children and starts real work — the
+// same consequence as the bottom action bar's own primary Go button
+// (actionPrimaryClass("go") above) — so it must look equally weighty, not
+// like the compact "read and dismiss" Accept every other verb still uses.
+// Every other verb (working/park/drop/done/reopen) never task-ifies
+// anything on accept, so they keep the original compact styling.
+func acceptButtonClass(verb string) string {
+	if verb == "go" {
+		return "btn btn-primary"
+	}
+	return "btn btn-primary btn-sm"
+}
 
 // TaskActionBar renders the sticky bottom action bar.
 // Timeline tab: state-aware primary (Start/Abort/Rerun) + "⋯" kebab
@@ -807,7 +821,6 @@ templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
 	}
 }
 
-
 // jobDisplayStatus returns the badge text used in the Jobs section.
 // "job_parked" is a UI-only synonym for "running while the surrounding task
 // is awaiting a user answer" — the agent process is alive inside
@@ -967,7 +980,8 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 		} else if activeTab == "description" {
 			<div class="tab-content">
 				if task.Description != "" {
-					<div class="qa-md-body">@renderMarkdown(task.Description)</div>
+					<div class="qa-md-body">@renderMarkdown(task.Description)
+</div>
 				} else {
 					<p class="tab-empty">(not set)</p>
 				}

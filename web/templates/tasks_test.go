@@ -246,6 +246,70 @@ func TestTaskDetailSuggestionSection_RendersAcceptRejectButtons(t *testing.T) {
 	}
 }
 
+// TestTaskDetailSuggestionSection_GoVerb_AcceptButtonMatchesPrimaryGoWeight
+// pins PR-2's UI requirement (docs/plans/suggestion-as-state-transition-impl.md
+// §4.3, design doc §3.2): accept(go) actually dispatches specced children and
+// starts real work, the same consequence as clicking the bottom action bar's
+// own primary "Go" button (actionPrimaryClass(action)'s "btn btn-primary" for
+// action=="go", tasks.templ) — so accepting a "go" suggestion must look as
+// weighty as that button, not like the compact "read and dismiss" Accept
+// used for every other verb. Asserted as "carries btn-primary but NOT
+// btn-sm" rather than an exact string match, so this stays robust to any
+// future class reordering.
+func TestTaskDetailSuggestionSection_GoVerb_AcceptButtonMatchesPrimaryGoWeight(t *testing.T) {
+	suggestion := orchestrator.Suggestion{Verb: "go", Reason: "children are specced"}
+
+	var buf bytes.Buffer
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusParked, suggestion).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	acceptButton := extractAcceptButtonTag(t, html)
+	if !strings.Contains(acceptButton, "btn-primary") {
+		t.Errorf("go accept button must carry btn-primary; got: %s", acceptButton)
+	}
+	if strings.Contains(acceptButton, "btn-sm") {
+		t.Errorf("go accept button must NOT be the compact btn-sm variant (must match the primary Go button's weight); got: %s", acceptButton)
+	}
+}
+
+// TestTaskDetailSuggestionSection_NonGoVerb_AcceptButtonStaysCompact is the
+// negative twin: every other verb's accept keeps the original compact
+// styling — only "go" carries the "this dispatches real work" weight, since
+// working/park/drop/done/reopen suggestions never task-ify anything.
+func TestTaskDetailSuggestionSection_NonGoVerb_AcceptButtonStaysCompact(t *testing.T) {
+	for _, verb := range []string{"working", "park", "drop", "done", "reopen"} {
+		suggestion := orchestrator.Suggestion{Verb: verb}
+		var buf bytes.Buffer
+		if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusWorking, suggestion).Render(context.Background(), &buf); err != nil {
+			t.Fatalf("render (%s): %v", verb, err)
+		}
+		html := buf.String()
+		acceptButton := extractAcceptButtonTag(t, html)
+		if !strings.Contains(acceptButton, "btn-sm") {
+			t.Errorf("verb=%s: accept button should stay compact (btn-sm); got: %s", verb, acceptButton)
+		}
+	}
+}
+
+// extractAcceptButtonTag pulls out the <button ...>Accept</button> tag from
+// rendered HTML, for asserting on its class attribute specifically (as
+// opposed to the Reject button, which sits right next to it in the same
+// markup).
+func extractAcceptButtonTag(t *testing.T, html string) string {
+	t.Helper()
+	idx := strings.Index(html, ">Accept<")
+	if idx == -1 {
+		t.Fatalf("no Accept button found in: %s", html)
+	}
+	start := strings.LastIndex(html[:idx], "<button")
+	if start == -1 {
+		t.Fatalf("no opening <button tag before Accept in: %s", html)
+	}
+	return html[start : idx+len(">Accept<")]
+}
+
 // TestTaskDetailSuggestionSection_DoneAndDroppedStatus_ShowsAcceptRejectButtons
 // pins PR #987 review's BLOCKER 3 fix: card machine v2's "answered" rule now
 // reaches done/dropped (NewCardMachine's own doc comment) specifically so a
