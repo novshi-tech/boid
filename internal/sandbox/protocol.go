@@ -141,23 +141,6 @@ const (
 	// the way the host-only `boid project list` does.
 	BoidOpProjectList BoidOp = "project_list"
 
-	// BoidOpTaskWake backs `boid task wake <task-id>` from inside the sandbox
-	// (docs/plans/cross-project-issue-triage.md Phase 1 PR-4, 論点10: the
-	// third wake category — "source event", e.g. "Jira moved" — is a
-	// workspace judgment call (khi's collector/evaluate loop, nose-approved),
-	// but had no execution口 before this op; wake_at and wake_task_id-based
-	// wakes are daemon-internal and already handled by QueueSweepLoop). This
-	// is a thin wrapper around the SAME api.WorkflowService.Wake the HTTP
-	// API / Web UI already call — NOT a new capability, and NOT a bypass of
-	// the wake_triaged/wake_ready IsManualAction guard: a direct `boid
-	// action send --type wake_ready` is still rejected (StateMachine.
-	// IsManualAction returns false for both), because Wake resolves the
-	// correct target status itself via ParkedFrom rather than trusting a
-	// caller-supplied action type. Scoped like BoidOpActionSend: the broker
-	// only validates TaskID is present; the executor enforces
-	// TokenContext.AllowsProject before calling Wake.
-	BoidOpTaskWake BoidOp = "task_wake"
-
 	// BoidOpTaskTriageGet / BoidOpTaskTriageList back `boid task triage
 	// <task-id>` and `boid task triage --list [--status S] [--project P]`
 	// from inside the sandbox (docs/plans/cross-project-issue-triage.md Phase
@@ -174,7 +157,7 @@ const (
 	// These are strictly READ ops over data the calling workspace already
 	// owns, so they do not widen 決定2's boundary (the same reasoning that
 	// already allows brokered task_list of the caller's own workspace —
-	// 実測結果 項10). Scoping matches BoidOpActionSend/BoidOpTaskWake: the
+	// 実測結果 項10). Scoping matches BoidOpActionSend: the
 	// broker only checks shape, the executor enforces
 	// TokenContext.AllowsProject before returning anything.
 	BoidOpTaskTriageGet  BoidOp = "task_triage_get"
@@ -200,7 +183,7 @@ const (
 	// an EXISTING task rather than the project being written into); its
 	// ownership is checked in the executor the same way as BoidOpActionSend's
 	// TaskID (GetTask + AllowsProject), since the broker has no TaskStore to
-	// resolve it against — but unlike action_send/task_wake, which merely
+	// resolve it against — but unlike action_send, which merely
 	// re-look-up their TaskID downstream and so tolerate a short (>=8-char)
 	// prefix transparently, Link writes the id it's given straight into
 	// task_identities.task_id, an FK column. It MUST use GetTask's resolved

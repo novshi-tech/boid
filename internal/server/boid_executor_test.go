@@ -433,7 +433,7 @@ func TestBoidBuiltinExecutor_TaskCreate_AllowsInitialStatusWithinWorkspace(t *te
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
-		CreatePatch: json.RawMessage(`{"title":"BGO-214","behavior":"dev","initial_status":"triaged","ref":"BGO-214"}`),
+		CreatePatch: json.RawMessage(`{"title":"BGO-214","behavior":"dev","initial_status":"parked","ref":"BGO-214"}`),
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("initial_status within own workspace: exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
@@ -466,7 +466,7 @@ func TestBoidBuiltinExecutor_TaskCreate_InitialStatus_StillRejectsOutsideWorkspa
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
-		CreatePatch: json.RawMessage(`{"project_id":"proj-outside","title":"sneaky","behavior":"dev","initial_status":"triaged","ref":"BGO-214"}`),
+		CreatePatch: json.RawMessage(`{"project_id":"proj-outside","title":"sneaky","behavior":"dev","initial_status":"parked","ref":"BGO-214"}`),
 	})
 	if resp.ExitCode != 1 {
 		t.Fatalf("initial_status targeting a project outside the workspace: exit code = %d, want 1 (stderr=%q)", resp.ExitCode, resp.Stderr)

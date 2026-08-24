@@ -94,13 +94,6 @@ func TestBroker_BoidProjectList_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList})
 }
 
-// BoidOpTaskWake (Phase 1 PR-4, 論点10): workspace-scope enforcement
-// (AllowsProject) lives in boid_executor, same as BoidOpActionSend — this
-// closes the plain policy-gate manifest entry point.
-func TestBroker_BoidTaskWake_PolicyReject(t *testing.T) {
-	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskWake, TaskID: "t1"})
-}
-
 // BoidOpTaskTriageGet / BoidOpTaskTriageList (Phase 1 PR-5a): read-only, with
 // workspace-scope enforcement in boid_executor (same as BoidOpTaskGet /
 // BoidOpActionSend) — these close the plain policy-gate manifest entry point.
@@ -242,17 +235,10 @@ var opEscapeCoverage = map[string]opCoverage{
 	// BoidOpTaskDelete's manifest entry above.
 	"BoidOpProjectList": {escapeTest: "TestBroker_BoidProjectList_PolicyReject"},
 
-	// BoidOpTaskWake (Phase 1 PR-4, docs/plans/cross-project-issue-triage.md
-	// 論点10): workspace-scope enforcement is exercised end-to-end by
-	// internal/server's boid_executor tests
-	// (TestBoidBuiltinExecutor_TaskWake_*); the plain policy-gate manifest
-	// entry point is TestBroker_BoidTaskWake_PolicyReject.
-	"BoidOpTaskWake": {escapeTest: "TestBroker_BoidTaskWake_PolicyReject"},
-
 	// BoidOpTaskTriageGet / BoidOpTaskTriageList (Phase 1 PR-5a,
 	// docs/plans/cross-project-issue-triage.md 決定14): read-only projections
 	// of the task_triage sidecar. Workspace-scope enforcement lives in
-	// boid_executor exactly as it does for BoidOpTaskGet / BoidOpTaskWake —
+	// boid_executor exactly as it does for BoidOpTaskGet —
 	// the get form looks the task up and checks AllowsProject before
 	// returning anything, and the list form checks an explicit project filter
 	// and otherwise iterates AllowedProjectIDs (never unscoped). Those are
