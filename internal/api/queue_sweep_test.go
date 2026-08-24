@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -401,6 +402,24 @@ func TestSweepReconcileChildren_VanishedChild_TreatedAsClosed(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("expected a child_closed action recorded on parent %q, got actions: %+v", "card", store.actions["card"])
+	}
+	// Payload key must match recordChildClosedOnParent's own child_closed
+	// payload exactly ("child_id", not "child_task_id") — coordinator review:
+	// a future consumer parsing child_closed by key must not silently miss
+	// vanished-child rows because they alone spelled the same value under a
+	// different key.
+	var payload struct {
+		ChildID     string `json:"child_id"`
+		ChildStatus string `json:"child_status"`
+	}
+	if err := json.Unmarshal(found.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal child_closed payload: %v", err)
+	}
+	if payload.ChildID != "child-gone" {
+		t.Fatalf(`child_closed payload "child_id" = %q, want "child-gone" (must match recordChildClosedOnParent's own key)`, payload.ChildID)
+	}
+	if payload.ChildStatus != "vanished" {
+		t.Fatalf(`child_closed payload "child_status" = %q, want "vanished"`, payload.ChildStatus)
 	}
 }
 

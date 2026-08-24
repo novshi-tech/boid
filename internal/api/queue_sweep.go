@@ -245,7 +245,12 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, ch
 		if gErr != nil {
 			return fmt.Errorf("sweep reconcile children: get parent task: %w", gErr)
 		}
-		payload, _ := json.Marshal(map[string]string{"child_task_id": childTaskRef, "child_status": "vanished"})
+		// "child_id" (not "child_task_id"), matching recordChildClosedOnParent's
+		// existing child_closed payload key exactly (workflow_triage.go) — a
+		// future consumer reading this payload by key must not silently miss
+		// vanished-child rows because they alone spelled the same value
+		// differently (coordinator review, LOW: payload key mismatch).
+		payload, _ := json.Marshal(map[string]string{"child_id": childTaskRef, "child_status": "vanished"})
 		action := &orchestrator.Action{
 			TaskID:     parentTaskID,
 			Type:       "child_closed",
