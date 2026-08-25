@@ -949,6 +949,12 @@ func TestWebHandler_TaskDetail_Card_IdentityRow_ShowsProjectAndKind(t *testing.T
 	if !strings.Contains(body, `<div class="detail-identity">proj-a / issue</div>`) {
 		t.Errorf("expected card identity row \"proj-a / issue\", got: %s", body)
 	}
+	// N4 (Opus review, PR #996): data-task-id is what TaskDetailLiveScript
+	// reads the task id from (§7 罠2) — a regression here would silently
+	// break live updates on every card detail page, with no visible error.
+	if !strings.Contains(body, `id="task-status" data-task-id="task-1"`) {
+		t.Errorf("card status section should carry data-task-id for TaskDetailLiveScript, got: %s", body)
+	}
 }
 
 // TestWebHandler_TaskDetail_Exec_IdentityRow_ShowsProjectAndBehavior is the
@@ -1885,6 +1891,99 @@ func TestTaskDetail_Tab_HXRequest_Timeline(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="task-timeline"`) {
 		t.Errorf("timeline tab should contain task-timeline element, got: %s", body)
+	}
+}
+
+// liveScriptMarker is a substring unique to TaskDetailLiveScript's <script>
+// body (the module-level re-entry guard variable name). Used by the B1
+// regression tests below as a cheap, robust way to detect the script's
+// presence/absence without depending on exact whitespace/formatting.
+//
+// Appears exactly TWICE per script instance — once in the guard check
+// (`if (window.__boidTimelineSubscriber) return`) and once in the
+// assignment (`window.__boidTimelineSubscriber = true`) — so
+// liveScriptInstanceCount below divides the raw occurrence count by this.
+const liveScriptMarker = "__boidTimelineSubscriber"
+
+// occurrencesPerLiveScript is how many times liveScriptMarker appears
+// within a single rendering of TaskDetailLiveScript (see its doc comment).
+const occurrencesPerLiveScript = 2
+
+// liveScriptInstanceCount returns how many times TaskDetailLiveScript was
+// rendered into body.
+func liveScriptInstanceCount(body string) int {
+	return strings.Count(body, liveScriptMarker) / occurrencesPerLiveScript
+}
+
+// TestTaskDetail_Exec_LiveScriptRendersOnceOutsideTabs pins Opus review
+// finding B1 (PR #996, blocking): TaskDetailLiveScript must render exactly
+// once per full page load, and — critically — NOT as part of the #tabs
+// fragment a tab-link click swaps. It used to live inside #tabs (rendered
+// by TaskDetailExecTabPanel), paired with an htmx:beforeSwap teardown that
+// closed the EventSource whenever #tabs was about to be swapped; the first
+// tab click tore the connection down, and the freshly-swapped-in copy of
+// the script never reopened it (its own top-of-IIFE re-entry guard
+// short-circuited before ever calling openES() again) — SSE updates for
+// #task-status/#task-timeline died permanently after exactly one tab
+// switch. This (and TestTaskDetail_Exec_TabSwapFragment_HasNoLiveScript
+// below) can't drive real HTMX/EventSource behavior from a Go test, but
+// together they pin the structural invariant the fix depends on: the
+// script is emitted exactly once, and never inside anything #tabs-swappable.
+func TestTaskDetail_Exec_LiveScriptRendersOnceOutsideTabs(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+
+	if got := liveScriptInstanceCount(body); got != 1 {
+		t.Errorf("live script rendered %d times on the full exec detail page, want exactly 1: %s", got, body)
+	}
+
+	// "Outside #tabs" is pinned by comparing against the #tabs fragment
+	// itself (TestTaskDetail_Exec_TabSwapFragment_HasNoLiveScript below):
+	// that fragment is rendered by the exact same TaskDetailExecTabsSection
+	// call the full page embeds for its #tabs subtree, and it never
+	// contains the script — so if the full page DOES contain the script
+	// (asserted above) and the #tabs subtree provably does not, the script
+	// must live outside #tabs.
+}
+
+// TestTaskDetail_Exec_TabSwapFragment_HasNoLiveScript is
+// TestTaskDetail_Exec_LiveScriptRendersOnceOutsideTabs's other half: the
+// HX-Request fragment a tab-link click actually receives (what
+// TaskDetailExecTabsSection renders — the exact #tabs subtree HTMX swaps)
+// must never contain the live script at all, on ANY tab — including
+// "timeline", where the script used to live before this fix (inside
+// TaskDetailExecTabPanel's activeTab=="timeline" branch). If it did, every
+// tab click would re-insert a copy that (per the script's own re-entry
+// guard) can never actually resubscribe — the B1 bug this test guards
+// against.
+func TestTaskDetail_Exec_TabSwapFragment_HasNoLiveScript(t *testing.T) {
+	for _, tab := range []string{"timeline", "description", "payload", "instructions"} {
+		t.Run(tab, func(t *testing.T) {
+			svc := &stubWebService{taskDetail: makeTaskDetailView()}
+			r := newTestWebHandler(svc)
+
+			req := httptest.NewRequest(http.MethodGet, "/tasks/task-1?tab="+tab, nil)
+			req.Header.Set("HX-Request", "true")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			body := w.Body.String()
+			if strings.Contains(body, liveScriptMarker) {
+				t.Errorf("tab-swap fragment (#tabs, tab=%s) must not contain the live-update script, got: %s", tab, body)
+			}
+		})
 	}
 }
 

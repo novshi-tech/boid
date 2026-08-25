@@ -1099,11 +1099,18 @@ templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
 // the only thing that would have consumed it, was never called from
 // anywhere on the page. Both are gone now, along with fragment kind=jobs
 // (internal/api/web.go).)
+//
+// TaskDetailLiveScript does NOT render here (Opus review, PR #996, B1):
+// this whole <div id="tab-panel"> is inside #tabs, which HTMX swaps
+// wholesale on every tab-link click — a <script> that lived in here used
+// to get torn down and re-inserted on every switch, and the second
+// insertion never actually re-subscribed (see TaskDetailLiveScript's own
+// doc comment for the failure mode). The script is rendered exactly once,
+// by TaskDetailExecBody, outside #tabs entirely.
 templ TaskDetailExecTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, activeTab string) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
 			@TaskDetailTimelineSection(task, timelineGroups)
-			@TaskDetailLiveScript()
 		} else if activeTab == "description" {
 			<div class="tab-content">
 				if task.Description != "" {
@@ -1271,12 +1278,26 @@ templ TaskDetailExecTabsSection(task *orchestrator.Task, timelineGroups []timeli
 // rather than #tab-panel's (execution-only; the card layout has no
 // tab-panel at all now that card detail has no tabs).
 //
-// The one layout-conditional bit is the htmx:beforeSwap teardown: it only
-// matters on the execution layout, where switching tabs swaps #tabs via
-// HTMX outerHTML and would otherwise leave a stale EventSource connection
-// open behind the swapped-out script. The card layout never swaps anything
-// with id="tabs" (it has none), so `document.getElementById('tabs')` is
-// null there and the branch is simply skipped.
+// Both callers (TaskDetailCardBody, TaskDetailExecBody) render this OUTSIDE
+// anything HTMX ever swaps — TaskDetailExecBody renders it as a sibling of
+// TaskDetailExecTabsSection's #tabs, not inside it (Opus review, PR #996,
+// blocking finding B1). It used to live inside TaskDetailExecTabPanel
+// (i.e. inside #tabs), paired with an htmx:beforeSwap teardown that closed
+// the EventSource and removed its own listener whenever #tabs was about to
+// be swapped (a tab-link click). That was a one-way trip: the top-of-IIFE
+// `if (window.__boidTimelineSubscriber) return` guard is a MODULE-level
+// flag that survives the swap, so when the freshly-swapped-in #tabs
+// (rendered by the same TaskDetailExecTabPanel, still gated on
+// activeTab=="timeline") re-inserted this same <script> and it ran again,
+// the guard immediately returned before ever calling openES() again — the
+// very first tab switch on an execution task's detail page silently killed
+// live updates for the rest of the page's life. Rendering the script once,
+// outside the swapped subtree, removes the reason the teardown existed in
+// the first place: the script node itself is never removed, so there is no
+// stale EventSource to close and no listener to re-attach — the
+// __boidTimelineSubscriber/__boidTimelineTicker guards alone are enough to
+// keep this idempotent across the (now impossible) case of the script
+// somehow rendering twice.
 templ TaskDetailLiveScript() {
 	<script>
 		(function() {
@@ -1345,16 +1366,6 @@ templ TaskDetailLiveScript() {
 				setInterval(tickElapsed, 1000);
 			}
 
-			var tabsEl = document.getElementById('tabs');
-			if (tabsEl) {
-				document.body.addEventListener('htmx:beforeSwap', function onSwap(e) {
-					if (e.detail.target && e.detail.target.id === 'tabs') {
-						closeES();
-						document.body.removeEventListener('htmx:beforeSwap', onSwap);
-					}
-				});
-			}
-
 			window.addEventListener('pagehide', closeES);
 			document.addEventListener('visibilitychange', function() {
 				if (document.visibilityState === 'hidden') {
@@ -1385,8 +1396,21 @@ templ TaskDetailLiveScript() {
 // (one tap) and never gets cut mid-block.
 const cardDescriptionCollapseThresholdLines = 12
 
+// cardDescriptionCollapseThresholdBytes is the byte-length side of the same
+// default-collapse decision (Opus review, PR #996, N2): line count alone
+// missed exactly the case §3.3's own note calls out — a 64KiB blob with no
+// "\n" at all (a single huge line, or CRLF-less pasted text) passes the
+// <=12-line check and would render fully expanded regardless of size. 2000
+// bytes is a rough proxy for "about what 12 lines of ordinary prose look
+// like" (~160 chars/line); collapsing on EITHER threshold means a
+// description only stays open by default when it is short on both axes.
+const cardDescriptionCollapseThresholdBytes = 2000
+
 func cardDescriptionOpenByDefault(desc string) bool {
 	if desc == "" {
+		return false
+	}
+	if len(desc) > cardDescriptionCollapseThresholdBytes {
 		return false
 	}
 	return strings.Count(desc, "\n")+1 <= cardDescriptionCollapseThresholdLines
@@ -1411,6 +1435,14 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 // the body (item 3), timeline (item 4, full — no default-collapse-to-N yet,
 // left to a later PR per the design doc's own "実装時に調整"), then the
 // escape-hatch action bar (item 5). No tabs — see §7 罠1.
+//
+// TaskDetailLiveScript renders here, at the body level — nothing on the
+// card layout ever gets HTMX-swapped, so there is no risk of the script
+// node itself being removed and reinserted (the failure mode TaskExecBody's
+// own doc comment below describes). TaskDetailExecBody mirrors this
+// placement (also body-level, also outside anything swappable) precisely
+// so both layouts follow the same rule: the live script is rendered once,
+// never inside a swap target.
 templ TaskDetailCardBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion) {
 	@TaskDetailCardStatusSection(task, errorMsg, projectName, children, suggestion)
 	@TaskDetailCardDescription(task)
@@ -1422,9 +1454,22 @@ templ TaskDetailCardBody(task *orchestrator.Task, timelineGroups []timeline.Stat
 // TaskDetailExecBody assembles an execution task detail page's content
 // (§3.4 item 1 — meta; items 3-5 — the existing tab structure is kept as-is
 // for PR-1, root child-tree (item 2) is PR-2 scope).
+//
+// TaskDetailLiveScript renders here, as a sibling AFTER
+// TaskDetailExecTabsSection — deliberately outside the #tabs node HTMX
+// swaps on every tab-link click (Opus review, PR #996, blocking finding
+// B1). It used to render inside TaskDetailExecTabPanel (inside #tabs) with
+// an htmx:beforeSwap teardown that closed the EventSource whenever #tabs
+// was about to be swapped; the very first tab click tore the connection
+// down and the script's own top-of-IIFE re-entry guard then silently
+// prevented the freshly-swapped-in copy from ever reopening it — SSE
+// updates died permanently after one tab switch. Rendering it once here
+// means #tabs can swap as much as it wants; the script node itself is
+// never touched.
 templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string) {
 	@TaskDetailExecStatusSection(task, errorMsg, projectName)
 	@TaskDetailExecTabsSection(task, timelineGroups, availableActions, activeTab)
+	@TaskDetailLiveScript()
 }
 
 // TaskDetail is the task detail page's single entry point — one URL

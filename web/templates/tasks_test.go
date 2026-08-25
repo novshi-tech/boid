@@ -791,3 +791,43 @@ func TestTaskDetailAwaitingBanner_NoQuestionID_RendersNothing(t *testing.T) {
 		t.Errorf("banner without a question id should render nothing, got: %s", got)
 	}
 }
+
+// TestCardDescriptionOpenByDefault_ByteLengthGuard pins Opus review finding
+// N2 (PR #996, non-blocking but folded into the B1 fix commit): the
+// original implementation collapsed only on line count
+// (cardDescriptionCollapseThresholdLines), which missed exactly the case
+// its own doc comment calls out — an ingested description can run up to
+// 64KiB with NO newlines at all (a single huge line, or pasted text with no
+// line breaks), and would have rendered fully expanded regardless of size.
+func TestCardDescriptionOpenByDefault_ByteLengthGuard(t *testing.T) {
+	longSingleLine := strings.Repeat("x", cardDescriptionCollapseThresholdBytes+1)
+	if strings.Contains(longSingleLine, "\n") {
+		t.Fatal("test fixture must have zero newlines to actually exercise the byte-length guard")
+	}
+	if got := cardDescriptionOpenByDefault(longSingleLine); got {
+		t.Errorf("a %d-byte single-line description should collapse by default (byte guard), got open=%v", len(longSingleLine), got)
+	}
+}
+
+func TestCardDescriptionOpenByDefault_ShortSingleLine_StaysOpen(t *testing.T) {
+	short := "a short single-line description"
+	if got := cardDescriptionOpenByDefault(short); !got {
+		t.Errorf("a short single-line description should stay open by default, got open=%v", got)
+	}
+}
+
+func TestCardDescriptionOpenByDefault_ManyShortLines_Collapses(t *testing.T) {
+	manyLines := strings.Repeat("line\n", cardDescriptionCollapseThresholdLines+1)
+	if len(manyLines) >= cardDescriptionCollapseThresholdBytes {
+		t.Fatal("test fixture must stay under the byte threshold to actually exercise the line-count guard")
+	}
+	if got := cardDescriptionOpenByDefault(manyLines); got {
+		t.Errorf("a description with more than %d lines should collapse by default (line guard), got open=%v", cardDescriptionCollapseThresholdLines, got)
+	}
+}
+
+func TestCardDescriptionOpenByDefault_Empty_ReturnsFalse(t *testing.T) {
+	if got := cardDescriptionOpenByDefault(""); got {
+		t.Errorf("empty description should return open=false (nothing to collapse or show), got open=%v", got)
+	}
+}
