@@ -215,9 +215,47 @@ ResolveOrCapture は `ResolveBehavior` を呼ばなくなり、共通コア + Ca
 3. **Task JSON の形**: flat → `{type, …core…, card:{…}, exec:{…}}`。
    消費者は CLI (client パッケージ、同 repo)・Web templ (同 repo)・khi の
    task JSON 読み取り箇所。card/exec の omitempty で相手型のノイズは出ない。
-   0035 が sidecar を選んだ理由だった「DTO 自動露出」問題はこの形で解消。
+   0035 が sidecar を選んだ理由だった「DTO 自動露出」問題のうち、**「相手型の
+   フィールドが紛れ込む」側は**この形で解消 (PR-2 レビューで表現を訂正 —
+   旧稿は無条件に「解消」と書いていたが、下記5の通り detail blob の方は
+   未解消のまま残っている)。
 4. **status 語彙**: captured/triaged/ready が API validation から消える。
    これらを送る・filter に使う消費者は存在しない想定だが、khi 側 grep で確認。
+5. **card の `detail` blob が全 task list/get レスポンスに乗るようになった**
+   (PR-2 レビューで発見・**受け入れ済み契約変更として明記**、未対応のまま
+   マージはしない §10 運用ルールにより doc 化が merge 条件)。
+   単一テーブル化で `taskSelectCols` (`internal/orchestrator/store.go`) が
+   card 専用列を含むようになり、GET /api/tasks・`boid task list --output
+   json`・タスク詳細取得を含む**あらゆる** list/get 経路が card 行 1件ごとに
+   `detail` (summary/source/content_ref/children/suggestion/observed を畳んだ
+   JSON blob) を無条件で返すようになった。PR 前の main では
+   `taskSelectCols` に card 系列が一切無く、`detail` は
+   `GetTaskTriage`/`ListTaskTriageByTaskIDs` を明示的に呼ぶ経路 (`GetCard`/
+   `ListCards`、web.go の queue_next 文脈同梱) だけが取得していた —
+   0035 がサイドカーに分けた元の理由 (列追加が全レスポンスへ自動露出する)
+   は、card についてはこの PR で実質的に解消していない。
+   khi は毎巡 card を list するため影響範囲は大きい。**判断: 受け入れて
+   ここに契約変更として明記する** (projection を切って detail を list から
+   落とす選択肢もあったが、実装コストと非破壊性 — 後から `?fields=light`
+   相当の projection を追加するのは何も壊さない非破壊変更 — を比較して
+   見送った)。上限は既存の attrs_set payload サイズ上限
+   (`orchestrator.MaxContentBytes` = 64KiB、`internal/orchestrator/
+   content_size.go`) が detail の実質的な上限として効くため、単一レスポンス
+   のワーストケースは card 件数 × 64KiB で頭打ちになる — 無制限に膨らむ
+   種類のリスクではない。khi 側の帯域が実際に問題になった場合の対応先は
+   PR-3 以降のフォローアップとする。
+6. **`task_update` の payload/auto_start/instructions は card に対して 409 に
+   なる**。旧 flat Task では Payload/AutoStart/Instructions が (execution
+   専用の意味を持ちつつも) card 上でも構造的に存在するフィールドだったため、
+   card への書き込みは黙って no-op マージされていた。PR-2 以降は
+   `task.Exec == nil` の場合その項目のフィールドごと存在しない —
+   `TaskAppService.UpdateTask` (`internal/api/task_service.go`) は payload・
+   auto_start にそれぞれ明示的な `task.Exec == nil` ガードを追加し、
+   instructions は `IsInstructionsEditable(task.Type, ...)` が同じ理由で
+   card を弾く。3つとも 400 ではなく 409 (Conflict) で返す。khi が過去に
+   card へ payload を書いていた運用があった場合、本 PR デプロイ時点でその
+   呼び出しが 409 を踏むようになる — デプロイ前に khi 側の書き込み経路を
+   確認しておくこと (PR-2 レビューで追記)。
 
 ## 6. 移行計画
 
@@ -289,12 +327,19 @@ name=boid-job` で実行中 job が居ないことを確認する (deploy は ru
   able to set them regardless of task status (**khi patches remote_id on
   working/parked tasks**; ...)」と明言している。working/parked は card 専用
   status であり、この一文は「khi が card に remote_id を書く運用が実在する」
-  という本番挙動の直接証言 (コードコメントに残った実測)。さらに
-  `internal/api/web.go` の `PostTaskEdit` (task 編集フォーム) は remote_id
-  フィールドを持ち、その編集可否ゲートは `IsPreDispatchEditableStatus` 一本
-  (parked を含む) — Web UI からも card への remote_id 書き込み経路がある。
-  両方とも「card が remote_id を持つ」ことを前提にした既存コードであり、
-  Execution 専用に倒すとこの 2 経路が壊れる。→ **remote_id は共通コアに残す**。
+  という本番挙動の直接証言 (コードコメントに残った実測)。加えて同じ doc
+  comment が「remote_id and auto_start have no status guard here」とも
+  明言している通り、`UpdateTask` は remote_id に一切 status ゲートを掛けて
+  いない — `IsPreDispatchEditableStatus` がゲートしているのは Title と
+  ProjectID の2つだけで (production 呼び出しは `task_service.go` の該当2箇所
+  のみ)、remote_id はそもそもその対象外。つまり card の remote_id 書き込みは
+  現に無条件で許容されている実装済みの経路であり、これを Execution 専用に
+  倒すと khi の既存運用を壊す。→ **remote_id は共通コアに残す**。
+  (旧稿はここで Web UI の task 編集フォームも card への remote_id 書き込み
+  経路として挙げていたが、そのフォーム自体 `GetTaskEdit` が
+  `Status != pending` を redirect するため card からは到達不能であり誤り
+  — PR-2 レビューで指摘され訂正。結論 (core 帰属) 自体は上記の khi 運用実測
+  + 無条件無ゲートという実装事実だけで独立に成立するため変更なし)
 - **datasource_id の生死 — 決着: 既に死んでいる、drop 済み (§9 参照)**:
   `internal/db/migrate/migrations/0025_drop_tasks_datasource_id.sql`
   (`ALTER TABLE tasks DROP COLUMN datasource_id;`) が既に存在し、
@@ -361,13 +406,22 @@ name=boid-job` で実行中 job が居ないことを確認する (deploy は ru
   `internal/orchestrator/store.go` の `UpdateTask` 自身の既存 doc comment が
   「khi patches remote_id on working/parked tasks」(working/parked は card
   専用 status) と明言しており、card への remote_id 書き込みが本番で実際に
-  起きている運用であることの直接証拠になっている。(2) `internal/api/web.go`
-  の task 編集フォーム (`PostTaskEdit`) が remote_id を
-  `IsPreDispatchEditableStatus` (parked を含む) でゲートしており、Web UI からも
-  card への書き込み経路がある。Execution 専用に倒すとこの 2 経路が 400/panic
-  するため、**保守的判断 (既存動作を壊さない側) として core に残した**。
-  実データでこの判断が覆る可能性: 低い (2 つの独立したコード経路が同じ結論を
-  指しており、コメント自体が「本番で実際に起きている」と明言しているため)。
+  起きている運用であることの直接証拠になっている。(2) 同じ doc comment が
+  「remote_id and auto_start have no status guard here」とも明言する通り、
+  `UpdateTask` は remote_id に一切 status ゲートを掛けていない —
+  `IsPreDispatchEditableStatus` がゲートしているのは Title/ProjectID のみ
+  (production 呼び出しは `task_service.go` の該当2箇所のみ) — つまり card
+  への remote_id 書き込みは現状すでに無条件で許容されている実装済みの経路。
+  Execution 専用に倒すと (1) の khi 運用が壊れるため、**保守的判断 (既存動作
+  を壊さない側) として core に残した**。実データでこの判断が覆る可能性: 低い
+  (doc comment 自体が「本番で実際に起きている」と明言しており、かつ現行実装
+  が既に無条件許容という後方互換前提で書かれているため)。
+  (旧稿はここで根拠 (2) として Web UI の task 編集フォームが
+  `IsPreDispatchEditableStatus` で remote_id をゲートしていると書いていたが、
+  実際は同フォーム自体 (`GetTaskEdit`) が `Status != pending` を redirect
+  するため card からは到達不能であり、かつ remote_id は上記の通りそもそも
+  `IsPreDispatchEditableStatus` の対象外 — 二重に誤りだった。PR-2 レビューで
+  指摘され訂正。結論は変わらない)。
 - `datasource_id` の生死 → **既に死んでいた (drop 済み) と判明、決着不要に
   帰着**。`internal/db/migrate/migrations/0025_drop_tasks_datasource_id.sql`
   が既に tasks テーブルから datasource_id を drop 済みであることをコード監査

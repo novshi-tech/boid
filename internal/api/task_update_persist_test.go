@@ -232,3 +232,65 @@ func TestTaskAppServiceUpdateTask_AutoStart_PersistsToRealDB(t *testing.T) {
 		t.Fatal("AutoStart after re-fetch = false, want true")
 	}
 }
+
+// TestTaskAppServiceUpdateTask_Payload_CardTask_Rejected pins a contract
+// change card-model-cleanup PR-2 review flagged as untested: PATCH
+// {payload: ...} against a card task now 409s (task_service.go's `if
+// task.Exec == nil` guard right before the payload merge) instead of
+// silently no-op-merging into a field that, pre-PR-2, existed as a flat
+// zero-value Task.Payload on every task regardless of type. A caller (e.g.
+// khi, if it had ever written payload to a card — see design doc §5 for the
+// contract-change note) now gets a hard 409 instead of a quiet no-op.
+func TestTaskAppServiceUpdateTask_Payload_CardTask_Rejected(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+
+	task := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeCard,
+		Title:     "a card",
+		Status:    orchestrator.TaskStatusParked,
+		Card:      &orchestrator.CardAttrs{},
+	}
+	if err := tasks.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Payload: []byte(`{"x":1}`)})
+	if err == nil {
+		t.Fatal("UpdateTask(payload) on a card: expected rejection, got success")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+}
+
+// TestTaskAppServiceUpdateTask_AutoStart_CardTask_Rejected is
+// TestTaskAppServiceUpdateTask_Payload_CardTask_Rejected's sibling for
+// auto_start (task_service.go's own `if task.Exec == nil` guard, added
+// specifically because — unlike Instructions — auto_start has no
+// IsInstructionsEditable-style status gate to lean on instead).
+func TestTaskAppServiceUpdateTask_AutoStart_CardTask_Rejected(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+
+	task := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeCard,
+		Title:     "a card",
+		Status:    orchestrator.TaskStatusParked,
+		Card:      &orchestrator.CardAttrs{},
+	}
+	if err := tasks.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	autoStart := true
+	_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{AutoStart: &autoStart})
+	if err == nil {
+		t.Fatal("UpdateTask(auto_start) on a card: expected rejection, got success")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+}

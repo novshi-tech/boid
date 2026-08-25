@@ -103,8 +103,15 @@ func resolveAttrsSetDoneTransition(sm *orchestrator.StateMachine, task *orchestr
 			// preExecutionStatuses attrs_set — non-transitioning, status
 			// unchanged. The actual fold happens later in
 			// applyAttrsSetSideEffect, same as always.
-			noop := *task
-			return &noop, nil
+			//
+			// orchestrator.CloneTaskShallow (not a bare `*task` copy — PR-2
+			// review, matching that helper's own doc comment listing this
+			// call site): the caller downstream doesn't currently mutate
+			// noop.Card, but a bare copy would silently alias noop.Card back
+			// into task.Card the moment it started, exactly the "縫い目" bug
+			// class CloneTaskShallow exists to close off everywhere, not just
+			// where a mutation is known today.
+			return orchestrator.CloneTaskShallow(task), nil
 		case errors.Is(err, sql.ErrNoRows):
 			// No row: an ordinary done task (or the theoretical initial_status
 			// edge case that never wrote any attrs). Falls through to

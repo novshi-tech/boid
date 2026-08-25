@@ -426,7 +426,7 @@ func TestApplyAction_Working_Park_DoesNotPollutePayload(t *testing.T) {
 }
 
 // TestApplyAction_Park_WithRealCoordinator_DoesNotPanicDispatchGoroutine pins
-// the wiring seam found in card-model-cleanup PR-2 review: ApplyAction's
+// the OBSERVABLE crash found in card-model-cleanup PR-2 review: ApplyAction's
 // post-commit dispatch goroutine used to be gated on `s.Coordinator != nil`
 // alone, not also `newTask.Exec != nil` (unlike the hook-preview block four
 // lines below it, which already had both). Every OTHER ApplyAction test in
@@ -447,6 +447,17 @@ func TestApplyAction_Working_Park_DoesNotPollutePayload(t *testing.T) {
 // goroutine panic), not merely failed an assertion — Shutdown() blocking
 // until the background goroutine returns is what makes that panic surface
 // synchronously within this test instead of racing process exit.
+//
+// CAVEAT (PR-2 review, mutation-tested): this test alone does NOT
+// independently pin the call-site gate (workflow_action.go's `newTask.Exec
+// != nil` on the goroutine launch) — it also passes if ONLY
+// DispatchAndAdvance's own defense-in-depth `task.Exec == nil` guard is
+// present and the call-site gate is removed, because that guard turns the
+// would-be panic into a clean error that runDispatchLoop's own error
+// handling absorbs without crashing anything. Mutating the call-site gate
+// alone (independent of DispatchAndAdvance's guard) is what
+// TestApplyAction_Park_DoesNotReachCoordinatorDispatch below pins — see its
+// doc comment for why a second, narrower test is needed.
 func TestApplyAction_Park_WithRealCoordinator_DoesNotPanicDispatchGoroutine(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
@@ -458,6 +469,36 @@ func TestApplyAction_Park_WithRealCoordinator_DoesNotPanicDispatchGoroutine(t *t
 		t.Fatalf("ApplyAction(park): %v", err)
 	}
 	svc.Shutdown()
+}
+
+// TestApplyAction_Park_DoesNotReachCoordinatorDispatch independently pins
+// the call-site gate itself (workflow_action.go's `s.Coordinator != nil &&
+// newTask.Exec != nil` on the post-commit goroutine launch), decoupled from
+// whatever DispatchAndAdvance does internally. It wires hookFiredCoordinator
+// (hook_fired_test.go) — a fake that counts DispatchAndAdvance calls instead
+// of a real orchestrator.Coordinator — with dispatchResult explicitly
+// non-nil so its own fallback branch (`task.Exec.Payload`) is never reached
+// either; the only thing this test can observe is whether ApplyAction's
+// goroutine calls DispatchAndAdvance AT ALL for a card action. If the
+// call-site gate regresses (goes back to `s.Coordinator != nil` alone) this
+// fails with dispatchCalls > 0, independent of whatever guard
+// DispatchAndAdvance itself does or doesn't have.
+func TestApplyAction_Park_DoesNotReachCoordinatorDispatch(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+	txStore := &recordingTxStore{task: task}
+	svc := newTriageWorkflowService(task, txStore)
+	fake := &hookFiredCoordinator{dispatchResult: &orchestrator.DispatchResult{}}
+	svc.Coordinator = fake
+
+	_, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "park"})
+	if err != nil {
+		t.Fatalf("ApplyAction(park): %v", err)
+	}
+	svc.Shutdown()
+
+	if fake.dispatchCalls != 0 {
+		t.Errorf("DispatchAndAdvance was called %d time(s) for a card action; want 0 — the post-commit goroutine launch must be gated on newTask.Exec != nil, not just s.Coordinator != nil", fake.dispatchCalls)
+	}
 }
 
 // ---- 論点9: child_dispatched/child_closed cannot be pushed externally ----

@@ -26,14 +26,6 @@ type TaskAppService struct {
 	// and the answer path (AnswerTask), so both halves of a blocking ask use the
 	// same in-memory registry. Nil disables blocking ask (notify --ask still works).
 	BlockingAsk *BlockingAskRegistry
-	// TaskTriage seeds the task_triage sidecar row for tasks created directly
-	// into a pre-execution status (docs/plans/cross-project-issue-triage.md
-	// Phase 1 PR-5a). This makes "has a sidecar row" a reliable discriminator
-	// for "is a triage task" from birth — the predicate ListCards and PR-5b's
-	// reopen guard both rest on, and one that status alone cannot provide
-	// (done is shared with ordinary tasks). Nil is tolerated: the row is then
-	// created lazily by the first side-effect action, exactly as before PR-5a.
-	TaskTriage CardStore
 	// AskDisconnectGrace is how long an awaiting task may sit with no live agent
 	// parked before the daemon reclaims it (a blocking ask whose foreground
 	// command was killed by a harness command-timeout). Zero falls back to

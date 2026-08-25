@@ -307,3 +307,100 @@ func TestApply_0045_CheckConstraintsRejectCrossTypeWrites(t *testing.T) {
 		t.Errorf("empty-string behavior on an execution row should be legal (no-yaml project), got: %v", err)
 	}
 }
+
+// TestApply_0045_TaskIdentitiesAndJobsSurviveTableRebuild pins the row
+// survival of the two tables that reference tasks(id) but are NOT part of
+// migration 0045's own table-rebuild: task_identities (the only table with
+// an ON DELETE CASCADE FK to tasks — added in 0041) and jobs (a plain
+// NO ACTION FK, added in 0001, still nullable per 0021).
+//
+// This is the exact seam disableForeignKeys (migrate.go) exists to cross
+// safely: 0045 does `PRAGMA foreign_keys=OFF` (outside the tx, see
+// migrate.go's doc comment on the modernc.org/sqlite DROP-TABLE-under-FK
+// quirk), then `DROP TABLE tasks` + `ALTER TABLE tasks_new RENAME TO tasks`
+// inside it. Neither task_identities nor jobs is touched by 0045's own SQL
+// at all — their rows are never re-INSERTed, only left in place while the
+// table they reference is swapped out from under them. Row loss (a
+// CASCADE-on-drop silently firing before the rename lands) or row
+// corruption (a stale reference surviving pointed at nothing) would be the
+// quietest possible way this migration could break in production, since
+// neither symptom raises an error — this test is the check no other test
+// in this file provides (they all either read back tasks/task_triage
+// columns directly or check task_triage's own existence).
+func TestApply_0045_TaskIdentitiesAndJobsSurviveTableRebuild(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	applyThrough(t, d.Conn, lastPre0045Version)
+	if _, err := d.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('p1', '/tmp/p1')`); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	insertPre0045Task(t, d.Conn, pre0045Fixture{
+		id: "card-with-refs", status: "working", behavior: "",
+	})
+	if _, err := d.Conn.Exec(
+		`INSERT INTO task_identities (identity, project_id, task_id, created_at) VALUES ('JIRA-1', 'p1', 'card-with-refs', datetime('now'))`,
+	); err != nil {
+		t.Fatalf("insert task_identities row: %v", err)
+	}
+	if _, err := d.Conn.Exec(
+		`INSERT INTO jobs (id, task_id, project_id, handler_id, status, output) VALUES ('job-1', 'card-with-refs', 'p1', 'dev', 'exited', 'hello')`,
+	); err != nil {
+		t.Fatalf("insert jobs row: %v", err)
+	}
+
+	if err := applyMigration(d.Conn, mustFindMigration(t, "0045_card_sti_migration")); err != nil {
+		t.Fatalf("apply 0045: %v", err)
+	}
+
+	// The referenced task itself must still exist under the same id (sanity
+	// check that the fixture and the FK target line up) — queryTaskRow
+	// itself fatals the test if the row is missing.
+	queryTaskRow(t, d.Conn, "card-with-refs")
+
+	var identityTaskID, identityProjectID string
+	if err := d.Conn.QueryRow(
+		`SELECT task_id, project_id FROM task_identities WHERE identity = 'JIRA-1'`,
+	).Scan(&identityTaskID, &identityProjectID); err != nil {
+		t.Fatalf("task_identities row lost across migration 0045: %v", err)
+	}
+	if identityTaskID != "card-with-refs" || identityProjectID != "p1" {
+		t.Errorf("task_identities row = task_id=%q project_id=%q, want task_id=card-with-refs project_id=p1", identityTaskID, identityProjectID)
+	}
+
+	var jobTaskID, jobHandlerID, jobOutput string
+	if err := d.Conn.QueryRow(
+		`SELECT task_id, handler_id, output FROM jobs WHERE id = 'job-1'`,
+	).Scan(&jobTaskID, &jobHandlerID, &jobOutput); err != nil {
+		t.Fatalf("jobs row lost across migration 0045: %v", err)
+	}
+	if jobTaskID != "card-with-refs" || jobHandlerID != "dev" || jobOutput != "hello" {
+		t.Errorf("jobs row = task_id=%q handler_id=%q output=%q, want task_id=card-with-refs handler_id=dev output=hello", jobTaskID, jobHandlerID, jobOutput)
+	}
+
+	// task_identities' ON DELETE CASCADE FK must still be wired to the NEW
+	// tasks table post-rebuild, not silently dropped by the DROP TABLE
+	// tasks — deleting the task should still cascade-delete the identity
+	// row, exactly as it would have pre-migration. jobs.task_id is a plain
+	// NO ACTION FK (not CASCADE, unchanged by 0045 — jobs' own schema isn't
+	// touched), so it must be cleared first or the DELETE below would fail
+	// on jobs' own FK rather than exercising task_identities' CASCADE at
+	// all; that NO ACTION behavior is itself unrelated to what 0045 changed
+	// and isn't what this assertion is checking.
+	if _, err := d.Conn.Exec(`DELETE FROM jobs WHERE id = 'job-1'`); err != nil {
+		t.Fatalf("delete job (to isolate the task_identities CASCADE check from jobs' own NO ACTION FK): %v", err)
+	}
+	if _, err := d.Conn.Exec(`DELETE FROM tasks WHERE id = 'card-with-refs'`); err != nil {
+		t.Fatalf("delete task: %v", err)
+	}
+	var remaining int
+	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM task_identities WHERE identity = 'JIRA-1'`).Scan(&remaining); err != nil {
+		t.Fatalf("count task_identities after task delete: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("task_identities row survived deleting its referenced task (CASCADE FK not wired to the post-0045 tasks table); remaining = %d, want 0", remaining)
+	}
+}

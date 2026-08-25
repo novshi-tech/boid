@@ -1648,11 +1648,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Meta:     store,
 		Workflow: workflow,
 		Projects: projectRepo,
-		// Seeds the task_triage sidecar row for pre-execution creates
-		// (docs/plans/cross-project-issue-triage.md Phase 1 PR-5a) — the
-		// invariant ListCards's "has a row = is a triage task" predicate
-		// rests on. Same repo the workflow service already uses.
-		TaskTriage: taskRepo,
 		// Identities backs the brokered task_identity_link/_unlink/_resolve
 		// ops (docs/plans/ingestion-identity.md PR-1). Same repo again —
 		// taskRepo already implements api.TaskIdentityStore (see
