@@ -421,6 +421,19 @@ func TestSweepReconcileChildren_VanishedChild_TreatedAsClosed(t *testing.T) {
 	if payload.ChildStatus != "vanished" {
 		t.Fatalf(`child_closed payload "child_status" = %q, want "vanished"`, payload.ChildStatus)
 	}
+
+	// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): this vanished-
+	// child path is the SECOND of the two MarkDetailChildClosed call sites
+	// (recordVanishedChildClosedOnParent, queue_sweep.go) — the sibling of
+	// recordChildClosedOnParent's own real-child path (workflow_card.go,
+	// pinned by TestFinalizeTerminal_ChildClosed_BumpsParentUpdatedAt,
+	// updated_at_bump_test.go). Without this assertion the vanished-child
+	// bump call was reachable by no test at all — Opus review round 1 (PR
+	// #998), BLOCKER B1: a mutation replacing that call with `return nil`
+	// still left `go test ./internal/...` fully green.
+	if len(store.touchedTaskUpdatedAtIDs) != 1 || store.touchedTaskUpdatedAtIDs[0] != "card" {
+		t.Fatalf("touchedTaskUpdatedAtIDs = %v, want [card]", store.touchedTaskUpdatedAtIDs)
+	}
 }
 
 // TestSweepReconcileChildren_NoTaskTriageRow_SkippedNotErrored mirrors

@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -185,5 +188,47 @@ func TestFinalizeTerminal_ChildClosed_BumpsParentUpdatedAt(t *testing.T) {
 	svc.finalizeTerminal(context.Background(), child)
 	if len(txStore.touchedTaskUpdatedAtIDs) != 1 {
 		t.Fatalf("touchedTaskUpdatedAtIDs after repeat close = %v, want still [parent-1] (must be idempotent)", txStore.touchedTaskUpdatedAtIDs)
+	}
+}
+
+// TestApplyAction_AttrsSet_TouchTaskUpdatedAtFailure_FailsTheWholeAction pins
+// the failure half of the bump call (Opus review round 1, PR #998, N1):
+// tx.TouchTaskUpdatedAt runs INSIDE the same Tx as applyAttrsSetSideEffect
+// (workflow_action.go's `case "attrs_set":` arm), so a failure there must
+// fail the Tx as a whole — surfaced to the caller as a 500 StatusError, the
+// same generic Tx-failure wrapping every other WithinTx error already gets
+// (see ApplyAction's own `if err := s.Tx.WithinTx(...); err != nil` handling)
+// — not silently swallowed or treated as a partial success. This is the
+// production-DB counterpart of what a real `UPDATE tasks SET updated_at`
+// failure (disk full, a lock timeout, …) would do: the whole attrs_set
+// transaction rolls back with it, so the suggestion attachment
+// (task_triage.suggestion_verb) that raced ahead of it never commits either
+// — this recordingTxStore fake has no real rollback semantics of its own
+// (unlike sqlite), so what is actually pinned here is the error-propagation
+// half of that contract; the atomicity half is a property of db.InTxDB
+// (internal/db), exercised for real by every sqlite-backed test elsewhere in
+// this package.
+func TestApplyAction_AttrsSet_TouchTaskUpdatedAtFailure_FailsTheWholeAction(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	txStore := &recordingTxStore{
+		task:                  task,
+		triage:                map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}},
+		touchTaskUpdatedAtErr: fmt.Errorf("simulated updated_at write failure"),
+	}
+	svc := newTriageWorkflowService(task, txStore)
+
+	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "attrs_set",
+		Payload: []byte(`{"suggestion":{"verb":"go","reason":"specced children ready"}}`),
+	})
+	if err == nil {
+		t.Fatal("expected an error when tx.TouchTaskUpdatedAt fails")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 StatusError, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "simulated updated_at write failure") {
+		t.Fatalf("error = %v, want it to mention the underlying TouchTaskUpdatedAt failure", err)
 	}
 }
