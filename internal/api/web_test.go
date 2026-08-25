@@ -922,6 +922,158 @@ func TestWebHandler_TaskDetail_NoTriageChildren_NoSection(t *testing.T) {
 	}
 }
 
+// TestWebHandler_TaskDetail_Card_IdentityRow_ShowsProjectAndKind pins the
+// meta 2-段 identity row for a card (docs/plans/webui-detail-list-redesign.md
+// §3.1 部品A): "<project> / <kind>", no ラベル, no "card" filler.
+func TestWebHandler_TaskDetail_Card_IdentityRow_ShowsProjectAndKind(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID:        "task-1",
+		Type:      orchestrator.TaskTypeCard,
+		ProjectID: "proj-a",
+		Title:     "card title",
+		Status:    orchestrator.TaskStatusParked,
+		Card:      &orchestrator.CardAttrs{Kind: "issue"},
+	}}}
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}", h.TaskDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `<div class="detail-identity">proj-a / issue</div>`) {
+		t.Errorf("expected card identity row \"proj-a / issue\", got: %s", body)
+	}
+	// N4 (Opus review, PR #996): data-task-id is what TaskDetailLiveScript
+	// reads the task id from (§7 罠2) — a regression here would silently
+	// break live updates on every card detail page, with no visible error.
+	if !strings.Contains(body, `id="task-status" data-task-id="task-1"`) {
+		t.Errorf("card status section should carry data-task-id for TaskDetailLiveScript, got: %s", body)
+	}
+}
+
+// TestWebHandler_TaskDetail_Exec_IdentityRow_ShowsProjectAndBehavior is the
+// execution-task counterpart: "<project> / <behavior>".
+func TestWebHandler_TaskDetail_Exec_IdentityRow_ShowsProjectAndBehavior(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
+		ProjectID: "proj-b",
+		Title:     "exec title",
+		Status:    orchestrator.TaskStatusExecuting,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "implement"},
+	}}}
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}", h.TaskDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `<div class="detail-identity">proj-b / implement</div>`) {
+		t.Errorf("expected exec identity row \"proj-b / implement\", got: %s", body)
+	}
+}
+
+// TestWebHandler_TaskDetail_Card_MovementRow_ShowsTransitionEdgeWithVerb
+// pins §3.1 部品A's movement row contract: when a suggestion is live, the
+// row must show the verb on the edge itself ("parked —go→ working"), not a
+// bare arrow — the design doc requires the verb stay visible because "go"
+// and "working" both land on the same target status (working) but mean
+// very different things (dispatch vs. a bare manual declaration).
+func TestWebHandler_TaskDetail_Card_MovementRow_ShowsTransitionEdgeWithVerb(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeCardTaskDetailView("task-1", orchestrator.TaskStatusParked)}
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
+		"task-1": {TaskID: "task-1", Detail: []byte(`{"suggestion":{"verb":"go","reason":"children specced"}}`)},
+	}}
+	h := &WebHandler{Service: svc, TaskTriage: triage}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}", h.TaskDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "—go→") {
+		t.Errorf("movement row should show the verb-labeled transition edge \"—go→\", got: %s", body)
+	}
+	if !strings.Contains(body, `badge-parked`) || !strings.Contains(body, `badge-working`) {
+		t.Errorf("movement row should show both the current status badge (parked) and the target status badge (working), got: %s", body)
+	}
+}
+
+// TestWebHandler_TaskDetail_Card_DescriptionShownInBody_NoTabNeeded pins
+// §3.3 item 3 (decided, not left to a later PR): a card's Description is
+// shown directly in the page body, not hidden behind a tab click — the
+// plain GET (no ?tab= at all) must already contain it.
+func TestWebHandler_TaskDetail_Card_DescriptionShownInBody_NoTabNeeded(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID:          "task-1",
+		Type:        orchestrator.TaskTypeCard,
+		Title:       "card title",
+		Description: "captured content the card is about",
+		Status:      orchestrator.TaskStatusParked,
+		Card:        &orchestrator.CardAttrs{},
+	}}}
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}", h.TaskDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if !strings.Contains(w.Body.String(), "captured content the card is about") {
+		t.Errorf("card body should show Description without navigating to a tab, got: %s", w.Body.String())
+	}
+}
+
+// TestWebHandler_TaskDetail_Exec_DescriptionNotShownByDefault is the
+// execution-task counterpart: Description stays behind the existing
+// Description tab (unchanged for PR-1 — §3.4), so the default (Timeline)
+// view must NOT show it.
+func TestWebHandler_TaskDetail_Exec_DescriptionNotShownByDefault(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID:          "task-1",
+		Type:        orchestrator.TaskTypeExecution,
+		Title:       "exec title",
+		Description: "exec task description text",
+		Status:      orchestrator.TaskStatusExecuting,
+		Exec:        &orchestrator.ExecAttrs{},
+	}}}
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}", h.TaskDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if strings.Contains(w.Body.String(), "exec task description text") {
+		t.Errorf("exec detail's default (Timeline) view should not show Description, got: %s", w.Body.String())
+	}
+}
+
 func TestWebHandlerPostDuplicate_Success(t *testing.T) {
 	svc := &stubWebService{duplicateTaskNewID: "new-task-id"}
 	r := newTestWebHandler(svc)
@@ -1147,13 +1299,38 @@ func TestTaskDetailFragment_Status(t *testing.T) {
 	}
 }
 
+// makeCardTaskDetailView is makeTaskDetailView's card-typed counterpart,
+// used by tests that exercise the card-only rendering path (suggestion /
+// children / movement edge). status defaults every card-machine verb's
+// FromStatus can plausibly apply to; individual tests override where a
+// specific verb's FromStatus matters (e.g. "reopen" only fires from
+// done/dropped).
+func makeCardTaskDetailView(id string, status orchestrator.TaskStatus) *TaskDetailView {
+	return &TaskDetailView{
+		Task: &orchestrator.Task{
+			ID:     id,
+			Type:   orchestrator.TaskTypeCard,
+			Title:  "Test Card",
+			Status: status,
+			Card:   &orchestrator.CardAttrs{},
+		},
+	}
+}
+
 // TestTaskDetailFragment_Status_RendersSuggestion is a wiring test for the
 // suggestion card on the fragment path (Opus review finding, 2026-08-18):
 // TestTaskDetailFragment_Status above sits right next to this code but
 // never wired a TaskTriage store, so it could not have caught the
 // suggestion parameter being dropped or left at its zero value.
+//
+// webui-detail-list-redesign PR-1: the fixture is now a Card (was an
+// Execution task with a triage row bolted on by the stub — a combination
+// the real DB can never produce, since CardStore.GetTaskTriage only ever
+// matches a `type='card'` row). The entity split branches TaskDetailFragment
+// on task.Type (§7 PR-1 — "分岐軸は task.Type"), and suggestion rendering is
+// card-only, so this test now needs a fixture that reflects that.
 func TestTaskDetailFragment_Status_RendersSuggestion(t *testing.T) {
-	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	svc := &stubWebService{taskDetail: makeCardTaskDetailView("task-1", orchestrator.TaskStatusDone)}
 	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"task-1": {TaskID: "task-1", Detail: []byte(`{"suggestion":{"verb":"reopen","action":"re-triage now","reason":"source event fired","basis":"issue #42 reopened"}}`)},
 	}}
@@ -1178,9 +1355,10 @@ func TestTaskDetailFragment_Status_RendersSuggestion(t *testing.T) {
 
 // TestTaskDetail_RendersSuggestion covers the full-page path (not just the
 // HTMX fragment) — the same wiring gap as above, but for TaskDetail →
-// templates.TaskDetail's threaded suggestion parameter.
+// templates.TaskDetail's threaded suggestion parameter. Card fixture for
+// the same reason as TestTaskDetailFragment_Status_RendersSuggestion above.
 func TestTaskDetail_RendersSuggestion(t *testing.T) {
-	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	svc := &stubWebService{taskDetail: makeCardTaskDetailView("task-1", orchestrator.TaskStatusDone)}
 	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"task-1": {TaskID: "task-1", Detail: []byte(`{"suggestion":{"verb":"reopen","reason":"source event fired"}}`)},
 	}}
@@ -1204,7 +1382,13 @@ func TestTaskDetail_RendersSuggestion(t *testing.T) {
 	}
 }
 
-func TestTaskDetailFragment_Jobs(t *testing.T) {
+// TestTaskDetailFragment_JobsKindRemoved pins the death of fragment
+// kind=jobs (docs/plans/webui-detail-list-redesign.md §7 PR-1 死骸掃除):
+// TaskDetailJobsSection was never reachable from the page (the `jobs`
+// argument flowed TaskDetail → TabsSection → TabPanel and was never read
+// there), and the fragment endpoint was its only caller. Same response as
+// any other unrecognized kind now — see TestTaskDetailFragment_UnknownKind.
+func TestTaskDetailFragment_JobsKindRemoved(t *testing.T) {
 	svc := &stubWebService{taskDetail: makeTaskDetailView()}
 	r := newTestWebHandler(svc)
 
@@ -1212,15 +1396,8 @@ func TestTaskDetailFragment_Jobs(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, `id="task-jobs"`) {
-		t.Errorf("jobs fragment should contain task-jobs element, got: %s", body)
-	}
-	if strings.Contains(body, "<html") {
-		t.Error("fragment should not contain full HTML page")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (kind=jobs no longer exists)", w.Code)
 	}
 }
 
@@ -1714,6 +1891,168 @@ func TestTaskDetail_Tab_HXRequest_Timeline(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="task-timeline"`) {
 		t.Errorf("timeline tab should contain task-timeline element, got: %s", body)
+	}
+}
+
+// liveScriptMarker is a substring unique to TaskDetailLiveScript's <script>
+// body (the module-level re-entry guard variable name). Used by the B1
+// regression tests below as a cheap, robust way to detect the script's
+// presence/absence without depending on exact whitespace/formatting.
+//
+// Appears exactly TWICE per script instance — once in the guard check
+// (`if (window.__boidTimelineSubscriber) return`) and once in the
+// assignment (`window.__boidTimelineSubscriber = true`) — so
+// liveScriptInstanceCount below divides the raw occurrence count by this.
+const liveScriptMarker = "__boidTimelineSubscriber"
+
+// occurrencesPerLiveScript is how many times liveScriptMarker appears
+// within a single rendering of TaskDetailLiveScript (see its doc comment).
+const occurrencesPerLiveScript = 2
+
+// liveScriptInstanceCount returns how many times TaskDetailLiveScript was
+// rendered into body.
+func liveScriptInstanceCount(body string) int {
+	return strings.Count(body, liveScriptMarker) / occurrencesPerLiveScript
+}
+
+// TestTaskDetail_Exec_LiveScriptRendersOnceOutsideTabs pins Opus review
+// finding B1 (PR #996, blocking): TaskDetailLiveScript must render exactly
+// once per full page load, and — critically — NOT as part of the #tabs
+// fragment a tab-link click swaps. It used to live inside #tabs (rendered
+// by TaskDetailExecTabPanel), paired with an htmx:beforeSwap teardown that
+// closed the EventSource whenever #tabs was about to be swapped; the first
+// tab click tore the connection down, and the freshly-swapped-in copy of
+// the script never reopened it (its own top-of-IIFE re-entry guard
+// short-circuited before ever calling openES() again) — SSE updates for
+// #task-status/#task-timeline died permanently after exactly one tab
+// switch. This (and TestTaskDetail_Exec_TabSwapFragment_HasNoLiveScript
+// below) can't drive real HTMX/EventSource behavior from a Go test, but
+// together they pin the structural invariant the fix depends on: the
+// script is emitted exactly once, and never inside anything #tabs-swappable.
+func TestTaskDetail_Exec_LiveScriptRendersOnceOutsideTabs(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+
+	if got := liveScriptInstanceCount(body); got != 1 {
+		t.Errorf("live script rendered %d times on the full exec detail page, want exactly 1: %s", got, body)
+	}
+
+	// "Outside #tabs" is pinned by comparing against the #tabs fragment
+	// itself (TestTaskDetail_Exec_TabSwapFragment_HasNoLiveScript below):
+	// that fragment is rendered by the exact same TaskDetailExecTabsSection
+	// call the full page embeds for its #tabs subtree, and it never
+	// contains the script — so if the full page DOES contain the script
+	// (asserted above) and the #tabs subtree provably does not, the script
+	// must live outside #tabs.
+}
+
+// TestTaskDetail_Exec_TabSwapFragment_HasNoLiveScript is
+// TestTaskDetail_Exec_LiveScriptRendersOnceOutsideTabs's other half: the
+// HX-Request fragment a tab-link click actually receives (what
+// TaskDetailExecTabsSection renders — the exact #tabs subtree HTMX swaps)
+// must never contain the live script at all, on ANY tab — including
+// "timeline", where the script used to live before this fix (inside
+// TaskDetailExecTabPanel's activeTab=="timeline" branch). If it did, every
+// tab click would re-insert a copy that (per the script's own re-entry
+// guard) can never actually resubscribe — the B1 bug this test guards
+// against.
+func TestTaskDetail_Exec_TabSwapFragment_HasNoLiveScript(t *testing.T) {
+	for _, tab := range []string{"timeline", "description", "payload", "instructions"} {
+		t.Run(tab, func(t *testing.T) {
+			svc := &stubWebService{taskDetail: makeTaskDetailView()}
+			r := newTestWebHandler(svc)
+
+			req := httptest.NewRequest(http.MethodGet, "/tasks/task-1?tab="+tab, nil)
+			req.Header.Set("HX-Request", "true")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			body := w.Body.String()
+			if strings.Contains(body, liveScriptMarker) {
+				t.Errorf("tab-swap fragment (#tabs, tab=%s) must not contain the live-update script, got: %s", tab, body)
+			}
+		})
+	}
+}
+
+// TestTaskDetail_Card_HXRequest_FullPageRender pins 罠1's resolution
+// (docs/plans/webui-detail-list-redesign.md §7 PR-1): a card detail page
+// has no tabs, so an HX-Request GET with a `tab` query param — the shape a
+// tab-link click sends on the execution layout — must fall through to a
+// full page render for a card instead of trying (and failing) to render a
+// #tabs fragment that does not exist on the card layout. Twin of
+// TestTaskDetail_Tab_HXRequest_Timeline above, which pins the execution
+// side of the same branch.
+func TestTaskDetail_Card_HXRequest_FullPageRender(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeCardTaskDetailView("task-1", orchestrator.TaskStatusParked)}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1?tab=timeline", nil)
+	req.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "<html") {
+		t.Errorf("HX-Request on a card should still get the full page (no #tabs to fragment-swap into), got: %s", body)
+	}
+	if strings.Contains(body, `id="tabs"`) {
+		t.Errorf("card detail page should render no #tabs element at all, got: %s", body)
+	}
+}
+
+// TestTaskDetail_CardVsExec_RenderDifferently pins the entity split itself
+// (§7 PR-1's core requirement): the two layouts must diverge in ways a
+// reader (and a test) can observe from the same handler, for the same
+// generic task detail route.
+func TestTaskDetail_CardVsExec_RenderDifferently(t *testing.T) {
+	execSvc := &stubWebService{taskDetail: makeTaskDetailView()}
+	execR := newTestWebHandler(execSvc)
+	execReq := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	execW := httptest.NewRecorder()
+	execR.ServeHTTP(execW, execReq)
+	execBody := execW.Body.String()
+
+	cardSvc := &stubWebService{taskDetail: makeCardTaskDetailView("task-1", orchestrator.TaskStatusParked)}
+	cardR := newTestWebHandler(cardSvc)
+	cardReq := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	cardW := httptest.NewRecorder()
+	cardR.ServeHTTP(cardW, cardReq)
+	cardBody := cardW.Body.String()
+
+	if execW.Code != http.StatusOK || cardW.Code != http.StatusOK {
+		t.Fatalf("status = (exec %d, card %d), want (200, 200)", execW.Code, cardW.Code)
+	}
+
+	// An execution task's detail page has tabs; a card's does not.
+	if !strings.Contains(execBody, `id="tabs"`) {
+		t.Error("execution task detail should render #tabs")
+	}
+	if strings.Contains(cardBody, `id="tabs"`) {
+		t.Error("card detail should NOT render #tabs (§7 罠1 — no tabs on the card layout)")
+	}
+
+	// Neither layout ever prints the literal filler behavior label "card"
+	// that the old shared status strip used for a triage task (§3.1: "埋め草
+	// 'card' ラベルは廃止"). The card fixture has no Kind set, so its
+	// identity row renders as just the project id with a trailing " / ".
+	if strings.Contains(cardBody, `>card<`) {
+		t.Errorf("card identity row should not render the literal filler \"card\", got: %s", cardBody)
 	}
 }
 

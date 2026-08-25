@@ -3,12 +3,12 @@ package templates
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/timeline"
 	"github.com/novshi-tech/boid/web/templates/components"
 	"gopkg.in/yaml.v3"
-	"time"
 )
 
 // instructionDisplay carries a single instruction history entry annotated
@@ -150,17 +150,6 @@ templ TaskListFragment(items []components.TreeItem, filter orchestrator.TaskFilt
 	</div>
 }
 
-type JobView struct {
-	ID        string
-	HandlerID string
-	Role      string
-	Status    string
-	ExitCode  int
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Output    string
-}
-
 func taskStatusClass(s string) string {
 	return "badge badge-" + s
 }
@@ -220,8 +209,6 @@ templ TaskListActionBar() {
 	</div>
 }
 
-// TaskDetailStatusSection renders the status card + action buttons.
-// Wrapped in <div id="task-status"> so EventSource JS can replace it via outerHTML.
 // detailProjectLabel returns the resolved project name when available,
 // falling back to the project ID.
 func detailProjectLabel(task *orchestrator.Task, projectName string) string {
@@ -231,25 +218,64 @@ func detailProjectLabel(task *orchestrator.Task, projectName string) string {
 	return task.ProjectID
 }
 
-// taskBehaviorLabel returns the behavior name for an execution task, or
-// "card" for a card (card-model-cleanup PR-2: Behavior is execution-only —
-// design doc §3.2 — so a card has none to show; surfacing its type instead
-// of leaving the slot blank keeps this generic status header meaningful for
-// both task types).
-func taskBehaviorLabel(task *orchestrator.Task) string {
-	if task.Exec != nil {
-		return task.Exec.Behavior
+// cardIdentityLabel renders the "素性の段" (identity row) text for a card
+// detail page: "<project> / <kind>" (docs/plans/webui-detail-list-redesign.md
+// §3.1, part A of the meta 2-段 regulation). The old shared status strip
+// used to fill the behavior slot with the literal string "card" for a card
+// (its own doc comment called this a filler, "空欄にしないため") — §3.1
+// retires that filler outright: a card genuinely has no behavior, and the
+// entity split means this label is never rendered for anything but a card,
+// so there is no shared slot left to keep non-blank.
+func cardIdentityLabel(task *orchestrator.Task, projectName string) string {
+	kind := ""
+	if task.Card != nil {
+		kind = task.Card.Kind
 	}
-	return string(task.Type)
+	if task.ProjectID == "" {
+		return kind
+	}
+	return detailProjectLabel(task, projectName) + " / " + kind
+}
+
+// execIdentityLabel is cardIdentityLabel's execution-task counterpart:
+// "<project> / <behavior>".
+func execIdentityLabel(task *orchestrator.Task, projectName string) string {
+	behavior := ""
+	if task.Exec != nil {
+		behavior = task.Exec.Behavior
+	}
+	if task.ProjectID == "" {
+		return behavior
+	}
+	return detailProjectLabel(task, projectName) + " / " + behavior
+}
+
+// suggestionTargetStatus returns the status a suggestion's verb would move a
+// card to, so the movement row can render the transition as an edge
+// ("parked —go→ working", §3.1 部品A). Reads the answer directly off card
+// machine v2's own rule table (machine_card.go) instead of a second,
+// hand-maintained verb→status map, so this can never silently drift from
+// the machine that actually governs the transition. Returns "" when no
+// manual, status-changing rule matches — defensive against a future verb
+// the card machine doesn't (yet) recognize; the caller falls back to
+// showing the bare status badge with no arrow in that case.
+func suggestionTargetStatus(status orchestrator.TaskStatus, verb string) string {
+	for _, r := range orchestrator.NewCardMachine().Rules {
+		if r.Manual && r.Action == verb && r.ToStatus != "" && (r.FromStatus == "*" || r.FromStatus == string(status)) {
+			return r.ToStatus
+		}
+	}
+	return ""
 }
 
 // taskExecPayload/taskExecInstructions read Payload/Instructions off a
 // task's Exec attrs, returning the zero value for a card (card-model-cleanup
-// PR-2: both are execution-only fields — design doc §3.2). The task detail
-// page is a generic per-task view (any task, card or execution — see
-// TaskDetailStatusSection's own doc comment), so every render site that used
-// to read task.Payload/task.Instructions directly goes through these instead
-// of risking a nil Exec dereference.
+// PR-2: both are execution-only fields — design doc §3.2). Both fields are
+// execution-only vocabulary in the first place (§3.3's "出さないもの": Payload
+// / Instructions never render on the card layout at all post-entity-split),
+// but these two helpers stay nil-safe regardless, since taskExecPayload also
+// backs TaskDetailAwaitingBanner, which any task (including, in principle, a
+// future card status this PR doesn't add) could reach.
 func taskExecPayload(task *orchestrator.Task) json.RawMessage {
 	if task.Exec == nil {
 		return nil
@@ -282,22 +308,32 @@ func detailRowClasses(task *orchestrator.Task) []string {
 	return classes
 }
 
-// TaskDetailStatusSection renders the frameless meta strip under the
-// site header. The title has moved to the header (one-level back-nav
-// Plan B); what's left here is the status stripe + compact meta
-// (status / behavior / project / updated). Actions are intentionally
-// NOT rendered here — they live in the sticky action bar at the bottom
-// of the page (see TaskActionBar).
-templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion) {
-	<div id="task-status">
+// TaskDetailCardStatusSection renders the card detail page's frameless meta
+// strip: the identity row (素性の段, §3.1) followed by the movement row
+// (動きの段) — a bare status badge, or the transition edge
+// "parked —go→ working" when a suggestion is live. The suggestion's own
+// Accept/Reject UI is folded in right here (via TaskDetailSuggestionSection)
+// rather than living in the bottom action bar — §3.3 item 5's role split:
+// approving a suggestion means applying the transition the movement row is
+// already showing, so the affordance belongs next to what it acts on. The
+// action bar (TaskCardActionBar) stays reserved for direct, suggestion-
+// independent operator moves — the escape hatch design doc §3.2 requires.
+//
+// id="task-status" carries data-task-id so TaskDetailLiveScript (shared by
+// both the card and execution layouts, §7 罠2) can find the task id without
+// depending on #tab-panel, which the card layout does not have.
+templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion) {
+	<div id="task-status" data-task-id={ task.ID }>
 		<div class={ detailRowClasses(task) }>
+			<div class="detail-identity">{ cardIdentityLabel(task, projectName) }</div>
 			<div class="detail-meta">
 				<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
-				<span class="detail-meta-sep">·</span>
-				<span>{ taskBehaviorLabel(task) }</span>
-				if task.ProjectID != "" {
-					<span class="detail-meta-sep">·</span>
-					<span>{ detailProjectLabel(task, projectName) }</span>
+				if suggestion.Verb != "" {
+					{{ target := suggestionTargetStatus(task.Status, suggestion.Verb) }}
+					if target != "" {
+						<span class="detail-meta-sep">—{ suggestion.Verb }→</span>
+						<span class={ taskStatusClass(target) }>{ target }</span>
+					}
 				}
 				<span class="detail-meta-sep">·</span>
 				<span class="detail-time">{ task.UpdatedAt.Local().Format("2006-01-02 15:04") }</span>
@@ -308,6 +344,35 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 		}
 		@TaskDetailSuggestionSection(task.ID, task.Status, suggestion)
 		@TaskDetailChildrenSection(children)
+	</div>
+}
+
+// TaskDetailExecStatusSection is TaskDetailCardStatusSection's execution-task
+// counterpart: identity row is "<project> / <behavior>"; the movement row
+// shows status + elapsed while executing, or the existing awaiting banner
+// (moved here from TaskDetailTimelineSection — see that function's own doc
+// comment — so it surfaces immediately instead of only inside the Timeline
+// tab).
+templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, projectName string) {
+	<div id="task-status" data-task-id={ task.ID }>
+		<div class={ detailRowClasses(task) }>
+			<div class="detail-identity">{ execIdentityLabel(task, projectName) }</div>
+			<div class="detail-meta">
+				<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
+				if task.Status == orchestrator.TaskStatusExecuting {
+					<span class="detail-meta-sep">·</span>
+					<span>{ timeline.FormatElapsed(task.UpdatedAt) } 経過</span>
+				}
+				<span class="detail-meta-sep">·</span>
+				<span class="detail-time">{ task.UpdatedAt.Local().Format("2006-01-02 15:04") }</span>
+			</div>
+		</div>
+		if errorMsg != "" {
+			<div class="action-error">{ errorMsg }</div>
+		}
+		if task.Status == orchestrator.TaskStatusAwaiting {
+			@TaskDetailAwaitingBanner(task)
+		}
 	</div>
 }
 
@@ -620,26 +685,151 @@ func acceptButtonLabel(verb string) string {
 	return "Accept: " + verb
 }
 
-// TaskActionBar renders the sticky bottom action bar.
-// Timeline tab: state-aware primary (Start/Abort/Rerun) + "⋯" kebab
-// (duplicate / abort / delete). Other tabs show no bar.
-templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab string, hasTriage bool) {
+// TaskCardActionBar renders the sticky bottom action bar for a card detail
+// page. Card detail has no tabs (§7 罠1), so — unlike TaskExecActionBar —
+// this always renders; there is no activeTab gate.
+//
+// This is the "escape hatch" design doc §3.2 requires: every card-machine
+// transition must stay reachable by a direct human click, independent of
+// whatever suggestion (if any) TaskDetailCardStatusSection's movement row is
+// showing (§3.3 item 5's role split — the suggestion's own Accept/Reject
+// lives there, not here).
+//
+// Split out of the old shared TaskActionBar (which used to carry BOTH card
+// and execution branches behind a hasTriage bool — see git history). The
+// branches kept here are copied verbatim (same POST targets, same hidden
+// fields, same confirm() text) from that function's hasTriage==true paths,
+// so PR-1's "遷移機能等価" holds. The branches NOT carried over (the
+// hasTriage==false Reopen+Rerun variant, the plain non-Shape/non-menu-item
+// exec path) never applied to a card in the first place — card machine v2
+// (machine_card.go) has no "abort" rule at all, and "pending"/"executing"/
+// "awaiting"/"aborted" are execution-only statuses a card can never reach,
+// so the removed code paths were unreachable dead branches for a card
+// caller both before and after this split.
+templ TaskCardActionBar(task *orchestrator.Task, availableActions []string) {
+	<div class="action-bar">
+		<div class="action-bar-inner">
+			if task.Status == orchestrator.TaskStatusDone || task.Status == orchestrator.TaskStatusDropped {
+				// card machine v2 (docs/plans/suggestion-as-state-transition.md
+				// §3.2): a done/dropped card reopens to parked, never
+				// executing — no Rerun here, "re-executing a card as a job"
+				// is not a real concept (a card never runs its own session).
+				<a href={ templ.SafeURL("/tasks/" + task.ID + "/reopen") } class="btn btn-primary action-bar-primary-form">Reopen</a>
+			} else {
+				{{ action, label := detailPrimaryAction(task, availableActions) }}
+				if action != "" {
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
+						<input type="hidden" name="type" value={ action }/>
+						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
+					</form>
+				} else {
+					<span class="action-bar-spacer"></span>
+				}
+			}
+			if task.Status == orchestrator.TaskStatusParked || task.Status == orchestrator.TaskStatusWorking {
+				// Shape (UC-3 shaping session launcher, cross-project-issue-triage
+				// plan doc — 整形 in the plan doc's Japanese). Secondary to Go:
+				// shaping is for cards still too fuzzy to Go on directly, not
+				// the default path. Card machine v2 (docs/plans/
+				// suggestion-as-state-transition.md §3.2) folds captured/
+				// triaged into parked, so parked is now the "still needs
+				// shaping" resting state Shape targets — working keeps its
+				// own offer (2026-08-14 follow-up) since a dispatched card's
+				// children list keeps needing shaping work after Go: an
+				// existing open child may need its spec defined, or a
+				// brand-new child may need to be added.
+				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/shape") } class="action-bar-primary-form">
+					<button type="submit" class="btn btn-secondary">Shape</button>
+				</form>
+			}
+			<details class="action-menu">
+				<summary class="action-menu-summary" aria-label="More actions">⋯</summary>
+				<div class="action-menu-list" role="menu">
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
+						<button type="submit" class="action-menu-item">duplicate</button>
+					</form>
+					// working (parked → working, card machine v2: declares
+					// manual work without dispatching any specced children —
+					// the lighter alternative to Go, which is the bottom
+					// bar's primary action instead. Only ever available from
+					// parked, so no extra status gate is needed beyond
+					// hasAction.
+					if hasAction(availableActions, "working") {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
+							<input type="hidden" name="type" value="working"/>
+							<button type="submit" class="action-menu-item">working</button>
+						</form>
+					}
+					// park (working → parked, card machine v2, queue から
+					// 一時的に外す — 決定9の「後回し」)。
+					if hasAction(availableActions, "park") {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Park this task (set aside for later)?')">
+							<input type="hidden" name="type" value="park"/>
+							<button type="submit" class="action-menu-item">park</button>
+						</form>
+					}
+					// done (parked → done、card 機械 v2 の 8 本目の辺、
+					// 2026-08-25)。ここで働いた人が居ないまま閉じる card
+					// ——「外で片付いていた」「重複と判明した」—— のための
+					// 1 手。理由は machine_card.go の NewCardMachine doc
+					// comment を参照。
+					//
+					// **status の門が要る。** このメニューは verb を 1 つずつ
+					// 列挙していて availableActions を回さないので、working の
+					// card では done が既に bottom bar の primary ボタン
+					// (detailPrimaryAction) として出ている。門が無いと同じ
+					// 遷移のボタンが 1 画面に 2 つ並ぶ。parked の primary は
+					// Go のまま —— card を閉じるのが既定の一手になってはいけない
+					// —— なので parked 側はこのメニューが唯一の入口になる。
+					if hasAction(availableActions, "done") && task.Status == orchestrator.TaskStatusParked {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Close this card as done? Use this when the work was finished elsewhere, or this card turned out to be a duplicate. It keeps the card&#39;s identities, so the source can still reopen it later.')">
+							<input type="hidden" name="type" value="done"/>
+							<button type="submit" class="action-menu-item">done</button>
+						</form>
+					}
+					// drop (parked → dropped, 必ず nose の判断
+					// でのみ入る終端 — 逆輸入2: 「終わった件と捨てた件を区別
+					// できないと成功の定義が測れない」)。
+					if hasAction(availableActions, "drop") {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Drop this task? This discards it — a dropped task does not resume.')">
+							<input type="hidden" name="type" value="drop"/>
+							<button type="submit" class="action-menu-item action-menu-item-danger">drop</button>
+						</form>
+					}
+					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/delete") } onsubmit="return confirm('Delete this task? This cannot be undone.')">
+						<button type="submit" class="action-menu-item action-menu-item-danger">delete</button>
+					</form>
+				</div>
+			</details>
+		</div>
+	</div>
+}
+
+// TaskExecActionBar renders the sticky bottom action bar for an execution
+// task detail page: state-aware primary (Start/Abort/Rerun) + "⋯" kebab
+// (duplicate / abort / delete). Only shown on the Timeline tab — the other
+// tabs (Description/Payload/Instructions) carry no action-bar-relevant
+// state.
+//
+// The card-only branches TaskCardActionBar now owns (Shape, the
+// Reopen-without-Rerun variant, the working/park/drop/status-gated-done
+// menu items) are gone from here: machine_execution.go's rule table never
+// grants "working"/"park"/"drop" as an available action for an execution
+// task, and "parked" is a status only a card ever reaches, so those
+// branches rendered nothing for an execution task before this split either
+// — removing them changes no execution task's rendered output (PR-1's
+// "遷移機能等価").
+templ TaskExecActionBar(task *orchestrator.Task, availableActions []string, activeTab string) {
 	if activeTab == "timeline" {
 		<div class="action-bar">
 			<div class="action-bar-inner">
-				if task.Status == orchestrator.TaskStatusAborted || (task.Status == orchestrator.TaskStatusDone && !hasTriage) {
-					// Ordinary (non-card) done/aborted task: reopen re-executes
-					// it (execution machine's own reopen: done/aborted→executing).
+				if task.Status == orchestrator.TaskStatusAborted || task.Status == orchestrator.TaskStatusDone {
+					// reopen re-executes it (execution machine's own reopen:
+					// done/aborted→executing).
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/reopen") } class="btn btn-primary action-bar-primary-form">Reopen</a>
 					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/rerun") } onsubmit="return confirm('Rerun this task?')">
 						<button type="submit" class="btn btn-secondary">Rerun</button>
 					</form>
-				} else if hasTriage && (task.Status == orchestrator.TaskStatusDone || task.Status == orchestrator.TaskStatusDropped) {
-					// card machine v2 (docs/plans/suggestion-as-state-transition.md
-					// §3.2): a done/dropped CARD reopens to parked, never
-					// executing — no Rerun here, "re-executing a card as a job"
-					// is not a real concept (a card never runs its own session).
-					<a href={ templ.SafeURL("/tasks/" + task.ID + "/reopen") } class="btn btn-primary action-bar-primary-form">Reopen</a>
 				} else {
 					{{ action, label := detailPrimaryAction(task, availableActions) }}
 					if action == "rerun" {
@@ -663,22 +853,6 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 				if task.Status == orchestrator.TaskStatusPending {
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit") } class="btn btn-secondary">Edit</a>
 				}
-				if (task.Status == orchestrator.TaskStatusParked || task.Status == orchestrator.TaskStatusWorking) && hasTriage {
-					// Shape (UC-3 shaping session launcher, cross-project-issue-triage
-					// plan doc — 整形 in the plan doc's Japanese). Secondary to Go:
-					// shaping is for cards still too fuzzy to Go on directly, not
-					// the default path. Card machine v2 (docs/plans/
-					// suggestion-as-state-transition.md §3.2) folds captured/
-					// triaged into parked, so parked is now the "still needs
-					// shaping" resting state Shape targets — working keeps its
-					// own offer (2026-08-14 follow-up) since a dispatched card's
-					// children list keeps needing shaping work after Go: an
-					// existing open child may need its spec defined, or a
-					// brand-new child may need to be added.
-					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/shape") } class="action-bar-primary-form">
-						<button type="submit" class="btn btn-secondary">Shape</button>
-					</form>
-				}
 				<details class="action-menu">
 					<summary class="action-menu-summary" aria-label="More actions">⋯</summary>
 					<div class="action-menu-list" role="menu">
@@ -688,11 +862,7 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 						// abort is gated on availableActions rather than the
 						// old blanket "not done/aborted/pending" exclusion,
 						// since machine.go now scopes it to the
-						// execution-lifecycle statuses only — a card (parked/
-						// working) uses drop/park/reopen instead (card machine
-						// v2 has no abort rule at all — docs/plans/
-						// suggestion-as-state-transition.md §3.2: "card は
-						// aborted にも到達しなくなる"). pending is still
+						// execution-lifecycle statuses only. pending is still
 						// excluded explicitly — machine.go DOES have a
 						// pending→aborted rule, but pending already has its
 						// own Edit affordance and hiding abort there predates
@@ -701,54 +871,6 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Abort this task?')">
 								<input type="hidden" name="type" value="abort"/>
 								<button type="submit" class="action-menu-item action-menu-item-danger">abort</button>
-							</form>
-						}
-						// working (parked → working, card machine v2: declares
-						// manual work without dispatching any specced children —
-						// the lighter alternative to Go, which is the bottom
-						// bar's primary action instead. Only ever available from
-						// parked, so no extra status gate is needed beyond
-						// hasAction.
-						if hasAction(availableActions, "working") {
-							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
-								<input type="hidden" name="type" value="working"/>
-								<button type="submit" class="action-menu-item">working</button>
-							</form>
-						}
-						// park (working → parked, card machine v2, queue から
-						// 一時的に外す — 決定9の「後回し」)。
-						if hasAction(availableActions, "park") {
-							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Park this task (set aside for later)?')">
-								<input type="hidden" name="type" value="park"/>
-								<button type="submit" class="action-menu-item">park</button>
-							</form>
-						}
-						// done (parked → done、card 機械 v2 の 8 本目の辺、
-						// 2026-08-25)。ここで働いた人が居ないまま閉じる card
-						// ——「外で片付いていた」「重複と判明した」—— のための
-						// 1 手。理由は machine_card.go の NewCardMachine doc
-						// comment を参照。
-						//
-						// **status の門が要る。** このメニューは verb を 1 つずつ
-						// 列挙していて availableActions を回さないので、working の
-						// card では done が既に bottom bar の primary ボタン
-						// (detailPrimaryAction) として出ている。門が無いと同じ
-						// 遷移のボタンが 1 画面に 2 つ並ぶ。parked の primary は
-						// Go のまま —— card を閉じるのが既定の一手になってはいけない
-						// —— なので parked 側はこのメニューが唯一の入口になる。
-						if hasAction(availableActions, "done") && task.Status == orchestrator.TaskStatusParked {
-							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Close this card as done? Use this when the work was finished elsewhere, or this card turned out to be a duplicate. It keeps the card&#39;s identities, so the source can still reopen it later.')">
-								<input type="hidden" name="type" value="done"/>
-								<button type="submit" class="action-menu-item">done</button>
-							</form>
-						}
-						// drop (parked → dropped, 必ず nose の判断
-						// でのみ入る終端 — 逆輸入2: 「終わった件と捨てた件を区別
-						// できないと成功の定義が測れない」)。
-						if hasAction(availableActions, "drop") {
-							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Drop this task? This discards it — a dropped task does not resume.')">
-								<input type="hidden" name="type" value="drop"/>
-								<button type="submit" class="action-menu-item action-menu-item-danger">drop</button>
 							</form>
 						}
 						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/delete") } onsubmit="return confirm('Delete this task? This cannot be undone.')">
@@ -795,9 +917,7 @@ func timelineJobStatusClass(ev timeline.Event, taskStatus string) string {
 		if ev.Sticky && taskStatus == string(orchestrator.TaskStatusAwaiting) {
 			// "parked" here feeds "timeline-row-job-" + ... (style.css), NOT
 			// "badge-" + ... — it does not collide with the real task status
-			// "parked" (cross-project-issue-triage Phase 1). Only
-			// jobDisplayStatus below (which DOES feed taskStatusClass, i.e.
-			// "badge-" + ...) needed renaming — see its own doc comment.
+			// "parked" (cross-project-issue-triage Phase 1).
 			return "parked"
 		}
 		return timeline.JobStatusRunning
@@ -847,7 +967,16 @@ func timelineJobSinceUnix(ev timeline.Event) string {
 
 // TaskDetailTimelineSection renders the action-and-job history grouped by
 // status visit. The grouping, sort, and label text are built by
-// internal/timeline so the TUI and Web UI render the same structure.
+// internal/timeline so the TUI and Web UI render the same structure. Shared
+// verbatim by both the card and execution detail layouts (§7 罠2 — same
+// #task-timeline id, same fragment kind=timeline in both).
+//
+// The awaiting call-to-action (TaskDetailAwaitingBanner) used to render at
+// the top of this section; it moved to TaskDetailExecStatusSection's
+// movement row (§3.1 部品A — exec's movement row is "状態+経過/awaitingバナー")
+// so it surfaces immediately instead of only once the reader is already
+// inside the (execution-only) Timeline tab, and so it does not render
+// twice when Timeline is the default active tab.
 //
 // Layout: one continuous left rail across the whole timeline; each row
 // (status header + events) sits on the rail with its own marker (○ for
@@ -857,9 +986,6 @@ func timelineJobSinceUnix(ev timeline.Event) string {
 // re-parsing per row.
 templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.StatusGroup) {
 	<div id="task-timeline" class="tab-content">
-		if task != nil && task.Status == orchestrator.TaskStatusAwaiting {
-			@TaskDetailAwaitingBanner(task)
-		}
 		if len(groups) == 0 {
 			<p class="tab-empty">(no history)</p>
 		} else {
@@ -962,162 +1088,29 @@ templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
 	}
 }
 
-// jobDisplayStatus returns the badge text used in the Jobs section.
-// "job_parked" is a UI-only synonym for "running while the surrounding task
-// is awaiting a user answer" — the agent process is alive inside
-// `boid task ask` holding its broker connection open. The job's DB row is
-// still `running`; this label only changes the WebUI rendering.
+// TaskDetailExecTabPanel renders the tab panel content for the given
+// activeTab, on an execution task's detail page. id="tab-panel" is the HTMX
+// swap target for tab switching. Card detail has no tabs (§7 罠1), so this
+// (and the tab machinery around it) is execution-only.
 //
-// Named "job_parked" (not bare "parked") because this feeds taskStatusClass
-// ("badge-" + s): with cross-project-issue-triage Phase 1's real task status
-// "parked" (docs/plans/cross-project-issue-triage.md, orchestrator.
-// TaskStatusParked), a bare "parked" here would render this job-running
-// synonym with the exact same badge class as an actually-parked triage task
-// — two unrelated concepts sharing one CSS class (PR-1's Phase 1 実測結果
-// 項6). Renamed here rather than at the real task status so the badge class
-// for TaskStatusParked stays the obvious "badge-parked".
-func jobDisplayStatus(jobStatus string, taskStatus orchestrator.TaskStatus) string {
-	if jobStatus == "running" && taskStatus == orchestrator.TaskStatusAwaiting {
-		return "job_parked"
-	}
-	return jobStatus
-}
-
-// TaskDetailJobsSection renders the jobs card.
-// Wrapped in <div id="task-jobs"> so EventSource JS can replace it via outerHTML.
-// `task` is needed so a running job can be re-labelled "parked" while the
-// task is awaiting a user answer (see [jobDisplayStatus]).
-templ TaskDetailJobsSection(task *orchestrator.Task, jobs []*JobView) {
-	<div id="task-jobs">
-		if len(jobs) > 0 {
-			<div class="card">
-				<h2 class="section-title">Jobs</h2>
-				<div class="job-list">
-					for _, job := range jobs {
-						{{ displayStatus := jobDisplayStatus(job.Status, task.Status) }}
-						<div class="job-row">
-							<div class="job-row-header">
-								<a href={ templ.SafeURL("/jobs/" + job.ID) } class="job-id">{ shortID(job.ID) }</a>
-								<span class={ taskStatusClass(displayStatus) }>{ displayStatus }</span>
-								<span>{ job.Role }</span>
-								if job.ExitCode != 0 {
-									<span class="exit-code">exit: { fmt.Sprintf("%d", job.ExitCode) }</span>
-								}
-							</div>
-							<div class="timeline-time">{ job.CreatedAt.Local().Format("2006-01-02 15:04:05") } – { job.UpdatedAt.Local().Format("15:04:05") }</div>
-							if job.Output != "" {
-								<details>
-									<summary>output</summary>
-									<pre>{ job.Output }</pre>
-								</details>
-							}
-						</div>
-					}
-				</div>
-			</div>
-		} else {
-			<div class="card">
-				<p style="color:#888;margin:0">No jobs</p>
-			</div>
-		}
-	</div>
-}
-
-// TaskDetailTabPanel renders the tab panel content for the given activeTab.
-// id="tab-panel" is the HTMX swap target for tab switching.
-templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, activeTab string) {
+// (死骸掃除, docs/plans/webui-detail-list-redesign.md §7 PR-1: this used to
+// also take a `jobs []*JobView` parameter that flowed in from TaskDetail →
+// TaskDetailTabsSection → here without ever being read — TaskDetailJobsSection,
+// the only thing that would have consumed it, was never called from
+// anywhere on the page. Both are gone now, along with fragment kind=jobs
+// (internal/api/web.go).)
+//
+// TaskDetailLiveScript does NOT render here (Opus review, PR #996, B1):
+// this whole <div id="tab-panel"> is inside #tabs, which HTMX swaps
+// wholesale on every tab-link click — a <script> that lived in here used
+// to get torn down and re-inserted on every switch, and the second
+// insertion never actually re-subscribed (see TaskDetailLiveScript's own
+// doc comment for the failure mode). The script is rendered exactly once,
+// by TaskDetailExecBody, outside #tabs entirely.
+templ TaskDetailExecTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, activeTab string) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
 			@TaskDetailTimelineSection(task, timelineGroups)
-			<script>
-				(function() {
-					if (window.__boidTimelineSubscriber) return;
-					window.__boidTimelineSubscriber = true;
-
-					var panel = document.getElementById('tab-panel');
-					var taskID = panel ? panel.dataset.taskId : '';
-					if (!taskID) return;
-
-					var es = null;
-
-					function refresh(kinds) {
-						kinds.forEach(function(kind) {
-							fetch('/tasks/' + taskID + '/fragment?kind=' + kind)
-								.then(function(r) { return r.ok ? r.text() : null; })
-								.then(function(html) {
-									if (!html) return;
-									var el = document.getElementById('task-' + kind);
-									if (el) el.outerHTML = html;
-								})
-								.catch(function() {});
-						});
-					}
-
-					function openES() {
-						if (es && es.readyState !== EventSource.CLOSED) return;
-						es = new EventSource('/api/tasks/' + taskID + '/events');
-						es.addEventListener('action', function() { refresh(['status', 'timeline']); });
-						es.addEventListener('job', function() { refresh(['status', 'timeline']); });
-						es.addEventListener('fired_event', function() { refresh(['timeline']); });
-					}
-
-					function closeES() {
-						if (es) { es.close(); }
-					}
-
-					openES();
-
-					// Live-tick the "MM:SS ago" text on running-job rows so
-					// the user sees the elapsed counter advance in real time
-					// instead of waiting for the next fragment refresh. The
-					// tick iterates over whatever .timeline-elapsed[data-since]
-					// nodes exist in the current DOM, so new rows added by a
-					// refresh pick up the counter on the next tick without
-					// re-wiring. Guarded by a window flag so repeated tab
-					// swaps don't stack extra intervals.
-					if (!window.__boidTimelineTicker) {
-						window.__boidTimelineTicker = true;
-						function tickElapsed() {
-							var now = Math.floor(Date.now() / 1000);
-							document.querySelectorAll('.timeline-elapsed[data-since]').forEach(function(el) {
-								var since = parseInt(el.dataset.since, 10);
-								if (!since) return;
-								var d = Math.max(0, now - since);
-								var h = Math.floor(d / 3600);
-								var m = Math.floor((d % 3600) / 60);
-								var s = d % 60;
-								var pad = function(n) { return (n < 10 ? '0' : '') + n; };
-								el.textContent = h > 0
-									? (pad(h) + ':' + pad(m) + ':' + pad(s))
-									: (pad(m) + ':' + pad(s));
-							});
-						}
-						tickElapsed();
-						setInterval(tickElapsed, 1000);
-					}
-
-					document.body.addEventListener('htmx:beforeSwap', function onSwap(e) {
-						if (e.detail.target && e.detail.target.id === 'tab-panel') {
-							closeES();
-							document.body.removeEventListener('htmx:beforeSwap', onSwap);
-						}
-					});
-
-					window.addEventListener('pagehide', closeES);
-					document.addEventListener('visibilitychange', function() {
-						if (document.visibilityState === 'hidden') {
-							closeES();
-						} else {
-							openES();
-							refresh(['status', 'timeline']);
-						}
-					});
-					window.addEventListener('pageshow', function(e) {
-						openES();
-						refresh(['status', 'timeline']);
-					});
-				})();
-			</script>
 		} else if activeTab == "description" {
 			<div class="tab-content">
 				if task.Description != "" {
@@ -1176,11 +1169,11 @@ func tabClass(tab, activeTab string) string {
 }
 
 // detailTabIsDropdown reports whether the active tab lives inside the
-// "details" dropdown (description / payload / instructions /
-// dependencies). Timeline gets top-level real estate because it's the
-// overwhelmingly most-used tab; everything else shares one dropdown
-// whose label reflects the current selection (defaulting to
-// "Description" — the landing spot when none is chosen).
+// "details" dropdown (description / payload / instructions). Timeline gets
+// top-level real estate because it's the overwhelmingly most-used tab;
+// everything else shares one dropdown whose label reflects the current
+// selection (defaulting to "Description" — the landing spot when none is
+// chosen). Execution-only — card detail has no tabs (§7 罠1).
 func detailTabIsDropdown(activeTab string) bool {
 	return activeTab != "timeline"
 }
@@ -1229,13 +1222,19 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 	>{ label }</a>
 }
 
-// TaskDetailTabsSection wraps tab-list + tab-panel + action-bar under a
-// single #tabs node. HTMX tab-link clicks swap this entire section so:
+// TaskDetailExecTabsSection wraps tab-list + tab-panel + action-bar under a
+// single #tabs node, for an execution task's detail page (card detail has
+// no tabs — §7 罠1). HTMX tab-link clicks swap this entire section so:
 //   - the active class on the visible tabs updates
 //   - the "more" details element is freshly rendered (closed by default,
 //     summary label reflects the new active tab when it's a hidden one)
 //   - the action bar primary button becomes tab-contextual without a separate swap
-templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, activeTab string, hasTriage bool) {
+//
+// This is also what GET /tasks/{id} renders directly (skipping Layout) when
+// the request carries HX-Request: true and the task is NOT a card — see
+// WebHandler.TaskDetail's own doc comment on the HX-Request branch for why
+// a card never takes this path.
+templ TaskDetailExecTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, activeTab string) {
 	<div id="tabs" class="tabs">
 		<div class="tab-list" role="tablist">
 			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
@@ -1261,15 +1260,232 @@ templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.S
 				</details>
 			</div>
 		</div>
-		@TaskDetailTabPanel(task, timelineGroups, jobs, activeTab)
-		@TaskActionBar(task, availableActions, activeTab, hasTriage)
+		@TaskDetailExecTabPanel(task, timelineGroups, activeTab)
+		@TaskExecActionBar(task, availableActions, activeTab)
 	</div>
 }
 
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion, hasTriage bool) {
+// TaskDetailLiveScript subscribes to /api/tasks/{id}/events (SSE) and keeps
+// #task-status / #task-timeline fresh, and ticks the "MM:SS ago" elapsed
+// text on running-job rows. Shared verbatim by both the card and execution
+// detail layouts (docs/plans/webui-detail-list-redesign.md §7 罠2 — both
+// layouts render the same #task-status/#task-timeline ids and the same
+// fragment kind=status/kind=timeline endpoints, so one copy of this script
+// works for both) rather than duplicated per layout.
+//
+// Reads the task id off #task-status's data-task-id attribute — both
+// TaskDetailCardStatusSection and TaskDetailExecStatusSection render that —
+// rather than #tab-panel's (execution-only; the card layout has no
+// tab-panel at all now that card detail has no tabs).
+//
+// Both callers (TaskDetailCardBody, TaskDetailExecBody) render this OUTSIDE
+// anything HTMX ever swaps — TaskDetailExecBody renders it as a sibling of
+// TaskDetailExecTabsSection's #tabs, not inside it (Opus review, PR #996,
+// blocking finding B1). It used to live inside TaskDetailExecTabPanel
+// (i.e. inside #tabs), paired with an htmx:beforeSwap teardown that closed
+// the EventSource and removed its own listener whenever #tabs was about to
+// be swapped (a tab-link click). That was a one-way trip: the top-of-IIFE
+// `if (window.__boidTimelineSubscriber) return` guard is a MODULE-level
+// flag that survives the swap, so when the freshly-swapped-in #tabs
+// (rendered by the same TaskDetailExecTabPanel, still gated on
+// activeTab=="timeline") re-inserted this same <script> and it ran again,
+// the guard immediately returned before ever calling openES() again — the
+// very first tab switch on an execution task's detail page silently killed
+// live updates for the rest of the page's life. Rendering the script once,
+// outside the swapped subtree, removes the reason the teardown existed in
+// the first place: the script node itself is never removed, so there is no
+// stale EventSource to close and no listener to re-attach — the
+// __boidTimelineSubscriber/__boidTimelineTicker guards alone are enough to
+// keep this idempotent across the (now impossible) case of the script
+// somehow rendering twice.
+templ TaskDetailLiveScript() {
+	<script>
+		(function() {
+			if (window.__boidTimelineSubscriber) return;
+			window.__boidTimelineSubscriber = true;
+
+			var statusEl = document.getElementById('task-status');
+			var taskID = statusEl ? statusEl.dataset.taskId : '';
+			if (!taskID) return;
+
+			var es = null;
+
+			function refresh(kinds) {
+				kinds.forEach(function(kind) {
+					fetch('/tasks/' + taskID + '/fragment?kind=' + kind)
+						.then(function(r) { return r.ok ? r.text() : null; })
+						.then(function(html) {
+							if (!html) return;
+							var el = document.getElementById('task-' + kind);
+							if (el) el.outerHTML = html;
+						})
+						.catch(function() {});
+				});
+			}
+
+			function openES() {
+				if (es && es.readyState !== EventSource.CLOSED) return;
+				es = new EventSource('/api/tasks/' + taskID + '/events');
+				es.addEventListener('action', function() { refresh(['status', 'timeline']); });
+				es.addEventListener('job', function() { refresh(['status', 'timeline']); });
+				es.addEventListener('fired_event', function() { refresh(['timeline']); });
+			}
+
+			function closeES() {
+				if (es) { es.close(); }
+			}
+
+			openES();
+
+			// Live-tick the "MM:SS ago" text on running-job rows so
+			// the user sees the elapsed counter advance in real time
+			// instead of waiting for the next fragment refresh. The
+			// tick iterates over whatever .timeline-elapsed[data-since]
+			// nodes exist in the current DOM, so new rows added by a
+			// refresh pick up the counter on the next tick without
+			// re-wiring. Guarded by a window flag so repeated tab
+			// swaps / re-renders don't stack extra intervals.
+			if (!window.__boidTimelineTicker) {
+				window.__boidTimelineTicker = true;
+				function tickElapsed() {
+					var now = Math.floor(Date.now() / 1000);
+					document.querySelectorAll('.timeline-elapsed[data-since]').forEach(function(el) {
+						var since = parseInt(el.dataset.since, 10);
+						if (!since) return;
+						var d = Math.max(0, now - since);
+						var h = Math.floor(d / 3600);
+						var m = Math.floor((d % 3600) / 60);
+						var s = d % 60;
+						var pad = function(n) { return (n < 10 ? '0' : '') + n; };
+						el.textContent = h > 0
+							? (pad(h) + ':' + pad(m) + ':' + pad(s))
+							: (pad(m) + ':' + pad(s));
+					});
+				}
+				tickElapsed();
+				setInterval(tickElapsed, 1000);
+			}
+
+			window.addEventListener('pagehide', closeES);
+			document.addEventListener('visibilitychange', function() {
+				if (document.visibilityState === 'hidden') {
+					closeES();
+				} else {
+					openES();
+					refresh(['status', 'timeline']);
+				}
+			});
+			window.addEventListener('pageshow', function(e) {
+				openES();
+				refresh(['status', 'timeline']);
+			});
+		})();
+	</script>
+}
+
+// cardDescriptionCollapseThresholdLines is the line count above which a
+// card's Description defaults to collapsed in TaskDetailCardDescription
+// (docs/plans/webui-detail-list-redesign.md §3.3 item 3). Description is
+// shown in the card body, not hidden behind a tab — but an ingested blob
+// can run up to 64KiB (§3.3's own note), and always-expanded would push the
+// rest of the page (timeline, action bar) off the first view, defeating the
+// "判断に要るものが3秒で読める" goal (§1). The doc left the exact threshold to
+// implementation ("折り畳みの既定は実装時判断でよい"); this collapses on
+// visual line count via <details>/<summary> rather than truncating the
+// markdown source itself, so a long description is still fully readable
+// (one tap) and never gets cut mid-block.
+const cardDescriptionCollapseThresholdLines = 12
+
+// cardDescriptionCollapseThresholdBytes is the byte-length side of the same
+// default-collapse decision (Opus review, PR #996, N2): line count alone
+// missed exactly the case §3.3's own note calls out — a 64KiB blob with no
+// "\n" at all (a single huge line, or CRLF-less pasted text) passes the
+// <=12-line check and would render fully expanded regardless of size. 2000
+// bytes is a rough proxy for "about what 12 lines of ordinary prose look
+// like" (~160 chars/line); collapsing on EITHER threshold means a
+// description only stays open by default when it is short on both axes.
+const cardDescriptionCollapseThresholdBytes = 2000
+
+func cardDescriptionOpenByDefault(desc string) bool {
+	if desc == "" {
+		return false
+	}
+	if len(desc) > cardDescriptionCollapseThresholdBytes {
+		return false
+	}
+	return strings.Count(desc, "\n")+1 <= cardDescriptionCollapseThresholdLines
+}
+
+// TaskDetailCardDescription renders a card's Description directly in the
+// page body (§3.3 item 3 — "本文" — decided: not a tab, unlike an execution
+// task's Description). Renders nothing when Description is empty, same
+// posture as TaskDetailChildrenSection/TaskDetailSuggestionSection next to
+// it on the page.
+templ TaskDetailCardDescription(task *orchestrator.Task) {
+	if task.Description != "" {
+		<details class="card-description" open?={ cardDescriptionOpenByDefault(task.Description) }>
+			<summary class="card-description-toggle">Description</summary>
+			<div class="qa-md-body">@renderMarkdown(task.Description)</div>
+		</details>
+	}
+}
+
+// TaskDetailCardBody assembles a card detail page's content (§3.3): meta
+// (identity + movement + suggestion + children, item 1/2), Description in
+// the body (item 3), timeline (item 4, full — no default-collapse-to-N yet,
+// left to a later PR per the design doc's own "実装時に調整"), then the
+// escape-hatch action bar (item 5). No tabs — see §7 罠1.
+//
+// TaskDetailLiveScript renders here, at the body level — nothing on the
+// card layout ever gets HTMX-swapped, so there is no risk of the script
+// node itself being removed and reinserted (the failure mode TaskExecBody's
+// own doc comment below describes). TaskDetailExecBody mirrors this
+// placement (also body-level, also outside anything swappable) precisely
+// so both layouts follow the same rule: the live script is rendered once,
+// never inside a swap target.
+templ TaskDetailCardBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion) {
+	@TaskDetailCardStatusSection(task, errorMsg, projectName, children, suggestion)
+	@TaskDetailCardDescription(task)
+	@TaskDetailTimelineSection(task, timelineGroups)
+	@TaskDetailLiveScript()
+	@TaskCardActionBar(task, availableActions)
+}
+
+// TaskDetailExecBody assembles an execution task detail page's content
+// (§3.4 item 1 — meta; items 3-5 — the existing tab structure is kept as-is
+// for PR-1, root child-tree (item 2) is PR-2 scope).
+//
+// TaskDetailLiveScript renders here, as a sibling AFTER
+// TaskDetailExecTabsSection — deliberately outside the #tabs node HTMX
+// swaps on every tab-link click (Opus review, PR #996, blocking finding
+// B1). It used to render inside TaskDetailExecTabPanel (inside #tabs) with
+// an htmx:beforeSwap teardown that closed the EventSource whenever #tabs
+// was about to be swapped; the very first tab click tore the connection
+// down and the script's own top-of-IIFE re-entry guard then silently
+// prevented the freshly-swapped-in copy from ever reopening it — SSE
+// updates died permanently after one tab switch. Rendering it once here
+// means #tabs can swap as much as it wants; the script node itself is
+// never touched.
+templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string) {
+	@TaskDetailExecStatusSection(task, errorMsg, projectName)
+	@TaskDetailExecTabsSection(task, timelineGroups, availableActions, activeTab)
+	@TaskDetailLiveScript()
+}
+
+// TaskDetail is the task detail page's single entry point — one URL
+// (/tasks/{id}) for both entities, layout selected by task.Type (the same
+// axis machineFor uses, docs/plans/webui-detail-list-redesign.md §7 PR-1):
+// a card gets TaskDetailCardBody ("判断の場" — movement + children + body
+// text are the main content, history is secondary), anything else gets
+// TaskDetailExecBody ("プロセスの観測窓" — timeline stays the main content,
+// via the existing tab structure).
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion) {
 	@Layout(task.Title, "/") {
-		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName, children, suggestion)
-		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab, hasTriage)
+		if task.Type == orchestrator.TaskTypeCard {
+			@TaskDetailCardBody(task, timelineGroups, availableActions, errorMsg, projectName, children, suggestion)
+		} else {
+			@TaskDetailExecBody(task, timelineGroups, availableActions, errorMsg, activeTab, projectName)
+		}
 	}
 }
 

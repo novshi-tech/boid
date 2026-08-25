@@ -259,14 +259,6 @@ pre {
 .badge-running             { background: #dcfce7; color: #15803d; }
 .badge-completed           { background: #e5e7eb; color: #6b7280; }
 .badge-failed              { background: #fee2e2; color: #b91c1c; }
-/* `job_parked` is a WebUI-only synonym for "running while the task is
-   awaiting a user answer" (agent blocked inside `boid task ask`). Same
-   palette as the awaiting badge so the eye groups them as the same
-   waiting-for-human state. Named job_parked (not bare "parked") so it does
-   not collide with the real task status "parked" below — see
-   jobDisplayStatus's doc comment in web/templates/tasks.templ (PR-1's Phase 1
-   実測結果 項6). */
-.badge-job_parked          { background: #fef9c3; color: #854d0e; }
 /* captured/triaged/ready: removed from tasks.status's own vocabulary by
    card-model-cleanup PR-2 (migration 0045 washes them to parked), but still
    reachable here — TaskDetailTimelineSection (tasks.templ) renders
@@ -303,7 +295,6 @@ pre {
   .badge-running             { background: #052e16; color: #4ade80; }
   .badge-completed           { background: #1f2937; color: #9ca3af; }
   .badge-failed              { background: #450a0a; color: #f87171; }
-  .badge-job_parked          { background: #422006; color: #fbbf24; }
   .badge-captured            { background: #0c4a6e; color: #7dd3fc; }
   .badge-triaged             { background: #164e63; color: #67e8f9; }
   .badge-parked              { background: #4c1d95; color: #c4b5fd; }
@@ -1166,6 +1157,15 @@ pre {
   word-break: break-word;
 }
 
+/* 素性の段 (webui-detail-list-redesign §3.1 部品A): a plain, label-free
+   "<project> / <kind-or-behavior>" path. Sits above .detail-meta (which
+   is now the 動きの段 — status badge, transition edge, elapsed/timestamp). */
+.detail-identity {
+  margin-top: 6px;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
 .detail-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1514,6 +1514,23 @@ body:has(.action-bar) {
    right-aligned so content starts flush-left. */
 .tab-content {
   padding-top: var(--space-3);
+}
+
+/* --- Card body Description (webui-detail-list-redesign §3.3 item 3) ---
+   Shown directly in the card page body, not behind a tab — but an ingested
+   blob can run up to 64KiB, so a long one defaults to collapsed via
+   <details>/<summary> (cardDescriptionOpenByDefault, tasks.templ). */
+.card-description {
+  padding-top: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.card-description-toggle {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--fg);
+  margin-bottom: 6px;
 }
 
 .tab-toolbar {

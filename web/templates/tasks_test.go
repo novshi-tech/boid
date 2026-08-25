@@ -36,17 +36,25 @@ func TestDetailPrimaryAction_WorkingWithoutDone(t *testing.T) {
 	}
 }
 
-// TestTaskActionBar_ParkedHasWorkingMenuItem: "working" (parked→working,
+// TestTaskCardActionBar_ParkedHasWorkingMenuItem: "working" (parked→working,
 // card machine v2's lighter alternative to Go) only ever appears in
 // availableActions for a PARKED task — see machine_card.go's rule table —
 // so, unlike v1's "triage" item (which was gated on task.Status==Working),
 // this menu item's gate is hasAction alone.
-func TestTaskActionBar_ParkedHasWorkingMenuItem(t *testing.T) {
+//
+// webui-detail-list-redesign PR-1: this used to go through the shared
+// TaskActionBar(task, availableActions, activeTab, hasTriage) with
+// hasTriage forced to false (an artificial setup for a card fixture — real
+// production traffic never called it that way, since hasTriage is only
+// ever true for a card). The entity split gave the card-only branches their
+// own function, TaskCardActionBar, with no activeTab/hasTriage parameters —
+// it always renders (card detail has no tabs, §7 罠1) and IS the card path.
+func TestTaskCardActionBar_ParkedHasWorkingMenuItem(t *testing.T) {
 	// card-model-cleanup PR-2: "parked" is a Card-only status.
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskActionBar(task, []string{"go", "working", "drop"}, "timeline", false).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "working", "drop"}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -59,11 +67,11 @@ func TestTaskActionBar_ParkedHasWorkingMenuItem(t *testing.T) {
 	}
 }
 
-func TestTaskActionBar_ParkedWithoutWorkingAction(t *testing.T) {
+func TestTaskCardActionBar_ParkedWithoutWorkingAction(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskActionBar(task, []string{"go", "drop"}, "timeline", false).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "drop"}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -73,18 +81,19 @@ func TestTaskActionBar_ParkedWithoutWorkingAction(t *testing.T) {
 	}
 }
 
-// TestTaskActionBar_ParkedHasDoneMenuItem pins the human half of card machine
-// v2's eighth edge (done: parked→done, 2026-08-25). The machine rule alone is
-// not enough to satisfy the design doc's escape hatch ("人の直接操作は常に全遷移
-// で可能であることを担保する", §3.2): this kebab menu enumerates its items verb
-// by verb rather than looping over availableActions, so a rule with no matching
-// item here is reachable from the CLI only. parked's PRIMARY button stays Go —
-// closing a card is never the default move — so done lives in the menu.
-func TestTaskActionBar_ParkedHasDoneMenuItem(t *testing.T) {
+// TestTaskCardActionBar_ParkedHasDoneMenuItem pins the human half of card
+// machine v2's eighth edge (done: parked→done, 2026-08-25). The machine rule
+// alone is not enough to satisfy the design doc's escape hatch ("人の直接操作は
+// 常に全遷移で可能であることを担保する", §3.2): this kebab menu enumerates its
+// items verb by verb rather than looping over availableActions, so a rule
+// with no matching item here is reachable from the CLI only. parked's
+// PRIMARY button stays Go — closing a card is never the default move — so
+// done lives in the menu.
+func TestTaskCardActionBar_ParkedHasDoneMenuItem(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskActionBar(task, []string{"go", "working", "drop", "done"}, "timeline", false).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "working", "drop", "done"}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -101,11 +110,11 @@ func TestTaskActionBar_ParkedHasDoneMenuItem(t *testing.T) {
 	}
 }
 
-func TestTaskActionBar_ParkedWithoutDoneAction(t *testing.T) {
+func TestTaskCardActionBar_ParkedWithoutDoneAction(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskActionBar(task, []string{"go", "drop"}, "timeline", false).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "drop"}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if strings.Contains(buf.String(), `value="done"`) {
@@ -113,16 +122,17 @@ func TestTaskActionBar_ParkedWithoutDoneAction(t *testing.T) {
 	}
 }
 
-// TestTaskActionBar_WorkingDoesNotDuplicateDone is the negative twin of
-// TestTaskActionBar_ParkedHasDoneMenuItem: on a WORKING card, done is already
-// the primary bottom-bar button (detailPrimaryAction), so the menu item must
-// stay out of the way — exactly one done form in the whole bar, not two.
-func TestTaskActionBar_WorkingDoesNotDuplicateDone(t *testing.T) {
+// TestTaskCardActionBar_WorkingDoesNotDuplicateDone is the negative twin of
+// TestTaskCardActionBar_ParkedHasDoneMenuItem: on a WORKING card, done is
+// already the primary bottom-bar button (detailPrimaryAction), so the menu
+// item must stay out of the way — exactly one done form in the whole bar,
+// not two.
+func TestTaskCardActionBar_WorkingDoesNotDuplicateDone(t *testing.T) {
 	// card-model-cleanup PR-2: "working" is a Card-only status.
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskActionBar(task, []string{"park", "done"}, "timeline", false).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"park", "done"}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if got := strings.Count(buf.String(), `value="done"`); got != 1 {
@@ -779,5 +789,45 @@ func TestTaskDetailAwaitingBanner_NoQuestionID_RendersNothing(t *testing.T) {
 	}
 	if got := strings.TrimSpace(buf.String()); got != "" {
 		t.Errorf("banner without a question id should render nothing, got: %s", got)
+	}
+}
+
+// TestCardDescriptionOpenByDefault_ByteLengthGuard pins Opus review finding
+// N2 (PR #996, non-blocking but folded into the B1 fix commit): the
+// original implementation collapsed only on line count
+// (cardDescriptionCollapseThresholdLines), which missed exactly the case
+// its own doc comment calls out — an ingested description can run up to
+// 64KiB with NO newlines at all (a single huge line, or pasted text with no
+// line breaks), and would have rendered fully expanded regardless of size.
+func TestCardDescriptionOpenByDefault_ByteLengthGuard(t *testing.T) {
+	longSingleLine := strings.Repeat("x", cardDescriptionCollapseThresholdBytes+1)
+	if strings.Contains(longSingleLine, "\n") {
+		t.Fatal("test fixture must have zero newlines to actually exercise the byte-length guard")
+	}
+	if got := cardDescriptionOpenByDefault(longSingleLine); got {
+		t.Errorf("a %d-byte single-line description should collapse by default (byte guard), got open=%v", len(longSingleLine), got)
+	}
+}
+
+func TestCardDescriptionOpenByDefault_ShortSingleLine_StaysOpen(t *testing.T) {
+	short := "a short single-line description"
+	if got := cardDescriptionOpenByDefault(short); !got {
+		t.Errorf("a short single-line description should stay open by default, got open=%v", got)
+	}
+}
+
+func TestCardDescriptionOpenByDefault_ManyShortLines_Collapses(t *testing.T) {
+	manyLines := strings.Repeat("line\n", cardDescriptionCollapseThresholdLines+1)
+	if len(manyLines) >= cardDescriptionCollapseThresholdBytes {
+		t.Fatal("test fixture must stay under the byte threshold to actually exercise the line-count guard")
+	}
+	if got := cardDescriptionOpenByDefault(manyLines); got {
+		t.Errorf("a description with more than %d lines should collapse by default (line guard), got open=%v", cardDescriptionCollapseThresholdLines, got)
+	}
+}
+
+func TestCardDescriptionOpenByDefault_Empty_ReturnsFalse(t *testing.T) {
+	if got := cardDescriptionOpenByDefault(""); got {
+		t.Errorf("empty description should return open=false (nothing to collapse or show), got open=%v", got)
 	}
 }
