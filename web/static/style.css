@@ -355,17 +355,6 @@ pre {
   align-self: center;
 }
 
-/* Queue/Parked row's compact twin of .detail-suggestion-inapplicable above —
-   taskTreeRow (task_tree.templ) has no Accept button to hide (the whole row
-   is a link to the detail page), so this badge is the only pre-click signal
-   that the verb shown won't actually apply. Full reason lives in the title
-   attribute (tooltip). */
-.badge-suggestion-inapplicable {
-  color: var(--muted);
-  background: transparent;
-  border: 1px dashed var(--border);
-}
-
 /* The detail card is not the task list — .badge-verb-* is color-only there
    (task list policy: no heavy chips, see .task-row-meta .badge above), but
    the detail page already renders every other badge filled (status badge,
@@ -2059,16 +2048,6 @@ details[open] > summary {
   margin-bottom: var(--space-1);
 }
 
-/* --- Task Tree icons --- */
-.tree-icon {
-  width: 16px;
-  height: 16px;
-}
-
-.tree-fold-icon-right {
-  display: none;
-}
-
 /* ========================================
    Desktop (min-width: 768px)
    ======================================== */
@@ -2105,10 +2084,6 @@ details[open] > summary {
     min-height: auto;
     padding-top: 8px;
     padding-bottom: 8px;
-  }
-
-  .tree-fold-btn {
-    top: 8px;
   }
 }
 
@@ -2702,21 +2677,6 @@ details[open] > summary {
   .qa-actions .btn {
     width: auto;
     flex-shrink: 0;
-  }
-}
-
-/* "要回答" call-to-action badge used in the task list */
-.badge-call-to-action {
-  background: #fbbf24;
-  color: #78350f;
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-@media (prefers-color-scheme: dark) {
-  .badge-call-to-action {
-    background: #b45309;
-    color: #fef3c7;
   }
 }
 

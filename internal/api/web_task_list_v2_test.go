@@ -280,6 +280,68 @@ func TestWebTaskList_PageParam(t *testing.T) {
 	}
 }
 
+// makeExecTasks builds n distinct root execution tasks — enough fixture rows
+// to exercise WebHandler.TaskList's hasMore trim (taskListPageSize=50).
+func makeExecTasks(n int) []*orchestrator.Task {
+	tasks := make([]*orchestrator.Task, n)
+	for i := 0; i < n; i++ {
+		tasks[i] = &orchestrator.Task{
+			ID:     "t-" + string(rune('a'+i%26)) + string(rune('0'+i/26)),
+			Title:  "task",
+			Type:   orchestrator.TaskTypeExecution,
+			Status: orchestrator.TaskStatusExecuting,
+			Exec:   &orchestrator.ExecAttrs{},
+		}
+	}
+	return tasks
+}
+
+// TestWebTaskList_HasMore_TrimsToPageSizeAndRendersNextLink pins the
+// hasMore trim itself (WebHandler.TaskList: `hasMore := len(tasks) >
+// taskListPageSize`) — previously untested at the HTTP level even though
+// TestWebTaskList_PageParam already covered the Limit=51 request side.
+// A mutation that hardcodes hasMore=false passed `go test ./internal/api/...`
+// green (memory: [[next-session-webui-detail-list-impl]] follow-up 1, N1).
+// The stub returns exactly what capturedFilter.Limit asked for is NOT
+// enforced by the stub — so a 51-row fixture directly exercises the trim.
+func TestWebTaskList_HasMore_TrimsToPageSizeAndRendersNextLink(t *testing.T) {
+	svc := &stubWebService{tasks: makeExecTasks(taskListPageSize + 1)}
+	r := newTestWebHandlerFull(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Next →") {
+		t.Errorf("expected a Next link when the store returns more than %d rows, got: %s", taskListPageSize, body)
+	}
+	// The 51st row must be trimmed before rendering — exactly
+	// taskListPageSize rows render, not taskListPageSize+1.
+	if got := strings.Count(body, `data-task-id="t-`); got != taskListPageSize {
+		t.Errorf("rendered %d task rows, want exactly %d (the +1 lookahead row must be trimmed)", got, taskListPageSize)
+	}
+}
+
+// TestWebTaskList_NoHasMore_NoNextLink is the negative twin: exactly
+// taskListPageSize rows (no lookahead row) must not show a Next link.
+func TestWebTaskList_NoHasMore_NoNextLink(t *testing.T) {
+	svc := &stubWebService{tasks: makeExecTasks(taskListPageSize)}
+	r := newTestWebHandlerFull(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if strings.Contains(body, "Next →") {
+		t.Errorf("did not expect a Next link when the store returns exactly %d rows, got: %s", taskListPageSize, body)
+	}
+}
+
 // TestWebTaskList_PageParam_InvalidFallsBackToPage1 pins the defensive
 // parse: a non-numeric or non-positive ?page= must not 500 or produce a
 // negative OFFSET — it degrades to page 1.

@@ -42,7 +42,7 @@ has the same shape:
 25. [orchestrator.Action.Actor ctx propagation](#25-orchestratoractionactor-ctx-propagation)
 26. [brokered op scoping layer (broker request-shaping ↔ executor re-check)](#26-brokered-op-scoping-layer-broker-request-shaping--executor-re-check)
 27. [park rule set ↔ Wake origin resolution](#27-park-rule-set--wake-origin-resolution)
-28. [status tab literal ↔ ListTasks status predicate](#28-status-tab-literal--listtasks-status-predicate)
+28. [status tab literal ↔ ListTasks status predicate — REMOVED (PR-4)](#28-status-tab-literal--listtasks-status-predicate--removed-pr-4-2026-08-26)
 
 ---
 
@@ -1578,63 +1578,35 @@ forces them to stay the same set.
   `Wake`'s `ParkedFrom` switch, and confirm the two derived guard tests above still pass (they
   will fail by name if you forget either half).
 
-## 28. status tab literal ↔ ListTasks status predicate
+## 28. status tab literal ↔ ListTasks status predicate — REMOVED (PR-4, 2026-08-26)
 
-A Web UI status tab is wired to `orchestrator.ListTasks`'s status filter by nothing more than two
-independently hand-typed string literals. There is no shared constant, and no dedicated branch on
-the receiving end to grep for the status name against.
+This seam described a Web UI status *tab* (`web/templates/components/filters.templ`'s
+`statusTab`) wired to `orchestrator.ListTasks`'s status filter by two independently hand-typed
+string literals, plus a matching `internal/api/web.go` `case filter.Status == "parked":` branch
+that picked `BuildTreeItemsWithSuggestions` over the default tree builder. `docs/plans/
+webui-detail-list-redesign.md` PR-4 (#999, 2026-08-25/26) deleted the entire Open/Closed/Queue/
+Parked tab switcher (`statusTab`/`statusTabActive`), the tree/queue builder family
+(`BuildTreeItemsWithSuggestions` and its three siblings), and `internal/api/tree.go` /
+`tree_test.go` wholesale (see `web/templates/components/filters.templ`'s own "GONE" doc comment,
+and [[next-session-webui-detail-list-impl]] in memory). The list is one flat, top-level-only view
+now; `?status=` is a plain query param the filter form only ever *preserves* as a hidden field
+(`web/templates/components/filters_test.go`'s `TestTaskFilters_StatusHiddenFieldOnlyWhenSet`) —
+nothing renders a tab-specific literal for it anymore, so the "two independently hand-typed
+literals must agree" hazard this seam warned about is gone along with the mechanism it warned
+about, not merely undocumented.
 
-- **End A (`web/templates/components/filters.templ`'s `TaskFilters`, and `internal/api/web.go`'s
-  `TaskList`)**: `@statusTab(filter, "parked", "Parked")` sends `status=parked` as a bare string
-  literal via `hx-vals`; `web.go`'s `case filter.Status == "parked":` matches it, again as a bare
-  literal, to pick `BuildTreeItemsWithSuggestions` over the default tree builder.
-- **End B (`internal/orchestrator/store.go`'s `ListTasks`)**: has **no dedicated `parked`
-  branch**. The status string falls through every named case (`open` / `closed` / `queue` /
-  `triage` / `queue_next`) into the **generic fallback**, `else if filter.Status != "" {
-  conditions = append(conditions, "t.status = ?"); args = append(args, filter.Status) }`. Grepping
-  `store.go` for the word `parked` finds nothing — that absence is not a gap, it is how this
-  status is currently handled, and a reviewer who expects a dedicated branch (because every other
-  view has one) can wrongly conclude the seam is unimplemented.
-- **Invariant**: the literal `TaskFilters`/`web.go` send must equal
-  `string(orchestrator.TaskStatusParked)` (currently `"parked"`), AND `store.go`'s generic
-  fallback must keep matching bare status literals verbatim against `t.status` for any status that
-  has no dedicated branch. Either end drifting alone breaks the tab silently: a typo'd literal on
-  End A sends a status the fallback matches zero rows for; a future dedicated `parked` branch added
-  to End B with different membership rules (e.g. copying `queue`'s pre-execution superset instead
-  of an exact-status match) changes what the tab shows without End A's literal ever changing.
-- **Past break / near-miss (BD-8 post-merge review, 2026-08)**: every other view already had a
-  store-level pin tying its literal to `ListTasks`'s actual behavior
-  (`TestListTasks_Queue_ReturnsExactlyPreExecutionSet` /
-  `TestListTasks_QueueNext_MembershipAndOrdering` / `TestListTasks_Triage_
-  ReturnsPreExecutionPlusWorking` / `TestListTasks_Closed_IncludesDropped`) — parked did not. The
-  one test that did touch the Parked tab's rendering
-  (`TestWebTaskList_ParkedStatus_RendersSuggestion`, `internal/api/tree_test.go`) uses
-  `stubWebService`, which captures the filter it was called with but never runs it through
-  `store.go`'s SQL — so it pins End A's literal reaching the handler, and nothing about whether
-  that literal, run through the real predicate, returns the right rows. Because the fallback is a
-  generic `t.status = ?`, this specific pair happened to already work; the risk was a **silent
-  future regression** (a typo, or a dedicated branch added with different semantics), not a
-  present bug — this class of gap fails by returning an empty or wrong list with no error, not by
-  crashing (決定9: 見えていなければ存在しない、と信じられるようにする — this is exactly the kind
-  of hole that decision exists to close).
-- **Guard**: `TestListTasks_Parked_ReturnsOnlyParkedTasks`
-  (`internal/orchestrator/pre_execution_filter_store_test.go`) pins the store-side half: mixed
-  statuses in, only the parked one out, via the literal `"parked"` exactly as the UI sends it.
-  `TestParkedTab_StatusString_MatchesStorePredicateAndFiltersCorrectly`
-  (`web/templates/components/filters_test.go`) connects `filters.templ`'s literal to End B in one
-  test: it renders the actual `TaskFilters` template and extracts the literal the Parked tab
-  button's `hx-vals` sends (not a hand-typed copy), asserts that literal equals
-  `string(orchestrator.TaskStatusParked)`, then feeds that exact literal into a real
-  `orchestrator.ListTasks` call against a real (`:memory:`) DB and asserts it returns the parked
-  task only. Both were verified by mutation (temporarily breaking `store.go`'s generic-fallback
-  branch and confirming both tests fail by name) before being trusted as guards. Note this does
-  NOT touch `web.go`'s separate `case filter.Status == "parked":` literal (End A's other half,
-  which picks `BuildTreeItemsWithSuggestions` — an orthogonal concern from which rows come back) —
-  that one is covered by the pre-existing `TestWebTaskList_ParkedStatus_RendersSuggestion`
-  (`internal/api/tree_test.go`), which drives an HTTP request through the real handler with a
-  `stubTriageStore` and checks the rendered suggestion badge.
-- **When you touch it**: adding a new status tab, or a dedicated branch in `store.go` for a status
-  that currently falls through the generic fallback — check whether the tab's literal and the new
-  branch's membership rule still agree, and add a store-side pin test for that status following
-  the pattern above (`TestListTasks_<Status>_Returns...`) rather than trusting the generic
+What is left of the two ends: `WebHandler.TaskList` (`internal/api/web.go`) still passes
+`q.Get("status")` straight through to `orchestrator.TaskFilter.Status`, and `store.go`'s
+`ListTasks` still has no dedicated `parked` branch — the status string still falls through the
+same generic fallback (`t.status = ?`) described above. That half is unchanged and still real,
+but it is no longer a *seam* (nothing hand-types a second copy of the literal to drift out of
+sync with it) — it is just a plain pass-through parameter. `TestListTasks_Parked_
+ReturnsOnlyParkedTasks` (`internal/orchestrator/pre_execution_filter_store_test.go`) still pins
+that `t.status = 'parked'` returns only parked tasks, which remains a fine regression guard for
+the generic fallback itself, just not for a cross-file literal-agreement seam anymore.
+- **When you touch it**: if a future feature reintroduces a UI element that hand-types a status
+  literal to steer `ListTasks` or a row-builder (e.g. a new preset filter chip), re-derive this
+  seam's shape from `orchestrator.TaskStatusParked`/`store.go`'s fallback rather than resurrecting
+  the text above verbatim — the specific End A this entry described (`statusTab`) no longer
+  exists to reference.
   fallback to keep doing the right thing forever.
