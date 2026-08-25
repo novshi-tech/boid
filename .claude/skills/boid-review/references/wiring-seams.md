@@ -1431,11 +1431,11 @@ upstream (this seam is about `Action.Actor` being *correct*; #22 is about the wr
   necessarily the task the write lands on). Daemon-internal callers with no real ctx to carry
   (`workflow_action.go`'s `auto_advance`/`dispatch_error`/`abort`/`persistFiredEvents`,
   `queue_sweep.go`'s `SweepWake`, `dispatcher/store.go`'s `markStaleTasksAborted`,
-  `workflow_triage.go`'s `recordChildClosedOnParent`) hardcode `orchestrator.ActorDaemon`
+  `workflow_card.go`'s `recordChildClosedOnParent`) hardcode `orchestrator.ActorDaemon`
   directly instead of relying on an (absent) wrapped ctx.
 - **End B (construction, reads ctx)**: every `&orchestrator.Action{...}` literal deep in a
   shared call chain — `ApplyAction` (`workflow_action.go`), `Wake`/`Dispatch`
-  (`workflow_triage.go`) — reads `orchestrator.ActorFromContext(ctx)`. A ctx that flows through
+  (`workflow_card.go`) — reads `orchestrator.ActorFromContext(ctx)`. A ctx that flows through
   `ApplyAction`/`Wake`/`Dispatch` WITHOUT ever passing through `orchestrator.WithActor` at any
   End A silently produces `Actor: ""` — not a compile error, not even a test failure unless a
   test specifically asserts the actor.
@@ -1453,7 +1453,7 @@ upstream (this seam is about `Action.Actor` being *correct*; #22 is about the wr
   checking every case individually. Two more of the same shape: `queue_sweep.go`'s `SweepWake`
   (the periodic machine-driven wake — the one path this field most needs to distinguish from a
   human pressing Wake — passed its bare loop ctx straight into `Wake`), and
-  `workflow_triage.go`'s `recordChildClosedOnParent`/the `child_dispatched` write inside
+  `workflow_card.go`'s `recordChildClosedOnParent`/the `child_dispatched` write inside
   `Dispatch` (one used no Actor at all, the other diverged from the sibling `"dispatch"` Action
   written in the SAME transaction). A fourth class: `task_ask.go`'s `recordAnswerAction`
   hardcoded `ActorHuman` even though `AnswerTask` is reachable from `boid_executor.go`'s
@@ -1542,8 +1542,8 @@ forces them to stay the same set.
   status a task can be parked FROM. A matching `{Action: "wake_X", FromStatus: "parked",
   ToStatus: X}` rule (Manual:false — see the doc comment above `NewMachine`) is what makes that
   origin recoverable.
-- **End B (`internal/api/workflow_triage.go`'s `TaskWorkflowService.Wake`)**: reads
-  `TaskTriage.ParkedFrom` (derived from the actions log, not a stored column) and `switch`es on
+- **End B (`internal/api/workflow_card.go`'s `TaskWorkflowService.Wake`)**: reads
+  `CardAttrs.ParkedFrom` (derived from the actions log, not a stored column) and `switch`es on
   it to pick which `wake_X` action to apply. This switch is a **hand-maintained mirror** of End
   A's origin set — it has no way to discover new origins from the rule table itself, since
   `Wake` calls `sm.Apply` with a resolved action name it already decided on, not a generic

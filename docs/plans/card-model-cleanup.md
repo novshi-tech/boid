@@ -316,7 +316,10 @@ name=boid-job` で実行中 job が居ないことを確認する (deploy は ru
   remote_id を書く運用の有無で決まる。
 - `datasource_id` の生死。
 - type 値の表記 `execution` の確定 (機械名 NewExecutionMachine に合わせた案。
-  より短い `work` 等にするなら PR-1 の前に決める)。
+  より短い `work` 等にするなら **PR-2 の前**に決める — PR-1 は Go の識別子・
+  ファイル名の rename のみで `tasks.type` の値リテラルを一切導入しないため、
+  この未決はブロッカーにならない。PR-2 の migration 0045・CHECK 制約・
+  tagged struct が実際に type 値を書き込む最初の PR なので、そこが締切)。
 
 ## 10. 採点表 — レビュワー用 yes/no 判定リスト
 
