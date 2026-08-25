@@ -831,3 +831,134 @@ func TestCardDescriptionOpenByDefault_Empty_ReturnsFalse(t *testing.T) {
 		t.Errorf("empty description should return open=false (nothing to collapse or show), got open=%v", got)
 	}
 }
+
+// --- PR-2 (docs/plans/webui-detail-list-redesign.md §3.3 item 2 / §7 PR-2):
+// the integrated child list (ChildRow) and the exec root child tree
+// (ChildTreeNode). WebHandler builds these; these tests pin what the
+// template does with them once built. ---
+
+func TestChildRow_DisplayStatus_PrefersLiveStatusOverLedger(t *testing.T) {
+	row := ChildRow{
+		Child:      orchestrator.TaskTriageChild{ID: "c1", Status: orchestrator.TaskTriageChildStatusDispatched},
+		LiveStatus: string(orchestrator.TaskStatusExecuting),
+	}
+	if got := row.DisplayStatus(); got != "executing" {
+		t.Errorf("DisplayStatus() = %q, want executing", got)
+	}
+}
+
+func TestChildRow_DisplayStatus_FallsBackToLedgerWhenNoLiveStatus(t *testing.T) {
+	row := ChildRow{Child: orchestrator.TaskTriageChild{ID: "c1", Status: orchestrator.TaskTriageChildStatusSpecced}}
+	if got := row.DisplayStatus(); got != "specced" {
+		t.Errorf("DisplayStatus() = %q, want specced", got)
+	}
+}
+
+func TestTaskDetailChildrenSection_DispatchedChild_ChipShowsLiveStatusNotLedger(t *testing.T) {
+	rows := []ChildRow{{
+		Child:      orchestrator.TaskTriageChild{ID: "c1", Title: "do it", Status: orchestrator.TaskTriageChildStatusDispatched, TaskRef: "task-x"},
+		LiveStatus: string(orchestrator.TaskStatusExecuting),
+	}}
+
+	var buf bytes.Buffer
+	if err := TaskDetailChildrenSection(rows).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, "badge-executing") {
+		t.Errorf("chip should show the live status badge-executing; got:\n%s", html)
+	}
+	if strings.Contains(html, "badge-dispatched") {
+		t.Errorf("chip should NOT show the bare ledger badge-dispatched once a live status resolved; got:\n%s", html)
+	}
+}
+
+func TestTaskDetailChildrenSection_NonDispatchedChild_ChipShowsLedgerStatus(t *testing.T) {
+	rows := []ChildRow{{Child: orchestrator.TaskTriageChild{ID: "c1", Title: "not yet", Status: orchestrator.TaskTriageChildStatusSpecced}}}
+
+	var buf bytes.Buffer
+	if err := TaskDetailChildrenSection(rows).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if html := buf.String(); !strings.Contains(html, "badge-specced") {
+		t.Errorf("chip should show the ledger status badge-specced; got:\n%s", html)
+	}
+}
+
+// This is the template-level half of the doc's own acceptance condition
+// ("awaiting の子を持つ card のフィクスチャで、⚠バッジと質問への直リンクが実際に
+// レンダされることをテストで確認する") — internal/api's
+// TestWebHandler_TaskDetail_Card_AwaitingChild_RendersWarningBadgeAndQuestionLink
+// is the HTTP-handler half.
+func TestTaskDetailChildrenSection_AwaitingChild_RendersWarningAndQuestionLink(t *testing.T) {
+	rows := []ChildRow{{
+		Child:              orchestrator.TaskTriageChild{ID: "c1", Title: "ask something", Status: orchestrator.TaskTriageChildStatusDispatched, TaskRef: "task-x"},
+		LiveStatus:         string(orchestrator.TaskStatusAwaiting),
+		AwaitingQuestionID: "q-9",
+	}}
+
+	var buf bytes.Buffer
+	if err := TaskDetailChildrenSection(rows).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, `href="/tasks/task-x/questions/q-9"`) {
+		t.Errorf("missing direct link to the child's question; got:\n%s", html)
+	}
+	if !strings.Contains(html, "⚠") {
+		t.Errorf("missing the warning marker; got:\n%s", html)
+	}
+}
+
+func TestTaskDetailChildrenSection_NonAwaitingChild_NoQuestionLink(t *testing.T) {
+	rows := []ChildRow{{
+		Child:      orchestrator.TaskTriageChild{ID: "c1", Title: "running", Status: orchestrator.TaskTriageChildStatusDispatched, TaskRef: "task-x"},
+		LiveStatus: string(orchestrator.TaskStatusExecuting),
+	}}
+
+	var buf bytes.Buffer
+	if err := TaskDetailChildrenSection(rows).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if html := buf.String(); strings.Contains(html, "questions/") {
+		t.Errorf("a non-awaiting child must not get a question link; got:\n%s", html)
+	}
+}
+
+func TestTaskDetailChildrenSection_EmptyRendersNothing(t *testing.T) {
+	var buf bytes.Buffer
+	if err := TaskDetailChildrenSection(nil).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "" {
+		t.Errorf("no children should render nothing, got: %s", got)
+	}
+}
+
+func TestTaskDetailExecChildTreeSection_RendersNestedRowsIndentedByDepth(t *testing.T) {
+	nodes := []ChildTreeNode{
+		{Task: &orchestrator.Task{ID: "c1", Title: "child A", Status: orchestrator.TaskStatusExecuting}, Depth: 1},
+		{Task: &orchestrator.Task{ID: "c1-1", Title: "grandchild A1", Status: orchestrator.TaskStatusDone}, Depth: 2},
+	}
+
+	var buf bytes.Buffer
+	if err := TaskDetailExecChildTreeSection(nodes).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{"child A", "grandchild A1", `href="/tasks/c1"`, `href="/tasks/c1-1"`, "--depth: 1", "--depth: 2"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %q; got:\n%s", want, html)
+		}
+	}
+}
+
+func TestTaskDetailExecChildTreeSection_EmptyRendersNothing(t *testing.T) {
+	var buf bytes.Buffer
+	if err := TaskDetailExecChildTreeSection(nil).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "" {
+		t.Errorf("no child tree should render nothing, got: %s", got)
+	}
+}

@@ -322,7 +322,7 @@ func detailRowClasses(task *orchestrator.Task) []string {
 // id="task-status" carries data-task-id so TaskDetailLiveScript (shared by
 // both the card and execution layouts, §7 罠2) can find the task id without
 // depending on #tab-panel, which the card layout does not have.
-templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion) {
+templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, projectName string, children []ChildRow, suggestion orchestrator.Suggestion) {
 	<div id="task-status" data-task-id={ task.ID }>
 		<div class={ detailRowClasses(task) }>
 			<div class="detail-identity">{ cardIdentityLabel(task, projectName) }</div>
@@ -352,8 +352,12 @@ templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, proj
 // shows status + elapsed while executing, or the existing awaiting banner
 // (moved here from TaskDetailTimelineSection — see that function's own doc
 // comment — so it surfaces immediately instead of only inside the Timeline
-// tab).
-templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, projectName string) {
+// tab). childTree renders right below the movement row (§3.4 item 2, §7
+// PR-2) — WebHandler.execChildTree only ever populates it for a root task
+// (parent_id == ""), so it is silently empty (renders nothing,
+// TaskDetailExecChildTreeSection's own guard) for every non-root execution
+// task, i.e. the overwhelming majority of callers.
+templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, projectName string, childTree []ChildTreeNode) {
 	<div id="task-status" data-task-id={ task.ID }>
 		<div class={ detailRowClasses(task) }>
 			<div class="detail-identity">{ execIdentityLabel(task, projectName) }</div>
@@ -373,6 +377,7 @@ templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, proj
 		if task.Status == orchestrator.TaskStatusAwaiting {
 			@TaskDetailAwaitingBanner(task)
 		}
+		@TaskDetailExecChildTreeSection(childTree)
 	</div>
 }
 
@@ -508,9 +513,44 @@ templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus,
 	}
 }
 
-// TaskDetailChildrenSection lists a triage card's task_triage.detail.children
-// right under the status row, so the two questions a reader has before
-// pressing Go are answerable from the card:
+// ChildRow merges one entry of a card's spec ledger
+// (task_triage.detail.children, orchestrator.TaskTriageChild) with the live
+// status of its dispatched task row (docs/plans/webui-detail-list-redesign.md
+// §3.3 item 2 / §7 PR-2). WebHandler.cardChildrenFromTriage builds these —
+// see that function's doc comment for how LiveStatus/AwaitingQuestionID get
+// populated and the 論点8 edge-case rules (matching ledger vs. live status,
+// unreachable TaskRef) that govern it.
+type ChildRow struct {
+	Child orchestrator.TaskTriageChild
+	// LiveStatus is the dispatched child's live orchestrator.TaskStatus
+	// value, or "" when Child.Status isn't "dispatched" or the live lookup
+	// didn't resolve (no TaskRef, vanished task, etc — 論点8's "突き合わせ
+	// 不能なら台帳のみ").
+	LiveStatus string
+	// AwaitingQuestionID is the qid to link to when LiveStatus == "awaiting"
+	// and the child's own payload carries an unanswered question
+	// (orchestrator.GetAwaitingPayload) — "" otherwise, including when
+	// LiveStatus == "awaiting" but no question id was found.
+	AwaitingQuestionID string
+}
+
+// DisplayStatus is ChildRow's single chip value (§3.3 item 2: "1子=1行、
+// 現在地のチップ1個") — the live task status when it resolved, the ledger
+// status otherwise. Both the chip rendered below and
+// WebHandler.childRowRank's sort read this one method, so the two can never
+// disagree about which status governs a row.
+func (r ChildRow) DisplayStatus() string {
+	if r.LiveStatus != "" {
+		return r.LiveStatus
+	}
+	return r.Child.Status
+}
+
+// TaskDetailChildrenSection lists a triage card's children — the spec ledger
+// merged with live status (ChildRow, above) — right under the status row, so
+// the questions a reader has before pressing Go, or before deciding whether
+// this card even needs attention right now, are answerable from the card
+// itself:
 //
 //  1. "is this card actually dispatch-ready" — nose hit this blind after the
 //     Shape launcher's first real dispatch: no child had been specced yet,
@@ -521,21 +561,31 @@ templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus,
 //     task and a leftover verification stub) looked identical to one with
 //     two real ones (2026-08-21). The behavior badge, project, and the
 //     collapsed spec body answer it.
+//  3. "did a dispatched child ask me something" (§7 PR-2 — closes §2.4's "子が
+//     4回 ask を上げたが親からは dispatched にしか見えなかった" gap): a
+//     dispatched child whose live status is awaiting gets a ⚠ link straight
+//     to /tasks/{child}/questions/{qid}, one tap from the parent card.
 //
 // Project is shown as a NAME: the stored value is a project id
 // (WebHandler.triageChildrenForDisplay resolves it), which on its own tells
 // the reader nothing about where the child would run.
 //
+// spec 折り畳みの中身は description のみ — instruction は毎回テンプレで冗長な
+// ため出さない (2026-08-25 nose, §3.3 item 2; the pre-PR-2 version of this
+// section rendered both).
+//
 // Renders nothing for the (overwhelming majority of) tasks with no children.
-templ TaskDetailChildrenSection(children []orchestrator.TaskTriageChild) {
-	if len(children) > 0 {
+templ TaskDetailChildrenSection(rows []ChildRow) {
+	if len(rows) > 0 {
 		<div class="detail-children">
-			<div class="detail-children-label">Children ({ fmt.Sprintf("%d", len(children)) })</div>
+			<div class="detail-children-label">Children ({ fmt.Sprintf("%d", len(rows)) })</div>
 			<ul class="detail-children-list">
-				for _, child := range children {
+				for _, row := range rows {
+					{{ child := row.Child }}
+					{{ status := row.DisplayStatus() }}
 					<li class="detail-children-item">
 						<div class="detail-children-head">
-							<span class={ "badge", "badge-" + child.Status }>{ child.Status }</span>
+							<span class={ "badge", "badge-" + status }>{ status }</span>
 							if child.Spec != nil && child.Spec.Behavior != "" {
 								<span class="badge badge-child-behavior">{ child.Spec.Behavior }</span>
 							}
@@ -552,23 +602,62 @@ templ TaskDetailChildrenSection(children []orchestrator.TaskTriageChild) {
 							if child.Status == orchestrator.TaskTriageChildStatusOpen {
 								<span class="detail-children-hint">(no spec yet)</span>
 							}
+							if row.AwaitingQuestionID != "" {
+								<a href={ templ.SafeURL("/tasks/" + child.TaskRef + "/questions/" + row.AwaitingQuestionID) } class="detail-children-ask">
+									<span aria-hidden="true">⚠</span> question
+								</a>
+							}
 							if child.TaskRef != "" {
 								<a href={ templ.SafeURL("/tasks/" + child.TaskRef) } class="detail-children-link">→ task</a>
 							}
 						</div>
-						if child.Spec != nil && (child.Spec.Description != "" || child.Spec.Instruction != "") {
+						if child.Spec != nil && child.Spec.Description != "" {
 							<details class="detail-children-spec">
 								<summary class="detail-children-spec-toggle">spec</summary>
-								if child.Spec.Description != "" {
-									<div class="detail-children-spec-label">description</div>
-									<pre class="detail-children-spec-body">{ child.Spec.Description }</pre>
-								}
-								if child.Spec.Instruction != "" {
-									<div class="detail-children-spec-label">instruction</div>
-									<pre class="detail-children-spec-body">{ child.Spec.Instruction }</pre>
-								}
+								<div class="detail-children-spec-label">description</div>
+								<pre class="detail-children-spec-body">{ child.Spec.Description }</pre>
 							</details>
 						}
+					</li>
+				}
+			</ul>
+		</div>
+	}
+}
+
+// ChildTreeNode is one node of a root execution task's descendant subtree
+// (docs/plans/webui-detail-list-redesign.md §3.4 item 2 / §7 PR-2).
+// WebHandler.execChildTree walks the tree depth-first and flattens it into
+// this slice — Depth (1 for a direct child, 2 for a grandchild, …) is what
+// TaskDetailExecChildTreeSection indents by, so a multi-level supervisor
+// tree renders without needing a nested Go slice-of-slices shape.
+type ChildTreeNode struct {
+	Task  *orchestrator.Task
+	Depth int
+}
+
+// TaskDetailExecChildTreeSection renders a root execution task's full
+// descendant subtree (§3.4 item 2): one flat, depth-first list, indented by
+// ChildTreeNode.Depth. Deliberately NOT built from BuildTreeItems/
+// task_tree.templ (the list page's tree — §7 PR-2 must not grow a new
+// dependency on that machinery now that PR-4 is slated to delete it) — this
+// is its own small component over WebHandler.execChildTree's app-side,
+// non-CTE traversal.
+//
+// Renders nothing for a non-root task (its own children, if any, are shown
+// on ITS OWN detail page instead — §3.4's "root のみ") or a root task with
+// no children — the overwhelming majority of execution tasks.
+templ TaskDetailExecChildTreeSection(nodes []ChildTreeNode) {
+	if len(nodes) > 0 {
+		<div class="detail-child-tree">
+			<div class="detail-children-label">Subtasks ({ fmt.Sprintf("%d", len(nodes)) })</div>
+			<ul class="detail-child-tree-list">
+				for _, node := range nodes {
+					<li class="detail-child-tree-item" style={ fmt.Sprintf("--depth: %d", node.Depth) }>
+						<a href={ templ.SafeURL("/tasks/" + node.Task.ID) } class="detail-child-tree-link">
+							<span class={ taskStatusClass(string(node.Task.Status)) }>{ string(node.Task.Status) }</span>
+							<span class="detail-child-tree-title">{ node.Task.Title }</span>
+						</a>
 					</li>
 				}
 			</ul>
@@ -1443,7 +1532,7 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 // placement (also body-level, also outside anything swappable) precisely
 // so both layouts follow the same rule: the live script is rendered once,
 // never inside a swap target.
-templ TaskDetailCardBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion) {
+templ TaskDetailCardBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, projectName string, children []ChildRow, suggestion orchestrator.Suggestion) {
 	@TaskDetailCardStatusSection(task, errorMsg, projectName, children, suggestion)
 	@TaskDetailCardDescription(task)
 	@TaskDetailTimelineSection(task, timelineGroups)
@@ -1452,8 +1541,8 @@ templ TaskDetailCardBody(task *orchestrator.Task, timelineGroups []timeline.Stat
 }
 
 // TaskDetailExecBody assembles an execution task detail page's content
-// (§3.4 item 1 — meta; items 3-5 — the existing tab structure is kept as-is
-// for PR-1, root child-tree (item 2) is PR-2 scope).
+// (§3.4 item 1 — meta; item 2 — root child tree, §7 PR-2; items 3-5 — the
+// existing tab structure is kept as-is).
 //
 // TaskDetailLiveScript renders here, as a sibling AFTER
 // TaskDetailExecTabsSection — deliberately outside the #tabs node HTMX
@@ -1466,8 +1555,8 @@ templ TaskDetailCardBody(task *orchestrator.Task, timelineGroups []timeline.Stat
 // updates died permanently after one tab switch. Rendering it once here
 // means #tabs can swap as much as it wants; the script node itself is
 // never touched.
-templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string) {
-	@TaskDetailExecStatusSection(task, errorMsg, projectName)
+templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, childTree []ChildTreeNode) {
+	@TaskDetailExecStatusSection(task, errorMsg, projectName, childTree)
 	@TaskDetailExecTabsSection(task, timelineGroups, availableActions, activeTab)
 	@TaskDetailLiveScript()
 }
@@ -1479,12 +1568,12 @@ templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.Stat
 // text are the main content, history is secondary), anything else gets
 // TaskDetailExecBody ("プロセスの観測窓" — timeline stays the main content,
 // via the existing tab structure).
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, children []ChildRow, suggestion orchestrator.Suggestion, childTree []ChildTreeNode) {
 	@Layout(task.Title, "/") {
 		if task.Type == orchestrator.TaskTypeCard {
 			@TaskDetailCardBody(task, timelineGroups, availableActions, errorMsg, projectName, children, suggestion)
 		} else {
-			@TaskDetailExecBody(task, timelineGroups, availableActions, errorMsg, activeTab, projectName)
+			@TaskDetailExecBody(task, timelineGroups, availableActions, errorMsg, activeTab, projectName, childTree)
 		}
 	}
 }
