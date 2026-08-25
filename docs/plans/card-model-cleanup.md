@@ -234,16 +234,32 @@ ResolveOrCapture は `ResolveBehavior` を呼ばなくなり、共通コア + Ca
    `ListCards`、web.go の queue_next 文脈同梱) だけが取得していた —
    0035 がサイドカーに分けた元の理由 (列追加が全レスポンスへ自動露出する)
    は、card についてはこの PR で実質的に解消していない。
-   khi は毎巡 card を list するため影響範囲は大きい。**判断: 受け入れて
-   ここに契約変更として明記する** (projection を切って detail を list から
-   落とす選択肢もあったが、実装コストと非破壊性 — 後から `?fields=light`
-   相当の projection を追加するのは何も壊さない非破壊変更 — を比較して
-   見送った)。上限は既存の attrs_set payload サイズ上限
-   (`orchestrator.MaxContentBytes` = 64KiB、`internal/orchestrator/
-   content_size.go`) が detail の実質的な上限として効くため、単一レスポンス
-   のワーストケースは card 件数 × 64KiB で頭打ちになる — 無制限に膨らむ
-   種類のリスクではない。khi 側の帯域が実際に問題になった場合の対応先は
-   PR-3 以降のフォローアップとする。
+   khi は毎巡 card を list するため影響範囲は大きい。
+
+   サイズについて訂正 (PR-2 レビューラウンド3): 旧稿はここで
+   `orchestrator.MaxContentBytes` (64KiB、`internal/orchestrator/
+   content_size.go`) が detail の実質的な上限として効くと書いていたが、
+   事実誤認だった。`ValidateContentSize("action payload", ...)`
+   (`internal/api/workflow_action.go`) がキャップするのは **1回の
+   attrs_set リクエストの payload** のみ。保存される detail 自体は
+   累積 fold で、`FoldDetailAttrs` (`internal/orchestrator/card.go`) が
+   attrs map へパッチをマージし続け、`AddDetailChild` (同ファイル) は
+   children 配列へ**上限無く**追記し、`UpsertTaskTriage` (同ファイル) は
+   detail の書き込み時にサイズチェックを一切行っていない。つまり 1回の
+   リクエストは 64KiB に制限されても、複数回の attrs_set/add_detail_child
+   を経た1枚の card の detail は 64KiB を軽く1桁超えうる — **累積には
+   上限が無い**。
+
+   **判断: それでも受け入れて契約変更として明記する** (根拠は実装コストの
+   低さと非破壊性の2点のみ — 数字によるサイズ上限の主張はしない)。
+   projection を切って detail を list から落とす選択肢もあったが、
+   projection の新設は今すぐ必要な実装ではなく、後から `?fields=light`
+   相当の projection を追加するのは何も壊さない非破壊変更として行えるため
+   見送った。detail 自体に累積上限を設ける実装 (`FoldDetailAttrs`/
+   `AddDetailChild`/`UpsertTaskTriage` へのサイズガード追加) も選択肢と
+   してあるが、本 PR のスコープでは着手しない。khi 側の帯域またはレスポンス
+   サイズが実際に問題になった場合の対応先 (projection または累積上限の
+   どちらか) は PR-3 以降のフォローアップとする。
 6. **`task_update` の payload/auto_start/instructions は card に対して 409 に
    なる**。旧 flat Task では Payload/AutoStart/Instructions が (execution
    専用の意味を持ちつつも) card 上でも構造的に存在するフィールドだったため、
