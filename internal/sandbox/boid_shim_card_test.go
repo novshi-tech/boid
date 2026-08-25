@@ -11,6 +11,41 @@ import "testing"
 // instead, so there is no longer a "both given" case to reject — each
 // subcommand only accepts the arguments that make sense for it.
 
+// TestParseBoidRequest_Card_DispatchesToSubcommands pins the `case "card":`
+// dispatch arm in parseBoidRequest itself — every sibling top-level
+// subcommand (task identity, task resolve-or-capture, project, ...) has a
+// test that drives the full argv through parseBoidRequest, not just the
+// leaf parse function. Without this, `boid card get`/`boid card list` (the
+// exact argv khi's boid_store.py sends) is only proven to parse correctly
+// once dispatched, never that dispatch actually reaches it.
+func TestParseBoidRequest_Card_DispatchesToSubcommands(t *testing.T) {
+	req, err := parseBoidRequest([]string{"card", "get", "t1"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if req.Op != BoidOpCardGet {
+		t.Fatalf("op = %q, want %q", req.Op, BoidOpCardGet)
+	}
+	if req.TaskID != "t1" {
+		t.Fatalf("task id = %q, want t1", req.TaskID)
+	}
+
+	req, err = parseBoidRequest([]string{"card", "list", "--status", "queue_next"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if req.Op != BoidOpCardList {
+		t.Fatalf("op = %q, want %q", req.Op, BoidOpCardList)
+	}
+	if req.Status != "queue_next" {
+		t.Fatalf("status = %q, want queue_next", req.Status)
+	}
+
+	if _, err := parseBoidRequest([]string{"card", "bogus"}); err == nil {
+		t.Fatal("unsupported card subcommand: expected an error, got success")
+	}
+}
+
 func TestParseBoidCardGet(t *testing.T) {
 	req, err := parseBoidCardGet([]string{"t1"})
 	if err != nil {
