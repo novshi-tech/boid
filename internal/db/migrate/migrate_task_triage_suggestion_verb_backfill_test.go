@@ -57,9 +57,7 @@ func TestApply_0044_BackfillExcludesTerminalCards(t *testing.T) {
 	}
 	defer d.Close()
 
-	if err := Apply(d.Conn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
+	applyThrough(t, d.Conn, "0044_add_task_triage_suggestion_verb")
 
 	if _, err := d.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('p1', '/tmp/p1')`); err != nil {
 		t.Fatalf("insert project: %v", err)
@@ -145,9 +143,7 @@ func TestApply_0044_BackfillExcludesLegacyStatuses(t *testing.T) {
 	}
 	defer d.Close()
 
-	if err := Apply(d.Conn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
+	applyThrough(t, d.Conn, "0044_add_task_triage_suggestion_verb")
 
 	if _, err := d.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('p1', '/tmp/p1')`); err != nil {
 		t.Fatalf("insert project: %v", err)

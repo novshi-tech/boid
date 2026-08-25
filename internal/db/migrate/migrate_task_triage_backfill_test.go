@@ -11,6 +11,14 @@ import (
 // and converges the urgency/kind that pre-PR-5a writes left inside the opaque
 // detail blob. Both halves have real branching, so they are pinned against a
 // real database rather than trusted by reading the SQL.
+//
+// card-model-cleanup PR-2 (migration 0045) drops task_triage entirely, so
+// this test can no longer run the FULL Apply() chain and expect task_triage
+// to still be there afterward — it now stops at 0039 (applyThrough, the
+// version immediately before 0040) via the same helper 0045's own test uses
+// (migrate_0045_card_sti_test.go), builds the pre-0040-shaped fixture, and
+// applies ONLY 0040 in isolation. This tests exactly what it always tested
+// (0040's own behavior); only the setup mechanism changed.
 func TestApply_0040_BackfillsTaskTriageRows(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {
@@ -18,14 +26,7 @@ func TestApply_0040_BackfillsTaskTriageRows(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Migrate up to (but not including) 0040 by applying everything, then
-	// simulating the pre-0040 world: delete the rows 0040 would have created
-	// and re-run just that migration's statements via a second Apply. Simpler
-	// and equally faithful: apply everything, insert pre-0040-shaped rows, and
-	// assert Apply is idempotent enough to converge them on a second run.
-	if err := Apply(d.Conn); err != nil {
-		t.Fatalf("apply migrations: %v", err)
-	}
+	applyThrough(t, d.Conn, "0039_add_workspace_egress_port")
 
 	if _, err := d.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('p1', '/tmp/p1')`); err != nil {
 		t.Fatalf("insert project: %v", err)
@@ -51,12 +52,8 @@ func TestApply_0040_BackfillsTaskTriageRows(t *testing.T) {
 		t.Fatalf("insert legacy sidecar: %v", err)
 	}
 
-	// Re-run 0040's statements the way a fresh daemon would.
-	if _, err := d.Conn.Exec(`DELETE FROM schema_migrations WHERE version = '0040_backfill_task_triage_rows'`); err != nil {
-		t.Fatalf("reset 0040: %v", err)
-	}
-	if err := Apply(d.Conn); err != nil {
-		t.Fatalf("re-apply migrations: %v", err)
+	if err := applyMigration(d.Conn, mustFindMigration(t, "0040_backfill_task_triage_rows")); err != nil {
+		t.Fatalf("apply 0040: %v", err)
 	}
 
 	// (1) the triage-status task gained a row; the ordinary one did not.
