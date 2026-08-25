@@ -50,25 +50,6 @@ func detailTimelineGroups(detail *TaskDetailView) []timeline.StatusGroup {
 	return timeline.Build(detail.Task, detail.Actions, infos)
 }
 
-// toJobViews converts Job records into the JobView shape used by the task
-// detail templates.
-func toJobViews(jobs []*Job) []*templates.JobView {
-	views := make([]*templates.JobView, 0, len(jobs))
-	for _, job := range jobs {
-		views = append(views, &templates.JobView{
-			ID:        job.ID,
-			HandlerID: job.HandlerID,
-			Role:      job.Role,
-			Status:    string(job.Status),
-			ExitCode:  job.ExitCode,
-			CreatedAt: job.CreatedAt,
-			UpdatedAt: job.UpdatedAt,
-			Output:    job.Output,
-		})
-	}
-	return views
-}
-
 type WebHandler struct {
 	Service           WebService
 	Hub               *TaskEventHub
@@ -468,28 +449,35 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	jobs := toJobViews(detail.Jobs)
 	tab := r.URL.Query().Get("tab")
 	if tab == "" {
 		tab = "timeline"
 	}
 	errorMsg := r.URL.Query().Get("error")
 	timelineGroups := detailTimelineGroups(detail)
-	triage := h.loadTriage(id)
-	children := h.resolveChildProjects(childrenOf(triage))
-	suggestion := suggestionOf(triage)
-	hasTriage := triage != nil
-	if r.Header.Get("HX-Request") == "true" {
-		// Tab clicks swap the entire #tabs section so the active class on
-		// the visible tabs and the "more" summary label stay in sync.
-		// hasTriage is needed here too (not just the full-page render below)
-		// because TaskActionBar's Shape button on a working task is gated
-		// on it, and this is the section that re-renders it.
-		templates.TaskDetailTabsSection(detail.Task, timelineGroups, jobs, detail.AvailableActions, tab, hasTriage).Render(r.Context(), w)
+
+	// 罠1 (docs/plans/webui-detail-list-redesign.md §7 PR-1): a card detail
+	// page has no tabs (TaskDetailCardBody), so there is nothing for an
+	// HX-Request tab-swap to target — a card always falls through to the
+	// full-page render below, regardless of the HX-Request header. Only an
+	// execution task's Timeline↔Description/Payload/Instructions tab click
+	// still takes the #tabs fragment shortcut. This is the "card は全面
+	// レンダに一本化する" choice the design doc's own 罠1 note asked PR-1 to
+	// make explicit.
+	if r.Header.Get("HX-Request") == "true" && detail.Task.Type != orchestrator.TaskTypeCard {
+		templates.TaskDetailExecTabsSection(detail.Task, timelineGroups, detail.AvailableActions, tab).Render(r.Context(), w)
 		return
 	}
+
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName, children, suggestion, hasTriage).Render(r.Context(), w)
+	var children []orchestrator.TaskTriageChild
+	var suggestion orchestrator.Suggestion
+	if detail.Task.Type == orchestrator.TaskTypeCard {
+		triage := h.loadTriage(id)
+		children = h.resolveChildProjects(childrenOf(triage))
+		suggestion = suggestionOf(triage)
+	}
+	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, children, suggestion).Render(r.Context(), w)
 }
 
 // triageChildrenFor returns the task_triage.detail.children for id, or nil
@@ -615,9 +603,14 @@ func (h *WebHandler) lookupProjectName(projectID string) string {
 
 // TaskDetailFragment returns a partial HTML fragment for the task detail page.
 // The `kind` query parameter selects which section to render:
-//   - "timeline": action history section
-//   - "status":   status card + available actions
-//   - "jobs":     jobs section
+//   - "timeline": action history section (shared by both entity layouts)
+//   - "status":   the meta strip — card or execution variant, by task.Type
+//
+// "jobs" used to be a third kind (TaskDetailJobsSection); removed
+// (docs/plans/webui-detail-list-redesign.md §7 PR-1 死骸掃除) along with
+// TaskDetailJobsSection itself — nothing on the task detail page ever
+// rendered it (the `jobs` parameter flowed TaskDetail → TabsSection →
+// TabPanel and was never read there either).
 func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	detail, err := h.Service.GetTaskDetail(id)
@@ -626,8 +619,6 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	jobs := toJobViews(detail.Jobs)
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	kind := r.URL.Query().Get("kind")
 	switch kind {
@@ -635,11 +626,13 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 		templates.TaskDetailTimelineSection(detail.Task, detailTimelineGroups(detail)).Render(r.Context(), w)
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
-		children := h.triageChildrenForDisplay(id)
-		suggestion := h.triageSuggestionFor(id)
-		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName, children, suggestion).Render(r.Context(), w)
-	case "jobs":
-		templates.TaskDetailJobsSection(detail.Task, jobs).Render(r.Context(), w)
+		if detail.Task.Type == orchestrator.TaskTypeCard {
+			children := h.triageChildrenForDisplay(id)
+			suggestion := h.triageSuggestionFor(id)
+			templates.TaskDetailCardStatusSection(detail.Task, "", projectName, children, suggestion).Render(r.Context(), w)
+		} else {
+			templates.TaskDetailExecStatusSection(detail.Task, "", projectName).Render(r.Context(), w)
+		}
 	default:
 		http.Error(w, "unknown fragment kind", http.StatusBadRequest)
 	}

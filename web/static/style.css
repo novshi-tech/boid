@@ -1166,6 +1166,15 @@ pre {
   word-break: break-word;
 }
 
+/* 素性の段 (webui-detail-list-redesign §3.1 部品A): a plain, label-free
+   "<project> / <kind-or-behavior>" path. Sits above .detail-meta (which
+   is now the 動きの段 — status badge, transition edge, elapsed/timestamp). */
+.detail-identity {
+  margin-top: 6px;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
 .detail-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1514,6 +1523,23 @@ body:has(.action-bar) {
    right-aligned so content starts flush-left. */
 .tab-content {
   padding-top: var(--space-3);
+}
+
+/* --- Card body Description (webui-detail-list-redesign §3.3 item 3) ---
+   Shown directly in the card page body, not behind a tab — but an ingested
+   blob can run up to 64KiB, so a long one defaults to collapsed via
+   <details>/<summary> (cardDescriptionOpenByDefault, tasks.templ). */
+.card-description {
+  padding-top: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.card-description-toggle {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--fg);
+  margin-bottom: 6px;
 }
 
 .tab-toolbar {
