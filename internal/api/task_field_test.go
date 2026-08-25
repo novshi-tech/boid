@@ -18,10 +18,12 @@ func (s *stubLifecycleStore) ListActionsByTask(_ string) ([]*orchestrator.Action
 func TestResolveTaskField_TopLevel(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:          "task-1",
+		Type:        orchestrator.TaskTypeExecution,
 		Title:       "hello",
 		Description: "world",
 		Status:      orchestrator.TaskStatusExecuting,
 		ParentID:    "parent-1",
+		Exec:        &orchestrator.ExecAttrs{},
 	}
 
 	cases := []struct {
@@ -47,7 +49,7 @@ func TestResolveTaskField_TopLevel(t *testing.T) {
 
 func TestResolveTaskField_PayloadExplicitPrefix(t *testing.T) {
 	payload := json.RawMessage(`{"artifact":{"report":{"summary":"ok"}}}`)
-	task := &orchestrator.Task{ID: "t", Payload: payload}
+	task := &orchestrator.Task{ID: "t", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: payload}}
 
 	got, err := ResolveTaskField(task, nil, "payload.artifact.report.summary")
 	if err != nil {
@@ -60,7 +62,7 @@ func TestResolveTaskField_PayloadExplicitPrefix(t *testing.T) {
 
 func TestResolveTaskField_PayloadAutoFallback(t *testing.T) {
 	payload := json.RawMessage(`{"awaiting":{"question":"why?","question_id":"q1"},"artifact":{"report":"done"}}`)
-	task := &orchestrator.Task{ID: "t", Payload: payload}
+	task := &orchestrator.Task{ID: "t", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: payload}}
 
 	cases := []struct {
 		path string
@@ -83,7 +85,7 @@ func TestResolveTaskField_PayloadAutoFallback(t *testing.T) {
 
 func TestResolveTaskField_PayloadWhole(t *testing.T) {
 	payload := json.RawMessage(`{"k":"v"}`)
-	task := &orchestrator.Task{ID: "t", Payload: payload}
+	task := &orchestrator.Task{ID: "t", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: payload}}
 
 	got, err := ResolveTaskField(task, nil, "payload")
 	if err != nil {
@@ -109,7 +111,7 @@ func TestResolveTaskField_LifecycleDerived(t *testing.T) {
 		},
 	}
 
-	task := &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusAborted}
+	task := &orchestrator.Task{ID: "t", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusAborted, Exec: &orchestrator.ExecAttrs{}}
 
 	cases := []struct {
 		path string
@@ -132,7 +134,7 @@ func TestResolveTaskField_LifecycleDerived(t *testing.T) {
 }
 
 func TestResolveTaskField_LifecycleWithoutStore(t *testing.T) {
-	task := &orchestrator.Task{ID: "t", Status: orchestrator.TaskStatusAborted}
+	task := &orchestrator.Task{ID: "t", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusAborted, Exec: &orchestrator.ExecAttrs{}}
 
 	got, err := ResolveTaskField(task, nil, "lifecycle.abort.message")
 	if err != nil {
@@ -144,7 +146,7 @@ func TestResolveTaskField_LifecycleWithoutStore(t *testing.T) {
 }
 
 func TestResolveTaskField_MissingPathReturnsEmpty(t *testing.T) {
-	task := &orchestrator.Task{ID: "t", Payload: json.RawMessage(`{}`)}
+	task := &orchestrator.Task{ID: "t", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)}}
 
 	got, err := ResolveTaskField(task, nil, "awaiting.question")
 	if err != nil {
@@ -164,7 +166,7 @@ func TestResolveTaskField_EmptyPath(t *testing.T) {
 
 func TestResolveTaskField_TraverseScalar(t *testing.T) {
 	payload := json.RawMessage(`{"k":"v"}`)
-	task := &orchestrator.Task{ID: "t", Payload: payload}
+	task := &orchestrator.Task{ID: "t", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: payload}}
 
 	if _, err := ResolveTaskField(task, nil, "title.foo"); err == nil {
 		t.Errorf("expected error when traversing into scalar")

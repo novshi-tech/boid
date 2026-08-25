@@ -167,7 +167,7 @@ func TestWebHandler_PostAnswer_AnswerIsTrimmed(t *testing.T) {
 func TestWebHandler_TaskDetail_AwaitingShowsBanner(t *testing.T) {
 	detail := makeTaskDetailView()
 	detail.Task.Status = orchestrator.TaskStatusAwaiting
-	detail.Task.Payload = []byte(`{"awaiting":{"question":"What should we do?","question_id":"qid-1"}}`)
+	detail.Task.Exec.Payload = []byte(`{"awaiting":{"question":"What should we do?","question_id":"qid-1"}}`)
 
 	svc := &stubAnswerService{
 		stubWebService: stubWebService{taskDetail: detail},
@@ -204,7 +204,7 @@ func TestWebHandler_TaskDetail_AwaitingShowsBanner(t *testing.T) {
 func TestWebHandler_QuestionPage_ActiveTurn(t *testing.T) {
 	detail := makeTaskDetailView()
 	detail.Task.Status = orchestrator.TaskStatusAwaiting
-	detail.Task.Payload = []byte(`{"awaiting":{"question":"Approve the plan?","question_id":"q-1"}}`)
+	detail.Task.Exec.Payload = []byte(`{"awaiting":{"question":"Approve the plan?","question_id":"q-1"}}`)
 	detail.Actions = []*orchestrator.Action{
 		{Type: "ask", Payload: []byte(`{"awaiting":{"question":"Approve the plan?","question_id":"q-1"}}`)},
 	}
@@ -239,7 +239,7 @@ func TestWebHandler_QuestionPage_AnsweredTurn(t *testing.T) {
 	detail := makeTaskDetailView()
 	// Task moved on to executing again after the user answered q-old.
 	detail.Task.Status = orchestrator.TaskStatusExecuting
-	detail.Task.Payload = []byte(`{}`)
+	detail.Task.Exec.Payload = []byte(`{}`)
 	detail.Actions = []*orchestrator.Action{
 		{Type: "ask", Payload: []byte(`{"awaiting":{"question":"Old question?","question_id":"q-old"}}`)},
 		{Type: "answer", Payload: []byte(`{"awaiting":{"question_id":"q-old","pending_answer":"yes go"}}`)},

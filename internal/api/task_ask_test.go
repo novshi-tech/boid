@@ -45,7 +45,8 @@ func TestAnswerTask_BlockingMode_DeliversWithoutDispatch(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusAwaiting,
-		Payload:   blockingAwaitingPayload(t, "q-1"),
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Payload: blockingAwaitingPayload(t, "q-1")},
 	}
 	wf := &stubWorkflowService{}
 	actions := &capturingActionStore{}
@@ -79,8 +80,8 @@ func TestAnswerTask_BlockingMode_DeliversWithoutDispatch(t *testing.T) {
 		t.Errorf("expected an 'answer' audit action, got %+v", actions.createdAction)
 	}
 	// The awaiting trait must be stripped once consumed.
-	if orchestrator.GetAwaitingPayload(task.Payload).QuestionID != "" {
-		t.Errorf("awaiting trait should be stripped after blocking answer, payload=%s", task.Payload)
+	if orchestrator.GetAwaitingPayload(task.Exec.Payload).QuestionID != "" {
+		t.Errorf("awaiting trait should be stripped after blocking answer, payload=%s", task.Exec.Payload)
 	}
 }
 
@@ -101,7 +102,8 @@ func TestAnswerTask_StampsActorFromContext(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusAwaiting,
-		Payload:   blockingAwaitingPayload(t, "q-1"),
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Payload: blockingAwaitingPayload(t, "q-1")},
 	}
 	actions := &capturingActionStore{}
 	svc := &TaskAppService{
@@ -136,7 +138,8 @@ func TestAnswerTask_NoWaiter_PersistsDurably(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusAwaiting,
-		Payload:   blockingAwaitingPayload(t, "q-1"),
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Payload: blockingAwaitingPayload(t, "q-1")},
 	}}
 	wf := &stubWorkflowService{}
 	svc := &TaskAppService{
@@ -151,7 +154,7 @@ func TestAnswerTask_NoWaiter_PersistsDurably(t *testing.T) {
 	if store.task.Status != orchestrator.TaskStatusAwaiting {
 		t.Errorf("task status = %q, want awaiting (answer parked, no live agent)", store.task.Status)
 	}
-	if got := orchestrator.GetAwaitingPayload(store.task.Payload).PendingAnswer; got != "the answer" {
+	if got := orchestrator.GetAwaitingPayload(store.task.Exec.Payload).PendingAnswer; got != "the answer" {
 		t.Errorf("pending_answer = %q, want %q (durable parking)", got, "the answer")
 	}
 	if wf.appliedType != "" {
@@ -168,7 +171,8 @@ func TestAnswerTask_LegacyAwaitingWithoutWaiter_PersistsDurably(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusAwaiting,
-		Payload:   json.RawMessage(`{"awaiting":{"question":"Q","question_id":"q-1","session_id":"sess-1"}}`),
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{"awaiting":{"question":"Q","question_id":"q-1","session_id":"sess-1"}}`)},
 	}}
 	svc := &TaskAppService{
 		Tasks:       store,
@@ -179,7 +183,7 @@ func TestAnswerTask_LegacyAwaitingWithoutWaiter_PersistsDurably(t *testing.T) {
 	if err := svc.AnswerTask(context.Background(), "t1", "q-1", "yes"); err != nil {
 		t.Fatalf("AnswerTask should persist durably, got %v", err)
 	}
-	if got := orchestrator.GetAwaitingPayload(store.task.Payload).PendingAnswer; got != "yes" {
+	if got := orchestrator.GetAwaitingPayload(store.task.Exec.Payload).PendingAnswer; got != "yes" {
 		t.Errorf("pending_answer = %q, want yes", got)
 	}
 }
@@ -193,7 +197,8 @@ func TestAskTaskBlocking_DisconnectDoesNotAbortImmediately(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Payload:   json.RawMessage(`{}`),
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}}
 	wf := &stubWorkflowService{}
 	svc := &TaskAppService{
@@ -224,7 +229,8 @@ func TestGraceAbortCheck_AbortsZombie(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusAwaiting,
-		Payload:   blockingAwaitingPayload(t, "q-1"),
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Payload: blockingAwaitingPayload(t, "q-1")},
 	}}
 	wf := &stubWorkflowService{}
 	svc := &TaskAppService{Tasks: store, Workflow: wf, BlockingAsk: NewBlockingAskRegistry()}
@@ -251,7 +257,7 @@ func TestGraceAbortCheck_SkipsRecovered(t *testing.T) {
 		{
 			name: "answer_parked",
 			mutate: func(task *orchestrator.Task, _ *BlockingAskRegistry) {
-				task.Payload = orchestrator.SetPendingAnswer(task.Payload, "parked", orchestrator.ActorHuman)
+				task.Exec.Payload = orchestrator.SetPendingAnswer(task.Exec.Payload, "parked", orchestrator.ActorHuman)
 			},
 			checkQ: "q-1",
 		},
@@ -272,7 +278,8 @@ func TestGraceAbortCheck_SkipsRecovered(t *testing.T) {
 				ID:        "t1",
 				ProjectID: "proj-1",
 				Status:    orchestrator.TaskStatusAwaiting,
-				Payload:   blockingAwaitingPayload(t, "q-1"),
+				Type:      orchestrator.TaskTypeExecution,
+				Exec:      &orchestrator.ExecAttrs{Payload: blockingAwaitingPayload(t, "q-1")},
 			}
 			reg := NewBlockingAskRegistry()
 			wf := &stubWorkflowService{}
@@ -301,7 +308,8 @@ func TestAskTaskBlocking_B1SecondAskFails(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Payload:   json.RawMessage(`{}`),
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	svc := &TaskAppService{
 		Tasks:       &stubTaskStore{task: task},
@@ -327,6 +335,8 @@ func TestAskTaskBlocking_AwaitingWithoutQuestionRejected(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusAwaiting, // no awaiting payload → no qid
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{},
 	}
 	svc := &TaskAppService{
 		Tasks:       &stubTaskStore{task: task},
@@ -349,6 +359,8 @@ func TestAskTaskBlocking_NonAskableStatusRejected(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusDone,
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{},
 	}
 	svc := &TaskAppService{
 		Tasks:       &stubTaskStore{task: task},
@@ -373,7 +385,8 @@ func TestAskTaskBlocking_ReAsk_ConsumesPendingAnswer(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusAwaiting,
-		Payload:   payload,
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Payload: payload},
 	}}
 	actions := &capturingActionStore{}
 	svc := &TaskAppService{
@@ -393,8 +406,8 @@ func TestAskTaskBlocking_ReAsk_ConsumesPendingAnswer(t *testing.T) {
 	if store.task.Status != orchestrator.TaskStatusExecuting {
 		t.Errorf("task status = %q, want executing after consuming answer", store.task.Status)
 	}
-	if orchestrator.GetAwaitingPayload(store.task.Payload).QuestionID != "" {
-		t.Errorf("awaiting trait should be stripped after consume, payload=%s", store.task.Payload)
+	if orchestrator.GetAwaitingPayload(store.task.Exec.Payload).QuestionID != "" {
+		t.Errorf("awaiting trait should be stripped after consume, payload=%s", store.task.Exec.Payload)
 	}
 	if actions.createdAction == nil || actions.createdAction.Type != "answer" {
 		t.Errorf("expected an 'answer' audit action, got %+v", actions.createdAction)
@@ -410,7 +423,8 @@ func TestAskTaskBlocking_ReAsk_ReattachesAndBlocks(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusAwaiting,
-		Payload:   blockingAwaitingPayload(t, "q-1"),
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Payload: blockingAwaitingPayload(t, "q-1")},
 	}}
 	reg := NewBlockingAskRegistry()
 	wf := &stubWorkflowService{}

@@ -132,15 +132,23 @@ func failReportFromPayload(payload json.RawMessage) *FailReport {
 	return &FailReport{Message: m.Message}
 }
 
-// IsInstructionsEditable reports whether a task's instructions can be edited
-// in the given status. Editing is allowed while pending (avoiding races with
-// in-flight handlers / post-execution mutations) and, since
-// docs/plans/cross-project-issue-triage.md Phase 1 PR-1, while a triage task
-// sits in captured/triaged/ready — a 整形セッション (UC-3) needs to be able to
-// edit these before dispatch. parked is excluded (see
-// IsPreDispatchEditableStatus's doc comment).
-func IsInstructionsEditable(status TaskStatus) bool {
-	return IsPreDispatchEditableStatus(status)
+// IsInstructionsEditable reports whether a task's instructions can be edited,
+// given its type and current status. Instructions are an execution-only
+// concept (ExecAttrs.Instructions — a Card has no instructions field at all,
+// design doc §3.2's field attribution table), so this is only ever true for
+// an execution task sitting in "pending" (avoiding races with in-flight
+// handlers / post-execution mutations).
+//
+// Before card-model-cleanup PR-2 this delegated to
+// IsPreDispatchEditableStatus, which — once card machine v2 folded
+// captured/triaged into parked — also returned true for a parked card; that
+// was already dead-end behavior (task_service.go's caller had nowhere
+// meaningful to write a parked card's "instructions" even then), not an
+// intentional editing surface. The ExecAttrs split now makes writing
+// instructions onto a card structurally impossible, so this predicate is
+// narrowed to match.
+func IsInstructionsEditable(taskType TaskType, status TaskStatus) bool {
+	return taskType == TaskTypeExecution && status == TaskStatusPending
 }
 
 func abortReasonFromPayload(payload json.RawMessage) *AbortReason {

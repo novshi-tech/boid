@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/adapters"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type TaskWorkflowService struct {
@@ -108,6 +109,18 @@ func enrichJob(runtimesDir string, job *Job) {
 		return
 	}
 	job.WorkspacePath = filepath.Join(runtimesDir, job.RuntimeID)
+}
+
+// taskBehaviorOrEmpty reads task.Exec.Behavior, or "" for a card
+// (card-model-cleanup PR-2: Behavior is execution-only, design doc §3.2).
+// enrichJobDisplayName already treats an empty behavior as "nothing to
+// enrich" (a card has no hook jobs to enrich display names for in the first
+// place), so this is a safe, no-special-casing-needed default.
+func taskBehaviorOrEmpty(task *orchestrator.Task) string {
+	if task == nil || task.Exec == nil {
+		return ""
+	}
+	return task.Exec.Behavior
 }
 
 // enrichJobDisplayName sets job.DisplayName from the project meta's hook definitions

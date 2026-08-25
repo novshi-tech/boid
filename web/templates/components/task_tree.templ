@@ -281,8 +281,8 @@ templ taskTreeRow(item TreeItem) {
 				if item.Task.ProjectID != "" {
 					<span class="task-row-project">{ item.ProjectLabel() }</span>
 				}
-				if item.Task.Behavior != "" {
-					<span class="task-row-behavior">{ item.Task.Behavior }</span>
+				if item.Task.Exec != nil && item.Task.Exec.Behavior != "" {
+					<span class="task-row-behavior">{ item.Task.Exec.Behavior }</span>
 				}
 			</div>
 		</div>

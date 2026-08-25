@@ -108,15 +108,15 @@ var errFakeConflict = &StatusError{Code: http.StatusConflict, Message: "not answ
 // accept.
 func TestWebAnswerSuggestion_Reject_RecordsAnsweredAction(t *testing.T) {
 	svc, taskRepo := newActionListTestService(t)
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusParked, Behavior: "triage"}
+	// card-model-cleanup PR-2: a card is type='card' from CreateTask itself
+	// now (design doc §3.6) — there is no separate SeedTaskTriage step left
+	// to seed a sidecar row after the fact (SeedTaskTriage is REMOVED
+	// entirely). machineFor picks NewCardMachine off task.Type directly, so
+	// setting Type/Card here is what the old "PR-B: machineFor needs this to
+	// pick NewCardMachine" seed comment used to accomplish indirectly.
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	if err := taskRepo.CreateTask(task); err != nil {
 		t.Fatalf("create task: %v", err)
-	}
-	// PR-B: machineFor needs this to pick NewCardMachine for the attrs_set/
-	// answered actions below — see TestListActions_NotedRoundTrips's own
-	// comment (action_list_read_test.go) for why this seed is needed.
-	if err := taskRepo.SeedTaskTriage(task.ID); err != nil {
-		t.Fatalf("seed task_triage: %v", err)
 	}
 	// Seed a suggestion the reject answers, via a real attrs_set — this is
 	// the same fold path note-suggest's push uses in production.

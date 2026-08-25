@@ -9,7 +9,7 @@ import (
 
 func TestChildCount_NoChildren(t *testing.T) {
 	d := createTestProject(t)
-	parent := &orchestrator.Task{ProjectID: "proj-1", Title: "Parent", Behavior: "dev"}
+	parent := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "Parent", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestChildCount_NoChildren(t *testing.T) {
 
 func TestChildCount_MixedChildren(t *testing.T) {
 	d := createTestProject(t)
-	parent := &orchestrator.Task{ProjectID: "proj-1", Title: "Parent", Behavior: "dev"}
+	parent := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "Parent", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
@@ -47,11 +47,14 @@ func TestChildCount_MixedChildren(t *testing.T) {
 	}
 	for _, s := range statuses {
 		child := &orchestrator.Task{
+			Type:      orchestrator.TaskTypeExecution,
 			ProjectID: "proj-1",
 			Title:     "Child",
-			Behavior:  "dev",
 			Status:    s,
 			ParentID:  parent.ID,
+			Exec: &orchestrator.ExecAttrs{
+				Behavior: "dev",
+			},
 		}
 		if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 			t.Fatalf("create child %s: %v", s, err)
@@ -79,7 +82,7 @@ func TestChildCount_MixedChildren(t *testing.T) {
 
 func TestChildCount_AddChildAfterParent(t *testing.T) {
 	d := createTestProject(t)
-	parent := &orchestrator.Task{ProjectID: "proj-1", Title: "Parent", Behavior: "dev"}
+	parent := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "Parent", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
@@ -95,10 +98,13 @@ func TestChildCount_AddChildAfterParent(t *testing.T) {
 
 	// 後から子を追加
 	child := &orchestrator.Task{
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Child",
-		Behavior:  "dev",
 		ParentID:  parent.ID,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
@@ -118,8 +124,8 @@ func TestChildCount_AddChildAfterParent(t *testing.T) {
 
 func TestChildCount_ReparentChild(t *testing.T) {
 	d := createTestProject(t)
-	parent1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Parent1", Behavior: "dev"}
-	parent2 := &orchestrator.Task{ProjectID: "proj-1", Title: "Parent2", Behavior: "dev"}
+	parent1 := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "Parent1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	parent2 := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "Parent2", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, parent1); err != nil {
 		t.Fatalf("create parent1: %v", err)
 	}
@@ -127,7 +133,7 @@ func TestChildCount_ReparentChild(t *testing.T) {
 		t.Fatalf("create parent2: %v", err)
 	}
 
-	child := &orchestrator.Task{ProjectID: "proj-1", Title: "Child", Behavior: "dev", ParentID: parent1.ID}
+	child := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "Child", ParentID: parent1.ID, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
 	}
@@ -174,10 +180,13 @@ func TestListTasks_OpenFilter_ClosedParentWithOpenChild(t *testing.T) {
 
 	// 親は done 状態
 	parent := &orchestrator.Task{
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Parent",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusDone,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -185,10 +194,13 @@ func TestListTasks_OpenFilter_ClosedParentWithOpenChild(t *testing.T) {
 
 	// 子は pending（open）
 	child := &orchestrator.Task{
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Child",
-		Behavior:  "dev",
 		ParentID:  parent.ID,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
@@ -215,10 +227,13 @@ func TestListTasks_OpenFilter_ClosedParentAllChildrenDone(t *testing.T) {
 
 	// 親は done 状態
 	parent := &orchestrator.Task{
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Parent",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusDone,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -226,11 +241,14 @@ func TestListTasks_OpenFilter_ClosedParentAllChildrenDone(t *testing.T) {
 
 	// 子も done 状態
 	child := &orchestrator.Task{
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Child",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusDone,
 		ParentID:  parent.ID,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
@@ -255,10 +273,13 @@ func TestListTasks_OpenFilter_ClosedParentAbortedChild(t *testing.T) {
 
 	// 親は aborted 状態
 	parent := &orchestrator.Task{
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Parent",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusAborted,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -266,11 +287,14 @@ func TestListTasks_OpenFilter_ClosedParentAbortedChild(t *testing.T) {
 
 	// 子も aborted 状態
 	child := &orchestrator.Task{
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Child",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusAborted,
 		ParentID:  parent.ID,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
@@ -289,12 +313,12 @@ func TestListTasks_OpenFilter_ClosedParentAbortedChild(t *testing.T) {
 
 func TestListTasks_ChildCountInList(t *testing.T) {
 	d := createTestProject(t)
-	parent := &orchestrator.Task{ProjectID: "proj-1", Title: "Parent", Behavior: "dev"}
+	parent := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "Parent", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		child := &orchestrator.Task{ProjectID: "proj-1", Title: "Child", Behavior: "dev", ParentID: parent.ID}
+		child := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "Child", ParentID: parent.ID, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 		if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 			t.Fatalf("create child %d: %v", i, err)
 		}
@@ -325,11 +349,11 @@ func TestListTasks_OpenFilter_OpenTasksOnly(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	openTask := &orchestrator.Task{ProjectID: "proj-x", Title: "Open", Behavior: "dev", Status: orchestrator.TaskStatusPending}
+	openTask := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-x", Title: "Open", Status: orchestrator.TaskStatusPending, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, openTask); err != nil {
 		t.Fatalf("create open task: %v", err)
 	}
-	doneTask := &orchestrator.Task{ProjectID: "proj-x", Title: "Done", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	doneTask := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-x", Title: "Done", Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
 		t.Fatalf("create done task: %v", err)
 	}

@@ -21,10 +21,13 @@ func TestCoordinator_DispatchAndAdvance_FiredEvents_HookKitID(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Payload:  json.RawMessage(`{}`),
+		},
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "go-dev/pr-verify", Kit: "go-dev"},
@@ -56,4 +59,3 @@ func TestCoordinator_DispatchAndAdvance_FiredEvents_HookKitID(t *testing.T) {
 		t.Errorf("Success = false, want true")
 	}
 }
-

@@ -70,17 +70,15 @@ func TestListActions_Unscoped_Rejected(t *testing.T) {
 // verification item, exercised end to end rather than at either layer alone.
 func TestListActions_NotedRoundTrips(t *testing.T) {
 	svc, taskRepo := newActionListTestService(t)
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusParked, Behavior: "triage"}
+	// card-model-cleanup PR-2: a card's kind/urgency/wake_at/... columns now
+	// live directly on the tasks row (migration 0045) — CreateTask with
+	// Type=Card + a non-nil Card already populates them, so there is no more
+	// separate SeedTaskTriage step (the function/method is gone entirely).
+	// Without Type=Card, machineFor would fall back to NewExecutionMachine,
+	// which has no "noted" rule at all.
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	if err := taskRepo.CreateTask(task); err != nil {
 		t.Fatalf("create task: %v", err)
-	}
-	// PR-B: seeds the task_triage row a real captured-status card always has
-	// by the time it exists (task_create.go's CreateTask does this at the
-	// app layer; this test calls the bare repository directly) — without it
-	// machineFor falls back to NewExecutionMachine, which has no "noted"
-	// rule at all.
-	if err := taskRepo.SeedTaskTriage(task.ID); err != nil {
-		t.Fatalf("seed task_triage: %v", err)
 	}
 
 	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
@@ -110,21 +108,16 @@ func TestListActions_NotedRoundTrips(t *testing.T) {
 // proj-2's actions, even when both exist in the same daemon.
 func TestListActions_ProjectScoping_NeverLeaksOtherProject(t *testing.T) {
 	svc, taskRepo := newActionListTestService(t)
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Status: orchestrator.TaskStatusParked, Behavior: "triage"}
+	// card-model-cleanup PR-2: see TestListActions_NotedRoundTrips's own
+	// comment — Type=Card + a non-nil Card populates the card columns at
+	// create time, no separate seed step exists anymore.
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	if err := taskRepo.CreateTask(task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
-	// PR-B: see TestListActions_NotedRoundTrips's own comment for why this
-	// seed is needed (machineFor's card discriminator).
-	if err := taskRepo.SeedTaskTriage(task1.ID); err != nil {
-		t.Fatalf("seed task_triage for task1: %v", err)
-	}
-	task2 := &orchestrator.Task{ProjectID: "proj-2", Title: "T2", Status: orchestrator.TaskStatusParked, Behavior: "triage"}
+	task2 := &orchestrator.Task{ProjectID: "proj-2", Title: "T2", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	if err := taskRepo.CreateTask(task2); err != nil {
 		t.Fatalf("create task2: %v", err)
-	}
-	if err := taskRepo.SeedTaskTriage(task2.ID); err != nil {
-		t.Fatalf("seed task_triage for task2: %v", err)
 	}
 	if _, err := svc.ApplyAction(context.Background(), task1.ID, ApplyActionRequest{Type: "noted", Payload: []byte(`{"p":1}`)}); err != nil {
 		t.Fatalf("ApplyAction task1: %v", err)
@@ -147,14 +140,11 @@ func TestListActions_ProjectScoping_NeverLeaksOtherProject(t *testing.T) {
 // path (multiple ApplyAction calls, not hand-inserted rows).
 func TestListActions_CursorMonotonic_AcrossRealApplyActionCalls(t *testing.T) {
 	svc, taskRepo := newActionListTestService(t)
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Status: orchestrator.TaskStatusParked, Behavior: "triage"}
+	// card-model-cleanup PR-2: see TestListActions_NotedRoundTrips's own
+	// comment — no separate seed step exists anymore.
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	if err := taskRepo.CreateTask(task); err != nil {
 		t.Fatalf("create task: %v", err)
-	}
-	// PR-B: see TestListActions_NotedRoundTrips's own comment for why this
-	// seed is needed (machineFor's card discriminator).
-	if err := taskRepo.SeedTaskTriage(task.ID); err != nil {
-		t.Fatalf("seed task_triage: %v", err)
 	}
 	for i := 0; i < 3; i++ {
 		if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "noted", Payload: []byte(`{"i":` + strconv.Itoa(i) + `}`)}); err != nil {

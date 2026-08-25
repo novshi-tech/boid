@@ -72,7 +72,13 @@ func TestUpdateTask_DescriptionOverLimit_RejectsAndDoesNotWrite(t *testing.T) {
 }
 
 func TestApplyAction_PayloadOverLimit_RejectsAndDoesNotRecord(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusCaptured, Behavior: "dev", Payload: []byte(`{}`)}
+	// card-model-cleanup PR-2: orchestrator.TaskStatusCaptured no longer
+	// exists (folded into parked well before this PR) — substituted with
+	// parked, a card's initial/resting state. The exact status/type is
+	// immaterial to what this test actually pins: ApplyAction's content-size
+	// check (orchestrator.ValidateContentSize) runs before the task is even
+	// loaded, so the rejection never reaches machine selection at all.
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
@@ -92,7 +98,7 @@ func TestApplyAction_PayloadOverLimit_RejectsAndDoesNotRecord(t *testing.T) {
 	if len(txStore.actions) != 0 {
 		t.Errorf("actions recorded = %d, want 0 (oversized payload must never reach CreateAction)", len(txStore.actions))
 	}
-	if task.Status != orchestrator.TaskStatusCaptured {
+	if task.Status != orchestrator.TaskStatusParked {
 		t.Errorf("task status changed to %q despite the rejected action", task.Status)
 	}
 }

@@ -97,7 +97,7 @@ func TestRerunTask_ClearsPayload(t *testing.T) {
 
 	// payload は空 (または instructions のみ) になるはず
 	var payloadMap map[string]json.RawMessage
-	if err := json.Unmarshal(result.Payload, &payloadMap); err != nil {
+	if err := json.Unmarshal(result.Exec.Payload, &payloadMap); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
 	if _, ok := payloadMap["artifact"]; ok {
@@ -136,11 +136,11 @@ func TestRerunTask_PreservesInstructions(t *testing.T) {
 		t.Fatalf("rerun task: %v", err)
 	}
 
-	if len(result.Instructions) == 0 {
-		t.Errorf("instructions should be preserved after rerun, got %v", result.Instructions)
+	if len(result.Exec.Instructions) == 0 {
+		t.Errorf("instructions should be preserved after rerun, got %v", result.Exec.Instructions)
 	}
 	var payloadMap map[string]json.RawMessage
-	if err := json.Unmarshal(result.Payload, &payloadMap); err != nil {
+	if err := json.Unmarshal(result.Exec.Payload, &payloadMap); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
 	if _, ok := payloadMap["artifact"]; ok {

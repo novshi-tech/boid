@@ -63,12 +63,18 @@ func newRealTaskAppService(t *testing.T) (*TaskAppService, *orchestrator.TaskRep
 func TestTaskAppServiceUpdateTask_RemoteID_PersistsToRealDB(t *testing.T) {
 	svc, tasks := newRealTaskAppService(t)
 
+	// card-model-cleanup PR-2: "working" is now a Card-only status (design
+	// doc §3.3), and a Card structurally cannot carry Behavior — this fixture
+	// only ever needed "a task past creation, not pending", so it moves to
+	// the execution-status equivalent (executing) rather than becoming a
+	// Card, since RemoteID editing is gated on neither type nor status.
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "t",
-		Behavior:  "dev",
-		Status:    orchestrator.TaskStatusWorking,
+		Status:    orchestrator.TaskStatusExecuting,
 		RemoteID:  "OLD-1",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	if err := tasks.CreateTask(task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -96,9 +102,10 @@ func TestTaskAppServiceUpdateTask_ProjectID_PersistsToRealDB(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "t",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusPending,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	if err := tasks.CreateTask(task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -129,11 +136,15 @@ func TestTaskAppServiceUpdateTask_ProjectID_PersistsToRealDB(t *testing.T) {
 func TestTaskAppServiceUpdateTask_Title_ParkedCard_PersistsToRealDB(t *testing.T) {
 	svc, tasks := newRealTaskAppService(t)
 
+	// card-model-cleanup PR-2: parked is a Card-only status now (design doc
+	// §3.3), and a Card structurally has no Behavior — dropped rather than
+	// migrated to Exec.Behavior.
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeCard,
 		Title:     "original title",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusParked,
+		Card:      &orchestrator.CardAttrs{},
 	}
 	if err := tasks.CreateTask(task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -159,11 +170,14 @@ func TestTaskAppServiceUpdateTask_Title_ParkedCard_PersistsToRealDB(t *testing.T
 func TestTaskAppServiceUpdateTask_Title_WorkingCard_StillRejected(t *testing.T) {
 	svc, tasks := newRealTaskAppService(t)
 
+	// working is a Card-only status (design doc §3.3); Behavior dropped for
+	// the same reason as the parked-card fixture above.
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeCard,
 		Title:     "original title",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusWorking,
+		Card:      &orchestrator.CardAttrs{},
 	}
 	if err := tasks.CreateTask(task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -196,10 +210,10 @@ func TestTaskAppServiceUpdateTask_AutoStart_PersistsToRealDB(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "t",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusExecuting,
-		AutoStart: false,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev", AutoStart: false},
 	}
 	if err := tasks.CreateTask(task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -214,7 +228,7 @@ func TestTaskAppServiceUpdateTask_AutoStart_PersistsToRealDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if !got.AutoStart {
+	if got.Exec == nil || !got.Exec.AutoStart {
 		t.Fatal("AutoStart after re-fetch = false, want true")
 	}
 }

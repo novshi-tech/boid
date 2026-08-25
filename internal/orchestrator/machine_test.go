@@ -32,8 +32,9 @@ func TestStateMachine_Advance_ConditionMet(t *testing.T) {
 	}
 
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"artifact":{"url":"https://github.com/..."}}`),
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Payload: json.RawMessage(`{"artifact":{"url":"https://github.com/..."}}`)},
 	}
 
 	next, ok := sm.Advance(task)
@@ -187,16 +188,13 @@ func TestCardMachine_AbortIsAbsent(t *testing.T) {
 	if sm.IsManualAction("abort") {
 		t.Fatal("NewCardMachine: IsManualAction(\"abort\") = true, want false")
 	}
-	for _, status := range []orchestrator.TaskStatus{
-		orchestrator.TaskStatusCaptured,
-		orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusParked,
-		orchestrator.TaskStatusReady,
-		orchestrator.TaskStatusWorking,
-		orchestrator.TaskStatusDropped,
-		orchestrator.TaskStatusDone,
-		orchestrator.TaskStatusAborted,
-	} {
+	// card-model-cleanup PR-2: captured/triaged/ready no longer exist as
+	// statuses at all, so the hand-picked "card-relevant" list they used to
+	// anchor is gone. Iterating orchestrator.KnownTaskStatuses() instead is
+	// strictly more thorough than the original list (it also covers
+	// pending/executing/awaiting, which the old list omitted) and matches
+	// this test's own "from ANY status" claim literally.
+	for _, status := range orchestrator.KnownTaskStatuses() {
 		task := &orchestrator.Task{Status: status}
 		if _, err := sm.Apply(task, &orchestrator.Action{Type: "abort"}); err == nil {
 			t.Errorf("NewCardMachine: abort from %s unexpectedly succeeded", status)

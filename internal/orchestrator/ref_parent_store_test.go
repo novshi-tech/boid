@@ -12,10 +12,13 @@ func TestCreateTask_RefAndParentID_Persisted(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task with ref",
-		Behavior:  "dev",
 		Ref:       "task-a",
 		ParentID:  "parent-uuid-1234",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -40,10 +43,13 @@ func TestCreateTask_EmptyRef_NoUniqueConstraint(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		task := &orchestrator.Task{
 			ProjectID: "proj-1",
+			Type:      orchestrator.TaskTypeExecution,
 			Title:     "Task without ref",
-			Behavior:  "dev",
 			// Ref:      "" (zero value, no ref)
 			ParentID: "same-parent",
+			Exec: &orchestrator.ExecAttrs{
+				Behavior: "dev",
+			},
 		}
 		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 			t.Fatalf("CreateTask[%d]: %v", i, err)
@@ -59,10 +65,13 @@ func TestCreateTask_SameRefSameParent_GetOrCreate(t *testing.T) {
 
 	t1 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task A",
-		Behavior:  "dev",
 		Ref:       "step-1",
 		ParentID:  "parent-uuid-abc",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
 		t.Fatalf("first CreateTask: %v", err)
@@ -70,10 +79,13 @@ func TestCreateTask_SameRefSameParent_GetOrCreate(t *testing.T) {
 
 	t2 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task B (same ref — should get existing)",
-		Behavior:  "dev",
 		Ref:       "step-1",
 		ParentID:  "parent-uuid-abc",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
 		t.Fatalf("second CreateTask with same ref: %v (want get-or-create, not error)", err)
@@ -95,10 +107,13 @@ func TestCreateTask_SameRef_RootTasks_GetOrCreate(t *testing.T) {
 
 	t1 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "BGO-214: fix the thing",
-		Behavior:  "dev",
 		Ref:       "BGO-214",
 		// ParentID intentionally empty: root task (a card).
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
 		t.Fatalf("first CreateTask: %v", err)
@@ -106,9 +121,12 @@ func TestCreateTask_SameRef_RootTasks_GetOrCreate(t *testing.T) {
 
 	t2 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "BGO-214: fix the thing (resend)",
-		Behavior:  "dev",
 		Ref:       "BGO-214",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
 		t.Fatalf("second (resend) CreateTask with same ref: %v (want get-or-create, not error)", err)
@@ -120,9 +138,12 @@ func TestCreateTask_SameRef_RootTasks_GetOrCreate(t *testing.T) {
 	// A different ref must still create a distinct root task.
 	t3 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "BGO-215: a different card",
-		Behavior:  "dev",
 		Ref:       "BGO-215",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t3); err != nil {
 		t.Fatalf("third CreateTask (different ref): %v", err)
@@ -147,9 +168,12 @@ func TestCreateTask_SameRef_UUIDShaped_RootTask_GetOrCreate(t *testing.T) {
 
 	t1 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "card with a UUID-shaped source ref",
-		Behavior:  "dev",
 		Ref:       uuidRef,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
 		t.Fatalf("first CreateTask: %v", err)
@@ -160,9 +184,12 @@ func TestCreateTask_SameRef_UUIDShaped_RootTask_GetOrCreate(t *testing.T) {
 
 	t2 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "resend after a crash",
-		Behavior:  "dev",
 		Ref:       uuidRef,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
 		t.Fatalf("resend CreateTask with the same UUID-shaped ref: %v (want get-or-create, not error)", err)
@@ -187,9 +214,12 @@ func TestCreateTask_SameRef_DifferentProject_RootTasks_NoCollision(t *testing.T)
 
 	t1 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "workspace A's BGO-214",
-		Behavior:  "dev",
 		Ref:       "BGO-214",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
 		t.Fatalf("first CreateTask: %v", err)
@@ -197,9 +227,12 @@ func TestCreateTask_SameRef_DifferentProject_RootTasks_NoCollision(t *testing.T)
 
 	t2 := &orchestrator.Task{
 		ProjectID: "proj-2",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "workspace B's unrelated BGO-214",
-		Behavior:  "dev",
 		Ref:       "BGO-214",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
 		t.Fatalf("second CreateTask (different project, same ref): %v (must not collide)", err)
@@ -217,10 +250,13 @@ func TestCreateTask_SameRefDifferentParent_OK(t *testing.T) {
 
 	t1 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task A",
-		Behavior:  "dev",
 		Ref:       "step-1",
 		ParentID:  "parent-uuid-aaa",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
 		t.Fatalf("first CreateTask: %v", err)
@@ -228,10 +264,13 @@ func TestCreateTask_SameRefDifferentParent_OK(t *testing.T) {
 
 	t2 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task B",
-		Behavior:  "dev",
 		Ref:       "step-1",
 		ParentID:  "parent-uuid-bbb",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
 		t.Fatalf("second CreateTask (different parent): %v", err)
@@ -243,10 +282,13 @@ func TestListTasks_RefAndParentID_Persisted(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task with ref",
-		Behavior:  "dev",
 		Ref:       "my-ref",
 		ParentID:  "my-parent",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -272,10 +314,13 @@ func TestFindTaskByRef_Found(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Ref task",
-		Behavior:  "dev",
 		Ref:       "step-2",
 		ParentID:  "parent-xyz",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -313,9 +358,12 @@ func TestFindTaskByRef_UUID_LooksUpByID(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task without ref",
-		Behavior:  "dev",
 		// Ref is empty — only referenceable by UUID
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -357,8 +405,11 @@ func TestFindTaskByRef_UUID_WrongProject_ReturnsNil(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task without ref",
-		Behavior:  "dev",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -378,10 +429,13 @@ func TestFindTaskByRef_WrongParent_ReturnsNil(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Ref task",
-		Behavior:  "dev",
 		Ref:       "step-3",
 		ParentID:  "parent-correct",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("CreateTask: %v", err)

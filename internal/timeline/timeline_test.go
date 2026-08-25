@@ -217,9 +217,19 @@ func TestBuildActionLabel_Answered(t *testing.T) {
 
 func TestBuild_IncludesAnsweredAction(t *testing.T) {
 	now := time.Now()
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusTriaged, CreatedAt: now.Add(-time.Hour)}
+	// card-model-cleanup PR-2: orchestrator.TaskStatusTriaged no longer exists
+	// as a Go constant (folded into "parked" by card machine v2 before this
+	// PR), but Build reads Task.Status/Action.FromStatus/ToStatus as plain
+	// untyped strings straight off the DB row — the actions table is never
+	// rewritten by migration 0045, so a historical row can still legitimately
+	// carry the literal "triaged" string. This test is about Build's
+	// answered-action inclusion, not about status validity, so the raw
+	// string literal (rather than the removed constant) keeps its original
+	// intent — including verifying Build handles a legacy status gracefully.
+	const legacyTriagedStatus = orchestrator.TaskStatus("triaged")
+	task := &orchestrator.Task{Status: legacyTriagedStatus, CreatedAt: now.Add(-time.Hour)}
 	actions := []*orchestrator.Action{
-		{Type: "answered", FromStatus: orchestrator.TaskStatusTriaged, ToStatus: orchestrator.TaskStatusTriaged, CreatedAt: now.Add(-time.Minute), Payload: []byte(`{"answer":"reject"}`)},
+		{Type: "answered", FromStatus: legacyTriagedStatus, ToStatus: legacyTriagedStatus, CreatedAt: now.Add(-time.Minute), Payload: []byte(`{"answer":"reject"}`)},
 	}
 	groups := Build(task, actions, nil)
 
@@ -262,4 +272,3 @@ func TestBuild_StickyNotEmittedForTerminalTask(t *testing.T) {
 		}
 	}
 }
-

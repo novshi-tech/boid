@@ -28,7 +28,8 @@ func TestNotifyTask_InteractiveRunningJobSetsJobID(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "my task",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	jobs := []*Job{
 		{ID: "j1", TaskID: "t1", Status: JobStatusCompleted, Interactive: false},
@@ -55,7 +56,8 @@ func TestNotifyTask_NoInteractiveRunningJob_JobIDEmpty(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "my task",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	jobs := []*Job{
 		{ID: "j1", TaskID: "t1", Status: JobStatusCompleted, Interactive: true},
@@ -82,7 +84,8 @@ func TestNotifyTask_AskMode_TransitionsToAwaiting(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "my task",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	notifier := &capturingNotifier{}
 	workflow := &stubWorkflowService{}
@@ -118,7 +121,8 @@ func TestNotifyTask_AskMode_StopsAgentForRunningJobs(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "my task",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "executor",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "executor"},
 	}
 	jobs := []*Job{
 		{ID: "j-completed", TaskID: "t1", Status: JobStatusCompleted, RuntimeID: "rt-completed"},
@@ -163,7 +167,8 @@ func TestNotifyTask_ProgressMode_LeavesRunningJobsAlone(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "my task",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "executor",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "executor"},
 	}
 	jobs := []*Job{
 		{ID: "j-running", TaskID: "t1", Status: JobStatusRunning, Interactive: true},
@@ -190,7 +195,8 @@ func TestNotifyTask_AskMode_SetsQuestionPageURLPath(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "my task",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	notifier := &capturingNotifier{}
 	workflow := &stubWorkflowService{}
@@ -218,7 +224,8 @@ func TestNotifyTask_AskMode_GeneratesQuestionIDForURL(t *testing.T) {
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	notifier := &capturingNotifier{}
 	workflow := &stubWorkflowService{}
@@ -266,7 +273,8 @@ func TestNotifyTask_DoneMode_RecordsDoneRequestActionNotApplyAction(t *testing.T
 		ProjectID: "proj-1",
 		Title:     "my task",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "executor",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "executor"},
 	}
 	jobs := []*Job{
 		{ID: "j-running", TaskID: "t1", Status: JobStatusRunning, Interactive: true, RuntimeID: "rt-running"},
@@ -316,7 +324,8 @@ func TestNotifyTask_FailMode_RecordsFailRequestActionNotApplyAction(t *testing.T
 		ProjectID: "proj-1",
 		Title:     "my task",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "executor",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "executor"},
 	}
 	jobs := []*Job{
 		{ID: "j-running", TaskID: "t1", Status: JobStatusRunning, Interactive: true, RuntimeID: "rt-running"},
@@ -367,8 +376,10 @@ func TestNotifyTask_FailMode_RecordsFailRequestActionNotApplyAction(t *testing.T
 func TestNotifyTask_ProgressMode_OversizedMessage_RejectsAndDoesNotRecord(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "t1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
+		Exec:      &orchestrator.ExecAttrs{},
 	}
 	actions := &capturingActionStore{}
 	svc := &TaskAppService{
@@ -395,7 +406,8 @@ func TestNotifyTask_DoneMode_OversizedMessage_RejectsAndDoesNotRecord(t *testing
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "executor",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "executor"},
 	}
 	actions := &capturingActionStore{}
 	svc := &TaskAppService{
@@ -424,7 +436,8 @@ func TestNotifyTask_FailMode_OversizedMessage_RejectsAndDoesNotRecord(t *testing
 		ID:        "t1",
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "executor",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "executor"},
 	}
 	actions := &capturingActionStore{}
 	svc := &TaskAppService{
@@ -456,8 +469,10 @@ func TestNotifyTask_FailMode_OversizedMessage_RejectsAndDoesNotRecord(t *testing
 func TestNotifyTask_DoneMode_NonExecutingTask_Errors(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "t1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusAwaiting,
+		Exec:      &orchestrator.ExecAttrs{},
 	}
 	notifier := &capturingNotifier{}
 	actions := &capturingActionStore{}
@@ -487,7 +502,8 @@ func TestNotifyTask_ProgressMode_CreatesActionNoHook(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "my task",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	notifier := &capturingNotifier{}
 	actions := &capturingActionStore{}
@@ -529,7 +545,9 @@ func TestNotifyTask_ProgressMode_CreatesActionNoHook(t *testing.T) {
 func TestNotifyTask_ProgressMode_NoNotifierRequired(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:     "t1",
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{},
 	}
 	actions := &capturingActionStore{}
 	svc := &TaskAppService{
@@ -550,7 +568,9 @@ func TestNotifyTask_ProgressMode_NoNotifierRequired(t *testing.T) {
 func TestNotifyTask_ProgressAndAskMutuallyExclusive(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:     "t1",
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{},
 	}
 	svc := &TaskAppService{
 		Tasks: &stubTaskStore{task: task},
@@ -576,7 +596,8 @@ func TestNotifyTask_ChildTaskAsk_SkipsHookButTransitionsToAwaiting(t *testing.T)
 		ProjectID: "proj-1",
 		Title:     "child work",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "executor",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "executor"},
 	}
 	notifier := &capturingNotifier{}
 	workflow := &stubWorkflowService{}
@@ -604,7 +625,8 @@ func TestNotifyTask_ChildTaskFYI_SkipsHookSilently(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "child work",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "executor",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "executor"},
 	}
 	notifier := &capturingNotifier{}
 	svc := &TaskAppService{
@@ -629,7 +651,8 @@ func TestNotifyTask_ChildTaskFYI_NoNotifierIsFine(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "child work",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "executor",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "executor"},
 	}
 	svc := &TaskAppService{
 		Tasks: &stubTaskStore{task: task},
@@ -648,7 +671,8 @@ func TestNotifyTask_RootTaskFYI_NoNotifierStillErrors(t *testing.T) {
 		ProjectID: "proj-1",
 		Title:     "root work",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "supervisor",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "supervisor"},
 	}
 	svc := &TaskAppService{
 		Tasks: &stubTaskStore{task: task},
@@ -673,9 +697,10 @@ func TestNotifyTask_RootTaskFYI_NoNotifierStillErrors(t *testing.T) {
 
 func TestAnswerTask_NotAwaiting_ReturnsConflict(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "t1",
-		Status:   orchestrator.TaskStatusExecuting,
-		Behavior: "dev",
+		ID:     "t1",
+		Status: orchestrator.TaskStatusExecuting,
+		Type:   orchestrator.TaskTypeExecution,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	svc := &TaskAppService{
 		Tasks: &stubTaskStore{task: task},

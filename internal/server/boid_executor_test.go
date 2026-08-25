@@ -267,9 +267,9 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	store := &capturingTaskStore{
 		created: []*orchestrator.Task{
 			// target-1: 既存 payload に instructions と artifact.run-agent を持つ
-			{ID: "target-1", ProjectID: "proj-1", Payload: []byte(`{"instructions":{"main":{"agent":"claude-code"}},"artifact.run-agent":{"commit":"abc","branch":"boid/target"}}`)},
-			{ID: "peer-1", ProjectID: "proj-2", Payload: []byte(`{}`)},
-			{ID: "foreign-1", ProjectID: "proj-3", Payload: []byte(`{}`)},
+			{ID: "target-1", ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: []byte(`{"instructions":{"main":{"agent":"claude-code"}},"artifact.run-agent":{"commit":"abc","branch":"boid/target"}}`)}},
+			{ID: "peer-1", ProjectID: "proj-2", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: []byte(`{}`)}},
+			{ID: "foreign-1", ProjectID: "proj-3", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: []byte(`{}`)}},
 		},
 	}
 	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
@@ -300,7 +300,7 @@ func TestBoidBuiltinExecutor_TaskUpdate_EnforcesWorkspaceScope(t *testing.T) {
 	if len(store.updated) != 1 {
 		t.Fatalf("updated tasks = %d, want 1", len(store.updated))
 	}
-	got := string(store.updated[0].Payload)
+	got := string(store.updated[0].Exec.Payload)
 	// 既存の instructions は保持される
 	if !strings.Contains(got, `"instructions"`) {
 		t.Errorf("merged payload = %s, want instructions preserved", got)
@@ -409,7 +409,7 @@ func TestBoidBuiltinExecutor_TaskCreate_DropsDeprecatedBaseBranch(t *testing.T) 
 	if len(store.created) != 1 {
 		t.Fatalf("created tasks = %d, want 1", len(store.created))
 	}
-	if got := store.created[0].BaseBranch; got != "main" {
+	if got := store.created[0].Exec.BaseBranch; got != "main" {
 		t.Errorf("base_branch = %q, want main (deprecated task-row override is dropped)", got)
 	}
 }
@@ -502,7 +502,7 @@ func TestBoidBuiltinExecutor_TaskCreate_BaseBranchInheritsFromProject(t *testing
 	if resp.ExitCode != 0 {
 		t.Fatalf("create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
-	if got := store.created[0].BaseBranch; got != "main" {
+	if got := store.created[0].Exec.BaseBranch; got != "main" {
 		t.Errorf("base_branch = %q, want main (inherited from project)", got)
 	}
 }
@@ -1130,7 +1130,12 @@ func TestBoidBuiltinExecutor_TaskList_AcceptsKnownStatusesAndKeywords(t *testing
 	}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
 
-	for _, status := range []string{"", "open", "closed", "queue_next", "triage", "triaged", "pending", "dropped"} {
+	// card-model-cleanup PR-2: "triaged" is no longer a valid TaskStatus (its
+	// concept was folded into "parked" by card machine v2 before this PR) —
+	// substituted with "parked" here so this loop still exercises "any exact
+	// orchestrator.TaskStatus value is accepted" with a real, currently-valid
+	// status.
+	for _, status := range []string{"", "open", "closed", "queue_next", "triage", "parked", "pending", "dropped"} {
 		resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 			Op:        sandbox.BoidOpTaskList,
 			ProjectID: "proj-1",
@@ -1645,8 +1650,10 @@ func (w *askWorkflowStub) ApplyAction(_ context.Context, taskID string, req api.
 			switch req.Type {
 			case "ask":
 				t.Status = orchestrator.TaskStatusAwaiting
-				if merged, mErr := orchestrator.MergePayload(t.Payload, req.Payload); mErr == nil {
-					t.Payload = merged
+				if t.Exec != nil {
+					if merged, mErr := orchestrator.MergePayload(t.Exec.Payload, req.Payload); mErr == nil {
+						t.Exec.Payload = merged
+					}
 				}
 			case "abort":
 				t.Status = orchestrator.TaskStatusAborted
@@ -1711,7 +1718,7 @@ func waitForExecCond(t *testing.T, cond func() bool) {
 // executing, and the ask RPC returns the answer on stdout.
 func TestBoidBuiltinExecutor_TaskAsk_BlockingRoundTrip(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Payload: []byte(`{}`)},
+		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: []byte(`{}`)}},
 	}}
 	reg := api.NewBlockingAskRegistry()
 	wf := &askWorkflowStub{store: store}
@@ -1769,7 +1776,7 @@ func TestBoidBuiltinExecutor_TaskAsk_BlockingRoundTrip(t *testing.T) {
 // immediately with "another question is pending".
 func TestBoidBuiltinExecutor_TaskAsk_SecondPendingFails(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Payload: []byte(`{}`)},
+		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: []byte(`{}`)}},
 	}}
 	reg := api.NewBlockingAskRegistry()
 	wf := &askWorkflowStub{store: nil} // keep the store executing so we reach Register
@@ -1803,7 +1810,7 @@ func TestBoidBuiltinExecutor_TaskAsk_SecondPendingFails(t *testing.T) {
 // never fires during the test) reclaims it only if no agent ever returns.
 func TestBoidBuiltinExecutor_TaskAsk_ContextCancelKeepsAwaiting(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Payload: []byte(`{}`)},
+		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: []byte(`{}`)}},
 	}}
 	reg := api.NewBlockingAskRegistry()
 	wf := &askWorkflowStub{store: store}

@@ -47,7 +47,8 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 		ID:        "task-1",
 		ProjectID: "proj-1",
 		Title:     "attach",
-		Behavior:  "dev",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -151,7 +152,8 @@ func TestServerJobRuntimeResizeUnknownRuntimeConflict(t *testing.T) {
 		ID:        "task-1",
 		ProjectID: "proj-1",
 		Title:     "resize-conflict",
-		Behavior:  "dev",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}

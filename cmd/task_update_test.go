@@ -165,9 +165,12 @@ func TestRunTaskUpdate_UpdatesInstructionsFromFile(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
 		t.Fatalf("get updated task: %v", err)
 	}
-	got := updated.Instructions.Active()
+	if updated.Exec == nil {
+		t.Fatal("updated.Exec is nil, want an execution task")
+	}
+	got := updated.Exec.Instructions.Active()
 	if got == nil {
-		t.Fatalf("instructions not set; got: %#v", updated.Instructions)
+		t.Fatalf("instructions not set; got: %#v", updated.Exec.Instructions)
 	}
 	if got.Model != "opus-4-7" {
 		t.Errorf("instructions.model = %q, want opus-4-7", got.Model)
@@ -212,8 +215,8 @@ func TestRunTaskUpdate_InstructionsFromStdin(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
 		t.Fatalf("get updated task: %v", err)
 	}
-	if len(updated.Instructions) == 0 {
-		t.Fatalf("instructions not set; got: %#v", updated.Instructions)
+	if updated.Exec == nil || len(updated.Exec.Instructions) == 0 {
+		t.Fatalf("instructions not set; got: %#v", updated.Exec)
 	}
 }
 
@@ -282,7 +285,10 @@ func TestRunTaskUpdate_PatchFileDropsDeprecatedTaskRowOverrides(t *testing.T) {
 	}, &task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	beforeBase := task.BaseBranch
+	if task.Exec == nil {
+		t.Fatal("task.Exec is nil, want an execution task")
+	}
+	beforeBase := task.Exec.BaseBranch
 
 	patchPath := writePatch(t, `worktree: false
 base_branch: develop
@@ -307,8 +313,11 @@ readonly: true
 	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
 		t.Fatalf("get updated task: %v", err)
 	}
-	if updated.BaseBranch != beforeBase {
-		t.Errorf("BaseBranch changed: before=%q after=%q (deprecated key must be dropped)", beforeBase, updated.BaseBranch)
+	if updated.Exec == nil {
+		t.Fatal("updated.Exec is nil, want an execution task")
+	}
+	if updated.Exec.BaseBranch != beforeBase {
+		t.Errorf("BaseBranch changed: before=%q after=%q (deprecated key must be dropped)", beforeBase, updated.Exec.BaseBranch)
 	}
 }
 

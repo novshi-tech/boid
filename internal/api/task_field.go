@@ -46,6 +46,28 @@ func ResolveTaskField(task *orchestrator.Task, actions orchestrator.LifecycleSto
 		return "", fmt.Errorf("unmarshal task: %w", err)
 	}
 
+	// card-model-cleanup PR-2 moved every execution-only field (behavior/
+	// traits/readonly/branch_prefix/base_branch/payload/instructions/
+	// auto_start) off Task's own top level into task.Exec (design doc §3.2),
+	// so the marshaled JSON above nests them under "exec.*" instead of
+	// top-level keys. Hoist them back into synthetic top-level entries so
+	// BOTH call patterns `--field behavior` (a bare top-level field name
+	// existing scripts/callers may already use) and the payload
+	// auto-prefix / explicit "payload." resolution (this function's own
+	// documented reason for existing) keep resolving exactly as they did
+	// before the split. A card (task.Exec == nil) simply gets none of these
+	// synthetic keys — same as it would if it explicitly had no such field.
+	if task.Exec != nil {
+		if execRaw, err := json.Marshal(task.Exec); err == nil {
+			var execTop map[string]any
+			if err := json.Unmarshal(execRaw, &execTop); err == nil {
+				for k, v := range execTop {
+					top[k] = v
+				}
+			}
+		}
+	}
+
 	segments := strings.Split(path, ".")
 
 	// Auto-prefix `payload.` when the first segment is not a top-level field.

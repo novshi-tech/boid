@@ -14,9 +14,10 @@ func TestBuildCloneDeclaration_NilTask_ReturnsNil(t *testing.T) {
 
 func TestBuildCloneDeclaration_RootTask_ChecksOutBaseBranch(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:         "abcd1234-0000-0000-0000-000000000000",
-		BaseBranch: "main",
-		ParentID:   "",
+		ID:       "abcd1234-0000-0000-0000-000000000000",
+		Type:     orchestrator.TaskTypeExecution,
+		ParentID: "",
+		Exec:     &orchestrator.ExecAttrs{BaseBranch: "main"},
 	}
 	got := orchestrator.BuildCloneDeclaration(task, "")
 	want := &orchestrator.CloneDeclaration{
@@ -37,9 +38,10 @@ func TestBuildCloneDeclaration_RootTask_ChecksOutBaseBranch(t *testing.T) {
 // per-task branch/fork point; Phase 2 removed Task.Worktree entirely).
 func TestBuildCloneDeclaration_ChildTask_ChecksOutBaseBranch(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:         "childtask-0000-0000-0000-000000000000",
-		BaseBranch: "feature/BGO-170",
-		ParentID:   "parent-task-id",
+		ID:       "childtask-0000-0000-0000-000000000000",
+		Type:     orchestrator.TaskTypeExecution,
+		ParentID: "parent-task-id",
+		Exec:     &orchestrator.ExecAttrs{BaseBranch: "feature/BGO-170"},
 	}
 	got := orchestrator.BuildCloneDeclaration(task, "")
 	want := &orchestrator.CloneDeclaration{
@@ -57,8 +59,9 @@ func TestBuildCloneDeclaration_ChildTask_ChecksOutBaseBranch(t *testing.T) {
 // to the retired per-task fork point) still flows through unchanged.
 func TestBuildCloneDeclaration_PropagatesBaseBranchForkPoint(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:         "roottask-0000-0000-0000-000000000000",
-		BaseBranch: "release/1.0",
+		ID:   "roottask-0000-0000-0000-000000000000",
+		Type: orchestrator.TaskTypeExecution,
+		Exec: &orchestrator.ExecAttrs{BaseBranch: "release/1.0"},
 	}
 	got := orchestrator.BuildCloneDeclaration(task, "main")
 	if got.BaseBranchForkPoint != "main" {

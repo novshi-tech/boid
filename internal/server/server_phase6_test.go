@@ -171,12 +171,15 @@ func TestServer_Smoke_StartDispatchJobDoneAndAutoAdvance(t *testing.T) {
 	finalTask := waitForTaskStatus(t, ts, task.ID, orchestrator.TaskStatusDone)
 
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(finalTask.Payload, &payload); err != nil {
+	if finalTask.Exec == nil {
+		t.Fatalf("final task has no Exec attrs: %+v", finalTask)
+	}
+	if err := json.Unmarshal(finalTask.Exec.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal final payload: %v", err)
 	}
 	artifact, ok := payload["artifact"]
 	if !ok || string(artifact) == "null" {
-		t.Fatalf("final payload missing artifact: %s", finalTask.Payload)
+		t.Fatalf("final payload missing artifact: %s", finalTask.Exec.Payload)
 	}
 }
 

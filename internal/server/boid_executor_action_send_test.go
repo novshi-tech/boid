@@ -31,7 +31,11 @@ import (
 // silently regained the ability to push done/go/drop through the gateway.
 func TestBoidBuiltinExecutor_ActionSend_StampsActorTask(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "t1", ProjectID: "proj-1", Status: orchestrator.TaskStatusDone},
+		// "done" is shared between Card and Execution — default to Execution
+		// here per the card-model-cleanup PR-2 spec's disambiguation rule
+		// (this fixture references none of the 8 execution-only fields and its
+		// status is not one of the Card-only parked/working/dropped values).
+		{ID: "t1", ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{}},
 	}}
 	workflow := &recordingWorkflow{}
 	exec := &boidBuiltinExecutor{
@@ -62,7 +66,7 @@ func TestBoidBuiltinExecutor_ActionSend_StampsActorTask(t *testing.T) {
 // workspace scope.
 func TestBoidBuiltinExecutor_ActionSend_ChildSpecced_RejectsProjectOutsideWorkspace(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "card-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusWorking},
+		{ID: "card-1", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}},
 	}}
 	workflow := &recordingWorkflow{}
 	exec := &boidBuiltinExecutor{
@@ -92,7 +96,7 @@ func TestBoidBuiltinExecutor_ActionSend_ChildSpecced_RejectsProjectOutsideWorksp
 // confirms the happy path is not broken by the new guard.
 func TestBoidBuiltinExecutor_ActionSend_ChildSpecced_AllowsProjectWithinWorkspace(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "card-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusWorking},
+		{ID: "card-1", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}},
 	}}
 	workflow := &recordingWorkflow{}
 	exec := &boidBuiltinExecutor{

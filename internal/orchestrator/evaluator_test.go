@@ -12,15 +12,18 @@ func TestEvaluate_MatchingHookFires(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
-		Instructions: orchestrator.Instructions{
-			{Agent: "claude-code", Message:"do stuff"},
+		Exec: &orchestrator.ExecAttrs{
+			Instructions: orchestrator.Instructions{
+				{Agent: "claude-code", Message: "do stuff"},
+			},
 		},
 	}
 	hooks := []projectspec.Hook{
 		{
-			ID:       "run-agent",
-			Kind:     projectspec.HandlerKindAgent,
+			ID:    "run-agent",
+			Kind:  projectspec.HandlerKindAgent,
 			Agent: "claude-code",
 		},
 	}
@@ -38,8 +41,9 @@ func TestEvaluate_NonMatchingStatus(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusPending,
-		Payload: json.RawMessage(`{}`),
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusPending,
+		Exec:   &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	hooks := []projectspec.Hook{
 		{
@@ -59,8 +63,9 @@ func TestEvaluate_MissingTrait(t *testing.T) {
 
 	// artifact trait を require する hook は、payload に artifact が無いと fire しない
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{}`),
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	hooks := []projectspec.Hook{
 		{
@@ -81,8 +86,9 @@ func TestEvaluate_NoRequiredTraits(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{}`),
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	hooks := []projectspec.Hook{
 		{
@@ -100,15 +106,18 @@ func TestEvaluate_InstructionsRouting_AgentMatch(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
-		Instructions: orchestrator.Instructions{
-			{Agent: "claude-code", Message:"do something"},
+		Exec: &orchestrator.ExecAttrs{
+			Instructions: orchestrator.Instructions{
+				{Agent: "claude-code", Message: "do something"},
+			},
 		},
 	}
 	hooks := []projectspec.Hook{
 		{
-			ID:       "run-claude",
-			Kind:     projectspec.HandlerKindAgent,
+			ID:    "run-claude",
+			Kind:  projectspec.HandlerKindAgent,
 			Agent: "claude-code",
 		},
 	}
@@ -126,15 +135,18 @@ func TestEvaluate_InstructionsRouting_AgentMismatch(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
-		Instructions: orchestrator.Instructions{
-			{Agent: "claude-code", Message:"do something"},
+		Exec: &orchestrator.ExecAttrs{
+			Instructions: orchestrator.Instructions{
+				{Agent: "claude-code", Message: "do something"},
+			},
 		},
 	}
 	hooks := []projectspec.Hook{
 		{
-			ID:       "run-codex",
-			Kind:     projectspec.HandlerKindAgent,
+			ID:    "run-codex",
+			Kind:  projectspec.HandlerKindAgent,
 			Agent: "codex",
 		},
 	}
@@ -149,8 +161,9 @@ func TestEvaluate_NonInstructionsHook_NotFiltered(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"artifact":"http://example.com"}`),
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Payload: json.RawMessage(`{"artifact":"http://example.com"}`)},
 	}
 	hooks := []projectspec.Hook{
 		{
@@ -175,10 +188,13 @@ func TestEvaluate_OptionalTrait_FiresWhenAbsent(t *testing.T) {
 
 	// executing: verification not in payload yet — hook should still fire
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{}`),
-		Instructions: orchestrator.Instructions{
-			{Agent: "claude-code", Message:"impl"},
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec: &orchestrator.ExecAttrs{
+			Payload: json.RawMessage(`{}`),
+			Instructions: orchestrator.Instructions{
+				{Agent: "claude-code", Message: "impl"},
+			},
 		},
 	}
 	hooks := []projectspec.Hook{
@@ -206,9 +222,12 @@ func TestEvaluate_SynthesizesAgentHook_WhenBehaviorHasNone(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
-		Instructions: orchestrator.Instructions{
-			{Agent: "claude-code", Message: "go"},
+		Exec: &orchestrator.ExecAttrs{
+			Instructions: orchestrator.Instructions{
+				{Agent: "claude-code", Message: "go"},
+			},
 		},
 	}
 
@@ -236,9 +255,12 @@ func TestEvaluate_DoesNotSynthesize_ForUnknownAgent(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
-		Instructions: orchestrator.Instructions{
-			{Agent: "some-future-agent", Message: "go"},
+		Exec: &orchestrator.ExecAttrs{
+			Instructions: orchestrator.Instructions{
+				{Agent: "some-future-agent", Message: "go"},
+			},
 		},
 	}
 
@@ -257,9 +279,12 @@ func TestEvaluate_DoesNotSynthesize_WhenAgentHookDeclared(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
-		Instructions: orchestrator.Instructions{
-			{Agent: "claude-code", Message: "go"},
+		Exec: &orchestrator.ExecAttrs{
+			Instructions: orchestrator.Instructions{
+				{Agent: "claude-code", Message: "go"},
+			},
 		},
 	}
 	hooks := []projectspec.Hook{
@@ -284,10 +309,13 @@ func TestEvaluate_Synthesizes_AlongsideNonAgentHook(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"artifact":"http://example.com"}`),
-		Instructions: orchestrator.Instructions{
-			{Agent: "claude-code", Message: "go"},
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec: &orchestrator.ExecAttrs{
+			Payload: json.RawMessage(`{"artifact":"http://example.com"}`),
+			Instructions: orchestrator.Instructions{
+				{Agent: "claude-code", Message: "go"},
+			},
 		},
 	}
 	hooks := []projectspec.Hook{
@@ -325,7 +353,9 @@ func TestEvaluate_DoesNotSynthesize_WhenInstructionsEmpty(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{},
 	}
 
 	matched := eval.Evaluate(task, nil)
@@ -338,8 +368,9 @@ func TestEvaluate_KitIDPreservedInMatchedHook(t *testing.T) {
 	eval := &orchestrator.Evaluator{}
 
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{}`),
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	hooks := []projectspec.Hook{
 		{
@@ -356,4 +387,3 @@ func TestEvaluate_KitIDPreservedInMatchedHook(t *testing.T) {
 		t.Fatalf("Kit = %q, want %q", matched[0].Kit, "go-dev")
 	}
 }
-

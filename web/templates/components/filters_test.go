@@ -114,23 +114,42 @@ func TestParkedTab_StatusString_MatchesStorePredicateAndFiltersCorrectly(t *test
 		t.Fatalf("create project: %v", err)
 	}
 
-	// Includes captured/dropped specifically (Opus review finding,
-	// 2026-08-18): a future dedicated "parked" branch written as a
-	// superset — e.g. copying queue's pre-execution set (captured/
-	// triaged/parked/ready) instead of an exact-status match — would pass
-	// this test undetected without them in the fixture.
+	// card-model-cleanup PR-2 (design doc §3.3): captured/triaged/ready no
+	// longer exist as statuses at all — migration 0045's CHECK constraint
+	// rejects them at the DB level, so the exact superset scenario the
+	// original Opus review flagged (2026-08-18 — a future dedicated "parked"
+	// branch written to match queue's old pre-execution status set instead
+	// of an exact match) is now structurally impossible, not merely
+	// untested. This still exercises the same exact-match guard across every
+	// status that CAN exist today — both Card statuses (parked/working/done/
+	// dropped) and Execution statuses (pending/executing/awaiting/done/
+	// aborted) — so a future superset bug (e.g. a "parked" branch that also
+	// matches "working") would still be caught.
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusParked,
-		orchestrator.TaskStatusCaptured,
-		orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusReady,
 		orchestrator.TaskStatusWorking,
 		orchestrator.TaskStatusDone,
 		orchestrator.TaskStatusDropped,
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusAwaiting,
+		orchestrator.TaskStatusAborted,
 	}
 	ids := map[orchestrator.TaskStatus]string{}
 	for _, s := range statuses {
-		task := &orchestrator.Task{ProjectID: "proj-1", Title: "task-" + string(s), Behavior: "dev", Status: s}
+		task := &orchestrator.Task{ProjectID: "proj-1", Title: "task-" + string(s), Status: s}
+		switch s {
+		case orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking, orchestrator.TaskStatusDropped:
+			// Card-only statuses (migration 0045's CHECK constraint).
+			task.Type = orchestrator.TaskTypeCard
+			task.Card = &orchestrator.CardAttrs{}
+		default:
+			// "done" is shared by both types (design doc §3.3); either type
+			// exercises this test's exact-match assertion equally, so pick
+			// Execution here alongside the genuinely Execution-only statuses.
+			task.Type = orchestrator.TaskTypeExecution
+			task.Exec = &orchestrator.ExecAttrs{Behavior: "dev"}
+		}
 		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 			t.Fatalf("create %s: %v", s, err)
 		}

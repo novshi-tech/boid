@@ -126,14 +126,17 @@ func TestResolveOrCapture_UnregisteredIdentity_CreatesCapturedTaskAndLinks(t *te
 		t.Errorf("ResolveIdentity returned task %q, want %q", resolved.ID, result.TaskID)
 	}
 
-	// task_triage sidecar was seeded (needed for the captured task to show
-	// up as a triage task / on the Web UI list, not just a bare task row).
+	// The card's CardAttrs columns are readable via GetTaskTriage from the
+	// moment CreateTask makes it type='card' — card-model-cleanup PR-2
+	// (design doc §3.6) retired the separate "seed the sidecar after the
+	// fact" step this comment used to describe: there is no sidecar table
+	// left, GetTaskTriage now just reads the same tasks row back.
 	tt, err := orchestrator.GetTaskTriage(svc.Tx.(realTransactor).conn, result.TaskID)
 	if err != nil {
-		t.Fatalf("GetTaskTriage: %v (task_triage row was not seeded)", err)
+		t.Fatalf("GetTaskTriage: %v (card row is not readable as a card)", err)
 	}
 	if tt.TaskID != result.TaskID {
-		t.Errorf("task_triage.TaskID = %q, want %q", tt.TaskID, result.TaskID)
+		t.Errorf("CardAttrs.TaskID = %q, want %q", tt.TaskID, result.TaskID)
 	}
 }
 
@@ -225,54 +228,39 @@ func TestResolveOrCapture_DescriptionOverLimit_RejectsAndCreatesNothing(t *testi
 	}
 }
 
-// TestResolveOrCapture_BaseBranchTemplate_StoredLiteralUnexpanded pins the
-// ResolveOrCapture doc comment's explicit claim (task_resolve_or_capture.go):
-// a templated meta.BaseBranch is stored on a freshly captured task VERBATIM,
-// with neither ExpandTaskBaseBranch (${TASK_REMOTE_ID}) nor ExpandBaseBranch
-// (${current_branch}) applied — unlike TaskAppService.CreateTask, which would
-// 400 on this exact template (task_create.go: ExpandTaskBaseBranch fails when
-// a template references ${TASK_REMOTE_ID} but remoteID is empty, and a
-// ResolveOrCapture request never carries a RemoteID at all). This is safe
-// only because a captured task can never reach executing directly
-// (machine.go), so nothing ever consumes this literal value — see the doc
-// comment for the full argument.
-func TestResolveOrCapture_BaseBranchTemplate_StoredLiteralUnexpanded(t *testing.T) {
-	d, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { d.Close() })
-	if err := migrate.Apply(d.Conn); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	const template = "feature/${TASK_REMOTE_ID}"
-	svc := &TaskWorkflowService{
-		Tx: realTransactor{conn: d.Conn},
-		Meta: stubMetaStore{meta: &orchestrator.ProjectMeta{
-			DefaultTaskBehavior: "triage",
-			TaskBehaviors:       map[string]orchestrator.TaskBehavior{"triage": {}},
-			BaseBranch:          template,
-		}},
-	}
+// TestResolveOrCapture_CapturedCard_HasNoExecAttrs replaces the pre-PR-2
+// TestResolveOrCapture_BaseBranchTemplate_StoredLiteralUnexpanded (card-model-
+// cleanup PR-2, design doc §3.7): that test pinned a templated meta.BaseBranch
+// being stored VERBATIM (unexpanded) on a freshly captured task, because the
+// old ResolveOrCapture called ResolveBehavior and squirreled away a
+// behavior/traits/readonly/branch_prefix/base_branch/payload/instructions set
+// nothing downstream ever consumed (the "base_branch 未展開テンプレ地雷", design
+// doc §7). PR-2 removes the call to ResolveBehavior entirely — a card has no
+// ExecAttrs to put any of that into — so the landmine is now structurally
+// impossible rather than merely unused. This test pins that directly: a
+// freshly captured task's Exec is nil and its Card is set, full stop,
+// regardless of what a project's meta.BaseBranch happens to contain.
+func TestResolveOrCapture_CapturedCard_HasNoExecAttrs(t *testing.T) {
+	svc := newResolveOrCaptureTestService(t)
 
 	result, err := svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
 		ProjectID: "proj-1", Identity: "jira:TMPL-1", Title: "t",
 	})
-	// The point of this test: no RemoteID is available, yet this must NOT
-	// error the way CreateTask's ExpandTaskBaseBranch would — the template is
-	// left untouched instead.
 	if err != nil {
-		t.Fatalf("ResolveOrCapture() error = %v, want success (template stays unexpanded, not an error)", err)
+		t.Fatalf("ResolveOrCapture() error = %v", err)
 	}
-	task, err := orchestrator.GetTask(d.Conn, result.TaskID)
+	task, err := orchestrator.GetTask(svc.Tx.(realTransactor).conn, result.TaskID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if task.BaseBranch != template {
-		t.Errorf("task.BaseBranch = %q, want the literal unexpanded template %q", task.BaseBranch, template)
+	if task.Type != orchestrator.TaskTypeCard {
+		t.Errorf("Type = %q, want %q", task.Type, orchestrator.TaskTypeCard)
+	}
+	if task.Exec != nil {
+		t.Errorf("Exec = %+v, want nil — a card structurally has no ExecAttrs (no behavior/base_branch/payload/... to leave dangling)", task.Exec)
+	}
+	if task.Card == nil {
+		t.Fatal("Card is nil, want a non-nil CardAttrs")
 	}
 }
 
@@ -290,7 +278,6 @@ type mockROCTxStore struct {
 	linkIdentityErr     error
 
 	createTaskCalls []*orchestrator.Task
-	seedCalls       []string
 	linkCalls       int
 }
 
@@ -306,11 +293,6 @@ func (m *mockROCTxStore) CreateTask(task *orchestrator.Task) error {
 		task.ID = "mock-created-task"
 	}
 	m.createTaskCalls = append(m.createTaskCalls, task)
-	return nil
-}
-
-func (m *mockROCTxStore) SeedTaskTriage(taskID string) error {
-	m.seedCalls = append(m.seedCalls, taskID)
 	return nil
 }
 
@@ -370,7 +352,10 @@ func TestResolveOrCapture_ConflictingIdentity_PropagatesErrIdentityConflict(t *t
 }
 
 func TestResolveOrCapture_AlreadyResolved_DoesNotAttemptCreate(t *testing.T) {
-	existing := &orchestrator.Task{ID: "existing-task", ProjectID: "proj-1", Status: orchestrator.TaskStatusTriaged}
+	// card-model-cleanup PR-2: TaskStatusTriaged no longer exists (design doc
+	// §3.3, migration 0045) — card machine v2 already folded it into parked
+	// before this PR; parked is the substitute "not-yet-triaged card" status.
+	existing := &orchestrator.Task{ID: "existing-task", Type: orchestrator.TaskTypeCard, ProjectID: "proj-1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	store := &mockROCTxStore{resolveIdentityTask: existing}
 	tx := &countingTransactor{store: store}
 	svc := &TaskWorkflowService{Tx: tx}
@@ -399,8 +384,8 @@ func TestResolveOrCapture_AlreadyResolved_DoesNotAttemptCreate(t *testing.T) {
 
 // failingLinkIdentityTxStore wraps the SAME real orchestrator.TaskRepository
 // (real sqlite tx) realTaskRepoTxStore does, and only overrides LinkIdentity
-// to force a failure. CreateTask / SeedTaskTriage / ResolveIdentity all run
-// for real against sqlite — unlike mockROCTxStore above (used only for the
+// to force a failure. CreateTask / ResolveIdentity all run for real against
+// sqlite — unlike mockROCTxStore above (used only for the
 // conflict-propagation test), this exercises the ACTUAL rollback rather than
 // just proving WithinTx was called exactly once.
 type failingLinkIdentityTxStore struct {
@@ -424,17 +409,20 @@ func (t failingLinkIdentityTransactor) WithinTx(fn func(TxStore) error) error {
 // 境界)" against a REAL sqlite transaction, not just the structural
 // WithinTx-call-count proof TestResolveOrCapture_
 // ConflictingIdentity_PropagatesErrIdentityConflict gives (that test uses a
-// mock TxStore whose CreateTask/SeedTaskTriage are simple stubs with no
-// rollback semantics of their own — it proves ONE WithinTx call happened,
-// not that a real commit never landed).
+// mock TxStore whose CreateTask is a simple stub with no rollback semantics
+// of its own — it proves ONE WithinTx call happened, not that a real commit
+// never landed).
 //
 // What this catches that the mock-based test can't: a regression where
 // db.InTxDB's rollback-on-error path silently breaks (e.g. a future change
 // that swallows fn's error before returning it, or calls tx.Commit()
 // unconditionally) would make the mock-based test still pass (WithinTx is
 // still called once, LinkIdentity is still called once) while this test
-// fails, because it would find the orphan task/task_triage rows actually
-// committed to disk.
+// fails, because it would find the orphan task row actually committed to
+// disk. card-model-cleanup PR-2 (migration 0045) folded the old task_triage
+// sidecar table into tasks itself and dropped the table outright, so a
+// card's kind/urgency/.../detail columns rolling back is no longer a
+// separate check from the tasks row rolling back — one COUNT(*) covers both.
 func TestResolveOrCapture_LinkIdentityFailure_RollsBackCreateAndSeed(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {
@@ -463,21 +451,15 @@ func TestResolveOrCapture_LinkIdentityFailure_RollsBackCreateAndSeed(t *testing.
 		t.Fatal("ResolveOrCapture() error = nil, want the forced LinkIdentity failure to propagate")
 	}
 
-	var taskCount, triageCount, identityCount int
+	var taskCount, identityCount int
 	if err := d.Conn.QueryRow("SELECT COUNT(*) FROM tasks").Scan(&taskCount); err != nil {
 		t.Fatalf("count tasks: %v", err)
-	}
-	if err := d.Conn.QueryRow("SELECT COUNT(*) FROM task_triage").Scan(&triageCount); err != nil {
-		t.Fatalf("count task_triage: %v", err)
 	}
 	if err := d.Conn.QueryRow("SELECT COUNT(*) FROM task_identities").Scan(&identityCount); err != nil {
 		t.Fatalf("count task_identities: %v", err)
 	}
 	if taskCount != 0 {
-		t.Errorf("tasks rows = %d, want 0 (CreateTask must have been rolled back with LinkIdentity's failure)", taskCount)
-	}
-	if triageCount != 0 {
-		t.Errorf("task_triage rows = %d, want 0 (SeedTaskTriage must have been rolled back too)", triageCount)
+		t.Errorf("tasks rows = %d, want 0 (CreateTask — including the card's own kind/urgency/wake_at/.../detail columns, folded into this same row by migration 0045 — must have been rolled back with LinkIdentity's failure)", taskCount)
 	}
 	if identityCount != 0 {
 		t.Errorf("task_identities rows = %d, want 0 (the forced-failing LinkIdentity itself must not have left a row)", identityCount)

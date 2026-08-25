@@ -34,7 +34,7 @@ func TestCreateTask_ExplicitReadonlyTrue_OverridesExecutorDefault(t *testing.T) 
 	if store.createdTask == nil {
 		t.Fatal("no task was created")
 	}
-	if !store.createdTask.Readonly {
+	if !store.createdTask.Exec.Readonly {
 		t.Errorf("Readonly = false, want true (explicit override must win over executor default)")
 	}
 }
@@ -67,7 +67,7 @@ func TestCreateTask_ExplicitReadonlyFalse_OverridesSupervisorDefault(t *testing.
 	if store.createdTask == nil {
 		t.Fatal("no task was created")
 	}
-	if store.createdTask.Readonly {
+	if store.createdTask.Exec.Readonly {
 		t.Errorf("Readonly = true, want false (explicit override must win over supervisor default)")
 	}
 }
@@ -97,7 +97,7 @@ func TestCreateTask_ReadonlyNil_UsesExecutorDefault(t *testing.T) {
 	if store.createdTask == nil {
 		t.Fatal("no task was created")
 	}
-	if store.createdTask.Readonly {
+	if store.createdTask.Exec.Readonly {
 		t.Errorf("Readonly = true, want false (executor default must be preserved when Readonly is nil)")
 	}
 }
@@ -127,7 +127,7 @@ func TestCreateTask_ReadonlyNil_UsesSupervisorDefault(t *testing.T) {
 	if store.createdTask == nil {
 		t.Fatal("no task was created")
 	}
-	if !store.createdTask.Readonly {
+	if !store.createdTask.Exec.Readonly {
 		t.Errorf("Readonly = false, want true (supervisor default must be preserved when Readonly is nil)")
 	}
 }

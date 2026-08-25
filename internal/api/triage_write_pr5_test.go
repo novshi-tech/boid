@@ -23,7 +23,7 @@ import (
 // via attrs_set lands in the queue predicate's column, not only in the opaque
 // blob.
 func TestApplyAction_AttrsSet_PromotesUrgencyToColumn(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -76,7 +76,7 @@ func TestApplyAction_AttrsSet_RejectsUnknownUrgency(t *testing.T) {
 		`{"urgency":123}`,
 		`{"kind":"epic"}`,
 	} {
-		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+		task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 		txStore := &recordingTxStore{task: task}
 		svc := newTriageWorkflowService(task, txStore)
 
@@ -105,7 +105,7 @@ func TestApplyAction_AttrsSet_RejectsUnknownUrgency(t *testing.T) {
 // expressible — otherwise urgency would be a one-way ratchet at the daemon
 // level, which is policy the daemon deliberately does not own).
 func TestApplyAction_AttrsSet_UrgencyNullClears(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Urgency: "now"},
 	}}
@@ -137,7 +137,7 @@ func TestApplyAction_AttrsSet_UrgencyNullClears(t *testing.T) {
 // still reads orchestrator.DetailSuggestion off the blob; the column exists
 // purely for the SQL predicate, see applyAttrsSetSideEffect's doc comment).
 func TestApplyAction_AttrsSet_PromotesSuggestionVerbToColumn(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -170,7 +170,7 @@ func TestApplyAction_AttrsSet_PromotesSuggestionVerbToColumn(t *testing.T) {
 // TestValidateSuggestionAttr_UnknownVerbRejected — this pins the same
 // rejection through the full ApplyAction/attrs_set entry point).
 func TestApplyAction_AttrsSet_RejectsUnknownSuggestionVerb(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -195,7 +195,7 @@ func TestApplyAction_AttrsSet_RejectsUnknownSuggestionVerb(t *testing.T) {
 // suggestion_verb the same way it already clears the blob's suggestion key
 // (validateSuggestionAttr's own null-clears convention).
 func TestApplyAction_AttrsSet_SuggestionNullClearsColumn(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", SuggestionVerb: "go", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go"}}}`)},
 	}}
@@ -214,14 +214,22 @@ func TestApplyAction_AttrsSet_SuggestionNullClearsColumn(t *testing.T) {
 
 // TestCreateTask_PreExecutionSeedsTriageRow pins the invariant PR-5a's list
 // predicate rests on: a task created directly into a pre-execution status IS a
-// triage task and gets its sidecar row at birth. Without this, khi's freshly
-// ingested cards would be invisible to ListCards until their first attrs_set
-// happened to land. v2 (docs/plans/suggestion-as-state-transition-impl.md §3.5)
-// folds captured/triaged into a single "parked" initial_status value.
+// card. Without this, khi's freshly ingested cards would be invisible to
+// ListCards until their first attrs_set happened to land. v2
+// (docs/plans/suggestion-as-state-transition-impl.md §3.5) folds captured/
+// triaged into a single "parked" initial_status value.
+//
+// card-model-cleanup PR-2 (design doc §3.6) replaced the old observable this
+// test used to check — a separate TaskTriage store recording a
+// SeedTaskTriage call after the fact — with a structural one:
+// createCardTask builds the returned task itself as Type=TaskTypeCard,
+// Card=&CardAttrs{} in the SAME CreateTask call, so there is no longer a
+// separate sidecar write to spy on via a second store. svc.TaskTriage is
+// never touched by CreateTask at all now (any status), so asserting against
+// it here would be vacuously true regardless of whether the real invariant
+// holds — this asserts on the returned task directly instead.
 func TestCreateTask_PreExecutionSeedsTriageRow(t *testing.T) {
-	triage := &stubTriageStore{}
 	svc := newInitialStatusTestService()
-	svc.TaskTriage = triage
 
 	task, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID:     "proj-1",
@@ -232,25 +240,32 @@ func TestCreateTask_PreExecutionSeedsTriageRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if triage.rows[task.ID] == nil {
-		t.Fatalf("no task_triage row seeded for a parked task (rows=%v)", triage.rows)
+	if task.Type != orchestrator.TaskTypeCard {
+		t.Fatalf("Type = %q, want %q (a parked task must be a card)", task.Type, orchestrator.TaskTypeCard)
+	}
+	if task.Card == nil {
+		t.Fatal("Card is nil, want a non-nil CardAttrs for a parked task")
 	}
 }
 
 // TestCreateTask_OrdinaryTaskSeedsNoTriageRow is the other half of the
-// invariant: an ordinary (pending) task must NOT get a sidecar row, or the
-// "has a row = is a triage task" discriminator collapses and every ingest /
-// sweep executor task would show up in the queue listing.
+// invariant: an ordinary (pending) task must NOT become a card, or the
+// "type='card' = is a triage task" discriminator collapses and every ingest /
+// sweep executor task would show up in the queue listing. See
+// TestCreateTask_PreExecutionSeedsTriageRow's doc comment above for why this
+// now asserts on the returned task's Type/Card directly rather than a
+// separate TaskTriage store.
 func TestCreateTask_OrdinaryTaskSeedsNoTriageRow(t *testing.T) {
-	triage := &stubTriageStore{}
 	svc := newInitialStatusTestService()
-	svc.TaskTriage = triage
 
 	task, err := svc.CreateTask(CreateTaskRequest{ProjectID: "proj-1", Title: "ingest", Behavior: "triage"})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if triage.rows[task.ID] != nil {
-		t.Fatalf("ordinary pending task got a task_triage row: %+v", triage.rows[task.ID])
+	if task.Type != orchestrator.TaskTypeExecution {
+		t.Fatalf("Type = %q, want %q (an ordinary pending task must not be a card)", task.Type, orchestrator.TaskTypeExecution)
+	}
+	if task.Card != nil {
+		t.Fatalf("ordinary pending task has a non-nil Card: %+v", task.Card)
 	}
 }

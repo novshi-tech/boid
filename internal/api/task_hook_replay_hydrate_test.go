@@ -34,21 +34,29 @@ type metaRecordingCoordinator struct {
 }
 
 func (c *metaRecordingCoordinator) DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
-	return &orchestrator.DispatchResult{FinalPayload: task.Payload}, nil
+	var payload json.RawMessage
+	if task.Exec != nil {
+		payload = task.Exec.Payload
+	}
+	return &orchestrator.DispatchResult{FinalPayload: payload}, nil
 }
 
 func (c *metaRecordingCoordinator) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
 	c.lastReplayMeta = meta
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+	var payload json.RawMessage
+	if task.Exec != nil {
+		payload = task.Exec.Payload
+	}
+	return &orchestrator.ReplayResult{FinalPayload: payload}, nil
 }
 
 func TestTaskWorkflowService_ReplayHook_UsesWorkspaceHydratedMeta(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-hydrate-replay",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev", Payload: json.RawMessage(`{}`)},
 	}
 	bareMeta := &orchestrator.ProjectMeta{ID: "bare", TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}
 	hydratedMeta := &orchestrator.ProjectMeta{ID: "hydrated", TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}
@@ -72,7 +80,7 @@ func TestTaskWorkflowService_ReplayHook_UsesWorkspaceHydratedMeta(t *testing.T) 
 }
 
 func TestTaskWorkflowService_ReplayHook_MetaNotLoaded500(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-hydrate-replay-2", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev"}
+	task := &orchestrator.Task{ID: "task-hydrate-replay-2", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
 		Jobs:  &stubJobStore{},
@@ -97,7 +105,7 @@ func TestTaskWorkflowService_ReplayHook_MetaNotLoaded500(t *testing.T) {
 // widening (doc's own words: "方向は揃うが...変化が入り得る"), pinned here so
 // it reads as designed rather than an accident.
 func TestTaskWorkflowService_ReplayHook_WorkspaceHydrationError500(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-hydrate-replay-3", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev"}
+	task := &orchestrator.Task{ID: "task-hydrate-replay-3", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
 		Jobs:  &stubJobStore{},
@@ -118,7 +126,7 @@ func TestTaskWorkflowService_ReplayHook_WorkspaceHydrationError500(t *testing.T)
 }
 
 func TestTaskWorkflowService_ListHooksForStatus_UsesWorkspaceHydratedMeta(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-hydrate-list", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev"}
+	task := &orchestrator.Task{ID: "task-hydrate-list", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	bareMeta := &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}
 	hydratedMeta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
@@ -146,7 +154,7 @@ func TestTaskWorkflowService_ListHooksForStatus_UsesWorkspaceHydratedMeta(t *tes
 }
 
 func TestTaskWorkflowService_ListHooksForStatus_MetaNotLoaded500(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-hydrate-list-2", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev"}
+	task := &orchestrator.Task{ID: "task-hydrate-list-2", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
 		Meta:  stubMetaStore{meta: nil},
@@ -163,7 +171,7 @@ func TestTaskWorkflowService_ListHooksForStatus_MetaNotLoaded500(t *testing.T) {
 }
 
 func TestTaskWorkflowService_ListHooksForStatus_WorkspaceHydrationError500(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-hydrate-list-3", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev"}
+	task := &orchestrator.Task{ID: "task-hydrate-list-3", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
 		Meta: stubMetaStore{

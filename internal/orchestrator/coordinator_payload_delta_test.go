@@ -37,12 +37,15 @@ func TestCoordinator_DispatchAndAdvance_PayloadDelta_EmptyWhenHookProducesNoOutp
 
 	task := &orchestrator.Task{
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		// Pre-existing payload, as if the task had already been through a
-		// prior dispatch round (e.g. reopen) before this one started.
-		Payload: json.RawMessage(`{"artifact":{"report":{"summary":"pre-existing"}}}`),
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			// Pre-existing payload, as if the task had already been through a
+			// prior dispatch round (e.g. reopen) before this one started.
+			Payload: json.RawMessage(`{"artifact":{"report":{"summary":"pre-existing"}}}`),
+		},
 	}
 	meta := metaWithBehavior([]projectspec.Hook{{ID: "hook-a"}})
 	sm := simpleStateMachine()
@@ -84,10 +87,13 @@ func TestCoordinator_DispatchAndAdvance_PayloadDelta_OnlyContainsThisCyclesWrite
 
 	task := &orchestrator.Task{
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{"artifact":{"report":{"summary":"pre-existing, untouched by hook-a"}}}`),
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Payload:  json.RawMessage(`{"artifact":{"report":{"summary":"pre-existing, untouched by hook-a"}}}`),
+		},
 	}
 	meta := metaWithBehavior([]projectspec.Hook{{ID: "hook-a"}})
 	sm := simpleStateMachine()

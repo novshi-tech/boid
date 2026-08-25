@@ -22,7 +22,7 @@ func createDispatcherTask(t *testing.T) *db.DB {
 func TestCreateJob(t *testing.T) {
 	d := createDispatcherTask(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestCreateJob(t *testing.T) {
 func TestGetJob(t *testing.T) {
 	d := createDispatcherTask(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -212,11 +212,11 @@ func TestGetJob_NotFound(t *testing.T) {
 func TestListJobsByTask(t *testing.T) {
 	d := createDispatcherTask(t)
 
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task1", Behavior: "dev"}
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task1", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
-	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task2", Behavior: "dev"}
+	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task2", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestListJobsByTask(t *testing.T) {
 func TestListJobsByTask_Empty(t *testing.T) {
 	d := createDispatcherTask(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestListJobsByTask_Empty(t *testing.T) {
 func TestUpdateJob(t *testing.T) {
 	d := createDispatcherTask(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestUpdateJob(t *testing.T) {
 func TestUpdateJob_Failed(t *testing.T) {
 	d := createDispatcherTask(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestUpdateJob_Failed(t *testing.T) {
 func TestListJobsFiltered_TasklessOnly(t *testing.T) {
 	d := createDispatcherTask(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}

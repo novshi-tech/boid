@@ -21,10 +21,13 @@ func TestCoordinator_ReplayHook_SingleHook(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Payload:  json.RawMessage(`{}`),
+		},
 	}
 	meta := metaWithBehavior([]projectspec.Hook{{ID: "main-hook"}})
 	sm := simpleStateMachine()
@@ -59,10 +62,13 @@ func TestCoordinator_ReplayHook_HookNotFound(t *testing.T) {
 	}
 
 	task := &orchestrator.Task{
-		ID:       "task-1",
-		Behavior: "dev",
-		Status:   orchestrator.TaskStatusExecuting,
-		Payload:  json.RawMessage(`{}`),
+		ID:     "task-1",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Payload:  json.RawMessage(`{}`),
+		},
 	}
 	meta := metaWithBehavior([]projectspec.Hook{{ID: "other-hook"}})
 
@@ -82,10 +88,13 @@ func TestCoordinator_ReplayHook_StatusMismatch(t *testing.T) {
 
 	// Hook requires executing status; task is pending → no match
 	task := &orchestrator.Task{
-		ID:       "task-2",
-		Behavior: "dev",
-		Status:   orchestrator.TaskStatusPending,
-		Payload:  json.RawMessage(`{}`),
+		ID:     "task-2",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusPending,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Payload:  json.RawMessage(`{}`),
+		},
 	}
 	meta := metaWithBehavior([]projectspec.Hook{{ID: "main-hook"}})
 
@@ -97,10 +106,13 @@ func TestCoordinator_ReplayHook_StatusMismatch(t *testing.T) {
 
 func TestListHooksForStatus_ReturnsMatchingHooks(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "task-list-1",
-		Behavior: "dev",
-		Status:   orchestrator.TaskStatusExecuting,
-		Payload:  json.RawMessage(`{}`),
+		ID:     "task-list-1",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Payload:  json.RawMessage(`{}`),
+		},
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "hook-a"},
@@ -115,10 +127,13 @@ func TestListHooksForStatus_ReturnsMatchingHooks(t *testing.T) {
 
 func TestListHooksForStatus_NonExecutingReturnsNone(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "task-list-2",
-		Behavior: "dev",
-		Status:   orchestrator.TaskStatusExecuting,
-		Payload:  json.RawMessage(`{}`),
+		ID:     "task-list-2",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Payload:  json.RawMessage(`{}`),
+		},
 	}
 	meta := metaWithBehavior([]projectspec.Hook{{ID: "hook-a"}})
 

@@ -32,15 +32,20 @@ func triageExec(store *capturingTaskStore, workflow *recordingWorkflow) *boidBui
 // including the actions-derived parked_from.
 func TestBoidBuiltinExecutor_TaskTriageGet_ReturnsProjection(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "t1", ProjectID: "proj-1", Status: orchestrator.TaskStatusParked},
+		{ID: "t1", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}}
+	// card-model-cleanup PR-2: TaskStatusReady no longer exists (folded into
+	// TaskStatusParked by card machine v2) — TaskStatusWorking is used here
+	// instead as a still-valid "parked from something other than parked
+	// itself" origin; the assertion below just needs ParkedFrom to survive
+	// the JSON round trip, which TaskStatusWorking exercises equally well.
 	workflow := &recordingWorkflow{triageViews: map[string]*api.CardView{
 		"t1": {
 			TaskID:     "t1",
 			ProjectID:  "proj-1",
 			Status:     orchestrator.TaskStatusParked,
 			Urgency:    "today",
-			ParkedFrom: orchestrator.TaskStatusReady,
+			ParkedFrom: orchestrator.TaskStatusWorking,
 			Detail:     json.RawMessage(`{"attrs":{"summary":"s"}}`),
 		},
 	}}
@@ -58,8 +63,8 @@ func TestBoidBuiltinExecutor_TaskTriageGet_ReturnsProjection(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp.Stdout), &view); err != nil {
 		t.Fatalf("stdout is not the view JSON (%v): %s", err, resp.Stdout)
 	}
-	if view.ParkedFrom != orchestrator.TaskStatusReady {
-		t.Fatalf("parked_from = %q, want ready (the derived field is the point of this op)", view.ParkedFrom)
+	if view.ParkedFrom != orchestrator.TaskStatusWorking {
+		t.Fatalf("parked_from = %q, want working (the derived field is the point of this op)", view.ParkedFrom)
 	}
 	if view.Urgency != "today" {
 		t.Fatalf("urgency = %q, want today", view.Urgency)
@@ -73,7 +78,7 @@ func TestBoidBuiltinExecutor_TaskTriageGet_ReturnsProjection(t *testing.T) {
 // even read.
 func TestBoidBuiltinExecutor_TaskTriageGet_CrossWorkspaceDenied(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "other", ProjectID: "proj-2", Status: orchestrator.TaskStatusTriaged},
+		{ID: "other", ProjectID: "proj-2", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}}
 	workflow := &recordingWorkflow{}
 	exec := triageExec(store, workflow)
@@ -118,9 +123,12 @@ func TestBoidBuiltinExecutor_TaskTriageList_CrossWorkspaceProjectDenied(t *testi
 // projects, exactly as BoidOpTaskList does. An unscoped ListCards would hand
 // every workspace's queue to any sandbox.
 func TestBoidBuiltinExecutor_TaskTriageList_UnfilteredStaysScoped(t *testing.T) {
+	// card-model-cleanup PR-2: TaskStatusTriaged no longer exists — substitute
+	// TaskStatusParked, a still-valid card status this test's scoping
+	// assertions don't otherwise depend on.
 	workflow := &recordingWorkflow{triageList: []*api.CardView{
-		{TaskID: "a", ProjectID: "proj-1", Status: orchestrator.TaskStatusTriaged},
-		{TaskID: "z", ProjectID: "proj-9", Status: orchestrator.TaskStatusTriaged},
+		{TaskID: "a", ProjectID: "proj-1", Status: orchestrator.TaskStatusParked},
+		{TaskID: "z", ProjectID: "proj-9", Status: orchestrator.TaskStatusParked},
 	}}
 	exec := triageExec(&capturingTaskStore{}, workflow)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1", "proj-3"}}

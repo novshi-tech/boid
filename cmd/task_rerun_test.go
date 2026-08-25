@@ -87,9 +87,12 @@ func TestRunTaskRerun_SendsInstructionsOverride(t *testing.T) {
 	if reran.Status != orchestrator.TaskStatusPending {
 		t.Errorf("status = %q, want pending", reran.Status)
 	}
-	got := reran.Instructions.Active()
+	if reran.Exec == nil {
+		t.Fatal("reran.Exec is nil, want an execution task")
+	}
+	got := reran.Exec.Instructions.Active()
 	if got == nil {
-		t.Fatalf("instructions not set; got: %#v", reran.Instructions)
+		t.Fatalf("instructions not set; got: %#v", reran.Exec.Instructions)
 	}
 	if got.Model != "opus-4-7" {
 		t.Errorf("instructions.model = %q, want opus-4-7", got.Model)
@@ -139,9 +142,12 @@ func TestRunTaskRerun_NoInstructionsFlagPreservesExisting(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &reran); err != nil {
 		t.Fatalf("get reran task: %v", err)
 	}
-	got := reran.Instructions.Active()
+	if reran.Exec == nil {
+		t.Fatal("reran.Exec is nil, want an execution task")
+	}
+	got := reran.Exec.Instructions.Active()
 	if got == nil {
-		t.Fatalf("instructions should be preserved; got: %#v", reran.Instructions)
+		t.Fatalf("instructions should be preserved; got: %#v", reran.Exec.Instructions)
 	}
 	if got.Message != "keep me" {
 		t.Errorf("instructions.message = %q, want %q", got.Message, "keep me")

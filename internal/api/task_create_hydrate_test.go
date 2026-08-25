@@ -46,7 +46,7 @@ func TestTaskAppServiceCreateTask_UsesWorkspaceHydratedMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil (workspace-hydrated meta should have supplied the \"extra\" behavior)", err)
 	}
-	if task == nil || task.Behavior != "extra" {
+	if task == nil || task.Exec == nil || task.Exec.Behavior != "extra" {
 		t.Fatalf("task = %+v, want Behavior=extra", task)
 	}
 }
@@ -83,7 +83,7 @@ func TestTaskAppServiceCreateTask_HydrationErrorFallsBackToBareMeta(t *testing.T
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil (must fall back to the bare project.yaml meta)", err)
 	}
-	if task == nil || task.Behavior != "dev" {
+	if task == nil || task.Exec == nil || task.Exec.Behavior != "dev" {
 		t.Fatalf("task = %+v, want Behavior=dev", task)
 	}
 }
@@ -116,7 +116,7 @@ func TestTaskAppServiceCreateTask_HydrationErrorAndNoBareMeta_NilMetaContinues(t
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil", err)
 	}
-	if task == nil || task.Behavior != "any-behavior" {
+	if task == nil || task.Exec == nil || task.Exec.Behavior != "any-behavior" {
 		t.Fatalf("task = %+v, want Behavior=any-behavior", task)
 	}
 }

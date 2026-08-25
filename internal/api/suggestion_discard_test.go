@@ -18,7 +18,7 @@ import (
 // (workflow_card.go) for the full design. ----
 
 func TestApplyAction_Drop_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
@@ -66,7 +66,7 @@ func TestApplyAction_Drop_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
 }
 
 func TestApplyAction_Park_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
@@ -97,7 +97,7 @@ func TestApplyAction_Park_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
 }
 
 func TestApplyAction_NoExistingSuggestion_NoDiscardRecorded(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -116,7 +116,7 @@ func TestApplyAction_NoExistingSuggestion_NoDiscardRecorded(t *testing.T) {
 // (acceptGo's own applyAnsweredSideEffect call) but never recorded it — the
 // asymmetry the review flagged ("go" silently discarding, no audit trail).
 func TestTaskWorkflowService_AcceptGo_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{

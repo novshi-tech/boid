@@ -33,7 +33,7 @@ func TestCleanOrphanRuntimes_RemovesOrphans(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}, Status: orchestrator.TaskStatusDone}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}

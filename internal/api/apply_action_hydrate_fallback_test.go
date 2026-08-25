@@ -21,11 +21,11 @@ import (
 func TestApplyAction_URLDerivedProjectHydrateFailureIsHardError(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "url-abc123",
 		Title:     "start task",
 		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
 	}
 
 	svc := &TaskWorkflowService{
@@ -68,11 +68,11 @@ func TestApplyAction_URLDerivedProjectHydrateFailureIsHardError(t *testing.T) {
 func TestApplyAction_URLDerivedProjectDegradedSuccessIsAlsoHardError(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "url-abc123",
 		Title:     "start task",
 		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
 	}
 
 	svc := &TaskWorkflowService{
@@ -106,11 +106,11 @@ func TestApplyAction_URLDerivedProjectDegradedSuccessIsAlsoHardError(t *testing.
 func TestApplyAction_URLDerivedProjectSuccessfulMergeDispatches(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "url-abc123",
 		Title:     "start task",
 		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
 	}
 
 	probe := newDispatchContextProbe()
@@ -147,11 +147,11 @@ func TestApplyAction_URLDerivedProjectSuccessfulMergeDispatches(t *testing.T) {
 func TestApplyAction_OrdinaryProjectHydrateFailureStillFallsBack(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "start task",
 		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
 	}
 
 	probe := newDispatchContextProbe()

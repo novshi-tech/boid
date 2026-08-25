@@ -13,10 +13,13 @@ func TestGetOrCreateTask_HitReturnsExisting(t *testing.T) {
 
 	t1 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Step A",
-		Behavior:  "dev",
 		Ref:       "step-a",
 		ParentID:  "parent-001",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
 		t.Fatalf("first CreateTask: %v", err)
@@ -25,10 +28,13 @@ func TestGetOrCreateTask_HitReturnsExisting(t *testing.T) {
 	// Second create with same ref+parent should return the existing task.
 	t2 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Step A (duplicate call)",
-		Behavior:  "dev",
 		Ref:       "step-a",
 		ParentID:  "parent-001",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
 		t.Fatalf("second CreateTask: %v", err)
@@ -55,10 +61,13 @@ func TestGetOrCreateTask_MissInsertsNew(t *testing.T) {
 
 	t1 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Step A",
-		Behavior:  "dev",
 		Ref:       "step-a",
 		ParentID:  "parent-001",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
 		t.Fatalf("first CreateTask: %v", err)
@@ -67,10 +76,13 @@ func TestGetOrCreateTask_MissInsertsNew(t *testing.T) {
 	// Different ref — must insert a new task.
 	t2 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Step B",
-		Behavior:  "dev",
 		Ref:       "step-b",
 		ParentID:  "parent-001",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
 		t.Fatalf("second CreateTask: %v", err)
@@ -96,10 +108,13 @@ func TestGetOrCreateTask_HitPreservesExistingFields(t *testing.T) {
 
 	t1 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Original Title",
-		Behavior:  "dev",
 		Ref:       "step-x",
 		ParentID:  "parent-xyz",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
 		t.Fatalf("first CreateTask: %v", err)
@@ -107,10 +122,13 @@ func TestGetOrCreateTask_HitPreservesExistingFields(t *testing.T) {
 
 	t2 := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Updated Title (should be ignored)",
-		Behavior:  "dev",
 		Ref:       "step-x",
 		ParentID:  "parent-xyz",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
 		t.Fatalf("second CreateTask (get-or-create hit): %v", err)

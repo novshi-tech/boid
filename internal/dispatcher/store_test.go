@@ -15,8 +15,8 @@ func TestMarkStaleExecutingTasksAborted_TransitionsExecuting(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	exec1 := &orchestrator.Task{ProjectID: "proj-1", Title: "exec1", Behavior: "executor"}
-	exec2 := &orchestrator.Task{ProjectID: "proj-1", Title: "exec2", Behavior: "executor"}
+	exec1 := &orchestrator.Task{ProjectID: "proj-1", Title: "exec1", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
+	exec2 := &orchestrator.Task{ProjectID: "proj-1", Title: "exec2", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
 	for _, task := range []*orchestrator.Task{exec1, exec2} {
 		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 			t.Fatalf("create task: %v", err)
@@ -55,8 +55,8 @@ func TestMarkStaleAwaitingTasksAborted_TransitionsAwaiting(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	awaiting := &orchestrator.Task{ProjectID: "proj-1", Title: "awaiting", Behavior: "executor"}
-	executing := &orchestrator.Task{ProjectID: "proj-1", Title: "executing", Behavior: "executor"}
+	awaiting := &orchestrator.Task{ProjectID: "proj-1", Title: "awaiting", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
+	executing := &orchestrator.Task{ProjectID: "proj-1", Title: "executing", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
 	if err := orchestrator.CreateTask(d.Conn, awaiting); err != nil {
 		t.Fatalf("create awaiting: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestMarkStaleExecutingTasksAborted_RecordsAbortAction(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "task", Behavior: "executor"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestMarkStaleExecutingTasksAborted_SkipsNonExecuting(t *testing.T) {
 	statuses := []string{"pending", "done", "aborted"}
 	var tasks []*orchestrator.Task
 	for _, s := range statuses {
-		task := &orchestrator.Task{ProjectID: "proj-1", Title: s, Behavior: "executor"}
+		task := &orchestrator.Task{ProjectID: "proj-1", Title: s, Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
 		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 			t.Fatalf("create task: %v", err)
 		}
@@ -212,7 +212,7 @@ func TestFindDaemonShutdownAbortedTasks_ReturnsShutdownTasks(t *testing.T) {
 	}
 
 	// Task A: aborted via daemon_shutdown — should be returned
-	taskA := &orchestrator.Task{ProjectID: "proj-1", Title: "A", Behavior: "executor"}
+	taskA := &orchestrator.Task{ProjectID: "proj-1", Title: "A", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
 	if err := orchestrator.CreateTask(d.Conn, taskA); err != nil {
 		t.Fatalf("create A: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestFindDaemonShutdownAbortedTasks_ReturnsShutdownTasks(t *testing.T) {
 	}
 
 	// Task B: aborted via dispatch_error — should NOT be returned
-	taskB := &orchestrator.Task{ProjectID: "proj-1", Title: "B", Behavior: "executor"}
+	taskB := &orchestrator.Task{ProjectID: "proj-1", Title: "B", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
 	if err := orchestrator.CreateTask(d.Conn, taskB); err != nil {
 		t.Fatalf("create B: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestFindDaemonShutdownAbortedTasks_ReturnsShutdownTasks(t *testing.T) {
 	}
 
 	// Task C: executing — should NOT be returned even if some action history
-	taskC := &orchestrator.Task{ProjectID: "proj-1", Title: "C", Behavior: "executor"}
+	taskC := &orchestrator.Task{ProjectID: "proj-1", Title: "C", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
 	if err := orchestrator.CreateTask(d.Conn, taskC); err != nil {
 		t.Fatalf("create C: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestFindDaemonShutdownAbortedTasks_LatestAbortWins(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "task", Behavior: "executor"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestMarkStaleExecutingTasksAborted_Idempotent(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "task", Behavior: "executor"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}

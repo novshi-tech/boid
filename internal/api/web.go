@@ -725,7 +725,17 @@ func (h *WebHandler) PostEdit(w http.ResponseWriter, r *http.Request) {
 	model := strings.TrimSpace(r.FormValue("model"))
 	agent := strings.TrimSpace(r.FormValue("agent"))
 
-	insts := detail.Task.Instructions
+	// Instructions is execution-only (design doc §3.2); safe to read
+	// unconditionally here because GetEdit only ever renders this form for a
+	// task in "pending" status (line ~698 above), which is itself
+	// execution-only under migration 0045's CHECK constraint — a card can
+	// never reach this handler. execInsts stays nil (not a panic) for the
+	// defensive case where that invariant is somehow violated.
+	var execInsts orchestrator.Instructions
+	if detail.Task.Exec != nil {
+		execInsts = detail.Task.Exec.Instructions
+	}
+	insts := execInsts
 	if len(insts) == 0 {
 		insts = orchestrator.Instructions{{
 			Agent:   agent,
@@ -856,7 +866,15 @@ func (h *WebHandler) QuestionPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	currentAwaiting := orchestrator.GetAwaitingPayload(detail.Task.Payload)
+	// Payload/awaiting is execution-only (design doc §3.2) — this page only
+	// exists for tasks that went through an "ask" action, which only ever
+	// happens on an execution task (a card has no agent session to ask
+	// from), so detail.Task.Exec is expected non-nil here.
+	var taskPayload json.RawMessage
+	if detail.Task.Exec != nil {
+		taskPayload = detail.Task.Exec.Payload
+	}
+	currentAwaiting := orchestrator.GetAwaitingPayload(taskPayload)
 	isActive := detail.Task.Status == orchestrator.TaskStatusAwaiting && currentAwaiting.QuestionID == questionID
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

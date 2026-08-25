@@ -42,7 +42,7 @@ func TestBoidBuiltinExecutor_TaskUpdatePayloadPatch_Unavailable(t *testing.T) {
 func TestBoidBuiltinExecutor_TaskUpdatePayloadPatch_HappyPath(t *testing.T) {
 	ts := &capturingTaskStore{
 		created: []*orchestrator.Task{
-			{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Payload: json.RawMessage(`{}`)},
+			{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)}},
 		},
 	}
 	js := &stubJobStore{
@@ -71,11 +71,11 @@ func TestBoidBuiltinExecutor_TaskUpdatePayloadPatch_HappyPath(t *testing.T) {
 		t.Fatalf("UpdateTask calls = %d, want 1", len(ts.updated))
 	}
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(ts.updated[0].Payload, &payload); err != nil {
+	if err := json.Unmarshal(ts.updated[0].Exec.Payload, &payload); err != nil {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if _, ok := payload["artifact"]; !ok {
-		t.Fatalf("expected artifact key in merged payload, got %s", ts.updated[0].Payload)
+		t.Fatalf("expected artifact key in merged payload, got %s", ts.updated[0].Exec.Payload)
 	}
 }
 
@@ -87,7 +87,7 @@ func TestBoidBuiltinExecutor_TaskUpdatePayloadPatch_HappyPath(t *testing.T) {
 func TestBoidBuiltinExecutor_TaskUpdatePayloadPatch_DropsTraitNotInDispatchTimeAllowlist(t *testing.T) {
 	ts := &capturingTaskStore{
 		created: []*orchestrator.Task{
-			{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Payload: json.RawMessage(`{}`)},
+			{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)}},
 		},
 	}
 	js := &stubJobStore{
@@ -113,11 +113,11 @@ func TestBoidBuiltinExecutor_TaskUpdatePayloadPatch_DropsTraitNotInDispatchTimeA
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(ts.updated[0].Payload, &payload); err != nil {
+	if err := json.Unmarshal(ts.updated[0].Exec.Payload, &payload); err != nil {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if _, ok := payload["artifact"]; ok {
-		t.Fatalf("expected artifact key to be dropped (not in dispatch-time allowedTraits), got %s", ts.updated[0].Payload)
+		t.Fatalf("expected artifact key to be dropped (not in dispatch-time allowedTraits), got %s", ts.updated[0].Exec.Payload)
 	}
 }
 

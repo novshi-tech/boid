@@ -84,10 +84,6 @@ func (r *TaskRepository) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*
 	return ListTaskTriageByTaskIDs(r.db, taskIDs)
 }
 
-func (r *TaskRepository) SeedTaskTriage(taskID string) error {
-	return SeedTaskTriage(r.db, taskID)
-}
-
 func (r *TaskRepository) DeleteTaskTriage(taskID string) error {
 	return DeleteTaskTriage(r.db, taskID)
 }

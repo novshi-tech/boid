@@ -37,8 +37,9 @@ import (
 func TestUpdateTaskPayloadPatch_MergesWhenTraitAllowed(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "run-agent"}
 
@@ -54,11 +55,11 @@ func TestUpdateTaskPayloadPatch_MergesWhenTraitAllowed(t *testing.T) {
 		t.Fatalf("unexpected task returned: %+v", got)
 	}
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+	if err := json.Unmarshal(got.Exec.Payload, &payload); err != nil {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if _, ok := payload["artifact"]; !ok {
-		t.Fatalf("expected artifact key in merged payload, got %s", got.Payload)
+		t.Fatalf("expected artifact key in merged payload, got %s", got.Exec.Payload)
 	}
 	if tasks.updateCalls != 1 {
 		t.Fatalf("UpdateTask calls = %d, want 1", tasks.updateCalls)
@@ -68,8 +69,9 @@ func TestUpdateTaskPayloadPatch_MergesWhenTraitAllowed(t *testing.T) {
 func TestUpdateTaskPayloadPatch_DropsTraitNotInProduces(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "verify-only"}
 
@@ -85,11 +87,11 @@ func TestUpdateTaskPayloadPatch_DropsTraitNotInProduces(t *testing.T) {
 		t.Fatalf("UpdateTaskPayloadPatch() error = %v", err)
 	}
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+	if err := json.Unmarshal(got.Exec.Payload, &payload); err != nil {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if _, ok := payload["artifact"]; ok {
-		t.Fatalf("expected artifact key to be dropped (not in allowedTraits), got %s", got.Payload)
+		t.Fatalf("expected artifact key to be dropped (not in allowedTraits), got %s", got.Exec.Payload)
 	}
 }
 
@@ -101,7 +103,7 @@ func TestUpdateTaskPayloadPatch_DropsTraitNotInProduces(t *testing.T) {
 // explicitly declared hook with no traits.produces list of its own; both
 // are indistinguishable from "unrestricted" on the file-based path too.
 func TestUpdateTaskPayloadPatch_NilAllowedTraits_UnrestrictedMerge(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", ProjectID: "proj-1", Payload: json.RawMessage(`{}`)}
+	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Exec: &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)}}
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "agent:claude-code"}
 
 	tasks := &stubTaskStore{task: task}
@@ -113,11 +115,11 @@ func TestUpdateTaskPayloadPatch_NilAllowedTraits_UnrestrictedMerge(t *testing.T)
 		t.Fatalf("UpdateTaskPayloadPatch() error = %v", err)
 	}
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+	if err := json.Unmarshal(got.Exec.Payload, &payload); err != nil {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if _, ok := payload["artifact"]; !ok {
-		t.Fatalf("expected unrestricted merge for nil allowedTraits, got %s", got.Payload)
+		t.Fatalf("expected unrestricted merge for nil allowedTraits, got %s", got.Exec.Payload)
 	}
 }
 
@@ -153,7 +155,7 @@ func TestUpdateTaskPayloadPatch_TaskNotFound(t *testing.T) {
 }
 
 func TestUpdateTaskPayloadPatch_RejectsReservedKeys(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", ProjectID: "proj-1", Payload: json.RawMessage(`{}`)}
+	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Exec: &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)}}
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "run-agent"}
 
 	tasks := &stubTaskStore{task: task}
@@ -174,8 +176,9 @@ func TestUpdateTaskPayloadPatch_RejectsReservedKeys(t *testing.T) {
 func TestUpdateTaskPayloadPatch_SharedTraitMergesByHandlerID(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
-		Payload:   json.RawMessage(`{"verification":{"security-review":{"passed":true}}}`),
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{"verification":{"security-review":{"passed":true}}}`)},
 	}
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "quality-review"}
 
@@ -190,14 +193,14 @@ func TestUpdateTaskPayloadPatch_SharedTraitMergesByHandlerID(t *testing.T) {
 	var payload struct {
 		Verification map[string]json.RawMessage `json:"verification"`
 	}
-	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+	if err := json.Unmarshal(got.Exec.Payload, &payload); err != nil {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if _, ok := payload.Verification["security-review"]; !ok {
-		t.Fatalf("expected prior handler's shared entry to survive, got %s", got.Payload)
+		t.Fatalf("expected prior handler's shared entry to survive, got %s", got.Exec.Payload)
 	}
 	if _, ok := payload.Verification["quality-review"]; !ok {
-		t.Fatalf("expected this job's HandlerID as the shared-trait key, got %s", got.Payload)
+		t.Fatalf("expected this job's HandlerID as the shared-trait key, got %s", got.Exec.Payload)
 	}
 }
 
@@ -228,8 +231,14 @@ func (s *barrierTaskStore) GetTask(id string) (*orchestrator.Task, error) {
 	time.Sleep(20 * time.Millisecond)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := *s.task
-	return &cp, nil
+	// card-model-cleanup PR-2: Exec is now a pointer field, so a bare `cp :=
+	// *s.task` would only copy the POINTER — both the returned snapshot and
+	// s.task would alias the SAME ExecAttrs, letting one goroutine's `task.
+	// Exec.Payload = merged` mutate the "live" row through the snapshot
+	// before UpdateTask is ever called, defeating this test's whole premise
+	// (two independent pre-write snapshots). CloneTaskShallow (model.go) is
+	// exactly the helper introduced for this class of bug.
+	return orchestrator.CloneTaskShallow(s.task), nil
 }
 
 func (s *barrierTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
@@ -255,7 +264,7 @@ func (s *barrierTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, 
 }
 
 func TestUpdateTaskPayloadPatch_ConcurrentCallsDoNotLoseUpdates(t *testing.T) {
-	tasks := &barrierTaskStore{task: &orchestrator.Task{ID: "task-1", ProjectID: "proj-1", Payload: json.RawMessage(`{}`)}}
+	tasks := &barrierTaskStore{task: &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Exec: &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)}}}
 	// Two concurrent "hooks" of the same readonly task's parallel dispatch
 	// round, each patching a different artifact sub-key. stubJobStore only
 	// tracks a single job, so route both goroutines through a small wrapper
@@ -295,11 +304,14 @@ func TestUpdateTaskPayloadPatch_ConcurrentCallsDoNotLoseUpdates(t *testing.T) {
 	var payload struct {
 		Artifact map[string]string `json:"artifact"`
 	}
-	if err := json.Unmarshal(final.Payload, &payload); err != nil {
+	if final.Exec == nil {
+		t.Fatal("final task has no Exec attrs")
+	}
+	if err := json.Unmarshal(final.Exec.Payload, &payload); err != nil {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if payload.Artifact["a"] != "1" || payload.Artifact["b"] != "2" {
-		t.Fatalf("lost update: expected both a and b keys, got %+v (full payload: %s)", payload.Artifact, final.Payload)
+		t.Fatalf("lost update: expected both a and b keys, got %+v (full payload: %s)", payload.Artifact, final.Exec.Payload)
 	}
 }
 

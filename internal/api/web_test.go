@@ -268,7 +268,6 @@ type stubTaskTriageStore struct {
 }
 
 func (s *stubTaskTriageStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error { return nil }
-func (s *stubTaskTriageStore) SeedTaskTriage(taskID string) error                 { return nil }
 func (s *stubTaskTriageStore) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
 	return s.triage, s.err
 }
@@ -349,7 +348,7 @@ func TestWebHandlerTaskList_FiltersMappedToTaskFilter(t *testing.T) {
 func TestWebHandlerTaskList_HXRequestReturnsFragment(t *testing.T) {
 	svc := &stubWebService{
 		tasks: []*orchestrator.Task{
-			{ID: "t-1", Title: "hello", Status: "executing"},
+			{ID: "t-1", Type: orchestrator.TaskTypeExecution, Title: "hello", Status: "executing", Exec: &orchestrator.ExecAttrs{}},
 		},
 	}
 	r := newTestWebHandlerWithTaskList(svc)
@@ -515,10 +514,12 @@ func TestWebHandlerPostStartSession_EmptyInstructionOK(t *testing.T) {
 func TestWebHandlerPostStartShapingSession_Success(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 		ID:          "task-1",
+		Type:        orchestrator.TaskTypeCard,
 		ProjectID:   "meta-proj",
 		Title:       "運用が回っていない気配",
 		Description: "詳細不明のsummaryのみ",
 		Status:      orchestrator.TaskStatusParked,
+		Card:        &orchestrator.CardAttrs{},
 	}}}
 	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
 	triage := &stubTaskTriageStore{triage: &orchestrator.CardAttrs{TaskID: "task-1", Kind: "issue", Urgency: "week"}}
@@ -560,10 +561,12 @@ func TestWebHandlerPostStartShapingSession_Success(t *testing.T) {
 func TestWebHandlerPostStartShapingSession_WorkingWithOpenChild(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 		ID:          "task-1",
+		Type:        orchestrator.TaskTypeCard,
 		ProjectID:   "meta-proj",
 		Title:       "運用が回っていない気配",
 		Description: "詳細不明のsummaryのみ",
 		Status:      orchestrator.TaskStatusWorking,
+		Card:        &orchestrator.CardAttrs{},
 	}}}
 	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
 	triage := &stubTaskTriageStore{triage: &orchestrator.CardAttrs{
@@ -594,7 +597,7 @@ func TestWebHandlerPostStartShapingSession_WorkingWithOpenChild(t *testing.T) {
 
 func TestWebHandlerPostStartShapingSession_WorkingWithoutTriageRow(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
-		ID: "task-1", Status: orchestrator.TaskStatusWorking,
+		ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{},
 	}}}
 	dispatcher := &stubSessionDispatcher{}
 	// No triage row at all: an ordinary (non-triage) working task, the
@@ -619,7 +622,7 @@ func TestWebHandlerPostStartShapingSession_WorkingWithoutTriageRow(t *testing.T)
 
 func TestWebHandlerPostStartShapingSession_WorkingWithTriageRowNoChildrenYet(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
-		ID: "task-1", ProjectID: "meta-proj", Status: orchestrator.TaskStatusWorking,
+		ID: "task-1", Type: orchestrator.TaskTypeCard, ProjectID: "meta-proj", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{},
 	}}}
 	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
 	// A triage row exists but has no children yet — the "add a brand-new
@@ -647,9 +650,11 @@ func TestWebHandlerPostStartShapingSession_UsesSessionBehaviorsDefaults(t *testi
 	svc := &stubWebService{
 		taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 			ID:        "task-1",
+			Type:      orchestrator.TaskTypeCard,
 			ProjectID: "meta-proj",
 			Title:     "運用が回っていない気配",
 			Status:    orchestrator.TaskStatusParked,
+			Card:      &orchestrator.CardAttrs{},
 		}},
 		projectByID: &orchestrator.Project{
 			ID: "meta-proj",
@@ -682,9 +687,11 @@ func TestWebHandlerPostStartShapingSession_FallsBackWhenNoSessionBehaviors(t *te
 	svc := &stubWebService{
 		taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 			ID:        "task-1",
+			Type:      orchestrator.TaskTypeCard,
 			ProjectID: "meta-proj",
 			Title:     "運用が回っていない気配",
 			Status:    orchestrator.TaskStatusParked,
+			Card:      &orchestrator.CardAttrs{},
 		}},
 		projectByID: &orchestrator.Project{ID: "meta-proj"},
 	}
@@ -710,9 +717,11 @@ func TestWebHandlerPostStartShapingSession_FallsBackOnInvalidHarnessType(t *test
 	svc := &stubWebService{
 		taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 			ID:        "task-1",
+			Type:      orchestrator.TaskTypeCard,
 			ProjectID: "meta-proj",
 			Title:     "運用が回っていない気配",
 			Status:    orchestrator.TaskStatusParked,
+			Card:      &orchestrator.CardAttrs{},
 		}},
 		projectByID: &orchestrator.Project{
 			ID: "meta-proj",
@@ -748,9 +757,11 @@ func TestWebHandlerPostStartShapingSession_FallsBackOnEmptyHarnessType(t *testin
 	svc := &stubWebService{
 		taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 			ID:        "task-1",
+			Type:      orchestrator.TaskTypeCard,
 			ProjectID: "meta-proj",
 			Title:     "運用が回っていない気配",
 			Status:    orchestrator.TaskStatusParked,
+			Card:      &orchestrator.CardAttrs{},
 		}},
 		projectByID: &orchestrator.Project{
 			ID: "meta-proj",
@@ -787,8 +798,12 @@ func TestWebHandlerPostStartShapingSession_FallsBackOnEmptyHarnessType(t *testin
 // been offered from in either version — a finished card has nothing left to
 // shape.
 func TestWebHandlerPostStartShapingSession_NotParkedOrWorking(t *testing.T) {
+	// A done card, per this test's own doc comment above ("a finished card
+	// has nothing left to shape") — Type/Card set to match (done is shared
+	// with execution tasks per card-model-cleanup PR-2's status vocabulary,
+	// so this disambiguates explicitly rather than leaving Type unset).
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
-		ID: "task-1", Status: orchestrator.TaskStatusDone,
+		ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusDone, Card: &orchestrator.CardAttrs{},
 	}}}
 	dispatcher := &stubSessionDispatcher{}
 	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
@@ -810,7 +825,7 @@ func TestWebHandlerPostStartShapingSession_NotParkedOrWorking(t *testing.T) {
 
 func TestWebHandlerPostStartShapingSession_DispatcherError(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
-		ID: "task-1", ProjectID: "meta-proj", Status: orchestrator.TaskStatusParked,
+		ID: "task-1", Type: orchestrator.TaskTypeCard, ProjectID: "meta-proj", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{},
 	}}}
 	dispatcher := &stubSessionDispatcher{err: fmt.Errorf("no sandbox capacity")}
 	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
@@ -830,7 +845,7 @@ func TestWebHandlerPostStartShapingSession_DispatcherError(t *testing.T) {
 
 func TestWebHandlerPostStartShapingSession_NoDispatcher(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
-		ID: "task-1", Status: orchestrator.TaskStatusParked,
+		ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{},
 	}}}
 	r := newTestWebHandlerWithShaping(svc, nil, nil)
 
@@ -855,8 +870,10 @@ func TestWebHandler_TaskDetail_ShowsTriageChildren(t *testing.T) {
 	]}`)
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 		ID:     "task-1",
+		Type:   orchestrator.TaskTypeCard,
 		Title:  "card title",
 		Status: orchestrator.TaskStatusParked,
+		Card:   &orchestrator.CardAttrs{},
 	}}}
 	triage := &stubTaskTriageStore{triage: &orchestrator.CardAttrs{TaskID: "task-1", Detail: detail}}
 	h := &WebHandler{Service: svc, TaskTriage: triage}
@@ -884,8 +901,10 @@ func TestWebHandler_TaskDetail_ShowsTriageChildren(t *testing.T) {
 func TestWebHandler_TaskDetail_NoTriageChildren_NoSection(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 		ID:     "task-1",
+		Type:   orchestrator.TaskTypeExecution,
 		Title:  "regular task",
 		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{},
 	}}}
 	h := &WebHandler{Service: svc}
 	r := chi.NewRouter()
@@ -1073,10 +1092,11 @@ func TestWebAppServiceDuplicateTask_NotFound(t *testing.T) {
 func makeTaskDetailView() *TaskDetailView {
 	return &TaskDetailView{
 		Task: &orchestrator.Task{
-			ID:       "task-1",
-			Title:    "Test Task",
-			Status:   "executing",
-			Behavior: "dev",
+			ID:     "task-1",
+			Type:   orchestrator.TaskTypeExecution,
+			Title:  "Test Task",
+			Status: "executing",
+			Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 		},
 		Actions:          []*orchestrator.Action{{Type: "start", FromStatus: "pending", ToStatus: "executing"}},
 		Jobs:             []*Job{{ID: "job-1", Role: "main", Status: JobStatusRunning}},
@@ -1346,8 +1366,10 @@ func TestWebHandler_GetTaskEdit_PendingTask(t *testing.T) {
 	detail := &TaskDetailView{
 		Task: &orchestrator.Task{
 			ID:     "task-1",
+			Type:   orchestrator.TaskTypeExecution,
 			Title:  "My Task",
 			Status: orchestrator.TaskStatusPending,
+			Exec:   &orchestrator.ExecAttrs{},
 		},
 	}
 	svc := &stubWebService{taskDetail: detail}
@@ -1379,7 +1401,9 @@ func TestWebHandler_GetTaskEdit_NonPendingRedirects(t *testing.T) {
 	detail := &TaskDetailView{
 		Task: &orchestrator.Task{
 			ID:     "task-1",
+			Type:   orchestrator.TaskTypeExecution,
 			Status: orchestrator.TaskStatusExecuting,
+			Exec:   &orchestrator.ExecAttrs{},
 		},
 	}
 	svc := &stubWebService{taskDetail: detail}
@@ -1401,11 +1425,14 @@ func TestWebHandler_PostEdit_Success(t *testing.T) {
 	detail := &TaskDetailView{
 		Task: &orchestrator.Task{
 			ID:     "task-1",
+			Type:   orchestrator.TaskTypeExecution,
 			Status: orchestrator.TaskStatusPending,
-			Instructions: orchestrator.Instructions{{
-				Message: "old message",
-				Model:   "sonnet",
-			}},
+			Exec: &orchestrator.ExecAttrs{
+				Instructions: orchestrator.Instructions{{
+					Message: "old message",
+					Model:   "sonnet",
+				}},
+			},
 		},
 	}
 	svc := &stubWebService{taskDetail: detail}
@@ -1629,11 +1656,14 @@ func TestWebHandler_PostEdit_RemoteID(t *testing.T) {
 	detail := &TaskDetailView{
 		Task: &orchestrator.Task{
 			ID:       "task-1",
+			Type:     orchestrator.TaskTypeExecution,
 			Status:   orchestrator.TaskStatusPending,
 			RemoteID: "OLD-1",
-			Instructions: orchestrator.Instructions{{
-				Message: "old message",
-			}},
+			Exec: &orchestrator.ExecAttrs{
+				Instructions: orchestrator.Instructions{{
+					Message: "old message",
+				}},
+			},
 		},
 	}
 	svc := &stubWebService{taskDetail: detail}
@@ -1729,8 +1759,8 @@ func TestTaskDetailFragment_JobLink(t *testing.T) {
 	now := time.Now()
 	detail := &TaskDetailView{
 		Task: &orchestrator.Task{
-			ID: "task-1", Title: "Test Task", Status: "executing",
-			CreatedAt: now.Add(-1 * time.Minute),
+			ID: "task-1", Type: orchestrator.TaskTypeExecution, Title: "Test Task", Status: "executing",
+			CreatedAt: now.Add(-1 * time.Minute), Exec: &orchestrator.ExecAttrs{},
 		},
 		Jobs: []*Job{
 			{

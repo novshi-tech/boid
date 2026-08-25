@@ -30,10 +30,10 @@ func TestTaskWorkflowServiceRunDispatchLoop_PreservesMidHookRPCWrite_ReopenScena
 	// the OLD report from before the reopen.
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(staleReport),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(staleReport)},
 	}
 	// taskInDB is what a fresh GetTask returns AFTER the hook's job called
 	// `boid task update --payload-patch` mid-flight (via
@@ -41,10 +41,10 @@ func TestTaskWorkflowServiceRunDispatchLoop_PreservesMidHookRPCWrite_ReopenScena
 	// gated on job completion) — the report is already the NEW one.
 	taskInDB := &orchestrator.Task{
 		ID:        task.ID,
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: task.ProjectID,
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  task.Behavior,
-		Payload:   []byte(freshReport),
+		Exec:      &orchestrator.ExecAttrs{Behavior: task.Exec.Behavior, Payload: []byte(freshReport)},
 	}
 
 	txStore := &recordingTxStore{task: taskInDB}
@@ -82,7 +82,10 @@ func TestTaskWorkflowServiceRunDispatchLoop_PreservesMidHookRPCWrite_ReopenScena
 			} `json:"report"`
 		} `json:"artifact"`
 	}
-	if err := json.Unmarshal(txStore.updatedTask.Payload, &payload); err != nil {
+	if txStore.updatedTask.Exec == nil {
+		t.Fatal("updated task has no Exec attrs")
+	}
+	if err := json.Unmarshal(txStore.updatedTask.Exec.Payload, &payload); err != nil {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if payload.Artifact.Report.Summary != "NEW (written via --payload-patch mid-job)" {
@@ -99,18 +102,18 @@ func TestTaskWorkflowServiceRunDispatchLoop_PreservesMidHookRPCWrite_ReopenScena
 func TestTaskWorkflowServiceRunDispatchLoop_MergesNonEmptyPayloadDeltaOntoFreshRow(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
 	}
 	// DB row already has a "verification" key an RPC call wrote mid-flight.
 	taskInDB := &orchestrator.Task{
 		ID:        task.ID,
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: task.ProjectID,
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  task.Behavior,
-		Payload:   []byte(`{"verification":{"quality-review":{"passed":true}}}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: task.Exec.Behavior, Payload: []byte(`{"verification":{"quality-review":{"passed":true}}}`)},
 	}
 
 	txStore := &recordingTxStore{task: taskInDB}
@@ -136,14 +139,17 @@ func TestTaskWorkflowServiceRunDispatchLoop_MergesNonEmptyPayloadDeltaOntoFreshR
 	if txStore.updatedTask == nil {
 		t.Fatal("expected payload persistence update")
 	}
+	if txStore.updatedTask.Exec == nil {
+		t.Fatal("updated task has no Exec attrs")
+	}
 	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(txStore.updatedTask.Payload, &payload); err != nil {
+	if err := json.Unmarshal(txStore.updatedTask.Exec.Payload, &payload); err != nil {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if _, ok := payload["artifact"]; !ok {
-		t.Errorf("expected artifact key from the hook's own delta, got %s", txStore.updatedTask.Payload)
+		t.Errorf("expected artifact key from the hook's own delta, got %s", txStore.updatedTask.Exec.Payload)
 	}
 	if _, ok := payload["verification"]; !ok {
-		t.Errorf("expected verification key from the concurrent RPC write to survive, got %s", txStore.updatedTask.Payload)
+		t.Errorf("expected verification key from the concurrent RPC write to survive, got %s", txStore.updatedTask.Exec.Payload)
 	}
 }

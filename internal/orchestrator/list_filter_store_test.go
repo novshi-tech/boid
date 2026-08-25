@@ -35,9 +35,9 @@ func TestListTasks_FilterByBehavior(t *testing.T) {
 	d := setupFilterTestDB(t)
 
 	tasks := []*orchestrator.Task{
-		{ProjectID: "proj-ws1-a", Title: "Dev Task 1", Behavior: "dev"},
-		{ProjectID: "proj-ws1-a", Title: "Dev Task 2", Behavior: "dev"},
-		{ProjectID: "proj-ws1-a", Title: "Review Task", Behavior: "review"},
+		{ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Dev Task 1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}},
+		{ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Dev Task 2", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}},
+		{ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Review Task", Exec: &orchestrator.ExecAttrs{Behavior: "review"}},
 	}
 	for _, task := range tasks {
 		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
@@ -53,8 +53,8 @@ func TestListTasks_FilterByBehavior(t *testing.T) {
 		t.Errorf("ListTasks(behavior=dev): got %d tasks, want 2", len(got))
 	}
 	for _, task := range got {
-		if task.Behavior != "dev" {
-			t.Errorf("unexpected behavior %q, want dev", task.Behavior)
+		if task.Exec.Behavior != "dev" {
+			t.Errorf("unexpected behavior %q, want dev", task.Exec.Behavior)
 		}
 	}
 }
@@ -64,18 +64,18 @@ func TestListTasks_FilterByWorkspaceID(t *testing.T) {
 
 	// ws-1 tasks (two projects)
 	if err := orchestrator.CreateTask(d.Conn, &orchestrator.Task{
-		ProjectID: "proj-ws1-a", Title: "WS1-A Task", Behavior: "dev",
+		ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "WS1-A Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"},
 	}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 	if err := orchestrator.CreateTask(d.Conn, &orchestrator.Task{
-		ProjectID: "proj-ws1-b", Title: "WS1-B Task", Behavior: "dev",
+		ProjectID: "proj-ws1-b", Type: orchestrator.TaskTypeExecution, Title: "WS1-B Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"},
 	}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
 	// ws-2 task
 	if err := orchestrator.CreateTask(d.Conn, &orchestrator.Task{
-		ProjectID: "proj-ws2", Title: "WS2 Task", Behavior: "dev",
+		ProjectID: "proj-ws2", Type: orchestrator.TaskTypeExecution, Title: "WS2 Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"},
 	}); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -108,11 +108,11 @@ func taskInResults(tasks []*orchestrator.Task, id string) bool {
 func TestListTasks_OpenTab_ExecutingParentDoneChild(t *testing.T) {
 	d := setupFilterTestDB(t)
 
-	parent := &orchestrator.Task{ID: "parent-1", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev", Status: orchestrator.TaskStatusExecuting}
+	parent := &orchestrator.Task{ID: "parent-1", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Parent", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	child := &orchestrator.Task{ID: "child-1", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "parent-1"}
+	child := &orchestrator.Task{ID: "child-1", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Child", Status: orchestrator.TaskStatusDone, ParentID: "parent-1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
 	}
@@ -131,11 +131,11 @@ func TestListTasks_OpenTab_ExecutingParentDoneChild(t *testing.T) {
 func TestListTasks_OpenTab_DoneParentDoneChild(t *testing.T) {
 	d := setupFilterTestDB(t)
 
-	parent := &orchestrator.Task{ID: "parent-2", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	parent := &orchestrator.Task{ID: "parent-2", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Parent", Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	child := &orchestrator.Task{ID: "child-2", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "parent-2"}
+	child := &orchestrator.Task{ID: "child-2", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Child", Status: orchestrator.TaskStatusDone, ParentID: "parent-2", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
 	}
@@ -157,15 +157,15 @@ func TestListTasks_OpenTab_DoneParentDoneChild(t *testing.T) {
 func TestListTasks_OpenTab_ThreeLevels(t *testing.T) {
 	d := setupFilterTestDB(t)
 
-	gp := &orchestrator.Task{ID: "gp-3", ProjectID: "proj-ws1-a", Title: "Grandparent", Behavior: "dev", Status: orchestrator.TaskStatusExecuting}
+	gp := &orchestrator.Task{ID: "gp-3", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Grandparent", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, gp); err != nil {
 		t.Fatalf("create grandparent: %v", err)
 	}
-	mid := &orchestrator.Task{ID: "mid-3", ProjectID: "proj-ws1-a", Title: "Middle", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "gp-3"}
+	mid := &orchestrator.Task{ID: "mid-3", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Middle", Status: orchestrator.TaskStatusDone, ParentID: "gp-3", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, mid); err != nil {
 		t.Fatalf("create middle: %v", err)
 	}
-	gc := &orchestrator.Task{ID: "gc-3", ProjectID: "proj-ws1-a", Title: "Grandchild", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "mid-3"}
+	gc := &orchestrator.Task{ID: "gc-3", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Grandchild", Status: orchestrator.TaskStatusDone, ParentID: "mid-3", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, gc); err != nil {
 		t.Fatalf("create grandchild: %v", err)
 	}
@@ -188,15 +188,15 @@ func TestListTasks_OpenTab_ThreeLevels(t *testing.T) {
 func TestListTasks_OpenTab_DoneParentExecutingChildDoneGrandchild(t *testing.T) {
 	d := setupFilterTestDB(t)
 
-	parent := &orchestrator.Task{ID: "parent-4", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	parent := &orchestrator.Task{ID: "parent-4", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Parent", Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	child := &orchestrator.Task{ID: "child-4", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", Status: orchestrator.TaskStatusExecuting, ParentID: "parent-4"}
+	child := &orchestrator.Task{ID: "child-4", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Child", Status: orchestrator.TaskStatusExecuting, ParentID: "parent-4", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
 	}
-	gc := &orchestrator.Task{ID: "gc-4", ProjectID: "proj-ws1-a", Title: "Grandchild", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "child-4"}
+	gc := &orchestrator.Task{ID: "gc-4", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Grandchild", Status: orchestrator.TaskStatusDone, ParentID: "child-4", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, gc); err != nil {
 		t.Fatalf("create grandchild: %v", err)
 	}
@@ -226,11 +226,11 @@ func TestListTasks_OpenTab_DoneParentExecutingChildDoneGrandchild(t *testing.T) 
 func TestListTasks_OpenTab_ParkedParentDoneChild_NoLiveDescendant(t *testing.T) {
 	d := setupFilterTestDB(t)
 
-	parent := &orchestrator.Task{ID: "parent-5", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev", Status: orchestrator.TaskStatusParked}
+	parent := &orchestrator.Task{ID: "parent-5", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeCard, Title: "Parent", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	child := &orchestrator.Task{ID: "child-5", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "parent-5"}
+	child := &orchestrator.Task{ID: "child-5", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Child", Status: orchestrator.TaskStatusDone, ParentID: "parent-5", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
 	}
@@ -256,15 +256,15 @@ func TestListTasks_OpenTab_ParkedParentDoneChild_NoLiveDescendant(t *testing.T) 
 func TestListTasks_OpenTab_ParkedParentDoneChildLiveGrandchild(t *testing.T) {
 	d := setupFilterTestDB(t)
 
-	parent := &orchestrator.Task{ID: "parent-7", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev", Status: orchestrator.TaskStatusParked}
+	parent := &orchestrator.Task{ID: "parent-7", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeCard, Title: "Parent", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	child := &orchestrator.Task{ID: "child-7", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "parent-7"}
+	child := &orchestrator.Task{ID: "child-7", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Child", Status: orchestrator.TaskStatusDone, ParentID: "parent-7", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
 	}
-	gc := &orchestrator.Task{ID: "gc-7", ProjectID: "proj-ws1-a", Title: "Grandchild", Behavior: "dev", Status: orchestrator.TaskStatusExecuting, ParentID: "child-7"}
+	gc := &orchestrator.Task{ID: "gc-7", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Grandchild", Status: orchestrator.TaskStatusExecuting, ParentID: "child-7", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, gc); err != nil {
 		t.Fatalf("create grandchild: %v", err)
 	}
@@ -297,19 +297,19 @@ func strPtr(s string) *string { return &s }
 func TestListTasks_FilterByParentID_Children(t *testing.T) {
 	d := setupFilterTestDB(t)
 
-	parent := &orchestrator.Task{ID: "parent-p1", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev"}
+	parent := &orchestrator.Task{ID: "parent-p1", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Parent", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	child1 := &orchestrator.Task{ID: "child-p1a", ProjectID: "proj-ws1-a", Title: "Child A", Behavior: "dev", ParentID: "parent-p1"}
+	child1 := &orchestrator.Task{ID: "child-p1a", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Child A", ParentID: "parent-p1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, child1); err != nil {
 		t.Fatalf("create child1: %v", err)
 	}
-	child2 := &orchestrator.Task{ID: "child-p1b", ProjectID: "proj-ws1-a", Title: "Child B", Behavior: "dev", ParentID: "parent-p1"}
+	child2 := &orchestrator.Task{ID: "child-p1b", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Child B", ParentID: "parent-p1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, child2); err != nil {
 		t.Fatalf("create child2: %v", err)
 	}
-	unrelated := &orchestrator.Task{ID: "unrelated-p1", ProjectID: "proj-ws1-a", Title: "Unrelated", Behavior: "dev"}
+	unrelated := &orchestrator.Task{ID: "unrelated-p1", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Unrelated", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, unrelated); err != nil {
 		t.Fatalf("create unrelated: %v", err)
 	}
@@ -331,11 +331,11 @@ func TestListTasks_FilterByParentID_Children(t *testing.T) {
 func TestListTasks_FilterByParentID_RootOnly(t *testing.T) {
 	d := setupFilterTestDB(t)
 
-	root := &orchestrator.Task{ID: "root-r1", ProjectID: "proj-ws1-a", Title: "Root", Behavior: "dev"}
+	root := &orchestrator.Task{ID: "root-r1", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Root", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, root); err != nil {
 		t.Fatalf("create root: %v", err)
 	}
-	child := &orchestrator.Task{ID: "child-r1", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", ParentID: "root-r1"}
+	child := &orchestrator.Task{ID: "child-r1", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Child", ParentID: "root-r1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
 	}
@@ -356,11 +356,11 @@ func TestListTasks_FilterByParentID_RootOnly(t *testing.T) {
 func TestListTasks_FilterByParentID_Nil_ReturnsAll(t *testing.T) {
 	d := setupFilterTestDB(t)
 
-	root := &orchestrator.Task{ID: "root-n1", ProjectID: "proj-ws1-a", Title: "Root", Behavior: "dev"}
+	root := &orchestrator.Task{ID: "root-n1", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Root", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, root); err != nil {
 		t.Fatalf("create root: %v", err)
 	}
-	child := &orchestrator.Task{ID: "child-n1", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", ParentID: "root-n1"}
+	child := &orchestrator.Task{ID: "child-n1", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Child", ParentID: "root-n1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
 	}

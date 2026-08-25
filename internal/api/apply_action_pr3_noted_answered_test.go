@@ -35,7 +35,7 @@ func TestApplyAction_Noted_PassesThroughArbitraryJSONPayloadUnvalidated(t *testi
 		`null`,            // null
 	}
 	for _, payload := range shapes {
-		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+		task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 		txStore := &recordingTxStore{task: task}
 		svc := newTriageWorkflowService(task, txStore)
 
@@ -59,7 +59,7 @@ func TestApplyAction_Noted_PassesThroughArbitraryJSONPayloadUnvalidated(t *testi
 }
 
 func TestApplyAction_Noted_RejectsInvalidJSON(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -76,7 +76,7 @@ func TestApplyAction_Noted_RejectsInvalidJSON(t *testing.T) {
 }
 
 func TestApplyAction_Noted_EmptyPayloadIsAccepted(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -91,21 +91,25 @@ func TestApplyAction_Noted_EmptyPayloadIsAccepted(t *testing.T) {
 // TestApplyAction_Noted_DoesNotWriteTaskRowOrPollutePayload mirrors
 // TestApplyAction_AttrsSet_DoesNotWriteTaskRow /
 // ..._UpdatesDetailWithoutTransitionOrPayloadPollution (apply_action_pr4_test.go)
-// for noted: non-transitioning, no tx.UpdateTask, task.Payload untouched.
+// for noted: non-transitioning, no tx.UpdateTask.
+//
+// card-model-cleanup PR-2: the original "task.Payload untouched" assertion
+// this test also carried is gone — a Card task has no Payload field at all
+// anymore (workflow_action.go's merge is scoped to newTask.Exec != nil, and
+// "noted" only exists on the card machine, machine_card.go), so the
+// pollution this test used to guard against is now structurally impossible
+// rather than merely unobserved. The remaining tx.UpdateTask check is still
+// the real regression guard (noted must stay non-transitioning).
 func TestApplyAction_Noted_DoesNotWriteTaskRowOrPollutePayload(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{"existing":"keep"}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
-	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
 		Type:    "noted",
 		Payload: []byte(`{"seen_at":"2026-08-19T00:00:00Z"}`),
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("ApplyAction(noted): %v", err)
-	}
-	if string(result.Task.Payload) != `{"existing":"keep"}` {
-		t.Fatalf("task.Payload = %s, want untouched (noted must not merge into task.Payload)", result.Task.Payload)
 	}
 	if txStore.updatedTask != nil {
 		t.Fatalf("noted called tx.UpdateTask (updatedTask=%+v), want no task-row write", txStore.updatedTask)
@@ -115,7 +119,7 @@ func TestApplyAction_Noted_DoesNotWriteTaskRowOrPollutePayload(t *testing.T) {
 func TestApplyAction_Answered_RequiresValidAnswer(t *testing.T) {
 	cases := []string{"", "maybe", "ACCEPT", "accept "}
 	for _, answer := range cases {
-		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+		task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 		txStore := &recordingTxStore{task: task}
 		svc := newTriageWorkflowService(task, txStore)
 
@@ -131,7 +135,7 @@ func TestApplyAction_Answered_RequiresValidAnswer(t *testing.T) {
 }
 
 func TestApplyAction_Answered_MissingPayloadRejected(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -151,7 +155,7 @@ func TestApplyAction_Answered_MissingPayloadRejected(t *testing.T) {
 // this payload — so this test sets up a real suggestion (verb="drop") that
 // disagrees with the payload's fabricated verb to prove which one wins.
 func TestApplyAction_Answered_VerbBasisRecordedButNotValidated(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
@@ -207,7 +211,7 @@ func TestApplyAction_Answered_Accept_RejectedForNonHumanActor(t *testing.T) {
 	}
 	for _, a := range actorCases {
 		t.Run(a.name, func(t *testing.T) {
-			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+			task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 			txStore := &recordingTxStore{
 				task: task,
 				triage: map[string]*orchestrator.CardAttrs{
@@ -254,7 +258,7 @@ func TestApplyAction_Answered_StripsSuggestion_Reject(t *testing.T) {
 
 func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	t.Helper()
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
@@ -316,9 +320,11 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	if answer == answeredAnswerAccept && (txStore.updatedTask == nil || txStore.updatedTask.Status != orchestrator.TaskStatusWorking) {
 		t.Fatalf("accept must commit the go transition via tx.UpdateTask, got updatedTask=%+v", txStore.updatedTask)
 	}
-	if string(result.Task.Payload) != `{}` {
-		t.Fatalf("task.Payload = %s, want untouched (answered must not merge into task.Payload)", result.Task.Payload)
-	}
+	// card-model-cleanup PR-2: the original "task.Payload untouched" check
+	// here is gone — a Card task has no Payload field at all anymore, so the
+	// pollution it guarded against is now structurally impossible (see
+	// TestApplyAction_Noted_DoesNotWriteTaskRowOrPollutePayload's own comment
+	// for the fuller explanation).
 }
 
 // TestApplyAction_Answered_NoTaskTriageRow_PreExecutionStatus_StillSucceeds
@@ -331,30 +337,29 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 // the sidecar for ELIGIBILITY (only applyAnsweredSideEffect's own
 // side-effect checked it, and tolerated a miss).
 //
-// An EARLIER version of PR-B's machineFor collapsed "no confirmed sidecar
-// row" straight to NewExecutionMachine — which has no "triaged" status or
-// "answered" rule at all — so this exact scenario 400'd before ever reaching
-// applyAnsweredSideEffect (a real, if narrow, regression the PR #986 review
-// caught as part of Blocker 1: a task in a pre-execution status can
-// legitimately have no row yet, since task_create.go's SeedTaskTriage is
-// deliberately best-effort at creation time). machineFor's Blocker-1 fix
-// (machine_select.go's isCardLifecycleStatus fallback) restores
-// NewCardMachine for exactly this case, which restores this original
-// behavior: the request succeeds, and — per
-// TestApplyAnsweredSideEffect_NoExistingTriageRow_NoOp below —
-// applyAnsweredSideEffect's own no-op-on-miss behavior means no phantom row
-// gets created either.
+// card-model-cleanup PR-2 (docs/plans/card-model-cleanup.md §3.6) retires
+// the whole PR-B "machineFor performs its own sidecar-row lookup and falls
+// back by status" mechanism this test's doc comment used to describe
+// (isCardLifecycleStatus, the machineFor Blocker-1 fallback): machineFor is
+// now a pure function of task.Type (see its own doc comment,
+// machine_select.go) — this fixture sets Type: TaskTypeCard directly, so
+// NewCardMachine is selected unconditionally, with no lookup and no fallback
+// left to test. What is STILL real and still worth pinning end-to-end here
+// is applyAnsweredSideEffect's own no-op-on-miss tolerance (a plain Go
+// GetTaskTriage-miss branch, unit-pinned directly by
+// TestApplyAnsweredSideEffect_NoExistingTriageRow_NoOp below): the full
+// ApplyAction("answered") request path must still succeed against a task
+// whose sidecar lookup reports no row, without fabricating a phantom row.
 func TestApplyAction_Answered_NoTaskTriageRow_PreExecutionStatus_StillSucceeds(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},
 		Tx:    recordingTransactor{store: txStore},
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
-		// TaskTriage deliberately wired (not nil) so machineFor performs a
-		// REAL lookup and confirms no row — as opposed to falling back on a
-		// nil store, which would be a different (and less interesting)
-		// reason to land on the same isCardLifecycleStatus fallback.
+		// TaskTriage wired (not nil) so applyAnsweredSideEffect's own
+		// GetTaskTriage call actually runs (and reports no row) instead of
+		// short-circuiting on a nil CardStore.
 		TaskTriage: txStore,
 	}
 
@@ -377,7 +382,7 @@ func TestApplyAction_Answered_NoTaskTriageRow_PreExecutionStatus_StillSucceeds(t
 func TestApplyAction_Answered_AcceptReopen_FromDoneAndDropped(t *testing.T) {
 	for _, from := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped} {
 		t.Run(string(from), func(t *testing.T) {
-			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: from, Behavior: "dev", Payload: []byte(`{}`)}
+			task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: from, Card: &orchestrator.CardAttrs{}}
 			txStore := &recordingTxStore{
 				task: task,
 				triage: map[string]*orchestrator.CardAttrs{
@@ -437,7 +442,7 @@ func TestApplyAction_Answered_AcceptReopen_FromDoneAndDropped(t *testing.T) {
 // (attrs_set → accept) even though the machine-level rule and the direct
 // Reopen button both work fine on their own.
 func TestApplyAction_Drop_ThenKhiSuggestsReopenViaAttrsSet_ThenHumanAccepts_RestoresToParked(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,12 +11,18 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 )
 
-// CardAttrs is the cross-project-issue-triage Phase 1 sidecar row for a
-// triage task (docs/plans/cross-project-issue-triage.md 実測c). It is
-// deliberately kept out of Task / TaskService / TaskStore: Task is the API
-// DTO (marshaled to JSON as-is, no conversion layer), so a column added
-// there auto-exposes in every API/CLI/Web response. CardAttrs lives only
-// where triage-specific code explicitly reads/writes it.
+// CardAttrs is the card-only field set (design doc §3.2's field attribution
+// table). Through card-model-cleanup PR-1 it was the cross-project-issue-
+// triage Phase 1 sidecar row for a triage task, kept out of Task/TaskService/
+// TaskStore because Task was the API DTO (marshaled to JSON as-is) and a
+// column added there auto-exposed in every API/CLI/Web response. PR-2
+// (docs/plans/card-model-cleanup.md §3.5, migration 0045) folds the
+// task_triage table into tasks itself (a card row's kind/urgency/wake_at/
+// wake_task_id/suggestion_verb/detail columns) and gives Task a genuinely
+// nested `card` JSON key (`Task.Card *CardAttrs`) instead — so this struct
+// keeps the exact shape callers already know, but every function below now
+// reads/writes the SAME tasks row addressed by task_id, filtered to
+// type='card', rather than a separate table.
 //
 // Urgency and WakeAt are real columns because they are queue predicates
 // (queue の決定論的評価 節, 決定12) — everything else that doesn't drive a SQL
@@ -46,75 +53,64 @@ type CardAttrs struct {
 	Detail         json.RawMessage `json:"detail,omitempty"`
 }
 
-// UpsertTaskTriage inserts or updates the sidecar row for TaskID.
+// UpsertTaskTriage writes CardAttrs' columns onto the tasks row identified
+// by tt.TaskID. Despite the name (kept for call-site compatibility across
+// PR-2 — see this file's own package doc comment), this is no longer an
+// upsert against a separate sidecar table: every card row already has these
+// columns (defaulted to their zero value) from the moment CreateTask makes
+// it type='card', so there is nothing to insert — only UPDATE. The affected-
+// row check turns "taskID doesn't exist or isn't a card" into a clear error
+// instead of a silent no-op (a bare UPDATE with no matching WHERE row
+// returns no error from database/sql).
 func UpsertTaskTriage(dbtx db.DBTX, tt *CardAttrs) error {
 	if tt.TaskID == "" {
-		return fmt.Errorf("upsert task_triage: task_id is required")
+		return fmt.Errorf("upsert card attrs: task_id is required")
 	}
 	detail := tt.Detail
 	if len(detail) == 0 {
 		detail = json.RawMessage("{}")
 	}
-	_, err := dbtx.Exec(
-		`INSERT INTO task_triage (task_id, kind, urgency, wake_at, wake_task_id, suggestion_verb, detail)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(task_id) DO UPDATE SET
-		   kind = excluded.kind,
-		   urgency = excluded.urgency,
-		   wake_at = excluded.wake_at,
-		   wake_task_id = excluded.wake_task_id,
-		   suggestion_verb = excluded.suggestion_verb,
-		   detail = excluded.detail`,
-		tt.TaskID, tt.Kind, tt.Urgency, nullableTime(tt.WakeAt), tt.WakeTaskID, tt.SuggestionVerb, string(detail),
+	res, err := dbtx.Exec(
+		`UPDATE tasks SET kind = ?, urgency = ?, wake_at = ?, wake_task_id = ?, suggestion_verb = ?, detail = ?
+		 WHERE id = ? AND type = 'card'`,
+		tt.Kind, tt.Urgency, nullableTime(tt.WakeAt), tt.WakeTaskID, tt.SuggestionVerb, string(detail), tt.TaskID,
 	)
 	if err != nil {
-		return fmt.Errorf("upsert task_triage: %w", err)
+		return fmt.Errorf("upsert card attrs: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("upsert card attrs %q: %w", tt.TaskID, ErrTaskNotFound)
 	}
 	return nil
 }
 
-// SeedTaskTriage creates an empty sidecar row for taskID if one does not
-// already exist, and does nothing at all if one does. This is the "assert
-// this task IS a triage task" primitive (Phase 1 PR-5a): unlike
-// UpsertTaskTriage it can never overwrite an existing row's columns, so a
-// caller that only means to mark membership cannot destroy state.
-//
-// Single-statement by design (Opus review round 2, Low): a get-then-upsert
-// from the caller has a TOCTOU window — an attrs_set for the same card
-// committing between the read and the write would be blanked by the seed.
-// ON CONFLICT DO NOTHING closes it in the database rather than relying on
-// the window being narrow.
-func SeedTaskTriage(dbtx db.DBTX, taskID string) error {
-	if taskID == "" {
-		return fmt.Errorf("seed task_triage: task_id is required")
-	}
-	if _, err := dbtx.Exec(
-		`INSERT INTO task_triage (task_id) VALUES (?) ON CONFLICT(task_id) DO NOTHING`,
-		taskID,
-	); err != nil {
-		return fmt.Errorf("seed task_triage: %w", err)
-	}
-	return nil
-}
-
-// GetTaskTriage retrieves the sidecar row for taskID. Returns an error
-// wrapping sql.ErrNoRows when no row exists.
+// GetTaskTriage retrieves the CardAttrs columns for taskID. Returns an error
+// wrapping sql.ErrNoRows when the task does not exist or is not a card (the
+// same "no row" contract callers wrote against when this queried a separate
+// task_triage table — see this file's own package doc comment).
 func GetTaskTriage(dbtx db.DBTX, taskID string) (*CardAttrs, error) {
 	row := dbtx.QueryRow(
-		`SELECT task_id, kind, urgency, wake_at, wake_task_id, suggestion_verb, detail FROM task_triage WHERE task_id = ?`,
+		`SELECT id, kind, urgency, wake_at, wake_task_id, suggestion_verb, detail FROM tasks WHERE id = ? AND type = 'card'`,
 		taskID,
 	)
 	var tt CardAttrs
 	var wakeAt sql.NullTime
-	var detail string
-	if err := row.Scan(&tt.TaskID, &tt.Kind, &tt.Urgency, &wakeAt, &tt.WakeTaskID, &tt.SuggestionVerb, &detail); err != nil {
-		return nil, fmt.Errorf("get task_triage %q: %w", taskID, err)
+	var kind, urgency, wakeTaskID, suggestionVerb, detail sql.NullString
+	if err := row.Scan(&tt.TaskID, &kind, &urgency, &wakeAt, &wakeTaskID, &suggestionVerb, &detail); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("get card attrs %q: %w", taskID, sql.ErrNoRows)
+		}
+		return nil, fmt.Errorf("get card attrs %q: %w", taskID, err)
 	}
+	tt.Kind = kind.String
+	tt.Urgency = urgency.String
+	tt.WakeTaskID = wakeTaskID.String
+	tt.SuggestionVerb = suggestionVerb.String
 	if wakeAt.Valid {
 		t := wakeAt.Time
 		tt.WakeAt = &t
 	}
-	tt.Detail = json.RawMessage(detail)
+	tt.Detail = json.RawMessage(detail.String)
 	return &tt, nil
 }
 
@@ -182,7 +178,7 @@ func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*CardAt
 		}
 		func() {
 			rows, err := dbtx.Query(
-				`SELECT task_id, kind, urgency, wake_at, wake_task_id, suggestion_verb, detail FROM task_triage WHERE task_id IN (`+placeholders+`)`,
+				`SELECT id, kind, urgency, wake_at, wake_task_id, suggestion_verb, detail FROM tasks WHERE type = 'card' AND id IN (`+placeholders+`)`,
 				args...,
 			)
 			if err != nil {
@@ -193,16 +189,20 @@ func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*CardAt
 			for rows.Next() {
 				var tt CardAttrs
 				var wakeAt sql.NullTime
-				var detail string
-				if err := rows.Scan(&tt.TaskID, &tt.Kind, &tt.Urgency, &wakeAt, &tt.WakeTaskID, &tt.SuggestionVerb, &detail); err != nil {
+				var kind, urgency, wakeTaskID, suggestionVerb, detail sql.NullString
+				if err := rows.Scan(&tt.TaskID, &kind, &urgency, &wakeAt, &wakeTaskID, &suggestionVerb, &detail); err != nil {
 					noteErr(fmt.Errorf("list task_triage by task_ids: scan: %w", err))
 					continue
 				}
+				tt.Kind = kind.String
+				tt.Urgency = urgency.String
+				tt.WakeTaskID = wakeTaskID.String
+				tt.SuggestionVerb = suggestionVerb.String
 				if wakeAt.Valid {
 					t := wakeAt.Time
 					tt.WakeAt = &t
 				}
-				tt.Detail = json.RawMessage(detail)
+				tt.Detail = json.RawMessage(detail.String)
 				out[tt.TaskID] = &tt
 			}
 			if err := rows.Err(); err != nil {
@@ -213,13 +213,27 @@ func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*CardAt
 	return out, firstErr
 }
 
-// DeleteTaskTriage removes the sidecar row for taskID. Deleting the parent
-// task row already cascades this via ON DELETE CASCADE (see
-// 0035_add_task_triage.sql) — this is for explicit cleanup when a task's
-// triage sidecar needs to be dropped without deleting the task itself.
+// DeleteTaskTriage resets a card's CardAttrs columns back to their empty
+// defaults without deleting the task row itself. Before card-model-cleanup
+// PR-2 (migration 0045) this deleted a separate task_triage sidecar row —
+// deleting the parent task row already cascaded that via ON DELETE CASCADE
+// (0035_add_task_triage.sql), so the only real use was explicit cleanup of
+// the sidecar's CONTENT without touching the task. Now that the content
+// lives on the tasks row itself, "delete the sidecar" can only mean
+// resetting those columns; the task row (and its type='card') is untouched.
+// Has no production caller as of this PR (grep confirms) — kept for
+// interface/test-double compatibility, same posture as its predecessor.
 func DeleteTaskTriage(dbtx db.DBTX, taskID string) error {
-	if _, err := dbtx.Exec(`DELETE FROM task_triage WHERE task_id = ?`, taskID); err != nil {
+	res, err := dbtx.Exec(
+		`UPDATE tasks SET kind = '', urgency = '', wake_at = NULL, wake_task_id = '', suggestion_verb = '', detail = '{}'
+		 WHERE id = ? AND type = 'card'`,
+		taskID,
+	)
+	if err != nil {
 		return fmt.Errorf("delete task_triage %q: %w", taskID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("delete task_triage %q: %w", taskID, ErrTaskNotFound)
 	}
 	return nil
 }

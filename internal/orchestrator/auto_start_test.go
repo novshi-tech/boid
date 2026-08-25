@@ -12,8 +12,11 @@ func TestCreateTask_AutoStart_Persisted(t *testing.T) {
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
 		Title:     "auto start task",
-		Behavior:  "dev",
-		AutoStart: true,
+		Type:      orchestrator.TaskTypeExecution,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior:  "dev",
+			AutoStart: true,
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -23,7 +26,7 @@ func TestCreateTask_AutoStart_Persisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if !got.AutoStart {
+	if !got.Exec.AutoStart {
 		t.Fatal("AutoStart should be true after round-trip")
 	}
 }
@@ -34,7 +37,8 @@ func TestCreateTask_AutoStart_DefaultFalse(t *testing.T) {
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
 		Title:     "normal task",
-		Behavior:  "dev",
+		Type:      orchestrator.TaskTypeExecution,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -44,7 +48,7 @@ func TestCreateTask_AutoStart_DefaultFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
 	}
-	if got.AutoStart {
+	if got.Exec.AutoStart {
 		t.Fatal("AutoStart should default to false")
 	}
 }
@@ -55,8 +59,11 @@ func TestListTasks_AutoStart_Persisted(t *testing.T) {
 	if err := orchestrator.CreateTask(d.Conn, &orchestrator.Task{
 		ProjectID: "proj-1",
 		Title:     "auto",
-		Behavior:  "dev",
-		AutoStart: true,
+		Type:      orchestrator.TaskTypeExecution,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior:  "dev",
+			AutoStart: true,
+		},
 	}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -68,7 +75,7 @@ func TestListTasks_AutoStart_Persisted(t *testing.T) {
 	if len(tasks) != 1 {
 		t.Fatalf("expected 1 task, got %d", len(tasks))
 	}
-	if !tasks[0].AutoStart {
+	if !tasks[0].Exec.AutoStart {
 		t.Fatal("AutoStart should be true in listed task")
 	}
 }

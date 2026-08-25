@@ -231,6 +231,39 @@ func detailProjectLabel(task *orchestrator.Task, projectName string) string {
 	return task.ProjectID
 }
 
+// taskBehaviorLabel returns the behavior name for an execution task, or
+// "card" for a card (card-model-cleanup PR-2: Behavior is execution-only —
+// design doc §3.2 — so a card has none to show; surfacing its type instead
+// of leaving the slot blank keeps this generic status header meaningful for
+// both task types).
+func taskBehaviorLabel(task *orchestrator.Task) string {
+	if task.Exec != nil {
+		return task.Exec.Behavior
+	}
+	return string(task.Type)
+}
+
+// taskExecPayload/taskExecInstructions read Payload/Instructions off a
+// task's Exec attrs, returning the zero value for a card (card-model-cleanup
+// PR-2: both are execution-only fields — design doc §3.2). The task detail
+// page is a generic per-task view (any task, card or execution — see
+// TaskDetailStatusSection's own doc comment), so every render site that used
+// to read task.Payload/task.Instructions directly goes through these instead
+// of risking a nil Exec dereference.
+func taskExecPayload(task *orchestrator.Task) json.RawMessage {
+	if task.Exec == nil {
+		return nil
+	}
+	return task.Exec.Payload
+}
+
+func taskExecInstructions(task *orchestrator.Task) orchestrator.Instructions {
+	if task.Exec == nil {
+		return nil
+	}
+	return task.Exec.Instructions
+}
+
 // projectOptionLabel returns the display label for a project in a select dropdown.
 func projectOptionLabel(p *orchestrator.Project) string {
 	if p.Meta.Name != "" {
@@ -261,7 +294,7 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 			<div class="detail-meta">
 				<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
 				<span class="detail-meta-sep">·</span>
-				<span>{ task.Behavior }</span>
+				<span>{ taskBehaviorLabel(task) }</span>
 				if task.ProjectID != "" {
 					<span class="detail-meta-sep">·</span>
 					<span>{ detailProjectLabel(task, projectName) }</span>
@@ -916,7 +949,7 @@ templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.Statu
 // watching decides whether to PAGE the user (fireUserAskNotification), not
 // whether a page the user already opened should offer the form.
 templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
-	{{ ap := orchestrator.GetAwaitingPayload(task.Payload) }}
+	{{ ap := orchestrator.GetAwaitingPayload(taskExecPayload(task)) }}
 	if ap.QuestionID != "" {
 		<a class="awaiting-banner" href={ templ.SafeURL("/tasks/" + task.ID + "/questions/" + ap.QuestionID) }>
 			<span class="awaiting-banner-icon" aria-hidden="true">?</span>
@@ -1096,7 +1129,7 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 			</div>
 		} else if activeTab == "payload" {
 			<div class="tab-content">
-				{{ yamlStr := payloadAsYAML(task.Payload) }}
+				{{ yamlStr := payloadAsYAML(taskExecPayload(task)) }}
 				if yamlStr != "" {
 					<pre class="tab-body-pre">{ yamlStr }</pre>
 				} else {
@@ -1105,8 +1138,8 @@ templ TaskDetailTabPanel(task *orchestrator.Task, timelineGroups []timeline.Stat
 			</div>
 		} else if activeTab == "instructions" {
 			<div class="tab-content">
-				if len(task.Instructions) > 0 {
-					for _, entry := range orderedInstructions(task.Instructions) {
+				if len(taskExecInstructions(task)) > 0 {
+					for _, entry := range orderedInstructions(taskExecInstructions(task)) {
 						{{ inst := entry.Instruction }}
 						<section class="instr-block">
 							<h3 class="instr-role">{ entry.Label }</h3>
@@ -1275,7 +1308,7 @@ templ TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, er
 					<label class="form-label">Description</label>
 					<textarea name="description" class="form-input" rows="8">{ task.Description }</textarea>
 				</div>
-				{{ active := task.Instructions.Active() }}
+				{{ active := taskExecInstructions(task).Active() }}
 				<div class="form-group">
 					<label class="form-label">Message</label>
 					<textarea name="message" class="form-input tab-edit-textarea" rows="8" placeholder="指示メッセージ">{ instrActiveField(active, "message") }</textarea>

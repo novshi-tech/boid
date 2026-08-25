@@ -19,11 +19,14 @@ func TestGetTaskCurrent_HappyPath(t *testing.T) {
 		tasks: map[string]*orchestrator.Task{
 			"t1": {
 				ID:          "t1",
+				Type:        orchestrator.TaskTypeExecution,
 				Title:       "hello",
 				Status:      orchestrator.TaskStatusExecuting,
-				Behavior:    "dev",
 				Description: "world",
-				Readonly:    true,
+				Exec: &orchestrator.ExecAttrs{
+					Behavior: "dev",
+					Readonly: true,
+				},
 			},
 		},
 	}
@@ -45,8 +48,8 @@ func TestGetTaskCurrent_HappyPath(t *testing.T) {
 func TestGetTaskCurrentField_Readonly(t *testing.T) {
 	store := &fieldTaskStore{
 		tasks: map[string]*orchestrator.Task{
-			"t1": {ID: "t1", Behavior: "executor", Readonly: false},
-			"t2": {ID: "t2", Behavior: "supervisor", Readonly: true},
+			"t1": {ID: "t1", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor", Readonly: false}},
+			"t2": {ID: "t2", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "supervisor", Readonly: true}},
 		},
 	}
 	svc := &TaskAppService{Tasks: store}
@@ -84,7 +87,7 @@ func TestGetTaskCurrent_NotFound(t *testing.T) {
 func TestGetTaskCurrentField_TopLevel(t *testing.T) {
 	store := &fieldTaskStore{
 		tasks: map[string]*orchestrator.Task{
-			"t1": {ID: "t1", Title: "hello", Status: orchestrator.TaskStatusExecuting, Behavior: "dev"},
+			"t1": {ID: "t1", Type: orchestrator.TaskTypeExecution, Title: "hello", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}},
 		},
 	}
 	svc := &TaskAppService{Tasks: store}
@@ -108,7 +111,7 @@ func TestGetTaskCurrentField_EmptyPath(t *testing.T) {
 }
 
 func TestGetTaskCurrentField_UnknownField_ReturnsEmpty(t *testing.T) {
-	store := &fieldTaskStore{tasks: map[string]*orchestrator.Task{"t1": {ID: "t1"}}}
+	store := &fieldTaskStore{tasks: map[string]*orchestrator.Task{"t1": {ID: "t1", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{}}}}
 	svc := &TaskAppService{Tasks: store}
 
 	got, err := svc.GetTaskCurrentField("t1", "no_such_field")
@@ -125,9 +128,12 @@ func TestGetInstructions_ExecutingWithActiveInstruction(t *testing.T) {
 		tasks: map[string]*orchestrator.Task{
 			"t1": {
 				ID:     "t1",
+				Type:   orchestrator.TaskTypeExecution,
 				Status: orchestrator.TaskStatusExecuting,
-				Instructions: orchestrator.Instructions{
-					{Agent: "claude-code", Name: "dev", Message: "do it", Model: "claude-sonnet-4-6"},
+				Exec: &orchestrator.ExecAttrs{
+					Instructions: orchestrator.Instructions{
+						{Agent: "claude-code", Name: "dev", Message: "do it", Model: "claude-sonnet-4-6"},
+					},
 				},
 			},
 		},
@@ -146,7 +152,7 @@ func TestGetInstructions_ExecutingWithActiveInstruction(t *testing.T) {
 func TestGetInstructions_NoActiveInstruction_ReturnsEmptySlice(t *testing.T) {
 	store := &fieldTaskStore{
 		tasks: map[string]*orchestrator.Task{
-			"t1": {ID: "t1", Status: orchestrator.TaskStatusPending},
+			"t1": {ID: "t1", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusPending, Exec: &orchestrator.ExecAttrs{}},
 		},
 	}
 	svc := &TaskAppService{Tasks: store}
@@ -174,9 +180,12 @@ func TestGetInstructionsField_Nested(t *testing.T) {
 		tasks: map[string]*orchestrator.Task{
 			"t1": {
 				ID:     "t1",
+				Type:   orchestrator.TaskTypeExecution,
 				Status: orchestrator.TaskStatusExecuting,
-				Instructions: orchestrator.Instructions{
-					{Agent: "claude-code", Name: "dev", Message: "do it"},
+				Exec: &orchestrator.ExecAttrs{
+					Instructions: orchestrator.Instructions{
+						{Agent: "claude-code", Name: "dev", Message: "do it"},
+					},
 				},
 			},
 		},

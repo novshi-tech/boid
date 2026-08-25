@@ -396,7 +396,7 @@ func TestDeleteProject_WithTasks(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -466,8 +466,11 @@ func TestCreateTask(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Test Task",
-		Behavior:  "dev",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -478,8 +481,8 @@ func TestCreateTask(t *testing.T) {
 	if task.Status != orchestrator.TaskStatusPending {
 		t.Fatalf("expected default status pending, got %s", task.Status)
 	}
-	if string(task.Payload) != "{}" {
-		t.Fatalf("expected default payload {}, got %s", string(task.Payload))
+	if string(task.Exec.Payload) != "{}" {
+		t.Fatalf("expected default payload {}, got %s", string(task.Exec.Payload))
 	}
 	if task.CreatedAt.IsZero() {
 		t.Fatal("expected CreatedAt to be set")
@@ -491,8 +494,11 @@ func TestGetTask_ByID(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Test Task",
-		Behavior:  "dev",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -515,8 +521,11 @@ func TestGetTask_ByPrefix(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Test Task",
-		Behavior:  "dev",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -549,8 +558,11 @@ func TestListTasks_NoFilter(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		task := &orchestrator.Task{
 			ProjectID: "proj-1",
+			Type:      orchestrator.TaskTypeExecution,
 			Title:     "Task",
-			Behavior:  "dev",
+			Exec: &orchestrator.ExecAttrs{
+				Behavior: "dev",
+			},
 		}
 		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 			t.Fatalf("create task %d: %v", i, err)
@@ -571,9 +583,12 @@ func TestListTasks_WithStatusFilter(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusExecuting,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create: %v", err)
@@ -602,10 +617,10 @@ func TestListTasks_WithProjectFilter(t *testing.T) {
 		t.Fatalf("create proj-2: %v", err)
 	}
 
-	if err := orchestrator.CreateTask(d.Conn, &orchestrator.Task{ProjectID: "proj-1", Title: "A", Behavior: "dev"}); err != nil {
+	if err := orchestrator.CreateTask(d.Conn, &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "A", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := orchestrator.CreateTask(d.Conn, &orchestrator.Task{ProjectID: "proj-2", Title: "B", Behavior: "dev"}); err != nil {
+	if err := orchestrator.CreateTask(d.Conn, &orchestrator.Task{ProjectID: "proj-2", Type: orchestrator.TaskTypeExecution, Title: "B", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -626,8 +641,11 @@ func TestUpdateTask(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task",
-		Behavior:  "dev",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create: %v", err)
@@ -650,7 +668,7 @@ func TestUpdateTask(t *testing.T) {
 func TestCreateAction(t *testing.T) {
 	d := createTestProject(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -674,7 +692,7 @@ func TestCreateAction(t *testing.T) {
 func TestCreateAction_DefaultPayload(t *testing.T) {
 	d := createTestProject(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -694,7 +712,7 @@ func TestCreateAction_DefaultPayload(t *testing.T) {
 func TestCreateAction_PersistsActor(t *testing.T) {
 	d := createTestProject(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -723,11 +741,11 @@ func TestCreateAction_PersistsActor(t *testing.T) {
 func TestListActionsByTask(t *testing.T) {
 	d := createTestProject(t)
 
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task1", Behavior: "dev"}
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
-	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "Task2", Behavior: "dev"}
+	task2 := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task2", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
@@ -767,7 +785,7 @@ func TestListActionsByTask(t *testing.T) {
 func TestCreateAction_WithStatusTransition(t *testing.T) {
 	d := createTestProject(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -800,7 +818,7 @@ func TestCreateAction_WithStatusTransition(t *testing.T) {
 func TestCreateAction_DispatchError_SameFromTo(t *testing.T) {
 	d := createTestProject(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -833,7 +851,7 @@ func TestCreateAction_DispatchError_SameFromTo(t *testing.T) {
 func TestCreateAction_LegacyNoStatusTransition(t *testing.T) {
 	d := createTestProject(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -865,7 +883,7 @@ func TestCreateAction_LegacyNoStatusTransition(t *testing.T) {
 func TestListActionsByTask_Empty(t *testing.T) {
 	d := createTestProject(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -882,7 +900,7 @@ func TestListActionsByTask_Empty(t *testing.T) {
 func TestDeleteTask(t *testing.T) {
 	d := createTestProject(t)
 
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task to delete", Behavior: "dev"}
+	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "Task to delete", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -927,9 +945,12 @@ func TestFindTaskByRemote_Found(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Remote Task",
-		Behavior:  "dev",
 		RemoteID:  "PROJ-1",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -966,13 +987,16 @@ func TestCreateTask_WithBehaviorFields(t *testing.T) {
 	d := createTestProject(t)
 
 	task := &orchestrator.Task{
-		ProjectID:    "proj-1",
-		Title:        "Task with behavior fields",
-		Behavior:     "dev",
-		Traits:       []string{"git", "sandbox"},
-		Readonly:     true,
-		BranchPrefix: "feat/",
-		BaseBranch:   "main",
+		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
+		Title:     "Task with behavior fields",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior:     "dev",
+			Traits:       []string{"git", "sandbox"},
+			Readonly:     true,
+			BranchPrefix: "feat/",
+			BaseBranch:   "main",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -982,17 +1006,17 @@ func TestCreateTask_WithBehaviorFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if len(got.Traits) != 2 || got.Traits[0] != "git" || got.Traits[1] != "sandbox" {
-		t.Fatalf("Traits = %v, want [git sandbox]", got.Traits)
+	if len(got.Exec.Traits) != 2 || got.Exec.Traits[0] != "git" || got.Exec.Traits[1] != "sandbox" {
+		t.Fatalf("Traits = %v, want [git sandbox]", got.Exec.Traits)
 	}
-	if !got.Readonly {
+	if !got.Exec.Readonly {
 		t.Fatal("Readonly = false, want true")
 	}
-	if got.BranchPrefix != "feat/" {
-		t.Fatalf("BranchPrefix = %q, want %q", got.BranchPrefix, "feat/")
+	if got.Exec.BranchPrefix != "feat/" {
+		t.Fatalf("BranchPrefix = %q, want %q", got.Exec.BranchPrefix, "feat/")
 	}
-	if got.BaseBranch != "main" {
-		t.Fatalf("BaseBranch = %q, want %q", got.BaseBranch, "main")
+	if got.Exec.BaseBranch != "main" {
+		t.Fatalf("BaseBranch = %q, want %q", got.Exec.BaseBranch, "main")
 	}
 }
 
@@ -1001,8 +1025,11 @@ func TestCreateTask_TraitsNilRoundtrip(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Task without traits",
-		Behavior:  "dev",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -1012,10 +1039,10 @@ func TestCreateTask_TraitsNilRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Traits != nil {
-		t.Fatalf("Traits = %v, want nil", got.Traits)
+	if got.Exec.Traits != nil {
+		t.Fatalf("Traits = %v, want nil", got.Exec.Traits)
 	}
-	if got.Readonly {
+	if got.Exec.Readonly {
 		t.Fatal("Readonly = true, want false")
 	}
 }
@@ -1025,8 +1052,11 @@ func TestUpdateTask_BehaviorFields(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Original Title",
-		Behavior:  "dev",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -1034,10 +1064,10 @@ func TestUpdateTask_BehaviorFields(t *testing.T) {
 
 	task.Title = "Updated Title"
 	task.Description = "Updated description"
-	task.Traits = []string{"docker"}
-	task.Readonly = true
-	task.BranchPrefix = "fix/"
-	task.BaseBranch = "develop"
+	task.Exec.Traits = []string{"docker"}
+	task.Exec.Readonly = true
+	task.Exec.BranchPrefix = "fix/"
+	task.Exec.BaseBranch = "develop"
 	task.Status = orchestrator.TaskStatusExecuting
 	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
 		t.Fatalf("update task: %v", err)
@@ -1053,25 +1083,25 @@ func TestUpdateTask_BehaviorFields(t *testing.T) {
 	if got.Description != "Updated description" {
 		t.Fatalf("Description = %q, want %q", got.Description, "Updated description")
 	}
-	if len(got.Traits) != 1 || got.Traits[0] != "docker" {
-		t.Fatalf("Traits = %v, want [docker]", got.Traits)
+	if len(got.Exec.Traits) != 1 || got.Exec.Traits[0] != "docker" {
+		t.Fatalf("Traits = %v, want [docker]", got.Exec.Traits)
 	}
-	if !got.Readonly {
+	if !got.Exec.Readonly {
 		t.Fatal("Readonly = false, want true")
 	}
-	if got.BranchPrefix != "fix/" {
-		t.Fatalf("BranchPrefix = %q, want %q", got.BranchPrefix, "fix/")
+	if got.Exec.BranchPrefix != "fix/" {
+		t.Fatalf("BranchPrefix = %q, want %q", got.Exec.BranchPrefix, "fix/")
 	}
-	if got.BaseBranch != "develop" {
-		t.Fatalf("BaseBranch = %q, want %q", got.BaseBranch, "develop")
+	if got.Exec.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want %q", got.Exec.BaseBranch, "develop")
 	}
 }
 
 func TestUpdateTask_ParentID(t *testing.T) {
 	d := createTestProject(t)
 
-	parent1 := &orchestrator.Task{ProjectID: "proj-1", Title: "P1", Behavior: "dev"}
-	parent2 := &orchestrator.Task{ProjectID: "proj-1", Title: "P2", Behavior: "dev"}
+	parent1 := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "P1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	parent2 := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "P2", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, parent1); err != nil {
 		t.Fatalf("create parent1: %v", err)
 	}
@@ -1081,9 +1111,12 @@ func TestUpdateTask_ParentID(t *testing.T) {
 
 	child := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "Child",
-		Behavior:  "dev",
 		ParentID:  parent1.ID,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
 		t.Fatalf("create child: %v", err)
@@ -1106,7 +1139,7 @@ func TestUpdateTask_ParentID(t *testing.T) {
 func TestFindTaskByRemote_MatchesRemoteID(t *testing.T) {
 	d := createTestProject(t)
 
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev", RemoteID: "PROJ-1"}
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "T1", RemoteID: "PROJ-1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
@@ -1134,8 +1167,8 @@ func TestFindTaskByRemote_MatchesRemoteID(t *testing.T) {
 func TestFindTaskByRemote_MultipleMatches_ReturnsLatest(t *testing.T) {
 	d := createTestProject(t)
 
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev", RemoteID: "PROJ-42"}
-	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "T2", Behavior: "dev", RemoteID: "PROJ-42"}
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "T1", RemoteID: "PROJ-42", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	task2 := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Title: "T2", RemoteID: "PROJ-42", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}

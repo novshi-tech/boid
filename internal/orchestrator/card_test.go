@@ -12,9 +12,10 @@ import (
 )
 
 // newTestDB opens an in-memory DB via db.Open (not a bare sql.Open) so
-// PRAGMA foreign_keys=ON is set — required for task_triage's
-// ON DELETE CASCADE to actually fire (see
-// TestTaskTriage_DeleteAndCascadeOnTaskDelete).
+// PRAGMA foreign_keys=ON is set — required by other tables' FKs (e.g.
+// identity bindings) even though card-model-cleanup PR-2 folded the old
+// task_triage sidecar's own ON DELETE CASCADE into a plain same-row delete
+// (see TestTaskTriage_DeleteAndCascadeOnTaskDelete's updated doc comment).
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	d, err := db.Open(":memory:")
@@ -28,6 +29,15 @@ func newTestDB(t *testing.T) *sql.DB {
 	return d.Conn
 }
 
+// createTestTask inserts a CARD row directly (type='card') — every function
+// in card.go this file exercises (UpsertTaskTriage/GetTaskTriage/
+// ListTaskTriageByTaskIDs/DeleteTaskTriage/ParkedFrom) reads/writes a card's
+// kind/urgency/wake_at/wake_task_id/suggestion_verb/detail columns on the
+// unified tasks row (WHERE type = 'card') since card-model-cleanup PR-2
+// (migration 0045) folded the old task_triage sidecar table into tasks
+// itself. status must be one of the four card statuses (parked/working/
+// done/dropped) — migration 0045's CHECK constraint on tasks.status now
+// rejects anything else for a type='card' row.
 func createTestTask(t *testing.T, dbtx interface {
 	Exec(string, ...any) (sql.Result, error)
 }, id string, status orchestrator.TaskStatus) {
@@ -41,9 +51,9 @@ func createTestTask(t *testing.T, dbtx interface {
 		t.Fatalf("insert project: %v", err)
 	}
 	_, err = dbtx.Exec(
-		`INSERT INTO tasks (id, project_id, title, status, behavior, payload, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, '{}', ?, ?)`,
-		id, "proj-"+id, "task "+id, string(status), "dev", now, now,
+		`INSERT INTO tasks (id, type, project_id, title, status, kind, urgency, wake_task_id, suggestion_verb, detail, created_at, updated_at)
+		 VALUES (?, 'card', ?, ?, ?, '', '', '', '', '{}', ?, ?)`,
+		id, "proj-"+id, "task "+id, string(status), now, now,
 	)
 	if err != nil {
 		t.Fatalf("insert task: %v", err)
@@ -52,7 +62,7 @@ func createTestTask(t *testing.T, dbtx interface {
 
 func TestTaskTriage_UpsertAndGet(t *testing.T) {
 	conn := newTestDB(t)
-	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)
+	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
 
 	wakeAt := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	tt := &orchestrator.CardAttrs{
@@ -149,7 +159,7 @@ func TestListTaskTriageByTaskIDs_IncludesSuggestionVerb(t *testing.T) {
 
 func TestTaskTriage_UpsertUpdatesExistingRow(t *testing.T) {
 	conn := newTestDB(t)
-	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)
+	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
 
 	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1", Urgency: "week"}); err != nil {
 		t.Fatalf("first upsert: %v", err)
@@ -173,15 +183,48 @@ func TestTaskTriage_GetNotFound(t *testing.T) {
 	}
 }
 
+// createExecutionTestTask inserts a plain EXECUTION row (type='execution')
+// — the card-model-cleanup PR-2 counterpart to createTestTask's card-only
+// insert, needed by tests that must exercise "this task is not a card at
+// all" (a card row can no longer exist without its CardAttrs columns, since
+// they live on the same row — there is no more "rowless card" state to
+// construct; the only way to get a genuinely absent CardAttrs is a
+// different task TYPE entirely).
+func createExecutionTestTask(t *testing.T, dbtx interface {
+	Exec(string, ...any) (sql.Result, error)
+}, id string) {
+	t.Helper()
+	now := time.Now().UTC()
+	_, err := dbtx.Exec(
+		`INSERT INTO projects (id, work_dir, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		"proj-"+id, "/tmp/"+id, now, now,
+	)
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	_, err = dbtx.Exec(
+		`INSERT INTO tasks (id, type, project_id, title, status, behavior, traits, readonly, branch_prefix, base_branch, payload, instructions, auto_start, created_at, updated_at)
+		 VALUES (?, 'execution', ?, ?, 'pending', '', '[]', FALSE, '', '', '{}', '[]', FALSE, ?, ?)`,
+		id, "proj-"+id, "task "+id, now, now,
+	)
+	if err != nil {
+		t.Fatalf("insert execution task: %v", err)
+	}
+}
+
 // TestListTaskTriageByTaskIDs_ReturnsRequestedRowsOnly is the store-side
-// pin for BD-8 残件1's batch fetch: mixed presence (some IDs have a
-// task_triage row, some don't, one is requested but doesn't exist at all)
-// in a single call.
+// pin for BD-8 残件1's batch fetch: mixed presence (a card, a card with no
+// attrs ever set, an execution task that is not a card at all, and an id
+// that doesn't exist) in a single call. card-model-cleanup PR-2: a card
+// always "has" its CardAttrs columns (they're part of the same row), so
+// "no task_triage row" is no longer expressible for a card — the case this
+// test now exercises for "must be absent from the map" is t3, an
+// EXECUTION task (never a card to begin with).
 func TestListTaskTriageByTaskIDs_ReturnsRequestedRowsOnly(t *testing.T) {
 	conn := newTestDB(t)
-	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)
-	createTestTask(t, conn, "t2", orchestrator.TaskStatusTriaged)
-	createTestTask(t, conn, "t3", orchestrator.TaskStatusTriaged) // no task_triage row
+	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
+	createTestTask(t, conn, "t2", orchestrator.TaskStatusParked)
+	createExecutionTestTask(t, conn, "t3") // not a card at all
 
 	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1", Urgency: "now"}); err != nil {
 		t.Fatalf("upsert t1: %v", err)
@@ -204,7 +247,7 @@ func TestListTaskTriageByTaskIDs_ReturnsRequestedRowsOnly(t *testing.T) {
 		t.Errorf("got[t2] = %+v, want Urgency=today", got["t2"])
 	}
 	if _, ok := got["t3"]; ok {
-		t.Error(`"t3" has no task_triage row and must be absent from the map, not a zero-value entry`)
+		t.Error(`"t3" is an execution task, not a card, and must be absent from the map`)
 	}
 	if _, ok := got["does-not-exist-at-all"]; ok {
 		t.Error(`"does-not-exist-at-all" must be absent from the map`)
@@ -236,7 +279,7 @@ func TestListTaskTriageByTaskIDs_ChunksAcrossInClauseLimit(t *testing.T) {
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("chunk-t%04d", i)
 		ids[i] = id
-		createTestTask(t, conn, id, orchestrator.TaskStatusTriaged)
+		createTestTask(t, conn, id, orchestrator.TaskStatusParked)
 		if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: id, Urgency: "week"}); err != nil {
 			t.Fatalf("upsert %s: %v", id, err)
 		}
@@ -269,9 +312,9 @@ func TestListTaskTriageByTaskIDs_ChunksAcrossInClauseLimit(t *testing.T) {
 // to close).
 func TestListTaskTriageByTaskIDs_OneRowScanErrorDoesNotSinkOthers(t *testing.T) {
 	conn := newTestDB(t)
-	createTestTask(t, conn, "good1", orchestrator.TaskStatusTriaged)
-	createTestTask(t, conn, "bad", orchestrator.TaskStatusTriaged)
-	createTestTask(t, conn, "good2", orchestrator.TaskStatusTriaged)
+	createTestTask(t, conn, "good1", orchestrator.TaskStatusParked)
+	createTestTask(t, conn, "bad", orchestrator.TaskStatusParked)
+	createTestTask(t, conn, "good2", orchestrator.TaskStatusParked)
 	for _, id := range []string{"good1", "bad", "good2"} {
 		if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: id, Urgency: "now"}); err != nil {
 			t.Fatalf("upsert %s: %v", id, err)
@@ -279,8 +322,10 @@ func TestListTaskTriageByTaskIDs_OneRowScanErrorDoesNotSinkOthers(t *testing.T) 
 	}
 	// Bypass UpsertTaskTriage's nullableTime marshaling with a raw,
 	// non-parseable wake_at — this is what makes rows.Scan fail for this
-	// one row specifically, independent of the query itself.
-	if _, err := conn.Exec(`UPDATE task_triage SET wake_at = 'not-a-real-timestamp' WHERE task_id = 'bad'`); err != nil {
+	// one row specifically, independent of the query itself. card-model-
+	// cleanup PR-2: wake_at now lives directly on the tasks row (WHERE
+	// type='card'), not a separate task_triage table.
+	if _, err := conn.Exec(`UPDATE tasks SET wake_at = 'not-a-real-timestamp' WHERE id = 'bad' AND type = 'card'`); err != nil {
 		t.Fatalf("raw update to induce a malformed wake_at: %v", err)
 	}
 
@@ -301,32 +346,47 @@ func TestListTaskTriageByTaskIDs_OneRowScanErrorDoesNotSinkOthers(t *testing.T) 
 
 func TestTaskTriage_DeleteAndCascadeOnTaskDelete(t *testing.T) {
 	conn := newTestDB(t)
-	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)
+	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
 	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1"}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	// FK ON DELETE CASCADE: deleting the task row must delete the sidecar row too
-	// (Opus指摘#14 — this is the behavior GC's bare `DELETE FROM tasks` relies on).
+	// card-model-cleanup PR-2: the card attrs columns now live directly on
+	// the tasks row itself (no more separate task_triage sidecar with its
+	// own ON DELETE CASCADE FK — Opus指摘#14's original concern), so
+	// deleting the task row trivially takes its card attrs with it. Still
+	// worth pinning: this is the behavior GC's bare `DELETE FROM tasks`
+	// relies on.
 	if _, err := conn.Exec(`DELETE FROM tasks WHERE id = ?`, "t1"); err != nil {
 		t.Fatalf("delete task: %v", err)
 	}
 	if _, err := orchestrator.GetTaskTriage(conn, "t1"); err == nil {
-		t.Fatal("expected task_triage row to be cascade-deleted with its task")
+		t.Fatal("expected card attrs to be gone along with its deleted task")
 	}
 }
 
+// TestTaskTriage_ExplicitDelete pins card-model-cleanup PR-2's redefinition
+// of DeleteTaskTriage (see its own doc comment in orchestrator/card.go):
+// since card attrs now live directly on the tasks row (no separate sidecar
+// row to literally delete), "delete" can only mean resetting the columns
+// back to their empty defaults — the row itself, and its type='card', stay
+// put. GetTaskTriage must therefore still SUCCEED after an explicit delete,
+// returning a card with empty CardAttrs, not sql.ErrNoRows.
 func TestTaskTriage_ExplicitDelete(t *testing.T) {
 	conn := newTestDB(t)
-	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)
-	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1"}); err != nil {
+	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1", Urgency: "now", Kind: "issue"}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	if err := orchestrator.DeleteTaskTriage(conn, "t1"); err != nil {
 		t.Fatalf("DeleteTaskTriage: %v", err)
 	}
-	if _, err := orchestrator.GetTaskTriage(conn, "t1"); err == nil {
-		t.Fatal("expected error after explicit delete")
+	got, err := orchestrator.GetTaskTriage(conn, "t1")
+	if err != nil {
+		t.Fatalf("GetTaskTriage after explicit delete: %v (task row/type='card' must survive; only the columns reset)", err)
+	}
+	if got.Urgency != "" || got.Kind != "" {
+		t.Errorf("card attrs after explicit delete = %+v, want empty (Urgency/Kind reset)", got)
 	}
 }
 
@@ -336,8 +396,12 @@ func TestParkedFrom_DerivesFromLatestParkAction(t *testing.T) {
 	conn := newTestDB(t)
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
 
+	// card-model-cleanup PR-2: machine_card.go's park rule now has exactly
+	// one edge (working → parked) — the old three-way triaged/ready/working
+	// origin is gone along with those statuses themselves. "working" is the
+	// only currently-valid FromStatus a real park action ever carries.
 	if err := orchestrator.CreateAction(conn, &orchestrator.Action{
-		TaskID: "t1", Type: "park", FromStatus: orchestrator.TaskStatusTriaged, ToStatus: orchestrator.TaskStatusParked,
+		TaskID: "t1", Type: "park", FromStatus: orchestrator.TaskStatusWorking, ToStatus: orchestrator.TaskStatusParked,
 	}); err != nil {
 		t.Fatalf("create park action: %v", err)
 	}
@@ -346,8 +410,8 @@ func TestParkedFrom_DerivesFromLatestParkAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParkedFrom: %v", err)
 	}
-	if from != orchestrator.TaskStatusTriaged {
-		t.Fatalf("ParkedFrom = %q, want %q", from, orchestrator.TaskStatusTriaged)
+	if from != orchestrator.TaskStatusWorking {
+		t.Fatalf("ParkedFrom = %q, want %q", from, orchestrator.TaskStatusWorking)
 	}
 }
 
@@ -355,19 +419,23 @@ func TestParkedFrom_UsesMostRecentParkAction(t *testing.T) {
 	conn := newTestDB(t)
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
 
-	// triaged -> ready -> park(from ready) -> wake -> ... -> park(from triaged) again.
+	// card-model-cleanup PR-2: park now only ever fires from "working" in
+	// production (machine_card.go's single park edge) — the old three-way
+	// triaged/ready/working origin this test used to model no longer exists
+	// (those statuses are gone). The FIRST park action below uses a
+	// different-but-still-valid FromStatus (done) purely as a distinguishable
+	// marker so this test can tell "used the most recent row" apart from
+	// "used any row" — it does not model a realistic card lifecycle. The
+	// LAST (most recent) park action uses "working", the only FromStatus a
+	// real park action carries today.
 	actions := []struct {
 		typ  string
 		from orchestrator.TaskStatus
 		to   orchestrator.TaskStatus
 	}{
-		{"ready", orchestrator.TaskStatusTriaged, orchestrator.TaskStatusReady},
-		{"park", orchestrator.TaskStatusReady, orchestrator.TaskStatusParked},
-		{"wake_ready", orchestrator.TaskStatusParked, orchestrator.TaskStatusReady},
-		{"park", orchestrator.TaskStatusReady, orchestrator.TaskStatusParked},
-		{"wake_ready", orchestrator.TaskStatusParked, orchestrator.TaskStatusReady},
-		{"triage", orchestrator.TaskStatusReady, orchestrator.TaskStatusTriaged}, // won't happen in practice, just to vary from_status
-		{"park", orchestrator.TaskStatusTriaged, orchestrator.TaskStatusParked},
+		{"park", orchestrator.TaskStatusDone, orchestrator.TaskStatusParked}, // older, distinguishable marker only
+		{"reopen", orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking},
+		{"park", orchestrator.TaskStatusWorking, orchestrator.TaskStatusParked}, // most recent, realistic
 	}
 	for i, a := range actions {
 		time.Sleep(time.Millisecond) // ensure created_at ordering is stable
@@ -382,14 +450,14 @@ func TestParkedFrom_UsesMostRecentParkAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParkedFrom: %v", err)
 	}
-	if from != orchestrator.TaskStatusTriaged {
-		t.Fatalf("ParkedFrom = %q, want %q (most recent park action)", from, orchestrator.TaskStatusTriaged)
+	if from != orchestrator.TaskStatusWorking {
+		t.Fatalf("ParkedFrom = %q, want %q (most recent park action)", from, orchestrator.TaskStatusWorking)
 	}
 }
 
 func TestParkedFrom_NoParkAction(t *testing.T) {
 	conn := newTestDB(t)
-	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)
+	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
 	if _, err := orchestrator.ParkedFrom(conn, "t1"); err == nil {
 		t.Fatal("expected error when no park action exists")
 	}

@@ -191,8 +191,9 @@ func TestLifecycleToStateMachine_DoneRequest_AutoAdvancesWithMessage(t *testing.
 	payload := []byte(`{"lifecycle":{"executed":true,"done":{"message":"PR #439 merged"}}}`)
 	sm := orchestrator.NewExecutionMachine()
 	outcome := sm.AdvanceFull(&orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: payload,
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Payload: payload},
 	})
 	if outcome == nil {
 		t.Fatal("expected state machine advance, got nil")
@@ -231,7 +232,9 @@ func TestLifecycleToStateMachine_DoneRequestAloneDoesNotAdvance(t *testing.T) {
 	payload := []byte(`{"lifecycle":{"executed":false,"done":{"message":"x"}}}`)
 	sm := orchestrator.NewExecutionMachine()
 	if outcome := sm.AdvanceFull(&orchestrator.Task{
-		Status: orchestrator.TaskStatusExecuting, Payload: payload,
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Payload: payload},
 	}); outcome != nil {
 		t.Errorf("expected no advance (executed=false), got status=%s", outcome.Task.Status)
 	}

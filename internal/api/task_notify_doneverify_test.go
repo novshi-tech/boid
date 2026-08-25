@@ -69,10 +69,10 @@ func TestVerifyDoneClaim(t *testing.T) {
 		wantErr bool
 	}{
 		{"open children block done", &orchestrator.Task{OpenChildCount: 2}, false, true},
-		{"real commit passes", &orchestrator.Task{Payload: releasePayload(head, "", false)}, false, false},
-		{"fabricated commit blocked", &orchestrator.Task{Payload: releasePayload("deadbeefcafefeed1234", "", false)}, false, true},
-		{"no release field skips", &orchestrator.Task{Payload: json.RawMessage(`{"artifact":{"report":{"summary":"x"}}}`)}, false, false},
-		{"nil projects skips commit check", &orchestrator.Task{Payload: releasePayload("deadbeefcafefeed1234", "", false)}, true, false},
+		{"real commit passes", &orchestrator.Task{Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: releasePayload(head, "", false)}}, false, false},
+		{"fabricated commit blocked", &orchestrator.Task{Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: releasePayload("deadbeefcafefeed1234", "", false)}}, false, true},
+		{"no release field skips", &orchestrator.Task{Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: json.RawMessage(`{"artifact":{"report":{"summary":"x"}}}`)}}, false, false},
+		{"nil projects skips commit check", &orchestrator.Task{Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: releasePayload("deadbeefcafefeed1234", "", false)}}, true, false},
 		{"empty task passes", &orchestrator.Task{}, false, false},
 	}
 	for _, tc := range cases {

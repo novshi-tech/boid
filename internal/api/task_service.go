@@ -100,7 +100,7 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 	if req.Title != "" {
-		if !orchestrator.IsPreDispatchEditableStatus(task.Status) {
+		if !orchestrator.IsPreDispatchEditableStatus(task.Type, task.Status) {
 			return nil, &StatusError{
 				Code:    http.StatusConflict,
 				Message: fmt.Sprintf("cannot edit title while task is not pending/pre-dispatch (status: %s)", task.Status),
@@ -109,7 +109,7 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		task.Title = req.Title
 	}
 	if req.ProjectID != "" {
-		if !orchestrator.IsPreDispatchEditableStatus(task.Status) {
+		if !orchestrator.IsPreDispatchEditableStatus(task.Type, task.Status) {
 			return nil, &StatusError{
 				Code:    http.StatusConflict,
 				Message: fmt.Sprintf("cannot edit project while task is not pending/pre-dispatch (status: %s)", task.Status),
@@ -135,6 +135,11 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		task.RemoteID = *req.RemoteID
 	}
 	if len(req.Payload) > 0 {
+		// Payload is execution-only (design doc §3.2) — a card has no field
+		// to merge this into at all (ExecAttrs doesn't exist on it).
+		if task.Exec == nil {
+			return nil, &StatusError{Code: http.StatusConflict, Message: "cannot edit payload: task is a card (payload is execution-only)"}
+		}
 		if err := orchestrator.RejectPayloadInstructions(req.Payload); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
@@ -145,8 +150,8 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		// top-level shallow merge で handler 間の書き込みが衝突しない。
 		// null は削除。instructions の特別扱いは不要。
 		var base map[string]json.RawMessage
-		if len(task.Payload) > 0 && string(task.Payload) != "null" {
-			if err := json.Unmarshal(task.Payload, &base); err != nil {
+		if len(task.Exec.Payload) > 0 && string(task.Exec.Payload) != "null" {
+			if err := json.Unmarshal(task.Exec.Payload, &base); err != nil {
 				return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload parse: " + err.Error()}
 			}
 		}
@@ -168,7 +173,7 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "payload merge: " + err.Error()}
 		}
-		task.Payload = merged
+		task.Exec.Payload = merged
 	}
 	if req.ParentID != nil {
 		task.ParentID = *req.ParentID
@@ -178,27 +183,38 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	// behavior type and project-level defaults, and are no longer mutable.
 	var instructionsBefore orchestrator.Instructions
 	if len(req.Instructions) > 0 {
-		if !orchestrator.IsInstructionsEditable(task.Status) {
+		// IsInstructionsEditable(task.Type, task.Status) is false for ANY
+		// card status (Instructions is execution-only, design doc §3.2) —
+		// same 409 a card already gets from every other status this used to
+		// reject, no separate task.Exec nil-check needed before the
+		// task.Exec.Instructions write below.
+		if !orchestrator.IsInstructionsEditable(task.Type, task.Status) {
 			return nil, &StatusError{
 				Code:    http.StatusConflict,
 				Message: fmt.Sprintf("cannot edit instructions while task is running (status: %s)", task.Status),
 			}
 		}
-		instructionsBefore = cloneInstructions(task.Instructions)
+		instructionsBefore = cloneInstructions(task.Exec.Instructions)
 		var override orchestrator.Instructions
 		if err := json.Unmarshal(req.Instructions, &override); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions parse: " + err.Error()}
 		}
-		task.Instructions = override
+		task.Exec.Instructions = override
 	}
 	if req.AutoStart != nil {
-		task.AutoStart = *req.AutoStart
+		// AutoStart is execution-only too; unlike Instructions there is no
+		// separate "editable status" gate to lean on (auto_start could
+		// always be set regardless of status), so this needs its own guard.
+		if task.Exec == nil {
+			return nil, &StatusError{Code: http.StatusConflict, Message: "cannot edit auto_start: task is a card (auto_start is execution-only)"}
+		}
+		task.Exec.AutoStart = *req.AutoStart
 	}
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	if instructionsBefore != nil {
-		s.auditInstructionsChange(task.ID, instructionsBefore, task.Instructions)
+		s.auditInstructionsChange(task.ID, instructionsBefore, task.Exec.Instructions)
 	}
 	// Actor caveat (論点11): UpdateTask has no ctx, so this always stamps
 	// ActorHuman even though it's also reachable from a sandbox
@@ -271,12 +287,19 @@ func (s *TaskAppService) UpdateTaskPayloadPatch(jobID string, patch json.RawMess
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
+	// A job's task is always an execution task (a card never dispatches a
+	// job — design doc §3, cards run no agent sessions), so task.Exec is
+	// expected non-nil here; this is defense in depth, not evidence a card
+	// job is possible.
+	if task.Exec == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "task is not an execution task (no Exec attrs); cannot apply a payload patch"}
+	}
 
-	merged, err := orchestrator.MergePayloadPatch(task.Payload, patch, job.HandlerID, allowedTraits)
+	merged, err := orchestrator.MergePayloadPatch(task.Exec.Payload, patch, job.HandlerID, allowedTraits)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
-	task.Payload = merged
+	task.Exec.Payload = merged
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
@@ -311,10 +334,21 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 		ProjectID:   source.ProjectID,
 		Title:       source.Title,
 		Description: source.Description,
-		Behavior:    source.Behavior,
 		RemoteID:    source.RemoteID,
-		Traits:      source.Traits,
 		AutoStart:   autoStart,
+	}
+	// Behavior/Traits/Instructions are execution-only (design doc §3.2) — a
+	// card source has none to copy. CreateTask always builds the duplicate
+	// as a fresh execution task (no InitialStatus is set below, so it
+	// defaults to "pending"), so leaving these empty for a card source just
+	// means the duplicate resolves the project's DEFAULT behavior instead of
+	// "inheriting" one the source never had — the card-model-cleanup PR-2
+	// design doc §7 calls this exact class of borrowed-but-meaningless
+	// exec-field value ("嘘の値") out as something the ExecAttrs split is
+	// SUPPOSED to make impossible, not a regression to work around.
+	if source.Exec != nil {
+		req.Behavior = source.Exec.Behavior
+		req.Traits = source.Exec.Traits
 	}
 	// Carry the source's instructions (e.g. a per-project release-policy override)
 	// so the duplicate behaves identically. RemoteID in particular must be copied:
@@ -331,8 +365,8 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 	// own ref scope: CreateTask leaves it empty for a root task or auto-generates a
 	// fresh unique ref for a child. Multiple tasks per remote_id are expected
 	// (one issue can spawn several tasks), so nothing here should be unique-keyed.
-	if len(source.Instructions) > 0 {
-		raw, err := json.Marshal(source.Instructions)
+	if source.Exec != nil && len(source.Exec.Instructions) > 0 {
+		raw, err := json.Marshal(source.Exec.Instructions)
 		if err != nil {
 			return nil, fmt.Errorf("marshal source instructions: %w", err)
 		}
@@ -346,6 +380,21 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
+	// Rerun is an execution-task-only operation (it resets status to
+	// "pending" and edits Instructions, both execution-only concepts —
+	// design doc §3.2). A card can share the "done" status value with an
+	// execution task (§3.3: the shared string is not ambiguous once type is
+	// checked directly, unlike the old status-only machineFor guess this
+	// refactor retires), so this type check is required, not merely
+	// defensive: without it a done CARD's rerun would try to reset it to
+	// "pending", a status migration 0045's CHECK constraint rejects for a
+	// card row outright.
+	if task.Type != orchestrator.TaskTypeExecution {
+		return nil, &StatusError{
+			Code:    http.StatusConflict,
+			Message: fmt.Sprintf("task is not an execution task (type: %s); cannot rerun", task.Type),
+		}
+	}
 	if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted {
 		return nil, &StatusError{
 			Code:    http.StatusConflict,
@@ -355,22 +404,22 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 
 	var instructionsBefore orchestrator.Instructions
 	if len(req.InstructionsOverride) > 0 && string(req.InstructionsOverride) != "null" {
-		instructionsBefore = cloneInstructions(task.Instructions)
+		instructionsBefore = cloneInstructions(task.Exec.Instructions)
 		var override orchestrator.Instructions
 		if err := json.Unmarshal(req.InstructionsOverride, &override); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: "instructions parse: " + err.Error()}
 		}
-		task.Instructions = override
+		task.Exec.Instructions = override
 	}
 
 	task.Status = orchestrator.TaskStatusPending
-	task.Payload = json.RawMessage("{}")
+	task.Exec.Payload = json.RawMessage("{}")
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
 	if instructionsBefore != nil {
-		s.auditInstructionsChange(task.ID, instructionsBefore, task.Instructions)
+		s.auditInstructionsChange(task.ID, instructionsBefore, task.Exec.Instructions)
 	}
 
 	if req.AutoStart && s.Workflow != nil {
@@ -436,17 +485,16 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	}
 	for _, j := range jobs {
 		enrichJob(s.RuntimesDir, j)
-		enrichJobDisplayName(j, task.Behavior, s.Meta)
+		enrichJobDisplayName(j, taskBehaviorOrEmpty(task), s.Meta)
 	}
 
 	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): task
 	// detail is a generic per-task view (any task, card or ordinary), so the
-	// governing machine is resolved dynamically. machineForDisplay (not
-	// machineFor) — this is a pure read whose only use of the result is
-	// AvailableActions for display; a transient task_triage lookup failure
-	// must not turn "show me this task" into a 503 (PR #986 review,
-	// Blocker 2 — see machineForDisplay's own doc comment).
-	sm := machineForDisplay(s.TaskTriage, task)
+	// governing machine is resolved dynamically. card-model-cleanup PR-2
+	// retired machineForDisplay: machineFor is now a pure function of
+	// task.Type (no DB lookup, so nothing left to fail transiently — see
+	// machineFor's own doc comment).
+	sm := machineFor(task)
 
 	return &TaskDetailView{
 		Task:             task,

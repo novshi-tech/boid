@@ -45,11 +45,12 @@ func (f *fakeTaskCreator) CreateTask(req CreateTaskRequest) (*orchestrator.Task,
 		// set createFn explicitly.
 		task = &orchestrator.Task{
 			ID:        fmt.Sprintf("child-%d", len(f.calls)),
+			Type:      orchestrator.TaskTypeExecution,
 			ProjectID: req.ProjectID,
 			ParentID:  req.ParentID,
 			Title:     req.Title,
-			Behavior:  req.Behavior,
 			Status:    orchestrator.TaskStatusExecuting,
+			Exec:      &orchestrator.ExecAttrs{Behavior: req.Behavior},
 		}
 	}
 	if err == nil && task != nil && req.Ref != "" && req.ParentID != "" {
@@ -82,7 +83,7 @@ func newAcceptGoWorkflowService(task *orchestrator.Task, txStore *recordingTxSto
 }
 
 func TestTaskWorkflowService_AcceptGo_NoChildren_ParkedToWorking(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newAcceptGoWorkflowService(task, txStore, nil)
 
@@ -99,7 +100,7 @@ func TestTaskWorkflowService_AcceptGo_NoChildren_ParkedToWorking(t *testing.T) {
 }
 
 func TestTaskWorkflowService_AcceptGo_SpeccedChildren_CreatesTasksAndMarksDispatched(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{
 		"summary": "keep me",
 		"children": [
@@ -173,7 +174,7 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChildren_CreatesTasksAndMarksDispat
 // bug carried forward until fixed 2026-08-14). spec.description が子タスクの
 // description に届くことを確認する。
 func TestTaskWorkflowService_AcceptGo_SpeccedChild_PassesDescriptionSeparatelyFromInstruction(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{
 		"children": [
 			{"id": "ch_00", "title": "do it", "status": "specced", "spec": {
@@ -224,7 +225,7 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChild_PassesDescriptionSeparatelyFr
 // callers that share this one message: a direct "go" click (viaAccept=false,
 // this test) and accept(go) (viaAccept=true, the companion test below).
 func TestTaskWorkflowService_AcceptGo_RejectsNonParkedTask_ErrorMessageHint(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newAcceptGoWorkflowService(task, txStore, nil)
 
@@ -258,7 +259,7 @@ func TestTaskWorkflowService_AcceptGo_RejectsNonParkedTask_ErrorMessageHint(t *t
 // sm.Apply failure). Both callers share the SAME message-building code, but
 // only a dedicated test on each actually proves it.
 func TestApplyAction_Answered_AcceptGo_InapplicableStatus_ErrorMessageHint(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusDone, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
@@ -288,7 +289,7 @@ func TestApplyAction_Answered_AcceptGo_InapplicableStatus_ErrorMessageHint(t *te
 // A specced child with no Spec is a data-integrity error (specced requires a
 // spec by definition) — must fail loudly rather than silently skip.
 func TestTaskWorkflowService_AcceptGo_SpeccedChildWithoutSpec_Errors(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{"children": [{"id": "ch_00", "status": "specced"}]}`)
 	txStore := &recordingTxStore{
 		task:   task,
@@ -309,7 +310,7 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChildWithoutSpec_Errors(t *testing.
 }
 
 func TestTaskWorkflowService_AcceptGo_UnrecognizedChildStatus_Errors(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{"children": [{"id": "ch_00", "status": "speced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
 		task:   task,
@@ -336,14 +337,14 @@ func TestTaskWorkflowService_AcceptGo_UnrecognizedChildStatus_Errors(t *testing.
 // "pending") must not be marked "dispatched" with a task_ref pointing at a
 // task that will never run.
 func TestTaskWorkflowService_AcceptGo_ChildAutoStartFails_TreatedAsDispatchFailure(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
 		task:   task,
 		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
-		return &orchestrator.Task{ID: "child-1", ProjectID: req.ProjectID, ParentID: req.ParentID, Status: orchestrator.TaskStatusPending}, nil
+		return &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: req.ProjectID, ParentID: req.ParentID, Status: orchestrator.TaskStatusPending}, nil
 	}}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
@@ -363,7 +364,7 @@ func TestTaskWorkflowService_AcceptGo_ChildAutoStartFails_TreatedAsDispatchFailu
 // and silently no-ops. acceptGo must reconcile this itself right after its
 // own Tx commits.
 func TestTaskWorkflowService_AcceptGo_ChildFinishesBeforeCommit_ReconciledAsClosed(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{"children": [{"id": "ch_00", "title": "quick", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
 		task:   task,
@@ -371,7 +372,7 @@ func TestTaskWorkflowService_AcceptGo_ChildFinishesBeforeCommit_ReconciledAsClos
 		tasks:  map[string]*orchestrator.Task{},
 	}
 	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
-		child := &orchestrator.Task{ID: "child-1", ProjectID: req.ProjectID, ParentID: "t1", Status: orchestrator.TaskStatusDone}
+		child := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: req.ProjectID, ParentID: "t1", Status: orchestrator.TaskStatusDone}
 		txStore.tasks["child-1"] = child
 		return child, nil
 	}}
@@ -421,7 +422,7 @@ func TestTaskWorkflowService_AcceptGo_ChildFinishesBeforeCommit_ReconciledAsClos
 // DUPLICATE of the already-succeeded first child. Ref: children[i].ID makes
 // the create idempotent.
 func TestTaskWorkflowService_AcceptGo_RetryAfterPartialFailure_DoesNotDuplicateEarlierChild(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{"children": [
 		{"id": "ch_00", "title": "first", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}},
 		{"id": "ch_01", "title": "second", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}
@@ -433,9 +434,9 @@ func TestTaskWorkflowService_AcceptGo_RetryAfterPartialFailure_DoesNotDuplicateE
 	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
 		if req.Ref == "ch_01" {
 			// Second child's auto-start silently fails, every attempt.
-			return &orchestrator.Task{ID: "child-2", ProjectID: req.ProjectID, ParentID: req.ParentID, Status: orchestrator.TaskStatusPending}, nil
+			return &orchestrator.Task{ID: "child-2", Type: orchestrator.TaskTypeExecution, ProjectID: req.ProjectID, ParentID: req.ParentID, Status: orchestrator.TaskStatusPending}, nil
 		}
-		return &orchestrator.Task{ID: "child-1", ProjectID: req.ProjectID, ParentID: req.ParentID, Status: orchestrator.TaskStatusExecuting}, nil
+		return &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: req.ProjectID, ParentID: req.ParentID, Status: orchestrator.TaskStatusExecuting}, nil
 	}}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
@@ -466,7 +467,7 @@ func TestTaskWorkflowService_AcceptGo_RetryAfterPartialFailure_DoesNotDuplicateE
 // thin bypass into acceptGo (this file's own doc comment, workflow_action.go)
 // — both a direct human click and accept(go) reach the identical code path.
 func TestApplyAction_Go_DelegatesToAcceptGo(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}}}
 	creator := &fakeTaskCreator{}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
@@ -496,7 +497,7 @@ func TestApplyAction_Go_DelegatesToAcceptGo(t *testing.T) {
 // specifically for accept-originated "go", while still stripping the
 // suggestion (it must not linger after being consumed).
 func TestApplyAction_Answered_AcceptGo_DoesNotRecordSuggestionDiscarded(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
@@ -542,7 +543,7 @@ func TestApplyAction_Answered_AcceptGo_DoesNotRecordSuggestionDiscarded(t *testi
 // the card left parked (never even reaching a "ready"-like resting state,
 // since v2 has none).
 func TestApplyAction_Go_DispatchFailure_ReturnsSyncErrorAndRecordsDispatchError(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{"children": [{"id": "ch_00", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
 		task:   task,
@@ -601,13 +602,13 @@ func TestApplyAction_Go_DispatchFailure_ReturnsSyncErrorAndRecordsDispatchError(
 // to hand-abort real, successful work. This is the one case where NOTHING
 // should be reported.
 func TestTaskWorkflowService_AcceptGo_ConcurrentTransitionWon_DoesNotRecordOrphanedChildIDs(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
 		// The in-Tx read sees the card already "working" — simulating a
 		// concurrent transition that committed in the window between the
 		// child being created (below) and this Tx opening.
-		task:   &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusWorking},
+		task:   &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}},
 		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	creator := &fakeTaskCreator{}
@@ -669,10 +670,10 @@ func TestTaskWorkflowService_AcceptGo_ConcurrentTransitionWon_DoesNotRecordOrpha
 // concurrentTransitionWon stays false) and after the child was already
 // created — a genuine write failure, not a race loss.
 func TestTaskWorkflowService_AcceptGo_GenuineTxFailure_StillRecordsOrphanedChildIDs(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
-		task:          &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}, // still parked: no race
+		task:          &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}, // still parked: no race
 		triage:        map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 		updateTaskErr: fmt.Errorf("simulated write failure"),
 	}

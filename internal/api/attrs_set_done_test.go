@@ -65,7 +65,7 @@ func newDoneTriageWorkflowService(task *orchestrator.Task, txStore *recordingTxS
 }
 
 func TestApplyAction_AttrsSet_Done_WithTaskTriageRow_Allowed(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{"existing":"keep"}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusDone, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task:   task,
 		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
@@ -82,9 +82,12 @@ func TestApplyAction_AttrsSet_Done_WithTaskTriageRow_Allowed(t *testing.T) {
 	if result.Task.Status != orchestrator.TaskStatusDone {
 		t.Fatalf("status = %q, want unchanged (done) — attrs_set must stay non-transitioning even on this path", result.Task.Status)
 	}
-	if string(result.Task.Payload) != `{"existing":"keep"}` {
-		t.Fatalf("task.Payload = %s, want untouched (attrs_set never merges into task.Payload)", result.Task.Payload)
-	}
+	// card-model-cleanup PR-2: the original "task.Payload untouched" check
+	// here is gone — a Card task has no Payload field at all anymore, so that
+	// pollution is now structurally impossible (see
+	// apply_action_pr3_noted_answered_test.go's
+	// TestApplyAction_Noted_DoesNotWriteTaskRowOrPollutePayload for the fuller
+	// explanation of the same substitution).
 	tt := txStore.triage["t1"]
 	if tt == nil {
 		t.Fatal("expected task_triage row to still exist")
@@ -99,28 +102,32 @@ func TestApplyAction_AttrsSet_Done_WithTaskTriageRow_Allowed(t *testing.T) {
 
 // TestApplyAction_AttrsSet_Done_NoTaskTriageRow_Rejected pins the doc's
 // stated invariant verbatim: "task_triage 行を持たない done の通常 task には
-// 発火しない". A task whose task_triage row was never created (the ordinary
+// 発火しない". A task whose CardAttrs lookup reports no row (the ordinary
 // path: pending→executing→done never touches attrs_set at all, so it would
 // never actually reach this branch in production — this test exercises the
 // GUARD directly, regardless of how such a task could arrive here) must be
 // rejected, not silently admitted.
 //
-// PR-B behavior change (docs/plans/suggestion-as-state-transition-impl.md
-// §2): the expected status code moved from 409 to 400. Before the machine
-// split, "done" always went to the one unified machine (attrs_set IS
-// Manual:true somewhere in it, for the preExecutionStatuses statuses), so
-// the request passed ApplyAction's IsManualAction gate and only failed
-// later, inside resolveAttrsSetDoneTransition's own guard, as a 409
-// ("no transition"). Now machineFor performs THE SAME task_triage lookup
-// (no row = not a card) even earlier than that, right after the task loads
-// — and routes a rowless "done" task to NewExecutionMachine, which has no
-// "attrs_set" rule AT ALL (attrs_set is card-only). So the request is
-// rejected at the IsManualAction gate itself, as a 400, before
-// resolveAttrsSetDoneTransition's own guard is ever reached. The invariant
-// itself ("no row ⇒ attrs_set does not fire") is unchanged; only the code
-// and the code path that enforces it are.
+// card-model-cleanup PR-2 (docs/plans/card-model-cleanup.md §3.6) retires
+// PR-B's whole "machineFor performs its own task_triage lookup and rejects
+// early" mechanism: machineFor is now a pure function of task.Type (no DB
+// access at all — see its own doc comment), so it can no longer intercept
+// this case earlier than resolveAttrsSetDoneTransition's own guard the way
+// PR-B's version did. The expected status code reverts to 409 — exactly
+// what it was BEFORE PR-B (see this test's git history): machineFor picks
+// NewCardMachine purely from task.Type == TaskTypeCard, the request passes
+// ApplyAction's IsManualAction gate (attrs_set is Manual:true on
+// NewCardMachine), resolveAttrsSetDoneTransition's own getTriage call gets
+// sql.ErrNoRows and intentionally falls through (does not reject
+// explicitly — see its own doc comment), and machine_card.go's own rule
+// table rejects it: attrs_set's FromStatus enumeration is exactly
+// {parked, working, dropped} — "done" is deliberately excluded — so
+// sm.Apply returns "no transition", surfaced as 409. The invariant itself
+// ("no row ⇒ attrs_set does not fire") is unchanged; only which layer
+// enforces it is (back to the single-layer story PR-B temporarily split in
+// two, now that machineFor no longer needs the lookup to select correctly).
 func TestApplyAction_AttrsSet_Done_NoTaskTriageRow_Rejected(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusDone, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task} // triage map left empty: no row for t1
 	svc := newDoneTriageWorkflowService(task, txStore)
 
@@ -135,27 +142,26 @@ func TestApplyAction_AttrsSet_Done_NoTaskTriageRow_Rejected(t *testing.T) {
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("error type = %T, want *StatusError", err)
 	}
-	if statusErr.Code != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want 400 (PR-B: machineFor's own task_triage lookup now rejects this before resolveAttrsSetDoneTransition's guard is ever reached — see this test's own doc comment)", statusErr.Code)
+	if statusErr.Code != http.StatusConflict {
+		t.Fatalf("status code = %d, want 409 (card-model-cleanup PR-2: machineFor no longer does its own task_triage lookup — see this test's own doc comment)", statusErr.Code)
 	}
 }
 
 // TestApplyAction_AttrsSet_Done_TaskTriageStoreNotWired_Rejected: when
-// s.TaskTriage itself is nil (construction gap), the guard must take the
-// SAME safe direction as resolveReopenVariant's own nil-store branch — an
-// indeterminate answer must not accidentally ADMIT the write. Uses the
-// ordinary (unmodified) newTriageWorkflowService, which deliberately leaves
-// TaskTriage nil.
+// s.TaskTriage itself is nil (construction gap), resolveAttrsSetDoneTransition's
+// own guard must take the safe direction — an indeterminate answer must not
+// accidentally ADMIT the write. Uses the ordinary (unmodified)
+// newTriageWorkflowService, which deliberately leaves TaskTriage nil.
 //
-// PR-B behavior change: same reasoning as
-// TestApplyAction_AttrsSet_Done_NoTaskTriageRow_Rejected above — machineFor
-// ALSO reads s.TaskTriage (the same nil field), and machineFor's OWN nil-store
-// handling falls back to NewExecutionMachine (a softer default than
-// resolveAttrsSetDoneTransition's — see machineFor's own doc comment for why
-// that asymmetry is safe), so the request is rejected earlier, as a 400, not
-// a 409.
+// card-model-cleanup PR-2: machineFor no longer reads s.TaskTriage at all
+// (task.Type alone decides the machine — see its own doc comment), so this
+// no longer intercepts the request any earlier than the case above. Same
+// 409 for the same reason: getTriage is nil, resolveAttrsSetDoneTransition's
+// `getTriage != nil` guard condition is false, the whole done-status special
+// case is skipped, and machine_card.go's own attrs_set rule (FromStatus ∈
+// {parked, working, dropped}, "done" excluded) rejects the "no transition".
 func TestApplyAction_AttrsSet_Done_TaskTriageStoreNotWired_Rejected(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusDone, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task:   task,
 		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}}, // a row DOES exist in the store...
@@ -170,26 +176,26 @@ func TestApplyAction_AttrsSet_Done_TaskTriageStoreNotWired_Rejected(t *testing.T
 		t.Fatal("ApplyAction(attrs_set on done, TaskTriage store not wired) succeeded, want rejection")
 	}
 	var statusErr *StatusError
-	if !errors.As(err, &statusErr) || statusErr.Code != http.StatusBadRequest {
-		t.Fatalf("error = %v, want *StatusError{Code: 400} (PR-B: machineFor's nil-store fallback rejects this earlier than resolveAttrsSetDoneTransition's own guard — see this test's own doc comment)", err)
+	if !errors.As(err, &statusErr) || statusErr.Code != http.StatusConflict {
+		t.Fatalf("error = %v, want *StatusError{Code: 409} (card-model-cleanup PR-2: machineFor no longer touches s.TaskTriage at all — see this test's own doc comment)", err)
 	}
 }
 
-// TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns503 pins that a
+// TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns500 pins that a
 // GENUINE lookup failure (not sql.ErrNoRows) is surfaced as a real error
 // rather than silently reinterpreted as "no row, reject" — the same
 // ErrNoRows-vs-other split statusErrorForGetTaskErr and
 // applyAttrsSetSideEffect already use elsewhere in this file.
 //
-// PR-B behavior change: the expected status code moved from 500 to 503, and
-// the failure now originates in machineFor rather than
-// resolveAttrsSetDoneTransition — machineFor performs the identical
-// s.TaskTriage.GetTaskTriage lookup EARLIER (right after the task loads),
-// hits the same transient error first, and reports it the way
-// resolveReopenVariant already does for an indeterminate sidecar lookup
-// (503, not 500) — see machineFor's own doc comment.
-func TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns503(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
+// card-model-cleanup PR-2: machineFor no longer performs any lookup (pure
+// function of task.Type — see its own doc comment), so this failure can only
+// ever originate where it always logically belonged:
+// resolveAttrsSetDoneTransition's own `default:` branch, which reports it as
+// a 500 (internal error) — not the 503 an earlier iteration of this test
+// expected back when machineFor had its own separate lookup layer to fail
+// in first.
+func TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns500(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusDone, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task, getTaskTriageErr: errors.New("db unavailable")}
 	svc := newDoneTriageWorkflowService(task, txStore)
 
@@ -204,8 +210,8 @@ func TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns503(t *testing.T
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("error type = %T, want *StatusError", err)
 	}
-	if statusErr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status code = %d, want 503 (a genuine lookup failure must not be silently treated as rejection; PR-B moved the failing lookup into machineFor — see this test's own doc comment)", statusErr.Code)
+	if statusErr.Code != http.StatusInternalServerError {
+		t.Fatalf("status code = %d, want 500 (a genuine lookup failure must not be silently treated as rejection; card-model-cleanup PR-2 — see this test's own doc comment)", statusErr.Code)
 	}
 }
 
@@ -216,7 +222,7 @@ func TestApplyAction_AttrsSet_Done_TaskTriageLookupError_Returns503(t *testing.T
 // pins this in more detail; this is a narrow smoke test at the same call
 // site the refactor touched.
 func TestApplyAction_AttrsSet_Working_StillNonTransitioning_NoRegression(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newDoneTriageWorkflowService(task, txStore)
 
@@ -247,7 +253,7 @@ func TestApplyAction_AttrsSet_Working_StillNonTransitioning_NoRegression(t *test
 func TestLogAttrsSetOnDoneTriage_LogsAtDebugLevel(t *testing.T) {
 	buf := captureSlog(t)
 
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusDone, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task:   task,
 		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
@@ -296,8 +302,8 @@ func TestLogAttrsSetOnDoneTriage_LogsAtDebugLevel(t *testing.T) {
 func TestApplyAction_AttrsSet_LogsUsingInTxStatus_NotStalePreTxSnapshot(t *testing.T) {
 	buf := captureSlog(t)
 
-	preTx := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
-	fresh := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
+	preTx := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+	fresh := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusDone, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task:   fresh, // tx.GetTask (in-Tx) sees the task as already done
 		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},

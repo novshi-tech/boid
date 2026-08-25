@@ -56,10 +56,15 @@ func TestChildrenPreviewLabel(t *testing.T) {
 }
 
 func makeTreeTestTask(id string) *orchestrator.Task {
+	// card-model-cleanup PR-2: "parked" is now a Card-only status (design doc
+	// §3.3), so this fixture must carry Type/Card to satisfy the tagged-union
+	// shape even though taskTreeRow itself never reads Card's fields.
 	return &orchestrator.Task{
 		ID:        id,
+		Type:      orchestrator.TaskTypeCard,
 		Title:     "task " + id,
 		Status:    orchestrator.TaskStatusParked,
+		Card:      &orchestrator.CardAttrs{},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
