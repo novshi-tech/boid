@@ -30,6 +30,12 @@ type recordingTxStore struct {
 	// by the ingestion-identity.md PR-1 drop-side-effect tests to pin that
 	// `drop` (and ONLY drop) releases a task's identity bindings.
 	unlinkAllForTaskCalls []string
+	// touchedTaskUpdatedAtIDs records every TouchTaskUpdatedAt(id) call, in
+	// call order (docs/plans/webui-detail-list-redesign.md PR-3) — the
+	// updated_at bump tests assert against this list instead of a real
+	// timestamp, since this fake has no wall-clock semantics of its own.
+	touchedTaskUpdatedAtIDs []string
+	touchTaskUpdatedAtErr   error // when set, TouchTaskUpdatedAt returns this instead of succeeding
 }
 
 func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error { return nil }
@@ -64,6 +70,13 @@ func (s *recordingTxStore) UpdateTask(task *orchestrator.Task) error {
 	return nil
 }
 func (s *recordingTxStore) DeleteTask(id string) error { return nil }
+func (s *recordingTxStore) TouchTaskUpdatedAt(id string) error {
+	if s.touchTaskUpdatedAtErr != nil {
+		return s.touchTaskUpdatedAtErr
+	}
+	s.touchedTaskUpdatedAtIDs = append(s.touchedTaskUpdatedAtIDs, id)
+	return nil
+}
 func (s *recordingTxStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	return nil, nil
 }

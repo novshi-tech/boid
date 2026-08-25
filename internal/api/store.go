@@ -448,6 +448,21 @@ type GlobalJobStore interface {
 	ListJobsWithContext(filter JobListFilter) ([]JobWithContext, error)
 }
 
+// TaskUpdatedAtToucher backs docs/plans/webui-detail-list-redesign.md PR-3's
+// updated_at bump (§3.2): a single-column `UPDATE tasks SET updated_at = ?
+// WHERE id = ?` that carries NO status. Deliberately its own interface, not
+// folded into TaskStore — TaskStore.UpdateTask does a blanket rewrite of
+// every column from a caller-held Task snapshot, which is exactly the
+// stale-snapshot race workflow_action.go's skipTaskUpdate guard exists to
+// avoid for attrs_set/child_added/child_specced/child_dropped/noted (see
+// that variable's own doc comment). TouchTaskUpdatedAt carries no status at
+// all, so calling it alongside those actions' own non-transitioning side
+// effects — in the same Tx — cannot stomp a concurrently-committed
+// transition the way an unconditional UpdateTask(stale snapshot) would.
+type TaskUpdatedAtToucher interface {
+	TouchTaskUpdatedAt(id string) error
+}
+
 type TxStore interface {
 	TaskStore
 	ActionStore
@@ -459,6 +474,7 @@ type TxStore interface {
 	// itself, the same way park/attrs_set/child_added/child_specced apply
 	// their own sidecar side effects inside the same transaction.
 	TaskIdentityStore
+	TaskUpdatedAtToucher
 }
 
 type Transactor interface {

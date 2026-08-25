@@ -259,7 +259,16 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, ch
 			Payload:    payload,
 			Actor:      orchestrator.ActorDaemon,
 		}
-		return tx.CreateAction(action)
+		if err := tx.CreateAction(action); err != nil {
+			return err
+		}
+		// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): same
+		// updated_at bump recordChildClosedOnParent's real-child path applies
+		// (workflow_card.go) — a vanished child is still a child_closed event
+		// from the parent's point of view, gated the same way on `changed`
+		// (the `if !changed { return nil }` above already short-circuited a
+		// repeat sweep tick finding nothing new).
+		return tx.TouchTaskUpdatedAt(parentTaskID)
 	}); err != nil {
 		slog.Error("vanished child_closed self-record failed", "task_id", parentTaskID, "child_task_id", childTaskRef, "error", err)
 	}

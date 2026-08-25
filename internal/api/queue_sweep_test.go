@@ -19,6 +19,12 @@ type sweepFakeStore struct {
 	tasks   map[string]*orchestrator.Task
 	triage  map[string]*orchestrator.CardAttrs
 	actions map[string][]*orchestrator.Action
+	// touchedTaskUpdatedAtIDs records every TouchTaskUpdatedAt(id) call
+	// (docs/plans/webui-detail-list-redesign.md PR-3) — the vanished-child
+	// child_closed sweep (recordVanishedChildClosedOnParent, queue_sweep.go)
+	// bumps the parent's updated_at the same way the direct self-record path
+	// (recordChildClosedOnParent, workflow_card.go) does.
+	touchedTaskUpdatedAtIDs []string
 }
 
 func newSweepFakeStore() *sweepFakeStore {
@@ -52,6 +58,10 @@ func (s *sweepFakeStore) UpdateTask(task *orchestrator.Task) error {
 	return nil
 }
 func (s *sweepFakeStore) DeleteTask(id string) error { delete(s.tasks, id); return nil }
+func (s *sweepFakeStore) TouchTaskUpdatedAt(id string) error {
+	s.touchedTaskUpdatedAtIDs = append(s.touchedTaskUpdatedAtIDs, id)
+	return nil
+}
 func (s *sweepFakeStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	return nil, nil
 }

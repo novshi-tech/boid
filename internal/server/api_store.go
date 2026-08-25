@@ -48,6 +48,10 @@ func (s apiTxStore) UpdateTask(task *orchestrator.Task) error {
 	return s.tasks.UpdateTask(task)
 }
 
+func (s apiTxStore) TouchTaskUpdatedAt(id string) error {
+	return s.tasks.TouchTaskUpdatedAt(id)
+}
+
 func (s apiTxStore) DeleteTask(id string) error {
 	return s.tasks.DeleteTask(id)
 }

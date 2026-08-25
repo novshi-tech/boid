@@ -381,16 +381,16 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// attrs_set/child_added/child_specced are non-transitioning (ToStatus==""
 	// in the matched rule, machine.go) AND their payload is fully consumed by
 	// the side-effect above (never merged into task.Payload either) — so the
-	// task row genuinely has nothing new to persist. Skipping tx.UpdateTask
-	// for exactly these three closes a race codex review flagged (Major): a
-	// caller read `task` before opening this Tx, so `newTask` is built from
-	// that stale snapshot; if a REAL transition (e.g. working→parked)
-	// committed concurrently in between, an unconditional UpdateTask(newTask)
-	// here would silently stomp the fresh status back to the stale one the
-	// non-transitioning action happened to read, even though its own
-	// side-effect (the sidecar RMW) correctly read-modified-wrote inside this
-	// same Tx. park is NOT in this set — it genuinely transitions status, so
-	// it still needs the write.
+	// task row's STATUS genuinely has nothing new to persist. Skipping
+	// tx.UpdateTask(newTask) for exactly these three closes a race codex
+	// review flagged (Major): a caller read `task` before opening this Tx, so
+	// `newTask` is built from that stale snapshot; if a REAL transition (e.g.
+	// working→parked) committed concurrently in between, an unconditional
+	// UpdateTask(newTask) here would silently stomp the fresh status back to
+	// the stale one the non-transitioning action happened to read, even
+	// though its own side-effect (the sidecar RMW) correctly
+	// read-modified-wrote inside this same Tx. park is NOT in this set — it
+	// genuinely transitions status, so it still needs the write.
 	//
 	// noted (docs/plans/ingestion-identity.md PR-3) joins this set for the
 	// identical reason: non-transitioning, payload fully consumed (never
@@ -398,6 +398,19 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// would risk the same stale-status-stomp race. ("answered" no longer
 	// reaches this function at all — see the sideEffectConsumesPayload
 	// comment above.)
+	//
+	// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): "nothing new to
+	// persist" stopped being true the moment updated_at became a signal worth
+	// persisting on its own — a suggestion attaching to an attrs_set-only
+	// action (below, gated on suggestionVerbChanged) IS new information the
+	// row should carry, even though its STATUS is not. skipTaskUpdate still
+	// means exactly what it always meant — "do not call UpdateTask(newTask),
+	// a full blanket rewrite from a stale-snapshot-derived struct" — it does
+	// NOT mean "this Tx writes nothing at all": the status-free single-column
+	// tx.TouchTaskUpdatedAt statement these actions may additionally issue
+	// carries no status, so it cannot stomp a concurrent transition the way
+	// UpdateTask(newTask) would, and coexists with this guard rather than
+	// undermining it.
 	skipTaskUpdate := req.Type == "attrs_set" || req.Type == "child_added" || req.Type == "child_specced" ||
 		req.Type == "child_dropped" || req.Type == "noted"
 
@@ -463,7 +476,30 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		case "attrs_set":
 			var saErr error
 			suggestionVerbChanged, saErr = applyAttrsSetSideEffect(tx, newTask.ID, attrsSetParsed)
-			return saErr
+			if saErr != nil {
+				return saErr
+			}
+			// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): bump
+			// updated_at, in the SAME Tx, exactly when a suggestion actually
+			// ATTACHES — suggestionVerbChanged (the verb differs from what
+			// task_triage held before this write) AND the new verb is
+			// non-empty (a null-clear/withdrawal, patch.Verb=="", must not
+			// bump — same polarity notifySuggestionArrived below applies via
+			// this same suggestionVerbChanged gate, queue_notify.go). This is
+			// deliberately narrower than "the suggestion key was present at
+			// all": khi's own _write_suggestion (write.py) resends the
+			// IDENTICAL verb unconditionally on every judge cycle, unlike its
+			// diff-guarded _do_observed/_do_summary siblings — without the
+			// "changed" half of this gate every one of those resends would
+			// reorder a future updated_at-sorted list on pure machine
+			// bookkeeping, exactly the churn §3.2 excludes observed/summary/
+			// urgency for.
+			if suggestionVerbChanged && attrsSetParsed.Verb != "" {
+				if err := tx.TouchTaskUpdatedAt(newTask.ID); err != nil {
+					return err
+				}
+			}
+			return nil
 		case "child_added":
 			return applyChildAddedSideEffect(tx, newTask.ID, childAddedParsed)
 		case "child_specced":
