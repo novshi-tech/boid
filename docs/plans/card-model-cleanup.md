@@ -263,11 +263,55 @@ name=boid-job` で実行中 job が居ないことを確認する (deploy は ru
 
 ### 移行前の実測 (migration を書く前にやる)
 
-- 本番 DB の status 分布: `boid exec` 等で captured/triaged/ready の残存行数を
-  数える (washover 完了済みなので 0 が期待値。0 でなくても §6.2-3 が拾う)。
-- rowless card の実在数 (task_triage に row の無い card 系 status 行)。
-- remote_id / datasource_id の実データ分布 → §3.2 の「監査して決める」2 項の決着。
-- khi 側で `task_triage_*` op・task JSON フィールドを読む箇所の grep 一覧。
+**実施結果 (2026-08-25, PR-2 実装セッション)**: 本番 DB への直接アクセスが無い
+実装環境だったため、以下はコード監査で代替した。§9 の未決 3 項の決着根拠は
+この節の実測結果そのもの。
+
+- **本番 DB の status 分布**: 直接測れないが、migration 0045 は「実測 0 件でも
+  安全」な設計 (§6.2-3 の 洗い替え + rowless card 救済) にしてあるので、
+  ブロッカーにならない。念のため migration test
+  (`internal/db/migrate/migrate_0045_card_sti_test.go`) に captured/triaged/ready
+  の各パターン (sidecar 有り/無し) を fixture として仕込み、0 件でも 100 件でも
+  同じロジックで決着することを確認した。
+- **rowless card の実在パターン**: `internal/api/machine_select.go` (PR-2 直前、
+  rename 後) の `machineFor` の doc comment 自体が実在を明言している ——
+  「task_create.go's SeedTaskTriage is deliberately BEST-EFFORT at
+  task-creation time ... leaves a real card genuinely rowless」。つまり
+  best-effort insert が失敗すると sidecar 行の無い card が実際に生まれる経路が
+  コードに書かれている。migration 0045 の 型判定優先順位2「row が無くても
+  status が card 系なら card」はこの経路への安全網として設計通り必要。
+  実測結果: rowless card は **実在しうる** (コード上の best-effort insert
+  失敗パスとして) — 件数は本番 DB を見ないと出せないが、0 件でも 0 件でなくても
+  migration の型判定ロジックは変わらない。
+- **remote_id の帰属 — 決着: core (§9 参照)**: `internal/orchestrator/store.go`
+  の `UpdateTask` 自身の doc comment (PR-2 着手前から存在する既存コメント) が
+  「remote_id and auto_start have no status guard here — callers rely on being
+  able to set them regardless of task status (**khi patches remote_id on
+  working/parked tasks**; ...)」と明言している。working/parked は card 専用
+  status であり、この一文は「khi が card に remote_id を書く運用が実在する」
+  という本番挙動の直接証言 (コードコメントに残った実測)。さらに
+  `internal/api/web.go` の `PostTaskEdit` (task 編集フォーム) は remote_id
+  フィールドを持ち、その編集可否ゲートは `IsPreDispatchEditableStatus` 一本
+  (parked を含む) — Web UI からも card への remote_id 書き込み経路がある。
+  両方とも「card が remote_id を持つ」ことを前提にした既存コードであり、
+  Execution 専用に倒すとこの 2 経路が壊れる。→ **remote_id は共通コアに残す**。
+- **datasource_id の生死 — 決着: 既に死んでいる、drop 済み (§9 参照)**:
+  `internal/db/migrate/migrations/0025_drop_tasks_datasource_id.sql`
+  (`ALTER TABLE tasks DROP COLUMN datasource_id;`) が既に存在し、
+  `internal/db/migrate/migrate.go` の migration チェーンに配線済みであることを
+  確認した。つまり本設計 doc の §3.2 が書かれた時点で datasource_id は
+  **既に tasks テーブルから消えている** (0025 は 2026-08-25 より前の別 PR で
+  マージ済み)。Go の `orchestrator.Task` struct に対応フィールドが無いことも
+  「死列」の根拠として §3.2 に書かれていた通り。→ **migration 0045 では
+  datasource_id に一切言及不要** (rebuild 元の tasks テーブルに列自体が
+  存在しないため、drop 判断すら発生しない)。
+- **khi 側の `task_triage_*` op・task JSON フィールド読み取り箇所**: khi は別
+  リポジトリで PR-3 の担当範囲 (本 PR-2 の指示スコープ外)。ただし PR-2 で
+  変える JSON 形 (`{type, ..., card:{...}, exec:{...}}`) は §5-3 で明記された
+  契約変更であり、broker op 名 (`task_triage_get`/`list`) と HTTP path
+  (`/api/triage`) は PR-2 で**変更していない** (Q2 相当、PR-1 と同じく無風)。
+  khi 側の JSON フィールド直読み (`.behavior` 等のフラット読み) は PR-3 の
+  カットオーバー時に対応が必要— このリスクは §5 に既述の通り。
 
 ## 7. 検算 — 既知の傷が消えることの確認
 
@@ -310,16 +354,31 @@ name=boid-job` で実行中 job が居ないことを確認する (deploy は ru
    兆候が出たら再検討。
 4. 命名は「物 = card、過程 = triage」で統一。
 
-未決 (実測 §6.4 とセットで決める):
+**決着済み (PR-2 実装時、2026-08-25 — 本番 DB に触れない実装環境だったため
+コード監査で代替。§6.4 に実測結果と根拠を記載)**:
 
-- `remote_id` の帰属 (core か Execution か) — 整形セッションが card に
-  remote_id を書く運用の有無で決まる。
-- `datasource_id` の生死。
-- type 値の表記 `execution` の確定 (機械名 NewExecutionMachine に合わせた案。
-  より短い `work` 等にするなら **PR-2 の前**に決める — PR-1 は Go の識別子・
-  ファイル名の rename のみで `tasks.type` の値リテラルを一切導入しないため、
-  この未決はブロッカーにならない。PR-2 の migration 0045・CHECK 制約・
-  tagged struct が実際に type 値を書き込む最初の PR なので、そこが締切)。
+- `remote_id` の帰属 → **core (共通コア) に決着**。根拠: (1)
+  `internal/orchestrator/store.go` の `UpdateTask` 自身の既存 doc comment が
+  「khi patches remote_id on working/parked tasks」(working/parked は card
+  専用 status) と明言しており、card への remote_id 書き込みが本番で実際に
+  起きている運用であることの直接証拠になっている。(2) `internal/api/web.go`
+  の task 編集フォーム (`PostTaskEdit`) が remote_id を
+  `IsPreDispatchEditableStatus` (parked を含む) でゲートしており、Web UI からも
+  card への書き込み経路がある。Execution 専用に倒すとこの 2 経路が 400/panic
+  するため、**保守的判断 (既存動作を壊さない側) として core に残した**。
+  実データでこの判断が覆る可能性: 低い (2 つの独立したコード経路が同じ結論を
+  指しており、コメント自体が「本番で実際に起きている」と明言しているため)。
+- `datasource_id` の生死 → **既に死んでいた (drop 済み) と判明、決着不要に
+  帰着**。`internal/db/migrate/migrations/0025_drop_tasks_datasource_id.sql`
+  が既に tasks テーブルから datasource_id を drop 済みであることをコード監査
+  (migrate.go の migration チェーンを直接確認) で発見した。本設計 doc の §3.2
+  執筆時点でこの事実が反映されていなかった (見落とし)。migration 0045 の
+  CREATE TABLE 文には datasource_id が最初から存在しないため、drop するか
+  否かの判断自体が発生しない。
+- type 値の表記 `execution` → **確定のまま実装 (追加決定なし)**。migration
+  0045・CHECK 制約・tagged struct 全てで `execution` を使用した。
+  `NewExecutionMachine` の命名と一致させる案がそのまま採用され、`work` 等への
+  変更は提案されなかった。
 
 ## 10. 採点表 — レビュワー用 yes/no 判定リスト
 
