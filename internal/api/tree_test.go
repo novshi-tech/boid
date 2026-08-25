@@ -190,7 +190,7 @@ func TestBuildTreeItems_MultipleRoots(t *testing.T) {
 func TestBuildQueueItems_PopulatesUrgencyAndSummaryFromTriage(t *testing.T) {
 	t1 := makeTask("t1", "")
 	t2 := makeTask("t2", "")
-	triage := map[string]*orchestrator.TaskTriage{
+	triage := map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Urgency: orchestrator.UrgencyNow, Detail: []byte(`{"summary":"customer wants a quote"}`)},
 		// t2 has no triage row at all.
 	}
@@ -227,7 +227,7 @@ func TestBuildQueueItems_PopulatesChildren(t *testing.T) {
 		{"id":"c1","status":"specced"},
 		{"id":"c2","status":"open"}
 	]}`)
-	triage := map[string]*orchestrator.TaskTriage{
+	triage := map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: detail},
 	}
 
@@ -247,7 +247,7 @@ func TestBuildQueueItems_PopulatesChildren(t *testing.T) {
 // the malformed-summary case: a broken children key must not sink the row.
 func TestBuildQueueItems_MalformedChildrenJSON_LeavesChildrenEmpty(t *testing.T) {
 	t1 := makeTask("t1", "")
-	triage := map[string]*orchestrator.TaskTriage{
+	triage := map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: []byte(`not json`)},
 	}
 	items := BuildQueueItems([]*orchestrator.Task{t1}, nil, triage)
@@ -261,7 +261,7 @@ func TestBuildQueueItems_MalformedChildrenJSON_LeavesChildrenEmpty(t *testing.T)
 
 func TestBuildQueueItems_MalformedDetailJSON_LeavesSummaryEmpty(t *testing.T) {
 	t1 := makeTask("t1", "")
-	triage := map[string]*orchestrator.TaskTriage{
+	triage := map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Urgency: orchestrator.UrgencyToday, Detail: []byte(`not json`)},
 	}
 	items := BuildQueueItems([]*orchestrator.Task{t1}, nil, triage)
@@ -281,7 +281,7 @@ func TestBuildQueueItems_MalformedDetailJSON_LeavesSummaryEmpty(t *testing.T) {
 // 案), the shape khi's evaluate step is expected to write.
 func TestBuildQueueItems_PopulatesSuggestion_TopLevel(t *testing.T) {
 	t1 := makeTask("t1", "")
-	triage := map[string]*orchestrator.TaskTriage{
+	triage := map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: []byte(`{"suggestion":{"verb":"wake","action":"re-triage now","reason":"source event fired","basis":"issue #42 reopened"}}`)},
 	}
 
@@ -301,7 +301,7 @@ func TestBuildQueueItems_PopulatesSuggestion_TopLevel(t *testing.T) {
 // writes it via attrs_set it lands here instead of at the top level.
 func TestBuildQueueItems_PopulatesSuggestion_FromAttrs(t *testing.T) {
 	t1 := makeTask("t1", "")
-	triage := map[string]*orchestrator.TaskTriage{
+	triage := map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"suggestion":{"verb":"go","action":"dispatch","reason":"fully specced"}}}`)},
 	}
 
@@ -320,7 +320,7 @@ func TestBuildQueueItems_PopulatesSuggestion_FromAttrs(t *testing.T) {
 // not sink the row (rule 5, 隠さない).
 func TestBuildQueueItems_MalformedSuggestionJSON_LeavesSuggestionEmpty(t *testing.T) {
 	t1 := makeTask("t1", "")
-	triage := map[string]*orchestrator.TaskTriage{
+	triage := map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: []byte(`not json`)},
 	}
 
@@ -338,7 +338,7 @@ func TestBuildQueueItems_MalformedSuggestionJSON_LeavesSuggestionEmpty(t *testin
 // a suggestion yet.
 func TestBuildQueueItems_NoSuggestionKey_LeavesSuggestionEmpty(t *testing.T) {
 	t1 := makeTask("t1", "")
-	triage := map[string]*orchestrator.TaskTriage{
+	triage := map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: []byte(`{"summary":"no suggestion here yet"}`)},
 	}
 
@@ -358,7 +358,7 @@ func TestBuildQueueItems_NoSuggestionKey_LeavesSuggestionEmpty(t *testing.T) {
 func TestBuildTreeItemsWithSuggestions_OverlaysSuggestionKeepingTreeShape(t *testing.T) {
 	parent := makeTask("p", "")
 	child := makeTask("c", "p")
-	triage := map[string]*orchestrator.TaskTriage{
+	triage := map[string]*orchestrator.CardAttrs{
 		"p": {TaskID: "p", Detail: []byte(`{"suggestion":{"verb":"wake","reason":"event fired"}}`)},
 		// "c" has no triage row at all.
 	}
@@ -396,7 +396,7 @@ func TestWebTaskList_ParkedStatus_RendersSuggestion(t *testing.T) {
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	svc := &stubWebService{tasks: []*orchestrator.Task{task}}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: []byte(`{"suggestion":{"verb":"reopen","reason":"source event fired"}}`)},
 	}}
 	h := &WebHandler{Service: svc, TaskTriage: triage}

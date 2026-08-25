@@ -10,11 +10,11 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 )
 
-// TaskTriage is the cross-project-issue-triage Phase 1 sidecar row for a
+// CardAttrs is the cross-project-issue-triage Phase 1 sidecar row for a
 // triage task (docs/plans/cross-project-issue-triage.md 実測c). It is
 // deliberately kept out of Task / TaskService / TaskStore: Task is the API
 // DTO (marshaled to JSON as-is, no conversion layer), so a column added
-// there auto-exposes in every API/CLI/Web response. TaskTriage lives only
+// there auto-exposes in every API/CLI/Web response. CardAttrs lives only
 // where triage-specific code explicitly reads/writes it.
 //
 // Urgency and WakeAt are real columns because they are queue predicates
@@ -26,7 +26,7 @@ import (
 // vs ready vs working) is derived from the actions log (see ParkedFrom
 // below), not duplicated into a second write path that could go stale
 // (決定13: event 追記を正、state は導出).
-type TaskTriage struct {
+type CardAttrs struct {
 	TaskID     string     `json:"task_id"`
 	Kind       string     `json:"kind,omitempty"`    // signal|issue|theme
 	Urgency    string     `json:"urgency,omitempty"` // now|today|week|someday
@@ -40,14 +40,14 @@ type TaskTriage struct {
 	// directly ("一覧は suggestion で駆動する", 設計 doc §3.6) — but unlike
 	// Kind/Urgency the full suggestion (reason/params) stays in Detail's JSON
 	// blob too; only the verb is duplicated into this column (see
-	// applyAttrsSetSideEffect's doc comment, internal/api/workflow_triage.go,
+	// applyAttrsSetSideEffect's doc comment, internal/api/workflow_card.go,
 	// for why that duplication is intentional and does not drift).
 	SuggestionVerb string          `json:"suggestion_verb,omitempty"`
 	Detail         json.RawMessage `json:"detail,omitempty"`
 }
 
 // UpsertTaskTriage inserts or updates the sidecar row for TaskID.
-func UpsertTaskTriage(dbtx db.DBTX, tt *TaskTriage) error {
+func UpsertTaskTriage(dbtx db.DBTX, tt *CardAttrs) error {
 	if tt.TaskID == "" {
 		return fmt.Errorf("upsert task_triage: task_id is required")
 	}
@@ -99,12 +99,12 @@ func SeedTaskTriage(dbtx db.DBTX, taskID string) error {
 
 // GetTaskTriage retrieves the sidecar row for taskID. Returns an error
 // wrapping sql.ErrNoRows when no row exists.
-func GetTaskTriage(dbtx db.DBTX, taskID string) (*TaskTriage, error) {
+func GetTaskTriage(dbtx db.DBTX, taskID string) (*CardAttrs, error) {
 	row := dbtx.QueryRow(
 		`SELECT task_id, kind, urgency, wake_at, wake_task_id, suggestion_verb, detail FROM task_triage WHERE task_id = ?`,
 		taskID,
 	)
-	var tt TaskTriage
+	var tt CardAttrs
 	var wakeAt sql.NullTime
 	var detail string
 	if err := row.Scan(&tt.TaskID, &tt.Kind, &tt.Urgency, &wakeAt, &tt.WakeTaskID, &tt.SuggestionVerb, &detail); err != nil {
@@ -160,8 +160,8 @@ const taskTriageInClauseChunkSize = 500
 // it can — but the map itself, not the error, is the thing to check for
 // "did I get anything useful" (see triageByTaskID's doc comment,
 // internal/api/web.go, for how the actual call site uses this).
-func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*TaskTriage, error) {
-	out := map[string]*TaskTriage{}
+func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*CardAttrs, error) {
+	out := map[string]*CardAttrs{}
 	var firstErr error
 	noteErr := func(err error) {
 		if firstErr == nil {
@@ -191,7 +191,7 @@ func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*TaskTr
 			}
 			defer rows.Close()
 			for rows.Next() {
-				var tt TaskTriage
+				var tt CardAttrs
 				var wakeAt sql.NullTime
 				var detail string
 				if err := rows.Scan(&tt.TaskID, &tt.Kind, &tt.Urgency, &wakeAt, &tt.WakeTaskID, &tt.SuggestionVerb, &detail); err != nil {
@@ -330,7 +330,7 @@ type Suggestion struct {
 // のスキーマ案) and falling back to detail.attrs.suggestion. The fallback is
 // the one actually exercised today: "suggestion" is not a promoted
 // attrs_set key (see applyAttrsSetSideEffect / FoldDetailAttrs,
-// internal/api/workflow_triage.go), and attrs_set is currently the only
+// internal/api/workflow_card.go), and attrs_set is currently the only
 // write path for it in this repo — so in practice it lands under
 // detail.attrs, not at the top level. Top-level is still checked first per
 // BD-8's design (a future/alternate writer could place it there directly);

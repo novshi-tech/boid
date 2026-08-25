@@ -55,7 +55,7 @@ func TestTaskTriage_UpsertAndGet(t *testing.T) {
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)
 
 	wakeAt := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	tt := &orchestrator.TaskTriage{
+	tt := &orchestrator.CardAttrs{
 		TaskID:  "t1",
 		Kind:    "issue",
 		Urgency: "today",
@@ -91,7 +91,7 @@ func TestTaskTriage_SuggestionVerb_RoundTrips(t *testing.T) {
 	conn := newTestDB(t)
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
 
-	tt := &orchestrator.TaskTriage{TaskID: "t1", SuggestionVerb: "go"}
+	tt := &orchestrator.CardAttrs{TaskID: "t1", SuggestionVerb: "go"}
 	if err := orchestrator.UpsertTaskTriage(conn, tt); err != nil {
 		t.Fatalf("UpsertTaskTriage: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestTaskTriage_SuggestionVerb_DefaultsToEmpty(t *testing.T) {
 	conn := newTestDB(t)
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
 
-	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: "t1"}); err != nil {
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1"}); err != nil {
 		t.Fatalf("UpsertTaskTriage: %v", err)
 	}
 	got, err := orchestrator.GetTaskTriage(conn, "t1")
@@ -127,14 +127,14 @@ func TestTaskTriage_SuggestionVerb_DefaultsToEmpty(t *testing.T) {
 }
 
 // TestListTaskTriageByTaskIDs_IncludesSuggestionVerb pins the batch-fetch
-// path (the one the Queue/Parked Web UI views and khi's ListTriage actually
+// path (the one the Queue/Parked Web UI views and khi's ListCards actually
 // use) alongside the single-row GetTaskTriage coverage above — a column
 // present in one query and forgotten in the other would silently blank the
 // verb badge specifically on list views.
 func TestListTaskTriageByTaskIDs_IncludesSuggestionVerb(t *testing.T) {
 	conn := newTestDB(t)
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusParked)
-	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: "t1", SuggestionVerb: "park"}); err != nil {
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1", SuggestionVerb: "park"}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 
@@ -151,10 +151,10 @@ func TestTaskTriage_UpsertUpdatesExistingRow(t *testing.T) {
 	conn := newTestDB(t)
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)
 
-	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: "t1", Urgency: "week"}); err != nil {
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1", Urgency: "week"}); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
-	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: "t1", Urgency: "now"}); err != nil {
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1", Urgency: "now"}); err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
 	got, err := orchestrator.GetTaskTriage(conn, "t1")
@@ -183,10 +183,10 @@ func TestListTaskTriageByTaskIDs_ReturnsRequestedRowsOnly(t *testing.T) {
 	createTestTask(t, conn, "t2", orchestrator.TaskStatusTriaged)
 	createTestTask(t, conn, "t3", orchestrator.TaskStatusTriaged) // no task_triage row
 
-	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: "t1", Urgency: "now"}); err != nil {
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1", Urgency: "now"}); err != nil {
 		t.Fatalf("upsert t1: %v", err)
 	}
-	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: "t2", Urgency: "today"}); err != nil {
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t2", Urgency: "today"}); err != nil {
 		t.Fatalf("upsert t2: %v", err)
 	}
 
@@ -237,7 +237,7 @@ func TestListTaskTriageByTaskIDs_ChunksAcrossInClauseLimit(t *testing.T) {
 		id := fmt.Sprintf("chunk-t%04d", i)
 		ids[i] = id
 		createTestTask(t, conn, id, orchestrator.TaskStatusTriaged)
-		if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: id, Urgency: "week"}); err != nil {
+		if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: id, Urgency: "week"}); err != nil {
 			t.Fatalf("upsert %s: %v", id, err)
 		}
 	}
@@ -273,7 +273,7 @@ func TestListTaskTriageByTaskIDs_OneRowScanErrorDoesNotSinkOthers(t *testing.T) 
 	createTestTask(t, conn, "bad", orchestrator.TaskStatusTriaged)
 	createTestTask(t, conn, "good2", orchestrator.TaskStatusTriaged)
 	for _, id := range []string{"good1", "bad", "good2"} {
-		if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: id, Urgency: "now"}); err != nil {
+		if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: id, Urgency: "now"}); err != nil {
 			t.Fatalf("upsert %s: %v", id, err)
 		}
 	}
@@ -302,7 +302,7 @@ func TestListTaskTriageByTaskIDs_OneRowScanErrorDoesNotSinkOthers(t *testing.T) 
 func TestTaskTriage_DeleteAndCascadeOnTaskDelete(t *testing.T) {
 	conn := newTestDB(t)
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)
-	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: "t1"}); err != nil {
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1"}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 
@@ -319,7 +319,7 @@ func TestTaskTriage_DeleteAndCascadeOnTaskDelete(t *testing.T) {
 func TestTaskTriage_ExplicitDelete(t *testing.T) {
 	conn := newTestDB(t)
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)
-	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: "t1"}); err != nil {
+	if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.CardAttrs{TaskID: "t1"}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	if err := orchestrator.DeleteTaskTriage(conn, "t1"); err != nil {

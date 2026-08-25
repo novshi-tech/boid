@@ -47,7 +47,7 @@ func newActionListTestService(t *testing.T) (*TaskWorkflowService, *orchestrator
 		// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2):
 		// machineFor needs this to pick NewCardMachine for the parked-status
 		// card tasks these tests create — same taskRepo, which already
-		// implements TaskTriageStore (wire.go wires it identically in
+		// implements CardStore (wire.go wires it identically in
 		// production).
 		TaskTriage: taskRepo,
 	}

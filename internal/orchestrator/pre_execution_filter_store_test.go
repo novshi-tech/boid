@@ -393,7 +393,7 @@ func TestListTasks_QueueNext_MembershipAndOrdering(t *testing.T) {
 			t.Fatalf("create %s: %v", title, err)
 		}
 		if verb != "" || urgency != "" {
-			if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.TaskTriage{TaskID: task.ID, SuggestionVerb: verb, Urgency: urgency}); err != nil {
+			if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.CardAttrs{TaskID: task.ID, SuggestionVerb: verb, Urgency: urgency}); err != nil {
 				t.Fatalf("upsert task_triage %s: %v", title, err)
 			}
 		}
@@ -449,7 +449,7 @@ func TestListTasks_QueueNext_MembershipAndOrdering(t *testing.T) {
 	}
 }
 
-// TestListTasks_Triage_ReturnsPreExecutionPlusWorking pins ListTriage's default
+// TestListTasks_Triage_ReturnsPreExecutionPlusWorking pins ListCards's default
 // floor (Phase 1 PR-5a): "the live triage cards" = pre-execution ∪ working.
 // Without a floor an unfiltered triage listing degrades into a full scan of
 // every task row ever created plus one sidecar point query per row; "queue"

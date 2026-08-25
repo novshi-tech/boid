@@ -15,13 +15,13 @@ import (
 // (acceptGo's unconditional applyAnsweredSideEffect call), and even there
 // with no audit trail; working/park/drop/done/reopen left a stale suggestion
 // sitting untouched. See recordAndStripSuggestionIfPresent's own doc comment
-// (workflow_triage.go) for the full design. ----
+// (workflow_card.go) for the full design. ----
 
 func TestApplyAction_Drop_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", SuggestionVerb: "working", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"working","reason":"still active"}}}`)},
 		},
 	}
@@ -69,7 +69,7 @@ func TestApplyAction_Park_DiscardsAndRecordsExistingSuggestion(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", SuggestionVerb: "done", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"done","reason":"all children closed"}}}`)},
 		},
 	}
@@ -119,7 +119,7 @@ func TestTaskWorkflowService_AcceptGo_DiscardsAndRecordsExistingSuggestion(t *te
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", SuggestionVerb: "park", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"park","reason":"blocked on review"}}}`)},
 		},
 	}

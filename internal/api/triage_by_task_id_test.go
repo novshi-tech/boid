@@ -27,7 +27,7 @@ func TestTriageByTaskID_NilTaskTriage_DegradesToEmptyMap(t *testing.T) {
 // an O(N) query pattern). This asserts the underlying store method is
 // invoked exactly once regardless of how many tasks are being enriched.
 func TestTriageByTaskID_BatchesIntoOneCall(t *testing.T) {
-	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Urgency: "now"},
 		"t2": {TaskID: "t2", Urgency: "today"},
 	}}
@@ -58,7 +58,7 @@ func TestTriageByTaskID_BatchesIntoOneCall(t *testing.T) {
 // ListTaskTriageByTaskIDs's returned map entirely on any non-nil error,
 // throwing away rows the store DID manage to fetch. The real
 // orchestrator.ListTaskTriageByTaskIDs is best-effort across chunks/rows
-// (task_triage.go's doc comment): a non-nil error means *something* went
+// (card.go's doc comment): a non-nil error means *something* went
 // wrong for at least one row or chunk, but the map can still be partially
 // or fully populated — e.g. one chunk's query failed while another
 // chunk's rows were gathered fine, or a single row's Scan failed while
@@ -67,7 +67,7 @@ func TestTriageByTaskID_BatchesIntoOneCall(t *testing.T) {
 // いなければ存在しない" failure class 決定9 exists to prevent.
 func TestTriageByTaskID_ErrorStillUsesPartialResults(t *testing.T) {
 	triage := &stubTriageStore{
-		rows: map[string]*orchestrator.TaskTriage{
+		rows: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", Urgency: "now"},
 		},
 		listErr: fmt.Errorf("simulated: one row failed to scan"),
@@ -81,13 +81,13 @@ func TestTriageByTaskID_ErrorStillUsesPartialResults(t *testing.T) {
 	}
 }
 
-// stubTriageStoreNilOnError is a TaskTriageStore whose
+// stubTriageStoreNilOnError is a CardStore whose
 // ListTaskTriageByTaskIDs returns (nil, err) — the total-failure case (as
 // opposed to stubTriageStore's partial-success case above), e.g. every
 // chunk's Query call itself failed before any row was ever scanned.
 type stubTriageStoreNilOnError struct{ stubTriageStore }
 
-func (s *stubTriageStoreNilOnError) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
+func (s *stubTriageStoreNilOnError) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.CardAttrs, error) {
 	return nil, fmt.Errorf("simulated: total failure, nothing fetched")
 }
 

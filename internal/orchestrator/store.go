@@ -316,7 +316,7 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	} else if filter.Status == "triage" {
 		// Phase 1 PR-5a, unchanged by PR-2: 「今生きている triage task」=
 		// pre-execution ∪ working = captured/triaged/parked/ready/working.
-		// ListTriage's default filter (`boid task triage --list` with no
+		// ListCards's default filter (`boid task triage --list` with no
 		// status — the exact call khi's open_triage_task_ids, app/trigger.py,
 		// makes), so this predicate directly decides which cards khi's
 		// signal detection considers on every sweep (docs/plans/

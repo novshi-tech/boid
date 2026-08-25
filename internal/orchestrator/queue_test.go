@@ -27,23 +27,23 @@ func TestShouldWake_DateCondition(t *testing.T) {
 	past := now.Add(-time.Hour)
 	future := now.Add(time.Hour)
 
-	if !orchestrator.ShouldWake(now, &orchestrator.TaskTriage{WakeAt: &past}, true, orchestrator.TaskStatusExecuting) {
+	if !orchestrator.ShouldWake(now, &orchestrator.CardAttrs{WakeAt: &past}, true, orchestrator.TaskStatusExecuting) {
 		t.Error("wake_at in the past must wake")
 	}
-	if !orchestrator.ShouldWake(now, &orchestrator.TaskTriage{WakeAt: &now}, true, orchestrator.TaskStatusExecuting) {
+	if !orchestrator.ShouldWake(now, &orchestrator.CardAttrs{WakeAt: &now}, true, orchestrator.TaskStatusExecuting) {
 		t.Error("wake_at exactly now (<=) must wake")
 	}
-	if orchestrator.ShouldWake(now, &orchestrator.TaskTriage{WakeAt: &future}, true, orchestrator.TaskStatusExecuting) {
+	if orchestrator.ShouldWake(now, &orchestrator.CardAttrs{WakeAt: &future}, true, orchestrator.TaskStatusExecuting) {
 		t.Error("wake_at in the future must not wake")
 	}
-	if orchestrator.ShouldWake(now, &orchestrator.TaskTriage{}, true, orchestrator.TaskStatusExecuting) {
+	if orchestrator.ShouldWake(now, &orchestrator.CardAttrs{}, true, orchestrator.TaskStatusExecuting) {
 		t.Error("no wake condition at all must not wake")
 	}
 }
 
 func TestShouldWake_TaskCondition(t *testing.T) {
 	now := time.Now()
-	tt := &orchestrator.TaskTriage{WakeTaskID: "some-task"}
+	tt := &orchestrator.CardAttrs{WakeTaskID: "some-task"}
 
 	if orchestrator.ShouldWake(now, tt, true, orchestrator.TaskStatusExecuting) {
 		t.Error("referenced task still non-terminal must not wake")

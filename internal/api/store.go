@@ -259,11 +259,11 @@ type WebService interface {
 
 type WorkflowService interface {
 	ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error)
-	// GetTriage / ListTriage are the task_triage read surface (triage_read.go,
+	// GetCard / ListCards are the task_triage read surface (card_read.go,
 	// Phase 1 PR-5a). Part of WorkflowService because the brokered ops that
 	// expose them to the sandbox reach the daemon through this same interface.
-	GetTriage(taskID string) (*TaskTriageView, error)
-	ListTriage(filter orchestrator.TaskFilter) ([]*TaskTriageView, error)
+	GetCard(taskID string) (*CardView, error)
+	ListCards(filter orchestrator.TaskFilter) ([]*CardView, error)
 	CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error)
 	// StopAgent asks the agent backing runtimeID to terminate gracefully,
 	// without tearing down the surrounding runner-inner-child. The broker's
@@ -310,26 +310,26 @@ type ActionStore interface {
 	ListActionsByTask(taskID string) ([]*orchestrator.Action, error)
 }
 
-// TaskTriageStore provides access to the cross-project-issue-triage Phase 1
+// CardStore provides access to the cross-project-issue-triage Phase 1
 // sidecar (docs/plans/cross-project-issue-triage.md 実測c). Deliberately
 // separate from TaskStore: TaskStore's orchestrator.Task is the API DTO
 // (marshaled to JSON with no conversion layer), so keeping triage-specific
 // fields out of it means they don't auto-expose in every task API response.
-type TaskTriageStore interface {
-	UpsertTaskTriage(tt *orchestrator.TaskTriage) error
+type CardStore interface {
+	UpsertTaskTriage(tt *orchestrator.CardAttrs) error
 	// SeedTaskTriage creates an empty row only when none exists (INSERT ...
 	// ON CONFLICT DO NOTHING). Distinct from UpsertTaskTriage precisely
 	// because it cannot overwrite: it asserts membership ("this is a triage
 	// task") and nothing else.
 	SeedTaskTriage(taskID string) error
-	GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error)
+	GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error)
 	// ListTaskTriageByTaskIDs batch-fetches sidecar rows for a set of task
 	// IDs in O(chunks) queries instead of O(N) GetTaskTriage calls (BD-8
 	// 残件1) — see orchestrator.ListTaskTriageByTaskIDs's doc comment for
 	// the chunking rationale and the "batch replaces per-row error
 	// tolerance" tradeoff. A taskID with no sidecar row is simply absent
 	// from the returned map, never an error.
-	ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error)
+	ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.CardAttrs, error)
 	DeleteTaskTriage(taskID string) error
 	// ParkedFrom derives which status (triaged/ready/working) a parked task
 	// was parked from, from the actions log (not a stored column — 決定13).
@@ -339,7 +339,7 @@ type TaskTriageStore interface {
 // TaskIdentityStore provides access to docs/plans/ingestion-identity.md
 // PR-1 (B-1)'s identity index (task_identities table): external key ->
 // task, scoped per project (I-1/I-2/I-3). Deliberately separate from
-// TaskStore for the same reason TaskTriageStore is: identity bindings are
+// TaskStore for the same reason CardStore is: identity bindings are
 // not part of orchestrator.Task's own JSON shape.
 type TaskIdentityStore interface {
 	// LinkIdentity binds identity to taskID within projectID's scope.
@@ -362,9 +362,9 @@ type TaskIdentityStore interface {
 // ActionListStore provides the workspace-scoped read backing docs/plans/
 // ingestion-identity.md PR-3 (B-3)'s BoidOpActionList. Deliberately separate
 // from ActionStore (ListActionsByTask, per-task, embedded in TxStore) for the
-// same reason TaskTriageStore/TaskIdentityStore are their own interfaces:
+// same reason CardStore/TaskIdentityStore are their own interfaces:
 // this is a non-transactional READ used outside WithinTx — the same
-// "TaskWorkflowService.TaskTriage TaskTriageStore" narrowing pattern
+// "TaskWorkflowService.TaskTriage CardStore" narrowing pattern
 // (workflow.go), not TxStore.
 type ActionListStore interface {
 	// ListActionsSince returns the actions matching filter (oldest first)
@@ -375,7 +375,7 @@ type ActionListStore interface {
 
 // TriggerRunStore backs docs/plans/ingestion-identity.md PR-4 (B-5)'s
 // trigger_runs ledger read/writes — narrowed from *orchestrator.
-// TaskRepository the same way ActionListStore/TaskTriageStore are (workflow.go).
+// TaskRepository the same way ActionListStore/CardStore are (workflow.go).
 // Deliberately non-transactional (unlike TxStore's WithinTx-scoped methods):
 // each call is a standalone statement, matching this table's actual access
 // pattern in trigger_loop.go (no create+link atomicity requirement the way
@@ -445,7 +445,7 @@ type GlobalJobStore interface {
 type TxStore interface {
 	TaskStore
 	ActionStore
-	TaskTriageStore
+	CardStore
 	JobStore
 	// TaskIdentityStore is embedded so the drop side effect (I-6:
 	// TaskWorkflowService.ApplyAction's WithinTx switch) can release a

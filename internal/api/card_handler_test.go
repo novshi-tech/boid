@@ -10,14 +10,14 @@ import (
 )
 
 type stubTriageReader struct {
-	view    *TaskTriageView
-	list    []*TaskTriageView
+	view    *CardView
+	list    []*CardView
 	gotID   string
 	gotFilt orchestrator.TaskFilter
 	err     error
 }
 
-func (s *stubTriageReader) GetTriage(taskID string) (*TaskTriageView, error) {
+func (s *stubTriageReader) GetCard(taskID string) (*CardView, error) {
 	s.gotID = taskID
 	if s.err != nil {
 		return nil, s.err
@@ -25,7 +25,7 @@ func (s *stubTriageReader) GetTriage(taskID string) (*TaskTriageView, error) {
 	return s.view, nil
 }
 
-func (s *stubTriageReader) ListTriage(filter orchestrator.TaskFilter) ([]*TaskTriageView, error) {
+func (s *stubTriageReader) ListCards(filter orchestrator.TaskFilter) ([]*CardView, error) {
 	s.gotFilt = filter
 	if s.err != nil {
 		return nil, s.err
@@ -40,10 +40,10 @@ func (s *stubTriageReader) ListTriage(filter orchestrator.TaskFilter) ([]*TaskTr
 // swallowed as a filter.
 func TestTriageHandler_Routes(t *testing.T) {
 	svc := &stubTriageReader{
-		view: &TaskTriageView{TaskID: "t1", Status: orchestrator.TaskStatusParked, ParkedFrom: orchestrator.TaskStatusReady},
-		list: []*TaskTriageView{{TaskID: "a"}, {TaskID: "b"}},
+		view: &CardView{TaskID: "t1", Status: orchestrator.TaskStatusParked, ParkedFrom: orchestrator.TaskStatusReady},
+		list: []*CardView{{TaskID: "a"}, {TaskID: "b"}},
 	}
-	h := &TriageHandler{Service: svc}
+	h := &CardHandler{Service: svc}
 
 	t.Run("single", func(t *testing.T) {
 		rec := httptest.NewRecorder()
@@ -54,7 +54,7 @@ func TestTriageHandler_Routes(t *testing.T) {
 		if svc.gotID != "t1" {
 			t.Fatalf("service saw id %q, want t1", svc.gotID)
 		}
-		var got TaskTriageView
+		var got CardView
 		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 			t.Fatalf("body is not a single view (%v): %s", err, rec.Body)
 		}
@@ -72,7 +72,7 @@ func TestTriageHandler_Routes(t *testing.T) {
 		if svc.gotFilt.ProjectID != "meta" || svc.gotFilt.Status != "queue_next" {
 			t.Fatalf("filter = %+v, want project_id/status carried through", svc.gotFilt)
 		}
-		var got []*TaskTriageView
+		var got []*CardView
 		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 			t.Fatalf("body is not a list (%v): %s", err, rec.Body)
 		}
@@ -85,7 +85,7 @@ func TestTriageHandler_Routes(t *testing.T) {
 // TestTriageHandler_PropagatesStatusError pins that a service StatusError keeps
 // its code (a missing task must not surface as 200 or 500).
 func TestTriageHandler_PropagatesStatusError(t *testing.T) {
-	h := &TriageHandler{Service: &stubTriageReader{err: &StatusError{Code: http.StatusNotFound, Message: "nope"}}}
+	h := &CardHandler{Service: &stubTriageReader{err: &StatusError{Code: http.StatusNotFound, Message: "nope"}}}
 	rec := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/missing", nil))
 	if rec.Code != http.StatusNotFound {

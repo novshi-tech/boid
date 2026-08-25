@@ -72,15 +72,15 @@ func (r *TaskRepository) ListActionsSince(filter ActionListFilter) ([]*Action, s
 	return ListActionsSince(r.db, filter)
 }
 
-func (r *TaskRepository) UpsertTaskTriage(tt *TaskTriage) error {
+func (r *TaskRepository) UpsertTaskTriage(tt *CardAttrs) error {
 	return UpsertTaskTriage(r.db, tt)
 }
 
-func (r *TaskRepository) GetTaskTriage(taskID string) (*TaskTriage, error) {
+func (r *TaskRepository) GetTaskTriage(taskID string) (*CardAttrs, error) {
 	return GetTaskTriage(r.db, taskID)
 }
 
-func (r *TaskRepository) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*TaskTriage, error) {
+func (r *TaskRepository) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*CardAttrs, error) {
 	return ListTaskTriageByTaskIDs(r.db, taskIDs)
 }
 

@@ -72,15 +72,15 @@ func (s apiTxStore) ListActionsByTask(taskID string) ([]*orchestrator.Action, er
 	return s.actions.ListActionsByTask(taskID)
 }
 
-func (s apiTxStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error {
+func (s apiTxStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error {
 	return s.tasks.UpsertTaskTriage(tt)
 }
 
-func (s apiTxStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
+func (s apiTxStore) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
 	return s.tasks.GetTaskTriage(taskID)
 }
 
-func (s apiTxStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
+func (s apiTxStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.CardAttrs, error) {
 	return s.tasks.ListTaskTriageByTaskIDs(taskIDs)
 }
 

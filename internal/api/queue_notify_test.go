@@ -153,7 +153,7 @@ func TestApplyAction_AttrsSet_NotifiesOnNewSuggestionVerb_ThroughApplyAction(t *
 // cycle for as long as the suggestion sits unanswered.
 func TestApplyAction_AttrsSet_ResendingSameVerb_DoesNotReNotify(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.TaskTriage{
+	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", SuggestionVerb: "park", Detail: []byte(`{"attrs":{"suggestion":{"verb":"park","reason":"blocked on review"}}}`)},
 	}}
 	notifier := &recordingNotifier{}
@@ -178,7 +178,7 @@ func TestApplyAction_AttrsSet_ResendingSameVerb_DoesNotReNotify(t *testing.T) {
 // notify twice for the same card".
 func TestApplyAction_AttrsSet_VerbChangesToADifferentVerb_Renotifies(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.TaskTriage{
+	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", SuggestionVerb: "park", Detail: []byte(`{"attrs":{"suggestion":{"verb":"park"}}}`)},
 	}}
 	notifier := &recordingNotifier{}
@@ -215,7 +215,7 @@ func TestApplyAttrsSetSideEffect_ReturnsVerbChanged(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			txStore := &recordingTxStore{triage: map[string]*orchestrator.TaskTriage{
+			txStore := &recordingTxStore{triage: map[string]*orchestrator.CardAttrs{
 				"t1": {TaskID: "t1", SuggestionVerb: c.existing},
 			}}
 			got, err := applyAttrsSetSideEffect(txStore, "t1", c.patch)

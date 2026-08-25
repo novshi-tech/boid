@@ -17,14 +17,14 @@ import (
 // each, look up an arbitrary wake_task_id target.
 type sweepFakeStore struct {
 	tasks   map[string]*orchestrator.Task
-	triage  map[string]*orchestrator.TaskTriage
+	triage  map[string]*orchestrator.CardAttrs
 	actions map[string][]*orchestrator.Action
 }
 
 func newSweepFakeStore() *sweepFakeStore {
 	return &sweepFakeStore{
 		tasks:   map[string]*orchestrator.Task{},
-		triage:  map[string]*orchestrator.TaskTriage{},
+		triage:  map[string]*orchestrator.CardAttrs{},
 		actions: map[string][]*orchestrator.Action{},
 	}
 }
@@ -70,27 +70,27 @@ func (s *sweepFakeStore) ListActionsByTask(taskID string) ([]*orchestrator.Actio
 }
 func (s *sweepFakeStore) SeedTaskTriage(taskID string) error {
 	if s.triage == nil {
-		s.triage = map[string]*orchestrator.TaskTriage{}
+		s.triage = map[string]*orchestrator.CardAttrs{}
 	}
 	if _, ok := s.triage[taskID]; !ok {
-		s.triage[taskID] = &orchestrator.TaskTriage{TaskID: taskID}
+		s.triage[taskID] = &orchestrator.CardAttrs{TaskID: taskID}
 	}
 	return nil
 }
 
-func (s *sweepFakeStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error {
+func (s *sweepFakeStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error {
 	s.triage[tt.TaskID] = tt
 	return nil
 }
-func (s *sweepFakeStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
+func (s *sweepFakeStore) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
 	tt, ok := s.triage[taskID]
 	if !ok {
 		return nil, fmt.Errorf("task_triage not found: %s: %w", taskID, sql.ErrNoRows)
 	}
 	return tt, nil
 }
-func (s *sweepFakeStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
-	out := map[string]*orchestrator.TaskTriage{}
+func (s *sweepFakeStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.CardAttrs, error) {
+	out := map[string]*orchestrator.CardAttrs{}
 	for _, id := range taskIDs {
 		if tt, ok := s.triage[id]; ok {
 			out[id] = tt
@@ -100,7 +100,7 @@ func (s *sweepFakeStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*
 }
 func (s *sweepFakeStore) DeleteTaskTriage(taskID string) error { delete(s.triage, taskID); return nil }
 
-// ParkedFrom is retained read-only display metadata (triage_read.go) — no
+// ParkedFrom is retained read-only display metadata (card_read.go) — no
 // queue-sweep test needs it since Wake/ParkedFrom-based resolution no longer
 // exists (v2's card machine has exactly one park origin, working).
 func (s *sweepFakeStore) ParkedFrom(taskID string) (orchestrator.TaskStatus, error) {
@@ -138,7 +138,7 @@ func TestSweepWake_DateCondition_RecordsWakeDue(t *testing.T) {
 	past := now.Add(-time.Hour)
 
 	store.tasks["t1"] = &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
-	store.triage["t1"] = &orchestrator.TaskTriage{TaskID: "t1", WakeAt: &past}
+	store.triage["t1"] = &orchestrator.CardAttrs{TaskID: "t1", WakeAt: &past}
 
 	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
 	woken, err := svc.SweepWake(context.Background(), now)
@@ -165,7 +165,7 @@ func TestSweepWake_StampsActorDaemon(t *testing.T) {
 	past := now.Add(-time.Hour)
 
 	store.tasks["t1"] = &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
-	store.triage["t1"] = &orchestrator.TaskTriage{TaskID: "t1", WakeAt: &past}
+	store.triage["t1"] = &orchestrator.CardAttrs{TaskID: "t1", WakeAt: &past}
 
 	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
 	woken, err := svc.SweepWake(context.Background(), now)
@@ -193,7 +193,7 @@ func TestSweepWake_TaskCondition_RecordsWakeDueWhenReferencedTaskTerminal(t *tes
 
 	store.tasks["blocker"] = &orchestrator.Task{ID: "blocker", Status: orchestrator.TaskStatusDone}
 	store.tasks["t2"] = &orchestrator.Task{ID: "t2", Status: orchestrator.TaskStatusParked}
-	store.triage["t2"] = &orchestrator.TaskTriage{TaskID: "t2", WakeTaskID: "blocker"}
+	store.triage["t2"] = &orchestrator.CardAttrs{TaskID: "t2", WakeTaskID: "blocker"}
 
 	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
 	woken, err := svc.SweepWake(context.Background(), now)
@@ -217,7 +217,7 @@ func TestSweepWake_NotYetDue_LeavesParked(t *testing.T) {
 	future := now.Add(time.Hour)
 
 	store.tasks["t3"] = &orchestrator.Task{ID: "t3", Status: orchestrator.TaskStatusParked}
-	store.triage["t3"] = &orchestrator.TaskTriage{TaskID: "t3", WakeAt: &future}
+	store.triage["t3"] = &orchestrator.CardAttrs{TaskID: "t3", WakeAt: &future}
 
 	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
 	woken, err := svc.SweepWake(context.Background(), now)
@@ -257,10 +257,10 @@ func TestSweepWake_MultipleParkedTasks_EachEvaluatedIndependently(t *testing.T) 
 	future := now.Add(time.Hour)
 
 	store.tasks["due"] = &orchestrator.Task{ID: "due", Status: orchestrator.TaskStatusParked}
-	store.triage["due"] = &orchestrator.TaskTriage{TaskID: "due", WakeAt: &past}
+	store.triage["due"] = &orchestrator.CardAttrs{TaskID: "due", WakeAt: &past}
 
 	store.tasks["not-due"] = &orchestrator.Task{ID: "not-due", Status: orchestrator.TaskStatusParked}
-	store.triage["not-due"] = &orchestrator.TaskTriage{TaskID: "not-due", WakeAt: &future}
+	store.triage["not-due"] = &orchestrator.CardAttrs{TaskID: "not-due", WakeAt: &future}
 
 	store.tasks["irrelevant"] = &orchestrator.Task{ID: "irrelevant", Status: orchestrator.TaskStatusExecuting}
 
@@ -293,7 +293,7 @@ func TestSweepWake_WorkingOriginPark_RecordsWakeDue_NoTransition(t *testing.T) {
 
 	store.tasks["child-pr"] = &orchestrator.Task{ID: "child-pr", Status: orchestrator.TaskStatusDone}
 	store.tasks["card"] = &orchestrator.Task{ID: "card", Status: orchestrator.TaskStatusParked}
-	store.triage["card"] = &orchestrator.TaskTriage{TaskID: "card", WakeTaskID: "child-pr"}
+	store.triage["card"] = &orchestrator.CardAttrs{TaskID: "card", WakeTaskID: "child-pr"}
 
 	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
 	woken, err := svc.SweepWake(context.Background(), now)
@@ -328,7 +328,7 @@ func TestSweepReconcileChildren_ClosesStaleDispatchedChild(t *testing.T) {
 	store.tasks["card"] = &orchestrator.Task{ID: "card", ParentID: "", Status: orchestrator.TaskStatusWorking}
 	store.tasks["child-1"] = &orchestrator.Task{ID: "child-1", ParentID: "card", Status: orchestrator.TaskStatusDone}
 	detail := []byte(`{"children":[{"id":"c1","status":"dispatched","task_ref":"child-1"}]}`)
-	store.triage["card"] = &orchestrator.TaskTriage{TaskID: "card", Detail: detail}
+	store.triage["card"] = &orchestrator.CardAttrs{TaskID: "card", Detail: detail}
 
 	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
 	if err := svc.SweepReconcileChildren(context.Background(), time.Now()); err != nil {
@@ -374,7 +374,7 @@ func TestSweepReconcileChildren_VanishedChild_TreatedAsClosed(t *testing.T) {
 	// "child-gone" deliberately absent from store.tasks — GetTask returns
 	// ErrTaskNotFound, simulating a GC'd child.
 	detail := []byte(`{"children":[{"id":"c1","status":"dispatched","task_ref":"child-gone"}]}`)
-	store.triage["card"] = &orchestrator.TaskTriage{TaskID: "card", Detail: detail}
+	store.triage["card"] = &orchestrator.CardAttrs{TaskID: "card", Detail: detail}
 
 	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
 	if err := svc.SweepReconcileChildren(context.Background(), time.Now()); err != nil {

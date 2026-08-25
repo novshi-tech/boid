@@ -34,7 +34,7 @@ func TestBoidBuiltinExecutor_TaskTriageGet_ReturnsProjection(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
 		{ID: "t1", ProjectID: "proj-1", Status: orchestrator.TaskStatusParked},
 	}}
-	workflow := &recordingWorkflow{triageViews: map[string]*api.TaskTriageView{
+	workflow := &recordingWorkflow{triageViews: map[string]*api.CardView{
 		"t1": {
 			TaskID:     "t1",
 			ProjectID:  "proj-1",
@@ -54,7 +54,7 @@ func TestBoidBuiltinExecutor_TaskTriageGet_ReturnsProjection(t *testing.T) {
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
 	}
-	var view api.TaskTriageView
+	var view api.CardView
 	if err := json.Unmarshal([]byte(resp.Stdout), &view); err != nil {
 		t.Fatalf("stdout is not the view JSON (%v): %s", err, resp.Stdout)
 	}
@@ -90,7 +90,7 @@ func TestBoidBuiltinExecutor_TaskTriageGet_CrossWorkspaceDenied(t *testing.T) {
 		t.Fatalf("stderr = %q, want the workspace restriction message", resp.Stderr)
 	}
 	if len(workflow.triageGets) != 0 {
-		t.Fatalf("workflow.GetTriage was called for a denied task: %v", workflow.triageGets)
+		t.Fatalf("workflow.GetCard was called for a denied task: %v", workflow.triageGets)
 	}
 }
 
@@ -109,16 +109,16 @@ func TestBoidBuiltinExecutor_TaskTriageList_CrossWorkspaceProjectDenied(t *testi
 		t.Fatalf("cross-workspace triage list succeeded: %s", resp.Stdout)
 	}
 	if len(workflow.triageFilters) != 0 {
-		t.Fatalf("workflow.ListTriage was called for a denied project: %v", workflow.triageFilters)
+		t.Fatalf("workflow.ListCards was called for a denied project: %v", workflow.triageFilters)
 	}
 }
 
 // TestBoidBuiltinExecutor_TaskTriageList_UnfilteredStaysScoped pins that a
 // list with NO filter does not run unscoped: it iterates the token's allowed
-// projects, exactly as BoidOpTaskList does. An unscoped ListTriage would hand
+// projects, exactly as BoidOpTaskList does. An unscoped ListCards would hand
 // every workspace's queue to any sandbox.
 func TestBoidBuiltinExecutor_TaskTriageList_UnfilteredStaysScoped(t *testing.T) {
-	workflow := &recordingWorkflow{triageList: []*api.TaskTriageView{
+	workflow := &recordingWorkflow{triageList: []*api.CardView{
 		{TaskID: "a", ProjectID: "proj-1", Status: orchestrator.TaskStatusTriaged},
 		{TaskID: "z", ProjectID: "proj-9", Status: orchestrator.TaskStatusTriaged},
 	}}
@@ -136,10 +136,10 @@ func TestBoidBuiltinExecutor_TaskTriageList_UnfilteredStaysScoped(t *testing.T) 
 	}
 	for _, f := range workflow.triageFilters {
 		if f.ProjectID != "proj-1" && f.ProjectID != "proj-3" {
-			t.Fatalf("ListTriage called with an out-of-scope filter: %+v", f)
+			t.Fatalf("ListCards called with an out-of-scope filter: %+v", f)
 		}
 	}
-	var views []*api.TaskTriageView
+	var views []*api.CardView
 	if err := json.Unmarshal([]byte(resp.Stdout), &views); err != nil {
 		t.Fatalf("stdout is not a view list (%v): %s", err, resp.Stdout)
 	}
@@ -166,6 +166,6 @@ func TestBoidBuiltinExecutor_TaskTriageList_RejectsUnknownStatus(t *testing.T) {
 		t.Fatalf("unknown status accepted: %s", resp.Stdout)
 	}
 	if len(workflow.triageFilters) != 0 {
-		t.Fatalf("ListTriage was called with an unvalidated status: %v", workflow.triageFilters)
+		t.Fatalf("ListCards was called with an unvalidated status: %v", workflow.triageFilters)
 	}
 }

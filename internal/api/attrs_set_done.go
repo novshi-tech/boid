@@ -76,14 +76,14 @@ import (
 // with the lookup machineFor just made moments earlier for the identical
 // task/store — i.e. a flaky store returning two different answers back to
 // back, not a real state change (nothing in this codebase deletes a
-// task_triage row once created — DeleteTaskTriage, orchestrator/task_triage.go,
+// task_triage row once created — DeleteTaskTriage, orchestrator/card.go,
 // currently has no production caller). The IN-Tx re-validation call
 // (workflow_action.go's skipTaskUpdate branch, using tx.GetTaskTriage) is the
 // one place these two branches remain meaningfully reachable: a genuine race
 // between the pre-Tx read and this Tx opening could still surface a
 // transient lookup error there, even though a real concurrent row deletion
 // is not something any current caller performs.
-func resolveAttrsSetDoneTransition(sm *orchestrator.StateMachine, task *orchestrator.Task, action *orchestrator.Action, getTriage func(string) (*orchestrator.TaskTriage, error)) (*orchestrator.Task, *StatusError) {
+func resolveAttrsSetDoneTransition(sm *orchestrator.StateMachine, task *orchestrator.Task, action *orchestrator.Action, getTriage func(string) (*orchestrator.CardAttrs, error)) (*orchestrator.Task, *StatusError) {
 	if action.Type == "attrs_set" && task.Status == orchestrator.TaskStatusDone && getTriage != nil {
 		_, err := getTriage(task.ID)
 		switch {
@@ -133,7 +133,7 @@ func resolveAttrsSetDoneTransition(sm *orchestrator.StateMachine, task *orchestr
 // observation once khi's real ingestion volume hits it. The line survives
 // at Debug purely as an ops trace (did an attrs_set actually land here,
 // and was the source reported closed at the time) — not a call to action.
-func logAttrsSetOnDoneTriage(taskTriage TaskTriageStore, taskID string) {
+func logAttrsSetOnDoneTriage(taskTriage CardStore, taskID string) {
 	if taskTriage == nil {
 		return
 	}

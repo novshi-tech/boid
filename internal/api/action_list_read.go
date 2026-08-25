@@ -3,7 +3,7 @@ package api
 // docs/plans/ingestion-identity.md PR-3 (B-3): BoidOpActionList's service
 // method. Scoping (project vs workspace vs "no filter" → AllowedProjectIDs)
 // is resolved by the CALLER (internal/server/boid_executor.go), mirroring
-// ListTriage's own division of labor — this method just forwards an
+// ListCards's own division of labor — this method just forwards an
 // already-scoped orchestrator.ActionListFilter to the store and shapes the
 // result.
 

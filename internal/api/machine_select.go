@@ -27,7 +27,7 @@ import (
 // indeterminate and returned as such — guessing on a transient failure risks
 // exactly the dangerous branch machineFor/resolveReopenVariant each exist to
 // avoid.
-func hasTaskTriageRow(store TaskTriageStore, taskID string) (bool, error) {
+func hasTaskTriageRow(store CardStore, taskID string) (bool, error) {
 	_, err := store.GetTaskTriage(taskID)
 	switch {
 	case err == nil:
@@ -76,7 +76,7 @@ func hasTaskTriageRow(store TaskTriageStore, taskID string) (bool, error) {
 // executing/awaiting for open-list/queue filtering purposes, since a working
 // card has already been through Go). That exclusion does not apply here: a
 // card reaches "working" via either the "working" verb directly or "go"
-// (acceptGo, workflow_triage.go — v1's Dispatch is gone, see this PR's
+// (acceptGo, workflow_card.go — v1's Dispatch is gone, see this PR's
 // description) without ever needing a task_triage row to exist first
 // (acceptGo tolerates sql.ErrNoRows as "no children" — see its own doc
 // comment), so a working card missing its row is exactly as plausible as a
@@ -144,7 +144,7 @@ func isCardLifecycleStatus(status orchestrator.TaskStatus) bool {
 // resolveReopenVariant's own equivalent branch. See machineForDisplay below
 // for the read-only call sites that intentionally soften this into a
 // status-based guess instead of failing the whole read closed.
-func machineFor(store TaskTriageStore, task *orchestrator.Task) (*orchestrator.StateMachine, error) {
+func machineFor(store CardStore, task *orchestrator.Task) (*orchestrator.StateMachine, error) {
 	if store != nil {
 		isCard, err := hasTaskTriageRow(store, task.ID)
 		if err != nil {
@@ -182,7 +182,7 @@ func machineFor(store TaskTriageStore, task *orchestrator.Task) (*orchestrator.S
 // Every WRITE path (ApplyAction, ReplayHook) keeps machineFor's fail-CLOSED
 // 503 unchanged — only this read-only sibling downgrades a lookup failure
 // to "guess by status and keep rendering".
-func machineForDisplay(store TaskTriageStore, task *orchestrator.Task) *orchestrator.StateMachine {
+func machineForDisplay(store CardStore, task *orchestrator.Task) *orchestrator.StateMachine {
 	sm, err := machineFor(store, task)
 	if err != nil {
 		if isCardLifecycleStatus(task.Status) {

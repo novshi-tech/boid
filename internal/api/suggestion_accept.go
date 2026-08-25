@@ -23,7 +23,7 @@ type suggestionParams struct {
 }
 
 // suggestionAttr is attrs.suggestion's shape: {verb, reason, params?}. This
-// mirrors orchestrator.Suggestion (task_triage.go, the READ side —
+// mirrors orchestrator.Suggestion (card.go, the READ side —
 // DetailSuggestion) but is declared separately here because Params is new in
 // this PR and orchestrator.Suggestion is a stable read-side type this PR does
 // not otherwise touch (avoiding a cross-package doc-comment/JSON-tag
@@ -46,7 +46,7 @@ type suggestionAttr struct {
 //
 // A JSON null value is accepted unconditionally (clearing the suggestion via
 // attrs_set — mirrors parsePromotedAttr's own null-clears-the-column
-// convention for urgency/kind, workflow_triage.go). Everything else must be
+// convention for urgency/kind, workflow_card.go). Everything else must be
 // a JSON object with a verb from the closed set; params.wake_at, if present,
 // must parse as RFC3339 (the same format applyParkSideEffect's own
 // parseParkPayload already requires for a direct park action's wake_at).
@@ -87,7 +87,7 @@ func validateSuggestionAttr(raw json.RawMessage) (string, error) {
 // from the ACCEPTED SUGGESTION's own params — not from the "answered"
 // action's payload, which carries only {answer, verb, basis} (see
 // answeredPayload). This reuses applyParkSideEffect's established
-// read-modify-write (workflow_triage.go) via the same *parkPayload shape
+// read-modify-write (workflow_card.go) via the same *parkPayload shape
 // parseParkPayload produces for a direct park action, so a suggested park
 // and a directly-clicked park converge on one writer.
 func applyParkSideEffectFromSuggestion(tx TxStore, taskID string, params suggestionParams) error {
@@ -196,7 +196,7 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 		if sugg.Verb == "go" {
 			// go needs non-transactional child creation BEFORE its own
 			// transition commits (acceptGo's own doc comment,
-			// workflow_triage.go) — cannot run nested inside THIS Tx.
+			// workflow_card.go) — cannot run nested inside THIS Tx.
 			// Deferred to after this Tx commits; newTask stays at the
 			// pre-transition (parked) snapshot until acceptGo's own result
 			// overwrites it below.

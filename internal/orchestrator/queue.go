@@ -50,7 +50,7 @@ func UrgencyRank(urgency string) int {
 // permanently strand a parked task (fail-open, ストレージ節 原則2's same
 // direction — daemon-side state loss/drift resolves toward re-surfacing,
 // never toward silently hiding something forever).
-func ShouldWake(now time.Time, tt *TaskTriage, wakeTaskFound bool, wakeTaskStatus TaskStatus) bool {
+func ShouldWake(now time.Time, tt *CardAttrs, wakeTaskFound bool, wakeTaskStatus TaskStatus) bool {
 	if tt == nil {
 		return false
 	}

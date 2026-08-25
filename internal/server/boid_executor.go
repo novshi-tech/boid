@@ -659,7 +659,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(existing.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage is restricted to the current workspace"}
 		}
-		view, err := e.workflow.GetTriage(req.TaskID)
+		view, err := e.workflow.GetCard(req.TaskID)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
@@ -684,13 +684,13 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// layer for a handwritten request that bypassed the shim. With no
 		// filter at all the listing is assembled per allowed project rather
 		// than running unscoped.
-		var views []*api.TaskTriageView
+		var views []*api.CardView
 		switch {
 		case req.ProjectID != "":
 			if !ctx.AllowsProject(req.ProjectID) {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage is restricted to the current workspace"}
 			}
-			listed, err := e.workflow.ListTriage(orchestrator.TaskFilter{ProjectID: req.ProjectID, Status: req.Status})
+			listed, err := e.workflow.ListCards(orchestrator.TaskFilter{ProjectID: req.ProjectID, Status: req.Status})
 			if err != nil {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 			}
@@ -703,7 +703,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			if ctx.WorkspaceID != "" && req.WorkspaceID != ctx.WorkspaceID {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage is restricted to the current workspace"}
 			}
-			listed, err := e.workflow.ListTriage(orchestrator.TaskFilter{WorkspaceID: req.WorkspaceID, Status: req.Status})
+			listed, err := e.workflow.ListCards(orchestrator.TaskFilter{WorkspaceID: req.WorkspaceID, Status: req.Status})
 			if err != nil {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 			}
@@ -712,7 +712,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			projectIDs := ctx.AllowedProjectIDs
 			if len(projectIDs) == 0 {
 				// An empty ProjectID here would make the fallback
-				// ListTriage(ProjectID: "") a DAEMON-WIDE listing of every
+				// ListCards(ProjectID: "") a DAEMON-WIDE listing of every
 				// card's title and detail blob (Opus review round 2). Job
 				// tokens always carry a ProjectID, so this is insurance rather
 				// than a live hole — but the triage payload is far richer than
@@ -724,7 +724,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				projectIDs = []string{ctx.ProjectID}
 			}
 			for _, pid := range projectIDs {
-				listed, err := e.workflow.ListTriage(orchestrator.TaskFilter{ProjectID: pid, Status: req.Status})
+				listed, err := e.workflow.ListCards(orchestrator.TaskFilter{ProjectID: pid, Status: req.Status})
 				if err != nil {
 					return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 				}
@@ -732,7 +732,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			}
 		}
 		if views == nil {
-			views = []*api.TaskTriageView{}
+			views = []*api.CardView{}
 		}
 		encoded, err := json.MarshalIndent(views, "", "  ")
 		if err != nil {

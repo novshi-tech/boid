@@ -22,11 +22,11 @@ type WebAppService struct {
 	Answerer   TaskAnswerService // optional: enables POST /tasks/{id}/answer
 	// TaskTriage backs machineFor's card-vs-ordinary-task discriminator
 	// (PR-B, docs/plans/suggestion-as-state-transition-impl.md §2) for
-	// GetTaskDetail's AvailableActions — same TaskTriageStore narrowing over
+	// GetTaskDetail's AvailableActions — same CardStore narrowing over
 	// taskRepo every other service in this package already wires (see
 	// TaskAppService.TaskTriage's own doc comment). Nil is tolerated:
 	// machineFor falls back to NewExecutionMachine.
-	TaskTriage TaskTriageStore
+	TaskTriage CardStore
 }
 
 func (s *WebAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {

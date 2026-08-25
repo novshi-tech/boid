@@ -21,7 +21,7 @@ func TestTriageChildrenForDisplay_ResolvesProjectIDToName(t *testing.T) {
 	svc := &stubWebService{projects: []*orchestrator.Project{
 		{ID: "url-abc", Meta: orchestrator.ProjectMeta{Name: "rook-server"}},
 	}}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: []byte(`{"children":[
 			{"id":"ch_00","title":"調査","status":"specced",
 			 "spec":{"project":"url-abc","behavior":"research","description":"d","instruction":"i"}}
@@ -46,7 +46,7 @@ func TestTriageChildrenForDisplay_KeepsUnresolvableProjectAsIs(t *testing.T) {
 	svc := &stubWebService{projects: []*orchestrator.Project{
 		{ID: "url-abc", Meta: orchestrator.ProjectMeta{Name: "rook-server"}},
 	}}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: []byte(`{"children":[
 			{"id":"ch_00","status":"specced","spec":{"project":"url-gone","behavior":"research"}}
 		]}`)},
@@ -60,7 +60,7 @@ func TestTriageChildrenForDisplay_KeepsUnresolvableProjectAsIs(t *testing.T) {
 
 func TestTriageChildrenForDisplay_LeavesSpeclessChildrenAlone(t *testing.T) {
 	svc := &stubWebService{}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: []byte(`{"children":[{"id":"ch_00","status":"open"}]}`)},
 	}}
 	h := &WebHandler{Service: svc, TaskTriage: triage}
@@ -82,7 +82,7 @@ func TestTriageChildrenForDisplay_DoesNotMutateStoredSpec(t *testing.T) {
 	svc := &stubWebService{projects: []*orchestrator.Project{
 		{ID: "url-abc", Meta: orchestrator.ProjectMeta{Name: "rook-server"}},
 	}}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Detail: []byte(`{"children":[
 			{"id":"ch_00","status":"specced","spec":{"project":"url-abc","behavior":"research"}}
 		]}`)},
