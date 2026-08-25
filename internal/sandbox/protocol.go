@@ -141,10 +141,12 @@ const (
 	// the way the host-only `boid project list` does.
 	BoidOpProjectList BoidOp = "project_list"
 
-	// BoidOpTaskTriageGet / BoidOpTaskTriageList back `boid task triage
-	// <task-id>` and `boid task triage --list [--status S] [--project P]`
-	// from inside the sandbox (docs/plans/cross-project-issue-triage.md Phase
-	// 1 PR-5a).
+	// BoidOpCardGet / BoidOpCardList back `boid card get <task-id>` and
+	// `boid card list [--status S] [--project-id P] [--workspace-id W]` from
+	// inside the sandbox (docs/plans/cross-project-issue-triage.md Phase 1
+	// PR-5a; renamed from task_triage_get/list and `boid task triage` by
+	// docs/plans/card-model-cleanup.md PR-3 §4 — wire rename only, scoping
+	// and shape are unchanged).
 	//
 	// 決定14 makes the daemon the SOLE source of truth for a triage task's
 	// state — khi retires its own decisions log and fold, keeping only claims
@@ -160,8 +162,8 @@ const (
 	// 実測結果 項10). Scoping matches BoidOpActionSend: the
 	// broker only checks shape, the executor enforces
 	// TokenContext.AllowsProject before returning anything.
-	BoidOpTaskTriageGet  BoidOp = "task_triage_get"
-	BoidOpTaskTriageList BoidOp = "task_triage_list"
+	BoidOpCardGet  BoidOp = "card_get"
+	BoidOpCardList BoidOp = "card_list"
 
 	// BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink / BoidOpTaskIdentityResolve
 	// back `boid task identity link/unlink/resolve` from inside the sandbox
@@ -251,7 +253,7 @@ const (
 	// なる」節) — this op lets the "反応型はスクリプトが書ける" (J-3) argument
 	// hold at the actual implementation-cost level, not just in principle.
 	//
-	// Scoping is broker-authoritative, matching BoidOpTaskTriageList EXACTLY
+	// Scoping is broker-authoritative, matching BoidOpCardList EXACTLY
 	// (project_id resolve+check / workspace_id equality check / neither ->
 	// inject the token's own WorkspaceID — see broker.go's case). TaskID
 	// additionally narrows to one task's actions; unlike

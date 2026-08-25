@@ -83,7 +83,7 @@ func TestBoidBuiltinExecutor_ActionList_ExplicitProjectID(t *testing.T) {
 
 // TestBoidBuiltinExecutor_ActionList_ExplicitProjectIDOutsideScopeDenied is
 // the executor-side defense-in-depth re-check (a handwritten request that
-// bypassed the shim/broker) — mirrors BoidOpTaskTriageList's own
+// bypassed the shim/broker) — mirrors BoidOpCardList's own
 // AllowsProject re-check.
 func TestBoidBuiltinExecutor_ActionList_ExplicitProjectIDOutsideScopeDenied(t *testing.T) {
 	fake := &fakeActionListService{}
@@ -151,7 +151,7 @@ func TestBoidBuiltinExecutor_ActionList_NoFilter_FallsBackToAllowedProjectIDs(t 
 
 // TestBoidBuiltinExecutor_ActionList_NoFilterNoAllowedProjectIDs_FallsBackToProjectID
 // covers the AllowedProjectIDs-empty insurance branch, mirroring
-// BoidOpTaskTriageList's own.
+// BoidOpCardList's own.
 func TestBoidBuiltinExecutor_ActionList_NoFilterNoAllowedProjectIDs_FallsBackToProjectID(t *testing.T) {
 	fake := &fakeActionListService{result: &api.ActionListResult{}}
 	exec := &boidBuiltinExecutor{actionList: fake}
@@ -168,7 +168,7 @@ func TestBoidBuiltinExecutor_ActionList_NoFilterNoAllowedProjectIDs_FallsBackToP
 }
 
 // TestBoidBuiltinExecutor_ActionList_NoScopeAtAllDenied is the last-resort
-// guard (Opus review round 2 precedent on BoidOpTaskTriageList): no
+// guard (Opus review round 2 precedent on BoidOpCardList): no
 // project_id/workspace_id given AND no AllowedProjectIDs AND no
 // ctx.ProjectID — refused outright rather than reaching the store unscoped.
 func TestBoidBuiltinExecutor_ActionList_NoScopeAtAllDenied(t *testing.T) {

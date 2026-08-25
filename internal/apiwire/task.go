@@ -49,8 +49,11 @@ type CreateTaskRequest struct {
 	// InitialStatus lets a caller create a task directly in a pre-execution
 	// status (docs/plans/cross-project-issue-triage.md Phase 1 PR-1) instead
 	// of the default "pending". Empty means "pending" (unchanged behavior).
-	// Only "", "pending", "captured", "triaged" are accepted — validated in
+	// Only "", "pending", "parked" are accepted — validated in
 	// internal/api/task_create.go, not here (apiwire is a pure wire struct).
+	// ("captured"/"triaged" were accepted pre-card-model-cleanup PR-2; card
+	// machine v2 has no such statuses, a card is now born directly into
+	// "parked" — see task_create.go's allowedCreateInitialStatuses.)
 	InitialStatus string `json:"initial_status,omitempty"`
 }
 

@@ -34,10 +34,11 @@ func (s *stubTriageReader) ListCards(filter orchestrator.TaskFilter) ([]*CardVie
 }
 
 // TestTriageHandler_Routes pins that the collection and single-task routes
-// don't shadow each other. GET /api/triage and GET /api/triage/{id} sit at the
-// same level, so a mis-registered route would silently send one to the other's
-// handler — the listing would answer with a single object, or an id would be
-// swallowed as a filter.
+// don't shadow each other. GET /api/cards and GET /api/cards/{id} (mount
+// renamed from /api/triage by docs/plans/card-model-cleanup.md PR-3 §4) sit
+// at the same level, so a mis-registered route would silently send one to
+// the other's handler — the listing would answer with a single object, or an
+// id would be swallowed as a filter.
 func TestTriageHandler_Routes(t *testing.T) {
 	svc := &stubTriageReader{
 		// card-model-cleanup PR-2: orchestrator.TaskStatusReady no longer

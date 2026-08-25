@@ -1,0 +1,76 @@
+package sandbox
+
+import "testing"
+
+// ---- Phase 1 PR-5a (docs/plans/cross-project-issue-triage.md 決定14),
+// renamed from `boid task triage` to `boid card get`/`boid card list` by
+// docs/plans/card-model-cleanup.md PR-3 §4 ----
+//
+// The old single command had two mutually exclusive forms (a task id, or
+// --list); the rename splits them into explicit `get`/`list` subcommands
+// instead, so there is no longer a "both given" case to reject — each
+// subcommand only accepts the arguments that make sense for it.
+
+func TestParseBoidCardGet(t *testing.T) {
+	req, err := parseBoidCardGet([]string{"t1"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if req.Op != BoidOpCardGet {
+		t.Fatalf("op = %q, want %q", req.Op, BoidOpCardGet)
+	}
+	if req.TaskID != "t1" {
+		t.Fatalf("task id = %q, want t1", req.TaskID)
+	}
+}
+
+func TestParseBoidCardGet_Rejects(t *testing.T) {
+	cases := map[string][]string{
+		"no arguments at all": {},
+		"two task ids":        {"t1", "t2"},
+		"unknown flag":        {"--list"},
+	}
+	for name, args := range cases {
+		if _, err := parseBoidCardGet(args); err == nil {
+			t.Errorf("%s: expected an error, got success", name)
+		}
+	}
+}
+
+func TestParseBoidCardList_WithFilters(t *testing.T) {
+	req, err := parseBoidCardList([]string{"--status", "queue_next", "--project-id=p1"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if req.Op != BoidOpCardList {
+		t.Fatalf("op = %q, want %q", req.Op, BoidOpCardList)
+	}
+	if req.Status != "queue_next" || req.ProjectID != "p1" {
+		t.Fatalf("filters not parsed: %+v", req)
+	}
+	if req.TaskID != "" {
+		t.Fatalf("task id = %q, want empty for the list form", req.TaskID)
+	}
+}
+
+func TestParseBoidCardList_NoFilters(t *testing.T) {
+	req, err := parseBoidCardList(nil)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if req.Op != BoidOpCardList {
+		t.Fatalf("op = %q, want %q", req.Op, BoidOpCardList)
+	}
+}
+
+func TestParseBoidCardList_Rejects(t *testing.T) {
+	cases := map[string][]string{
+		"positional task id": {"t1"},
+		"unknown flag":       {"--urgency", "now"},
+	}
+	for name, args := range cases {
+		if _, err := parseBoidCardList(args); err == nil {
+			t.Errorf("%s: expected an error, got success", name)
+		}
+	}
+}

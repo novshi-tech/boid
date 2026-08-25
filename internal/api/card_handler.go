@@ -14,13 +14,14 @@ type CardReadService interface {
 	ListCards(filter orchestrator.TaskFilter) ([]*CardView, error)
 }
 
-// CardHandler serves the task_triage read surface (docs/plans/
+// CardHandler serves the card read surface (docs/plans/
 // cross-project-issue-triage.md Phase 1 PR-5a).
 //
-// Mounted at its own /api/triage root rather than as /api/tasks/{id}/triage +
-// a sibling list route: the listing needs a collection endpoint of its own,
-// and hanging it off /api/tasks would put a static "triage" segment in the
-// same position as the {id} wildcard.
+// Mounted at its own /api/cards root (renamed from /api/triage by
+// docs/plans/card-model-cleanup.md PR-3 §4) rather than as
+// /api/tasks/{id}/cards + a sibling list route: the listing needs a
+// collection endpoint of its own, and hanging it off /api/tasks would put a
+// static segment in the same position as the {id} wildcard.
 type CardHandler struct {
 	Service CardReadService
 }

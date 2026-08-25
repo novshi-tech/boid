@@ -640,24 +640,24 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("action applied: %s\n", req.ActionType),
 		}
-	case sandbox.BoidOpTaskTriageGet:
+	case sandbox.BoidOpCardGet:
 		// docs/plans/cross-project-issue-triage.md Phase 1 PR-5a: the read
 		// half of 決定14 (daemon が state の唯一の正). Same scoping pattern as
 		// BoidOpTaskGet — look the task up, then enforce AllowsProject before
 		// returning anything, so a caller that happens to know another
 		// workspace's task UUID still learns nothing about it.
 		if req.TaskID == "" {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage requires a task id"}
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card get requires a task id"}
 		}
 		if e.tasks == nil || e.workflow == nil {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage unavailable"}
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card get unavailable"}
 		}
 		existing, err := e.tasks.GetTask(req.TaskID)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		if !ctx.AllowsProject(existing.ProjectID) {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage is restricted to the current workspace"}
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card get is restricted to the current workspace"}
 		}
 		view, err := e.workflow.GetCard(req.TaskID)
 		if err != nil {
@@ -668,9 +668,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
-	case sandbox.BoidOpTaskTriageList:
+	case sandbox.BoidOpCardList:
 		if e.workflow == nil {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage unavailable"}
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card list unavailable"}
 		}
 		if err := validateTaskListStatus(req.Status); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
@@ -678,7 +678,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// Scoping mirrors BoidOpTaskList exactly, in BOTH layers: the broker
 		// resolves the project ref, checks AllowsProject, and rejects a
 		// workspace_id that isn't the caller's own (see broker.go's
-		// BoidOpTaskTriageList case — that is where task_list's scoping lives
+		// BoidOpCardList case — that is where task_list's scoping lives
 		// too, so putting it only here would leave --workspace-id unchecked);
 		// the AllowsProject re-check below is the defense-in-depth second
 		// layer for a handwritten request that bypassed the shim. With no
@@ -688,7 +688,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		switch {
 		case req.ProjectID != "":
 			if !ctx.AllowsProject(req.ProjectID) {
-				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage is restricted to the current workspace"}
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card list is restricted to the current workspace"}
 			}
 			listed, err := e.workflow.ListCards(orchestrator.TaskFilter{ProjectID: req.ProjectID, Status: req.Status})
 			if err != nil {
@@ -701,7 +701,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			// unchecked value here genuinely crosses the compartment 決定2
 			// exists to keep (every other workspace's card titles/summaries).
 			if ctx.WorkspaceID != "" && req.WorkspaceID != ctx.WorkspaceID {
-				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage is restricted to the current workspace"}
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card list is restricted to the current workspace"}
 			}
 			listed, err := e.workflow.ListCards(orchestrator.TaskFilter{WorkspaceID: req.WorkspaceID, Status: req.Status})
 			if err != nil {
@@ -715,11 +715,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				// ListCards(ProjectID: "") a DAEMON-WIDE listing of every
 				// card's title and detail blob (Opus review round 2). Job
 				// tokens always carry a ProjectID, so this is insurance rather
-				// than a live hole — but the triage payload is far richer than
+				// than a live hole — but the card payload is far richer than
 				// task_list's id/status/title, so it is refused explicitly
 				// instead of relying on that invariant holding forever.
 				if ctx.ProjectID == "" {
-					return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage: no project scope available for an unfiltered listing"}
+					return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card list: no project scope available for an unfiltered listing"}
 				}
 				projectIDs = []string{ctx.ProjectID}
 			}
@@ -820,7 +820,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		// Every other op that hands a task back to the caller re-checks
 		// AllowsProject on the task it actually got, not just the project it
-		// was asked about (BoidOpTaskGet/BoidOpTaskTriageGet/BoidOpActionSend
+		// was asked about (BoidOpTaskGet/BoidOpCardGet/BoidOpActionSend
 		// all do this). Resolve is no different — the broker
 		// only validated req.ProjectID itself; verify the task ResolveIdentity
 		// actually returned still belongs to it.
@@ -830,7 +830,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// Only the task's own ID and status — never the full task (the
 		// design doc is explicit: resolve is a delivery-address lookup, not
 		// a task-detail read; workspace already owns whatever more it needs
-		// via task_triage_get/BoidOpTaskGet).
+		// via card_get/BoidOpTaskGet).
 		out, err := json.Marshal(struct {
 			TaskID string `json:"task_id"`
 			Status string `json:"status"`
@@ -883,11 +883,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 	case sandbox.BoidOpActionList:
 		// docs/plans/ingestion-identity.md PR-3 (B-3). req.ProjectID/
 		// req.WorkspaceID are already broker-resolved+workspace-checked
-		// (broker.go's BoidOpActionList case, mirroring BoidOpTaskTriageList
+		// (broker.go's BoidOpActionList case, mirroring BoidOpCardList
 		// exactly) — this builds the orchestrator.ActionListFilter the SAME
 		// three-branch shape decides between (project_id / workspace_id /
 		// neither -> ctx.AllowedProjectIDs), but as ONE ProjectIDs slice
-		// rather than BoidOpTaskTriageList's per-project loop: a single SQL
+		// rather than BoidOpCardList's per-project loop: a single SQL
 		// IN(...) query keeps cursor pagination correct across the whole
 		// scope in one pass (see orchestrator.ActionListFilter's own doc
 		// comment for why a loop cannot merge cursors correctly here).
@@ -907,7 +907,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			filter.ProjectIDs = []string{req.ProjectID}
 		case req.WorkspaceID != "":
 			// Defense in depth behind the broker's own equality check —
-			// same rationale as BoidOpTaskTriageList's WorkspaceID branch:
+			// same rationale as BoidOpCardList's WorkspaceID branch:
 			// an unchecked value here would cross the compartment 決定2
 			// exists to keep.
 			if ctx.WorkspaceID != "" && req.WorkspaceID != ctx.WorkspaceID {
@@ -917,7 +917,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		default:
 			projectIDs := ctx.AllowedProjectIDs
 			if len(projectIDs) == 0 {
-				// Mirrors BoidOpTaskTriageList's own insurance (Opus review
+				// Mirrors BoidOpCardList's own insurance (Opus review
 				// round 2): an empty ProjectIDs AND empty WorkspaceID would
 				// make ListActionsSince refuse via ErrActionListUnscoped —
 				// which is safe — but only if ctx.ProjectID is also empty;

@@ -45,11 +45,13 @@ const (
 	// own workspace (see sandbox.BoidOpProjectList's doc comment).
 	OpBoidProjectList = "project_list"
 
-	// OpBoidTaskTriageGet / OpBoidTaskTriageList back `boid task triage`
+	// OpBoidCardGet / OpBoidCardList back `boid card get` / `boid card list`
 	// from inside the sandbox (docs/plans/cross-project-issue-triage.md Phase
-	// 1 PR-5a 決定14): the read half of "daemon が state の唯一の正".
-	OpBoidTaskTriageGet  = "task_triage_get"
-	OpBoidTaskTriageList = "task_triage_list"
+	// 1 PR-5a 決定14, renamed from task_triage_get/list by
+	// docs/plans/card-model-cleanup.md PR-3 §4): the read half of "daemon が
+	// state の唯一の正".
+	OpBoidCardGet  = "card_get"
+	OpBoidCardList = "card_list"
 
 	// OpBoidTaskIdentityLink / OpBoidTaskIdentityUnlink / OpBoidTaskIdentityResolve
 	// back `boid task identity link/unlink/resolve` from inside the sandbox

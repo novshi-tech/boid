@@ -20,17 +20,17 @@ import (
 // ANOTHER workspace's triage state, which is the one thing 決定2 exists to
 // prevent.
 
-func triageExec(store *capturingTaskStore, workflow *recordingWorkflow) *boidBuiltinExecutor {
+func cardExec(store *capturingTaskStore, workflow *recordingWorkflow) *boidBuiltinExecutor {
 	return &boidBuiltinExecutor{
 		tasks:    &api.TaskAppService{Tasks: store},
 		workflow: workflow,
 	}
 }
 
-// TestBoidBuiltinExecutor_TaskTriageGet_ReturnsProjection pins the happy path:
+// TestBoidBuiltinExecutor_CardGet_ReturnsProjection pins the happy path:
 // a caller inside its own workspace gets the full projection as JSON,
 // including the actions-derived parked_from.
-func TestBoidBuiltinExecutor_TaskTriageGet_ReturnsProjection(t *testing.T) {
+func TestBoidBuiltinExecutor_CardGet_ReturnsProjection(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
 		{ID: "t1", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}}
@@ -49,11 +49,11 @@ func TestBoidBuiltinExecutor_TaskTriageGet_ReturnsProjection(t *testing.T) {
 			Detail:     json.RawMessage(`{"attrs":{"summary":"s"}}`),
 		},
 	}}
-	exec := triageExec(store, workflow)
+	exec := cardExec(store, workflow)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
-		Op:     sandbox.BoidOpTaskTriageGet,
+		Op:     sandbox.BoidOpCardGet,
 		TaskID: "t1",
 	})
 	if resp.ExitCode != 0 {
@@ -71,21 +71,21 @@ func TestBoidBuiltinExecutor_TaskTriageGet_ReturnsProjection(t *testing.T) {
 	}
 }
 
-// TestBoidBuiltinExecutor_TaskTriageGet_CrossWorkspaceDenied is the escape
+// TestBoidBuiltinExecutor_CardGet_CrossWorkspaceDenied is the escape
 // test: knowing another workspace's task UUID must not reveal its triage
 // state (title/summary/children are exactly the cross-workspace leak 決定2
 // forbids). The check must happen BEFORE the workflow call, so nothing is
 // even read.
-func TestBoidBuiltinExecutor_TaskTriageGet_CrossWorkspaceDenied(t *testing.T) {
+func TestBoidBuiltinExecutor_CardGet_CrossWorkspaceDenied(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
 		{ID: "other", ProjectID: "proj-2", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}}
 	workflow := &recordingWorkflow{}
-	exec := triageExec(store, workflow)
+	exec := cardExec(store, workflow)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
-		Op:     sandbox.BoidOpTaskTriageGet,
+		Op:     sandbox.BoidOpCardGet,
 		TaskID: "other",
 	})
 	if resp.ExitCode == 0 {
@@ -99,15 +99,15 @@ func TestBoidBuiltinExecutor_TaskTriageGet_CrossWorkspaceDenied(t *testing.T) {
 	}
 }
 
-// TestBoidBuiltinExecutor_TaskTriageList_CrossWorkspaceProjectDenied pins the
+// TestBoidBuiltinExecutor_CardList_CrossWorkspaceProjectDenied pins the
 // same gate on the list form's explicit project filter.
-func TestBoidBuiltinExecutor_TaskTriageList_CrossWorkspaceProjectDenied(t *testing.T) {
+func TestBoidBuiltinExecutor_CardList_CrossWorkspaceProjectDenied(t *testing.T) {
 	workflow := &recordingWorkflow{}
-	exec := triageExec(&capturingTaskStore{}, workflow)
+	exec := cardExec(&capturingTaskStore{}, workflow)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
-		Op:        sandbox.BoidOpTaskTriageList,
+		Op:        sandbox.BoidOpCardList,
 		ProjectID: "proj-2",
 	})
 	if resp.ExitCode == 0 {
@@ -118,11 +118,11 @@ func TestBoidBuiltinExecutor_TaskTriageList_CrossWorkspaceProjectDenied(t *testi
 	}
 }
 
-// TestBoidBuiltinExecutor_TaskTriageList_UnfilteredStaysScoped pins that a
+// TestBoidBuiltinExecutor_CardList_UnfilteredStaysScoped pins that a
 // list with NO filter does not run unscoped: it iterates the token's allowed
 // projects, exactly as BoidOpTaskList does. An unscoped ListCards would hand
 // every workspace's queue to any sandbox.
-func TestBoidBuiltinExecutor_TaskTriageList_UnfilteredStaysScoped(t *testing.T) {
+func TestBoidBuiltinExecutor_CardList_UnfilteredStaysScoped(t *testing.T) {
 	// card-model-cleanup PR-2: TaskStatusTriaged no longer exists — substitute
 	// TaskStatusParked, a still-valid card status this test's scoping
 	// assertions don't otherwise depend on.
@@ -130,11 +130,11 @@ func TestBoidBuiltinExecutor_TaskTriageList_UnfilteredStaysScoped(t *testing.T) 
 		{TaskID: "a", ProjectID: "proj-1", Status: orchestrator.TaskStatusParked},
 		{TaskID: "z", ProjectID: "proj-9", Status: orchestrator.TaskStatusParked},
 	}}
-	exec := triageExec(&capturingTaskStore{}, workflow)
+	exec := cardExec(&capturingTaskStore{}, workflow)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1", "proj-3"}}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
-		Op: sandbox.BoidOpTaskTriageList,
+		Op: sandbox.BoidOpCardList,
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
@@ -158,16 +158,16 @@ func TestBoidBuiltinExecutor_TaskTriageList_UnfilteredStaysScoped(t *testing.T) 
 	}
 }
 
-// TestBoidBuiltinExecutor_TaskTriageList_RejectsUnknownStatus pins that the
+// TestBoidBuiltinExecutor_CardList_RejectsUnknownStatus pins that the
 // list form validates its status the same way BoidOpTaskList does, rather than
 // passing an unrecognized value straight to the DB layer (実測結果 項10).
-func TestBoidBuiltinExecutor_TaskTriageList_RejectsUnknownStatus(t *testing.T) {
+func TestBoidBuiltinExecutor_CardList_RejectsUnknownStatus(t *testing.T) {
 	workflow := &recordingWorkflow{}
-	exec := triageExec(&capturingTaskStore{}, workflow)
+	exec := cardExec(&capturingTaskStore{}, workflow)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
-		Op:     sandbox.BoidOpTaskTriageList,
+		Op:     sandbox.BoidOpCardList,
 		Status: "not-a-status",
 	})
 	if resp.ExitCode == 0 {

@@ -94,15 +94,15 @@ func TestBroker_BoidProjectList_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList})
 }
 
-// BoidOpTaskTriageGet / BoidOpTaskTriageList (Phase 1 PR-5a): read-only, with
+// BoidOpCardGet / BoidOpCardList (Phase 1 PR-5a): read-only, with
 // workspace-scope enforcement in boid_executor (same as BoidOpTaskGet /
 // BoidOpActionSend) — these close the plain policy-gate manifest entry point.
-func TestBroker_BoidTaskTriageGet_PolicyReject(t *testing.T) {
-	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskTriageGet, TaskID: "t1"})
+func TestBroker_BoidCardGet_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpCardGet, TaskID: "t1"})
 }
 
-func TestBroker_BoidTaskTriageList_PolicyReject(t *testing.T) {
-	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskTriageList})
+func TestBroker_BoidCardList_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpCardList})
 }
 
 // BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink / BoidOpTaskIdentityResolve
@@ -132,7 +132,7 @@ func TestBroker_BoidTaskResolveOrCapture_PolicyReject(t *testing.T) {
 }
 
 // BoidOpActionList (docs/plans/ingestion-identity.md PR-3, B-3): scoping is
-// broker-authoritative, the SAME pattern as BoidOpTaskTriageList — see
+// broker-authoritative, the SAME pattern as BoidOpCardList — see
 // TestBroker_BoidActionList_WorkspaceIDMismatchDenied /
 // TestBroker_BoidActionList_ProjectIDOutsideWorkspaceDenied in broker_test.go
 // for the cross-workspace rejections; this closes the plain policy-gate
@@ -235,22 +235,23 @@ var opEscapeCoverage = map[string]opCoverage{
 	// BoidOpTaskDelete's manifest entry above.
 	"BoidOpProjectList": {escapeTest: "TestBroker_BoidProjectList_PolicyReject"},
 
-	// BoidOpTaskTriageGet / BoidOpTaskTriageList (Phase 1 PR-5a,
-	// docs/plans/cross-project-issue-triage.md 決定14): read-only projections
-	// of the task_triage sidecar. Workspace-scope enforcement lives in
-	// boid_executor exactly as it does for BoidOpTaskGet —
-	// the get form looks the task up and checks AllowsProject before
-	// returning anything, and the list form checks an explicit project filter
-	// and otherwise iterates AllowedProjectIDs (never unscoped). Those are
-	// exercised end-to-end by internal/server's
-	// TestBoidBuiltinExecutor_TaskTriage_* tests; the plain policy-gate
+	// BoidOpCardGet / BoidOpCardList (Phase 1 PR-5a,
+	// docs/plans/cross-project-issue-triage.md 決定14; renamed from
+	// task_triage_get/list by docs/plans/card-model-cleanup.md PR-3 §4):
+	// read-only projections of a card (api.CardView). Workspace-scope
+	// enforcement lives in boid_executor exactly as it does for
+	// BoidOpTaskGet — the get form looks the task up and checks
+	// AllowsProject before returning anything, and the list form checks an
+	// explicit project filter and otherwise iterates AllowedProjectIDs
+	// (never unscoped). Those are exercised end-to-end by internal/server's
+	// TestBoidBuiltinExecutor_Card{Get,List}_* tests; the plain policy-gate
 	// manifest entry points are below.
-	"BoidOpTaskTriageGet": {escapeTest: "TestBroker_BoidTaskTriageGet_PolicyReject"},
+	"BoidOpCardGet": {escapeTest: "TestBroker_BoidCardGet_PolicyReject"},
 	// The list form's filters are scoped in the BROKER (as task_list's are —
 	// the first cut scoped only in the executor, which left --workspace-id
 	// entirely unchecked: an Opus-review High, since ListTasks' WorkspaceID
 	// filter INNER JOINs project_workspaces and really does cross workspaces).
-	"BoidOpTaskTriageList": {escapeTest: "TestBroker_BoidTaskTriageList_WorkspaceIDMismatchDenied"},
+	"BoidOpCardList": {escapeTest: "TestBroker_BoidCardList_WorkspaceIDMismatchDenied"},
 
 	// BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink / BoidOpTaskIdentityResolve
 	// (docs/plans/ingestion-identity.md PR-1, B-1): scoping is
@@ -274,7 +275,7 @@ var opEscapeCoverage = map[string]opCoverage{
 	"BoidOpTaskResolveOrCapture": {escapeTest: "TestBroker_BoidTaskResolveOrCapture_PolicyReject"},
 
 	// BoidOpActionList (docs/plans/ingestion-identity.md PR-3, B-3): scoping
-	// is broker-authoritative, matching BoidOpTaskTriageList exactly — same
+	// is broker-authoritative, matching BoidOpCardList exactly — same
 	// reasoning as that entry above (ListActionsSince's WorkspaceID join
 	// really does cross workspaces if left unchecked).
 	"BoidOpActionList": {escapeTest: "TestBroker_BoidActionList_WorkspaceIDMismatchDenied"},

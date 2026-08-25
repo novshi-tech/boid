@@ -2173,10 +2173,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		}
 	}
 
-	// task_triage read surface (docs/plans/cross-project-issue-triage.md Phase
-	// 1 PR-5a). Mounted at its own root rather than under /api/tasks — see
-	// api.CardHandler's doc comment.
-	r.Mount("/api/triage", (&api.CardHandler{Service: runtime.workflow}).Routes())
+	// card read surface (docs/plans/cross-project-issue-triage.md Phase
+	// 1 PR-5a; mount renamed from /api/triage by docs/plans/
+	// card-model-cleanup.md PR-3 §4). Mounted at its own root rather than
+	// under /api/tasks — see api.CardHandler's doc comment.
+	r.Mount("/api/cards", (&api.CardHandler{Service: runtime.workflow}).Routes())
 
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {

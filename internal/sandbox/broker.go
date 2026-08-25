@@ -494,17 +494,17 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			return &ExecResponse{ExitCode: 1, Stderr: "boid action send requires a type"}
 		}
 		// project 検証は boid_executor 側で行う (task_notify と同じパターン)
-	case BoidOpTaskTriageGet:
+	case BoidOpCardGet:
 		if boidReq.TaskID == "" {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid task triage requires a task id"}
+			return &ExecResponse{ExitCode: 1, Stderr: "boid card get requires a task id"}
 		}
 		// project 検証は boid_executor 側で行う (action_send と同じパターン)
-	case BoidOpTaskTriageList:
+	case BoidOpCardList:
 		// BoidOpTaskList と**同一の**スコーピングをここで行う (codex/Opus
 		// レビュー High): task_list の scoping は executor ではなく broker 側に
 		// あり、 project ref の解決 (name → UUID) もここでしか行われない。
 		// 「executor 側で AllowedProjectIDs で見る」だけでは
-		// (a) --workspace-id が無検査で通り他 workspace の triage card が
+		// (a) --workspace-id が無検査で通り他 workspace の card が
 		// 丸ごと読める (ListTasks の WorkspaceID filter は project_workspaces を
 		// INNER JOIN する = 本当に workspace を跨ぐ)、
 		// (b) project 名を渡すと UUID 空間の AllowsProject と突き合わされて
@@ -512,15 +512,15 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.ProjectID != "" {
 			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
 			if err != nil {
-				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task triage: resolve project %q: %s", boidReq.ProjectID, err)}
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid card list: resolve project %q: %s", boidReq.ProjectID, err)}
 			}
 			boidReq.ProjectID = resolved
 			if !entry.Context.AllowsProject(boidReq.ProjectID) {
-				return &ExecResponse{ExitCode: 1, Stderr: "boid task triage: project is outside the current workspace"}
+				return &ExecResponse{ExitCode: 1, Stderr: "boid card list: project is outside the current workspace"}
 			}
 		}
 		if boidReq.WorkspaceID != "" && boidReq.WorkspaceID != entry.Context.WorkspaceID {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid task triage: workspace_id is outside the current workspace"}
+			return &ExecResponse{ExitCode: 1, Stderr: "boid card list: workspace_id is outside the current workspace"}
 		}
 		if boidReq.ProjectID == "" && boidReq.WorkspaceID == "" && entry.Context.WorkspaceID != "" {
 			boidReq.WorkspaceID = entry.Context.WorkspaceID
@@ -605,8 +605,8 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		}
 	case BoidOpActionList:
 		// docs/plans/ingestion-identity.md PR-3 (B-3): scoping mirrors
-		// BoidOpTaskTriageList EXACTLY — same three branches (project_id /
-		// workspace_id / neither), same reasons (see BoidOpTaskTriageList's
+		// BoidOpCardList EXACTLY — same three branches (project_id /
+		// workspace_id / neither), same reasons (see BoidOpCardList's
 		// case above and BoidOpActionList's own doc comment in protocol.go).
 		if boidReq.ProjectID != "" {
 			resolved, err := b.resolveProjectRef(boidReq.ProjectID)

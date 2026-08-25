@@ -18,6 +18,7 @@ const boidShimUsage = `Usage: boid <command> [subcommand] [flags]
 Commands:
   task     Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen,
            current, instructions, env, payload, attachments list, attachments get)
+  card     Read cards (get, list)
   job      Manage jobs (done, list, show, log)
   action   Send and list actions (send, list)
   agent    Manage agent (stop)
@@ -180,8 +181,6 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskAsk(args[2:])
 		case "delete":
 			return parseBoidTaskDelete(args[2:])
-		case "triage":
-			return parseBoidTaskTriage(args[2:])
 		case "identity":
 			if len(args) < 3 {
 				return nil, fmt.Errorf("boid shim: missing boid task identity subcommand")
@@ -212,6 +211,18 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidProjectList(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid project subcommand %q", args[1])
+		}
+	case "card":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("boid shim: missing boid card subcommand")
+		}
+		switch args[1] {
+		case "get":
+			return parseBoidCardGet(args[2:])
+		case "list":
+			return parseBoidCardList(args[2:])
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported boid card subcommand %q", args[1])
 		}
 	default:
 		return nil, fmt.Errorf("boid shim: unsupported boid subcommand %q", args[0])
@@ -719,25 +730,49 @@ func parseBoidTaskReopen(args []string) (*BoidRequest, error) {
 	return req, nil
 }
 
-// parseBoidTaskTriage builds the BoidRequest for the triage read surface
-// (docs/plans/cross-project-issue-triage.md Phase 1 PR-5a):
-//
-//	boid task triage <task-id>                        # one task's projection
-//	boid task triage --list [--status S] [--project-id P] [--workspace-id W]
-//
-// The two forms are mutually exclusive: a task id selects the single-task op,
-// --list selects the collection op. Mixing them is an error rather than a
-// silently-ignored argument, so a caller never believes it filtered a listing
-// that actually returned one row (or vice versa).
-func parseBoidTaskTriage(args []string) (*BoidRequest, error) {
-	req := &BoidRequest{Op: BoidOpTaskTriageGet}
-	list := false
+// parseBoidCardGet builds the BoidRequest for `boid card get <task-id>`, the
+// single-card half of the card read surface (docs/plans/
+// cross-project-issue-triage.md Phase 1 PR-5a). Renamed from
+// `boid task triage <task-id>` (a single ambiguous "task id or --list" form)
+// to an explicit `get`/`list` subcommand pair by docs/plans/
+// card-model-cleanup.md PR-3 §4 — wire rename only, the op and its scoping
+// are unchanged. Kept as its own command (not folded into `boid task show`)
+// because it returns the card's own projection (api.CardView: kind/urgency/
+// suggestion/detail/children/parked_from), not orchestrator.Task's columns.
+func parseBoidCardGet(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpCardGet}
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--list":
-			list = true
+		case strings.HasPrefix(arg, "-"):
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid card get", arg)
+		default:
+			if req.TaskID != "" {
+				return nil, fmt.Errorf("boid shim: unexpected argument %q for boid card get", arg)
+			}
+			req.TaskID = arg
+		}
+	}
+
+	if req.TaskID == "" {
+		return nil, fmt.Errorf("boid shim: boid card get requires a task id")
+	}
+	return req, nil
+}
+
+// parseBoidCardList builds the BoidRequest for
+// `boid card list [--status S] [--project-id P] [--workspace-id W]`, the
+// collection half of the card read surface (docs/plans/
+// cross-project-issue-triage.md Phase 1 PR-5a). Renamed from
+// `boid task triage --list [...]` by docs/plans/card-model-cleanup.md PR-3
+// §4 — wire rename only, filters and scoping are unchanged.
+func parseBoidCardList(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpCardList}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
 		case arg == "--status" || strings.HasPrefix(arg, "--status="):
 			value, next, err := takeStringFlagValue(args, i, "--status")
 			if err != nil {
@@ -759,29 +794,11 @@ func parseBoidTaskTriage(args []string) (*BoidRequest, error) {
 			}
 			i = next
 			req.WorkspaceID = value
-		case strings.HasPrefix(arg, "-"):
-			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task triage", arg)
 		default:
-			if req.TaskID != "" {
-				return nil, fmt.Errorf("boid shim: unexpected argument %q for boid task triage", arg)
-			}
-			req.TaskID = arg
+			return nil, fmt.Errorf("boid shim: unsupported argument %q for boid card list", arg)
 		}
 	}
 
-	if list {
-		if req.TaskID != "" {
-			return nil, fmt.Errorf("boid shim: boid task triage takes either a task id or --list, not both")
-		}
-		req.Op = BoidOpTaskTriageList
-		return req, nil
-	}
-	if req.TaskID == "" {
-		return nil, fmt.Errorf("boid shim: boid task triage requires a task id (or --list)")
-	}
-	if req.Status != "" || req.ProjectID != "" || req.WorkspaceID != "" {
-		return nil, fmt.Errorf("boid shim: boid task triage <task-id> takes no filter flags (did you mean --list?)")
-	}
 	return req, nil
 }
 

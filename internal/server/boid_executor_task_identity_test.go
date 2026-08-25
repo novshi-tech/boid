@@ -250,7 +250,7 @@ func TestBoidBuiltinExecutor_TaskIdentityLink_RejectsCrossProjectTaskWithinWorks
 
 // TestBoidBuiltinExecutor_TaskIdentityResolve_RejectsTaskOutsideWorkspace
 // pins the third Opus review finding: every OTHER op that hands a task back
-// to the caller (BoidOpTaskGet / BoidOpTaskTriageGet / BoidOpActionSend)
+// to the caller (BoidOpTaskGet / BoidOpCardGet / BoidOpActionSend)
 // re-checks AllowsProject on the task it actually got, not
 // just the project the caller asked about — resolve was the one op that
 // didn't.
