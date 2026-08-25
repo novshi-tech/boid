@@ -110,9 +110,10 @@ func TestTaskDetailChildrenSection_RendersSpec(t *testing.T) {
 			Instruction: "推測で結論を書かない",
 		},
 	}}
+	rows := []templates.ChildRow{{Child: children[0]}}
 
 	var buf bytes.Buffer
-	if err := templates.TaskDetailChildrenSection(children).Render(context.Background(), &buf); err != nil {
+	if err := templates.TaskDetailChildrenSection(rows).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -121,10 +122,18 @@ func TestTaskDetailChildrenSection_RendersSpec(t *testing.T) {
 		"research",                                 // どの behavior で走るか
 		"rook-server",                              // どのプロジェクトで走るか
 		"PR #1063 の実装を読んで競合の扱いを切り分ける", // 何をするのか
-		"推測で結論を書かない",                       // どう進めるのか
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("rendered children section is missing %q — a reader still cannot tell what Go would do", want)
 		}
+	}
+
+	// PR-2 (docs/plans/webui-detail-list-redesign.md §3.3 item 2, §7 PR-2):
+	// instruction is dropped from the spec collapse — it's a templated,
+	// per-behavior boilerplate string, not reader-specific content the way
+	// Description is. Description alone (asserted above) is what answers
+	// "what does this child actually do".
+	if strings.Contains(html, "推測で結論を書かない") {
+		t.Error("rendered children section still contains the child's instruction text — PR-2 drops instruction from the spec collapse (description only)")
 	}
 }

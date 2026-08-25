@@ -476,6 +476,57 @@ pre {
   font-size: 0.8125rem;
 }
 
+/* PR-2 (docs/plans/webui-detail-list-redesign.md §7): a dispatched child's
+   direct link to its own open question — same warning tone as
+   .awaiting-banner-title so a scanning eye recognizes "needs you" at a
+   glance, without pulling in the banner's full box/icon treatment (this is
+   an inline link inside a child row, not a standalone call-to-action). */
+.detail-children-ask {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #92400e;
+}
+
+@media (prefers-color-scheme: dark) {
+  .detail-children-ask { color: #fbbf24; }
+}
+
+/* --- Task detail: execution root's descendant subtree (§3.4 item 2) ---
+   Deliberately separate from .task-list/.task-row (components/task_tree.templ)
+   — that machinery is tied to the list page's BuildTreeItems/recursive-CTE
+   flow, which is slated for removal (PR-4); this is its own small,
+   depth-indented flat list over WebHandler.execChildTree's app-side walk. */
+.detail-child-tree {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.detail-child-tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.detail-child-tree-item {
+  padding-left: calc(var(--depth, 0) * 16px);
+}
+
+.detail-child-tree-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-decoration: none;
+  color: inherit;
+}
+
+.detail-child-tree-title {
+  flex: 1;
+}
+
 /* --- Card --- */
 .card {
   background: var(--surface);

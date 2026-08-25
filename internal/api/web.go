@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -470,14 +471,138 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	var children []orchestrator.TaskTriageChild
+	var children []templates.ChildRow
 	var suggestion orchestrator.Suggestion
+	var childTree []templates.ChildTreeNode
 	if detail.Task.Type == orchestrator.TaskTypeCard {
 		triage := h.loadTriage(id)
-		children = h.resolveChildProjects(childrenOf(triage))
+		children = h.cardChildrenFromTriage(id, triage)
 		suggestion = suggestionOf(triage)
+	} else {
+		childTree = h.execChildTree(detail.Task)
 	}
-	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, children, suggestion).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, children, suggestion, childTree).Render(r.Context(), w)
+}
+
+// maxChildTreeDepth caps app-side recursion in execChildTree/listDescendants
+// as a defensive guard against a pathological parent_id cycle — Task.
+// ParentID can be rewritten via UpdateTask (store.go's UPDATE statement
+// carries parent_id), so an unbounded walk is not provably impossible, just
+// never expected in practice (docs/plans/webui-detail-list-redesign.md §7
+// PR-2 calls the expected scale small). Far above any real supervisor tree
+// depth.
+const maxChildTreeDepth = 50
+
+// execChildTree returns task's full descendant subtree, depth-first
+// (docs/plans/webui-detail-list-redesign.md §3.4 item 2 / §7 PR-2): a root
+// (parent_id == "") execution task detail page's own child tree. Returns
+// nil for anything that is not a root task — including a card, whose
+// children get the C-2 integrated ledger view instead
+// (cardChildrenFromTriage) — or a root task with no children.
+//
+// Traversal is app-side (repeated ListTasks-by-parent_id calls), NOT a SQL
+// recursive CTE: the design doc explicitly asks PR-2 not to grow a new one
+// now that the list page's own CTEs (open_descendants/open_ancestors,
+// store.go) are slated for removal in PR-4.
+func (h *WebHandler) execChildTree(task *orchestrator.Task) []templates.ChildTreeNode {
+	if task == nil || task.ParentID != "" {
+		return nil
+	}
+	return h.listDescendants(task.ID, 1)
+}
+
+// listDescendants is execChildTree's recursive body: one ListTasks call per
+// tree level, flattened depth-first into a single slice (ChildTreeNode.Depth
+// carries the level so the template can indent without a nested shape).
+func (h *WebHandler) listDescendants(parentID string, depth int) []templates.ChildTreeNode {
+	if depth > maxChildTreeDepth {
+		return nil
+	}
+	kids, err := h.Service.ListTasks(orchestrator.TaskFilter{ParentID: &parentID})
+	if err != nil || len(kids) == 0 {
+		return nil
+	}
+	nodes := make([]templates.ChildTreeNode, 0, len(kids))
+	for _, k := range kids {
+		nodes = append(nodes, templates.ChildTreeNode{Task: k, Depth: depth})
+		nodes = append(nodes, h.listDescendants(k.ID, depth+1)...)
+	}
+	return nodes
+}
+
+// cardChildrenFromTriage builds a card detail page's integrated child rows
+// (docs/plans/webui-detail-list-redesign.md §3.3 item 2 / §7 PR-2): the spec
+// ledger (task_triage.detail.children, already resolved to display form by
+// resolveChildProjects) merged with the live status of each dispatched
+// child's real task row. The live lookup is ONE parent_id query
+// (store.go:911 の ListChildren 相当, via WebService.ListTasks) covering
+// every child at once, not one query per ledger entry.
+//
+// 論点8 (edge cases, §5): a ledger entry only ever gets a LiveStatus when its
+// own Status is "dispatched" AND its TaskRef resolves inside that one
+// query's result — never for open/specced/closed, and never when TaskRef is
+// empty or points at a task the query didn't return (deleted/GC'd/still
+// propagating). Either miss just leaves LiveStatus empty, and
+// ChildRow.DisplayStatus then falls back to the ledger status — no error,
+// matching "突き合わせ不能なら台帳のみ". When a lookup DOES succeed, the live
+// status always wins over the bare "dispatched" ledger value — "矛盾したら生
+// status優先表示" — there is nothing else to reconcile, since the ledger only
+// ever carries that one coarse status for the whole executing→awaiting→
+// done/aborted lifecycle.
+func (h *WebHandler) cardChildrenFromTriage(cardID string, triage *orchestrator.CardAttrs) []templates.ChildRow {
+	ledger := h.resolveChildProjects(childrenOf(triage))
+	if len(ledger) == 0 {
+		return nil
+	}
+	live := make(map[string]*orchestrator.Task, len(ledger))
+	if kids, err := h.Service.ListTasks(orchestrator.TaskFilter{ParentID: &cardID}); err == nil {
+		for _, k := range kids {
+			live[k.ID] = k
+		}
+	}
+	rows := make([]templates.ChildRow, 0, len(ledger))
+	for _, c := range ledger {
+		row := templates.ChildRow{Child: c}
+		if c.Status == orchestrator.TaskTriageChildStatusDispatched && c.TaskRef != "" {
+			if t, ok := live[c.TaskRef]; ok && t != nil {
+				row.LiveStatus = string(t.Status)
+				if t.Status == orchestrator.TaskStatusAwaiting && t.Exec != nil {
+					row.AwaitingQuestionID = orchestrator.GetAwaitingPayload(t.Exec.Payload).QuestionID
+				}
+			}
+		}
+		rows = append(rows, row)
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return childRowRank(rows[i]) < childRowRank(rows[j]) })
+	return rows
+}
+
+// cardChildrenForDisplay is cardChildrenFromTriage plus its own triage load,
+// for callers (TaskDetailFragment's "status" kind, hit on every SSE
+// refresh) that don't already hold a loaded triage row.
+func (h *WebHandler) cardChildrenForDisplay(cardID string) []templates.ChildRow {
+	return h.cardChildrenFromTriage(cardID, h.loadTriage(cardID))
+}
+
+// childRowRank implements §3.3 item 2's "要注意順" sort (awaiting → executing
+// → open/specced → closed) over ChildRow.DisplayStatus(). Every status
+// DisplayStatus can return that isn't explicitly awaiting/executing/terminal
+// (open, specced, a "dispatched" ledger entry whose live lookup missed, or
+// the momentary "pending" a freshly-dispatched-but-not-yet-started child
+// could show) shares the same middle tier — none of them are "worth
+// interrupting the reader for" the way awaiting/executing are, and none are
+// finished the way done/aborted/closed are.
+func childRowRank(row templates.ChildRow) int {
+	switch row.DisplayStatus() {
+	case string(orchestrator.TaskStatusAwaiting):
+		return 0
+	case string(orchestrator.TaskStatusExecuting):
+		return 1
+	case string(orchestrator.TaskStatusDone), string(orchestrator.TaskStatusAborted), orchestrator.TaskTriageChildStatusClosed:
+		return 3
+	default:
+		return 2
+	}
 }
 
 // triageChildrenFor returns the task_triage.detail.children for id, or nil
@@ -627,11 +752,12 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
 		if detail.Task.Type == orchestrator.TaskTypeCard {
-			children := h.triageChildrenForDisplay(id)
+			children := h.cardChildrenForDisplay(id)
 			suggestion := h.triageSuggestionFor(id)
 			templates.TaskDetailCardStatusSection(detail.Task, "", projectName, children, suggestion).Render(r.Context(), w)
 		} else {
-			templates.TaskDetailExecStatusSection(detail.Task, "", projectName).Render(r.Context(), w)
+			childTree := h.execChildTree(detail.Task)
+			templates.TaskDetailExecStatusSection(detail.Task, "", projectName, childTree).Render(r.Context(), w)
 		}
 	default:
 		http.Error(w, "unknown fragment kind", http.StatusBadRequest)

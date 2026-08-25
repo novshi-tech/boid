@@ -51,7 +51,26 @@ type applyActionCall struct {
 
 func (s *stubWebService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	s.capturedFilter = filter
-	return s.tasks, nil
+	if filter.ParentID == nil {
+		return s.tasks, nil
+	}
+	// PR-2 (docs/plans/webui-detail-list-redesign.md §7): WebHandler.
+	// cardChildrenFromTriage/execChildTree both filter by ParentID, and
+	// tests exercising them (e.g. a multi-level exec child tree) need this
+	// stub to behave like the real store.ListTasks — otherwise every level
+	// of a recursive walk would see the whole unfiltered fixture and loop
+	// forever, or a card's children query would pick up unrelated fixture
+	// rows. No other caller in this package ever sets ParentID (TaskList
+	// never does — see TestWebHandlerTaskList_FiltersMappedToTaskFilter),
+	// so this branch is new-callers-only and does not change any existing
+	// test's observed behavior.
+	var out []*orchestrator.Task
+	for _, t := range s.tasks {
+		if t.ParentID == *filter.ParentID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
 }
 
 func (s *stubWebService) GetTaskDetail(id string) (*TaskDetailView, error) {
