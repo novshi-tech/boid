@@ -31,10 +31,10 @@ func receiveEvent(t *testing.T, ch <-chan TaskEvent, timeout time.Duration) (Tas
 func TestApplyAction_BroadcastsActionOnCommitSuccess(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-hub-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
 	}
 	txStore := &recordingTxStore{task: task}
 	hub := NewTaskEventHub()
@@ -76,10 +76,10 @@ func TestApplyAction_BroadcastsActionOnCommitSuccess(t *testing.T) {
 func TestApplyAction_NoBroadcastOnCommitFailure(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-hub-fail",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
 	}
 	hub := NewTaskEventHub()
 	ch := hub.Subscribe(t.Context(), task.ID)
@@ -114,9 +114,10 @@ func TestCompleteJob_BroadcastsJobOnJobFailedCommitSuccess(t *testing.T) {
 	}
 	task := &orchestrator.Task{
 		ID:        "task-hub-2",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl"},
 	}
 
 	txStore := &stubTx{}
@@ -167,9 +168,10 @@ func TestCompleteJob_NoBroadcastOnCommitFailure(t *testing.T) {
 	}
 	task := &orchestrator.Task{
 		ID:        "task-hub-fail2",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl"},
 	}
 	hub := NewTaskEventHub()
 	ch := hub.Subscribe(t.Context(), task.ID)

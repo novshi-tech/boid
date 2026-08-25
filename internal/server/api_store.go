@@ -84,10 +84,6 @@ func (s apiTxStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orche
 	return s.tasks.ListTaskTriageByTaskIDs(taskIDs)
 }
 
-func (s apiTxStore) SeedTaskTriage(taskID string) error {
-	return s.tasks.SeedTaskTriage(taskID)
-}
-
 func (s apiTxStore) DeleteTaskTriage(taskID string) error {
 	return s.tasks.DeleteTaskTriage(taskID)
 }

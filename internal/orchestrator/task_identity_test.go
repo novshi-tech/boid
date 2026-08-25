@@ -21,11 +21,11 @@ func TestLinkIdentity_ConflictOnDifferentTask_ButIdempotentOnSameTask(t *testing
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	taskA := &orchestrator.Task{ProjectID: "proj-1", Title: "A", Behavior: "dev", Payload: []byte(`{}`)}
+	taskA := &orchestrator.Task{ProjectID: "proj-1", Title: "A", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, taskA); err != nil {
 		t.Fatalf("create task A: %v", err)
 	}
-	taskB := &orchestrator.Task{ProjectID: "proj-1", Title: "B", Behavior: "dev", Payload: []byte(`{}`)}
+	taskB := &orchestrator.Task{ProjectID: "proj-1", Title: "B", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, taskB); err != nil {
 		t.Fatalf("create task B: %v", err)
 	}
@@ -67,11 +67,11 @@ func TestLinkIdentity_SameIdentityDifferentProjects(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-2", WorkDir: "/tmp/proj-2"}); err != nil {
 		t.Fatalf("create project 2: %v", err)
 	}
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev", Payload: []byte(`{}`)}
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
-	task2 := &orchestrator.Task{ProjectID: "proj-2", Title: "T2", Behavior: "dev", Payload: []byte(`{}`)}
+	task2 := &orchestrator.Task{ProjectID: "proj-2", Title: "T2", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
@@ -118,11 +118,11 @@ func TestUnlinkIdentity_ThenRelinkToDifferentTask(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	taskA := &orchestrator.Task{ProjectID: "proj-1", Title: "A", Behavior: "dev", Payload: []byte(`{}`)}
+	taskA := &orchestrator.Task{ProjectID: "proj-1", Title: "A", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, taskA); err != nil {
 		t.Fatalf("create task A: %v", err)
 	}
-	taskB := &orchestrator.Task{ProjectID: "proj-1", Title: "B", Behavior: "dev", Payload: []byte(`{}`)}
+	taskB := &orchestrator.Task{ProjectID: "proj-1", Title: "B", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, taskB); err != nil {
 		t.Fatalf("create task B: %v", err)
 	}
@@ -151,11 +151,11 @@ func TestUnlinkAllForTask_ReleasesEveryIdentity(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	other := &orchestrator.Task{ProjectID: "proj-1", Title: "Other", Behavior: "dev", Payload: []byte(`{}`)}
+	other := &orchestrator.Task{ProjectID: "proj-1", Title: "Other", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, other); err != nil {
 		t.Fatalf("create other task: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestTaskDelete_CascadesIdentityBindings(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestLinkIdentity_RejectsEmptyIdentity(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestLinkIdentity_RejectsEmptyProjectID(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestUnlinkIdentity_RejectsEmptyProjectID(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestResolveIdentity_RejectsEmptyProjectID(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}

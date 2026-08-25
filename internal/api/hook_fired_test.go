@@ -21,11 +21,11 @@ func (c *hookFiredCoordinator) DispatchAndAdvance(ctx context.Context, task *orc
 	if c.dispatchResult != nil {
 		return c.dispatchResult, c.dispatchErr
 	}
-	return &orchestrator.DispatchResult{FinalPayload: task.Payload}, c.dispatchErr
+	return &orchestrator.DispatchResult{FinalPayload: task.Exec.Payload}, c.dispatchErr
 }
 
 func (c *hookFiredCoordinator) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+	return &orchestrator.ReplayResult{FinalPayload: task.Exec.Payload}, nil
 }
 
 // TestRunDispatchLoop_HookFiredActionsRecorded verifies that hook_fired actions
@@ -33,9 +33,10 @@ func (c *hookFiredCoordinator) ReplayHook(ctx context.Context, task *orchestrato
 func TestRunDispatchLoop_HookFiredActionsRecorded(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-fired-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 
 	firedEvents := []orchestrator.FiredEvent{
@@ -45,7 +46,7 @@ func TestRunDispatchLoop_HookFiredActionsRecorded(t *testing.T) {
 	coord := &hookFiredCoordinator{
 		dispatchResult: &orchestrator.DispatchResult{
 			FiredEvents:  firedEvents,
-			FinalPayload: task.Payload,
+			FinalPayload: task.Exec.Payload,
 		},
 	}
 
@@ -71,9 +72,10 @@ func TestRunDispatchLoop_HookFiredActionsRecorded(t *testing.T) {
 func TestRunDispatchLoop_HookFiredAction_PayloadContents(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-fired-2",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 
 	coord := &hookFiredCoordinator{
@@ -81,7 +83,7 @@ func TestRunDispatchLoop_HookFiredAction_PayloadContents(t *testing.T) {
 			FiredEvents: []orchestrator.FiredEvent{
 				{KitID: "go-dev", HandlerID: "go-dev/pr-verify", Kind: "hook", SourceState: "executing", Success: true},
 			},
-			FinalPayload: task.Payload,
+			FinalPayload: task.Exec.Payload,
 		},
 	}
 
@@ -136,9 +138,10 @@ func TestRunDispatchLoop_HookFiredAction_PayloadContents(t *testing.T) {
 func TestRunDispatchLoop_PersistsFiredEventsOnFailedDispatch(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-fired-fail-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 
 	coord := &hookFiredCoordinator{

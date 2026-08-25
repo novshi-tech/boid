@@ -38,9 +38,10 @@ func TestCompleteJobSuccessNotifiesWithoutTransition(t *testing.T) {
 	}
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl"},
 	}
 
 	taskStore := &stubTaskStore{task: task}
@@ -89,9 +90,10 @@ func TestCompleteJobFailureTransitionsToAborted(t *testing.T) {
 	}
 	task := &orchestrator.Task{
 		ID:        "task-3",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-3",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl"},
 	}
 
 	taskStore := &stubTaskStore{task: task}
@@ -129,11 +131,11 @@ func TestCompleteJobFailureTransitionsToAborted(t *testing.T) {
 func TestApplyAction_RecordsFromToStatus(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "test task",
 		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
 	}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{
@@ -172,9 +174,10 @@ func TestCompleteJob_JobFailed_RecordsFromToStatus(t *testing.T) {
 	}
 	task := &orchestrator.Task{
 		ID:        "task-10",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-10",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl"},
 	}
 
 	tx := &stubTx{}
@@ -322,11 +325,11 @@ func TestTaskAppServiceCreateTask_ProjectNotInMeta_Skips(t *testing.T) {
 func TestTaskAppServiceGetTaskDetail(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Implement observability",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   json.RawMessage(`{"artifact":{"url":"https://example.com"}}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: json.RawMessage(`{"artifact":{"url":"https://example.com"}}`)},
 	}
 	actions := []*orchestrator.Action{{
 		ID:      "action-1",
@@ -367,9 +370,10 @@ func TestTaskAppServiceGetTaskDetail(t *testing.T) {
 func TestTaskAppServiceGetTaskDetail_AvailableActions(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-aa",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-aa",
 		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "dev",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	svc := &TaskAppService{
 		Tasks:   &stubTaskStore{task: task},
@@ -409,9 +413,10 @@ func TestTaskWorkflowServiceCompleteJobFailedProjectMetaMissing(t *testing.T) {
 	}
 	task := &orchestrator.Task{
 		ID:        "task-2",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-2",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl"},
 	}
 
 	jobs := &stubJobStore{job: job}
@@ -446,9 +451,10 @@ func TestTaskWorkflowServiceCompleteJobFailedProjectMetaMissing(t *testing.T) {
 
 func TestTaskAppServiceDeleteTask(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "task-1",
-		Status:   orchestrator.TaskStatusDone,
-		Behavior: "dev",
+		ID:     "task-1",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusDone,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -467,9 +473,10 @@ func TestTaskAppServiceDeleteTask_ActiveStatusBlockedWithoutForce(t *testing.T) 
 	}
 	for _, status := range activeStatuses {
 		task := &orchestrator.Task{
-			ID:       "task-1",
-			Status:   status,
-			Behavior: "dev",
+			ID:     "task-1",
+			Type:   orchestrator.TaskTypeExecution,
+			Status: status,
+			Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
@@ -490,9 +497,10 @@ func TestTaskAppServiceDeleteTask_ActiveStatusBlockedWithoutForce(t *testing.T) 
 
 func TestTaskAppServiceDeleteTask_ActiveStatusAllowedWithForce(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "task-1",
-		Status:   orchestrator.TaskStatusExecuting,
-		Behavior: "dev",
+		ID:     "task-1",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -523,9 +531,11 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:          "task-1",
+			Type:        orchestrator.TaskTypeExecution,
 			Title:       "old title",
 			Description: "old desc",
 			Status:      orchestrator.TaskStatusPending,
+			Exec:        &orchestrator.ExecAttrs{},
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
@@ -565,14 +575,28 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 	// wrong default — this is the one card status that stays excluded now
 	// that parked (below) no longer is.
 	t.Run("title update rejected when not pending", func(t *testing.T) {
-		for _, status := range []orchestrator.TaskStatus{
-			orchestrator.TaskStatusExecuting,
-			orchestrator.TaskStatusAwaiting,
-			orchestrator.TaskStatusDone,
-			orchestrator.TaskStatusAborted,
-			orchestrator.TaskStatusWorking,
+		// card-model-cleanup PR-2: IsPreDispatchEditableStatus now takes
+		// task.Type as well as task.Status, so each fixture needs the Type
+		// that actually produces this status in practice (working is
+		// card-only; the rest are execution-only or, for done, at least
+		// plausibly execution — see model.go's TaskStatus doc comment).
+		for _, tc := range []struct {
+			status orchestrator.TaskStatus
+			typ    orchestrator.TaskType
+		}{
+			{orchestrator.TaskStatusExecuting, orchestrator.TaskTypeExecution},
+			{orchestrator.TaskStatusAwaiting, orchestrator.TaskTypeExecution},
+			{orchestrator.TaskStatusDone, orchestrator.TaskTypeExecution},
+			{orchestrator.TaskStatusAborted, orchestrator.TaskTypeExecution},
+			{orchestrator.TaskStatusWorking, orchestrator.TaskTypeCard},
 		} {
-			task := &orchestrator.Task{ID: "task-x", Title: "old", Status: status}
+			status := tc.status
+			task := &orchestrator.Task{ID: "task-x", Type: tc.typ, Title: "old", Status: status}
+			if tc.typ == orchestrator.TaskTypeCard {
+				task.Card = &orchestrator.CardAttrs{}
+			} else {
+				task.Exec = &orchestrator.ExecAttrs{}
+			}
 			store := &stubTaskStore{task: task}
 			svc := &TaskAppService{Tasks: store}
 
@@ -593,16 +617,19 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 	// §3.5) folds captured/triaged into parked as a card's initial/main
 	// resting status, so excluding parked now locks every fresh card's
 	// title out of editing — PR #987 review, HIGH 7 moves parked into this
-	// allowed set (captured/triaged/ready stay too, read-only legacy
-	// statuses that must not newly become uneditable).
-	t.Run("title update allowed for parked and legacy pre-execution statuses", func(t *testing.T) {
+	// allowed set.
+	//
+	// card-model-cleanup PR-2: captured/triaged/ready are gone as Go
+	// identifiers entirely (no row can hold them any more — migration 0045's
+	// CHECK constraint), not merely "legacy read-only statuses" as the
+	// comment above once described them — this loop now covers exactly the
+	// one status IsPreDispatchEditableStatus(TaskTypeCard, ...) actually
+	// admits.
+	t.Run("title update allowed for parked", func(t *testing.T) {
 		for _, status := range []orchestrator.TaskStatus{
 			orchestrator.TaskStatusParked,
-			orchestrator.TaskStatusCaptured,
-			orchestrator.TaskStatusTriaged,
-			orchestrator.TaskStatusReady,
 		} {
-			task := &orchestrator.Task{ID: "task-x", Title: "old", Status: status}
+			task := &orchestrator.Task{ID: "task-x", Type: orchestrator.TaskTypeCard, Title: "old", Status: status, Card: &orchestrator.CardAttrs{}}
 			store := &stubTaskStore{task: task}
 			svc := &TaskAppService{Tasks: store}
 
@@ -619,9 +646,11 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 	t.Run("project update success", func(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:        "task-p",
+			Type:      orchestrator.TaskTypeExecution,
 			Title:     "t",
 			ProjectID: "proj-old",
 			Status:    orchestrator.TaskStatusPending,
+			Exec:      &orchestrator.ExecAttrs{},
 		}
 		store := &stubTaskStore{task: task}
 		projects := &stubProjectRepository{
@@ -644,7 +673,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 			orchestrator.TaskStatusDone,
 			orchestrator.TaskStatusAborted,
 		} {
-			task := &orchestrator.Task{ID: "task-x", ProjectID: "proj-old", Status: status}
+			task := &orchestrator.Task{ID: "task-x", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-old", Status: status, Exec: &orchestrator.ExecAttrs{}}
 			store := &stubTaskStore{task: task}
 			projects := &stubProjectRepository{
 				projects: []*orchestrator.Project{{ID: "proj-new"}},
@@ -665,8 +694,10 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 	t.Run("project update rejected for nonexistent project", func(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:        "task-p",
+			Type:      orchestrator.TaskTypeExecution,
 			ProjectID: "proj-old",
 			Status:    orchestrator.TaskStatusPending,
+			Exec:      &orchestrator.ExecAttrs{},
 		}
 		store := &stubTaskStore{task: task}
 		projects := &stubProjectRepository{projects: nil}
@@ -685,9 +716,11 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 	t.Run("remote_id updated", func(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:       "task-r",
+			Type:     orchestrator.TaskTypeExecution,
 			Title:    "t",
 			RemoteID: "OLD-1",
 			Status:   orchestrator.TaskStatusPending,
+			Exec:     &orchestrator.ExecAttrs{},
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
@@ -705,9 +738,11 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 	t.Run("remote_id updated while executing", func(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:       "task-exec",
+			Type:     orchestrator.TaskTypeExecution,
 			Title:    "t",
 			RemoteID: "OLD",
 			Status:   orchestrator.TaskStatusExecuting,
+			Exec:     &orchestrator.ExecAttrs{},
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
@@ -726,10 +761,11 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 	t.Run("no payload preserves existing payload", func(t *testing.T) {
 		task := &orchestrator.Task{
-			ID:      "task-1",
-			Title:   "old title",
-			Status:  orchestrator.TaskStatusPending,
-			Payload: json.RawMessage(`{"artifact":{"url":"https://example.com"}}`),
+			ID:     "task-1",
+			Type:   orchestrator.TaskTypeExecution,
+			Title:  "old title",
+			Status: orchestrator.TaskStatusPending,
+			Exec:   &orchestrator.ExecAttrs{Payload: json.RawMessage(`{"artifact":{"url":"https://example.com"}}`)},
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
@@ -739,7 +775,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
 		var m map[string]json.RawMessage
-		if err := json.Unmarshal(got.Payload, &m); err != nil {
+		if err := json.Unmarshal(got.Exec.Payload, &m); err != nil {
 			t.Fatalf("unmarshal payload: %v", err)
 		}
 		if _, ok := m["artifact"]; !ok {
@@ -750,10 +786,11 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 	t.Run("payload update replaces key via shallow merge", func(t *testing.T) {
 		existingPayload := json.RawMessage(`{"artifact":{"url":"old"}}`)
 		task := &orchestrator.Task{
-			ID:      "task-3",
-			Title:   "title",
-			Status:  orchestrator.TaskStatusPending,
-			Payload: existingPayload,
+			ID:     "task-3",
+			Type:   orchestrator.TaskTypeExecution,
+			Title:  "title",
+			Status: orchestrator.TaskStatusPending,
+			Exec:   &orchestrator.ExecAttrs{Payload: existingPayload},
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
@@ -764,7 +801,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
 		var m map[string]json.RawMessage
-		if err := json.Unmarshal(got.Payload, &m); err != nil {
+		if err := json.Unmarshal(got.Exec.Payload, &m); err != nil {
 			t.Fatalf("unmarshal payload: %v", err)
 		}
 		var artifact map[string]string
@@ -779,10 +816,11 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 	t.Run("payload update preserves other existing keys", func(t *testing.T) {
 		existingPayload := json.RawMessage(`{"artifact":{"url":"https://example.com"},"verification":{"agent-1":{"findings":"none"}}}`)
 		task := &orchestrator.Task{
-			ID:      "task-4",
-			Title:   "title",
-			Status:  orchestrator.TaskStatusPending,
-			Payload: existingPayload,
+			ID:     "task-4",
+			Type:   orchestrator.TaskTypeExecution,
+			Title:  "title",
+			Status: orchestrator.TaskStatusPending,
+			Exec:   &orchestrator.ExecAttrs{Payload: existingPayload},
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
@@ -794,7 +832,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
 		var m map[string]json.RawMessage
-		if err := json.Unmarshal(got.Payload, &m); err != nil {
+		if err := json.Unmarshal(got.Exec.Payload, &m); err != nil {
 			t.Fatalf("unmarshal payload: %v", err)
 		}
 		if _, ok := m["artifact"]; !ok {
@@ -806,7 +844,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 	})
 
 	t.Run("payload containing instructions is rejected", func(t *testing.T) {
-		task := &orchestrator.Task{ID: "task-5", Title: "title"}
+		task := &orchestrator.Task{ID: "task-5", Type: orchestrator.TaskTypeExecution, Title: "title", Exec: &orchestrator.ExecAttrs{}}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
 
@@ -820,8 +858,10 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 	t.Run("instructions update applied at top level", func(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:     "task-6",
+			Type:   orchestrator.TaskTypeExecution,
 			Title:  "title",
 			Status: orchestrator.TaskStatusPending,
+			Exec:   &orchestrator.ExecAttrs{},
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store, Actions: &stubActionStore{}}
@@ -831,7 +871,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
-		if len(got.Instructions) == 0 {
+		if len(got.Exec.Instructions) == 0 {
 			t.Fatal("expected instructions to be set")
 		}
 	})
@@ -839,8 +879,10 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 	t.Run("instructions update is rejected while task is running", func(t *testing.T) {
 		task := &orchestrator.Task{
 			ID:     "task-7",
+			Type:   orchestrator.TaskTypeExecution,
 			Title:  "title",
 			Status: orchestrator.TaskStatusExecuting,
+			Exec:   &orchestrator.ExecAttrs{},
 		}
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
@@ -863,8 +905,10 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		t.Run("instructions update is rejected when task is "+string(status), func(t *testing.T) {
 			task := &orchestrator.Task{
 				ID:     "task-instr-" + string(status),
+				Type:   orchestrator.TaskTypeExecution,
 				Title:  "title",
 				Status: status,
+				Exec:   &orchestrator.ExecAttrs{},
 			}
 			store := &stubTaskStore{task: task}
 			svc := &TaskAppService{Tasks: store}
@@ -1048,11 +1092,11 @@ func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if !reflect.DeepEqual(task.Traits, []string{"artifact", "verification"}) {
-		t.Errorf("Traits = %v, want %v", task.Traits, []string{"artifact", "verification"})
+	if !reflect.DeepEqual(task.Exec.Traits, []string{"artifact", "verification"}) {
+		t.Errorf("Traits = %v, want %v", task.Exec.Traits, []string{"artifact", "verification"})
 	}
-	if task.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "main")
+	if task.Exec.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q", task.Exec.BaseBranch, "main")
 	}
 }
 
@@ -1085,16 +1129,16 @@ func TestCreateTask_NoTaskRowOverridesAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
-		t.Errorf("Traits = %v, want %v", task.Traits, []string{"artifact"})
+	if !reflect.DeepEqual(task.Exec.Traits, []string{"artifact"}) {
+		t.Errorf("Traits = %v, want %v", task.Exec.Traits, []string{"artifact"})
 	}
 	// Readonly / BaseBranch come from the canonical behavior name + project-top
 	// fields; the request has no knobs to override them.
-	if task.Readonly != false {
-		t.Errorf("Readonly = %v, want false (executor is canonically writable)", task.Readonly)
+	if task.Exec.Readonly != false {
+		t.Errorf("Readonly = %v, want false (executor is canonically writable)", task.Exec.Readonly)
 	}
-	if task.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want %q (project-top base_branch)", task.BaseBranch, "main")
+	if task.Exec.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q (project-top base_branch)", task.Exec.BaseBranch, "main")
 	}
 }
 
@@ -1120,8 +1164,8 @@ func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
-		t.Errorf("Traits = %v, want template value %v", task.Traits, []string{"artifact"})
+	if !reflect.DeepEqual(task.Exec.Traits, []string{"artifact"}) {
+		t.Errorf("Traits = %v, want template value %v", task.Exec.Traits, []string{"artifact"})
 	}
 }
 
@@ -1149,11 +1193,11 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if task.Behavior != "kit/my-behavior" {
-		t.Errorf("Behavior = %q, want %q", task.Behavior, "kit/my-behavior")
+	if task.Exec.Behavior != "kit/my-behavior" {
+		t.Errorf("Behavior = %q, want %q", task.Exec.Behavior, "kit/my-behavior")
 	}
-	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
-		t.Errorf("Traits = %v, want [artifact]", task.Traits)
+	if !reflect.DeepEqual(task.Exec.Traits, []string{"artifact"}) {
+		t.Errorf("Traits = %v, want [artifact]", task.Exec.Traits)
 	}
 }
 
@@ -1174,8 +1218,8 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultInstructionsMerged(t *test
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if len(task.Instructions) == 0 {
-		t.Error("expected task.Instructions to be set from default_instructions")
+	if len(task.Exec.Instructions) == 0 {
+		t.Error("expected task.Exec.Instructions to be set from default_instructions")
 	}
 }
 
@@ -1227,8 +1271,8 @@ func TestTaskAppServiceCreateTask_NeitherBehaviorNorSpec_DefaultsToPlan(t *testi
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil", err)
 	}
-	if task.Behavior != orchestrator.DefaultBehavior {
-		t.Errorf("Behavior = %q, want %q", task.Behavior, orchestrator.DefaultBehavior)
+	if task.Exec.Behavior != orchestrator.DefaultBehavior {
+		t.Errorf("Behavior = %q, want %q", task.Exec.Behavior, orchestrator.DefaultBehavior)
 	}
 }
 
@@ -1254,10 +1298,10 @@ func TestTaskAppServiceCreateTask_DefaultPlan_InheritsTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want nil", err)
 	}
-	if task.Behavior != orchestrator.DefaultBehavior {
-		t.Errorf("Behavior = %q, want %q", task.Behavior, orchestrator.DefaultBehavior)
+	if task.Exec.Behavior != orchestrator.DefaultBehavior {
+		t.Errorf("Behavior = %q, want %q", task.Exec.Behavior, orchestrator.DefaultBehavior)
 	}
-	if !task.Readonly {
+	if !task.Exec.Readonly {
 		t.Errorf("Readonly = false, want true (supervisor is canonically readonly)")
 	}
 }
@@ -1319,8 +1363,8 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 	if store.createdTask == nil {
 		t.Fatal("createdTask is nil")
 	}
-	if store.createdTask.Behavior != "kit/conflict-fix" {
-		t.Errorf("Behavior = %q, want %q", store.createdTask.Behavior, "kit/conflict-fix")
+	if store.createdTask.Exec.Behavior != "kit/conflict-fix" {
+		t.Errorf("Behavior = %q, want %q", store.createdTask.Exec.Behavior, "kit/conflict-fix")
 	}
 }
 
@@ -1349,7 +1393,7 @@ func TestCreateTask_CanonicalSupervisor_ForcesReadonly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if !task.Readonly {
+	if !task.Exec.Readonly {
 		t.Errorf("Readonly = false, want true (supervisor is canonically readonly)")
 	}
 }
@@ -1375,7 +1419,7 @@ func TestCreateTask_CanonicalExecutor_ForcesNotReadonly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if task.Readonly {
+	if task.Exec.Readonly {
 		t.Errorf("Readonly = true, want false (executor is canonically writable)")
 	}
 }
@@ -1442,7 +1486,7 @@ func TestCreateTask_NonCanonicalBehavior_ReadonlyDefaultTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask(research) error = %v", err)
 	}
-	if !researchTask.Readonly {
+	if !researchTask.Exec.Readonly {
 		t.Errorf("research: Readonly = false, want true (non-canonical default is fail-safe readonly)")
 	}
 
@@ -1454,7 +1498,7 @@ func TestCreateTask_NonCanonicalBehavior_ReadonlyDefaultTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask(dev-task) error = %v", err)
 	}
-	if devTask.Readonly {
+	if devTask.Exec.Readonly {
 		t.Errorf("dev-task: Readonly = true, want false (explicit readonly:false in behavior)")
 	}
 }
@@ -1538,8 +1582,8 @@ func TestCreateTask_SupervisorCase3_BaseBranchPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if task.BaseBranch != "release-2026" {
-		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "release-2026")
+	if task.Exec.BaseBranch != "release-2026" {
+		t.Errorf("BaseBranch = %q, want %q", task.Exec.BaseBranch, "release-2026")
 	}
 }
 
@@ -1584,9 +1628,9 @@ func TestCreateTask_ExecutorCase3_NoParent_Errors(t *testing.T) {
 func TestCreateTask_ExecutorCase3_WithParent_OK(t *testing.T) {
 	dir := initServiceTestRepo(t, "main")
 	parent := &orchestrator.Task{
-		ID:         "task-parent",
-		Behavior:   "supervisor",
-		BaseBranch: "release-2026",
+		ID:   "task-parent",
+		Type: orchestrator.TaskTypeExecution,
+		Exec: &orchestrator.ExecAttrs{Behavior: "supervisor", BaseBranch: "release-2026"},
 	}
 	store := &stubTaskStore{
 		tasks: map[string]*orchestrator.Task{parent.ID: parent},
@@ -1611,8 +1655,8 @@ func TestCreateTask_ExecutorCase3_WithParent_OK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if task.BaseBranch != "release-2026" {
-		t.Errorf("BaseBranch = %q, want %q (inherited from parent)", task.BaseBranch, "release-2026")
+	if task.Exec.BaseBranch != "release-2026" {
+		t.Errorf("BaseBranch = %q, want %q (inherited from parent)", task.Exec.BaseBranch, "release-2026")
 	}
 }
 
@@ -1643,8 +1687,8 @@ func TestCreateTask_EmptyBaseBranch_ExpandsCurrentBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if task.BaseBranch != "feature/BGO-170" {
-		t.Errorf("BaseBranch = %q, want %q (expanded from current HEAD)", task.BaseBranch, "feature/BGO-170")
+	if task.Exec.BaseBranch != "feature/BGO-170" {
+		t.Errorf("BaseBranch = %q, want %q (expanded from current HEAD)", task.Exec.BaseBranch, "feature/BGO-170")
 	}
 }
 
@@ -1803,7 +1847,6 @@ func (s *stubTx) CreateAction(action *orchestrator.Action) error {
 // every time (prior=0 always) — fix this the same way recordingTxStore's
 // ListActionsByTask does before relying on it for that.
 func (s *stubTx) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) { return nil, nil }
-func (s *stubTx) SeedTaskTriage(string) error                                     { return nil }
 
 func (s *stubTx) UpsertTaskTriage(tt *orchestrator.CardAttrs) error { return nil }
 func (s *stubTx) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
@@ -1963,12 +2006,12 @@ func (l *stubLifecycle) SignaledRuntime() (string, syscall.Signal) {
 func TestDuplicateTask_CopiesFields(t *testing.T) {
 	source := &orchestrator.Task{
 		ID:          "src-1",
+		Type:        orchestrator.TaskTypeExecution,
 		ProjectID:   "proj-1",
 		Title:       "Original Task",
 		Description: "task description",
-		Behavior:    "dev",
 		Status:      orchestrator.TaskStatusAborted,
-		Payload:     json.RawMessage(`{"old":"data"}`),
+		Exec:        &orchestrator.ExecAttrs{Behavior: "dev", Payload: json.RawMessage(`{"old":"data"}`)},
 		RemoteID:    "PROJ-1",
 	}
 	meta := &orchestrator.ProjectMeta{
@@ -1995,8 +2038,8 @@ func TestDuplicateTask_CopiesFields(t *testing.T) {
 	if task.Description != "task description" {
 		t.Errorf("Description = %q, want %q", task.Description, "task description")
 	}
-	if task.Behavior != "dev" {
-		t.Errorf("Behavior = %q, want %q", task.Behavior, "dev")
+	if task.Exec.Behavior != "dev" {
+		t.Errorf("Behavior = %q, want %q", task.Exec.Behavior, "dev")
 	}
 	if task.RemoteID != "PROJ-1" {
 		t.Errorf("RemoteID = %q, want %q (duplicate must carry remote_id so base_branch templates resolve)", task.RemoteID, "PROJ-1")
@@ -2006,11 +2049,11 @@ func TestDuplicateTask_CopiesFields(t *testing.T) {
 func TestDuplicateTask_InstructionsFromDefaultInstructions(t *testing.T) {
 	source := &orchestrator.Task{
 		ID:        "src-2",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Task",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusDone,
-		Payload:   json.RawMessage(`{"old":"data"}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev", Payload: json.RawMessage(`{"old":"data"}`)},
 	}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
@@ -2029,12 +2072,12 @@ func TestDuplicateTask_InstructionsFromDefaultInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DuplicateTask() error = %v", err)
 	}
-	if len(task.Instructions) == 0 {
+	if len(task.Exec.Instructions) == 0 {
 		t.Error("instructions missing: should come from default_instructions")
 	}
-	if len(task.Payload) > 0 && string(task.Payload) != "{}" && string(task.Payload) != "null" {
+	if len(task.Exec.Payload) > 0 && string(task.Exec.Payload) != "{}" && string(task.Exec.Payload) != "null" {
 		var m map[string]json.RawMessage
-		if err := json.Unmarshal(task.Payload, &m); err != nil {
+		if err := json.Unmarshal(task.Exec.Payload, &m); err != nil {
 			t.Fatalf("unmarshal payload: %v", err)
 		}
 		if _, ok := m["old"]; ok {
@@ -2046,10 +2089,11 @@ func TestDuplicateTask_InstructionsFromDefaultInstructions(t *testing.T) {
 func TestDuplicateTask_AutoStart(t *testing.T) {
 	source := &orchestrator.Task{
 		ID:        "src-3",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Task",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusAborted,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
@@ -2090,10 +2134,11 @@ func TestDuplicateTask_AnySourceStatus(t *testing.T) {
 		t.Run(string(status), func(t *testing.T) {
 			source := &orchestrator.Task{
 				ID:        "src-1",
+				Type:      orchestrator.TaskTypeExecution,
 				ProjectID: "proj-1",
 				Title:     "Task",
-				Behavior:  "dev",
 				Status:    status,
+				Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 			}
 			store := &stubTaskStore{task: source}
 			svc := &TaskAppService{
@@ -2127,11 +2172,11 @@ func TestDuplicateTask_NotFound(t *testing.T) {
 func TestRerunTask_DoneToPending(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-done",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Done Task",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusDone,
-		Payload:   json.RawMessage(`{"artifact":{"url":"old"}}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev", Payload: json.RawMessage(`{"artifact":{"url":"old"}}`)},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -2150,9 +2195,10 @@ func TestRerunTask_DoneToPending(t *testing.T) {
 
 func TestRerunTask_AbortedToPendingUnit(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "task-aborted",
-		Status:   orchestrator.TaskStatusAborted,
-		Behavior: "dev",
+		ID:     "task-aborted",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusAborted,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -2174,9 +2220,10 @@ func TestRerunTask_WrongStatusUnit(t *testing.T) {
 	for _, status := range wrongStatuses {
 		t.Run(string(status), func(t *testing.T) {
 			task := &orchestrator.Task{
-				ID:       "task-1",
-				Status:   status,
-				Behavior: "dev",
+				ID:     "task-1",
+				Type:   orchestrator.TaskTypeExecution,
+				Status: status,
+				Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 			}
 			store := &stubTaskStore{task: task}
 			svc := &TaskAppService{Tasks: store}
@@ -2209,10 +2256,10 @@ func TestRerunTask_NotFoundUnit(t *testing.T) {
 
 func TestRerunTask_ClearsPayloadUnit(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "task-1",
-		Status:   orchestrator.TaskStatusDone,
-		Behavior: "dev",
-		Payload:  json.RawMessage(`{"artifact":{"url":"old"},"verification":{"gate":{"findings":[]}}}`),
+		ID:     "task-1",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusDone,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "dev", Payload: json.RawMessage(`{"artifact":{"url":"old"},"verification":{"gate":{"findings":[]}}}`)},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -2222,7 +2269,7 @@ func TestRerunTask_ClearsPayloadUnit(t *testing.T) {
 		t.Fatalf("RerunTask() error = %v", err)
 	}
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(result.Payload, &m); err != nil {
+	if err := json.Unmarshal(result.Exec.Payload, &m); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
 	if _, ok := m["artifact"]; ok {
@@ -2235,11 +2282,14 @@ func TestRerunTask_ClearsPayloadUnit(t *testing.T) {
 
 func TestRerunTask_PreservesInstructionsUnit(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:           "task-1",
-		Status:       orchestrator.TaskStatusAborted,
-		Behavior:     "dev",
-		Payload:      json.RawMessage(`{"artifact":{"url":"old"}}`),
-		Instructions: orchestrator.Instructions{{Agent: "c"}},
+		ID:     "task-1",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusAborted,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior:     "dev",
+			Payload:      json.RawMessage(`{"artifact":{"url":"old"}}`),
+			Instructions: orchestrator.Instructions{{Agent: "c"}},
+		},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -2248,11 +2298,11 @@ func TestRerunTask_PreservesInstructionsUnit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)
 	}
-	if len(result.Instructions) == 0 {
+	if len(result.Exec.Instructions) == 0 {
 		t.Error("instructions should be preserved after rerun")
 	}
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(result.Payload, &m); err != nil {
+	if err := json.Unmarshal(result.Exec.Payload, &m); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
 	if _, ok := m["artifact"]; ok {
@@ -2262,11 +2312,14 @@ func TestRerunTask_PreservesInstructionsUnit(t *testing.T) {
 
 func TestRerunTask_InstructionsOverrideApplied(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "task-1",
-		Status:   orchestrator.TaskStatusAborted,
-		Behavior: "dev",
-		Instructions: orchestrator.Instructions{
-			{Agent: "claude-code", Model: "sonnet-4-6"},
+		ID:     "task-1",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusAborted,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Instructions: orchestrator.Instructions{
+				{Agent: "claude-code", Model: "sonnet-4-6"},
+			},
 		},
 	}
 	store := &stubTaskStore{task: task}
@@ -2277,7 +2330,7 @@ func TestRerunTask_InstructionsOverrideApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RerunTask() error = %v", err)
 	}
-	active := result.Instructions.Active()
+	active := result.Exec.Instructions.Active()
 	if active == nil || active.Model != "opus-4-7" {
 		t.Errorf("expected model opus-4-7, got %#v", active)
 	}
@@ -2285,9 +2338,10 @@ func TestRerunTask_InstructionsOverrideApplied(t *testing.T) {
 
 func TestRerunTask_AutoStartUnit(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "task-1",
-		Status:   orchestrator.TaskStatusDone,
-		Behavior: "dev",
+		ID:     "task-1",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusDone,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	workflow := &stubWorkflowService{}
 	store := &stubTaskStore{task: task}
@@ -2308,13 +2362,13 @@ func TestRerunTask_AutoStartUnit(t *testing.T) {
 func TestRerunTask_PreservesTaskMetadata(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:          "task-meta",
+		Type:        orchestrator.TaskTypeExecution,
 		ProjectID:   "proj-1",
 		Title:       "Meta Task",
 		Description: "Some description",
-		Behavior:    "dev",
 		Status:      orchestrator.TaskStatusDone,
 		Ref:         "my-ref",
-		AutoStart:   true,
+		Exec:        &orchestrator.ExecAttrs{Behavior: "dev", AutoStart: true},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -2332,8 +2386,8 @@ func TestRerunTask_PreservesTaskMetadata(t *testing.T) {
 	if result.Description != "Some description" {
 		t.Errorf("Description = %q, want %q", result.Description, "Some description")
 	}
-	if result.Behavior != "dev" {
-		t.Errorf("Behavior = %q, want %q", result.Behavior, "dev")
+	if result.Exec.Behavior != "dev" {
+		t.Errorf("Behavior = %q, want %q", result.Exec.Behavior, "dev")
 	}
 	if result.Ref != "my-ref" {
 		t.Errorf("Ref = %q, want %q", result.Ref, "my-ref")
@@ -2374,10 +2428,11 @@ func TestGetTaskDetail_JobsIncludeWorkspacePath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			task := &orchestrator.Task{
 				ID:        "task-wp",
+				Type:      orchestrator.TaskTypeExecution,
 				ProjectID: "proj-wp",
 				Title:     "workspace path test",
 				Status:    orchestrator.TaskStatusExecuting,
-				Behavior:  "dev",
+				Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 			}
 			job := &Job{
 				ID:        "job-wp",
@@ -2880,8 +2935,8 @@ func TestCreateTask_StaticBaseBranch_PassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if task.BaseBranch != "main" {
-		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "main")
+	if task.Exec.BaseBranch != "main" {
+		t.Errorf("BaseBranch = %q, want %q", task.Exec.BaseBranch, "main")
 	}
 }
 
@@ -2909,8 +2964,8 @@ func TestCreateTask_DynamicBaseBranch_ExpandsTaskRemoteID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if task.BaseBranch != "feature/PROJ-123" {
-		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "feature/PROJ-123")
+	if task.Exec.BaseBranch != "feature/PROJ-123" {
+		t.Errorf("BaseBranch = %q, want %q", task.Exec.BaseBranch, "feature/PROJ-123")
 	}
 }
 
@@ -2950,10 +3005,11 @@ func TestCreateTask_ChildResolvesOwnBaseBranch(t *testing.T) {
 	// (so cross-project parents do not drag their base_branch into the
 	// child's project).
 	parent := &orchestrator.Task{
-		ID:         "parent-1",
-		ProjectID:  "proj-1",
-		BaseBranch: "feature/PROJ-100",
-		RemoteID:   "PROJ-100",
+		ID:        "parent-1",
+		Type:      orchestrator.TaskTypeExecution,
+		ProjectID: "proj-1",
+		RemoteID:  "PROJ-100",
+		Exec:      &orchestrator.ExecAttrs{BaseBranch: "feature/PROJ-100"},
 	}
 	meta := &orchestrator.ProjectMeta{
 		BaseBranch: "feature/${TASK_REMOTE_ID}",
@@ -2979,9 +3035,9 @@ func TestCreateTask_ChildResolvesOwnBaseBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if task.BaseBranch != "feature/PROJ-200" {
+	if task.Exec.BaseBranch != "feature/PROJ-200" {
 		t.Errorf("child BaseBranch = %q, want %q (resolved from child's own remote_id)",
-			task.BaseBranch, "feature/PROJ-200")
+			task.Exec.BaseBranch, "feature/PROJ-200")
 	}
 }
 
@@ -2990,10 +3046,11 @@ func TestCreateTask_ChildShareesParentBranchWhenSameRemoteID(t *testing.T) {
 	// pass the same remote_id from parent → child. The template + child's
 	// own remote_id resolves to the same value the parent ended up with.
 	parent := &orchestrator.Task{
-		ID:         "parent-1",
-		ProjectID:  "proj-1",
-		BaseBranch: "feature/PROJ-100",
-		RemoteID:   "PROJ-100",
+		ID:        "parent-1",
+		Type:      orchestrator.TaskTypeExecution,
+		ProjectID: "proj-1",
+		RemoteID:  "PROJ-100",
+		Exec:      &orchestrator.ExecAttrs{BaseBranch: "feature/PROJ-100"},
 	}
 	meta := &orchestrator.ProjectMeta{
 		BaseBranch: "feature/${TASK_REMOTE_ID}",
@@ -3019,9 +3076,9 @@ func TestCreateTask_ChildShareesParentBranchWhenSameRemoteID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
-	if task.BaseBranch != "feature/PROJ-100" {
+	if task.Exec.BaseBranch != "feature/PROJ-100" {
 		t.Errorf("child BaseBranch = %q, want %q (same remote_id → same branch)",
-			task.BaseBranch, "feature/PROJ-100")
+			task.Exec.BaseBranch, "feature/PROJ-100")
 	}
 }
 
@@ -3031,10 +3088,11 @@ func TestCreateTask_ChildInheritsParentRemoteIDByDefault(t *testing.T) {
 	// This is what makes "spawn a child under the same Jira issue" the no-effort
 	// default — callers don't have to thread remote_id through every spawn site.
 	parent := &orchestrator.Task{
-		ID:         "parent-1",
-		ProjectID:  "proj-1",
-		BaseBranch: "feature/PROJ-100",
-		RemoteID:   "PROJ-100",
+		ID:        "parent-1",
+		Type:      orchestrator.TaskTypeExecution,
+		ProjectID: "proj-1",
+		RemoteID:  "PROJ-100",
+		Exec:      &orchestrator.ExecAttrs{BaseBranch: "feature/PROJ-100"},
 	}
 	meta := &orchestrator.ProjectMeta{
 		BaseBranch: "feature/${TASK_REMOTE_ID}",
@@ -3063,9 +3121,9 @@ func TestCreateTask_ChildInheritsParentRemoteIDByDefault(t *testing.T) {
 	if task.RemoteID != "PROJ-100" {
 		t.Errorf("child RemoteID = %q, want %q (inherited from parent)", task.RemoteID, "PROJ-100")
 	}
-	if task.BaseBranch != "feature/PROJ-100" {
+	if task.Exec.BaseBranch != "feature/PROJ-100" {
 		t.Errorf("child BaseBranch = %q, want %q (template expanded with inherited remote_id)",
-			task.BaseBranch, "feature/PROJ-100")
+			task.Exec.BaseBranch, "feature/PROJ-100")
 	}
 }
 
@@ -3074,10 +3132,11 @@ func TestCreateTask_ChildExplicitRemoteIDOverridesParent(t *testing.T) {
 	// supports the rare cross-track case where a child belongs to a different
 	// Jira issue than its parent.
 	parent := &orchestrator.Task{
-		ID:         "parent-1",
-		ProjectID:  "proj-1",
-		BaseBranch: "feature/PROJ-100",
-		RemoteID:   "PROJ-100",
+		ID:        "parent-1",
+		Type:      orchestrator.TaskTypeExecution,
+		ProjectID: "proj-1",
+		RemoteID:  "PROJ-100",
+		Exec:      &orchestrator.ExecAttrs{BaseBranch: "feature/PROJ-100"},
 	}
 	meta := &orchestrator.ProjectMeta{
 		BaseBranch: "feature/${TASK_REMOTE_ID}",
@@ -3106,9 +3165,9 @@ func TestCreateTask_ChildExplicitRemoteIDOverridesParent(t *testing.T) {
 	if task.RemoteID != "PROJ-200" {
 		t.Errorf("child RemoteID = %q, want %q (explicit child value wins)", task.RemoteID, "PROJ-200")
 	}
-	if task.BaseBranch != "feature/PROJ-200" {
+	if task.Exec.BaseBranch != "feature/PROJ-200" {
 		t.Errorf("child BaseBranch = %q, want %q (resolved from explicit remote_id)",
-			task.BaseBranch, "feature/PROJ-200")
+			task.Exec.BaseBranch, "feature/PROJ-200")
 	}
 }
 
@@ -3117,10 +3176,11 @@ func TestCreateTask_ChildAndParentMissingRemoteID_Returns400(t *testing.T) {
 	// template requires ${TASK_REMOTE_ID}, there is nothing to expand and we
 	// surface the usual 400.
 	parent := &orchestrator.Task{
-		ID:         "parent-1",
-		ProjectID:  "proj-1",
-		BaseBranch: "main",
+		ID:        "parent-1",
+		Type:      orchestrator.TaskTypeExecution,
+		ProjectID: "proj-1",
 		// RemoteID intentionally empty.
+		Exec: &orchestrator.ExecAttrs{BaseBranch: "main"},
 	}
 	meta := &orchestrator.ProjectMeta{
 		BaseBranch: "feature/${TASK_REMOTE_ID}",
@@ -3191,13 +3251,13 @@ func TestTaskAppServiceCreateTask_BehaviorNamePersistedVerbatim(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateTask() error = %v, want nil", err)
 			}
-			if task.Behavior != tc.behaviorKey {
+			if task.Exec.Behavior != tc.behaviorKey {
 				t.Errorf("Behavior = %q, want %q (name must persist verbatim)",
-					task.Behavior, tc.behaviorKey)
+					task.Exec.Behavior, tc.behaviorKey)
 			}
-			if task.Readonly != tc.expectedReadonly {
+			if task.Exec.Readonly != tc.expectedReadonly {
 				t.Errorf("Readonly = %v, want %v for behavior %q",
-					task.Readonly, tc.expectedReadonly, tc.behaviorKey)
+					task.Exec.Readonly, tc.expectedReadonly, tc.behaviorKey)
 			}
 		})
 	}

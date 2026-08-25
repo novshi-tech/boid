@@ -56,7 +56,7 @@ func (s *fieldActionStore) ListActionsByTask(taskID string) ([]*orchestrator.Act
 func TestTaskHandler_Field_TopLevel(t *testing.T) {
 	store := &fieldTaskStore{
 		tasks: map[string]*orchestrator.Task{
-			"t1": {ID: "t1", Title: "hello", Status: orchestrator.TaskStatusExecuting},
+			"t1": {ID: "t1", Type: orchestrator.TaskTypeExecution, Title: "hello", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{}},
 		},
 	}
 	svc := &TaskAppService{Tasks: store, Actions: &fieldActionStore{}}
@@ -86,7 +86,7 @@ func TestTaskHandler_Field_PayloadAutoFallback(t *testing.T) {
 	})
 	store := &fieldTaskStore{
 		tasks: map[string]*orchestrator.Task{
-			"t1": {ID: "t1", Payload: payload},
+			"t1": {ID: "t1", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Payload: payload}},
 		},
 	}
 	svc := &TaskAppService{Tasks: store, Actions: &fieldActionStore{}}
@@ -112,7 +112,7 @@ func TestTaskHandler_Field_LifecycleDerivedFromActions(t *testing.T) {
 	})
 	store := &fieldTaskStore{
 		tasks: map[string]*orchestrator.Task{
-			"t1": {ID: "t1", Status: orchestrator.TaskStatusAborted},
+			"t1": {ID: "t1", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusAborted, Exec: &orchestrator.ExecAttrs{}},
 		},
 	}
 	actions := &fieldActionStore{

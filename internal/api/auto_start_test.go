@@ -10,9 +10,10 @@ import (
 
 func TestTaskAppServiceUpdateTask_AutoStart_TriggersStart(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "t-1",
-		Status:   orchestrator.TaskStatusPending,
-		Behavior: "dev",
+		ID:     "t-1",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusPending,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	store := &stubTaskStore{task: task}
 	workflow := &stubWorkflowService{}
@@ -36,9 +37,10 @@ func TestTaskAppServiceUpdateTask_AutoStart_TriggersStart(t *testing.T) {
 
 func TestTaskAppServiceUpdateTask_AutoStart_NotPending_NoStart(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "t-2",
-		Status:   orchestrator.TaskStatusExecuting,
-		Behavior: "dev",
+		ID:     "t-2",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	store := &stubTaskStore{task: task}
 	workflow := &stubWorkflowService{}
@@ -62,9 +64,10 @@ func TestTaskAppServiceUpdateTask_AutoStart_NotPending_NoStart(t *testing.T) {
 
 func TestTaskAppServiceUpdateTask_AutoStart_False_NoStart(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "t-3",
-		Status:   orchestrator.TaskStatusPending,
-		Behavior: "dev",
+		ID:     "t-3",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusPending,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	store := &stubTaskStore{task: task}
 	workflow := &stubWorkflowService{}
@@ -88,9 +91,10 @@ func TestTaskAppServiceUpdateTask_AutoStart_False_NoStart(t *testing.T) {
 
 func TestTaskAppServiceUpdateTask_AutoStart_NoWorkflow_NoError(t *testing.T) {
 	task := &orchestrator.Task{
-		ID:       "t-4",
-		Status:   orchestrator.TaskStatusPending,
-		Behavior: "dev",
+		ID:     "t-4",
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusPending,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{

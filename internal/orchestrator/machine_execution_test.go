@@ -174,8 +174,9 @@ func TestExecutionMachine_JobFailed_FromAnyState(t *testing.T) {
 func TestExecutionMachine_Executing_LifecycleExecuted_Done(t *testing.T) {
 	sm := orchestrator.NewExecutionMachine()
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{"lifecycle":{"executed":true}}`),
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Payload: json.RawMessage(`{"lifecycle":{"executed":true}}`)},
 	}
 	next, ok := sm.Advance(task)
 	if !ok {
@@ -189,8 +190,9 @@ func TestExecutionMachine_Executing_LifecycleExecuted_Done(t *testing.T) {
 func TestExecutionMachine_Executing_NoLifecycleExecuted_NoTransition(t *testing.T) {
 	sm := orchestrator.NewExecutionMachine()
 	task := &orchestrator.Task{
-		Status:  orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(`{}`),
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	if _, ok := sm.Advance(task); ok {
 		t.Fatal("expected no advance when lifecycle.executed not set")
@@ -204,9 +206,10 @@ func TestExecutionMachine_Executing_NoLifecycleExecuted_NoTransition(t *testing.
 func TestExecutionMachine_LifecycleDone_AutoAdvanceWithMessage(t *testing.T) {
 	sm := orchestrator.NewExecutionMachine()
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(
-			`{"lifecycle":{"executed":true,"done":{"message":"PR #439 merged"}}}`),
+		Exec: &orchestrator.ExecAttrs{Payload: json.RawMessage(
+			`{"lifecycle":{"executed":true,"done":{"message":"PR #439 merged"}}}`)},
 	}
 	outcome := sm.AdvanceFull(task)
 	if outcome == nil {
@@ -229,9 +232,10 @@ func TestExecutionMachine_LifecycleDone_AutoAdvanceWithMessage(t *testing.T) {
 func TestExecutionMachine_LifecycleFail_AutoAdvanceToAborted(t *testing.T) {
 	sm := orchestrator.NewExecutionMachine()
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(
-			`{"lifecycle":{"executed":true,"fail":{"message":"tests broken"}}}`),
+		Exec: &orchestrator.ExecAttrs{Payload: json.RawMessage(
+			`{"lifecycle":{"executed":true,"fail":{"message":"tests broken"}}}`)},
 	}
 	outcome := sm.AdvanceFull(task)
 	if outcome == nil {
@@ -255,9 +259,10 @@ func TestExecutionMachine_LifecycleFail_AutoAdvanceToAborted(t *testing.T) {
 func TestExecutionMachine_LifecycleFail_TakesPrecedenceOverBareExecuted(t *testing.T) {
 	sm := orchestrator.NewExecutionMachine()
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
-		Payload: json.RawMessage(
-			`{"lifecycle":{"executed":true,"fail":{"message":"x"}}}`),
+		Exec: &orchestrator.ExecAttrs{Payload: json.RawMessage(
+			`{"lifecycle":{"executed":true,"fail":{"message":"x"}}}`)},
 	}
 	next, ok := sm.Advance(task)
 	if !ok {

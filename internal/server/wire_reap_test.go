@@ -62,11 +62,11 @@ func TestReapOrphansBeforeReopen_SkipsTasksWithFailedJobs(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	taskA := &orchestrator.Task{ProjectID: "proj-1", Title: "A", Behavior: "dev", Status: orchestrator.TaskStatusAborted}
+	taskA := &orchestrator.Task{ProjectID: "proj-1", Title: "A", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}, Status: orchestrator.TaskStatusAborted}
 	if err := orchestrator.CreateTask(d.Conn, taskA); err != nil {
 		t.Fatalf("create task A: %v", err)
 	}
-	taskB := &orchestrator.Task{ProjectID: "proj-1", Title: "B", Behavior: "dev", Status: orchestrator.TaskStatusAborted}
+	taskB := &orchestrator.Task{ProjectID: "proj-1", Title: "B", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}, Status: orchestrator.TaskStatusAborted}
 	if err := orchestrator.CreateTask(d.Conn, taskB); err != nil {
 		t.Fatalf("create task B: %v", err)
 	}

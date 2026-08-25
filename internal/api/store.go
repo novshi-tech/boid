@@ -310,18 +310,24 @@ type ActionStore interface {
 	ListActionsByTask(taskID string) ([]*orchestrator.Action, error)
 }
 
-// CardStore provides access to the cross-project-issue-triage Phase 1
-// sidecar (docs/plans/cross-project-issue-triage.md 実測c). Deliberately
-// separate from TaskStore: TaskStore's orchestrator.Task is the API DTO
-// (marshaled to JSON with no conversion layer), so keeping triage-specific
-// fields out of it means they don't auto-expose in every task API response.
+// CardStore provides access to a card's CardAttrs columns (kind/urgency/
+// wake_at/wake_task_id/suggestion_verb/detail). Through card-model-cleanup
+// PR-1 these lived in a separate task_triage sidecar table, kept apart from
+// TaskStore because TaskStore's orchestrator.Task was the API DTO (marshaled
+// to JSON with no conversion layer) and a column added there auto-exposed in
+// every task API response. PR-2 (docs/plans/card-model-cleanup.md, migration
+// 0045) folds these columns into the same tasks row (filtered to
+// type='card') and gives Task a genuinely nested `card` JSON key instead —
+// this interface's shape is kept as-is so the many card-lifecycle call
+// sites (workflow_card.go et al.) do not need to change, only what backs
+// them.
+//
+// SeedTaskTriage — the "assert this task IS a triage task" primitive used to
+// live here — is GONE as of PR-2: a card is type='card' from the moment
+// CreateTask makes it, so there is no longer a separate act of "seeding" a
+// row after the fact (design doc §3.6).
 type CardStore interface {
 	UpsertTaskTriage(tt *orchestrator.CardAttrs) error
-	// SeedTaskTriage creates an empty row only when none exists (INSERT ...
-	// ON CONFLICT DO NOTHING). Distinct from UpsertTaskTriage precisely
-	// because it cannot overwrite: it asserts membership ("this is a triage
-	// task") and nothing else.
-	SeedTaskTriage(taskID string) error
 	GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error)
 	// ListTaskTriageByTaskIDs batch-fetches sidecar rows for a set of task
 	// IDs in O(chunks) queries instead of O(N) GetTaskTriage calls (BD-8

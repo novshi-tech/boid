@@ -110,42 +110,23 @@ func TestCardMachineV2_AvailableActions(t *testing.T) {
 	}
 }
 
-// TestCardMachineV2_LegacyStatuses_NoRules pins that captured/triaged/ready
-// (KnownTaskStatuses' legacy carve-out, kept only for reading pre-cutover DB
-// rows — docs/plans/suggestion-as-state-transition-impl.md §3.5) have ZERO
-// rules anywhere in v2's rule table: no verb, old or new, transitions a task
-// sitting in one of these statuses. A pre-cutover card stuck in one of these
-// is unstuck only by direct DB/ops intervention (the 洗い替え runbook), not
-// through this machine.
-func TestCardMachineV2_LegacyStatuses_NoRules(t *testing.T) {
-	sm := orchestrator.NewCardMachine()
-	legacy := []orchestrator.TaskStatus{
-		orchestrator.TaskStatusCaptured,
-		orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusReady,
-	}
-	// wake_due is deliberately excluded from this list: its FromStatus is "*"
-	// by design (a pure fact-record, unrelated to which status a card sits
-	// in — see NewCardMachine's own doc comment), so it succeeds from a
-	// legacy status too. That is harmless (nothing ever routes SweepWake at
-	// a captured/triaged/ready card in practice) and not a rule-table bug.
-	allActions := append([]string{
-		"triage", "ready", "wake_triaged", "wake_ready", "wake_working", "dispatch",
-		"triage_done", "reopen_triaged", "attrs_set", "child_added", "child_specced",
-		"child_dropped", "noted", "answered",
-	}, v2CardTransitionActions...)
-	for _, status := range legacy {
-		if got := sm.AvailableActions(status); len(got) != 0 {
-			t.Errorf("AvailableActions(%s) = %v, want empty (legacy status has no v2 rules)", status, got)
-		}
-		for _, action := range allActions {
-			task := &orchestrator.Task{Status: status}
-			if _, err := sm.Apply(task, &orchestrator.Action{Type: action}); err == nil {
-				t.Errorf("%s from legacy status %s: expected rejection, got success", action, status)
-			}
-		}
-	}
-}
+// TestCardMachineV2_LegacyStatuses_NoRules (captured/triaged/ready have zero
+// rules in v2's rule table) is DELETED as of card-model-cleanup PR-2: those
+// three statuses are not merely excluded from KnownTaskStatuses() now, they
+// are structurally impossible — migration 0045's CHECK constraint rejects
+// any tasks.status value outside {parked,working,done,dropped} (card) /
+// {pending,executing,awaiting,done,aborted} (execution) at the DB layer, and
+// the migration itself 洗い替えs every pre-cutover captured/triaged/ready row
+// to parked in the same transaction. There is no code path left, in this
+// package or any caller, that can ever produce a Task carrying one of these
+// three values again — the scenario this test manufactured (a card "stuck"
+// in a legacy status) cannot occur post-cutover. The migration-level
+// coverage of the actual legacy-row handling this test's doc comment
+// referenced already lives in internal/db/migrate/migrate_0045_card_sti_test.go
+// (TestApply_0045_TypeJudgment converts legacy-status rows to card/parked;
+// TestApply_0045_ActionsHistoryUntouched confirms the action log's own
+// legacy from_status/to_status strings are left untouched) — that is now the
+// sole and correct home for this concern.
 
 // TestCardMachineV2_DeletedV1Rules pins that every v1-only verb (triage/
 // ready/wake_triaged/wake_ready/wake_working/dispatch/triage_done/
@@ -161,7 +142,13 @@ func TestCardMachineV2_DeletedV1Rules(t *testing.T) {
 		if sm.IsManualAction(action) {
 			t.Errorf("IsManualAction(%q) = true, want false (v1 rule must be deleted)", action)
 		}
-		for _, status := range append(v2CardStatuses, orchestrator.TaskStatusCaptured, orchestrator.TaskStatusTriaged, orchestrator.TaskStatusReady) {
+		// card-model-cleanup PR-2: this used to also probe the legacy
+		// captured/triaged/ready statuses (extra assurance that a deleted
+		// verb stays rejected even from a pre-cutover row) — those statuses
+		// no longer exist as constructible TaskStatus values at all (see
+		// TestCardMachineV2_LegacyStatuses_NoRules's removal note above), so
+		// only the four real v2 statuses remain to probe here.
+		for _, status := range v2CardStatuses {
 			task := &orchestrator.Task{Status: status}
 			if _, err := sm.Apply(task, &orchestrator.Action{Type: action}); err == nil {
 				t.Errorf("%s from %s: expected rejection (v1 rule deleted), got success", action, status)
@@ -193,10 +180,10 @@ func TestCardMachineV2_DeletedV1Rules(t *testing.T) {
 //     reach a terminal card.
 func TestCardMachineV2_TriageVocabulary_PerActionFromStatus(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
+	// card-model-cleanup PR-2: captured/triaged/ready dropped from this list
+	// — they no longer exist as constructible TaskStatus values (see
+	// TestCardMachineV2_LegacyStatuses_NoRules's removal note above).
 	universallyDisallowed := []orchestrator.TaskStatus{
-		orchestrator.TaskStatusCaptured,
-		orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusReady,
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusAwaiting,
@@ -273,7 +260,11 @@ func TestCardMachineV2_WakeDue(t *testing.T) {
 	if sm.IsManualAction("wake_due") {
 		t.Fatal("IsManualAction(wake_due) = true, want false (machine-internal, daemon self-record only)")
 	}
-	for _, status := range append(v2CardStatuses, orchestrator.TaskStatusCaptured, orchestrator.TaskStatusTriaged, orchestrator.TaskStatusReady) {
+	// card-model-cleanup PR-2: this used to also probe the legacy
+	// captured/triaged/ready statuses; they no longer exist as constructible
+	// TaskStatus values (see TestCardMachineV2_LegacyStatuses_NoRules's
+	// removal note above), so only the four real v2 statuses remain here.
+	for _, status := range v2CardStatuses {
 		task := &orchestrator.Task{Status: status}
 		next, err := sm.Apply(task, &orchestrator.Action{Type: "wake_due"})
 		if err != nil {
@@ -349,10 +340,10 @@ func TestCardMachineV2_CanApplyManualAction_Answered(t *testing.T) {
 		orchestrator.TaskStatusDone,
 		orchestrator.TaskStatusDropped,
 	}
+	// card-model-cleanup PR-2: captured/triaged/ready dropped from this list
+	// — they no longer exist as constructible TaskStatus values (see
+	// TestCardMachineV2_LegacyStatuses_NoRules's removal note above).
 	notAnswerable := []orchestrator.TaskStatus{
-		orchestrator.TaskStatusCaptured,
-		orchestrator.TaskStatusTriaged,
-		orchestrator.TaskStatusReady,
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusAwaiting,

@@ -8,12 +8,11 @@ CREATE INDEX idx_project_workspaces_workspace_id
 -- index: idx_task_identities_task_id
 CREATE INDEX idx_task_identities_task_id ON task_identities(task_id);
 
--- index: idx_task_triage_wake_at
-CREATE INDEX idx_task_triage_wake_at
-    ON task_triage(wake_at) WHERE wake_at IS NOT NULL;
-
 -- index: idx_tasks_ref_parent_project
 CREATE UNIQUE INDEX idx_tasks_ref_parent_project ON tasks(ref, parent_id, project_id) WHERE ref != '';
+
+-- index: idx_tasks_wake_at
+CREATE INDEX idx_tasks_wake_at ON tasks(wake_at) WHERE wake_at IS NOT NULL;
 
 -- index: idx_trigger_runs_inflight_started
 CREATE INDEX idx_trigger_runs_inflight_started
@@ -97,29 +96,75 @@ CREATE TABLE task_identities (
     UNIQUE (project_id, identity)
 );
 
--- table: task_triage
-CREATE TABLE task_triage (
-    task_id      TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-    kind         TEXT NOT NULL DEFAULT '',   -- signal|issue|theme (theme はlifecycleに乗らない)
-    urgency      TEXT NOT NULL DEFAULT '',   -- now|today|week|someday (queue述語, 決定12)
-    wake_at      DATETIME,                   -- parked復帰の日時条件。NULL = 日時wakeなし
-    wake_task_id TEXT NOT NULL DEFAULT '',   -- 事象wake: このtaskが終端に達したら復帰
-    detail       TEXT NOT NULL DEFAULT '{}'  -- summary/source/content_ref/children/suggestion/observed
-, suggestion_verb TEXT NOT NULL DEFAULT '');
-
 -- table: tasks
-CREATE TABLE tasks (
+CREATE TABLE "tasks" (
     id            TEXT PRIMARY KEY,
+    type          TEXT NOT NULL,
     project_id    TEXT NOT NULL REFERENCES projects(id),
     remote_id     TEXT NOT NULL DEFAULT '',
     title         TEXT NOT NULL,
     description   TEXT NOT NULL DEFAULT '',
     status        TEXT NOT NULL DEFAULT 'pending',
-    behavior      TEXT NOT NULL,
-    payload       TEXT NOT NULL DEFAULT '{}',
+    ref           TEXT NOT NULL DEFAULT '',
+    parent_id     TEXT NOT NULL DEFAULT '',
     created_at    DATETIME NOT NULL DEFAULT (datetime('now')),
-    updated_at    DATETIME NOT NULL DEFAULT (datetime('now'))
-, auto_start BOOLEAN NOT NULL DEFAULT FALSE, traits TEXT NOT NULL DEFAULT '[]', readonly BOOLEAN NOT NULL DEFAULT FALSE, worktree BOOLEAN NOT NULL DEFAULT FALSE, branch_prefix TEXT NOT NULL DEFAULT '', base_branch TEXT NOT NULL DEFAULT '', ref TEXT NOT NULL DEFAULT '', parent_id TEXT NOT NULL DEFAULT '', instructions TEXT NOT NULL DEFAULT '{}');
+    updated_at    DATETIME NOT NULL DEFAULT (datetime('now')),
+    worktree      BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- ExecAttrs (design doc §3.2/§3.5). NULL on every card row. behavior is
+    -- allowed to be '' (a no-yaml project's resolved behavior name) but NOT
+    -- NULL on an execution row — NULL means "not an execution task" here,
+    -- not "no behavior" (§3.4's note on this exact distinction).
+    behavior      TEXT,
+    traits        TEXT,
+    readonly      BOOLEAN,
+    branch_prefix TEXT,
+    base_branch   TEXT,
+    payload       TEXT,
+    instructions  TEXT,
+    auto_start    BOOLEAN,
+
+    -- CardAttrs (design doc §3.2/§3.5). NULL on every execution row.
+    -- wake_at is the one card column that may legitimately be NULL even on
+    -- a live card row (nil = no date-based wake condition) — it does not
+    -- get an "IS NOT NULL for card rows" CHECK below, unlike its siblings.
+    kind             TEXT,
+    urgency          TEXT,
+    wake_at          DATETIME,
+    wake_task_id     TEXT,
+    suggestion_verb  TEXT,
+    detail           TEXT,
+
+    CHECK (type IN ('card', 'execution')),
+
+    -- 型ごとの status 語彙 (§3.4).
+    CHECK (type != 'card'      OR status IN ('parked', 'working', 'done', 'dropped')),
+    CHECK (type != 'execution' OR status IN ('pending', 'executing', 'awaiting', 'done', 'aborted')),
+
+    -- 相手型のフィールドは NULL (§3.4, 実列全部に張る).
+    CHECK (type != 'card' OR (
+        behavior IS NULL AND traits IS NULL AND readonly IS NULL AND
+        branch_prefix IS NULL AND base_branch IS NULL AND payload IS NULL AND
+        instructions IS NULL AND auto_start IS NULL
+    )),
+    CHECK (type != 'execution' OR (
+        kind IS NULL AND urgency IS NULL AND wake_at IS NULL AND
+        wake_task_id IS NULL AND suggestion_verb IS NULL AND detail IS NULL
+    )),
+
+    -- 自分の型のフィールドは（wake_at を除いて）NULL であってはならない —
+    -- 上の CHECK の裏面。behavior だけ空文字が正当 (上のコメント参照) なので
+    -- IS NOT NULL のみを課し、値の中身は問わない。
+    CHECK (type != 'execution' OR (
+        behavior IS NOT NULL AND traits IS NOT NULL AND readonly IS NOT NULL AND
+        branch_prefix IS NOT NULL AND base_branch IS NOT NULL AND payload IS NOT NULL AND
+        instructions IS NOT NULL AND auto_start IS NOT NULL
+    )),
+    CHECK (type != 'card' OR (
+        kind IS NOT NULL AND urgency IS NOT NULL AND
+        wake_task_id IS NOT NULL AND suggestion_verb IS NOT NULL AND detail IS NOT NULL
+    ))
+);
 
 -- table: trigger_runs
 CREATE TABLE trigger_runs (

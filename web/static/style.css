@@ -267,6 +267,15 @@ pre {
    jobDisplayStatus's doc comment in web/templates/tasks.templ (PR-1's Phase 1
    実測結果 項6). */
 .badge-job_parked          { background: #fef9c3; color: #854d0e; }
+/* captured/triaged/ready: removed from tasks.status's own vocabulary by
+   card-model-cleanup PR-2 (migration 0045 washes them to parked), but still
+   reachable here — TaskDetailTimelineSection (tasks.templ) renders
+   taskStatusClass(group.Status) against the ACTIONS ledger's
+   from_status/to_status, which migration 0045 deliberately does NOT rewrite
+   (Q9/TestApply_0045_ActionsHistoryUntouched). A card whose history predates
+   the migration still shows these values in its timeline, so the rule stays
+   live (PR-2 review round 3: mistakenly removed as dead in round 2, then
+   restored once this reachability path was found). */
 .badge-captured            { background: #e0f2fe; color: #0369a1; }
 .badge-triaged             { background: #cffafe; color: #0e7490; }
 .badge-parked              { background: #ede9fe; color: #6d28d9; }
@@ -586,13 +595,14 @@ pre {
 .task-row-status-reworking           { border-left-color: #22c55e; }
 .task-row-status-done                { border-left-color: #9ca3af; }
 .task-row-status-aborted             { border-left-color: var(--danger); }
-/* cross-project-issue-triage Phase 1 pre-execution statuses — mirrors the
-   badge palette above (saturated weight, same convention as every other
-   row-stripe color in this block). */
-.task-row-status-captured            { border-left-color: #0ea5e9; }
-.task-row-status-triaged             { border-left-color: #06b6d4; }
+/* cross-project-issue-triage Phase 1 card statuses — mirrors the badge
+   palette above (saturated weight, same convention as every other
+   row-stripe color in this block). captured/triaged/ready were removed by
+   card-model-cleanup PR-2 (migration 0045 washes them to parked; the Go
+   TaskStatus enum no longer has them at all), so string(task.Status) can
+   never produce those class names anymore — their rules were dead and have
+   been removed. */
 .task-row-status-parked              { border-left-color: #8b5cf6; }
-.task-row-status-ready               { border-left-color: #6366f1; }
 .task-row-status-working             { border-left-color: #22c55e; }
 .task-row-status-dropped             { border-left-color: #a8a29e; }
 

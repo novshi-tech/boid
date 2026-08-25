@@ -55,16 +55,6 @@ func (s *stubTriageStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error {
 	return nil
 }
 
-func (s *stubTriageStore) SeedTaskTriage(taskID string) error {
-	if s.rows == nil {
-		s.rows = map[string]*orchestrator.CardAttrs{}
-	}
-	if _, ok := s.rows[taskID]; !ok {
-		s.rows[taskID] = &orchestrator.CardAttrs{TaskID: taskID}
-	}
-	return nil
-}
-
 func (s *stubTriageStore) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
 	if s.getErr != nil {
 		return nil, s.getErr
@@ -121,8 +111,14 @@ func (s *multiTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestra
 			continue
 		}
 		if filter.Status == "triage" {
-			// pre-execution ∪ working — ListCards's default floor (store.go).
-			if !orchestrator.IsPreExecutionStatus(t.Status) && t.Status != orchestrator.TaskStatusWorking {
+			// card-model-cleanup PR-2 (migration 0045) restates the "triage"
+			// floor on tasks.type instead of a status enumeration: every card
+			// that hasn't reached a terminal status yet (parked ∪ working) —
+			// mirrors store.go's own ListTasks "triage" branch. IsPreExecution
+			// Status is gone entirely (REMOVED, no replacement function — the
+			// concept is now just task.Type == TaskTypeCard).
+			if t.Type != orchestrator.TaskTypeCard ||
+				(t.Status != orchestrator.TaskStatusParked && t.Status != orchestrator.TaskStatusWorking) {
 				continue
 			}
 		} else if filter.Status != "" && string(t.Status) != filter.Status {
@@ -152,7 +148,7 @@ func (s *multiTaskStore) ListChildren(string) ([]*orchestrator.Task, error) { re
 // parked task will wake back to.
 func TestGetCard_ReturnsStoredAndDerivedFields(t *testing.T) {
 	wakeAt := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Title: "見積もり依頼", Status: orchestrator.TaskStatusParked}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Title: "見積もり依頼", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	triage := &stubTriageStore{
 		rows: map[string]*orchestrator.CardAttrs{
 			"t1": {
@@ -164,7 +160,11 @@ func TestGetCard_ReturnsStoredAndDerivedFields(t *testing.T) {
 				Detail:         json.RawMessage(`{"attrs":{"summary":"見積もり"},"children":[{"id":"ch_00","status":"open"}]}`),
 			},
 		},
-		parkedFrom: map[string]orchestrator.TaskStatus{"t1": orchestrator.TaskStatusReady},
+		// card-model-cleanup PR-2: orchestrator.TaskStatusReady no longer
+		// exists (folded into parked well before this PR). park's only
+		// FromStatus under card machine v2 is "working" (machine_card.go), so
+		// that is the only value ParkedFrom can actually return now.
+		parkedFrom: map[string]orchestrator.TaskStatus{"t1": orchestrator.TaskStatusWorking},
 	}
 	svc := &TaskWorkflowService{Tasks: &multiTaskStore{tasks: []*orchestrator.Task{task}}, TaskTriage: triage}
 
@@ -190,8 +190,8 @@ func TestGetCard_ReturnsStoredAndDerivedFields(t *testing.T) {
 	if view.WakeAt == nil || !view.WakeAt.Equal(wakeAt) {
 		t.Fatalf("wake_at = %v, want %v", view.WakeAt, wakeAt)
 	}
-	if view.ParkedFrom != orchestrator.TaskStatusReady {
-		t.Fatalf("parked_from = %q, want ready (derived from the actions log)", view.ParkedFrom)
+	if view.ParkedFrom != orchestrator.TaskStatusWorking {
+		t.Fatalf("parked_from = %q, want working (derived from the actions log)", view.ParkedFrom)
 	}
 	children, err := orchestrator.DetailChildren(view.Detail)
 	if err != nil {
@@ -207,10 +207,10 @@ func TestGetCard_ReturnsStoredAndDerivedFields(t *testing.T) {
 // side does it wake to", and a stale value there would be actively
 // misleading.
 func TestGetCard_ParkedFromOnlyForParked(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	triage := &stubTriageStore{
 		rows:       map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}},
-		parkedFrom: map[string]orchestrator.TaskStatus{"t1": orchestrator.TaskStatusReady},
+		parkedFrom: map[string]orchestrator.TaskStatus{"t1": orchestrator.TaskStatusWorking},
 	}
 	svc := &TaskWorkflowService{Tasks: &multiTaskStore{tasks: []*orchestrator.Task{task}}, TaskTriage: triage}
 
@@ -229,15 +229,18 @@ func TestGetCard_ParkedFromOnlyForParked(t *testing.T) {
 // the read surface report "this task does not exist" for a task that plainly
 // does.
 func TestGetCard_NoSidecarRowStillReturnsState(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged}
+	// card-model-cleanup PR-2: orchestrator.TaskStatusTriaged no longer
+	// exists (folded into parked well before this PR — see model.go's
+	// TaskStatus doc comment); parked is now a card's initial/resting state.
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	svc := &TaskWorkflowService{Tasks: &multiTaskStore{tasks: []*orchestrator.Task{task}}, TaskTriage: &stubTriageStore{}}
 
 	view, err := svc.GetCard("t1")
 	if err != nil {
 		t.Fatalf("GetCard: %v", err)
 	}
-	if view.Status != orchestrator.TaskStatusTriaged {
-		t.Fatalf("status = %q, want triaged", view.Status)
+	if view.Status != orchestrator.TaskStatusParked {
+		t.Fatalf("status = %q, want parked", view.Status)
 	}
 	if view.Urgency != "" || view.Detail != nil {
 		t.Fatalf("expected empty sidecar fields, got %+v", view)
@@ -264,11 +267,15 @@ func TestGetCard_MissingTaskIs404(t *testing.T) {
 // project) must not appear in the triage listing. The discriminator is the
 // sidecar row, which CreateTask now seeds for every pre-execution task.
 func TestListCards_OnlyTriageTasks(t *testing.T) {
+	// card-model-cleanup PR-2: orchestrator.TaskStatusTriaged no longer
+	// exists (folded into parked well before this PR); the "triage" floor
+	// (multiTaskStore.ListTasks above, mirroring store.go's own ListTasks) is
+	// now `Type == TaskTypeCard && Status IN (parked, working)`.
 	tasks := []*orchestrator.Task{
-		{ID: "triage1", ProjectID: "meta", Status: orchestrator.TaskStatusTriaged},
-		{ID: "ingest1", ProjectID: "meta", Status: orchestrator.TaskStatusExecuting},
-		{ID: "triage2", ProjectID: "meta", Status: orchestrator.TaskStatusWorking},
-		{ID: "other", ProjectID: "elsewhere", Status: orchestrator.TaskStatusTriaged},
+		{ID: "triage1", Type: orchestrator.TaskTypeCard, ProjectID: "meta", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
+		{ID: "ingest1", Type: orchestrator.TaskTypeExecution, ProjectID: "meta", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{}},
+		{ID: "triage2", Type: orchestrator.TaskTypeCard, ProjectID: "meta", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}},
+		{ID: "other", Type: orchestrator.TaskTypeCard, ProjectID: "elsewhere", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}
 	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"triage1": {TaskID: "triage1", Urgency: "now"},
@@ -293,9 +300,14 @@ func TestListCards_OnlyTriageTasks(t *testing.T) {
 // TestListCards_PassesStatusFilter pins that the caller's status filter
 // reaches the task store (khi's sweep lists by state).
 func TestListCards_PassesStatusFilter(t *testing.T) {
+	// card-model-cleanup PR-2: "a" used to be orchestrator.TaskStatusTriaged
+	// (a status that no longer exists — folded into parked well before this
+	// PR). This test's whole point is an explicit status filter narrowing
+	// from a fixture with TWO distinct statuses, so "a" is now working
+	// instead — any card status other than "b"'s parked keeps that intent.
 	tasks := []*orchestrator.Task{
-		{ID: "a", ProjectID: "meta", Status: orchestrator.TaskStatusTriaged},
-		{ID: "b", ProjectID: "meta", Status: orchestrator.TaskStatusParked},
+		{ID: "a", Type: orchestrator.TaskTypeCard, ProjectID: "meta", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}},
+		{ID: "b", Type: orchestrator.TaskTypeCard, ProjectID: "meta", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}
 	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"a": {TaskID: "a"},
@@ -354,10 +366,13 @@ func (s *filterRecordingTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]
 // khi's project_card.py renders the note body FROM this view, so a missing
 // description means one extra round trip per note on every sweep.
 func TestTriageView_CarriesDescription(t *testing.T) {
+	// card-model-cleanup PR-2: orchestrator.TaskStatusTriaged no longer
+	// exists (folded into parked well before this PR).
 	task := &orchestrator.Task{
-		ID: "t1", ProjectID: "p1", Title: "見積もり依頼",
+		ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Title: "見積もり依頼",
 		Description: "顧客から見積もりの催促。\n\n- canonical source: ROOKPF-303",
-		Status:      orchestrator.TaskStatusTriaged,
+		Status:      orchestrator.TaskStatusParked,
+		Card:        &orchestrator.CardAttrs{},
 	}
 	triage := &stubTriageStore{
 		rows: map[string]*orchestrator.CardAttrs{

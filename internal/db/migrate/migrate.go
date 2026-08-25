@@ -12,7 +12,52 @@ import (
 var schemaFS embed.FS
 
 func Apply(conn *sql.DB) error {
-	migrations := []migration{
+	migrations := allMigrations()
+
+	if err := ensureSchemaMigrationsTable(conn); err != nil {
+		return err
+	}
+
+	applied, err := appliedVersions(conn)
+	if err != nil {
+		return err
+	}
+
+	// Schema ceiling check (docs/plans/phase6-container-backend.md §PR6,
+	// §決定4): refuse to start against a database a NEWER binary has
+	// already migrated past this binary's own newest known migration.
+	// Before this check, an older binary opening a newer DB silently
+	// ignored any recorded version it didn't recognize and proceeded to
+	// run against a schema shape it was never tested against — exactly
+	// the failure mode §決定4 calls out ("旧バイナリは自分の知らない記録
+	// 済み version を黙って無視して新しい DB を開く"). Checked BEFORE the
+	// apply loop below so an old binary refuses immediately rather than
+	// only after (harmlessly) re-confirming every migration it does know
+	// about is already applied.
+	if err := checkSchemaCeiling(migrations, applied); err != nil {
+		return err
+	}
+
+	for _, m := range migrations {
+		if _, ok := applied[m.version]; ok {
+			continue
+		}
+		if err := applyMigration(conn, m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// allMigrations returns the full, ordered migration slice Apply() applies.
+// Extracted to its own function (card-model-cleanup PR-2) so tests can apply
+// a PREFIX of the chain (see applyThrough in migrate_0045_card_sti_test.go)
+// to set up pre-migration-0045-shaped fixture data — something Apply()
+// itself, which always runs the WHOLE chain, cannot do. Apply() itself is
+// unchanged in behavior; this is a pure refactor (the slice literal moved,
+// nothing in it changed).
+func allMigrations() []migration {
+	return []migration{
 		{
 			version: "0001_initial",
 			path:    "migrations/0001_initial.sql",
@@ -412,47 +457,47 @@ func Apply(conn *sql.DB) error {
 			version: "0044_add_task_triage_suggestion_verb",
 			path:    "migrations/0044_add_task_triage_suggestion_verb.sql",
 		},
+		{
+			// docs/plans/card-model-cleanup.md PR-2: STI migration. Rebuilds
+			// tasks as a Single Table Inheritance table (a `type` discriminator
+			// column plus card-only/execution-only column groups, each NULL on
+			// the "other" type's rows, enforced by CHECK constraints), migrates
+			// task_triage's columns onto the corresponding card rows, 洗い替え
+			// legacy captured/triaged/ready statuses to parked, and drops
+			// task_triage. Single transaction (table rebuild) — see the SQL
+			// file's own header comment for the full step-by-step.
+			//
+			// No skip function: table-rebuild migrations in this file
+			// (0021/0032, the precedent this one follows) don't use one either
+			// — schema_migrations' own version guard is what prevents a second
+			// run on an up-to-date DB, and there is no single "does this look
+			// already-migrated" column/table check that would be safe to probe
+			// mid-rebuild the way a plain ADD COLUMN's columnExists is.
+			version:            "0045_card_sti_migration",
+			path:               "migrations/0045_card_sti_migration.sql",
+			disableForeignKeys: true,
+		},
 	}
-
-	if err := ensureSchemaMigrationsTable(conn); err != nil {
-		return err
-	}
-
-	applied, err := appliedVersions(conn)
-	if err != nil {
-		return err
-	}
-
-	// Schema ceiling check (docs/plans/phase6-container-backend.md §PR6,
-	// §決定4): refuse to start against a database a NEWER binary has
-	// already migrated past this binary's own newest known migration.
-	// Before this check, an older binary opening a newer DB silently
-	// ignored any recorded version it didn't recognize and proceeded to
-	// run against a schema shape it was never tested against — exactly
-	// the failure mode §決定4 calls out ("旧バイナリは自分の知らない記録
-	// 済み version を黙って無視して新しい DB を開く"). Checked BEFORE the
-	// apply loop below so an old binary refuses immediately rather than
-	// only after (harmlessly) re-confirming every migration it does know
-	// about is already applied.
-	if err := checkSchemaCeiling(migrations, applied); err != nil {
-		return err
-	}
-
-	for _, m := range migrations {
-		if _, ok := applied[m.version]; ok {
-			continue
-		}
-		if err := applyMigration(conn, m); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 type migration struct {
 	version string
 	path    string
 	skip    func(*sql.Tx) (bool, error)
+	// disableForeignKeys, when true, toggles `PRAGMA foreign_keys` OFF then
+	// back ON around this migration's transaction (see applyMigration).
+	// Needed by 0045_card_sti_migration: it DROPs and rebuilds the `tasks`
+	// table, which `actions`/`task_identities`/(pre-drop) `task_triage`
+	// reference via a plain (NO ACTION) foreign key — modernc.org/sqlite
+	// enforces FK constraints even on DROP TABLE of a referenced parent
+	// when a live child row points at it (confirmed empirically; this is
+	// NOT documented C-sqlite3 behavior callers can assume away), so the
+	// DROP fails outright unless FK enforcement is off for the duration.
+	// `PRAGMA foreign_keys` is a no-op once a transaction is already open
+	// (SQLite's own documented restriction), so this can't be the migration
+	// SQL file's own first statement — it must run OUTSIDE
+	// applyMigration's conn.Begin()/Commit() boundary.
+	disableForeignKeys bool
 }
 
 // versionNumberPattern matches the leading zero-padded numeric prefix of a
@@ -546,6 +591,22 @@ func appliedVersions(conn *sql.DB) (map[string]struct{}, error) {
 }
 
 func applyMigration(conn *sql.DB, m migration) error {
+	if m.disableForeignKeys {
+		// Must run BEFORE conn.Begin() below: `PRAGMA foreign_keys` is a
+		// documented no-op once a transaction is already open, so it cannot
+		// live inside the migration's own SQL file. Restored unconditionally
+		// via defer (including on error) — a failed migration must not leave
+		// FK enforcement silently disabled for whatever runs next on this
+		// connection (db.go's SetMaxOpenConns(1) makes this the ONE
+		// connection every subsequent query on this *db.DB uses).
+		if _, err := conn.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+			return fmt.Errorf("disable foreign_keys for migration %s: %w", m.version, err)
+		}
+		defer func() {
+			_, _ = conn.Exec(`PRAGMA foreign_keys=ON`)
+		}()
+	}
+
 	tx, err := conn.Begin()
 	if err != nil {
 		return fmt.Errorf("begin migration %s: %w", m.version, err)

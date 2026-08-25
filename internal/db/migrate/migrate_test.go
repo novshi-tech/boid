@@ -85,6 +85,7 @@ func TestApplyLegacyDatabaseAddsHandlerID(t *testing.T) {
 		CREATE TABLE tasks (
 			id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL REFERENCES projects(id),
+			remote_id TEXT NOT NULL DEFAULT '',
 			title TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'pending',
@@ -230,8 +231,8 @@ func TestMigration0023_RenamesConsumerToAgent(t *testing.T) {
 	// Insert a task with old-format instructions containing "consumer":
 	oldInstructions := `[{"type":"execution","consumer":"claude-code","message":"do it"}]`
 	_, err = d.Conn.Exec(
-		`INSERT INTO tasks (id, project_id, title, status, behavior, payload, instructions)
-		 VALUES ('t1', 'p1', 'test', 'pending', 'dev', '{}', ?)`,
+		`INSERT INTO tasks (id, type, project_id, title, status, behavior, traits, readonly, branch_prefix, base_branch, payload, instructions, auto_start)
+		 VALUES ('t1', 'execution', 'p1', 'test', 'pending', 'dev', '[]', FALSE, '', '', '{}', ?, FALSE)`,
 		oldInstructions,
 	)
 	if err != nil {
@@ -473,6 +474,7 @@ func TestMigration0032_LegacyDatabasePreservesExistingCookieDevice(t *testing.T)
 		CREATE TABLE tasks (
 			id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL REFERENCES projects(id),
+			remote_id TEXT NOT NULL DEFAULT '',
 			title TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'pending',

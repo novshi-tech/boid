@@ -94,16 +94,6 @@ func (s *recordingTxStore) ListActionsByTask(taskID string) ([]*orchestrator.Act
 	}
 	return out, nil
 }
-func (s *recordingTxStore) SeedTaskTriage(taskID string) error {
-	if s.triage == nil {
-		s.triage = map[string]*orchestrator.CardAttrs{}
-	}
-	if _, ok := s.triage[taskID]; !ok {
-		s.triage[taskID] = &orchestrator.CardAttrs{TaskID: taskID}
-	}
-	return nil
-}
-
 func (s *recordingTxStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error {
 	if s.triage == nil {
 		s.triage = map[string]*orchestrator.CardAttrs{}
@@ -213,22 +203,22 @@ func (p *dispatchContextProbe) DispatchAndAdvance(ctx context.Context, task *orc
 		}
 		return nil, ctx.Err()
 	case <-p.release:
-		return &orchestrator.DispatchResult{FinalPayload: task.Payload}, nil
+		return &orchestrator.DispatchResult{FinalPayload: task.Exec.Payload}, nil
 	}
 }
 
 func (p *dispatchContextProbe) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+	return &orchestrator.ReplayResult{FinalPayload: task.Exec.Payload}, nil
 }
 
 func TestTaskWorkflowServiceApplyAction_BackgroundDispatchMustOutliveRequestContext(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "start task",
 		Status:    orchestrator.TaskStatusPending,
-		Behavior:  "impl",
-		Payload:   []byte(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
 	}
 
 	txStore := &recordingTxStore{}
@@ -341,7 +331,7 @@ func humanCtx() context.Context {
 }
 
 func TestTaskWorkflowServiceApplyAction_Working_ParkedToWorking(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
 	result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "working"})
 	if err != nil {
@@ -362,7 +352,7 @@ func TestTaskWorkflowServiceApplyAction_Working_ParkedToWorking(t *testing.T) {
 // pin, and TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion
 // for the escape-hatch positive pin.
 func TestTaskWorkflowServiceApplyAction_StampsActorFromContext(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	cases := []struct {
 		name string
@@ -416,7 +406,7 @@ func TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion(t *test
 	}
 	for _, c := range cases {
 		t.Run(c.action+"_from_"+string(c.from), func(t *testing.T) {
-			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: c.from, Behavior: "dev", Payload: []byte(`{}`)}
+			task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: c.from, Card: &orchestrator.CardAttrs{}}
 			txStore := &recordingTxStore{
 				task:   task,
 				triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}},
@@ -470,7 +460,7 @@ func TestApplyAction_CardTransitions_RejectedForNonHumanActor(t *testing.T) {
 				// fires on the action name alone, before FromStatus is even
 				// checked, so the exact status doesn't matter for this test —
 				// parked is used uniformly for simplicity).
-				task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+				task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 				txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}}}
 				svc := newTriageWorkflowService(task, txStore)
 				svc.TaskTriage = txStore
@@ -493,7 +483,7 @@ func TestApplyAction_CardTransitions_RejectedForNonHumanActor(t *testing.T) {
 // preserving any existing kind/urgency/detail on the sidecar row. park's
 // only FromStatus in v2 is working (design doc §3.2's edge table).
 func TestTaskWorkflowServiceApplyAction_Park_UpsertsWakeCondition(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
@@ -529,7 +519,7 @@ func TestTaskWorkflowServiceApplyAction_Park_UpsertsWakeCondition(t *testing.T) 
 
 // park with no payload still creates a sidecar row (WakeAt/WakeTaskID empty).
 func TestTaskWorkflowServiceApplyAction_Park_NoPayload_CreatesEmptySidecarRow(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -551,7 +541,7 @@ func TestTaskWorkflowServiceApplyAction_Park_NoPayload_CreatesEmptySidecarRow(t 
 // fresh sidecar", which on a transient DB error would silently blow away an
 // existing row's kind/urgency/detail instead of surfacing the failure.
 func TestTaskWorkflowServiceApplyAction_Park_PropagatesNonNotFoundTriageError(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task, getTaskTriageErr: fmt.Errorf("db connection reset")}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -575,7 +565,7 @@ func TestTaskWorkflowServiceApplyAction_Park_PropagatesNonNotFoundTriageError(t 
 // origin left to disambiguate; see machine_card.go's own doc comment).
 func TestTaskWorkflowServiceApplyAction_RejectsNonManualActions(t *testing.T) {
 	for _, actionType := range []string{"job_failed", "progress", "done_request", "fail_request", "wake_due"} {
-		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+		task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 		svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
 
 		_, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: actionType})
@@ -597,7 +587,7 @@ func TestTaskWorkflowServiceApplyAction_RejectsNonManualActions(t *testing.T) {
 // never going through ApplyAction at all.
 func TestExecutionMachine_JobFailed_StillApplicableDirectlyViaSmApply(t *testing.T) {
 	sm := orchestrator.NewExecutionMachine()
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
+	task := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{}}
 	next, err := sm.Apply(task, &orchestrator.Action{Type: "job_failed"})
 	if err != nil {
 		t.Fatalf("job_failed via direct sm.Apply (CompleteJob's path): %v", err)
@@ -616,23 +606,23 @@ func (d fixedDispatchResult) DispatchAndAdvance(ctx context.Context, task *orche
 }
 
 func (d fixedDispatchResult) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+	return &orchestrator.ReplayResult{FinalPayload: task.Exec.Payload}, nil
 }
 
 func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenPersistingPayload(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{"prompt":"start"}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{"prompt":"start"}`)},
 	}
 	completed := &orchestrator.Task{
 		ID:        task.ID,
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: task.ProjectID,
 		Status:    orchestrator.TaskStatusDone,
-		Behavior:  task.Behavior,
-		Payload:   task.Payload,
+		Exec:      &orchestrator.ExecAttrs{Behavior: task.Exec.Behavior, Payload: task.Exec.Payload},
 	}
 
 	txStore := &recordingTxStore{task: completed}
@@ -671,17 +661,17 @@ func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenPe
 func TestTaskWorkflowServiceRunDispatchLoop_MustNotOverwriteTerminalStatusWhenAdvanceIsAvailable(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(`{"prompt":"start"}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{"prompt":"start"}`)},
 	}
 	aborted := &orchestrator.Task{
 		ID:        task.ID,
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: task.ProjectID,
 		Status:    orchestrator.TaskStatusAborted,
-		Behavior:  task.Behavior,
-		Payload:   task.Payload,
+		Exec:      &orchestrator.ExecAttrs{Behavior: task.Exec.Behavior, Payload: task.Exec.Payload},
 	}
 
 	txStore := &recordingTxStore{task: aborted}
@@ -730,18 +720,18 @@ func TestTaskWorkflowServiceRunDispatchLoop_ClearsPendingAnswerAfterDispatch(t *
 	withAnswer := `{"awaiting":{"session_id":"sess-1","question_id":"q-1","pending_answer":"yes"}}`
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(withAnswer),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(withAnswer)},
 	}
 	// The DB still returns the task-with-answer so the tx refresh gets it.
 	taskInDB := &orchestrator.Task{
 		ID:        task.ID,
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: task.ProjectID,
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  task.Behavior,
-		Payload:   []byte(withAnswer),
+		Exec:      &orchestrator.ExecAttrs{Behavior: task.Exec.Behavior, Payload: []byte(withAnswer)},
 	}
 
 	txStore := &recordingTxStore{task: taskInDB}
@@ -767,7 +757,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_ClearsPendingAnswerAfterDispatch(t *
 	if txStore.updatedTask == nil {
 		t.Fatal("expected payload persistence update")
 	}
-	ap := orchestrator.GetAwaitingPayload(txStore.updatedTask.Payload)
+	ap := orchestrator.GetAwaitingPayload(txStore.updatedTask.Exec.Payload)
 	if ap.PendingAnswer != "" {
 		t.Errorf("pending_answer = %q, want empty after dispatch", ap.PendingAnswer)
 	}
@@ -789,20 +779,20 @@ func TestTaskWorkflowServiceRunDispatchLoop_MidHookAsk_PreservesNewAwaiting(t *t
 
 	task := &orchestrator.Task{
 		ID:        "task-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "impl",
-		Payload:   []byte(staleAwaiting),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(staleAwaiting)},
 	}
 	// DB row already reflects the mid-hook ApplyAction("ask"): question_id=q-2,
 	// fresh question text. Status is awaiting because the in-flight notify --ask
 	// transitioned it.
 	taskInDB := &orchestrator.Task{
 		ID:        task.ID,
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: task.ProjectID,
 		Status:    orchestrator.TaskStatusAwaiting,
-		Behavior:  task.Behavior,
-		Payload:   []byte(freshAwaiting),
+		Exec:      &orchestrator.ExecAttrs{Behavior: task.Exec.Behavior, Payload: []byte(freshAwaiting)},
 	}
 
 	txStore := &recordingTxStore{task: taskInDB}
@@ -828,7 +818,7 @@ func TestTaskWorkflowServiceRunDispatchLoop_MidHookAsk_PreservesNewAwaiting(t *t
 	if txStore.updatedTask == nil {
 		t.Fatal("expected payload persistence update")
 	}
-	ap := orchestrator.GetAwaitingPayload(txStore.updatedTask.Payload)
+	ap := orchestrator.GetAwaitingPayload(txStore.updatedTask.Exec.Payload)
 	if ap.QuestionID != "q-2" {
 		t.Errorf("question_id = %q, want q-2 (mid-hook ask must not be clobbered)", ap.QuestionID)
 	}

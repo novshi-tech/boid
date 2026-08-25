@@ -49,10 +49,11 @@ func runTaskArtifacts(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get task: %w", err)
 	}
 
-	// parse payload.artifact
+	// parse payload.artifact. Payload is execution-only (design doc §3.2) —
+	// a card task (task.Exec == nil) simply has no artifact to find.
 	var payload map[string]json.RawMessage
-	if len(task.Payload) > 0 {
-		_ = json.Unmarshal(task.Payload, &payload)
+	if task.Exec != nil && len(task.Exec.Payload) > 0 {
+		_ = json.Unmarshal(task.Exec.Payload, &payload)
 	}
 
 	var artifactRaw json.RawMessage

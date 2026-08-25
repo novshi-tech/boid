@@ -17,9 +17,10 @@ import (
 func TestAbortOnDispatchError_CtxCanceled_UsesDaemonShutdownCode(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-shut-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{
@@ -69,9 +70,10 @@ func TestAbortOnDispatchError_CtxCanceled_UsesDaemonShutdownCode(t *testing.T) {
 func TestAbortOnDispatchError_WrappedCanceled_UsesDaemonShutdownCode(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-shut-2",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{
@@ -105,9 +107,10 @@ func TestAbortOnDispatchError_WrappedCanceled_UsesDaemonShutdownCode(t *testing.
 func TestAbortOnDispatchError_NonCanceled_UsesDispatchErrorCode(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-disperr-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Payload: json.RawMessage(`{}`)},
 	}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{

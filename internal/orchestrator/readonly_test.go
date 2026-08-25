@@ -23,7 +23,11 @@ func TestIsReadonly(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			task := &orchestrator.Task{Readonly: tc.readonly, Status: tc.status}
+			task := &orchestrator.Task{
+				Type:   orchestrator.TaskTypeExecution,
+				Status: tc.status,
+				Exec:   &orchestrator.ExecAttrs{Readonly: tc.readonly},
+			}
 			got := orchestrator.IsReadonly(task)
 			if got != tc.want {
 				t.Errorf("IsReadonly(readonly=%v, %q) = %v, want %v",

@@ -144,9 +144,9 @@ func FilterInstructions(instructions Instructions, agent string) []RoutedInstruc
 // projection (no caller in this codebase uses it that way yet), unsafe as
 // an answer to "what should THIS job be doing".
 func CurrentInstructions(task *Task) []RoutedInstruction {
-	if task == nil || task.Status != TaskStatusExecuting || len(task.Instructions) == 0 {
+	if task == nil || task.Status != TaskStatusExecuting || task.Exec == nil || len(task.Exec.Instructions) == 0 {
 		return nil
 	}
-	active := task.Instructions[len(task.Instructions)-1]
-	return FilterInstructions(task.Instructions, active.Agent)
+	active := task.Exec.Instructions[len(task.Exec.Instructions)-1]
+	return FilterInstructions(task.Exec.Instructions, active.Agent)
 }

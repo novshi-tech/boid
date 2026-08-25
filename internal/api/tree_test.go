@@ -14,11 +14,13 @@ import (
 func makeTask(id, parentID string) *orchestrator.Task {
 	return &orchestrator.Task{
 		ID:        id,
+		Type:      orchestrator.TaskTypeExecution,
 		ParentID:  parentID,
 		Title:     "Task " + id,
 		Status:    orchestrator.TaskStatusPending,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
+		Exec:      &orchestrator.ExecAttrs{},
 	}
 }
 
@@ -392,8 +394,8 @@ func TestBuildTreeItemsWithSuggestions_OverlaysSuggestionKeepingTreeShape(t *tes
 // TaskList with a stubTriageStore attached and checks the rendered HTML.
 func TestWebTaskList_ParkedStatus_RendersSuggestion(t *testing.T) {
 	task := &orchestrator.Task{
-		ID: "t1", Title: "parked card", Status: orchestrator.TaskStatusParked,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		ID: "t1", Type: orchestrator.TaskTypeCard, Title: "parked card", Status: orchestrator.TaskStatusParked,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(), Card: &orchestrator.CardAttrs{},
 	}
 	svc := &stubWebService{tasks: []*orchestrator.Task{task}}
 	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{

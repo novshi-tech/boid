@@ -44,10 +44,13 @@ func TestRenderTaskDetail(t *testing.T) {
 			Title:       "Test Task",
 			Description: "Some description",
 			Status:      orchestrator.TaskStatusExecuting,
-			Behavior:    "dev",
-			Payload:     payload,
-			CreatedAt:   time.Unix(0, 0).UTC(),
-			UpdatedAt:   time.Unix(0, 0).UTC(),
+			Type:        orchestrator.TaskTypeExecution,
+			Exec: &orchestrator.ExecAttrs{
+				Behavior: "dev",
+				Payload:  payload,
+			},
+			CreatedAt: time.Unix(0, 0).UTC(),
+			UpdatedAt: time.Unix(0, 0).UTC(),
 		},
 		Actions: []*orchestrator.Action{
 			{
@@ -88,6 +91,10 @@ func TestRenderTaskDetail(t *testing.T) {
 		"task-abc",
 		"Title:",
 		"Status:",
+		"Type:",
+		"execution",
+		"Behavior:",
+		"dev",
 		"Description:",
 		"instructions:",
 		"Actions:",
@@ -165,10 +172,19 @@ func TestIsTerminalTaskStatus(t *testing.T) {
 		orchestrator.TaskStatusPending,
 		orchestrator.TaskStatusExecuting,
 		orchestrator.TaskStatusAwaiting,
-		orchestrator.TaskStatusCaptured,
-		orchestrator.TaskStatusTriaged,
 		orchestrator.TaskStatusParked,
-		orchestrator.TaskStatusReady,
+		orchestrator.TaskStatusWorking,
+		// card-model-cleanup PR-2: TaskStatusCaptured/TaskStatusTriaged/
+		// TaskStatusReady no longer exist as Go constants (folded into
+		// "parked" by card machine v2 before this PR). isTerminalTaskStatus
+		// (and orchestrator.IsTerminalStatus underneath it) never validates
+		// its input against the known-status vocabulary — it is a plain
+		// switch on the string value — so these raw literals still exercise
+		// genuine behavior: an arbitrary/legacy status string must still be
+		// treated as non-terminal.
+		orchestrator.TaskStatus("captured"),
+		orchestrator.TaskStatus("triaged"),
+		orchestrator.TaskStatus("ready"),
 	}
 	for _, s := range terminal {
 		if !isTerminalTaskStatus(s) {

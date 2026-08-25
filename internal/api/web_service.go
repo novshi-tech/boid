@@ -20,13 +20,6 @@ type WebAppService struct {
 	TaskSvc    TaskService
 	Hooks      HookService
 	Answerer   TaskAnswerService // optional: enables POST /tasks/{id}/answer
-	// TaskTriage backs machineFor's card-vs-ordinary-task discriminator
-	// (PR-B, docs/plans/suggestion-as-state-transition-impl.md §2) for
-	// GetTaskDetail's AvailableActions — same CardStore narrowing over
-	// taskRepo every other service in this package already wires (see
-	// TaskAppService.TaskTriage's own doc comment). Nil is tolerated:
-	// machineFor falls back to NewExecutionMachine.
-	TaskTriage CardStore
 }
 
 func (s *WebAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
@@ -56,9 +49,12 @@ func (s *WebAppService) ListBehaviors() ([]string, error) {
 	seen := make(map[string]bool)
 	var behaviors []string
 	for _, t := range tasks {
-		if t.Behavior != "" && !seen[t.Behavior] {
-			seen[t.Behavior] = true
-			behaviors = append(behaviors, t.Behavior)
+		if t.Exec == nil {
+			continue // card: no behavior (design doc §3.2)
+		}
+		if t.Exec.Behavior != "" && !seen[t.Exec.Behavior] {
+			seen[t.Exec.Behavior] = true
+			behaviors = append(behaviors, t.Exec.Behavior)
 		}
 	}
 	sort.Strings(behaviors)
@@ -78,18 +74,17 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	actions, _ := s.Actions.ListActionsByTask(task.ID)
 	rawJobs, _ := s.Jobs.ListJobsByTask(task.ID)
 	for _, j := range rawJobs {
-		enrichJobDisplayName(j, task.Behavior, s.Meta)
+		enrichJobDisplayName(j, taskBehaviorOrEmpty(task), s.Meta)
 	}
 	jobs := rawJobs
 
 	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): task
 	// detail is a generic per-task view (any task, card or ordinary), so the
-	// governing machine is resolved dynamically. machineForDisplay (not
-	// machineFor) — this is a pure read whose only use of the result is
-	// AvailableActions for display; a transient task_triage lookup failure
-	// must not turn "show me this task" into a 503 (PR #986 review,
-	// Blocker 2 — see machineForDisplay's own doc comment).
-	sm := machineForDisplay(s.TaskTriage, task)
+	// governing machine is resolved dynamically. card-model-cleanup PR-2
+	// retired machineForDisplay: machineFor is now a pure function of
+	// task.Type (no DB lookup, so nothing left to fail transiently — see
+	// machineFor's own doc comment).
+	sm := machineFor(task)
 
 	return &TaskDetailView{
 		Task:             task,
@@ -201,7 +196,7 @@ func (s *WebAppService) GetJob(id string) (*JobWithContext, error) {
 	result := &JobWithContext{Job: *job}
 	if task, err := s.Tasks.GetTask(job.TaskID); err == nil {
 		result.TaskTitle = task.Title
-		enrichJobDisplayName(&result.Job, task.Behavior, s.Meta)
+		enrichJobDisplayName(&result.Job, taskBehaviorOrEmpty(task), s.Meta)
 	}
 	return result, nil
 }

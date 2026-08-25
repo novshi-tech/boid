@@ -30,40 +30,37 @@ func sqlStatusInList(statuses []TaskStatus) string {
 	return strings.Join(parts, ",")
 }
 
-// terminalStatusSQLList / preExecutionStatusSQLList are derived once from
-// IsTerminalStatus / IsPreExecutionStatus (model.go) rather than hardcoded a
-// second time here, so the open/closed/queue filter SQL below can never drift
-// from those helpers as new statuses are added (Opus指摘#9 応用: one source of
-// truth).
+// terminalStatusSQLList is derived once from IsTerminalStatus (model.go)
+// rather than hardcoded a second time here, so the open/closed/queue filter
+// SQL below can never drift from that helper as new statuses are added
+// (Opus指摘#9 応用: one source of truth).
+//
+// card-model-cleanup PR-2 (migration 0045) retired preExecutionStatusSQLList
+// (IsPreExecutionStatus itself no longer exists — see model.go): the
+// predicate it backed, "is this task in a not-yet-active card status", is
+// now answered directly by the tasks.type column wherever a query needs it
+// (see ListTasks's "triage" branch below), not by enumerating a status set.
 var (
-	terminalStatusSQLList     = sqlStatusInList(filterTaskStatuses(IsTerminalStatus))
-	preExecutionStatusSQLList = sqlStatusInList(filterTaskStatuses(IsPreExecutionStatus))
-	// notOpenSelfStatusSQLList = terminal ∪ (pre-execution minus captured) —
-	// used by the self-clause of the "open" filter (項1, sqlOpenSelf):
-	// pre-execution tasks must not pollute the default open view on their
-	// own, distinct from the child-rescue/descendant clauses which keep
-	// pre-execution visible when they have live (executing) children.
+	terminalStatusSQLList = sqlStatusInList(filterTaskStatuses(IsTerminalStatus))
+	// notOpenSelfStatusSQLList = terminal ∪ {parked} — used by the self-clause
+	// of the "open" filter (項1, sqlOpenSelf): a fresh/resting card must not
+	// pollute the default open view on its own, distinct from the
+	// child-rescue/descendant clauses which keep it visible when it has live
+	// (executing) children.
 	//
-	// captured is carved OUT of this exclusion (docs/plans/
-	// ingestion-identity.md PR-2, B-2, 「captured の可視化」): unlike
-	// triaged/parked/ready — which already have a dedicated tab (Queue/
-	// Parked, filters.templ) — a bare captured task had NO tab at all before
-	// this change (実物確認: queue_next explicitly excludes captured by
-	// design, parked/closed obviously don't apply). captured means "workspace
-	// already judged this worth triaging, but the identity index missed and
-	// a fresh task landed" (I-4) — closer in spirit to an ordinary open task
-	// awaiting attention than to triaged/parked/ready's "already triaged,
-	// waiting on a Go decision" — so it belongs in Open, not left invisible.
-	//
-	// captured/triaged/ready are all legacy-only under card machine v2 — see
-	// IsPreExecutionStatus's own doc comment. This filter still needs to keep
-	// treating them correctly for any pre-cutover row that still carries one;
-	// it is not evidence that new tasks still flow through them.
+	// card-model-cleanup PR-2 (migration 0045) removed captured/triaged/ready
+	// from the status vocabulary entirely — they are no longer valid
+	// tasks.status values at all (the CHECK constraint rejects them), not
+	// merely excluded from this list. parked is the only non-terminal card
+	// status that belongs here: working is deliberately NOT included (see
+	// TaskStatusWorking's own doc comment in model.go) — a working card has
+	// already had a decision applied to it and belongs in Open the same way
+	// an executing task does. captured's old carve-out (docs/plans/
+	// ingestion-identity.md PR-2, B-2, 「captured の可視化」) is moot now that
+	// captured itself no longer exists.
 	notOpenSelfStatusSQLList = sqlStatusInList(append(
 		append([]TaskStatus{}, filterTaskStatuses(IsTerminalStatus)...),
-		filterTaskStatuses(func(s TaskStatus) bool {
-			return IsPreExecutionStatus(s) && s != TaskStatusCaptured
-		})...,
+		TaskStatusParked,
 	))
 	// notOpenAncestorGateStatusSQLList = terminal ∪ {parked} — used only by the
 	// open_descendants CTE's seed (子孫救済, 項3). "working → parked"
@@ -72,11 +69,14 @@ var (
 	// (self clause) without help from this gate. Once the child terminates,
 	// this gate must stop pulling it (or its done/aborted siblings) into the
 	// open view just because the parent is still "parked" — parked means
-	// "set aside", unlike executing/triaged which represent an actually live
-	// thread. Other pre-execution statuses (captured/triaged/ready) are
-	// deliberately NOT added here: per 逆輸入1, pre-execution tasks don't
-	// normally have real child Task rows yet, so widening the gate further
-	// would be scope creep.
+	// "set aside", unlike executing which represents an actually live
+	// thread.
+	//
+	// Composition-identical to notOpenSelfStatusSQLList as of PR-2 (both
+	// reduce to terminal ∪ {parked} now that captured/triaged/ready are
+	// gone) — kept as a separate named list because the two back different
+	// SQL clauses (self-status vs. descendant-gate) that could diverge again
+	// if either rule changes independently.
 	notOpenAncestorGateStatusSQLList = sqlStatusInList(append(
 		append([]TaskStatus{}, filterTaskStatuses(IsTerminalStatus)...),
 		TaskStatusParked,
@@ -131,16 +131,55 @@ type TaskFilter struct {
 	ParentID    *string
 }
 
-// taskSelectCols は tasks テーブルの基本カラム一覧（テーブル別名 t を使用）。
+// taskSelectCols は tasks テーブルの全カラム一覧（テーブル別名 t を使用）。
+//
+// card-model-cleanup PR-2 (migration 0045, docs/plans/card-model-cleanup.md
+// §3.4) 以降、tasks は Single Table Inheritance: card 専用列 (kind/urgency/
+// wake_at/wake_task_id/suggestion_verb/detail) と execution 専用列
+// (behavior/traits/readonly/branch_prefix/base_branch/payload/instructions/
+// auto_start) が同じテーブルに同居し、自分の type でない側の列は常に NULL
+// (CHECK 制約が保証)。scanTask がこの列順を前提に nullable スキャンするので、
+// 変更する場合は両方を同時に直すこと。
 //
 // tasks.worktree DB 列は branch-policy-simplification Phase 2 で Task 構造体
 // から外れたが、既存 DB との互換のため列自体は残す (NOT NULL DEFAULT FALSE、
 // migration 0007)。INSERT / UPDATE / SELECT からは列参照を落とし、書き込みは
 // 列 default に任せる。
-const taskSelectCols = `t.id, t.project_id, t.remote_id, t.title, t.description,` +
-	` t.status, t.behavior, t.traits, t.readonly,` +
-	` t.branch_prefix, t.base_branch, t.payload, t.instructions, t.auto_start,` +
+const taskSelectCols = `t.id, t.type, t.project_id, t.remote_id, t.title, t.description, t.status,` +
+	` t.behavior, t.traits, t.readonly, t.branch_prefix, t.base_branch, t.payload, t.instructions, t.auto_start,` +
+	` t.kind, t.urgency, t.wake_at, t.wake_task_id, t.suggestion_verb, t.detail,` +
 	` t.ref, t.parent_id, t.created_at, t.updated_at`
+
+// validateTaskTypeConsistency enforces design doc §3.5's invariant: Card is
+// non-nil iff Type == TaskTypeCard, Exec is non-nil iff Type ==
+// TaskTypeExecution. Called by CreateTask (task-creation side) and scanTask
+// (DB-scan side) — Q17 of docs/plans/card-model-cleanup.md §10 asks for the
+// check to exist on BOTH sides: the DB's own CHECK constraint (migration
+// 0045) already prevents a row from violating this, but scanTask's copy
+// catches a hand-built row from a test fixture or a future direct SQL write
+// that bypasses CreateTask/UpdateTask, and CreateTask's copy fails fast
+// before ever reaching the DB.
+func validateTaskTypeConsistency(t *Task) error {
+	switch t.Type {
+	case TaskTypeCard:
+		if t.Card == nil {
+			return fmt.Errorf("task type is %q but Card is nil", t.Type)
+		}
+		if t.Exec != nil {
+			return fmt.Errorf("task type is %q but Exec is set", t.Type)
+		}
+	case TaskTypeExecution:
+		if t.Exec == nil {
+			return fmt.Errorf("task type is %q but Exec is nil", t.Type)
+		}
+		if t.Card != nil {
+			return fmt.Errorf("task type is %q but Card is set", t.Type)
+		}
+	default:
+		return fmt.Errorf("unknown task type %q (want %q or %q)", t.Type, TaskTypeCard, TaskTypeExecution)
+	}
+	return nil
+}
 
 // taskChildCountCols は子タスク数を集計するサブクエリカラム群（テーブル別名 t を前提）。
 //
@@ -180,6 +219,10 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		}
 	}
 
+	if err := validateTaskTypeConsistency(t); err != nil {
+		return fmt.Errorf("create task: %w", err)
+	}
+
 	if t.ID == "" {
 		t.ID = uuid.New().String()
 	}
@@ -187,10 +230,19 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	t.CreatedAt = now
 	t.UpdatedAt = now
 	if t.Status == "" {
-		t.Status = TaskStatusPending
+		// Type-specific defaults: "pending" is not a legal card status (and
+		// "parked" is not a legal execution status) under migration 0045's
+		// CHECK constraint, so the old type-agnostic default-to-pending
+		// would fail a fresh card outright.
+		switch t.Type {
+		case TaskTypeCard:
+			t.Status = TaskStatusParked
+		default:
+			t.Status = TaskStatusPending
+		}
 	}
-	if len(t.Payload) == 0 {
-		t.Payload = json.RawMessage("{}")
+	if t.Exec != nil && len(t.Exec.Payload) == 0 {
+		t.Exec.Payload = json.RawMessage("{}")
 	}
 	// Auto-generate ref when ref is empty and a parent scope is provided.
 	if t.Ref == "" && t.ParentID != "" {
@@ -200,19 +252,24 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		}
 		t.Ref = ref
 	}
-	traitsJSON, err := marshalTraits(t.Traits)
+
+	execCols, err := execInsertValues(t.Exec)
 	if err != nil {
-		return fmt.Errorf("marshal traits: %w", err)
+		return fmt.Errorf("marshal exec attrs: %w", err)
 	}
-	instructionsJSON, err := marshalInstructions(t.Instructions)
-	if err != nil {
-		return fmt.Errorf("marshal instructions: %w", err)
-	}
+	cardCols := cardInsertValues(t.Card)
 
 	_, err = dbtx.Exec(
-		`INSERT INTO tasks (id, project_id, remote_id, title, description, status, behavior, traits, readonly, branch_prefix, base_branch, payload, instructions, auto_start, ref, parent_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.ProjectID, t.RemoteID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
+		`INSERT INTO tasks (
+			id, type, project_id, remote_id, title, description, status,
+			behavior, traits, readonly, branch_prefix, base_branch, payload, instructions, auto_start,
+			kind, urgency, wake_at, wake_task_id, suggestion_verb, detail,
+			ref, parent_id, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, string(t.Type), t.ProjectID, t.RemoteID, t.Title, t.Description, string(t.Status),
+		execCols.behavior, execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart,
+		cardCols.kind, cardCols.urgency, cardCols.wakeAt, cardCols.wakeTaskID, cardCols.suggestionVerb, cardCols.detail,
+		t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		// Concurrent create: if another goroutine just inserted the same (ref, parent_id),
@@ -227,6 +284,62 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		return fmt.Errorf("insert task: %w", err)
 	}
 	return nil
+}
+
+// execInsertCols is the nullable SQL-bindable projection of an ExecAttrs (or
+// its absence). Every field is `any` so a nil ExecAttrs binds SQL NULL to
+// every execution column in one place, rather than repeating a "was Exec
+// nil" check at each of CreateTask/UpdateTask's argument positions.
+type execInsertCols struct {
+	behavior, traits, branchPrefix, baseBranch, payload, instructions any
+	readonly, autoStart                                               any
+}
+
+func execInsertValues(e *ExecAttrs) (execInsertCols, error) {
+	if e == nil {
+		return execInsertCols{}, nil
+	}
+	traitsJSON, err := marshalTraits(e.Traits)
+	if err != nil {
+		return execInsertCols{}, fmt.Errorf("marshal traits: %w", err)
+	}
+	instructionsJSON, err := marshalInstructions(e.Instructions)
+	if err != nil {
+		return execInsertCols{}, fmt.Errorf("marshal instructions: %w", err)
+	}
+	return execInsertCols{
+		behavior:     e.Behavior,
+		traits:       traitsJSON,
+		readonly:     e.Readonly,
+		branchPrefix: e.BranchPrefix,
+		baseBranch:   e.BaseBranch,
+		payload:      string(e.Payload),
+		instructions: instructionsJSON,
+		autoStart:    e.AutoStart,
+	}, nil
+}
+
+// cardInsertCols is execInsertCols' card-side counterpart.
+type cardInsertCols struct {
+	kind, urgency, wakeAt, wakeTaskID, suggestionVerb, detail any
+}
+
+func cardInsertValues(c *CardAttrs) cardInsertCols {
+	if c == nil {
+		return cardInsertCols{}
+	}
+	detail := c.Detail
+	if len(detail) == 0 {
+		detail = json.RawMessage("{}")
+	}
+	return cardInsertCols{
+		kind:           c.Kind,
+		urgency:        c.Urgency,
+		wakeAt:         nullableTime(c.WakeAt),
+		wakeTaskID:     c.WakeTaskID,
+		suggestionVerb: c.SuggestionVerb,
+		detail:         string(detail),
+	}
 }
 
 func GetTask(dbtx db.DBTX, id string) (*Task, error) {
@@ -314,13 +427,15 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	} else if filter.Status == "closed" {
 		conditions = append(conditions, "t.status IN ("+terminalStatusSQLList+")")
 	} else if filter.Status == "triage" {
-		// Phase 1 PR-5a, unchanged by PR-2: 「今生きている triage task」=
-		// pre-execution ∪ working = captured/triaged/parked/ready/working.
-		// ListCards's default filter (`boid task triage --list` with no
-		// status — the exact call khi's open_triage_task_ids, app/trigger.py,
-		// makes), so this predicate directly decides which cards khi's
-		// signal detection considers on every sweep (docs/plans/
-		// suggestion-as-state-transition-impl.md §4.1's khi 対象軸 note).
+		// Phase 1 PR-5a; card-model-cleanup PR-2 (migration 0045) restates the
+		// predicate on tasks.type instead of enumerating a status set: 「今生
+		// きている triage task」= every card that hasn't reached a terminal
+		// status yet (parked ∪ working). ListCards's default filter
+		// (`boid card list` with no status — the exact call khi's
+		// open_triage_task_ids, app/trigger.py, makes), so this predicate
+		// directly decides which cards khi's signal detection considers on
+		// every sweep (docs/plans/suggestion-as-state-transition-impl.md
+		// §4.1's khi 対象軸 note).
 		//
 		// done is DELIBERATELY excluded (a decision made here, not just
 		// inherited): non-boid signal sources (Slack/Jira/Bitbucket) do not
@@ -330,21 +445,24 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		// here would mean every done triage card stays a signal candidate
 		// until 30-day GC sweeps it — unbounded work for no additional
 		// coverage.
-		conditions = append(conditions, "t.status IN ("+preExecutionStatusSQLList+", 'working')")
+		conditions = append(conditions, "t.type = 'card' AND t.status IN ('parked', 'working')")
 	} else if filter.Status == "queue_next" {
 		// design doc §3.6 (「一覧は suggestion で駆動する」), docs/plans/
-		// suggestion-as-state-transition-impl.md §4.1: queue membership is now
-		// `suggestion_verb != ''` — ANY status (parked/working/done/dropped,
-		// even a legacy captured/triaged/ready row) qualifies the moment it
-		// carries a suggestion. The old state ∈ {ready,triaged} ∧ urgency ∈
-		// {now,today,week} predicate (Phase 1 PR-3) is gone entirely; urgency
-		// demotes from a membership gate to an ORDER BY tie-breaker only (a
-		// suggested card with no urgency still shows, just sorted last).
-		// INNER JOIN still narrows the scan to rows with a task_triage
-		// sidecar (a bare task_triage-less task can never carry a
-		// suggestion).
-		joins = append(joins, "INNER JOIN task_triage tt ON tt.task_id = t.id")
-		conditions = append(conditions, "tt.suggestion_verb != ''")
+		// suggestion-as-state-transition-impl.md §4.1: queue membership is
+		// `suggestion_verb != ''` — ANY card status (parked/working/done/
+		// dropped) qualifies the moment it carries a suggestion. The old
+		// state ∈ {ready,triaged} ∧ urgency ∈ {now,today,week} predicate
+		// (Phase 1 PR-3) is gone entirely; urgency demotes from a membership
+		// gate to an ORDER BY tie-breaker only (a suggested card with no
+		// urgency still shows, just sorted last).
+		//
+		// card-model-cleanup PR-2 (migration 0045) folded task_triage into
+		// tasks itself, so the former "INNER JOIN task_triage tt ON
+		// tt.task_id = t.id" that narrowed the scan to sidecar-bearing rows
+		// is gone — suggestion_verb is NULL (never '') for an execution row
+		// by the table's own CHECK constraint, so `t.suggestion_verb != ''`
+		// alone already excludes every non-card row without a join.
+		conditions = append(conditions, "t.suggestion_verb != ''")
 	} else if filter.Status != "" {
 		conditions = append(conditions, "t.status = ?")
 		args = append(args, filter.Status)
@@ -389,7 +507,7 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		// が無い pure-Go 関数を残すと逆に誤解を招く)。orchestrator.UrgencyRank
 		// は urgency tier だけの pure-Go 版として引き続き lockstep を保つ。
 		query += " ORDER BY " +
-			"CASE tt.urgency WHEN 'now' THEN 0 WHEN 'today' THEN 1 WHEN 'week' THEN 2 ELSE 3 END, " +
+			"CASE t.urgency WHEN 'now' THEN 0 WHEN 'today' THEN 1 WHEN 'week' THEN 2 ELSE 3 END, " +
 			"t.created_at ASC, t.id ASC"
 	} else {
 		query += " ORDER BY t.created_at DESC"
@@ -442,19 +560,35 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 // IsPreDispatchEditableStatus one layer up in
 // api.TaskAppService.UpdateTask — this function has no status of its own to
 // check, it just persists whatever the caller decided was valid to set.
+//
+// card-model-cleanup PR-2 (migration 0045): this SET clause deliberately
+// does NOT touch kind/urgency/wake_at/wake_task_id/suggestion_verb/detail
+// (the CardAttrs columns) even though they now live on this same tasks row.
+// Those are UpsertTaskTriage's exclusive write path (workflow_card.go's
+// park/attrs_set/child_* side effects), which does its own read-modify-write
+// scoped to exactly those columns; folding them into this function's blanket
+// rewrite would introduce a lost-update race that did NOT exist before the
+// STI merge (task_triage was a genuinely separate table/row with its own
+// writer before this PR — a concurrent GetTask-then-UpdateTask on the core
+// columns could never clobber a concurrent attrs_set). The exec columns
+// (traits/readonly/branch_prefix/base_branch/payload/instructions/
+// auto_start) keep the SAME blanket-rewrite treatment they always had
+// (UpdateTask was already their sole non-locked writer pre-refactor); for a
+// card, t.Exec is nil so execInsertValues binds SQL NULL to all of them —
+// already their permanent value on a card row (CHECK-enforced), so this is
+// a no-op, not a new write path.
 func UpdateTask(dbtx db.DBTX, t *Task) error {
-	t.UpdatedAt = time.Now().UTC()
-	traitsJSON, err := marshalTraits(t.Traits)
-	if err != nil {
-		return fmt.Errorf("marshal traits: %w", err)
+	if err := validateTaskTypeConsistency(t); err != nil {
+		return fmt.Errorf("update task: %w", err)
 	}
-	instructionsJSON, err := marshalInstructions(t.Instructions)
+	t.UpdatedAt = time.Now().UTC()
+	execCols, err := execInsertValues(t.Exec)
 	if err != nil {
-		return fmt.Errorf("marshal instructions: %w", err)
+		return fmt.Errorf("marshal exec attrs: %w", err)
 	}
 	_, err = dbtx.Exec(
 		`UPDATE tasks SET project_id = ?, remote_id = ?, title = ?, description = ?, status = ?, traits = ?, readonly = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, auto_start = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
-		t.ProjectID, t.RemoteID, t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.ParentID, t.UpdatedAt, t.ID,
+		t.ProjectID, t.RemoteID, t.Title, t.Description, string(t.Status), execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart, t.ParentID, t.UpdatedAt, t.ID,
 	)
 	if err != nil {
 		return err
@@ -815,15 +949,29 @@ type taskScanner interface {
 	Scan(dest ...any) error
 }
 
+// scanTask reads one tasks row (STI: card-model-cleanup PR-2, migration
+// 0045) into a tagged-union Task. Every subtype-specific column is scanned
+// into a nullable sql.Null* target regardless of the row's actual type — the
+// DB's CHECK constraint guarantees the "other" type's columns are NULL, but
+// scanTask cannot rely on that alone (a hand-built fixture row in a test, or
+// a future direct SQL write, could violate it) — see
+// validateTaskTypeConsistency's own doc comment for why this function calls
+// it too, not just CreateTask.
 func scanTask(s taskScanner) (*Task, error) {
 	var t Task
-	var payload string
-	var instructionsJSON string
-	var traitsJSON string
+	var taskType string
+	var status string
+
+	var behavior, traitsJSON, branchPrefix, baseBranch, payload, instructionsJSON sql.NullString
+	var readonly, autoStart sql.NullBool
+
+	var kind, urgency, wakeTaskID, suggestionVerb, detail sql.NullString
+	var wakeAt sql.NullTime
+
 	if err := s.Scan(
-		&t.ID, &t.ProjectID, &t.RemoteID, &t.Title, &t.Description,
-		&t.Status, &t.Behavior, &traitsJSON, &t.Readonly,
-		&t.BranchPrefix, &t.BaseBranch, &payload, &instructionsJSON, &t.AutoStart,
+		&t.ID, &taskType, &t.ProjectID, &t.RemoteID, &t.Title, &t.Description, &status,
+		&behavior, &traitsJSON, &readonly, &branchPrefix, &baseBranch, &payload, &instructionsJSON, &autoStart,
+		&kind, &urgency, &wakeAt, &wakeTaskID, &suggestionVerb, &detail,
 		&t.Ref, &t.ParentID, &t.CreatedAt, &t.UpdatedAt,
 		&t.TotalChildCount, &t.DoneChildCount, &t.AbortedChildCount, &t.OpenChildCount,
 	); err != nil {
@@ -832,17 +980,47 @@ func scanTask(s taskScanner) (*Task, error) {
 		}
 		return nil, fmt.Errorf("scan task: %w", err)
 	}
-	t.Payload = json.RawMessage(payload)
-	traits, err := unmarshalTraits(traitsJSON)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal traits: %w", err)
+	t.Type = TaskType(taskType)
+	t.Status = TaskStatus(status)
+
+	switch t.Type {
+	case TaskTypeExecution:
+		traits, err := unmarshalTraits(traitsJSON.String)
+		if err != nil {
+			return nil, fmt.Errorf("unmarshal traits: %w", err)
+		}
+		instructions, err := unmarshalInstructions(instructionsJSON.String)
+		if err != nil {
+			return nil, fmt.Errorf("unmarshal instructions: %w", err)
+		}
+		t.Exec = &ExecAttrs{
+			Behavior:     behavior.String,
+			Traits:       traits,
+			Readonly:     readonly.Bool,
+			BranchPrefix: branchPrefix.String,
+			BaseBranch:   baseBranch.String,
+			Payload:      json.RawMessage(payload.String),
+			Instructions: instructions,
+			AutoStart:    autoStart.Bool,
+		}
+	case TaskTypeCard:
+		card := &CardAttrs{
+			TaskID:         t.ID,
+			Kind:           kind.String,
+			Urgency:        urgency.String,
+			WakeTaskID:     wakeTaskID.String,
+			SuggestionVerb: suggestionVerb.String,
+			Detail:         json.RawMessage(detail.String),
+		}
+		if wakeAt.Valid {
+			w := wakeAt.Time
+			card.WakeAt = &w
+		}
+		t.Card = card
 	}
-	t.Traits = traits
-	instructions, err := unmarshalInstructions(instructionsJSON)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal instructions: %w", err)
+	if err := validateTaskTypeConsistency(&t); err != nil {
+		return nil, fmt.Errorf("scan task %q: %w", t.ID, err)
 	}
-	t.Instructions = instructions
 	return &t, nil
 }
 

@@ -34,10 +34,10 @@ func extractInstructionAgents(instructions Instructions) map[string]bool {
 // gated to known harness agents (claude-code / codex / opencode) so unknown
 // agent names do not collide with the shell adapter's Argv requirement.
 func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
-	if task.Status != TaskStatusExecuting {
+	if task.Status != TaskStatusExecuting || task.Exec == nil {
 		return nil
 	}
-	activeTraits, _ := ActiveTraitTypes(task.Payload)
+	activeTraits, _ := ActiveTraitTypes(task.Exec.Payload)
 	traitSet := make(map[TraitType]bool, len(activeTraits))
 	for _, t := range activeTraits {
 		traitSet[t] = true
@@ -45,7 +45,7 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 
 	// status == executing is guaranteed above, so every instruction in the
 	// history is live for routing; just collect the agents it addresses.
-	agents := extractInstructionAgents(task.Instructions)
+	agents := extractInstructionAgents(task.Exec.Instructions)
 
 	var matched []Hook
 	var agentHookDeclared bool
@@ -82,10 +82,10 @@ func (e *Evaluator) Evaluate(task *Task, hooks []Hook) []Hook {
 // harnessTypeForAgent (anything that would fall through to "shell" is
 // excluded — the shell adapter needs a real Argv it cannot produce here).
 func synthesizeAgentHook(task *Task) *Hook {
-	if task == nil || len(task.Instructions) == 0 {
+	if task == nil || task.Exec == nil || len(task.Exec.Instructions) == 0 {
 		return nil
 	}
-	active := task.Instructions[len(task.Instructions)-1]
+	active := task.Exec.Instructions[len(task.Exec.Instructions)-1]
 	if active.Agent == "" {
 		return nil
 	}

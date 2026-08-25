@@ -57,7 +57,11 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 	// Re-ask path: the task is already awaiting from a prior ask whose foreground
 	// command was killed by a harness command-timeout.
 	if task.Status == orchestrator.TaskStatusAwaiting {
-		ap := orchestrator.GetAwaitingPayload(task.Payload)
+		// task.Exec != nil is guaranteed here: migration 0045's CHECK
+		// constraint restricts TaskStatusAwaiting to the execution status
+		// vocabulary only (a card can never reach it), so a task scanned
+		// back with this status always carries a non-nil Exec.
+		ap := orchestrator.GetAwaitingPayload(task.Exec.Payload)
 		if ap.QuestionID == "" {
 			return "", &StatusError{
 				Code:    http.StatusConflict,
@@ -168,7 +172,10 @@ func (s *TaskAppService) graceAbortCheck(taskID, qid string) {
 	if task.Status != orchestrator.TaskStatusAwaiting {
 		return // answered (executing), aborted, or otherwise moved on
 	}
-	ap := orchestrator.GetAwaitingPayload(task.Payload)
+	// task.Exec != nil is guaranteed past this point — see AskTaskBlocking's
+	// matching comment above (TaskStatusAwaiting is execution-only per
+	// migration 0045's CHECK constraint).
+	ap := orchestrator.GetAwaitingPayload(task.Exec.Payload)
 	if ap.QuestionID != qid {
 		return // a different ask episode is now in flight
 	}
@@ -185,10 +192,15 @@ func (s *TaskAppService) graceAbortCheck(taskID, qid string) {
 // flips the task awaiting → executing, strips the awaiting trait (removing the
 // parked answer), records the audit action, and returns the answer. Used when an
 // answer arrived while the agent was disconnected and the agent has re-asked.
+//
+// task.Exec != nil is guaranteed: the only call site (AskTaskBlocking) is
+// itself inside a `task.Status == TaskStatusAwaiting` branch, and awaiting is
+// execution-only per migration 0045's CHECK constraint (a card can never
+// carry that status).
 func (s *TaskAppService) consumePendingAnswer(task *orchestrator.Task, answer, actor string) (string, error) {
 	fromStatus := task.Status
 	task.Status = orchestrator.TaskStatusExecuting
-	task.Payload = orchestrator.StripAwaitingTrait(task.Payload)
+	task.Exec.Payload = orchestrator.StripAwaitingTrait(task.Exec.Payload)
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return "", &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
@@ -229,18 +241,23 @@ func (s *TaskAppService) recordAnswerAction(taskID string, fromStatus orchestrat
 //
 // The task pointer is the one returned by GetTask; mutating + UpdateTask
 // persists it.
+//
+// task.Exec != nil is guaranteed: the only call site (AnswerTask,
+// task_notify.go) rejects with 409 before this point unless task.Status ==
+// TaskStatusAwaiting, and awaiting is execution-only per migration 0045's
+// CHECK constraint (a card can never carry that status).
 func (s *TaskAppService) answerBlocking(ctx context.Context, task *orchestrator.Task, answer string) error {
 	if s.BlockingAsk == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "blocking ask is not configured"}
 	}
-	qid := orchestrator.GetAwaitingPayload(task.Payload).QuestionID
+	qid := orchestrator.GetAwaitingPayload(task.Exec.Payload).QuestionID
 	actor := orchestrator.ActorFromContext(ctx)
 
 	if s.BlockingAsk.Notify(qid, answer) {
 		// Fast path: a live agent received the answer in-memory.
 		fromStatus := task.Status
 		task.Status = orchestrator.TaskStatusExecuting
-		task.Payload = orchestrator.StripAwaitingTrait(task.Payload)
+		task.Exec.Payload = orchestrator.StripAwaitingTrait(task.Exec.Payload)
 		if err := s.Tasks.UpdateTask(task); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
@@ -251,7 +268,7 @@ func (s *TaskAppService) answerBlocking(ctx context.Context, task *orchestrator.
 	// Slow path: no live waiter. Park the answer (and who gave it) durably;
 	// the agent collects both on its next ask. The task stays awaiting until
 	// then.
-	task.Payload = orchestrator.SetPendingAnswer(task.Payload, answer, actor)
+	task.Exec.Payload = orchestrator.SetPendingAnswer(task.Exec.Payload, answer, actor)
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}

@@ -81,19 +81,6 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 		return nil, fmt.Errorf("resolve or capture: transactor unavailable")
 	}
 
-	// Behavior resolution is pure (in-memory project.yaml lookup, no DB) so
-	// it's fine to run it up front — same 2-step hydrate-then-fallback
-	// TaskAppService.CreateTask uses, so a workspace-level default project
-	// definition's task_behaviors are visible here too.
-	var meta *orchestrator.ProjectMeta
-	if s.Meta != nil {
-		if hydrated, err := s.Meta.GetWithWorkspace(ctx, req.ProjectID); err == nil && hydrated != nil {
-			meta = hydrated
-		} else if m, ok := s.Meta.Get(req.ProjectID); ok {
-			meta = m
-		}
-	}
-
 	var result ResolveOrCaptureResult
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
 		if existing, rerr := tx.ResolveIdentity(req.ProjectID, req.Identity); rerr == nil {
@@ -103,94 +90,41 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 			return fmt.Errorf("resolve or capture: resolve identity: %w", rerr)
 		}
 
-		// Unresolved: build a new captured triage task from the project's
-		// resolved default behavior. Deliberately does NOT replicate EITHER
-		// of CreateTask's (task_create.go) two base_branch template-expand
-		// steps — and, unlike that earlier version of this comment, both
-		// branches need spelling out because both are skipped:
-		//
-		//   - meta.BaseBranch == "": CreateTask auto-expands `${current_branch}`
-		//     as a fallback. Every real ingestion caller today (khi's
-		//     daemon_sync.py ensure_task) already creates captured/triaged
-		//     tasks with no base_branch override and relies solely on
-		//     meta.BaseBranch (ResolveBehavior always sets res.BaseBranch =
-		//     meta.BaseBranch when meta != nil), so that fallback path has
-		//     never actually been exercised by ingestion.
-		//   - meta.BaseBranch != "" (e.g. a template like
-		//     "feature/${TASK_REMOTE_ID}"): CreateTask runs it through
-		//     ExpandTaskBaseBranch (${TASK_REMOTE_ID}) then ExpandBaseBranch
-		//     (${current_branch}). Neither runs here. ExpandTaskBaseBranch
-		//     can't be called meaningfully: this request never carries a
-		//     RemoteID (a freshly captured task doesn't have one until
-		//     triage assigns it), and ExpandTaskBaseBranch hard-errors when
-		//     a template references ${TASK_REMOTE_ID} but remoteID is empty
-		//     — calling it unconditionally would turn every capture for such
-		//     a project into a failure, which is worse than the status quo.
-		//     ExpandBaseBranch is skipped too: it shells out to git against
-		//     the project workdir, and this whole block deliberately stays
-		//     pure/in-memory with no project workdir filesystem access —
-		//     db.go's SetMaxOpenConns(1) means a git subprocess call here
-		//     would hold the daemon's single DB connection hostage for the
-		//     duration of the shell-out.
-		//
-		// The consequence (stated plainly, not just implied): when
-		// meta.BaseBranch is a template, the LITERAL, UNEXPANDED template
-		// string is what lands in a freshly captured task's
-		// tasks.base_branch column — e.g. "feature/${TASK_REMOTE_ID}"
-		// verbatim, never resolved, never validated, even when RemoteID
-		// would already be available.
-		//
-		// This is acceptable only because a card's own BaseBranch is dead
-		// data while it lives on the card machine: NewCardMachine (card
-		// machine v2, docs/plans/suggestion-as-state-transition-impl.md §3)
-		// has no rule reaching executing at all — the ONLY paths to
-		// executing are NewExecutionMachine's pending→(start) and
-		// done/aborted→(reopen) — so nothing ever reads this literal
-		// template to build a clone. If a future change lets a card reach
-		// executing directly, this landmine becomes reachable and must be
-		// revisited then — either expand here (accepting the
-		// git-shell-out-in-tx cost) or validate/reject a templated
-		// meta.BaseBranch before it ever reaches this path.
-		res, err := orchestrator.ResolveBehavior(meta, orchestrator.BehaviorResolveRequest{})
-		if err != nil {
-			return fmt.Errorf("resolve or capture: resolve behavior: %w", err)
-		}
-
+		// Unresolved: build a fresh parked card. card-model-cleanup PR-2
+		// (docs/plans/card-model-cleanup.md §3.7) purifies this path further
+		// than before: it no longer calls ResolveBehavior AT ALL (not even
+		// the earlier "call it but discard most of the result" shape) — a
+		// card structurally has no ExecAttrs to put a resolved
+		// behavior/traits/readonly/branch_prefix/base_branch/payload/
+		// instructions into. This retires the base_branch-template landmine
+		// that used to live here in full: a captured/parked task's
+		// BaseBranch column doesn't exist anymore, so there is no dead,
+		// unexpanded template string it could ever hold (see git history on
+		// this file for the landmine's original, now-obsolete writeup —
+		// design doc §7's "base_branch 未展開テンプレ地雷" row).
 		task := &orchestrator.Task{
-			ProjectID:    req.ProjectID,
-			Title:        req.Title,
-			Description:  req.Description,
-			Status:       orchestrator.TaskStatusParked,
-			Behavior:     res.BehaviorName,
-			Traits:       res.Traits,
-			Readonly:     res.Readonly,
-			BranchPrefix: res.BranchPrefix,
-			BaseBranch:   res.BaseBranch,
-			Payload:      res.Payload,
-			Instructions: res.Instructions,
+			ProjectID:   req.ProjectID,
+			Title:       req.Title,
+			Description: req.Description,
+			Status:      orchestrator.TaskStatusParked,
+			Type:        orchestrator.TaskTypeCard,
+			Card:        &orchestrator.CardAttrs{},
 		}
 		if err := tx.CreateTask(task); err != nil {
 			return fmt.Errorf("resolve or capture: create task: %w", err)
 		}
-		// task_triage sidecar row: makes the freshly captured task
-		// discoverable as a triage task from birth — same reasoning as
-		// CreateTask's own SeedTaskTriage call (task_create.go), just done
-		// unconditionally and INSIDE the transaction here rather than
-		// best-effort afterward, since we still hold transactional control
-		// (CreateTask's own post-commit best-effort tolerance exists only
-		// because by that point the task is already committed and can't be
-		// rolled back — not the case here).
-		if err := tx.SeedTaskTriage(task.ID); err != nil {
-			return fmt.Errorf("resolve or capture: seed task_triage: %w", err)
-		}
+		// SeedTaskTriage is GONE as of card-model-cleanup PR-2 (design doc
+		// §3.6): the task above is already type='card' from the CreateTask
+		// call itself, so there is no separate "seed the sidecar" step left
+		// to perform — a card cannot be born rowless anymore.
 		if err := tx.LinkIdentity(req.ProjectID, req.Identity, task.ID); err != nil {
 			// Deliberately unwrapped (not %w'd into a StatusError) so
 			// errors.Is(err, orchestrator.ErrIdentityConflict) survives to
 			// boid_executor.go, matching api/task_identity.go's own
 			// convention. Returning this error rolls back the whole
-			// WithinTx closure — the task/task_triage rows created above
-			// never commit (I-4's "作ったが link されていない task が残る と
-			// 次の巡で同じキーがもう1枚作る" is what this rollback prevents).
+			// WithinTx closure — the task row created above never commits
+			// (I-4's "作ったが link されていない task が残る と 次の巡で同じ
+			// キーがもう1枚作る" is what this rollback prevents).
 			return err
 		}
 		result = ResolveOrCaptureResult{TaskID: task.ID, Created: true}

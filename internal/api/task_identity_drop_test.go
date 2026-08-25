@@ -15,7 +15,13 @@ import (
 )
 
 func TestTaskWorkflowServiceApplyAction_Drop_ReleasesIdentityBindings(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	// card-model-cleanup PR-2: a parked task is a Card, which structurally has
+	// no Behavior/Payload (execution-only, design doc §3.2) — the old
+	// fixture's Behavior/Payload are dropped rather than migrated to Exec,
+	// since a card never carries ExecAttrs; Type must be set explicitly so
+	// machineFor (a pure switch on task.Type now) picks NewCardMachine for
+	// the "drop" transition below.
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newTriageWorkflowService(task, txStore)
 
@@ -51,7 +57,7 @@ func TestTaskWorkflowServiceApplyAction_Drop_ReleasesIdentityBindings(t *testing
 // side effect is keyed off the ACTION being "drop" specifically, not off
 // "which machine happened to be selected".
 func TestTaskWorkflowServiceApplyAction_Done_DoesNotReleaseIdentityBindings(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusExecuting, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	txStore := &recordingTxStore{task: task}
 	svc := &TaskWorkflowService{
 		Tasks: &stubTaskStore{task: task},

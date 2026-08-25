@@ -17,7 +17,11 @@ type replayHookCoordinator struct {
 }
 
 func (c *replayHookCoordinator) DispatchAndAdvance(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) (*orchestrator.DispatchResult, error) {
-	return &orchestrator.DispatchResult{FinalPayload: task.Payload}, nil
+	var payload json.RawMessage
+	if task.Exec != nil {
+		payload = task.Exec.Payload
+	}
+	return &orchestrator.DispatchResult{FinalPayload: payload}, nil
 }
 
 func (c *replayHookCoordinator) ReplayHook(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine, hookID string) (*orchestrator.ReplayResult, error) {
@@ -28,17 +32,21 @@ func (c *replayHookCoordinator) ReplayHook(ctx context.Context, task *orchestrat
 	if c.replayResult != nil {
 		return c.replayResult, nil
 	}
-	return &orchestrator.ReplayResult{FinalPayload: task.Payload}, nil
+	var payload json.RawMessage
+	if task.Exec != nil {
+		payload = task.Exec.Payload
+	}
+	return &orchestrator.ReplayResult{FinalPayload: payload}, nil
 }
 
 // TestTaskWorkflowService_ReplayHook_Basic verifies basic hook replay with status persisted.
 func TestTaskWorkflowService_ReplayHook_Basic(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-hook-1",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev", Payload: json.RawMessage(`{}`)},
 	}
 
 	newPayload := json.RawMessage(`{"step":"done"}`)
@@ -80,10 +88,10 @@ func TestTaskWorkflowService_ReplayHook_Basic(t *testing.T) {
 func TestTaskWorkflowService_ReplayHook_RunningJobConflict(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-hook-2",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev", Payload: json.RawMessage(`{}`)},
 	}
 	runningJob := &Job{
 		ID:     "job-running-1",
@@ -131,10 +139,10 @@ func TestTaskWorkflowService_ReplayHook_TaskNotFound(t *testing.T) {
 func TestTaskWorkflowService_ReplayHook_StatusOverride(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-hook-3",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusDone,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev", Payload: json.RawMessage(`{}`)},
 	}
 
 	coord := &replayHookCoordinator{}
@@ -179,10 +187,10 @@ func TestTaskWorkflowService_ReplayHook_PreservesMidHookRPCWrite(t *testing.T) {
 	// BEFORE the replayed hook's job ran.
 	task := &orchestrator.Task{
 		ID:        "task-hook-4",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   staleReport,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev", Payload: staleReport},
 	}
 	coord := &replayHookCoordinator{
 		replayResult: &orchestrator.ReplayResult{
@@ -199,10 +207,10 @@ func TestTaskWorkflowService_ReplayHook_PreservesMidHookRPCWrite(t *testing.T) {
 	// step re-reads it — already reflecting the mid-hook RPC write.
 	dbTask := &orchestrator.Task{
 		ID:        task.ID,
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: task.ProjectID,
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  task.Behavior,
-		Payload:   freshReport,
+		Exec:      &orchestrator.ExecAttrs{Behavior: task.Exec.Behavior, Payload: freshReport},
 	}
 	txStore := &recordingTxStore{task: dbTask}
 	svc := &TaskWorkflowService{
@@ -227,7 +235,10 @@ func TestTaskWorkflowService_ReplayHook_PreservesMidHookRPCWrite(t *testing.T) {
 			} `json:"report"`
 		} `json:"artifact"`
 	}
-	if err := json.Unmarshal(txStore.updatedTask.Payload, &payload); err != nil {
+	if txStore.updatedTask.Exec == nil {
+		t.Fatal("updated task has no Exec attrs")
+	}
+	if err := json.Unmarshal(txStore.updatedTask.Exec.Payload, &payload); err != nil {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if payload.Artifact.Report.Summary != "NEW via --payload-patch mid-replay" {

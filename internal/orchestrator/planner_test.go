@@ -62,7 +62,7 @@ func (s stubTaskLookup) GetTask(id string) (*Task, error) {
 // from behavior (nil when behavior has none).
 func TestDispatchPlannerInjectsDefaultBuiltinsForHook(t *testing.T) {
 	projectDir := t.TempDir()
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, &Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "dev"}})
 
 	hookReq, hookCleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -101,11 +101,11 @@ func TestDispatchPlannerInjectsDefaultBuiltinsForHook(t *testing.T) {
 func TestPlanHook_SetsVisibilityProjectNameFromMeta(t *testing.T) {
 	projectDir := t.TempDir()
 	proj := &Project{ID: "proj-1", WorkDir: projectDir}
-	task := &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting}
+	task := &Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "dev"}}
 	meta := &ProjectMeta{
 		ID:            proj.ID,
 		Name:          "bm-next",
-		TaskBehaviors: map[string]TaskBehavior{task.Behavior: {}},
+		TaskBehaviors: map[string]TaskBehavior{task.Exec.Behavior: {}},
 	}
 	planner := &DispatchPlanner{
 		Meta:     stubMetaCache{meta: meta},
@@ -143,7 +143,7 @@ func TestPlanHook_CarriesAdditionalBindings(t *testing.T) {
 	binding := BindMount{Source: "/opt/volta", Target: "/opt/volta", Mode: "rw"}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
 		AdditionalBindings: []BindMount{binding},
-	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+	}, &Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "dev"}})
 
 	req, _, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -187,11 +187,14 @@ func TestPlanHook_AgentHookInteractive(t *testing.T) {
 			task := &Task{
 				ID:        "task-1",
 				ProjectID: "proj-1",
-				Behavior:  "executor",
+				Type:      TaskTypeExecution,
 				Status:    TaskStatusExecuting,
-				Instructions: Instructions{{
-					Agent: tc.agent,
-				}},
+				Exec: &ExecAttrs{
+					Behavior: "executor",
+					Instructions: Instructions{{
+						Agent: tc.agent,
+					}},
+				},
 			}
 			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
@@ -232,12 +235,15 @@ func TestPlanHook_AcceptsScriptlessAgentHook(t *testing.T) {
 	task := &Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Behavior:  "executor",
+		Type:      TaskTypeExecution,
 		Status:    TaskStatusExecuting,
-		Instructions: Instructions{{
-			Agent:   "claude-code",
-			Message: "do stuff",
-		}},
+		Exec: &ExecAttrs{
+			Behavior: "executor",
+			Instructions: Instructions{{
+				Agent:   "claude-code",
+				Message: "do stuff",
+			}},
+		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
@@ -281,7 +287,7 @@ func TestPlanHook_RejectsScriptlessNonAgentHook(t *testing.T) {
 	planner := newPlannerForTest(
 		&Project{ID: "proj-1", WorkDir: projectDir},
 		TaskBehavior{},
-		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+		&Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "executor"}},
 	)
 
 	_, _, err := planner.PlanHook(&HookFireEvent{
@@ -309,7 +315,7 @@ func TestPlanHook_UsesCommandBuildsShArgv(t *testing.T) {
 	planner := newPlannerForTest(
 		&Project{ID: "proj-1", WorkDir: projectDir},
 		TaskBehavior{},
-		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+		&Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "executor"}},
 	)
 
 	req, cleanup, err := planner.PlanHook(&HookFireEvent{
@@ -350,7 +356,7 @@ func TestPlanHook_RejectsCommandAndAgentTogether(t *testing.T) {
 	planner := newPlannerForTest(
 		&Project{ID: "proj-1", WorkDir: projectDir},
 		TaskBehavior{},
-		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+		&Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "executor"}},
 	)
 
 	_, _, err := planner.PlanHook(&HookFireEvent{
@@ -378,7 +384,7 @@ func TestPlanHook_RejectsAgentKindHookWithCommand(t *testing.T) {
 	planner := newPlannerForTest(
 		&Project{ID: "proj-1", WorkDir: projectDir},
 		TaskBehavior{},
-		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+		&Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "executor"}},
 	)
 
 	_, _, err := planner.PlanHook(&HookFireEvent{
@@ -416,11 +422,14 @@ func TestPlanHook_DefaultArmRejectsValidationDrift(t *testing.T) {
 	task := &Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Behavior:  "executor",
+		Type:      TaskTypeExecution,
 		Status:    TaskStatusExecuting,
-		Instructions: Instructions{{
-			Agent: "claude-code",
-		}},
+		Exec: &ExecAttrs{
+			Behavior: "executor",
+			Instructions: Instructions{{
+				Agent: "claude-code",
+			}},
+		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
@@ -449,7 +458,7 @@ func TestPlanHook_DockerEnabled_WhenCapabilitySet(t *testing.T) {
 	planner := newPlannerWithCapabilities(
 		&Project{ID: "proj-1", WorkDir: projectDir},
 		TaskBehavior{},
-		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+		&Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "executor"}},
 		Capabilities{Docker: dockerCap},
 	)
 	req, cleanup, err := planner.PlanHook(&HookFireEvent{
@@ -474,7 +483,7 @@ func TestPlanHook_DockerEnabled_WhenCapabilityNotSet(t *testing.T) {
 	planner := newPlannerWithCapabilities(
 		&Project{ID: "proj-1", WorkDir: projectDir},
 		TaskBehavior{},
-		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+		&Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "executor"}},
 		Capabilities{},
 	)
 	req, cleanup, err := planner.PlanHook(&HookFireEvent{
@@ -501,10 +510,13 @@ func TestPlanHook_Instruction_MatchingAgent(t *testing.T) {
 	task := &Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Behavior:  "dev",
+		Type:      TaskTypeExecution,
 		Status:    TaskStatusExecuting,
-		Instructions: Instructions{
-			{Agent: "claude-code", Message: "do X"},
+		Exec: &ExecAttrs{
+			Behavior: "dev",
+			Instructions: Instructions{
+				{Agent: "claude-code", Message: "do X"},
+			},
 		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
@@ -557,11 +569,14 @@ func TestPlanHook_Instruction_NonMatchingAgent_ReturnsNil(t *testing.T) {
 	task := &Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Behavior:  "dev",
+		Type:      TaskTypeExecution,
 		Status:    TaskStatusExecuting,
-		Instructions: Instructions{
-			{Agent: "claude-code", Message: "do X"},
-			{Agent: "codex", Message: "do Y"}, // active/last entry
+		Exec: &ExecAttrs{
+			Behavior: "dev",
+			Instructions: Instructions{
+				{Agent: "claude-code", Message: "do X"},
+				{Agent: "codex", Message: "do Y"}, // active/last entry
+			},
 		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
@@ -596,9 +611,10 @@ func TestPlanHook_TaskSnapshot(t *testing.T) {
 		ID:          "task-1",
 		ProjectID:   "proj-1",
 		Title:       "Hello",
+		Type:        TaskTypeExecution,
 		Status:      TaskStatusExecuting,
-		Behavior:    "dev",
 		Description: "short desc",
+		Exec:        &ExecAttrs{Behavior: "dev"},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
@@ -632,12 +648,15 @@ func TestPlanHook_PrimaryInput_FilteredByConsumes(t *testing.T) {
 	task := &Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
+		Type:      TaskTypeExecution,
 		Status:    TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload: json.RawMessage(`{
-			"artifact": {"file": "foo.go"},
-			"verification": {"findings": []}
-		}`),
+		Exec: &ExecAttrs{
+			Behavior: "dev",
+			Payload: json.RawMessage(`{
+				"artifact": {"file": "foo.go"},
+				"verification": {"findings": []}
+			}`),
+		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
@@ -676,11 +695,14 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 		Env: map[string]string{"KIT_VAR": "kit-value"},
 	}
 	task := &Task{
-		ID:         "task-1",
-		ProjectID:  "proj-1",
-		Behavior:   "dev",
-		Status:     TaskStatusExecuting,
-		BaseBranch: "feature/BGO-170",
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Type:      TaskTypeExecution,
+		Status:    TaskStatusExecuting,
+		Exec: &ExecAttrs{
+			Behavior:   "dev",
+			BaseBranch: "feature/BGO-170",
+		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, behavior, task)
 
@@ -706,7 +728,7 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 	// Tasks without a base branch should not surface an empty BOID_BASE_BRANCH:
 	// kit detection (`-n "${BOID_BASE_BRANCH:-}"`) treats empty and unset alike,
 	// but leaving the var absent keeps env diagnostics clean.
-	task.BaseBranch = ""
+	task.Exec.BaseBranch = ""
 	emptyReq, _, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-3",
 		TaskID:    "task-1",
@@ -734,7 +756,7 @@ func TestPlanHook_PropagatesHostCommands(t *testing.T) {
 		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, behavior,
-		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+		&Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "dev"}})
 
 	req, cleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -772,7 +794,7 @@ func TestPlanHook_CapturesHookTraitsProduces(t *testing.T) {
 	projectDir := t.TempDir()
 	behavior := TaskBehavior{}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, behavior,
-		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+		&Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "dev"}})
 
 	req, cleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -814,7 +836,7 @@ func TestPlanHook_HookTraitsProduces_NilForHookWithNoProduces(t *testing.T) {
 	projectDir := t.TempDir()
 	behavior := TaskBehavior{}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, behavior,
-		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+		&Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "dev"}})
 
 	req, cleanup, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -854,9 +876,12 @@ func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {
 			task := &Task{
 				ID:        "task-1",
 				ProjectID: "proj-1",
-				Behavior:  "dev",
-				Readonly:  tc.readonly,
+				Type:      TaskTypeExecution,
 				Status:    tc.status,
+				Exec: &ExecAttrs{
+					Behavior: "dev",
+					Readonly: tc.readonly,
+				},
 			}
 			planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 			req, cleanup, err := planner.PlanHook(&HookFireEvent{
@@ -897,9 +922,12 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 	task := &Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Behavior:  "dev",
+		Type:      TaskTypeExecution,
 		Status:    TaskStatusExecuting,
-		Payload:   awaitingPayload,
+		Exec: &ExecAttrs{
+			Behavior: "dev",
+			Payload:  awaitingPayload,
+		},
 	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 
@@ -924,7 +952,7 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 	}
 
 	// Initial-start task (no awaiting payload): env vars must be absent.
-	task.Payload = nil
+	task.Exec.Payload = nil
 	plainPlanner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
 	plainReq, _, err := plainPlanner.PlanHook(&HookFireEvent{
 		EventID:   "event-2",
@@ -953,12 +981,15 @@ func TestDispatchPlanner_NoParentBranchEnv(t *testing.T) {
 	projectDir := t.TempDir()
 
 	task := &Task{
-		ID:         "child0001234567",
-		ProjectID:  "proj-1",
-		Behavior:   "executor",
-		Status:     TaskStatusExecuting,
-		BaseBranch: "main",
-		ParentID:   "root00001234567",
+		ID:        "child0001234567",
+		ProjectID: "proj-1",
+		Type:      TaskTypeExecution,
+		Status:    TaskStatusExecuting,
+		ParentID:  "root00001234567",
+		Exec: &ExecAttrs{
+			Behavior:   "executor",
+			BaseBranch: "main",
+		},
 	}
 	planner := newPlannerForTest(
 		&Project{ID: "proj-1", WorkDir: projectDir},
@@ -983,12 +1014,15 @@ func TestDispatchPlanner_NoParentBranchEnv(t *testing.T) {
 func TestDispatchPlanner_BaseBranchEnvRetained_WithParent(t *testing.T) {
 	projectDir := t.TempDir()
 	childTask := &Task{
-		ID:         "child12345678901",
-		ProjectID:  "proj-1",
-		Behavior:   "executor",
-		Status:     TaskStatusExecuting,
-		BaseBranch: "feature/BGO-999",
-		ParentID:   "parent1234567890",
+		ID:        "child12345678901",
+		ProjectID: "proj-1",
+		Type:      TaskTypeExecution,
+		Status:    TaskStatusExecuting,
+		ParentID:  "parent1234567890",
+		Exec: &ExecAttrs{
+			Behavior:   "executor",
+			BaseBranch: "feature/BGO-999",
+		},
 	}
 	planner := newPlannerForTest(
 		&Project{ID: "proj-1", WorkDir: projectDir},
@@ -1014,7 +1048,7 @@ func TestDispatchPlanner_BaseBranchEnvRetained_WithParent(t *testing.T) {
 func newPlannerForTest(proj *Project, behavior TaskBehavior, task *Task) *DispatchPlanner {
 	meta := &ProjectMeta{
 		ID:            proj.ID,
-		TaskBehaviors: map[string]TaskBehavior{task.Behavior: behavior},
+		TaskBehaviors: map[string]TaskBehavior{task.Exec.Behavior: behavior},
 	}
 	return &DispatchPlanner{
 		Meta:     stubMetaCache{meta: meta},
@@ -1027,7 +1061,7 @@ func newPlannerForTest(proj *Project, behavior TaskBehavior, task *Task) *Dispat
 func newPlannerWithCapabilities(proj *Project, behavior TaskBehavior, task *Task, caps Capabilities) *DispatchPlanner {
 	meta := &ProjectMeta{
 		ID:            proj.ID,
-		TaskBehaviors: map[string]TaskBehavior{task.Behavior: behavior},
+		TaskBehaviors: map[string]TaskBehavior{task.Exec.Behavior: behavior},
 		Capabilities:  caps,
 	}
 	return &DispatchPlanner{

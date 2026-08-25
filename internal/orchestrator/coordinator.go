@@ -11,15 +11,31 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// lookupBehavior returns the TaskBehavior that matches task.Behavior. Returns
-// false if the project has no matching behavior; callers should treat that as
-// "no hooks" rather than an error.
+// lookupBehavior returns the TaskBehavior that matches task.Exec.Behavior.
+// Returns false if the project has no matching behavior, or if task is not
+// an execution task at all (a card has no behavior — see design doc §3.2);
+// callers should treat both as "no hooks" rather than an error. Coordinator/
+// Evaluator/DispatchPlanner are exclusively the dispatch/hook-firing path, so
+// task.Exec is expected to be non-nil in practice (only an execution task
+// ever reaches "executing" and fires hooks) — this nil check is defense in
+// depth, not evidence that a card is expected here.
 func lookupBehavior(meta *ProjectMeta, task *Task) (TaskBehavior, bool) {
-	if meta == nil || task == nil {
+	if meta == nil || task == nil || task.Exec == nil {
 		return TaskBehavior{}, false
 	}
-	b, ok := meta.TaskBehaviors[task.Behavior]
+	b, ok := meta.TaskBehaviors[task.Exec.Behavior]
 	return b, ok
+}
+
+// taskBehaviorName safely reads task.Exec.Behavior for error-message
+// formatting (ReplayHook), returning "" for a nil task/Exec rather than
+// panicking — an error message is best-effort context, not something worth
+// crashing the dispatch path over.
+func taskBehaviorName(task *Task) string {
+	if task == nil || task.Exec == nil {
+		return ""
+	}
+	return task.Exec.Behavior
 }
 
 // Coordinator orchestrates the hook → advance flow.
@@ -45,8 +61,21 @@ func (d *Coordinator) DispatchAndAdvance(
 	meta *ProjectMeta,
 	sm *StateMachine,
 ) (*DispatchResult, error) {
+	// Defense in depth (mirrors AdvanceFull's own task.Exec == nil guard):
+	// this function has multiple call sites (workflow_action.go's
+	// runDispatchLoop, plus any future caller) and nothing at the type level
+	// forces every one of them to have already checked task.Exec != nil
+	// before calling in. A card task (Exec == nil by construction) reaching
+	// here previously nil-panicked on task.Exec.Payload below, in an
+	// unrecovered goroutine — found in card-model-cleanup PR-2 review. The
+	// real fix is gating the call site (see workflow_action.go), but this
+	// guard turns any future missed gate into an error return instead of a
+	// process crash.
+	if task.Exec == nil {
+		return nil, fmt.Errorf("DispatchAndAdvance: task %s has no Exec (type=%s); only an execution task can be dispatched", task.ID, task.Type)
+	}
 	readonly := IsReadonly(task)
-	payload := task.Payload
+	payload := task.Exec.Payload
 	// delta accumulates ONLY what this cycle's own hooks actually wrote,
 	// starting from an empty object rather than the (potentially
 	// stale-by-completion-time) task.Payload snapshot — see
@@ -143,8 +172,13 @@ func (d *Coordinator) evaluateAndAdvance(
 	// Evaluate auto-advance.
 	var newStatus TaskStatus
 	var actionPayload json.RawMessage
-	advanceTask := *task
-	advanceTask.Payload = payloadForSM
+	// CloneTaskShallow (not a bare `*task` copy): advanceTask.Exec must be
+	// its OWN ExecAttrs, not the same pointer task.Exec still holds, or the
+	// Payload write below would alias back into the caller's task (model.go's
+	// CloneTaskShallow doc comment explains why this matters after the
+	// tagged-struct split).
+	advanceTask := *CloneTaskShallow(task)
+	advanceTask.Exec.Payload = payloadForSM
 	if outcome := sm.AdvanceFull(&advanceTask); outcome != nil {
 		newStatus = outcome.Task.Status
 		actionPayload = outcome.ActionPayload
@@ -402,7 +436,7 @@ func (d *Coordinator) ReplayHook(
 ) (*ReplayResult, error) {
 	behavior, ok := lookupBehavior(meta, task)
 	if !ok {
-		return nil, fmt.Errorf("behavior %q not found in project meta", task.Behavior)
+		return nil, fmt.Errorf("behavior %q not found in project meta", taskBehaviorName(task))
 	}
 
 	// Find hook by ID.
@@ -415,7 +449,7 @@ func (d *Coordinator) ReplayHook(
 		}
 	}
 	if found == nil {
-		return nil, fmt.Errorf("hook %q not found in behavior %q", hookID, task.Behavior)
+		return nil, fmt.Errorf("hook %q not found in behavior %q", hookID, taskBehaviorName(task))
 	}
 
 	// Check hook matches current status.
@@ -430,7 +464,7 @@ func (d *Coordinator) ReplayHook(
 	readonly := IsReadonly(task)
 	hookResults, err := d.dispatchHooks(ctx, task, matched, readonly)
 
-	payload := task.Payload
+	payload := task.Exec.Payload
 	// See DispatchResult.PayloadDelta's doc comment: this must be applied
 	// onto a freshly re-read task row, never FinalPayload's stale-by-
 	// completion-time snapshot (Phase 5b PR7 codex review Blocker 1,

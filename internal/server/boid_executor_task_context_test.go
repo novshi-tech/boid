@@ -35,7 +35,7 @@ func (s *stubJobContextProvider) JobContext(jobID string) (dispatcher.JobContext
 
 func TestBoidBuiltinExecutor_TaskCurrent_HappyPath(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "task-1", ProjectID: "proj-1", Title: "hello", Status: orchestrator.TaskStatusExecuting, Behavior: "dev"},
+		{ID: "task-1", ProjectID: "proj-1", Title: "hello", Status: orchestrator.TaskStatusExecuting, Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}},
 	}}
 	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store}}
 	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
@@ -58,7 +58,11 @@ func TestBoidBuiltinExecutor_TaskCurrent_HappyPath(t *testing.T) {
 
 func TestBoidBuiltinExecutor_TaskCurrent_WithField(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "task-1", ProjectID: "proj-1", Title: "hello", Status: orchestrator.TaskStatusExecuting},
+		// SnapshotTask (internal/orchestrator/planner.go) requires task.Exec
+		// != nil (Behavior/Readonly are execution-only fields) and returns nil
+		// otherwise, so this fixture needs Type/Exec set for GetTaskCurrentField
+		// to resolve anything at all.
+		{ID: "task-1", ProjectID: "proj-1", Title: "hello", Status: orchestrator.TaskStatusExecuting, Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{}},
 	}}
 	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store}}
 	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}

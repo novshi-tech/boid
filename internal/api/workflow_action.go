@@ -54,10 +54,10 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// instead, since the task load happens first and the IsManualAction
 	// check below can no longer run without it. See this PR's own
 	// description for the full list of call sites this reordering touches.
-	sm, err := machineFor(s.TaskTriage, task)
-	if err != nil {
-		return nil, err
-	}
+	//
+	// card-model-cleanup PR-2: machineFor is now a pure function of
+	// task.Type, so it cannot fail.
+	sm := machineFor(task)
 
 	// Only Manual:true rules (on the machine just resolved above) are
 	// reachable through this public entry point (HTTP API / brokered
@@ -247,13 +247,19 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// machines' "reopen" rules keep their own name, so keying on plain
 	// "reopen" alone is sufficient in v2.
 	var reopenPayloadConsumed bool
-	if req.Type == "reopen" && len(req.Payload) > 0 {
+	// Instructions is execution-only (design doc §3.2) — a card's "reopen"
+	// (done/dropped → parked, machine_card.go) has no instruction history to
+	// append to at all, so this whole block is scoped to newTask.Exec != nil.
+	// A card reopen carrying an instruction-override payload simply has
+	// nothing to consume it (reopenPayloadConsumed stays false), which is
+	// the correct outcome: there was never a feature here for cards to lose.
+	if req.Type == "reopen" && len(req.Payload) > 0 && newTask.Exec != nil {
 		var p struct {
 			Instruction *orchestrator.Instruction `json:"instruction,omitempty"`
 		}
 		if err := json.Unmarshal(req.Payload, &p); err == nil && p.Instruction != nil {
 			inst := *p.Instruction
-			if active := task.Instructions.Active(); active != nil {
+			if active := newTask.Exec.Instructions.Active(); active != nil {
 				if inst.Agent == "" {
 					inst.Agent = active.Agent
 				}
@@ -261,7 +267,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 					inst.Model = active.Model
 				}
 			}
-			newTask.Instructions = orchestrator.AppendInstruction(task.Instructions, inst)
+			newTask.Exec.Instructions = orchestrator.AppendInstruction(newTask.Exec.Instructions, inst)
 			reopenPayloadConsumed = true
 		}
 	}
@@ -296,12 +302,21 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		"noted":         true,
 	}
 
-	if !reopenPayloadConsumed && !sideEffectConsumesPayload[req.Type] {
-		merged, err := orchestrator.MergePayload(task.Payload, action.Payload)
+	// Payload is execution-only (design doc §3.2) — a card has no field to
+	// merge action.Payload into at all, so this generic merge is scoped to
+	// newTask.Exec != nil. Before the ExecAttrs split, EVERY task (including
+	// a card) had a real (if usually meaningless) Payload column, so a plain
+	// card-lifecycle action (working/drop/done/reopen-without-instruction)
+	// silently merged its action payload into it; the ExecAttrs split makes
+	// that incidental write structurally impossible instead of merely
+	// pointless — see design doc §7's "card の行に嘘の behavior 一式" row for
+	// the same reasoning applied to this sibling field.
+	if !reopenPayloadConsumed && !sideEffectConsumesPayload[req.Type] && newTask.Exec != nil {
+		merged, err := orchestrator.MergePayload(newTask.Exec.Payload, action.Payload)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: "payload merge: " + err.Error()}
 		}
-		newTask.Payload = merged
+		newTask.Exec.Payload = merged
 	}
 
 	// park / attrs_set / child_added / child_specced each validate their
@@ -543,7 +558,19 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		s.notifySuggestionArrived(ctx, newTask, attrsSetParsed)
 	}
 
-	if s.Coordinator != nil {
+	// newTask.Exec != nil is required here, not merely defensive: a card
+	// manual action (park/drop/done/reopen/attrs_set/child_*/noted — every
+	// rule except go/answered, which are redirected to acceptGo/applyAnswered
+	// earlier in this function) reaches this point with newTask.Exec == nil
+	// by construction (a CardAttrs-only row). Coordinator.DispatchAndAdvance
+	// unconditionally reads task.Exec.Payload, and this launch runs in an
+	// unrecovered goroutine after the HTTP response has already been sent —
+	// an unguarded launch here previously nil-panicked the whole daemon
+	// process on the very first non-go/answered card action (found in
+	// card-model-cleanup PR-2 review; DispatchAndAdvance itself also gained
+	// a defense-in-depth guard, see its doc comment). Mirrors the
+	// hook-preview block just below, which already carried this guard.
+	if s.Coordinator != nil && newTask.Exec != nil {
 		dispatchCtx := s.dispatchCtx
 		if dispatchCtx == nil {
 			dispatchCtx = context.Background()
@@ -556,9 +583,14 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	}
 
 	var matchedHooks []string
-	if s.Coordinator != nil {
+	// Behavior is execution-only (design doc §3.2); Evaluator.Evaluate also
+	// only ever matches anything while status == executing (its own gate),
+	// so this whole preview is naturally a no-op for a card even without the
+	// nil check — the check just avoids the LookupBehavior call on a nil
+	// Exec outright.
+	if s.Coordinator != nil && newTask.Exec != nil {
 		if coord, ok := s.Coordinator.(*orchestrator.Coordinator); ok && coord.Evaluator != nil {
-			if behavior, found := orchestrator.LookupBehavior(meta, newTask.Behavior); found {
+			if behavior, found := orchestrator.LookupBehavior(meta, newTask.Exec.Behavior); found {
 				for _, hook := range coord.Evaluator.Evaluate(newTask, behavior.Hooks) {
 					matchedHooks = append(matchedHooks, hook.ID)
 				}
@@ -638,17 +670,23 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			if err != nil {
 				return err
 			}
+			// runDispatchLoop only ever drives an execution task (it is the
+			// hook-firing loop; a card never dispatches a hook — design doc
+			// §3), so latest.Exec is expected non-nil here.
+			if latest.Exec == nil {
+				return fmt.Errorf("dispatch loop: task %q is not an execution task (no Exec attrs)", latest.ID)
+			}
 			// Clear pending_answer from the (DB-fresh) awaiting trait now that
 			// the hook has been spawned and consumed it. session_id, question,
 			// and question_id are preserved so the task can be resumed again
 			// if the kit emits another ask.
-			latest.Payload = orchestrator.ClearPendingAnswer(latest.Payload)
+			latest.Exec.Payload = orchestrator.ClearPendingAnswer(latest.Exec.Payload)
 			if len(result.PayloadDelta) > 0 {
-				merged, mergeErr := orchestrator.MergePayload(latest.Payload, result.PayloadDelta)
+				merged, mergeErr := orchestrator.MergePayload(latest.Exec.Payload, result.PayloadDelta)
 				if mergeErr != nil {
 					return mergeErr
 				}
-				latest.Payload = merged
+				latest.Exec.Payload = merged
 			}
 			if err := tx.UpdateTask(latest); err != nil {
 				return err

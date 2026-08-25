@@ -215,9 +215,63 @@ ResolveOrCapture は `ResolveBehavior` を呼ばなくなり、共通コア + Ca
 3. **Task JSON の形**: flat → `{type, …core…, card:{…}, exec:{…}}`。
    消費者は CLI (client パッケージ、同 repo)・Web templ (同 repo)・khi の
    task JSON 読み取り箇所。card/exec の omitempty で相手型のノイズは出ない。
-   0035 が sidecar を選んだ理由だった「DTO 自動露出」問題はこの形で解消。
+   0035 が sidecar を選んだ理由だった「DTO 自動露出」問題のうち、**「相手型の
+   フィールドが紛れ込む」側は**この形で解消 (PR-2 レビューで表現を訂正 —
+   旧稿は無条件に「解消」と書いていたが、下記5の通り detail blob の方は
+   未解消のまま残っている)。
 4. **status 語彙**: captured/triaged/ready が API validation から消える。
    これらを送る・filter に使う消費者は存在しない想定だが、khi 側 grep で確認。
+5. **card の `detail` blob が全 task list/get レスポンスに乗るようになった**
+   (PR-2 レビューで発見・**受け入れ済み契約変更として明記**、未対応のまま
+   マージはしない §10 運用ルールにより doc 化が merge 条件)。
+   単一テーブル化で `taskSelectCols` (`internal/orchestrator/store.go`) が
+   card 専用列を含むようになり、GET /api/tasks・`boid task list --output
+   json`・タスク詳細取得を含む**あらゆる** list/get 経路が card 行 1件ごとに
+   `detail` (summary/source/content_ref/children/suggestion/observed を畳んだ
+   JSON blob) を無条件で返すようになった。PR 前の main では
+   `taskSelectCols` に card 系列が一切無く、`detail` は
+   `GetTaskTriage`/`ListTaskTriageByTaskIDs` を明示的に呼ぶ経路 (`GetCard`/
+   `ListCards`、web.go の queue_next 文脈同梱) だけが取得していた —
+   0035 がサイドカーに分けた元の理由 (列追加が全レスポンスへ自動露出する)
+   は、card についてはこの PR で実質的に解消していない。
+   khi は毎巡 card を list するため影響範囲は大きい。
+
+   サイズについて訂正 (PR-2 レビューラウンド3): 旧稿はここで
+   `orchestrator.MaxContentBytes` (64KiB、`internal/orchestrator/
+   content_size.go`) が detail の実質的な上限として効くと書いていたが、
+   事実誤認だった。`ValidateContentSize("action payload", ...)`
+   (`internal/api/workflow_action.go`) がキャップするのは **1回の
+   attrs_set リクエストの payload** のみ。保存される detail 自体は
+   累積 fold で、`FoldDetailAttrs` (`internal/orchestrator/card.go`) が
+   attrs map へパッチをマージし続け、`AddDetailChild` (同ファイル) は
+   children 配列へ**上限無く**追記し、`UpsertTaskTriage` (同ファイル) は
+   detail の書き込み時にサイズチェックを一切行っていない。つまり 1回の
+   リクエストは 64KiB に制限されても、複数回の attrs_set/add_detail_child
+   を経た1枚の card の detail は 64KiB を軽く1桁超えうる — **累積には
+   上限が無い**。
+
+   **判断: それでも受け入れて契約変更として明記する** (根拠は実装コストの
+   低さと非破壊性の2点のみ — 数字によるサイズ上限の主張はしない)。
+   projection を切って detail を list から落とす選択肢もあったが、
+   projection の新設は今すぐ必要な実装ではなく、後から `?fields=light`
+   相当の projection を追加するのは何も壊さない非破壊変更として行えるため
+   見送った。detail 自体に累積上限を設ける実装 (`FoldDetailAttrs`/
+   `AddDetailChild`/`UpsertTaskTriage` へのサイズガード追加) も選択肢と
+   してあるが、本 PR のスコープでは着手しない。khi 側の帯域またはレスポンス
+   サイズが実際に問題になった場合の対応先 (projection または累積上限の
+   どちらか) は PR-3 以降のフォローアップとする。
+6. **`task_update` の payload/auto_start/instructions は card に対して 409 に
+   なる**。旧 flat Task では Payload/AutoStart/Instructions が (execution
+   専用の意味を持ちつつも) card 上でも構造的に存在するフィールドだったため、
+   card への書き込みは黙って no-op マージされていた。PR-2 以降は
+   `task.Exec == nil` の場合その項目のフィールドごと存在しない —
+   `TaskAppService.UpdateTask` (`internal/api/task_service.go`) は payload・
+   auto_start にそれぞれ明示的な `task.Exec == nil` ガードを追加し、
+   instructions は `IsInstructionsEditable(task.Type, ...)` が同じ理由で
+   card を弾く。3つとも 400 ではなく 409 (Conflict) で返す。khi が過去に
+   card へ payload を書いていた運用があった場合、本 PR デプロイ時点でその
+   呼び出しが 409 を踏むようになる — デプロイ前に khi 側の書き込み経路を
+   確認しておくこと (PR-2 レビューで追記)。
 
 ## 6. 移行計画
 
@@ -263,11 +317,62 @@ name=boid-job` で実行中 job が居ないことを確認する (deploy は ru
 
 ### 移行前の実測 (migration を書く前にやる)
 
-- 本番 DB の status 分布: `boid exec` 等で captured/triaged/ready の残存行数を
-  数える (washover 完了済みなので 0 が期待値。0 でなくても §6.2-3 が拾う)。
-- rowless card の実在数 (task_triage に row の無い card 系 status 行)。
-- remote_id / datasource_id の実データ分布 → §3.2 の「監査して決める」2 項の決着。
-- khi 側で `task_triage_*` op・task JSON フィールドを読む箇所の grep 一覧。
+**実施結果 (2026-08-25, PR-2 実装セッション)**: 本番 DB への直接アクセスが無い
+実装環境だったため、以下はコード監査で代替した。§9 の未決 3 項の決着根拠は
+この節の実測結果そのもの。
+
+- **本番 DB の status 分布**: 直接測れないが、migration 0045 は「実測 0 件でも
+  安全」な設計 (§6.2-3 の 洗い替え + rowless card 救済) にしてあるので、
+  ブロッカーにならない。念のため migration test
+  (`internal/db/migrate/migrate_0045_card_sti_test.go`) に captured/triaged/ready
+  の各パターン (sidecar 有り/無し) を fixture として仕込み、0 件でも 100 件でも
+  同じロジックで決着することを確認した。
+- **rowless card の実在パターン**: `internal/api/machine_select.go` (PR-2 直前、
+  rename 後) の `machineFor` の doc comment 自体が実在を明言している ——
+  「task_create.go's SeedTaskTriage is deliberately BEST-EFFORT at
+  task-creation time ... leaves a real card genuinely rowless」。つまり
+  best-effort insert が失敗すると sidecar 行の無い card が実際に生まれる経路が
+  コードに書かれている。migration 0045 の 型判定優先順位2「row が無くても
+  status が card 系なら card」はこの経路への安全網として設計通り必要。
+  実測結果: rowless card は **実在しうる** (コード上の best-effort insert
+  失敗パスとして) — 件数は本番 DB を見ないと出せないが、0 件でも 0 件でなくても
+  migration の型判定ロジックは変わらない。
+- **remote_id の帰属 — 決着: core (§9 参照)**: `internal/orchestrator/store.go`
+  の `UpdateTask` 自身の doc comment (PR-2 着手前から存在する既存コメント) が
+  「remote_id and auto_start have no status guard here — callers rely on being
+  able to set them regardless of task status (**khi patches remote_id on
+  working/parked tasks**; ...)」と明言している。working/parked は card 専用
+  status であり、この一文は「khi が card に remote_id を書く運用が実在する」
+  という本番挙動の直接証言 (コードコメントに残った実測)。加えて同じ doc
+  comment が「remote_id and auto_start have no status guard here」とも
+  明言している通り、`UpdateTask` は remote_id に一切 status ゲートを掛けて
+  いない — `IsPreDispatchEditableStatus` がゲートしているのは Title と
+  ProjectID の2つだけで (production 呼び出しは `task_service.go` の該当2箇所
+  のみ)、remote_id はそもそもその対象外。つまり card の remote_id 書き込みは
+  現に無条件で許容されている実装済みの経路であり、これを Execution 専用に
+  倒すと khi の既存運用を壊す。→ **remote_id は共通コアに残す**。
+  (旧稿はここで Web UI の task 編集フォームも card への remote_id 書き込み
+  経路として挙げていたが、そのフォーム自体 `GetTaskEdit` が
+  `Status != pending` を redirect するため card からは到達不能であり誤り
+  — PR-2 レビューで指摘され訂正。結論 (core 帰属) 自体は上記の khi 運用実測
+  + 無条件無ゲートという実装事実だけで独立に成立するため変更なし)
+- **datasource_id の生死 — 決着: 既に死んでいる、drop 済み (§9 参照)**:
+  `internal/db/migrate/migrations/0025_drop_tasks_datasource_id.sql`
+  (`ALTER TABLE tasks DROP COLUMN datasource_id;`) が既に存在し、
+  `internal/db/migrate/migrate.go` の migration チェーンに配線済みであることを
+  確認した。つまり本設計 doc の §3.2 が書かれた時点で datasource_id は
+  **既に tasks テーブルから消えている** (0025 は 2026-08-25 より前の別 PR で
+  マージ済み)。Go の `orchestrator.Task` struct に対応フィールドが無いことも
+  「死列」の根拠として §3.2 に書かれていた通り。→ **migration 0045 では
+  datasource_id に一切言及不要** (rebuild 元の tasks テーブルに列自体が
+  存在しないため、drop 判断すら発生しない)。
+- **khi 側の `task_triage_*` op・task JSON フィールド読み取り箇所**: khi は別
+  リポジトリで PR-3 の担当範囲 (本 PR-2 の指示スコープ外)。ただし PR-2 で
+  変える JSON 形 (`{type, ..., card:{...}, exec:{...}}`) は §5-3 で明記された
+  契約変更であり、broker op 名 (`task_triage_get`/`list`) と HTTP path
+  (`/api/triage`) は PR-2 で**変更していない** (Q2 相当、PR-1 と同じく無風)。
+  khi 側の JSON フィールド直読み (`.behavior` 等のフラット読み) は PR-3 の
+  カットオーバー時に対応が必要— このリスクは §5 に既述の通り。
 
 ## 7. 検算 — 既知の傷が消えることの確認
 
@@ -310,16 +415,40 @@ name=boid-job` で実行中 job が居ないことを確認する (deploy は ru
    兆候が出たら再検討。
 4. 命名は「物 = card、過程 = triage」で統一。
 
-未決 (実測 §6.4 とセットで決める):
+**決着済み (PR-2 実装時、2026-08-25 — 本番 DB に触れない実装環境だったため
+コード監査で代替。§6.4 に実測結果と根拠を記載)**:
 
-- `remote_id` の帰属 (core か Execution か) — 整形セッションが card に
-  remote_id を書く運用の有無で決まる。
-- `datasource_id` の生死。
-- type 値の表記 `execution` の確定 (機械名 NewExecutionMachine に合わせた案。
-  より短い `work` 等にするなら **PR-2 の前**に決める — PR-1 は Go の識別子・
-  ファイル名の rename のみで `tasks.type` の値リテラルを一切導入しないため、
-  この未決はブロッカーにならない。PR-2 の migration 0045・CHECK 制約・
-  tagged struct が実際に type 値を書き込む最初の PR なので、そこが締切)。
+- `remote_id` の帰属 → **core (共通コア) に決着**。根拠: (1)
+  `internal/orchestrator/store.go` の `UpdateTask` 自身の既存 doc comment が
+  「khi patches remote_id on working/parked tasks」(working/parked は card
+  専用 status) と明言しており、card への remote_id 書き込みが本番で実際に
+  起きている運用であることの直接証拠になっている。(2) 同じ doc comment が
+  「remote_id and auto_start have no status guard here」とも明言する通り、
+  `UpdateTask` は remote_id に一切 status ゲートを掛けていない —
+  `IsPreDispatchEditableStatus` がゲートしているのは Title/ProjectID のみ
+  (production 呼び出しは `task_service.go` の該当2箇所のみ) — つまり card
+  への remote_id 書き込みは現状すでに無条件で許容されている実装済みの経路。
+  Execution 専用に倒すと (1) の khi 運用が壊れるため、**保守的判断 (既存動作
+  を壊さない側) として core に残した**。実データでこの判断が覆る可能性: 低い
+  (doc comment 自体が「本番で実際に起きている」と明言しており、かつ現行実装
+  が既に無条件許容という後方互換前提で書かれているため)。
+  (旧稿はここで根拠 (2) として Web UI の task 編集フォームが
+  `IsPreDispatchEditableStatus` で remote_id をゲートしていると書いていたが、
+  実際は同フォーム自体 (`GetTaskEdit`) が `Status != pending` を redirect
+  するため card からは到達不能であり、かつ remote_id は上記の通りそもそも
+  `IsPreDispatchEditableStatus` の対象外 — 二重に誤りだった。PR-2 レビューで
+  指摘され訂正。結論は変わらない)。
+- `datasource_id` の生死 → **既に死んでいた (drop 済み) と判明、決着不要に
+  帰着**。`internal/db/migrate/migrations/0025_drop_tasks_datasource_id.sql`
+  が既に tasks テーブルから datasource_id を drop 済みであることをコード監査
+  (migrate.go の migration チェーンを直接確認) で発見した。本設計 doc の §3.2
+  執筆時点でこの事実が反映されていなかった (見落とし)。migration 0045 の
+  CREATE TABLE 文には datasource_id が最初から存在しないため、drop するか
+  否かの判断自体が発生しない。
+- type 値の表記 `execution` → **確定のまま実装 (追加決定なし)**。migration
+  0045・CHECK 制約・tagged struct 全てで `execution` を使用した。
+  `NewExecutionMachine` の命名と一致させる案がそのまま採用され、`work` 等への
+  変更は提案されなかった。
 
 ## 10. 採点表 — レビュワー用 yes/no 判定リスト
 

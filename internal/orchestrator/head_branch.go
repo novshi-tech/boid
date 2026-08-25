@@ -28,12 +28,12 @@ package orchestrator
 // from the retired per-task fork point described above — see
 // CloneDeclaration.BaseBranchForkPoint's doc comment.
 func BuildCloneDeclaration(task *Task, baseBranchForkPoint string) *CloneDeclaration {
-	if task == nil {
+	if task == nil || task.Exec == nil {
 		return nil
 	}
 	return &CloneDeclaration{
-		Branch:              task.BaseBranch,
-		BaseBranch:          task.BaseBranch,
+		Branch:              task.Exec.BaseBranch,
+		BaseBranch:          task.Exec.BaseBranch,
 		CheckoutOnly:        true,
 		BaseBranchForkPoint: baseBranchForkPoint,
 	}

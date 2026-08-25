@@ -12,10 +12,11 @@ import (
 func TestCreateTask_GetOrCreate_HitSkipsAutoStart(t *testing.T) {
 	existing := &orchestrator.Task{
 		ID:       "existing-1",
+		Type:     orchestrator.TaskTypeExecution,
 		Ref:      "step-a",
 		ParentID: "parent-1",
 		Status:   orchestrator.TaskStatusExecuting,
-		Behavior: "dev",
+		Exec:     &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	store := &stubTaskStore{
 		task: existing,
@@ -61,12 +62,17 @@ func TestCreateTask_GetOrCreate_HitSkipsAutoStart(t *testing.T) {
 // `task_create --initial-status parked --ref BGO-214` (no parent) must
 // return the existing card task, not create a duplicate.
 func TestCreateTask_GetOrCreate_RootTask_HitReturnsExisting(t *testing.T) {
+	// card-model-cleanup PR-2: an initial_status=parked task is a Card, which
+	// structurally has no Behavior (execution-only, design doc §3.2) — the
+	// old fixture's Behavior: "dev" is dropped rather than migrated to
+	// Exec.Behavior, since createCardTask never resolves or stores one.
 	existing := &orchestrator.Task{
 		ID:       "existing-card-1",
+		Type:     orchestrator.TaskTypeCard,
 		Ref:      "BGO-214",
 		ParentID: "",
 		Status:   orchestrator.TaskStatusParked,
-		Behavior: "dev",
+		Card:     &orchestrator.CardAttrs{},
 	}
 	store := &stubTaskStore{
 		task: existing,

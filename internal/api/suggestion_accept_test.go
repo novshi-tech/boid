@@ -143,7 +143,7 @@ func TestApplyParkSideEffectFromSuggestion_WritesWakeCondition(t *testing.T) {
 // accept_go_test.go — these three did not). ----
 
 func TestApplyAction_Answered_AcceptWorking(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
@@ -172,7 +172,7 @@ func TestApplyAction_Answered_AcceptWorking(t *testing.T) {
 // condition must come from the SUGGESTION's own params, not from the
 // answered action's payload (which carries only {answer, verb, basis}).
 func TestApplyAction_Answered_AcceptPark_WritesWakeCondition(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
@@ -205,7 +205,7 @@ func TestApplyAction_Answered_AcceptPark_WritesWakeCondition(t *testing.T) {
 }
 
 func TestApplyAction_Answered_AcceptDone(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
@@ -268,7 +268,7 @@ func TestApplyAction_Answered_Accept_AllVerbStatusCombinations(t *testing.T) {
 		for _, status := range statuses {
 			verb, status := verb, status
 			t.Run(fmt.Sprintf("%s_from_%s", verb, status), func(t *testing.T) {
-				task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: status, Behavior: "dev", Payload: []byte(`{}`)}
+				task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: status, Card: &orchestrator.CardAttrs{}}
 				detail := []byte(fmt.Sprintf(`{"attrs":{"suggestion":{"verb":%q}}}`, verb))
 				txStore := &recordingTxStore{
 					task:   task,
@@ -364,7 +364,7 @@ func TestApplyAction_Answered_Reject_AllVerbStatusCombinations_AlwaysSucceeds(t 
 		for _, status := range statuses {
 			verb, status := verb, status
 			t.Run(fmt.Sprintf("%s_from_%s", verb, status), func(t *testing.T) {
-				task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: status, Behavior: "dev", Payload: []byte(`{}`)}
+				task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: status, Card: &orchestrator.CardAttrs{}}
 				detail := []byte(fmt.Sprintf(`{"attrs":{"suggestion":{"verb":%q}}}`, verb))
 				txStore := &recordingTxStore{
 					task:   task,

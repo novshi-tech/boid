@@ -30,16 +30,27 @@ import (
 // row) falls through to sm.Apply's existing rejection unchanged.
 //
 // Why "row exists" is safe as the判定 key, despite CreateTask technically
-// allowing ANY project to request initial_status=captured/triaged
-// (task_create.go's allowedCreateInitialStatuses is not scoped to the meta
-// project) AND despite the row NOT always starting out with real content —
-// CreateTask's own SeedTaskTriage call (task_create.go) and
-// ResolveOrCapture's tx.SeedTaskTriage (task_resolve_or_capture.go) both
-// insert an EMPTY sidecar row ({} detail, no attrs) up front, unconditional
-// on the caller ever sending an attrs_set at all (2026-08-19 correction,
-// Opus review — the previous text here claimed attrs_set's payload contract
-// makes an empty row impossible; that is not true, these two seed calls
-// prove it, and a careful reviewer will find them independently).
+// allowing ANY project to request initial_status=parked (task_create.go's
+// allowedCreateInitialStatuses is not scoped to the meta project) AND
+// despite the row NOT always starting out with real content — CreateTask's
+// own createCardTask (task_create.go) and ResolveOrCapture
+// (task_resolve_or_capture.go) both build a task with EMPTY CardAttrs
+// ({} detail, no attrs) up front, unconditional on the caller ever sending
+// an attrs_set at all (2026-08-19 correction, Opus review — the previous
+// text here claimed attrs_set's payload contract makes an empty row
+// impossible; that is not true, and a careful reviewer will find both
+// construction sites independently).
+//
+// card-model-cleanup PR-2 (docs/plans/card-model-cleanup.md, migration
+// 0045) strengthens this further than the original argument needed: getTriage
+// (CardStore.GetTaskTriage) now queries the SAME tasks row filtered to
+// `type = 'card'` — there is no longer a separate task_triage sidecar table
+// at all, so "the row exists" and "this task's type is card" are now the
+// exact same fact, not two facts kept in sync by convention. A card can
+// never be rowless post-migration: it is type='card' from the moment
+// CreateTask/ResolveOrCapture inserts it (design doc §3.6 — SeedTaskTriage,
+// the old best-effort post-hoc seeding step this comment used to reference,
+// is gone entirely).
 //
 // PR #987 review (LOW 12) correction, superseding this section's original
 // "reachability" argument: card machine v2 (docs/plans/
@@ -54,10 +65,10 @@ import (
 // task_triage row is still the pristine empty seed (e.g. a human clicks
 // go→working→done on a card nobody ever ran attrs_set/park/note against).
 // That is fine: "row exists" was ALWAYS safe here for the reason given above
-// (lines 32-42) alone — a task_triage row is created ONLY by a genuine
-// triage/card-creation path (SeedTaskTriage / ResolveOrCapture's
-// tx.SeedTaskTriage), never by accident on an ordinary task — and that fact
-// does not depend on WHEN or via WHICH rule the task later reaches "done".
+// alone — a card row is created ONLY by a genuine card-creation path
+// (createCardTask / ResolveOrCapture), never by accident on an ordinary
+// task — and that fact does not depend on WHEN or via WHICH rule the task
+// later reaches "done".
 // The row's mere existence, empty or not, already proves this is a real
 // triage card; there was never a need to additionally prove it is non-empty
 // by the time done arrives.
@@ -92,8 +103,15 @@ func resolveAttrsSetDoneTransition(sm *orchestrator.StateMachine, task *orchestr
 			// preExecutionStatuses attrs_set — non-transitioning, status
 			// unchanged. The actual fold happens later in
 			// applyAttrsSetSideEffect, same as always.
-			noop := *task
-			return &noop, nil
+			//
+			// orchestrator.CloneTaskShallow (not a bare `*task` copy — PR-2
+			// review, matching that helper's own doc comment listing this
+			// call site): the caller downstream doesn't currently mutate
+			// noop.Card, but a bare copy would silently alias noop.Card back
+			// into task.Card the moment it started, exactly the "縫い目" bug
+			// class CloneTaskShallow exists to close off everywhere, not just
+			// where a mutation is known today.
+			return orchestrator.CloneTaskShallow(task), nil
 		case errors.Is(err, sql.ErrNoRows):
 			// No row: an ordinary done task (or the theoretical initial_status
 			// edge case that never wrote any attrs). Falls through to

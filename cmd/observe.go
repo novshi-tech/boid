@@ -52,12 +52,26 @@ func renderTaskDetail(detail *apiwire.TaskDetailView) error {
 		fmt.Printf("Description: %s\n", task.Description)
 	}
 	fmt.Printf("Status:      %s\n", task.Status)
-	fmt.Printf("Behavior:    %s\n", task.Behavior)
+	fmt.Printf("Type:        %s\n", task.Type)
+	// Behavior/Payload are execution-only; Kind/Urgency are card-only
+	// (card-model-cleanup PR-2, design doc §3.2) — print whichever side this
+	// task actually carries.
+	if task.Exec != nil {
+		fmt.Printf("Behavior:    %s\n", task.Exec.Behavior)
+	}
+	if task.Card != nil {
+		if task.Card.Kind != "" {
+			fmt.Printf("Kind:        %s\n", task.Card.Kind)
+		}
+		if task.Card.Urgency != "" {
+			fmt.Printf("Urgency:     %s\n", task.Card.Urgency)
+		}
+	}
 	fmt.Printf("Created At:  %s\n", formatTime(task.CreatedAt))
 	fmt.Printf("Updated At:  %s\n", formatTime(task.UpdatedAt))
 
-	if hasPayload(task.Payload) {
-		if yamlStr, err := jsonToYAMLIndented(task.Payload, "  "); err == nil {
+	if task.Exec != nil && hasPayload(task.Exec.Payload) {
+		if yamlStr, err := jsonToYAMLIndented(task.Exec.Payload, "  "); err == nil {
 			fmt.Println("Payload:")
 			fmt.Print(yamlStr)
 		}

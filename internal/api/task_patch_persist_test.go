@@ -35,12 +35,18 @@ func TestTaskHandlerPatch_RemoteIDOnly_PersistsToRealDB(t *testing.T) {
 	svc, tasks := newRealTaskAppService(t)
 	h := &TaskHandler{Service: svc}
 
+	// card-model-cleanup PR-2: "working" is a Card-only status now (design
+	// doc §3.3), and a Card cannot carry Behavior — moved to the
+	// execution-status equivalent (executing), matching
+	// task_update_persist_test.go's identical substitution, since RemoteID
+	// editing is gated on neither type nor status.
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "t",
-		Behavior:  "dev",
-		Status:    orchestrator.TaskStatusWorking,
+		Status:    orchestrator.TaskStatusExecuting,
 		RemoteID:  "OLD-1",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	if err := tasks.CreateTask(task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -72,9 +78,10 @@ func TestTaskHandlerPatch_ProjectIDOnly_PersistsToRealDB(t *testing.T) {
 
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
 		Title:     "t",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusPending,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
 	}
 	if err := tasks.CreateTask(task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -105,11 +112,17 @@ func TestTaskHandlerPatch_ProjectIDOnly_NonPreDispatchStatus_Returns409(t *testi
 	svc, tasks := newRealTaskAppService(t)
 	h := &TaskHandler{Service: svc}
 
+	// working is a Card-only status (design doc §3.3): this is exactly the
+	// "not pre-dispatch" fixture IsPreDispatchEditableStatus needs — a card
+	// is only editable while parked, so working correctly represents "no
+	// longer editable" for a card the same way it would for the retired
+	// flat-model fixture.
 	task := &orchestrator.Task{
 		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeCard,
 		Title:     "t",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusWorking,
+		Card:      &orchestrator.CardAttrs{},
 	}
 	if err := tasks.CreateTask(task); err != nil {
 		t.Fatalf("CreateTask: %v", err)

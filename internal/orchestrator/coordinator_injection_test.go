@@ -23,10 +23,13 @@ func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_OnExitZero(t *testing.
 
 	task := &orchestrator.Task{
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Payload:  json.RawMessage(`{}`),
+		},
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "main-hook"},
@@ -62,10 +65,13 @@ func TestCoordinator_DispatchAndAdvance_LifecycleExecuted_NotSetOnJobFailure(t *
 
 	task := &orchestrator.Task{
 		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Status:    orchestrator.TaskStatusExecuting,
-		Behavior:  "dev",
-		Payload:   json.RawMessage(`{}`),
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Payload:  json.RawMessage(`{}`),
+		},
 	}
 	meta := metaWithBehavior([]projectspec.Hook{
 		{ID: "main-hook"},

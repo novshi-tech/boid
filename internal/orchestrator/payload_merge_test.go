@@ -238,10 +238,13 @@ func TestMergeDefaultInstructions_MultipleOverride_CompleteReplacement(t *testin
 
 func TestCurrentInstructions_ExecutingWithActiveInstruction(t *testing.T) {
 	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
 		Status: orchestrator.TaskStatusExecuting,
-		Instructions: orchestrator.Instructions{
-			{Agent: "claude-code", Name: "planner", Message: "old"},
-			{Agent: "claude-code", Name: "dev", Message: "do the thing", Model: "claude-sonnet-4-6"},
+		Exec: &orchestrator.ExecAttrs{
+			Instructions: orchestrator.Instructions{
+				{Agent: "claude-code", Name: "planner", Message: "old"},
+				{Agent: "claude-code", Name: "dev", Message: "do the thing", Model: "claude-sonnet-4-6"},
+			},
 		},
 	}
 	got := orchestrator.CurrentInstructions(task)
@@ -255,8 +258,11 @@ func TestCurrentInstructions_ExecutingWithActiveInstruction(t *testing.T) {
 
 func TestCurrentInstructions_NotExecuting_ReturnsNil(t *testing.T) {
 	task := &orchestrator.Task{
-		Status:       orchestrator.TaskStatusPending,
-		Instructions: orchestrator.Instructions{{Agent: "claude-code", Message: "m"}},
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusPending,
+		Exec: &orchestrator.ExecAttrs{
+			Instructions: orchestrator.Instructions{{Agent: "claude-code", Message: "m"}},
+		},
 	}
 	if got := orchestrator.CurrentInstructions(task); got != nil {
 		t.Errorf("want nil for non-executing task, got %+v", got)
@@ -264,7 +270,11 @@ func TestCurrentInstructions_NotExecuting_ReturnsNil(t *testing.T) {
 }
 
 func TestCurrentInstructions_NoInstructions_ReturnsNil(t *testing.T) {
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
+	task := &orchestrator.Task{
+		Type:   orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{},
+	}
 	if got := orchestrator.CurrentInstructions(task); got != nil {
 		t.Errorf("want nil when task has no instructions, got %+v", got)
 	}

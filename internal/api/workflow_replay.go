@@ -52,10 +52,13 @@ func (s *TaskWorkflowService) ReplayHook(ctx context.Context, taskID string, req
 	// card's), so — unlike Wake/Dispatch/autoDone/autoReopen/CompleteJob,
 	// each of which only ever runs against one definite side of the split —
 	// the governing machine must be resolved dynamically per task (PR-B).
-	sm, err := machineFor(s.TaskTriage, task)
-	if err != nil {
-		return nil, err
-	}
+	// card-model-cleanup PR-2: machineFor is a pure function of task.Type now,
+	// so it cannot fail. A card reaching this far still fails fast just below
+	// — Coordinator.ReplayHook's lookupBehavior(meta, task) returns
+	// (TaskBehavior{}, false) for a nil task.Exec, which surfaces as "behavior
+	// not found" (400), the same as a card with an unmatched behavior name
+	// always did.
+	sm := machineFor(task)
 	replay, err := s.Coordinator.ReplayHook(ctx, task, meta, sm, req.HookID)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
@@ -76,12 +79,12 @@ func (s *TaskWorkflowService) ReplayHook(ctx context.Context, taskID string, req
 		if err != nil {
 			return err
 		}
-		if len(replay.PayloadDelta) > 0 {
-			merged, mergeErr := orchestrator.MergePayload(latest.Payload, replay.PayloadDelta)
+		if len(replay.PayloadDelta) > 0 && latest.Exec != nil {
+			merged, mergeErr := orchestrator.MergePayload(latest.Exec.Payload, replay.PayloadDelta)
 			if mergeErr != nil {
 				return mergeErr
 			}
-			latest.Payload = merged
+			latest.Exec.Payload = merged
 		}
 		if replay.NewStatus != "" {
 			latest.Status = replay.NewStatus

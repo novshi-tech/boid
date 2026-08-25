@@ -16,7 +16,10 @@ import (
 // HumanCanApplyEveryEdge_NoSuggestion, internal/api, for the machine-level
 // pin of the same edges these render buttons for).
 func TestDetailPrimaryAction_Working(t *testing.T) {
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
+	// card-model-cleanup PR-2: "working" is now a Card-only status (design
+	// doc §3.3), so this fixture must be a Card even though
+	// detailPrimaryAction itself only reads task.Status.
+	task := &orchestrator.Task{Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 
 	action, label := detailPrimaryAction(task, []string{"park", "done"})
 	if action != "done" || label != "Done" {
@@ -25,7 +28,7 @@ func TestDetailPrimaryAction_Working(t *testing.T) {
 }
 
 func TestDetailPrimaryAction_WorkingWithoutDone(t *testing.T) {
-	task := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
+	task := &orchestrator.Task{Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 
 	action, label := detailPrimaryAction(task, []string{"park"})
 	if action != "" || label != "" {
@@ -39,7 +42,8 @@ func TestDetailPrimaryAction_WorkingWithoutDone(t *testing.T) {
 // so, unlike v1's "triage" item (which was gated on task.Status==Working),
 // this menu item's gate is hasAction alone.
 func TestTaskActionBar_ParkedHasWorkingMenuItem(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusParked}
+	// card-model-cleanup PR-2: "parked" is a Card-only status.
+	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
 	if err := TaskActionBar(task, []string{"go", "working", "drop"}, "timeline", false).Render(context.Background(), &buf); err != nil {
@@ -56,7 +60,7 @@ func TestTaskActionBar_ParkedHasWorkingMenuItem(t *testing.T) {
 }
 
 func TestTaskActionBar_ParkedWithoutWorkingAction(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusParked}
+	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
 	if err := TaskActionBar(task, []string{"go", "drop"}, "timeline", false).Render(context.Background(), &buf); err != nil {
@@ -77,7 +81,7 @@ func TestTaskActionBar_ParkedWithoutWorkingAction(t *testing.T) {
 // item here is reachable from the CLI only. parked's PRIMARY button stays Go —
 // closing a card is never the default move — so done lives in the menu.
 func TestTaskActionBar_ParkedHasDoneMenuItem(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusParked}
+	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
 	if err := TaskActionBar(task, []string{"go", "working", "drop", "done"}, "timeline", false).Render(context.Background(), &buf); err != nil {
@@ -98,7 +102,7 @@ func TestTaskActionBar_ParkedHasDoneMenuItem(t *testing.T) {
 }
 
 func TestTaskActionBar_ParkedWithoutDoneAction(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusParked}
+	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
 	if err := TaskActionBar(task, []string{"go", "drop"}, "timeline", false).Render(context.Background(), &buf); err != nil {
@@ -114,7 +118,8 @@ func TestTaskActionBar_ParkedWithoutDoneAction(t *testing.T) {
 // the primary bottom-bar button (detailPrimaryAction), so the menu item must
 // stay out of the way — exactly one done form in the whole bar, not two.
 func TestTaskActionBar_WorkingDoesNotDuplicateDone(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusWorking}
+	// card-model-cleanup PR-2: "working" is a Card-only status.
+	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
 	if err := TaskActionBar(task, []string{"park", "done"}, "timeline", false).Render(context.Background(), &buf); err != nil {
@@ -563,8 +568,12 @@ func TestTaskDetailSuggestionSection_AbortedStatus_HidesAcceptRejectButtons(t *t
 // suggestion" case (the overwhelming majority of tasks): no card at all,
 // not an empty one.
 func TestTaskDetailSuggestionSection_EmptyRendersNothing(t *testing.T) {
+	// card-model-cleanup PR-2: TaskStatusTriaged no longer exists (design doc
+	// §3.3, folded into TaskStatusParked well before this PR) — an empty
+	// suggestion renders nothing regardless of status, so any valid status
+	// pins the same behavior.
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusTriaged, orchestrator.Suggestion{}).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusParked, orchestrator.Suggestion{}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if html := strings.TrimSpace(buf.String()); html != "" {
@@ -582,8 +591,13 @@ func TestTaskDetailSuggestionSection_EmptyRendersNothing(t *testing.T) {
 func TestTaskDetailSuggestionSection_UnknownVerb_StillRendersTextWithNeutralClass(t *testing.T) {
 	suggestion := orchestrator.Suggestion{Verb: "mystery", Reason: "unclear"}
 
+	// card-model-cleanup PR-2: TaskStatusTriaged no longer exists (design doc
+	// §3.3) — TaskStatusParked is the current card status this scenario maps
+	// to (the verb badge itself renders unconditionally, before the
+	// CanApplyManualAction gate, so the exact status doesn't change what this
+	// test asserts).
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusTriaged, suggestion).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusParked, suggestion).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -711,7 +725,15 @@ func awaitingTask(t *testing.T, id, parentID, qid string) *orchestrator.Task {
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	return &orchestrator.Task{ID: id, ParentID: parentID, Status: orchestrator.TaskStatusAwaiting, Payload: payload}
+	// card-model-cleanup PR-2: Payload moved to Exec.Payload, and "awaiting"
+	// is an Execution-only status (design doc §3.3).
+	return &orchestrator.Task{
+		ID:       id,
+		Type:     orchestrator.TaskTypeExecution,
+		ParentID: parentID,
+		Status:   orchestrator.TaskStatusAwaiting,
+		Exec:     &orchestrator.ExecAttrs{Payload: payload},
+	}
 }
 
 // The banner is the only in-page route to the answer form, and it used to be
@@ -746,7 +768,10 @@ func TestTaskDetailAwaitingBanner_RootTaskLinksToItsQuestion(t *testing.T) {
 
 // No question id means there is no answer page to link to.
 func TestTaskDetailAwaitingBanner_NoQuestionID_RendersNothing(t *testing.T) {
-	task := &orchestrator.Task{ID: "child-1", ParentID: "parent-1", Status: orchestrator.TaskStatusAwaiting}
+	// Exec left nil deliberately: this exercises taskExecPayload's nil-Exec
+	// path (card-model-cleanup PR-2), matching the pre-refactor fixture's
+	// unset Payload.
+	task := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ParentID: "parent-1", Status: orchestrator.TaskStatusAwaiting}
 
 	var buf bytes.Buffer
 	if err := TaskDetailAwaitingBanner(task).Render(context.Background(), &buf); err != nil {

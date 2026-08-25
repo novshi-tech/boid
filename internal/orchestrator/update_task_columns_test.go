@@ -23,11 +23,14 @@ func TestUpdateTask_PersistsRemoteIDProjectIDAutoStart(t *testing.T) {
 	}
 
 	task := &orchestrator.Task{
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "t",
-		Behavior:  "dev",
 		RemoteID:  "OLD-1",
-		AutoStart: false,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior:  "dev",
+			AutoStart: false,
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -35,7 +38,7 @@ func TestUpdateTask_PersistsRemoteIDProjectIDAutoStart(t *testing.T) {
 
 	task.RemoteID = "ROOKPF-306"
 	task.ProjectID = "proj-2"
-	task.AutoStart = true
+	task.Exec.AutoStart = true
 	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
@@ -54,7 +57,7 @@ func TestUpdateTask_PersistsRemoteIDProjectIDAutoStart(t *testing.T) {
 	if got.ProjectID != "proj-2" {
 		t.Errorf("ProjectID after re-fetch = %q, want %q (UpdateTask must persist project_id)", got.ProjectID, "proj-2")
 	}
-	if !got.AutoStart {
+	if !got.Exec.AutoStart {
 		t.Error("AutoStart after re-fetch = false, want true (UpdateTask must persist auto_start)")
 	}
 }
@@ -71,17 +74,20 @@ func TestUpdateTask_DoesNotPersistRefOrBehavior(t *testing.T) {
 	d := createTestProject(t)
 
 	task := &orchestrator.Task{
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "t",
-		Behavior:  "dev",
 		Ref:       "original-ref",
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
 	task.Ref = "changed-ref"
-	task.Behavior = "changed-behavior"
+	task.Exec.Behavior = "changed-behavior"
 	if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
@@ -93,7 +99,7 @@ func TestUpdateTask_DoesNotPersistRefOrBehavior(t *testing.T) {
 	if got.Ref != "original-ref" {
 		t.Errorf("Ref after UpdateTask = %q, want unchanged %q (ref is an immutable dedup key)", got.Ref, "original-ref")
 	}
-	if got.Behavior != "dev" {
-		t.Errorf("Behavior after UpdateTask = %q, want unchanged %q (behavior has no update port)", got.Behavior, "dev")
+	if got.Exec.Behavior != "dev" {
+		t.Errorf("Behavior after UpdateTask = %q, want unchanged %q (behavior has no update port)", got.Exec.Behavior, "dev")
 	}
 }

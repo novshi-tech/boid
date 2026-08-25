@@ -18,17 +18,17 @@ func TestGCTasks_DeletesDoneAndAborted(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
 		t.Fatalf("create done task: %v", err)
 	}
 
-	abortedTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Aborted Task", Behavior: "dev", Status: orchestrator.TaskStatusAborted}
+	abortedTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Aborted Task", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusAborted, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, abortedTask); err != nil {
 		t.Fatalf("create aborted task: %v", err)
 	}
 
-	pendingTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Pending Task", Behavior: "dev"}
+	pendingTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Pending Task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, pendingTask); err != nil {
 		t.Fatalf("create pending task: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestGCTasks_EmptyStatuses(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -111,11 +111,11 @@ func TestGCTasks_OlderThanFilter(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	oldTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Old Done", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	oldTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Old Done", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, oldTask); err != nil {
 		t.Fatalf("create old task: %v", err)
 	}
-	recentTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Recent Done", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	recentTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Recent Done", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, recentTask); err != nil {
 		t.Fatalf("create recent task: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestGCTasks_NothingToDelete(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	pendingTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Pending", Behavior: "dev"}
+	pendingTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Pending", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, pendingTask); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -199,17 +199,17 @@ func TestGCTasks_AllDone(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Done 1", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "Done 1", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
 
-	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "Done 2", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "Done 2", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
 
-	pendingTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Pending", Behavior: "dev"}
+	pendingTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Pending", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, pendingTask); err != nil {
 		t.Fatalf("create pending task: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestGC_RuntimesDirCleanup(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestGC_RuntimesDirCleanup_DryRun(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestGC_RuntimesDirCleanup_OlderThanFilter(t *testing.T) {
 	}
 
 	// 古いタスク（60日前）
-	oldTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Old Done", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	oldTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Old Done", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, oldTask); err != nil {
 		t.Fatalf("create old task: %v", err)
 	}
@@ -555,7 +555,7 @@ func TestGC_RuntimesDirCleanup_OlderThanFilter(t *testing.T) {
 	}
 
 	// 新しいタスク（今）
-	recentTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Recent Done", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	recentTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Recent Done", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, recentTask); err != nil {
 		t.Fatalf("create recent task: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestGC_RuntimesDirCleanup_CallsRuntimeReaperBeforeRemoval(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-reaper", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	doneTask := &orchestrator.Task{ProjectID: "proj-reaper", Title: "T", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	doneTask := &orchestrator.Task{ProjectID: "proj-reaper", Title: "T", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -667,7 +667,7 @@ func TestGC_RuntimesDirCleanup_CloneWorkspaceDir(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-clone", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	doneTask := &orchestrator.Task{ProjectID: "proj-clone", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	doneTask := &orchestrator.Task{ProjectID: "proj-clone", Title: "Done Task", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -830,7 +830,7 @@ func TestGC_RuntimesDirCleanup_ReaperErrorContinues(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-reap-err", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	doneTask := &orchestrator.Task{ProjectID: "proj-reap-err", Title: "T", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	doneTask := &orchestrator.Task{ProjectID: "proj-reap-err", Title: "T", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -875,9 +875,9 @@ func TestGC_AttachmentsCleanup(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	doneTask := &orchestrator.Task{ProjectID: "proj-att", Title: "Done", Behavior: "dev", Status: orchestrator.TaskStatusDone}
-	abortedTask := &orchestrator.Task{ProjectID: "proj-att", Title: "Aborted", Behavior: "dev", Status: orchestrator.TaskStatusAborted}
-	runningTask := &orchestrator.Task{ProjectID: "proj-att", Title: "Running", Behavior: "dev", Status: orchestrator.TaskStatusExecuting}
+	doneTask := &orchestrator.Task{ProjectID: "proj-att", Title: "Done", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	abortedTask := &orchestrator.Task{ProjectID: "proj-att", Title: "Aborted", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusAborted, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	runningTask := &orchestrator.Task{ProjectID: "proj-att", Title: "Running", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	for _, tk := range []*orchestrator.Task{doneTask, abortedTask, runningTask} {
 		if err := orchestrator.CreateTask(d.Conn, tk); err != nil {
 			t.Fatalf("create task: %v", err)
@@ -927,8 +927,8 @@ func TestGC_AttachmentsCleanup_OlderThanFilter(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 
-	old := &orchestrator.Task{ProjectID: "proj-att2", Title: "Old", Behavior: "dev", Status: orchestrator.TaskStatusDone}
-	fresh := &orchestrator.Task{ProjectID: "proj-att2", Title: "Fresh", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	old := &orchestrator.Task{ProjectID: "proj-att2", Title: "Old", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	fresh := &orchestrator.Task{ProjectID: "proj-att2", Title: "Fresh", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	for _, tk := range []*orchestrator.Task{old, fresh} {
 		if err := orchestrator.CreateTask(d.Conn, tk); err != nil {
 			t.Fatalf("create task: %v", err)
@@ -977,7 +977,7 @@ func TestGC_TranscriptsDirCleanup_IndependentOfRuntimesDir(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -1024,7 +1024,7 @@ func TestGC_TranscriptsDirCleanup_BothRootsCleanedTogether(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
 		t.Fatalf("create task: %v", err)
 	}

@@ -45,8 +45,8 @@ func TestDuplicateTask_CreatesNewTask(t *testing.T) {
 	if dup.ProjectID != source.ProjectID {
 		t.Errorf("ProjectID = %q, want %q", dup.ProjectID, source.ProjectID)
 	}
-	if dup.Behavior != source.Behavior {
-		t.Errorf("Behavior = %q, want %q", dup.Behavior, source.Behavior)
+	if dup.Exec.Behavior != source.Exec.Behavior {
+		t.Errorf("Behavior = %q, want %q", dup.Exec.Behavior, source.Exec.Behavior)
 	}
 	if dup.Status != orchestrator.TaskStatusPending {
 		t.Errorf("Status = %q, want %q", dup.Status, orchestrator.TaskStatusPending)
@@ -81,11 +81,11 @@ func TestDuplicateTask_CarriesRemoteIDAndInstructions(t *testing.T) {
 		t.Errorf("RemoteID = %q, want %q", dup.RemoteID, source.RemoteID)
 	}
 	// instructions(リリース上書き)を引き継ぐこと
-	if len(dup.Instructions) == 0 {
+	if dup.Exec == nil || len(dup.Exec.Instructions) == 0 {
 		t.Fatalf("duplicated task should carry source instructions, got none")
 	}
-	if dup.Instructions[0].Message != source.Instructions[0].Message {
-		t.Errorf("Instructions[0].Message = %q, want %q", dup.Instructions[0].Message, source.Instructions[0].Message)
+	if dup.Exec.Instructions[0].Message != source.Exec.Instructions[0].Message {
+		t.Errorf("Instructions[0].Message = %q, want %q", dup.Exec.Instructions[0].Message, source.Exec.Instructions[0].Message)
 	}
 }
 

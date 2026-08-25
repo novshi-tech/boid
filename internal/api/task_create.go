@@ -122,6 +122,70 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
 
+	// card-model-cleanup PR-2 (docs/plans/card-model-cleanup.md §3.7): a card
+	// (initial_status=parked) never calls ResolveBehavior at all — Behavior/
+	// Traits/Readonly/BranchPrefix/BaseBranch/Payload/Instructions/AutoStart
+	// are execution-only fields a card structurally cannot carry (ExecAttrs
+	// is nil), so there is nothing for behavior resolution to feed into. This
+	// is what retires the base_branch-template landmine
+	// task_resolve_or_capture.go's ResolveOrCapture used to carry (a
+	// captured/parked task's BaseBranch held a literal, unexpanded template
+	// string, dead data because card machine v2 has no rule reaching
+	// "executing" directly) — the ExecAttrs split makes that state
+	// unrepresentable instead of merely unreachable.
+	if initialStatus == orchestrator.TaskStatusParked {
+		return s.createCardTask(req, initialStatus)
+	}
+	return s.createExecutionTask(req, initialStatus)
+}
+
+// createCardTask builds and inserts a fresh Card (design doc §3.7's purified
+// capture path, applied to the generic CreateTask entry point too — not just
+// ResolveOrCapture). A card created here starts with empty CardAttrs (kind/
+// urgency/wake_at/wake_task_id/suggestion_verb/detail all zero-valued) —
+// exactly what SeedTaskTriage used to insert after the fact. Since the row
+// is type='card' from the INSERT itself, there is no long a separate
+// "seeding" step at all (design doc §3.6): a card cannot be born rowless.
+func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
+	// Children inherit remote_id from their parent when they don't supply
+	// their own (see createExecutionTask's matching comment for the full
+	// rationale — remote_id is a common-core field, so this applies to a
+	// card exactly the same way).
+	if req.RemoteID == "" && req.ParentID != "" {
+		if parent, parentErr := s.Tasks.GetTask(req.ParentID); parentErr == nil && parent != nil && parent.RemoteID != "" {
+			req.RemoteID = parent.RemoteID
+		}
+	}
+
+	if req.Ref != "" {
+		existing, err := s.Tasks.FindTaskByRef(req.Ref, req.ParentID, req.ProjectID)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if existing != nil {
+			return existing, nil
+		}
+	}
+
+	task := &orchestrator.Task{
+		ID:          req.ID,
+		Type:        orchestrator.TaskTypeCard,
+		ProjectID:   req.ProjectID,
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      initialStatus,
+		RemoteID:    req.RemoteID,
+		Ref:         req.Ref,
+		ParentID:    req.ParentID,
+		Card:        &orchestrator.CardAttrs{},
+	}
+	if err := s.Tasks.CreateTask(task); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return task, nil
+}
+
+func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
 	var meta *orchestrator.ProjectMeta
 	if s.Meta != nil {
 		// Hydrate with workspace.yaml so a workspace-level default project
@@ -287,54 +351,35 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	}
 
 	task := &orchestrator.Task{
-		ID:           req.ID,
-		ProjectID:    req.ProjectID,
-		Title:        req.Title,
-		Description:  req.Description,
-		Status:       initialStatus,
-		Behavior:     res.BehaviorName,
-		Traits:       traits,
-		Readonly:     readonly,
-		BranchPrefix: branchPrefix,
-		BaseBranch:   baseBranch,
-		RemoteID:     req.RemoteID,
-		Payload:      payload,
-		Instructions: res.Instructions,
-		AutoStart:    req.AutoStart,
-		Ref:          req.Ref,
-		ParentID:     req.ParentID,
+		ID:          req.ID,
+		Type:        orchestrator.TaskTypeExecution,
+		ProjectID:   req.ProjectID,
+		Title:       req.Title,
+		Description: req.Description,
+		Status:      initialStatus,
+		RemoteID:    req.RemoteID,
+		Ref:         req.Ref,
+		ParentID:    req.ParentID,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior:     res.BehaviorName,
+			Traits:       traits,
+			Readonly:     readonly,
+			BranchPrefix: branchPrefix,
+			BaseBranch:   baseBranch,
+			Payload:      payload,
+			Instructions: res.Instructions,
+			AutoStart:    req.AutoStart,
+		},
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
-	// Seed the task_triage sidecar for a task created directly into a
-	// pre-execution status (docs/plans/cross-project-issue-triage.md Phase 1
-	// PR-5a). "Has a sidecar row" is what makes a task identifiable as a
-	// triage task — ListCards's predicate and PR-5b's reopen guard both rest
-	// on it, and status alone cannot supply it (done is shared with ordinary
-	// tasks). Seeding at birth means khi's freshly ingested cards are visible
-	// immediately rather than only after their first attrs_set lands.
-	//
-	// Checked against task.Status (not req.InitialStatus) so the get-or-create
-	// path above — which can return an EXISTING task in a completely different
-	// status — never mislabels an ordinary task as a triage one. A failure here
-	// is logged rather than failing the create: the task itself is already
-	// committed, and the row is re-created by the first side-effect action
-	// anyway (the pre-PR-5a behavior), so a lazily-seeded row is a strictly
-	// better outcome than a lost card.
-	//
-	// SeedTaskTriage is INSERT ... ON CONFLICT DO NOTHING, so it can never
-	// overwrite an existing row — which matters because the get-or-create path
-	// above can return an EXISTING triaged task on a khi re-ingest, and an
-	// overwrite there would blank that card's urgency/kind and its whole detail
-	// blob (children + observed.source_closed), silently making it unfinishable
-	// under 決定15. Doing the check in one statement also closes the TOCTOU a
-	// get-then-upsert would leave open against a concurrent attrs_set.
-	if s.TaskTriage != nil && orchestrator.IsPreExecutionStatus(task.Status) {
-		if err := s.TaskTriage.SeedTaskTriage(task.ID); err != nil {
-			slog.Error("task create: failed to seed task_triage row", "task_id", task.ID, "error", err)
-		}
-	}
+	// SeedTaskTriage (the task_triage sidecar seed for a task created
+	// directly into a pre-execution status) is GONE as of card-model-cleanup
+	// PR-2 (design doc §3.6): a card is type='card' from the INSERT itself
+	// now (createCardTask above), so there is no "seed it after the fact"
+	// step left for this execution-task path to perform — an execution task
+	// is never a card no matter what status it starts in.
 	// Guard: only fire auto_start for a freshly pending task. When get-or-create
 	// at the store level returns an existing task (e.g. concurrent create race),
 	// the task may already be executing or terminal.

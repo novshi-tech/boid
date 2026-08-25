@@ -355,7 +355,15 @@ func (s *TaskAppService) verifyDoneClaim(ctx context.Context, task *orchestrator
 		}
 	}
 
-	commit, branch, pushed := releaseClaim(task.Payload)
+	// Payload is execution-only (design doc §3.2); verifyDoneClaim only ever
+	// runs against a task reporting "done" via `boid task notify --done`
+	// from inside a running agent session, which only an execution task has
+	// — a card never runs a session to call notify from.
+	var taskPayload json.RawMessage
+	if task.Exec != nil {
+		taskPayload = task.Exec.Payload
+	}
+	commit, branch, pushed := releaseClaim(taskPayload)
 	if commit == "" || s.Projects == nil {
 		return nil
 	}

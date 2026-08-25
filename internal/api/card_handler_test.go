@@ -40,7 +40,13 @@ func (s *stubTriageReader) ListCards(filter orchestrator.TaskFilter) ([]*CardVie
 // swallowed as a filter.
 func TestTriageHandler_Routes(t *testing.T) {
 	svc := &stubTriageReader{
-		view: &CardView{TaskID: "t1", Status: orchestrator.TaskStatusParked, ParkedFrom: orchestrator.TaskStatusReady},
+		// card-model-cleanup PR-2: orchestrator.TaskStatusReady no longer
+		// exists (folded into parked well before this PR). park's only
+		// FromStatus under card machine v2 is "working" (machine_card.go), so
+		// that is the only value ParkedFrom can actually return now — this
+		// test only cares that whatever value the service returns is
+		// serialized through untouched.
+		view: &CardView{TaskID: "t1", Status: orchestrator.TaskStatusParked, ParkedFrom: orchestrator.TaskStatusWorking},
 		list: []*CardView{{TaskID: "a"}, {TaskID: "b"}},
 	}
 	h := &CardHandler{Service: svc}
@@ -58,7 +64,7 @@ func TestTriageHandler_Routes(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 			t.Fatalf("body is not a single view (%v): %s", err, rec.Body)
 		}
-		if got.ParkedFrom != orchestrator.TaskStatusReady {
+		if got.ParkedFrom != orchestrator.TaskStatusWorking {
 			t.Fatalf("parked_from = %q, want it serialized through", got.ParkedFrom)
 		}
 	})

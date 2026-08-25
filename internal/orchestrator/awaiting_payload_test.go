@@ -19,11 +19,14 @@ func TestAwaitingPayload_RoundTrip(t *testing.T) {
 	// silently rather than fail (existing rows predate the field removal).
 	payload := json.RawMessage(`{"awaiting":{"session_id":"sess-abc","question":"Should I proceed?","question_id":"qid-1","pending_answer":"yes"}}`)
 	task := &orchestrator.Task{
+		Type:      orchestrator.TaskTypeExecution,
 		ProjectID: "proj-1",
 		Title:     "Awaiting Task",
-		Behavior:  "dev",
 		Status:    orchestrator.TaskStatusAwaiting,
-		Payload:   payload,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "dev",
+			Payload:  payload,
+		},
 	}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
@@ -38,7 +41,7 @@ func TestAwaitingPayload_RoundTrip(t *testing.T) {
 		t.Errorf("status: got %q, want %q", got.Status, orchestrator.TaskStatusAwaiting)
 	}
 
-	ap := orchestrator.GetAwaitingPayload(got.Payload)
+	ap := orchestrator.GetAwaitingPayload(got.Exec.Payload)
 	if ap.Question != "Should I proceed?" {
 		t.Errorf("question: got %q, want %q", ap.Question, "Should I proceed?")
 	}

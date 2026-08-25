@@ -41,7 +41,7 @@ func TestListActionsSince_CursorMonotonic_NoDuplicates(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev"}
+	task := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "T", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -107,11 +107,11 @@ func TestListActionsSince_ProjectScoping_IsolatesOtherProject(t *testing.T) {
 			t.Fatalf("create project %s: %v", id, err)
 		}
 	}
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev"}
+	task1 := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "T1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
-	task2 := &orchestrator.Task{ProjectID: "proj-2", Title: "T2", Behavior: "dev"}
+	task2 := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-2", Title: "T2", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
@@ -147,11 +147,11 @@ func TestListActionsSince_WorkspaceScoping_IsolatesOtherWorkspace(t *testing.T) 
 	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-b", "ws-2"); err != nil {
 		t.Fatalf("assign proj-b: %v", err)
 	}
-	taskA := &orchestrator.Task{ProjectID: "proj-a", Title: "TA", Behavior: "dev"}
+	taskA := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-a", Title: "TA", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, taskA); err != nil {
 		t.Fatalf("create taskA: %v", err)
 	}
-	taskB := &orchestrator.Task{ProjectID: "proj-b", Title: "TB", Behavior: "dev"}
+	taskB := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-b", Title: "TB", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, taskB); err != nil {
 		t.Fatalf("create taskB: %v", err)
 	}
@@ -178,11 +178,11 @@ func TestListActionsSince_TaskIDNarrowsWithinScope(t *testing.T) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task1 := &orchestrator.Task{ProjectID: "proj-1", Title: "T1", Behavior: "dev"}
+	task1 := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "T1", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task1); err != nil {
 		t.Fatalf("create task1: %v", err)
 	}
-	task2 := &orchestrator.Task{ProjectID: "proj-1", Title: "T2", Behavior: "dev"}
+	task2 := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "T2", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestListActionsSince_TiedCreatedAt_PageBoundary_NoDuplicatesNoGaps(t *testi
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev"}
+	task := &orchestrator.Task{Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Title: "T", Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}

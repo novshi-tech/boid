@@ -61,8 +61,11 @@ base_branch: feature/BGO-170
 	if err := ts.Client.Do("GET", "/api/tasks/"+taskID, nil, &task); err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if task.BaseBranch == "feature/BGO-170" {
-		t.Errorf("BaseBranch = %q, want value from behavior (deprecated task-row override must be dropped)", task.BaseBranch)
+	if task.Exec == nil {
+		t.Fatal("task.Exec is nil, want an execution task")
+	}
+	if task.Exec.BaseBranch == "feature/BGO-170" {
+		t.Errorf("BaseBranch = %q, want value from behavior (deprecated task-row override must be dropped)", task.Exec.BaseBranch)
 	}
 }
 
@@ -98,8 +101,11 @@ func TestRunTaskCreate_DropsDeprecatedBaseBranchFromJSONStdin(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/tasks/"+taskID, nil, &task); err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if task.BaseBranch == "feature/X" {
-		t.Errorf("BaseBranch = %q, want value from behavior (deprecated task-row override must be dropped)", task.BaseBranch)
+	if task.Exec == nil {
+		t.Fatal("task.Exec is nil, want an execution task")
+	}
+	if task.Exec.BaseBranch == "feature/X" {
+		t.Errorf("BaseBranch = %q, want value from behavior (deprecated task-row override must be dropped)", task.Exec.BaseBranch)
 	}
 }
 

@@ -137,11 +137,18 @@ func (sm *StateMachine) Apply(task *Task, action *Action) (*Task, error) {
 			continue // skip condition-based rules
 		}
 		if r.Action == action.Type && (r.FromStatus == "*" || r.FromStatus == string(task.Status)) {
-			newTask := *task
+			// CloneTaskShallow, not a bare `*task` copy: callers of Apply
+			// (workflow_action.go) mutate the returned task's
+			// Exec.Instructions/Exec.Payload directly (e.g. reopen's
+			// instruction-override, the generic action-payload merge) — a
+			// bare struct copy would still share the SAME ExecAttrs/CardAttrs
+			// pointer as the input task, so that mutation would alias back
+			// into it. See CloneTaskShallow's own doc comment.
+			newTask := CloneTaskShallow(task)
 			if r.ToStatus != "" {
 				newTask.Status = TaskStatus(r.ToStatus)
 			}
-			return &newTask, nil
+			return newTask, nil
 		}
 	}
 	return nil, fmt.Errorf("no transition for action %q from status %q", action.Type, task.Status)
@@ -149,7 +156,16 @@ func (sm *StateMachine) Apply(task *Task, action *Action) (*Task, error) {
 
 // AdvanceFull evaluates condition-based rules for the task's current status and payload.
 // Returns an AdvanceOutcome (including optional action payload) if a condition was met, or nil otherwise.
+//
+// Condition/ActionPayloadFn are only ever set on NewExecutionMachine's rules
+// (never on NewCardMachine's — see machine_card.go), so task.Exec.Payload
+// below is only evaluated when r.Condition != nil, which in practice means
+// task is always an execution task here. The nil guard is defense in depth,
+// not evidence a card is expected to reach this loop body.
 func (sm *StateMachine) AdvanceFull(task *Task) *AdvanceOutcome {
+	if task.Exec == nil {
+		return nil
+	}
 	for _, r := range sm.Rules {
 		if r.Condition == nil {
 			continue // skip action-based rules
@@ -157,12 +173,12 @@ func (sm *StateMachine) AdvanceFull(task *Task) *AdvanceOutcome {
 		if r.FromStatus != "*" && r.FromStatus != string(task.Status) {
 			continue
 		}
-		if r.Condition(task.Payload) {
-			newTask := *task
+		if r.Condition(task.Exec.Payload) {
+			newTask := CloneTaskShallow(task)
 			newTask.Status = TaskStatus(r.ToStatus)
-			o := &AdvanceOutcome{Task: &newTask}
+			o := &AdvanceOutcome{Task: newTask}
 			if r.ActionPayloadFn != nil {
-				o.ActionPayload = r.ActionPayloadFn(task.Payload)
+				o.ActionPayload = r.ActionPayloadFn(task.Exec.Payload)
 			}
 			return o
 		}

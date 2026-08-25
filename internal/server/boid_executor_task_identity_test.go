@@ -85,7 +85,7 @@ func (f *fakeIdentityStore) ListIdentitiesByTask(taskID string) ([]string, error
 
 func TestBoidBuiltinExecutor_TaskIdentityLink_CallsStore(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "t1", ProjectID: "proj-1", Status: orchestrator.TaskStatusCaptured},
+		{ID: "t1", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}}
 	identities := &fakeIdentityStore{}
 	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store, Identities: identities}}
@@ -116,7 +116,7 @@ func TestBoidBuiltinExecutor_TaskIdentityLink_CallsStore(t *testing.T) {
 // that up with). Mirrors BoidOpActionSend exactly.
 func TestBoidBuiltinExecutor_TaskIdentityLink_RejectsTaskOutsideWorkspace(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "t1", ProjectID: "proj-outside", Status: orchestrator.TaskStatusCaptured},
+		{ID: "t1", ProjectID: "proj-outside", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}}
 	identities := &fakeIdentityStore{}
 	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store, Identities: identities}}
@@ -149,7 +149,7 @@ func TestBoidBuiltinExecutor_TaskIdentityLink_RejectsTaskOutsideWorkspace(t *tes
 // deliberately does NOT assert its exact text.
 func TestBoidBuiltinExecutor_TaskIdentityLink_ConflictSurfacesAsDistinctExitCode(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "t1", ProjectID: "proj-1", Status: orchestrator.TaskStatusCaptured},
+		{ID: "t1", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}}
 	identities := &fakeIdentityStore{linkErr: orchestrator.ErrIdentityConflict}
 	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store, Identities: identities}}
@@ -182,7 +182,7 @@ func TestBoidBuiltinExecutor_TaskIdentityLink_ResolvesPrefixTaskID(t *testing.T)
 	if err := orchestrator.CreateProject(d, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
 	if err := orchestrator.CreateTask(d, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestBoidBuiltinExecutor_TaskIdentityLink_ResolvesPrefixTaskID(t *testing.T)
 // (both in the same workspace) succeeded silently.
 func TestBoidBuiltinExecutor_TaskIdentityLink_RejectsCrossProjectTaskWithinWorkspace(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "t1", ProjectID: "proj-2", Status: orchestrator.TaskStatusCaptured},
+		{ID: "t1", ProjectID: "proj-2", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}}
 	identities := &fakeIdentityStore{}
 	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store, Identities: identities}}
@@ -255,7 +255,7 @@ func TestBoidBuiltinExecutor_TaskIdentityLink_RejectsCrossProjectTaskWithinWorks
 // just the project the caller asked about — resolve was the one op that
 // didn't.
 func TestBoidBuiltinExecutor_TaskIdentityResolve_RejectsTaskOutsideWorkspace(t *testing.T) {
-	identities := &fakeIdentityStore{resolved: &orchestrator.Task{ID: "t1", ProjectID: "proj-outside", Status: orchestrator.TaskStatusTriaged}}
+	identities := &fakeIdentityStore{resolved: &orchestrator.Task{ID: "t1", ProjectID: "proj-outside", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}}
 	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Identities: identities}}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
@@ -294,7 +294,11 @@ func TestBoidBuiltinExecutor_TaskIdentityUnlink_CallsStore(t *testing.T) {
 }
 
 func TestBoidBuiltinExecutor_TaskIdentityResolve_Found(t *testing.T) {
-	identities := &fakeIdentityStore{resolved: &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusTriaged}}
+	// card-model-cleanup PR-2: TaskStatusTriaged no longer exists (folded into
+	// TaskStatusParked by card machine v2) — substituting TaskStatusParked
+	// keeps this test's actual intent (stdout mentions the task id and its
+	// status) intact.
+	identities := &fakeIdentityStore{resolved: &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}}
 	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Identities: identities}}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 
@@ -306,7 +310,7 @@ func TestBoidBuiltinExecutor_TaskIdentityResolve_Found(t *testing.T) {
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
 	}
-	if !strings.Contains(resp.Stdout, "t1") || !strings.Contains(resp.Stdout, "triaged") {
+	if !strings.Contains(resp.Stdout, "t1") || !strings.Contains(resp.Stdout, "parked") {
 		t.Fatalf("stdout = %q, want it to mention task id and status", resp.Stdout)
 	}
 }
@@ -377,7 +381,7 @@ func TestBoidBuiltinExecutor_TaskIdentity_Unavailable(t *testing.T) {
 
 func TestBoidBuiltinExecutor_TaskIdentityLink_Unavailable(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "t1", ProjectID: "proj-1", Status: orchestrator.TaskStatusCaptured},
+		{ID: "t1", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
 	}}
 	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store}}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}

@@ -31,7 +31,7 @@ func (n *recordingNotifier) Notify(ctx context.Context, ev notify.Event) error {
 func TestNotifySuggestionArrived_FiresWhenVerbSet(t *testing.T) {
 	notifier := &recordingNotifier{}
 	svc := &TaskWorkflowService{Notifier: notifier}
-	task := &orchestrator.Task{ID: "t1", Title: "見積もり依頼", Status: orchestrator.TaskStatusParked}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, Title: "見積もり依頼", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	svc.notifySuggestionArrived(context.Background(), task, &attrsSetPatch{HasVerb: true, Verb: "park"})
 
@@ -51,7 +51,7 @@ func TestNotifySuggestionArrived_FiresRegardlessOfUrgency(t *testing.T) {
 	for _, urgency := range []string{"", orchestrator.UrgencyToday, orchestrator.UrgencyWeek, orchestrator.UrgencySomeday, orchestrator.UrgencyNow} {
 		notifier := &recordingNotifier{}
 		svc := &TaskWorkflowService{Notifier: notifier}
-		task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
+		task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 		svc.notifySuggestionArrived(context.Background(), task, &attrsSetPatch{HasVerb: true, Verb: "go", HasUrgency: urgency != "", Urgency: urgency})
 
@@ -67,7 +67,7 @@ func TestNotifySuggestionArrived_FiresRegardlessOfUrgency(t *testing.T) {
 func TestNotifySuggestionArrived_SkipsWhenNoVerbSet(t *testing.T) {
 	notifier := &recordingNotifier{}
 	svc := &TaskWorkflowService{Notifier: notifier}
-	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	for _, patch := range []*attrsSetPatch{
 		nil,
@@ -88,7 +88,7 @@ func TestNotifySuggestionArrived_SkipsWhenNoVerbSet(t *testing.T) {
 func TestNotifySuggestionArrived_SkipsExplicitNullClear(t *testing.T) {
 	notifier := &recordingNotifier{}
 	svc := &TaskWorkflowService{Notifier: notifier}
-	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	svc.notifySuggestionArrived(context.Background(), task, &attrsSetPatch{HasVerb: true, Verb: ""})
 
@@ -99,7 +99,7 @@ func TestNotifySuggestionArrived_SkipsExplicitNullClear(t *testing.T) {
 
 func TestNotifySuggestionArrived_NilNotifierIsNoop(t *testing.T) {
 	svc := &TaskWorkflowService{}
-	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	// Must not panic.
 	svc.notifySuggestionArrived(context.Background(), task, &attrsSetPatch{HasVerb: true, Verb: "go"})
 }
@@ -128,7 +128,7 @@ func TestNotifySuggestionArrived_NilTaskIsNoop(t *testing.T) {
 // pins the happy path through the real seam: a brand-new suggestion (no
 // task_triage row existed yet) must still notify.
 func TestApplyAction_AttrsSet_NotifiesOnNewSuggestionVerb_ThroughApplyAction(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	notifier := &recordingNotifier{}
 	svc := newTriageWorkflowService(task, txStore)
@@ -152,7 +152,7 @@ func TestApplyAction_AttrsSet_NotifiesOnNewSuggestionVerb_ThroughApplyAction(t *
 // without the verbChanged gate, this would fire on every single khi judge
 // cycle for as long as the suggestion sits unanswered.
 func TestApplyAction_AttrsSet_ResendingSameVerb_DoesNotReNotify(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", SuggestionVerb: "park", Detail: []byte(`{"attrs":{"suggestion":{"verb":"park","reason":"blocked on review"}}}`)},
 	}}
@@ -177,7 +177,7 @@ func TestApplyAction_AttrsSet_ResendingSameVerb_DoesNotReNotify(t *testing.T) {
 // "drop") must still notify — the gate is "did verb change", not "never
 // notify twice for the same card".
 func TestApplyAction_AttrsSet_VerbChangesToADifferentVerb_Renotifies(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", SuggestionVerb: "park", Detail: []byte(`{"attrs":{"suggestion":{"verb":"park"}}}`)},
 	}}

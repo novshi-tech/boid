@@ -64,8 +64,12 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 
 	behavior, _ := lookupBehavior(meta, task)
 
+	if task.Exec == nil {
+		return nil, nil, fmt.Errorf("hook fire event for task %q, which is not an execution task (no Exec attrs)", task.ID)
+	}
+
 	// Business payload filter: limit task.payload to the traits this hook declares.
-	payload := FilterPayloadByTraits(task.Payload, event.Hook.Traits.Consumes)
+	payload := FilterPayloadByTraits(task.Exec.Payload, event.Hook.Traits.Consumes)
 
 	// 1 hook = 1 routed instruction. If multiple candidates match (same phase
 	// and agent), take the first after filtering.
@@ -181,14 +185,14 @@ func validateHookCommandFields(h *Hook) error {
 // (a weaker, largely redundant signal now that clone-mode child tasks share
 // no branch machinery with their parent), it is dropped entirely.
 func taskBusinessEnv(task *Task) map[string]string {
-	if task == nil {
+	if task == nil || task.Exec == nil {
 		return nil
 	}
 	out := map[string]string{}
-	if task.BaseBranch != "" {
-		out["BOID_BASE_BRANCH"] = task.BaseBranch
+	if task.Exec.BaseBranch != "" {
+		out["BOID_BASE_BRANCH"] = task.Exec.BaseBranch
 	}
-	ap := GetAwaitingPayload(task.Payload)
+	ap := GetAwaitingPayload(task.Exec.Payload)
 	if ap.PendingAnswer != "" {
 		out["BOID_USER_ANSWER"] = ap.PendingAnswer
 	}
@@ -255,10 +259,10 @@ func selectInstruction(task *Task, agent string) *RoutedInstruction {
 	// Instructions only drive dispatch while the task is executing; other
 	// statuses carry no live instruction. This guard makes that explicit —
 	// it was previously enforced indirectly through the instruction phase.
-	if task.Status != TaskStatusExecuting {
+	if task.Status != TaskStatusExecuting || task.Exec == nil {
 		return nil
 	}
-	routed := FilterInstructions(task.Instructions, agent)
+	routed := FilterInstructions(task.Exec.Instructions, agent)
 	if len(routed) == 0 {
 		return nil
 	}
@@ -274,18 +278,22 @@ func selectInstruction(task *Task, agent string) *RoutedInstruction {
 // `boid task current` RPC (docs/plans/phase5-shim-and-task-context.md)
 // reuses the exact same projection instead of re-deriving it.
 //
-// Readonly is populated from task.Readonly directly, the same field
+// Readonly is populated from task.Exec.Readonly directly, the same field
 // IsReadonly reads — there is no second source of truth to drift against.
+// Behavior/Readonly are execution-only (design doc §3.2); SnapshotTask is
+// only ever called from PlanHook, which already requires task.Exec != nil
+// (see its own guard above), so this reads task.Exec unconditionally rather
+// than degrading to zero values a card could never legitimately produce.
 func SnapshotTask(task *Task) *TaskSnapshot {
-	if task == nil {
+	if task == nil || task.Exec == nil {
 		return nil
 	}
 	return &TaskSnapshot{
 		ID:          task.ID,
 		Title:       task.Title,
 		Status:      string(task.Status),
-		Behavior:    task.Behavior,
+		Behavior:    task.Exec.Behavior,
 		Description: task.Description,
-		Readonly:    task.Readonly,
+		Readonly:    task.Exec.Readonly,
 	}
 }
