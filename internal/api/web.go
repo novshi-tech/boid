@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -20,7 +21,6 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/timeline"
 	"github.com/novshi-tech/boid/web/templates"
-	"github.com/novshi-tech/boid/web/templates/components"
 )
 
 // detailTimelineGroups builds the status-grouped timeline for the Web UI
@@ -69,10 +69,12 @@ type WebHandler struct {
 	// that never registers the /settings route.
 	ConfigService SettingsConfigService
 
-	// TaskTriage backs the queue_next view's 文脈同梱 enrichment (urgency +
-	// summary per row, docs/plans/cross-project-issue-triage.md Phase 1
-	// PR-3) — nil-safe: when unset, queue_next tasks render with no
-	// urgency/summary badge instead of failing the whole list.
+	// TaskTriage backs the list row's suggestion/summary enrichment
+	// (docs/plans/cross-project-issue-triage.md Phase 1 PR-3, restated by
+	// docs/plans/webui-detail-list-redesign.md PR-4 now that the list is one
+	// flat view instead of four tabs) — nil-safe: when unset, every row
+	// renders with no suggestion edge/summary badge instead of failing the
+	// whole list.
 	TaskTriage CardStore
 }
 
@@ -253,20 +255,20 @@ func taskFormAttachments(r *http.Request) []*multipart.FileHeader {
 	return r.MultipartForm.File["attachments"]
 }
 
-// triageByTaskID batch-fetches task_triage rows for a view's enrichment:
-// the queue_next view (BuildQueueItems: urgency/summary/children/
-// suggestion) and the Parked tab (BuildTreeItemsWithSuggestions:
-// suggestion only). h.TaskTriage == nil degrades to no enrichment (empty
-// map), not an error — both views still list tasks correctly, just without
-// the extra badges.
+// triageByTaskID batch-fetches task_triage rows for the list row's
+// enrichment (templates.BuildListRows: suggestion + summary per row —
+// docs/plans/webui-detail-list-redesign.md PR-4 restates this for the one
+// flat list that replaced the pre-PR-4 queue_next/Parked tabs'
+// BuildQueueItems/BuildTreeItemsWithSuggestions, both deleted). h.TaskTriage
+// == nil degrades to no enrichment (empty map), not an error — the list
+// still renders correctly, just without the extra badges.
 //
 // A single ListTaskTriageByTaskIDs call (BD-8 残件1), not a per-task
 // GetTaskTriage loop: #task-list self-polls every 5s (tasks.templ's
-// hx-trigger), and the Parked tab has no upper bound the way queue_next's
-// urgency predicate does (store.go's queue_next branch), so the old N+1
-// loop's query count grew linearly with both poll frequency and however
-// many cards were parked — exactly the shape that gets worse once BD-7's
-// ingest starts landing more of them.
+// hx-trigger), and the list has no upper bound on how many rows carry a
+// triage sidecar, so the old N+1 loop's query count grew linearly with both
+// poll frequency and however many cards were live — exactly the shape that
+// gets worse once BD-7's ingest starts landing more of them.
 //
 // Same per-row tolerance as the old loop, just moved into
 // ListTaskTriageByTaskIDs itself (Opus review finding, 2026-08-18: a
@@ -300,18 +302,52 @@ func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orch
 	return out
 }
 
+// taskListPageSize is the list's page size (docs/plans/
+// webui-detail-list-redesign.md §3.5, §5 論点4): LIMIT/OFFSET is enough at
+// the current data scale, and "how often does someone actually look at page
+// 2" is assumed low, so a simple fixed page size (no user-configurable
+// page-size control) is the whole pagination UI.
+const taskListPageSize = 50
+
+// parseTaskListPage reads the "page" query param as a 1-indexed page
+// number, clamped to >= 1 for any missing/malformed/non-positive value —
+// a bad or absent page param must degrade to "show page 1", never a 500 or
+// a negative OFFSET.
+func parseTaskListPage(raw string) int {
+	if raw == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
 func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	page := parseTaskListPage(q.Get("page"))
+	// docs/plans/webui-detail-list-redesign.md PR-4 (§3.5): the list is one
+	// flat, TOP-LEVEL-ONLY view now — no more Open/Closed/Queue/Parked tabs,
+	// no tree. ParentID="" restricts to root tasks (a card's/root exec
+	// task's own children are read from the detail page instead — §3.3/§3.4
+	// item 2, shipped by PR-2). The default status is "" (every status,
+	// newest-updated first); ActiveOnly is the opt-in "アクティブのみ"
+	// narrowing that replaces the old default-to-"open" tab.
+	rootParentID := ""
 	filter := orchestrator.TaskFilter{
 		Status:      q.Get("status"),
 		ProjectID:   q.Get("project"),
 		Behavior:    q.Get("behavior"),
 		WorkspaceID: q.Get("workspace"),
 		Title:       q.Get("q"),
-	}
-	// Web UI defaults to "open" when no status is specified.
-	if filter.Status == "" {
-		filter.Status = "open"
+		ParentID:    &rootParentID,
+		ActiveOnly:  q.Get("active") == "1",
+		// Fetch one row past the page size to answer "is there a next page"
+		// without a second COUNT query — trimmed back to taskListPageSize
+		// below before it ever reaches a template.
+		Limit:  taskListPageSize + 1,
+		Offset: (page - 1) * taskListPageSize,
 	}
 
 	projects, _ := h.Service.ListProjects()
@@ -326,51 +362,29 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	hasMore := len(tasks) > taskListPageSize
+	if hasMore {
+		tasks = tasks[:taskListPageSize]
+	}
 
 	projectNames := projectNameMap(projects)
-	var items []components.TreeItem
-	switch {
-	case filter.Status == "queue_next":
-		// queue_next (cross-project-issue-triage Phase 1 PR-3) is a flat,
-		// deterministically-ordered list — 文脈同梱: 1項目 = 1判断 (成功の定義)
-		// reads better as a flat priority list than a parent/child tree, and
-		// its SQL ordering (store.go's ListTasks "queue_next" branch) would
-		// be discarded by BuildTreeItems' own grouping/sort anyway.
-		items = BuildQueueItems(tasks, projectNames, h.triageByTaskID(tasks))
-	case filter.Status == "parked":
-		// Parked tab (BD-8): BuildTreeItems' shape (Depth/HasChildren/
-		// ParentID), plus the suggestion overlay so "which parked card has
-		// a wake suggestion" is answerable from the list, not just
-		// per-task. This is not actually a rich tree in practice — the
-		// backing query is the generic `t.status = ?` predicate
-		// (store.go), so a parked task's non-parked children (e.g.
-		// dispatched/working ones from before it was parked) are excluded
-		// from the result set and BuildTreeItems degenerates to a flat
-		// list for them. Using the tree builder here is just "don't
-		// special-case parked-parent-with-parked-child" — not a claim that
-		// this view shows a card's live children.
-		items = BuildTreeItemsWithSuggestions(tasks, projectNames, h.triageByTaskID(tasks))
-	case filter.Status == "closed":
-		items = BuildFlatItems(tasks, projectNames)
-	default:
-		items = BuildTreeItems(tasks, projectNames)
-	}
+	items := templates.BuildListRows(tasks, projectNames, h.triageByTaskID(tasks))
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	if r.Header.Get("HX-Target") == "main-content" {
 		workspaces, _ := h.Service.ListWorkspaces()
-		templates.TaskListContent(items, filter, projects, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
+		templates.TaskListContent(items, filter, page, hasMore, projects, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
 		return
 	}
 
 	if r.Header.Get("HX-Request") == "true" {
-		templates.TaskListFragment(items, filter, r.URL.RequestURI()).Render(r.Context(), w)
+		templates.TaskListFragment(items, filter, page, hasMore, r.URL.RequestURI()).Render(r.Context(), w)
 		return
 	}
 
 	workspaces, _ := h.Service.ListWorkspaces()
-	templates.TaskList(items, filter, projects, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
+	templates.TaskList(items, filter, page, hasMore, projects, workspaces, r.URL.RequestURI()).Render(r.Context(), w)
 }
 
 func (h *WebHandler) SessionList(w http.ResponseWriter, r *http.Request) {
@@ -439,6 +453,20 @@ func projectInList(projects []*orchestrator.Project, projectID string) bool {
 		}
 	}
 	return false
+}
+
+// projectNameMap builds an id→display-name lookup from a project list.
+// Moved here from the pre-PR-4 tree.go (deleted by docs/plans/
+// webui-detail-list-redesign.md PR-4 alongside the BuildTreeItems family it
+// backed) — TaskList is its only caller now.
+func projectNameMap(projects []*orchestrator.Project) map[string]string {
+	m := make(map[string]string, len(projects))
+	for _, p := range projects {
+		if p.Meta.Name != "" {
+			m[p.ID] = p.Meta.Name
+		}
+	}
+	return m
 }
 
 func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {

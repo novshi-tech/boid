@@ -35,7 +35,8 @@ const notifyTimeout = 10 * time.Second
 //     'now' tier on a card already sitting in the queue", but queue
 //     membership is no longer urgency-gated at all (design doc §3.6 —
 //     urgency demoted to an ORDER BY-only attribute, store.go's "queue_next"
-//     branch). Keeping an urgency-gated notify would smuggle urgency back in
+//     branch — itself later removed entirely, docs/plans/
+//     webui-detail-list-redesign.md PR-4). Keeping an urgency-gated notify would smuggle urgency back in
 //     as a decision-relevant field the queue predicate itself no longer
 //     treats that way, and — concretely — could notify about urgency="now"
 //     on a card with NO suggestion at all (urgency and suggestion are

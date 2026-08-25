@@ -140,123 +140,153 @@ func TestTaskCardActionBar_WorkingDoesNotDuplicateDone(t *testing.T) {
 	}
 }
 
-// TestTaskListContent_ParkedTabActive guards BD-8's Web UI fix: ?status=parked
-// used to fall through TaskFilters' old else-branch and render Open as the
-// active tab (there was no dedicated parked case at all — see
-// components.statusTab / statusTabActive, filters.templ). Renders through
-// TaskListContent (not components.TaskFilters directly) because that's the
-// actual call path a browser hits (tasks.templ wraps components.TaskFilters).
-func TestTaskListContent_ParkedTabActive(t *testing.T) {
+// TestTaskFilters_NoStatusTabsInList mirrors components' own
+// TestTaskFilters_NoStatusTabs at the page-content level (docs/plans/
+// webui-detail-list-redesign.md PR-4, §3.5): the old Open/Closed/Queue/
+// Parked status tabs (components.statusTab/statusTabActive, filters.templ)
+// are gone — TaskListContent renders the active-only toggle instead, no
+// tabs at all regardless of filter.Status.
+func TestTaskFilters_NoStatusTabsInList(t *testing.T) {
 	filter := orchestrator.TaskFilter{Status: "parked"}
 
 	var buf bytes.Buffer
-	if err := TaskListContent(nil, filter, nil, nil, "/?status=parked").Render(context.Background(), &buf); err != nil {
+	if err := TaskListContent(nil, filter, 1, false, nil, nil, "/?status=parked").Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 
-	if !strings.Contains(html, `class="status-tab active" role="tab" aria-selected="true">Parked</button>`) {
-		t.Error("Parked tab should be active for ?status=parked")
+	if strings.Contains(html, "status-tab") {
+		t.Errorf("expected no status-tab markup (removed by PR-4), got: %s", html)
 	}
-	if strings.Contains(html, `class="status-tab active" role="tab" aria-selected="true">Open</button>`) {
-		t.Error("Open tab should NOT be active for ?status=parked (this was the reported bug)")
-	}
-}
-
-// TestTaskListContent_OpenTabActiveByDefault pins the unchanged default:
-// no status (as web.go's TaskList normalizes an empty query param to
-// "open" before this template ever sees it) still shows Open as active.
-func TestTaskListContent_OpenTabActiveByDefault(t *testing.T) {
-	filter := orchestrator.TaskFilter{Status: "open"}
-
-	var buf bytes.Buffer
-	if err := TaskListContent(nil, filter, nil, nil, "/?status=open").Render(context.Background(), &buf); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	html := buf.String()
-
-	if !strings.Contains(html, `class="status-tab active" role="tab" aria-selected="true">Open</button>`) {
-		t.Error("Open tab should be active for ?status=open")
-	}
-	if strings.Contains(html, `class="status-tab active" role="tab" aria-selected="true">Parked</button>`) {
-		t.Error("Parked tab should NOT be active for ?status=open")
+	if !strings.Contains(html, `name="active"`) {
+		t.Errorf("expected the active-only toggle to render, got: %s", html)
 	}
 }
 
-// TestTaskListFragment_EmptyOpenTab_ShowsCreateFirstTaskCopy pins the
-// unchanged default (BD-8 残件2 must not touch the Open tab's behavior): an
-// empty install with no filter still gets the "create your first task"
-// invitation, not "nothing in this view".
-func TestTaskListFragment_EmptyOpenTab_ShowsCreateFirstTaskCopy(t *testing.T) {
-	filter := orchestrator.TaskFilter{Status: "open"}
-
+// TestTaskListFragment_EmptyDefaultView_ShowsCreateFirstTaskCopy pins the
+// unchanged default-empty-install experience: no filter at all (the new
+// default — 全状態表示, no more "open" tab) on page 1 still gets the "create
+// your first task" invitation.
+func TestTaskListFragment_EmptyDefaultView_ShowsCreateFirstTaskCopy(t *testing.T) {
 	var buf bytes.Buffer
-	if err := TaskListFragment(nil, filter, "/?status=open").Render(context.Background(), &buf); err != nil {
+	if err := TaskListFragment(nil, orchestrator.TaskFilter{}, 1, false, "/").Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 
 	if !strings.Contains(html, "No tasks yet") {
-		t.Errorf("expected the Open tab's empty-install copy, got: %s", html)
+		t.Errorf("expected the empty-install copy, got: %s", html)
 	}
 	if !strings.Contains(html, `href="/tasks/new"`) {
-		t.Errorf("expected the Create CTA on the empty Open tab, got: %s", html)
+		t.Errorf("expected the Create CTA on the empty default view, got: %s", html)
 	}
 }
 
-// TestTaskListFragment_EmptyNonOpenTabs_ShowsViewSpecificCopy is the BD-8
-// 残件2 regression: Closed / Queue(queue_next) / Parked are each their own
-// status predicate, not "Open minus something" — an empty result on one of
-// them means the view has nothing right now, not that the product has zero
-// tasks. Before this fix, taskFilterActive (which never looks at
-// filter.Status) alone picked the copy, so all three tabs rendered the same
-// misleading "No tasks yet / Create your first task to get started" as a
-// truly-empty install, complete with a Create CTA that has nothing to do
-// with why the tab is empty.
-func TestTaskListFragment_EmptyNonOpenTabs_ShowsViewSpecificCopy(t *testing.T) {
-	for _, status := range []string{"closed", "queue_next", "parked"} {
-		t.Run(status, func(t *testing.T) {
-			filter := orchestrator.TaskFilter{Status: status}
-
+// TestTaskListFragment_EmptyWithFilter_ShowsFilterCopy pins the PR-4
+// generalization of the old per-tab empty copy: ANY narrowing filter
+// (status, active-only, search, project, ...) that returns zero rows shows
+// the "no tasks match the current filters" copy with a Clear filters CTA —
+// there is no more per-tab "nothing in this view" branch, because there are
+// no more tabs. taskFilterActive (tasks.templ) now folds Status/ActiveOnly
+// into the same check as Title/ProjectID/etc.
+func TestTaskListFragment_EmptyWithFilter_ShowsFilterCopy(t *testing.T) {
+	cases := []struct {
+		name   string
+		filter orchestrator.TaskFilter
+	}{
+		{"status", orchestrator.TaskFilter{Status: "parked"}},
+		{"active_only", orchestrator.TaskFilter{ActiveOnly: true}},
+		{"title_search", orchestrator.TaskFilter{Title: "no such task"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			if err := TaskListFragment(nil, filter, "/?status="+status).Render(context.Background(), &buf); err != nil {
+			if err := TaskListFragment(nil, c.filter, 1, false, "/?q=no+such+task").Render(context.Background(), &buf); err != nil {
 				t.Fatalf("render: %v", err)
 			}
 			html := buf.String()
 
+			if !strings.Contains(html, "No tasks match the current filters") {
+				t.Errorf("expected the filter-narrowed-to-nothing copy, got: %s", html)
+			}
 			if strings.Contains(html, "No tasks yet") {
-				t.Errorf("status=%q must not show the empty-install copy, got: %s", status, html)
-			}
-			if strings.Contains(html, `href="/tasks/new"`) {
-				t.Errorf("status=%q must not show the Create CTA (misleading — creating a task won't populate this view), got: %s", status, html)
-			}
-			if !strings.Contains(html, "Nothing in this view") {
-				t.Errorf("status=%q should show view-specific empty copy, got: %s", status, html)
+				t.Errorf("must not show the empty-install copy when a filter is active, got: %s", html)
 			}
 		})
 	}
 }
 
-// TestTaskListFragment_EmptyNonOpenTabWithFilter_ShowsFilterCopy pins the
-// priority order when both conditions hold: an additional filter (e.g.
-// search text) narrows a non-Open tab to zero results. The
-// filter-narrowed-to-nothing copy (with its "clear filters" CTA) wins over
-// the view-specific empty copy, since clearing the filter is the more
-// specific/actionable next step.
-func TestTaskListFragment_EmptyNonOpenTabWithFilter_ShowsFilterCopy(t *testing.T) {
-	filter := orchestrator.TaskFilter{Status: "parked", Title: "no such task"}
-
+// TestTaskListFragment_EmptyPastPage1_ShowsGoBackCopy pins the pagination
+// boundary's empty state (§3.5, §5 論点4): landing on page 2+ with zero rows
+// (the dataset shrank, or the caller typo'd ?page=) shows a "go back" hint,
+// not the misleading "create your first task" install copy.
+func TestTaskListFragment_EmptyPastPage1_ShowsGoBackCopy(t *testing.T) {
 	var buf bytes.Buffer
-	if err := TaskListFragment(nil, filter, "/?status=parked&q=no+such+task").Render(context.Background(), &buf); err != nil {
+	if err := TaskListFragment(nil, orchestrator.TaskFilter{}, 2, false, "/?page=2").Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 
-	if !strings.Contains(html, "No tasks match the current filters") {
-		t.Errorf("expected the filter-narrowed-to-nothing copy to win, got: %s", html)
+	if !strings.Contains(html, "Nothing on this page") {
+		t.Errorf("expected the past-page-1 empty copy, got: %s", html)
 	}
-	if strings.Contains(html, "Nothing in this view") {
-		t.Errorf("view-specific copy should not show when an additional filter is also active, got: %s", html)
+	if strings.Contains(html, "No tasks yet") || strings.Contains(html, "No tasks match the current filters") {
+		t.Errorf("must not show the page-1 empty copies when page > 1, got: %s", html)
+	}
+}
+
+// TestTaskListPagination_RendersPrevAndNext pins the Prev/Next nav's
+// visibility rules: Prev only past page 1, Next only when hasMore.
+func TestTaskListPagination_RendersPrevAndNext(t *testing.T) {
+	rows := []ListRow{{Task: &orchestrator.Task{ID: "t1", Title: "t1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{}}}}
+
+	var buf bytes.Buffer
+	if err := TaskListFragment(rows, orchestrator.TaskFilter{}, 2, true, "/?page=2").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, "← Prev") {
+		t.Errorf("expected a Prev link on page 2, got: %s", html)
+	}
+	if !strings.Contains(html, "Next →") {
+		t.Errorf("expected a Next link when hasMore is true, got: %s", html)
+	}
+	// page 1 is the canonical/bookmarkable URL with no "page" param at all
+	// (pageURL's own canonicalization — TestPageURL_SetsAndRemovesPageParam
+	// pins this directly), so the Prev link (page 2 - 1 = page 1) targets a
+	// bare "/", not "?page=1".
+	if !strings.Contains(html, `hx-get="/"`) {
+		t.Errorf("Prev link should point at / (page 1, no page param), got: %s", html)
+	}
+	if !strings.Contains(html, "page=3") {
+		t.Errorf("Next link should point at page=3, got: %s", html)
+	}
+}
+
+// TestTaskListPagination_Page1NoMore_RendersNeitherLink pins the common
+// case: a single page of results shows no pagination nav at all.
+func TestTaskListPagination_Page1NoMore_RendersNeitherLink(t *testing.T) {
+	rows := []ListRow{{Task: &orchestrator.Task{ID: "t1", Title: "t1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{}}}}
+
+	var buf bytes.Buffer
+	if err := TaskListFragment(rows, orchestrator.TaskFilter{}, 1, false, "/").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+	if strings.Contains(html, "list-pagination") {
+		t.Errorf("expected no pagination nav on a single-page result, got: %s", html)
+	}
+}
+
+// TestPageURL_SetsAndRemovesPageParam pins pageURL's canonicalization: page
+// 1 removes the "page" param entirely (a clean, bookmarkable URL), any other
+// page sets it.
+func TestPageURL_SetsAndRemovesPageParam(t *testing.T) {
+	if got := pageURL("/?status=open&page=3", 1); strings.Contains(got, "page=") {
+		t.Errorf("pageURL(..., 1) = %q, want no page param", got)
+	}
+	if got := pageURL("/?status=open", 2); !strings.Contains(got, "page=2") {
+		t.Errorf("pageURL(..., 2) = %q, want page=2", got)
 	}
 }
 

@@ -2322,9 +2322,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			// configHandler above uses), mirroring configHandler's own
 			// `Service: srv` wiring just above.
 			ConfigService: srv,
-			// queue_next view enrichment (cross-project-issue-triage Phase 1
-			// PR-3) — same taskRepo instance already wired as
-			// TaskWorkflowService.TaskTriage above.
+			// List row suggestion/summary enrichment (cross-project-issue-triage
+			// Phase 1 PR-3; restated for the single flat list by docs/plans/
+			// webui-detail-list-redesign.md PR-4 — the pre-PR-4 queue_next/
+			// Parked tabs this originally backed are gone) — same taskRepo
+			// instance already wired as TaskWorkflowService.TaskTriage above.
 			TaskTriage: runtime.taskRepo,
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)

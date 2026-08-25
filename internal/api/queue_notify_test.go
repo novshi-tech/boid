@@ -48,7 +48,7 @@ func TestNotifySuggestionArrived_FiresWhenVerbSet(t *testing.T) {
 // (including none at all) still notifies once a suggestion attaches — the
 // gate is "does this patch carry a verb", full stop.
 func TestNotifySuggestionArrived_FiresRegardlessOfUrgency(t *testing.T) {
-	for _, urgency := range []string{"", orchestrator.UrgencyToday, orchestrator.UrgencyWeek, orchestrator.UrgencySomeday, orchestrator.UrgencyNow} {
+	for _, urgency := range []string{"", "today", "week", "someday", "now"} {
 		notifier := &recordingNotifier{}
 		svc := &TaskWorkflowService{Notifier: notifier}
 		task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
@@ -72,7 +72,7 @@ func TestNotifySuggestionArrived_SkipsWhenNoVerbSet(t *testing.T) {
 	for _, patch := range []*attrsSetPatch{
 		nil,
 		{},
-		{HasUrgency: true, Urgency: orchestrator.UrgencyNow},
+		{HasUrgency: true, Urgency: "now"},
 	} {
 		svc.notifySuggestionArrived(context.Background(), task, patch)
 	}

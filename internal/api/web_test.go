@@ -60,10 +60,12 @@ func (s *stubWebService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestra
 	// stub to behave like the real store.ListTasks — otherwise every level
 	// of a recursive walk would see the whole unfiltered fixture and loop
 	// forever, or a card's children query would pick up unrelated fixture
-	// rows. No other caller in this package ever sets ParentID (TaskList
-	// never does — see TestWebHandlerTaskList_FiltersMappedToTaskFilter),
-	// so this branch is new-callers-only and does not change any existing
-	// test's observed behavior.
+	// rows. PR-4 (§3.5) added a second caller: TaskList itself now ALWAYS
+	// sets ParentID to the root scope ("") — see
+	// TestWebTaskList_RootOnly/TestWebTaskList_ChildTaskNeverAppears
+	// (web_task_list_v2_test.go) — so most fixtures in this file (which
+	// default ParentID to "") pass through this same filtering unchanged;
+	// only a fixture that deliberately sets a non-empty ParentID is affected.
 	var out []*orchestrator.Task
 	for _, t := range s.tasks {
 		if t.ParentID == *filter.ParentID {

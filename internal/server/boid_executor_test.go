@@ -1134,8 +1134,10 @@ func TestBoidBuiltinExecutor_TaskList_AcceptsKnownStatusesAndKeywords(t *testing
 	// concept was folded into "parked" by card machine v2 before this PR) —
 	// substituted with "parked" here so this loop still exercises "any exact
 	// orchestrator.TaskStatus value is accepted" with a real, currently-valid
-	// status.
-	for _, status := range []string{"", "open", "closed", "queue_next", "triage", "parked", "pending", "dropped"} {
+	// status. docs/plans/webui-detail-list-redesign.md PR-4 (§3.6) added
+	// "cards_live" as the canonical name for the predicate "triage" backs
+	// (kept as a compatibility alias) — both must validate.
+	for _, status := range []string{"", "open", "closed", "queue_next", "cards_live", "triage", "parked", "pending", "dropped"} {
 		resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 			Op:        sandbox.BoidOpTaskList,
 			ProjectID: "proj-1",

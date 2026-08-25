@@ -257,15 +257,23 @@ func applyChildSpeccedSideEffect(tx TxStore, taskID string, p *childSpeccedPaylo
 // Phase 1 PR-5a; suggestion added by PR-2, docs/plans/
 // suggestion-as-state-transition-impl.md §4.1).
 //
-// Why these are not opaque like every other attrs key: each one IS a queue
-// predicate. ListTasks("queue_next") INNER JOINs task_triage, filters on
-// tt.suggestion_verb (the membership gate since PR-2) and orders by
-// tt.urgency (an ordering-only attribute since PR-2 — store.go) — so a value
-// that only ever reaches detail.attrs can never affect the queue. Before
-// PR-5a nothing wrote the urgency column at all, which left the queue view
-// permanently empty; the same gap existed for suggestion_verb before PR-2.
-// kind rides along because it is the same shape (a real column, daemon
-// vocabulary, no channel knowledge).
+// Why these are not opaque like every other attrs key: each one is a real,
+// promoted-out column with readers beyond the opaque blob. Historically
+// (PR-2 through docs/plans/webui-detail-list-redesign.md PR-4) that reader
+// was a SQL queue predicate — ListTasks("queue_next") INNER JOINed
+// task_triage, filtered on tt.suggestion_verb, and ordered by tt.urgency.
+// PR-4 (§3.6) removed that predicate entirely (queue_next no longer has
+// special membership semantics — store.go's ListTasks) and dropped urgency
+// from every display surface, but urgency/kind/suggestion_verb stay
+// promoted columns regardless: suggestion_verb backs the `/api/cards` read
+// surface (CardView.SuggestionVerb, card_read.go — khi's own external
+// contract) AND the change-detection this same file's notifySuggestionArrived
+// gate and PR-3's updated_at bump both key off (oldVerb comparison, below) —
+// neither of those can read a value that only ever reached detail.attrs.
+// Before PR-5a nothing wrote the urgency column at all, which left the (then
+// still SQL-driven) queue view permanently empty; the same gap existed for
+// suggestion_verb before PR-2. kind rides along because it is the same
+// shape (a real column, daemon vocabulary, no channel knowledge).
 //
 // suggestion differs from urgency/kind in one respect worth flagging here:
 // its promoted list ({go, working, park, drop, done, reopen}) is
@@ -415,12 +423,13 @@ func parseAttrsSetObject(payload json.RawMessage) (map[string]json.RawMessage, e
 //
 // urgency/kind are written to their column and NOT also folded into the
 // blob: two copies of the same value could drift, and the column is the one
-// the queue SQL actually reads.
+// external readers (the `/api/cards` surface, formerly also the queue SQL —
+// see promotedAttrVocabulary's own doc comment for the PR-4 update) expect.
 //
 // suggestion_verb (PR-2, docs/plans/suggestion-as-state-transition-impl.md
 // §4.1) is the one deliberate exception to that rule: only the VERB is
-// promoted to a column (the queue predicate only ever needs to know
-// "does this card have a suggestion", store.go's "queue_next" branch), while
+// promoted to a column (the readers above only ever need to know "does this
+// card have a suggestion", not its full shape), while
 // the full suggestion object — including that same verb — stays in
 // detail.attrs.suggestion via patch.Attrs (parseAttrsSetPayload's switch
 // folds it there too). This is safe from drift because there is exactly ONE
@@ -598,9 +607,13 @@ func applyAnsweredSideEffect(tx TxStore, taskID string) error {
 	tt.Detail = stripped
 	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1): clear
 	// the promoted column alongside the blob key. Every path that strips a
-	// suggestion must clear both representations, or the queue predicate
-	// (store.go's "queue_next" branch, suggestion_verb != '') would keep
-	// showing a card whose suggestion was already answered.
+	// suggestion must clear both representations, or a stale value would
+	// leak through the `/api/cards` read surface (CardView.SuggestionVerb)
+	// and confuse the change-detection PR-3's updated_at bump relies on —
+	// before docs/plans/webui-detail-list-redesign.md PR-4 this also fed a
+	// live queue SQL predicate (store.go's now-removed "queue_next" branch,
+	// suggestion_verb != ''), which is the historical reason this column
+	// exists at all.
 	tt.SuggestionVerb = ""
 	if err := tx.UpsertTaskTriage(tt); err != nil {
 		return fmt.Errorf("answered: upsert task_triage: %w", err)

@@ -1,0 +1,279 @@
+package templates
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/timeline"
+)
+
+// ListRow is one row of the flat, top-level-only task list (docs/plans/
+// webui-detail-list-redesign.md §3.5, PR-4). It replaces
+// components.TreeItem (task_tree.templ, BuildTreeItems family — both
+// deleted by this PR): the list no longer needs tree-shape fields (Depth/
+// HasChildren/ParentID) now that tabs AND the tree are both gone — the list
+// only ever shows root (parent_id-less) tasks (WebHandler.TaskList filters
+// ParentID == ""), and a card's own children are read from the task's own
+// aggregate child-count columns (orchestrator.Task.{Total,Done,Aborted,
+// Open,Awaiting}ChildCount, store.go's taskChildCountCols) rather than a
+// second recursive query the way the old tree needed.
+type ListRow struct {
+	Task        *orchestrator.Task
+	ProjectName string
+	// Suggestion is task_triage.detail.suggestion (or detail.attrs.
+	// suggestion — orchestrator.DetailSuggestion), populated from the same
+	// batch triage lookup (WebHandler.triageByTaskID) the pre-PR-4 queue/
+	// Parked views used (ListTaskTriageByTaskIDs). Zero value when the task
+	// has no triage row, or no suggestion is attached — every execution
+	// task, and any card khi hasn't evaluated yet.
+	Suggestion orchestrator.Suggestion
+	// Summary is task_triage.detail.summary (or detail.attrs.summary —
+	// triageSummary below), the 3行目 fallback text for a card with NO live
+	// suggestion (§5 論点6's card-side candidate: "無い行の有力候補は card =
+	// khi の summary attr" — left as an explicit open question by the design
+	// doc, decided here for PR-4 rather than shipping a blank 3行目 whenever
+	// a card has nothing pending). Zero value when the task has no triage
+	// row, no summary was ever written, or the task is an execution task
+	// (Summary is card-only vocabulary).
+	Summary string
+}
+
+// ProjectLabel returns the resolved project name when available, falling
+// back to the raw project ID — same fallback convention as
+// detailProjectLabel (tasks.templ) and the deleted components.TreeItem.
+func (r ListRow) ProjectLabel() string {
+	if r.ProjectName != "" {
+		return r.ProjectName
+	}
+	return r.Task.ProjectID
+}
+
+// rowIdentityLabel dispatches to the same 素性の段 (identity row) helpers
+// the detail page already uses (cardIdentityLabel/execIdentityLabel,
+// tasks.templ, §3.1 部品A) so the list row's 2行目 never drifts from what
+// the detail page shows for the same task.
+func rowIdentityLabel(task *orchestrator.Task, projectName string) string {
+	if task.Type == orchestrator.TaskTypeCard {
+		return cardIdentityLabel(task, projectName)
+	}
+	return execIdentityLabel(task, projectName)
+}
+
+// childRollupLabel renders §3.5's row-2 child rollup ("子 N · 進行 M · ⚠ K"
+// / "子 N · 完了 M") straight from a task's own aggregate child-count
+// columns (no second query — store.go's taskChildCountCols already computed
+// these alongside the row itself). Returns "" for a childless task, so the
+// caller can skip the rollup segment entirely.
+//
+// Shape (deliberately NOT a 1:1 dump of every count column):
+//   - "子 N" always, when N > 0
+//   - "進行 M" when there is at least one non-terminal, non-awaiting child
+//     (M = OpenChildCount - AwaitingChildCount) — the child rollup's answer
+//     to "is anything actually moving"
+//   - otherwise, when there is no in-progress child, "完了 M" (M =
+//     DoneChildCount) if any child has finished — answers "did the work
+//     that happened actually finish"
+//   - "⚠ K" whenever K = AwaitingChildCount > 0, appended regardless of the
+//     progress/done branch above — this is §2.4's "子が4回 ask を上げたが
+//     親からは dispatched にしか見えなかった" gap closed at the list level
+//     (the detail page's own answer, ChildRow.AwaitingQuestionID, is PR-2)
+func childRollupLabel(t *orchestrator.Task) string {
+	if t.TotalChildCount == 0 {
+		return ""
+	}
+	inProgress := t.OpenChildCount - t.AwaitingChildCount
+	if inProgress < 0 {
+		inProgress = 0
+	}
+	parts := []string{fmt.Sprintf("子 %d", t.TotalChildCount)}
+	switch {
+	case inProgress > 0:
+		parts = append(parts, fmt.Sprintf("進行 %d", inProgress))
+	case t.DoneChildCount > 0:
+		parts = append(parts, fmt.Sprintf("完了 %d", t.DoneChildCount))
+	}
+	if t.AwaitingChildCount > 0 {
+		parts = append(parts, fmt.Sprintf("⚠ %d", t.AwaitingChildCount))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// relativeTimeLabel renders row 1's trailing timestamp (§3.5's "12m"/"2h"/
+// "3d" mock) — a short, coarse-grained "how long ago" label distinct from
+// the detail page's absolute "2026-08-25 14:02" (task.UpdatedAt.Local().
+// Format, TaskDetailCardStatusSection) which has room for precision the
+// list row's single trailing token does not.
+func relativeTimeLabel(t time.Time) string {
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return "たった今"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// BuildListRows attaches each task's resolved project name and (for a card)
+// its live suggestion — the two per-row enrichments the list template needs
+// beyond what orchestrator.Task itself already carries via its own
+// child-count columns. Input order is preserved untouched: store.go's
+// ListTasks already applies the view's ORDER BY (updated_at DESC, id —
+// unified across every view by this same PR), so this must not re-sort.
+//
+// Replaces internal/api's BuildTreeItems / BuildTreeItemsWithSuggestions /
+// BuildQueueItems / BuildFlatItems (deleted by PR-4 alongside
+// components.TreeItem — the four builders existed to serve four different
+// tabs with four different shapes; one flat view needs exactly one builder).
+func BuildListRows(tasks []*orchestrator.Task, projectNames map[string]string, triageByTaskID map[string]*orchestrator.CardAttrs) []ListRow {
+	rows := make([]ListRow, 0, len(tasks))
+	for _, t := range tasks {
+		row := ListRow{Task: t, ProjectName: projectNames[t.ProjectID]}
+		if tt, ok := triageByTaskID[t.ID]; ok && tt != nil {
+			if s, ok := orchestrator.DetailSuggestion(tt.Detail); ok {
+				row.Suggestion = s
+			}
+			row.Summary = triageSummary(tt.Detail)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// triageSummary extracts the "summary" string from a task_triage detail JSON
+// blob (docs/plans/cross-project-issue-triage.md データモデル節), preferring
+// the top-level key and falling back to detail.attrs.summary — the daemon's
+// attrs_set action folds a workspace's write into detail.attrs
+// (orchestrator.FoldDetailAttrs), so that is the shape actually exercised in
+// practice. Moved here verbatim from the pre-PR-4 internal/api/tree.go
+// (BuildQueueItems' own helper of the same name) — the source blob and
+// fallback rule are unchanged, only the caller (list-row Summary, not a
+// queue-only view) is new.
+//
+// Each candidate is decoded independently so a malformed or wrong-shaped
+// value in one location cannot blank out a well-formed value in the other.
+// Returns "" on any parse failure or when the field is absent — never
+// panics, never partially-fabricates a value.
+func triageSummary(detail []byte) string {
+	if len(detail) == 0 {
+		return ""
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(detail, &top); err != nil {
+		return ""
+	}
+	if s := decodeSummaryString(top["summary"]); s != "" {
+		return s
+	}
+	raw, ok := top["attrs"]
+	if !ok || len(raw) == 0 {
+		return ""
+	}
+	var attrs map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &attrs); err != nil {
+		return ""
+	}
+	return decodeSummaryString(attrs["summary"])
+}
+
+// decodeSummaryString reads one candidate location's value as a plain string,
+// yielding "" for absent/null/wrong-typed values rather than erroring.
+func decodeSummaryString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
+}
+
+// taskListRows renders the list's rows in a single container div (id
+// preserved as "task-tree" is NOT kept — the fold/localStorage JS it backed,
+// components.TaskTree, is deleted along with the tree it folded; the list is
+// flat now, nothing to fold).
+templ taskListRows(rows []ListRow) {
+	<div class="task-list" id="task-list-rows" role="list">
+		for _, row := range rows {
+			@taskListRow(row)
+		}
+	</div>
+}
+
+// taskListRow renders one §3.5 3-line row:
+//
+//  1. title + relative time
+//  2. identity path (素性の段, §3.1) + child rollup (childRollupLabel)
+//  3. 動きの段 — a suggestion's transition edge (card) or plain status +
+//     situational text (exec's elapsed / awaiting), wrapped rather than
+//     ellipsis-truncated and clamped to 2 lines (list-row-line3's CSS,
+//     style.css) so the situation is never silently cut off mid-sentence —
+//     2026-08-25 nose review: 「省略記号で切らず折り返す、上限2行で clamp」
+templ taskListRow(row ListRow) {
+	<a
+		href={ templ.SafeURL("/tasks/" + row.Task.ID) }
+		class={ "task-row", "list-row", "task-row-status-" + string(row.Task.Status), templ.KV("task-row-blocked", row.Task.Blocked) }
+		data-task-id={ row.Task.ID }
+		style="--depth: 0; --chev: 0px"
+	>
+		<div class="task-row-body">
+			<div class="list-row-line1">
+				<span class="task-row-title" title={ row.Task.Title }>{ row.Task.Title }</span>
+				<span class="list-row-time">{ relativeTimeLabel(row.Task.UpdatedAt) }</span>
+			</div>
+			<div class="list-row-line2">
+				<span class="task-row-project">{ rowIdentityLabel(row.Task, row.ProjectName) }</span>
+				if rollup := childRollupLabel(row.Task); rollup != "" {
+					<span class="list-row-rollup">{ rollup }</span>
+				}
+			</div>
+			<div class="list-row-line3">
+				@taskListRowMovement(row)
+			</div>
+		</div>
+	</a>
+}
+
+// taskListRowMovement is taskListRow's 3行目 body, split out for testability
+// (a render test can assert on just the movement segment's HTML without
+// re-deriving the whole 3-line row). Mirrors TaskDetailCardStatusSection /
+// TaskDetailExecStatusSection's own movement-row logic (tasks.templ) at
+// list-row scale — same suggestionTargetStatus/taskStatusClass helpers, so
+// the list row's edge rendering can never drift from the detail page's.
+templ taskListRowMovement(row ListRow) {
+	if row.Task.Type == orchestrator.TaskTypeCard && row.Suggestion.Verb != "" {
+		{{ target := suggestionTargetStatus(row.Task.Status, row.Suggestion.Verb) }}
+		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
+		if target != "" {
+			<span class="detail-meta-sep">—{ row.Suggestion.Verb }→</span>
+			<span class={ taskStatusClass(target) }>{ target }</span>
+		}
+		if row.Suggestion.Reason != "" {
+			<span class="list-row-movement-text">{ row.Suggestion.Reason }</span>
+		}
+	} else if row.Task.Type == orchestrator.TaskTypeExecution && row.Task.Status == orchestrator.TaskStatusExecuting {
+		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
+		<span class="list-row-movement-text">{ timeline.FormatElapsed(row.Task.UpdatedAt) } 経過</span>
+	} else if row.Task.Status == orchestrator.TaskStatusAwaiting {
+		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
+		<span class="list-row-movement-text">⚠ 質問あり</span>
+	} else if row.Task.Type == orchestrator.TaskTypeCard && row.Summary != "" {
+		// §5 論点6: a card with no live suggestion falls back to khi's
+		// summary attr rather than a bare status badge — see ListRow.Summary's
+		// own doc comment for why this PR decides that question.
+		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
+		<span class="list-row-movement-text">{ row.Summary }</span>
+	} else {
+		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
+	}
+}

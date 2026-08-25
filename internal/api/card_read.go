@@ -127,12 +127,17 @@ func (s *TaskWorkflowService) ListCards(filter orchestrator.TaskFilter) ([]*Card
 	// Default floor (Opus review round 3): an unset status would run
 	// ListTasks(TaskFilter{}) — every task row ever created — and then one
 	// sidecar point query per row, almost all of which return ErrNoRows and
-	// are discarded. "triage" is pre-execution ∪ working, i.e. exactly the
-	// live cards a caller means by "list the triage tasks"; done/dropped
-	// remain reachable by naming the status explicitly. WebHandler.TaskList
-	// defaults to status=open for the same reason.
+	// are discarded. "cards_live" (renamed from "triage" by docs/plans/
+	// webui-detail-list-redesign.md PR-4 — §3.6: same predicate, clearer
+	// name) is pre-execution ∪ working, i.e. exactly the live cards a caller
+	// means by "list the triage tasks"; done/dropped remain reachable by
+	// naming the status explicitly. This is the exact call khi's
+	// open_triage_task_ids (app/trigger.py) makes with no status at all, so
+	// it goes straight to the canonical name — khi is boid's own code path
+	// here, not an external caller that needs the "triage" compatibility
+	// alias store.go's ListTasks still accepts for explicit callers.
 	if filter.Status == "" {
-		filter.Status = "triage"
+		filter.Status = "cards_live"
 	}
 	tasks, err := s.Tasks.ListTasks(filter)
 	if err != nil {

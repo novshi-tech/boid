@@ -3,6 +3,8 @@ package templates
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -74,50 +76,46 @@ func instrActiveField(inst *orchestrator.Instruction, field string) string {
 }
 
 // taskFilterActive reports whether the user has narrowed the list with any
-// filter beyond the default status view. Used to switch the empty-state copy
-// between "no tasks at all" and "filters match nothing".
+// filter beyond the default (全状態表示) view. Used to switch the empty-state
+// copy between "no tasks at all" and "filters match nothing".
 //
-// Deliberately excludes f.Status — see taskStatusIsDefaultView, which
-// exists precisely because Status needs its own (not this function's)
-// empty-state branch.
+// docs/plans/webui-detail-list-redesign.md PR-4 (§3.5): the old Open/Closed/
+// Queue/Parked status tabs are gone, so f.Status is no longer a "view
+// selector" with its own empty-state branch (taskStatusIsDefaultView, this
+// function's old neighbor, is deleted along with them) — an explicit status
+// now behaves exactly like any other narrowing filter, and ActiveOnly joins
+// the same list.
 func taskFilterActive(f orchestrator.TaskFilter) bool {
-	return f.Title != "" || f.ProjectID != "" || f.Behavior != "" || f.WorkspaceID != ""
+	return f.Title != "" || f.ProjectID != "" || f.Behavior != "" || f.WorkspaceID != "" || f.Status != "" || f.ActiveOnly
 }
 
-// taskStatusIsDefaultView reports whether status is the Open tab's status
-// value — "" and "open" both count, matching web.go's TaskList, which
-// normalizes an empty query param to "open" before it ever reaches a
-// template (filters.templ's statusTabActive treats "" the same way, for the
-// same defensive reason: don't assume every caller already normalized it).
-//
-// Used by TaskListFragment's empty state (BD-8 残件2): Closed / Queue /
-// Parked are as-narrow-as-Open views by construction (each is its own
-// status predicate, not "Open with something extra filtered out"), so an
-// empty result on one of them means "this view currently has no matching
-// tasks" — a fact about the view, not about the whole task list. Before
-// this, taskFilterActive(f) alone decided the empty-state copy, and it does
-// not look at f.Status at all, so an empty Parked/Closed/Queue tab rendered
-// the same "No tasks yet / Create your first task to get started" copy as a
-// truly-empty install — misleading on all three tabs, not just Parked.
-//
-// Open keeps the "create your first task" invitation even when it's empty
-// for the same structural reason (a task-free workspace and "every task is
-// done/aborted, so Open predicate-wise has nothing to show" are
-// indistinguishable from Open's own predicate alone — Opus review finding,
-// 2026-08-18) — deliberately, as first-run onboarding copy: Open is the
-// landing view, so it is the one place "go create something" is always the
-// right next action regardless of why it's empty, unlike Closed/Queue/
-// Parked where a Create CTA would be actively misleading (creating a task
-// doesn't populate those views). TestTaskListFragment_EmptyOpenTab_
-// ShowsCreateFirstTaskCopy pins this as intentional, not merely
-// unaddressed.
-func taskStatusIsDefaultView(status string) bool {
-	return status == "" || status == "open"
+// pageURL returns currentURL with its "page" query parameter set to page
+// (or removed entirely when page <= 1, keeping the canonical/bookmarkable
+// URL for page 1 free of a redundant "page=1"). Used by the pagination nav
+// (§3.5, §5 論点4: LIMIT/OFFSET) to build Prev/Next links without
+// hand-splicing query strings.
+func pageURL(currentURL string, page int) string {
+	u, err := url.Parse(currentURL)
+	if err != nil {
+		return currentURL
+	}
+	q := u.Query()
+	if page <= 1 {
+		q.Del("page")
+	} else {
+		q.Set("page", strconv.Itoa(page))
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // TaskListFragment renders only the task list container (for HTMX partial responses).
 // currentURL is embedded as the polling target so filter params are preserved across polls.
-templ TaskListFragment(items []components.TreeItem, filter orchestrator.TaskFilter, currentURL string) {
+// page/hasMore drive the pagination nav (§3.5): page is the current 1-indexed
+// page, hasMore reports whether WebHandler.TaskList found more rows past
+// this page's LIMIT (it fetches pageSize+1 to answer this without a second
+// COUNT query — see web.go's own doc comment).
+templ TaskListFragment(items []ListRow, filter orchestrator.TaskFilter, page int, hasMore bool, currentURL string) {
 	<div
 		id="task-list"
 		hx-get={ currentURL }
@@ -125,17 +123,12 @@ templ TaskListFragment(items []components.TreeItem, filter orchestrator.TaskFilt
 		hx-target="#task-list"
 		hx-swap="outerHTML"
 	>
-		if len(items) == 0 {
+		if len(items) == 0 && page <= 1 {
 			if taskFilterActive(filter) {
 				<div class="empty-state">
 					<div class="empty-state-title">No tasks match the current filters</div>
 					<p class="empty-state-hint">Try adjusting your search terms or filters.</p>
 					<a href="/" class="btn btn-secondary empty-state-cta">Clear filters</a>
-				</div>
-			} else if !taskStatusIsDefaultView(filter.Status) {
-				<div class="empty-state">
-					<div class="empty-state-title">Nothing in this view</div>
-					<p class="empty-state-hint">This tab has no matching tasks right now.</p>
 				</div>
 			} else {
 				<div class="empty-state">
@@ -145,9 +138,51 @@ templ TaskListFragment(items []components.TreeItem, filter orchestrator.TaskFilt
 				</div>
 			}
 		} else {
-			@components.TaskTree(items)
+			if len(items) == 0 {
+				<div class="empty-state">
+					<div class="empty-state-title">Nothing on this page</div>
+					<p class="empty-state-hint">Go back to an earlier page.</p>
+				</div>
+			} else {
+				@taskListRows(items)
+			}
+			if page > 1 || hasMore {
+				@taskListPagination(currentURL, page, hasMore)
+			}
 		}
 	</div>
+}
+
+// taskListPagination renders the Prev/Next nav (§3.5, §5 論点4). Both links
+// navigate like every other filter control on this page (hx-target=
+// #main-content, hx-push-url) so the page number round-trips through the
+// URL and survives a bookmark/reload, not just an in-session click.
+templ taskListPagination(currentURL string, page int, hasMore bool) {
+	<nav class="list-pagination" aria-label="ページ">
+		if page > 1 {
+			<a
+				href={ templ.SafeURL(pageURL(currentURL, page-1)) }
+				class="btn btn-secondary btn-sm"
+				hx-get={ pageURL(currentURL, page-1) }
+				hx-target="#main-content"
+				hx-swap="innerHTML"
+				hx-select="#main-content"
+				hx-push-url="true"
+			>← Prev</a>
+		}
+		<span class="list-pagination-page">{ fmt.Sprintf("%d", page) }</span>
+		if hasMore {
+			<a
+				href={ templ.SafeURL(pageURL(currentURL, page+1)) }
+				class="btn btn-secondary btn-sm"
+				hx-get={ pageURL(currentURL, page+1) }
+				hx-target="#main-content"
+				hx-swap="innerHTML"
+				hx-select="#main-content"
+				hx-push-url="true"
+			>Next →</a>
+		}
+	</nav>
 }
 
 func taskStatusClass(s string) string {
@@ -182,16 +217,16 @@ type filterOption struct {
 }
 
 // TaskListContent renders the inner content (filter form + task list) for HTMX partial swaps.
-templ TaskListContent(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
+templ TaskListContent(items []ListRow, filter orchestrator.TaskFilter, page int, hasMore bool, projects []*orchestrator.Project, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
 	<div id="main-content">
 		@components.TaskFilters(filter, projects, workspaces)
-		@TaskListFragment(items, filter, currentURL)
+		@TaskListFragment(items, filter, page, hasMore, currentURL)
 	</div>
 }
 
-templ TaskList(items []components.TreeItem, filter orchestrator.TaskFilter, projects []*orchestrator.Project, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
+templ TaskList(items []ListRow, filter orchestrator.TaskFilter, page int, hasMore bool, projects []*orchestrator.Project, workspaces []*orchestrator.WorkspaceSummary, currentURL string) {
 	@Layout("Tasks", "") {
-		@TaskListContent(items, filter, projects, workspaces, currentURL)
+		@TaskListContent(items, filter, page, hasMore, projects, workspaces, currentURL)
 		@TaskListActionBar()
 	}
 }
@@ -384,10 +419,10 @@ templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, proj
 // TaskDetailSuggestionSection renders task_triage.detail.suggestion (or
 // detail.attrs.suggestion — orchestrator.DetailSuggestion) as a compact
 // card right under the status row: verb + action, then reason and basis on
-// their own lines. This is the only place Basis is shown (the queue row and
-// Parked tab row, task_tree.templ, only have room for verb + reason).
-// Renders nothing when there is no suggestion — every non-triage task, and
-// any triage task khi hasn't evaluated yet.
+// their own lines. This is the only place Basis is shown (the list row's
+// 3行目, task_list_row.templ, only has room for verb + reason). Renders
+// nothing when there is no suggestion — every non-triage task, and any
+// triage task khi hasn't evaluated yet.
 //
 // docs/plans/ingestion-identity.md PR-3 (B-3+B-4, J-6): Accept/Reject
 // buttons close "既に開いている穴" — 決定14 moved judgment to the Web UI, but
@@ -638,11 +673,11 @@ type ChildTreeNode struct {
 
 // TaskDetailExecChildTreeSection renders a root execution task's full
 // descendant subtree (§3.4 item 2): one flat, depth-first list, indented by
-// ChildTreeNode.Depth. Deliberately NOT built from BuildTreeItems/
-// task_tree.templ (the list page's tree — §7 PR-2 must not grow a new
-// dependency on that machinery now that PR-4 is slated to delete it) — this
-// is its own small component over WebHandler.execChildTree's app-side,
-// non-CTE traversal.
+// ChildTreeNode.Depth. Deliberately NOT built from the list page's own
+// row/query machinery (BuildListRows/ListTasks, or the pre-PR-4 tree these
+// replaced — task_tree.templ/BuildTreeItems, both deleted by PR-4) — this is
+// its own small component over WebHandler.execChildTree's app-side, non-CTE
+// traversal.
 //
 // Renders nothing for a non-root task (its own children, if any, are shown
 // on ITS OWN detail page instead — §3.4's "root のみ") or a root task with
