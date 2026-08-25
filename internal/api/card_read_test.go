@@ -110,13 +110,16 @@ func (s *multiTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestra
 		if filter.ProjectID != "" && t.ProjectID != filter.ProjectID {
 			continue
 		}
-		if filter.Status == "triage" {
-			// card-model-cleanup PR-2 (migration 0045) restates the "triage"
-			// floor on tasks.type instead of a status enumeration: every card
-			// that hasn't reached a terminal status yet (parked ∪ working) —
-			// mirrors store.go's own ListTasks "triage" branch. IsPreExecution
-			// Status is gone entirely (REMOVED, no replacement function — the
-			// concept is now just task.Type == TaskTypeCard).
+		if filter.Status == "cards_live" || filter.Status == "triage" {
+			// card-model-cleanup PR-2 (migration 0045) restates the predicate
+			// on tasks.type instead of a status enumeration: every card that
+			// hasn't reached a terminal status yet (parked ∪ working) —
+			// mirrors store.go's own ListTasks "cards_live" branch (renamed
+			// from "triage" by docs/plans/webui-detail-list-redesign.md PR-4;
+			// "triage" is still accepted as a compatibility alias, mirrored
+			// here). IsPreExecutionStatus is gone entirely (REMOVED, no
+			// replacement function — the concept is now just task.Type ==
+			// TaskTypeCard).
 			if t.Type != orchestrator.TaskTypeCard ||
 				(t.Status != orchestrator.TaskStatusParked && t.Status != orchestrator.TaskStatusWorking) {
 				continue
@@ -335,8 +338,8 @@ func TestListCards_DefaultsToLiveTriageStatuses(t *testing.T) {
 	if _, err := svc.ListCards(orchestrator.TaskFilter{ProjectID: "meta"}); err != nil {
 		t.Fatalf("ListCards: %v", err)
 	}
-	if store.last.Status != "triage" {
-		t.Fatalf("status filter = %q, want the \"triage\" floor (pre-execution ∪ working)", store.last.Status)
+	if store.last.Status != "cards_live" {
+		t.Fatalf("status filter = %q, want the \"cards_live\" floor (pre-execution ∪ working; renamed from \"triage\" by PR-4)", store.last.Status)
 	}
 
 	// An explicit status is never overridden — done cards stay reachable.

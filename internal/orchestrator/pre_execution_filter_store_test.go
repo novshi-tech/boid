@@ -2,7 +2,6 @@ package orchestrator_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -306,13 +305,17 @@ func TestListTasks_Parked_ReturnsOnlyParkedTasks(t *testing.T) {
 	}
 }
 
-// TestListTasks_Open_RescuesGreatGrandchildOfOpenAncestor pins down that the
-// open_descendants CTE rewrite (base case = children of a non-terminal
-// parent, not the non-terminal task itself — see the self-match fix above)
-// still rescues descendants several levels down, not just direct children.
-// codex review round 2 asked for this explicitly since the rewrite touched
-// the recursive term's seed.
-func TestListTasks_Open_RescuesGreatGrandchildOfOpenAncestor(t *testing.T) {
+// TestListTasks_Open_NoLongerRescuesGreatGrandchild pins the PR-4 narrowing
+// (docs/plans/webui-detail-list-redesign.md §3.6): the multi-level
+// open_descendants/open_ancestors recursive CTEs are DELETED — they existed
+// only to keep the list-page tree (task_tree.templ) from showing an orphaned
+// row, and that tree is gone. "open" now rescues only DIRECT (1-level)
+// children of a non-terminal self (still exercised by
+// TestListTasks_Open_IncludesPreExecutionParentWithExecutingChild below); a
+// grandchild several levels down a chain of terminal intermediates is no
+// longer rescued. This is the direct negative twin of the old
+// TestListTasks_Open_RescuesGreatGrandchildOfOpenAncestor this test replaces.
+func TestListTasks_Open_NoLongerRescuesGreatGrandchild(t *testing.T) {
 	d := createTestProject(t)
 	greatGrandparent := &orchestrator.Task{
 		ProjectID: "proj-1",
@@ -366,58 +369,16 @@ func TestListTasks_Open_RescuesGreatGrandchildOfOpenAncestor(t *testing.T) {
 	for _, tk := range got {
 		ids[tk.ID] = true
 	}
+	// greatGrandparent itself is still open (self clause: executing).
+	if !ids[greatGrandparent.ID] {
+		t.Error("open view must still include the executing great-grandparent itself")
+	}
+	// grandparent/parent/child are all terminal (done) with no live child of
+	// their own — none of them are rescued by the (now 1-level-only) child
+	// rescue, and the removed multi-level CTEs no longer reach past them.
 	for _, tk := range []*orchestrator.Task{grandparent, parent, child} {
-		if !ids[tk.ID] {
-			t.Errorf("open view must rescue %q (%s) — it has a live (executing) ancestor several levels up", tk.Title, tk.ID)
-		}
-	}
-}
-
-// TestListTasks_Open_AllTerminalAncestors_NoRescue is the negative twin of
-// the above: when every ancestor is terminal too, nothing should be rescued
-// (and nothing should self-match via the CTE either).
-func TestListTasks_Open_AllTerminalAncestors_NoRescue(t *testing.T) {
-	d := createTestProject(t)
-	grandparent := &orchestrator.Task{
-		ProjectID: "proj-1",
-		Title:     "grandparent (aborted)",
-		Type:      orchestrator.TaskTypeExecution,
-		Status:    orchestrator.TaskStatusAborted,
-		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
-	}
-	if err := orchestrator.CreateTask(d.Conn, grandparent); err != nil {
-		t.Fatalf("create grandparent: %v", err)
-	}
-	parent := &orchestrator.Task{
-		ProjectID: "proj-1",
-		Title:     "parent (done)",
-		Type:      orchestrator.TaskTypeExecution,
-		Status:    orchestrator.TaskStatusDone,
-		ParentID:  grandparent.ID,
-		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
-	}
-	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
-		t.Fatalf("create parent: %v", err)
-	}
-	child := &orchestrator.Task{
-		ProjectID: "proj-1",
-		Title:     "child (done)",
-		Type:      orchestrator.TaskTypeExecution,
-		Status:    orchestrator.TaskStatusDone,
-		ParentID:  parent.ID,
-		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
-	}
-	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
-		t.Fatalf("create child: %v", err)
-	}
-
-	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
-	if err != nil {
-		t.Fatalf("ListTasks: %v", err)
-	}
-	for _, tk := range got {
-		if tk.ID == grandparent.ID || tk.ID == parent.ID || tk.ID == child.ID {
-			t.Errorf("open view must not include %q — every ancestor in this chain is terminal", tk.Title)
+		if ids[tk.ID] {
+			t.Errorf("open view must NOT include %q (%s) now that multi-level ancestor/descendant rescue is removed (PR-4)", tk.Title, tk.ID)
 		}
 	}
 }
@@ -455,95 +416,52 @@ func TestListTasks_Open_IncludesWorking(t *testing.T) {
 	}
 }
 
-// TestListTasks_QueueNext_MembershipAndOrdering pins PR-2's redefinition of
-// "queue_next" (docs/plans/suggestion-as-state-transition-impl.md §4.1,
-// design doc §3.6 "一覧は suggestion で駆動する"): membership is now
-// `suggestion_verb != ""` regardless of status — the old state ∈ {ready,
-// triaged} ∧ urgency ∈ {now,today,week} predicate (Phase 1 PR-3) is GONE.
-// Any status (parked/working/done/dropped, even legacy ones) shows up here
-// the moment it carries a suggestion; urgency drops from a membership gate
-// to an ORDER BY tie-breaker only (a suggested card with no urgency at all
-// still appears, just sorted last).
-func TestListTasks_QueueNext_MembershipAndOrdering(t *testing.T) {
+// TestListTasks_QueueNext_ReturnsEmpty pins docs/plans/
+// webui-detail-list-redesign.md PR-4's decided answer to 論点3: explicitly
+// requesting Status: "queue_next" (the pre-PR-4 Queue tab's membership
+// predicate, `suggestion_verb != ”`) now returns an EMPTY list — not an
+// error, not the suggestion-bearing cards it used to match — because
+// "queue_next" is no longer a special-cased predicate at all, just a literal
+// status string that can never match a real tasks.status value. Fixtures
+// deliberately carry live suggestions so a regression that silently restored
+// the old predicate (instead of truly deleting it) would fail this test by
+// returning non-empty.
+func TestListTasks_QueueNext_ReturnsEmpty(t *testing.T) {
 	d := createTestProject(t)
-
-	mk := func(title string, status orchestrator.TaskStatus, verb, urgency string) *orchestrator.Task {
-		task := &orchestrator.Task{
-			ProjectID: "proj-1",
-			Title:     title,
-			Type:      orchestrator.TaskTypeCard,
-			Status:    status,
-			Card:      &orchestrator.CardAttrs{},
-		}
-		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
-			t.Fatalf("create %s: %v", title, err)
-		}
-		if verb != "" || urgency != "" {
-			if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.CardAttrs{TaskID: task.ID, SuggestionVerb: verb, Urgency: urgency}); err != nil {
-				t.Fatalf("upsert task_triage %s: %v", title, err)
-			}
-		}
-		time.Sleep(2 * time.Millisecond) // force distinct created_at for ordering
-		return task
+	task := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "suggested",
+		Type:      orchestrator.TaskTypeCard,
+		Status:    orchestrator.TaskStatusParked,
+		Card:      &orchestrator.CardAttrs{},
 	}
-
-	// Created oldest-first, deliberately out of urgency order, so the
-	// assertions below only pass if urgency-rank actually wins over
-	// created_at ordering.
-	nowOlder := mk("suggested-now-older", orchestrator.TaskStatusParked, "park", orchestrator.UrgencyNow)
-	nowNewer := mk("suggested-now-newer", orchestrator.TaskStatusWorking, "done", orchestrator.UrgencyNow)
-	today := mk("suggested-today", orchestrator.TaskStatusParked, "go", orchestrator.UrgencyToday)
-	week := mk("suggested-week", orchestrator.TaskStatusParked, "drop", orchestrator.UrgencyWeek)
-	noUrgency := mk("suggested-no-urgency", orchestrator.TaskStatusParked, "working", "")
-	// A verb on a done/dropped card (khi suggesting reopen) is a real edge —
-	// design doc §3.2's done/dropped→parked reopen edges — so it must appear
-	// too, not just parked/working.
-	doneReopen := mk("done-card-reopen-suggested", orchestrator.TaskStatusDone, "reopen", orchestrator.UrgencyNow)
-
-	_ = mk("parked-no-suggestion", orchestrator.TaskStatusParked, "", orchestrator.UrgencyNow)
-	_ = mk("working-no-suggestion", orchestrator.TaskStatusWorking, "", "")
-	_ = mk("done-no-suggestion", orchestrator.TaskStatusDone, "", "")
-	_ = mk("dropped-no-suggestion", orchestrator.TaskStatusDropped, "", "")
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.CardAttrs{TaskID: task.ID, SuggestionVerb: "go", Urgency: "now"}); err != nil {
+		t.Fatalf("upsert task_triage: %v", err)
+	}
 
 	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "queue_next"})
 	if err != nil {
 		t.Fatalf("ListTasks: %v", err)
 	}
-
-	var gotIDs []string
-	for _, tk := range got {
-		gotIDs = append(gotIDs, tk.ID)
-	}
-	// Ordering: now (oldest-created first — the created_at ASC tiebreak
-	// store.go's ORDER BY comment calls out as "古いものを腐らせない") > today >
-	// week > no-urgency (someday/empty sort last, same as UrgencyRank's
-	// fallback). PR #988 review, LOW 5: this must assert the EXACT position
-	// of all six rows, not just set membership within the first three —
-	// nowOlder/nowNewer/doneReopen were deliberately created oldest-first
-	// specifically so a store.go regression that dropped "t.created_at ASC"
-	// from the ORDER BY (leaving only urgency-rank, with whatever order
-	// sqlite happens to return ties in) would go undetected by a
-	// membership-only check.
-	want := []string{nowOlder.ID, nowNewer.ID, doneReopen.ID, today.ID, week.ID, noUrgency.ID}
-	if len(gotIDs) != len(want) {
-		t.Fatalf("queue_next returned %d tasks, want %d: got %v", len(gotIDs), len(want), gotIDs)
-	}
-	for i := range want {
-		if gotIDs[i] != want[i] {
-			t.Errorf("position %d: got task id %s, want %s (full order: got=%v want=%v)", i, gotIDs[i], want[i], gotIDs, want)
-		}
+	if len(got) != 0 {
+		t.Fatalf("ListTasks(Status: %q) = %d tasks, want 0 (queue_next predicate removed, PR-4)", "queue_next", len(got))
 	}
 }
 
-// TestListTasks_Triage_ReturnsPreExecutionPlusWorking pins the "triage"
-// filter's current predicate (store.go): `t.type = 'card' AND t.status IN
-// ('parked', 'working')`. card-model-cleanup PR-2 restated this directly on
-// tasks.type instead of enumerating a legacy pre-execution status set
+// TestListTasks_CardsLive_ReturnsPreExecutionPlusWorking pins the
+// "cards_live" filter's current predicate (store.go, renamed from "triage"
+// by docs/plans/webui-detail-list-redesign.md PR-4 — §3.6 makes clear the
+// PREDICATE is unchanged, only the name is): `t.type = 'card' AND t.status
+// IN ('parked', 'working')`. card-model-cleanup PR-2 restated this directly
+// on tasks.type instead of enumerating a legacy pre-execution status set
 // (captured/triaged/ready, all removed) — so this is now a TWO-axis pin, not
 // just a status pin: it must exclude both non-matching card statuses
 // (done/dropped) AND every execution task regardless of status, since
-// "triage" only ever means "a live card".
-func TestListTasks_Triage_ReturnsPreExecutionPlusWorking(t *testing.T) {
+// "cards_live" only ever means "a live card".
+func TestListTasks_CardsLive_ReturnsPreExecutionPlusWorking(t *testing.T) {
 	d := createTestProject(t)
 	type fixture struct {
 		task     *orchestrator.Task
@@ -566,7 +484,7 @@ func TestListTasks_Triage_ReturnsPreExecutionPlusWorking(t *testing.T) {
 		}
 	}
 
-	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "triage"})
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "cards_live"})
 	if err != nil {
 		t.Fatalf("ListTasks: %v", err)
 	}
@@ -576,10 +494,57 @@ func TestListTasks_Triage_ReturnsPreExecutionPlusWorking(t *testing.T) {
 	}
 	for _, f := range fixtures {
 		if f.included && !gotIDs[f.task.ID] {
-			t.Errorf("%s (type=%s, status=%s) missing from the triage filter", f.task.Title, f.task.Type, f.task.Status)
+			t.Errorf("%s (type=%s, status=%s) missing from the cards_live filter", f.task.Title, f.task.Type, f.task.Status)
 		}
 		if !f.included && gotIDs[f.task.ID] {
-			t.Errorf("%s (type=%s, status=%s) must not appear in the triage filter", f.task.Title, f.task.Type, f.task.Status)
+			t.Errorf("%s (type=%s, status=%s) must not appear in the cards_live filter", f.task.Title, f.task.Type, f.task.Status)
+		}
+	}
+}
+
+// TestListTasks_TriageAlias_MatchesCardsLive pins the PR-4 backward-compat
+// promise (§3.6): the old Status: "triage" string, if an explicit caller
+// still sends it, must return EXACTLY the same set as the canonical
+// "cards_live" — a stale bookmark, script, or `boid card list --status
+// triage` invocation keeps working, not just "doesn't error".
+func TestListTasks_TriageAlias_MatchesCardsLive(t *testing.T) {
+	d := createTestProject(t)
+	fixtures := []*orchestrator.Task{
+		{ProjectID: "proj-1", Title: "card-parked", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}},
+		{ProjectID: "proj-1", Title: "card-working", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}},
+		{ProjectID: "proj-1", Title: "card-done", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusDone, Card: &orchestrator.CardAttrs{}},
+	}
+	for _, f := range fixtures {
+		if err := orchestrator.CreateTask(d.Conn, f); err != nil {
+			t.Fatalf("create %s: %v", f.Title, err)
+		}
+	}
+
+	viaCanonical, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "cards_live"})
+	if err != nil {
+		t.Fatalf("ListTasks(cards_live): %v", err)
+	}
+	viaAlias, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "triage"})
+	if err != nil {
+		t.Fatalf("ListTasks(triage): %v", err)
+	}
+	toIDs := func(tasks []*orchestrator.Task) map[string]bool {
+		out := map[string]bool{}
+		for _, t := range tasks {
+			out[t.ID] = true
+		}
+		return out
+	}
+	canonicalIDs, aliasIDs := toIDs(viaCanonical), toIDs(viaAlias)
+	if len(canonicalIDs) == 0 {
+		t.Fatal("fixture bug: cards_live returned no rows")
+	}
+	if len(canonicalIDs) != len(aliasIDs) {
+		t.Fatalf("cards_live returned %d rows, triage alias returned %d — want equal", len(canonicalIDs), len(aliasIDs))
+	}
+	for id := range canonicalIDs {
+		if !aliasIDs[id] {
+			t.Errorf("triage alias missing task %s that cards_live included", id)
 		}
 	}
 }

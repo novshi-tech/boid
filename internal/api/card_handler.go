@@ -46,10 +46,16 @@ func (h *CardHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 // List returns the projections of the triage tasks matching the query
 // filters. project_id and status are passed straight through to the same
-// orchestrator.TaskFilter the task listing uses, so "triage"/"queue_next"
-// and any concrete status value all work here too ("queue", the old broad
-// pre-execution-status superset, was removed in PR-2 — docs/plans/
-// suggestion-as-state-transition-impl.md §4.1).
+// orchestrator.TaskFilter the task listing uses, so "cards_live" (renamed
+// from "triage" — the old name is still accepted as a compatibility alias,
+// docs/plans/webui-detail-list-redesign.md PR-4 §3.6) and any concrete
+// status value all work here too. "queue_next" is ALSO still a valid string
+// to pass, but PR-4 removed its special membership predicate entirely — it
+// now falls through to a literal `t.status = 'queue_next'` match, which can
+// never match a real row, so it deterministically returns an empty list
+// rather than an error (store.go's own doc comment). "queue" (the old broad
+// pre-execution-status superset) was removed in PR-2 — docs/plans/
+// suggestion-as-state-transition-impl.md §4.1.
 func (h *CardHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	views, err := h.Service.ListCards(orchestrator.TaskFilter{

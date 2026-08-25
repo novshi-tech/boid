@@ -2,43 +2,16 @@ package orchestrator
 
 import "time"
 
-// Urgency vocabulary for task_triage.urgency (queue の決定論的評価 節、論点d 語彙は
-// Phase 0 実運用からの逆輸入 — Phase 0 の khi-task-collector dogfood がすでに
-// now/today/week/someday を使っている)。
-const (
-	UrgencyNow     = "now"
-	UrgencyToday   = "today"
-	UrgencyWeek    = "week"
-	UrgencySomeday = "someday"
-)
-
-// UrgencyRank backs the queue_next view's ordering (store.go): urgency now >
-// today > week, someday/unrecognized sort last. Lower rank sorts first. This
-// is a pure-Go mirror of the CASE expression in store.go's "queue_next"
-// ORDER BY, kept for unit testing the ranking in isolation — the CASE
-// expression itself must stay in lockstep with this function.
+// docs/plans/webui-detail-list-redesign.md PR-4 (§3.6, §5 論点2) removed this
+// file's urgency vocabulary consts (UrgencyNow/Today/Week/Someday) and
+// UrgencyRank: urgency dropped from every display surface (list row,
+// task_tree.templ badge, queue_next ORDER BY — all gone), and UrgencyRank
+// itself had zero production callers left (comments and its own test only —
+// confirmed by grep before deletion). The closed vocabulary khi still WRITES
+// against (attrs_set's urgency key) lives independently as a literal list in
+// internal/api/workflow_card.go's promotedAttrVocabulary — that map does NOT
+// reference these consts (never did), so it is unaffected by this deletion.
 //
-// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1) removed this
-// file's QueueEligible and StateRank: queue membership is no longer a
-// (status, urgency) predicate at all (it's `suggestion_verb != ”`, any
-// status — design doc §3.6, 「一覧は suggestion で駆動する」), and the v1
-// "state (ready が先)" ordering tier StateRank backed has no SQL counterpart
-// left to mirror — card machine v2 has no "ready" status to rank. Keeping
-// either function around describing a rule store.go no longer implements
-// would be actively misleading, not merely unused.
-func UrgencyRank(urgency string) int {
-	switch urgency {
-	case UrgencyNow:
-		return 0
-	case UrgencyToday:
-		return 1
-	case UrgencyWeek:
-		return 2
-	default:
-		return 3
-	}
-}
-
 // ShouldWake evaluates queue 節 rule 1 (wake 評価) for a parked task: wake
 // if wake_at has passed, OR the task referenced by wake_task_id has reached
 // a terminal status. Both are decided purely from tt's fields plus facts

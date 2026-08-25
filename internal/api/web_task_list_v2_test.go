@@ -19,8 +19,11 @@ func newTestWebHandlerFull(svc WebService) *chi.Mux {
 	return r
 }
 
-// TestWebTaskList_DefaultStatusIsOpen verifies that empty ?status= defaults to "open" filter.
-func TestWebTaskList_DefaultStatusIsOpen(t *testing.T) {
+// TestWebTaskList_DefaultStatusIsEmpty pins docs/plans/
+// webui-detail-list-redesign.md PR-4's §3.5 default: no ?status= means NO
+// status narrowing at all (every status, newest-updated first) — the old
+// default-to-"open" tab is gone.
+func TestWebTaskList_DefaultStatusIsEmpty(t *testing.T) {
 	svc := &stubWebService{}
 	r := newTestWebHandlerFull(svc)
 
@@ -31,22 +34,26 @@ func TestWebTaskList_DefaultStatusIsOpen(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-	if svc.capturedFilter.Status != "open" {
-		t.Errorf("default Status = %q, want \"open\"", svc.capturedFilter.Status)
+	if svc.capturedFilter.Status != "" {
+		t.Errorf("default Status = %q, want \"\" (全状態表示, no default-to-open)", svc.capturedFilter.Status)
+	}
+	if svc.capturedFilter.ActiveOnly {
+		t.Error("default ActiveOnly = true, want false (no filter applied by default)")
 	}
 }
 
-// TestWebTaskList_OpenStatus verifies that ?status=open passes "open" to ListTasks.
-func TestWebTaskList_OpenStatus(t *testing.T) {
+// TestWebTaskList_ActiveOnlyQueryParam verifies ?active=1 sets
+// filter.ActiveOnly — the replacement for the old status=open tab.
+func TestWebTaskList_ActiveOnlyQueryParam(t *testing.T) {
 	svc := &stubWebService{}
 	r := newTestWebHandlerFull(svc)
 
-	req := httptest.NewRequest(http.MethodGet, "/?status=open", nil)
+	req := httptest.NewRequest(http.MethodGet, "/?active=1", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if svc.capturedFilter.Status != "open" {
-		t.Errorf("Status = %q, want \"open\"", svc.capturedFilter.Status)
+	if !svc.capturedFilter.ActiveOnly {
+		t.Error("?active=1 should set filter.ActiveOnly = true")
 	}
 }
 
@@ -64,15 +71,37 @@ func TestWebTaskList_ClosedStatus(t *testing.T) {
 	}
 }
 
-// TestWebTaskList_ClosedRendersFlat verifies that closed tasks are rendered as flat list
-// (no parent-child nesting in HTML output — each task-tree-row has no margin-left indentation).
-func TestWebTaskList_ClosedRendersFlat(t *testing.T) {
+// TestWebTaskList_RootOnly pins §3.5's "1本のフラットリスト、トップレベル
+// (parent_id無し) のみ" — TaskList always filters ParentID to the root scope
+// ("") regardless of any other query param, so a non-root task never reaches
+// the list (its children are read from the parent's own detail page, PR-2).
+func TestWebTaskList_RootOnly(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerFull(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if svc.capturedFilter.ParentID == nil {
+		t.Fatal("ParentID filter must be set (root-only listing)")
+	}
+	if *svc.capturedFilter.ParentID != "" {
+		t.Errorf("ParentID = %q, want \"\" (root tasks only)", *svc.capturedFilter.ParentID)
+	}
+}
+
+// TestWebTaskList_ChildTaskNeverAppears is the render-level twin of
+// TestWebTaskList_RootOnly: a non-root task in the underlying store (the
+// stub honors ParentID like the real store.ListTasks does) must not show up
+// in the rendered list at all.
+func TestWebTaskList_ChildTaskNeverAppears(t *testing.T) {
 	parent := &orchestrator.Task{
-		ID: "p1", Title: "Parent", Status: orchestrator.TaskStatusDone,
+		ID: "p1", Title: "Parent Task", Status: orchestrator.TaskStatusDone,
 		ParentID: "", CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	child := &orchestrator.Task{
-		ID: "c1", Title: "Child", Status: orchestrator.TaskStatusDone,
+		ID: "c1", Title: "Child Task", Status: orchestrator.TaskStatusDone,
 		ParentID: "p1", CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	svc := &stubWebService{tasks: []*orchestrator.Task{parent, child}}
@@ -83,9 +112,11 @@ func TestWebTaskList_ClosedRendersFlat(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	body := w.Body.String()
-	// flat list: no margin-left: 16px (depth > 0)
-	if strings.Contains(body, "margin-left: 16px") {
-		t.Errorf("closed list should be flat (no indentation), but got margin-left: 16px in:\n%s", body)
+	if !strings.Contains(body, "Parent Task") {
+		t.Errorf("expected the root task to render, got: %s", body)
+	}
+	if strings.Contains(body, "Child Task") {
+		t.Errorf("a non-root task must never appear in the list (PR-4 root-only), got: %s", body)
 	}
 }
 
@@ -143,12 +174,12 @@ func TestWebTaskList_ProjectClearedWhenNotInWorkspace(t *testing.T) {
 func TestWebTaskList_TaskRowIsAnchorTag(t *testing.T) {
 	task := &orchestrator.Task{
 		ID: "t-abc", Title: "My Task", Status: orchestrator.TaskStatusExecuting,
-		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		CreatedAt: time.Now(), UpdatedAt: time.Now(), Exec: &orchestrator.ExecAttrs{},
 	}
 	svc := &stubWebService{tasks: []*orchestrator.Task{task}}
 	r := newTestWebHandlerFull(svc)
 
-	req := httptest.NewRequest(http.MethodGet, "/?status=open", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -166,8 +197,10 @@ func TestWebTaskList_TaskRowIsAnchorTag(t *testing.T) {
 	}
 }
 
-// TestWebTaskList_OpenClosedToggleInHTML verifies the open/closed toggle is present in HTML.
-func TestWebTaskList_OpenClosedToggleInHTML(t *testing.T) {
+// TestWebTaskList_ActiveOnlyToggleInHTML verifies the active-only toggle
+// (the PR-4 replacement for the old 4-tab status switcher) renders, and the
+// old tab markup does not.
+func TestWebTaskList_ActiveOnlyToggleInHTML(t *testing.T) {
 	svc := &stubWebService{}
 	r := newTestWebHandlerFull(svc)
 
@@ -176,23 +209,15 @@ func TestWebTaskList_OpenClosedToggleInHTML(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	body := w.Body.String()
-	// Hidden status input must be present (fix for status drop bug).
-	if !strings.Contains(body, `name="status"`) {
-		t.Errorf("body should contain hidden status input, got: %s", body)
+	if !strings.Contains(body, `name="active"`) {
+		t.Errorf("body should contain the active-only toggle checkbox, got: %s", body)
 	}
-	// Open and Closed tab buttons must be present.
-	if !strings.Contains(body, ">Open<") {
-		t.Errorf("body should contain Open tab button, got: %s", body)
+	// Old tab UI must be fully gone.
+	if strings.Contains(body, "status-tab") {
+		t.Errorf("body should NOT contain the old status-tab markup, got: %s", body)
 	}
-	if !strings.Contains(body, ">Closed<") {
-		t.Errorf("body should contain Closed tab button, got: %s", body)
-	}
-	// Old 7-button style should be gone.
-	if strings.Contains(body, `value="pending"`) {
-		t.Errorf("body should NOT contain pending button (old 7-button style), got: %s", body)
-	}
-	if strings.Contains(body, `value="executing"`) {
-		t.Errorf("body should NOT contain executing button (old 7-button style), got: %s", body)
+	if strings.Contains(body, `value="pending"`) || strings.Contains(body, `value="executing"`) {
+		t.Errorf("body should NOT contain the old per-status tab buttons, got: %s", body)
 	}
 }
 
@@ -237,26 +262,41 @@ func TestWebTaskList_ClosedStatusWithWorkspace(t *testing.T) {
 	}
 }
 
-// TestBuildFlatItems verifies that BuildFlatItems returns items with Depth=0, HasChildren=false.
-func TestBuildFlatItems(t *testing.T) {
-	now := time.Now()
-	parent := &orchestrator.Task{ID: "p", Title: "Parent", ParentID: "", CreatedAt: now, UpdatedAt: now}
-	child := &orchestrator.Task{ID: "c", Title: "Child", ParentID: "p", CreatedAt: now, UpdatedAt: now}
+// TestWebTaskList_PageParam verifies ?page=2 translates into the right
+// Limit/Offset (§3.5, §5 論点4): page size 50, so page 2 is offset 50.
+func TestWebTaskList_PageParam(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerFull(svc)
 
-	items := BuildFlatItems([]*orchestrator.Task{parent, child}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/?page=2", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
-	if len(items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(items))
+	if svc.capturedFilter.Offset != 50 {
+		t.Errorf("Offset = %d, want 50 (page 2, page size 50)", svc.capturedFilter.Offset)
 	}
-	for i, item := range items {
-		if item.Depth != 0 {
-			t.Errorf("items[%d].Depth = %d, want 0", i, item.Depth)
+	if svc.capturedFilter.Limit != 51 {
+		t.Errorf("Limit = %d, want 51 (page size + 1, to detect hasMore)", svc.capturedFilter.Limit)
+	}
+}
+
+// TestWebTaskList_PageParam_InvalidFallsBackToPage1 pins the defensive
+// parse: a non-numeric or non-positive ?page= must not 500 or produce a
+// negative OFFSET — it degrades to page 1.
+func TestWebTaskList_PageParam_InvalidFallsBackToPage1(t *testing.T) {
+	for _, raw := range []string{"abc", "-1", "0", ""} {
+		svc := &stubWebService{}
+		r := newTestWebHandlerFull(svc)
+
+		req := httptest.NewRequest(http.MethodGet, "/?page="+raw, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("page=%q: status = %d, want 200", raw, w.Code)
 		}
-		if item.HasChildren {
-			t.Errorf("items[%d].HasChildren = true, want false", i)
-		}
-		if item.ParentID != "" {
-			t.Errorf("items[%d].ParentID = %q, want empty", i, item.ParentID)
+		if svc.capturedFilter.Offset != 0 {
+			t.Errorf("page=%q: Offset = %d, want 0 (falls back to page 1)", raw, svc.capturedFilter.Offset)
 		}
 	}
 }

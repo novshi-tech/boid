@@ -11,48 +11,18 @@ func projectLabel(p *orchestrator.Project) string {
 	return p.ID
 }
 
-// statusTabActive reports whether tab is the currently selected status view.
-// filter.Status is normalized to "open" before it ever reaches this
-// template (web.go's TaskList defaults an empty query param), but "" is
-// still treated as "open" here defensively rather than assuming every
-// caller does that normalization. Any other status value (including
-// "parked" before this tab existed, or any future/unknown value) is simply
-// not active — this is the fix for the bug where opening ?status=parked
-// showed Open as the active tab: the old else-branch matched every status
-// that wasn't "closed" or "queue_next".
-func statusTabActive(filterStatus, tab string) bool {
-	status := filterStatus
-	if status == "" {
-		status = "open"
-	}
-	return status == tab
-}
-
-func ariaSelectedAttr(active bool) string {
-	if active {
-		return "true"
-	}
-	return "false"
-}
-
-templ statusTab(filter orchestrator.TaskFilter, status, label string) {
-	<button
-		type="button"
-		hx-get="/"
-		hx-vals={ `{"status":"` + status + `"}` }
-		hx-include="closest form"
-		hx-target="#main-content"
-		hx-swap="innerHTML"
-		hx-select="#main-content"
-		hx-push-url="true"
-		class={ "status-tab", templ.KV("active", statusTabActive(filter.Status, status)) }
-		role="tab"
-		aria-selected={ ariaSelectedAttr(statusTabActive(filter.Status, status)) }
-	>{ label }</button>
-}
-
-// TaskFilters renders the task list toolbar:
-//   - status (open/closed/queue/parked) as the primary view tabs
+// TaskFilters renders the task list toolbar (docs/plans/
+// webui-detail-list-redesign.md PR-4, §3.5): the 4-tab status switcher
+// (Open/Closed/Queue/Parked, statusTab/statusTabActive) is GONE — the list
+// no longer has separate tabbed views to switch between. In its place is a
+// single 「アクティブのみ」(active-only) checkbox toggle (filter.ActiveOnly)
+// — unchecked (the default, no query param) shows every status, checked
+// narrows to non-terminal tasks. filter.Status itself is preserved as a
+// hidden field only when a caller arrived with an explicit status (a
+// bookmark, or an API-style deep link); the toolbar itself no longer writes
+// one.
+//
+//   - active-only toggle (see above)
 //   - search as a standalone input (its own hx-target avoids losing focus on each keystroke)
 //   - workspace > project as one logical filter group
 //
@@ -73,13 +43,13 @@ templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Proje
 		hx-push-url="true"
 		hx-trigger="change"
 	>
-		<input type="hidden" name="status" value={ filter.Status }/>
-		<div class="status-tabs" role="tablist" aria-label="ステータス">
-			@statusTab(filter, "open", "Open")
-			@statusTab(filter, "closed", "Closed")
-			@statusTab(filter, "queue_next", "Queue")
-			@statusTab(filter, "parked", "Parked")
-		</div>
+		if filter.Status != "" {
+			<input type="hidden" name="status" value={ filter.Status }/>
+		}
+		<label class="active-only-toggle">
+			<input type="checkbox" name="active" value="1" checked?={ filter.ActiveOnly }/>
+			アクティブのみ
+		</label>
 		<input
 			type="search"
 			name="q"

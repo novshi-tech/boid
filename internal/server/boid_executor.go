@@ -160,10 +160,23 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 // validateTaskListStatus rejects status values ListTasks doesn't understand
 // before they reach the DB layer, where they were previously passed through
 // unvalidated (docs/plans/cross-project-issue-triage.md Phase 1 実測結果 項10).
-// Empty (no filter), the special keywords ("open"/"closed"/"queue_next" —
-// now a suggestion_verb-driven predicate, PR-2, docs/plans/
-// suggestion-as-state-transition-impl.md §4.1, see store.go's ListTasks —
-// /"triage"), and any exact orchestrator.TaskStatus value are accepted.
+// Empty (no filter), the special keywords ("open"/"closed"/"cards_live"/
+// "triage" — the last two are the SAME predicate, docs/plans/
+// webui-detail-list-redesign.md PR-4 §3.6 renamed "triage" to "cards_live"
+// and kept "triage" as a compatibility alias for any explicit caller), and
+// any exact orchestrator.TaskStatus value are accepted.
+//
+// "queue_next" is ALSO still accepted here (unlike "queue" below) even
+// though PR-4 removed its special-cased predicate from store.go's
+// ListTasks entirely: it now falls through to store.go's generic
+// `t.status = ?` literal-equality branch, which can never match a real row
+// (queue_next is not a valid tasks.status value) and so deterministically
+// returns an empty list — the decided §5 論点3 answer (empty, not an
+// error; see store.go's own doc comment and
+// orchestrator.TestListTasks_QueueNext_ReturnsEmpty). Rejecting it here
+// would contradict that decision by turning a query that used to return
+// real rows into a hard CLI error instead of the chosen "quietly empty"
+// behavior.
 //
 // "queue" (the old broad pre-execution-status superset, PR-1 of
 // cross-project-issue-triage.md) is REMOVED as of PR-2: the Web UI never
@@ -174,7 +187,8 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 // match, which can never match any real row and would otherwise look like a
 // permanently-empty list instead of an error.
 func validateTaskListStatus(status string) error {
-	if status == "" || status == "open" || status == "closed" || status == "queue_next" || status == "triage" {
+	switch status {
+	case "", "open", "closed", "queue_next", "cards_live", "triage":
 		return nil
 	}
 	if _, ok := orchestrator.ParseTaskStatus(status); ok {

@@ -27,8 +27,20 @@ import (
 // table, flat tasks columns), compute the "open"/"queue_next" ID sets the
 // OLD predicate (as store.go implemented it immediately before this PR —
 // see git history on store.go for the literal SQL these mirror) would have
-// returned, run migration 0045, then compute the SAME two ID sets via the
-// CURRENT orchestrator.ListTasks and assert they match.
+// returned, run migration 0045, then compute the SAME two ID sets via a
+// FIXED, frozen reimplementation of the post-0045/pre-PR-4 predicate
+// (openTaskIDsAfterMigrationFixedPredicate / queueNextTaskIDsAfterMigrationFixedPredicate,
+// below) and assert they match.
+//
+// docs/plans/webui-detail-list-redesign.md PR-4 (§3.6) deliberately changed
+// BOTH the "open" predicate (removed the multi-level open_descendants/
+// open_ancestors CTEs) and "queue_next" (removed entirely) — a real,
+// intentional, documented product change, not a regression. Before PR-4,
+// this test called orchestrator.ListTasks directly for its "after" leg,
+// which coupled a historical migration-equivalence check to whatever
+// ListTasks does TODAY; PR-4 decoupled it by freezing the "after" SQL here
+// instead, so this file stays a pure point-in-time record of migration
+// 0045's own correctness, unaffected by later, unrelated predicate changes.
 //
 // The "before" SQL below is a deliberately narrow reimplementation: only
 // enough of store.go's actual notOpenSelfStatusSQLList / open_descendants /
@@ -100,6 +112,82 @@ func queueNextTaskIDsBeforeMigration(t *testing.T, conn *db.DB) []string {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			t.Fatalf("queue_next (before) scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// openTaskIDsAfterMigrationFixedPredicate and queueNextTaskIDsAfterMigrationFixedPredicate
+// mirror store.go's ListTasks("open") / ListTasks("queue_next") predicates
+// AS THEY STOOD immediately after migration 0045 and before docs/plans/
+// webui-detail-list-redesign.md PR-4 (§3.6) simplified/removed them.
+//
+// This test's job is proving migration 0045 (task_triage → STI folding)
+// didn't change "open"/"queue_next" behavior — it is NOT a live regression
+// test for whatever orchestrator.ListTasks does today (PR-4's own
+// store_test.go pins carry that job, e.g. TestListTasks_Open_
+// NoLongerRescuesGreatGrandchild / TestListTasks_QueueNext_ReturnsEmpty).
+// PR-4 deliberately changed both predicates (CTE removal, queue_next
+// removal) — calling the live orchestrator.ListTasks here would make this
+// migration-equivalence test fail on every later, unrelated predicate
+// change, which is not what "did migration 0045 preserve behavior" means.
+// So the "after" leg is frozen to a literal copy of the post-0045/pre-PR-4
+// SQL instead of the live function — this file now stands on its own as a
+// historical snapshot, decoupled from ListTasks's ongoing evolution.
+func openTaskIDsAfterMigrationFixedPredicate(t *testing.T, conn *db.DB) []string {
+	t.Helper()
+	const notOpenSelf = `('done','aborted','dropped','parked')`
+	const notOpenAncestorGate = `('done','aborted','dropped','parked')`
+	const terminal = `('done','aborted','dropped')`
+	query := `
+		WITH RECURSIVE open_descendants(id) AS (
+			SELECT c.id FROM tasks c JOIN tasks p ON c.parent_id = p.id
+			WHERE p.status NOT IN ` + notOpenAncestorGate + `
+			UNION
+			SELECT c.id FROM tasks c JOIN open_descendants od ON c.parent_id = od.id
+		), open_ancestors(id) AS (
+			SELECT p.id FROM tasks c JOIN tasks p ON c.parent_id = p.id
+			WHERE c.status NOT IN ` + terminal + `
+			UNION
+			SELECT p.id FROM tasks c JOIN tasks p ON c.parent_id = p.id
+			JOIN open_ancestors oa ON oa.id = c.id
+		)
+		SELECT t.id FROM tasks t
+		WHERE (t.status NOT IN ` + notOpenSelf + ` OR
+			(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN ` + terminal + `) > 0 OR
+			t.id IN (SELECT id FROM open_descendants) OR
+			t.id IN (SELECT id FROM open_ancestors))`
+	rows, err := conn.Conn.Query(query)
+	if err != nil {
+		t.Fatalf("open (after, fixed predicate) query: %v", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("open (after, fixed predicate) scan: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func queueNextTaskIDsAfterMigrationFixedPredicate(t *testing.T, conn *db.DB) []string {
+	t.Helper()
+	rows, err := conn.Conn.Query(`SELECT t.id FROM tasks t WHERE t.suggestion_verb != ''`)
+	if err != nil {
+		t.Fatalf("queue_next (after, fixed predicate) query: %v", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("queue_next (after, fixed predicate) scan: %v", err)
 		}
 		ids = append(ids, id)
 	}
@@ -195,11 +283,7 @@ func TestApply_0045_OpenListEquivalence(t *testing.T) {
 		t.Fatalf("apply 0045: %v", err)
 	}
 
-	after, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
-	if err != nil {
-		t.Fatalf("list open (after): %v", err)
-	}
-	afterIDs := sortedTaskIDs(after)
+	afterIDs := openTaskIDsAfterMigrationFixedPredicate(t, d)
 
 	if len(before) == 0 {
 		t.Fatal("fixture bug: expected a non-empty 'before' open set")
@@ -218,11 +302,7 @@ func TestApply_0045_QueueNextEquivalence(t *testing.T) {
 		t.Fatalf("apply 0045: %v", err)
 	}
 
-	after, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "queue_next"})
-	if err != nil {
-		t.Fatalf("list queue_next (after): %v", err)
-	}
-	afterIDs := sortedTaskIDs(after)
+	afterIDs := queueNextTaskIDsAfterMigrationFixedPredicate(t, d)
 
 	want := []string{"queue-candidate"}
 	if !equalStringSlices(before, want) {

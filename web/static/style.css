@@ -592,36 +592,10 @@ pre {
   min-height: var(--tap-target);
 }
 
-/* Tree guide lines: vertical lines at each ancestor's chevron x.
-   ::before draws the line for the immediate parent (depth - 1).
-   ::after draws the line for the grandparent (depth - 2) when depth >= 2.
-   Deeper nesting keeps the immediate-parent line; ancestors above grandparent
-   are not visualised (rare in practice). */
-.task-row::before,
-.task-row::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: var(--muted);
-  opacity: 0.35;
-  pointer-events: none;
-  display: none;
-}
-
-.task-row:not([style*="--depth: 0"])::before {
-  display: block;
-  left: calc(var(--space-3) + (var(--depth) - 1) * var(--gutter) + 9px);
-}
-
-.task-row[style*="--depth: 2"]::after,
-.task-row[style*="--depth: 3"]::after,
-.task-row[style*="--depth: 4"]::after,
-.task-row[style*="--depth: 5"]::after {
-  display: block;
-  left: calc(var(--space-3) + (var(--depth) - 2) * var(--gutter) + 9px);
-}
+/* Tree guide lines (removed by docs/plans/webui-detail-list-redesign.md
+   PR-4, §3.5: the list-page tree is gone — task_tree.templ/BuildTreeItems —
+   and nothing sets --depth to a non-zero value on a .task-row element
+   anymore, so these vertical ancestor guide lines could never draw). */
 
 .task-row:hover {
   background-color: var(--card);
@@ -662,27 +636,8 @@ pre {
   border-left-color: #cbd5e1;
 }
 
-/* Fold chevron — absolutely positioned at the depth-anchored gutter
-   so leaf rows (without a chevron) keep their title flush at the same x. */
-.tree-fold-btn {
-  position: absolute;
-  left: calc(var(--space-3) + var(--depth) * var(--gutter) - 2px);
-  top: 10px;
-  width: var(--chev);
-  height: 20px;
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: var(--muted);
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.tree-fold-btn:hover {
-  color: var(--accent);
-}
+/* Fold chevron (.tree-fold-btn, removed by PR-4 alongside the list-page
+   tree it folded — components.TaskTree/taskTreeRow, task_tree.templ). */
 
 /* Two-line row body: title (line 1, ellipsis on overflow) +
    meta (line 2: status + project). Title gets the full row width. */
@@ -747,36 +702,16 @@ pre {
   opacity: 0.5;
 }
 
-/* Queue view (cross-project-issue-triage Phase 1 PR-3, ?status=queue_next):
-   summary line (task_triage.detail の summary — 文脈同梱: 1項目 = 1判断) shown
-   under the title, and an urgency badge (now/today/week) in the meta row.
-   Urgency reuses .task-row-meta .badge's stripped chrome (transparent bg,
-   colored text) like the status badge next to it, but keeps its own hue so
-   the two don't read as the same signal. */
-.task-row-summary {
-  font-size: 0.8125rem;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 2px;
-}
-
-.badge-urgency-now   { color: #b91c1c; }
-.badge-urgency-today { color: #c2410c; }
-.badge-urgency-week  { color: #1d4ed8; }
-
-/* Suggestion verb badge (queue row + Parked tab row, task_triage.detail.
-   suggestion — cross-project-issue-triage 逆輸入3 / BD-8). Lives inside
-   .task-row-meta next to the urgency badge, so it inherits the same
-   stripped chrome as every other list badge (.task-row-meta .badge above:
-   transparent bg, no padding/radius) — the list conveys state via colored
-   text, not filled chips, and this must not be the one exception. Colors
+/* Suggestion verb badge (task detail page's suggestion section,
+   components.VerbBadgeClass — cross-project-issue-triage 逆輸入3 / BD-8).
+   The pre-PR-4 queue/Parked list rows also used this; docs/plans/
+   webui-detail-list-redesign.md PR-4 dropped the badge-chip rendering from
+   the list row (the 3行目 movement line renders the transition edge as
+   plain status-colored text via .task-status-classes instead — see
+   .list-row-line3 below), so this block is now detail-page-only. Colors
    echo the closest-meaning status hue (go≈working, reopen≈awaiting/parked's
    attention-needed hue, done≈done/specced, drop≈aborted, working≈pending)
-   so a nose scanning verbs recognizes the hue before reading the word.
-   Reason reuses .task-row-summary (own line, same muted/ellipsis style) —
-   see task_tree.templ's taskTreeRow. */
+   so a nose scanning verbs recognizes the hue before reading the word. */
 .badge-verb-go      { color: #15803d; }
 .badge-verb-reopen  { color: #854d0e; }
 .badge-verb-done    { color: #0e7490; }
@@ -787,25 +722,7 @@ pre {
    still renders (rule 5, 隠さない), only the color drops to neutral gray. */
 .badge-verb-unknown { color: #76716a; }
 
-/* Children preview (queue row, cross-project-issue-triage 実地テスト
-   2026-08-14 followup): "what does Go dispatch" at a glance, next to the
-   urgency badge — a compact counterpart to task detail's full
-   TaskDetailChildrenSection list. Muted pill so it reads as metadata, not
-   an action. */
-.task-row-children {
-  flex-shrink: 0;
-  padding: 1px var(--space-1);
-  border-radius: var(--radius-1);
-  background: var(--surface-2, rgba(127, 127, 127, 0.12));
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
 @media (prefers-color-scheme: dark) {
-  .badge-urgency-now   { color: #f87171; }
-  .badge-urgency-today { color: #fb923c; }
-  .badge-urgency-week  { color: #60a5fa; }
-
   .badge-verb-go      { color: #4ade80; }
   .badge-verb-reopen  { color: #fbbf24; }
   .badge-verb-done    { color: #67e8f9; }
@@ -815,21 +732,102 @@ pre {
   .badge-verb-unknown { color: #9b958a; }
 }
 
+/* --- List row (docs/plans/webui-detail-list-redesign.md §3.5, PR-4) ---
+   3-line row: title+time / identity path+child rollup / movement. Shares
+   .task-row's status-stripe + hover chrome (--depth pinned to 0, --chev to
+   0px — task_list_row.templ — since the list is flat now, no fold chevron
+   or ancestor guide lines to make room for). */
+.list-row-line1 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.list-row-line1 .task-row-title {
+  flex: 1;
+}
+
+.list-row-time {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.list-row-line2 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.list-row-line2 .task-row-project {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-row-rollup {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 動きの段 (§3.1): a transition edge or a bare status, plus situational
+   text. Deliberately NOT ellipsis-truncated (2026-08-25 nose review:
+   「省略記号で切らず折り返す、上限2行で clamp」) — wraps normally but is
+   hard-clipped at 2 lines via max-height, so a long reason never pushes the
+   row's height open indefinitely, but also never gets cut mid-word with a
+   misleading "…". */
+.list-row-line3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  font-size: 0.8125rem;
+  max-height: calc(2 * 1.4em);
+  overflow: hidden;
+}
+
+.list-row-line3 .badge {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.list-row-movement-text {
+  color: var(--muted);
+}
+
 /* --- Sessions list ---
    Sessions reuse .task-row but render a flat list with no tree nesting. The
    rows carry no inline --depth, so .task-row's --pad-left gutter calc would
    reference an undefined variable and collapse (content jammed against the
-   left edge). Pin depth/chevron to zero for a normal, balanced left padding,
-   and hide the tree guide lines that the depth-less selector would otherwise
-   draw. */
+   left edge). Pin depth/chevron to zero for a normal, balanced left padding
+   (the tree guide lines this used to also suppress are gone entirely as of
+   PR-4 — see the removed .task-row::before/::after comment above). */
 .session-list .task-row {
   --depth: 0;
   --chev: 0px;
 }
 
-.session-list .task-row::before,
-.session-list .task-row::after {
-  display: none;
+/* --- List pagination (docs/plans/webui-detail-list-redesign.md §3.5, §5
+   論点4: LIMIT/OFFSET) --- */
+.list-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+}
+
+.list-pagination-page {
+  color: var(--muted);
+  font-size: 0.875rem;
 }
 
 /* --- Job List --- */
@@ -969,10 +967,11 @@ pre {
 }
 
 /* --- Task Toolbar --- */
-/* Hierarchy:
-   1. status tabs  (primary)  — view switch
-   2. filter group (secondary) — search + dropdowns, visually clustered
-   3. + new        (tertiary)  — secondary action, trailing edge
+/* Hierarchy (docs/plans/webui-detail-list-redesign.md PR-4, §3.5 — the old
+   4-tab status switcher, .status-tabs/.status-tab, is REMOVED):
+   1. active-only toggle (primary) — narrows to non-terminal tasks
+   2. filter group      (secondary) — search + dropdowns, visually clustered
+   3. + new             (tertiary)  — secondary action, trailing edge
 */
 .task-toolbar {
   display: flex;
@@ -982,33 +981,14 @@ pre {
   margin-bottom: var(--space-3);
 }
 
-.status-tabs {
+.active-only-toggle {
   display: inline-flex;
-  border-bottom: 2px solid var(--border);
-  flex-shrink: 0;
-}
-
-.status-tab {
-  padding: 6px 14px;
-  border: none;
-  background: none;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  color: var(--muted);
-  cursor: pointer;
-  font-family: var(--font-sans);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  min-height: auto;
-}
-
-.status-tab:hover {
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.875rem;
   color: var(--fg);
-}
-
-.status-tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  flex-shrink: 0;
+  cursor: pointer;
 }
 
 /* Standalone search input (kept separate from W/P/B group). */

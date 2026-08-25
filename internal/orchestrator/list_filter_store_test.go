@@ -103,9 +103,18 @@ func taskInResults(tasks []*orchestrator.Task, id string) bool {
 	return false
 }
 
-// TestListTasks_OpenTab_ExecutingParentDoneChild verifies that a done child of an executing parent
-// appears in the open tab.
-func TestListTasks_OpenTab_ExecutingParentDoneChild(t *testing.T) {
+// TestListTasks_OpenTab_ExecutingParentDoneChild_ChildNoLongerRescued pins
+// docs/plans/webui-detail-list-redesign.md PR-4's narrowing of "open"
+// (§3.6): the recursive open_descendants CTE that used to rescue a done
+// CHILD because its DIRECT parent was still live (even at depth 1 — the
+// CTE's own base case) is DELETED along with the list-page tree it existed
+// for (task_tree.templ). "open" only rescues in the OTHER direction now: a
+// task with a live CHILD of its own (the 1-level, non-recursive header-
+// rescue subquery kept below) — see
+// TestListTasks_OpenTab_DoneParentExecutingChildDoneGrandchild for that
+// half. This test replaces the old TestListTasks_OpenTab_
+// ExecutingParentDoneChild, which asserted the now-removed behavior.
+func TestListTasks_OpenTab_ExecutingParentDoneChild_ChildNoLongerRescued(t *testing.T) {
 	d := setupFilterTestDB(t)
 
 	parent := &orchestrator.Task{ID: "parent-1", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Parent", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
@@ -121,8 +130,11 @@ func TestListTasks_OpenTab_ExecutingParentDoneChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTasks(open): %v", err)
 	}
-	if !taskInResults(got, "child-1") {
-		t.Errorf("done child of executing parent should appear in open tab, got IDs: %v", taskIDs(got))
+	if !taskInResults(got, "parent-1") {
+		t.Errorf("executing parent should still appear in open tab (self clause), got IDs: %v", taskIDs(got))
+	}
+	if taskInResults(got, "child-1") {
+		t.Errorf("done child of an executing parent must NOT be rescued anymore (open_descendants CTE removed, PR-4), got IDs: %v", taskIDs(got))
 	}
 }
 
@@ -152,9 +164,13 @@ func TestListTasks_OpenTab_DoneParentDoneChild(t *testing.T) {
 	}
 }
 
-// TestListTasks_OpenTab_ThreeLevels verifies that a done grandchild of an executing grandparent
-// appears in the open tab (recursive ancestor check).
-func TestListTasks_OpenTab_ThreeLevels(t *testing.T) {
+// TestListTasks_OpenTab_ThreeLevels_NoLongerRescuesDescendants is the
+// multi-level twin of the ExecutingParentDoneChild update above: neither the
+// middle task nor the grandchild is rescued anymore now that
+// open_descendants (the recursive CTE that used to reach arbitrarily deep)
+// is deleted (PR-4, §3.6) — replaces the old TestListTasks_OpenTab_
+// ThreeLevels, which pinned the removed recursive-rescue behavior.
+func TestListTasks_OpenTab_ThreeLevels_NoLongerRescuesDescendants(t *testing.T) {
 	d := setupFilterTestDB(t)
 
 	gp := &orchestrator.Task{ID: "gp-3", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeExecution, Title: "Grandparent", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
@@ -174,17 +190,23 @@ func TestListTasks_OpenTab_ThreeLevels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTasks(open): %v", err)
 	}
-	if !taskInResults(got, "mid-3") {
-		t.Errorf("done middle child of executing grandparent should appear in open tab, got IDs: %v", taskIDs(got))
+	if !taskInResults(got, "gp-3") {
+		t.Errorf("executing grandparent should still appear in open tab (self clause), got IDs: %v", taskIDs(got))
 	}
-	if !taskInResults(got, "gc-3") {
-		t.Errorf("done grandchild of executing grandparent should appear in open tab, got IDs: %v", taskIDs(got))
+	if taskInResults(got, "mid-3") {
+		t.Errorf("done middle child of executing grandparent must NOT be rescued anymore (PR-4), got IDs: %v", taskIDs(got))
+	}
+	if taskInResults(got, "gc-3") {
+		t.Errorf("done grandchild of executing grandparent must NOT be rescued anymore (PR-4), got IDs: %v", taskIDs(got))
 	}
 }
 
 // TestListTasks_OpenTab_DoneParentExecutingChildDoneGrandchild verifies:
-// - done parent with executing child is rescued by the "has open child" rule
-// - done grandchild of executing child appears via ancestor rescue
+//   - done parent with executing child is rescued by the "has open child" rule
+//     (1-level, non-recursive — kept as-is by PR-4)
+//   - done grandchild of executing child is NO LONGER rescued (PR-4, §3.6):
+//     that direction was open_descendants' job, and the recursive CTE is
+//     deleted along with the list-page tree it existed for
 func TestListTasks_OpenTab_DoneParentExecutingChildDoneGrandchild(t *testing.T) {
 	d := setupFilterTestDB(t)
 
@@ -211,8 +233,8 @@ func TestListTasks_OpenTab_DoneParentExecutingChildDoneGrandchild(t *testing.T) 
 	if !taskInResults(got, "child-4") {
 		t.Errorf("executing child should appear in open tab, got IDs: %v", taskIDs(got))
 	}
-	if !taskInResults(got, "gc-4") {
-		t.Errorf("done grandchild of executing child should appear in open tab, got IDs: %v", taskIDs(got))
+	if taskInResults(got, "gc-4") {
+		t.Errorf("done grandchild of executing child must NOT be rescued anymore (open_descendants CTE removed, PR-4), got IDs: %v", taskIDs(got))
 	}
 }
 
@@ -247,13 +269,19 @@ func TestListTasks_OpenTab_ParkedParentDoneChild_NoLiveDescendant(t *testing.T) 
 	}
 }
 
-// TestListTasks_OpenTab_ParkedParentDoneChildLiveGrandchild is a regression
-// test for the "親がいないのに子だけ表示されている" orphan bug: a done child
-// of a parked parent that itself has a still-live grandchild must not vanish
-// from the open tab while its grandchild keeps showing — the whole ancestor
-// chain up to the parked root must stay visible via open_ancestors so the
-// tree stays consistent and progress is still trackable.
-func TestListTasks_OpenTab_ParkedParentDoneChildLiveGrandchild(t *testing.T) {
+// TestListTasks_OpenTab_ParkedParentDoneChildLiveGrandchild_OnlyOneLevelRescued
+// is docs/plans/webui-detail-list-redesign.md PR-4's update to the old
+// "親がいないのに子だけ表示されている" orphan-bug regression test: the
+// open_ancestors CTE that used to keep the WHOLE chain (however deep) visible
+// whenever any descendant was still live is deleted along with the list-page
+// tree it existed for (§3.6 — its only purpose was preventing an orphaned
+// tree row, and there is no tree left to orphan). Only the 1-level,
+// non-recursive header-rescue clause remains: a task is rescued when it has
+// a DIRECT live child of its own. child-7 (done) is rescued because its own
+// child gc-7 is executing; parent-7 (parked) is NOT rescued because ITS own
+// direct child (child-7) is done, not live — the rescue no longer reaches
+// two levels up.
+func TestListTasks_OpenTab_ParkedParentDoneChildLiveGrandchild_OnlyOneLevelRescued(t *testing.T) {
 	d := setupFilterTestDB(t)
 
 	parent := &orchestrator.Task{ID: "parent-7", ProjectID: "proj-ws1-a", Type: orchestrator.TaskTypeCard, Title: "Parent", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
@@ -274,13 +302,13 @@ func TestListTasks_OpenTab_ParkedParentDoneChildLiveGrandchild(t *testing.T) {
 		t.Fatalf("ListTasks(open): %v", err)
 	}
 	if !taskInResults(got, "gc-7") {
-		t.Errorf("executing grandchild should appear in open tab, got IDs: %v", taskIDs(got))
+		t.Errorf("executing grandchild should appear in open tab (self clause), got IDs: %v", taskIDs(got))
 	}
 	if !taskInResults(got, "child-7") {
-		t.Errorf("done child that is the direct parent of a live grandchild should appear in open tab (no orphan), got IDs: %v", taskIDs(got))
+		t.Errorf("done child with a direct live child of its own should appear in open tab (1-level header rescue), got IDs: %v", taskIDs(got))
 	}
-	if !taskInResults(got, "parent-7") {
-		t.Errorf("parked root with a live grandchild deep in its subtree should appear in open tab (no orphan), got IDs: %v", taskIDs(got))
+	if taskInResults(got, "parent-7") {
+		t.Errorf("parked grandparent must NOT be rescued anymore — its own direct child is done, not live, and multi-level rescue is removed (PR-4), got IDs: %v", taskIDs(got))
 	}
 }
 

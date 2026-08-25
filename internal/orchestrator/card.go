@@ -39,15 +39,20 @@ type CardAttrs struct {
 	Urgency    string     `json:"urgency,omitempty"` // now|today|week|someday
 	WakeAt     *time.Time `json:"wake_at,omitempty"` // 日時wake条件。nil = 無し
 	WakeTaskID string     `json:"wake_task_id,omitempty"`
-	// SuggestionVerb is the promoted queue predicate (docs/plans/
+	// SuggestionVerb is the promoted suggestion column (docs/plans/
 	// suggestion-as-state-transition-impl.md §4.1, migration 0044): one of
 	// go/working/park/drop/done/reopen (orchestrator.IsCardTransitionAction),
 	// or "" when the card carries no current suggestion. Mirrors Kind/Urgency
-	// — a real column because store.go's "queue_next" filter reads it
-	// directly ("一覧は suggestion で駆動する", 設計 doc §3.6) — but unlike
-	// Kind/Urgency the full suggestion (reason/params) stays in Detail's JSON
-	// blob too; only the verb is duplicated into this column (see
-	// applyAttrsSetSideEffect's doc comment, internal/api/workflow_card.go,
+	// — a real column, not opaque blob-only data. Until docs/plans/
+	// webui-detail-list-redesign.md PR-4 it was ALSO a live SQL queue
+	// predicate (store.go's "queue_next" filter, since removed — §3.6); it
+	// stays promoted regardless because it backs the `/api/cards` read
+	// surface (CardView.SuggestionVerb) and the daemon's own
+	// notifySuggestionArrived/updated_at-bump change-detection (both key off
+	// comparing this column's old vs. new value). Unlike Kind/Urgency the
+	// full suggestion (reason/params) stays in Detail's JSON blob too; only
+	// the verb is duplicated into this column (see applyAttrsSetSideEffect's
+	// doc comment, internal/api/workflow_card.go,
 	// for why that duplication is intentional and does not drift).
 	SuggestionVerb string          `json:"suggestion_verb,omitempty"`
 	Detail         json.RawMessage `json:"detail,omitempty"`
