@@ -128,7 +128,7 @@ templ TaskListFragment(items []ListRow, filter orchestrator.TaskFilter, page int
 				<div class="empty-state">
 					<div class="empty-state-title">No tasks match the current filters</div>
 					<p class="empty-state-hint">Try adjusting your search terms or filters.</p>
-					<a href="/" class="btn btn-secondary empty-state-cta">Clear filters</a>
+					<a href="/?cleared=1" class="btn btn-secondary empty-state-cta">Clear filters</a>
 				</div>
 			} else {
 				<div class="empty-state">

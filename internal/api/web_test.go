@@ -366,6 +366,138 @@ func TestWebHandlerTaskList_FiltersMappedToTaskFilter(t *testing.T) {
 	}
 }
 
+// TestWebHandlerTaskList_SavesFilterToCookie covers the browser-side
+// persistence request: after narrowing the list, the filter query should be
+// remembered so a later plain "/" visit (no query at all) reapplies it
+// without the user re-selecting anything.
+func TestWebHandlerTaskList_SavesFilterToCookie(t *testing.T) {
+	svc := &stubWebService{
+		projects: []*orchestrator.Project{{ID: "proj-1", WorkspaceID: "ws-1"}},
+	}
+	r := newTestWebHandlerWithTaskList(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/?status=executing&project=proj-1&workspace=ws-1&active=1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	res := w.Result()
+	var cookie *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name == taskFilterCookieName {
+			cookie = c
+			break
+		}
+	}
+	if cookie == nil {
+		t.Fatalf("expected Set-Cookie %q, got none: %v", taskFilterCookieName, res.Cookies())
+	}
+	got, err := url.ParseQuery(cookie.Value)
+	if err != nil {
+		t.Fatalf("cookie value not a valid query: %v", err)
+	}
+	if got.Get("status") != "executing" || got.Get("project") != "proj-1" || got.Get("workspace") != "ws-1" || got.Get("active") != "1" {
+		t.Errorf("cookie value = %q, missing expected filter params", cookie.Value)
+	}
+	if cookie.MaxAge <= 0 {
+		t.Errorf("MaxAge = %d, want a positive persistence window", cookie.MaxAge)
+	}
+}
+
+// TestWebHandlerTaskList_RestoresFilterFromCookie covers a bare "/" browser
+// navigation (no query string at all) with a previously saved cookie: the
+// handler should redirect to the saved filter query rather than showing an
+// unfiltered list.
+func TestWebHandlerTaskList_RestoresFilterFromCookie(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerWithTaskList(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: taskFilterCookieName, Value: "status=executing&active=1"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 redirect", w.Code)
+	}
+	loc := w.Header().Get("Location")
+	if loc != "/?status=executing&active=1" {
+		t.Errorf("Location = %q, want restored filter query", loc)
+	}
+}
+
+// TestWebHandlerTaskList_NoCookieShowsUnfilteredList covers the true
+// first-ever visit: no cookie saved yet, bare "/" should render normally
+// (no redirect loop, no crash).
+func TestWebHandlerTaskList_NoCookieShowsUnfilteredList(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerWithTaskList(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+}
+
+// TestWebHandlerTaskList_ClearedParamDeletesCookieAndRedirects covers the
+// "Clear filters" empty-state link (?cleared=1): it must both wipe the saved
+// cookie and land on a bare "/", or a saved filter would immediately
+// reassert itself and clearing would look like a no-op.
+func TestWebHandlerTaskList_ClearedParamDeletesCookieAndRedirects(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerWithTaskList(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/?cleared=1", nil)
+	req.AddCookie(&http.Cookie{Name: taskFilterCookieName, Value: "status=executing"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 redirect", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/" {
+		t.Errorf("Location = %q, want /", loc)
+	}
+	res := w.Result()
+	var cookie *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name == taskFilterCookieName {
+			cookie = c
+			break
+		}
+	}
+	if cookie == nil {
+		t.Fatalf("expected a Set-Cookie clearing %q, got none", taskFilterCookieName)
+	}
+	if cookie.MaxAge >= 0 {
+		t.Errorf("MaxAge = %d, want negative (delete)", cookie.MaxAge)
+	}
+}
+
+// TestWebHandlerTaskList_HXPollingDoesNotRedirect covers the list's 5s
+// polling refresh (hx-get={currentURL}, HX-Request: true), which legitimately
+// requests a bare "/" when no filter is active. It must render inline, never
+// redirect — a redirect here would break htmx's polling loop.
+func TestWebHandlerTaskList_HXPollingDoesNotRedirect(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandlerWithTaskList(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("HX-Request", "true")
+	req.AddCookie(&http.Cookie{Name: taskFilterCookieName, Value: "status=executing"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (no redirect during htmx polling)", w.Code)
+	}
+}
+
 func TestWebHandlerTaskList_HXRequestReturnsFragment(t *testing.T) {
 	svc := &stubWebService{
 		tasks: []*orchestrator.Task{

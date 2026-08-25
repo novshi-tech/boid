@@ -163,7 +163,7 @@ func TaskListFragment(items []ListRow, filter orchestrator.TaskFilter, page int,
 		}
 		if len(items) == 0 && page <= 1 {
 			if taskFilterActive(filter) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"empty-state\"><div class=\"empty-state-title\">No tasks match the current filters</div><p class=\"empty-state-hint\">Try adjusting your search terms or filters.</p><a href=\"/\" class=\"btn btn-secondary empty-state-cta\">Clear filters</a></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<div class=\"empty-state\"><div class=\"empty-state-title\">No tasks match the current filters</div><p class=\"empty-state-hint\">Try adjusting your search terms or filters.</p><a href=\"/?cleared=1\" class=\"btn btn-secondary empty-state-cta\">Clear filters</a></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

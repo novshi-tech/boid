@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -324,8 +325,76 @@ func parseTaskListPage(raw string) int {
 	return n
 }
 
+// taskFilterCookieName holds the browser-side memory of the task list's
+// filter query (status/project/behavior/workspace/q/active), so a plain "/"
+// visit (a bookmark, the nav link, a browser restore) reapplies whatever the
+// user last narrowed the list to instead of resetting to "show everything".
+// This is client-side persistence, not server state — the daemon itself
+// never reads or reasons about this cookie's value beyond replaying it back
+// into the same query-param handling every other visit already goes
+// through.
+const taskFilterCookieName = "boid_task_filters"
+
+// taskFilterCookieMaxAge is deliberately long (a browser profile is
+// typically long-lived) — this is a convenience default, not a security or
+// privacy-sensitive TTL.
+const taskFilterCookieMaxAge = 180 * 24 * time.Hour
+
+// taskFilterCookieKeys lists the query params that make up the "filter"
+// (as opposed to "page", which is pagination state, not a filter, and
+// "cleared", which is a one-shot signal rather than a persisted value).
+func taskFilterCookieKeys() []string {
+	return []string{"status", "project", "behavior", "workspace", "q", "active"}
+}
+
+// encodeTaskFilterCookie extracts just the filter keys from q and re-encodes
+// them as a query string suitable for both the cookie value and a redirect
+// target.
+func encodeTaskFilterCookie(q url.Values) string {
+	v := url.Values{}
+	for _, k := range taskFilterCookieKeys() {
+		if val := q.Get(k); val != "" {
+			v.Set(k, val)
+		}
+	}
+	return v.Encode()
+}
+
+func deleteTaskFilterCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: taskFilterCookieName, Value: "", Path: "/", MaxAge: -1})
+}
+
 func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
+	// The cookie dance below only applies to a real top-level browser
+	// navigation — htmx's own requests (the 5s poll, the filter form's
+	// change/input handlers, pagination) always carry an explicit query
+	// (possibly empty-filter-but-present, e.g. the poll re-requesting the
+	// exact currentURL it was given) and must render inline; redirecting one
+	// would break the swap/poll loop.
+	if r.Header.Get("HX-Request") != "true" {
+		if _, cleared := r.URL.Query()["cleared"]; cleared {
+			deleteTaskFilterCookie(w)
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+		if r.URL.RawQuery == "" {
+			if c, err := r.Cookie(taskFilterCookieName); err == nil && c.Value != "" {
+				http.Redirect(w, r, "/?"+c.Value, http.StatusFound)
+				return
+			}
+		}
+	}
+
 	q := r.URL.Query()
+	if r.URL.RawQuery != "" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     taskFilterCookieName,
+			Value:    encodeTaskFilterCookie(q),
+			Path:     "/",
+			MaxAge:   int(taskFilterCookieMaxAge.Seconds()),
+			SameSite: http.SameSiteLaxMode,
+		})
+	}
 	page := parseTaskListPage(q.Get("page"))
 	// docs/plans/webui-detail-list-redesign.md PR-4 (§3.5): the list is one
 	// flat, TOP-LEVEL-ONLY view now — no more Open/Closed/Queue/Parked tabs,
