@@ -35,6 +35,13 @@ func (r *TaskRepository) UpdateTask(task *Task) error {
 	return UpdateTask(r.db, task)
 }
 
+// TouchTaskUpdatedAt backs docs/plans/webui-detail-list-redesign.md PR-3's
+// updated_at bump (api.TaskUpdatedAtToucher) — thin wrapper, same shape as
+// every other TaskRepository method.
+func (r *TaskRepository) TouchTaskUpdatedAt(id string) error {
+	return TouchTaskUpdatedAt(r.db, id)
+}
+
 func (r *TaskRepository) DeleteTask(id string) error {
 	conn, ok := r.db.(*sql.DB)
 	if !ok {

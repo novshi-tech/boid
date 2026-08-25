@@ -733,7 +733,20 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 			Payload:    payload,
 			Actor:      orchestrator.ActorDaemon,
 		}
-		return tx.CreateAction(action)
+		if err := tx.CreateAction(action); err != nil {
+			return err
+		}
+		// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): a child
+		// reaching done/aborted is new judgment material for the PARENT
+		// card — "can I close this now" — so it bumps the parent's
+		// updated_at the same way a suggestion attaching does. Gated on
+		// `changed` (already true here — the `if !changed { return nil }`
+		// above short-circuits before this point), matching this whole
+		// function's own idempotency: finalizeTerminal may call this
+		// repeatedly for the same terminal task (its own doc comment,
+		// "safe to call multiple times"), and a retry over an
+		// already-closed child must not keep re-bumping updated_at.
+		return tx.TouchTaskUpdatedAt(task.ParentID)
 	}); err != nil {
 		slog.Error("child_closed self-record failed", "task_id", task.ID, "parent_id", task.ParentID, "error", err)
 		return

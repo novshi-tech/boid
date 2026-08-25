@@ -596,6 +596,23 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 	return nil
 }
 
+// TouchTaskUpdatedAt bumps id's updated_at column to now — a single-column
+// statement that carries NO status, deliberately narrower than UpdateTask's
+// blanket rewrite (docs/plans/webui-detail-list-redesign.md §3.2, PR-3). It
+// exists so a non-transitioning side effect (attrs_set's suggestion
+// attachment, child_closed's parent self-record) can record "something
+// worth surfacing changed here" in the SAME transaction as its own write,
+// without reintroducing the stale-snapshot race UpdateTask(t) risks for
+// those actions — see workflow_action.go's skipTaskUpdate doc comment for
+// why those actions never call UpdateTask with a caller-held Task value.
+func TouchTaskUpdatedAt(dbtx db.DBTX, id string) error {
+	_, err := dbtx.Exec(`UPDATE tasks SET updated_at = ? WHERE id = ?`, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("touch task updated_at: %w", err)
+	}
+	return nil
+}
+
 func CreateAction(dbtx db.DBTX, a *Action) error {
 	if a.ID == "" {
 		a.ID = uuid.New().String()

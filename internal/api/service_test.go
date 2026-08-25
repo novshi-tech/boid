@@ -1820,7 +1820,8 @@ func (s *stubTx) UpdateTask(task *orchestrator.Task) error {
 	s.updatedTask = task
 	return nil
 }
-func (s *stubTx) DeleteTask(id string) error { return nil }
+func (s *stubTx) DeleteTask(id string) error         { return nil }
+func (s *stubTx) TouchTaskUpdatedAt(id string) error { return nil }
 func (s *stubTx) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	return nil, nil
 }

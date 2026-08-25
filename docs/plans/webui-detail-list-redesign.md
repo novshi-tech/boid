@@ -148,7 +148,7 @@ bump する (= 「動き」として描かれ、一覧で浮上する):
 | イベント | 実装点 | 備考 |
 |---|---|---|
 | 全ての状態遷移 | 既存 (UpdateTask が bump 済み) | 人の直接操作・accept 経由とも |
-| suggestion の付与 | attrs_set side-effect で **suggestion キーを畳み、かつ verb が空でないとき** | notifySuggestionArrived (`queue_notify.go`) と同じ判定極性。null-clear (撤回) は bump しない |
+| suggestion の付与 | attrs_set side-effect で **verb が (旧値から) 変化し、かつ空でないとき** | notifySuggestionArrived (`queue_notify.go`) が実際に発火する条件 (呼び出し側の suggestionVerbChanged ゲート + 関数自身の verb 非空チェック) と同じ判定極性。null-clear (撤回) はもちろん、同一 verb の再送 (khi の `_write_suggestion` は無条件で毎 judge cycle 送る) も bump しない |
 | child_closed | 親 card への記録時 | 子の完了は親の判断材料が変わった瞬間 |
 
 bump しない: observed / summary / urgency / link / skip / done-signal 等の
