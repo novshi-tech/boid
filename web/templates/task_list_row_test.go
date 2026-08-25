@@ -97,8 +97,8 @@ func TestTriageSummary_BadTopLevelStillReadsAttrs(t *testing.T) {
 // Pins §3.5's row-2 child rollup shape (task_list_row.templ's own doc
 // comment): "子 N" always when N>0, "進行 M"/"完了 M" mutually exclusive,
 // "⚠ K" appended regardless. Previously untested — a mutation that always
-// returns "" passed `go test ./web/...` green (memory: [[next-session-
-// webui-detail-list-redesign.md]] follow-up 1, N1).
+// returns "" passed `go test ./web/...` green (memory:
+// [[next-session-webui-detail-list-impl]] follow-up 1, N1).
 
 func TestChildRollupLabel_NoChildren_ReturnsEmpty(t *testing.T) {
 	task := &orchestrator.Task{TotalChildCount: 0}
@@ -286,6 +286,9 @@ func TestBuildListRows_ResolvesProjectName(t *testing.T) {
 	names := map[string]string{"proj-1": "My Project"}
 
 	rows := BuildListRows(tasks, names, nil)
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(rows))
+	}
 	if rows[0].ProjectName != "My Project" {
 		t.Errorf("ProjectName = %q, want My Project", rows[0].ProjectName)
 	}

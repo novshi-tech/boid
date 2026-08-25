@@ -1598,7 +1598,8 @@ about, not merely undocumented.
 What is left of the two ends: `WebHandler.TaskList` (`internal/api/web.go`) still passes
 `q.Get("status")` straight through to `orchestrator.TaskFilter.Status`, and `store.go`'s
 `ListTasks` still has no dedicated `parked` branch — the status string still falls through the
-same generic fallback (`t.status = ?`) described above. That half is unchanged and still real,
+same generic fallback (`else if filter.Status != "" { conditions = append(conditions, "t.status = ?");
+args = append(args, filter.Status) }`). That half is unchanged and still real,
 but it is no longer a *seam* (nothing hand-types a second copy of the literal to drift out of
 sync with it) — it is just a plain pass-through parameter. `TestListTasks_Parked_
 ReturnsOnlyParkedTasks` (`internal/orchestrator/pre_execution_filter_store_test.go`) still pins
@@ -1609,4 +1610,3 @@ the generic fallback itself, just not for a cross-file literal-agreement seam an
   seam's shape from `orchestrator.TaskStatusParked`/`store.go`'s fallback rather than resurrecting
   the text above verbatim — the specific End A this entry described (`statusTab`) no longer
   exists to reference.
-  fallback to keep doing the right thing forever.
