@@ -226,7 +226,7 @@ func TestExecutionMachine_Reopen_DroppedStatusNotHandled(t *testing.T) {
 // TestExecutionMachine_Reopen_DroppedStatusNotHandled: NewCardMachine's own
 // "reopen" rule covers done/dropped→parked (see machine_card_test.go's
 // TestCardMachineV2_AllEdges for the positive pin — done→parked is one of
-// v2's seven core edges, a deliberate departure from v1 where a done/aborted
+// v2's eight core edges, a deliberate departure from v1 where a done/aborted
 // card's reopen routed to the DIFFERENT "reopen_triaged" name via
 // api.resolveReopenVariant). "aborted" is NOT a v2 card status at all — see
 // TestCardMachineV2_JobFailed_NotRegistered — so reopen from aborted must

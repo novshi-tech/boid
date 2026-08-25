@@ -756,7 +756,7 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 // Wake mechanism (wake_triaged/wake_ready/wake_working, ParkedFrom-based
 // origin resolution) is gone too: v2's card machine has exactly one park
 // origin (working), so there is nothing left for a resurfacing step to
-// disambiguate — a parked card's exits (go/working/drop) are all ordinary
+// disambiguate — a parked card's exits (go/working/drop/done) are all ordinary
 // Manual actions now, reachable through the same ApplyAction endpoint as
 // everything else. See queue_sweep.go's SweepWake for what wake_due became
 // instead (a fact record, no transition).

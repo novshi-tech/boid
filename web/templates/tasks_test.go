@@ -69,6 +69,62 @@ func TestTaskActionBar_ParkedWithoutWorkingAction(t *testing.T) {
 	}
 }
 
+// TestTaskActionBar_ParkedHasDoneMenuItem pins the human half of card machine
+// v2's eighth edge (done: parked→done, 2026-08-25). The machine rule alone is
+// not enough to satisfy the design doc's escape hatch ("人の直接操作は常に全遷移
+// で可能であることを担保する", §3.2): this kebab menu enumerates its items verb
+// by verb rather than looping over availableActions, so a rule with no matching
+// item here is reachable from the CLI only. parked's PRIMARY button stays Go —
+// closing a card is never the default move — so done lives in the menu.
+func TestTaskActionBar_ParkedHasDoneMenuItem(t *testing.T) {
+	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusParked}
+
+	var buf bytes.Buffer
+	if err := TaskActionBar(task, []string{"go", "working", "drop", "done"}, "timeline", false).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if !strings.Contains(html, `value="done"`) {
+		t.Error("parked status action bar should contain a done action menu item")
+	}
+	if !strings.Contains(html, `>done<`) {
+		t.Error("parked status action bar should have a visible \"done\" label")
+	}
+	// The primary slot is unchanged: Go, not Done.
+	if !strings.Contains(html, `>Go<`) {
+		t.Errorf("parked's primary button must still be Go; got: %s", html)
+	}
+}
+
+func TestTaskActionBar_ParkedWithoutDoneAction(t *testing.T) {
+	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusParked}
+
+	var buf bytes.Buffer
+	if err := TaskActionBar(task, []string{"go", "drop"}, "timeline", false).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(buf.String(), `value="done"`) {
+		t.Error("done menu item should not render when done is not in availableActions")
+	}
+}
+
+// TestTaskActionBar_WorkingDoesNotDuplicateDone is the negative twin of
+// TestTaskActionBar_ParkedHasDoneMenuItem: on a WORKING card, done is already
+// the primary bottom-bar button (detailPrimaryAction), so the menu item must
+// stay out of the way — exactly one done form in the whole bar, not two.
+func TestTaskActionBar_WorkingDoesNotDuplicateDone(t *testing.T) {
+	task := &orchestrator.Task{ID: "task-1", Status: orchestrator.TaskStatusWorking}
+
+	var buf bytes.Buffer
+	if err := TaskActionBar(task, []string{"park", "done"}, "timeline", false).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got := strings.Count(buf.String(), `value="done"`); got != 1 {
+		t.Errorf("working card renders %d done forms, want exactly 1 (the primary button)", got)
+	}
+}
+
 // TestTaskListContent_ParkedTabActive guards BD-8's Web UI fix: ?status=parked
 // used to fall through TaskFilters' old else-branch and render Open as the
 // active tab (there was no dedicated parked case at all — see
@@ -274,14 +330,16 @@ func TestTaskDetailSuggestionSection_GoVerb_AcceptButtonMatchesPrimaryGoWeight(t
 	}
 }
 
-// verbApplicableStatus is card machine v2's own single valid FromStatus per
-// verb (machine_card.go's rule table — go/working/drop only from parked,
-// park/done only from working, reopen only from done). PR-3 added
+// verbApplicableStatus names ONE valid FromStatus per verb (machine_card.go's
+// rule table — go/working/drop only from parked, park only from working,
+// done from parked OR working, reopen from done or dropped). PR-3 added
 // components.SuggestionInapplicable, which hides the Accept button entirely
 // when a suggestion's verb doesn't match the task's CURRENT status — so
 // every render test below that wants to see a LIVE Accept button (as opposed
-// to the dedicated inapplicable-message tests, further down) must pass the
-// one status each verb actually applies from, not an arbitrary card status.
+// to the dedicated inapplicable-message tests, further down) must pass a
+// status the verb actually applies from, not an arbitrary card status.
+// Verbs with more than one valid FromStatus (done, reopen) just pick one
+// here; cardVerbApplicableStatuses (further down) is the exhaustive twin.
 var verbApplicableStatus = map[string]orchestrator.TaskStatus{
 	"go":      orchestrator.TaskStatusParked,
 	"working": orchestrator.TaskStatusParked,
@@ -542,28 +600,35 @@ func TestTaskDetailSuggestionSection_UnknownVerb_StillRendersTextWithNeutralClas
 //
 // cardVerbApplicableStatuses is every status a verb's own card-machine rule
 // (machine_card.go) actually fires from — the exhaustive twin of
-// verbApplicableStatus above (which only names ONE status per verb; "reopen"
-// alone has two, done AND dropped).
+// verbApplicableStatus above (which only names ONE status per verb; "done"
+// has two, parked AND working, and "reopen" has two, done AND dropped).
 var cardVerbApplicableStatuses = map[string]map[orchestrator.TaskStatus]bool{
 	"go":      {orchestrator.TaskStatusParked: true},
 	"working": {orchestrator.TaskStatusParked: true},
 	"drop":    {orchestrator.TaskStatusParked: true},
 	"park":    {orchestrator.TaskStatusWorking: true},
-	"done":    {orchestrator.TaskStatusWorking: true},
+	"done":    {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
 	"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
 }
 
 // TestTaskDetailSuggestionSection_InapplicableVerb_HidesAcceptShowsMessageAndReject
-// is the fix's core render pin: accept("done") on a card that is currently
-// "parked" (done only fires from "working" — machine_card.go) used to render
-// a live Accept button that 409'd on click with an opaque `no transition for
-// action "done" from status "parked"`. Now: no Accept button, a
-// plain-language explanation naming both the verb and the status, and
-// Reject still present (an inapplicable suggestion must remain dismissible —
-// this PR's own description covers why the queue predicate itself keeps
-// showing it).
+// is the fix's core render pin: accept("reopen") on a card that is currently
+// "parked" (reopen only fires from done/dropped — machine_card.go) used to
+// render a live Accept button that 409'd on click with an opaque `no
+// transition for action "reopen" from status "parked"`. Now: no Accept
+// button, a plain-language explanation naming both the verb and the status,
+// and Reject still present (an inapplicable suggestion must remain
+// dismissible — this PR's own description covers why the queue predicate
+// itself keeps showing it).
+//
+// The verb was "done" until 2026-08-25, when card machine v2 gained its
+// eighth edge (done: parked→done) and that combination became APPLICABLE —
+// see NewCardMachine's own doc comment. "reopen" on parked is the
+// replacement because verb and status stay textually distinct there (unlike
+// "park" on "parked", where a Contains check for the verb would pass on the
+// status string alone and prove nothing).
 func TestTaskDetailSuggestionSection_InapplicableVerb_HidesAcceptShowsMessageAndReject(t *testing.T) {
-	suggestion := orchestrator.Suggestion{Verb: "done", Reason: "looks finished"}
+	suggestion := orchestrator.Suggestion{Verb: "reopen", Reason: "the source came back"}
 
 	var buf bytes.Buffer
 	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusParked, suggestion).Render(context.Background(), &buf); err != nil {
@@ -571,16 +636,16 @@ func TestTaskDetailSuggestionSection_InapplicableVerb_HidesAcceptShowsMessageAnd
 	}
 	html := buf.String()
 
-	if strings.Contains(html, ">Accept: done<") {
+	if strings.Contains(html, ">Accept: reopen<") {
 		t.Errorf("Accept button must not render for an inapplicable verb/status combo; got: %s", html)
 	}
-	if !strings.Contains(html, "done") || !strings.Contains(html, "parked") {
+	if !strings.Contains(html, "reopen") || !strings.Contains(html, "parked") {
 		t.Errorf("inapplicable message should name the verb and the status; got: %s", html)
 	}
 	// Review LOW 4: a bare "cannot be applied" is not enough — the message
 	// must also say what CAN be applied instead, same as the API's 409
 	// (both now pull from orchestrator.StateMachine.AvailableActionsHint).
-	for _, want := range []string{"go", "working", "drop"} {
+	for _, want := range []string{"go", "working", "drop", "done"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("inapplicable message should name every action available from parked (%q missing); got: %s", want, html)
 		}
@@ -590,16 +655,16 @@ func TestTaskDetailSuggestionSection_InapplicableVerb_HidesAcceptShowsMessageAnd
 	}
 	// The suggestion's own content (badge/reason) still renders regardless —
 	// only the Accept affordance is what's gated.
-	if !strings.Contains(html, "badge-verb-done") || !strings.Contains(html, "looks finished") {
+	if !strings.Contains(html, "badge-verb-reopen") || !strings.Contains(html, "the source came back") {
 		t.Errorf("suggestion content should still render even when inapplicable; got: %s", html)
 	}
 }
 
 // TestTaskDetailSuggestionSection_AllVerbStatusCombinations_AcceptOnlyWhenApplicable
 // is the exhaustive 6-verb × 4-status (24 combination) render-level twin of
-// orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges:
-// Accept renders for exactly the 7 applicable combinations,
-// never for the other 17 — and Reject renders for ALL 24, since an
+// orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlyEightEdges:
+// Accept renders for exactly the 8 applicable combinations,
+// never for the other 16 — and Reject renders for ALL 24, since an
 // inapplicable suggestion must still be dismissible.
 func TestTaskDetailSuggestionSection_AllVerbStatusCombinations_AcceptOnlyWhenApplicable(t *testing.T) {
 	verbs := []string{"go", "working", "park", "drop", "done", "reopen"}
