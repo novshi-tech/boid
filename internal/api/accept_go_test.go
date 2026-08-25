@@ -65,7 +65,7 @@ func (f *fakeTaskCreator) CreateTask(req CreateTaskRequest) (*orchestrator.Task,
 // for accept(go)'s machine dispatch: Tasks for the pre-tx read, Tx for the
 // transactional write, TaskTriage for the pre-tx children read
 // (recordingTxStore implements all three via the same underlying map — same
-// as taskRepo implementing TaskStore/TxStore/TaskTriageStore in wire.go), and
+// as taskRepo implementing TaskStore/TxStore/CardStore in wire.go), and
 // TaskCreator for child task-ification.
 func newAcceptGoWorkflowService(task *orchestrator.Task, txStore *recordingTxStore, creator *fakeTaskCreator) *TaskWorkflowService {
 	return &TaskWorkflowService{
@@ -110,7 +110,7 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChildren_CreatesTasksAndMarksDispat
 	}`)
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	creator := &fakeTaskCreator{}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
@@ -185,7 +185,7 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChild_PassesDescriptionSeparatelyFr
 	}`)
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	creator := &fakeTaskCreator{}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
@@ -261,7 +261,7 @@ func TestApplyAction_Answered_AcceptGo_InapplicableStatus_ErrorMessageHint(t *te
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","reason":"stale"}}}`)},
 		},
 	}
@@ -292,7 +292,7 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChildWithoutSpec_Errors(t *testing.
 	detail := []byte(`{"children": [{"id": "ch_00", "status": "specced"}]}`)
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	svc := newAcceptGoWorkflowService(task, txStore, &fakeTaskCreator{})
 
@@ -313,7 +313,7 @@ func TestTaskWorkflowService_AcceptGo_UnrecognizedChildStatus_Errors(t *testing.
 	detail := []byte(`{"children": [{"id": "ch_00", "status": "speced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	creator := &fakeTaskCreator{}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
@@ -340,7 +340,7 @@ func TestTaskWorkflowService_AcceptGo_ChildAutoStartFails_TreatedAsDispatchFailu
 	detail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
 		return &orchestrator.Task{ID: "child-1", ProjectID: req.ProjectID, ParentID: req.ParentID, Status: orchestrator.TaskStatusPending}, nil
@@ -367,7 +367,7 @@ func TestTaskWorkflowService_AcceptGo_ChildFinishesBeforeCommit_ReconciledAsClos
 	detail := []byte(`{"children": [{"id": "ch_00", "title": "quick", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 		tasks:  map[string]*orchestrator.Task{},
 	}
 	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
@@ -428,7 +428,7 @@ func TestTaskWorkflowService_AcceptGo_RetryAfterPartialFailure_DoesNotDuplicateE
 	]}`)
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
 		if req.Ref == "ch_01" {
@@ -467,7 +467,7 @@ func TestTaskWorkflowService_AcceptGo_RetryAfterPartialFailure_DoesNotDuplicateE
 // — both a direct human click and accept(go) reach the identical code path.
 func TestApplyAction_Go_DelegatesToAcceptGo(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}}}
+	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}}}
 	creator := &fakeTaskCreator{}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
@@ -492,14 +492,14 @@ func TestApplyAction_Go_DelegatesToAcceptGo(t *testing.T) {
 // common accept path in the whole feature (design doc §3.9 treats this
 // action-log history as future auto-accept-policy evaluation data, so this
 // mislabeling would have polluted it from day one). acceptGo's viaAccept
-// param (workflow_triage.go) now suppresses the suggestion_discarded record
+// param (workflow_card.go) now suppresses the suggestion_discarded record
 // specifically for accept-originated "go", while still stripping the
 // suggestion (it must not linger after being consumed).
 func TestApplyAction_Answered_AcceptGo_DoesNotRecordSuggestionDiscarded(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", SuggestionVerb: "go", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","reason":"children are specced"}}}`)},
 		},
 	}
@@ -535,7 +535,7 @@ func TestApplyAction_Answered_AcceptGo_DoesNotRecordSuggestionDiscarded(t *testi
 
 // TestApplyAction_Go_DispatchFailure_ReturnsSyncErrorAndRecordsDispatchError
 // is the CONCRETE IMPROVEMENT over v1's known gap (see acceptGo's own doc
-// comment, workflow_triage.go): v1's equivalent failure (Dispatch erroring
+// comment, workflow_card.go): v1's equivalent failure (Dispatch erroring
 // after "ready" already committed) only ever reached slog.Error, with the
 // caller already getting an HTTP 200. accept(go)/"go" failing now ALWAYS
 // surfaces as a synchronous error, with a dispatch_error action recorded and
@@ -546,7 +546,7 @@ func TestApplyAction_Go_DispatchFailure_ReturnsSyncErrorAndRecordsDispatchError(
 	detail := []byte(`{"children": [{"id": "ch_00", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
 		return nil, fmt.Errorf("project p2 not found")
@@ -608,7 +608,7 @@ func TestTaskWorkflowService_AcceptGo_ConcurrentTransitionWon_DoesNotRecordOrpha
 		// concurrent transition that committed in the window between the
 		// child being created (below) and this Tx opening.
 		task:   &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusWorking},
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	creator := &fakeTaskCreator{}
 	svc := &TaskWorkflowService{
@@ -673,7 +673,7 @@ func TestTaskWorkflowService_AcceptGo_GenuineTxFailure_StillRecordsOrphanedChild
 	detail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
 	txStore := &recordingTxStore{
 		task:          &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}, // still parked: no race
-		triage:        map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		triage:        map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 		updateTaskErr: fmt.Errorf("simulated write failure"),
 	}
 	creator := &fakeTaskCreator{}

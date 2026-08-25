@@ -60,7 +60,7 @@ func TestValidateSuggestionAttr_MissingVerbRejected(t *testing.T) {
 
 // TestValidateSuggestionAttr_NullClearsWithoutValidation mirrors
 // parsePromotedAttr's own null-clears-the-column convention
-// (workflow_triage.go) — an explicit JSON null clearing the suggestion key
+// (workflow_card.go) — an explicit JSON null clearing the suggestion key
 // must not be rejected just because it carries no verb to validate, and
 // must report the cleared ("") verb so the caller can clear the promoted
 // column too.
@@ -82,7 +82,7 @@ func TestValidateSuggestionAttr_MalformedJSONRejected(t *testing.T) {
 
 // TestValidateSuggestionAttr_ParkWakeAt validates the RFC3339 format check on
 // params.wake_at — the same format parseParkPayload's own wake_at parsing
-// requires for a direct park action (workflow_triage.go).
+// requires for a direct park action (workflow_card.go).
 func TestValidateSuggestionAttr_ParkWakeAt(t *testing.T) {
 	valid := []byte(`{"verb":"park","params":{"wake_at":"2026-09-01T00:00:00Z"}}`)
 	if _, err := validateSuggestionAttr(valid); err != nil {
@@ -114,7 +114,7 @@ func TestValidateSuggestionAttr_ParkWakeTaskIDWithoutWakeAt(t *testing.T) {
 
 func TestApplyParkSideEffectFromSuggestion_WritesWakeCondition(t *testing.T) {
 	txStore := &recordingTxStore{
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", Kind: "issue", Urgency: "week", Detail: []byte(`{"summary":"keep me"}`)},
 		},
 	}
@@ -146,7 +146,7 @@ func TestApplyAction_Answered_AcceptWorking(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"working"}}}`)},
 		},
 	}
@@ -175,7 +175,7 @@ func TestApplyAction_Answered_AcceptPark_WritesWakeCondition(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"park","params":{"wake_at":"2026-09-01T00:00:00Z","wake_task_id":"blocking-task"}}}}`)},
 		},
 	}
@@ -208,7 +208,7 @@ func TestApplyAction_Answered_AcceptDone(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"done","reason":"all children closed"}}}`)},
 		},
 	}
@@ -272,7 +272,7 @@ func TestApplyAction_Answered_Accept_AllVerbStatusCombinations(t *testing.T) {
 				detail := []byte(fmt.Sprintf(`{"attrs":{"suggestion":{"verb":%q}}}`, verb))
 				txStore := &recordingTxStore{
 					task:   task,
-					triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+					triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 				}
 				svc := newAcceptGoWorkflowService(task, txStore, nil)
 
@@ -347,7 +347,7 @@ func TestApplyAction_Answered_Accept_AllVerbStatusCombinations(t *testing.T) {
 // (docs/plans's own §4/§5 discussion, this PR's description "queue に載せ続
 // けるか" section): if Reject were also blocked by verb/status applicability,
 // an inapplicable suggestion could never be cleared at all. Unlike Accept,
-// Reject applies NO verb-specific transition (workflow_triage.go's
+// Reject applies NO verb-specific transition (workflow_card.go's
 // applyAnsweredSideEffect just strips the suggestion), so it must succeed
 // for every one of the 24 verb×status combinations — including all 17
 // where Accept is rejected above.
@@ -368,7 +368,7 @@ func TestApplyAction_Answered_Reject_AllVerbStatusCombinations_AlwaysSucceeds(t 
 				detail := []byte(fmt.Sprintf(`{"attrs":{"suggestion":{"verb":%q}}}`, verb))
 				txStore := &recordingTxStore{
 					task:   task,
-					triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+					triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 				}
 				svc := newAcceptGoWorkflowService(task, txStore, nil)
 

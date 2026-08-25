@@ -68,7 +68,7 @@ func TestApplyAction_AttrsSet_Done_WithTaskTriageRow_Allowed(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{"existing":"keep"}`)}
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
 	}
 	svc := newDoneTriageWorkflowService(task, txStore)
 
@@ -158,7 +158,7 @@ func TestApplyAction_AttrsSet_Done_TaskTriageStoreNotWired_Rejected(t *testing.T
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}}, // a row DOES exist in the store...
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}}, // a row DOES exist in the store...
 	}
 	svc := newTriageWorkflowService(task, txStore) // ...but TaskTriage is left nil, so the guard can't see it.
 
@@ -250,7 +250,7 @@ func TestLogAttrsSetOnDoneTriage_LogsAtDebugLevel(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task:   task,
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
 	}
 	svc := newDoneTriageWorkflowService(task, txStore)
 
@@ -300,7 +300,7 @@ func TestApplyAction_AttrsSet_LogsUsingInTxStatus_NotStalePreTxSnapshot(t *testi
 	fresh := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task:   fresh, // tx.GetTask (in-Tx) sees the task as already done
-		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"observed":{"source_closed":true}}}`)}},
 	}
 	svc := newDoneTriageWorkflowService(preTx, txStore) // s.Tasks (pre-Tx) sees "working"
 

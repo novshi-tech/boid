@@ -16,7 +16,7 @@ type recordingTxStore struct {
 	task             *orchestrator.Task
 	updatedTask      *orchestrator.Task
 	actions          []*orchestrator.Action
-	triage           map[string]*orchestrator.TaskTriage
+	triage           map[string]*orchestrator.CardAttrs
 	parkedFromFn     func(taskID string) (orchestrator.TaskStatus, error)
 	getTaskTriageErr error // when set, GetTaskTriage returns this instead of the usual not-found
 	updateTaskErr    error // when set, UpdateTask returns this instead of succeeding — used to
@@ -96,22 +96,22 @@ func (s *recordingTxStore) ListActionsByTask(taskID string) ([]*orchestrator.Act
 }
 func (s *recordingTxStore) SeedTaskTriage(taskID string) error {
 	if s.triage == nil {
-		s.triage = map[string]*orchestrator.TaskTriage{}
+		s.triage = map[string]*orchestrator.CardAttrs{}
 	}
 	if _, ok := s.triage[taskID]; !ok {
-		s.triage[taskID] = &orchestrator.TaskTriage{TaskID: taskID}
+		s.triage[taskID] = &orchestrator.CardAttrs{TaskID: taskID}
 	}
 	return nil
 }
 
-func (s *recordingTxStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error {
+func (s *recordingTxStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error {
 	if s.triage == nil {
-		s.triage = map[string]*orchestrator.TaskTriage{}
+		s.triage = map[string]*orchestrator.CardAttrs{}
 	}
 	s.triage[tt.TaskID] = tt
 	return nil
 }
-func (s *recordingTxStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
+func (s *recordingTxStore) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
 	if s.getTaskTriageErr != nil {
 		return nil, s.getTaskTriageErr
 	}
@@ -133,8 +133,8 @@ func (s *recordingTxStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriag
 	cp := *tt
 	return &cp, nil
 }
-func (s *recordingTxStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
-	out := map[string]*orchestrator.TaskTriage{}
+func (s *recordingTxStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.CardAttrs, error) {
+	out := map[string]*orchestrator.CardAttrs{}
 	for _, id := range taskIDs {
 		if tt, ok := s.triage[id]; ok {
 			out[id] = tt
@@ -320,10 +320,10 @@ func newTriageWorkflowService(task *orchestrator.Task, txStore *recordingTxStore
 	}
 	if isPreExecutionCardStatus(task.Status) {
 		if txStore.triage == nil {
-			txStore.triage = map[string]*orchestrator.TaskTriage{}
+			txStore.triage = map[string]*orchestrator.CardAttrs{}
 		}
 		if _, ok := txStore.triage[task.ID]; !ok {
-			txStore.triage[task.ID] = &orchestrator.TaskTriage{TaskID: task.ID}
+			txStore.triage[task.ID] = &orchestrator.CardAttrs{TaskID: task.ID}
 		}
 		svc.TaskTriage = txStore
 	}
@@ -419,7 +419,7 @@ func TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion(t *test
 			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: c.from, Behavior: "dev", Payload: []byte(`{}`)}
 			txStore := &recordingTxStore{
 				task:   task,
-				triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}},
+				triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}},
 			}
 			svc := &TaskWorkflowService{
 				Tasks:      &stubTaskStore{task: task},
@@ -471,7 +471,7 @@ func TestApplyAction_CardTransitions_RejectedForNonHumanActor(t *testing.T) {
 				// checked, so the exact status doesn't matter for this test —
 				// parked is used uniformly for simplicity).
 				task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-				txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}}}
+				txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}}}
 				svc := newTriageWorkflowService(task, txStore)
 				svc.TaskTriage = txStore
 
@@ -496,7 +496,7 @@ func TestTaskWorkflowServiceApplyAction_Park_UpsertsWakeCondition(t *testing.T) 
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", Kind: "issue", Urgency: "week", Detail: []byte(`{"summary":"keep me"}`)},
 		},
 	}

@@ -169,11 +169,11 @@ func (s *stubWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	}, nil
 }
 
-func (s *stubWorkflowService) GetTriage(taskID string) (*TaskTriageView, error) {
-	return &TaskTriageView{TaskID: taskID}, nil
+func (s *stubWorkflowService) GetCard(taskID string) (*CardView, error) {
+	return &CardView{TaskID: taskID}, nil
 }
 
-func (s *stubWorkflowService) ListTriage(orchestrator.TaskFilter) ([]*TaskTriageView, error) {
+func (s *stubWorkflowService) ListCards(orchestrator.TaskFilter) ([]*CardView, error) {
 	return nil, nil
 }
 
@@ -263,17 +263,17 @@ func (s *stubSessionDispatcher) StartSession(ctx context.Context, req StartSessi
 // stubTaskTriageStore backs h.TaskTriage in shaping-session tests. Only
 // GetTaskTriage is exercised; the rest satisfy the interface.
 type stubTaskTriageStore struct {
-	triage *orchestrator.TaskTriage
+	triage *orchestrator.CardAttrs
 	err    error
 }
 
-func (s *stubTaskTriageStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error { return nil }
+func (s *stubTaskTriageStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error { return nil }
 func (s *stubTaskTriageStore) SeedTaskTriage(taskID string) error                 { return nil }
-func (s *stubTaskTriageStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
+func (s *stubTaskTriageStore) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
 	return s.triage, s.err
 }
-func (s *stubTaskTriageStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
-	out := map[string]*orchestrator.TaskTriage{}
+func (s *stubTaskTriageStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.CardAttrs, error) {
+	out := map[string]*orchestrator.CardAttrs{}
 	if s.triage != nil {
 		for _, id := range taskIDs {
 			if id == s.triage.TaskID {
@@ -288,7 +288,7 @@ func (s *stubTaskTriageStore) ParkedFrom(taskID string) (orchestrator.TaskStatus
 	return "", nil
 }
 
-func newTestWebHandlerWithShaping(svc WebService, dispatcher SessionDispatcher, triage TaskTriageStore) *chi.Mux {
+func newTestWebHandlerWithShaping(svc WebService, dispatcher SessionDispatcher, triage CardStore) *chi.Mux {
 	h := &WebHandler{Service: svc, SessionDispatcher: dispatcher, TaskTriage: triage}
 	r := chi.NewRouter()
 	r.Post("/tasks/{id}/shape", h.PostStartShapingSession)
@@ -521,7 +521,7 @@ func TestWebHandlerPostStartShapingSession_Success(t *testing.T) {
 		Status:      orchestrator.TaskStatusParked,
 	}}}
 	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
-	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{TaskID: "task-1", Kind: "issue", Urgency: "week"}}
+	triage := &stubTaskTriageStore{triage: &orchestrator.CardAttrs{TaskID: "task-1", Kind: "issue", Urgency: "week"}}
 	r := newTestWebHandlerWithShaping(svc, dispatcher, triage)
 
 	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
@@ -566,7 +566,7 @@ func TestWebHandlerPostStartShapingSession_WorkingWithOpenChild(t *testing.T) {
 		Status:      orchestrator.TaskStatusWorking,
 	}}}
 	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
-	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{
+	triage := &stubTaskTriageStore{triage: &orchestrator.CardAttrs{
 		TaskID: "task-1", Kind: "issue", Urgency: "week",
 		Detail: json.RawMessage(`{"children":[{"id":"ch_00","title":"サブ課題A","status":"open"}]}`),
 	}}
@@ -625,7 +625,7 @@ func TestWebHandlerPostStartShapingSession_WorkingWithTriageRowNoChildrenYet(t *
 	// A triage row exists but has no children yet — the "add a brand-new
 	// child while working" use case must still be reachable, not just
 	// "shape an existing open child".
-	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{TaskID: "task-1", Kind: "issue"}}
+	triage := &stubTaskTriageStore{triage: &orchestrator.CardAttrs{TaskID: "task-1", Kind: "issue"}}
 	r := newTestWebHandlerWithShaping(svc, dispatcher, triage)
 
 	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
@@ -858,7 +858,7 @@ func TestWebHandler_TaskDetail_ShowsTriageChildren(t *testing.T) {
 		Title:  "card title",
 		Status: orchestrator.TaskStatusParked,
 	}}}
-	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{TaskID: "task-1", Detail: detail}}
+	triage := &stubTaskTriageStore{triage: &orchestrator.CardAttrs{TaskID: "task-1", Detail: detail}}
 	h := &WebHandler{Service: svc, TaskTriage: triage}
 	r := chi.NewRouter()
 	r.Get("/tasks/{id}", h.TaskDetail)
@@ -1134,7 +1134,7 @@ func TestTaskDetailFragment_Status(t *testing.T) {
 // suggestion parameter being dropped or left at its zero value.
 func TestTaskDetailFragment_Status_RendersSuggestion(t *testing.T) {
 	svc := &stubWebService{taskDetail: makeTaskDetailView()}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"task-1": {TaskID: "task-1", Detail: []byte(`{"suggestion":{"verb":"reopen","action":"re-triage now","reason":"source event fired","basis":"issue #42 reopened"}}`)},
 	}}
 	h := &WebHandler{Service: svc, TaskTriage: triage}
@@ -1161,7 +1161,7 @@ func TestTaskDetailFragment_Status_RendersSuggestion(t *testing.T) {
 // templates.TaskDetail's threaded suggestion parameter.
 func TestTaskDetail_RendersSuggestion(t *testing.T) {
 	svc := &stubWebService{taskDetail: makeTaskDetailView()}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"task-1": {TaskID: "task-1", Detail: []byte(`{"suggestion":{"verb":"reopen","reason":"source event fired"}}`)},
 	}}
 	h := &WebHandler{Service: svc, TaskTriage: triage}

@@ -1261,7 +1261,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Lifecycle:   lifecycle,
 		Hub:         hub,
 		Adapter:     claudeAdapter,
-		// TaskTriage: taskRepo already implements TaskTriageStore (see
+		// TaskTriage: taskRepo already implements CardStore (see
 		// internal/orchestrator/repository.go) — same object as Tasks above,
 		// viewed through a narrower interface for TaskWorkflowService.Dispatch's
 		// pre-tx children read (docs/plans/cross-project-issue-triage.md Phase
@@ -1650,7 +1650,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Projects: projectRepo,
 		// Seeds the task_triage sidecar row for pre-execution creates
 		// (docs/plans/cross-project-issue-triage.md Phase 1 PR-5a) — the
-		// invariant ListTriage's "has a row = is a triage task" predicate
+		// invariant ListCards's "has a row = is a triage task" predicate
 		// rests on. Same repo the workflow service already uses.
 		TaskTriage: taskRepo,
 		// Identities backs the brokered task_identity_link/_unlink/_resolve
@@ -2185,8 +2185,8 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 
 	// task_triage read surface (docs/plans/cross-project-issue-triage.md Phase
 	// 1 PR-5a). Mounted at its own root rather than under /api/tasks — see
-	// api.TriageHandler's doc comment.
-	r.Mount("/api/triage", (&api.TriageHandler{Service: runtime.workflow}).Routes())
+	// api.CardHandler's doc comment.
+	r.Mount("/api/triage", (&api.CardHandler{Service: runtime.workflow}).Routes())
 
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {

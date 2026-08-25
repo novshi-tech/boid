@@ -131,7 +131,7 @@ func SuggestionInapplicableReason(verb string, status orchestrator.TaskStatus) s
 // childrenPreviewLabel summarizes a queue row's children into a compact
 // "N specced, M open" string for the queue list — a preview of what
 // pressing Go actually dispatches (only specced children task-ify;
-// TaskWorkflowService.Dispatch, internal/api/workflow_triage.go). Omits a
+// TaskWorkflowService.Dispatch, internal/api/workflow_card.go). Omits a
 // status entirely once its count is zero, so a fully-specced card just
 // reads "N specced" instead of "N specced, 0 open".
 func childrenPreviewLabel(children []orchestrator.TaskTriageChild) string {

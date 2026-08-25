@@ -73,7 +73,7 @@ func applyParkSideEffect(tx TxStore, taskID string, p *parkPayload) error {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("park: get task_triage: %w", err)
 		}
-		tt = &orchestrator.TaskTriage{TaskID: taskID}
+		tt = &orchestrator.CardAttrs{TaskID: taskID}
 	}
 
 	tt.WakeAt = nil
@@ -127,7 +127,7 @@ func applyChildAddedSideEffect(tx TxStore, taskID string, p *childAddedPayload) 
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("child_added: get task_triage: %w", err)
 		}
-		tt = &orchestrator.TaskTriage{TaskID: taskID}
+		tt = &orchestrator.CardAttrs{TaskID: taskID}
 	}
 	newDetail, aerr := orchestrator.AddDetailChild(tt.Detail, orchestrator.TaskTriageChild{
 		ID:    p.ID,
@@ -177,7 +177,7 @@ func applyChildDroppedSideEffect(tx TxStore, taskID string, p *childDroppedPaylo
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("child_dropped: get task_triage: %w", err)
 		}
-		tt = &orchestrator.TaskTriage{TaskID: taskID}
+		tt = &orchestrator.CardAttrs{TaskID: taskID}
 	}
 	newDetail, changed, derr := orchestrator.DropDetailChild(tt.Detail, p.ID)
 	if derr != nil {
@@ -233,7 +233,7 @@ func applyChildSpeccedSideEffect(tx TxStore, taskID string, p *childSpeccedPaylo
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("child_specced: get task_triage: %w", err)
 		}
-		tt = &orchestrator.TaskTriage{TaskID: taskID}
+		tt = &orchestrator.CardAttrs{TaskID: taskID}
 	}
 	newDetail, serr := orchestrator.SpecDetailChild(tt.Detail, p.ID, orchestrator.TaskTriageChildSpec{
 		Project:     p.Project,
@@ -451,7 +451,7 @@ func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) (v
 		if !errors.Is(err, sql.ErrNoRows) {
 			return false, fmt.Errorf("attrs_set: get task_triage: %w", err)
 		}
-		tt = &orchestrator.TaskTriage{TaskID: taskID}
+		tt = &orchestrator.CardAttrs{TaskID: taskID}
 	}
 	oldVerb := tt.SuggestionVerb
 	if len(patch.Attrs) > 0 {

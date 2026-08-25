@@ -16,7 +16,7 @@ import (
 // and does NOT know execution-only rules (start/ask/answer/abort).
 func TestMachineFor_SidecarRowExists_PicksCardMachine(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
-	store := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}}}
+	store := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}}}
 
 	sm, err := machineFor(store, task)
 	if err != nil {
@@ -62,7 +62,7 @@ func TestMachineFor_NilStore_FallsBackToExecutionMachine(t *testing.T) {
 		t.Fatalf("machineFor(nil store): %v", err)
 	}
 	if !sm.IsManualAction("start") {
-		t.Error("expected the execution machine for a nil TaskTriageStore")
+		t.Error("expected the execution machine for a nil CardStore")
 	}
 }
 
@@ -203,7 +203,7 @@ func TestMachineForDisplay_LookupError_FallsBackByStatus(t *testing.T) {
 // error.
 func TestHasTaskTriageRow_SharedBySelectorAndReopenRouting(t *testing.T) {
 	t.Run("row exists", func(t *testing.T) {
-		store := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}}}
+		store := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}}}
 		isCard, err := hasTaskTriageRow(store, "t1")
 		if err != nil || !isCard {
 			t.Fatalf("isCard=%v err=%v, want true/nil", isCard, err)

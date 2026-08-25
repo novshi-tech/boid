@@ -24,9 +24,9 @@ var errNoTriageRow = fmt.Errorf("get task_triage: %w", sql.ErrNoRows)
 // read that state back — including the fields DERIVED from the actions log
 // (parked_from), not just the stored columns.
 
-// stubTriageStore is a TaskTriageStore backed by in-memory maps.
+// stubTriageStore is a CardStore backed by in-memory maps.
 type stubTriageStore struct {
-	rows       map[string]*orchestrator.TaskTriage
+	rows       map[string]*orchestrator.CardAttrs
 	parkedFrom map[string]orchestrator.TaskStatus
 	getErr     error
 
@@ -35,7 +35,7 @@ type stubTriageStore struct {
 	// same best-effort "a non-nil error means something went wrong, but
 	// out may still be partially or fully useful" contract the real
 	// orchestrator.ListTaskTriageByTaskIDs has (see its doc comment,
-	// internal/orchestrator/task_triage.go). Kept separate from getErr
+	// internal/orchestrator/card.go). Kept separate from getErr
 	// (which only affects GetTaskTriage) so a test can exercise the batch
 	// path's error handling without also breaking single-row lookups.
 	listErr error
@@ -47,9 +47,9 @@ type stubTriageStore struct {
 	listTaskTriageByTaskIDsCalls int
 }
 
-func (s *stubTriageStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error {
+func (s *stubTriageStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error {
 	if s.rows == nil {
-		s.rows = map[string]*orchestrator.TaskTriage{}
+		s.rows = map[string]*orchestrator.CardAttrs{}
 	}
 	s.rows[tt.TaskID] = tt
 	return nil
@@ -57,15 +57,15 @@ func (s *stubTriageStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error {
 
 func (s *stubTriageStore) SeedTaskTriage(taskID string) error {
 	if s.rows == nil {
-		s.rows = map[string]*orchestrator.TaskTriage{}
+		s.rows = map[string]*orchestrator.CardAttrs{}
 	}
 	if _, ok := s.rows[taskID]; !ok {
-		s.rows[taskID] = &orchestrator.TaskTriage{TaskID: taskID}
+		s.rows[taskID] = &orchestrator.CardAttrs{TaskID: taskID}
 	}
 	return nil
 }
 
-func (s *stubTriageStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
+func (s *stubTriageStore) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
 	if s.getErr != nil {
 		return nil, s.getErr
 	}
@@ -75,9 +75,9 @@ func (s *stubTriageStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage
 	return nil, errNoTriageRow
 }
 
-func (s *stubTriageStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
+func (s *stubTriageStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.CardAttrs, error) {
 	s.listTaskTriageByTaskIDsCalls++
-	out := map[string]*orchestrator.TaskTriage{}
+	out := map[string]*orchestrator.CardAttrs{}
 	for _, id := range taskIDs {
 		if tt, ok := s.rows[id]; ok {
 			out[id] = tt
@@ -99,7 +99,7 @@ func (s *stubTriageStore) ParkedFrom(taskID string) (orchestrator.TaskStatus, er
 }
 
 // multiTaskStore is a TaskStore over a fixed set of tasks, supporting the
-// ProjectID/Status filters ListTriage passes through.
+// ProjectID/Status filters ListCards passes through.
 type multiTaskStore struct {
 	tasks []*orchestrator.Task
 }
@@ -121,7 +121,7 @@ func (s *multiTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestra
 			continue
 		}
 		if filter.Status == "triage" {
-			// pre-execution ∪ working — ListTriage's default floor (store.go).
+			// pre-execution ∪ working — ListCards's default floor (store.go).
 			if !orchestrator.IsPreExecutionStatus(t.Status) && t.Status != orchestrator.TaskStatusWorking {
 				continue
 			}
@@ -144,17 +144,17 @@ func (s *multiTaskStore) FindTaskByRef(string, string, string) (*orchestrator.Ta
 }
 func (s *multiTaskStore) ListChildren(string) ([]*orchestrator.Task, error) { return nil, nil }
 
-// TestGetTriage_ReturnsStoredAndDerivedFields pins S5: a parked triage task's
+// TestGetCard_ReturnsStoredAndDerivedFields pins S5: a parked triage task's
 // view carries the stored sidecar columns, the opaque detail blob, AND
 // parked_from — which exists nowhere as a column and is derived from the
 // actions log (決定13). A read surface that returns only the columns would
 // leave workspace-side callers unable to tell which side (triaged/ready) a
 // parked task will wake back to.
-func TestGetTriage_ReturnsStoredAndDerivedFields(t *testing.T) {
+func TestGetCard_ReturnsStoredAndDerivedFields(t *testing.T) {
 	wakeAt := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Title: "見積もり依頼", Status: orchestrator.TaskStatusParked}
 	triage := &stubTriageStore{
-		rows: map[string]*orchestrator.TaskTriage{
+		rows: map[string]*orchestrator.CardAttrs{
 			"t1": {
 				TaskID:         "t1",
 				Kind:           "issue",
@@ -168,9 +168,9 @@ func TestGetTriage_ReturnsStoredAndDerivedFields(t *testing.T) {
 	}
 	svc := &TaskWorkflowService{Tasks: &multiTaskStore{tasks: []*orchestrator.Task{task}}, TaskTriage: triage}
 
-	view, err := svc.GetTriage("t1")
+	view, err := svc.GetCard("t1")
 	if err != nil {
-		t.Fatalf("GetTriage: %v", err)
+		t.Fatalf("GetCard: %v", err)
 	}
 	if view.Status != orchestrator.TaskStatusParked {
 		t.Fatalf("status = %q, want parked", view.Status)
@@ -202,39 +202,39 @@ func TestGetTriage_ReturnsStoredAndDerivedFields(t *testing.T) {
 	}
 }
 
-// TestGetTriage_ParkedFromOnlyForParked pins that parked_from is not
+// TestGetCard_ParkedFromOnlyForParked pins that parked_from is not
 // fabricated for a non-parked task: a working task has no meaningful "which
 // side does it wake to", and a stale value there would be actively
 // misleading.
-func TestGetTriage_ParkedFromOnlyForParked(t *testing.T) {
+func TestGetCard_ParkedFromOnlyForParked(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusWorking}
 	triage := &stubTriageStore{
-		rows:       map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1"}},
+		rows:       map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}},
 		parkedFrom: map[string]orchestrator.TaskStatus{"t1": orchestrator.TaskStatusReady},
 	}
 	svc := &TaskWorkflowService{Tasks: &multiTaskStore{tasks: []*orchestrator.Task{task}}, TaskTriage: triage}
 
-	view, err := svc.GetTriage("t1")
+	view, err := svc.GetCard("t1")
 	if err != nil {
-		t.Fatalf("GetTriage: %v", err)
+		t.Fatalf("GetCard: %v", err)
 	}
 	if view.ParkedFrom != "" {
 		t.Fatalf("parked_from = %q for a working task, want empty", view.ParkedFrom)
 	}
 }
 
-// TestGetTriage_NoSidecarRowStillReturnsState pins the fail-open posture: a
+// TestGetCard_NoSidecarRowStillReturnsState pins the fail-open posture: a
 // triage task whose sidecar row does not exist yet must still be readable
 // (its status is the state that matters most). Returning 404 here would make
 // the read surface report "this task does not exist" for a task that plainly
 // does.
-func TestGetTriage_NoSidecarRowStillReturnsState(t *testing.T) {
+func TestGetCard_NoSidecarRowStillReturnsState(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged}
 	svc := &TaskWorkflowService{Tasks: &multiTaskStore{tasks: []*orchestrator.Task{task}}, TaskTriage: &stubTriageStore{}}
 
-	view, err := svc.GetTriage("t1")
+	view, err := svc.GetCard("t1")
 	if err != nil {
-		t.Fatalf("GetTriage: %v", err)
+		t.Fatalf("GetCard: %v", err)
 	}
 	if view.Status != orchestrator.TaskStatusTriaged {
 		t.Fatalf("status = %q, want triaged", view.Status)
@@ -244,13 +244,13 @@ func TestGetTriage_NoSidecarRowStillReturnsState(t *testing.T) {
 	}
 }
 
-// TestGetTriage_MissingTaskIs404 pins that a genuinely absent task is still an
+// TestGetCard_MissingTaskIs404 pins that a genuinely absent task is still an
 // error — the fail-open tolerance above applies to the sidecar row, not to the
 // task itself.
-func TestGetTriage_MissingTaskIs404(t *testing.T) {
+func TestGetCard_MissingTaskIs404(t *testing.T) {
 	svc := &TaskWorkflowService{Tasks: &multiTaskStore{}, TaskTriage: &stubTriageStore{}}
-	if _, err := svc.GetTriage("nope"); err == nil {
-		t.Fatal("GetTriage on a missing task returned no error")
+	if _, err := svc.GetCard("nope"); err == nil {
+		t.Fatal("GetCard on a missing task returned no error")
 	} else {
 		var se *StatusError
 		if !errors.As(err, &se) || se.Code != 404 {
@@ -259,27 +259,27 @@ func TestGetTriage_MissingTaskIs404(t *testing.T) {
 	}
 }
 
-// TestListTriage_OnlyTriageTasks pins the list predicate: a project's ordinary
+// TestListCards_OnlyTriageTasks pins the list predicate: a project's ordinary
 // tasks (the ingest/sweep executor tasks that live in the very same meta
 // project) must not appear in the triage listing. The discriminator is the
 // sidecar row, which CreateTask now seeds for every pre-execution task.
-func TestListTriage_OnlyTriageTasks(t *testing.T) {
+func TestListCards_OnlyTriageTasks(t *testing.T) {
 	tasks := []*orchestrator.Task{
 		{ID: "triage1", ProjectID: "meta", Status: orchestrator.TaskStatusTriaged},
 		{ID: "ingest1", ProjectID: "meta", Status: orchestrator.TaskStatusExecuting},
 		{ID: "triage2", ProjectID: "meta", Status: orchestrator.TaskStatusWorking},
 		{ID: "other", ProjectID: "elsewhere", Status: orchestrator.TaskStatusTriaged},
 	}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"triage1": {TaskID: "triage1", Urgency: "now"},
 		"triage2": {TaskID: "triage2"},
 		"other":   {TaskID: "other"},
 	}}
 	svc := &TaskWorkflowService{Tasks: &multiTaskStore{tasks: tasks}, TaskTriage: triage}
 
-	views, err := svc.ListTriage(orchestrator.TaskFilter{ProjectID: "meta"})
+	views, err := svc.ListCards(orchestrator.TaskFilter{ProjectID: "meta"})
 	if err != nil {
-		t.Fatalf("ListTriage: %v", err)
+		t.Fatalf("ListCards: %v", err)
 	}
 	got := map[string]bool{}
 	for _, v := range views {
@@ -290,46 +290,46 @@ func TestListTriage_OnlyTriageTasks(t *testing.T) {
 	}
 }
 
-// TestListTriage_PassesStatusFilter pins that the caller's status filter
+// TestListCards_PassesStatusFilter pins that the caller's status filter
 // reaches the task store (khi's sweep lists by state).
-func TestListTriage_PassesStatusFilter(t *testing.T) {
+func TestListCards_PassesStatusFilter(t *testing.T) {
 	tasks := []*orchestrator.Task{
 		{ID: "a", ProjectID: "meta", Status: orchestrator.TaskStatusTriaged},
 		{ID: "b", ProjectID: "meta", Status: orchestrator.TaskStatusParked},
 	}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
 		"a": {TaskID: "a"},
 		"b": {TaskID: "b"},
 	}}
 	svc := &TaskWorkflowService{Tasks: &multiTaskStore{tasks: tasks}, TaskTriage: triage}
 
-	views, err := svc.ListTriage(orchestrator.TaskFilter{ProjectID: "meta", Status: "parked"})
+	views, err := svc.ListCards(orchestrator.TaskFilter{ProjectID: "meta", Status: "parked"})
 	if err != nil {
-		t.Fatalf("ListTriage: %v", err)
+		t.Fatalf("ListCards: %v", err)
 	}
 	if len(views) != 1 || views[0].TaskID != "b" {
 		t.Fatalf("listed %+v, want only the parked task", views)
 	}
 }
 
-// TestListTriage_DefaultsToLiveTriageStatuses pins the query floor: an unset
+// TestListCards_DefaultsToLiveTriageStatuses pins the query floor: an unset
 // status must not degrade into "every task row ever created, then one sidecar
 // point query per row" — the shape WebHandler.TaskList avoids by defaulting to
 // status=open.
-func TestListTriage_DefaultsToLiveTriageStatuses(t *testing.T) {
+func TestListCards_DefaultsToLiveTriageStatuses(t *testing.T) {
 	store := &filterRecordingTaskStore{}
 	svc := &TaskWorkflowService{Tasks: store, TaskTriage: &stubTriageStore{}}
 
-	if _, err := svc.ListTriage(orchestrator.TaskFilter{ProjectID: "meta"}); err != nil {
-		t.Fatalf("ListTriage: %v", err)
+	if _, err := svc.ListCards(orchestrator.TaskFilter{ProjectID: "meta"}); err != nil {
+		t.Fatalf("ListCards: %v", err)
 	}
 	if store.last.Status != "triage" {
 		t.Fatalf("status filter = %q, want the \"triage\" floor (pre-execution ∪ working)", store.last.Status)
 	}
 
 	// An explicit status is never overridden — done cards stay reachable.
-	if _, err := svc.ListTriage(orchestrator.TaskFilter{Status: "done"}); err != nil {
-		t.Fatalf("ListTriage(done): %v", err)
+	if _, err := svc.ListCards(orchestrator.TaskFilter{Status: "done"}); err != nil {
+		t.Fatalf("ListCards(done): %v", err)
 	}
 	if store.last.Status != "done" {
 		t.Fatalf("status filter = %q, want the caller's explicit value", store.last.Status)
@@ -360,28 +360,28 @@ func TestTriageView_CarriesDescription(t *testing.T) {
 		Status:      orchestrator.TaskStatusTriaged,
 	}
 	triage := &stubTriageStore{
-		rows: map[string]*orchestrator.TaskTriage{
+		rows: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", Kind: "issue", Urgency: "today"},
 		},
 	}
 	svc := &TaskWorkflowService{Tasks: &multiTaskStore{tasks: []*orchestrator.Task{task}}, TaskTriage: triage}
 
-	view, err := svc.GetTriage("t1")
+	view, err := svc.GetCard("t1")
 	if err != nil {
-		t.Fatalf("GetTriage: %v", err)
+		t.Fatalf("GetCard: %v", err)
 	}
 	if view.Description != task.Description {
-		t.Fatalf("GetTriage description = %q, want %q", view.Description, task.Description)
+		t.Fatalf("GetCard description = %q, want %q", view.Description, task.Description)
 	}
 
-	views, err := svc.ListTriage(orchestrator.TaskFilter{})
+	views, err := svc.ListCards(orchestrator.TaskFilter{})
 	if err != nil {
-		t.Fatalf("ListTriage: %v", err)
+		t.Fatalf("ListCards: %v", err)
 	}
 	if len(views) != 1 {
-		t.Fatalf("ListTriage returned %d views, want 1", len(views))
+		t.Fatalf("ListCards returned %d views, want 1", len(views))
 	}
 	if views[0].Description != task.Description {
-		t.Fatalf("ListTriage description = %q, want %q", views[0].Description, task.Description)
+		t.Fatalf("ListCards description = %q, want %q", views[0].Description, task.Description)
 	}
 }

@@ -25,7 +25,7 @@ func TestDetailSuggestion_TopLevel(t *testing.T) {
 
 // TestDetailSuggestion_FromAttrs covers the attrs_set fold path: "suggestion"
 // is not a promoted key (applyAttrsSetSideEffect, internal/api/
-// workflow_triage.go), so when khi writes it via attrs_set it lands under
+// workflow_card.go), so when khi writes it via attrs_set it lands under
 // detail.attrs instead of at the top level (orchestrator.FoldDetailAttrs).
 func TestDetailSuggestion_FromAttrs(t *testing.T) {
 	detail := json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","action":"dispatch","reason":"fully specced"}}}`)

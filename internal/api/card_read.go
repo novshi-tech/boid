@@ -12,7 +12,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// TaskTriageView is the read-side projection of a triage task
+// CardView is the read-side projection of a triage task
 // (docs/plans/cross-project-issue-triage.md Phase 1 PR-5a).
 //
 // 決定14 makes the daemon the SOLE source of truth for a triage task's state:
@@ -22,7 +22,7 @@ import (
 // derived rather than stored. Before PR-5a there was no read surface at all:
 // the sidecar was reachable only from inside the daemon (Web UI's queue_next
 // enrichment), and `boid task show` returns orchestrator.Task's own columns,
-// which deliberately exclude everything triage-specific (see TaskTriageStore's
+// which deliberately exclude everything triage-specific (see CardStore's
 // doc comment).
 //
 // The view unions three sources:
@@ -38,7 +38,7 @@ import (
 // Detail is passed through verbatim as an opaque blob. The daemon does not
 // interpret its keys (逆輸入3's boundary: channel-specific knowledge stays on
 // the workspace side), so neither does this projection.
-type TaskTriageView struct {
+type CardView struct {
 	TaskID    string                  `json:"task_id"`
 	ProjectID string                  `json:"project_id"`
 	Title     string                  `json:"title,omitempty"`
@@ -75,7 +75,7 @@ type TaskTriageView struct {
 	Detail json.RawMessage `json:"detail,omitempty"`
 }
 
-// GetTriage returns the read-side projection of one triage task.
+// GetCard returns the read-side projection of one triage task.
 //
 // A missing TASK is an error (404). A missing SIDECAR ROW is not: the task's
 // status is the single most important piece of state, and a triage task can
@@ -84,7 +84,7 @@ type TaskTriageView struct {
 // yet). Reporting 404 for those would tell the caller "this task does not
 // exist" about a task that plainly does — the same fail-open posture
 // Dispatch already takes when it treats a missing row as "no children".
-func (s *TaskWorkflowService) GetTriage(taskID string) (*TaskTriageView, error) {
+func (s *TaskWorkflowService) GetCard(taskID string) (*CardView, error) {
 	if s.Tasks == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "triage: TaskStore not configured"}
 	}
@@ -92,7 +92,7 @@ func (s *TaskWorkflowService) GetTriage(taskID string) (*TaskTriageView, error) 
 	if err != nil {
 		return nil, statusErrorForGetTaskErr(err)
 	}
-	var tt *orchestrator.TaskTriage
+	var tt *orchestrator.CardAttrs
 	if s.TaskTriage != nil {
 		loaded, ttErr := s.TaskTriage.GetTaskTriage(taskID)
 		if ttErr != nil {
@@ -106,7 +106,7 @@ func (s *TaskWorkflowService) GetTriage(taskID string) (*TaskTriageView, error) 
 	return s.triageViewFor(task, tt), nil
 }
 
-// ListTriage returns the projections of every TRIAGE task matching filter.
+// ListCards returns the projections of every TRIAGE task matching filter.
 //
 // The discriminator is "has a task_triage row" rather than "has a
 // triage-shaped status". Status alone cannot decide it: `done` is shared with
@@ -120,7 +120,7 @@ func (s *TaskWorkflowService) GetTriage(taskID string) (*TaskTriageView, error) 
 // A task whose sidecar lookup fails for a reason OTHER than "no row" is
 // skipped rather than aborting the whole listing: one malformed row must not
 // make the entire queue unreadable (same posture as SweepWake).
-func (s *TaskWorkflowService) ListTriage(filter orchestrator.TaskFilter) ([]*TaskTriageView, error) {
+func (s *TaskWorkflowService) ListCards(filter orchestrator.TaskFilter) ([]*CardView, error) {
 	if s.Tasks == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "triage: TaskStore not configured"}
 	}
@@ -138,7 +138,7 @@ func (s *TaskWorkflowService) ListTriage(filter orchestrator.TaskFilter) ([]*Tas
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "triage list: " + err.Error()}
 	}
-	views := make([]*TaskTriageView, 0, len(tasks))
+	views := make([]*CardView, 0, len(tasks))
 	if s.TaskTriage == nil {
 		return views, nil
 	}
@@ -163,8 +163,8 @@ func (s *TaskWorkflowService) ListTriage(filter orchestrator.TaskFilter) ([]*Tas
 
 // triageViewFor builds the projection for an already-loaded task and its
 // already-loaded sidecar row (tt may be nil: "task exists, no sidecar yet").
-func (s *TaskWorkflowService) triageViewFor(task *orchestrator.Task, tt *orchestrator.TaskTriage) *TaskTriageView {
-	view := &TaskTriageView{
+func (s *TaskWorkflowService) triageViewFor(task *orchestrator.Task, tt *orchestrator.CardAttrs) *CardView {
+	view := &CardView{
 		TaskID:      task.ID,
 		ProjectID:   task.ProjectID,
 		Title:       task.Title,

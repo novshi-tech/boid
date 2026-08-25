@@ -91,7 +91,7 @@ type WebHandler struct {
 	// summary per row, docs/plans/cross-project-issue-triage.md Phase 1
 	// PR-3) — nil-safe: when unset, queue_next tasks render with no
 	// urgency/summary badge instead of failing the whole list.
-	TaskTriage TaskTriageStore
+	TaskTriage CardStore
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -290,7 +290,7 @@ func taskFormAttachments(r *http.Request) []*multipart.FileHeader {
 // ListTaskTriageByTaskIDs itself (Opus review finding, 2026-08-18: a
 // single-row Scan failure there is still a per-row error that must not
 // sink the rest of the batch — see that function's doc comment,
-// internal/orchestrator/task_triage.go). A non-nil err here means
+// internal/orchestrator/card.go). A non-nil err here means
 // something went wrong for at least one row/chunk; out may still be
 // partially or fully populated, and using it (rather than discarding to an
 // empty map) is what actually preserves "don't let one bad row sink the
@@ -299,9 +299,9 @@ func taskFormAttachments(r *http.Request) []*multipart.FileHeader {
 // exists to prevent, just moved from GetTaskTriage's call site to this
 // one. The error is logged (not swallowed) so an operator has something to
 // grep when a view's badges are missing without an obvious cause.
-func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orchestrator.TaskTriage {
+func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orchestrator.CardAttrs {
 	if h.TaskTriage == nil {
-		return map[string]*orchestrator.TaskTriage{}
+		return map[string]*orchestrator.CardAttrs{}
 	}
 	ids := make([]string, len(tasks))
 	for i, t := range tasks {
@@ -313,7 +313,7 @@ func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orch
 			"error", err, "task_count", len(ids), "rows_returned", len(out))
 	}
 	if out == nil {
-		return map[string]*orchestrator.TaskTriage{}
+		return map[string]*orchestrator.CardAttrs{}
 	}
 	return out
 }
@@ -493,7 +493,7 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // triageChildrenFor returns the task_triage.detail.children for id, or nil
-// when there is no sidecar row / no TaskTriageStore wired / the detail blob
+// when there is no sidecar row / no CardStore wired / the detail blob
 // doesn't parse. Best-effort like PostStartShapingSession's triage lookup —
 // a task detail page must still render for a task with no triage children
 // (i.e. almost every task; children only exist on triage cards past the
@@ -554,7 +554,7 @@ func (h *WebHandler) triageSuggestionFor(id string) orchestrator.Suggestion {
 // childrenOf parses a (possibly nil) task_triage row's Detail blob into its
 // children list, or nil when the row is nil / has no Detail / the blob
 // doesn't parse.
-func childrenOf(triage *orchestrator.TaskTriage) []orchestrator.TaskTriageChild {
+func childrenOf(triage *orchestrator.CardAttrs) []orchestrator.TaskTriageChild {
 	if triage == nil || len(triage.Detail) == 0 {
 		return nil
 	}
@@ -570,7 +570,7 @@ func childrenOf(triage *orchestrator.TaskTriage) []orchestrator.TaskTriageChild 
 // task_triage row, mirroring childrenOf's best-effort posture: a missing
 // row / empty detail / malformed suggestion blob all just return the zero
 // Suggestion rather than erroring.
-func suggestionOf(triage *orchestrator.TaskTriage) orchestrator.Suggestion {
+func suggestionOf(triage *orchestrator.CardAttrs) orchestrator.Suggestion {
 	if triage == nil || len(triage.Detail) == 0 {
 		return orchestrator.Suggestion{}
 	}
@@ -584,7 +584,7 @@ func suggestionOf(triage *orchestrator.TaskTriage) orchestrator.Suggestion {
 // fatal and simply returns nil — most tasks, including most working ones,
 // never had a task_triage row at all (see triageChildrenFor's own doc
 // comment).
-func (h *WebHandler) loadTriage(id string) *orchestrator.TaskTriage {
+func (h *WebHandler) loadTriage(id string) *orchestrator.CardAttrs {
 	if h.TaskTriage == nil {
 		return nil
 	}
@@ -1065,7 +1065,7 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 		redirectTaskErr(w, r, id, fmt.Errorf("shaping session requires a parked or working task (status = %s)", task.Status))
 		return
 	}
-	triage := h.loadTriage(id) // best-effort — a missing sidecar row is not fatal, see triage_read.go's GetTriage doc comment
+	triage := h.loadTriage(id) // best-effort — a missing sidecar row is not fatal, see card_read.go's GetCard doc comment
 	if task.Status == orchestrator.TaskStatusWorking && triage == nil {
 		redirectTaskErr(w, r, id, fmt.Errorf("shaping session on a working task requires a task_triage sidecar row"))
 		return
@@ -1130,8 +1130,8 @@ func shapingSessionDefaults(svc WebService, projectID string) (harnessType, mode
 // urgency into the shaping session's bootstrap prompt (UC-3 手順3: 「payload
 // に card (id・title・content_ref) を同梱」). detail's opaque JSON (content_ref
 // 等 workspace 固有のキー) is passed through verbatim rather than parsed here
-// — the daemon does not interpret task_triage.detail's keys (triage_read.go's
-// TaskTriageView doc comment), and neither does this instruction builder.
+// — the daemon does not interpret task_triage.detail's keys (card_read.go's
+// CardView doc comment), and neither does this instruction builder.
 //
 // Deliberately silent on HOW to write the card back (2026-08-14 incident):
 // an earlier revision of this text prescribed "本文ファイルに追記した上で" —
@@ -1141,7 +1141,7 @@ func shapingSessionDefaults(svc WebService, projectID string) (harnessType, mode
 // input layer is a claim + daemon_sync reconcile owned by that workspace's
 // own note-spec skill). The daemon has no business prescribing a workspace's
 // write path — that's exactly the "channel-specific knowledge stays on the
-// workspace side" boundary (triage_read.go's TaskTriageView doc comment)
+// workspace side" boundary (card_read.go's CardView doc comment)
 // applied to procedure, not just data. This function now states boid's own
 // contract (record child_specced/child_added — NEVER a card-level state
 // transition; card machine v2 removed "ready" from the vocabulary entirely,
@@ -1164,7 +1164,7 @@ func shapingSessionDefaults(svc WebService, projectID string) (harnessType, mode
 // task_behaviors, and what it carries is data (which harness/model to
 // launch with), never procedure. The "no procedure in the instruction"
 // principle this comment documents is unchanged.
-func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskTriage) string {
+func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.CardAttrs) string {
 	var b strings.Builder
 	if task.Status == orchestrator.TaskStatusWorking {
 		b.WriteString("整形セッション: この working カードの子タスク一覧 (task_triage.detail.children) を編集してください。" +

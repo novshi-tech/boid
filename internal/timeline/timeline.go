@@ -184,7 +184,7 @@ func buildProgressLabel(a *orchestrator.Action) string {
 
 // buildAnsweredLabel extracts the accept/reject decision from an answered
 // Action's JSON payload (answeredPayload's wire shape, internal/api's
-// workflow_triage.go: {"answer": "accept"|"reject", "verb": ..., "basis":
+// workflow_card.go: {"answer": "accept"|"reject", "verb": ..., "basis":
 // ...}). Falls back to the bare action type when the payload is missing or
 // doesn't parse — timeline must never fail to render over a malformed row.
 func buildAnsweredLabel(a *orchestrator.Action) string {

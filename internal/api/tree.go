@@ -67,7 +67,7 @@ func BuildTreeItems(tasks []*orchestrator.Task, projectNames map[string]string) 
 // Same best-effort posture as BuildQueueItems: a task with no triage row,
 // or a Detail blob orchestrator.DetailSuggestion can't parse, just keeps
 // its zero-value Suggestion instead of erroring the whole page.
-func BuildTreeItemsWithSuggestions(tasks []*orchestrator.Task, projectNames map[string]string, triageByTaskID map[string]*orchestrator.TaskTriage) []components.TreeItem {
+func BuildTreeItemsWithSuggestions(tasks []*orchestrator.Task, projectNames map[string]string, triageByTaskID map[string]*orchestrator.CardAttrs) []components.TreeItem {
 	items := BuildTreeItems(tasks, projectNames)
 	for i := range items {
 		tt, ok := triageByTaskID[items[i].Task.ID]
@@ -110,7 +110,7 @@ func BuildFlatItems(tasks []*orchestrator.Task, projectNames map[string]string) 
 // with no summary is still useful (title + urgency alone can be enough to
 // judge), and a summary-less/malformed row must never make the WHOLE queue
 // view fail to render (rule 5, 隠さない, would be defeated by that).
-func BuildQueueItems(tasks []*orchestrator.Task, projectNames map[string]string, triageByTaskID map[string]*orchestrator.TaskTriage) []components.TreeItem {
+func BuildQueueItems(tasks []*orchestrator.Task, projectNames map[string]string, triageByTaskID map[string]*orchestrator.CardAttrs) []components.TreeItem {
 	result := make([]components.TreeItem, 0, len(tasks))
 	for _, t := range tasks {
 		item := components.TreeItem{
@@ -152,7 +152,7 @@ func BuildQueueItems(tasks []*orchestrator.Task, projectNames map[string]string,
 // Found while wiring khi's summary path (2026-08-22), where the design's
 // "keep writing the one-line summary separately; the queue row badge reads it"
 // turned out not to be satisfiable at all. This mirrors DetailSuggestion
-// (internal/orchestrator/task_triage.go), which already reads top-level first
+// (internal/orchestrator/card.go), which already reads top-level first
 // and falls back to attrs for exactly the same reason.
 //
 // Each candidate is decoded independently so a malformed or wrong-shaped value

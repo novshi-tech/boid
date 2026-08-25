@@ -20,7 +20,7 @@ package orchestrator
 //	working : parked  → working   (accept(working): manual work declared, no dispatch)
 //	drop    : parked  → dropped
 //	done    : parked  → done      (closed without ever being worked here — see the 8th-edge note below)
-//	park    : working → parked    (sets a wake condition — see workflow_triage.go's park side effect)
+//	park    : working → parked    (sets a wake condition — see workflow_card.go's park side effect)
 //	done    : working → done
 //	reopen  : done    → parked
 //	reopen  : dropped → parked

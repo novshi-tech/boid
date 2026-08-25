@@ -121,7 +121,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// are plain transitions the generic Tx flow below already handles fine,
 	// go must task-ify any specced children BEFORE its parked→working
 	// transition can commit (acceptGo's own doc comment,
-	// workflow_triage.go — that ordering cannot fit inside the one Tx this
+	// workflow_card.go — that ordering cannot fit inside the one Tx this
 	// function opens further down: SetMaxOpenConns(1) deadlocks a nested
 	// TaskCreator.CreateTask call). This applies identically whether "go"
 	// arrived as a direct human click (this line) or via accept(go)
@@ -227,7 +227,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// through resolveAttrsSetDoneTransition's service-layer guard first (see
 	// its own doc comment, attrs_set_done.go), which falls straight through
 	// to sm.Apply for every action/status combination this PR does not touch.
-	var getTriage func(string) (*orchestrator.TaskTriage, error)
+	var getTriage func(string) (*orchestrator.CardAttrs, error)
 	if s.TaskTriage != nil {
 		getTriage = s.TaskTriage.GetTaskTriage
 	}
@@ -403,7 +403,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 			// "dropped", which is not in attrs_set's FromStatus
 			// enumeration) would still be recorded as if it succeeded
 			// cleanly. Mirrors Wake's own "resolve everything from inside
-			// the same transaction" pattern (workflow_triage.go).
+			// the same transaction" pattern (workflow_card.go).
 			fresh, ferr := tx.GetTask(taskID)
 			if ferr != nil {
 				return statusErrorForGetTaskErr(ferr)
@@ -722,7 +722,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 }
 
 // orphanedChildTaskIDs is optional: PR #987 review's BLOCKER 4 fix. acceptGo
-// (workflow_triage.go) used to compensate a failed parked→working commit by
+// (workflow_card.go) used to compensate a failed parked→working commit by
 // best-effort ABORTING every child it had already created and auto-started
 // in this call — but CreateTask's own (ref, parent_id) get-or-create dedup
 // (task_create.go) means "a child THIS call created" is not actually
@@ -883,7 +883,7 @@ func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orches
 	// Phase 1 PR-4 (docs/plans/cross-project-issue-triage.md 論点9): a
 	// terminal task that is a dispatched triage child self-records
 	// child_closed on its parent here — see recordChildClosedOnParent's own
-	// doc comment (workflow_triage.go) for why finalizeTerminal is the right
+	// doc comment (workflow_card.go) for why finalizeTerminal is the right
 	// funnel.
 	s.recordChildClosedOnParent(task)
 }

@@ -103,11 +103,11 @@ func TestApplyAction_AttrsSet_RejectsWhenConcurrentTransitionRacedAhead(t *testi
 	// never called UpsertTaskTriage — since the row's mere existence can no
 	// longer be the "no side effect happened" signal once PR-B requires one
 	// to exist up front for machineFor's own sake.
-	seedTriage := &orchestrator.TaskTriage{TaskID: "t1", Kind: "unchanged-sentinel"}
+	seedTriage := &orchestrator.CardAttrs{TaskID: "t1", Kind: "unchanged-sentinel"}
 	txStore := &recordingTxStore{
 		task:  racedTask, // what the in-Tx GetTask sees (post-race)
 		tasks: map[string]*orchestrator.Task{"t1": racedTask},
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": seedTriage,
 		},
 	}
@@ -351,7 +351,7 @@ func TestFinalizeTerminal_ChildClosed_SelfRecordsOnParent(t *testing.T) {
 	txStore := &recordingTxStore{
 		task:  child,
 		tasks: map[string]*orchestrator.Task{"parent-1": parent, "child-1": child},
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"parent-1": {TaskID: "parent-1", Detail: detail},
 		},
 	}
@@ -462,7 +462,7 @@ func TestApplyAction_ChildDropped_RefusesDispatched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddDetailChild: %v", err)
 	}
-	txStore.triage = map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}}
+	txStore.triage = map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}}
 	svc := newTriageWorkflowService(task, txStore)
 
 	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{

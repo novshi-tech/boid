@@ -310,7 +310,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	// Seed the task_triage sidecar for a task created directly into a
 	// pre-execution status (docs/plans/cross-project-issue-triage.md Phase 1
 	// PR-5a). "Has a sidecar row" is what makes a task identifiable as a
-	// triage task — ListTriage's predicate and PR-5b's reopen guard both rest
+	// triage task — ListCards's predicate and PR-5b's reopen guard both rest
 	// on it, and status alone cannot supply it (done is shared with ordinary
 	// tasks). Seeding at birth means khi's freshly ingested cards are visible
 	// immediately rather than only after their first attrs_set lands.
@@ -343,7 +343,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	// parameter, so this always stamps ActorHuman even though this call also
 	// backs `boid task create` from inside a sandbox (internal/server/
 	// boid_executor.go's BoidOpTaskCreate) and Dispatch's child-task
-	// creation (workflow_triage.go), both of which should really carry the
+	// creation (workflow_card.go), both of which should really carry the
 	// creating task's own actor. Threading ctx through CreateTask/UpdateTask/
 	// RerunTask (this whole family predates ctx) is a follow-up, not done
 	// here to keep this PR's blast radius to the ctx seams that already

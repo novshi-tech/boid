@@ -37,7 +37,7 @@ import (
 )
 
 // realTaskRepoTxStore adapts *orchestrator.TaskRepository (which implements
-// every Task/Action/TaskTriage/TaskIdentity method TxStore needs) plus
+// every Task/Action/CardAttrs/TaskIdentity method TxStore needs) plus
 // trivial Job stubs (unused by ResolveOrCapture) into a full TxStore, backed
 // by a REAL sqlite transaction — the same shape internal/server/api_store.go's
 // apiTxStore uses in production, just assembled locally so this package

@@ -21,12 +21,12 @@ type TaskWorkflowService struct {
 	// TaskTriage provides non-transactional (pre-tx-open) read access to the
 	// task_triage sidecar for TaskWorkflowService.Dispatch's pre-check /
 	// children read (docs/plans/cross-project-issue-triage.md Phase 1 PR-2).
-	// TxStore already embeds TaskTriageStore for the in-transaction writes
+	// TxStore already embeds CardStore for the in-transaction writes
 	// Dispatch and applyParkSideEffect need — this field is only for the read
 	// that has to happen BEFORE opening a transaction (see Dispatch's own doc
 	// comment for why child-task creation can't run nested inside one). Nil
 	// is tolerated (treated as "no children"); wire.go always sets this.
-	TaskTriage TaskTriageStore
+	TaskTriage CardStore
 	// Actions provides the workspace-scoped BoidOpActionList read (docs/plans/
 	// ingestion-identity.md PR-3, B-3) — same "narrower interface over the
 	// same underlying taskRepo value" pattern as TaskTriage above. Nil is

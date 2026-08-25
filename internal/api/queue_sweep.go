@@ -212,7 +212,7 @@ func (s *TaskWorkflowService) reconcileDispatchedChildren(taskID string, childre
 // recordVanishedChildClosedOnParent persists a vanished child's "closed"
 // mapping onto its parent's task_triage sidecar (PR #987 review round 2,
 // MEDIUM N3) — the vanished-child sibling of recordChildClosedOnParent
-// (workflow_triage.go), which cannot be reused directly here since it takes
+// (workflow_card.go), which cannot be reused directly here since it takes
 // a real child *orchestrator.Task (task.ID/task.ParentID/task.Status), and a
 // vanished child has none of those available — only the parent's own task ID
 // and the dangling TaskRef string survive in task_triage.detail.children.
@@ -246,7 +246,7 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, ch
 			return fmt.Errorf("sweep reconcile children: get parent task: %w", gErr)
 		}
 		// "child_id" (not "child_task_id"), matching recordChildClosedOnParent's
-		// existing child_closed payload key exactly (workflow_triage.go) — a
+		// existing child_closed payload key exactly (workflow_card.go) — a
 		// future consumer reading this payload by key must not silently miss
 		// vanished-child rows because they alone spelled the same value
 		// differently (coordinator review, LOW: payload key mismatch).

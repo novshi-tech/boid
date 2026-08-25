@@ -31,8 +31,8 @@ type recordingWorkflow struct {
 	// PR-5a triage read surface
 	triageGets    []string
 	triageFilters []orchestrator.TaskFilter
-	triageViews   map[string]*api.TaskTriageView
-	triageList    []*api.TaskTriageView
+	triageViews   map[string]*api.CardView
+	triageList    []*api.CardView
 	triageErr     error
 }
 
@@ -55,7 +55,7 @@ func (w *recordingWorkflow) Wake(ctx context.Context, taskID string) (*api.Actio
 
 // triageViews / triageList back the PR-5a read ops; triageErr lets a test
 // force the failure path.
-func (w *recordingWorkflow) GetTriage(taskID string) (*api.TaskTriageView, error) {
+func (w *recordingWorkflow) GetCard(taskID string) (*api.CardView, error) {
 	w.triageGets = append(w.triageGets, taskID)
 	if w.triageErr != nil {
 		return nil, w.triageErr
@@ -63,15 +63,15 @@ func (w *recordingWorkflow) GetTriage(taskID string) (*api.TaskTriageView, error
 	if v, ok := w.triageViews[taskID]; ok {
 		return v, nil
 	}
-	return &api.TaskTriageView{TaskID: taskID}, nil
+	return &api.CardView{TaskID: taskID}, nil
 }
 
-func (w *recordingWorkflow) ListTriage(filter orchestrator.TaskFilter) ([]*api.TaskTriageView, error) {
+func (w *recordingWorkflow) ListCards(filter orchestrator.TaskFilter) ([]*api.CardView, error) {
 	w.triageFilters = append(w.triageFilters, filter)
 	if w.triageErr != nil {
 		return nil, w.triageErr
 	}
-	var out []*api.TaskTriageView
+	var out []*api.CardView
 	for _, v := range w.triageList {
 		if filter.ProjectID != "" && v.ProjectID != filter.ProjectID {
 			continue
@@ -1661,11 +1661,11 @@ func (w *askWorkflowStub) Wake(ctx context.Context, taskID string) (*api.ActionA
 	return w.ApplyAction(ctx, taskID, api.ApplyActionRequest{Type: "wake"})
 }
 
-func (w *askWorkflowStub) GetTriage(taskID string) (*api.TaskTriageView, error) {
-	return &api.TaskTriageView{TaskID: taskID}, nil
+func (w *askWorkflowStub) GetCard(taskID string) (*api.CardView, error) {
+	return &api.CardView{TaskID: taskID}, nil
 }
 
-func (w *askWorkflowStub) ListTriage(orchestrator.TaskFilter) ([]*api.TaskTriageView, error) {
+func (w *askWorkflowStub) ListCards(orchestrator.TaskFilter) ([]*api.CardView, error) {
 	return nil, nil
 }
 

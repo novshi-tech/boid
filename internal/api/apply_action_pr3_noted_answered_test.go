@@ -154,7 +154,7 @@ func TestApplyAction_Answered_VerbBasisRecordedButNotValidated(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"drop"}}}`)},
 		},
 	}
@@ -210,7 +210,7 @@ func TestApplyAction_Answered_Accept_RejectedForNonHumanActor(t *testing.T) {
 			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 			txStore := &recordingTxStore{
 				task: task,
-				triage: map[string]*orchestrator.TaskTriage{
+				triage: map[string]*orchestrator.CardAttrs{
 					"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go"}}}`)},
 				},
 			}
@@ -239,7 +239,7 @@ func TestApplyAction_Answered_Accept_RejectedForNonHumanActor(t *testing.T) {
 
 // TestApplyAction_Answered_StripsSuggestion_Accept and
 // TestApplyAction_Answered_StripsSuggestion_Reject both pin the fold-side
-// effect (workflow_triage.go's applyAnsweredSideEffect): detail.attrs.suggestion
+// effect (workflow_card.go's applyAnsweredSideEffect): detail.attrs.suggestion
 // is dropped regardless of accept/reject. The reject case is the one the
 // design doc calls out by name — khi's real suggestion_answered claims are
 // 25/25 "accept" and 0 "reject" (実測, 2026-08-19), so the reject path had
@@ -257,7 +257,7 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{
 		task: task,
-		triage: map[string]*orchestrator.TaskTriage{
+		triage: map[string]*orchestrator.CardAttrs{
 			"t1": {
 				TaskID:         "t1",
 				SuggestionVerb: "go",
@@ -380,7 +380,7 @@ func TestApplyAction_Answered_AcceptReopen_FromDoneAndDropped(t *testing.T) {
 			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: from, Behavior: "dev", Payload: []byte(`{}`)}
 			txStore := &recordingTxStore{
 				task: task,
-				triage: map[string]*orchestrator.TaskTriage{
+				triage: map[string]*orchestrator.CardAttrs{
 					"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"reopen","reason":"issue reopened"}}}`)},
 				},
 			}

@@ -5,14 +5,14 @@ import "testing"
 // triageSummary backs the one-line badge on the queue/tree rows. The only
 // writer a workspace has for task_triage.detail is the attrs_set action, and
 // that folds into detail.ATTRS (FoldDetailAttrs, internal/orchestrator/
-// task_triage.go) — never the top level. So a reader that looks at
+// card.go) — never the top level. So a reader that looks at
 // detail.summary alone can never see anything a workspace wrote, and the badge
 // stays empty forever: found while wiring khi's new summary path, where S-1
 // ("keep writing the one-line summary separately; the queue row badge reads
 // it") turned out not to be satisfiable at all.
 //
 // The fallback mirrors DetailSuggestion (same file's neighbour in
-// internal/orchestrator/task_triage.go), which already reads top-level first
+// internal/orchestrator/card.go), which already reads top-level first
 // and falls back to attrs for exactly the same reason.
 
 func TestTriageSummary_TopLevel(t *testing.T) {

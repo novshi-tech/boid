@@ -106,7 +106,7 @@ func TestApplyAction_AttrsSet_RejectsUnknownUrgency(t *testing.T) {
 // level, which is policy the daemon deliberately does not own).
 func TestApplyAction_AttrsSet_UrgencyNullClears(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.TaskTriage{
+	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", Urgency: "now"},
 	}}
 	svc := newTriageWorkflowService(task, txStore)
@@ -196,7 +196,7 @@ func TestApplyAction_AttrsSet_RejectsUnknownSuggestionVerb(t *testing.T) {
 // (validateSuggestionAttr's own null-clears convention).
 func TestApplyAction_AttrsSet_SuggestionNullClearsColumn(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
-	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.TaskTriage{
+	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{
 		"t1": {TaskID: "t1", SuggestionVerb: "go", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go"}}}`)},
 	}}
 	svc := newTriageWorkflowService(task, txStore)
@@ -215,7 +215,7 @@ func TestApplyAction_AttrsSet_SuggestionNullClearsColumn(t *testing.T) {
 // TestCreateTask_PreExecutionSeedsTriageRow pins the invariant PR-5a's list
 // predicate rests on: a task created directly into a pre-execution status IS a
 // triage task and gets its sidecar row at birth. Without this, khi's freshly
-// ingested cards would be invisible to ListTriage until their first attrs_set
+// ingested cards would be invisible to ListCards until their first attrs_set
 // happened to land. v2 (docs/plans/suggestion-as-state-transition-impl.md §3.5)
 // folds captured/triaged into a single "parked" initial_status value.
 func TestCreateTask_PreExecutionSeedsTriageRow(t *testing.T) {
