@@ -20,8 +20,9 @@ package orchestrator
 // パス) は action を 1 本も残さない (task_create も同様で一貫はしている)。
 // つまり「いつ誰がこの task を起こしたか」は action_list からは読み戻せず、
 // workspace の tick スクリプトが「新しい task が増えた」ことを検出する手段は
-// この op には無い — 別途 task_triage_list (status=captured) を併用する必要
-// がある。action_list は「既存 task に何が起きたか」の読み口であって、
+// この op には無い — 別途 card_list (status=parked。card-model-cleanup PR-3
+// で task_triage_list/captured から rename・洗い替え済み) を併用する必要が
+// ある。action_list は「既存 task に何が起きたか」の読み口であって、
 // 「task の存在そのものの変化」の読み口ではない。
 
 import (
@@ -77,7 +78,7 @@ func ClampActionListLimit(requested int) int {
 
 // ErrActionListUnscoped is returned by ListActionsSince when the filter
 // names neither a project scope (ProjectIDs) nor a WorkspaceID. Broker +
-// executor scoping (mirroring BoidOpTaskList/BoidOpTaskTriageList exactly)
+// executor scoping (mirroring BoidOpTaskList/BoidOpCardList exactly)
 // is the primary enforcement point — this is defense in depth at the query
 // itself, cheap to add and directly closes the "brokered scoping bug" class
 // PR-4/PR-5 review flagged three separate times (executor-only scoping with
@@ -92,7 +93,7 @@ type ActionListFilter struct {
 	// the "neither project nor workspace given" fallback
 	// (TokenContext.AllowedProjectIDs, resolved by the caller — boid_executor.go
 	// — before this filter is built). A single query rather than
-	// one-call-per-project (the loop BoidOpTaskList/BoidOpTaskTriageList's
+	// one-call-per-project (the loop BoidOpTaskList/BoidOpCardList's
 	// executor uses over AllowedProjectIDs) is deliberate: correctly merging
 	// cursor-paginated results across N separately-limited per-project
 	// queries needs an N-way merge (each source must contribute up to
@@ -103,7 +104,7 @@ type ActionListFilter struct {
 	// WorkspaceID scopes via project_workspaces, matching ListTasks' own
 	// WorkspaceID join (store.go). In practice mutually exclusive with
 	// ProjectIDs — the caller picks exactly one shape per call, mirroring
-	// BoidOpTaskTriageList's own project_id/workspace_id branching — but
+	// BoidOpCardList's own project_id/workspace_id branching — but
 	// nothing here forbids combining them (both apply as an AND).
 	WorkspaceID string
 	// TaskID additionally narrows to one task's actions. Safe to combine

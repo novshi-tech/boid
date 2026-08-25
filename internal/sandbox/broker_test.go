@@ -36,17 +36,17 @@ func testGateBoidPolicies() map[string]sandbox.BuiltinPolicy {
 	return map[string]sandbox.BuiltinPolicy{
 		"boid": {
 			AllowedOps: map[string]struct{}{
-				string(sandbox.BoidOpJobDone):        {},
-				string(sandbox.BoidOpJobList):        {},
-				string(sandbox.BoidOpJobShow):        {},
-				string(sandbox.BoidOpJobLog):         {},
-				string(sandbox.BoidOpActionSend):     {},
-				string(sandbox.BoidOpTaskCreate):     {},
-				string(sandbox.BoidOpTaskTriageList): {},
-				string(sandbox.BoidOpTaskUpdate):     {},
-				string(sandbox.BoidOpTaskImport):     {},
-				string(sandbox.BoidOpTaskReopen):     {},
-				string(sandbox.BoidOpTaskList):       {},
+				string(sandbox.BoidOpJobDone):    {},
+				string(sandbox.BoidOpJobList):    {},
+				string(sandbox.BoidOpJobShow):    {},
+				string(sandbox.BoidOpJobLog):     {},
+				string(sandbox.BoidOpActionSend): {},
+				string(sandbox.BoidOpTaskCreate): {},
+				string(sandbox.BoidOpCardList):   {},
+				string(sandbox.BoidOpTaskUpdate): {},
+				string(sandbox.BoidOpTaskImport): {},
+				string(sandbox.BoidOpTaskReopen): {},
+				string(sandbox.BoidOpTaskList):   {},
 			},
 			AllowedCwdRoots: []string{"/tmp"},
 		},
@@ -2955,7 +2955,7 @@ func TestBroker_BoidJobLog_PolicyReject(t *testing.T) {
 	}
 }
 
-// --- BoidOpTaskTriageList scoping (Phase 1 PR-5a, Opus review High) ---
+// --- BoidOpCardList scoping (Phase 1 PR-5a, Opus review High) ---
 //
 // The triage listing's filters must be scoped in the BROKER, exactly like
 // BoidOpTaskList's: that is where task_list's own scoping lives, and
@@ -2964,7 +2964,7 @@ func TestBroker_BoidJobLog_PolicyReject(t *testing.T) {
 // to keep. An unchecked workspace_id here hands a sandboxed agent every other
 // workspace's card titles, summaries and detail blobs.
 
-func TestBroker_BoidTaskTriageList_WorkspaceIDMismatchDenied(t *testing.T) {
+func TestBroker_BoidCardList_WorkspaceIDMismatchDenied(t *testing.T) {
 	ctx := sandbox.TokenContext{
 		JobID:       "j1",
 		TaskID:      "t1",
@@ -2980,7 +2980,7 @@ func TestBroker_BoidTaskTriageList_WorkspaceIDMismatchDenied(t *testing.T) {
 		Cwd:     "/tmp",
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
-			Op:          sandbox.BoidOpTaskTriageList,
+			Op:          sandbox.BoidOpCardList,
 			WorkspaceID: "ws-other",
 		},
 	})
@@ -2992,7 +2992,7 @@ func TestBroker_BoidTaskTriageList_WorkspaceIDMismatchDenied(t *testing.T) {
 	}
 }
 
-func TestBroker_BoidTaskTriageList_ProjectIDOutsideWorkspaceDenied(t *testing.T) {
+func TestBroker_BoidCardList_ProjectIDOutsideWorkspaceDenied(t *testing.T) {
 	ctx := sandbox.TokenContext{
 		JobID:             "j1",
 		TaskID:            "t1",
@@ -3009,7 +3009,7 @@ func TestBroker_BoidTaskTriageList_ProjectIDOutsideWorkspaceDenied(t *testing.T)
 		Cwd:     "/tmp",
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
-			Op:        sandbox.BoidOpTaskTriageList,
+			Op:        sandbox.BoidOpCardList,
 			ProjectID: "proj-elsewhere",
 		},
 	})
@@ -3021,11 +3021,11 @@ func TestBroker_BoidTaskTriageList_ProjectIDOutsideWorkspaceDenied(t *testing.T)
 	}
 }
 
-// TestBroker_BoidTaskTriageList_UnfilteredInjectsOwnWorkspace pins the other
+// TestBroker_BoidCardList_UnfilteredInjectsOwnWorkspace pins the other
 // half of the mirror: with no filter the broker injects the caller's own
 // workspace, so the listing is scoped even when the caller asked for
 // everything.
-func TestBroker_BoidTaskTriageList_UnfilteredInjectsOwnWorkspace(t *testing.T) {
+func TestBroker_BoidCardList_UnfilteredInjectsOwnWorkspace(t *testing.T) {
 	ctx := sandbox.TokenContext{
 		JobID:       "j1",
 		TaskID:      "t1",
@@ -3040,7 +3040,7 @@ func TestBroker_BoidTaskTriageList_UnfilteredInjectsOwnWorkspace(t *testing.T) {
 		Command: "boid",
 		Cwd:     "/tmp",
 		Token:   token,
-		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskTriageList},
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpCardList},
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("unfiltered listing should succeed: exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
@@ -3051,9 +3051,9 @@ func TestBroker_BoidTaskTriageList_UnfilteredInjectsOwnWorkspace(t *testing.T) {
 }
 
 // docs/plans/ingestion-identity.md PR-3 (B-3): BoidOpActionList's broker
-// scoping mirrors BoidOpTaskTriageList EXACTLY (see broker.go's case and
+// scoping mirrors BoidOpCardList EXACTLY (see broker.go's case and
 // BoidOpActionList's own doc comment in protocol.go) — these three tests
-// mirror the three TaskTriageList tests immediately above, one per branch.
+// mirror the three BoidOpCardList tests immediately above, one per branch.
 
 func actionListBoidPolicies() map[string]sandbox.BuiltinPolicy {
 	return map[string]sandbox.BuiltinPolicy{
