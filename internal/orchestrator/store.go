@@ -62,25 +62,6 @@ var (
 		append([]TaskStatus{}, filterTaskStatuses(IsTerminalStatus)...),
 		TaskStatusParked,
 	))
-	// notOpenAncestorGateStatusSQLList = terminal ∪ {parked} — used only by the
-	// open_descendants CTE's seed (子孫救済, 項3). "working → parked"
-	// (machine.go) explicitly parks a card aside while its already-dispatched
-	// child keeps running; that live child stays visible on its own status
-	// (self clause) without help from this gate. Once the child terminates,
-	// this gate must stop pulling it (or its done/aborted siblings) into the
-	// open view just because the parent is still "parked" — parked means
-	// "set aside", unlike executing which represents an actually live
-	// thread.
-	//
-	// Composition-identical to notOpenSelfStatusSQLList as of PR-2 (both
-	// reduce to terminal ∪ {parked} now that captured/triaged/ready are
-	// gone) — kept as a separate named list because the two back different
-	// SQL clauses (self-status vs. descendant-gate) that could diverge again
-	// if either rule changes independently.
-	notOpenAncestorGateStatusSQLList = sqlStatusInList(append(
-		append([]TaskStatus{}, filterTaskStatuses(IsTerminalStatus)...),
-		TaskStatusParked,
-	))
 )
 
 func filterTaskStatuses(pred func(TaskStatus) bool) []TaskStatus {
@@ -129,6 +110,23 @@ type TaskFilter struct {
 	WorkspaceID string
 	Title       string
 	ParentID    *string
+	// ActiveOnly narrows the result to non-terminal tasks (docs/plans/
+	// webui-detail-list-redesign.md §3.5's 「アクティブのみ (非終端)」トグル).
+	// This is a SEPARATE axis from Status — composes with any Status value
+	// (including "", meaning "no status predicate at all") rather than being
+	// yet another special Status keyword, because "non-terminal" must include
+	// TaskStatusParked (unlike the legacy "open" Status keyword's self-clause,
+	// which deliberately excludes parked — see notOpenSelfStatusSQLList's own
+	// doc comment). Ignored (no-op) when false.
+	ActiveOnly bool
+	// Limit/Offset implement the list page's pagination (§3.5 / §5 論点4: LIMIT/
+	// OFFSET is enough at the current scale; keyset can follow if it stops
+	// being enough). Limit <= 0 means "no LIMIT clause" (unbounded, the
+	// pre-PR-4 default every non-web caller still gets). Offset > 0 with
+	// Limit <= 0 still applies (via SQLite's `LIMIT -1 OFFSET ?`) rather than
+	// being silently dropped.
+	Limit  int
+	Offset int
 }
 
 // taskSelectCols は tasks テーブルの全カラム一覧（テーブル別名 t を使用）。
@@ -189,11 +187,16 @@ func validateTaskTypeConsistency(t *Task) error {
 // 実在して親の done 主張を塞ぐケースはそもそも発生しない。ここを緩めると
 // verifyDoneClaim の詐称防止ガードを無意味に弱めるだけになる (Opus指摘#6)。
 // terminal (done/aborted/dropped) だけを除外する。
+// awaiting カウント (最後の1本) は docs/plans/webui-detail-list-redesign.md
+// PR-4 (§3.5) 追加分: 一覧の行ロールアップで「⚠ N」(質問持ちの子の存在) を
+// 親の行に上げるための集計。他の3本と同じく直接の子のみを数える（孫は数えない
+// — §3.3-2 の子一覧統合と同じく1階層のみが対象）。
 var taskChildCountCols = `` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id),` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status = 'done'),` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status = 'aborted'),` +
-	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN (` + terminalStatusSQLList + `))`
+	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN (` + terminalStatusSQLList + `)),` +
+	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status = 'awaiting')`
 
 func CreateTask(dbtx db.DBTX, t *Task) error {
 	// Get-or-create: when ref is set, return the existing task (scoped by
@@ -364,108 +367,89 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	var conditions []string
 	var args []any
 	var joins []string
-	var ctePrefix string
 
-	// "open" は特殊フィルタ: 自身が open 状態 OR open な子を持つ（ヘッダー救済）OR
-	// open な祖先を持つ（子孫救済）OR open な子孫を持つ（祖先救済、複数階層）
+	// "open" は特殊フィルタ: 自身が open 状態 OR open な子を持つ（ヘッダー救済）。
+	//
+	// docs/plans/webui-detail-list-redesign.md PR-4 (§3.6): 再帰 CTE
+	// (open_descendants/open_ancestors、複数階層の祖先救済・子孫救済) は
+	// 一覧のツリー表示 (task_tree.templ, BuildTreeItems) 撤廃に伴い削除した —
+	// 存在理由がツリー表示の孤児防止だけだったため (§2.2 の記述)。残るのは
+	// self clause と 1 階層の子救済 (直接の子だけを見る非相関サブクエリ) の
+	// みで、CLI/API から直接 "open" を指定する既存の呼び手 (Web UI 自身は
+	// もう "open" を送らない — 既定は無フィルタ + ActiveOnly トグル) との
+	// 後方互換のために残してある。
 	//
 	// NOT IN は役割ごとに使う集合が異なる (Opus指摘#7):
-	//   - 子救済 (taskChildCountCols 型の直接の子カウント) と祖先救済 CTE
-	//     (open_ancestors) は「terminal でなければ open」— pre-execution な子・
-	//     子孫を含めたまま。進行中の triage task (executing な子を持つ triaged
-	//     親など) を隠さないため。
-	//   - 子孫救済 CTE (open_descendants) の祖先ゲートだけは
-	//     notOpenAncestorGateStatusSQLList (terminal ∪ parked) を使う —
-	//     parked は「意図的に脇に置かれた」状態であり、executing/triaged と
-	//     違って「進行中の thread」ではないため、parked な祖先だけで
-	//     done/aborted な子孫まで救済してしまうと working→parked にした直後に
-	//     もう終わっている子タスクが Open タブに居座り続けるバグになる
-	//     (working→parked は machine.go の設計上、まだ生きている dispatched
-	//     child は self clause だけで開いたままになる)。
+	//   - 子救済 (taskChildCountCols 型の直接の子カウント) は「terminal で
+	//     なければ open」— pre-execution な子を含めたまま。進行中の
+	//     triage task (executing な子を持つ triaged 親など) を隠さないため。
 	//   - 自身が open かの self clause だけは「terminal でも pre-execution でも
 	//     なければ open」— pre-execution な task 単体は従来の open ビューを
 	//     汚さない (項1 本来の目的)。
 	if filter.Status == "open" {
-		// open_descendants は「非 terminal かつ非 parked な祖先を持つ子孫」だけを
-		// 表す — base case を「非 terminal な task 自身」ではなく「非 terminal
-		// な task の直接の子」にすることで、自分自身が seed に紛れ込まない形に
-		// している。当初は自分自身を seed にしていたため、親を持つ
-		// pre-execution task が (親の状態に関係なく) 常に自己マッチして
-		// self clause の pre-execution 除外をすり抜けるバグがあった —
-		// done な親を持つ childless triaged task が open に漏れるケースで
-		// 発覚 (codex レビューで指摘、実装時の parent_id != '' ガードだけでは
-		// 不十分だった)。この形なら「祖先救済」の意味そのまま: 自分の親
-		// (またはその先祖) が非 terminal かつ非 parked である場合にのみ子孫と
-		// してマッチする。
-		//
-		// open_ancestors は逆方向 (祖先救済、複数階層) — 「terminal/parked な
-		// 親でも、その部分木のどこかに非 terminal な子孫が居るなら、その子孫
-		// までのパス上の祖先は全部見せる」。既存の子救済 (直接の子だけ見る
-		// taskChildCountCols 相当の条件) は 1 階層しか救済できないため、
-		// 「working→parked にした親 → 完了済みの子 → まだ生きている孫」の
-		// ような 3 階層のケースだと、孫は self clause で表示されるのに、その
-		// 直接の親 (完了済みの子) が Open タブから消えて孫だけ宙に浮く
-		// (「親がいないのに子だけ表示される」) UI 上の孤児表示バグになる。
-		// open_ancestors は base case (直接の子が非 terminal) から親側へ再帰的に
-		// 遡ることで、その部分木全体を一貫して Open タブに表示する。
-		ctePrefix = `WITH RECURSIVE open_descendants(id) AS (` +
-			`SELECT c.id FROM tasks c JOIN tasks p ON c.parent_id = p.id ` +
-			`WHERE p.status NOT IN (` + notOpenAncestorGateStatusSQLList + `) ` +
-			`UNION ` +
-			`SELECT c.id FROM tasks c JOIN open_descendants od ON c.parent_id = od.id` +
-			`), open_ancestors(id) AS (` +
-			`SELECT p.id FROM tasks c JOIN tasks p ON c.parent_id = p.id ` +
-			`WHERE c.status NOT IN (` + terminalStatusSQLList + `) ` +
-			`UNION ` +
-			`SELECT p.id FROM tasks c JOIN tasks p ON c.parent_id = p.id ` +
-			`JOIN open_ancestors oa ON oa.id = c.id` +
-			`) `
 		conditions = append(conditions, `(t.status NOT IN (`+notOpenSelfStatusSQLList+`) OR `+
-			`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN (`+terminalStatusSQLList+`)) > 0 OR `+
-			`t.id IN (SELECT id FROM open_descendants) OR `+
-			`t.id IN (SELECT id FROM open_ancestors))`)
+			`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN (`+terminalStatusSQLList+`)) > 0)`)
 	} else if filter.Status == "closed" {
 		conditions = append(conditions, "t.status IN ("+terminalStatusSQLList+")")
-	} else if filter.Status == "triage" {
+	} else if filter.Status == "cards_live" || filter.Status == "triage" {
 		// Phase 1 PR-5a; card-model-cleanup PR-2 (migration 0045) restates the
 		// predicate on tasks.type instead of enumerating a status set: 「今生
-		// きている triage task」= every card that hasn't reached a terminal
-		// status yet (parked ∪ working). ListCards's default filter
-		// (`boid card list` with no status — the exact call khi's
-		// open_triage_task_ids, app/trigger.py, makes), so this predicate
-		// directly decides which cards khi's signal detection considers on
-		// every sweep (docs/plans/suggestion-as-state-transition-impl.md
-		// §4.1's khi 対象軸 note).
+		// きている card」= every card that hasn't reached a terminal status
+		// yet (parked ∪ working). ListCards's default filter (`boid card
+		// list` with no status — the exact call khi's open_triage_task_ids,
+		// app/trigger.py, makes), so this predicate directly decides which
+		// cards khi's signal detection considers on every sweep
+		// (docs/plans/suggestion-as-state-transition-impl.md §4.1's khi 対象軸
+		// note).
+		//
+		// docs/plans/webui-detail-list-redesign.md PR-4 (§3.6): renamed from
+		// "triage" to "cards_live" — the predicate content is UNCHANGED
+		// (a status name, not a filter name, since card machine v2 has no
+		// "triaged" status at all — see the design doc's own note on why the
+		// old name confused readers). "triage" is accepted as a compatibility
+		// alias for any EXPLICIT caller (no known external one exists as of
+		// this PR — see the design doc's own audit), so a stale bookmark or
+		// script keeps working. card_read.go's internal default-fill (an
+		// unset status defaulting to this predicate, the path khi's
+		// no-status call actually takes) has been updated to use the
+		// canonical "cards_live" name directly, since that is boid's own
+		// code, not an external caller needing the alias.
 		//
 		// done is DELIBERATELY excluded (a decision made here, not just
 		// inherited): non-boid signal sources (Slack/Jira/Bitbucket) do not
 		// drop a done card from their own re-detection (khi's detect.py
 		// NO_RECORD_STATUSES is dropped/aborted only), so a source reopening
 		// a done card is already handled outside this filter. Including done
-		// here would mean every done triage card stays a signal candidate
-		// until 30-day GC sweeps it — unbounded work for no additional
-		// coverage.
+		// here would mean every done card stays a signal candidate until
+		// 30-day GC sweeps it — unbounded work for no additional coverage.
 		conditions = append(conditions, "t.type = 'card' AND t.status IN ('parked', 'working')")
-	} else if filter.Status == "queue_next" {
-		// design doc §3.6 (「一覧は suggestion で駆動する」), docs/plans/
-		// suggestion-as-state-transition-impl.md §4.1: queue membership is
-		// `suggestion_verb != ''` — ANY card status (parked/working/done/
-		// dropped) qualifies the moment it carries a suggestion. The old
-		// state ∈ {ready,triaged} ∧ urgency ∈ {now,today,week} predicate
-		// (Phase 1 PR-3) is gone entirely; urgency demotes from a membership
-		// gate to an ORDER BY tie-breaker only (a suggested card with no
-		// urgency still shows, just sorted last).
-		//
-		// card-model-cleanup PR-2 (migration 0045) folded task_triage into
-		// tasks itself, so the former "INNER JOIN task_triage tt ON
-		// tt.task_id = t.id" that narrowed the scan to sidecar-bearing rows
-		// is gone — suggestion_verb is NULL (never '') for an execution row
-		// by the table's own CHECK constraint, so `t.suggestion_verb != ''`
-		// alone already excludes every non-card row without a join.
-		conditions = append(conditions, "t.suggestion_verb != ''")
 	} else if filter.Status != "" {
+		// docs/plans/webui-detail-list-redesign.md PR-4 (§3.6, §5 論点3):
+		// "queue_next" membership (the old `suggestion_verb != ''` branch) is
+		// REMOVED — the Queue tab it backed is gone (タブ4枚撤廃), and no
+		// external caller sends it (grep confirmed by the design doc's own
+		// audit; the Web UI's own default fill was "open", never
+		// "queue_next"). It, and every other exact status string, now falls
+		// through to this single generic `t.status = ?` literal-equality
+		// branch. "queue_next" is not a real tasks.status value (the CHECK
+		// constraint would reject it), so that comparison can never match a
+		// row — an explicit `?status=queue_next` call deterministically
+		// returns an EMPTY list, not an error. This is the decided answer to
+		// 論点3's "status=queue_next を明示指定したときの応答": empty, not 400
+		// — pinned by TestListTasks_QueueNext_ReturnsEmpty.
 		conditions = append(conditions, "t.status = ?")
 		args = append(args, filter.Status)
+	}
+	// ActiveOnly (docs/plans/webui-detail-list-redesign.md §3.5's 「アクティブ
+	// のみ (非終端)」トグル) is a second, independent axis from Status above —
+	// composes via AND with whatever Status already narrowed to (including no
+	// narrowing at all, filter.Status == ""). Deliberately just "not
+	// terminal", not notOpenSelfStatusSQLList's terminal∪parked: a parked
+	// card IS active (it hasn't reached done/aborted/dropped), unlike the
+	// legacy "open" Status keyword's self-clause, which carves parked out
+	// because the (now-removed) Parked tab owned it instead.
+	if filter.ActiveOnly {
+		conditions = append(conditions, "t.status NOT IN ("+terminalStatusSQLList+")")
 	}
 	if filter.ProjectID != "" {
 		conditions = append(conditions, "t.project_id = ?")
@@ -487,30 +471,37 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		conditions = append(conditions, "t.parent_id = ?")
 		args = append(args, *filter.ParentID)
 	}
-	query := ctePrefix + `SELECT ` + taskSelectCols + `, ` + taskChildCountCols + ` FROM tasks t`
+	query := `SELECT ` + taskSelectCols + `, ` + taskChildCountCols + ` FROM tasks t`
 	for _, j := range joins {
 		query += " " + j
 	}
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	if filter.Status == "closed" {
-		query += " ORDER BY t.updated_at DESC"
-	} else if filter.Status == "queue_next" {
-		// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1,
-		// design doc §3.6): urgency は可視性を失い並び順だけの属性になった —
-		// membership はもう urgency と無関係 (上の WHERE 参照) なので、ORDER BY
-		// は urgency (now > today > week > someday/空) → created_at 昇順
-		// (古いものを腐らせない) → id だけになる。v1 の「state (ready が先)」
-		// tier は card 機械 v2 に ready/triaged という現役状態が無くなった
-		// ため削除 (StateRank ごと queue.go から削除済み — もう対応する SQL
-		// が無い pure-Go 関数を残すと逆に誤解を招く)。orchestrator.UrgencyRank
-		// は urgency tier だけの pure-Go 版として引き続き lockstep を保つ。
-		query += " ORDER BY " +
-			"CASE t.urgency WHEN 'now' THEN 0 WHEN 'today' THEN 1 WHEN 'week' THEN 2 ELSE 3 END, " +
-			"t.created_at ASC, t.id ASC"
-	} else {
-		query += " ORDER BY t.created_at DESC"
+	// docs/plans/webui-detail-list-redesign.md PR-4 (§3.5, §3.2): every view
+	// sorts by updated_at DESC now (tie-break: id ASC, deterministic) — the
+	// per-branch ORDER BY this used to carry (created_at DESC by default,
+	// updated_at DESC only for "closed", a bespoke urgency-then-created_at
+	// order for "queue_next") is gone along with "queue_next" itself. A
+	// suggestion attached to a card, or any status transition, bumps
+	// updated_at (PR-3, TouchTaskUpdatedAt/UpdateTask) — so this single ORDER
+	// BY is what makes "a card just got a suggestion" surface at the top of
+	// every view without a dedicated queue ordering.
+	query += " ORDER BY t.updated_at DESC, t.id ASC"
+	// LIMIT/OFFSET (§3.5, §5 論点4): Limit<=0 means unbounded (every non-web
+	// caller today). Offset>0 with Limit<=0 still applies via SQLite's
+	// LIMIT -1 (unbounded) OFFSET ? rather than being silently dropped.
+	if filter.Limit > 0 || filter.Offset > 0 {
+		limit := filter.Limit
+		if limit <= 0 {
+			limit = -1
+		}
+		query += " LIMIT ?"
+		args = append(args, limit)
+		if filter.Offset > 0 {
+			query += " OFFSET ?"
+			args = append(args, filter.Offset)
+		}
 	}
 
 	rows, err := dbtx.Query(query, args...)
@@ -990,7 +981,7 @@ func scanTask(s taskScanner) (*Task, error) {
 		&behavior, &traitsJSON, &readonly, &branchPrefix, &baseBranch, &payload, &instructionsJSON, &autoStart,
 		&kind, &urgency, &wakeAt, &wakeTaskID, &suggestionVerb, &detail,
 		&t.Ref, &t.ParentID, &t.CreatedAt, &t.UpdatedAt,
-		&t.TotalChildCount, &t.DoneChildCount, &t.AbortedChildCount, &t.OpenChildCount,
+		&t.TotalChildCount, &t.DoneChildCount, &t.AbortedChildCount, &t.OpenChildCount, &t.AwaitingChildCount,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrTaskNotFound

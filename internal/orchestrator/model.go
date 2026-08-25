@@ -159,6 +159,15 @@ type Task struct {
 	DoneChildCount    int `json:"done_child_count,omitempty"`
 	AbortedChildCount int `json:"aborted_child_count,omitempty"`
 	OpenChildCount    int `json:"open_child_count,omitempty"`
+	// AwaitingChildCount is the number of direct children currently sitting
+	// at TaskStatusAwaiting — added by docs/plans/webui-detail-list-redesign.md
+	// PR-4 (§3.5) so the list row's child rollup can surface "⚠ N" without a
+	// second query: a card whose dispatched child asked a question was
+	// previously invisible from the parent's own row (§2.4's "子が4回 ask を
+	// 上げたが親からは dispatched にしか見えなかった" gap) — the detail page's
+	// child ledger already closed this for PR-2 (ChildRow.AwaitingQuestionID);
+	// this is the list-side counterpart.
+	AwaitingChildCount int `json:"awaiting_child_count,omitempty"`
 	// Blocked は表示用フィールド（DBには保存しない）
 	Blocked bool `json:"blocked,omitempty"`
 }

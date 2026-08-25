@@ -7,20 +7,10 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func TestUrgencyRank_Ordering(t *testing.T) {
-	if !(orchestrator.UrgencyRank(orchestrator.UrgencyNow) < orchestrator.UrgencyRank(orchestrator.UrgencyToday)) {
-		t.Error("now must rank before today")
-	}
-	if !(orchestrator.UrgencyRank(orchestrator.UrgencyToday) < orchestrator.UrgencyRank(orchestrator.UrgencyWeek)) {
-		t.Error("today must rank before week")
-	}
-	if !(orchestrator.UrgencyRank(orchestrator.UrgencyWeek) < orchestrator.UrgencyRank(orchestrator.UrgencySomeday)) {
-		t.Error("week must rank before someday")
-	}
-	if !(orchestrator.UrgencyRank(orchestrator.UrgencyWeek) < orchestrator.UrgencyRank("garbage")) {
-		t.Error("unrecognized urgency must rank last, same as someday")
-	}
-}
+// TestUrgencyRank_Ordering / UrgencyNow / UrgencyRank were removed by
+// docs/plans/webui-detail-list-redesign.md PR-4 (§3.6, §5 論点2) alongside
+// their production counterparts in queue.go — urgency dropped from every
+// display surface and UrgencyRank had zero production callers left.
 
 func TestShouldWake_DateCondition(t *testing.T) {
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
