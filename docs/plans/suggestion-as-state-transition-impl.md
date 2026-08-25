@@ -96,6 +96,10 @@ task_triage sidecar の有無で選ぶ。**rule の内容・名前・挙動は�
 - Manual rule: `go: parked→working` / `working: parked→working` /
   `drop: parked→dropped` / `park: working→parked` / `done: working→done` /
   `reopen: done→parked` / `reopen: dropped→parked`
+  - **2026-08-25 追記: 8 本目 `done: parked→done` を追加した。** 「外で片付いていた」
+    「重複と判明した」card を 1 手で閉じるための辺。カットオーバー後に §6 の監視項目が
+    予言していた drop 誤用が実際に起きた (下記) のを受けた対応。設計 doc §3.2 の
+    「8 本目の辺」節と `internal/orchestrator/machine_card.go` の doc comment が正
 - 非遷移 Manual rule (attrs_set / child_added / child_specced / child_dropped /
   noted / answered) の FromStatus 列挙は {parked, working} に縮む (captured/triaged/
   ready が消えるため)。done への attrs_set 着地 (I-5b/I-5c、attrs_set_done.go) は
@@ -279,6 +283,14 @@ card 機械の遷移 action (go/working/park/drop/done/reopen) は Manual:true �
      (`UnlinkAllForTask`) ため、間違えると次の再取り込みで**別の新しい card**が
      生まれ、旧 card との連続性が失われる。機械的な検出手段は無く、khi の skill
      文面の精度と人の目視だけが頼り。
+   - **この予言は 2026-08-25 に的中した — そして辺を足して誘因ごと消した。**
+     khi の card `ad8c6808` が重複と判断されて `drop` され、identity が解放された
+     結果、次の巡で同じ Jira イベントが `cba7c559` として再 capture された (1 周)。
+     対応は 2 段階: (a) khi の skill 文面に「重複 card は drop でなく done で畳む」を
+     追記 (khi `49c520e`)、(b) **card 機械に 8 本目の辺 `done: parked→done` を追加**
+     して、そもそも 2 手の回り道を要らなくした (§3.1、設計 doc §3.2「8 本目の辺」)。
+     この監視項目は残す — 辺が増えても「やらないと決めた」と「終わった」を人が
+     取り違える余地は残るので、目視の対象としては生き続ける。
 
 ## 7. 着手前に確定させる点 (PR-1 実装セッションで確定・実装済み)
 

@@ -149,15 +149,19 @@ func TestVerbBadgeClass_UnknownVerbFallsBackToNeutral(t *testing.T) {
 // a real Accept button to hide), this row is a link to the detail page with
 // no button at all — the only way to warn a reader BEFORE they click through
 // is a visible marker next to the verb badge. A suggestion whose verb
-// doesn't match the task's CURRENT status (done only fires from working,
-// machine_card.go — this task sits on parked) gets a "not applicable" badge
-// carrying the full reason as a tooltip (title attribute).
+// doesn't match the task's CURRENT status (reopen only fires from
+// done/dropped, machine_card.go — this task sits on parked) gets a "not
+// applicable" badge carrying the full reason as a tooltip (title attribute).
+//
+// The verb was "done" until 2026-08-25, when card machine v2 gained its
+// eighth edge (done: parked→done) and that combination became APPLICABLE —
+// see NewCardMachine's own doc comment.
 func TestTaskTreeRow_InapplicableVerbStatus_ShowsNotApplicableBadge(t *testing.T) {
 	task := makeTreeTestTask("t1")
 	task.Status = orchestrator.TaskStatusParked
 	item := TreeItem{
 		Task:       task,
-		Suggestion: orchestrator.Suggestion{Verb: "done"},
+		Suggestion: orchestrator.Suggestion{Verb: "reopen"},
 	}
 
 	var buf bytes.Buffer
@@ -167,19 +171,19 @@ func TestTaskTreeRow_InapplicableVerbStatus_ShowsNotApplicableBadge(t *testing.T
 	html := buf.String()
 
 	if !strings.Contains(html, "badge-suggestion-inapplicable") {
-		t.Errorf("expected the not-applicable badge for verb=done on a parked task, got: %s", html)
+		t.Errorf("expected the not-applicable badge for verb=reopen on a parked task, got: %s", html)
 	}
 	if !strings.Contains(html, "not applicable") {
 		t.Errorf("expected visible \"not applicable\" text, got: %s", html)
 	}
-	if !strings.Contains(html, "done") || !strings.Contains(html, "parked") {
+	if !strings.Contains(html, "reopen") || !strings.Contains(html, "parked") {
 		t.Errorf("tooltip should name the verb and the status, got: %s", html)
 	}
 	// Review LOW 4: the tooltip must also say what CAN be applied from
-	// parked (go/working/drop), not stop at a bare "cannot be applied" —
+	// parked (go/working/drop/done), not stop at a bare "cannot be applied" —
 	// same content the API's 409 message carries, both sourced from
 	// orchestrator.StateMachine.AvailableActionsHint.
-	for _, want := range []string{"go", "working", "drop"} {
+	for _, want := range []string{"go", "working", "drop", "done"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("tooltip should name every action available from parked (%q missing), got: %s", want, html)
 		}
@@ -209,8 +213,8 @@ func TestTaskTreeRow_ApplicableVerbStatus_NoNotApplicableBadge(t *testing.T) {
 }
 
 // TestSuggestionInapplicable_AllVerbStatusCombinations mirrors
-// orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges
-// at the components-package level: exactly 7 of the 24 (verb, status)
+// orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlyEightEdges
+// at the components-package level: exactly 8 of the 24 (verb, status)
 // combinations are applicable.
 func TestSuggestionInapplicable_AllVerbStatusCombinations(t *testing.T) {
 	applicable := map[string]map[orchestrator.TaskStatus]bool{
@@ -218,7 +222,7 @@ func TestSuggestionInapplicable_AllVerbStatusCombinations(t *testing.T) {
 		"working": {orchestrator.TaskStatusParked: true},
 		"drop":    {orchestrator.TaskStatusParked: true},
 		"park":    {orchestrator.TaskStatusWorking: true},
-		"done":    {orchestrator.TaskStatusWorking: true},
+		"done":    {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
 		"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
 	}
 	statuses := []orchestrator.TaskStatus{

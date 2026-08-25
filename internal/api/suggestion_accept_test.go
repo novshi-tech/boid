@@ -231,26 +231,27 @@ func TestApplyAction_Answered_AcceptDone(t *testing.T) {
 
 // ---- PR-3 (suggestion 状態遷移化 follow-up): 適用不能な suggestion の防御 ----
 //
-// The bug: card machine v2 admits exactly one status per verb (go/working/
-// drop only from parked; park/done only from working; reopen only from
-// done/dropped — NewCardMachine's own doc comment). Before this PR,
+// The bug: card machine v2 admits only a narrow status set per verb
+// (go/working/drop only from parked; park only from working; done from
+// parked or working; reopen only from done/dropped — NewCardMachine's own
+// doc comment). Before this PR,
 // accept(verb) on a mismatched status either 409'd with sm.Apply's raw
 // `no transition for action %q from status %q` (every verb except go) or,
 // for go specifically, acceptGo's own pre-existing "(must be parked)"
 // check — neither said what WOULD have worked. This test exercises every
-// one of the 6 verbs × 4 card statuses = 24 combinations: exactly 7 succeed
-// (cardTransitionAcceptEdges), the other 17 must 409 with a message naming
+// one of the 6 verbs × 4 card statuses = 24 combinations: exactly 8 succeed
+// (cardTransitionAcceptEdges), the other 16 must 409 with a message naming
 // the verb, the status, and (for the 5 non-go verbs, whose failure comes
 // from the SAME generic sm.Apply path applyAnswered's own code shares) what
 // CAN be applied instead — mirroring
-// orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges
+// orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlyEightEdges
 // at the machine-rule level.
 var cardTransitionAcceptEdges = map[string]map[orchestrator.TaskStatus]bool{
 	"go":      {orchestrator.TaskStatusParked: true},
 	"working": {orchestrator.TaskStatusParked: true},
 	"drop":    {orchestrator.TaskStatusParked: true},
 	"park":    {orchestrator.TaskStatusWorking: true},
-	"done":    {orchestrator.TaskStatusWorking: true},
+	"done":    {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
 	"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
 }
 

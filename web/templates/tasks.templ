@@ -690,6 +690,25 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 								<button type="submit" class="action-menu-item">park</button>
 							</form>
 						}
+						// done (parked → done、card 機械 v2 の 8 本目の辺、
+						// 2026-08-25)。ここで働いた人が居ないまま閉じる card
+						// ——「外で片付いていた」「重複と判明した」—— のための
+						// 1 手。理由は machine_card.go の NewCardMachine doc
+						// comment を参照。
+						//
+						// **status の門が要る。** このメニューは verb を 1 つずつ
+						// 列挙していて availableActions を回さないので、working の
+						// card では done が既に bottom bar の primary ボタン
+						// (detailPrimaryAction) として出ている。門が無いと同じ
+						// 遷移のボタンが 1 画面に 2 つ並ぶ。parked の primary は
+						// Go のまま —— card を閉じるのが既定の一手になってはいけない
+						// —— なので parked 側はこのメニューが唯一の入口になる。
+						if hasAction(availableActions, "done") && task.Status == orchestrator.TaskStatusParked {
+							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Close this card as done? Use this when the work was finished elsewhere, or this card turned out to be a duplicate. It keeps the card&#39;s identities, so the source can still reopen it later.')">
+								<input type="hidden" name="type" value="done"/>
+								<button type="submit" class="action-menu-item">done</button>
+							</form>
+						}
 						// drop (parked → dropped, 必ず nose の判断
 						// でのみ入る終端 — 逆輸入2: 「終わった件と捨てた件を区別
 						// できないと成功の定義が測れない」)。

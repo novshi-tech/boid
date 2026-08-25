@@ -14,6 +14,7 @@ import (
 //	go      : parked  → working
 //	working : parked  → working
 //	drop    : parked  → dropped
+//	done    : parked  → done
 //	park    : working → parked
 //	done    : working → done
 //	reopen  : done    → parked
@@ -21,7 +22,7 @@ import (
 //
 // This is the network's complete edge list — TestCardMachineV2_AllEdges below
 // walks the full status × action cross product and asserts EXACTLY these
-// seven edges succeed, everything else (including every old v1 verb —
+// eight edges succeed, everything else (including every old v1 verb —
 // triage/ready/wake_*/dispatch/triage_done/reopen_triaged) is rejected.
 
 // v2CardStatuses is every status the v2 card machine actually reaches
@@ -46,6 +47,9 @@ func TestCardMachineV2_AllEdges(t *testing.T) {
 			"go":      orchestrator.TaskStatusWorking,
 			"working": orchestrator.TaskStatusWorking,
 			"drop":    orchestrator.TaskStatusDropped,
+			// 8 本目の辺 (2026-08-25): 「外で片付いていた」「重複と判明した」card を
+			// 1 手で閉じる。詳細は machine_card.go の NewCardMachine doc comment。
+			"done": orchestrator.TaskStatusDone,
 		},
 		orchestrator.TaskStatusWorking: {
 			"park": orchestrator.TaskStatusParked,
@@ -88,7 +92,7 @@ func TestCardMachineV2_AvailableActions(t *testing.T) {
 		status orchestrator.TaskStatus
 		want   map[string]bool
 	}{
-		{orchestrator.TaskStatusParked, map[string]bool{"go": true, "working": true, "drop": true}},
+		{orchestrator.TaskStatusParked, map[string]bool{"go": true, "working": true, "drop": true, "done": true}},
 		{orchestrator.TaskStatusWorking, map[string]bool{"park": true, "done": true}},
 		{orchestrator.TaskStatusDone, map[string]bool{"reopen": true}},
 		{orchestrator.TaskStatusDropped, map[string]bool{"reopen": true}},
@@ -378,20 +382,21 @@ func TestCardMachineV2_CanApplyManualAction_Answered(t *testing.T) {
 // test in internal/api.
 // ---- PR-3 (suggestion 状態遷移化 follow-up): CanApplyTransitionAction ----
 //
-// The bug this guards against: card machine v2 admits exactly ONE status per
-// verb (go/working/drop only from parked; park/done only from working;
-// reopen only from done/dropped — NewCardMachine's own doc comment), but
+// The bug this guards against: card machine v2 admits only a NARROW set of
+// statuses per verb (go/working/drop only from parked; park only from
+// working; done from parked or working; reopen only from done/dropped —
+// NewCardMachine's own doc comment), but
 // nothing let a caller ask "would VERB actually apply from the task's
 // CURRENT status" before this PR — CanApplyManualAction("answered", status)
 // alone says yes for any of the four card statuses regardless of the
 // suggestion's own verb, so a suggestion whose verb didn't match the card's
 // status still rendered a live-looking Accept button that 409'd on click.
 
-// cardTransitionEdges is the exact seven (verb, fromStatus) pairs
+// cardTransitionEdges is the exact eight (verb, fromStatus) pairs
 // TestCardMachineV2_AllEdges already pins as the network's entire edge list
 // — reused here as CanApplyTransitionAction's own hardcoded expectation, so
 // this test also serves as an explicit, human-readable pin of "exactly these
-// seven combinations answer applicable" (as opposed to the drift-proof
+// eight combinations answer applicable" (as opposed to the drift-proof
 // rule-table-derived test right below it, which reads no hardcoded list at
 // all).
 var cardTransitionEdges = map[string]map[orchestrator.TaskStatus]bool{
@@ -399,15 +404,15 @@ var cardTransitionEdges = map[string]map[orchestrator.TaskStatus]bool{
 	"working": {orchestrator.TaskStatusParked: true},
 	"drop":    {orchestrator.TaskStatusParked: true},
 	"park":    {orchestrator.TaskStatusWorking: true},
-	"done":    {orchestrator.TaskStatusWorking: true},
+	"done":    {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
 	"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
 }
 
-// TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges is the
+// TestCardMachineV2_CanApplyTransitionAction_PinsExactlyEightEdges is the
 // exhaustive 6-verb × 4-status (24 combination) cross-product pin: exactly
-// the seven edges in cardTransitionEdges answer true, every other
+// the eight edges in cardTransitionEdges answer true, every other
 // combination answers false.
-func TestCardMachineV2_CanApplyTransitionAction_PinsExactlySevenEdges(t *testing.T) {
+func TestCardMachineV2_CanApplyTransitionAction_PinsExactlyEightEdges(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
 	for _, verb := range v2CardTransitionActions {
 		for _, status := range v2CardStatuses {

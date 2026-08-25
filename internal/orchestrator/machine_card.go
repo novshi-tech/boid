@@ -19,10 +19,53 @@ package orchestrator
 //	go      : parked  → working   (accept(go): specced children get dispatched, then this fires)
 //	working : parked  → working   (accept(working): manual work declared, no dispatch)
 //	drop    : parked  → dropped
+//	done    : parked  → done      (closed without ever being worked here — see the 8th-edge note below)
 //	park    : working → parked    (sets a wake condition — see workflow_triage.go's park side effect)
 //	done    : working → done
 //	reopen  : done    → parked
 //	reopen  : dropped → parked
+//
+// ---- the eighth edge: done from parked (2026-08-25) ----
+//
+// Card machine v2 shipped with seven edges, and `done` only from `working`.
+// That mirrored the drop discipline design doc §3.2 states explicitly ("drop
+// は parked からだけ ... working の card を捨てたければ park → drop の 2 手"),
+// but no line in either doc ever gave a REASON to exclude parked→done — it
+// simply fell out of the table. Two everyday cases have no one-step exit
+// without it, and both are cards nobody ever worked on HERE:
+//
+//   - the work was already finished elsewhere (a card whose Jira issue got
+//     closed by someone else, a manual card resolved out-of-band)
+//   - the card turned out to be a DUPLICATE of another card carrying the
+//     real work
+//
+// The v1 workaround was accept(working) → (next sweep round) accept(done):
+// two human accepts, a full sweep cycle of latency, and — worse — an
+// intermediate `working`, whose model.go meaning is "誰かが手を動かしている",
+// asserted about a card nobody is touching. A card is 判断の台帳 (machine.go's
+// package doc comment); writing a false fact into the ledger to reach a true
+// one is the wrong trade. Note the asymmetry with drop's own 2-step: park →
+// drop passes through `parked` ("前提条件が揃っていない"), a neutral resting
+// state that stays true of a card being set aside — working does not.
+//
+// The detour also had a documented failure mode that fired in production:
+// docs/plans/suggestion-as-state-transition-impl.md §6's 監視 note predicted
+// that an LLM wanting to close such a card in ONE step would reach for `drop`
+// (always valid from parked) instead, that boid cannot tell that misuse apart
+// from a legitimate drop, and that there is no mechanical detection for it.
+// Because drop releases every identity (UnlinkAllForTask, I-6) while done
+// holds them (I-5), the mistake silently costs the card its identity — the
+// next ingestion of the same source key then creates a BRAND NEW card with no
+// link to the old one's summary, children, action log, or reopen path. That
+// is exactly what happened on 2026-08-25 (khi cards ad8c6808 → cba7c559,
+// re-captured one round after the errant drop). This edge removes the
+// incentive rather than adding another warning nobody can enforce.
+//
+// What it does NOT weaken: the Go gate stays exactly one edge wide
+// (parked→working is still the only 前進 edge, still human-accept-only), and
+// "Go を過ぎた card は drop できない" is untouched (drop is still parked-only;
+// working→dropped remains unreachable). Closing a card is not starting work
+// on it, so neither invariant is in play here.
 //
 // This is the network's ENTIRE edge list — see docs/plans/
 // suggestion-as-state-transition.md §3.2's table, which this rule set
@@ -56,7 +99,7 @@ package orchestrator
 // ---- push-down defense (穴11, docs/plans/suggestion-as-state-transition.md
 // §3.8's closing note) ----
 //
-// All seven Manual transition rules above are reachable through the public
+// All eight Manual transition rules above are reachable through the public
 // ApplyAction endpoint (HTTP API / Web UI / brokered `boid action send` / CLI
 // all funnel through it) because IsManualAction says yes for all of them —
 // unlike v1, where wake_triaged/wake_ready/dispatch/triage_done were kept
@@ -73,7 +116,7 @@ package orchestrator
 // The replacement is actor-based, not name-based: api.ApplyAction checks
 // `sm.Name == CardMachineName && IsCardTransitionAction(req.Type) &&
 // actor != ActorHuman` and rejects with 403 before ever calling sm.Apply.
-// IsCardTransitionAction (below) is the exact seven-verb closed set — go/
+// IsCardTransitionAction (below) is the exact six-verb closed set — go/
 // working/park/drop/done/reopen — the only actions on this machine whose
 // ToStatus != "" (attrs_set/child_added/child_specced/child_dropped/noted/
 // answered/wake_due all stay reachable from any actor, including khi's
@@ -89,7 +132,7 @@ package orchestrator
 // ActorHuman through and is never blocked by its own defense.
 //
 // escape hatch (design doc §3.2's explicit requirement): this defense must
-// never block a HUMAN from directly driving every one of the seven edges
+// never block a HUMAN from directly driving every one of the eight edges
 // with no suggestion involved — see
 // TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion
 // (internal/api) for the pinned proof.
@@ -98,6 +141,10 @@ func NewCardMachine() *StateMachine {
 		{Action: "go", FromStatus: "parked", ToStatus: "working", Manual: true},
 		{Action: "working", FromStatus: "parked", ToStatus: "working", Manual: true},
 		{Action: "drop", FromStatus: "parked", ToStatus: "dropped", Manual: true},
+		// The eighth edge — see this function's doc comment for why a card
+		// nobody worked on here must be closable in ONE step rather than via
+		// a false intermediate `working`.
+		{Action: "done", FromStatus: "parked", ToStatus: "done", Manual: true},
 		{Action: "park", FromStatus: "working", ToStatus: "parked", Manual: true},
 		{Action: "done", FromStatus: "working", ToStatus: "done", Manual: true},
 		{Action: "reopen", FromStatus: "done", ToStatus: "parked", Manual: true},

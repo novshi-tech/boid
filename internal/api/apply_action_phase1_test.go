@@ -392,7 +392,7 @@ func TestTaskWorkflowServiceApplyAction_StampsActorFromContext(t *testing.T) {
 
 // TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion is the
 // escape-hatch pin design doc §3.2 explicitly requires: "人の直接操作は常に
-// 全遷移で可能であることを担保する" — every one of card machine v2's seven
+// 全遷移で可能であることを担保する" — every one of card machine v2's eight
 // edges must be reachable directly by a human (Web UI / CLI, ActorHuman),
 // with NO suggestion involved anywhere in the fixture. suggestion is one
 // entry point into these transitions, never the only one.
@@ -405,6 +405,10 @@ func TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion(t *test
 		{orchestrator.TaskStatusParked, "go", orchestrator.TaskStatusWorking},
 		{orchestrator.TaskStatusParked, "working", orchestrator.TaskStatusWorking},
 		{orchestrator.TaskStatusParked, "drop", orchestrator.TaskStatusDropped},
+		// 8 本目の辺: 「外で片付いていた」「重複と判明した」card を 1 手で閉じる。
+		// これが無いと khi は working→done の 2 手を提案するしかなく、その回り道が
+		// identity を解放する drop の誤用を誘っていた (machine_card.go の doc comment)。
+		{orchestrator.TaskStatusParked, "done", orchestrator.TaskStatusDone},
 		{orchestrator.TaskStatusWorking, "park", orchestrator.TaskStatusParked},
 		{orchestrator.TaskStatusWorking, "done", orchestrator.TaskStatusDone},
 		{orchestrator.TaskStatusDone, "reopen", orchestrator.TaskStatusParked},

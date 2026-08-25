@@ -161,6 +161,7 @@ reject は「その提案は採らない」。カードは動かず、suggestion
 | parked | working | accept(go): specced 子を dispatch して開始 | 人 |
 | parked | working | accept(working): 手動作業として開始 | 人 |
 | parked | dropped | drop (直接 or accept) | 人 |
+| parked | done | accept(done) / 直接 done — ここで働いた人が居ないまま閉じる (下記「8 本目の辺」) | 人 |
 | working | parked | park (wake 条件付き、直接 or accept) | 人 |
 | working | done | accept(done) / 直接 done | 人 |
 | done | parked | reopen (直接 or accept) | 人 |
@@ -171,6 +172,35 @@ reject は「その提案は採らない」。カードは動かず、suggestion
 人の accept を通る — Go ゲートはこの 1 本の辺に凝縮される。wake の 3 分岐が消える理由も
 この表で自明になる: parked の出口は人の accept だけで、行き先は suggestion の verb が
 決めるから、機械が park の起点を記憶する必要が構造ごと消える。
+
+**8 本目の辺 `parked → done` (2026-08-25 追加)。** v2 は 7 辺で出荷し、`done` は
+`working` からだけだった。これは下記「drop は parked からだけ」の鏡像のつもりだったが、
+**parked → done を外す理由はどちらの doc にも一行も書かれていない** — 表から漏れた
+だけだった。この辺が無いと 1 手で閉じられない日常ケースが 2 つあり、どちらも
+**ここでは誰も working していない** card:
+
+- 外で既に片付いていた (他人が Jira 課題を閉じた、source 無し手動 card を外で解決した)
+- **重複と判明した** (実体の作業は別 card 側にある)
+
+回り道は accept(working) → 次の巡で accept(done) の 2 手だった。accept が 2 回、
+sweep 1 巡ぶんの遅延、そして何より中間の `working` が「誰かが手を動かしている」という
+**事実でないこと**を台帳に書く。card は判断の台帳なのだから、真を得るために偽を通すのは
+筋が悪い。drop 側の 2 手 (park → drop) と非対称なことに注意 — あちらが経由する
+`parked` は「前提条件が揃っていない」で、脇に置いた card について真のまま。
+
+さらにこの回り道は**実際に事故を起こした**。実装計画 doc §6 の監視項目が「1 手で
+済ませたい LLM は代わりに `drop` を選ぶ余地がある / boid にはそれが正当な drop としか
+見えない / 機械的な検出手段は無い」と予言しており、`drop` は identity を全解放する
+(`UnlinkAllForTask`、I-6) 一方 `done` は保持する (I-5) ので、間違えると card は黙って
+identity を失い、次の取り込みで**別の新しい card** が生まれて summary・children・
+action 履歴・reopen 経路との連続性が切れる。2026-08-25 に khi の card ad8c6808 →
+cba7c559 でこれが 1 周した。**この辺は、強制できない警告を増やす代わりに誘因そのものを
+消す。**
+
+弱めないもの: Go ゲートは 1 辺のまま (`parked → working` が唯一の前進で、人の accept
+必須)、「Go を過ぎた card は drop できない」も無傷 (`drop` は parked からだけ、
+`working → dropped` は依然として到達不能)。card を閉じることは仕事を始めることでは
+ないので、どちらの不変量にも触れない。
 
 **注記 (2026-08-25、khi 側実装で判明): `dropped → parked` の accept 半分は原理上
 ほぼ到達不能。** `drop` は card の identity を全解放する — `internal/orchestrator/
@@ -218,7 +248,10 @@ task の status を検査しない。drop で該当 identity の行自体が削�
   source_closed が永久に満たせず閉じられない) にも閉じ道ができる。done の基準は
   daemon の固定式から khi の instruction に移り、**workspace ごとに柔軟に定義できる**
 - **drop は parked からだけ**: 「Go を過ぎた card は drop できない」現行規律を維持。
-  working の card を捨てたければ park → drop の 2 手
+  working の card を捨てたければ park → drop の 2 手。**これは `done` とは対称でない**
+  (2026-08-25) — `done` は parked / working の両方から打てる。理由は上の「8 本目の辺」を
+  参照: park は真であり続ける中間状態だが working はそうではない、という非対称が根拠で、
+  「2 手にすること」自体が目的だったわけではない
 - **人の直接操作は常に全遷移で可能であることを担保する** (nose レビュー: escape hatch)。
   suggestion は入口の一つにすぎず、最悪 khi が何も提案しなくても人手だけで card を
   一周させられること。穴 11 の防御設計はこの担保を塞がないこと
