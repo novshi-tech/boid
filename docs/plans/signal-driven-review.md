@@ -595,6 +595,9 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 12. Pack と boid の間の契約は `signal-ingest-detailed-design.md` §7 (Pack contract v1) を
     正とする — 両側の義務、apiVersion による版管理、追加のみの進化規則、conformance
     test の検査対象
+13. 公式 Pack の置き場は `boid-api-skills` repo (Pack repo へ発展させる)。boid repo に
+    Pack の中身は置かない。v0 の配布は host checkout の bind mount
+    (詳細設計 §10、2026-08-26)
 
 ### 検証・実装と並行して決めること
 

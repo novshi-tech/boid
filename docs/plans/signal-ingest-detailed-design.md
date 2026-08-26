@@ -373,9 +373,11 @@ workspace 内部の安定キー (例: 親 card id + 子の世代キー)、link �
 | Connector の実行詳細 | 導出 trigger + project sandbox exec job + ingest 単位 tx (§5) |
 | Signal 1 件の size limit | 既存 ValidateContentSize (64KiB) を行単位に適用 (§2) |
 | (新規に確定) source の宣言場所 | メタプロジェクトの project.yaml `signals.sources` (§1) |
+| (新規に確定) Pack repo の置き場 | `boid-api-skills` を Pack repo へ発展。boid repo に Pack の中身は置かない。v0 配布は host checkout の bind mount (§10) |
 
-残る未決: Pack の発見・配布・signing、kit との関係、resolver、scan script テンプレ、
-Web UI 表示、service profile の複数 header/OAuth2 表現 (v0 の脱糖は単一 slot のみ)。
+残る未決: Pack の image 同梱・`boid integration install`・signing (v0 は bind mount で
+回避)、kit との関係、resolver、scan script テンプレ、Web UI 表示、service profile の
+複数 header/OAuth2 表現 (v0 の脱糖は単一 slot のみ)。
 
 ---
 
@@ -399,13 +401,21 @@ Web UI 表示、service profile の複数 header/OAuth2 表現 (v0 の脱糖は�
 - **Q26 を本体 doc §14 に追加する**: 「`boid task create` の idempotency key は
   (project, key) で一意であり、同一 key の再実行が新規作成せず既存 task の id を返す
   テストがある」
-- **PR-8 が Pack 側実装** (nose レビュー指摘: Pack が無いと機能しない)。公式 Pack は
-  boid repo 直下の `integrations/` に置き、container image の build で
-  `/opt/boid/integrations/` へ copy する。実装は現行 khi の adapter (slack 160 行 /
-  jira 176 行 / bitbucket 243 行、いずれも gateway 経由の fetch-only) の移植で、変更点は
-  栞の読み書き (`FileBookmarks` → `boid signal cursor`) と出力 (Signal 構築 → JSONL to
-  `boid signal ingest`) が主。conformance test (§7) もここで実装する。
+- **PR-8 が Pack 側実装** (nose レビュー指摘: Pack が無いと機能しない)。**公式 Pack は
+  boid repo に置かず、既存の `boid-api-skills` repo を Pack repo へ発展させる** (nose
+  判断)。同 repo は既に 13 service の reference skill (80 files / 1.1MB) を持ち、Pack の
+  `skills/` 部分そのもの — `integration.yaml` と `connectors/` を足して Pack layout に
+  再構成する。boid repo 側に置くのは契約 (§7)・loader・conformance test の枠組みだけで、
+  Pack の中身は持ち込まない (ファイル増と、SaaS API と boid の release cycle の結合を
+  避ける)。connector の実装は現行 khi の adapter (slack 160 行 / jira 176 行 /
+  bitbucket 243 行、いずれも gateway 経由の fetch-only) の移植で、変更点は栞の読み書き
+  (`FileBookmarks` → `boid signal cursor`) と出力 (Signal 構築 → JSONL to
+  `boid signal ingest`) が主。
   **PR-8 完了までこの機構は end-to-end では動かない** — 初回の実証は PR-8 + shadow-a
+- **配布の v0**: container image への preinstall はまだやらない。`integrations.dir` を
+  compose volume で host の Pack repo checkout へ bind mount する (Pack 更新 = git pull +
+  boid 再起動。build の結合ゼロ)。image への同梱・`boid integration install`・signing は
+  未決のまま後続の packaging とする
 - shadow-a/shadow-b 自体はこの doc の範囲外 (本体 doc §10.3/§10.4)
 
 ---
