@@ -661,6 +661,13 @@ type GCResult struct {
 	// at all and grows unbounded (khi's 2 triggers alone project to
 	// ~105,000 rows/year).
 	TriggerRuns int64
+	// Signals is the count of signals rows GCSignals deleted
+	// (docs/plans/signal-ingest-detailed-design.md §2/§9: "inbox の GC:
+	// acked 30 日で既存 GC tx に相乗り") — both acked rows older than the
+	// cutoff and unacked (including dead-lettered) rows whose received_at
+	// is older than the cutoff, so a permanently-dead signal doesn't linger
+	// forever just because nothing ever acks it.
+	Signals int64
 }
 
 // GCTasks deletes terminal tasks older than olderThan and their related data

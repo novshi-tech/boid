@@ -477,6 +477,31 @@ func allMigrations() []migration {
 			path:               "migrations/0045_card_sti_migration.sql",
 			disableForeignKeys: true,
 		},
+		{
+			// docs/plans/signal-ingest-detailed-design.md §2 (PR-1): signal
+			// inbox の 2 テーブル (signals / signal_cursors). Unlike
+			// 0042/0043 (brand-new tables, no skip needed), this DOES probe
+			// before re-applying — the defensive-idempotency posture 0041's
+			// task_identities skip uses (a partial-apply-then-rerun, e.g. a
+			// daemon crash between the file's two CREATE TABLE statements,
+			// must not choke re-running against an already-migrated DB).
+			// [L4, Opus review 2026-08-26] an earlier version of this
+			// comment said "No skip function" while a skip WAS present
+			// below, and the skip only probed `signals`, leaving
+			// `signal_cursors` unchecked — both fixed here: the comment now
+			// matches the code, and BOTH tables are probed (only signals is
+			// consulted first since the two are created together by the
+			// same file; signal_cursors is the confirming second check).
+			version: "0046_add_signal_inbox",
+			path:    "migrations/0046_add_signal_inbox.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				signalsExist, err := tableExists(tx, "signals")
+				if err != nil || !signalsExist {
+					return signalsExist, err
+				}
+				return tableExists(tx, "signal_cursors")
+			},
+		},
 	}
 }
 

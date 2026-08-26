@@ -81,7 +81,11 @@ type gcResponse struct {
 	// TriggerRuns is the count of finished trigger_runs rows deleted (N-2,
 	// Opus review) — see orchestrator.GCTriggerRuns.
 	TriggerRuns int64 `json:"trigger_runs"`
-	DryRun      bool  `json:"dry_run,omitempty"`
+	// Signals is the count of signals rows deleted — see
+	// orchestrator.GCSignals (docs/plans/signal-ingest-detailed-design.md
+	// §2/§9).
+	Signals int64 `json:"signals"`
+	DryRun  bool  `json:"dry_run,omitempty"`
 	// WorkspaceHomes lists every workspace HOME volume's size
 	// (docs/plans/home-workspace-volume.md Phase 4 PR5) — visibility only,
 	// never auto-pruned by GC. Omitted entirely when GCHandler.Homes was not
@@ -136,6 +140,7 @@ func (h *GCHandler) Run(w http.ResponseWriter, r *http.Request) {
 		SandboxTmp:  result.SandboxTmp,
 		Devices:     result.Devices,
 		TriggerRuns: result.TriggerRuns,
+		Signals:     result.Signals,
 		DryRun:      req.DryRun,
 	}
 	if h.Homes != nil {

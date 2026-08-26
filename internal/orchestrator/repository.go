@@ -156,6 +156,62 @@ func (r *TaskRepository) DeleteTriggerRun(id string) error {
 	return DeleteTriggerRun(r.db, id)
 }
 
+// IngestSignals / GetSignalCursor / ListSignals / ClaimSignals / AckSignals /
+// HasPendingSignals back docs/plans/signal-ingest-detailed-design.md §2
+// (PR-1)'s inbox store (signal_store.go).
+//
+// IngestSignals and ClaimSignals each need their SQL statements to run as
+// ONE transaction (signal_store.go's own doc comments — Q13's crash-safety
+// claim rests on this), so — unlike every other wrapper on this type —
+// they follow DeleteTask's pattern above rather than being one-line
+// delegators: when r.db is a raw *sql.DB (not already inside a WithinTx
+// call), they open their own transaction spanning the whole operation.
+func (r *TaskRepository) IngestSignals(workspaceID, service, connector string, rows []SignalIngestRow) error {
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return IngestSignals(r.db, workspaceID, service, connector, rows)
+	}
+	return db.InTxDB(conn, func(tx db.DBTX) error {
+		return IngestSignals(tx, workspaceID, service, connector, rows)
+	})
+}
+
+func (r *TaskRepository) GetSignalCursor(workspaceID, service, connector string) (string, error) {
+	return GetSignalCursor(r.db, workspaceID, service, connector)
+}
+
+func (r *TaskRepository) ListSignals(filter SignalFilter) ([]*Signal, error) {
+	return ListSignals(r.db, filter)
+}
+
+func (r *TaskRepository) ClaimSignals(workspaceID string, limit, maxAttempts int) ([]*Signal, error) {
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return ClaimSignals(r.db, workspaceID, limit, maxAttempts)
+	}
+	var claimed []*Signal
+	err := db.InTxDB(conn, func(tx db.DBTX) error {
+		c, err := ClaimSignals(tx, workspaceID, limit, maxAttempts)
+		if err != nil {
+			return err
+		}
+		claimed = c
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return claimed, nil
+}
+
+func (r *TaskRepository) AckSignals(workspaceID string, ids []string) error {
+	return AckSignals(r.db, workspaceID, ids)
+}
+
+func (r *TaskRepository) HasPendingSignals(workspaceID string, maxAttempts int) (bool, error) {
+	return HasPendingSignals(r.db, workspaceID, maxAttempts)
+}
+
 type ProjectRepository struct {
 	db db.DBTX
 }
@@ -334,6 +390,14 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 			return err
 		}
 		result.TriggerRuns = n
+		// docs/plans/signal-ingest-detailed-design.md §2/§9: signal inbox GC
+		// rides the same transaction and 30-day schedule, matching
+		// GCTriggerRuns' own precedent immediately above.
+		sn, err := GCSignals(dbtx, olderThan, dryRun)
+		if err != nil {
+			return err
+		}
+		result.Signals = sn
 		return nil
 	})
 	if err != nil {

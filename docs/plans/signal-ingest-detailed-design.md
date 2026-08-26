@@ -267,7 +267,14 @@ connector job の権限は通常の exec job より**絞る** (nose レビュー
   `occurred_at <= cursor` を自分で落とす」(jira 分精度の実証済み教訓)。重複して返しても
   inbox の dedup で no-op なので、迷ったら広く読む側へ倒す
 - ページングは ingest を複数回呼んでよい (1 回ごとに tx が切れる = 途中 crash でも
-  取り込んだ分の栞は正しく進んでいる)
+  取り込んだ分の栞は正しく進んでいる)。**ページングする connector は古い順
+  (oldest-first) に ingest すること**。新しい順にしか返さない API (Slack の
+  `conversations.history`、Jira の既定 JQL ソート等) は、ページ全件を集めてから
+  昇順に並べ替えて ingest すること — `IngestSignals` は cursor を「その呼び出しで
+  渡されたバッチの `max(occurred_at)`」へ進める実装であり、newest-first のまま
+  ページ単位で ingest すると 1 ページ目で cursor が実質「今」まで進んでしまい、
+  2 ページ目取得前に crash すると古いページが永久に失われる (PR-1 実装時に発見、
+  Opus review 2026-08-26)
 - 終了: 成功 0 / 失敗非ゼロ (握り潰さない — failStreak に乗せる)
 - 実行 runtime: connector は宣言 project の sandbox で動くため、必要な runtime
   (python3 等) は**その project の実行 image が持っていること**。公式 Pack v0 は
