@@ -143,8 +143,48 @@ type Task struct {
 	Status      TaskStatus `json:"status"`
 	Ref         string     `json:"ref,omitempty"`
 	ParentID    string     `json:"parent_id,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	// IdempotencyKey backs `boid task create --idempotency-key` (docs/plans/
+	// signal-ingest-detailed-design.md §8, migration 0047). Unlike Ref, this
+	// is NOT an external-world identity — no link/drop/reopen semantics ride
+	// on it (that's task_identities' job — see its own doc comment for the
+	// distinction). It exists purely so a caller with no external identity to
+	// key off of (the common case: a judgment task minting a child task) can
+	// make a create call safe to retry: a second CreateTask with the same
+	// (ProjectID, ParentID, IdempotencyKey) returns the FIRST task instead of
+	// inserting a duplicate (CreateTask's get-or-create, store.go). Empty
+	// string means "no key" (stored as SQL NULL — see migration 0047's own
+	// comment for why NULL rather than NOT NULL DEFAULT '').
+	//
+	// Scoped by ParentID as well as ProjectID (migration 0047's partial
+	// unique index is on all three) — NOT project-only. An earlier version of
+	// this feature scoped by ProjectID alone and had a confirmed bug (PR
+	// #1012 review, Opus M3): two DIFFERENT parent tasks in the same project
+	// that happened to reuse the same idempotency_key (e.g. both simply used
+	// "step-1") would silently collide — the second parent's create call
+	// would succeed and hand back the FIRST parent's child, with no error
+	// and no way to tell from the response. Scoping by ParentID too closes
+	// this the same way migration 0037 closed the identical hole for Ref
+	// (cross-workspace root tasks reusing the same ref).
+	//
+	// Caller contract this implies (signal-driven-review.md §8.5's stated
+	// use case): a judgment task minting a child needs ParentID itself to be
+	// STABLE across retries for the dedup to actually catch a duplicate
+	// create — the design doc's own example key ("親 card id + 子の世代キー")
+	// hints at this by embedding the CARD's id, not the judgment task's own.
+	// A trigger re-dispatches a fresh judgment task instance (a new, distinct
+	// task id) on every firing (signal-driven-review.md §8.3/§8.4), so if a
+	// caller passed the judgment task's OWN id as ParentID (the `BOID_TASK_ID`
+	// auto-fill default — see cmd/task.go/boid_shim.go), a resend after a
+	// crash would carry a DIFFERENT ParentID than the crashed attempt and the
+	// dedup would silently miss, recreating the exact bug this field exists
+	// to close. Callers using IdempotencyKey for cross-retry convergence MUST
+	// pass an explicit ParentID that outlives the creating task itself (e.g.
+	// the persistent card's task id), not rely on the BOID_TASK_ID default —
+	// see internal/skills/data/boid-task/SKILL.md's "Resume: reconcile before
+	// create" section.
+	IdempotencyKey string    `json:"idempotency_key,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 
 	// Card holds the card-only fields (kind/urgency/wake_at/wake_task_id/
 	// suggestion_verb/detail). Non-nil iff Type == TaskTypeCard.

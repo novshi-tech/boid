@@ -94,7 +94,7 @@ CLI listener のアドレスは `127.0.0.1:8442` 固定（override 不可）。`
 | コマンド | 役割 |
 |---|---|
 | `boid task list [--status STATUS] [--workspace ID] [--behavior NAME]` | タスク一覧 |
-| `boid task create [-f FILE]` | YAML を stdin (または `-f`) で渡してタスクを作成 |
+| `boid task create [-f FILE] [--idempotency-key KEY]` | YAML を stdin (または `-f`) で渡してタスクを作成。`--idempotency-key` (または YAML の `idempotency_key`) を指定すると、同一 `(project_id, key)` での再実行は新規作成せず既存タスクの id を返す (exit 0) |
 | `boid task show <id> [--field PATH]` | タスク詳細 (status と payload)。 `--field` 指定時は dotted path で 1 フィールドのみ plain text 出力 (例: `--field status`, `--field payload.artifact.report`, `--field awaiting.question`, `--field lifecycle.abort.message`) |
 | `boid task watch <id> [--interval DURATION]` | status と payload の変化をライブ表示 |
 | `boid task update <id> [-f FILE \| --patch-file FILE] [--payload-file FILE] [--instructions-file FILE]` | タスクを更新。 ファイルパス `-` で stdin。`-f` は `--patch-file` のショートハンド |
@@ -172,9 +172,12 @@ auto_start: false
 description: ...
 payload:    { ... }
 instructions: { ... }
+idempotency_key: <string>   # 省略可 (--idempotency-key と等価)
 ```
 
 `behavior_spec` を渡すと `project.yaml` の task_behaviors を参照せず、 inline でタスクの設定を指定できます。
+
+`idempotency_key` は project 内部の安定キー (例: 親 card id + 子の世代キー) で、外部 identity ではありません。 同一 `(project_id, idempotency_key)` の task が既に存在する場合、新規作成せず既存タスクを返します (子タスクの重複生成防止)。 外部世界の identity から task を引き当てる用途には `task_identities` (`task_resolve_or_capture`) を使ってください — 挙動が異なります (詳細は `docs/plans/signal-ingest-detailed-design.md` §8)。
 
 ### `task hook` (タスク単位の hook 操作)
 

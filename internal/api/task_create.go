@@ -168,16 +168,17 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 	}
 
 	task := &orchestrator.Task{
-		ID:          req.ID,
-		Type:        orchestrator.TaskTypeCard,
-		ProjectID:   req.ProjectID,
-		Title:       req.Title,
-		Description: req.Description,
-		Status:      initialStatus,
-		RemoteID:    req.RemoteID,
-		Ref:         req.Ref,
-		ParentID:    req.ParentID,
-		Card:        &orchestrator.CardAttrs{},
+		ID:             req.ID,
+		Type:           orchestrator.TaskTypeCard,
+		ProjectID:      req.ProjectID,
+		Title:          req.Title,
+		Description:    req.Description,
+		Status:         initialStatus,
+		RemoteID:       req.RemoteID,
+		Ref:            req.Ref,
+		ParentID:       req.ParentID,
+		IdempotencyKey: req.IdempotencyKey,
+		Card:           &orchestrator.CardAttrs{},
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -351,15 +352,16 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	}
 
 	task := &orchestrator.Task{
-		ID:          req.ID,
-		Type:        orchestrator.TaskTypeExecution,
-		ProjectID:   req.ProjectID,
-		Title:       req.Title,
-		Description: req.Description,
-		Status:      initialStatus,
-		RemoteID:    req.RemoteID,
-		Ref:         req.Ref,
-		ParentID:    req.ParentID,
+		ID:             req.ID,
+		Type:           orchestrator.TaskTypeExecution,
+		ProjectID:      req.ProjectID,
+		Title:          req.Title,
+		Description:    req.Description,
+		Status:         initialStatus,
+		RemoteID:       req.RemoteID,
+		Ref:            req.Ref,
+		ParentID:       req.ParentID,
+		IdempotencyKey: req.IdempotencyKey,
 		Exec: &orchestrator.ExecAttrs{
 			Behavior:     res.BehaviorName,
 			Traits:       traits,
@@ -384,6 +386,21 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	// at the store level returns an existing task (e.g. concurrent create race),
 	// the task may already be executing or terminal.
 	//
+	// IdempotencyKey get-or-create hits this same guard (PR #1012 review,
+	// Opus L2) rather than an early return like Ref's own service-level
+	// pre-check above (which is a pure perf optimization for Ref — see its
+	// comment — not present for IdempotencyKey to avoid widening the
+	// TaskStore interface). This is intentional, not an oversight: unlike
+	// Ref's concurrent-create-race case (where "already executing or
+	// terminal" is the only way an existing task can turn up), a resumed
+	// caller's IdempotencyKey hit can legitimately land on an existing task
+	// that is STILL pending (e.g. a resend after a crash before the previous
+	// attempt ever called start) — in that case re-firing start is the
+	// correct resumption behavior, not a duplicate-start bug. The
+	// `task.Status == TaskStatusPending` check already protects the case
+	// this guard exists for either way: an existing task that is executing/
+	// awaiting/done/aborted never re-fires start, exactly like Ref's path.
+
 	// Actor caveat (論点11): CreateTask(req CreateTaskRequest) has no ctx
 	// parameter, so this always stamps ActorHuman even though this call also
 	// backs `boid task create` from inside a sandbox (internal/server/

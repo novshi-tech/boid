@@ -307,6 +307,146 @@ func TestRunBoidShim_TaskCreateSendsTypedRequest(t *testing.T) {
 	}
 }
 
+// TestRunBoidShim_TaskCreate_IdempotencyKeyFlag pins the sandboxed
+// `boid task create --idempotency-key <key>` flag (docs/plans/
+// signal-ingest-detailed-design.md §8). This is the PRIMARY intended call
+// site (a judgment task minting a child task runs inside the sandbox), so
+// unlike TestRunBoidShim_TaskCreateSendsTypedRequest's siblings this goes
+// through the real sandbox.RunBoidShim entry point (not a hand-built
+// sandbox.BoidRequest) — RunBoidShim is what actually dispatches into
+// parseBoidTaskCreate's flag parsing, which is exactly the code path PR
+// #1012's review (Opus M1) found broken: --idempotency-key was accepted by
+// no case in parseBoidTaskCreate's flag switch at all, so a sandboxed caller
+// got a hard "unsupported flag" error before ever reaching the broker.
+func TestRunBoidShim_TaskCreate_IdempotencyKeyFlag(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	specPath := filepath.Join(dir, "task.yaml")
+	specYAML := "project_id: proj-1\ntitle: child task\ninitial_status: parked\n"
+	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
+		t.Fatalf("write task spec: %v", err)
+	}
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-456")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"task", "create",
+		"-f", specPath,
+		"--idempotency-key", "card-1:child-gen-1",
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr = %q, want 0 (--idempotency-key must be accepted)", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	var createPatch struct {
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if err := json.Unmarshal(req.Boid.CreatePatch, &createPatch); err != nil {
+		t.Fatalf("parse CreatePatch: %v", err)
+	}
+	if createPatch.IdempotencyKey != "card-1:child-gen-1" {
+		t.Fatalf("idempotency_key = %q, want card-1:child-gen-1", createPatch.IdempotencyKey)
+	}
+}
+
+// TestRunBoidShim_TaskCreate_IdempotencyKeyFlagEqualsForm pins the
+// `--idempotency-key=<key>` single-token form (takeStringFlagValue's other
+// accepted shape, already used by --file=/--status= etc. elsewhere in this
+// file).
+func TestRunBoidShim_TaskCreate_IdempotencyKeyFlagEqualsForm(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	specPath := filepath.Join(dir, "task.yaml")
+	specYAML := "project_id: proj-1\ntitle: child task\ninitial_status: parked\n"
+	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
+		t.Fatalf("write task spec: %v", err)
+	}
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-456")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"task", "create",
+		"-f", specPath,
+		"--idempotency-key=card-1:child-gen-2",
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr = %q, want 0", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	var createPatch struct {
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if err := json.Unmarshal(req.Boid.CreatePatch, &createPatch); err != nil {
+		t.Fatalf("parse CreatePatch: %v", err)
+	}
+	if createPatch.IdempotencyKey != "card-1:child-gen-2" {
+		t.Fatalf("idempotency_key = %q, want card-1:child-gen-2", createPatch.IdempotencyKey)
+	}
+}
+
 func TestRunBoidShim_TaskCreatePropagatesBaseBranch(t *testing.T) {
 	dir := t.TempDir()
 	sockPath := filepath.Join(dir, "broker.sock")
