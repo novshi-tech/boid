@@ -16,6 +16,7 @@
 - `docs/plans/api-gateway.md` — service registry と workspace-scoped credential 境界
 - khi-task-collector の `docs/plans/signal-and-summary.md` — 現行 sweep の設計
 - `docs/plans/signal-envelope-inventory.md` — §10.2 机上検証の結果 (envelope v0 の根拠)
+- `docs/plans/signal-ingest-detailed-design.md` — 移行順 step 2/6 の実装設計 (PR 分割と採点表の割り当て込み)
 
 ---
 
@@ -255,6 +256,9 @@ Pack の skill は source 側の知識 — 判断中の読み方・調べ方と�
 書き込み手順 — だけを扱い、boid コマンドには言及しない。boid の使い方は core の
 組み込みスキルが担う (§8.2)。
 
+Pack と boid の間の契約 (両側の義務・版管理・進化規則) は
+`signal-ingest-detailed-design.md` §7 (Pack contract v1) が正である。
+
 ### 6.3 Manifest 案
 
 ```yaml
@@ -451,6 +455,10 @@ r1 の「上書き不可の core review protocol prompt」はこの機構強制�
 - single-flight: 前回起こした判断タスクが未終了なら次を起こさない
 - 発火先は workspace が定義する通常の task (メタプロジェクトの scan script / behavior)
 
+connector の定期実行も同じ trigger 機構に乗せる (source 1 件 = 導出 trigger)。source の
+宣言はメタプロジェクトの project.yaml (`signals.sources`) で行い、connector はその
+プロジェクトの sandbox で走る。詳細は `signal-ingest-detailed-design.md`。
+
 ### 8.4 判断タスクと篩
 
 判断タスクは通常 task である。メタプロジェクトの scan script が `boid signal list` で
@@ -582,16 +590,20 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 9. 実装は shadow-a (ingest 等価性)・shadow-b (知識配置) を Go 条件とする
 10. envelope schema v0 を机上検証で確定した (§5.2、2026-08-26。根拠は
     `signal-envelope-inventory.md`)
+11. CLI 最終形・inbox GC・connector 実行 (導出 trigger)・size limit・source 宣言場所は
+    詳細設計で決着した (`signal-ingest-detailed-design.md` §9、2026-08-26)
+12. Pack と boid の間の契約は `signal-ingest-detailed-design.md` §7 (Pack contract v1) を
+    正とする — 両側の義務、apiVersion による版管理、追加のみの進化規則、conformance
+    test の検査対象
+13. 公式 Pack の置き場は `boid-api-skills` repo (Pack repo へ発展させる)。boid repo に
+    Pack の中身は置かない。v0 の配布は host checkout の bind mount
+    (詳細設計 §10、2026-08-26)
 
 ### 検証・実装と並行して決めること
 
-- Signal 1 件の size limit と inbox の行上限 (field 構成の v0 は確定済み — §5.2)
 - boid 内部シグナル (action 列) の経路 — inbox へ統合するか、現行どおり workspace の
   scan script が `boid action list` を直読みし続けるか
   (初期実装は後者を推す。`signal-envelope-inventory.md` §6)
-- `boid signal` CLI の最終形 (引数、workspace scoping、ack の単位)
-- inbox の GC (ack 済み Signal の保持期間、既存 30 日 GC への載せ方)
-- Connector の実行詳細 (実行コンテキスト、schedule、cursor 永続の transaction 境界)
 - Resource resolver を Pack contract に含めるか (据え置き)
 - Pack の発見・配布・install/update/signing/version pin の具体方式
   (pin を instance の `uses:` で行うか install 時に固定するかを含む)
@@ -655,6 +667,7 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 | Q13 | crash 時に Signal を取りこぼさない (at-least-once) ことがテストで示されている | transaction 境界のテスト |
 | Q14 | `boid signal ack` は冪等で、二重 ack がエラーにならないテストがある | CLI テスト |
 | Q15 | trigger の debounce と single-flight にテストがある | trigger テスト |
+| Q26 | `boid task create` の idempotency key は (project, key) で一意であり、同一 key の再実行が新規作成せず既存 task の id を返すテストがある | task_create 実装とテスト |
 
 ### D. Pack runtime の guard (§6・§7)
 
@@ -667,6 +680,7 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 | Q20 | skill/connector に service instance の論理名が決め打ちされておらず、解決済み service binding 経由で参照している | Pack 実体と binding 受け渡しコード |
 | Q21 | Pack の skill は source 側の知識のみを扱い、boid コマンドへの言及を含まない | conformance test |
 | Q22 | Pack contract の conformance test が boid 側に存在し、公式 Pack 全てがそれを通る | テストと CI |
+| Q27 | connector job の builtin op は signal 系 (ingest / cursor) のみに制限され、他の op と宣言外 service への gateway 到達が拒否されるテストがある | policy とテスト |
 
 ### E. 全体 (どの段階でも採点)
 
