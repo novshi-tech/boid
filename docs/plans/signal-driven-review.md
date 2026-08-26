@@ -342,6 +342,15 @@ profile は「接続の型」、instance は「実際の接続 1 本」である
 `jira-cloud` profile の別 instance)。gateway には instance 名で生える
 (`$BOID_API_BASE/customer-jira`)。
 
+分担は「仕様は profile、値は instance」である。注入方法 (`injection: bearer`) は
+profile 側にあり、instance は slot へ SecretStore key を割り当てるだけで注入のやり方を
+知らない。endpoint も profile が要否 (`configurable`) を宣言し、instance は値を埋める。
+§6.3 の例が薄いのは最小例だからで、現実の profile はここが厚くなる — endpoint 固定の
+サービス (Slack) は `configurable: false` + 既定値を宣言する、OAuth2 が要るサービスは
+フローと token endpoint を宣言する (現行 gateway の OAuth2 対応を Pack 側へ移す)、
+複数 header の表現は未決 (§12)。既存の自由形式 registry ではこの機械的仕様を運用者が
+`auth:` として毎回書いており、それを Pack 作者へ移すことが profile の存在理由である。
+
 ### 7.2 service instance の定義例
 
 次は `config.yaml` の `services:`、すなわち **service instance** の定義例である。
@@ -374,6 +383,12 @@ services:
   Pack にも現れない
 - `internal-api` — profile を持たない従来の自由形式 instance。任意 HTTP API を扱う
   escape hatch としてそのまま維持し、既存 registry を置き換えない
+
+運用者が profile の中身 (integration.yaml) を読み込む必要はない。profile は自己記述的で
+あり、instance の設定に必要な項目 (必須 slot、endpoint の要否) は boid が profile から
+提示し、config 読み込み時に instance を profile と照合して検証する — 不足 slot・
+未知 slot・必須 endpoint の欠落は設定エラーにする。提示の UX (`boid integration show` /
+対話的な service 追加) は未決 (§12)。
 
 ### 7.3 論理名を skill に決め打ちしない
 
@@ -577,7 +592,8 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 - Pack の発見・配布・install/update/signing/version pin の具体方式
   (pin を instance の `uses:` で行うか install 時に固定するかを含む)
 - Pack と既存 kit 機構の関係 (統合するか並置するか)
-- service profile が複数 header 等をどう表現するか
+- service profile が複数 header・OAuth2 フロー等をどう表現するか
+- instance 設定の発見・検証の UX (profile からの必須項目提示、対話的な service 追加)
 - scan script の定型を組み込みスキル/テンプレとして配布するか
 - Web UI における inbox・connector 失敗の表示
 
