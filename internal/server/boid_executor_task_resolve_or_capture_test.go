@@ -163,7 +163,7 @@ func TestBoidBuiltinExecutor_ResolveOrCapture_OtherErrorStaysGeneric(t *testing.
 // parameter and no wire.go change required.
 func TestNewBoidBuiltinExecutor_WiresResolveOrCaptureFromWorkflow(t *testing.T) {
 	workflow := &api.TaskWorkflowService{} // *api.TaskWorkflowService implements resolveOrCaptureService
-	got := newBoidBuiltinExecutor(workflow, nil, nil, nil, nil, "", nil)
+	got := newBoidBuiltinExecutor(workflow, nil, nil, nil, nil, "", nil, nil)
 	exec, ok := got.(*boidBuiltinExecutor)
 	if !ok {
 		t.Fatalf("newBoidBuiltinExecutor returned %T, want *boidBuiltinExecutor", got)
@@ -179,7 +179,7 @@ func TestNewBoidBuiltinExecutor_WiresResolveOrCaptureFromWorkflow(t *testing.T) 
 // lets the 3 pre-existing WorkflowService test doubles in this package and
 // internal/api/web_test.go keep compiling with no new pass-through method.
 func TestNewBoidBuiltinExecutor_ResolveOrCaptureNilWhenWorkflowDoesNotImplementIt(t *testing.T) {
-	got := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil)
+	got := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil)
 	exec, ok := got.(*boidBuiltinExecutor)
 	if !ok {
 		t.Fatalf("newBoidBuiltinExecutor returned %T, want *boidBuiltinExecutor", got)

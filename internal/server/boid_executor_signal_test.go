@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
@@ -140,13 +141,11 @@ func TestBoidBuiltinExecutor_SignalList_PlainListForwardsFilter(t *testing.T) {
 	if len(fake.claimCalls) != 0 {
 		t.Fatalf("ClaimSignals should not be called for a plain list, calls=%+v", fake.claimCalls)
 	}
-	// orchestrator.Signal (signal_store.go, PR-1) has no json tags, so its
-	// default JSON rendering uses the capitalized Go field names verbatim —
-	// unlike api.CardView/api.ActionListResult (which have their own json
-	// tags in internal/api), there is no api-level wrapper type for Signal
-	// in scope for this PR to introduce one.
-	if !strings.Contains(resp.Stdout, `"ID": "sig-1"`) {
-		t.Errorf("stdout missing signal id: %s", resp.Stdout)
+	// signalsJSONResponse renders the apiwire.ListSignalsResponse envelope
+	// (M3, PR #1014 review) — same lower-case field names as PR-2's host
+	// `GET /api/signals`, wrapped in a top-level "signals" array.
+	if !strings.Contains(resp.Stdout, `"signals": [`) || !strings.Contains(resp.Stdout, `"id": "sig-1"`) {
+		t.Errorf("stdout missing envelope-wrapped signal id: %s", resp.Stdout)
 	}
 }
 
@@ -171,7 +170,7 @@ func TestBoidBuiltinExecutor_SignalList_ClaimCallsClaimSignals(t *testing.T) {
 	if len(fake.listCalls) != 0 {
 		t.Fatalf("ListSignals should NOT be called when --claim is set, calls=%+v", fake.listCalls)
 	}
-	if !strings.Contains(resp.Stdout, `"Attempts": 1`) {
+	if !strings.Contains(resp.Stdout, `"attempts": 1`) {
 		t.Errorf("stdout missing attempts: %s", resp.Stdout)
 	}
 }
@@ -223,8 +222,8 @@ func TestBoidBuiltinExecutor_SignalList_ReturnsEmptyArrayNotNull(t *testing.T) {
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
 	}
-	if strings.TrimSpace(resp.Stdout) != "[]" {
-		t.Fatalf("stdout = %q, want [] for a nil result", resp.Stdout)
+	if !strings.Contains(resp.Stdout, `"signals": []`) {
+		t.Fatalf("stdout = %q, want an empty (never null) signals array in the envelope", resp.Stdout)
 	}
 }
 
@@ -341,6 +340,42 @@ func TestBoidBuiltinExecutor_SignalIngest_RejectsMalformedLine(t *testing.T) {
 	}
 }
 
+// TestBoidBuiltinExecutor_SignalIngest_EmptyPayloadIsNoOpSuccess pins m2
+// (review of PR #1014, 2026-08-26): a connector that polls its source and
+// finds nothing new — the ordinary outcome of most polling cycles — must
+// not get a non-zero exit for calling `boid signal ingest` with an empty
+// (or blank-lines-only) body, matching orchestrator.IngestSignals' own
+// no-op-success contract for an empty rows slice.
+func TestBoidBuiltinExecutor_SignalIngest_EmptyPayloadIsNoOpSuccess(t *testing.T) {
+	fake := &fakeSignalStore{}
+	exec := &boidBuiltinExecutor{signals: fake}
+
+	cases := map[string][]byte{
+		"zero bytes":       []byte(""),
+		"blank lines only": []byte("\n\n   \n"),
+	}
+	for name, payload := range cases {
+		resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{}, &sandbox.BoidRequest{
+			Op:            sandbox.BoidOpSignalIngest,
+			WorkspaceID:   "ws-1",
+			Service:       "svc",
+			Connector:     "pack/conn",
+			IngestPayload: payload,
+		})
+		if resp.ExitCode != 0 {
+			t.Errorf("%s: exit code = %d, want 0 (stderr=%q)", name, resp.ExitCode, resp.Stderr)
+		}
+	}
+	if len(fake.ingestCalls) != len(cases) {
+		t.Fatalf("IngestSignals calls = %d, want %d (one per case, forwarded as a no-op)", len(fake.ingestCalls), len(cases))
+	}
+	for _, call := range fake.ingestCalls {
+		if len(call.rows) != 0 {
+			t.Errorf("rows = %+v, want empty", call.rows)
+		}
+	}
+}
+
 func TestBoidBuiltinExecutor_SignalIngest_RequiresScope(t *testing.T) {
 	fake := &fakeSignalStore{}
 	exec := &boidBuiltinExecutor{signals: fake}
@@ -406,44 +441,72 @@ func TestBoidBuiltinExecutor_SignalCursorGet_RequiresScope(t *testing.T) {
 }
 
 // --- wiring ---
+//
+// [M1, review of PR #1014, 2026-08-26] `signals` used to be populated via a
+// runtime-interface-check against `workflow`, the same pattern
+// resolveOrCapture/actionList use below it in this file — but no concrete
+// type ever passed as `workflow` (production wire.go's
+// *api.TaskWorkflowService included) implements api.SignalStore's methods,
+// so that check always silently resolved to nil in production: every signal
+// op replied "unavailable" for real callers while every unit test still
+// passed (the tests built their own double that DID implement the
+// interface, which is exactly the class of gap
+// TestNewBoidBuiltinExecutor_WiresActionListFromWorkflow's own doc comment
+// warns about — "テストが具象型を直接渡し本番の wire だけアサーションを通
+// る構図"). `signals` is now an explicit constructor parameter instead (see
+// wire.go's call site, which passes `taskRepo` directly), so the wiring
+// tests below exercise the ACTUAL parameter-passing, not a type assertion.
 
-// TestNewBoidBuiltinExecutor_SignalsNilWhenWorkflowDoesNotImplementIt
-// confirms a WorkflowService test double that does NOT implement
-// api.SignalStore's methods leaves the field nil rather than panicking — the
-// same convention TestNewBoidBuiltinExecutor_ActionListNilWhenWorkflowDoesNotImplementIt
-// pins for actionList. As of PR-3, no production wiring value implements
-// api.SignalStore yet (see boidBuiltinExecutor.signals's own doc comment) —
-// that wiring lands in a later PR, so there is deliberately no
-// "production wire actually satisfies it" counterpart test here yet.
-func TestNewBoidBuiltinExecutor_SignalsNilWhenWorkflowDoesNotImplementIt(t *testing.T) {
-	got := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil)
+// TestNewBoidBuiltinExecutor_SignalsNilWhenNotProvided confirms a nil
+// `signals` argument leaves the field nil rather than panicking — the "no
+// store provided" case (e.g. a caller that doesn't have PR-3's op set
+// wired up yet).
+func TestNewBoidBuiltinExecutor_SignalsNilWhenNotProvided(t *testing.T) {
+	got := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil)
 	exec, ok := got.(*boidBuiltinExecutor)
 	if !ok {
 		t.Fatalf("newBoidBuiltinExecutor returned %T, want *boidBuiltinExecutor", got)
 	}
 	if exec.signals != nil {
-		t.Fatal("signals should stay nil for a workflow double that doesn't implement api.SignalStore")
+		t.Fatal("signals should stay nil when the caller passes nil")
 	}
 }
 
-// signalWorkflowDouble implements both api.WorkflowService (via
-// *recordingWorkflow embedding) and api.SignalStore (via *fakeSignalStore
-// embedding), so newBoidBuiltinExecutor's runtime interface check picks up
-// the SAME value's SignalStore methods — mirroring how actionListService's
-// own wiring test exercises the "does get picked up" half of the check.
-type signalWorkflowDouble struct {
-	*recordingWorkflow
-	*fakeSignalStore
-}
+// TestNewBoidBuiltinExecutor_WiresSignalsFromRealTaskRepository is the
+// "production wire actually satisfies it" positive test M1's fix requires —
+// mirroring TestNewBoidBuiltinExecutor_WiresActionListFromWorkflow's own
+// intent, but for an explicit parameter rather than a type assertion: it
+// uses the REAL production types on both sides (*api.TaskWorkflowService as
+// workflow — signal ops never call into it, so its zero value is fine — and
+// a *orchestrator.TaskRepository backed by a real migrated test DB as
+// signals, exactly what wire.go passes as `taskRepo`), then drives an
+// actual signal_list call through ExecuteBoidBuiltin end to end to prove
+// the wiring is live, not just non-nil.
+func TestNewBoidBuiltinExecutor_WiresSignalsFromRealTaskRepository(t *testing.T) {
+	// newBoidExecutorTestDB (boid_executor_task_identity_test.go) rather than
+	// testutil.NewTestDB: this file is `package server`, and testutil imports
+	// internal/server (for testutil.NewTestServer), so importing testutil
+	// here would be an import cycle.
+	taskRepo := orchestrator.NewTaskRepository(newBoidExecutorTestDB(t))
+	workflow := &api.TaskWorkflowService{}
 
-func TestNewBoidBuiltinExecutor_WiresSignalsFromWorkflow(t *testing.T) {
-	workflow := &signalWorkflowDouble{recordingWorkflow: &recordingWorkflow{}, fakeSignalStore: &fakeSignalStore{}}
-	got := newBoidBuiltinExecutor(workflow, nil, nil, nil, nil, "", nil)
+	got := newBoidBuiltinExecutor(workflow, nil, nil, nil, nil, "", nil, taskRepo)
 	exec, ok := got.(*boidBuiltinExecutor)
 	if !ok {
 		t.Fatalf("newBoidBuiltinExecutor returned %T, want *boidBuiltinExecutor", got)
 	}
 	if exec.signals == nil {
-		t.Fatal("signals was not wired from a workflow value that implements api.SignalStore")
+		t.Fatal("signals was not wired from the explicit constructor parameter")
+	}
+
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{}, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpSignalList,
+		WorkspaceID: "ws-1",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("signal_list through the wired real store: exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, `"signals": []`) {
+		t.Fatalf("stdout = %q, want an empty signals envelope for a fresh DB", resp.Stdout)
 	}
 }

@@ -58,28 +58,40 @@ boid signal list [--claim] [--source <pack>/<connector>] [--state <state>] [--li
 - `--limit N`: cap the batch size (default is generous; set this explicitly
   in a scan loop so one run never tries to process an unbounded batch).
 
-Each returned row looks like:
+The reply is a JSON object with a `signals` array — the SAME envelope shape
+the host-side `GET /api/signals` API uses, so the two are interchangeable
+if you're ever comparing output from a sandboxed task against `boid signal
+list` run from outside a job:
 
 ```json
 {
-  "WorkspaceID": "ws-1",
-  "Service": "slack-api",
-  "Connector": "slack/mentions",
-  "ID": "1699999999.000100",
-  "OccurredAt": "2026-08-26T01:23:45Z",
-  "Identity": "slack:C0123:1699999999.000100",
-  "URL": "https://...",
-  "Author": "U0ABC123",
-  "Title": "someone mentioned you in #general",
-  "ReceivedAt": "2026-08-26T01:24:01Z",
-  "Attempts": 1,
-  "AckedAt": null
+  "signals": [
+    {
+      "id": "1699999999.000100",
+      "occurred_at": "2026-08-26T01:23:45Z",
+      "source": {
+        "pack": "slack",
+        "connector": "mentions",
+        "service": "slack-api"
+      },
+      "identity": "slack:C0123:1699999999.000100",
+      "url": "https://...",
+      "author": "U0ABC123",
+      "title": "someone mentioned you in #general",
+      "received_at": "2026-08-26T01:24:01Z",
+      "attempts": 1,
+      "acked_at": null
+    }
+  ]
 }
 ```
 
-`ID` is the connector's own stable event key — unique per (service,
+`id` is the connector's own stable event key — unique per (service,
 connector), **not** unique on its own across the whole workspace (see ack's
-matching rule below). `Identity` is an opaque string from the connector; if
+matching rule below). `source.pack`/`source.connector` are the two halves of
+what `--source` filters on together as `<pack>/<connector>` (e.g.
+`--source slack/mentions` means `source.pack == "slack" && source.connector
+== "mentions"`). `identity` is an opaque string from the connector; if
 you need to correlate a Signal with an existing boid task, that's your own
 judgment logic, not something this command resolves for you.
 
@@ -111,7 +123,7 @@ exactly the ids `list --claim` just handed you.
 
 - `list` (no `--claim`): read-only, safe to call repeatedly, does not affect
   what a later `--claim` call selects.
-- `list --claim`: increments `Attempts` on every Signal it returns. This is
+- `list --claim`: increments `attempts` on every Signal it returns. This is
   what makes a Signal eventually "dead" (see below) if nothing ever acks it —
   it is the inbox's only defense against a scan loop that keeps claiming the
   same stuck Signal forever without making progress.

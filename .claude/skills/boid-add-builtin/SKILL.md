@@ -99,13 +99,31 @@ full file-by-file rationale.
      any existing `TestBroker_Boid*_PolicyReject` for the pattern) or an
      `exempt` reason. **This is an AST-driven hard fail**: it parses every
      `BoidOp` constant straight out of `protocol.go`, so forgetting this step
-     fails the build with the exact missing op named — there is no way to
-     silently skip it, but there IS a way to not know it exists if you only
-     read the older parts of this skill, which is why this step used to be
-     missing from here entirely until 2026-08-26.
+     fails `go test` (a runtime assertion, not a compile error) with the
+     exact missing op named — there is no way to silently skip it, but there
+     IS a way to not know it exists if you only read the older parts of this
+     skill, which is why this step used to be missing from here entirely
+     until 2026-08-26.
    - Plus the usual op-specific tests: shim parsing (`boid_shim_*_test.go`),
      broker scoping (`broker_*_test.go`), and executor logic
      (`internal/server/boid_executor_*_test.go`).
+   - **If the op needs a new backing store/service dependency wired via a
+     runtime-interface-check against an existing constructor parameter**
+     (step 6's `resolveOrCaptureService`/`actionListService` pattern),
+     ALSO add a positive wiring test against the REAL production type on
+     both sides — not just a hand-built test double. PR #1014's review
+     (docs/plans/signal-ingest-detailed-design.md PR-3, M1, 2026-08-26)
+     found exactly this gap: `signals` was wired with this pattern, every
+     unit test passed because the test built its own double that
+     implemented the target interface, and production silently never
+     picked it up because *api.TaskWorkflowService (the real type passed at
+     the real wire.go call site) never implemented it — see
+     `TestNewBoidBuiltinExecutor_WiresActionListFromWorkflow` for the
+     established shape of this test, and `boidBuiltinExecutor.signals`'s
+     own doc comment in `internal/server/boid_executor.go` for the
+     post-mortem and the fix (an explicit constructor parameter instead of
+     a runtime check, once no real production type was ever going to
+     implement the interface).
 
 ---
 

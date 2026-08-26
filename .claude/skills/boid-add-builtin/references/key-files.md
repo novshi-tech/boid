@@ -28,7 +28,7 @@ checklist — the tables below now cover BOTH paths.
 | `internal/server/boid_executor.go` | `boidBuiltinExecutor.ExecuteBoidBuiltin`'s per-op `switch req.Op` — the actual business logic (calling into whatever store/service backs the op). This is a DIFFERENT file from `internal/sandbox/boid_executor.go` (see above) |
 | `internal/dispatcher/policy_translate_test.go` | `TestOpConstantsMirror` — add a `{orchestrator.OpBoid..., string(sandbox.BoidOp...)}` pair so the mirror added to `policy_ops.go` is actually checked for drift |
 | `internal/orchestrator/policy_test.go` | `TestDefaultBuiltinPolicies_HookBoidOps`'s `wantOps` — a plain `len(a) != len(b)` comparison (`opsEqual`), so forgetting to add the new op here fails immediately, not silently |
-| `internal/sandbox/broker_op_escape_test.go` | `opEscapeCoverage` — an AST-driven hard-fail manifest: it parses every `BoidOp` constant straight out of `protocol.go` and requires each one to have a named guard test (or an explicit `exempt` reason) registered here. **Forgetting this step fails the build with a clear message naming the missing op** — see the file's own top-of-file doc comment |
+| `internal/sandbox/broker_op_escape_test.go` | `opEscapeCoverage` — an AST-driven hard-fail manifest: it parses every `BoidOp` constant straight out of `protocol.go` and requires each one to have a named guard test (or an explicit `exempt` reason) registered here. **Forgetting this step fails `go test` with a clear message naming the missing op** (not a compile failure — a runtime test assertion) — see the file's own top-of-file doc comment |
 
 ## Reference files — adding an entirely new builtin command (rare; the `oci` example below)
 
@@ -115,23 +115,17 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy
 
 **Role branching: none** — all roles share the same policy (`_ Role`).
 
-**Do not hardcode a count here — it drifts fast** (this table went stale at
-"16 total" while the real list grew to 32, then 34, across several PRs before
-anyone caught it; that staleness is exactly why this file needed the 2026-08-26
-update). `boidPolicy()` in `internal/orchestrator/policy.go` is the single
-source of truth — read its `sortedOps(...)` call directly rather than trusting
-a table like this one to be current. As of the `signal_list`/`signal_ack`
-addition (docs/plans/signal-ingest-detailed-design.md PR-3, 2026-08-26) it
-allows 34 ops, spanning job/task/action/project/card/task-identity/
-action-list/signal groups — `job_done`, `job_list`, `job_show`, `job_log`,
-`action_send`, `agent_stop`, `task_create`, `task_get`, `task_update`,
-`task_import`, `task.reopen` (historically uses `.`, not `_`), `task_list`,
-`task_notify`, `task_answer`, `task_ask`, `task_delete`, `task_current`,
-`task_instructions`, `task_env`, `task_payload`, `task_attachments_list`,
-`task_attachments_get`, `task_update_payload_patch`, `project_behaviors`,
-`project_list`, `card_get`, `card_list`, `task_identity_link`,
-`task_identity_unlink`, `task_identity_resolve`, `task_resolve_or_capture`,
-`action_list`, `signal_list`, `signal_ack`.
+**Do not hardcode a count OR a full list here — both drift fast.** An earlier
+version of this file went stale at "16 total" while the real list grew past
+30 across several PRs before anyone caught it (docs/plans/
+signal-ingest-detailed-design.md §11) — and the FIRST attempt at this
+2026-08-26 fix repeated the exact same mistake one paragraph down (a
+hardcoded "34 ops" count plus a full enumeration), caught in review of PR
+#1014 (m4). `boidPolicy()` in `internal/orchestrator/policy.go` is the
+single source of truth — read its `sortedOps(...)` call directly; it spans
+job/task/action/project/card/task-identity/action-list/signal groups as of
+the `signal_list`/`signal_ack` addition (PR-3), but don't copy that sentence
+into a number either.
 
 **Not every declared `BoidOp` belongs in this list.** `signal_ingest` and
 `signal_cursor_get` are declared in `protocol.go`/`policy_ops.go` (so the

@@ -195,31 +195,46 @@ func TestBroker_BoidSignalAck_RequiresAtLeastOneID(t *testing.T) {
 
 // --- signal_ingest / signal_cursor_get: scoping + validation, exercised
 // against a PR-5-style reduced policy (signalIngestBoidPolicies above) since
-// no real job carries one yet in PR-3. ---
+// no real job carries one yet in PR-3.
+//
+// [M2, review of PR #1014, 2026-08-26] Service/Connector are now
+// broker-injected from TokenContext.Service/Connector, unconditionally
+// overwriting whatever the request carried — the SAME pattern WorkspaceID
+// already uses. The tests below set ctx.Service/ctx.Connector (not
+// request.Service/Connector) for the success paths, and specifically pin
+// that a request trying to claim a DIFFERENT service/connector than its
+// token's own gets silently corrected, not honored. ---
 
+// TestBroker_BoidSignalIngest_RequiresServiceAndConnector pins that a
+// request is rejected when the TOKEN (not the request) carries no
+// service/connector — this is the only way it can be missing now, since the
+// broker overwrites the request's own value unconditionally.
 func TestBroker_BoidSignalIngest_RequiresServiceAndConnector(t *testing.T) {
 	broker, exec := newBrokerForListTest(t)
 	ctx := sandbox.TokenContext{JobID: "j1", ProjectID: "proj-1", WorkspaceID: "ws-1", Role: testRoleHook}
 	token := broker.Register(map[string]sandbox.CommandDef{}, signalIngestBoidPolicies(), ctx)
 
-	cases := map[string]*sandbox.BoidRequest{
-		"missing service":   {Op: sandbox.BoidOpSignalIngest, Connector: "pack/conn", IngestPayload: []byte(`{}`)},
-		"missing connector": {Op: sandbox.BoidOpSignalIngest, Service: "svc", IngestPayload: []byte(`{}`)},
-	}
-	for name, req := range cases {
-		resp := broker.Handle(&sandbox.ExecRequest{Command: "boid", Cwd: "/tmp", Token: token, Boid: req})
-		if resp.ExitCode == 0 {
-			t.Errorf("%s: expected rejection", name)
-		}
+	// Even a request that itself carries a full service/connector is
+	// rejected, because the token backing it has none.
+	req := &sandbox.BoidRequest{Op: sandbox.BoidOpSignalIngest, Service: "svc", Connector: "pack/conn", IngestPayload: []byte(`{"id":"1","occurred_at":"2026-08-26T00:00:00Z","identity":"x"}`)}
+	resp := broker.Handle(&sandbox.ExecRequest{Command: "boid", Cwd: "/tmp", Token: token, Boid: req})
+	if resp.ExitCode == 0 {
+		t.Fatal("expected rejection: token carries no service/connector")
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("executor should not be reached, calls=%+v", exec.calls)
 	}
 }
 
-func TestBroker_BoidSignalIngest_InjectsOwnWorkspace(t *testing.T) {
+// TestBroker_BoidSignalIngest_OverwritesRequestServiceConnectorFromToken is
+// the core M2 security property: a request that tries to claim a DIFFERENT
+// service/connector than its own token's is silently corrected to the
+// token's value, not honored or rejected — the same "no argument can widen
+// scope" shape WorkspaceID already gets. Before this fix there was no
+// TokenContext.Service/Connector at all, so this scenario had no defense.
+func TestBroker_BoidSignalIngest_OverwritesRequestServiceConnectorFromToken(t *testing.T) {
 	broker, exec := newBrokerForListTest(t)
-	ctx := sandbox.TokenContext{JobID: "j1", ProjectID: "proj-1", WorkspaceID: "ws-1", Role: testRoleHook}
+	ctx := sandbox.TokenContext{JobID: "j1", ProjectID: "proj-1", WorkspaceID: "ws-1", Service: "own-svc", Connector: "own-pack/own-conn", Role: testRoleHook}
 	token := broker.Register(map[string]sandbox.CommandDef{}, signalIngestBoidPolicies(), ctx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
@@ -228,8 +243,8 @@ func TestBroker_BoidSignalIngest_InjectsOwnWorkspace(t *testing.T) {
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
 			Op:            sandbox.BoidOpSignalIngest,
-			Service:       "svc",
-			Connector:     "pack/conn",
+			Service:       "attacker-svc",
+			Connector:     "attacker-pack/attacker-conn",
 			WorkspaceID:   "ws-other",
 			IngestPayload: []byte(`{"id":"1","occurred_at":"2026-08-26T00:00:00Z","identity":"x"}`),
 		},
@@ -237,8 +252,12 @@ func TestBroker_BoidSignalIngest_InjectsOwnWorkspace(t *testing.T) {
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
 	}
-	if len(exec.calls) != 1 || exec.calls[0].WorkspaceID != "ws-1" {
-		t.Fatalf("broker should inject the caller's own workspace, calls=%+v", exec.calls)
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	got := exec.calls[0]
+	if got.Service != "own-svc" || got.Connector != "own-pack/own-conn" || got.WorkspaceID != "ws-1" {
+		t.Fatalf("broker should overwrite with the token's own service/connector/workspace, got %+v", got)
 	}
 }
 
@@ -248,7 +267,7 @@ func TestBroker_BoidSignalIngest_InjectsOwnWorkspace(t *testing.T) {
 // depth against a shim bypass.
 func TestBroker_BoidSignalIngest_RejectsOversizedPayload(t *testing.T) {
 	broker, exec := newBrokerForListTest(t)
-	ctx := sandbox.TokenContext{JobID: "j1", ProjectID: "proj-1", WorkspaceID: "ws-1", Role: testRoleHook}
+	ctx := sandbox.TokenContext{JobID: "j1", ProjectID: "proj-1", WorkspaceID: "ws-1", Service: "svc", Connector: "pack/conn", Role: testRoleHook}
 	token := broker.Register(map[string]sandbox.CommandDef{}, signalIngestBoidPolicies(), ctx)
 
 	oversized := make([]byte, sandbox.PayloadPatchMaxBytes+1)
@@ -262,8 +281,6 @@ func TestBroker_BoidSignalIngest_RejectsOversizedPayload(t *testing.T) {
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
 			Op:            sandbox.BoidOpSignalIngest,
-			Service:       "svc",
-			Connector:     "pack/conn",
 			IngestPayload: oversized,
 		},
 	})
@@ -284,19 +301,19 @@ func TestBroker_BoidSignalCursorGet_RequiresServiceAndConnector(t *testing.T) {
 		Command: "boid",
 		Cwd:     "/tmp",
 		Token:   token,
-		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpSignalCursorGet, Service: "svc"},
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpSignalCursorGet, Service: "svc", Connector: "pack/conn"},
 	})
 	if resp.ExitCode == 0 {
-		t.Fatal("expected rejection for missing connector")
+		t.Fatal("expected rejection: token carries no service/connector")
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("executor should not be reached, calls=%+v", exec.calls)
 	}
 }
 
-func TestBroker_BoidSignalCursorGet_InjectsOwnWorkspace(t *testing.T) {
+func TestBroker_BoidSignalCursorGet_OverwritesRequestServiceConnectorFromToken(t *testing.T) {
 	broker, exec := newBrokerForListTest(t)
-	ctx := sandbox.TokenContext{JobID: "j1", ProjectID: "proj-1", WorkspaceID: "ws-1", Role: testRoleHook}
+	ctx := sandbox.TokenContext{JobID: "j1", ProjectID: "proj-1", WorkspaceID: "ws-1", Service: "own-svc", Connector: "own-pack/own-conn", Role: testRoleHook}
 	token := broker.Register(map[string]sandbox.CommandDef{}, signalIngestBoidPolicies(), ctx)
 
 	resp := broker.Handle(&sandbox.ExecRequest{
@@ -305,16 +322,20 @@ func TestBroker_BoidSignalCursorGet_InjectsOwnWorkspace(t *testing.T) {
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
 			Op:          sandbox.BoidOpSignalCursorGet,
-			Service:     "svc",
-			Connector:   "pack/conn",
+			Service:     "attacker-svc",
+			Connector:   "attacker-pack/attacker-conn",
 			WorkspaceID: "ws-other",
 		},
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
 	}
-	if len(exec.calls) != 1 || exec.calls[0].WorkspaceID != "ws-1" {
-		t.Fatalf("broker should inject the caller's own workspace, calls=%+v", exec.calls)
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(exec.calls))
+	}
+	got := exec.calls[0]
+	if got.Service != "own-svc" || got.Connector != "own-pack/own-conn" || got.WorkspaceID != "ws-1" {
+		t.Fatalf("broker should overwrite with the token's own service/connector/workspace, got %+v", got)
 	}
 }
 
@@ -326,7 +347,7 @@ func TestBroker_BoidSignalCursorGet_InjectsOwnWorkspace(t *testing.T) {
 // path.
 func TestBroker_BoidSignalIngest_RoundTripsPayload(t *testing.T) {
 	broker, exec := newBrokerForListTest(t)
-	ctx := sandbox.TokenContext{JobID: "j1", ProjectID: "proj-1", WorkspaceID: "ws-1", Role: testRoleHook}
+	ctx := sandbox.TokenContext{JobID: "j1", ProjectID: "proj-1", WorkspaceID: "ws-1", Service: "svc", Connector: "pack/conn", Role: testRoleHook}
 	token := broker.Register(map[string]sandbox.CommandDef{}, signalIngestBoidPolicies(), ctx)
 
 	payload := []byte(`{"id":"1","occurred_at":"2026-08-26T00:00:00Z","identity":"x"}` + "\n")
@@ -336,8 +357,6 @@ func TestBroker_BoidSignalIngest_RoundTripsPayload(t *testing.T) {
 		Token:   token,
 		Boid: &sandbox.BoidRequest{
 			Op:            sandbox.BoidOpSignalIngest,
-			Service:       "svc",
-			Connector:     "pack/conn",
 			IngestPayload: payload,
 		},
 	})

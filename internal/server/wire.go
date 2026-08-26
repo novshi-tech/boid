@@ -1696,7 +1696,15 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// jobs whose transcript was written under the pre-migration tmpfs
 		// root by a daemon build that predates this PR (codex review round
 		// 1 — see transcriptLogReader's own doc comment).
-		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc)
+		// taskRepo (in scope above) already implements api.SignalStore
+		// (PR-1's var _ assertion, internal/api/store.go) — passed
+		// explicitly rather than relying on a runtime interface check
+		// against workflow (docs/plans/signal-ingest-detailed-design.md
+		// §3.2, PR-3; M1 of PR #1014's review: workflow's concrete type
+		// *api.TaskWorkflowService does not implement api.SignalStore, so
+		// the earlier runtime-check version of this wiring silently left
+		// every signal op unavailable in production).
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc, taskRepo)
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{
