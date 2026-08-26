@@ -224,7 +224,17 @@ signals:
 
 - スケジュール・1m 解像度・**single-flight** — trigger_runs がそのまま担う
 - **失敗の可視化** — connector の非ゼロ exit は既存 failStreak (3 回毎に通知、
-  `trigger_loop.go:732-748`) に乗る。§8.1 の「上限超過は可視化」の実装がこれ
+  `trigger_loop.go:732-748`) に乗る。§8.1 の「上限超過は可視化」の実装がこれ。
+  **StartExec 自体の dispatch 失敗 (pack 未導入・config schema 違反・pack version 曖昧
+  など、§6.2 決着済み) も同じ failStreak に計上される**
+  (`TriggerDispatchFailureExitCode`、PR-5 実装時に追加 — 当初 `fireTrigger` の
+  fail-open 経路は dispatch 失敗を `slog.Warn` のみで `trigger_runs` 行を削除して
+  次周期リトライするだけだったため、`TriggerLoop.trackFailStreak` (`Completed` だけを
+  見る) には一切現れず、通知が飛ばないまま無期限リトライし続ける抜けがあった。
+  `SweepTriggers` が dispatch 失敗時に `trigger_runs` 行の削除 (= fail-open の即時
+  リトライ性は維持) と**別に**、`TriggerCompletionResult{ExitCode:
+  TriggerDispatchFailureExitCode}` を `Completed` へ計上することで、既存の
+  `trackFailStreak` 機構に無改造で乗せた)
 - 手動実行 — `boid trigger run <project> signal:slack/mentions` がタダで手に入る
 - 履歴と GC — trigger_runs の既存 30 日 GC
 
@@ -241,7 +251,12 @@ pass-through field):
   `Visibility.AdditionalBindings` の既存経路を使う
 
 connector が呼ぶ service は workspace の enabled services に入っている必要がある
-(検証は load 時に警告)。gateway 側の 403/502 は既存の 2 層検査のまま。
+(検証は警告のみ、エラーにしない — 実装は `ProjectStore.GetWithWorkspace` から。
+**「load 時」は project.yaml parse 時ではなく hydrate 時を指す** — trigger sweep が
+1 分毎に project を hydrate するたび呼ばれるため、宣言漏れが解消されるまで警告は
+毎分ログに出続ける。daemon 全体の floor は考慮しない、workspace 自身の `services:`
+のみとの照合。詳細は `docs/ja/reference/project-yaml.md` の該当節)。gateway 側の
+403/502 は既存の 2 層検査のまま。
 
 connector job の権限は通常の exec job より**絞る** (nose レビュー指摘の採用):
 
@@ -315,8 +330,27 @@ daemon 起動時 (`wire.go` の gateway 配線点) に新 package `internal/inte
    **起動エラー** — services の eager validation と同じ倒し方。§7.2 の照合検証の実装
 4. connector の `config` は manifest の `configSchema` で検証する。v0 は JSON Schema の
    極小 subset (type/object/properties/required、値型は string/number/boolean) を自前実装
-   (外部ライブラリ最小の規約)。検証失敗は**該当 connector の導出 trigger を作らない +
-   起動ログにエラー** (採点表 Q19)
+   (外部ライブラリ最小の規約)
+
+   **検証タイミングの決着 (PR-5 実装時の判断、当初案からの変更)**: 上記 1〜3 (Pack
+   manifest 自体の検証) は起動時に Pack registry 全体を一括で見るので daemon 起動エラーに
+   できるが、`config` (project.yaml `signals.sources[].config`) は **project 単位の宣言**
+   であり、daemon 起動時に全 project の project.yaml を横断的にスキャンする既存機構が
+   無い。「該当 connector の導出 trigger を作らない」という当初案は、hydrate
+   (`internal/orchestrator`) が Pack registry (`internal/integrationpack`) を知らない
+   という層分離 (`internal/orchestrator` は `internal/integrationpack`/`internal/config`
+   を import しない) と両立しない — Pack registry が実際に手に入るのは
+   `sessionDispatcherAdapter.StartExec` (`internal/server/wire.go`) の時点のみ。
+
+   よって v0 の実装は: 導出 trigger は (config の妥当性に関係なく) 常に生成される。
+   config schema 検証は **StartExec 時点**で行い、失敗すれば `StartExec` がエラーを返す
+   (`resolveConnectorExec`、`internal/server/connector_exec.go`)。この失敗は
+   `fireTrigger` の既存 fail-open 経路 (次周期リトライ) に乗り、かつ
+   `TriggerLoop.trackFailStreak` へも計上される
+   (`TriggerDispatchFailureExitCode`、`internal/api/trigger_loop.go`) — 3 回連続で
+   通知が飛ぶ、既存の failStreak 通知と同じ扱い。「起動ログにエラー」の代わりに
+   「dispatch 失敗として毎周期ログ + failStreak 通知」になる。採点表 Q19 はこの形で
+   引き続き満たされる (検証が行われ、失敗が可視化される、という命題自体は変わらない)。
 
 - profile の credential slot が複数ある Pack と、`<ver>` ディレクトリ名が manifest の
   `version` と一致しない Pack は、v0 では**起動エラー** (未対応・不整合を黙って握らない。
@@ -452,3 +486,72 @@ workspace 内部の安定キー (例: 親 card id + 子の世代キー)、link �
 - `boid-add-builtin` スキルの checklist は現物と 5 点ズレている (op 数 16→32、
   escape-manifest テストの欠落ほか) — PR-3 のついでにスキルを現物へ追随させる
 - `wiring-seams.md` の seam #6 (組み込みスキルの配布経路) も stale — 同上
+
+---
+
+## 12. PR-8 (公式 Pack 実装) 着手前に必ず解決すべき既知の問題
+
+PR-5 (導出 trigger + connector 実行、§5) の独立レビュー (2026-08-26、Opus) で発見。
+PR-5 自体のブロッカーではない (§5 は Pack が実在しなくても policy/wiring レベルで検証
+できている) が、**PR-8 で実際に Pack を動かす前には必ず解決すること** — 現状のまま
+PR-8 を進めると、以下のいずれかで初回デプロイが機能しない・原因不明の失敗になる。
+
+### 12.1 (B1) `LoadPacks` がドットディレクトリを Pack として誤解釈し起動拒否になる
+
+`internal/integrationpack/pack.go` の `LoadPacks` は `<integrations.dir>` 直下の
+エントリを無条件に Pack ディレクトリとして扱う。§10 が指定する v0 配布形態
+(`integrations.dir` を Pack repo の host checkout へ compose volume で bind mount) では、
+その checkout のルートに `.git/` が存在する — `LoadPacks` はこれも「Pack ディレクトリ」
+として `<dir>/.git/<version>/integration.yaml` を探しに行き、見つからず hard error で
+daemon 起動を拒否する (再現確認済み)。**PR-8 の初回デプロイが起動不能になる**、実運用に
+直結する問題。
+
+対応方針 (未実装、PR-8 着手前に選ぶ): (a) `.` から始まるエントリを `LoadPacks` が
+明示的にスキップする、(b) `integrations.dir` 自体を Pack repo のサブディレクトリ
+(例: `<repo>/packs/`) に向ける運用にして `.git` を配下に含めない、のどちらか。(a) の方が
+daemon 側だけで閉じる分シンプル。
+
+### 12.2 (M1) Pack bind mount の host-visible path 境界が未検証
+
+`sessionDispatcherAdapter` は `pack.Dir` (`integrations.dir` 配下の絶対パス、daemon
+プロセス自身がファイル読み取りに使う path) をそのまま `orchestrator.BindMount.Source`
+として渡し、container backend の DooD (docker-out-of-docker) bind mount source に使う。
+これは daemon プロセスが動いているコンテナの中の path であり、実際に docker socket 越しに
+job container を起こす **docker daemon (ホスト)** から見た path とは限らない —
+`hostVisibleRuntimesDirFor` (`internal/server/wire.go`) が `runtimes/` ディレクトリに
+対して既にやっている「host から見える path への変換」と同じ罠が Pack bind にも存在する。
+compose.yml が `integrations.dir` を daemon コンテナとホストの両方に**同一 path**で
+bind mount する運用であれば問題は起きないが、それを強制する仕組みは無い。ズレた構成では
+bind が空になり、connector 起動時に `BOID_CONNECTOR_EXEC` が指す path が ENOENT になる
+(原因の特定が難しい失敗モード)。
+
+対応方針 (未実装): `hostVisibleRuntimesDirFor` と同様の host-visible path 解決を
+Pack bind にも適用するか、compose.yml のドキュメント/テンプレートで
+「daemon コンテナとホストで `integrations.dir` は同一 path でなければならない」という
+制約を明記し、起動時に検証する。
+
+### 12.3 (M2) HostCommands と同型の権限漏れが他フィールドにも残っている可能性
+
+PR-5 実装時、`SessionJobInput.HostCommands` が connector job にもそのまま漏れる欠陥が
+見つかり修正済み (§5.2 実装、`BuildSessionJobSpec` の `ConnectorPolicy` 分岐)。同型の
+懸念が他にも残っている:
+
+- **`DockerEnabled`**: メタプロジェクトが `capabilities.docker` を宣言していると、
+  connector job にも per-sandbox docker proxy が生える (`Visibility.DockerEnabled`、
+  `BuiltinPolicies` とは独立した機構)。connector が docker socket に触れる必要は
+  無いはずで、意図しない権限拡大の可能性がある
+- **`AdditionalBindings`**: project/kit が宣言する host bind 一式が connector job にも
+  そのまま見える (PR-5 は Pack ディレクトリの bind を**追加**しただけで、既存の
+  binding を落としていない)。意図的ならそう doc化すべきで、そうでなければ
+  `HostCommands` と同じ扱いで空にする必要がある
+- **egress allowlist**: §5.3 の「直接の外部到達は egress 制約で元々できない」という
+  記述は不正確 — 実装は workspace 全体の `allowed_domains` proxy をそのまま使っており、
+  gateway (`$BOID_API_BASE`) を経由しない到達 (workspace の allowlist に載っている
+  他ドメインへの直接 HTTP) は塞がれていない。connector 専用の allowlist 縮小は
+  実装されていない
+
+対応方針 (未実装): PR-8 着手前に上記 3 点それぞれについて「意図的に許可する
+(doc化する)」か「connector job 用に縮小する (実装する)」かを個別に決定すること。
+`HostCommands` の修正 (`BuildSessionJobSpec` の `ConnectorPolicy` 分岐、
+`internal/dispatcher/session_job.go`) と同じパターン (単一の enforcement point) を
+踏襲すれば実装コストは大きくないはず。

@@ -163,6 +163,30 @@ const TriggerRunSelfHealGrace = 3 * time.Minute
 // unambiguously in logs/notifications.
 const TriggerRunSelfHealExitCode = -1
 
+// TriggerDispatchFailureExitCode is the sentinel SweepTriggers reports in
+// TriggerSweepResult.Completed for a StartExec (dispatch) failure — distinct
+// from TriggerRunSelfHealExitCode so the two failure classes stay
+// distinguishable in logs/notifications (self-heal = a job WAS dispatched
+// but its outcome was never observed; this = the job was never dispatched
+// at all). docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5 review
+// finding, B2): before this existed, a dispatch failure (pack not
+// installed, connector config schema violation, ambiguous pack version —
+// new failure classes a connector trigger's StartExec can hit that an
+// ordinary schedule trigger's `sh -c` almost never does) was ONLY
+// slog.Warn'd (fireTrigger's fail-open retry path) and never reached
+// TriggerLoop.trackFailStreak, which reads exclusively from Completed — an
+// operator would see nothing but silent, indefinite per-tick retries in the
+// daemon's own log.
+//
+// Deliberately does NOT change fireTrigger's own DeleteTriggerRun-on-failure
+// behavior (SweepTriggers' own comment at the call site explains why: an
+// `every`-gapped CompleteTriggerRun would delay the "fail-open, retry next
+// tick" behavior every trigger has always had, all the way out to a full
+// `every` — this sentinel is reported to trackFailStreak ALONGSIDE the
+// existing delete, purely for notification bookkeeping, not as a
+// trigger_runs row of its own).
+const TriggerDispatchFailureExitCode = -2
+
 // selfHealStaleTriggerRun force-closes run if it has been in flight, unable
 // to resolve to a real job's terminal state, for at least
 // TriggerRunSelfHealGrace (N-1, Opus review). Returns true when it closed
@@ -557,6 +581,11 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 				// succeeded) and retries automatically. No separate
 				// retry/backoff bookkeeping needed.
 				slog.Warn("trigger sweep: dispatch failed (fail-open, will retry next tick)", "project_id", p.ID, "trigger", trig.Name, "error", ferr)
+				// B2 (PR-5 review finding): report the failure to
+				// trackFailStreak too, alongside (not instead of) the
+				// fail-open retry above — see TriggerDispatchFailureExitCode's
+				// own doc comment for why this doesn't touch trigger_runs.
+				result.Completed = append(result.Completed, TriggerCompletionResult{TriggerKey: key, ExitCode: TriggerDispatchFailureExitCode})
 				continue
 			}
 			result.Fired = append(result.Fired, TriggerFireResult{TriggerKey: key, JobID: jobID})

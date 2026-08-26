@@ -88,11 +88,19 @@ func deriveSignalTriggers(sources []SignalSource) ([]Trigger, error) {
 }
 
 // warnSignalConnectorServicesNotEnabled logs a warning (never an error —
-// docs/plans/signal-ingest-detailed-design.md §5.2: "検証は load 時に警告")
-// for each derived (Connector != nil) trigger whose declared service is not
-// in the workspace's OWN enabled-services list. Called from
-// ProjectStore.GetWithWorkspace, the only point in this layer that has both
-// a hydrated Triggers list AND the linked WorkspaceMeta at once.
+// docs/plans/signal-ingest-detailed-design.md §5.2: "検証は警告のみ、エラーに
+// しない") for each derived (Connector != nil) trigger whose declared
+// service is not in the workspace's OWN enabled-services list. Called from
+// ProjectStore.GetWithWorkspace — NOT project.yaml parse/load time (m1,
+// PR-5 independent review finding): GetWithWorkspace hydrates on every
+// call, and the trigger sweep loop calls it roughly once per project per
+// sweep tick (1 minute, TriggerSweepResolution) via
+// hydrateMetaForTriggers, so a persistent misconfiguration logs THIS
+// warning roughly once a minute for as long as it remains unresolved, not
+// just once at `boid project fetch` time. Accepted as-is (no throttling
+// added) rather than introducing a new dedup-state mechanism to solve a
+// cosmetic log-volume concern — see docs/ja/reference/project-yaml.md's
+// "service の有効化チェック" section for the documented, accurate frequency.
 //
 // Deliberately checks against workspaceServices alone, NOT the
 // floor-∪-workspace effective set config.APIGatewayServicesFloor

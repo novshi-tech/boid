@@ -264,11 +264,6 @@ func TestBuildExecJobSpec_PropagatesBaseBranchError(t *testing.T) {
 	}
 }
 
-// TestBuildSessionJobSpec_EmptyProjectWorkDirYieldsNoClone documents the
-// intentional exception: an empty ProjectWorkDir (no project visible at
-// all) yields Clone=nil with no error, so BuildSandboxSpec's own "no
-// project visible" branch takes over cleanly. This is different from
-// "ProjectWorkDir set but HEAD unresolvable", which is fail-loud above.
 // --- signal-derived connector trigger pass-through fields (docs/plans/
 // signal-ingest-detailed-design.md §5.2, PR-5) ---
 
@@ -414,6 +409,11 @@ func TestBuildExecJobSpec_ConnectorFields_Passthrough(t *testing.T) {
 	}
 }
 
+// TestBuildSessionJobSpec_EmptyProjectWorkDirYieldsNoClone documents the
+// intentional exception: an empty ProjectWorkDir (no project visible at
+// all) yields Clone=nil with no error, so BuildSandboxSpec's own "no
+// project visible" branch takes over cleanly. This is different from
+// "ProjectWorkDir set but HEAD unresolvable", which is fail-loud above.
 func TestBuildSessionJobSpec_EmptyProjectWorkDirYieldsNoClone(t *testing.T) {
 	// resolveSessionBaseBranchFn is not consulted when ProjectWorkDir=="",
 	// so no stub is needed.

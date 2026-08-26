@@ -476,6 +476,92 @@ func TestSweepTriggers_DispatchFailure_FailsOpenAndRetriesImmediately(t *testing
 	}
 }
 
+// TestSweepTriggers_DispatchFailure_RecordedInCompletedForFailStreak pins B2
+// (PR-5 review finding, docs/plans/signal-ingest-detailed-design.md §5.2): a
+// dispatch (StartExec) failure — the failure class a signal-derived
+// connector trigger newly introduces at StartExec time (pack not
+// installed, config schema violation, ambiguous pack version) that an
+// ordinary `sh -c` schedule trigger almost never hits — must be visible to
+// TriggerLoop.trackFailStreak (which reads exclusively from
+// TriggerSweepResult.Completed), not just slog.Warn'd. This extends
+// TestSweepTriggers_DispatchFailure_FailsOpenAndRetriesImmediately's
+// coverage with the Completed-list assertion that test didn't make; every
+// other assertion there (Fired/Skipped empty, row deleted, immediate retry)
+// must still hold — this fix reports the failure to trackFailStreak
+// ALONGSIDE the existing fail-open delete, not instead of it.
+func TestSweepTriggers_DispatchFailure_RecordedInCompletedForFailStreak(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "intake", Every: "10m", Run: "true"}}},
+	})
+	exec.failNext = 1
+	now := time.Now()
+
+	result, err := svc.SweepTriggers(context.Background(), now)
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v", err)
+	}
+	if len(result.Completed) != 1 {
+		t.Fatalf("Completed = %+v, want exactly 1 entry (the dispatch failure)", result.Completed)
+	}
+	got := result.Completed[0]
+	wantKey := TriggerKey{ProjectID: "proj-1", TriggerName: "intake"}
+	if got.TriggerKey != wantKey || got.ExitCode != TriggerDispatchFailureExitCode {
+		t.Errorf("Completed[0] = %+v, want {%+v, %d}", got, wantKey, TriggerDispatchFailureExitCode)
+	}
+
+	// The existing fail-open contract is untouched: still no Fired/Skipped,
+	// still an immediate retry, still no in-flight trigger_runs row left
+	// behind — the new Completed entry is additive bookkeeping only.
+	if len(result.Fired) != 0 || len(result.Skipped) != 0 {
+		t.Errorf("Fired/Skipped = %+v/%+v, want both empty", result.Fired, result.Skipped)
+	}
+	runsAfterFailure, err := svc.Triggers.ListInFlightTriggerRuns()
+	if err != nil {
+		t.Fatalf("ListInFlightTriggerRuns: %v", err)
+	}
+	if len(runsAfterFailure) != 0 {
+		t.Fatalf("in-flight trigger_runs after dispatch failure = %+v, want empty", runsAfterFailure)
+	}
+	result2, err := svc.SweepTriggers(context.Background(), now)
+	if err != nil {
+		t.Fatalf("retry sweep: %v", err)
+	}
+	if len(result2.Fired) != 1 {
+		t.Fatalf("Fired on immediate retry = %+v, want exactly 1", result2.Fired)
+	}
+	if len(exec.calls) != 2 {
+		t.Errorf("StartExec calls = %d, want 2", len(exec.calls))
+	}
+}
+
+// TestTriggerLoop_DispatchFailure_NotifiesAfterConsecutiveFailures is the
+// full TriggerLoop.runOnce-level closure of B2: repeated dispatch failures
+// across sweep ticks (fakeTriggerLoopStore scripted to return a dispatch
+// failure's Completed entry every tick, mirroring what SweepTriggers now
+// produces) must trigger the SAME consecutive-failure notification an
+// ordinary non-zero-exit-code job would, after TriggerStuckFailStreakThreshold
+// consecutive occurrences.
+func TestTriggerLoop_DispatchFailure_NotifiesAfterConsecutiveFailures(t *testing.T) {
+	key := TriggerKey{ProjectID: "proj-1", TriggerName: "signal:slack/mentions"}
+	dispatchFailure := TriggerSweepResult{
+		Completed: []TriggerCompletionResult{{TriggerKey: key, ExitCode: TriggerDispatchFailureExitCode}},
+	}
+	results := make([]TriggerSweepResult, TriggerStuckFailStreakThreshold)
+	for i := range results {
+		results[i] = dispatchFailure
+	}
+	store := &fakeTriggerLoopStore{results: results}
+	notifier := &fakeTriggerNotifier{}
+	loop := &TriggerLoop{Store: store, Notifier: notifier}
+
+	for i := 0; i < TriggerStuckFailStreakThreshold; i++ {
+		loop.runOnce(context.Background())
+	}
+	if len(notifier.messages) != 1 {
+		t.Fatalf("messages after %d consecutive dispatch failures = %v, want exactly 1 (operators must not be left with silent, indefinite per-tick retries)", TriggerStuckFailStreakThreshold, notifier.messages)
+	}
+}
+
 // TestSweepTriggers_JobRowMissing_SelfHealsAfterGracePeriod pins N-1 (Opus
 // review): a trigger_runs row whose job_id can never be resolved (here:
 // simulating the 30-day taskless-job GC having removed the jobs row

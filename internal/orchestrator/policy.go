@@ -87,13 +87,6 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy {
 // set" by adding them here; see sandbox.BoidOpSignalIngest's own doc comment
 // for the same note from the protocol side.
 func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
-	cwds := []string{"/tmp"}
-	if pctx.ProjectDir != "" {
-		cwds = append(cwds, pctx.ProjectDir)
-	}
-	if pctx.HomeDir != "" {
-		cwds = append(cwds, pctx.HomeDir)
-	}
 	return BuiltinPolicy{
 		AllowedOps: sortedOps(
 			OpBoidJobDone,
@@ -131,8 +124,22 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidSignalList,
 			OpBoidSignalAck,
 		),
-		AllowedCwdRoots: cwds,
+		AllowedCwdRoots: boidCwdRoots(pctx),
 	}
+}
+
+// boidCwdRoots is the "boid" builtin's AllowedCwdRoots — shared by
+// boidPolicy and connectorPolicy (both grant the SAME cwd surface; only the
+// op set differs between the general and connector-scoped policies).
+func boidCwdRoots(pctx PolicyContext) []string {
+	cwds := []string{"/tmp"}
+	if pctx.ProjectDir != "" {
+		cwds = append(cwds, pctx.ProjectDir)
+	}
+	if pctx.HomeDir != "" {
+		cwds = append(cwds, pctx.HomeDir)
+	}
+	return cwds
 }
 
 // fetchPolicy returns the policy for the fetch builtin (HTTP GET only).
@@ -169,16 +176,9 @@ func ConnectorBuiltinPolicies(pctx PolicyContext) map[string]BuiltinPolicy {
 // connectorPolicy is ConnectorBuiltinPolicies' "boid" entry — see that
 // function's doc comment for the full rationale.
 func connectorPolicy(pctx PolicyContext) BuiltinPolicy {
-	cwds := []string{"/tmp"}
-	if pctx.ProjectDir != "" {
-		cwds = append(cwds, pctx.ProjectDir)
-	}
-	if pctx.HomeDir != "" {
-		cwds = append(cwds, pctx.HomeDir)
-	}
 	return BuiltinPolicy{
 		AllowedOps:      sortedOps(OpBoidSignalIngest, OpBoidSignalCursorGet),
-		AllowedCwdRoots: cwds,
+		AllowedCwdRoots: boidCwdRoots(pctx),
 	}
 }
 
