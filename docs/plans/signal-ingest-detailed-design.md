@@ -1,0 +1,338 @@
+# Signal ingest v0 — 詳細設計
+
+2026-08-26 起案。`docs/plans/signal-driven-review.md` (r3) の移行順 step 2 (core ingest)・
+step 6 (trigger source) と、connector 実行に必要な最小の Pack runtime の実装設計。
+envelope は `signal-envelope-inventory.md` で確定した v0 を前提とする。
+
+方針: **新しい機構をほぼ作らない。** inbox の table 2 枚と CLI/op を足し、実行・スケジュール・
+単発防止・失敗通知・GC はすべて既存機構 (trigger loop / trigger_runs / failStreak /
+TaskGCStore / API gateway / SecretStore) に乗せる。
+
+---
+
+## 1. 全体配線
+
+```text
+project.yaml (メタプロジェクト)
+  signals.sources[] ──(hydrate)──▶ 合成 trigger "signal:<pack>/<connector>"
+  triggers[] (on: signals) ─────▶ 判断側 trigger
+                │
+                ▼ (既存 TriggerLoop が 1m 毎に評価)
+   ┌─ 合成 trigger 発火 ──▶ exec job (project sandbox 内で connector 実行)
+   │      connector: gateway で外部 fetch → `boid signal ingest` (JSONL)
+   │                                │
+   │                                ▼
+   │                     signals / signal_cursors (SQLite、1 tx)
+   │                                │
+   └─ on: signals trigger ──▶ 未 ack Signal があり every 経過なら発火
+                                    │
+                                    ▼
+                        scan script → `boid signal list --claim` → 判断 → `boid signal ack`
+```
+
+- **connector の宣言場所はメタプロジェクトの `.boid/project.yaml`** とする (r3 doc からの
+  精密化)。理由: connector job には sandbox の宿主 project が要る。workspace には project が
+  無い場合があり、metaproject は現行 khi の trigger job が adapter を回している場所そのもの。
+  inbox 自体は workspace 単位 (project → `project_workspaces` で解決)。
+- boid 内部シグナル (action 列) は v0 では inbox を通らない。scan script が
+  `boid action list` を直読みする現行のまま (inventory §6 の推し通り)。
+
+---
+
+## 2. DB (migration 0046)
+
+前提: 現在の最新 migration は `0045_card_sti_migration.sql`
+(`internal/db/migrate/migrate.go:476-478`)。実装時点の次番号を使う。
+
+```sql
+-- 0046_add_signal_inbox.sql
+CREATE TABLE IF NOT EXISTS signals (
+  workspace_id TEXT NOT NULL,           -- workspaces.slug (FK は張らない: project_workspaces の前例)
+  service      TEXT NOT NULL,           -- service instance 名
+  connector    TEXT NOT NULL,           -- "<pack>/<connector>"
+  id           TEXT NOT NULL,           -- envelope id (connector が生成する安定 event key)
+  occurred_at  TEXT NOT NULL,           -- RFC3339 (tz-aware)
+  identity     TEXT NOT NULL,
+  url          TEXT NOT NULL DEFAULT '',
+  author       TEXT NOT NULL DEFAULT '',
+  title        TEXT NOT NULL DEFAULT '',
+  received_at  TEXT NOT NULL,           -- daemon 時計
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  acked_at     TEXT,
+  PRIMARY KEY (workspace_id, service, connector, id)
+);
+CREATE INDEX IF NOT EXISTS idx_signals_pending
+  ON signals(workspace_id, occurred_at) WHERE acked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS signal_cursors (
+  workspace_id TEXT NOT NULL,
+  service      TEXT NOT NULL,
+  connector    TEXT NOT NULL,
+  cursor       TEXT NOT NULL DEFAULT '',
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, service, connector)
+);
+```
+
+- **dedup は PK そのもの**: `INSERT OR IGNORE` で同一 (workspace, service, connector, id) の
+  再投入は no-op (採点表 Q10)
+- サイズは 1 行を JSON エンコードした値に既存の `orchestrator.ValidateContentSize`
+  (64KiB、`internal/orchestrator/content_size.go:76`) を適用 (未決だった size limit の決着)
+- 登録手順は定型どおり: `allMigrations()` へ `tableExists` skip 付きで追記 →
+  `TestSchemaGolden` を `-update-golden` で再生成 → `TestMigrationFilesAllWired`
+
+### store 層 (既存パターン踏襲)
+
+`internal/orchestrator/signal_store.go` に `db.DBTX` を取る package 関数:
+
+| 関数 | 契約 |
+|---|---|
+| `IngestSignals(dbtx, ws, service, connector, rows)` | **1 tx**: `INSERT OR IGNORE` → cursor を `max(rows.occurred_at)` へ **単調にのみ** 前進 (現在値より小さければ据え置き)。挿入とカーソル前進が同一 tx = crash しても取りこぼさない (Q13) |
+| `GetSignalCursor(dbtx, ws, service, connector)` | 無ければ空文字 (= 最初から) |
+| `ListSignals(dbtx, filter)` | filter: ws (必須) / service / connector / state (pending・dead・acked・all) / limit。pending は `acked_at IS NULL AND attempts < max`、dead は `acked_at IS NULL AND attempts >= max`。occurred_at 昇順 |
+| `ClaimSignals(dbtx, ws, limit, maxAttempts)` | **1 tx**: pending を昇順に limit 件 select → `attempts = attempts + 1` → 返す。dead は返さない (無限再配送の防止、khi の MAX_ATTEMPTS 相当。v0 は定数 5) |
+| `AckSignals(dbtx, ws, ids)` | `acked_at = now WHERE acked_at IS NULL`。**既 ack は no-op (冪等、Q14)**、未知 id はエラーで列挙 (typo 検出) |
+| `HasPendingSignals(dbtx, ws, maxAttempts)` | trigger 述語用。**dead は数えない** — dead だけが残った workspace で trigger が永久に発火し続けるのを防ぐ |
+| `GCSignals(dbtx, olderThan, dryRun)` | `acked_at IS NOT NULL AND acked_at < cutoff` を削除 (未決だった inbox GC の決着) |
+
+- 細い interface を `internal/api/store.go` に追加 (`SignalStore`)、`TaskRepository` に
+  一行 wrapper (`GCTriggerRuns` の型)。GC は `TaskGCStore.GC` の既存 tx 内に
+  `GCSignals` を追加し、`GCResult`・`gcResponse`・`cmd/gc.go` に counter を足す (定型 A)
+
+---
+
+## 3. `boid signal` CLI
+
+### 3.1 host 側 (cobra、scopeRemote)
+
+```text
+boid signal list [--workspace <slug>] [--source <pack>/<connector>] [--service <name>]
+                 [--state pending|dead|acked|all] [--limit N] [-o json]
+boid signal ack  [--workspace <slug>] <id>...
+```
+
+- route: `GET /api/signals`・`POST /api/signals/ack`。handler は
+  `internal/api/signal_handler.go` (card_handler の型)、`mountRoutes` で mount
+- `--workspace` 既定は `default` slug。DTO は `internal/apiwire` に置く
+  (cmd/client は internal/api を import しない規約)
+- leaf command には `boid.scope` annotation (scope_annotations_test が強制)
+
+### 3.2 sandbox 側 (shim builtin op)
+
+| shim コマンド | op 定数 | 用途 |
+|---|---|---|
+| `boid signal list [--claim] [--source ...] [--state ...] [--limit N] [--json]` | `signal_list` | scan script が読む。`--claim` は ClaimSignals (attempts++ 込み) |
+| `boid signal ack <id>...` | `signal_ack` | 判断後の決着。冪等 |
+| `boid signal ingest` | `signal_ingest` | connector 専用。stdin の JSONL を取り込む |
+| `boid signal cursor` | `signal_cursor_get` | connector 専用。自 source の栞を返す |
+
+- workspace scoping は broker が job token から注入する (`card_list` の
+  `internal/sandbox/broker.go:502-524` と同型)。**引数で workspace を指定させない**
+- `ingest`/`cursor` の source/service は引数でなく env (`BOID_SIGNAL_SERVICE` /
+  `BOID_SIGNAL_CONNECTOR`、§5) から取る — connector が他 source の栞を触れない
+- readonly は builtin op を縛らない現行仕様のまま (khi の trigger job が readonly で
+  task_create を打つのと同じ)。ack/ingest も readonly job から打てる
+- **新 op の追い先 11 ファイル** (探索で確定した checklist): `protocol.go` (op 定数) /
+  `policy_ops.go` (mirror) / `policy.go` (boidPolicy) / `boid_shim.go` (語→request) /
+  `broker.go` (scoping) / `boid_executor.go` (実行) / `policy_translate_test.go` (mirror 表) /
+  `policy_test.go` (wantOps、**length 比較で hard fail**) /
+  `broker_op_escape_test.go` (**AST 列挙で hard fail**) / shim・broker・executor の各テスト
+
+### 3.3 組み込みスキル `boid-signal`
+
+`internal/skills/data/boid-signal/SKILL.md` を追加し、`deploy.go:13` の `go:embed` に
+1 行足すだけで全 job へ read-only mount される (現行の配布機構)。内容は
+list/claim/ack の使い方と「ack = この Signal について判断を書き終えた」の意味論。
+**契約ではなく知識** (r3 §8.2)。
+
+---
+
+## 4. Trigger source `on: signals`
+
+### 4.1 schema
+
+`orchestrator.Trigger` (`internal/orchestrator/spec_types.go:408-425`) に field を 1 つ足す:
+
+```yaml
+triggers:
+  - name: sweep
+    on: signals        # 省略時 "schedule" (現行と完全互換)
+    every: 2m          # signals でも必須 — 発火間隔の下限 = debounce
+    run: python3 -m khi.app.scan
+```
+
+`ValidateTriggers` (`trigger_validate.go:26`) に `on ∈ {"", "schedule", "signals"}` を追加。
+`every` の必須・下限 (1m) は両 kind 共通のまま。
+
+### 4.2 述語
+
+`SweepTriggers` の due 判定 (`internal/api/trigger_loop.go:414-439`) を拡張:
+
+```text
+due := now - latestRun.StartedAt >= every        # 現行 triggerIsDue のまま
+if trig.On == "signals":
+    due = due && HasPendingSignals(workspaceOf(project))
+```
+
+- **debounce はこの形で構造的に成立する**: every 窓内に何件 Signal が来ても発火は 1 回、
+  発火後も未 ack が残っていれば (= 判断が crash した / 捌き切れなかった) every 経過後に
+  再発火する。crash 回復と coalescing が同じ 1 行で出る
+- single-flight は既存の `trigger_runs` partial unique index
+  (`0043:71-72`、(project_id, trigger_name) で DB レベル強制) に**一切手を入れない**
+- workspace 未所属 project の `on: signals` は常に not due (debug log のみ)
+- skip streak (stuck 検知) は every ベースの現行式がそのまま働く
+
+---
+
+## 5. Connector 実行 = 合成 trigger
+
+### 5.1 宣言 (メタプロジェクトの project.yaml)
+
+```yaml
+signals:
+  sources:
+    - connector: slack/mentions      # <pack>/<connector>
+      service: slack-api             # service instance 名
+      every: 10m
+      config:
+        include_threads: true
+```
+
+`ProjectMeta` に `Signals` を追加。hydrate 時に source 1 件を**合成 trigger**
+`{Name: "signal:<pack>/<connector>", Every: every, Run: exec "$BOID_CONNECTOR_EXEC"}` に
+展開して既存の trigger 列へ足す (名前衝突は load 時に検証)。これにより:
+
+- スケジュール・1m 解像度・**single-flight** — trigger_runs がそのまま担う
+- **失敗の可視化** — connector の非ゼロ exit は既存 failStreak (3 回毎に通知、
+  `trigger_loop.go:732-748`) に乗る。§8.1 の「上限超過は可視化」の実装がこれ
+- 手動実行 — `boid trigger run <project> signal:slack/mentions` がタダで手に入る
+- 履歴と GC — trigger_runs の既存 30 日 GC
+
+### 5.2 job 環境
+
+合成 trigger の発火は既存 `fireTrigger` → `StartExec` (exec job、readonly、project
+sandbox)。`StartExecRequest` に 2 点を追加する:
+
+- env: `BOID_SIGNAL_SERVICE` / `BOID_SIGNAL_CONNECTOR` / `BOID_SIGNAL_CONFIG` (config の
+  JSON) / `BOID_CONNECTOR_EXEC` (下記パス)
+- bind: 解決済み Pack ディレクトリ → `/run/boid/integrations/<pack>` (read-only)。
+  `Visibility.AdditionalBindings` の既存経路を使う
+
+connector が呼ぶ service は workspace の enabled services に入っている必要がある
+(検証は load 時に警告)。gateway 側の 403/502 は既存の 2 層検査のまま。
+
+### 5.3 connector プロセス契約 (Pack conformance の中核)
+
+- 入力: 上記 env。栞は `boid signal cursor` で取得
+- 外部 fetch: `$BOID_API_BASE/$BOID_SIGNAL_SERVICE/...` のみ (直接の外部到達は
+  egress 制約で元々できない)
+- 出力: `boid signal ingest` の stdin へ JSONL。1 行 =
+  `{id, occurred_at, identity, url?, author?, title?}` (source ブロックは daemon が
+  env から合成する — connector は自分の instance 名を知らなくてよい、§7.2 の binding 相当)
+- **栞の契約**: 「cursor より後だけを返す。外部検索の精度に任せず、取得後に
+  `occurred_at <= cursor` を自分で落とす」(jira 分精度の実証済み教訓)。重複して返しても
+  inbox の dedup で no-op なので、迷ったら広く読む側へ倒す
+- ページングは ingest を複数回呼んでよい (1 回ごとに tx が切れる = 途中 crash でも
+  取り込んだ分の栞は正しく進んでいる)
+- 終了: 成功 0 / 失敗非ゼロ (握り潰さない — failStreak に乗せる)
+
+---
+
+## 6. Config と Pack loader (最小)
+
+### 6.1 config.yaml
+
+```yaml
+integrations:
+  dir: /opt/boid/integrations        # 既定値。bare binary はここを差し替える
+
+services:
+  customer-jira:
+    uses: jira-cloud/jira-cloud@1.2.0
+    endpoint: https://example.atlassian.net
+    credentials:
+      token: JIRA_TOKEN
+```
+
+- `ServiceConfig` に `Uses` / `Endpoint` / `Credentials map[string]string` を追加。
+  `uses` 指定時は `base_url`/`auth` と排他 (`validateServiceConfig` で検証)
+- schema.go に leaf を追加 (set/apply 経路の unknown-key 検査対象にする)
+
+### 6.2 解決タイミング
+
+`config.Load()` は構文検証のみ (manifest の IO を config parse に持ち込まない)。
+daemon 起動時 (`wire.go` の gateway 配線点) に新 package `internal/integrationpack` が:
+
+1. `<integrations.dir>/<pack>/<ver>/integration.yaml` を列挙・parse
+2. `uses:` を profile へ解決し、**既存の `apigateway.ServiceConfig` へ脱糖**する —
+   profile の credential slot (`injection: bearer|basic|header|query` + header 名) を
+   既存 `auth:` と同じ形に写す。**gateway 本体 (`internal/apigateway`) は一切変更しない**
+3. 失敗 (pack 不在・version 不一致・slot 未 bind・未知 slot・endpoint 要求違反) は
+   **起動エラー** — services の eager validation と同じ倒し方。§7.2 の照合検証の実装
+4. connector の `config` は manifest の `configSchema` で検証する。v0 は JSON Schema の
+   極小 subset (type/object/properties/required、値型は string/number/boolean) を自前実装
+   (外部ライブラリ最小の規約)。検証失敗は**該当 connector の合成 trigger を作らない +
+   起動ログにエラー** (採点表 Q19)
+
+- `internal/integrationpack` は新 package なので architecture allowlist
+  (`scripts/check-internal-architecture.sh` の**両方の配列**) へ登録
+- Pack の skills mount (§6.4 の selective mount) は移行順 step 3 (公式 Pack 化) の範囲。
+  本設計では connector 実行に必要な範囲だけを実装する
+
+---
+
+## 7. `boid task create --idempotency-key` (独立 PR)
+
+- `tasks.idempotency_key TEXT` (nullable) + partial unique index
+  `(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL` (migration は実装時の次番号)
+- 衝突時はエラーでなく**既存 task の id を返して exit 0** (再実行が収束する、の実装)
+- CLI flag と `task_create` op の request field を追加。子タスク重複生成バグの再発防止
+
+---
+
+## 8. 本体 doc への反映 (この設計で決着した未決)
+
+| §12 の未決 | 決着 |
+|---|---|
+| `boid signal` CLI の最終形 | §3 (list/claim/ack + connector 用 ingest/cursor、workspace は token/flag) |
+| inbox の GC | acked 30 日で既存 GC tx に相乗り (§2) |
+| Connector の実行詳細 | 合成 trigger + project sandbox exec job + ingest 単位 tx (§5) |
+| Signal 1 件の size limit | 既存 ValidateContentSize (64KiB) を行単位に適用 (§2) |
+| (新規に確定) source の宣言場所 | メタプロジェクトの project.yaml `signals.sources` (§1) |
+
+残る未決: Pack の発見・配布・signing、kit との関係、resolver、scan script テンプレ、
+Web UI 表示、service profile の複数 header/OAuth2 表現 (v0 の脱糖は単一 slot のみ)。
+
+---
+
+## 9. PR 分割と採点表の割り当て
+
+本体 doc §14 のルール 4 に従い、C〜E を PR 単位へ割り直す。E (Q23-25) は全 PR で採点。
+
+| PR | 内容 | 主に検査する命題 |
+|---|---|---|
+| **PR-1** | migration 0046 + signal store + GC 相乗り | Q10 (dedup no-op)、Q13 (at-least-once tx) |
+| **PR-2** | host API/CLI (`/api/signals`、`boid signal list/ack`) | Q14 (ack 冪等) |
+| **PR-3** | shim op 4 種 + `boid-signal` 組み込みスキル | Q14、(op checklist 11 ファイル) |
+| **PR-4** | config (`integrations.dir`・`uses:`) + `internal/integrationpack` + 脱糖 + 検証 | Q16、Q17、Q19、Q21 の骨格 |
+| **PR-5** | 合成 trigger + connector 実行 (env/bind/プロトコル) | Q11 (栞 self-exceeding)、Q12 (失敗可視化 = failStreak)、Q18、Q20 |
+| **PR-6** | trigger `on: signals` 述語 | Q15 (debounce/single-flight テスト) |
+| **PR-7** | `boid task create --idempotency-key` | Q26 (新設: 下記) |
+
+- 依存: PR-1 → {2,3} → 5、4 → 5、6 は 1 のみに依存。7 は独立。並列 PR の
+  interface 衝突に注意 (PR-4 と PR-5 の integrationpack 契約は PR-4 が先)
+- **Q26 を本体 doc §14 に追加する**: 「`boid task create` の idempotency key は
+  (project, key) で一意であり、同一 key の再実行が新規作成せず既存 task の id を返す
+  テストがある」
+- 公式 Pack 化 (slack/jira/bitbucket connector の実装。khi adapter の移植) と shadow-a は
+  この doc の範囲外 — PR-5 の後、別 doc なしで着手できる (conformance test = §5.3 の契約)
+
+---
+
+## 10. 実装時の既知の注意
+
+- `SetMaxOpenConns(1)`: 新しい loop は作らないので DB 競合の追加なし (trigger loop に相乗り)
+- trigger loop の due→busy→fire の順序と fail-open (`trigger_loop.go:441-466`) は触らない
+- `boid-add-builtin` スキルの checklist は現物と 5 点ズレている (op 数 16→32、
+  escape-manifest テストの欠落ほか) — PR-3 のついでにスキルを現物へ追随させる
+- `wiring-seams.md` の seam #6 (組み込みスキルの配布経路) も stale — 同上
