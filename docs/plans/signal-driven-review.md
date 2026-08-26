@@ -64,7 +64,7 @@ SaaS API と boid 本体の release cycle の結合、全 job への不要な sk
 
 既存 Integration Pack だけを使う workspace は、次だけで追加できる状態を目標にする。
 
-- workspace automation の設定
+- workspace の review 定義
 - service instance と credential の binding
 - source の選択・検索条件
 - workspace の判断方針
@@ -76,7 +76,7 @@ Git repository、Python package、専用 write CLI、専用 test suite は要求
 
 本設計は「任意の SaaS workflow engine」を目指さない。対象は次に限定する。
 
-> 外部・内部の observation を契機に、boid の task/card を reconcile する automation。
+> 外部・内部の observation を契機に、boid の task/card を reconcile する自動処理。
 
 入力と判断方針は拡張可能にするが、出力は boid の task model と state machine に閉じる。
 Integration Pack に独自 DB field、独自状態遷移、独自 review verb を追加させない。
@@ -147,8 +147,8 @@ External services ───────▶ normalized Signal
                               人が判断
 ```
 
-概念上、subsystem 全体は **reconciliation**、LLM が判断する automation kind は
-**review**、1 回の実行記録は **review run** と呼ぶ。
+概念上、subsystem 全体は **reconciliation**、LLM が判断する処理は **review**、
+1 回の実行記録は **review run** と呼ぶ。
 
 review は現行 khi の sweep task を第一級機能として一般化したものだが、一般化するのは
 source だけではない。起動条件、policy の供給、出力契約、retry/ack lifecycle も対象である。
@@ -195,9 +195,10 @@ hints:
 core が解釈するのは次だけである。
 
 - workspace/source instance と idempotency key
+  (`id`。Connector が同一 event から必ず同じ値を生成する、取り込み dedup 用の安定キー)
 - 発生時刻
 - title/preview/body の開示済み部分
-- source provenance
+- source provenance (envelope の `source:` ブロック)
 - 外部 resource への handle
 - identity 候補
 - opaque な hints
@@ -313,6 +314,7 @@ boid image
 - SaaS API の変更は Pack release で追従できる
 - custom Pack は boid 本体を fork せず追加できる
 - review job には利用する skill だけを read-only mount する
+  (組み込みスキルと同様、dispatcher が job sandbox 構築時に agent のスキル探索パス配下へ bind mount する)
 
 Pack install は daemon 管理者だけが実行できる。project.yaml や review agent が自分で
 Pack を install/upgrade して権限を増やすことはできない。
@@ -361,21 +363,26 @@ service binding を渡す。
 
 skill/connector は環境固有の論理名を埋め込まず、この binding を使う。
 
+自由形式 service には profile がないため、この binding の対象外である。従来どおり
+自身の service 名で gateway を参照する。`review_access.services` には両形式の service を
+並べられる。
+
 ---
 
-## 8. Review automation の定義
+## 8. Review の定義
 
 ### 8.1 task_behaviors から分離する
 
 review を通常の `task_behaviors.sweep` として workspace に定義させると、workspace が
 protocol prompt、signal ack、batch、retry、完了管理、書き込み規約を再び持つことになる。
 
-review は workspace automation の第一級 kind として定義する。
+review は workspace の第一級定義として置く。汎用の `automations` + `kind` による
+family 化は行わない。現時点で kind は review しか実在せず、実在しない 2 つ目の kind の
+ための抽象は早すぎるためである。2 つ目の kind が実在した時点で括り直す。
 
 ```yaml
-automations:
+reviews:
   task-review:
-    kind: review
     enabled: true
 
     schedule:
@@ -430,7 +437,7 @@ Core review protocol（boid、上書き不可）
     +
 Integration skills（Pack、対象 run に必要なものだけ）
     +
-Workspace policy（automation 定義、全対象共通）
+Workspace policy（review 定義、全対象共通）
     +
 Project review hints（対象 project が判明した場合だけ）
 ```
@@ -482,23 +489,27 @@ workspace policy で関連性と所属先を判断し、候補または所属先
 現行 sweep task は LLM を起動するために通常 task を使っている。しかし review cycle は
 人が片付ける work item ではなく、work item を再評価する system activity である。
 
-目標モデルは `automation_runs` + `Job` とする。
+目標モデルは `review_runs` + `Job` とする。
 
 ```text
-Workspace Automation
+workspace の review 定義
         │
         ▼
- AutomationRun ── Job ── LLM
+  ReviewRun ── Job ── LLM
         │
         ├── Signal/Subject を lease
         ├── mutation を記録
         └── complete / retry / dead-letter
 ```
 
+run が lease する対象は、当該 review 定義の未 ack Signal から `batch_size` を上限に
+選ぶ。複数の Signal が同一 task へ合流する場合に subject へどう畳むかは未決である
+(§14)。
+
 ReviewRun は少なくとも次を snapshot する。
 
 - workspace revision
-- automation definition revision
+- review 定義の revision
 - Integration Pack の version/digest
 - policy instruction
 - model/runtime 設定
@@ -516,9 +527,9 @@ trigger と behavior の version skew をここで防ぐ。
 host 側の手動操作案:
 
 ```text
-boid review run <workspace>/<automation>
-boid review status <workspace>/<automation>
-boid review runs <workspace>/<automation>
+boid review run <workspace>/<review>
+boid review status <workspace>/<review>
+boid review runs <workspace>/<review>
 boid review retry <run-id>
 ```
 
@@ -567,12 +578,16 @@ run token により次を強制する。
 途中で job が死んだ場合、適用済み mutation は残るが Signal は ack されない。lease expiry
 または retry により再 review され、同じ mutation は no-op になる。
 
-Integration Pack はこの mutation set を拡張できない。新しい出力概念が必要なら boid の
-task model として検討する。
+boid への書き込み手順を知るのは core review protocol 層だけである。Pack の skill が
+扱うのは source 側の知識 — review 中の読み方・調べ方と、child task が使う外部への
+書き込み手順 — であり、boid の review operation には言及しない。
 
 ---
 
 ## 11. 汎用性の担保
+
+本節が担保するのは構造上の閉じ方である。generic にして現行 sweep の判断品質が出るか、
+という実現性の担保は本節ではなく §12 の shadow 検証が担う。
 
 ### 11.1 拡張軸
 
@@ -598,6 +613,8 @@ Integration Pack       Workspace / Project Policy
 - connector config は Pack の schema で検証する
 - skill/connector に service instance の論理名を決め打ちしない
 - core protocol prompt にサービス固有手順を入れない
+- Pack の skill/playbook に boid の review operation への言及を入れない
+  (boid への書き込み手順は core protocol 層が独占し、conformance test で検査する)
 - Pack は state machine、review verb、DB schema を拡張できない
 - Pack contract の conformance test を boid 側で提供する
 
@@ -621,7 +638,7 @@ Integration Pack       Workspace / Project Policy
 > normalized Signal、generic core protocol、Integration skill、workspace policy の組み合わせで、
 > 現行 `/khi-sweep` と同等以上に外部世界を調査し、正しい提案を作れるか。
 
-これを確認せずに signal inbox、Pack runtime、automation table を先に実装すると、review agent
+これを確認せずに signal inbox、Pack runtime、review run table を先に実装すると、review agent
 が十分に判断できない大きな機構だけが残る危険がある。
 
 ### 12.2 仮説
@@ -636,7 +653,17 @@ Integration Pack       Workspace / Project Policy
 
 ### 12.3 検証方法
 
-現行 sweep を止めず、同じ対象に generic `review-v0` を dry-run で並走させる。
+shadow に先立ち、コードを書かない机上 walkthrough を行う。
+
+1. 現行 khi の sweep prompt を §8.3 の 4 層へ手で分解する。分解できなければ、この
+   時点で H4 を棄却し、知識の置き場所を再検討する。
+2. khi の履歴から実 Signal を 2〜3 件選び、envelope への変換と、期待される mutation 列
+   (identity link・summary・child upsert・suggest・complete) を手書きする。
+
+紙の上で書けないものは、shadow のインフラを作っても動かない。この成果物はそのまま
+core protocol の初稿と shadow の期待値になる。
+
+その上で、現行 sweep を止めず、同じ対象に generic `review-v0` を dry-run で並走させる。
 
 ```text
 同じ Signal / 対象
@@ -706,8 +733,8 @@ shadow 検証が Go になった後の概略順。PR 分割は検証後に別 do
 3. **Signal inbox/review lifecycle** — cursor、attempts、dead letter、lease を core へ移す
 4. **Integration Pack runtime** — Connector、skill mount、service profile を導入
 5. **公式 Pack 化** — Slack/Jira/Bitbucket adapter と `boid-api-skills` を Pack へ整理
-6. **workspace automation** — project trigger/sweep behavior を第一級 review 定義へ移す
-7. **ReviewRun 化** — 通常 sweep task 依存を `automation_runs` + Job へ置換
+6. **workspace review 定義** — project trigger/sweep behavior を第一級 review 定義へ移す
+7. **ReviewRun 化** — 通常 sweep task 依存を `review_runs` + Job へ置換
 8. **khi 退役** — khi-task-collector repo には固有 policy もコードも残さない
 
 途中の各段階で現行 khi と並走可能にし、一度に writer、scheduler、adapter、prompt を
@@ -732,13 +759,17 @@ shadow 検証が Go になった後の概略順。PR 分割は検証後に別 do
 ### shadow 検証後に決めること
 
 - 共通 Signal schema の必須/任意 field と size limit
+- Signal から subject への畳み込み (同一 task へ合流する複数 Signal の単位化。
+  現行 khi の dirty 抽出 + batch 化に相当)
+- 大量・低 S/N の source (mail 等) に対する、Connector の機械的 filter と review の
+  間の安価な篩の段
 - Resource resolver を Pack contract の必須能力にするか
 - API reference skill と review playbook を分けるか
 - Connector process protocol と cursor/checkpoint の transaction 境界
-- Pack の install/update/signing/version pin の具体方式
+- Pack の発見・配布・install/update/signing/version pin の具体方式
 - service profile が複数 header 等をどう表現するか
-- workspace automation schema の最終形
-- `automation_runs` の schema と Job principal
+- workspace review 定義 schema の最終形
+- `review_runs` の schema と Job principal
 - review batch 内の並列性と subagent 利用
 - live shadow の期間、評価 rubric、Go threshold
 - Web UI における review run、dead letter、失敗の表示
@@ -789,7 +820,7 @@ shadow 検証が Go になった後の概略順。PR 分割は検証後に別 do
 | Q10 | core の DB schema にサービス固有 field が存在しない | migration の diff |
 | Q11 | daemon が SaaS credential を保持して外部 API を直接呼ぶ経路が存在しない (connector/review の外部到達は workspace sandbox + API gateway 経由のみ) | connector 実行経路のコード |
 | Q12 | Pack が state machine・review verb・DB schema を拡張できる経路が存在しない | manifest schema と loader |
-| Q13 | connector config は Pack manifest の schema で検証され、検証失敗が該当 automation の起動を止める | loader とそのテスト |
+| Q13 | connector config は Pack manifest の schema で検証され、検証失敗が該当 review の起動を止める | loader とそのテスト |
 | Q14 | skill/connector に service instance の論理名が決め打ちされておらず、解決済み service binding 経由で参照している (§7.2) | Pack 実体と binding 受け渡しコード |
 | Q15 | Pack contract の conformance test が boid 側に存在し、公式 Pack 全てがそれを通る | テストと CI |
 
@@ -811,8 +842,8 @@ Q17・Q18 は現行 khi の運用で実際に踏んだ障害 (栞が自分自身
 
 | # | 命題 | 根拠の在り処 |
 |---|---|---|
-| Q21 | ReviewRun は §9.1 列挙の snapshot 項目 (workspace revision・automation 定義 revision・Pack version/digest・policy instruction・model/runtime 設定・対象 signal IDs・service bindings) を全て記録する | run 作成コード |
-| Q22 | automation 定義の更新は実行中 run へ影響せず、次の run から反映されることを示すテストがある | run 実装とテスト |
+| Q21 | ReviewRun は §9.1 列挙の snapshot 項目 (workspace revision・review 定義の revision・Pack version/digest・policy instruction・model/runtime 設定・対象 signal IDs・service bindings) を全て記録する | run 作成コード |
+| Q22 | review 定義の更新は実行中 run へ影響せず、次の run から反映されることを示すテストがある | run 実装とテスト |
 | Q23 | run token で「lease 外 subject」「他 workspace」「未許可 mutation」「transition の直接実行」「complete 後の書き込み」が全て拒否され、それぞれにテストがある | 認可コードとテスト |
 | Q24 | 各 review mutation は冪等で、同一 run の再実行が no-op になるテストがある | mutation 実装とテスト |
 | Q25 | child upsert は stable-key により冪等で、再実行しても子 task が重複生成されない | child upsert 実装とテスト |
