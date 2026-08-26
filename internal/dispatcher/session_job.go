@@ -69,6 +69,28 @@ type SessionJobInput struct {
 	// (and shown in the TUI / Web UI). Empty falls back to "<harness>
 	// session" downstream.
 	DisplayName string
+
+	// ConnectorPolicy, when true, selects orchestrator.ConnectorBuiltinPolicies
+	// instead of the general DefaultBuiltinPolicies(RoleHook, []string{"boid",
+	// "fetch"}, ...) set (docs/plans/signal-ingest-detailed-design.md §5.2,
+	// Q27) — ONLY signal_ingest/signal_cursor_get are allowed, and no fetch
+	// builtin at all. Set only by sessionDispatcherAdapter.StartExec
+	// (internal/server/wire.go) when the firing StartExecRequest carries a
+	// connector reference; every other caller leaves this false (the zero
+	// value) and keeps the existing policy unchanged.
+	ConnectorPolicy bool
+
+	// APIGatewayServices, when non-nil, overrides the dispatcher-resolved
+	// (floor ∪ workspace) API gateway service allowlist for this job's token
+	// — copied straight onto JobSpec.APIGatewayServices (see that field's own
+	// doc comment for the full rationale and where it gets consumed).
+	APIGatewayServices []string
+
+	// SignalService / SignalConnector are copied straight onto
+	// JobSpec.SignalService/SignalConnector — see that field's own doc
+	// comment.
+	SignalService   string
+	SignalConnector string
 }
 
 // BuildSessionJobSpec converts a resolved SessionJobInput into a JobSpec
@@ -83,12 +105,41 @@ type SessionJobInput struct {
 // the cutover contract (docs/plans/git-gateway-cutover.md PR6) requires a
 // clone-based dispatch for every project-visible job.
 func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
-	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
-		orchestrator.RoleHook,
-		[]string{"boid", "fetch"},
-		orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir},
-	)
-	hostCommands := orchestrator.HostCommands(input.HostCommands).ToCommandDefs()
+	pctx := orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir}
+	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5, Q27): a
+	// connector job gets the reduced, signal-ops-only policy instead of the
+	// general hook/exec set — see ConnectorPolicy's own doc comment.
+	// ConnectorBuiltinPolicies deliberately returns no "fetch" entry at all
+	// (§5.2: "fetch builtin も渡さない").
+	var builtinPolicies map[string]orchestrator.BuiltinPolicy
+	if input.ConnectorPolicy {
+		builtinPolicies = orchestrator.ConnectorBuiltinPolicies(pctx)
+	} else {
+		builtinPolicies = orchestrator.DefaultBuiltinPolicies(
+			orchestrator.RoleHook,
+			[]string{"boid", "fetch"},
+			pctx,
+		)
+	}
+	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5, Q27 fix — code
+	// review finding a86515ae): a connector job must get ZERO host_commands
+	// entries, regardless of what the caller passed in
+	// SessionJobInput.HostCommands. internal/sandbox/broker.go's Handle
+	// dispatches any non-boid/non-fetch command via entry.Commands — a
+	// COMPLETELY SEPARATE authorization path from entry.BuiltinPolicies, so
+	// ConnectorBuiltinPolicies alone (above) does NOT close this door: the
+	// metaproject's project.yaml may declare host_commands (e.g. a `gh`
+	// entry backed by a real host credential) for its own ordinary hook/exec
+	// jobs, and without this, a connector job would silently inherit them
+	// too — the "only signal_ingest/signal_cursor_get" claim would be false.
+	// Forcing hostCommands empty HERE (the single point ConnectorPolicy is
+	// already decided) closes it for every current and future caller, not
+	// just the one that happens to remember to clear it — mirroring how
+	// ConnectorBuiltinPolicies itself already omits "fetch".
+	var hostCommands map[string]orchestrator.CommandDef
+	if !input.ConnectorPolicy {
+		hostCommands = orchestrator.HostCommands(input.HostCommands).ToCommandDefs()
+	}
 
 	env := map[string]string{}
 	for k, v := range input.Env {
@@ -127,11 +178,14 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 			DockerEnabled:      input.DockerEnabled,
 			Clone:              cloneDecl,
 		},
-		BuiltinPolicies: builtinPolicies,
-		HostCommands:    hostCommands,
-		SecretNamespace: input.SecretNamespace,
-		Env:             env,
-		Interactive:     true, // sessions are PTY-attached by definition
+		BuiltinPolicies:    builtinPolicies,
+		HostCommands:       hostCommands,
+		SecretNamespace:    input.SecretNamespace,
+		Env:                env,
+		Interactive:        true, // sessions are PTY-attached by definition
+		APIGatewayServices: input.APIGatewayServices,
+		SignalService:      input.SignalService,
+		SignalConnector:    input.SignalConnector,
 	}
 	// Instruction is delivered through Env (BOID_USER_ANSWER), which the
 	// runner-inner-child threads into RunContext.UserAnswer. For the claude

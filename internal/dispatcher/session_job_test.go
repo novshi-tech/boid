@@ -264,6 +264,151 @@ func TestBuildExecJobSpec_PropagatesBaseBranchError(t *testing.T) {
 	}
 }
 
+// --- signal-derived connector trigger pass-through fields (docs/plans/
+// signal-ingest-detailed-design.md §5.2, PR-5) ---
+
+// TestBuildSessionJobSpec_ConnectorPolicyFalse_UsesDefaultPolicy pins the
+// unchanged default: every existing caller (ConnectorPolicy left at its
+// zero value, false) keeps getting the general
+// DefaultBuiltinPolicies(RoleHook, []string{"boid","fetch"}, ...) set —
+// this PR must not silently narrow every session/exec job's policy.
+func TestBuildSessionJobSpec_ConnectorPolicyFalse_UsesDefaultPolicy(t *testing.T) {
+	stubSessionBaseBranch(t, "main")
+	in := sampleSessionInput()
+	spec := mustBuildSessionJobSpec(t, in)
+
+	want := orchestrator.DefaultBuiltinPolicies(orchestrator.RoleHook, []string{"boid", "fetch"}, orchestrator.PolicyContext{ProjectDir: in.ProjectWorkDir})
+	if !reflect.DeepEqual(spec.BuiltinPolicies, want) {
+		t.Errorf("BuiltinPolicies = %+v, want the unchanged default %+v", spec.BuiltinPolicies, want)
+	}
+}
+
+// TestBuildSessionJobSpec_ConnectorPolicyTrue_UsesReducedPolicy pins Q27:
+// SessionJobInput.ConnectorPolicy selects orchestrator.ConnectorBuiltinPolicies
+// (signal_ingest/signal_cursor_get ONLY, no fetch) instead of the general set.
+func TestBuildSessionJobSpec_ConnectorPolicyTrue_UsesReducedPolicy(t *testing.T) {
+	stubSessionBaseBranch(t, "main")
+	in := sampleSessionInput()
+	in.ConnectorPolicy = true
+	spec := mustBuildSessionJobSpec(t, in)
+
+	want := orchestrator.ConnectorBuiltinPolicies(orchestrator.PolicyContext{ProjectDir: in.ProjectWorkDir})
+	if !reflect.DeepEqual(spec.BuiltinPolicies, want) {
+		t.Errorf("BuiltinPolicies = %+v, want the connector-reduced policy %+v", spec.BuiltinPolicies, want)
+	}
+	if _, hasFetch := spec.BuiltinPolicies["fetch"]; hasFetch {
+		t.Error(`BuiltinPolicies should not carry a "fetch" entry when ConnectorPolicy is true`)
+	}
+}
+
+// TestBuildSessionJobSpec_APIGatewayServices_Passthrough pins §5.2's
+// service-allowlist override: nil by default (existing dispatch-time
+// resolution untouched), verbatim passthrough when the caller sets it.
+func TestBuildSessionJobSpec_APIGatewayServices_Passthrough(t *testing.T) {
+	stubSessionBaseBranch(t, "main")
+
+	in := sampleSessionInput()
+	spec := mustBuildSessionJobSpec(t, in)
+	if spec.APIGatewayServices != nil {
+		t.Errorf("APIGatewayServices = %v, want nil by default", spec.APIGatewayServices)
+	}
+
+	in.APIGatewayServices = []string{"slack-api"}
+	spec = mustBuildSessionJobSpec(t, in)
+	if !reflect.DeepEqual(spec.APIGatewayServices, []string{"slack-api"}) {
+		t.Errorf("APIGatewayServices = %v, want [slack-api]", spec.APIGatewayServices)
+	}
+}
+
+// TestBuildSessionJobSpec_SignalServiceConnector_Passthrough pins the
+// TokenContext.Service/Connector source (docs/plans/
+// signal-ingest-detailed-design.md §3.2/§5.2): verbatim passthrough into
+// JobSpec, empty by default.
+func TestBuildSessionJobSpec_SignalServiceConnector_Passthrough(t *testing.T) {
+	stubSessionBaseBranch(t, "main")
+
+	in := sampleSessionInput()
+	spec := mustBuildSessionJobSpec(t, in)
+	if spec.SignalService != "" || spec.SignalConnector != "" {
+		t.Errorf("SignalService/SignalConnector = %q/%q, want empty by default", spec.SignalService, spec.SignalConnector)
+	}
+
+	in.SignalService = "slack-api"
+	in.SignalConnector = "slack/mentions"
+	spec = mustBuildSessionJobSpec(t, in)
+	if spec.SignalService != "slack-api" || spec.SignalConnector != "slack/mentions" {
+		t.Errorf("SignalService/SignalConnector = %q/%q, want slack-api/slack/mentions", spec.SignalService, spec.SignalConnector)
+	}
+}
+
+// TestBuildSessionJobSpec_ConnectorPolicyTrue_ForcesHostCommandsEmpty pins a
+// blocker found in code review (Q27): internal/sandbox/broker.go's Handle
+// dispatches any non-boid/non-fetch command via entry.Commands — a
+// COMPLETELY SEPARATE authorization path from entry.BuiltinPolicies. Before
+// this fix, a connector job still inherited the metaproject's project.yaml
+// host_commands (SessionJobInput.HostCommands, e.g. a `gh` entry backed by a
+// real host credential) even though ConnectorPolicy restricted
+// BuiltinPolicies to signal_ingest/signal_cursor_get only — the reduced
+// policy claim was FALSE for host_commands. ConnectorPolicy must force
+// hostCommands empty regardless of what the caller passed, mirroring how it
+// already forces no "fetch" entry into BuiltinPolicies.
+func TestBuildSessionJobSpec_ConnectorPolicyTrue_ForcesHostCommandsEmpty(t *testing.T) {
+	stubSessionBaseBranch(t, "main")
+	in := sampleSessionInput()
+	in.ConnectorPolicy = true
+	in.HostCommands = map[string]orchestrator.HostCommandSpec{
+		"gh": {Path: "/usr/bin/gh"},
+	}
+	spec := mustBuildSessionJobSpec(t, in)
+
+	if len(spec.HostCommands) != 0 {
+		t.Errorf("HostCommands = %+v, want empty when ConnectorPolicy is true (a connector job must not reach the metaproject's declared host_commands)", spec.HostCommands)
+	}
+}
+
+// TestBuildSessionJobSpec_ConnectorPolicyFalse_KeepsHostCommands is the
+// negative-space check for the fix above: every ordinary (non-connector)
+// caller's host_commands must still flow through unaffected.
+func TestBuildSessionJobSpec_ConnectorPolicyFalse_KeepsHostCommands(t *testing.T) {
+	stubSessionBaseBranch(t, "main")
+	in := sampleSessionInput()
+	in.HostCommands = map[string]orchestrator.HostCommandSpec{
+		"gh": {Path: "/usr/bin/gh"},
+	}
+	spec := mustBuildSessionJobSpec(t, in)
+
+	if len(spec.HostCommands) != 1 {
+		t.Fatalf("HostCommands = %+v, want 1 entry (gh) — ConnectorPolicy is false, host_commands must pass through unchanged", spec.HostCommands)
+	}
+	if _, ok := spec.HostCommands["gh"]; !ok {
+		t.Errorf("HostCommands = %+v, want the gh entry keyed by name", spec.HostCommands)
+	}
+}
+
+// TestBuildExecJobSpec_ConnectorFields_Passthrough pins that BuildExecJobSpec
+// (the `boid exec` / trigger-fire variant) carries the same 3 new fields
+// through unchanged — it wraps BuildSessionJobSpec and must not drop them.
+func TestBuildExecJobSpec_ConnectorFields_Passthrough(t *testing.T) {
+	stubSessionBaseBranch(t, "main")
+	in := sampleSessionInput()
+	in.ConnectorPolicy = true
+	in.APIGatewayServices = []string{"slack-api"}
+	in.SignalService = "slack-api"
+	in.SignalConnector = "slack/mentions"
+
+	spec := mustBuildExecJobSpec(t, in, []string{"sh", "-c", "exit 0"}, false)
+
+	if _, hasFetch := spec.BuiltinPolicies["fetch"]; hasFetch {
+		t.Error(`BuildExecJobSpec should also select the reduced policy when ConnectorPolicy is true`)
+	}
+	if !reflect.DeepEqual(spec.APIGatewayServices, []string{"slack-api"}) {
+		t.Errorf("APIGatewayServices = %v, want [slack-api]", spec.APIGatewayServices)
+	}
+	if spec.SignalService != "slack-api" || spec.SignalConnector != "slack/mentions" {
+		t.Errorf("SignalService/SignalConnector = %q/%q, unexpected", spec.SignalService, spec.SignalConnector)
+	}
+}
+
 // TestBuildSessionJobSpec_EmptyProjectWorkDirYieldsNoClone documents the
 // intentional exception: an empty ProjectWorkDir (no project visible at
 // all) yields Clone=nil with no error, so BuildSandboxSpec's own "no

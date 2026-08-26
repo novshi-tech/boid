@@ -24,6 +24,19 @@ func (r *Runner) registerAPIGatewayToken(jobID string, spec *orchestrator.JobSpe
 		return "", ""
 	}
 	services := r.resolveEnabledAPIServices(workspaceID)
+	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5): a signal-
+	// derived trigger's connector job restricts its own token to the ONE
+	// service instance it declared, via spec.APIGatewayServices. This
+	// INTERSECTS with the normally-resolved (floor ∪ workspace) set rather
+	// than trusting spec.APIGatewayServices outright — defense in depth: the
+	// declared service is only WARNED about at project.yaml load time if it
+	// falls outside the workspace's enabled set (never blocked, see
+	// orchestrator.GetWithWorkspace), so a stale declaration must not be
+	// able to grant gateway reach the workspace no longer actually enables.
+	// nil (every job but a connector trigger) leaves services untouched.
+	if spec.APIGatewayServices != nil {
+		services = intersectServiceNames(services, spec.APIGatewayServices)
+	}
 	readOnly := !spec.Visibility.Writable
 	token = r.APIGateway.Register(services, spec.SecretNamespace, spec.TaskID, readOnly)
 
@@ -59,4 +72,27 @@ func (r *Runner) resolveEnabledAPIServices(workspaceID string) []string {
 		return r.APIGatewayServicesFloor
 	}
 	return orchestrator.ResolveEnabledServices(r.APIGatewayServicesFloor, wsMeta)
+}
+
+// intersectServiceNames returns the entries of want that also appear in
+// resolved, preserving want's order (docs/plans/
+// signal-ingest-detailed-design.md §5.2's override-intersect — see
+// registerAPIGatewayToken's own doc comment for why this intersects rather
+// than trusting want outright). An empty result (want names nothing
+// resolved actually enables) is a legitimate, safe outcome: the connector
+// job's gateway token simply authorizes no service, and every gateway call
+// it attempts gets an ordinary 403 — not a panic, not a silent full-access
+// fallback.
+func intersectServiceNames(resolved, want []string) []string {
+	allowed := make(map[string]bool, len(resolved))
+	for _, s := range resolved {
+		allowed[s] = true
+	}
+	out := make([]string, 0, len(want))
+	for _, s := range want {
+		if allowed[s] {
+			out = append(out, s)
+		}
+	}
+	return out
 }

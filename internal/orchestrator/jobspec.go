@@ -94,6 +94,37 @@ type JobSpec struct {
 	// SecretNamespace scopes the broker's secret resolver.
 	SecretNamespace string
 
+	// APIGatewayServices, when non-nil, OVERRIDES the dispatcher-resolved
+	// (floor ∪ workspace) API gateway service allowlist for this job's
+	// token (docs/plans/signal-ingest-detailed-design.md §5.2): a signal-
+	// derived trigger's connector exec job is restricted to exactly the ONE
+	// service instance its signals.sources[] declaration named, never the
+	// workspace's full enabled set. Runner.registerAPIGatewayToken
+	// (internal/dispatcher/apigateway_wire.go) intersects this with the
+	// normally-resolved set rather than trusting it outright — defense in
+	// depth against a stale declaration naming a service the workspace no
+	// longer enables (project.yaml load only WARNS about that mismatch,
+	// never blocks — see ProjectStore.GetWithWorkspace). nil (every job but
+	// a connector trigger) leaves the existing resolveEnabledAPIServices
+	// behavior completely unchanged.
+	APIGatewayServices []string
+
+	// SignalService / SignalConnector set sandbox.TokenContext.Service/
+	// Connector for this job's broker token registration (docs/plans/
+	// signal-ingest-detailed-design.md §3.2/§5.2): the ONLY fields that
+	// authorize BoidOpSignalIngest/BoidOpSignalCursorGet's broker-side
+	// scoping (internal/sandbox/broker.go) to a specific (service,
+	// connector) pair. Set only by BuildSessionJobSpec from
+	// SessionJobInput.SignalService/SignalConnector, which in turn only a
+	// signal-derived trigger's StartExec call populates
+	// (sessionDispatcherAdapter.StartExec, internal/server/wire.go). Empty
+	// for every other job — signal_ingest/signal_cursor_get stay
+	// unreachable in practice for any job that doesn't ALSO get
+	// ConnectorBuiltinPolicies (BuiltinPolicies alone is not enough; both
+	// must line up, matching TokenContext.Service's own doc comment).
+	SignalService   string
+	SignalConnector string
+
 	// Env carries extra environment variables the orchestrator wants to export
 	// (e.g. behavior-level overrides). dispatcher merges these with its own
 	// HOME/PATH/proxy/broker settings.

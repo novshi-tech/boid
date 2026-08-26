@@ -130,6 +130,35 @@ type StartExecRequest struct {
 	// DisplayName is the human-readable label persisted to jobs.display_name.
 	// Empty falls back to argv[0] (dispatcher.BuildExecJobSpec).
 	DisplayName string `json:"display_name,omitempty"`
+
+	// Connector, when non-nil, marks this exec as a signal-derived trigger's
+	// connector run (docs/plans/signal-ingest-detailed-design.md §5.1/§5.2,
+	// PR-5) — fireTrigger (internal/api/trigger_loop.go) populates it from
+	// the firing orchestrator.Trigger's own Connector field. Every other
+	// StartExec caller (`boid exec`, a plain schedule trigger) leaves this
+	// nil, and sessionDispatcherAdapter.StartExec dispatches exactly as
+	// before this PR when it is nil.
+	Connector *ConnectorRef `json:"connector,omitempty"`
+}
+
+// ConnectorRef identifies a signal-derived trigger's connector — the raw
+// declaration StartExecRequest carries through from
+// orchestrator.TriggerConnector (fireTrigger copies the 4 fields verbatim;
+// see that type's own doc comment for why no Pack-registry resolution
+// happens this early). sessionDispatcherAdapter.StartExec
+// (internal/server/wire.go) resolves this against the daemon's loaded Pack
+// registry to build the connector job's env/bind/policy/service-allowlist.
+type ConnectorRef struct {
+	// Pack / ConnectorName are the "<pack>/<connector>" halves.
+	Pack          string `json:"pack"`
+	ConnectorName string `json:"connector_name"`
+	// Service is the service instance name this connector's API gateway
+	// token is restricted to.
+	Service string `json:"service"`
+	// Config is the connector's own configuration (project.yaml
+	// signals.sources[].config), validated against the Pack manifest's
+	// declared configSchema at resolution time.
+	Config map[string]any `json:"config,omitempty"`
 }
 
 // StartExecResult is the response shape for POST /api/projects/{id}/exec.

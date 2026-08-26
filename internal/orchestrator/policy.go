@@ -87,13 +87,6 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy {
 // set" by adding them here; see sandbox.BoidOpSignalIngest's own doc comment
 // for the same note from the protocol side.
 func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
-	cwds := []string{"/tmp"}
-	if pctx.ProjectDir != "" {
-		cwds = append(cwds, pctx.ProjectDir)
-	}
-	if pctx.HomeDir != "" {
-		cwds = append(cwds, pctx.HomeDir)
-	}
 	return BuiltinPolicy{
 		AllowedOps: sortedOps(
 			OpBoidJobDone,
@@ -131,8 +124,22 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidSignalList,
 			OpBoidSignalAck,
 		),
-		AllowedCwdRoots: cwds,
+		AllowedCwdRoots: boidCwdRoots(pctx),
 	}
+}
+
+// boidCwdRoots is the "boid" builtin's AllowedCwdRoots — shared by
+// boidPolicy and connectorPolicy (both grant the SAME cwd surface; only the
+// op set differs between the general and connector-scoped policies).
+func boidCwdRoots(pctx PolicyContext) []string {
+	cwds := []string{"/tmp"}
+	if pctx.ProjectDir != "" {
+		cwds = append(cwds, pctx.ProjectDir)
+	}
+	if pctx.HomeDir != "" {
+		cwds = append(cwds, pctx.HomeDir)
+	}
+	return cwds
 }
 
 // fetchPolicy returns the policy for the fetch builtin (HTTP GET only).
@@ -141,6 +148,37 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 func fetchPolicy(_ Role, _ PolicyContext) BuiltinPolicy {
 	return BuiltinPolicy{
 		AllowedOps: sortedOps(OpFetchGet),
+	}
+}
+
+// ConnectorBuiltinPolicies returns the reduced, connector-scoped builtin
+// policy map a signal-derived trigger's exec job gets INSTEAD OF
+// DefaultBuiltinPolicies(RoleHook, []string{"boid","fetch"}, pctx)
+// (docs/plans/signal-ingest-detailed-design.md §5.2, Q27):
+//
+//   - "boid" -> connectorPolicy(pctx): ONLY OpBoidSignalIngest /
+//     OpBoidSignalCursorGet are allowed. Nothing from the general boidPolicy
+//     set (task_create, card/action reads, ...) is reachable — a connector
+//     job cannot touch boid state beyond its own source's ingest/cursor.
+//   - NO "fetch" entry at all (§5.2: "fetch builtin も渡さない —
+//     connector の外部到達は gateway で足りる"): a connector job's only
+//     network path is the API gateway (already reached via
+//     $BOID_API_BASE/$BOID_SIGNAL_SERVICE), not the general-purpose fetch
+//     builtin every other hook/exec job gets.
+//
+// Called only by dispatcher.BuildSessionJobSpec when
+// SessionJobInput.ConnectorPolicy is true — every other job keeps calling
+// DefaultBuiltinPolicies unchanged.
+func ConnectorBuiltinPolicies(pctx PolicyContext) map[string]BuiltinPolicy {
+	return map[string]BuiltinPolicy{"boid": connectorPolicy(pctx)}
+}
+
+// connectorPolicy is ConnectorBuiltinPolicies' "boid" entry — see that
+// function's doc comment for the full rationale.
+func connectorPolicy(pctx PolicyContext) BuiltinPolicy {
+	return BuiltinPolicy{
+		AllowedOps:      sortedOps(OpBoidSignalIngest, OpBoidSignalCursorGet),
+		AllowedCwdRoots: boidCwdRoots(pctx),
 	}
 }
 

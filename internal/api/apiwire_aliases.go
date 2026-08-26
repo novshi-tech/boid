@@ -61,6 +61,7 @@ type StartSessionRequest = apiwire.StartSessionRequest
 type StartSessionResult = apiwire.StartSessionResult
 type StartExecRequest = apiwire.StartExecRequest
 type StartExecResult = apiwire.StartExecResult
+type ConnectorRef = apiwire.ConnectorRef
 
 // from internal/api/task.go
 type NotifyTaskRequest = apiwire.NotifyTaskRequest

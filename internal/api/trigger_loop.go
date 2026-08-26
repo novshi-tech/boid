@@ -163,6 +163,30 @@ const TriggerRunSelfHealGrace = 3 * time.Minute
 // unambiguously in logs/notifications.
 const TriggerRunSelfHealExitCode = -1
 
+// TriggerDispatchFailureExitCode is the sentinel SweepTriggers reports in
+// TriggerSweepResult.Completed for a StartExec (dispatch) failure — distinct
+// from TriggerRunSelfHealExitCode so the two failure classes stay
+// distinguishable in logs/notifications (self-heal = a job WAS dispatched
+// but its outcome was never observed; this = the job was never dispatched
+// at all). docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5 review
+// finding, B2): before this existed, a dispatch failure (pack not
+// installed, connector config schema violation, ambiguous pack version —
+// new failure classes a connector trigger's StartExec can hit that an
+// ordinary schedule trigger's `sh -c` almost never does) was ONLY
+// slog.Warn'd (fireTrigger's fail-open retry path) and never reached
+// TriggerLoop.trackFailStreak, which reads exclusively from Completed — an
+// operator would see nothing but silent, indefinite per-tick retries in the
+// daemon's own log.
+//
+// Deliberately does NOT change fireTrigger's own DeleteTriggerRun-on-failure
+// behavior (SweepTriggers' own comment at the call site explains why: an
+// `every`-gapped CompleteTriggerRun would delay the "fail-open, retry next
+// tick" behavior every trigger has always had, all the way out to a full
+// `every` — this sentinel is reported to trackFailStreak ALONGSIDE the
+// existing delete, purely for notification bookkeeping, not as a
+// trigger_runs row of its own).
+const TriggerDispatchFailureExitCode = -2
+
 // selfHealStaleTriggerRun force-closes run if it has been in flight, unable
 // to resolve to a real job's terminal state, for at least
 // TriggerRunSelfHealGrace (N-1, Opus review). Returns true when it closed
@@ -369,7 +393,7 @@ func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, pr
 		return "", err
 	}
 
-	result, err := s.Exec.StartExec(ctx, StartExecRequest{
+	req := StartExecRequest{
 		ProjectID: projectID,
 		Argv:      triggerRunArgv(trig.Run),
 		// PR-4 節「実行」: Readonly true 固定。boid op の allowlist は role
@@ -382,7 +406,24 @@ func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, pr
 		// 明記されている、N-5 Opus review)。
 		Readonly:    true,
 		DisplayName: "trigger:" + trig.Name,
-	})
+	}
+	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5): a
+	// hydrate-derived connector trigger's raw connector declaration is
+	// copied through VERBATIM — no Pack-registry resolution happens here
+	// (internal/api must not import internal/integrationpack; see
+	// TriggerConnector's own doc comment). sessionDispatcherAdapter.StartExec
+	// (internal/server/wire.go) is where this gets resolved into the
+	// connector job's actual env/bind/policy/service-allowlist. nil for
+	// every ordinary trigger — dispatch is completely unchanged for them.
+	if trig.Connector != nil {
+		req.Connector = &ConnectorRef{
+			Pack:          trig.Connector.Pack,
+			ConnectorName: trig.Connector.ConnectorName,
+			Service:       trig.Connector.Service,
+			Config:        trig.Connector.Config,
+		}
+	}
+	result, err := s.Exec.StartExec(ctx, req)
 	if err != nil {
 		if derr := s.Triggers.DeleteTriggerRun(run.ID); derr != nil {
 			// Both the dispatch AND its own cleanup failed — the claimed
@@ -540,6 +581,11 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 				// succeeded) and retries automatically. No separate
 				// retry/backoff bookkeeping needed.
 				slog.Warn("trigger sweep: dispatch failed (fail-open, will retry next tick)", "project_id", p.ID, "trigger", trig.Name, "error", ferr)
+				// B2 (PR-5 review finding): report the failure to
+				// trackFailStreak too, alongside (not instead of) the
+				// fail-open retry above — see TriggerDispatchFailureExitCode's
+				// own doc comment for why this doesn't touch trigger_runs.
+				result.Completed = append(result.Completed, TriggerCompletionResult{TriggerKey: key, ExitCode: TriggerDispatchFailureExitCode})
 				continue
 			}
 			result.Fired = append(result.Fired, TriggerFireResult{TriggerKey: key, JobID: jobID})

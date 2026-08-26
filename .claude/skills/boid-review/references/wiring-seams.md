@@ -1653,3 +1653,50 @@ Any `on:` kind that can additionally veto an otherwise-every-elapsed trigger's `
   its predicate strictly AFTER the `inFlight[key]` busy check, and derive the busy check from the
   plain every-elapsed value — never from `due` post-veto. Re-run the guard test above (or add an
   analogous one for the new kind) before merging.
+
+## 30. connector job's reduced-permission bundle — BuiltinPolicies is not the only broker gate
+
+A "connector job gets restricted permissions" claim spans **multiple independent broker-side
+gates**. Restricting one (`BuiltinPolicies`) and believing the claim covers all of them is the
+break — `internal/sandbox/broker.go`'s `Handle` has TWO separate dispatch paths with no shared
+enforcement point between them.
+
+- **End A (`orchestrator.ConnectorBuiltinPolicies`, `internal/orchestrator/policy.go`, consumed by
+  `dispatcher.BuildSessionJobSpec` via `SessionJobInput.ConnectorPolicy`)**: restricts which `boid`
+  builtin **ops** a connector job's token may invoke (`signal_ingest`/`signal_cursor_get` only) and
+  omits the `fetch` builtin entirely. This is `entry.BuiltinPolicies` in the broker.
+- **End B (`SessionJobInput.HostCommands` → `orchestrator.JobSpec.HostCommands` →
+  `ResolveHostCommands` → `CommandBroker.RegisterCommands`'s `commands` argument →
+  `entry.Commands`)**: a COMPLETELY SEPARATE map the broker consults for any command name that is
+  NOT the typed `boid`/`fetch` builtins — `broker.go`'s `handle()` calls
+  `lookupCommand(entry.Commands, req.Command)` for everything else, with **no reference to
+  `entry.BuiltinPolicies` at all**. A metaproject's project.yaml `host_commands:` (e.g. a `gh`
+  entry backed by a real host credential/path) flows into this map for EVERY job dispatched for
+  that project, connector or not, unless something explicitly empties it for the connector case.
+- **Invariant**: "connector job can only reach signal_ingest/signal_cursor_get" must hold across
+  BOTH gates — narrowing `BuiltinPolicies` alone leaves `entry.Commands` exactly as populated as an
+  ordinary hook/exec job's, i.e. unrestricted access to every declared `host_commands:` entry.
+- **Past break (code-review agent finding, PR-5,
+  `docs/plans/signal-ingest-detailed-design.md` §5.2)**: the initial connector-trigger
+  implementation added `SessionJobInput.ConnectorPolicy` and had `BuildSessionJobSpec` swap in
+  `ConnectorBuiltinPolicies` for `BuiltinPolicies`, but left `hostCommands :=
+  orchestrator.HostCommands(input.HostCommands).ToCommandDefs()` unconditional — `wire.go`'s
+  `sessionDispatcherAdapter.StartExec` built `SessionJobInput.HostCommands` from the metaproject's
+  `meta.HostCommands` BEFORE branching on `req.Connector != nil`, and that branch never touched it.
+  A connector job could therefore invoke any host_commands entry the metaproject declared, directly
+  contradicting the PR's own "only signal_ingest/signal_cursor_get" claim (Lens 2 territory: the
+  claim was broader than what the diff proved).
+- **Guard**: `TestBuildSessionJobSpec_ConnectorPolicyTrue_ForcesHostCommandsEmpty` /
+  `_ConnectorPolicyFalse_KeepsHostCommands` (`internal/dispatcher/session_job_test.go`) pin the
+  JobSpec-construction half; `TestDispatch_ConnectorPolicy_EndToEnd_HostCommandsNeverReachBroker`
+  (`internal/dispatcher/runner_signal_token_test.go`) drives the full
+  `BuildExecJobSpec` → `Runner.Dispatch` → `CommandBroker.RegisterCommands` chain and asserts the
+  broker receives an EMPTY commands map despite a declared `host_commands.gh` entry in the input.
+- **When you touch it**: any future "job type X gets reduced permissions" feature must enumerate
+  and pin EVERY broker-reachable authorization surface (today: `entry.BuiltinPolicies`,
+  `entry.Commands`, and the API gateway service allowlist — seam-adjacent but a different registry,
+  see `Runner.registerAPIGatewayToken`/`intersectServiceNames`), not just the one the feature's own
+  code path happens to touch first. A single `ConnectorPolicy`-shaped bool that forces every gate's
+  restricted value at ONE place (`BuildSessionJobSpec`, not the caller) is the pattern this PR
+  converged on after the fix — prefer extending that one function's `if input.ConnectorPolicy`
+  block over adding a second call site that has to remember to replicate it.

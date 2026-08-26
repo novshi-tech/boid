@@ -370,6 +370,42 @@ sandbox からは `BOID_API_BASE` 環境変数 (`https://<gateway>/api/<job-toke
 
 workspace 単位の有効化は `services_floor` (daemon 全体) + workspace 自身の `Services` リスト (`boid workspace services add/remove/list`、[CLI リファレンス](./cli.md#workspace) 参照) の additive union です。`services_floor` に書いた名前が `services` に存在しない場合は起動時に warning が出ますが、config load 自体は失敗しません。
 
+### `services.<name>.uses` — Integration Pack の service profile から生成する
+
+`base_url`/`auth` を手書きする代わりに、導入済みの Integration Pack (下記 `integrations.dir`) が宣言する service profile を参照して instance を作れます (docs/plans/signal-driven-review.md §7、docs/plans/signal-ingest-detailed-design.md §6)。
+
+```yaml
+services:
+  customer-jira:
+    uses: jira-cloud/jira-cloud@1.2.0   # <pack>/<profile>@<version>
+    endpoint: https://example.atlassian.net
+    credentials:
+      token: JIRA_TOKEN                  # secret store の key 名 (値そのものではない)
+```
+
+| キー | 型 | 説明 |
+|---|---|---|
+| `services.<name>.uses` | string (`<pack>/<profile>@<version>`) | 導入済み Pack の service profile への参照。`base_url`/`auth` と排他 (両方書くと config load エラー) |
+| `services.<name>.endpoint` | string | profile が `endpoint.configurable: true` を宣言している場合のみ指定可 (指定必須)。それ以外では指定するとエラー |
+| `services.<name>.credentials.<slot>` | string | profile が宣言する credential slot 名へ secret store の key を bind する。値そのものはここに書かない |
+
+daemon 起動時に `internal/integrationpack` が `uses:` を実際の `base_url`/`auth` へ脱糖して API gateway の service registry に登録する。参照する Pack が未導入・profile 未宣言・credential slot 不一致などは daemon の起動エラーになる (`services` の他エントリと同じ eager validation)。
+
+---
+
+## `integrations` — Integration Pack registry
+
+```yaml
+integrations:
+  dir: /opt/boid/integrations   # 既定値
+```
+
+| キー | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `integrations.dir` | string (絶対パス) | `/opt/boid/integrations` | 導入済み Integration Pack を daemon が探すディレクトリ。`<dir>/<pack名>/<version>/integration.yaml` の形で列挙される。ディレクトリ自体が存在しなくてもエラーにはならない (Pack 未導入の既定状態)。v0 の配布方式は Pack repo の host checkout をこのパスへ compose volume で bind mount する運用 (詳細は `docs/plans/signal-ingest-detailed-design.md` §6.4/§10)。**再起動が必要** (`Reload: ReloadRestartRequired`) |
+
+`services.<name>.uses` (上記) の解決元となる registry で、`boid signal` 系の connector 実行 (project.yaml `signals.sources[]`、[project.yaml リファレンス](./project-yaml.md#signalssources) 参照) が使う Pack もここから解決される。
+
 ---
 
 ## oauth_providers — API gateway の OAuth2 provider 定義

@@ -612,6 +612,12 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 - instance 設定の発見・検証の UX (profile からの必須項目提示、対話的な service 追加)
 - scan script の定型を組み込みスキル/テンプレとして配布するか
 - Web UI における inbox・connector 失敗の表示
+- **PR-8 (公式 Pack 実装) 着手前に必ず解決すべき3点** (PR-5 の独立レビューで発見、
+  2026-08-26): `LoadPacks` がドットディレクトリ (`.git/` 等) を Pack と誤解釈して起動
+  拒否になる件・Pack bind mount の host-visible path 境界が未検証な件・
+  `DockerEnabled`/`AdditionalBindings`/egress allowlist に `HostCommands` と同型の
+  connector job 権限漏れが残っている可能性 — 詳細は
+  `signal-ingest-detailed-design.md` §12
 
 ---
 

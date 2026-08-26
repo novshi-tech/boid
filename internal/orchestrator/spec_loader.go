@@ -110,6 +110,24 @@ func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*Proj
 		}
 	}
 
+	// docs/plans/signal-ingest-detailed-design.md §5.1 (PR-5): expand
+	// signals.sources[] into derived Trigger entries and append them to
+	// meta.Triggers BEFORE ValidateTriggers runs below — a derived trigger
+	// name colliding with a user-authored `triggers:` entry (or two sources
+	// deriving the same name — deriveSignalTriggers' own duplicate check)
+	// must fail `boid project add`/`fetch` exactly the same way a
+	// hand-authored duplicate trigger name already does. This is the
+	// "hydrate 時に... 導出 trigger に展開して既存の trigger 列へ足す" step;
+	// the resulting Trigger.Connector metadata is inert data until fireTrigger
+	// (internal/api/trigger_loop.go) reads it at dispatch time.
+	if len(meta.Signals.Sources) > 0 {
+		derived, err := deriveSignalTriggers(meta.Signals.Sources)
+		if err != nil {
+			return nil, err
+		}
+		meta.Triggers = append(meta.Triggers, derived...)
+	}
+
 	// docs/plans/ingestion-identity.md PR-4 (B-5): same load-time posture as
 	// the hook validation loop above — a malformed `triggers[]` entry (empty
 	// name/run, unparseable/non-positive every, duplicate name) must fail
@@ -118,6 +136,13 @@ func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*Proj
 	// project.yaml non-strictly (yaml.Unmarshal above has no KnownFields) and
 	// has no Triggers field to decode into at all, so it ignores `triggers:`
 	// with no warning — accepted (see spec_types.go's Trigger doc comment).
+	//
+	// This ALSO validates every derived trigger appended just above — a
+	// duplicate name (derived-vs-user or derived-vs-derived beyond
+	// deriveSignalTriggers' own check) and the `every` floor
+	// (TriggerSweepResolution) apply identically to a derived trigger; there
+	// is no separate validation pass for signals.sources (existing-mechanism
+	// reuse).
 	if err := ValidateTriggers(meta.Triggers); err != nil {
 		return nil, err
 	}

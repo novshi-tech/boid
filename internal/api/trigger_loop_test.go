@@ -297,6 +297,58 @@ func TestSweepTriggers_NeverRunBefore_FiresExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestSweepTriggers_ConnectorTrigger_ThreadsConnectorRefIntoStartExec pins
+// docs/plans/signal-ingest-detailed-design.md §5.2: firing a hydrate-derived
+// connector trigger (Trigger.Connector != nil) must copy its Pack/
+// ConnectorName/Service/Config into StartExecRequest.Connector VERBATIM —
+// the raw declaration sessionDispatcherAdapter.StartExec later resolves
+// against the Pack registry. A plain schedule trigger (the test above) must
+// leave StartExecRequest.Connector nil; this test is the other half of that
+// branch.
+func TestSweepTriggers_ConnectorTrigger_ThreadsConnectorRefIntoStartExec(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{
+			Name:  "signal:slack/mentions",
+			Every: "10m",
+			Run:   `exec "$BOID_CONNECTOR_EXEC"`,
+			Connector: &orchestrator.TriggerConnector{
+				Pack:          "slack",
+				ConnectorName: "mentions",
+				Service:       "slack-api",
+				Config:        map[string]any{"include_threads": true},
+			},
+		}}},
+	})
+	now := time.Now()
+
+	result, err := svc.SweepTriggers(context.Background(), now)
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v", err)
+	}
+	if len(result.Fired) != 1 {
+		t.Fatalf("Fired = %+v, want exactly 1", result.Fired)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("StartExec calls = %d, want 1", len(exec.calls))
+	}
+	got := exec.calls[0]
+	if got.Connector == nil {
+		t.Fatal("StartExecRequest.Connector is nil, want the trigger's TriggerConnector copied through")
+	}
+	if got.Connector.Pack != "slack" || got.Connector.ConnectorName != "mentions" {
+		t.Errorf("Connector = %+v, want Pack=slack ConnectorName=mentions", got.Connector)
+	}
+	if got.Connector.Service != "slack-api" {
+		t.Errorf("Connector.Service = %q, want %q", got.Connector.Service, "slack-api")
+	}
+	if got.Connector.Config["include_threads"] != true {
+		t.Errorf("Connector.Config = %+v, want include_threads=true", got.Connector.Config)
+	}
+	if !got.Readonly {
+		t.Error("Readonly = false, want true — a connector trigger is dispatched through the exact same readonly exec path as every other trigger")
+	}
+}
+
 func TestSweepTriggers_EveryElapsed_FiresAgainOnlyAfterInterval(t *testing.T) {
 	svc, jobs, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
 		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "intake", Every: "10m", Run: "true"}}},
@@ -421,6 +473,92 @@ func TestSweepTriggers_DispatchFailure_FailsOpenAndRetriesImmediately(t *testing
 	}
 	if len(exec.calls) != 2 {
 		t.Errorf("StartExec calls = %d, want 2 (one failed attempt + one successful retry)", len(exec.calls))
+	}
+}
+
+// TestSweepTriggers_DispatchFailure_RecordedInCompletedForFailStreak pins B2
+// (PR-5 review finding, docs/plans/signal-ingest-detailed-design.md §5.2): a
+// dispatch (StartExec) failure — the failure class a signal-derived
+// connector trigger newly introduces at StartExec time (pack not
+// installed, config schema violation, ambiguous pack version) that an
+// ordinary `sh -c` schedule trigger almost never hits — must be visible to
+// TriggerLoop.trackFailStreak (which reads exclusively from
+// TriggerSweepResult.Completed), not just slog.Warn'd. This extends
+// TestSweepTriggers_DispatchFailure_FailsOpenAndRetriesImmediately's
+// coverage with the Completed-list assertion that test didn't make; every
+// other assertion there (Fired/Skipped empty, row deleted, immediate retry)
+// must still hold — this fix reports the failure to trackFailStreak
+// ALONGSIDE the existing fail-open delete, not instead of it.
+func TestSweepTriggers_DispatchFailure_RecordedInCompletedForFailStreak(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "intake", Every: "10m", Run: "true"}}},
+	})
+	exec.failNext = 1
+	now := time.Now()
+
+	result, err := svc.SweepTriggers(context.Background(), now)
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v", err)
+	}
+	if len(result.Completed) != 1 {
+		t.Fatalf("Completed = %+v, want exactly 1 entry (the dispatch failure)", result.Completed)
+	}
+	got := result.Completed[0]
+	wantKey := TriggerKey{ProjectID: "proj-1", TriggerName: "intake"}
+	if got.TriggerKey != wantKey || got.ExitCode != TriggerDispatchFailureExitCode {
+		t.Errorf("Completed[0] = %+v, want {%+v, %d}", got, wantKey, TriggerDispatchFailureExitCode)
+	}
+
+	// The existing fail-open contract is untouched: still no Fired/Skipped,
+	// still an immediate retry, still no in-flight trigger_runs row left
+	// behind — the new Completed entry is additive bookkeeping only.
+	if len(result.Fired) != 0 || len(result.Skipped) != 0 {
+		t.Errorf("Fired/Skipped = %+v/%+v, want both empty", result.Fired, result.Skipped)
+	}
+	runsAfterFailure, err := svc.Triggers.ListInFlightTriggerRuns()
+	if err != nil {
+		t.Fatalf("ListInFlightTriggerRuns: %v", err)
+	}
+	if len(runsAfterFailure) != 0 {
+		t.Fatalf("in-flight trigger_runs after dispatch failure = %+v, want empty", runsAfterFailure)
+	}
+	result2, err := svc.SweepTriggers(context.Background(), now)
+	if err != nil {
+		t.Fatalf("retry sweep: %v", err)
+	}
+	if len(result2.Fired) != 1 {
+		t.Fatalf("Fired on immediate retry = %+v, want exactly 1", result2.Fired)
+	}
+	if len(exec.calls) != 2 {
+		t.Errorf("StartExec calls = %d, want 2", len(exec.calls))
+	}
+}
+
+// TestTriggerLoop_DispatchFailure_NotifiesAfterConsecutiveFailures is the
+// full TriggerLoop.runOnce-level closure of B2: repeated dispatch failures
+// across sweep ticks (fakeTriggerLoopStore scripted to return a dispatch
+// failure's Completed entry every tick, mirroring what SweepTriggers now
+// produces) must trigger the SAME consecutive-failure notification an
+// ordinary non-zero-exit-code job would, after TriggerStuckFailStreakThreshold
+// consecutive occurrences.
+func TestTriggerLoop_DispatchFailure_NotifiesAfterConsecutiveFailures(t *testing.T) {
+	key := TriggerKey{ProjectID: "proj-1", TriggerName: "signal:slack/mentions"}
+	dispatchFailure := TriggerSweepResult{
+		Completed: []TriggerCompletionResult{{TriggerKey: key, ExitCode: TriggerDispatchFailureExitCode}},
+	}
+	results := make([]TriggerSweepResult, TriggerStuckFailStreakThreshold)
+	for i := range results {
+		results[i] = dispatchFailure
+	}
+	store := &fakeTriggerLoopStore{results: results}
+	notifier := &fakeTriggerNotifier{}
+	loop := &TriggerLoop{Store: store, Notifier: notifier}
+
+	for i := 0; i < TriggerStuckFailStreakThreshold; i++ {
+		loop.runOnce(context.Background())
+	}
+	if len(notifier.messages) != 1 {
+		t.Fatalf("messages after %d consecutive dispatch failures = %v, want exactly 1 (operators must not be left with silent, indefinite per-tick retries)", TriggerStuckFailStreakThreshold, notifier.messages)
 	}
 }
 

@@ -571,6 +571,15 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
 			Role:              j.Role,
 			ProjectDir:        projectWorkDir,
+			// docs/plans/signal-ingest-detailed-design.md §3.2/§5.2 (PR-5):
+			// the ONLY place TokenContext.Service/Connector are ever
+			// populated — empty for every job except a signal-derived
+			// trigger's connector exec (spec.SignalService/SignalConnector,
+			// set by BuildSessionJobSpec from SessionJobInput). See that
+			// field's own doc comment (internal/sandbox/protocol.go) for the
+			// broker-side enforcement this feeds.
+			Service:   spec.SignalService,
+			Connector: spec.SignalConnector,
 		}
 		// SandboxRoot (docs/plans/git-gateway-cutover.md PR6 cutover): clone-mode
 		// jobs have no host ProjectDir the sandbox's own filesystem corresponds
