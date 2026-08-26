@@ -121,7 +121,25 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 			pctx,
 		)
 	}
-	hostCommands := orchestrator.HostCommands(input.HostCommands).ToCommandDefs()
+	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5, Q27 fix — code
+	// review finding a86515ae): a connector job must get ZERO host_commands
+	// entries, regardless of what the caller passed in
+	// SessionJobInput.HostCommands. internal/sandbox/broker.go's Handle
+	// dispatches any non-boid/non-fetch command via entry.Commands — a
+	// COMPLETELY SEPARATE authorization path from entry.BuiltinPolicies, so
+	// ConnectorBuiltinPolicies alone (above) does NOT close this door: the
+	// metaproject's project.yaml may declare host_commands (e.g. a `gh`
+	// entry backed by a real host credential) for its own ordinary hook/exec
+	// jobs, and without this, a connector job would silently inherit them
+	// too — the "only signal_ingest/signal_cursor_get" claim would be false.
+	// Forcing hostCommands empty HERE (the single point ConnectorPolicy is
+	// already decided) closes it for every current and future caller, not
+	// just the one that happens to remember to clear it — mirroring how
+	// ConnectorBuiltinPolicies itself already omits "fetch".
+	var hostCommands map[string]orchestrator.CommandDef
+	if !input.ConnectorPolicy {
+		hostCommands = orchestrator.HostCommands(input.HostCommands).ToCommandDefs()
+	}
 
 	env := map[string]string{}
 	for k, v := range input.Env {
