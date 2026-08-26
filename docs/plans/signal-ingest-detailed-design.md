@@ -97,13 +97,13 @@ CREATE TABLE IF NOT EXISTS signal_cursors (
 
 | 関数 | 契約 |
 |---|---|
-| `IngestSignals(dbtx, ws, service, connector, rows)` | **1 tx**: `INSERT OR IGNORE` → cursor を `max(rows.occurred_at)` へ **単調にのみ** 前進 (現在値より小さければ据え置き)。挿入とカーソル前進が同一 tx = crash しても取りこぼさない (Q13) |
+| `IngestSignals(dbtx, ws, service, connector, rows)` | **1 tx**: `INSERT OR IGNORE` → cursor を `max(rows.occurred_at)` へ **単調にのみ** 前進 (現在値より小さければ据え置き)。挿入とカーソル前進が同一 tx = crash しても取りこぼさない (Q13)。occurred_at と cursor の比較は RFC3339 を**時刻として parse して**行う (文字列比較は offset 混在 — jira は `+0900` で来る — で壊れる)。保存は UTC へ正規化した RFC3339 |
 | `GetSignalCursor(dbtx, ws, service, connector)` | 無ければ空文字 (= 最初から) |
 | `ListSignals(dbtx, filter)` | filter: ws (必須) / service / connector / state (pending・dead・acked・all) / limit。pending は `acked_at IS NULL AND attempts < max`、dead は `acked_at IS NULL AND attempts >= max`。occurred_at 昇順 |
 | `ClaimSignals(dbtx, ws, limit, maxAttempts)` | **1 tx**: pending を昇順に limit 件 select → `attempts = attempts + 1` → 返す。dead は返さない (無限再配送の防止、khi の MAX_ATTEMPTS 相当。v0 は定数 5) |
-| `AckSignals(dbtx, ws, ids)` | `acked_at = now WHERE acked_at IS NULL`。**既 ack は no-op (冪等、Q14)**、未知 id はエラーで列挙 (typo 検出) |
+| `AckSignals(dbtx, ws, ids)` | `acked_at = now WHERE acked_at IS NULL`。**既 ack は no-op (冪等、Q14)**、未知 id はエラーで列挙 (typo 検出)。照合は **(workspace_id, id)** で行い、service/connector を跨いで一致した行は全て ack する (id は複合 PK の一部で workspace 内一意ではないため、規則をここで固定する) |
 | `HasPendingSignals(dbtx, ws, maxAttempts)` | trigger 述語用。**dead は数えない** — dead だけが残った workspace で trigger が永久に発火し続けるのを防ぐ |
-| `GCSignals(dbtx, olderThan, dryRun)` | `acked_at IS NOT NULL AND acked_at < cutoff` を削除 (未決だった inbox GC の決着) |
+| `GCSignals(dbtx, olderThan, dryRun)` | acked が cutoff より古い行に加え、**未 ack でも received_at が cutoff より古い行を削除** (dead の永久残留を防ぐ。dead は 30 日間 `--state dead` で可視、それで拾われなければ他の 30 日 GC と同じ扱い) |
 
 - 細い interface を `internal/api/store.go` に追加 (`SignalStore`)、`TaskRepository` に
   一行 wrapper (`GCTriggerRuns` の型)。GC は `TaskGCStore.GC` の既存 tx 内に
@@ -136,6 +136,13 @@ boid signal ack  [--workspace <slug>] <id>...
 | `boid signal ingest` | `signal_ingest` | connector 専用。stdin の JSONL を取り込む |
 | `boid signal cursor` | `signal_cursor_get` | connector 専用。自 source の栞を返す |
 
+- **policy の割り当て (重要)**: 一般の `boidPolicy` へ足すのは `signal_list`・`signal_ack`
+  の 2 op **だけ**。`signal_ingest`・`signal_cursor_get` は宣言 (protocol / mirror /
+  escape-manifest) はするが一般 policy へは**入れない** — 付与は PR-5 の connector 専用
+  縮小 policy のみ。通常 job から ingest / cursor は常に拒否される (PR-3 の時点では
+  「誰も呼べない op」として存在する)。checklist の手順 3 を機械的に適用しないこと
+- `signal_ingest` の stdin は shim が上限 10MiB (既存 `PayloadPatchMaxBytes` と同値) で
+  読み切って送る。超過はエラー (握り潰さない)
 - workspace scoping は broker が job token から注入する (`card_list` の
   `internal/sandbox/broker.go:502-524` と同型)。**引数で workspace を指定させない**
 - `ingest`/`cursor` の source/service は引数でなく env (`BOID_SIGNAL_SERVICE` /
@@ -191,6 +198,9 @@ if trig.On == "signals":
   (`0043:71-72`、(project_id, trigger_name) で DB レベル強制) に**一切手を入れない**
 - workspace 未所属 project の `on: signals` は常に not due (debug log のみ)
 - skip streak (stuck 検知) は every ベースの現行式がそのまま働く
+- workspace の解決は trigger loop が既に使っている hydrate (`hydrateMetaForTriggers` =
+  `Meta.GetWithWorkspace`) の結果を使う。`HasPendingSignals` は `TaskWorkflowService` の
+  store interface (`internal/api/store.go`) へ追加して配線する
 
 ---
 
@@ -221,7 +231,9 @@ signals:
 ### 5.2 job 環境
 
 導出 trigger の発火は既存 `fireTrigger` → `StartExec` (exec job、readonly、project
-sandbox)。`StartExecRequest` に 2 点を追加する:
+sandbox)。`StartExecRequest` に **4 点**を追加する (env・bind と、下記「権限の絞り」の
+縮小 policy・service allowlist。いずれも `SessionJobInput` → `BuildSessionJobSpec` への
+pass-through field):
 
 - env: `BOID_SIGNAL_SERVICE` / `BOID_SIGNAL_CONNECTOR` / `BOID_SIGNAL_CONFIG` (config の
   JSON) / `BOID_CONNECTOR_EXEC` (下記パス)
@@ -257,6 +269,9 @@ connector job の権限は通常の exec job より**絞る** (nose レビュー
 - ページングは ingest を複数回呼んでよい (1 回ごとに tx が切れる = 途中 crash でも
   取り込んだ分の栞は正しく進んでいる)
 - 終了: 成功 0 / 失敗非ゼロ (握り潰さない — failStreak に乗せる)
+- 実行 runtime: connector は宣言 project の sandbox で動くため、必要な runtime
+  (python3 等) は**その project の実行 image が持っていること**。公式 Pack v0 は
+  python3 前提 (= khi metaproject の image で動く)
 
 ---
 
@@ -296,6 +311,9 @@ daemon 起動時 (`wire.go` の gateway 配線点) に新 package `internal/inte
    (外部ライブラリ最小の規約)。検証失敗は**該当 connector の導出 trigger を作らない +
    起動ログにエラー** (採点表 Q19)
 
+- profile の credential slot が複数ある Pack と、`<ver>` ディレクトリ名が manifest の
+  `version` と一致しない Pack は、v0 では**起動エラー** (未対応・不整合を黙って握らない。
+  先頭 slot を勝手に取るような縮退をしない)
 - `internal/integrationpack` は新 package なので architecture allowlist
   (`scripts/check-internal-architecture.sh` の**両方の配列**) へ登録
 - Pack の skills mount (§6.4 の selective mount) は移行順 step 3 (公式 Pack 化) の範囲。
