@@ -55,6 +55,18 @@ type CreateTaskRequest struct {
 	// machine v2 has no such statuses, a card is now born directly into
 	// "parked" — see task_create.go's allowedCreateInitialStatuses.)
 	InitialStatus string `json:"initial_status,omitempty"`
+	// IdempotencyKey (docs/plans/signal-ingest-detailed-design.md §8): a
+	// caller-supplied stable key, scoped by ProjectID, that makes a create
+	// call safe to retry — a second call with the same (ProjectID,
+	// IdempotencyKey) returns the existing task instead of creating a
+	// duplicate (exit 0, not an error). Reachable via all three of `boid
+	// task create --idempotency-key`, this JSON field on POST /api/tasks
+	// directly, and the sandboxed `task_create` builtin op (whose YAML spec
+	// is forwarded wholesale — see internal/sandbox/boid_shim.go's
+	// parseBoidTaskCreate). See orchestrator.Task.IdempotencyKey's doc
+	// comment for the distinction from task_identities/Ref (no external-
+	// identity or link/drop semantics here — purely an internal dedup key).
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 type DuplicateTaskRequest struct {

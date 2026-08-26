@@ -94,7 +94,7 @@ Creating, observing, and updating tasks lives under `boid task`. See [Concepts /
 | Command | Role |
 |---|---|
 | `boid task list [--status STATUS] [--workspace ID] [--behavior NAME]` | List tasks. |
-| `boid task create [-f FILE]` | Create a task; YAML on stdin (or via `-f`). |
+| `boid task create [-f FILE] [--idempotency-key KEY]` | Create a task; YAML on stdin (or via `-f`). With `--idempotency-key` (or `idempotency_key` in the YAML), a repeated call with the same `(project_id, key)` returns the existing task's id instead of creating a duplicate (exit 0). |
 | `boid task show <id> [--field PATH]` | Task detail (status and payload). With `--field <path>`, prints a single value as plain text — dotted JSON path resolved against the task (e.g. `--field status`, `--field payload.artifact.report`, `--field awaiting.question`, `--field lifecycle.abort.message`). |
 | `boid task watch <id> [--interval DURATION]` | Stream status / payload changes live. |
 | `boid task update <id> [-f FILE \| --patch-file FILE] [--payload-file FILE] [--instructions-file FILE]` | Update a task; use `-` for stdin. `-f` is a shorthand for `--patch-file`. |
@@ -172,9 +172,12 @@ auto_start: false
 description: ...
 payload:    { ... }
 instructions: { ... }
+idempotency_key: <string>   # optional, equivalent to --idempotency-key
 ```
 
 Pass `behavior_spec` to specify the behavior inline instead of referencing a name in `project.yaml`'s `task_behaviors`.
+
+`idempotency_key` is a project-internal stable key (e.g. parent card id + child generation key), not an external identity. If a task with the same `(project_id, idempotency_key)` already exists, it is returned instead of creating a duplicate (prevents duplicate child-task creation). To look tasks up by an external-world identity, use `task_identities` (`task_resolve_or_capture`) instead — its semantics differ (see `docs/plans/signal-ingest-detailed-design.md` §8).
 
 ### `task hook` (per-task hook operations)
 

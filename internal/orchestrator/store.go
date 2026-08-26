@@ -146,7 +146,7 @@ type TaskFilter struct {
 const taskSelectCols = `t.id, t.type, t.project_id, t.remote_id, t.title, t.description, t.status,` +
 	` t.behavior, t.traits, t.readonly, t.branch_prefix, t.base_branch, t.payload, t.instructions, t.auto_start,` +
 	` t.kind, t.urgency, t.wake_at, t.wake_task_id, t.suggestion_verb, t.detail,` +
-	` t.ref, t.parent_id, t.created_at, t.updated_at`
+	` t.ref, t.parent_id, t.idempotency_key, t.created_at, t.updated_at`
 
 // validateTaskTypeConsistency enforces design doc §3.5's invariant: Card is
 // non-nil iff Type == TaskTypeCard, Exec is non-nil iff Type ==
@@ -222,6 +222,26 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		}
 	}
 
+	// Get-or-create: idempotency_key-based (docs/plans/
+	// signal-ingest-detailed-design.md §8, migration 0047). Independent of
+	// the Ref check above — a task may carry either, both, or neither.
+	// Unlike Ref, idempotency_key has no external-identity meaning (no
+	// UUID-shortcut lookup, no link/drop semantics — see the field's own doc
+	// comment on Task) and is scoped by ProjectID alone, not ParentID: the
+	// design's example key ("<parent card id>:<child generation key>") is
+	// already parent-scoped inside the key string itself, so folding
+	// ParentID into the SQL scope too would be redundant, not safer.
+	if t.IdempotencyKey != "" {
+		existing, err := FindTaskByIdempotencyKey(dbtx, t.ProjectID, t.IdempotencyKey)
+		if err != nil {
+			return fmt.Errorf("find existing idempotency key: %w", err)
+		}
+		if existing != nil {
+			*t = *existing
+			return nil
+		}
+	}
+
 	if err := validateTaskTypeConsistency(t); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
@@ -262,23 +282,43 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	}
 	cardCols := cardInsertValues(t.Card)
 
+	// idempotency_key is genuinely nullable (migration 0047's own comment):
+	// an empty Go string must bind SQL NULL, not the empty string, so the
+	// partial unique index's `WHERE idempotency_key IS NOT NULL` never sees a
+	// keyless row.
+	var idempotencyKey any
+	if t.IdempotencyKey != "" {
+		idempotencyKey = t.IdempotencyKey
+	}
+
 	_, err = dbtx.Exec(
 		`INSERT INTO tasks (
 			id, type, project_id, remote_id, title, description, status,
 			behavior, traits, readonly, branch_prefix, base_branch, payload, instructions, auto_start,
 			kind, urgency, wake_at, wake_task_id, suggestion_verb, detail,
-			ref, parent_id, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ref, parent_id, idempotency_key, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, string(t.Type), t.ProjectID, t.RemoteID, t.Title, t.Description, string(t.Status),
 		execCols.behavior, execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart,
 		cardCols.kind, cardCols.urgency, cardCols.wakeAt, cardCols.wakeTaskID, cardCols.suggestionVerb, cardCols.detail,
-		t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
+		t.Ref, t.ParentID, idempotencyKey, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		// Concurrent create: if another goroutine just inserted the same (ref, parent_id),
 		// fall back to the existing task rather than returning an error.
 		if t.Ref != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			existing, findErr := FindTaskByRef(dbtx, t.Ref, t.ParentID, t.ProjectID)
+			if findErr == nil && existing != nil {
+				*t = *existing
+				return nil
+			}
+		}
+		// Concurrent create: same race, for idempotency_key's own partial
+		// unique index (migration 0047) instead of ref's. Independent check —
+		// see the pre-insert idempotency_key block above for why this doesn't
+		// fold into the Ref branch.
+		if t.IdempotencyKey != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			existing, findErr := FindTaskByIdempotencyKey(dbtx, t.ProjectID, t.IdempotencyKey)
 			if findErr == nil && existing != nil {
 				*t = *existing
 				return nil
@@ -913,6 +953,36 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID, projectID string) (*Task, error)
 	return t, nil
 }
 
+// FindTaskByIdempotencyKey returns the task matching the given idempotency
+// key within the given project scope, or nil if no matching task is found.
+// See migration 0047 and Task.IdempotencyKey's doc comment for the field's
+// contract (docs/plans/signal-ingest-detailed-design.md §8).
+//
+// Unlike FindTaskByRef, there is no UUID-shaped-string special case here:
+// idempotency_key is never treated as a stand-in for a task ID, only as an
+// opaque workspace-internal stable key. The equality comparison below also
+// never needs an explicit `IS NOT NULL` guard — SQL's NULL = 'x' is neither
+// true nor false, so a keyless (NULL) row can never match a non-empty
+// idempotencyKey argument, and this function itself short-circuits before
+// querying when idempotencyKey is empty.
+func FindTaskByIdempotencyKey(dbtx db.DBTX, projectID, idempotencyKey string) (*Task, error) {
+	if idempotencyKey == "" {
+		return nil, nil
+	}
+	row := dbtx.QueryRow(
+		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.project_id = ? AND t.idempotency_key = ?`,
+		projectID, idempotencyKey,
+	)
+	t, err := scanTask(row)
+	if err != nil {
+		if errors.Is(err, ErrTaskNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return t, nil
+}
+
 // ListChildren returns all direct children of the given parent task, ordered
 // by created_at ASC (oldest first). Returns an empty slice if the task has no
 // children — never nil. parentID must be non-empty; passing "" returns an
@@ -982,12 +1052,13 @@ func scanTask(s taskScanner) (*Task, error) {
 
 	var kind, urgency, wakeTaskID, suggestionVerb, detail sql.NullString
 	var wakeAt sql.NullTime
+	var idempotencyKey sql.NullString
 
 	if err := s.Scan(
 		&t.ID, &taskType, &t.ProjectID, &t.RemoteID, &t.Title, &t.Description, &status,
 		&behavior, &traitsJSON, &readonly, &branchPrefix, &baseBranch, &payload, &instructionsJSON, &autoStart,
 		&kind, &urgency, &wakeAt, &wakeTaskID, &suggestionVerb, &detail,
-		&t.Ref, &t.ParentID, &t.CreatedAt, &t.UpdatedAt,
+		&t.Ref, &t.ParentID, &idempotencyKey, &t.CreatedAt, &t.UpdatedAt,
 		&t.TotalChildCount, &t.DoneChildCount, &t.AbortedChildCount, &t.OpenChildCount, &t.AwaitingChildCount,
 	); err != nil {
 		if err == sql.ErrNoRows {
@@ -997,6 +1068,7 @@ func scanTask(s taskScanner) (*Task, error) {
 	}
 	t.Type = TaskType(taskType)
 	t.Status = TaskStatus(status)
+	t.IdempotencyKey = idempotencyKey.String
 
 	switch t.Type {
 	case TaskTypeExecution:

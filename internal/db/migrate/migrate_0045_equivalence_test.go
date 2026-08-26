@@ -331,6 +331,18 @@ func TestApply_0045_TaskTreeEquivalence(t *testing.T) {
 	if err := applyMigration(d.Conn, mustFindMigration(t, "0045_card_sti_migration")); err != nil {
 		t.Fatalf("apply 0045: %v", err)
 	}
+	// Unlike the Open/QueueNext equivalence tests above (which compare
+	// against a FROZEN custom-SQL reimplementation for exactly this reason —
+	// see this file's package doc comment), this test calls the LIVE
+	// orchestrator.ListChildren/GetTask below, so the schema must be caught
+	// up to whatever those functions' SELECT lists expect today (e.g.
+	// migration 0047's idempotency_key column) — none of the migrations
+	// between 0045 and the current chain head touch id/parent_id, so this
+	// does not affect what this test is actually checking (parent/child
+	// relationships survive the 0045 rebuild).
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("apply remaining migrations: %v", err)
+	}
 
 	for _, e := range wantEdges {
 		children, err := orchestrator.ListChildren(d.Conn, e.parent)

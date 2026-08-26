@@ -143,8 +143,20 @@ type Task struct {
 	Status      TaskStatus `json:"status"`
 	Ref         string     `json:"ref,omitempty"`
 	ParentID    string     `json:"parent_id,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	// IdempotencyKey backs `boid task create --idempotency-key` (docs/plans/
+	// signal-ingest-detailed-design.md §8, migration 0047). Unlike Ref, this
+	// is NOT an external-world identity — no link/drop/reopen semantics ride
+	// on it (that's task_identities' job — see its own doc comment for the
+	// distinction). It exists purely so a caller with no external identity to
+	// key off of (the common case: a judgment task minting a child task) can
+	// make a create call safe to retry: a second CreateTask with the same
+	// (ProjectID, IdempotencyKey) returns the FIRST task instead of inserting
+	// a duplicate (CreateTask's get-or-create, store.go). Empty string means
+	// "no key" (stored as SQL NULL — see migration 0047's own comment for why
+	// NULL rather than NOT NULL DEFAULT '').
+	IdempotencyKey string    `json:"idempotency_key,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 
 	// Card holds the card-only fields (kind/urgency/wake_at/wake_task_id/
 	// suggestion_verb/detail). Non-nil iff Type == TaskTypeCard.

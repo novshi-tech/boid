@@ -502,6 +502,16 @@ func allMigrations() []migration {
 				return tableExists(tx, "signal_cursors")
 			},
 		},
+		{
+			// docs/plans/signal-ingest-detailed-design.md §8 (独立 PR):
+			// `boid task create --idempotency-key` の永続化列 + 部分 unique
+			// index。ファイル自体の doc comment に不変条件の詳細がある。
+			version: "0047_add_tasks_idempotency_key",
+			path:    "migrations/0047_add_tasks_idempotency_key.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "tasks", "idempotency_key")
+			},
+		},
 	}
 }
 

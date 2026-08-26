@@ -12,6 +12,10 @@ CREATE INDEX idx_signals_pending
 -- index: idx_task_identities_task_id
 CREATE INDEX idx_task_identities_task_id ON task_identities(task_id);
 
+-- index: idx_tasks_project_idempotency_key
+CREATE UNIQUE INDEX idx_tasks_project_idempotency_key
+  ON tasks(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+
 -- index: idx_tasks_ref_parent_project
 CREATE UNIQUE INDEX idx_tasks_ref_parent_project ON tasks(ref, parent_id, project_id) WHERE ref != '';
 
@@ -164,7 +168,7 @@ CREATE TABLE "tasks" (
     wake_at          DATETIME,
     wake_task_id     TEXT,
     suggestion_verb  TEXT,
-    detail           TEXT,
+    detail           TEXT, idempotency_key TEXT,
 
     CHECK (type IN ('card', 'execution')),
 

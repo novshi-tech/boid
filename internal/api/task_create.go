@@ -168,16 +168,17 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 	}
 
 	task := &orchestrator.Task{
-		ID:          req.ID,
-		Type:        orchestrator.TaskTypeCard,
-		ProjectID:   req.ProjectID,
-		Title:       req.Title,
-		Description: req.Description,
-		Status:      initialStatus,
-		RemoteID:    req.RemoteID,
-		Ref:         req.Ref,
-		ParentID:    req.ParentID,
-		Card:        &orchestrator.CardAttrs{},
+		ID:             req.ID,
+		Type:           orchestrator.TaskTypeCard,
+		ProjectID:      req.ProjectID,
+		Title:          req.Title,
+		Description:    req.Description,
+		Status:         initialStatus,
+		RemoteID:       req.RemoteID,
+		Ref:            req.Ref,
+		ParentID:       req.ParentID,
+		IdempotencyKey: req.IdempotencyKey,
+		Card:           &orchestrator.CardAttrs{},
 	}
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -351,15 +352,16 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	}
 
 	task := &orchestrator.Task{
-		ID:          req.ID,
-		Type:        orchestrator.TaskTypeExecution,
-		ProjectID:   req.ProjectID,
-		Title:       req.Title,
-		Description: req.Description,
-		Status:      initialStatus,
-		RemoteID:    req.RemoteID,
-		Ref:         req.Ref,
-		ParentID:    req.ParentID,
+		ID:             req.ID,
+		Type:           orchestrator.TaskTypeExecution,
+		ProjectID:      req.ProjectID,
+		Title:          req.Title,
+		Description:    req.Description,
+		Status:         initialStatus,
+		RemoteID:       req.RemoteID,
+		Ref:            req.Ref,
+		ParentID:       req.ParentID,
+		IdempotencyKey: req.IdempotencyKey,
 		Exec: &orchestrator.ExecAttrs{
 			Behavior:     res.BehaviorName,
 			Traits:       traits,

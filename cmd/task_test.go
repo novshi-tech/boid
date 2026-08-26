@@ -53,6 +53,7 @@ traits:
 auto_start: true
 ref: my-task
 parent_id: parent-1
+idempotency_key: card-1:child-gen-1
 payload:
   foo: bar
 instructions:
@@ -78,6 +79,9 @@ instructions:
 	}
 	if spec.ParentID != "parent-1" {
 		t.Errorf("ParentID = %q, want parent-1", spec.ParentID)
+	}
+	if spec.IdempotencyKey != "card-1:child-gen-1" {
+		t.Errorf("IdempotencyKey = %q, want card-1:child-gen-1", spec.IdempotencyKey)
 	}
 	if len(spec.Payload) == 0 {
 		t.Error("Payload is empty, want non-empty JSON")

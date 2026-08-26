@@ -133,6 +133,7 @@ func init() {
 	taskListCmd.Flags().String("workspace", "", "Filter by workspace ID")
 	taskListCmd.Flags().String("behavior", "", "Filter by behavior name")
 	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
+	taskCreateCmd.Flags().String("idempotency-key", "", "Stable key (scoped by project_id) so a repeated create with the same key returns the existing task instead of creating a duplicate; overrides idempotency_key in the spec if both are given")
 	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
 	taskShowCmd.Flags().String("field", "", "Dotted path to a single field (e.g. status, payload.artifact.report, awaiting.question, lifecycle.abort.message). Prints the value as plain text.")
 	taskDeleteCmd.Flags().Bool("force", false, "Delete even if task is active")
@@ -342,6 +343,10 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 	req, err := parseTaskCreateSpec(data)
 	if err != nil {
 		return err
+	}
+
+	if key, _ := cmd.Flags().GetString("idempotency-key"); key != "" {
+		req.IdempotencyKey = key
 	}
 
 	if req.ProjectID == "" {
