@@ -76,5 +76,20 @@ const (
 	// OpBoidActionSend.
 	OpBoidActionList = "action_list"
 
+	// OpBoidSignalList / OpBoidSignalAck back `boid signal list` / `boid
+	// signal ack` from inside the sandbox (docs/plans/
+	// signal-ingest-detailed-design.md §3.2, PR-3) — part of the general
+	// boidPolicy (see boidPolicy's own doc comment in policy.go).
+	OpBoidSignalList = "signal_list"
+	OpBoidSignalAck  = "signal_ack"
+
+	// OpBoidSignalIngest / OpBoidSignalCursorGet mirror
+	// sandbox.BoidOpSignalIngest / BoidOpSignalCursorGet — declared here for
+	// mirror-table / drift-check completeness only. DELIBERATELY NOT added
+	// to boidPolicy's AllowedOps (policy.go): design doc §3.2 grants these
+	// only via PR-5's connector-scoped reduced policy.
+	OpBoidSignalIngest    = "signal_ingest"
+	OpBoidSignalCursorGet = "signal_cursor_get"
+
 	OpFetchGet = "get"
 )
