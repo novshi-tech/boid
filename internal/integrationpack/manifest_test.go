@@ -330,6 +330,84 @@ serviceProfiles:
 	}
 }
 
+// TestParseManifest_DuplicateServiceProfileNameRejected pins a review
+// finding (F4, MEDIUM): before this fix, a manifest declaring two
+// serviceProfiles[] entries with the same name parsed cleanly, and
+// Pack.ServiceProfile's lookup silently returned whichever one came first
+// in the slice — the exact "先頭 slot を勝手に取るような縮退をしない" v0
+// restriction (docs/plans/signal-ingest-detailed-design.md §6.2), just one
+// level up (profile name instead of credential slot). No silent
+// first-match degradation: duplicate profile names must be a hard
+// ParseManifest error.
+func TestParseManifest_DuplicateServiceProfileNameRejected(t *testing.T) {
+	yaml := `
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata: {name: x, version: '1.0.0'}
+serviceProfiles:
+  - name: dup
+    credentials: [{name: token, injection: bearer}]
+  - name: dup
+    endpoint: {configurable: true}
+`
+	_, err := ParseManifest([]byte(yaml))
+	if err == nil {
+		t.Fatal("want error for duplicate service profile name, got nil")
+	}
+	if !strings.Contains(err.Error(), "dup") {
+		t.Errorf("error should name the duplicate, got: %v", err)
+	}
+}
+
+// TestParseManifest_DuplicateConnectorNameRejected mirrors
+// TestParseManifest_DuplicateServiceProfileNameRejected for connectors[].
+func TestParseManifest_DuplicateConnectorNameRejected(t *testing.T) {
+	yaml := `
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata: {name: x, version: '1.0.0'}
+serviceProfiles:
+  - name: x
+    credentials: [{name: token, injection: bearer}]
+connectors:
+  - name: dup
+    executable: connectors/a
+    serviceProfile: x
+  - name: dup
+    executable: connectors/b
+    serviceProfile: x
+`
+	_, err := ParseManifest([]byte(yaml))
+	if err == nil {
+		t.Fatal("want error for duplicate connector name, got nil")
+	}
+	if !strings.Contains(err.Error(), "dup") {
+		t.Errorf("error should name the duplicate, got: %v", err)
+	}
+}
+
+// TestParseManifest_DuplicateSkillNameRejected mirrors
+// TestParseManifest_DuplicateServiceProfileNameRejected for skills[].
+func TestParseManifest_DuplicateSkillNameRejected(t *testing.T) {
+	yaml := `
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata: {name: x, version: '1.0.0'}
+skills:
+  - name: dup
+    path: skills/a
+  - name: dup
+    path: skills/b
+`
+	_, err := ParseManifest([]byte(yaml))
+	if err == nil {
+		t.Fatal("want error for duplicate skill name, got nil")
+	}
+	if !strings.Contains(err.Error(), "dup") {
+		t.Errorf("error should name the duplicate, got: %v", err)
+	}
+}
+
 // TestParseManifest_ConnectorUnknownServiceProfileRejected pins
 // manifest-internal consistency: a connector's serviceProfile must name a
 // serviceProfiles[] entry declared in the SAME manifest (there is nowhere
@@ -369,6 +447,81 @@ skills:
 	_, err := ParseManifest([]byte(yaml))
 	if err == nil {
 		t.Fatal("want error for skill requiring an unknown service profile, got nil")
+	}
+}
+
+// TestParseManifest_ConnectorExecutableRequired pins F5 (recommended
+// review finding): an empty connectors[].executable used to parse cleanly
+// — PR-5 uses it as the exec/bind-mount source, where an empty value is
+// never meaningful.
+func TestParseManifest_ConnectorExecutableRequired(t *testing.T) {
+	yaml := `
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata: {name: x, version: '1.0.0'}
+serviceProfiles:
+  - name: x
+    credentials: [{name: token, injection: bearer}]
+connectors:
+  - name: c
+    serviceProfile: x
+`
+	if _, err := ParseManifest([]byte(yaml)); err == nil {
+		t.Fatal("want error for missing connectors[].executable, got nil")
+	}
+}
+
+// TestParseManifest_ConnectorExecutablePathTraversalRejected pins F5: an
+// absolute path or a "../" path-traversal executable used to parse
+// cleanly, even though PR-5 resolves it relative to the Pack's own version
+// directory (docs/plans/signal-ingest-detailed-design.md §7.1 "mount
+// 位置") — either would let a malicious/buggy Pack point outside its own
+// installed directory.
+func TestParseManifest_ConnectorExecutablePathTraversalRejected(t *testing.T) {
+	cases := []string{"/etc/passwd", "../../../etc/passwd", "connectors/../../escape"}
+	for _, exe := range cases {
+		yaml := "apiVersion: boid.dev/v1\nkind: IntegrationPack\nmetadata: {name: x, version: '1.0.0'}\n" +
+			"serviceProfiles:\n  - name: x\n    credentials: [{name: token, injection: bearer}]\n" +
+			"connectors:\n  - name: c\n    executable: \"" + exe + "\"\n    serviceProfile: x\n"
+		if _, err := ParseManifest([]byte(yaml)); err == nil {
+			t.Errorf("executable %q: want error for a non-local path, got nil", exe)
+		}
+	}
+}
+
+// TestParseManifest_SkillPathRequired mirrors
+// TestParseManifest_ConnectorExecutableRequired for skills[].path.
+func TestParseManifest_SkillPathRequired(t *testing.T) {
+	yaml := "apiVersion: boid.dev/v1\nkind: IntegrationPack\nmetadata: {name: x, version: '1.0.0'}\nskills:\n  - name: s\n"
+	if _, err := ParseManifest([]byte(yaml)); err == nil {
+		t.Fatal("want error for missing skills[].path, got nil")
+	}
+}
+
+// TestParseManifest_SkillPathTraversalRejected mirrors
+// TestParseManifest_ConnectorExecutablePathTraversalRejected for
+// skills[].path.
+func TestParseManifest_SkillPathTraversalRejected(t *testing.T) {
+	cases := []string{"/etc/passwd", "../../../etc/passwd"}
+	for _, p := range cases {
+		yaml := "apiVersion: boid.dev/v1\nkind: IntegrationPack\nmetadata: {name: x, version: '1.0.0'}\n" +
+			"skills:\n  - name: s\n    path: \"" + p + "\"\n"
+		if _, err := ParseManifest([]byte(yaml)); err == nil {
+			t.Errorf("path %q: want error for a non-local path, got nil", p)
+		}
+	}
+}
+
+// TestParseManifest_MultipleYAMLDocumentsRejected pins F6 (recommended
+// review finding): a "---"-separated second YAML document used to be
+// silently ignored (yaml.Decoder.Decode only reads the first document) —
+// an operator who accidentally pasted a stray second document (or
+// concatenated two manifests) would have the second half silently vanish
+// rather than fail loudly.
+func TestParseManifest_MultipleYAMLDocumentsRejected(t *testing.T) {
+	yaml := validManifestYAML + "\n---\nfoo: bar\n"
+	if _, err := ParseManifest([]byte(yaml)); err == nil {
+		t.Fatal("want error for a manifest containing more than one YAML document, got nil")
 	}
 }
 

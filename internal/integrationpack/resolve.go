@@ -46,11 +46,15 @@ func findPack(packs []*Pack, pack, version string) (*Pack, bool) {
 //     must bind it ("slot 未 bind"), and must not carry any OTHER key
 //     ("未知 slot").
 //
-// The returned apigateway.ServiceConfig's AllowReadOnlyWrite is always
-// false (the zero value) — a Pack-profile-backed instance opts into that
-// gate the same way a free-form one does: it cannot, since ServiceConfig
-// (config.yaml) has no allow_readonly_write-equivalent field for a uses:
-// entry today. Revisit if a real Pack needs it.
+// The returned apigateway.ServiceConfig's AllowReadOnlyWrite is copied
+// straight from sc.AllowReadOnlyWrite (F2, review finding, MEDIUM: an
+// earlier version of this function silently dropped it, and its own doc
+// comment here incorrectly claimed ServiceConfig had no such field for a
+// uses: entry — config.ServiceConfig.AllowReadOnlyWrite lives on the exact
+// same struct a uses: entry uses; the earlier bug was that this function
+// never read it, not that it does not exist). A Pack-profile-backed
+// instance opts into the read-only→GET/HEAD-only gate exactly the same way
+// a free-form base_url/auth entry does via config.APIGatewayServices().
 func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack) (apigateway.ServiceConfig, error) {
 	packName, profileName, version, err := config.ParseUsesReference(sc.Uses)
 	if err != nil {
@@ -104,6 +108,7 @@ func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack)
 			Header:    slot.Header,
 			Query:     slot.Query,
 		},
+		AllowReadOnlyWrite: sc.AllowReadOnlyWrite,
 	}, nil
 }
 

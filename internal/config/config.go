@@ -651,6 +651,31 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		c.Services = raw.Services
 	}
 
+	// uses: wiring gap warning (F3, review finding, MEDIUM): as of this PR,
+	// internal/integrationpack.ResolveServices exists but nothing in
+	// internal/server/wire.go calls it yet — the API gateway's
+	// CredentialProvider is still built from cfg.APIGatewayServices() alone
+	// (docs/plans/signal-ingest-detailed-design.md §6.2 item 2's actual
+	// wiring is PR-5 scope). A uses: entry parses/validates cleanly here,
+	// appears in `boid config get`, and even satisfies services_floor's own
+	// unknown-name check — yet is never registered with the gateway, so a
+	// sandbox's first request to it silently 502s with no clue why. Warn
+	// loudly at every config load (the same place services_floor's own
+	// unknown-name warning lives, just below) rather than let this look
+	// like a working configuration until PR-5 lands. Sorted for
+	// deterministic log output.
+	var usesNames []string
+	for name, sc := range c.Services {
+		if sc.Uses != "" {
+			usesNames = append(usesNames, name)
+		}
+	}
+	sort.Strings(usesNames)
+	for _, name := range usesNames {
+		slog.Warn("services: uses: is not yet resolved against any Integration Pack — internal/integrationpack.ResolveServices exists but is not yet wired into the API gateway (PR-5); this service will not be reachable from a sandbox until that wiring lands",
+			"service", name, "uses", c.Services[name].Uses)
+	}
+
 	// services_floor: (docs/plans/api-gateway.md §3). Deliberately NOT
 	// validated against c.Services the way gateway.forges entries are
 	// validated against known forge kinds — mirrors sandbox.
@@ -689,6 +714,17 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	// default with a zero value.
 	c.Integrations = defaults.Integrations
 	if raw.Integrations.Dir != "" {
+		// F8, review finding (recommended): a relative integrations.dir
+		// would resolve against the daemon PROCESS's cwd once PR-5
+		// bind-mounts a Pack directory from it — an unpredictable,
+		// deployment-dependent location (whatever directory `boid start`
+		// happened to be invoked from, or the container's WORKDIR).
+		// Required to be absolute at config-load time instead of a
+		// request-time surprise, the same "fail loud with the offending
+		// value" posture every other path-shaped leaf here has.
+		if !filepath.IsAbs(raw.Integrations.Dir) {
+			return fmt.Errorf("integrations.dir: must be an absolute path (got %q)", raw.Integrations.Dir)
+		}
 		c.Integrations.Dir = raw.Integrations.Dir
 	}
 

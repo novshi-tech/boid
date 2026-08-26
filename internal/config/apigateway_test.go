@@ -456,6 +456,89 @@ services:
 	}
 }
 
+// TestLoadFromPath_Services_UsesEndpointSafetyChecksApply pins a review
+// finding (F1, HIGH/security): the uses: branch used to `return nil`
+// without ever running the same absolute-URL/scheme/query-fragment/
+// allow_insecure checks base_url gets — an operator's `endpoint:` value
+// reached apigateway.NewCredentialProvider completely unvalidated, silently
+// breaking that constructor's own documented "already validated by
+// config.yaml load" invariant. Every one of these cases must be rejected
+// at config-load time, the exact same posture base_url already has.
+func TestLoadFromPath_Services_UsesEndpointSafetyChecksApply(t *testing.T) {
+	cases := []struct {
+		name          string
+		endpoint      string
+		allowInsecure bool
+		wantErr       string
+	}{
+		{name: "malformed", endpoint: "not a url at all", wantErr: "absolute URL"},
+		{name: "no scheme", endpoint: "example.atlassian.net", wantErr: "absolute URL"},
+		{name: "query string", endpoint: "https://example.atlassian.net/api?tenant=x", wantErr: "query string"},
+		{name: "fragment", endpoint: "https://example.atlassian.net/api#x", wantErr: "query string"},
+		{name: "unsupported scheme even with allow_insecure", endpoint: "ftp://example.atlassian.net", allowInsecure: true, wantErr: "not supported"},
+		{name: "plain http without allow_insecure", endpoint: "http://example.atlassian.net", wantErr: "allow_insecure"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			allow := ""
+			if tc.allowInsecure {
+				allow = "    allow_insecure: true\n"
+			}
+			content := "services:\n  customer-jira:\n    uses: jira-cloud/jira-cloud@1.2.0\n" +
+				"    endpoint: \"" + tc.endpoint + "\"\n" + allow + "    credentials: { token: JIRA_TOKEN }\n"
+			_, err := loadFromPath(writeConfigFile(t, content))
+			if err == nil {
+				t.Fatalf("endpoint %q: want error, got nil", tc.endpoint)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("endpoint %q: error = %q, want it to contain %q", tc.endpoint, err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLoadFromPath_Services_UsesEndpointHTTPWithAllowInsecureAccepted is
+// the companion positive case — allow_insecure: true must actually unlock
+// a plain-http endpoint for a uses: entry too (F1/F2: allow_insecure was
+// silently inert for uses: entries before this fix, since the uses: branch
+// never reached any code that reads it).
+func TestLoadFromPath_Services_UsesEndpointHTTPWithAllowInsecureAccepted(t *testing.T) {
+	content := `
+services:
+  customer-jira:
+    uses: jira-cloud/jira-cloud@1.2.0
+    endpoint: http://example-internal.atlassian.net
+    allow_insecure: true
+    credentials:
+      token: JIRA_TOKEN
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Services["customer-jira"].Endpoint != "http://example-internal.atlassian.net" {
+		t.Errorf("Endpoint = %q", cfg.Services["customer-jira"].Endpoint)
+	}
+}
+
+// TestLoadFromPath_Services_UsesEndpointOmittedIsNotAConfigLoadError pins
+// that an OMITTED endpoint on a uses: entry is not itself a config-load
+// error (whether it's actually required depends on the resolved profile —
+// internal/integrationpack.DesugarService decides that once the Pack
+// registry is known, since this package cannot reach it — Q16).
+func TestLoadFromPath_Services_UsesEndpointOmittedIsNotAConfigLoadError(t *testing.T) {
+	content := `
+services:
+  customer-jira:
+    uses: jira-cloud/jira-cloud@1.2.0
+    credentials:
+      token: JIRA_TOKEN
+`
+	if _, err := loadFromPath(writeConfigFile(t, content)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // TestLoadFromPath_Services_UsesExclusiveWithBaseURLRejected pins the
 // documented exclusivity (docs/plans/signal-ingest-detailed-design.md §6.1:
 // "uses 指定時は既存の base_url/auth と排他"): a services.<name> entry

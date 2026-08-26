@@ -3,6 +3,8 @@ package integrationpack
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -216,6 +218,19 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("integrationpack: parse manifest: %w", err)
 	}
+	// F6, review finding (recommended): yaml.Decoder.Decode only ever reads
+	// ONE "---"-separated document per call — a manifest accidentally
+	// containing a second document (a stray paste, two manifests
+	// concatenated) used to have that second document silently vanish
+	// rather than fail loudly. A second Decode call into a throwaway value
+	// returning anything other than io.EOF means more content follows.
+	var extra yaml.Node
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("integrationpack: parse manifest: file contains more than one YAML document")
+		}
+		return nil, fmt.Errorf("integrationpack: parse manifest: %w", err)
+	}
 
 	if raw.APIVersion != ManifestAPIVersion {
 		return nil, fmt.Errorf("integrationpack: unsupported apiVersion %q (want %q)", raw.APIVersion, ManifestAPIVersion)
@@ -241,6 +256,15 @@ func ParseManifest(data []byte) (*Manifest, error) {
 		if rsp.Name == "" {
 			return nil, fmt.Errorf("integrationpack: serviceProfiles: a profile name must not be empty")
 		}
+		// F4, review finding (MEDIUM): a duplicate profile name used to
+		// parse cleanly, and Pack.ServiceProfile's lookup silently returned
+		// whichever entry came first in the slice — the same "先頭 slot を
+		// 勝手に取るような縮退をしない" v0 restriction the credential-slot
+		// count check just below already enforces, one level up (profile
+		// name instead of slot name). No silent first-match degradation.
+		if profileNames[rsp.Name] {
+			return nil, fmt.Errorf("integrationpack: serviceProfiles: duplicate profile name %q", rsp.Name)
+		}
 		if len(rsp.Credentials) > 1 {
 			return nil, fmt.Errorf("integrationpack: serviceProfiles[%q]: declares %d credential slots, v0 supports at most 1 (no silent take-the-first fallback)", rsp.Name, len(rsp.Credentials))
 		}
@@ -259,9 +283,27 @@ func ParseManifest(data []byte) (*Manifest, error) {
 		m.ServiceProfiles = append(m.ServiceProfiles, profile)
 	}
 
+	connectorNames := make(map[string]bool, len(raw.Connectors))
 	for _, rc := range raw.Connectors {
 		if rc.Name == "" {
 			return nil, fmt.Errorf("integrationpack: connectors: a connector name must not be empty")
+		}
+		// F4 (MEDIUM) — same no-silent-first-match posture as
+		// serviceProfiles above.
+		if connectorNames[rc.Name] {
+			return nil, fmt.Errorf("integrationpack: connectors: duplicate connector name %q", rc.Name)
+		}
+		connectorNames[rc.Name] = true
+		// F5, review finding (recommended): PR-5 resolves executable
+		// relative to this Pack version's own directory (docs/plans/
+		// signal-ingest-detailed-design.md §7.1 "mount 位置") and uses it
+		// as an exec source — an empty, absolute, or "../"-escaping value
+		// was accepted here with no check at all before this fix.
+		// filepath.IsLocal (path/filepath) is exactly this guarantee:
+		// non-empty, relative, and never escapes its own directory via
+		// "..".
+		if !filepath.IsLocal(rc.Executable) {
+			return nil, fmt.Errorf("integrationpack: connectors[%q]: executable %q must be a non-empty path local to the Pack directory (no absolute path, no \"..\")", rc.Name, rc.Executable)
 		}
 		if rc.ServiceProfile == "" {
 			return nil, fmt.Errorf("integrationpack: connectors[%q]: serviceProfile is required", rc.Name)
@@ -285,9 +327,22 @@ func ParseManifest(data []byte) (*Manifest, error) {
 		})
 	}
 
+	skillNames := make(map[string]bool, len(raw.Skills))
 	for _, rs := range raw.Skills {
 		if rs.Name == "" {
 			return nil, fmt.Errorf("integrationpack: skills: a skill name must not be empty")
+		}
+		// F4 (MEDIUM) — same no-silent-first-match posture as
+		// serviceProfiles/connectors above.
+		if skillNames[rs.Name] {
+			return nil, fmt.Errorf("integrationpack: skills: duplicate skill name %q", rs.Name)
+		}
+		skillNames[rs.Name] = true
+		// F5 (recommended) — same non-empty/local-path guarantee as
+		// connectors[].executable above; PR-5's selective skill mount
+		// resolves this relative to the Pack's own directory too.
+		if !filepath.IsLocal(rs.Path) {
+			return nil, fmt.Errorf("integrationpack: skills[%q]: path %q must be a non-empty path local to the Pack directory (no absolute path, no \"..\")", rs.Name, rs.Path)
 		}
 		if rs.RequiresServiceProfile != "" && !profileNames[rs.RequiresServiceProfile] {
 			return nil, fmt.Errorf("integrationpack: skills[%q]: requiresServiceProfile %q is not declared under serviceProfiles", rs.Name, rs.RequiresServiceProfile)

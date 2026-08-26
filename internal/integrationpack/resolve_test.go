@@ -50,6 +50,30 @@ func TestDesugarService_Valid(t *testing.T) {
 	}
 }
 
+// TestDesugarService_PropagatesAllowReadOnlyWrite pins a review finding
+// (F2, MEDIUM): config.ServiceConfig.AllowReadOnlyWrite lives on the exact
+// same struct a uses: entry uses — it was silently dropped because the
+// uses: branch of validateServiceConfig returns before ever reaching it,
+// and DesugarService's own returned apigateway.ServiceConfig never read it
+// either. An operator setting allow_readonly_write: true on a uses: entry
+// must see it actually reach the gateway's read-only gate, the same as a
+// free-form base_url/auth entry already does (config.APIGatewayServices()).
+func TestDesugarService_PropagatesAllowReadOnlyWrite(t *testing.T) {
+	sc := config.ServiceConfig{
+		Uses:               "jira-cloud/jira-cloud@1.2.0",
+		Endpoint:           "https://example.atlassian.net",
+		Credentials:        map[string]string{"token": "JIRA_TOKEN"},
+		AllowReadOnlyWrite: true,
+	}
+	got, err := DesugarService("customer-jira", sc, bearerPack(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.AllowReadOnlyWrite {
+		t.Error("AllowReadOnlyWrite = false, want true (config value was dropped by DesugarService)")
+	}
+}
+
 // TestDesugarService_PackNotInstalled pins Q19's "pack 不在" startup-error
 // case: a uses: reference naming a pack/version that isn't among the loaded
 // Packs is a config error, not a nil/zero-value fallback.

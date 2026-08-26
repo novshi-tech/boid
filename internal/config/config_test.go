@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -762,6 +763,74 @@ func TestLoadFromPath_IntegrationsDir_Custom(t *testing.T) {
 	}
 	if cfg.Integrations.Dir != "/srv/boid-packs" {
 		t.Errorf("Integrations.Dir = %q, want /srv/boid-packs", cfg.Integrations.Dir)
+	}
+}
+
+// TestLoadFromPath_Services_UsesEntryWarnsNotYetWired pins a review finding
+// (F3, MEDIUM/wiring): as of PR-4, internal/integrationpack.ResolveServices
+// exists but nothing calls it yet — internal/server/wire.go still only
+// ever builds the API gateway's CredentialProvider from
+// cfg.APIGatewayServices() (which deliberately excludes every uses: entry
+// — see that method's own doc comment). Without a loud signal, a
+// uses:-configured service parses/validates cleanly, shows up in `boid
+// config get`, and even satisfies services_floor's own unknown-name check
+// (since it DOES exist under services:) — yet is never actually registered
+// with the gateway, so the first sandboxed request to it silently 502s
+// with no clue why. A config-load-time warning closes that gap until PR-5
+// wires the real thing.
+func TestLoadFromPath_Services_UsesEntryWarnsNotYetWired(t *testing.T) {
+	buf := captureSlog(t)
+	content := `
+services:
+  customer-jira:
+    uses: jira-cloud/jira-cloud@1.2.0
+    endpoint: https://example.atlassian.net
+    credentials:
+      token: JIRA_TOKEN
+`
+	if _, err := loadFromPath(writeConfigFile(t, content)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "customer-jira") {
+		t.Errorf("expected a warning naming the uses: service, log = %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "uses") {
+		t.Errorf("expected the warning to mention uses:, log = %q", buf.String())
+	}
+}
+
+// TestLoadFromPath_Services_NoUsesEntriesNoWarning is the negative
+// counterpart — a config.yaml with only free-form services (or none at
+// all) must not emit the uses:-not-wired warning.
+func TestLoadFromPath_Services_NoUsesEntriesNoWarning(t *testing.T) {
+	buf := captureSlog(t)
+	content := `
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    auth: { kind: bearer, secret_key: k }
+`
+	if _, err := loadFromPath(writeConfigFile(t, content)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(buf.String(), "uses") {
+		t.Errorf("did not expect a uses:-not-wired warning for a config with no uses: entries, log = %q", buf.String())
+	}
+}
+
+// TestLoadFromPath_IntegrationsDir_RelativeRejected pins F8 (recommended
+// review finding): a relative integrations.dir would resolve against the
+// daemon PROCESS's cwd once PR-5 bind-mounts a Pack directory from it — an
+// unpredictable, deployment-dependent location. Require an absolute path
+// at config-load time instead of a request-time surprise.
+func TestLoadFromPath_IntegrationsDir_RelativeRejected(t *testing.T) {
+	content := "integrations:\n  dir: relative/path\n"
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for a relative integrations.dir, got nil")
+	}
+	if !strings.Contains(err.Error(), "absolute") {
+		t.Errorf("error should mention \"absolute\", got: %v", err)
 	}
 }
 

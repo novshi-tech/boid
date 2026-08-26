@@ -134,6 +134,56 @@ var validServiceAuthKinds = map[string]bool{
 	string(apigateway.AuthOAuth2): true,
 }
 
+// ValidateServiceURL validates rawURL for the safety properties every
+// service's outbound upstream address must have (docs/plans/api-gateway.md
+// §1/§2):
+//   - an absolute URL with an explicit scheme and host
+//   - no query string or fragment (apigateway.Server always forwards the
+//     INBOUND request's own RawQuery verbatim and never merges in anything
+//     from this URL, and an HTTP fragment is never sent to a server at all
+//     — RFC 3986 §3.5)
+//   - https, unless allowInsecure is true (a plain-http scheme means an
+//     injected credential crosses the network to the upstream in
+//     cleartext — allowInsecure moves that acknowledgment into the config
+//     document itself rather than a log line that may never be read)
+//   - only http/https schemes even with allowInsecure set (the gateway's
+//     outbound Transport only ever speaks http/https regardless of this
+//     flag — "ftp"/"ws"/anything else would validate cleanly yet fail
+//     every request at 502 once dispatched)
+//
+// Exported and shared by validateServiceConfig's own base_url check AND
+// its uses:-branch endpoint check (F1, review finding, HIGH/security: a
+// uses: entry's Endpoint used to bypass every one of these checks
+// entirely — malformed/http-without-allow_insecure/non-http(s)-scheme/
+// query-string endpoints all loaded cleanly, silently breaking
+// apigateway.NewCredentialProvider's own documented "already validated by
+// config.yaml load" invariant). serviceName/fieldName only name the
+// offending services.<name> entry/key in the returned error — fieldName is
+// "base_url" or "endpoint" depending on the caller.
+func ValidateServiceURL(serviceName, fieldName, rawURL string, allowInsecure bool) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("services[%q]: %q must be an absolute URL with a scheme and host (got %q)", serviceName, fieldName, rawURL)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("services[%q]: %q must not include a query string or fragment (got %q) — the sandbox's own query string is always forwarded as-is; use auth.kind: query for a fixed, injected query parameter instead", serviceName, fieldName, rawURL)
+	}
+	if u.Scheme != "https" && !allowInsecure {
+		return fmt.Errorf(
+			"services[%q]: %q scheme %q is not https, so this service's injected credential would cross the network in cleartext — "+
+				"set \"allow_insecure: true\" on this service if that is intentional (e.g. an internal test/staging API with no TLS yet)",
+			serviceName, fieldName, u.Scheme)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("services[%q]: %q scheme %q is not supported — the gateway only ever speaks http or https to the upstream, regardless of \"allow_insecure\"", serviceName, fieldName, u.Scheme)
+	}
+	if u.Scheme != "https" {
+		slog.Warn("services: URL does not use https — this service's injected credential will cross the network to the upstream in cleartext",
+			"service", serviceName, "field", fieldName, "url", rawURL, "scheme", u.Scheme)
+	}
+	return nil
+}
+
 // validateServiceConfig validates one services.<name> entry, returning a
 // descriptive error naming both the service and the missing/invalid field —
 // the same "fail loud with the offending name" posture
@@ -189,6 +239,26 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 		if _, _, _, err := ParseUsesReference(sc.Uses); err != nil {
 			return fmt.Errorf("services[%q]: \"uses\": %w", name, err)
 		}
+		// endpoint: (F1, review finding, HIGH/security): this used to
+		// `return nil` right here without ever validating sc.Endpoint at
+		// all — an operator's endpoint value reached
+		// apigateway.NewCredentialProvider completely unvalidated,
+		// silently breaking that constructor's own documented "already
+		// validated by config.yaml load" invariant (malformed/http-without-
+		// allow_insecure/non-http(s)-scheme/query-string endpoints all
+		// loaded cleanly). A uses:-based instance's resolved BaseURL comes
+		// from Endpoint (internal/integrationpack.DesugarService), so it
+		// must satisfy the exact same safety properties base_url does —
+		// ValidateServiceURL is the single shared check both use. Whether
+		// Endpoint is actually REQUIRED depends on the resolved service
+		// profile (unknown here — Q16), so an EMPTY Endpoint is not
+		// rejected by this package; DesugarService enforces that half once
+		// the Pack registry is known.
+		if sc.Endpoint != "" {
+			if err := ValidateServiceURL(name, "endpoint", sc.Endpoint, sc.AllowInsecure); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	// endpoint:/credentials: only mean anything alongside uses: (they fill
@@ -213,69 +283,10 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 	// exactly this reason — a malformed base_url should fail `boid start`
 	// loudly (the same posture gateway.forges.*.host gets), not silently
 	// vanish from the gateway's service registry with only a log warning
-	// once the daemon is already running.
-	u, err := url.Parse(sc.BaseURL)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("services[%q]: \"base_url\" must be an absolute URL with a scheme and host (got %q)", name, sc.BaseURL)
-	}
-	// A query string or fragment on base_url is rejected outright (codex
-	// review round 2 finding), rather than silently ignored: apigateway.
-	// Server always forwards the INBOUND request's own RawQuery verbatim
-	// (docs/plans/api-gateway.md §5 — the sandbox's own query string must
-	// reach the upstream unchanged) and never merges it with anything from
-	// base_url, and a URL fragment is never sent to an HTTP server at all
-	// (RFC 3986 §3.5 — it is a client-side-only construct). An operator
-	// writing `base_url: https://host/api?tenant=x` expecting "?tenant=x"
-	// to always be appended would otherwise see it silently vanish on
-	// every single request with no indication why — failing the config
-	// load instead directs them to the one place that DOES support a
-	// fixed, always-injected value: the query AuthKind (a fixed query
-	// parameter set from the secret store, not encoded into base_url).
-	if u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("services[%q]: \"base_url\" must not include a query string or fragment (got %q) — the sandbox's own query string is always forwarded as-is; use auth.kind: query for a fixed, injected query parameter instead", name, sc.BaseURL)
-	}
-	// docs/plans/api-gateway.md §1 states the gateway's own outbound leg as
-	// "gateway → upstream は daemon 発の HTTPS" — a plain-http base_url means
-	// this service's injected bearer/basic/header/query credential crosses
-	// the network to the upstream in cleartext. Not rejected outright: PR1's
-	// own stated primary use case ("自社開発アプリのテスト・運用API") often
-	// means an internal test/staging environment that legitimately has no
-	// TLS yet, and hard-rejecting http:// unconditionally would make the
-	// gateway unusable for exactly that case.
-	//
-	// AllowInsecure IS required, though (codex review round 4 finding,
-	// escalated from a round-2 warn-only version of this check): a bare log
-	// warning is not fail-closed — an operator who never greps boid.log
-	// (or whose daemon logs are quietly discarded/rotated away) has NO
-	// signal that a credential is crossing the network in cleartext, and a
-	// copy-pasted-from-an-insecure-example or typo'd "http" scheme would
-	// otherwise ship silently. Requiring `allow_insecure: true` in the same
-	// services.<name> block moves the acknowledgment into the config
-	// document itself — visible in `boid config get`, in code review of a
-	// config.yaml change, and in `boid config apply`'s diff — rather than a
-	// log line that may never be read. This still does not block the real
-	// use case: it becomes a one-line, explicit, self-documenting opt-in
-	// instead of an unconditional accept.
-	if u.Scheme != "https" && !sc.AllowInsecure {
-		return fmt.Errorf(
-			"services[%q]: \"base_url\" scheme %q is not https, so this service's injected credential would cross the network in cleartext — "+
-				"set \"allow_insecure: true\" on this service if that is intentional (e.g. an internal test/staging API with no TLS yet)",
-			name, u.Scheme)
-	}
-	// allow_insecure only ever bought a plaintext-HTTP escape hatch — never
-	// license for an arbitrary scheme (codex review round 6 finding): the
-	// gateway's outbound Transport is a fixed *http.Transport (server.go's
-	// NewServer), which only ever speaks http/https regardless of this flag,
-	// so "ftp"/"ws"/anything else would validate cleanly here yet fail every
-	// single request at 502 once dispatched. Rejecting it at config-load
-	// time turns that into an immediate, actionable `boid start` error
-	// instead of a request-time surprise.
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return fmt.Errorf("services[%q]: \"base_url\" scheme %q is not supported — the gateway only ever speaks http or https to the upstream, regardless of \"allow_insecure\"", name, u.Scheme)
-	}
-	if u.Scheme != "https" {
-		slog.Warn("services: base_url does not use https — this service's injected credential will cross the network to the upstream in cleartext",
-			"service", name, "base_url", sc.BaseURL, "scheme", u.Scheme)
+	// once the daemon is already running. ValidateServiceURL is the exact
+	// same check the uses: branch's own "endpoint" field above shares (F1).
+	if err := ValidateServiceURL(name, "base_url", sc.BaseURL, sc.AllowInsecure); err != nil {
+		return err
 	}
 	if !validServiceAuthKinds[sc.Auth.Kind] {
 		return fmt.Errorf("services[%q]: auth.kind: unrecognized %q (want one of bearer, basic, header, query, oauth2)", name, sc.Auth.Kind)
