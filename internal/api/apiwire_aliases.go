@@ -78,3 +78,10 @@ const WorkspaceInitScriptCleared = apiwire.WorkspaceInitScriptCleared
 const WorkspaceInitScriptUnchanged = apiwire.WorkspaceInitScriptUnchanged
 
 type WorkspaceInitScriptResult = apiwire.WorkspaceInitScriptResult
+
+// from internal/api/signal_handler.go
+type SignalSource = apiwire.SignalSource
+type Signal = apiwire.Signal
+type ListSignalsResponse = apiwire.ListSignalsResponse
+type AckSignalsRequest = apiwire.AckSignalsRequest
+type AckSignalsResponse = apiwire.AckSignalsResponse

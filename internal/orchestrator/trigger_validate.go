@@ -33,6 +33,13 @@ func ValidateTriggers(triggers []Trigger) error {
 			return fmt.Errorf("project.yaml: triggers[%d]: duplicate trigger name %q", i, trig.Name)
 		}
 		seen[trig.Name] = true
+		switch trig.On {
+		case "", TriggerOnSchedule, TriggerOnSignals:
+			// ok — "" is an alias for TriggerOnSchedule (fields added after
+			// this one existed, pre-dating `on`, round-trip unchanged).
+		default:
+			return fmt.Errorf("project.yaml: triggers[%d] (%s): on: unknown value %q (must be %q or %q)", i, trig.Name, trig.On, TriggerOnSchedule, TriggerOnSignals)
+		}
 		if trig.Run == "" {
 			return fmt.Errorf("project.yaml: triggers[%d] (%s): run must not be empty", i, trig.Name)
 		}

@@ -1283,6 +1283,16 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// assignment at sessionAdapter's construction below (mountRoutes)
 		// for why it can't be until then.
 		Triggers: taskRepo,
+		// Signals: taskRepo already implements api.SignalStore (see
+		// internal/orchestrator/signal_store.go's IngestSignals /
+		// GetSignalCursor / ListSignals / ClaimSignals / AckSignals /
+		// HasPendingSignals, and internal/api/store.go's `var _ SignalStore
+		// = (*orchestrator.TaskRepository)(nil)` assertion) — same object as
+		// Tasks/TaskTriage/Actions/Triggers above, viewed through a narrower
+		// interface. docs/plans/signal-ingest-detailed-design.md §4.2 (PR-6):
+		// SweepTriggers' on:signals due predicate reads this via
+		// signalsPendingForTrigger (trigger_loop.go).
+		Signals: taskRepo,
 		// TaskCreator is wired below, once taskSvc (*api.TaskAppService) is
 		// constructed — see the comment there for why this can't be set here.
 	}
@@ -2186,6 +2196,13 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// card-model-cleanup.md PR-3 §4). Mounted at its own root rather than
 	// under /api/tasks — see api.CardHandler's doc comment.
 	r.Mount("/api/cards", (&api.CardHandler{Service: runtime.workflow}).Routes())
+
+	// signal inbox read/ack surface (docs/plans/signal-ingest-detailed-
+	// design.md §3.1, PR-2). taskRepo already implements api.SignalStore
+	// (PR-1's var _ assertion, internal/api/store.go) — same "mount the
+	// handler directly against taskRepo, no wrapper service" shape as
+	// TaskTriage/Actions/Triggers above use runtime.workflow's fields for.
+	r.Mount("/api/signals", (&api.SignalHandler{Store: runtime.taskRepo}).Routes())
 
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {

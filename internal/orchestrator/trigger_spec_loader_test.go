@@ -84,6 +84,49 @@ triggers:
 	}
 }
 
+// TestReadProjectMeta_Triggers_OnSignals_DecodesAsString pins F3 (Opus
+// review 2026-08-26): `on` is a YAML 1.1 reserved boolean-literal key
+// (on/off/yes/no all decode to true/false under YAML 1.1). yaml.v3 (this
+// repo's parser) follows YAML 1.2's Core Schema instead, where `on`/`off`
+// are plain strings, not booleans — so `on: signals` and `on: schedule`
+// decode as the strings "signals"/"schedule", not booleans, through this
+// package's ACTUAL parse path (ReadProjectMeta, not a synthetic
+// yaml.Unmarshal call). This is a regression pin, not new behavior: it
+// documents/locks in a YAML-library quirk this PR's correctness silently
+// depends on.
+func TestReadProjectMeta_Triggers_OnSignals_DecodesAsString(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+triggers:
+  - name: sweep
+    on: signals
+    every: 2m
+    run: python3 -m khi.app.scan
+  - name: intake
+    on: schedule
+    every: 10m
+    run: python3 scripts/intake_tick.py
+`)
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if len(meta.Triggers) != 2 {
+		t.Fatalf("Triggers = %+v, want 2 entries", meta.Triggers)
+	}
+	if meta.Triggers[0].On != "signals" {
+		t.Errorf("Triggers[0].On = %q, want \"signals\" (YAML 1.1 reserved-boolean-key regression)", meta.Triggers[0].On)
+	}
+	if meta.Triggers[1].On != "schedule" {
+		t.Errorf("Triggers[1].On = %q, want \"schedule\"", meta.Triggers[1].On)
+	}
+}
+
 func TestReadProjectMeta_Triggers_DuplicateName_RejectedAtLoadTime(t *testing.T) {
 	dir := t.TempDir()
 	writeProjectYAML(t, dir, `

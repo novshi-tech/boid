@@ -40,6 +40,12 @@ func TestResolveField_KnownPaths(t *testing.T) {
 		{"oauth_providers.freee.authorization_endpoint", true},
 		{"oauth_providers.freee.device_authorization_endpoint", true},
 		{"oauth_providers.google.authorize_params.access_type", true},
+		// docs/plans/signal-ingest-detailed-design.md §6.1 (PR-4).
+		{"integrations.dir", true},
+		{"integrations", false}, // container, not a leaf
+		{"services.myapp.uses", true},
+		{"services.myapp.endpoint", true},
+		{"services.myapp.credentials.token", true},
 	}
 	for _, tc := range cases {
 		_, ok := ResolveField(tc.path)

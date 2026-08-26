@@ -269,6 +269,52 @@ func (s *TaskWorkflowService) triggerIsDue(now time.Time, key TriggerKey, every 
 	return now.Sub(latest.StartedAt) >= every, nil
 }
 
+// signalsPendingForTrigger evaluates the extra `on: signals` half of the due
+// predicate (docs/plans/signal-ingest-detailed-design.md §4.2):
+//
+//	due := now - latestRun.StartedAt >= every        # triggerIsDue, unchanged
+//	if trig.On == "signals":
+//	    due = due && HasPendingSignals(workspaceOf(project))
+//
+// meta is the SAME hydrated *orchestrator.ProjectMeta the caller
+// (SweepTriggers) already read off hydrateMetaForTriggers for this project —
+// meta.SecretNamespace carries the resolved workspace id whenever the
+// project has a linked workspace (ProjectStore.GetWithWorkspace always
+// injects it, including in its degraded os.ErrNotExist window; see that
+// method's own doc comment), so this issues NO new DB query to re-resolve
+// the workspace, matching §4.2's explicit requirement.
+//
+// A project with no linked workspace (empty SecretNamespace) is always not
+// due — logged at Debug, not Warn/error: this is an ordinary, expected
+// project.yaml shape (an on:signals trigger declared on a workspace-unlinked
+// project), not a failure (§4.2: "常に not due (debug log のみ、エラーにしない)").
+// The same applies when no SignalStore is wired at all (s.Signals nil) —
+// this deliberately does NOT fold into SweepTriggers' top-level nil guard,
+// since that would also block every plain schedule trigger sharing this
+// daemon; only on:signals triggers depend on Signals.
+//
+// A HasPendingSignals error also resolves to not-due (logged at Warn) rather
+// than aborting the whole trigger's evaluation — matching triggerIsDue's own
+// caller (SweepTriggers already treats a per-trigger evaluation error as
+// "skip this trigger this tick, retry next tick", the same fail-open posture
+// dispatch failures get.
+func (s *TaskWorkflowService) signalsPendingForTrigger(meta *orchestrator.ProjectMeta, key TriggerKey) bool {
+	if meta.SecretNamespace == "" {
+		slog.Debug("trigger sweep: on:signals trigger's project has no linked workspace; never due", "project_id", key.ProjectID, "trigger", key.TriggerName)
+		return false
+	}
+	if s.Signals == nil {
+		slog.Debug("trigger sweep: on:signals trigger evaluated but no SignalStore is wired; never due", "project_id", key.ProjectID, "trigger", key.TriggerName)
+		return false
+	}
+	pending, err := s.Signals.HasPendingSignals(meta.SecretNamespace, orchestrator.MaxSignalAttempts)
+	if err != nil {
+		slog.Warn("trigger sweep: on:signals HasPendingSignals failed; treating as not due", "project_id", key.ProjectID, "trigger", key.TriggerName, "workspace_id", meta.SecretNamespace, "error", err)
+		return false
+	}
+	return pending
+}
+
 // triggerRunArgv wraps run the way every trigger-fired exec job's Argv is
 // built: `sh -c` plus an `exec 0</dev/null;` prefix that closes the shell's
 // own stdin before running the command (N-4, Opus review). Needed because
@@ -425,16 +471,49 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 			// flight — that combination (not due AND busy) is completely
 			// normal whenever a trigger's own command runs longer than one
 			// sweep tick but still finishes well within `every`.
-			due, derr := s.triggerIsDue(now, key, every)
+			//
+			// everyDue (NOT the final on:signals-adjusted due below) is
+			// what decides whether a busy trigger counts as a "skip"
+			// (Opus review F1, 2026-08-26): trackSkipStreak's own doc
+			// comment requires a stuck key to appear in EITHER Skipped or
+			// Fired on every tick until it resolves. If the on:signals
+			// predicate were allowed to make an in-flight, every-elapsed
+			// trigger's due false (e.g. the very job that's now wedged
+			// acked every pending Signal right before hanging, so the
+			// inbox is empty by the time this tick runs), that trigger
+			// would silently vanish from both Skipped and Fired — wedged
+			// forever with no stuck notification ever firing, unlike an
+			// identically-configured `on: schedule` trigger. Evaluating
+			// busy against everyDue, BEFORE the signals predicate is even
+			// consulted, closes that gap: a busy, every-elapsed trigger is
+			// always recorded as Skipped regardless of what
+			// signalsPendingForTrigger would say (and, as a side benefit,
+			// the extra HasPendingSignals read for on:signals triggers is
+			// skipped entirely in the busy case, since it can't fire this
+			// tick either way).
+			everyDue, derr := s.triggerIsDue(now, key, every)
 			if derr != nil {
 				slog.Warn("trigger sweep: evaluate due failed", "project_id", p.ID, "trigger", trig.Name, "error", derr)
 				continue
 			}
-			if !due {
+			if !everyDue {
 				continue
 			}
 			if run, busy := inFlight[key]; busy {
 				result.Skipped = append(result.Skipped, TriggerSkip{TriggerKey: key, Since: run.StartedAt, Every: every})
+				continue
+			}
+
+			// docs/plans/signal-ingest-detailed-design.md §4.2: on:signals
+			// ANDs an extra "has a pending Signal" condition onto the
+			// already-true everyDue above — evaluated only once we know
+			// the trigger is NOT busy (see the F1 comment above for why
+			// busy is checked against everyDue alone, not this).
+			due := everyDue
+			if trig.On == orchestrator.TriggerOnSignals {
+				due = s.signalsPendingForTrigger(meta, key)
+			}
+			if !due {
 				continue
 			}
 

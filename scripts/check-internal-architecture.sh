@@ -23,6 +23,7 @@ current_allowed=(
   humanize
   initwizard
   install
+  integrationpack
   logrotate
   mtls
   notify
@@ -57,6 +58,7 @@ target_allowed=(
   humanize
   initwizard
   install
+  integrationpack
   logrotate
   mtls
   notify

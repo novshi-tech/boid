@@ -95,3 +95,56 @@ func TestValidateTriggers_DuplicateName_Rejected(t *testing.T) {
 		t.Fatal("ValidateTriggers() = nil, want an error for a duplicate trigger name")
 	}
 }
+
+// docs/plans/signal-ingest-detailed-design.md §4.1 (PR-6): `on` selects the
+// trigger's activation predicate. Empty and "schedule" are equivalent (the
+// pre-existing, unchanged behavior); "signals" additionally requires the
+// project's workspace to have a pending Signal (SweepTriggers' due
+// predicate, internal/api/trigger_loop.go). Anything else is a
+// project.yaml authoring mistake and must fail loudly at load time, same as
+// every other Trigger field ValidateTriggers checks.
+
+func TestValidateTriggers_OnEmpty_OK(t *testing.T) {
+	err := ValidateTriggers([]Trigger{{Name: "intake", Every: "10m", Run: "true", On: ""}})
+	if err != nil {
+		t.Errorf("ValidateTriggers(on=\"\") = %v, want nil", err)
+	}
+}
+
+func TestValidateTriggers_OnSchedule_OK(t *testing.T) {
+	err := ValidateTriggers([]Trigger{{Name: "intake", Every: "10m", Run: "true", On: "schedule"}})
+	if err != nil {
+		t.Errorf("ValidateTriggers(on=schedule) = %v, want nil", err)
+	}
+}
+
+func TestValidateTriggers_OnSignals_OK(t *testing.T) {
+	err := ValidateTriggers([]Trigger{{Name: "sweep", Every: "2m", Run: "python3 -m khi.app.scan", On: "signals"}})
+	if err != nil {
+		t.Errorf("ValidateTriggers(on=signals) = %v, want nil", err)
+	}
+}
+
+func TestValidateTriggers_OnUnknown_Rejected(t *testing.T) {
+	err := ValidateTriggers([]Trigger{{Name: "intake", Every: "10m", Run: "true", On: "webhook"}})
+	if err == nil {
+		t.Fatal("ValidateTriggers(on=webhook) = nil, want an error for an unknown `on` value")
+	}
+}
+
+// TestValidateTriggers_OnSignals_EveryStillRequired pins §4.1's "every は
+// signals でも必須 — 発火間隔の下限 = debounce": on:signals does not relax the
+// every-required / sweep-resolution-floor checks that apply to every trigger.
+func TestValidateTriggers_OnSignals_EveryStillRequired(t *testing.T) {
+	err := ValidateTriggers([]Trigger{{Name: "sweep", Run: "true", On: "signals"}})
+	if err == nil {
+		t.Fatal("ValidateTriggers(on=signals, every=\"\") = nil, want an error (every still required)")
+	}
+}
+
+func TestValidateTriggers_OnSignals_BelowSweepResolution_Rejected(t *testing.T) {
+	err := ValidateTriggers([]Trigger{{Name: "sweep", Every: "1s", Run: "true", On: "signals"}})
+	if err == nil {
+		t.Fatal("ValidateTriggers(on=signals, every=1s) = nil, want an error (below TriggerSweepResolution)")
+	}
+}
