@@ -15,6 +15,7 @@
 - `docs/plans/workspace-default-project.md` — workspace default と project 定義
 - `docs/plans/api-gateway.md` — service registry と workspace-scoped credential 境界
 - khi-task-collector の `docs/plans/signal-and-summary.md` — 現行 sweep の設計
+- `docs/plans/signal-envelope-inventory.md` — §10.2 机上検証の結果 (envelope v0 の根拠)
 
 ---
 
@@ -167,42 +168,35 @@ workspace の通常 task であり、core は判断の実行機構を持たな�
 core は control plane だけを抽象化する。判断 agent は Integration Pack の skill と
 service binding を受け取り、data plane ではサービス固有の API を意識して調査する。
 
-### 5.2 envelope 案 = `boid signal list` の出力
+### 5.2 envelope v0 = `boid signal list` の出力
 
 envelope は新しい protocol ではなく、inbox を読む CLI の出力 schema である。
+机上検証 (§10.2、`docs/plans/signal-envelope-inventory.md`) で現行 khi の本番実装・
+実データと突き合わせて v0 を確定した。現行の Signal 型 (6 field) と同型であり、
+r1 案にあった title (必須扱い)・preview・hints・resource.kind・identities[] (複数) は
+使用実績が無いため落とし、現行が持つ author を加えた。
 
 ```yaml
-id: slack-main:C123:1723456789.000100
-occurred_at: 2026-08-26T10:00:00Z
-title: PRレビューについてのメンション
-preview: 修正内容を確認してほしい
-source:
+id: slack:C043YAL7G15:1787711028.007819    # 必須。connector が同一 event から必ず同じ値を生成 (dedup キー)
+occurred_at: 2026-08-26T02:23:48Z          # 必須。RFC3339 tz-aware。source cursor の材料
+source:                                    # 必須。provenance
   pack: slack
   connector: mentions
-  service: slack-main
-resource:
-  kind: message
-  id: C123:1723456789.000100
-  url: https://example.slack.com/archives/C123/p1723456789000100
-identities:
-  - slack:message:C123:1723456789.000100
-hints:
-  author: U123
-  thread: "1723456789.000100"
+  service: slack-api                       # service instance 名
+identity: slack-thread:1787711028.007819   # 必須。機械的に導出できる帰属候補 (単数)
+url: https://khi.slack.com/archives/...    # 任意 (強く推奨)。原文への入口
+author: self | <生ID> | null               # 任意。篩の材料。self は「自分自身」の共有語彙
+title: "..."                               # 任意。篩の材料。判断は依存しない
 ```
 
-core が解釈するのは次だけである。
+- dedup と栞 (cursor) の単位は **(service instance, connector, id)** の複合
+- `identity` の語彙は **workspace 全体の共有語彙** — bitbucket connector が `jira:<KEY>` を
+  出して PR コメントと Jira 課題を機械的に合流させるのが本番実績。Pack contract で
+  identity を pack-scope に閉じてはいけない
+- `author` の `self` 正規化 (生 ID と自分の識別子の比較) は connector の責務。落とすか
+  どうかは workspace の篩が決める (§8.4)
 
-- workspace/source instance と idempotency key
-  (`id`。Connector が同一 event から必ず同じ値を生成する、取り込み dedup 用の安定キー)
-- 発生時刻
-- title/preview/body の開示済み部分
-- source provenance (envelope の `source:` ブロック)
-- 外部 resource への handle
-- identity 候補
-- opaque な hints
-
-`resource.kind: message` や `hints.thread` の意味は core が解釈しない。Slack Pack の
+`identity` や `id` の中身 (`slack-thread:` が何を指すか) は core が解釈しない。Pack の
 skill と、それを読む判断 agent が解釈する。
 
 ### 5.3 Connector の責務
@@ -521,6 +515,11 @@ khi の履歴から実 Signal を数件 (低 S/N の mail 想定を 1 件含む)
 変換する。現行の判断が実際に参照している field を棚卸しし、envelope schema の必須/任意を
 確定する。紙の上で書けないものは実装しても動かない。
 
+**実施済み (2026-08-26)** — 結果は `docs/plans/signal-envelope-inventory.md`。本番の
+sweep 82 本から実例 4 件 (slack 新規・jira 新規・bitbucket→jira 合流・mail 想定) を
+変換し、envelope v0 を §5.2 に反映した。副産物として boid 内部シグナルの経路が未決と
+判明 (§12)。
+
 ### 10.3 shadow-a: ingest の等価性
 
 現行 khi collector を止めず、boid ingest (Pack connector) を並走させ、inbox に落ちる
@@ -581,10 +580,15 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 7. 篩・batch 化は workspace の scan script の責務
 8. メタプロジェクトは存続する (khi は退役でなく縮退)
 9. 実装は shadow-a (ingest 等価性)・shadow-b (知識配置) を Go 条件とする
+10. envelope schema v0 を机上検証で確定した (§5.2、2026-08-26。根拠は
+    `signal-envelope-inventory.md`)
 
 ### 検証・実装と並行して決めること
 
-- envelope schema の必須/任意 field と size limit (§10.2 の棚卸しで確定)
+- Signal 1 件の size limit と inbox の行上限 (field 構成の v0 は確定済み — §5.2)
+- boid 内部シグナル (action 列) の経路 — inbox へ統合するか、現行どおり workspace の
+  scan script が `boid action list` を直読みし続けるか
+  (初期実装は後者を推す。`signal-envelope-inventory.md` §6)
 - `boid signal` CLI の最終形 (引数、workspace scoping、ack の単位)
 - inbox の GC (ack 済み Signal の保持期間、既存 30 日 GC への載せ方)
 - Connector の実行詳細 (実行コンテキスト、schedule、cursor 永続の transaction 境界)
