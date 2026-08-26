@@ -1,0 +1,5 @@
+apiVersion: boid.dev/v2
+kind: IntegrationPack
+metadata:
+  name: conformance-fixture
+  version: 0.1.0

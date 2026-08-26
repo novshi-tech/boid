@@ -146,6 +146,52 @@ jobs:
         with:
           version: v2.1.6
 
+  pack-conformance:
+    name: Pack conformance (boid-api-skills)
+    runs-on: ubuntu-24.04
+    # docs/plans/signal-ingest-detailed-design.md §7.3: "conformance test は
+    # boid リポジトリに置き、公式 Pack は CI で常時通す" (§14 Q22). The
+    # conformance test FRAMEWORK lives here (packconformance/ — at the
+    # module root, NOT under internal/, so a custom Pack author's own
+    # separate Go module can actually import it; see packconformance's own
+    # package doc comment), but the Pack CONTENT it checks lives in the
+    # separate novshi-tech/boid-api-skills repo (§10's PR-8 note: boid repo
+    # keeps the contract/loader/conformance framework only, never the Pack
+    # content itself — file-count and SaaS-API/boid release-cycle
+    # decoupling). This job is therefore this repo's first precedent for
+    # checking out a SECOND repository: boid-api-skills is public, so the
+    # default GITHUB_TOKEN (already scoped to this run) is sufficient for
+    # actions/checkout — no additional secret/PAT was introduced.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check out boid-api-skills (Pack repo)
+        uses: actions/checkout@v4
+        with:
+          repository: novshi-tech/boid-api-skills
+          path: boid-api-skills
+
+      - name: Run Pack conformance tests against boid-api-skills
+        # TestOfficialPacks (packconformance/officialpacks_test.go)
+        # discovers every Pack directory under BOID_API_SKILLS_DIR by
+        # walking for integration.yaml files (not by calling
+        # integrationpack.LoadPacks on the checkout root — that would hit
+        # docs/plans/signal-ingest-detailed-design.md §12.1's known "B1"
+        # bug, LoadPacks misreading the checkout's own .git/ as a Pack
+        # directory) and runs ConformancePack against each. Passes
+        # trivially (0 packs found, logged not failed) until PR-8 actually
+        # lands the first official Pack there.
+        env:
+          BOID_API_SKILLS_DIR: ${{ github.workspace }}/boid-api-skills
+        run: go test ./packconformance/... -run TestOfficialPacks -v
+
   container-image:
     name: Container image build
     runs-on: ubuntu-24.04

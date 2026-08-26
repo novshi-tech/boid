@@ -1,0 +1,4 @@
+#!/bin/sh
+# Deliberately NOT chmod +x'd (see the fixture's directory name) — this
+# fixture's violation is the missing executable bit.
+exit 7

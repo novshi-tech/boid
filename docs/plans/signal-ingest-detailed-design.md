@@ -555,3 +555,46 @@ PR-5 実装時、`SessionJobInput.HostCommands` が connector job にもその�
 `HostCommands` の修正 (`BuildSessionJobSpec` の `ConnectorPolicy` 分岐、
 `internal/dispatcher/session_job.go`) と同じパターン (単一の enforcement point) を
 踏襲すれば実装コストは大きくないはず。
+
+### 12.4 conformance test framework (boid 側パート) レビューで判明した follow-up
+
+`packconformance/`（Pack contract v1 conformance test framework、§7.2/§7.3、採点表
+Q21/Q22）の Opus レビュー (2026-08-27) で判明。F1 (custom Pack 作者が `internal/` 配下の
+package を import できない) と F2 (skill scan が manifest の `skills[].path` を見ず
+`skills/` 決め打ち)・F5 (`.git` 誤読を防ぐ discovery ロジックに専用テストが無い) は
+同 PR で修正済み。残りは次のいずれかで PR-8 (Pack 実装本体) 着手までに解決すること:
+
+- **F3**: `LoadPacks` (`internal/integrationpack/pack.go`) が hard error にする
+  `metadata.name`/`metadata.version` とインストールディレクトリ名の不一致チェックが
+  `packconformance` には無い。`ConformancePack` は単一 Pack ディレクトリを直接受け取る
+  設計 (§12.1 の B1 を踏まないための意図的な選択、`ConformancePack` 自身の doc comment
+  参照) のため、ディレクトリ名との整合性検査は本来 `LoadPacks` 側の責務のままで良いが、
+  conformance test 単体を手元で回した custom Pack 作者にはこの不一致が可視化されない
+  (`boid` daemon 起動時に初めて発覚する)。追加するなら `ConformancePack` に
+  optional な `expectedName`/`expectedVersion` 引数を足すか、`TestOfficialPacks` 側で
+  ディレクトリ名 (`discoverPackDirs` が返す `<pack>/<version>` の実ディレクトリ名) と
+  `manifest.Metadata` を突き合わせる形が自然
+- **F4**: `extension_check.go` の `findExtensionViolations` の `filepath.WalkDir` に
+  dot-directory skip が無い (`discoverPackDirs` は §12.1 対策で持っているが、こちらは
+  持っていない)。F1 修正で `ConformancePack` が単一 Pack バージョンディレクトリを直接
+  受け取る設計のままである限り Pack ディレクトリ自体に `.git` が含まれることは無いので
+  現状は実害が無いはずだが、将来 `ConformancePack` の呼び出し形が変わる (例えば
+  Pack repo のサブツリーをまるごと渡すような使い方が増える) と沈黙のまま影響が出る
+  可能性がある。`discoverPackDirs` と同じ dot-directory skip をここにも合わせておくのが
+  安全
+- **F6**: `TestOfficialPacks` は 0 Pack ディレクトリ発見時に `t.Skip` ではなく
+  `t.Log` してそのまま return している (意図的: PR-8 で最初の公式 Pack が着地するまで
+  CI を赤くしないため — 本文参照)。CI の実行結果としては pass 扱いで問題ないが、
+  `go test -v` の出力上は「実行されたが何も検査していない」テストと「本当に全部
+  green だった」テストが区別しづらい。`t.Skip` に変えると `go test` の集計上は
+  skipped 扱いになり pass/skip が視覚的に分かれるが、GitHub Actions の checks UI 上で
+  skip がどう見えるかは要確認 (単純に置き換えると CI green の可視性が却って落ちる
+  懸念がある)
+- **F9**: `docs/plans/signal-ingest-detailed-design.md §12.1, "B1"` という形の
+  citation が `packconformance` 内に複数箇所ある。§12.1 自体はこの doc に実在する
+  (見出しは「### 12.1 (B1) `LoadPacks` がドットディレクトリを Pack として誤解釈し
+  起動拒否になる」) が、citation の書式が「節番号 + カンマ区切りで略称」という
+  この doc の他の箇所には無い独自形式になっており紛らわしい、という指摘。次に
+  `packconformance` を触る際に `docs/plans/signal-ingest-detailed-design.md §12.1`
+  （B1）のように見出しの略称をそのまま埋め込む形に揃えるか、コード側の citation
+  文言を統一すること

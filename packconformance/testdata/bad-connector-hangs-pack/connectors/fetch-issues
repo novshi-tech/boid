@@ -1,0 +1,6 @@
+#!/bin/sh
+# Deliberately hangs forever, ignoring BOID_API_BASE entirely — this
+# fixture's violation is that the launch-smoke check's timeout must catch
+# it (a well-behaved connector reacting to an unreachable BOID_API_BASE has
+# no legitimate reason to hang).
+sleep 999

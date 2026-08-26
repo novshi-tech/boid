@@ -1,0 +1,23 @@
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata:
+  name: conformance-fixture
+  version: 0.1.0
+
+serviceProfiles:
+  - name: conformance-fixture
+    endpoint:
+      configurable: true
+    credentials:
+      - name: token
+        injection: bearer
+
+connectors:
+  - name: fetch-issues
+    executable: connectors/fetch-issues
+    serviceProfile: conformance-fixture
+
+skills:
+  - name: fixture-api
+    path: skills/fixture-api
+    requiresServiceProfile: conformance-fixture
