@@ -98,6 +98,24 @@ type ServiceConfig struct {
 	// JIRA_TOKEN}` example). Only meaningful — and only accepted by
 	// validateServiceConfig — when Uses is set.
 	Credentials map[string]string `yaml:"credentials,omitempty"`
+	// Username fills in the resolved service profile's INSTANCE-SPECIFIC
+	// Basic-auth username slot (feat/credential-slot-instance-username:
+	// internal/integrationpack.CredentialSlot.UsernameFrom ==
+	// UsernameFromInstance) — e.g. a Jira Cloud instance's Basic-auth
+	// convention of username = the operator's own Atlassian account email,
+	// which differs per instance and so cannot be a Pack-fixed constant the
+	// way Bitbucket's "x-bitbucket-api-token-auth" is (CredentialSlot.
+	// Username). Deliberately a TOP-LEVEL, PLAINTEXT field — mirroring
+	// Endpoint's own shape, not folded into Credentials above: Credentials
+	// only ever binds SecretStore KEY REFERENCES, and an email address is a
+	// config value, not a secret, so mixing the two would blur the secret/
+	// non-secret distinction every other field in this file preserves. Only
+	// meaningful — and only accepted by validateServiceConfig — when Uses is
+	// set; whether the resolved profile's slot actually accepts it (as
+	// opposed to declaring its own fixed username, or using a non-basic
+	// injection) is internal/integrationpack.DesugarService's job (Q16: this
+	// package cannot reach the Pack registry).
+	Username string `yaml:"username,omitempty"`
 }
 
 // ParseUsesReference parses a services.<name>.uses value of the form
@@ -261,16 +279,22 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 		}
 		return nil
 	}
-	// endpoint:/credentials: only mean anything alongside uses: (they fill
-	// in / bind a resolved Pack service profile's declared slots — see
-	// ServiceConfig's own doc comments) — rejecting them outright on a
+	// endpoint:/credentials:/username: only mean anything alongside uses:
+	// (they fill in / bind a resolved Pack service profile's declared slots
+	// — see ServiceConfig's own doc comments) — rejecting them outright on a
 	// free-form entry catches a likely stray copy-paste at config-load time
-	// instead of the value silently doing nothing.
+	// instead of the value silently doing nothing. username: in particular
+	// is easy to confuse with auth.username (the field that actually
+	// configures Basic auth on a free-form entry) — the error names both so
+	// the fix is obvious.
 	if sc.Endpoint != "" {
 		return fmt.Errorf("services[%q]: \"endpoint\" requires \"uses\" to be set", name)
 	}
 	if len(sc.Credentials) > 0 {
 		return fmt.Errorf("services[%q]: \"credentials\" requires \"uses\" to be set", name)
+	}
+	if sc.Username != "" {
+		return fmt.Errorf("services[%q]: \"username\" requires \"uses\" to be set (for a free-form entry, use \"auth.username\" instead)", name)
 	}
 
 	if sc.BaseURL == "" {

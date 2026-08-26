@@ -3,6 +3,7 @@ package integrationpack
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/config"
@@ -45,6 +46,12 @@ func findPack(packs []*Pack, pack, version string) (*Pack, bool) {
 //  5. the profile must declare exactly one credential slot, sc.Credentials
 //     must bind it ("slot 未 bind"), and must not carry any OTHER key
 //     ("未知 slot").
+//  6. (feat/credential-slot-instance-username) if that slot's injection is
+//     basic and it declares usernameFrom: instance, sc.Username must be
+//     non-empty and colon-free (RFC 7617 §2); if the slot does NOT declare
+//     usernameFrom: instance (a Pack-fixed username, or any non-basic
+//     injection), sc.Username must be empty — there is no slot for an
+//     instance-supplied value to fill.
 //
 // The returned apigateway.ServiceConfig's AllowReadOnlyWrite is copied
 // straight from sc.AllowReadOnlyWrite (F2, review finding, MEDIUM: an
@@ -98,13 +105,46 @@ func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack)
 		return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: credentials: profile %q's slot %q is not bound (set credentials.%s to a SecretStore key)", instanceName, profileName, slot.Name, slot.Name)
 	}
 
+	// username: (feat/credential-slot-instance-username) — the slot's own
+	// Username (a Pack-fixed constant, e.g. Bitbucket's
+	// "x-bitbucket-api-token-auth") is the default; usernameFrom: instance
+	// overrides that with the value config.yaml's uses: entry supplies
+	// instead. Either way exactly one source is authoritative per slot
+	// (parseCredentialSlot already enforces that a basic slot declares
+	// exactly one of Username/UsernameFrom) — what THIS function enforces is
+	// that sc.Username agrees with which source the slot actually declared:
+	// present when required, absent when there is no slot for it to fill.
+	username := slot.Username
+	if slot.Injection == InjectionBasic && slot.UsernameFrom == UsernameFromInstance {
+		if sc.Username == "" {
+			return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: profile %q's credential slot %q requires the service instance to supply \"username\" (usernameFrom: instance) — set services.%s.username", instanceName, profileName, slot.Name, instanceName)
+		}
+		username = sc.Username
+	} else if sc.Username != "" {
+		return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: \"username\" is not accepted — profile %q's credential slot %q does not declare usernameFrom: instance (it has a Pack-fixed username, or uses a non-basic injection)", instanceName, profileName, slot.Name)
+	}
+	// RFC 7617 §2: the Basic credential is built as "username:secret", so a
+	// colon in the username changes what the upstream parses as each half —
+	// the same check config.validateServiceConfig already applies to a
+	// free-form auth.username entry. Checked once, here, against the FINAL
+	// resolved username regardless of its source (F2, codex/Opus review
+	// finding on PR #1017: checking only inside the usernameFrom: instance
+	// branch above left a Pack-declared FIXED username (slot.Username)
+	// completely unchecked — neither this package nor config.
+	// validateServiceConfig ever validates that value, since it only ever
+	// sees a free-form auth.username, never a uses:-resolved Pack-fixed
+	// one).
+	if slot.Injection == InjectionBasic && strings.Contains(username, ":") {
+		return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: username %q must not contain \":\" (RFC 7617 §2 — the Basic credential is built as \"username:secret\", so a colon in the username changes what the upstream parses as each half)", instanceName, username)
+	}
+
 	return apigateway.ServiceConfig{
 		Name:    instanceName,
 		BaseURL: sc.Endpoint,
 		Auth: apigateway.ServiceAuth{
 			Kind:      apigateway.AuthKind(slot.Injection),
 			SecretKey: secretKey,
-			Username:  slot.Username,
+			Username:  username,
 			Header:    slot.Header,
 			Query:     slot.Query,
 		},

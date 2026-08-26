@@ -100,16 +100,37 @@ type CredentialSlot struct {
 	// meaningful) when Injection == InjectionQuery, mirroring
 	// config.ServiceAuthConfig.Query.
 	Query string
-	// Username is the fixed Basic-auth username half — required (and only
-	// meaningful) when Injection == InjectionBasic. Declared on the SLOT,
-	// not the instance: RFC 7617 usernames for a token-as-password
-	// convention (e.g. Bitbucket's "x-bitbucket-api-token-auth") are a
-	// property of the API itself, which the Pack author knows and an
-	// operator should never have to supply per instance — "仕様は profile、
-	// 値は instance" (signal-driven-review.md §7.1) applied to this one
-	// field.
+	// Username is the fixed Basic-auth username half — meaningful only when
+	// Injection == InjectionBasic, and mutually exclusive with
+	// UsernameFrom (exactly one of the two is required for a basic slot).
+	// Declared on the SLOT, not the instance: RFC 7617 usernames for a
+	// token-as-password convention (e.g. Bitbucket's
+	// "x-bitbucket-api-token-auth") are a property of the API itself, which
+	// the Pack author knows and an operator should never have to supply per
+	// instance — "仕様は profile、値は instance" (signal-driven-review.md
+	// §7.1) applied to this one field.
 	Username string
+	// UsernameFrom selects the Basic-auth username SOURCE when Injection ==
+	// InjectionBasic: the zero value ("") means Username above supplies a
+	// Pack-fixed value (the Bitbucket case); the only other recognized
+	// value, UsernameFromInstance ("instance"), means the username is
+	// INSTANCE-SPECIFIC — the Pack only declares THAT an instance must
+	// supply one, not the value itself (still "仕様は profile、値は
+	// instance", just applied the other way around from Username: here the
+	// profile's "仕様" is merely "an instance-supplied username is
+	// required"). This is what Jira Cloud's Basic-auth convention needs
+	// (username = the operator's own Atlassian account email, which differs
+	// per instance and so cannot be a fixed manifest constant the way
+	// Bitbucket's convention is). Mutually exclusive with Username; DesugarService
+	// is where the instance's actual value (config.ServiceConfig.Username)
+	// gets bound in. Meaningless (and rejected by parseCredentialSlot) for
+	// any injection other than basic.
+	UsernameFrom string
 }
+
+// UsernameFromInstance is the only value CredentialSlot.UsernameFrom
+// currently recognizes — see that field's own doc comment.
+const UsernameFromInstance = "instance"
 
 // Connector is one connectors[] entry.
 type Connector struct {
@@ -159,11 +180,12 @@ type rawEndpoint struct {
 }
 
 type rawCredentialSlot struct {
-	Name      string `yaml:"name"`
-	Injection string `yaml:"injection"`
-	Header    string `yaml:"header,omitempty"`
-	Query     string `yaml:"query,omitempty"`
-	Username  string `yaml:"username,omitempty"`
+	Name         string `yaml:"name"`
+	Injection    string `yaml:"injection"`
+	Header       string `yaml:"header,omitempty"`
+	Query        string `yaml:"query,omitempty"`
+	Username     string `yaml:"username,omitempty"`
+	UsernameFrom string `yaml:"usernameFrom,omitempty"`
 }
 
 type rawConnector struct {
@@ -201,7 +223,8 @@ type rawSkill struct {
 //     "先頭 slot を勝手に取るような縮退をしない" — more than one is a hard
 //     error, not a silently-take-the-first fallback)
 //   - each credential slot's injection is one of bearer/basic/header/query,
-//     with its injection-conditional field (header/query/username) required
+//     with its injection-conditional field (header/query/username, or for
+//     basic: exactly one of username/usernameFrom) required
 //   - connectors[].serviceProfile and skills[].requiresServiceProfile must
 //     each name a serviceProfiles[] entry declared in the SAME manifest
 //   - a connector's configSchema, if present, is itself validated against
@@ -361,11 +384,32 @@ func parseCredentialSlot(profileName string, rc rawCredentialSlot) (CredentialSl
 	if rc.Name == "" {
 		return CredentialSlot{}, fmt.Errorf("integrationpack: serviceProfiles[%q]: credentials: a slot name must not be empty", profileName)
 	}
+	// usernameFrom is only ever meaningful for injection: basic — checked
+	// once, up front, so every other injection arm below doesn't need its
+	// own copy of this guard (mirrors how the switch below already leaves
+	// "username" unchecked for non-basic injections, but a NEW field gets
+	// no such legacy leniency).
+	if rc.UsernameFrom != "" && CredentialInjection(rc.Injection) != InjectionBasic {
+		return CredentialSlot{}, fmt.Errorf("integrationpack: serviceProfiles[%q].credentials[%q]: \"usernameFrom\" is only meaningful for injection basic (got injection %q)", profileName, rc.Name, rc.Injection)
+	}
 	switch CredentialInjection(rc.Injection) {
 	case InjectionBearer:
 	case InjectionBasic:
-		if rc.Username == "" {
-			return CredentialSlot{}, fmt.Errorf("integrationpack: serviceProfiles[%q].credentials[%q]: injection basic requires \"username\" (the fixed Basic-auth username half)", profileName, rc.Name)
+		// Exactly one of "username" (a Pack-fixed value, e.g. Bitbucket's
+		// "x-bitbucket-api-token-auth") or "usernameFrom: instance" (the
+		// service instance supplies it, e.g. Jira Cloud's per-tenant
+		// Atlassian account email) is required — "仕様は profile、値は
+		// instance" (signal-driven-review.md §7.1) applied to this field
+		// either way, just with the value living in a different place.
+		switch {
+		case rc.Username != "" && rc.UsernameFrom != "":
+			return CredentialSlot{}, fmt.Errorf("integrationpack: serviceProfiles[%q].credentials[%q]: injection basic must declare exactly one of \"username\" (a Pack-fixed Basic-auth username) or \"usernameFrom: instance\" (the service instance supplies it) — not both", profileName, rc.Name)
+		case rc.UsernameFrom != "":
+			if rc.UsernameFrom != UsernameFromInstance {
+				return CredentialSlot{}, fmt.Errorf("integrationpack: serviceProfiles[%q].credentials[%q]: usernameFrom: unrecognized %q (want %q)", profileName, rc.Name, rc.UsernameFrom, UsernameFromInstance)
+			}
+		case rc.Username == "":
+			return CredentialSlot{}, fmt.Errorf("integrationpack: serviceProfiles[%q].credentials[%q]: injection basic requires either \"username\" (a Pack-fixed Basic-auth username) or \"usernameFrom: instance\" (the service instance supplies it)", profileName, rc.Name)
 		}
 	case InjectionHeader:
 		if rc.Header == "" {
@@ -379,11 +423,12 @@ func parseCredentialSlot(profileName string, rc rawCredentialSlot) (CredentialSl
 		return CredentialSlot{}, fmt.Errorf("integrationpack: serviceProfiles[%q].credentials[%q]: injection: unrecognized %q (want one of bearer, basic, header, query)", profileName, rc.Name, rc.Injection)
 	}
 	return CredentialSlot{
-		Name:      rc.Name,
-		Injection: CredentialInjection(rc.Injection),
-		Header:    rc.Header,
-		Query:     rc.Query,
-		Username:  rc.Username,
+		Name:         rc.Name,
+		Injection:    CredentialInjection(rc.Injection),
+		Header:       rc.Header,
+		Query:        rc.Query,
+		Username:     rc.Username,
+		UsernameFrom: rc.UsernameFrom,
 	}, nil
 }
 

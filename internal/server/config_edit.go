@@ -527,6 +527,9 @@ var restartFieldExtractorExemptions = map[string]string{
 	"services.*.uses":          "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.endpoint":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.credentials.*": "covered by changedServiceLeaves' per-id, whole-map diff (finer-grained than a wildcard comparison)",
+	// services.*.username (feat/credential-slot-instance-username) — same
+	// reasoning as the uses:/endpoint/credentials.* trio above.
+	"services.*.username": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 
 	// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2) — same
 	// reasoning as the services.* septet above: changedOAuthProviderLeaves'
@@ -679,6 +682,14 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			}
 			if !maps.Equal(o.Credentials, n.Credentials) {
 				changed = append(changed, name+".credentials")
+			}
+			// services.*.username (feat/credential-slot-instance-username) —
+			// same "safer left to a restart" reasoning as uses:/endpoint/
+			// credentials.* just above (a mid-flight change would need the
+			// desugared apigateway.ServiceConfig this instance resolves to
+			// rebuilt against the Pack registry).
+			if o.Username != n.Username {
+				changed = append(changed, name+".username")
 			}
 		}
 	}

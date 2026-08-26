@@ -182,18 +182,23 @@ var Schema = []FieldSpec{
 	{Path: "services.*.auth.header", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.query", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.provider", Kind: KindString, Reload: ReloadRestartRequired},
-	// services.*.uses/endpoint/credentials.* (docs/plans/signal-driven-review.md
-	// §7.2, docs/plans/signal-ingest-detailed-design.md §6.1, PR-4): the
-	// Integration Pack service-profile-backed instance shape, mutually
+	// services.*.uses/endpoint/credentials.*/username (docs/plans/
+	// signal-driven-review.md §7.2, docs/plans/signal-ingest-detailed-design.md
+	// §6.1, PR-4; username added by feat/credential-slot-instance-username):
+	// the Integration Pack service-profile-backed instance shape, mutually
 	// exclusive with base_url/auth above (validateServiceConfig in
 	// apigateway.go enforces that at document-decode time, same "Schema
 	// only governs which KEYS exist" split every other kind-conditional
 	// leaf here has). credentials.* is a second wildcard segment for the
 	// profile's declared credential slot names — same shape as
-	// oauth_providers.*.authorize_params.* below.
+	// oauth_providers.*.authorize_params.* below. username is a plaintext,
+	// non-secret instance value (e.g. a Jira Cloud tenant's Atlassian
+	// account email) — deliberately separate from credentials.*, which only
+	// ever binds SecretStore key references.
 	{Path: "services.*.uses", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.endpoint", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.credentials.*", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.username", Kind: KindString, Reload: ReloadRestartRequired},
 
 	// services_floor (docs/plans/api-gateway.md §3): the daemon-wide
 	// enabled-service floor, mirroring sandbox.allowed_domains' own
