@@ -75,6 +75,17 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy {
 	}
 }
 
+// boidPolicy grants every hook/exec job the "boid" builtin's general op set.
+//
+// docs/plans/signal-ingest-detailed-design.md §3.2 (PR-3): OpBoidSignalList /
+// OpBoidSignalAck are added below (the judgment-side scan/ack surface — any
+// job may read its own workspace's signal inbox and ack a Signal once it has
+// written a judgment for it). OpBoidSignalIngest / OpBoidSignalCursorGet are
+// DELIBERATELY NOT added here — the design doc is explicit that granting
+// those two is PR-5's job (a connector-scoped, reduced policy handed only to
+// derived-trigger exec jobs), not this general policy. Do not "complete the
+// set" by adding them here; see sandbox.BoidOpSignalIngest's own doc comment
+// for the same note from the protocol side.
 func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 	cwds := []string{"/tmp"}
 	if pctx.ProjectDir != "" {
@@ -117,6 +128,8 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidTaskIdentityResolve,
 			OpBoidTaskResolveOrCapture,
 			OpBoidActionList,
+			OpBoidSignalList,
+			OpBoidSignalAck,
 		),
 		AllowedCwdRoots: cwds,
 	}

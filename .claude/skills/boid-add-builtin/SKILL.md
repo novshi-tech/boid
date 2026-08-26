@@ -7,16 +7,131 @@ description: >
   Use when a team member wants to add a new builtin command to the boid orchestrator.
 ---
 
-# boid builtin command — Adding a New Command
-
-Follow these **7 steps** in order when adding a new builtin.
-Each step lists the relevant existing implementation to reference.
+# boid builtin command — Adding a New Command or Op
 
 For a quick look at code details and file paths, see [references/key-files.md](references/key-files.md).
 
 `boid` and `fetch` are always available without any declaration in project.yaml / kit.yaml.
 New builtins follow the same convention — they are always injected by the planner
 (the `builtin_commands` config key has been removed).
+
+## Which path applies to you?
+
+There are two different things people mean by "add a builtin", and they need
+different checklists. **Check which one you actually need before following
+either walkthrough below** — this distinction was missing from this skill
+until 2026-08-26 (docs/plans/signal-ingest-detailed-design.md PR-3), and
+following the wrong one wastes real time (or worse, ships an op with no
+escape-manifest test coverage, silently weakening the security gate).
+
+1. **Adding a new OP to the already-registered `boid` builtin** — e.g.
+   `card_get`/`card_list`, `action_list`, `task_identity_link`, and most
+   recently `signal_list`/`signal_ack`/`signal_ingest`/`signal_cursor_get`.
+   **This is the common case** — almost every real PR in this repo's history
+   that touches this area is this path, not the one below. See "Adding a new
+   OP to the existing `boid` builtin" immediately below.
+2. **Adding an entirely new top-level builtin command** (a new name alongside
+   `boid`/`fetch`, e.g. a hypothetical `oci` or `net`) — rare; no builtin has
+   actually been added this way since `fetch`. See "Steps 1–7" further down.
+
+---
+
+## Adding a new OP to the existing `boid` builtin (the common case)
+
+Follow these steps in order. Each names the exact file and what changes; see
+[references/key-files.md](references/key-files.md)'s first table for the
+full file-by-file rationale.
+
+1. **`internal/sandbox/protocol.go`** — add a `BoidOp` constant (e.g.
+   `BoidOpFooBar BoidOp = "foo_bar"`) and any new `BoidRequest` fields the op
+   needs. Write a doc comment explaining what the op does and how it's scoped
+   — this codebase's convention is that every op constant carries its own
+   design rationale inline (read a few existing ones for the tone).
+2. **`internal/orchestrator/policy_ops.go`** — add the MIRROR string constant
+   (`OpBoidFooBar = "foo_bar"`), byte-identical to step 1's value.
+   `orchestrator` cannot import `sandbox` (layer direction), so this string
+   literal has to be kept in lock-step by hand — that's exactly what step 7
+   below checks.
+3. **`internal/orchestrator/policy.go`** — decide whether `boidPolicy()`
+   should grant this op to every hook/exec job (the default — add
+   `OpBoidFooBar` to its `sortedOps(...)` call) or whether it's meant to be
+   restricted to a narrower policy that doesn't exist yet (rare — see
+   `signal_ingest`/`signal_cursor_get`'s doc comment there for a real example
+   of "declared but deliberately not granted here"). Don't reflexively
+   "complete the set" without checking which one applies.
+4. **`internal/sandbox/boid_shim.go`** — add a `case` in `parseBoidRequest`'s
+   command/subcommand switch and a `parseBoidFooBar(args []string)
+   (*BoidRequest, error)` function that turns `boid foo bar [flags]` into a
+   `*BoidRequest{Op: BoidOpFooBar, ...}`. This is the CLI surface a sandboxed
+   agent actually types; skipping it leaves the op reachable only by a
+   hand-crafted request, which no real caller sends.
+5. **`internal/sandbox/broker.go`** — add a `case BoidOpFooBar:` in
+   `handleBoidBuiltin`'s `switch boidReq.Op`. Validate required fields and,
+   if the op needs workspace/project scoping, do it HERE and make it
+   broker-authoritative — inject the value from `entry.Context`, never trust
+   whatever the request already carries (this exact class of bug — scoping
+   left to the executor alone, leaving a flag like `--workspace-id`
+   unchecked — has been caught by review multiple times; grep this file for
+   "codex/Opus レビュー" for the incident write-ups).
+6. **`internal/server/boid_executor.go`** — add a `case sandbox.BoidOpFooBar:`
+   in `boidBuiltinExecutor.ExecuteBoidBuiltin`'s `switch req.Op` with the
+   actual business logic. **This is NOT the same file as
+   `internal/sandbox/boid_executor.go`** — that one is a 13-line interface
+   declaration (`BoidExecutor`) with nothing to add to. If the op needs a new
+   backing store/service dependency that no existing constructor parameter
+   provides, follow the `resolveOrCaptureService`/`actionListService`
+   "runtime interface-check against the existing `workflow` parameter"
+   pattern already used in this file, rather than adding a new required
+   constructor parameter (which breaks every existing call site, including
+   ones outside your PR's scope).
+7. **Tests — three separate registries, not just op-specific test files:**
+   - `internal/orchestrator/policy_test.go`'s `TestDefaultBuiltinPolicies_HookBoidOps`
+     — add the new `OpBoidFooBar` to `wantOps`. This is a plain
+     `len(a) != len(b)` comparison (`opsEqual`), so a forgotten entry fails
+     immediately as a length mismatch, not a silent pass.
+   - `internal/dispatcher/policy_translate_test.go`'s `TestOpConstantsMirror`
+     — add the `{orchestrator.OpBoidFooBar, string(sandbox.BoidOpFooBar)}`
+     pair, closing the loop on step 2's mirror.
+   - `internal/sandbox/broker_op_escape_test.go`'s `opEscapeCoverage` map —
+     add an entry keyed by the Go constant name (`"BoidOpFooBar"`) naming a
+     real test function that drives the op through the broker's policy gate
+     (`assertBoidOpRejectedByPolicy` is the standard one-liner for this — see
+     any existing `TestBroker_Boid*_PolicyReject` for the pattern) or an
+     `exempt` reason. **This is an AST-driven hard fail**: it parses every
+     `BoidOp` constant straight out of `protocol.go`, so forgetting this step
+     fails `go test` (a runtime assertion, not a compile error) with the
+     exact missing op named — there is no way to silently skip it, but there
+     IS a way to not know it exists if you only read the older parts of this
+     skill, which is why this step used to be missing from here entirely
+     until 2026-08-26.
+   - Plus the usual op-specific tests: shim parsing (`boid_shim_*_test.go`),
+     broker scoping (`broker_*_test.go`), and executor logic
+     (`internal/server/boid_executor_*_test.go`).
+   - **If the op needs a new backing store/service dependency wired via a
+     runtime-interface-check against an existing constructor parameter**
+     (step 6's `resolveOrCaptureService`/`actionListService` pattern),
+     ALSO add a positive wiring test against the REAL production type on
+     both sides — not just a hand-built test double. PR #1014's review
+     (docs/plans/signal-ingest-detailed-design.md PR-3, M1, 2026-08-26)
+     found exactly this gap: `signals` was wired with this pattern, every
+     unit test passed because the test built its own double that
+     implemented the target interface, and production silently never
+     picked it up because *api.TaskWorkflowService (the real type passed at
+     the real wire.go call site) never implemented it — see
+     `TestNewBoidBuiltinExecutor_WiresActionListFromWorkflow` for the
+     established shape of this test, and `boidBuiltinExecutor.signals`'s
+     own doc comment in `internal/server/boid_executor.go` for the
+     post-mortem and the fix (an explicit constructor parameter instead of
+     a runtime check, once no real production type was ever going to
+     implement the interface).
+
+---
+
+## Adding an entirely new top-level builtin command (rare)
+
+Follow these **7 steps** in order when adding a brand-new builtin name (not a
+new op on `boid`). Each step lists the relevant existing implementation to
+reference.
 
 > **Historical note**: `git` used to be a builtin as well. The git gateway cutover (2026-07)
 > retired the sandbox-side `git` builtin — `git` is now a credential-less binary running inside

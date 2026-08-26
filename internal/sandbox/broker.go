@@ -624,6 +624,67 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.ProjectID == "" && boidReq.WorkspaceID == "" && entry.Context.WorkspaceID != "" {
 			boidReq.WorkspaceID = entry.Context.WorkspaceID
 		}
+	case BoidOpSignalList:
+		// docs/plans/signal-ingest-detailed-design.md §3.2 (PR-3): workspace
+		// scoping is broker-injected from the job token, never
+		// caller-supplied — unlike BoidOpCardList/BoidOpActionList's
+		// three-branch project_id/workspace_id/neither shape, there is no
+		// flag for this at all (the shim never sets WorkspaceID for this
+		// op), so the broker unconditionally overwrites whatever a
+		// hand-crafted request set here.
+		boidReq.WorkspaceID = entry.Context.WorkspaceID
+	case BoidOpSignalAck:
+		if len(boidReq.SignalIDs) == 0 {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid signal ack requires at least one id"}
+		}
+		boidReq.WorkspaceID = entry.Context.WorkspaceID
+	case BoidOpSignalIngest:
+		// Declared for protocol/mirror/escape-manifest completeness (§3.2) —
+		// NOT part of the general boidPolicy (policy.go), so the
+		// allowsBuiltinOp check above already rejects this for every job in
+		// PR-3. This case exists so the scoping shape is ready for PR-5's
+		// connector-scoped reduced policy to grant it.
+		//
+		// [M2, review of PR #1014, 2026-08-26] Service/Connector are
+		// overwritten from entry.Context — NEVER trusted from the request
+		// as the shim sent it — the SAME "broker-injected, never
+		// caller-supplied" pattern WorkspaceID already gets above. Before
+		// this fix, a request's Service/Connector were validated for
+		// non-emptiness but otherwise passed through verbatim: a
+		// well-behaved shim only ever sets them from the
+		// BOID_SIGNAL_SERVICE/BOID_SIGNAL_CONNECTOR env, but nothing
+		// enforced that server-side, so a hand-crafted ExecRequest
+		// bypassing the shim could claim an arbitrary Service/Connector.
+		// TokenContext.Service/Connector are empty for every job as of
+		// PR-3 (no caller populates them yet — that's PR-5's job when it
+		// registers a connector-scoped token), so this op stays rejected
+		// in practice regardless; the point of this fix is that the
+		// enforcement shape is now actually load-bearing rather than
+		// aspirational, so PR-5 doesn't inherit a false sense of security.
+		boidReq.Service = entry.Context.Service
+		boidReq.Connector = entry.Context.Connector
+		if boidReq.Service == "" || boidReq.Connector == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid signal ingest requires a service and connector"}
+		}
+		if len(boidReq.IngestPayload) > PayloadPatchMaxBytes {
+			// Defense in depth: the shim already caps this before ever
+			// sending the request (boid_shim.go's parseBoidSignalIngest),
+			// but the broker re-checks independently so a shim bypass can't
+			// push an oversized payload through to the executor — same
+			// two-point pattern as BoidOpTaskUpdatePayloadPatch's
+			// PayloadPatch.
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid signal ingest payload exceeds %d bytes", PayloadPatchMaxBytes)}
+		}
+		boidReq.WorkspaceID = entry.Context.WorkspaceID
+	case BoidOpSignalCursorGet:
+		// Service/Connector overwrite: same M2 fix as BoidOpSignalIngest
+		// above.
+		boidReq.Service = entry.Context.Service
+		boidReq.Connector = entry.Context.Connector
+		if boidReq.Service == "" || boidReq.Connector == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid signal cursor requires a service and connector"}
+		}
+		boidReq.WorkspaceID = entry.Context.WorkspaceID
 	case BoidOpJobList:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid job list requires a task id"}

@@ -41,6 +41,10 @@ func TestOpConstantsMirror(t *testing.T) {
 		{orchestrator.OpBoidTaskIdentityResolve, string(sandbox.BoidOpTaskIdentityResolve)},
 		{orchestrator.OpBoidTaskResolveOrCapture, string(sandbox.BoidOpTaskResolveOrCapture)},
 		{orchestrator.OpBoidActionList, string(sandbox.BoidOpActionList)},
+		{orchestrator.OpBoidSignalList, string(sandbox.BoidOpSignalList)},
+		{orchestrator.OpBoidSignalAck, string(sandbox.BoidOpSignalAck)},
+		{orchestrator.OpBoidSignalIngest, string(sandbox.BoidOpSignalIngest)},
+		{orchestrator.OpBoidSignalCursorGet, string(sandbox.BoidOpSignalCursorGet)},
 	}
 	for _, p := range pairs {
 		if p.orchestratorConst != p.sandboxConst {

@@ -2,15 +2,23 @@ package apiwire
 
 import "time"
 
-// docs/plans/signal-ingest-detailed-design.md §3.1 (PR-2): the daemon↔client
-// wire contract for `GET /api/signals` / `POST /api/signals/ack`. PR-1
-// already shipped the store layer (internal/orchestrator/signal_store.go)
+// docs/plans/signal-ingest-detailed-design.md §3.1/§3.2 (PR-2/PR-3): the
+// daemon↔client wire contract for `GET /api/signals` / `POST
+// /api/signals/ack` (PR-2's internal/api/signal_handler.go) AND the
+// sandbox-side `boid signal list`/`boid signal ack` shim response
+// (PR-3's internal/server/boid_executor.go) — both must reply with the SAME
+// envelope shape regardless of which surface a caller uses (M3, PR #1014
+// review: an earlier version of the sandbox side marshaled
+// orchestrator.Signal directly, which has no json tags and so replied with
+// raw Go field names — a different, undocumented shape from this one).
+//
+// PR-1 already shipped the store layer (internal/orchestrator/signal_store.go)
 // and its SignalStore interface (internal/api/store.go) — this file is the
-// wire shape the CLI (cmd/signal.go) and internal/api/signal_handler.go
-// share, following the same apiwire split every other daemon↔client payload
-// in this package uses (see doc.go): apiwire may import only the standard
-// library and internal/orchestrator, so the CLI stays buildable for
-// GOOS=windows/darwin.
+// wire shape the CLI (cmd/signal.go), internal/api/signal_handler.go, and
+// internal/server/boid_executor.go all share, following the same apiwire
+// split every other daemon↔client payload in this package uses (see
+// doc.go): apiwire may import only the standard library and
+// internal/orchestrator, so the CLI stays buildable for GOOS=windows/darwin.
 
 // SignalSource is the provenance block of the Signal envelope
 // (docs/plans/signal-driven-review.md §5.2: `source.pack` / `source.connector`
@@ -31,10 +39,10 @@ type SignalSource struct {
 // §5.2: id / occurred_at / source / identity / url / author / title) plus
 // the daemon-side bookkeeping fields (received_at / attempts / acked_at) an
 // operator needs when listing --state dead/acked/all. This is the wire
-// contract `GET /api/signals` and `boid signal list -o json` are pinned to —
-// deliberately NOT a straight mirror of orchestrator.Signal (whose
-// Connector field is still the raw composite, and which has no envelope
-// concept at all).
+// contract `GET /api/signals` and `boid signal list -o json` (host) /
+// `boid signal list` (sandbox) are all pinned to — deliberately NOT a
+// straight mirror of orchestrator.Signal (whose Connector field is still
+// the raw composite, and which has no envelope concept at all).
 type Signal struct {
 	ID         string       `json:"id"`
 	OccurredAt time.Time    `json:"occurred_at"`
@@ -49,7 +57,9 @@ type Signal struct {
 	AckedAt *time.Time `json:"acked_at,omitempty"`
 }
 
-// ListSignalsResponse is GET /api/signals' response body.
+// ListSignalsResponse is GET /api/signals' response body, and also what
+// `boid signal list`/`boid signal list --claim` reply with from inside the
+// sandbox (PR-3) — same envelope on both surfaces (M3 above).
 type ListSignalsResponse struct {
 	Signals []Signal `json:"signals"`
 }

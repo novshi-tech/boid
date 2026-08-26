@@ -19,6 +19,7 @@ Commands:
   task     Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen,
            current, instructions, env, payload, attachments list, attachments get)
   card     Read cards (get, list)
+  signal   Scan and ack the signal inbox (list, ack, ingest, cursor)
   job      Manage jobs (done, list, show, log)
   action   Send and list actions (send, list)
   agent    Manage agent (stop)
@@ -223,6 +224,22 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidCardList(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid card subcommand %q", args[1])
+		}
+	case "signal":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("boid shim: missing boid signal subcommand")
+		}
+		switch args[1] {
+		case "list":
+			return parseBoidSignalList(args[2:])
+		case "ack":
+			return parseBoidSignalAck(args[2:])
+		case "ingest":
+			return parseBoidSignalIngest(args[2:])
+		case "cursor":
+			return parseBoidSignalCursor(args[2:])
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported boid signal subcommand %q", args[1])
 		}
 	default:
 		return nil, fmt.Errorf("boid shim: unsupported boid subcommand %q", args[0])
@@ -823,6 +840,142 @@ func parseBoidCardList(args []string) (*BoidRequest, error) {
 	}
 
 	return req, nil
+}
+
+// parseBoidSignalList builds the BoidRequest for `boid signal list [--claim]
+// [--source <pack>/<connector>] [--state pending|dead|acked|all]
+// [--limit N] [--json]` (docs/plans/signal-ingest-detailed-design.md §3.2,
+// PR-3). There is deliberately no --workspace-id flag here — workspace
+// scoping is broker-injected from the job token, never caller-supplied (see
+// BoidRequest.Service's doc comment in protocol.go). --json is accepted for
+// symmetry with the host CLI's `-o json` (§3.1) but is currently a no-op:
+// every sandbox-side list op (card list, action list) already replies with
+// JSON unconditionally.
+func parseBoidSignalList(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpSignalList}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--claim":
+			req.Claim = true
+		case arg == "--json":
+			// no-op — see doc comment above.
+		case arg == "--source" || strings.HasPrefix(arg, "--source="):
+			value, next, err := takeStringFlagValue(args, i, "--source")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Connector = value
+		case arg == "--state" || strings.HasPrefix(arg, "--state="):
+			value, next, err := takeStringFlagValue(args, i, "--state")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.SignalState = value
+		case arg == "--limit" || strings.HasPrefix(arg, "--limit="):
+			value, next, err := takeStringFlagValue(args, i, "--limit")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, fmt.Errorf("boid shim: invalid limit %q", value)
+			}
+			req.Limit = n
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported argument %q for boid signal list", arg)
+		}
+	}
+
+	return req, nil
+}
+
+// parseBoidSignalAck builds the BoidRequest for `boid signal ack <id>...`
+// (design doc §3.2). Takes one or more positional ids; AckSignals is
+// idempotent per id (Q14), so repeating an id already acked in a prior call
+// is a no-op success, not an error.
+func parseBoidSignalAck(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpSignalAck}
+
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid signal ack", arg)
+		}
+		req.SignalIDs = append(req.SignalIDs, arg)
+	}
+
+	if len(req.SignalIDs) == 0 {
+		return nil, fmt.Errorf("boid shim: boid signal ack requires at least one id")
+	}
+	return req, nil
+}
+
+// signalConnectorEnv reads the connector's own identity from the
+// environment (design doc §3.2: "ingest/cursor の source/service は引数で
+// はなく env...から取る") — never a CLI flag, so a connector process cannot
+// address another source's inbox rows / cursor.
+func signalConnectorEnv() (service, connector string, err error) {
+	service = os.Getenv("BOID_SIGNAL_SERVICE")
+	connector = os.Getenv("BOID_SIGNAL_CONNECTOR")
+	if service == "" || connector == "" {
+		return "", "", fmt.Errorf("boid shim: this command requires BOID_SIGNAL_SERVICE and BOID_SIGNAL_CONNECTOR to be set (this command must run inside a connector job)")
+	}
+	return service, connector, nil
+}
+
+// parseBoidSignalIngest builds the BoidRequest for `boid signal ingest`
+// (design doc §3.2, §5.3): connector-only, takes no arguments, and reads its
+// JSONL body from stdin. The shim caps the read at PayloadPatchMaxBytes
+// (design doc: "既存 PayloadPatchMaxBytes と同値") and errors on overflow
+// rather than silently truncating — the broker independently re-checks the
+// same cap (defense in depth, matching BoidOpTaskUpdatePayloadPatch's
+// PayloadPatch precedent). Parsing/validating each JSONL line happens
+// server-side in the executor, not here.
+func parseBoidSignalIngest(args []string) (*BoidRequest, error) {
+	if len(args) != 0 {
+		return nil, fmt.Errorf("boid shim: boid signal ingest takes no arguments (unexpected %q)", args[0])
+	}
+	service, connector, err := signalConnectorEnv()
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, PayloadPatchMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("boid shim: read signal ingest stdin: %w", err)
+	}
+	if len(data) > PayloadPatchMaxBytes {
+		return nil, fmt.Errorf("boid shim: signal ingest stdin exceeds %d bytes", PayloadPatchMaxBytes)
+	}
+
+	return &BoidRequest{
+		Op:            BoidOpSignalIngest,
+		Service:       service,
+		Connector:     connector,
+		IngestPayload: data,
+	}, nil
+}
+
+// parseBoidSignalCursor builds the BoidRequest for `boid signal cursor`
+// (design doc §3.2, §5.3): connector-only, takes no arguments, returns the
+// caller's own (service, connector)'s stored cursor.
+func parseBoidSignalCursor(args []string) (*BoidRequest, error) {
+	if len(args) != 0 {
+		return nil, fmt.Errorf("boid shim: boid signal cursor takes no arguments (unexpected %q)", args[0])
+	}
+	service, connector, err := signalConnectorEnv()
+	if err != nil {
+		return nil, err
+	}
+	return &BoidRequest{
+		Op:        BoidOpSignalCursorGet,
+		Service:   service,
+		Connector: connector,
+	}, nil
 }
 
 // parseBoidTaskIdentityLink builds the BoidRequest for

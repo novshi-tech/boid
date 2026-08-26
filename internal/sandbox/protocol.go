@@ -264,6 +264,38 @@ const (
 	// (orchestrator.ListActionsSince) — a TaskID outside the caller's scope
 	// simply matches zero rows, it can never widen what comes back.
 	BoidOpActionList BoidOp = "action_list"
+
+	// BoidOpSignalList / BoidOpSignalAck back `boid signal list [--claim]
+	// [--source ...] [--state ...] [--limit N]` / `boid signal ack <id>...`
+	// from inside the sandbox (docs/plans/signal-ingest-detailed-design.md
+	// §3.2, PR-3): the judgment-side read/decide surface over the signal
+	// inbox (signals/signal_cursors, migration 0046, PR-1's signal_store.go).
+	// Both are part of the general boidPolicy (policy.go) — any hook/exec job
+	// may scan its own workspace's inbox and ack a Signal once it has
+	// written a judgment for it, the same "workspace membership is the
+	// gate, not role" posture as BoidOpCardList/BoidOpActionList.
+	//
+	// BoidOpSignalList's --claim flag routes to ClaimSignals (attempts++)
+	// instead of the plain read ListSignals — see BoidRequest.Claim.
+	// BoidOpSignalAck is idempotent by construction: AckSignals only ever
+	// sets acked_at WHERE acked_at IS NULL, so acking an already-acked id is
+	// a no-op success, not an error (design doc §2, Q14).
+	BoidOpSignalList BoidOp = "signal_list"
+	BoidOpSignalAck  BoidOp = "signal_ack"
+
+	// BoidOpSignalIngest / BoidOpSignalCursorGet back `boid signal ingest`
+	// (stdin JSONL) / `boid signal cursor` from inside a connector's exec
+	// job (design doc §3.2, §5.3 connector プロセス契約). Declared here
+	// (protocol / mirror / escape-manifest) for completeness, but
+	// DELIBERATELY NOT added to the general boidPolicy in policy.go's
+	// boidPolicy: design doc §3.2 is explicit that granting these two ops is
+	// PR-5's job (a connector-scoped, reduced policy handed only to derived
+	// trigger exec jobs). As of PR-3 these are "nobody can call them" ops —
+	// fully wired end-to-end (broker scoping + executor logic + tests) but
+	// unreachable because no policy names them yet. See boidPolicy's own
+	// doc comment in policy.go for the matching note from the policy side.
+	BoidOpSignalIngest    BoidOp = "signal_ingest"
+	BoidOpSignalCursorGet BoidOp = "signal_cursor_get"
 )
 
 // IdentityNotFoundExitCode is BoidOpTaskIdentityResolve's distinguished exit
@@ -400,6 +432,64 @@ type BoidRequest struct {
 	// above) round out the op's other inputs; no new fields are needed for
 	// those.
 	Since string `json:"since,omitempty"`
+
+	// Signal ops fields (docs/plans/signal-ingest-detailed-design.md §3.2,
+	// PR-3). WorkspaceID (already declared above) is the scope for all four
+	// signal ops, but is NEVER caller-supplied for them — the shim never
+	// sets it (there is no --workspace-id flag in the sandbox-side signal
+	// grammar) and the broker unconditionally overwrites whatever value (if
+	// any) a hand-crafted request carries with entry.Context.WorkspaceID
+	// (design doc: "引数で workspace を指定させない").
+	//
+	// Service/Connector serve two different ops in two different ways:
+	//   - BoidOpSignalList: Connector is the optional --source filter
+	//     (Service has no sandbox-side flag — host CLI only, PR-2). Not
+	//     broker-enforced beyond normal read scoping — a filter narrowing
+	//     what the caller's OWN workspace shows is not a security boundary.
+	//   - BoidOpSignalIngest / BoidOpSignalCursorGet: both fields are the
+	//     connector's own identity. The shim populates them from the
+	//     BOID_SIGNAL_SERVICE / BOID_SIGNAL_CONNECTOR environment variables
+	//     (never a CLI flag), but that alone is only a well-behaved-shim
+	//     convention, not enforcement — the broker is what actually makes
+	//     this a security boundary: BoidOpSignalIngest/BoidOpSignalCursorGet's
+	//     broker.go case unconditionally OVERWRITES these fields with
+	//     TokenContext.Service/Connector (M2 of PR #1014's review: an
+	//     earlier version of this comment claimed the env-only shim path
+	//     alone prevented a connector from addressing another source's
+	//     inbox/cursor, which was false — nothing stopped a hand-crafted
+	//     ExecRequest that bypassed the shim from setting these fields to
+	//     an arbitrary value; only the broker's overwrite closes that).
+	Service   string `json:"service,omitempty"`
+	Connector string `json:"connector,omitempty"`
+
+	// Claim selects BoidOpSignalList's ClaimSignals path (attempts++
+	// included) over the plain ListSignals read — `boid signal list
+	// --claim`.
+	Claim bool `json:"claim,omitempty"`
+
+	// SignalState filters BoidOpSignalList by orchestrator.SignalState
+	// (pending|dead|acked|all) — `boid signal list --state <state>`. Empty
+	// defaults to "pending" (design doc §3.2's "未 ack の Signal" framing),
+	// the same default orchestrator.ListSignals itself applies for an empty
+	// SignalFilter.State. A distinct field from Status (which carries task
+	// status for the task_* ops) — the two are unrelated vocabularies and
+	// sharing a field would silently conflate them.
+	SignalState string `json:"signal_state,omitempty"`
+
+	// SignalIDs carries `boid signal ack <id>...`'s positional id list (1 or
+	// more). AckSignals matches by (workspace_id, id) only and is idempotent
+	// per id (Q14) — repeating an already-acked id here is a no-op success.
+	SignalIDs []string `json:"signal_ids,omitempty"`
+
+	// IngestPayload carries the raw JSONL bytes `boid signal ingest` reads
+	// from stdin, capped by the shim at PayloadPatchMaxBytes (design doc
+	// §3.2: "既存 PayloadPatchMaxBytes と同値" — reusing that constant rather
+	// than defining a second one for the same 10 MiB limit). Parsing each
+	// line into orchestrator.SignalIngestRow and validating the required
+	// fields (id/occurred_at/identity) happens server-side in the executor,
+	// not in the shim — matching how BoidOpTaskUpdatePayloadPatch's
+	// PayloadPatch is parsed server-side rather than in boid_shim.go.
+	IngestPayload []byte `json:"ingest_payload,omitempty"`
 }
 
 type TokenContext struct {
@@ -416,6 +506,27 @@ type TokenContext struct {
 	// notion of "which project are we operating on" that doesn't care
 	// whether the sandbox itself can see the tree.
 	ProjectDir string
+	// Service / Connector are the token-registration-time-stamped identity
+	// a connector job is authorized to ingest/read the cursor for
+	// (docs/plans/signal-ingest-detailed-design.md §3.2/§5.2, PR-3's M2
+	// review fix). BoidOpSignalIngest / BoidOpSignalCursorGet's broker case
+	// (broker.go) unconditionally overwrites BoidRequest.Service/Connector
+	// with these values — the SAME "broker-injected, never
+	// caller-supplied" pattern WorkspaceID already uses for every signal
+	// op. Before this fix, the shim-populated BoidRequest.Service/Connector
+	// (read from the BOID_SIGNAL_SERVICE/BOID_SIGNAL_CONNECTOR env inside
+	// the job) were trusted as-is by the broker — a correctly-behaving shim
+	// never lets an agent override those env vars via a CLI flag, but
+	// nothing stopped a hand-crafted ExecRequest (bypassing the shim
+	// entirely) from claiming an arbitrary Service/Connector and reading or
+	// writing another source's inbox rows/cursor. Empty for every job today
+	// (PR-3 ships no caller that sets these — that's PR-5's job, when it
+	// registers a connector-scoped token), which is exactly why
+	// signal_ingest/signal_cursor_get stay unreachable in practice even
+	// once PR-5 eventually grants the op via its own reduced policy, until
+	// PR-5 ALSO populates these two fields at registration time.
+	Service   string
+	Connector string
 	// SandboxRoot is the sandbox-internal (not host-side) root directory a
 	// clone-mode job's filesystem lives under — a name-scoped subdirectory
 	// of the neutral parent path "/workspace" (docs/plans/git-gateway-cutover.md

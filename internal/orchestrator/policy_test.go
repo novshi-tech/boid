@@ -50,9 +50,35 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 		OpBoidTaskIdentityResolve,
 		OpBoidTaskResolveOrCapture,
 		OpBoidActionList,
+		OpBoidSignalList,
+		OpBoidSignalAck,
 	}
 	if !opsEqual(boidP.AllowedOps, wantOps) {
 		t.Errorf("hook×boid AllowedOps = %v, want %v", boidP.AllowedOps, wantOps)
+	}
+}
+
+// TestDefaultBuiltinPolicies_HookBoidExcludesConnectorOnlySignalOps pins
+// docs/plans/signal-ingest-detailed-design.md §3.2's explicit exception to
+// the "new op → add it to boidPolicy" default: OpBoidSignalIngest /
+// OpBoidSignalCursorGet are declared (protocol.go / policy_ops.go) but must
+// NOT be reachable through the general boidPolicy in PR-3 — granting them is
+// PR-5's job (a connector-scoped, reduced policy). Without this test, a
+// future edit that "completes the set" by adding these two to boidPolicy's
+// AllowedOps would silently regress that boundary.
+func TestDefaultBuiltinPolicies_HookBoidExcludesConnectorOnlySignalOps(t *testing.T) {
+	boidP := DefaultBuiltinPolicies(RoleHook, []string{"boid"}, PolicyContext{})["boid"]
+	if boidP.Allows(OpBoidSignalIngest) {
+		t.Error("hook×boid must NOT allow signal_ingest (PR-5's connector-scoped policy grants it, not the general policy)")
+	}
+	if boidP.Allows(OpBoidSignalCursorGet) {
+		t.Error("hook×boid must NOT allow signal_cursor_get (PR-5's connector-scoped policy grants it, not the general policy)")
+	}
+	if !boidP.Allows(OpBoidSignalList) {
+		t.Error("hook×boid should allow signal_list")
+	}
+	if !boidP.Allows(OpBoidSignalAck) {
+		t.Error("hook×boid should allow signal_ack")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -130,9 +131,42 @@ type boidBuiltinExecutor struct {
 	// PR-3, B-3). Same runtime-interface-check wiring as resolveOrCapture
 	// above — see actionListService's own doc comment.
 	actionList actionListService
+	// signals backs BoidOpSignalList / BoidOpSignalAck / BoidOpSignalIngest /
+	// BoidOpSignalCursorGet (docs/plans/signal-ingest-detailed-design.md
+	// §3.2, PR-3).
+	//
+	// [M1, review of PR #1014, 2026-08-26] This field was ORIGINALLY wired
+	// with a runtime-interface-check against `workflow`
+	// (`if sig, ok := workflow.(api.SignalStore); ok`), mirroring
+	// resolveOrCapture/actionList below — but that pattern only works when
+	// SOME concrete type passed as `workflow` at production wire-up time
+	// actually implements the target interface's methods. Unlike
+	// resolveOrCaptureService/actionListService (whose methods were added
+	// directly to *api.TaskWorkflowService in the same PR that introduced
+	// the check), api.SignalStore's 6 methods have never been added to
+	// *api.TaskWorkflowService, and no other PR was ever assigned to do so
+	// — production wire.go passes a *api.TaskWorkflowService that does NOT
+	// implement api.SignalStore, so the check always resolved to nil and
+	// every signal op silently replied "unavailable" from the moment it
+	// shipped. Confirmed by a failing
+	// TestNewBoidBuiltinExecutor_WiresSignalsFromRealTaskRepository-shaped
+	// probe against the real production type before this fix.
+	//
+	// Fixed by taking `signals` as an EXPLICIT constructor parameter
+	// instead: wire.go passes `taskRepo` directly (the same
+	// *orchestrator.TaskRepository value already in scope there, which
+	// PR-1's `var _ SignalStore = (*orchestrator.TaskRepository)(nil)`
+	// assertion in internal/api/store.go proves satisfies this interface) —
+	// no runtime type assertion, no possibility of the check silently
+	// resolving to nil. Nil is still tolerated here (every other optional
+	// dependency in this struct follows the same "nil disables the op with
+	// an 'unavailable' error" convention), but nil now means "the caller
+	// deliberately passed no store" rather than "a type assertion that
+	// nobody verified against the real production type happened to fail".
+	signals api.SignalStore
 }
 
-func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string, projects projectLookup) sandbox.BoidExecutor {
+func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string, projects projectLookup, signals api.SignalStore) sandbox.BoidExecutor {
 	if workflow == nil && tasks == nil {
 		return nil
 	}
@@ -154,6 +188,7 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 		projects:         projects,
 		resolveOrCapture: resolveOrCapture,
 		actionList:       actionList,
+		signals:          signals,
 	}
 }
 
@@ -953,6 +988,109 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
+	case sandbox.BoidOpSignalList:
+		// docs/plans/signal-ingest-detailed-design.md §3.2 (PR-3). WorkspaceID
+		// is already broker-injected from the job token (broker.go's
+		// BoidOpSignalList case) — the "requires a workspace" check below is
+		// defense in depth for a handwritten request that bypassed the
+		// broker (e.g. a direct ExecuteBoidBuiltin caller in a future test),
+		// mirroring every other op's own re-check convention in this file.
+		if e.signals == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal list unavailable"}
+		}
+		if req.WorkspaceID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal list requires a workspace"}
+		}
+		if req.Claim {
+			// ClaimSignals (orchestrator/signal_store.go) has no
+			// connector/state filter — it always selects pending signals
+			// workspace-wide. --source and a non-pending --state are
+			// refused outright rather than silently ignored, so a caller
+			// doesn't mistakenly believe the filter was honored.
+			if req.Connector != "" {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal list: --claim does not support --source (ClaimSignals has no connector filter)"}
+			}
+			if req.SignalState != "" && req.SignalState != string(orchestrator.SignalStatePending) {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal list: --claim always claims pending signals; --state is not supported with --claim"}
+			}
+			claimed, err := e.signals.ClaimSignals(req.WorkspaceID, req.Limit, 0)
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			return signalsJSONResponse(claimed)
+		}
+		listed, err := e.signals.ListSignals(orchestrator.SignalFilter{
+			WorkspaceID: req.WorkspaceID,
+			Connector:   req.Connector,
+			State:       orchestrator.SignalState(req.SignalState),
+			Limit:       req.Limit,
+		})
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return signalsJSONResponse(listed)
+	case sandbox.BoidOpSignalAck:
+		if e.signals == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal ack unavailable"}
+		}
+		if req.WorkspaceID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal ack requires a workspace"}
+		}
+		if len(req.SignalIDs) == 0 {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal ack requires at least one id"}
+		}
+		// AckSignals is idempotent per id (Q14): acking an id already acked
+		// by a prior call is a no-op success, not an error — nothing extra
+		// is needed here to preserve that, since it's a plain passthrough.
+		if err := e.signals.AckSignals(req.WorkspaceID, req.SignalIDs); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{ExitCode: 0}
+	case sandbox.BoidOpSignalIngest:
+		// Unreachable via the general policy as of PR-3 (policy.go's
+		// boidPolicy deliberately excludes this op — see its own doc
+		// comment) — implemented now so PR-5's connector-scoped reduced
+		// policy can grant it later with zero executor changes.
+		if e.signals == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal ingest unavailable"}
+		}
+		if req.WorkspaceID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal ingest requires a workspace"}
+		}
+		if req.Service == "" || req.Connector == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal ingest requires a service and connector"}
+		}
+		rows, err := parseSignalIngestPayload(req.IngestPayload)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if err := e.signals.IngestSignals(req.WorkspaceID, req.Service, req.Connector, rows); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{ExitCode: 0}
+	case sandbox.BoidOpSignalCursorGet:
+		// Unreachable via the general policy as of PR-3 — see
+		// BoidOpSignalIngest's case above for the same note.
+		if e.signals == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal cursor unavailable"}
+		}
+		if req.WorkspaceID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal cursor requires a workspace"}
+		}
+		if req.Service == "" || req.Connector == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal cursor requires a service and connector"}
+		}
+		cursor, err := e.signals.GetSignalCursor(req.WorkspaceID, req.Service, req.Connector)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		encoded, err := json.MarshalIndent(struct {
+			Cursor string `json:"cursor"`
+		}{Cursor: cursor}, "", "  ")
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
 	case sandbox.BoidOpJobList:
 		if e.jobs == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list unavailable"}
@@ -1234,6 +1372,108 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 	default:
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("unsupported boid op %q", req.Op)}
 	}
+}
+
+// signalsJSONResponse renders a []*orchestrator.Signal (from ListSignals or
+// ClaimSignals) as apiwire.ListSignalsResponse — the SAME v0 envelope shape
+// PR-2's `GET /api/signals` host API replies with (M3, PR #1014 review: an
+// earlier version marshaled orchestrator.Signal directly, which has no json
+// tags and so replied with raw Go field names — a DIFFERENT, undocumented
+// shape depending on whether `boid signal list` ran on the host or inside a
+// sandbox). toWireSignals never returns nil (json.MarshalIndent renders an
+// empty slice as "[]", never "null", inside the "signals" field).
+func signalsJSONResponse(signals []*orchestrator.Signal) *sandbox.ExecResponse {
+	encoded, err := json.MarshalIndent(apiwire.ListSignalsResponse{Signals: toWireSignals(signals)}, "", "  ")
+	if err != nil {
+		return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+	}
+	return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
+}
+
+// toWireSignals shapes store rows into the v0 envelope (signal-driven-
+// review.md §5.2), splitting each row's stored "<pack>/<connector>"
+// composite Connector back into the envelope's separate
+// source.pack/source.connector fields. Mirrors internal/api/signal_handler.go's
+// own toWireSignals exactly (PR-2, docs/plans/signal-ingest-detailed-design.md
+// §3.1) — duplicated here rather than shared because it's an unexported
+// helper in a different package (internal/api), the same "small local
+// helper rather than reusing an unexported cross-package one" precedent
+// internal/api/signal_handler.go's own dedupeStrings doc comment describes
+// for orchestrator's dedupeStringsPreserveOrder.
+func toWireSignals(signals []*orchestrator.Signal) []apiwire.Signal {
+	out := make([]apiwire.Signal, 0, len(signals))
+	for _, s := range signals {
+		pack, connector := splitSignalPackConnector(s.Connector)
+		out = append(out, apiwire.Signal{
+			ID:         s.ID,
+			OccurredAt: s.OccurredAt,
+			Source: apiwire.SignalSource{
+				Pack:      pack,
+				Connector: connector,
+				Service:   s.Service,
+			},
+			Identity:   s.Identity,
+			URL:        s.URL,
+			Author:     s.Author,
+			Title:      s.Title,
+			ReceivedAt: s.ReceivedAt,
+			Attempts:   s.Attempts,
+			AckedAt:    s.AckedAt,
+		})
+	}
+	return out
+}
+
+// splitSignalPackConnector splits a stored "<pack>/<connector>" composite
+// into its two halves. A value with no "/" (should never happen for a real
+// connector-produced row, but the wire layer must not panic on it) comes
+// back as an empty Pack with the whole string as Connector.
+func splitSignalPackConnector(composite string) (pack, connector string) {
+	pack, connector, ok := strings.Cut(composite, "/")
+	if !ok {
+		return "", composite
+	}
+	return pack, connector
+}
+
+// parseSignalIngestPayload parses `boid signal ingest`'s stdin body
+// (BoidRequest.IngestPayload) as JSONL — one orchestrator.SignalIngestRow
+// per non-blank line (design doc §5.3: "1 行 = {id, occurred_at, identity,
+// url?, author?, title?}") — server-side, matching where
+// BoidOpTaskUpdatePayloadPatch's PayloadPatch is parsed. A malformed line
+// fails the whole call (nothing partially applied — IngestSignals itself is
+// an all-or-nothing single tx per design doc §2, so a payload that can't
+// even be parsed must not reach it at all) with the 1-indexed line number in
+// the error for connector-side debugging.
+// parseSignalIngestPayload returns an empty (nil) slice, not an error, when
+// payload has no signal rows (blank/whitespace-only stdin, or no stdin at
+// all) — matching orchestrator.IngestSignals' own contract for an empty
+// rows slice ("if len(rows) == 0 { return nil }", signal_store.go), so the
+// two layers agree rather than the shim/executor boundary silently
+// tightening a no-op into a hard failure. [m2, review of PR #1014,
+// 2026-08-26]: an earlier version of this function returned an error here,
+// which meant a connector that polls its source and finds nothing new —
+// the ordinary, expected outcome of most polling cycles, not an error
+// condition — would get exit != 0 from `boid signal ingest` if it always
+// piped its (possibly empty) batch through rather than conditionally
+// skipping the call, incrementing failStreak for doing nothing wrong. A
+// malformed (non-empty, non-JSON) line is still a real error and still
+// fails the whole call, unchanged.
+func parseSignalIngestPayload(payload []byte) ([]orchestrator.SignalIngestRow, error) {
+	var rows []orchestrator.SignalIngestRow
+	lines := strings.Split(string(payload), "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		var row orchestrator.SignalIngestRow
+		if err := json.Unmarshal([]byte(trimmed), &row); err != nil {
+			return nil, fmt.Errorf("boid signal ingest: line %d: invalid json: %w", i+1, err)
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 // marshalTaskContextResponse renders v (a task-current snapshot, routed

@@ -220,7 +220,7 @@ func TestBoidBuiltinExecutor_ActionList_ReturnsActionsAndCursor(t *testing.T) {
 // that gap).
 func TestNewBoidBuiltinExecutor_WiresActionListFromWorkflow(t *testing.T) {
 	workflow := &api.TaskWorkflowService{} // *api.TaskWorkflowService implements actionListService
-	got := newBoidBuiltinExecutor(workflow, nil, nil, nil, nil, "", nil)
+	got := newBoidBuiltinExecutor(workflow, nil, nil, nil, nil, "", nil, nil)
 	exec, ok := got.(*boidBuiltinExecutor)
 	if !ok {
 		t.Fatalf("newBoidBuiltinExecutor returned %T, want *boidBuiltinExecutor", got)
@@ -234,7 +234,7 @@ func TestNewBoidBuiltinExecutor_WiresActionListFromWorkflow(t *testing.T) {
 // confirms a WorkflowService test double that does NOT implement ListActions
 // leaves the field nil rather than panicking.
 func TestNewBoidBuiltinExecutor_ActionListNilWhenWorkflowDoesNotImplementIt(t *testing.T) {
-	got := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil)
+	got := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil)
 	exec, ok := got.(*boidBuiltinExecutor)
 	if !ok {
 		t.Fatalf("newBoidBuiltinExecutor returned %T, want *boidBuiltinExecutor", got)
