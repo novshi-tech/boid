@@ -317,6 +317,21 @@ Full reference: [references/builtins.md](references/builtins.md).
 `(ref, parent_id)` returns the **existing** task. Re-running the entire create loop
 on resume is safe — existing tasks are returned as-is.
 
+**When `ref` isn't enough**: `ref`'s dedup is scoped by `parent_id`, so it only works
+when the SAME parent task retries. If the creating task itself is NOT stable across
+retries — e.g. a judgment task that a trigger re-dispatches as a brand-new task
+instance each time it fires (signal-driven review) — `parent_id` differs on every
+attempt, so `ref` alone cannot catch a duplicate create. For that case use
+`idempotency_key` instead (or in addition): it is scoped by `(project_id, parent_id)`
+too, so the SAME requirement applies — pass an explicit, stable `parent_id` (e.g. the
+persistent card's task id), not the auto-filled `BOID_TASK_ID` (that's the ephemeral
+creating task's own id, which is exactly what changes between retries). A second call
+with the same `(project_id, parent_id, idempotency_key)` returns the existing task,
+same exit-0 convergence as `ref`. See
+[references/builtins.md](references/builtins.md)'s `idempotency_key` row for the full
+contract, and the distinction from `task_resolve_or_capture` (external-identity
+lookup with link/drop semantics — a different mechanism entirely).
+
 For efficiency, use `artifact.children` to skip creates of already-terminal tasks:
 
 ```bash

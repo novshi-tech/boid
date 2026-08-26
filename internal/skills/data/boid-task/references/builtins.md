@@ -35,7 +35,7 @@ auto_start: true
 YAML
 ```
 
-Reads YAML/JSON from stdin (or `-f <file>`). Prints `task created: <id> (<status>)`.
+Reads YAML/JSON from stdin (or `-f <file>`). Prints `task created: <id> (<status>)`. `--idempotency-key <key>` is also accepted as a flag (equivalent to the `idempotency_key` field below; the flag wins if both are given).
 
 | Field | Description |
 |---|---|
@@ -48,6 +48,7 @@ Reads YAML/JSON from stdin (or `-f <file>`). Prints `task created: <id> (<status
 | `project_id` | Project to create in. Defaults to the same project as the parent. |
 | `behavior_spec` | Inline behavior definition. Not normally needed — prefer named behaviors from `project.yaml`. |
 | `ref` | Child ref name within the parent scope. |
+| `idempotency_key` | Stable key, scoped by `(project_id, parent_id)`, that makes a retried create converge instead of duplicating: a second call with the same key under the same parent returns the FIRST call's task id (exit 0), not an error. Use this — not `ref` — when a judgment task mints a child and needs the retry to be safe (e.g. key = `<parent card id>:<child generation key>`). No external-identity semantics ride on it (unlike `task_resolve_or_capture`'s identity-based lookup) — it is purely an internal dedup key. |
 
 ## boid task show
 

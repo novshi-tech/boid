@@ -327,6 +327,8 @@ func parseBoidJobDone(args []string) (*BoidRequest, error) {
 
 func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	filePath := ""
+	idempotencyKey := ""
+	idempotencyKeySet := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -341,6 +343,24 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 			}
 			i = next
 			filePath = value
+		case arg == "--idempotency-key" || strings.HasPrefix(arg, "--idempotency-key="):
+			// docs/plans/signal-ingest-detailed-design.md §8: mirrors
+			// cmd/task.go's host-side --idempotency-key flag, which the
+			// sandboxed `boid task create` command lacked entirely (the
+			// primary use case — a judgment task minting a child task — runs
+			// INSIDE the sandbox, so without this the flag form was
+			// unusable at its main call site; the YAML spec's
+			// `idempotency_key:` field already worked via the generic
+			// map-forward below). Set on the map AFTER parsing the spec
+			// (below) so the flag wins over a same-named spec field, same
+			// precedence as runTaskCreate on the host side.
+			value, next, err := takeStringFlagValue(args, i, "--idempotency-key")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			idempotencyKey = value
+			idempotencyKeySet = true
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task create", arg)
 		}
@@ -367,6 +387,9 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	}
 	if v == nil {
 		v = make(map[string]any)
+	}
+	if idempotencyKeySet {
+		v["idempotency_key"] = idempotencyKey
 	}
 
 	title, _ := v["title"].(string)

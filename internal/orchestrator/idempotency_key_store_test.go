@@ -95,6 +95,126 @@ func TestCreateTask_SameIdempotencyKey_DifferentProject_NoCollision(t *testing.T
 	}
 }
 
+// TestCreateTask_SameIdempotencyKey_DifferentParent_NoCollision is the M3
+// regression guard (PR #1012 review, Opus): scoping idempotency_key by
+// ProjectID alone let two DIFFERENT parent tasks in the SAME project, both
+// reusing a plain key like "child-gen-1", silently collide — the second
+// parent's create call succeeded (no error) but handed back the FIRST
+// parent's child, which is exactly the "wrong id, no error" failure mode
+// this feature exists to prevent (just aimed at the wrong parent). Confirmed
+// reproducible before migration 0047 was rescoped to
+// (project_id, parent_id, idempotency_key): parent-b's ListChildren stayed
+// empty while parent-a silently gained an extra child with the wrong title.
+func TestCreateTask_SameIdempotencyKey_DifferentParent_NoCollision(t *testing.T) {
+	d := createTestProject(t)
+
+	// Both parents pre-exist as ordinary tasks so ListChildren has something
+	// real to scope against below.
+	parentA := &orchestrator.Task{ID: "parent-a", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Card: &orchestrator.CardAttrs{}}
+	parentB := &orchestrator.Task{ID: "parent-b", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Card: &orchestrator.CardAttrs{}}
+	if err := orchestrator.CreateTask(d.Conn, parentA); err != nil {
+		t.Fatalf("create parent-a: %v", err)
+	}
+	if err := orchestrator.CreateTask(d.Conn, parentB); err != nil {
+		t.Fatalf("create parent-b: %v", err)
+	}
+
+	childA := &orchestrator.Task{
+		ProjectID:      "proj-1",
+		Type:           orchestrator.TaskTypeExecution,
+		Title:          "parent-a's child",
+		ParentID:       "parent-a",
+		Ref:            "child-a-ref",
+		IdempotencyKey: "child-gen-1",
+		Exec:           &orchestrator.ExecAttrs{Behavior: "dev"},
+	}
+	if err := orchestrator.CreateTask(d.Conn, childA); err != nil {
+		t.Fatalf("CreateTask under parent-a: %v", err)
+	}
+
+	childB := &orchestrator.Task{
+		ProjectID:      "proj-1",
+		Type:           orchestrator.TaskTypeExecution,
+		Title:          "parent-b's child",
+		ParentID:       "parent-b",
+		Ref:            "child-b-ref", // different ref: this collision is specific to idempotency_key
+		IdempotencyKey: "child-gen-1", // SAME key as childA, but a DIFFERENT parent
+		Exec:           &orchestrator.ExecAttrs{Behavior: "dev"},
+	}
+	if err := orchestrator.CreateTask(d.Conn, childB); err != nil {
+		t.Fatalf("CreateTask under parent-b with same idempotency key as parent-a's child: %v (want independent creation, not collision)", err)
+	}
+	if childB.ID == childA.ID {
+		t.Fatalf("parent-b's child got the SAME id as parent-a's child (%q) — idempotency_key must be parent-scoped, not just project-scoped", childA.ID)
+	}
+	if childB.Title != "parent-b's child" {
+		t.Errorf("childB.Title = %q, want its OWN title (got parent-a's child back instead of creating its own)", childB.Title)
+	}
+
+	bChildren, err := orchestrator.ListChildren(d.Conn, "parent-b")
+	if err != nil {
+		t.Fatalf("ListChildren(parent-b): %v", err)
+	}
+	if len(bChildren) != 1 || bChildren[0].ID != childB.ID {
+		t.Errorf("ListChildren(parent-b) = %v, want exactly [childB] (%q)", bChildren, childB.ID)
+	}
+
+	aChildren, err := orchestrator.ListChildren(d.Conn, "parent-a")
+	if err != nil {
+		t.Fatalf("ListChildren(parent-a): %v", err)
+	}
+	if len(aChildren) != 1 || aChildren[0].ID != childA.ID {
+		t.Errorf("ListChildren(parent-a) = %v, want exactly [childA] (%q) — must not have gained parent-b's attempt", aChildren, childA.ID)
+	}
+}
+
+// TestCreateTask_SameIdempotencyKey_TypeMismatch_ReturnsError is the L3
+// regression guard (PR #1012 review, Opus): a Card create whose
+// idempotency_key collides with an EXISTING Execution row under the same
+// (project_id, parent_id) — or vice versa — must fail loudly, not silently
+// hand back the wrong-typed task. Without this check, the dedup hit
+// overwrites the caller's *Task with the existing row's full shape
+// (including its Type), so a caller that built an Execution task with a
+// non-nil Exec would get back a Card with Exec == nil, before
+// validateTaskTypeConsistency ever runs (the dedup hit returns early,
+// bypassing that check entirely).
+func TestCreateTask_SameIdempotencyKey_TypeMismatch_ReturnsError(t *testing.T) {
+	d := createTestProject(t)
+
+	card := &orchestrator.Task{
+		ProjectID:      "proj-1",
+		Type:           orchestrator.TaskTypeCard,
+		Title:          "existing card",
+		IdempotencyKey: "shared-key",
+		Card:           &orchestrator.CardAttrs{},
+	}
+	if err := orchestrator.CreateTask(d.Conn, card); err != nil {
+		t.Fatalf("create card: %v", err)
+	}
+
+	exec := &orchestrator.Task{
+		ProjectID:      "proj-1",
+		Type:           orchestrator.TaskTypeExecution,
+		Title:          "conflicting execution create",
+		IdempotencyKey: "shared-key",
+		Exec:           &orchestrator.ExecAttrs{Behavior: "dev"},
+	}
+	err := orchestrator.CreateTask(d.Conn, exec)
+	if err == nil {
+		t.Fatalf("CreateTask succeeded (returned task %+v) for a type-mismatched idempotency_key collision, want an error", exec)
+	}
+
+	// Exactly the original card must exist — the mismatched attempt must not
+	// have inserted a second (wrongly-typed) row either.
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != card.ID {
+		t.Fatalf("ListTasks = %v, want exactly the original card (%q)", got, card.ID)
+	}
+}
+
 // TestCreateTask_EmptyIdempotencyKey_AlwaysCreatesNew is the regression guard:
 // omitting idempotency_key must not change existing behavior at all — every
 // call creates a fresh task, exactly like before this feature existed

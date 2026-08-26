@@ -12,12 +12,34 @@
 -- idempotency_key IS NOT NULL) と Go 側の「空文字列 = 未指定」判定が
 -- ズレる余地を無くす。
 --
--- 部分 unique index (project_id, idempotency_key) WHERE idempotency_key IS
--- NOT NULL: project スコープ (task_identities/ref と同じ思想 — 別 project が
--- 偶然同じ内部キーを使っても衝突しない)。衝突時の挙動はアプリ側
--- (internal/orchestrator/store.go の CreateTask) が担う — エラーではなく
--- 既存 task の id を返して exit 0 (「再実行が収束する」の実装、ref の
--- get-or-create と対称)。
+-- 部分 unique index (project_id, parent_id, idempotency_key) WHERE
+-- idempotency_key IS NOT NULL: ref の unique index
+-- (idx_tasks_ref_parent_project、migration 0037) と全く同じ3列スコープを
+-- 踏襲する。project_id だけでスコープした最初の実装 (PR #1012 レビュー
+-- Opus M3) には実測バグがあった — 同一 project 内の異なる親 task が
+-- 偶然同じ idempotency_key を使うと (例: どちらも "step-1" のような
+-- 単純なキーを付ける)、get-or-create が親違いのまま既存 task を返して
+-- しまい、呼び出し側からは「成功したが実は別の親の子を掴んだ」という
+-- サイレントな誤配線になる (このバグは本来この機構が防ぐはずの「子タスク
+-- 重複生成」の逆パターン)。parent_id をスコープに含めることで、この
+-- 誤配線を構造的に起こり得なくする — ref が project_id を足した理由
+-- (migration 0037: 別 workspace が同じ ref を使っても衝突しない) と対称の
+-- 理由で、idempotency_key も parent_id を足す。
+--
+-- 衝突時の挙動はアプリ側 (internal/orchestrator/store.go の CreateTask) が
+-- 担う — エラーではなく既存 task の id を返して exit 0 (「再実行が収束する」
+-- の実装、ref の get-or-create と対称)。
+--
+-- 呼び出し側の契約: parent_id をスコープに含めたことで、判断タスクの再実行を
+-- またいだ収束を idempotency_key に期待する場合、parent_id 自体が再実行を
+-- またいで安定していなければならない (signal-driven-review.md §8.3/§8.4:
+-- trigger は毎回新しい判断タスクを起こすため、子タスク作成時に既定の
+-- BOID_TASK_ID をそのまま parent_id に使うと、クラッシュ後の再送では違う
+-- parent_id になり dedup が効かない)。呼び出し側は永続的な card の task id
+-- のような安定した parent_id を明示的に渡す必要がある — 詳細は
+-- Task.IdempotencyKey (internal/orchestrator/model.go) と
+-- internal/skills/data/boid-task/SKILL.md の「Resume: reconcile before
+-- create」節を参照。
 ALTER TABLE tasks ADD COLUMN idempotency_key TEXT;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_project_idempotency_key
-  ON tasks(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_project_parent_idempotency_key
+  ON tasks(project_id, parent_id, idempotency_key) WHERE idempotency_key IS NOT NULL;

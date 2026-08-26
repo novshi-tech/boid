@@ -179,6 +179,30 @@ func validateTaskTypeConsistency(t *Task) error {
 	return nil
 }
 
+// rejectIdempotencyKeyTypeMismatch guards CreateTask's idempotency_key
+// get-or-create (PR #1012 review, Opus L3): the pre-insert lookup and the
+// post-INSERT-conflict fallback both run BEFORE validateTaskTypeConsistency
+// would otherwise catch a shape problem, and BEFORE the caller-requested
+// Task (t) is overwritten with the existing row — so without this check, a
+// TaskTypeCard create whose idempotency_key collides with an existing
+// TaskTypeExecution row (or vice versa) would silently hand back a task of
+// the WRONG type: `t.Type` ends up existing.Type, `t.Exec`/`t.Card` end up
+// whichever the existing row actually has, and a caller that (reasonably)
+// assumed its own requested type would get e.g. a nil Exec on what it
+// thinks is an execution task. This can only happen when two DIFFERENT
+// call sites reuse the same (project_id, parent_id, idempotency_key) for
+// semantically different tasks — a caller bug, but one that must surface
+// as an error, not a silently wrong-shaped success.
+func rejectIdempotencyKeyTypeMismatch(requested, existing *Task) error {
+	if requested.Type != "" && existing.Type != requested.Type {
+		return fmt.Errorf(
+			"idempotency_key %q (project_id=%s, parent_id=%s) already used by a %s task (id=%s); this create requested a %s task",
+			requested.IdempotencyKey, requested.ProjectID, requested.ParentID, existing.Type, existing.ID, requested.Type,
+		)
+	}
+	return nil
+}
+
 // taskChildCountCols は子タスク数を集計するサブクエリカラム群（テーブル別名 t を前提）。
 //
 // open_child_count (最後の1本) は pre-execution な子を引き続きカウントする —
@@ -227,16 +251,21 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	// the Ref check above — a task may carry either, both, or neither.
 	// Unlike Ref, idempotency_key has no external-identity meaning (no
 	// UUID-shortcut lookup, no link/drop semantics — see the field's own doc
-	// comment on Task) and is scoped by ProjectID alone, not ParentID: the
-	// design's example key ("<parent card id>:<child generation key>") is
-	// already parent-scoped inside the key string itself, so folding
-	// ParentID into the SQL scope too would be redundant, not safer.
+	// comment on Task). Scoped by (ProjectID, ParentID) — same 3-column scope
+	// migration 0037 uses for Ref, and for the identical reason: scoping by
+	// ProjectID alone let two DIFFERENT parents in the same project silently
+	// collide on a reused key, with the second parent's create call handing
+	// back the FIRST parent's child (PR #1012 review, Opus M3 — see
+	// Task.IdempotencyKey's own doc comment for the full story).
 	if t.IdempotencyKey != "" {
-		existing, err := FindTaskByIdempotencyKey(dbtx, t.ProjectID, t.IdempotencyKey)
+		existing, err := FindTaskByIdempotencyKey(dbtx, t.ProjectID, t.ParentID, t.IdempotencyKey)
 		if err != nil {
 			return fmt.Errorf("find existing idempotency key: %w", err)
 		}
 		if existing != nil {
+			if err := rejectIdempotencyKeyTypeMismatch(t, existing); err != nil {
+				return err
+			}
 			*t = *existing
 			return nil
 		}
@@ -318,8 +347,11 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		// see the pre-insert idempotency_key block above for why this doesn't
 		// fold into the Ref branch.
 		if t.IdempotencyKey != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			existing, findErr := FindTaskByIdempotencyKey(dbtx, t.ProjectID, t.IdempotencyKey)
+			existing, findErr := FindTaskByIdempotencyKey(dbtx, t.ProjectID, t.ParentID, t.IdempotencyKey)
 			if findErr == nil && existing != nil {
+				if mismatchErr := rejectIdempotencyKeyTypeMismatch(t, existing); mismatchErr != nil {
+					return mismatchErr
+				}
 				*t = *existing
 				return nil
 			}
@@ -954,9 +986,12 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID, projectID string) (*Task, error)
 }
 
 // FindTaskByIdempotencyKey returns the task matching the given idempotency
-// key within the given project scope, or nil if no matching task is found.
-// See migration 0047 and Task.IdempotencyKey's doc comment for the field's
-// contract (docs/plans/signal-ingest-detailed-design.md §8).
+// key within the given (projectID, parentID) scope, or nil if no matching
+// task is found. See migration 0047 and Task.IdempotencyKey's doc comment
+// for the field's contract (docs/plans/signal-ingest-detailed-design.md §8)
+// and for why parentID is part of the scope (PR #1012 review, Opus M3: a
+// project-only scope let two different parents silently collide on a reused
+// key).
 //
 // Unlike FindTaskByRef, there is no UUID-shaped-string special case here:
 // idempotency_key is never treated as a stand-in for a task ID, only as an
@@ -965,13 +1000,13 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID, projectID string) (*Task, error)
 // true nor false, so a keyless (NULL) row can never match a non-empty
 // idempotencyKey argument, and this function itself short-circuits before
 // querying when idempotencyKey is empty.
-func FindTaskByIdempotencyKey(dbtx db.DBTX, projectID, idempotencyKey string) (*Task, error) {
+func FindTaskByIdempotencyKey(dbtx db.DBTX, projectID, parentID, idempotencyKey string) (*Task, error) {
 	if idempotencyKey == "" {
 		return nil, nil
 	}
 	row := dbtx.QueryRow(
-		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.project_id = ? AND t.idempotency_key = ?`,
-		projectID, idempotencyKey,
+		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.project_id = ? AND t.parent_id = ? AND t.idempotency_key = ?`,
+		projectID, parentID, idempotencyKey,
 	)
 	t, err := scanTask(row)
 	if err != nil {
