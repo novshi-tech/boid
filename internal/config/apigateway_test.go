@@ -539,6 +539,59 @@ services:
 	}
 }
 
+// TestLoadFromPath_Services_UsesUsernameValid pins the new top-level
+// "username:" field (docs/plans/signal-driven-review.md §7 follow-up,
+// feat/credential-slot-instance-username): a uses: entry may supply an
+// INSTANCE-SPECIFIC Basic-auth username value — e.g. Jira Cloud's
+// convention of the operator's own Atlassian account email — as a
+// plaintext top-level field, deliberately separate from "credentials:"
+// (which binds SecretStore key REFERENCES, never a plaintext value like an
+// email address). This package parses it verbatim; whether the resolved
+// profile's credential slot actually accepts it (usernameFrom: instance) is
+// internal/integrationpack.DesugarService's job (Q16 — this package cannot
+// reach the Pack registry), the same split Endpoint already has.
+func TestLoadFromPath_Services_UsesUsernameValid(t *testing.T) {
+	content := `
+services:
+  customer-jira:
+    uses: jira-cloud/jira-cloud@1.0.0
+    endpoint: https://example.atlassian.net
+    username: alice@example.com
+    credentials:
+      token: JIRA_TOKEN
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Services["customer-jira"].Username != "alice@example.com" {
+		t.Errorf("Username = %q, want alice@example.com", cfg.Services["customer-jira"].Username)
+	}
+}
+
+// TestLoadFromPath_Services_UsernameWithoutUsesRejected is
+// EndpointWithoutUsesRejected's "username:" counterpart — the field only
+// means anything alongside uses: (it fills a resolved Pack service
+// profile's instance-supplied username slot); on a free-form base_url/auth
+// entry it is very likely a mistaken stand-in for auth.username (the field
+// that actually configures Basic auth there).
+func TestLoadFromPath_Services_UsernameWithoutUsesRejected(t *testing.T) {
+	content := `
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    username: alice@example.com
+    auth: { kind: bearer, secret_key: k }
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for username: without uses:, got nil")
+	}
+	if !strings.Contains(err.Error(), "username") || !strings.Contains(err.Error(), "uses") {
+		t.Errorf("error should mention both username and uses, got: %v", err)
+	}
+}
+
 // TestLoadFromPath_Services_UsesExclusiveWithBaseURLRejected pins the
 // documented exclusivity (docs/plans/signal-ingest-detailed-design.md §6.1:
 // "uses 指定時は既存の base_url/auth と排他"): a services.<name> entry

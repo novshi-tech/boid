@@ -46,6 +46,10 @@ func TestResolveField_KnownPaths(t *testing.T) {
 		{"services.myapp.uses", true},
 		{"services.myapp.endpoint", true},
 		{"services.myapp.credentials.token", true},
+		// feat/credential-slot-instance-username: instance-supplied Basic-auth
+		// username (a plaintext value, deliberately separate from
+		// credentials.* which only ever binds SecretStore key references).
+		{"services.myapp.username", true},
 	}
 	for _, tc := range cases {
 		_, ok := ResolveField(tc.path)

@@ -253,6 +253,111 @@ serviceProfiles:
 	}
 }
 
+// jiraCloudBasicInstanceUsernamePack returns a loaded *Pack whose
+// jira-cloud service profile declares "usernameFrom: instance" for its
+// basic-injection credential slot — the shape jira-cloud actually needs
+// (Basic auth with an instance-specific Atlassian account email as the
+// username), unlike bitbucket-cloud's Pack-fixed username.
+func jiraCloudBasicInstanceUsernamePack(t *testing.T) []*Pack {
+	t.Helper()
+	m, err := ParseManifest([]byte(`
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata: {name: jira-cloud, version: '1.0.0'}
+serviceProfiles:
+  - name: jira-cloud
+    endpoint: {configurable: true}
+    credentials:
+      - name: token
+        injection: basic
+        usernameFrom: instance
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []*Pack{{Name: m.Metadata.Name, Version: m.Metadata.Version, Dir: "/opt/boid/integrations/jira-cloud/1.0.0", Manifest: *m}}
+}
+
+// TestDesugarService_BasicInjectionUsernameFromInstance pins the core new
+// behavior: when the profile's basic slot declares usernameFrom: instance,
+// the service instance's own (plaintext, non-secret) config.yaml "username:"
+// field flows into apigateway.ServiceAuth.Username — the same field
+// TestDesugarService_BasicInjection already pins for the Pack-fixed case,
+// just sourced from the instance instead of the profile.
+func TestDesugarService_BasicInjectionUsernameFromInstance(t *testing.T) {
+	sc := config.ServiceConfig{
+		Uses:        "jira-cloud/jira-cloud@1.0.0",
+		Endpoint:    "https://example.atlassian.net",
+		Username:    "alice@example.com",
+		Credentials: map[string]string{"token": "JIRA_TOKEN"},
+	}
+	got, err := DesugarService("customer-jira", sc, jiraCloudBasicInstanceUsernamePack(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Auth.Kind != apigateway.AuthBasic || got.Auth.Username != "alice@example.com" || got.Auth.SecretKey != "JIRA_TOKEN" {
+		t.Errorf("Auth = %+v", got.Auth)
+	}
+}
+
+// TestDesugarService_BasicInjectionUsernameFromInstance_MissingRejected pins
+// the "未対応・不整合を黙って握らない" posture applied to the new field:
+// when the profile declares usernameFrom: instance, an instance that omits
+// "username" is a config error, not a silently-empty Basic-auth username.
+func TestDesugarService_BasicInjectionUsernameFromInstance_MissingRejected(t *testing.T) {
+	sc := config.ServiceConfig{
+		Uses:        "jira-cloud/jira-cloud@1.0.0",
+		Endpoint:    "https://example.atlassian.net",
+		Credentials: map[string]string{"token": "JIRA_TOKEN"},
+		// no Username.
+	}
+	_, err := DesugarService("customer-jira", sc, jiraCloudBasicInstanceUsernamePack(t))
+	if err == nil {
+		t.Fatal("want error for a missing instance-supplied username, got nil")
+	}
+	if !strings.Contains(err.Error(), "username") {
+		t.Errorf("error should mention username, got: %v", err)
+	}
+}
+
+// TestDesugarService_BasicInjectionUsernameFromInstance_ColonRejected pins
+// RFC 7617 §2's userid-must-not-contain-":" rule (config.
+// validateServiceConfig already enforces this for a free-form auth.username
+// entry — see apigateway_test.go's TestLoadFromPath_Services_
+// BasicUsernameWithColonRejected) applied to an instance-supplied uses:
+// username too: the Basic credential is built as "username:secret", so a
+// colon in the username changes what the upstream parses as each half.
+func TestDesugarService_BasicInjectionUsernameFromInstance_ColonRejected(t *testing.T) {
+	sc := config.ServiceConfig{
+		Uses:        "jira-cloud/jira-cloud@1.0.0",
+		Endpoint:    "https://example.atlassian.net",
+		Username:    "alice:example.com",
+		Credentials: map[string]string{"token": "JIRA_TOKEN"},
+	}
+	_, err := DesugarService("customer-jira", sc, jiraCloudBasicInstanceUsernamePack(t))
+	if err == nil {
+		t.Fatal("want error for a username containing \":\", got nil")
+	}
+}
+
+// TestDesugarService_FixedUsernameProfile_InstanceUsernameRejected pins the
+// other direction: when the profile does NOT declare usernameFrom: instance
+// (bitbucket-cloud's Pack-fixed username, or any non-basic injection), an
+// instance that sets "username" anyway is rejected rather than silently
+// ignored — there is no slot for it to fill.
+func TestDesugarService_FixedUsernameProfile_InstanceUsernameRejected(t *testing.T) {
+	sc := config.ServiceConfig{
+		Uses:        "jira-cloud/jira-cloud@1.2.0",
+		Endpoint:    "https://example.atlassian.net",
+		Username:    "should-not-be-settable",
+		Credentials: map[string]string{"token": "JIRA_TOKEN"},
+	}
+	_, err := DesugarService("customer-jira", sc, bearerPack(t))
+	if err == nil {
+		t.Fatal("want error for an instance-supplied username on a bearer-injection profile, got nil")
+	}
+}
+
 // TestDesugarService_QueryInjection mirrors HeaderInjection for
 // injection: query.
 func TestDesugarService_QueryInjection(t *testing.T) {

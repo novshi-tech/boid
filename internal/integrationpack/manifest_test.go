@@ -330,6 +330,172 @@ serviceProfiles:
 	}
 }
 
+// TestParseManifest_BasicInjectionUsernameFromInstance pins the extension
+// that lets a profile declare "usernameFrom: instance" instead of a fixed
+// "username" — Jira Cloud's Basic-auth convention (username = the operator's
+// Atlassian account email, password = API token) needs a DIFFERENT username
+// per service instance, which the fixed-username field (Bitbucket's
+// "x-bitbucket-api-token-auth" convention) cannot express (docs/plans/
+// signal-driven-review.md §7.1's "仕様は profile、値は instance" applied to
+// this one field: the profile only declares THAT the instance must supply a
+// username, not the value itself).
+func TestParseManifest_BasicInjectionUsernameFromInstance(t *testing.T) {
+	yaml := `
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata: {name: jira-cloud, version: '1.0.0'}
+serviceProfiles:
+  - name: jira-cloud
+    endpoint: {configurable: true}
+    credentials:
+      - name: token
+        injection: basic
+        usernameFrom: instance
+`
+	m, err := ParseManifest([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(m.ServiceProfiles) != 1 || len(m.ServiceProfiles[0].Credentials) != 1 {
+		t.Fatalf("ServiceProfiles = %+v", m.ServiceProfiles)
+	}
+	slot := m.ServiceProfiles[0].Credentials[0]
+	if slot.Injection != InjectionBasic {
+		t.Errorf("Injection = %q, want basic", slot.Injection)
+	}
+	if slot.UsernameFrom != UsernameFromInstance {
+		t.Errorf("UsernameFrom = %q, want %q", slot.UsernameFrom, UsernameFromInstance)
+	}
+	if slot.Username != "" {
+		t.Errorf("Username = %q, want empty (usernameFrom: instance declares no fixed value)", slot.Username)
+	}
+}
+
+// TestParseManifest_BasicInjectionUsernameAndUsernameFromMutuallyExclusive
+// pins that a profile cannot declare both a fixed "username" AND
+// "usernameFrom: instance" for the same slot — the two are contradictory
+// (one says the value is fixed by the Pack, the other says the instance
+// supplies it).
+func TestParseManifest_BasicInjectionUsernameAndUsernameFromMutuallyExclusive(t *testing.T) {
+	yaml := `
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata: {name: x, version: '1.0.0'}
+serviceProfiles:
+  - name: x
+    credentials:
+      - name: token
+        injection: basic
+        username: fixed-user
+        usernameFrom: instance
+`
+	_, err := ParseManifest([]byte(yaml))
+	if err == nil {
+		t.Fatal("want error for both username and usernameFrom set, got nil")
+	}
+}
+
+// TestParseManifest_UsernameFromUnrecognizedValueRejected pins that
+// usernameFrom only recognizes "instance" today — any other value (a typo,
+// or a not-yet-supported future source) is a hard error, not a silent
+// no-op, matching the injection field's own "unrecognized %q" posture.
+func TestParseManifest_UsernameFromUnrecognizedValueRejected(t *testing.T) {
+	yaml := `
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata: {name: x, version: '1.0.0'}
+serviceProfiles:
+  - name: x
+    credentials:
+      - name: token
+        injection: basic
+        usernameFrom: workspace
+`
+	_, err := ParseManifest([]byte(yaml))
+	if err == nil {
+		t.Fatal("want error for unrecognized usernameFrom value, got nil")
+	}
+	if !strings.Contains(err.Error(), "usernameFrom") {
+		t.Errorf("error should mention usernameFrom, got: %v", err)
+	}
+}
+
+// TestParseManifest_UsernameFromOnNonBasicInjectionRejected pins that
+// usernameFrom is only meaningful for injection: basic — declaring it
+// alongside bearer/header/query is a likely copy-paste mistake that should
+// fail loudly rather than being silently ignored (mirroring username's own
+// injection-conditional meaning).
+func TestParseManifest_UsernameFromOnNonBasicInjectionRejected(t *testing.T) {
+	cases := []string{"bearer", "header", "query"}
+	for _, injection := range cases {
+		extra := ""
+		switch injection {
+		case "header":
+			extra = "\n        header: X-Api-Key"
+		case "query":
+			extra = "\n        query: api_key"
+		}
+		yaml := "apiVersion: boid.dev/v1\nkind: IntegrationPack\nmetadata: {name: x, version: '1.0.0'}\n" +
+			"serviceProfiles:\n  - name: x\n    credentials:\n      - name: token\n        injection: " + injection +
+			"\n        usernameFrom: instance" + extra + "\n"
+		if _, err := ParseManifest([]byte(yaml)); err == nil {
+			t.Errorf("injection %q: want error for usernameFrom on a non-basic slot, got nil", injection)
+		}
+	}
+}
+
+// TestParseManifest_BitbucketCloudFixedUsernameStillParses is a regression
+// test pinning the exact serviceProfiles[].credentials[] shape the
+// boid-api-skills bitbucket-cloud Pack's integration.yaml uses today (a
+// profile-fixed Basic-auth username, RFC 7617's token-as-password
+// convention) — this extension must not require that Pack to change at all.
+func TestParseManifest_BitbucketCloudFixedUsernameStillParses(t *testing.T) {
+	yaml := `
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata:
+  name: bitbucket-cloud
+  version: 1.0.0
+
+serviceProfiles:
+  - name: bitbucket-cloud
+    endpoint:
+      configurable: true
+    credentials:
+      - name: token
+        injection: basic
+        username: x-bitbucket-api-token-auth
+
+connectors:
+  - name: pr-comments
+    executable: connectors/pr-comments
+    serviceProfile: bitbucket-cloud
+    configSchema:
+      type: object
+      properties:
+        workspace:
+          type: string
+      required:
+        - workspace
+
+skills:
+  - name: bitbucket-api
+    path: skills/bitbucket-api
+    requiresServiceProfile: bitbucket-cloud
+`
+	m, err := ParseManifest([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	slot := m.ServiceProfiles[0].Credentials[0]
+	if slot.Username != "x-bitbucket-api-token-auth" {
+		t.Errorf("Username = %q", slot.Username)
+	}
+	if slot.UsernameFrom != "" {
+		t.Errorf("UsernameFrom = %q, want empty (fixed-username profile)", slot.UsernameFrom)
+	}
+}
+
 // TestParseManifest_DuplicateServiceProfileNameRejected pins a review
 // finding (F4, MEDIUM): before this fix, a manifest declaring two
 // serviceProfiles[] entries with the same name parsed cleanly, and
