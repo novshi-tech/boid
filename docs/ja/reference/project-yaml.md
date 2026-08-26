@@ -260,8 +260,9 @@ triggers:
 - **crash からの回復**: 発火後、判断が crash した/捌き切れなかった等で未 ack の Signal が残っていれば、次の `every` 経過時に再びこのトリガが発火する — 別立ての再試行機構は無く、上記の 1 行の due 判定がそのまま crash 回復も兼ねる
 - **single-flight**: 既存の `trigger_runs` の部分 UNIQUE インデックスがそのまま効く。変更なし
 - **workspace 未所属の project**: プロジェクトがどの workspace にも紐づいていない場合、`on: signals` トリガは常に発火しない (エラーにはならず、daemon ログに debug レベルで記録されるのみ)
+- **「未 ack」の定義**: attempts が上限 (`MaxSignalAttempts`) に達し dead-letter 化した Signal はここで言う「未 ack」に含まれない — dead-letter だけが残る workspace で `on: signals` トリガが永久に発火し続けることはない
 
-デバッグ用の手動起動口は `boid trigger run -p <project-ref> <name>` (`every` の経過は無視するが single-flight は尊重する) — 詳細は [CLI リファレンス](cli.md#サンドボックス操作) を参照。
+デバッグ用の手動起動口は `boid trigger run -p <project-ref> <name>` (`every` の経過に加えて `on: signals` の Signal 有無判定もバイパスするが、single-flight は尊重する) — 詳細は [CLI リファレンス](cli.md#サンドボックス操作) を参照。
 
 ## 共通の構成要素
 

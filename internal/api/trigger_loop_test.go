@@ -1381,6 +1381,106 @@ func TestSweepTriggers_OnSignals_NoSignalStoreWired_NeverDue(t *testing.T) {
 	}
 }
 
+// TestSweepTriggers_OnSignals_HasPendingSignalsErrors_FailsClosed pins F2
+// (Opus review 2026-08-26, CONFIRMED mutation survivor):
+// signalsPendingForTrigger's `return false` on a HasPendingSignals error
+// (fail-closed, "never due" — matching the workspace-unlinked/no-store
+// cases right above) was not actually exercised by any prior test — flipping
+// it to `return true` would not have turned any existing test red. A
+// HasPendingSignals error must make the trigger not due AND must not
+// surface as a SweepTriggers-level error (the same fail-open-per-trigger
+// posture triggerIsDue/dispatch failures already get — logged, not
+// propagated).
+func TestSweepTriggers_OnSignals_HasPendingSignalsErrors_FailsClosed(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {
+			SecretNamespace: "ws-1",
+			Triggers:        []orchestrator.Trigger{{Name: "sweep", Every: "2m", Run: "python3 -m khi.app.scan", On: orchestrator.TriggerOnSignals}},
+		},
+	})
+	svc.Signals = &fakeSignalStore{err: fmt.Errorf("simulated HasPendingSignals failure")}
+
+	result, err := svc.SweepTriggers(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v, want nil (a per-trigger HasPendingSignals error must not abort the sweep)", err)
+	}
+	if len(result.Fired) != 0 {
+		t.Errorf("Fired = %+v, want empty (HasPendingSignals error must fail closed, not open)", result.Fired)
+	}
+	if len(exec.calls) != 0 {
+		t.Errorf("StartExec calls = %d, want 0", len(exec.calls))
+	}
+}
+
+// TestSweepTriggers_OnSignals_WedgedInFlight_StaysInSkipped pins F1 (Opus
+// review 2026-08-26, CONFIRMED): an on:signals trigger whose job is wedged
+// (Running forever — e.g. the scan script or judgment agent hung) must keep
+// appearing in Skipped on every subsequent every-elapsed tick, exactly like
+// an identically-configured `on: schedule` trigger does — so
+// TriggerLoop.trackSkipStreak's stuck-notification safety net still fires
+// for it.
+//
+// Before the fix, a busy on:signals trigger whose inbox went empty (e.g.
+// because the very job that's now wedged acked everything right before
+// hanging) would compute due=false via the signals predicate BEFORE the
+// busy check ever ran, so it never landed in Skipped at all — silently
+// wedged forever with no stuck notification, unlike `on: schedule`. This
+// test reproduces exactly that inbox-goes-empty-while-wedged sequence and
+// asserts the trigger is recorded as Skipped anyway, on more than one
+// subsequent tick (not just once).
+func TestSweepTriggers_OnSignals_WedgedInFlight_StaysInSkipped(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {
+			SecretNamespace: "ws-1",
+			Triggers:        []orchestrator.Trigger{{Name: "sweep", Every: "10m", Run: "python3 -m khi.app.scan", On: orchestrator.TriggerOnSignals}},
+		},
+	})
+	signals := &fakeSignalStore{pending: map[string]bool{"ws-1": true}}
+	svc.Signals = signals
+	now := time.Now()
+	key := TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"}
+
+	// First sweep fires the job — its scan script starts working through
+	// the inbox.
+	result, err := svc.SweepTriggers(context.Background(), now)
+	if err != nil {
+		t.Fatalf("first sweep: %v", err)
+	}
+	if len(result.Fired) != 1 {
+		t.Fatalf("first sweep Fired = %+v, want exactly 1", result.Fired)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("StartExec calls after first sweep = %d, want 1", len(exec.calls))
+	}
+
+	// The job acks every pending Signal (inbox goes empty) but then hangs
+	// right before exiting — it never reaches a terminal status (Running
+	// forever, no jobs.complete call).
+	signals.mu.Lock()
+	signals.pending["ws-1"] = false
+	signals.mu.Unlock()
+
+	// Two subsequent every-elapsed ticks: the wedged trigger must be
+	// recorded as Skipped on EACH of them (trackSkipStreak's own doc
+	// comment: a stuck key stays in Skipped or Fired every tick until it
+	// resolves), never silently dropped, and must never fire a second job.
+	for i, at := range []time.Time{now.Add(11 * time.Minute), now.Add(22 * time.Minute)} {
+		result, err := svc.SweepTriggers(context.Background(), at)
+		if err != nil {
+			t.Fatalf("sweep #%d: %v", i+2, err)
+		}
+		if len(result.Fired) != 0 {
+			t.Errorf("sweep #%d Fired = %+v, want empty (still busy)", i+2, result.Fired)
+		}
+		if len(result.Skipped) != 1 || result.Skipped[0].TriggerKey != key {
+			t.Fatalf("sweep #%d Skipped = %+v, want exactly [%+v] (F1: wedged on:signals trigger must stay in Skipped even though its inbox is now empty)", i+2, result.Skipped, key)
+		}
+	}
+	if len(exec.calls) != 1 {
+		t.Errorf("StartExec calls after wedge = %d, want still 1 (single-flight)", len(exec.calls))
+	}
+}
+
 // TestSweepTriggers_OnEmpty_RegressionUnaffectedBySignals pins §4.1/§4.2's
 // full-compatibility requirement ("on 省略時は従来の schedule 動作と完全互換"):
 // a trigger with On=="" behaves EXACTLY like before this PR — due purely

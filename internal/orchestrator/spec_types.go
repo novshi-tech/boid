@@ -400,13 +400,18 @@ type Capabilities struct {
 	Docker *DockerCapability `yaml:"docker,omitempty" json:"docker,omitempty"`
 }
 
+// TriggerOn is Trigger.On's type — a named string type, matching this
+// package's other closed-enum-ish string fields (e.g. SignalState,
+// signal_store.go) rather than a bare string.
+type TriggerOn string
+
 // TriggerOnSchedule / TriggerOnSignals are Trigger.On's two valid values
 // (docs/plans/signal-ingest-detailed-design.md §4.1, PR-6). ValidateTriggers
 // also accepts "" as an alias for TriggerOnSchedule (the pre-existing
 // default, before this field existed).
 const (
-	TriggerOnSchedule = "schedule"
-	TriggerOnSignals  = "signals"
+	TriggerOnSchedule TriggerOn = "schedule"
+	TriggerOnSignals  TriggerOn = "signals"
 )
 
 // Trigger is one project.yaml `triggers[]` entry (docs/plans/
@@ -432,7 +437,7 @@ type Trigger struct {
 	// project.yaml load time. omitempty: the overwhelmingly common case
 	// (plain schedule triggers, pre-dating this field) round-trips through
 	// export/apply without gaining an `on: schedule` line nobody wrote.
-	On string `yaml:"on,omitempty" json:"on,omitempty"`
+	On TriggerOn `yaml:"on,omitempty" json:"on,omitempty"`
 	// Every is a Go time.ParseDuration string (e.g. "10m", "1h") — the
 	// minimum wall-clock gap between two starts of this trigger. There is
 	// deliberately no time-of-day window (12 節 B-5 既定案「トリガの時間帯窓

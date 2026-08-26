@@ -471,26 +471,49 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 			// flight — that combination (not due AND busy) is completely
 			// normal whenever a trigger's own command runs longer than one
 			// sweep tick but still finishes well within `every`.
-			due, derr := s.triggerIsDue(now, key, every)
+			//
+			// everyDue (NOT the final on:signals-adjusted due below) is
+			// what decides whether a busy trigger counts as a "skip"
+			// (Opus review F1, 2026-08-26): trackSkipStreak's own doc
+			// comment requires a stuck key to appear in EITHER Skipped or
+			// Fired on every tick until it resolves. If the on:signals
+			// predicate were allowed to make an in-flight, every-elapsed
+			// trigger's due false (e.g. the very job that's now wedged
+			// acked every pending Signal right before hanging, so the
+			// inbox is empty by the time this tick runs), that trigger
+			// would silently vanish from both Skipped and Fired — wedged
+			// forever with no stuck notification ever firing, unlike an
+			// identically-configured `on: schedule` trigger. Evaluating
+			// busy against everyDue, BEFORE the signals predicate is even
+			// consulted, closes that gap: a busy, every-elapsed trigger is
+			// always recorded as Skipped regardless of what
+			// signalsPendingForTrigger would say (and, as a side benefit,
+			// the extra HasPendingSignals read for on:signals triggers is
+			// skipped entirely in the busy case, since it can't fire this
+			// tick either way).
+			everyDue, derr := s.triggerIsDue(now, key, every)
 			if derr != nil {
 				slog.Warn("trigger sweep: evaluate due failed", "project_id", p.ID, "trigger", trig.Name, "error", derr)
 				continue
 			}
-			// docs/plans/signal-ingest-detailed-design.md §4.2: on:signals
-			// ANDs an extra "has a pending Signal" condition onto the
-			// existing every-elapsed check — short-circuited (only
-			// evaluated when the every-elapsed half is already true) so an
-			// on:signals trigger that simply hasn't reached its next
-			// `every` yet never issues the extra read, same as the plain
-			// schedule case already skips straight to `continue` below.
-			if due && trig.On == orchestrator.TriggerOnSignals {
-				due = s.signalsPendingForTrigger(meta, key)
-			}
-			if !due {
+			if !everyDue {
 				continue
 			}
 			if run, busy := inFlight[key]; busy {
 				result.Skipped = append(result.Skipped, TriggerSkip{TriggerKey: key, Since: run.StartedAt, Every: every})
+				continue
+			}
+
+			// docs/plans/signal-ingest-detailed-design.md §4.2: on:signals
+			// ANDs an extra "has a pending Signal" condition onto the
+			// already-true everyDue above — evaluated only once we know
+			// the trigger is NOT busy (see the F1 comment above for why
+			// busy is checked against everyDue alone, not this).
+			due := everyDue
+			if trig.On == orchestrator.TriggerOnSignals {
+				due = s.signalsPendingForTrigger(meta, key)
+			}
+			if !due {
 				continue
 			}
 

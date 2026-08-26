@@ -43,6 +43,7 @@ has the same shape:
 26. [brokered op scoping layer (broker request-shaping ↔ executor re-check)](#26-brokered-op-scoping-layer-broker-request-shaping--executor-re-check)
 27. [park rule set ↔ Wake origin resolution](#27-park-rule-set--wake-origin-resolution)
 28. [status tab literal ↔ ListTasks status predicate — REMOVED (PR-4)](#28-status-tab-literal--listtasks-status-predicate--removed-pr-4-2026-08-26)
+29. [Trigger.On due predicate ↔ stuck-detection (trackSkipStreak) invariant](#29-triggeron-due-predicate--stuck-detection-trackskipstreak-invariant)
 
 ---
 
@@ -1610,3 +1611,45 @@ the generic fallback itself, just not for a cross-file literal-agreement seam an
   seam's shape from `orchestrator.TaskStatusParked`/`store.go`'s fallback rather than resurrecting
   the text above verbatim — the specific End A this entry described (`statusTab`) no longer
   exists to reference.
+
+## 29. Trigger.On due predicate ↔ stuck-detection (trackSkipStreak) invariant
+
+Any `on:` kind that can additionally veto an otherwise-every-elapsed trigger's `due` (today: only
+`on: signals`, but the shape generalizes to a future third kind) can silently defeat
+`TriggerLoop.trackSkipStreak`'s stuck-notification safety net if the veto is allowed to run
+*before* the single-flight busy check decides what goes into `TriggerSweepResult.Skipped`.
+
+- **End A (`internal/api/trigger_loop.go`'s `SweepTriggers`)**: computes `everyDue` (the plain
+  `now - latestRun.StartedAt >= every` check, `triggerIsDue`) and checks `inFlight[key]` against
+  **`everyDue` alone** — a busy, every-elapsed trigger is ALWAYS appended to `result.Skipped`,
+  regardless of any `on:`-kind-specific predicate (`signalsPendingForTrigger` for `on: signals`).
+  Only once a trigger is confirmed NOT busy does the final `due` (which the `on:`-specific
+  predicate can still veto) decide whether `fireTrigger` runs.
+- **End B (`TriggerLoop.trackSkipStreak`, same file)**: its own doc comment states the invariant
+  this seam protects — a key that is genuinely stuck (in flight past `every`) must appear in
+  EITHER `Skipped` or `Fired` on every subsequent sweep tick until it resolves, or the
+  stuck-overrun notification (`TriggerStuckOverrunMultiplier × every`) never fires for it.
+  `trackSkipStreak` has no way to tell "this key stopped appearing in Skipped because it fired"
+  apart from "this key stopped appearing in Skipped because some OTHER predicate vetoed it" — it
+  just deletes any key missing from this tick's `Skipped` list, silently resetting its streak.
+- **Invariant**: whether a `(project, trigger)` counts as "busy" for `Skipped` purposes must be
+  decided from the every-elapsed check ALONE, never from a `due` value that a later `on:`-kind
+  predicate has already narrowed. A trigger that is both every-elapsed AND in-flight is *always* a
+  skip, independent of what any additional activation condition says about that same instant.
+- **Past break (F1, Opus review 2026-08-26, `docs/plans/signal-ingest-detailed-design.md` PR-6)**:
+  the original `on: signals` implementation ANDed the signals predicate into `due` BEFORE the busy
+  check (`if due && trig.On == "signals" { due = signalsPendingForTrigger(...) }; if !due {
+  continue }; if busy { ... Skipped ... }`). A wedged `on: signals` job (Running forever) whose
+  inbox happened to go empty — e.g. because that very job acked everything right before hanging —
+  computed `due == false` from the signals predicate alone, so execution never reached the busy
+  check at all: the trigger vanished from both `Skipped` and `Fired`, permanently, with no stuck
+  notification ever firing (unlike an identically-configured `on: schedule` trigger, which would
+  notify after `TriggerStuckOverrunMultiplier × every`).
+- **Guard**: `TestSweepTriggers_OnSignals_WedgedInFlight_StaysInSkipped`
+  (`internal/api/trigger_loop_test.go`) fires an `on: signals` trigger, empties its workspace's
+  inbox while leaving the job Running (never completed), and asserts it is recorded in `Skipped`
+  on multiple subsequent every-elapsed ticks.
+- **When you touch it**: if a future `on:` kind (or any other new veto on `due`) is added, apply
+  its predicate strictly AFTER the `inFlight[key]` busy check, and derive the busy check from the
+  plain every-elapsed value — never from `due` post-veto. Re-run the guard test above (or add an
+  analogous one for the new kind) before merging.
