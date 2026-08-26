@@ -49,6 +49,36 @@ type Config struct {
 	// surfaces at request time, not load time" contract every other
 	// secret-store-shaped reference in this file already has.
 	OAuthProviders map[string]OAuthProviderConfig `yaml:"oauth_providers,omitempty"`
+	// Integrations configures where the daemon looks for installed
+	// Integration Packs (docs/plans/signal-ingest-detailed-design.md §6.1,
+	// docs/plans/signal-driven-review.md §6). A top-level key, deliberately
+	// separate from Services: the Pack registry is loaded/validated by
+	// internal/integrationpack (not this package — see IntegrationsConfig's
+	// own doc comment for why), while services.*.uses just references it.
+	Integrations IntegrationsConfig `yaml:"integrations,omitempty"`
+}
+
+// IntegrationsConfig configures the Integration Pack loader
+// (internal/integrationpack.LoadPacks, docs/plans/signal-ingest-detailed-design.md
+// §6.1). Deliberately just a directory path — the actual pack enumeration/
+// parsing/validation is internal/integrationpack's job, not this package's:
+// Config.UnmarshalYAML only ever does SYNTACTIC validation (docs/plans/
+// signal-ingest-detailed-design.md §6.2: "config.Load() は構文検証のみ
+// (manifest の IO を config parse に持ち込まない)") — resolving this path
+// against the filesystem happens once, eagerly, at daemon startup, not on
+// every config.yaml parse (a CLI invocation like `boid config get` must not
+// need filesystem/Pack-registry access just to read a scalar).
+type IntegrationsConfig struct {
+	// Dir is the filesystem root internal/integrationpack.LoadPacks
+	// enumerates: <dir>/<pack>/<version>/integration.yaml. Defaults to
+	// "/opt/boid/integrations" — the compose volume mount point a
+	// container-backend deployment bind-mounts an Integration Pack repo
+	// checkout onto (docs/plans/signal-driven-review.md §6.4's "配布の v0");
+	// a bare binary deployment overrides this to wherever its own Pack
+	// checkout lives. A directory that does not exist (the common case for
+	// a deployment with no Packs installed yet) is not an error — see
+	// LoadPacks' own doc comment.
+	Dir string `yaml:"dir,omitempty"`
 }
 
 // LogConfig holds daemon logging settings.
@@ -330,6 +360,9 @@ func DefaultConfig() *Config {
 				"bitbucket": {},
 			},
 		},
+		Integrations: IntegrationsConfig{
+			Dir: "/opt/boid/integrations",
+		},
 	}
 }
 
@@ -457,6 +490,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		Services       map[string]ServiceConfig       `yaml:"services"`
 		ServicesFloor  []string                       `yaml:"services_floor"`
 		OAuthProviders map[string]OAuthProviderConfig `yaml:"oauth_providers"`
+		Integrations   struct {
+			Dir string `yaml:"dir"`
+		} `yaml:"integrations"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -644,6 +680,16 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			}
 		}
 		c.OAuthProviders = raw.OAuthProviders
+	}
+
+	// integrations.dir (docs/plans/signal-ingest-detailed-design.md §6.1):
+	// starts from the default ("/opt/boid/integrations") like every other
+	// leaf with a non-empty built-in default (e.g. gateway.forges above) —
+	// an omitted or empty integrations.dir must not silently overwrite the
+	// default with a zero value.
+	c.Integrations = defaults.Integrations
+	if raw.Integrations.Dir != "" {
+		c.Integrations.Dir = raw.Integrations.Dir
 	}
 
 	return nil

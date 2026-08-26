@@ -736,3 +736,49 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("default GC.OlderThan: got %v, want 720h", cfg.GC.OlderThan)
 	}
 }
+
+// TestDefaultConfig_IntegrationsDir pins the default integrations.dir
+// (docs/plans/signal-ingest-detailed-design.md §6.1): the compose volume
+// mount point a container-backend deployment bind-mounts an Integration
+// Pack repo checkout onto, so a fresh install needs zero config.yaml edits
+// to have SOMEWHERE internal/integrationpack.LoadPacks looks (finding it
+// empty/absent is not an error — see LoadPacks' own doc comment).
+func TestDefaultConfig_IntegrationsDir(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Integrations.Dir != "/opt/boid/integrations" {
+		t.Errorf("default Integrations.Dir = %q, want /opt/boid/integrations", cfg.Integrations.Dir)
+	}
+}
+
+// TestLoadFromPath_IntegrationsDir_Custom pins that an operator's
+// integrations.dir override survives config.yaml load unchanged — a bare
+// binary deployment (no compose volume) points this wherever its own Pack
+// checkout lives (docs/plans/signal-driven-review.md §6.4).
+func TestLoadFromPath_IntegrationsDir_Custom(t *testing.T) {
+	content := "integrations:\n  dir: /srv/boid-packs\n"
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Integrations.Dir != "/srv/boid-packs" {
+		t.Errorf("Integrations.Dir = %q, want /srv/boid-packs", cfg.Integrations.Dir)
+	}
+}
+
+// TestLoadFromPath_IntegrationsDir_OmittedKeepsDefault pins that an
+// otherwise-unrelated config.yaml (one written before this key existed, or
+// simply one that doesn't mention integrations: at all) keeps the built-in
+// default rather than losing it to a zero-value overwrite — the same
+// "start from DefaultConfig, only override what's present" contract every
+// other Config field with a non-empty default (e.g. gateway.forges) already
+// has.
+func TestLoadFromPath_IntegrationsDir_OmittedKeepsDefault(t *testing.T) {
+	content := "log:\n  level: debug\n"
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Integrations.Dir != "/opt/boid/integrations" {
+		t.Errorf("Integrations.Dir = %q, want default /opt/boid/integrations to survive an unrelated config.yaml", cfg.Integrations.Dir)
+	}
+}

@@ -423,6 +423,218 @@ func TestLoadFromPath_Services_AllowInsecureDoesNotPermitArbitraryScheme(t *test
 	}
 }
 
+// TestLoadFromPath_Services_UsesValid pins the "uses:" instance shape
+// (docs/plans/signal-driven-review.md §7.2): a services.<name> entry may
+// reference an installed Integration Pack's service profile instead of
+// writing base_url/auth by hand. Uses/Endpoint/Credentials parse verbatim —
+// this package cannot resolve the reference itself (it has no access to the
+// installed Pack registry; internal/integrationpack does that against the
+// loaded Packs) — see APIGatewayServices' own doc comment for why a uses:
+// entry is excluded from its output.
+func TestLoadFromPath_Services_UsesValid(t *testing.T) {
+	content := `
+services:
+  customer-jira:
+    uses: jira-cloud/jira-cloud@1.2.0
+    endpoint: https://example.atlassian.net
+    credentials:
+      token: JIRA_TOKEN
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sc := cfg.Services["customer-jira"]
+	if sc.Uses != "jira-cloud/jira-cloud@1.2.0" {
+		t.Errorf("Uses = %q", sc.Uses)
+	}
+	if sc.Endpoint != "https://example.atlassian.net" {
+		t.Errorf("Endpoint = %q", sc.Endpoint)
+	}
+	if sc.Credentials["token"] != "JIRA_TOKEN" {
+		t.Errorf("Credentials[token] = %q, want JIRA_TOKEN", sc.Credentials["token"])
+	}
+}
+
+// TestLoadFromPath_Services_UsesExclusiveWithBaseURLRejected pins the
+// documented exclusivity (docs/plans/signal-ingest-detailed-design.md §6.1:
+// "uses 指定時は既存の base_url/auth と排他"): a services.<name> entry
+// cannot set both — the base_url would come from the resolved Pack service
+// profile, so a hand-written one alongside it is an unresolvable
+// contradiction, not a harmless override.
+func TestLoadFromPath_Services_UsesExclusiveWithBaseURLRejected(t *testing.T) {
+	content := `
+services:
+  customer-jira:
+    uses: jira-cloud/jira-cloud@1.2.0
+    base_url: https://example.atlassian.net
+    credentials:
+      token: JIRA_TOKEN
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for uses: + base_url:, got nil")
+	}
+	if !strings.Contains(err.Error(), "uses") || !strings.Contains(err.Error(), "base_url") {
+		t.Errorf("error should mention both uses and base_url, got: %v", err)
+	}
+}
+
+// TestLoadFromPath_Services_UsesExclusiveWithAuthRejected is
+// UsesExclusiveWithBaseURLRejected's auth: counterpart — credential
+// injection for a uses: entry comes from the resolved profile's declared
+// slot (bound via credentials:), not a hand-written auth: block.
+func TestLoadFromPath_Services_UsesExclusiveWithAuthRejected(t *testing.T) {
+	content := `
+services:
+  customer-jira:
+    uses: jira-cloud/jira-cloud@1.2.0
+    auth: { kind: bearer, secret_key: JIRA_TOKEN }
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for uses: + auth:, got nil")
+	}
+	if !strings.Contains(err.Error(), "uses") || !strings.Contains(err.Error(), "auth") {
+		t.Errorf("error should mention both uses and auth, got: %v", err)
+	}
+}
+
+// TestLoadFromPath_Services_UsesMalformedRejected pins the "<pack>/<profile>@<version>"
+// syntax (docs/plans/signal-driven-review.md §7.2) at config-load time —
+// this package cannot check the reference resolves to an installed Pack
+// (see TestLoadFromPath_Services_UsesValid's own doc comment), but a
+// structurally malformed reference is a config-authoring mistake this
+// package CAN and should catch eagerly, the same "fail loud with the
+// offending name" posture every other leaf in this file has.
+func TestLoadFromPath_Services_UsesMalformedRejected(t *testing.T) {
+	cases := []string{
+		"jira-cloud",             // no "/" and no "@" at all
+		"jira-cloud@1.2.0",       // no "/" — missing profile
+		"jira-cloud/jira-cloud",  // no "@" — missing version
+		"/jira-cloud@1.2.0",      // empty pack name
+		"jira-cloud/@1.2.0",      // empty profile name
+		"jira-cloud/jira-cloud@", // empty version
+	}
+	for _, uses := range cases {
+		content := "services:\n  myapp:\n    uses: \"" + uses + "\"\n    credentials: { token: T }\n"
+		if _, err := loadFromPath(writeConfigFile(t, content)); err == nil {
+			t.Errorf("uses %q: want error for malformed uses: reference, got nil", uses)
+		}
+	}
+}
+
+// TestLoadFromPath_Services_EndpointWithoutUsesRejected pins that endpoint:
+// only makes sense alongside uses: (it fills in a Pack service profile's
+// endpoint.configurable slot — signal-driven-review.md §7.2) — a free-form
+// base_url/auth entry has no such slot to fill, so setting it is very
+// likely a stray copy-paste rather than anything meaningful.
+func TestLoadFromPath_Services_EndpointWithoutUsesRejected(t *testing.T) {
+	content := `
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    endpoint: https://should-not-be-here.example.com
+    auth: { kind: bearer, secret_key: k }
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for endpoint: without uses:, got nil")
+	}
+	if !strings.Contains(err.Error(), "endpoint") || !strings.Contains(err.Error(), "uses") {
+		t.Errorf("error should mention both endpoint and uses, got: %v", err)
+	}
+}
+
+// TestLoadFromPath_Services_CredentialsWithoutUsesRejected is
+// EndpointWithoutUsesRejected's credentials: counterpart — credentials:
+// binds a Pack service profile's declared slot names, which only exist once
+// uses: resolves to one.
+func TestLoadFromPath_Services_CredentialsWithoutUsesRejected(t *testing.T) {
+	content := `
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    auth: { kind: bearer, secret_key: k }
+    credentials:
+      token: SOME_KEY
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for credentials: without uses:, got nil")
+	}
+	if !strings.Contains(err.Error(), "credentials") || !strings.Contains(err.Error(), "uses") {
+		t.Errorf("error should mention both credentials and uses, got: %v", err)
+	}
+}
+
+// TestAPIGatewayServices_ExcludesUsesEntries pins that APIGatewayServices()
+// — the flat []apigateway.ServiceConfig list built from ONLY this package's
+// own knowledge (base_url/auth) — never emits a broken entry for a uses:
+// service (which has no BaseURL/Auth of its own to convert: those come from
+// the resolved Pack profile, which this package cannot reach). Combining
+// this method's output with the Pack-resolved uses: entries is
+// internal/integrationpack.ResolveServices' job (internal/server/wire.go's
+// gateway wiring point calls that instead of this method alone, once
+// wired) — see this method's own doc comment.
+func TestAPIGatewayServices_ExcludesUsesEntries(t *testing.T) {
+	cfg := &Config{Services: map[string]ServiceConfig{
+		"plain": {BaseURL: "https://plain.example.com", Auth: ServiceAuthConfig{Kind: "bearer", SecretKey: "k"}},
+		"packed": {
+			Uses:        "jira-cloud/jira-cloud@1.2.0",
+			Endpoint:    "https://example.atlassian.net",
+			Credentials: map[string]string{"token": "JIRA_TOKEN"},
+		},
+	}}
+	services := cfg.APIGatewayServices()
+	if len(services) != 1 {
+		t.Fatalf("len(APIGatewayServices()) = %d, want 1 (the uses: entry must be excluded)", len(services))
+	}
+	if services[0].Name != "plain" {
+		t.Errorf("APIGatewayServices()[0].Name = %q, want %q", services[0].Name, "plain")
+	}
+}
+
+// TestParseUsesReference pins ParseUsesReference's exact splitting rule —
+// the single source of truth both validateServiceConfig (syntax check, this
+// package) and internal/integrationpack (semantic resolution against the
+// loaded Pack registry) share, so the two can never drift apart on an edge
+// case.
+func TestParseUsesReference(t *testing.T) {
+	cases := []struct {
+		uses                           string
+		wantPack, wantProfile, wantVer string
+		wantErr                        bool
+	}{
+		{uses: "jira-cloud/jira-cloud@1.2.0", wantPack: "jira-cloud", wantProfile: "jira-cloud", wantVer: "1.2.0"},
+		{uses: "slack/slack@1.1.0", wantPack: "slack", wantProfile: "slack", wantVer: "1.1.0"},
+		{uses: "jira-cloud", wantErr: true},
+		{uses: "jira-cloud@1.2.0", wantErr: true},
+		{uses: "jira-cloud/jira-cloud", wantErr: true},
+		{uses: "/jira-cloud@1.2.0", wantErr: true},
+		{uses: "jira-cloud/@1.2.0", wantErr: true},
+		{uses: "jira-cloud/jira-cloud@", wantErr: true},
+		{uses: "", wantErr: true},
+	}
+	for _, tc := range cases {
+		pack, profile, ver, err := ParseUsesReference(tc.uses)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("ParseUsesReference(%q): want error, got nil", tc.uses)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseUsesReference(%q): unexpected error: %v", tc.uses, err)
+			continue
+		}
+		if pack != tc.wantPack || profile != tc.wantProfile || ver != tc.wantVer {
+			t.Errorf("ParseUsesReference(%q) = (%q, %q, %q), want (%q, %q, %q)",
+				tc.uses, pack, profile, ver, tc.wantPack, tc.wantProfile, tc.wantVer)
+		}
+	}
+}
+
 // writeConfigFile writes content to a fresh config.yaml under a new temp
 // dir and returns its path — a one-line version of the write half of
 // writeAndLoad, for tests (like the one above) that need the *Config

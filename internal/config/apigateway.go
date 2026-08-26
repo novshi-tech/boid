@@ -71,6 +71,55 @@ type ServiceConfig struct {
 	// アクセス権限を置かない" decision). Defaults to false (fail-closed) —
 	// an operator must explicitly opt each service in.
 	AllowReadOnlyWrite bool `yaml:"allow_readonly_write,omitempty"`
+
+	// Uses references an installed Integration Pack's service profile
+	// instead of hand-writing BaseURL/Auth (docs/plans/signal-driven-review.md
+	// §7.2, docs/plans/signal-ingest-detailed-design.md §6.1). Format:
+	// "<pack名>/<profile名>@<pack version>" — parsed by ParseUsesReference.
+	// Mutually exclusive with BaseURL/Auth (validateServiceConfig). This
+	// package can only check the reference's SYNTAX; resolving it against
+	// the installed Pack registry (pack existence, profile/version match,
+	// credential slot binding, endpoint requirement) is
+	// internal/integrationpack's job — it has the loaded Packs this package
+	// deliberately does not depend on (Q16: core must not import
+	// service-specific Pack internals).
+	Uses string `yaml:"uses,omitempty"`
+	// Endpoint fills in the resolved service profile's endpoint.configurable
+	// slot (signal-driven-review.md §7.1/§7.2). Only meaningful — and only
+	// accepted by validateServiceConfig — when Uses is set; the profile
+	// itself decides whether a value is required, forbidden, or unused
+	// (internal/integrationpack.DesugarService enforces the pairing since
+	// this package has no access to the profile that decides it).
+	Endpoint string `yaml:"endpoint,omitempty"`
+	// Credentials binds each of the resolved service profile's declared
+	// credential slot names to a SecretStore key reference — never a
+	// plaintext value, the same convention ServiceAuthConfig.SecretKey
+	// already has (signal-driven-review.md §7.2's `credentials: {token:
+	// JIRA_TOKEN}` example). Only meaningful — and only accepted by
+	// validateServiceConfig — when Uses is set.
+	Credentials map[string]string `yaml:"credentials,omitempty"`
+}
+
+// ParseUsesReference parses a services.<name>.uses value of the form
+// "<pack名>/<profile名>@<pack version>" (docs/plans/signal-driven-review.md
+// §7.2) into its three components. Exported so internal/integrationpack —
+// which resolves the reference against the loaded Pack registry — parses it
+// with the exact same rule this package's own load-time syntax check
+// (validateServiceConfig) uses, rather than each maintaining its own
+// split/regex logic that could silently drift apart on an edge case (e.g.
+// how a pack name containing "@" or "/" is rejected).
+func ParseUsesReference(uses string) (pack, profile, version string, err error) {
+	malformed := fmt.Errorf("%q must have the form \"<pack>/<profile>@<version>\"", uses)
+	at := strings.LastIndex(uses, "@")
+	if at <= 0 || at == len(uses)-1 {
+		return "", "", "", malformed
+	}
+	ref, version := uses[:at], uses[at+1:]
+	slash := strings.Index(ref, "/")
+	if slash <= 0 || slash == len(ref)-1 {
+		return "", "", "", malformed
+	}
+	return ref[:slash], ref[slash+1:], version, nil
 }
 
 // validServiceAuthKinds is the initial AuthKind set docs/plans/api-gateway.md
@@ -119,6 +168,41 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 	if name == "" {
 		return fmt.Errorf("services: a service name must not be empty")
 	}
+
+	// uses: (docs/plans/signal-driven-review.md §7.2, docs/plans/
+	// signal-ingest-detailed-design.md §6.1): a Pack-profile-backed instance
+	// is a completely different shape from a free-form base_url/auth entry
+	// — its base_url/auth come from the resolved profile instead — so the
+	// two are mutually exclusive, checked BEFORE the base_url/auth
+	// requirements below ever run (a uses: entry has no reason to satisfy
+	// them at all). This package can only validate uses:'s own SYNTAX
+	// (ParseUsesReference) — resolving it against the installed Pack
+	// registry is internal/integrationpack's job (this package does not,
+	// and must not, import anything Pack-specific — Q16).
+	if sc.Uses != "" {
+		if sc.BaseURL != "" {
+			return fmt.Errorf("services[%q]: \"uses\" and \"base_url\" are mutually exclusive — base_url comes from the resolved Integration Pack service profile instead", name)
+		}
+		if sc.Auth != (ServiceAuthConfig{}) {
+			return fmt.Errorf("services[%q]: \"uses\" and \"auth\" are mutually exclusive — credential injection comes from the resolved Integration Pack service profile instead (set \"credentials\" to bind SecretStore keys to the profile's declared slots)", name)
+		}
+		if _, _, _, err := ParseUsesReference(sc.Uses); err != nil {
+			return fmt.Errorf("services[%q]: \"uses\": %w", name, err)
+		}
+		return nil
+	}
+	// endpoint:/credentials: only mean anything alongside uses: (they fill
+	// in / bind a resolved Pack service profile's declared slots — see
+	// ServiceConfig's own doc comments) — rejecting them outright on a
+	// free-form entry catches a likely stray copy-paste at config-load time
+	// instead of the value silently doing nothing.
+	if sc.Endpoint != "" {
+		return fmt.Errorf("services[%q]: \"endpoint\" requires \"uses\" to be set", name)
+	}
+	if len(sc.Credentials) > 0 {
+		return fmt.Errorf("services[%q]: \"credentials\" requires \"uses\" to be set", name)
+	}
+
 	if sc.BaseURL == "" {
 		return fmt.Errorf("services[%q]: missing required \"base_url\" field", name)
 	}
@@ -291,6 +375,15 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 // here (a hand-built Config that skipped validation) is skipped silently
 // rather than surfaced as an error, since this method has no error return
 // and never should have one under that invariant.
+//
+// A uses: entry (docs/plans/signal-driven-review.md §7.2) is deliberately
+// EXCLUDED from the output — it has no BaseURL/Auth of its own to convert
+// (those come from the resolved Integration Pack service profile, which
+// this package cannot reach — Q16: core must not import anything
+// Pack-specific). internal/integrationpack.ResolveServices is what combines
+// this method's output with its own Pack-resolved uses: entries into the
+// full flat list internal/server/wire.go's gateway wiring point actually
+// needs — see that function's own doc comment.
 func (c Config) APIGatewayServices() []apigateway.ServiceConfig {
 	names := make([]string, 0, len(c.Services))
 	for name := range c.Services {
@@ -300,6 +393,9 @@ func (c Config) APIGatewayServices() []apigateway.ServiceConfig {
 	out := make([]apigateway.ServiceConfig, 0, len(names))
 	for _, name := range names {
 		sc := c.Services[name]
+		if sc.Uses != "" {
+			continue
+		}
 		if err := validateServiceConfig(name, sc); err != nil {
 			continue
 		}
@@ -316,6 +412,25 @@ func (c Config) APIGatewayServices() []apigateway.ServiceConfig {
 			},
 			AllowReadOnlyWrite: sc.AllowReadOnlyWrite,
 		})
+	}
+	return out
+}
+
+// UsesServices returns the subset of c.Services with uses: set, keyed by
+// instance name — the counterpart to APIGatewayServices() (which
+// deliberately excludes them, see that method's own doc comment) that
+// internal/integrationpack.ResolveServices consumes to know which
+// instances to desugar against the loaded Pack registry. Each entry has
+// already passed validateServiceConfig's own uses:-vs-base_url/auth
+// exclusivity and uses: syntax checks (Config.UnmarshalYAML validates every
+// c.Services entry eagerly at load time) — resolving the reference against
+// installed Packs is the one thing this package cannot do itself (Q16).
+func (c Config) UsesServices() map[string]ServiceConfig {
+	out := make(map[string]ServiceConfig)
+	for name, sc := range c.Services {
+		if sc.Uses != "" {
+			out[name] = sc
+		}
 	}
 	return out
 }
