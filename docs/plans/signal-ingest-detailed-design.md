@@ -231,6 +231,18 @@ sandbox)。`StartExecRequest` に 2 点を追加する:
 connector が呼ぶ service は workspace の enabled services に入っている必要がある
 (検証は load 時に警告)。gateway 側の 403/502 は既存の 2 層検査のまま。
 
+connector job の権限は通常の exec job より**絞る** (nose レビュー指摘の採用):
+
+- builtin op は `signal_ingest`・`signal_cursor_get` の 2 つだけを許可する。policy は
+  job spec 単位で dispatch 時に stamp される既存機構なので、導出 trigger の StartExec が
+  専用の縮小 policy を渡すだけ — `task_create` 等は broker が拒否する
+- `fetch` builtin も渡さない (connector の外部到達は gateway で足りる)
+- API gateway token の service allowlist は workspace の全 enabled services ではなく
+  **宣言した service 1 本**に絞る (Registry への登録も job 単位なので渡す値の変更のみ)
+
+これで connector (Pack 由来のコード) が boid の状態や他 service に触れる面が消える。
+検査は採点表 Q27。
+
 ### 5.3 connector プロセス契約 (Pack conformance の中核)
 
 - 入力: 上記 env。栞は `boid signal cursor` で取得
@@ -307,6 +319,7 @@ Pack が依存してよい boid の面と、boid が Pack に要求する面を 
 | 外部到達 | `$BOID_API_BASE/$BOID_SIGNAL_SERVICE/...` (credential 注入済み)。egress はこれ以外閉 | 既存 gateway 契約に従う |
 | 取り込み口 | `boid signal ingest` (stdin JSONL、1 行 64KiB、複数回呼び出し可、行単位 dedup) / `boid signal cursor` (自 source の栞) | envelope field は**追加のみ** |
 | 実行保証 | source ごとに single-flight。every 間隔・1m 解像度で起動。非ゼロ exit は失敗として記録・通知 (failStreak) され、次周期に再実行される | v1 で固定 |
+| 権限範囲 | connector job から呼べる builtin op は `signal_ingest` / `signal_cursor_get` のみ。gateway は宣言した service 1 本のみ (§5.2) | v1 で固定 |
 
 ### 7.2 Pack が満たすべきもの (boid が要求する面)
 
@@ -341,6 +354,14 @@ Pack が依存してよい boid の面と、boid が Pack に要求する面を 
 - 衝突時はエラーでなく**既存 task の id を返して exit 0** (再実行が収束する、の実装)
 - CLI flag と `task_create` op の request field を追加。子タスク重複生成バグの再発防止
 
+**既存の `task_resolve_or_capture` との違い** (nose レビュー質問への回答): あちらは
+task_identities (外部世界の identity) をキーに card を引き当てる/無ければ起票する口で、
+identity の link 意味論 (drop で解放・reopen の再燃経路) が付いてくる。idempotency key は
+**外部 identity を持たない task** — 典型は判断が立てる子 task — の重複防止で、キーは
+workspace 内部の安定キー (例: 親 card id + 子の世代キー)、link 意味論は無い。identity を
+`child:<id>` のような合成値で流用すると、identity 表が「外部イベントの帰属」という
+本来の意味を失い、drop の identity 解放と衝突するため、別の口として足す。
+
 ---
 
 ## 9. 本体 doc への反映 (この設計で決着した未決)
@@ -368,17 +389,24 @@ Web UI 表示、service profile の複数 header/OAuth2 表現 (v0 の脱糖は�
 | **PR-2** | host API/CLI (`/api/signals`、`boid signal list/ack`) | Q14 (ack 冪等) |
 | **PR-3** | shim op 4 種 + `boid-signal` 組み込みスキル | Q14、(op checklist 11 ファイル) |
 | **PR-4** | config (`integrations.dir`・`uses:`) + `internal/integrationpack` + 脱糖 + 検証 | Q16、Q17、Q19、Q21 の骨格 |
-| **PR-5** | 導出 trigger + connector 実行 (env/bind/プロトコル) | Q11 (栞 self-exceeding)、Q12 (失敗可視化 = failStreak)、Q18、Q20 |
+| **PR-5** | 導出 trigger + connector 実行 (env/bind/縮小 policy/プロトコル) | Q11 (栞 self-exceeding)、Q12 (失敗可視化 = failStreak)、Q18、Q20、Q27 (権限の絞り) |
 | **PR-6** | trigger `on: signals` 述語 | Q15 (debounce/single-flight テスト) |
 | **PR-7** | `boid task create --idempotency-key` | Q26 (新設: 下記) |
+| **PR-8** | 公式 Pack (slack/jira/bitbucket) + conformance test | Q11、Q21、Q22 |
 
-- 依存: PR-1 → {2,3} → 5、4 → 5、6 は 1 のみに依存。7 は独立。並列 PR の
+- 依存: PR-1 → {2,3} → 5、4 → 5、6 は 1 のみに依存、8 は 5 の後。7 は独立。並列 PR の
   interface 衝突に注意 (PR-4 と PR-5 の integrationpack 契約は PR-4 が先)
 - **Q26 を本体 doc §14 に追加する**: 「`boid task create` の idempotency key は
   (project, key) で一意であり、同一 key の再実行が新規作成せず既存 task の id を返す
   テストがある」
-- 公式 Pack 化 (slack/jira/bitbucket connector の実装。khi adapter の移植) と shadow-a は
-  この doc の範囲外 — PR-5 の後、別 doc なしで着手できる (conformance test = §7 の契約)
+- **PR-8 が Pack 側実装** (nose レビュー指摘: Pack が無いと機能しない)。公式 Pack は
+  boid repo 直下の `integrations/` に置き、container image の build で
+  `/opt/boid/integrations/` へ copy する。実装は現行 khi の adapter (slack 160 行 /
+  jira 176 行 / bitbucket 243 行、いずれも gateway 経由の fetch-only) の移植で、変更点は
+  栞の読み書き (`FileBookmarks` → `boid signal cursor`) と出力 (Signal 構築 → JSONL to
+  `boid signal ingest`) が主。conformance test (§7) もここで実装する。
+  **PR-8 完了までこの機構は end-to-end では動かない** — 初回の実証は PR-8 + shadow-a
+- shadow-a/shadow-b 自体はこの doc の範囲外 (本体 doc §10.3/§10.4)
 
 ---
 

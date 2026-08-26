@@ -677,6 +677,7 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 | Q20 | skill/connector に service instance の論理名が決め打ちされておらず、解決済み service binding 経由で参照している | Pack 実体と binding 受け渡しコード |
 | Q21 | Pack の skill は source 側の知識のみを扱い、boid コマンドへの言及を含まない | conformance test |
 | Q22 | Pack contract の conformance test が boid 側に存在し、公式 Pack 全てがそれを通る | テストと CI |
+| Q27 | connector job の builtin op は signal 系 (ingest / cursor) のみに制限され、他の op と宣言外 service への gateway 到達が拒否されるテストがある | policy とテスト |
 
 ### E. 全体 (どの段階でも採点)
 
