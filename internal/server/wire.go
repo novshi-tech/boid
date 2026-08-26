@@ -2189,6 +2189,13 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// under /api/tasks — see api.CardHandler's doc comment.
 	r.Mount("/api/cards", (&api.CardHandler{Service: runtime.workflow}).Routes())
 
+	// signal inbox read/ack surface (docs/plans/signal-ingest-detailed-
+	// design.md §3.1, PR-2). taskRepo already implements api.SignalStore
+	// (PR-1's var _ assertion, internal/api/store.go) — same "mount the
+	// handler directly against taskRepo, no wrapper service" shape as
+	// TaskTriage/Actions/Triggers above use runtime.workflow's fields for.
+	r.Mount("/api/signals", (&api.SignalHandler{Store: runtime.taskRepo}).Routes())
+
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {
 		r.Mount("/", actionHandler.Routes())
