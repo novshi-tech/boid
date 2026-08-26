@@ -293,6 +293,9 @@ skills:
     requiresServiceProfile: jira-cloud
 ```
 
+`serviceProfiles:` が §7 の service profile の定義である。Pack は接続の型だけを宣言し、
+endpoint の実値や credential をここに書くことはできない。
+
 core が持つのは manifest schema、connector execution protocol、selective skill mount、
 pack version/digest、service profile の解決だけである。
 
@@ -324,11 +327,25 @@ Pack を install/upgrade して権限を増やすことはできない。
 
 ## 7. Service profile と service instance
 
-### 7.1 従来の自由形式 service は残す
+### 7.1 定義場所と関係
 
-現在の `config.yaml services:` は任意 HTTP API を扱う escape hatch として維持する。
-Integration Pack の service profile は型付き convenience であり、既存 registry を
-置き換えない。
+profile は「接続の型」、instance は「実際の接続 1 本」である。定義場所も書き手も違う。
+
+| | service profile | service instance |
+|---|---|---|
+| 何か | 接続の型。必要な credential slot と注入方法の宣言 | 実際の接続 1 本。endpoint と secret の bind |
+| どこに定義 | Pack の `integration.yaml` の `serviceProfiles:` (§6.3) | daemon の `config.yaml` の `services:` (既存 registry) |
+| 誰が書く | Pack 作者 (配布物の一部) | 運用者 (環境ごと) |
+| 値 | 持たない (endpoint 実値・credential を書けない) | 持つ (endpoint と SecretStore key の bind) |
+
+同じ profile から複数の instance を作れる (例: 顧客 Jira と自社 Jira は同じ
+`jira-cloud` profile の別 instance)。gateway には instance 名で生える
+(`$BOID_API_BASE/customer-jira`)。
+
+### 7.2 service instance の定義例
+
+次は `config.yaml` の `services:`、すなわち **service instance** の定義例である。
+`customer-jira` と `internal-api` が instance 名になる。
 
 ```yaml
 services:
@@ -345,13 +362,24 @@ services:
       secret_key: INTERNAL_TOKEN
 ```
 
-Pack は credential の値を持たない。profile は必要な credential slot と注入方法を宣言し、
-service instance が SecretStore の key を bind する。
+- `uses:` — **インストール済み Pack が宣言する profile への参照**。書式は
+  `<pack 名>/<profile 名>@<pack version>` で、例は Pack `jira-cloud` の中の profile
+  `jira-cloud` (同名) を指す。install の指示ではない — install は daemon 管理者の操作
+  (§6.4) であり、`uses:` はインストール済み Pack から選ぶだけ。未インストールの参照は
+  設定エラーにする。version は Pack の版。例は instance 単位の pin を示しているが、
+  pin の置き場所 (install 時 / instance / workspace) は未決 (§12)
+- `endpoint:` — profile が `endpoint.configurable: true` と宣言した記入欄を埋める値
+- `credentials:` — profile の credential slot (`token`) へ SecretStore の key
+  (`JIRA_TOKEN`) を bind する。値そのものは SecretStore にあり、config.yaml にも
+  Pack にも現れない
+- `internal-api` — profile を持たない従来の自由形式 instance。任意 HTTP API を扱う
+  escape hatch としてそのまま維持し、既存 registry を置き換えない
 
-### 7.2 論理名を skill に決め打ちしない
+### 7.3 論理名を skill に決め打ちしない
 
 `jira-api` 等は慣例名であって固定名ではない。connector 実行と判断タスクには解決済み
-service binding を渡す。
+service binding を渡す。key が profile の論理名、value が選ばれた instance と
+gateway URL である。
 
 ```json
 {
@@ -547,6 +575,7 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 - Connector の実行詳細 (実行コンテキスト、schedule、cursor 永続の transaction 境界)
 - Resource resolver を Pack contract に含めるか (据え置き)
 - Pack の発見・配布・install/update/signing/version pin の具体方式
+  (pin を instance の `uses:` で行うか install 時に固定するかを含む)
 - Pack と既存 kit 機構の関係 (統合するか並置するか)
 - service profile が複数 header 等をどう表現するか
 - scan script の定型を組み込みスキル/テンプレとして配布するか
