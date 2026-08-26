@@ -119,18 +119,23 @@ func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack)
 		if sc.Username == "" {
 			return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: profile %q's credential slot %q requires the service instance to supply \"username\" (usernameFrom: instance) — set services.%s.username", instanceName, profileName, slot.Name, instanceName)
 		}
-		// RFC 7617 §2: the Basic credential is built as
-		// "username:secret", so a colon in the username changes what the
-		// upstream parses as each half — the same check config.
-		// validateServiceConfig already applies to a free-form auth.username
-		// entry, mirrored here since this is the other place a Basic-auth
-		// username value gets accepted.
-		if strings.Contains(sc.Username, ":") {
-			return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: username %q must not contain \":\" (RFC 7617 §2 — the Basic credential is built as \"username:secret\", so a colon in the username changes what the upstream parses as each half)", instanceName, sc.Username)
-		}
 		username = sc.Username
 	} else if sc.Username != "" {
 		return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: \"username\" is not accepted — profile %q's credential slot %q does not declare usernameFrom: instance (it has a Pack-fixed username, or uses a non-basic injection)", instanceName, profileName, slot.Name)
+	}
+	// RFC 7617 §2: the Basic credential is built as "username:secret", so a
+	// colon in the username changes what the upstream parses as each half —
+	// the same check config.validateServiceConfig already applies to a
+	// free-form auth.username entry. Checked once, here, against the FINAL
+	// resolved username regardless of its source (F2, codex/Opus review
+	// finding on PR #1017: checking only inside the usernameFrom: instance
+	// branch above left a Pack-declared FIXED username (slot.Username)
+	// completely unchecked — neither this package nor config.
+	// validateServiceConfig ever validates that value, since it only ever
+	// sees a free-form auth.username, never a uses:-resolved Pack-fixed
+	// one).
+	if slot.Injection == InjectionBasic && strings.Contains(username, ":") {
+		return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: username %q must not contain \":\" (RFC 7617 §2 — the Basic credential is built as \"username:secret\", so a colon in the username changes what the upstream parses as each half)", instanceName, username)
 	}
 
 	return apigateway.ServiceConfig{

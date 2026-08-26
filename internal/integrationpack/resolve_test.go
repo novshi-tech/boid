@@ -340,12 +340,11 @@ func TestDesugarService_BasicInjectionUsernameFromInstance_ColonRejected(t *test
 	}
 }
 
-// TestDesugarService_FixedUsernameProfile_InstanceUsernameRejected pins the
-// other direction: when the profile does NOT declare usernameFrom: instance
-// (bitbucket-cloud's Pack-fixed username, or any non-basic injection), an
-// instance that sets "username" anyway is rejected rather than silently
-// ignored — there is no slot for it to fill.
-func TestDesugarService_FixedUsernameProfile_InstanceUsernameRejected(t *testing.T) {
+// TestDesugarService_NonBasicInjection_InstanceUsernameRejected pins one
+// half of the "no slot to fill" direction: on a non-basic (here, bearer)
+// injection, an instance that sets "username" anyway is rejected rather
+// than silently ignored.
+func TestDesugarService_NonBasicInjection_InstanceUsernameRejected(t *testing.T) {
 	sc := config.ServiceConfig{
 		Uses:        "jira-cloud/jira-cloud@1.2.0",
 		Endpoint:    "https://example.atlassian.net",
@@ -355,6 +354,86 @@ func TestDesugarService_FixedUsernameProfile_InstanceUsernameRejected(t *testing
 	_, err := DesugarService("customer-jira", sc, bearerPack(t))
 	if err == nil {
 		t.Fatal("want error for an instance-supplied username on a bearer-injection profile, got nil")
+	}
+}
+
+// TestDesugarService_BasicFixedUsernameProfile_InstanceUsernameRejected pins
+// the OTHER "no slot to fill" case (F1, codex/Opus review finding on PR
+// #1017, CONFIRMED via mutation testing: resolve.go's `else if sc.Username
+// != ""` check used to have no test exercising the specific combination of
+// injection: basic + a Pack-FIXED username — mutating that condition to
+// additionally require `slot.Injection != InjectionBasic` made a real
+// bitbucket-cloud-shaped instance's stray "username:" get silently ignored
+// instead of rejected, and the full test suite stayed green). Uses the
+// exact same fixed-username basic Pack shape as TestDesugarService_
+// BasicInjection (bitbucket-cloud's "x-bitbucket-api-token-auth"
+// convention) — an instance setting "username" on top of that profile-fixed
+// value has no slot to fill, so it must be rejected exactly like the
+// non-basic-injection case above.
+func TestDesugarService_BasicFixedUsernameProfile_InstanceUsernameRejected(t *testing.T) {
+	m, err := ParseManifest([]byte(`
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata: {name: bitbucket-cloud, version: '1.3.0'}
+serviceProfiles:
+  - name: bitbucket-cloud
+    endpoint: {configurable: true}
+    credentials:
+      - {name: token, injection: basic, username: x-bitbucket-api-token-auth}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packs := []*Pack{{Name: m.Metadata.Name, Version: m.Metadata.Version, Dir: "/x", Manifest: *m}}
+	sc := config.ServiceConfig{
+		Uses:        "bitbucket-cloud/bitbucket-cloud@1.3.0",
+		Endpoint:    "https://api.bitbucket.org/2.0",
+		Username:    "should-not-be-settable",
+		Credentials: map[string]string{"token": "BB_TOKEN"},
+	}
+	_, err = DesugarService("bitbucket-api", sc, packs)
+	if err == nil {
+		t.Fatal("want error for an instance-supplied username on a basic-injection profile with a Pack-fixed username, got nil")
+	}
+}
+
+// TestDesugarService_BasicFixedUsernameWithColonRejected pins F2 (codex/Opus
+// review finding on PR #1017, CONFIRMED): the RFC 7617 §2 colon check used
+// to run only inside the usernameFrom: instance branch, so a Pack that
+// declares a FIXED username containing a colon in its own integration.yaml
+// (a malformed/malicious Pack, or an author's own copy-paste mistake) went
+// completely unchecked — neither this package nor config.
+// validateServiceConfig (which only ever sees a free-form auth.username,
+// never a uses:-resolved Pack-fixed one) had a check for it. The fix moves
+// the colon check to run once against the FINAL resolved username,
+// gated only on slot.Injection == InjectionBasic — covering the Pack-fixed
+// source too, not just the instance-supplied one.
+func TestDesugarService_BasicFixedUsernameWithColonRejected(t *testing.T) {
+	m, err := ParseManifest([]byte(`
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata: {name: bad-pack, version: '1.0.0'}
+serviceProfiles:
+  - name: bad-pack
+    endpoint: {configurable: true}
+    credentials:
+      - {name: token, injection: basic, username: "evil:user"}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packs := []*Pack{{Name: m.Metadata.Name, Version: m.Metadata.Version, Dir: "/x", Manifest: *m}}
+	sc := config.ServiceConfig{
+		Uses:        "bad-pack/bad-pack@1.0.0",
+		Endpoint:    "https://example.com",
+		Credentials: map[string]string{"token": "TOKEN"},
+	}
+	_, err = DesugarService("bad-instance", sc, packs)
+	if err == nil {
+		t.Fatal("want error for a Pack-fixed username containing \":\", got nil")
+	}
+	if !strings.Contains(err.Error(), ":") {
+		t.Errorf("error should mention the colon problem, got: %v", err)
 	}
 }
 
