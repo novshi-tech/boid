@@ -400,21 +400,46 @@ type Capabilities struct {
 	Docker *DockerCapability `yaml:"docker,omitempty" json:"docker,omitempty"`
 }
 
+// TriggerOnSchedule / TriggerOnSignals are Trigger.On's two valid values
+// (docs/plans/signal-ingest-detailed-design.md §4.1, PR-6). ValidateTriggers
+// also accepts "" as an alias for TriggerOnSchedule (the pre-existing
+// default, before this field existed).
+const (
+	TriggerOnSchedule = "schedule"
+	TriggerOnSignals  = "signals"
+)
+
 // Trigger is one project.yaml `triggers[]` entry (docs/plans/
 // ingestion-identity.md PR-4 / B-5, J-1/J-2). It declares WHEN a command
-// runs (Every) and WHAT command runs (Run) — nothing else. daemon reads
-// only these three fields; it never interprets Run's contents (J-2, this
-// PR's own 不変条件: daemon は run の中身を知らない).
+// runs (Every, and since PR-6 also On) and WHAT command runs (Run) —
+// nothing else. daemon reads only these fields; it never interprets Run's
+// contents (J-2, this PR's own 不変条件: daemon は run の中身を知らない).
 type Trigger struct {
 	// Name identifies this trigger within its project (single-flight and
 	// trigger_runs history are scoped by (project_id, trigger_name) — 12
 	// 節 B-5 "single-flight の粒度は trigger 単位"). Must be non-empty and
 	// unique within a project's Triggers slice — see ValidateTriggers.
 	Name string `yaml:"name" json:"name"`
+	// On selects this trigger's activation predicate (docs/plans/
+	// signal-ingest-detailed-design.md §4.1, PR-6). "" and
+	// TriggerOnSchedule ("schedule") are equivalent and mean the
+	// pre-existing, unchanged behavior: due purely once Every has elapsed
+	// since the trigger's last recorded start. TriggerOnSignals ("signals")
+	// ADDITIONALLY requires the trigger's project to have a linked
+	// workspace with at least one pending (unacked) Signal — see
+	// SweepTriggers' due predicate (internal/api/trigger_loop.go) for where
+	// this is evaluated. ValidateTriggers rejects any other value at
+	// project.yaml load time. omitempty: the overwhelmingly common case
+	// (plain schedule triggers, pre-dating this field) round-trips through
+	// export/apply without gaining an `on: schedule` line nobody wrote.
+	On string `yaml:"on,omitempty" json:"on,omitempty"`
 	// Every is a Go time.ParseDuration string (e.g. "10m", "1h") — the
 	// minimum wall-clock gap between two starts of this trigger. There is
 	// deliberately no time-of-day window (12 節 B-5 既定案「トリガの時間帯窓
 	// はスクリプトが時刻で自制する」— J-4's「daemon はドメインに依存しない」).
+	// Required for BOTH On kinds — for On=="signals" this is also the
+	// trigger's debounce window (§4.2: "every 窓内に何件 Signal が来ても発火
+	// は1回").
 	Every string `yaml:"every" json:"every"`
 	// Run is a command string passed to `sh -c` inside the project's
 	// sandbox — NOT a script path daemon resolves (J-2: 撤廃済みの script

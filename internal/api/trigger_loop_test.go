@@ -1124,3 +1124,318 @@ func TestTriggerLoop_Notify_WrapsCtxWithNotifyTimeout(t *testing.T) {
 		t.Errorf("deadline was %v from now, want within (0, %v]", notifier.deadlineWithin, notifyTimeout)
 	}
 }
+
+// ---- on:signals trigger predicate (docs/plans/signal-ingest-detailed-design.md
+// §4.2, PR-6, Q15 採点表: "trigger の debounce と single-flight にテストがある") ----
+//
+// debounce and single-flight are NOT new mechanisms here (design doc §4.2):
+// debounce falls out structurally from ANDing the existing every-elapsed
+// check with HasPendingSignals (an every window collapses any number of
+// Signals into at most one fire, and a fire that leaves Signals unacked
+// re-arms once every elapses again — crash recovery/coalescing from the
+// same one line); single-flight is untouched — trigger_runs'
+// idx_trigger_runs_inflight_unique (migration 0043) still owns it, as the
+// pre-existing single-flight tests above (unchanged, still green) confirm.
+
+// fakeSignalStore stubs api.SignalStore for these tests — SweepTriggers'
+// on:signals predicate only ever calls HasPendingSignals; the other methods
+// exist purely so *fakeSignalStore satisfies the SignalStore interface and
+// error loudly if some future change starts calling them from this path.
+type fakeSignalStore struct {
+	mu      sync.Mutex
+	pending map[string]bool // workspaceID -> "has a pending signal"
+	err     error           // when non-nil, HasPendingSignals returns this instead
+	calls   []string        // workspaceIDs HasPendingSignals was invoked with
+}
+
+func (f *fakeSignalStore) HasPendingSignals(workspaceID string, _ int) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, workspaceID)
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.pending[workspaceID], nil
+}
+
+func (f *fakeSignalStore) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fakeSignalStore) IngestSignals(string, string, string, []orchestrator.SignalIngestRow) error {
+	return fmt.Errorf("fakeSignalStore: IngestSignals not implemented (unused by SweepTriggers)")
+}
+func (f *fakeSignalStore) GetSignalCursor(string, string, string) (string, error) {
+	return "", fmt.Errorf("fakeSignalStore: GetSignalCursor not implemented (unused by SweepTriggers)")
+}
+func (f *fakeSignalStore) ListSignals(orchestrator.SignalFilter) ([]*orchestrator.Signal, error) {
+	return nil, fmt.Errorf("fakeSignalStore: ListSignals not implemented (unused by SweepTriggers)")
+}
+func (f *fakeSignalStore) ClaimSignals(string, int, int) ([]*orchestrator.Signal, error) {
+	return nil, fmt.Errorf("fakeSignalStore: ClaimSignals not implemented (unused by SweepTriggers)")
+}
+func (f *fakeSignalStore) AckSignals(string, []string) error {
+	return fmt.Errorf("fakeSignalStore: AckSignals not implemented (unused by SweepTriggers)")
+}
+
+var _ SignalStore = (*fakeSignalStore)(nil)
+
+// TestSweepTriggers_OnSignals_NoPendingSignals_NotDue pins §4.2's `due :=
+// ... && HasPendingSignals(...)`: an on:signals trigger whose `every` HAS
+// elapsed (here: never run before, the unconditionally-due case) still does
+// not fire while its workspace has no pending Signal.
+func TestSweepTriggers_OnSignals_NoPendingSignals_NotDue(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {
+			SecretNamespace: "ws-1",
+			Triggers:        []orchestrator.Trigger{{Name: "sweep", Every: "2m", Run: "python3 -m khi.app.scan", On: orchestrator.TriggerOnSignals}},
+		},
+	})
+	signals := &fakeSignalStore{pending: map[string]bool{}}
+	svc.Signals = signals
+
+	result, err := svc.SweepTriggers(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v", err)
+	}
+	if len(result.Fired) != 0 {
+		t.Errorf("Fired = %+v, want empty (no pending signal)", result.Fired)
+	}
+	if len(exec.calls) != 0 {
+		t.Errorf("StartExec calls = %d, want 0", len(exec.calls))
+	}
+	if signals.callCount() == 0 {
+		t.Error("HasPendingSignals was never called — on:signals predicate not wired")
+	}
+}
+
+// TestSweepTriggers_OnSignals_PendingSignals_EveryElapsed_Fires is the
+// positive counterpart: every elapsed AND a pending signal exists → fires.
+func TestSweepTriggers_OnSignals_PendingSignals_EveryElapsed_Fires(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {
+			SecretNamespace: "ws-1",
+			Triggers:        []orchestrator.Trigger{{Name: "sweep", Every: "2m", Run: "python3 -m khi.app.scan", On: orchestrator.TriggerOnSignals}},
+		},
+	})
+	svc.Signals = &fakeSignalStore{pending: map[string]bool{"ws-1": true}}
+
+	result, err := svc.SweepTriggers(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v", err)
+	}
+	if len(result.Fired) != 1 {
+		t.Fatalf("Fired = %+v, want exactly 1", result.Fired)
+	}
+	if result.Fired[0].TriggerKey != (TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"}) {
+		t.Errorf("Fired[0] = %+v, unexpected", result.Fired[0])
+	}
+	if len(exec.calls) != 1 {
+		t.Errorf("StartExec calls = %d, want 1", len(exec.calls))
+	}
+}
+
+// TestSweepTriggers_OnSignals_EveryNotElapsed_Debounced pins the debounce
+// half of §4.2: once a trigger has fired, a SECOND pending signal arriving
+// (or simply still being present) before `every` elapses again must NOT
+// cause a second fire — any number of Signals inside one `every` window
+// collapse into at most one fire.
+func TestSweepTriggers_OnSignals_EveryNotElapsed_Debounced(t *testing.T) {
+	svc, jobs, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {
+			SecretNamespace: "ws-1",
+			Triggers:        []orchestrator.Trigger{{Name: "sweep", Every: "10m", Run: "python3 -m khi.app.scan", On: orchestrator.TriggerOnSignals}},
+		},
+	})
+	signals := &fakeSignalStore{pending: map[string]bool{"ws-1": true}}
+	svc.Signals = signals
+	now := time.Now()
+
+	result, err := svc.SweepTriggers(context.Background(), now)
+	if err != nil {
+		t.Fatalf("first sweep: %v", err)
+	}
+	if len(result.Fired) != 1 {
+		t.Fatalf("first sweep Fired = %+v, want exactly 1", result.Fired)
+	}
+	// The trigger's own run must complete (else this would be a
+	// single-flight skip, not a debounce non-fire) so this test isolates
+	// the every-elapsed half of the AND, same as
+	// TestSweepTriggers_EveryElapsed_FiresAgainOnlyAfterInterval does for
+	// plain schedule triggers.
+	jobs.complete("job-1", 0)
+
+	// The signal is STILL pending (script has not acked it yet) but only 5m
+	// of the 10m window have passed.
+	before := now.Add(5 * time.Minute)
+	result2, err := svc.SweepTriggers(context.Background(), before)
+	if err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if len(result2.Fired) != 0 {
+		t.Errorf("second sweep (every not elapsed) Fired = %+v, want empty (debounce)", result2.Fired)
+	}
+	if len(exec.calls) != 1 {
+		t.Errorf("StartExec calls after second sweep = %d, want still 1", len(exec.calls))
+	}
+}
+
+// TestSweepTriggers_OnSignals_StillPendingAfterEvery_RefiresForCrashRecovery
+// pins the other half of §4.2's single sentence: "発火後も未 ack が残っていれば
+// (= 判断が crash した/捌き切れなかった) every 経過後に再発火する" — crash
+// recovery and coalescing are the SAME mechanism (an unresolved pending
+// signal simply keeps the predicate true), so once `every` elapses again the
+// trigger re-fires without any separate retry/backoff bookkeeping.
+func TestSweepTriggers_OnSignals_StillPendingAfterEvery_RefiresForCrashRecovery(t *testing.T) {
+	svc, jobs, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {
+			SecretNamespace: "ws-1",
+			Triggers:        []orchestrator.Trigger{{Name: "sweep", Every: "10m", Run: "python3 -m khi.app.scan", On: orchestrator.TriggerOnSignals}},
+		},
+	})
+	svc.Signals = &fakeSignalStore{pending: map[string]bool{"ws-1": true}}
+	now := time.Now()
+
+	if _, err := svc.SweepTriggers(context.Background(), now); err != nil {
+		t.Fatalf("first sweep: %v", err)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("StartExec calls after first sweep = %d, want 1", len(exec.calls))
+	}
+	// The judgment task "crashed" (or simply never got around to acking) —
+	// its job still reaches a terminal state (non-zero exit models the
+	// crash), but the signal it was supposed to ack is still pending.
+	jobs.complete("job-1", 1)
+
+	after := now.Add(11 * time.Minute)
+	result, err := svc.SweepTriggers(context.Background(), after)
+	if err != nil {
+		t.Fatalf("second sweep (after every): %v", err)
+	}
+	if len(result.Fired) != 1 {
+		t.Fatalf("second sweep Fired = %+v, want exactly 1 (re-fire: crash recovery)", result.Fired)
+	}
+	if len(exec.calls) != 2 {
+		t.Errorf("StartExec calls after second sweep = %d, want 2", len(exec.calls))
+	}
+}
+
+// TestSweepTriggers_OnSignals_NoWorkspace_NeverDue pins §4.2's "workspace
+// 未所属 project の on: signals trigger は常に not due (debug log のみ、
+// エラーにしない)": a project with no linked workspace (empty
+// SecretNamespace — ProjectStore.GetWithWorkspace's hydration convention,
+// see that method's own doc comment) must never fire an on:signals trigger,
+// and SweepTriggers as a whole must not error over it, regardless of what
+// HasPendingSignals would have said — it must not even be called with an
+// empty workspace id (orchestrator.HasPendingSignals treats "" as a caller
+// error).
+func TestSweepTriggers_OnSignals_NoWorkspace_NeverDue(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {
+			SecretNamespace: "", // not linked to any workspace
+			Triggers:        []orchestrator.Trigger{{Name: "sweep", Every: "2m", Run: "python3 -m khi.app.scan", On: orchestrator.TriggerOnSignals}},
+		},
+	})
+	signals := &fakeSignalStore{err: fmt.Errorf("must not be called with an empty workspace id")}
+	svc.Signals = signals
+
+	result, err := svc.SweepTriggers(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v, want nil (workspace-unlinked on:signals trigger must not error the sweep)", err)
+	}
+	if len(result.Fired) != 0 {
+		t.Errorf("Fired = %+v, want empty (no linked workspace)", result.Fired)
+	}
+	if len(exec.calls) != 0 {
+		t.Errorf("StartExec calls = %d, want 0", len(exec.calls))
+	}
+	if signals.callCount() != 0 {
+		t.Errorf("HasPendingSignals was called %d time(s) with an empty-workspace project, want 0", signals.callCount())
+	}
+}
+
+// TestSweepTriggers_OnSignals_NoSignalStoreWired_NeverDue covers a daemon
+// built without a SignalStore wired (svc.Signals nil, same "optional
+// dependency" convention Triggers/Exec/Notifier already follow on this
+// struct) — an on:signals trigger must fail closed (never due), not panic.
+func TestSweepTriggers_OnSignals_NoSignalStoreWired_NeverDue(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {
+			SecretNamespace: "ws-1",
+			Triggers:        []orchestrator.Trigger{{Name: "sweep", Every: "2m", Run: "python3 -m khi.app.scan", On: orchestrator.TriggerOnSignals}},
+		},
+	})
+	// svc.Signals deliberately left nil.
+
+	result, err := svc.SweepTriggers(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v, want nil", err)
+	}
+	if len(result.Fired) != 0 {
+		t.Errorf("Fired = %+v, want empty (no SignalStore wired)", result.Fired)
+	}
+	if len(exec.calls) != 0 {
+		t.Errorf("StartExec calls = %d, want 0", len(exec.calls))
+	}
+}
+
+// TestSweepTriggers_OnEmpty_RegressionUnaffectedBySignals pins §4.1/§4.2's
+// full-compatibility requirement ("on 省略時は従来の schedule 動作と完全互換"):
+// a trigger with On=="" behaves EXACTLY like before this PR — due purely
+// from `every` elapsed — and must never even consult the SignalStore
+// (a wired one that errors on any call proves it is never touched).
+func TestSweepTriggers_OnEmpty_RegressionUnaffectedBySignals(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {
+			SecretNamespace: "ws-1",
+			Triggers:        []orchestrator.Trigger{{Name: "intake", Every: "10m", Run: "python3 tick.py"}}, // On left as the zero value
+		},
+	})
+	signals := &fakeSignalStore{err: fmt.Errorf("must not be called for a schedule (on=\"\") trigger")}
+	svc.Signals = signals
+
+	result, err := svc.SweepTriggers(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v", err)
+	}
+	if len(result.Fired) != 1 {
+		t.Fatalf("Fired = %+v, want exactly 1 (on=\"\" fires purely on every-elapsed, same as pre-PR-6)", result.Fired)
+	}
+	if len(exec.calls) != 1 {
+		t.Errorf("StartExec calls = %d, want 1", len(exec.calls))
+	}
+	if signals.callCount() != 0 {
+		t.Errorf("HasPendingSignals was called %d time(s) for an on=\"\" trigger, want 0", signals.callCount())
+	}
+}
+
+// TestSweepTriggers_OnScheduleExplicit_RegressionUnaffectedBySignals is the
+// same regression pin as above but for On==TriggerOnSchedule spelled out
+// explicitly, rather than left as the zero value — both must behave
+// identically (ValidateTriggers already treats them as aliases).
+func TestSweepTriggers_OnScheduleExplicit_RegressionUnaffectedBySignals(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {
+			SecretNamespace: "ws-1",
+			Triggers:        []orchestrator.Trigger{{Name: "intake", Every: "10m", Run: "python3 tick.py", On: orchestrator.TriggerOnSchedule}},
+		},
+	})
+	signals := &fakeSignalStore{err: fmt.Errorf("must not be called for an on:schedule trigger")}
+	svc.Signals = signals
+
+	result, err := svc.SweepTriggers(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v", err)
+	}
+	if len(result.Fired) != 1 {
+		t.Fatalf("Fired = %+v, want exactly 1", result.Fired)
+	}
+	if len(exec.calls) != 1 {
+		t.Errorf("StartExec calls = %d, want 1", len(exec.calls))
+	}
+	if signals.callCount() != 0 {
+		t.Errorf("HasPendingSignals was called %d time(s) for an on:schedule trigger, want 0", signals.callCount())
+	}
+}

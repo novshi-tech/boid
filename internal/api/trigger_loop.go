@@ -269,6 +269,52 @@ func (s *TaskWorkflowService) triggerIsDue(now time.Time, key TriggerKey, every 
 	return now.Sub(latest.StartedAt) >= every, nil
 }
 
+// signalsPendingForTrigger evaluates the extra `on: signals` half of the due
+// predicate (docs/plans/signal-ingest-detailed-design.md §4.2):
+//
+//	due := now - latestRun.StartedAt >= every        # triggerIsDue, unchanged
+//	if trig.On == "signals":
+//	    due = due && HasPendingSignals(workspaceOf(project))
+//
+// meta is the SAME hydrated *orchestrator.ProjectMeta the caller
+// (SweepTriggers) already read off hydrateMetaForTriggers for this project —
+// meta.SecretNamespace carries the resolved workspace id whenever the
+// project has a linked workspace (ProjectStore.GetWithWorkspace always
+// injects it, including in its degraded os.ErrNotExist window; see that
+// method's own doc comment), so this issues NO new DB query to re-resolve
+// the workspace, matching §4.2's explicit requirement.
+//
+// A project with no linked workspace (empty SecretNamespace) is always not
+// due — logged at Debug, not Warn/error: this is an ordinary, expected
+// project.yaml shape (an on:signals trigger declared on a workspace-unlinked
+// project), not a failure (§4.2: "常に not due (debug log のみ、エラーにしない)").
+// The same applies when no SignalStore is wired at all (s.Signals nil) —
+// this deliberately does NOT fold into SweepTriggers' top-level nil guard,
+// since that would also block every plain schedule trigger sharing this
+// daemon; only on:signals triggers depend on Signals.
+//
+// A HasPendingSignals error also resolves to not-due (logged at Warn) rather
+// than aborting the whole trigger's evaluation — matching triggerIsDue's own
+// caller (SweepTriggers already treats a per-trigger evaluation error as
+// "skip this trigger this tick, retry next tick", the same fail-open posture
+// dispatch failures get.
+func (s *TaskWorkflowService) signalsPendingForTrigger(meta *orchestrator.ProjectMeta, key TriggerKey) bool {
+	if meta.SecretNamespace == "" {
+		slog.Debug("trigger sweep: on:signals trigger's project has no linked workspace; never due", "project_id", key.ProjectID, "trigger", key.TriggerName)
+		return false
+	}
+	if s.Signals == nil {
+		slog.Debug("trigger sweep: on:signals trigger evaluated but no SignalStore is wired; never due", "project_id", key.ProjectID, "trigger", key.TriggerName)
+		return false
+	}
+	pending, err := s.Signals.HasPendingSignals(meta.SecretNamespace, orchestrator.MaxSignalAttempts)
+	if err != nil {
+		slog.Warn("trigger sweep: on:signals HasPendingSignals failed; treating as not due", "project_id", key.ProjectID, "trigger", key.TriggerName, "workspace_id", meta.SecretNamespace, "error", err)
+		return false
+	}
+	return pending
+}
+
 // triggerRunArgv wraps run the way every trigger-fired exec job's Argv is
 // built: `sh -c` plus an `exec 0</dev/null;` prefix that closes the shell's
 // own stdin before running the command (N-4, Opus review). Needed because
@@ -429,6 +475,16 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 			if derr != nil {
 				slog.Warn("trigger sweep: evaluate due failed", "project_id", p.ID, "trigger", trig.Name, "error", derr)
 				continue
+			}
+			// docs/plans/signal-ingest-detailed-design.md §4.2: on:signals
+			// ANDs an extra "has a pending Signal" condition onto the
+			// existing every-elapsed check — short-circuited (only
+			// evaluated when the every-elapsed half is already true) so an
+			// on:signals trigger that simply hasn't reached its next
+			// `every` yet never issues the extra read, same as the plain
+			// schedule case already skips straight to `continue` below.
+			if due && trig.On == orchestrator.TriggerOnSignals {
+				due = s.signalsPendingForTrigger(meta, key)
 			}
 			if !due {
 				continue
