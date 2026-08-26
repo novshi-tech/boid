@@ -30,6 +30,16 @@ project.yaml (メタプロジェクト)
                         scan script → `boid signal list --claim` → 判断 → `boid signal ack`
 ```
 
+- **合成 trigger** = ユーザが `triggers:` に書くものと同じ内部表現 (`orchestrator.Trigger`)
+  を、daemon が `signals.sources` の 1 件から機械的に生成したもの (**source 1 件 =
+  trigger 1 本**)。「合成」は複数 trigger の組み合わせという意味ではなく「宣言から
+  自動生成される」の意。生成後は既存の trigger loop がユーザ定義 trigger と区別なく
+  評価・実行する
+- **「1m 毎に評価」は新設のポーリングではない**。1m は既存 TriggerLoop の評価解像度
+  (`orchestrator.TriggerSweepResolution`) で、毎分やるのは「due か」の判定 =
+  trigger_runs の timestamp 比較 (+ `on: signals` では未 ack の存在確認 1 クエリ) だけ。
+  project.yaml を毎分パースし直すわけではない — trigger 定義は hydrate 済み meta
+  (キャッシュ) から読み、project.yaml の変更反映は従来どおり `boid project fetch` 時
 - **connector の宣言場所はメタプロジェクトの `.boid/project.yaml`** とする (r3 doc からの
   精密化)。理由: connector job には sandbox の宿主 project が要る。workspace には project が
   無い場合があり、metaproject は現行 khi の trigger job が adapter を回している場所そのもの。
