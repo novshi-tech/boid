@@ -1,0 +1,8 @@
+#!/bin/sh
+# conformance test fixture connector: launches quickly and exits non-zero
+# without any network I/O. A real connector would attempt $BOID_API_BASE
+# (deliberately unreachable when the harness invokes it — see
+# connector_check.go's connectorLaunchEnv), fail, and exit non-zero the
+# same way; this fixture only needs to demonstrate "launches promptly" for
+# the framework's own tests, so it skips the network attempt entirely.
+exit 7
