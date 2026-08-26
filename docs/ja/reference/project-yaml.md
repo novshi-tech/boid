@@ -232,22 +232,37 @@ triggers:
   - name: sweep
     every: 1h
     run: bash scripts/sweep_tick.sh
+  - name: signal-sweep
+    on: signals        # 省略時 "schedule"
+    every: 2m          # signals でも必須 — 発火間隔の下限 = debounce
+    run: python3 -m khi.app.scan
 ```
 
 | キー | 型 | 必須 | 役割 |
 |---|---|---|---|
 | `name` | string | はい | このプロジェクト内でトリガを一意に識別する名前。空文字列・重複はロード時にエラー。`boid trigger run <name>` で参照する名前でもある |
-| `every` | string (`time.ParseDuration`) | はい | 前回の起動から次に起こすまでの最小間隔 (例: `10m`、`1h`)。`0` 以下は拒否。**実効下限は daemon の sweep 周期 (1 分)** — それより短い値 (例: `1s`) はロード時に拒否される。「毎秒」のように sweep 周期より高い頻度は表現できない |
+| `on` | string (`schedule` \| `signals`) | いいえ (既定 `schedule`) | トリガの発火条件を選ぶ (docs/plans/signal-ingest-detailed-design.md §4)。`schedule` (既定/省略時) は `every` 経過のみで発火する従来どおりの挙動。`signals` は `every` 経過に加えて、このプロジェクトが紐づく workspace に未 ack の Signal が 1 件以上あることを要求する — 詳細は下記「`on: signals` の意味論」を参照。それ以外の値はロード時にエラー |
+| `every` | string (`time.ParseDuration`) | はい | 前回の起動から次に起こすまでの最小間隔 (例: `10m`、`1h`)。`0` 以下は拒否。**実効下限は daemon の sweep 周期 (1 分)** — それより短い値 (例: `1s`) はロード時に拒否される。「毎秒」のように sweep 周期より高い頻度は表現できない。`on: signals` でも必須で、この場合は発火間隔の下限 = debounce 窓としても働く |
 | `run` | string | はい | サンドボックス内で `sh -c` に渡されるコマンド文字列 (スクリプトパスではない)。sandbox の `/bin/sh` は dash なので bashism は `bash scripts/x.sh` のように明示すること。stdin は daemon 側が `exec 0</dev/null` 相当で閉じた状態で実行される (対話的な入力を待つスクリプトは書けない — attach するクライアントが存在しないため、閉じないと永久にハングする) |
 
 **実行の性質:**
 
 - 常に `Readonly: true` 固定の exec job として起動される (`boid exec --readonly` と同じ経路)。readonly でも `boid task create` / `boid task action-send` 等の boid op は通る (readonly はサンドボックスのファイルシステム書き込み可否だけを制御し、op の allowlist には影響しない)
-- **single-flight**: 同じ `(project, trigger)` の組は同時に 1 つしか走らない。前回がまだ実行中なら次の周期は見送られる (DB の部分 UNIQUE インデックスで強制される — 複数 daemon プロセスが同じ DB を共有する場合でも保証される)
+- **single-flight**: 同じ `(project, trigger)` の組は同時に 1 つしか走らない。前回がまだ実行中なら次の周期は見送られる (DB の部分 UNIQUE インデックスで強制される — 複数 daemon プロセスが同じ DB を共有する場合でも保証される)。`on: signals` でもこの機構に変更はない
 - 詰まり (`in-flight` が異常に長く続く) や連続失敗はログと通知でのみ検出される。**トリガ自身のコマンドにタイムアウトは無い** — 実行が返らないコマンドは daemon 側からは止められないので、`run:` に渡すコマンド自身がタイムアウトを持つこと (例: `timeout 300 python3 scripts/intake_tick.py`)
 - daemon は `run:` の中身を一切解釈しない。何個 task を作るか・どう判断するかはスクリプト側の責務
 
-デバッグ用の手動起動口は `boid trigger run -p <project-ref> <name>` (`every` の経過は無視するが single-flight は尊重する) — 詳細は [CLI リファレンス](cli.md#サンドボックス操作) を参照。
+**`on: signals` の意味論:**
+
+`on: signals` は既存の `every` 経過判定に「未 ack の Signal が 1 件以上ある」という条件を AND するだけで、新しい debounce/single-flight 機構は作られていない (docs/plans/signal-ingest-detailed-design.md §4.2)。
+
+- **debounce**: `every` 窓内に何件 Signal が届いても発火は 1 回だけ。窓が経過するまで再発火しない
+- **crash からの回復**: 発火後、判断が crash した/捌き切れなかった等で未 ack の Signal が残っていれば、次の `every` 経過時に再びこのトリガが発火する — 別立ての再試行機構は無く、上記の 1 行の due 判定がそのまま crash 回復も兼ねる
+- **single-flight**: 既存の `trigger_runs` の部分 UNIQUE インデックスがそのまま効く。変更なし
+- **workspace 未所属の project**: プロジェクトがどの workspace にも紐づいていない場合、`on: signals` トリガは常に発火しない (エラーにはならず、daemon ログに debug レベルで記録されるのみ)
+- **「未 ack」の定義**: attempts が上限 (`MaxSignalAttempts`) に達し dead-letter 化した Signal はここで言う「未 ack」に含まれない — dead-letter だけが残る workspace で `on: signals` トリガが永久に発火し続けることはない
+
+デバッグ用の手動起動口は `boid trigger run -p <project-ref> <name>` (`every` の経過に加えて `on: signals` の Signal 有無判定もバイパスするが、single-flight は尊重する) — 詳細は [CLI リファレンス](cli.md#サンドボックス操作) を参照。
 
 ## 共通の構成要素
 

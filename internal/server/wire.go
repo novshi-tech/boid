@@ -1283,6 +1283,16 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// assignment at sessionAdapter's construction below (mountRoutes)
 		// for why it can't be until then.
 		Triggers: taskRepo,
+		// Signals: taskRepo already implements api.SignalStore (see
+		// internal/orchestrator/signal_store.go's IngestSignals /
+		// GetSignalCursor / ListSignals / ClaimSignals / AckSignals /
+		// HasPendingSignals, and internal/api/store.go's `var _ SignalStore
+		// = (*orchestrator.TaskRepository)(nil)` assertion) — same object as
+		// Tasks/TaskTriage/Actions/Triggers above, viewed through a narrower
+		// interface. docs/plans/signal-ingest-detailed-design.md §4.2 (PR-6):
+		// SweepTriggers' on:signals due predicate reads this via
+		// signalsPendingForTrigger (trigger_loop.go).
+		Signals: taskRepo,
 		// TaskCreator is wired below, once taskSvc (*api.TaskAppService) is
 		// constructed — see the comment there for why this can't be set here.
 	}

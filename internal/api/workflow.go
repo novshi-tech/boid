@@ -67,6 +67,14 @@ type TaskWorkflowService struct {
 	// construction-order gap must not be fatal — see wire.go's own comment
 	// at the assignment site.
 	Exec ExecDispatcher
+	// Signals backs the `on: signals` trigger predicate's HasPendingSignals
+	// read (docs/plans/signal-ingest-detailed-design.md §4.2, PR-6,
+	// SweepTriggers/signalsPendingForTrigger, trigger_loop.go). Nil is
+	// tolerated the same way Triggers/Exec above are: an on:signals trigger
+	// simply never becomes due (fail-closed, not a panic) when no
+	// SignalStore is wired — a plain schedule (on=""/on:schedule) trigger is
+	// entirely unaffected either way.
+	Signals SignalStore
 
 	dispatchCtx    context.Context
 	dispatchCancel context.CancelFunc
