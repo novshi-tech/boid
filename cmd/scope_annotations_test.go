@@ -146,7 +146,13 @@ var expectedScopeAnnotations = map[string]string{
 	// doesn't depend on daemon locality any more than `attach`'s local
 	// terminal handling above does.
 	"boid secret oauth login": scopeRemote,
-	"boid task answer":        scopeRemote,
+	// docs/plans/signal-ingest-detailed-design.md §3.1 (PR-2): both are
+	// ordinary HTTP API calls against the daemon (GET /api/signals, POST
+	// /api/signals/ack) — same axis as `boid task list`/`boid action send`
+	// above.
+	"boid signal list": scopeRemote,
+	"boid signal ack":  scopeRemote,
+	"boid task answer": scopeRemote,
 	"boid task artifacts":     scopeRemote,
 	"boid task create":        scopeRemote,
 	"boid task delete":        scopeRemote,
