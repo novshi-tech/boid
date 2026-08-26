@@ -14,15 +14,28 @@
 --     FK は張らない (workspace の削除/再構成と signal 行のライフサイクルを
 --     独立させる — 30 日 GC が別途面倒を見る)。
 --   - occurred_at / received_at / acked_at は RFC3339 の TEXT。DATETIME 型
---     ではなく TEXT にしているのは、occurred_at がソースの tz 表記
---     (jira は `+09:00` 等) をそのまま保持でき、cursor との比較は文字列
---     比較ではなく store 層が明示的に time.Parse して行うため
+--     ではなく TEXT にしているのは、保存前に必ず UTC へ正規化した上で
+--     **固定幅の** RFC3339 ナノ秒表記 (末尾ゼロを trim しない) で書き込む
+--     制御を store 層自身に持たせるため — DATETIME 型で driver のシリアライズ
+--     に委ねると末尾ゼロが trim され、レキシコグラフィックな
+--     `ORDER BY occurred_at` が実時刻の順序と食い違いうる (M2, Opus review
+--     2026-08-26 — internal/orchestrator/signal_store.go の
+--     signalTimeLayout のコメント参照)。connector から届く occurred_at の
+--     tz 表記 (jira は `+09:00` 等) はワイヤ上の入力としては受け付けるが、
+--     **保存値は常に UTC 正規化済み** であり生の offset は残らない。cursor
+--     との比較も文字列比較ではなく store 層が明示的に time.Parse して行う
 --     (internal/orchestrator/signal_store.go の IngestSignals のコメント
 --     参照 — 文字列比較は offset 混在で壊れる)。
 --   - attempts / acked_at が「取り込み中のまま残る終着状態を持たない」の
---     実装: connector 失敗は attempts に積むだけで行は pending のまま残り
---     (ClaimSignals が再配送する)、上限超過は dead として可視化されるが
---     行は消えない — 判断側が ack するか GC (30 日) が刈るまで残る。
+--     実装: attempts は connector の取り込み失敗**ではなく**、判断側への
+--     配信試行回数 — ClaimSignals が呼ばれるたび (scan script が signal を
+--     掴んで判断を試みるたび) に加算される。判断が終わらないまま (crash 等
+--     で) 放置された signal は pending のまま残り、次の ClaimSignals で
+--     再配送される。上限 (MaxSignalAttempts) 超過は dead として可視化される
+--     が行は消えない — 判断側が ack するか GC (30 日、GCSignals) が刈るまで
+--     残る。connector 自体の取り込み失敗 (非ゼロ exit) は別の機構 (導出
+--     trigger の failStreak、design doc §5.1) で可視化され、signals.attempts
+--     とは無関係 (L5, Opus review 2026-08-26)。
 CREATE TABLE IF NOT EXISTS signals (
   workspace_id TEXT NOT NULL,           -- workspaces.slug (FK は張らない: project_workspaces の前例)
   service      TEXT NOT NULL,           -- service instance 名

@@ -144,8 +144,24 @@ func resolveMaxAttempts(maxAttempts int) int {
 	return maxAttempts
 }
 
+// signalTimeLayout is a FIXED-WIDTH RFC3339-with-nanoseconds layout used for
+// every stored timestamp (occurred_at/received_at/acked_at/cursor/
+// updated_at).
+//
+// [M2, Opus review 2026-08-26]: this is deliberately NOT time.RFC3339Nano.
+// RFC3339Nano trims trailing zeros from the fractional-second component,
+// producing a VARIABLE-width string whose lexicographic order does not
+// always match chronological order — e.g. "...T01:00:00.5Z" (with a
+// fractional second) sorts BEFORE "...T01:00:00Z" (no fractional second at
+// all) because '.' (0x2E) < 'Z' (0x5A), even though the first instant is
+// LATER. ListSignals/ClaimSignals both `ORDER BY occurred_at` as a plain
+// TEXT column, so lexicographic order matching chronological order is load-
+// bearing, not cosmetic — a fixed 9-digit fractional field (zero-padded,
+// never trimmed) is what makes that hold for every stored row.
+const signalTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 func formatSignalTime(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
+	return t.UTC().Format(signalTimeLayout)
 }
 
 // parseSignalTime parses an RFC3339 timestamp. Go's time.Parse tolerates a
@@ -255,6 +271,30 @@ func IngestSignals(dbtx db.DBTX, workspaceID, service, connector string, rows []
 // GetSignalCursor returns (workspaceID, service, connector)'s stored cursor,
 // or "" if the source has never ingested (design doc §2: "無ければ空文字
 // (= 最初から)").
+//
+// Contract (design doc §5.3): the cursor is EXCLUSIVE of itself from the
+// connector's point of view — a conformant connector drops anything with
+// `occurred_at <= cursor` before ever calling `boid signal ingest`, and
+// treats `occurred_at > cursor` as new. This store does not enforce or
+// interpret that filtering itself (PK-based dedup in IngestSignals is a
+// second, independent safety net for exact-duplicate re-sends; a
+// well-behaved connector's own `<= cursor` filtering is what keeps fetch
+// volume down) — GetSignalCursor just returns the opaque stored value.
+//
+// [L8, Opus review 2026-08-26] KNOWN RISK inherited from this
+// exclusive-boundary design (same bug family as khi's pre-rewrite
+// ts-based bookmarks — see the boid-project memory note
+// "khi-source-bookmark-must-be-exclusive"): if two sibling events share the
+// EXACT SAME occurred_at and the cursor advances to that timestamp after
+// only one of them has been ingested (the other arriving from the source in
+// a later page/fetch), the connector's own `occurred_at <= cursor`
+// self-filter will silently drop the sibling FOREVER — it never reaches
+// IngestSignals, so PK-based dedup never even sees it to no-op it. This is
+// not something the store layer can fix (a cursor here is a single scalar,
+// not a set of "ids already seen at this timestamp"). Pack authors (§7.2)
+// working with sub-second or tie-prone sources should add a secondary
+// tiebreaker (e.g. sort by id too) in their own fetch logic rather than
+// relying on occurred_at alone to be unique.
 func GetSignalCursor(dbtx db.DBTX, workspaceID, service, connector string) (string, error) {
 	var cursor string
 	err := dbtx.QueryRow(
@@ -492,24 +532,40 @@ func HasPendingSignals(dbtx db.DBTX, workspaceID string, maxAttempts int) (bool,
 	return exists != 0, nil
 }
 
-// GCSignals deletes signals rows that are either (a) acked and acked_at is
-// older than the cutoff, or (b) still unacked (including dead-lettered) but
-// received_at is older than the cutoff — the latter prevents a dead signal
-// from lingering forever just because it never gets acked (design doc §2:
-// "未 ack でも received_at が cutoff より古い行を削除...dead の永久残留を
-// 防ぐ"). olderThan=0 disables the time filter, matching
-// GCTasks/GCTriggerRuns' own convention (every matching row is eligible).
+// GCSignals deletes signals rows that are STRUCTURALLY eligible — acked
+// (judgment complete) or dead-lettered (retries exhausted, attempts >=
+// MaxSignalAttempts) — and, when olderThan > 0, additionally old enough
+// (acked_at, respectively received_at, before the cutoff). olderThan=0
+// disables the AGE filter only, matching GCTasks (status IN (...)) /
+// GCTriggerRuns (finished_at IS NOT NULL): those siblings keep a
+// non-time STATE predicate that protects live rows even when the caller
+// asks for an unbounded sweep, and GCSignals now does the same — a
+// still-pending signal (unacked, attempts < MaxSignalAttempts) is NEVER
+// eligible for deletion, regardless of olderThan.
+//
+// [H1, Opus review 2026-08-26, CONFIRMED data-loss bug]: an earlier version
+// of this function had no structural gate — at olderThan<=0 its WHERE
+// clause degenerated to `1 = 1`, deleting EVERY signal in the table,
+// including brand-new pending (attempts=0) rows that had never even been
+// claimed once. Worse, signal_cursors was left pointing PAST the deleted
+// rows (IngestSignals had already advanced it), so the connector's own
+// "occurred_at <= cursor, drop it" self-filter (§5.3) would never let those
+// rows be re-ingested — permanent, silent loss. Reachable via
+// `boid gc --older-than 0`, `POST /api/gc {"older_than":"0s"}`, or the 24h
+// auto-GC loop if `gc.older_than` were ever configured to 0. The structural
+// gate below closes this: a pending row can never match, so it survives
+// every combination of olderThan and dryRun.
 //
 // Intended to run inside the SAME transaction as GCTasks/GCTriggerRuns
 // (TaskGCStore.GC, repository.go) — a single statement, so it needs no tx
 // guarantee of its own the way IngestSignals/ClaimSignals do.
 func GCSignals(dbtx db.DBTX, olderThan time.Duration, dryRun bool) (int64, error) {
-	cond := "1 = 1"
-	var args []any
+	cond := `(acked_at IS NOT NULL) OR (acked_at IS NULL AND attempts >= ?)`
+	args := []any{MaxSignalAttempts}
 	if olderThan > 0 {
 		cutoff := formatSignalTime(time.Now().Add(-olderThan))
-		cond = `(acked_at IS NOT NULL AND acked_at < ?) OR (acked_at IS NULL AND received_at < ?)`
-		args = []any{cutoff, cutoff}
+		cond = `(` + cond + `) AND ((acked_at IS NOT NULL AND acked_at < ?) OR (acked_at IS NULL AND received_at < ?))`
+		args = append(args, cutoff, cutoff)
 	}
 
 	if dryRun {

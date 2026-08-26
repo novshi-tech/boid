@@ -16,6 +16,7 @@ package orchestrator_test
 //     TestTaskRepository_IngestSignals_PartialBatchFailureRollsBackEntirely)
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -33,6 +34,27 @@ func mustParseRFC3339(t *testing.T, s string) time.Time {
 		t.Fatalf("parse %q: %v", s, err)
 	}
 	return tm
+}
+
+// TestClampSignalListLimit mirrors action_list_test.go's
+// TestClampActionListLimit at the same granularity (L7, Opus review
+// 2026-08-26) — ClampSignalListLimit was modeled directly on
+// ClampActionListLimit but had no test of its own.
+func TestClampSignalListLimit(t *testing.T) {
+	cases := []struct {
+		requested int
+		want      int
+	}{
+		{0, orchestrator.DefaultSignalListLimit},
+		{-5, orchestrator.DefaultSignalListLimit},
+		{50, 50},
+		{orchestrator.MaxSignalListLimit + 1000, orchestrator.MaxSignalListLimit},
+	}
+	for _, c := range cases {
+		if got := orchestrator.ClampSignalListLimit(c.requested); got != c.want {
+			t.Errorf("ClampSignalListLimit(%d) = %d, want %d", c.requested, got, c.want)
+		}
+	}
 }
 
 // --- IngestSignals: dedup (Q10) ---
@@ -487,6 +509,191 @@ func TestClaimSignals_OrdersByOccurredAtAscendingAndRespectsLimit(t *testing.T) 
 	}
 }
 
+// TestClaimSignals_OrderingSurvivesFractionalSecondWidthDifferences is the
+// ClaimSignals counterpart to
+// TestListSignals_OrderingSurvivesFractionalSecondWidthDifferences (M2,
+// Opus review 2026-08-26) — ClaimSignals' `ORDER BY occurred_at` shares the
+// exact same lexicographic-vs-chronological risk ListSignals' does.
+func TestClaimSignals_OrderingSurvivesFractionalSecondWidthDifferences(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	// evt-a has no fractional-second component; evt-b has one (500ms) and
+	// is chronologically LATER. Before the fixed-width storage fix,
+	// RFC3339Nano trimmed evt-a's fractional part away entirely, so a
+	// lexicographic ORDER BY occurred_at put evt-b BEFORE evt-a (because
+	// '.' (0x2E) < 'Z' (0x5A)), which would have made ClaimSignals process
+	// (and deliver) them out of chronological order.
+	rows := []orchestrator.SignalIngestRow{
+		{ID: "evt-a", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"},
+		{ID: "evt-b", OccurredAt: "2026-08-20T01:00:00.5Z", Identity: "jira:B"},
+	}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", rows); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	claimed, err := orchestrator.ClaimSignals(d.Conn, "ws-1", 10, 5)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(claimed) != 2 || claimed[0].ID != "evt-a" || claimed[1].ID != "evt-b" {
+		ids := make([]string, len(claimed))
+		for i, s := range claimed {
+			ids[i] = s.ID
+		}
+		t.Fatalf("claim order = %v, want [evt-a evt-b] (evt-a occurred first)", ids)
+	}
+}
+
+// failAfterNExecs wraps a db.DBTX, returning an error from the Nth Exec call
+// onward (1-indexed) instead of delegating — used to simulate a crash
+// partway through a multi-statement operation without needing real
+// concurrency. ClaimSignals has no per-row validation of its own (unlike
+// IngestSignals' occurred_at/identity checks) to fail on naturally, so this
+// is the deterministic stand-in.
+type failAfterNExecs struct {
+	db.DBTX
+	n     int
+	execs int
+}
+
+func (f *failAfterNExecs) Exec(query string, args ...any) (sql.Result, error) {
+	f.execs++
+	if f.execs >= f.n {
+		return nil, errors.New("simulated crash mid-operation")
+	}
+	return f.DBTX.Exec(query, args...)
+}
+
+// TestClaimSignals_RollbackLeavesAttemptsUnincremented pins M3 (Opus review
+// 2026-08-26): ClaimSignals' initial SELECT and its per-key `attempts + 1`
+// UPDATEs must be one atomic unit, the same "1 tx" contract IngestSignals
+// has (see IngestSignals' own doc comment and
+// TestIngestSignals_RollbackLeavesNoPartialState). Using failAfterNExecs to
+// fail the SECOND key's UPDATE, this confirms that if the surrounding
+// transaction rolls back, the FIRST key's already-applied increment does
+// NOT survive either — i.e. a caller can never observe a half-claimed
+// batch.
+func TestClaimSignals_RollbackLeavesAttemptsUnincremented(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	rows := []orchestrator.SignalIngestRow{
+		{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"},
+		{ID: "evt-2", OccurredAt: "2026-08-20T02:00:00Z", Identity: "jira:B"},
+	}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", rows); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	err := db.InTxDB(d.Conn, func(tx db.DBTX) error {
+		// n=2: the 1st Exec (evt-1's UPDATE) succeeds, the 2nd Exec (evt-2's
+		// UPDATE) fails — simulating a crash after partially claiming the
+		// batch.
+		failing := &failAfterNExecs{DBTX: tx, n: 2}
+		_, cerr := orchestrator.ClaimSignals(failing, "ws-1", 10, 5)
+		if cerr == nil {
+			t.Fatal("ClaimSignals with injected failure = nil error, want an error")
+		}
+		return cerr
+	})
+	if err == nil {
+		t.Fatal("InTxDB = nil error, want the injected failure to propagate and roll back")
+	}
+
+	all, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	if err != nil {
+		t.Fatalf("ListSignals: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("got %d signals, want 2 (rows themselves must be untouched)", len(all))
+	}
+	for _, s := range all {
+		if s.Attempts != 0 {
+			t.Errorf("signal %s attempts = %d after rollback, want 0 (no partial claim may survive)", s.ID, s.Attempts)
+		}
+	}
+}
+
+// TestTaskRepository_ClaimSignals_PartialFailureRollsBackEntirely is M3's
+// wrapper-level counterpart (Opus review 2026-08-26): "select + N 件の
+// attempts++ update が同一 tx で行われることを検証" specifically through
+// TaskRepository.ClaimSignals (constructed with a raw *sql.DB, exactly the
+// shape a future caller will use) — not just the package function via a
+// manually-opened transaction as the test above does. Without a dedicated
+// test here, a future "simplify ClaimSignals' wrapper to a one-line
+// delegator like every other TaskRepository method" edit (repository.go)
+// would drop the self-opened transaction and nothing would go red — the
+// sibling IngestSignals wrapper already has exactly this kind of test
+// (TestTaskRepository_IngestSignals_PartialBatchFailureRollsBackEntirely);
+// ClaimSignals had none.
+//
+// failAfterNExecs can't be plugged in here (TaskRepository.ClaimSignals'
+// self-wrap branch requires r.db to be the CONCRETE type *sql.DB — a Go
+// type assertion, not an interface check — so any wrapper struct would
+// take the "already in a tx" branch instead of the one under test). A
+// temporary SQLite trigger stands in as the fault injector instead: it
+// fires as a REAL side effect of evt-1's UPDATE (the first key
+// ClaimSignals processes, per occurred_at ASC) and deletes evt-2 out from
+// under the loop before its re-fetch runs, making ClaimSignals' existing
+// "claim signals: re-fetch" error path fire deterministically. If the
+// wrapper is properly transactional, evt-1's already-applied attempts
+// increment rolls back together with everything else; if it were
+// regressed to a bare delegator over the raw *sql.DB, evt-1's UPDATE would
+// have already autocommitted individually and would leak through despite
+// the overall call returning an error.
+func TestTaskRepository_ClaimSignals_PartialFailureRollsBackEntirely(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	rows := []orchestrator.SignalIngestRow{
+		{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"}, // claimed first (earlier occurred_at)
+		{ID: "evt-2", OccurredAt: "2026-08-20T02:00:00Z", Identity: "jira:B"}, // claimed second
+	}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", rows); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	if _, err := d.Conn.Exec(`
+		CREATE TRIGGER kill_evt2 AFTER UPDATE OF attempts ON signals
+		WHEN NEW.id != 'evt-2'
+		BEGIN
+			DELETE FROM signals WHERE id = 'evt-2';
+		END;
+	`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	repo := orchestrator.NewTaskRepository(d.Conn)
+	if _, err := repo.ClaimSignals("ws-1", 10, 5); err == nil {
+		t.Fatal("ClaimSignals with a row vanishing mid-loop = nil error, want an error")
+	}
+
+	remaining, err := d.Conn.Query(`SELECT id, attempts FROM signals WHERE workspace_id = 'ws-1' ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer remaining.Close()
+	found := map[string]int{}
+	for remaining.Next() {
+		var id string
+		var attempts int
+		if err := remaining.Scan(&id, &attempts); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		found[id] = attempts
+	}
+	// evt-2 was deleted by the trigger as a SIDE EFFECT of evt-1's UPDATE —
+	// that deletion is real regardless of tx wrapping (SQLite triggers fire
+	// inline). What this test actually pins is evt-1: if
+	// TaskRepository.ClaimSignals truly wraps the whole operation in one
+	// transaction, the trigger's DELETE and evt-1's own UPDATE both get
+	// rolled back together with the error InTxDB propagates, so evt-1
+	// survives WITH attempts=0. A regressed one-line-delegator wrapper would
+	// have already autocommitted evt-1's UPDATE (attempts=1) before the
+	// loop ever reached evt-2.
+	attempts, ok := found["evt-1"]
+	if !ok {
+		t.Fatal("evt-1 missing entirely after rollback — the whole transaction (including the trigger's DELETE of evt-2) should have reverted")
+	}
+	if attempts != 0 {
+		t.Errorf("evt-1 attempts = %d after rollback, want 0 (must not survive a failed claim)", attempts)
+	}
+}
+
 // --- HasPendingSignals ---
 
 func TestHasPendingSignals_TrueWhenPendingExists(t *testing.T) {
@@ -630,6 +837,44 @@ func TestListSignals_ScopedByServiceAndConnector(t *testing.T) {
 	}
 }
 
+// TestListSignals_OrderingSurvivesFractionalSecondWidthDifferences pins M2
+// (Opus review 2026-08-26, CONFIRMED): occurred_at is stored as TEXT and
+// ListSignals sorts it via a plain lexicographic `ORDER BY occurred_at`. An
+// earlier version formatted timestamps with time.RFC3339Nano, which trims
+// trailing zeros from the fractional-second component — producing a
+// VARIABLE-width string whose lexicographic order does not always match
+// chronological order.
+func TestListSignals_OrderingSurvivesFractionalSecondWidthDifferences(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	// evt-a has NO fractional-second component; evt-b has one and is
+	// chronologically LATER (by 500ms). Before the fix, evt-a's stored
+	// string had no "." at all ("...:00Z"), while evt-b's did
+	// ("...:00.5Z") — since '.' (0x2E) < 'Z' (0x5A), evt-b's string
+	// lexicographically sorted BEFORE evt-a's, even though evt-b occurred
+	// later.
+	rows := []orchestrator.SignalIngestRow{
+		{ID: "evt-a", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"},
+		{ID: "evt-b", OccurredAt: "2026-08-20T01:00:00.5Z", Identity: "jira:B"},
+	}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", rows); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	got, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	if err != nil {
+		t.Fatalf("ListSignals: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "evt-a" || got[1].ID != "evt-b" {
+		ids := make([]string, len(got))
+		for i, s := range got {
+			ids[i] = s.ID
+		}
+		t.Fatalf("order = %v, want [evt-a evt-b] (evt-a occurred first)", ids)
+	}
+	if !got[1].OccurredAt.After(got[0].OccurredAt) {
+		t.Fatalf("got[1].OccurredAt (%v) is not after got[0].OccurredAt (%v)", got[1].OccurredAt, got[0].OccurredAt)
+	}
+}
+
 // --- GCSignals ---
 
 func TestGCSignals_DeletesOldAckedRows(t *testing.T) {
@@ -662,10 +907,47 @@ func TestGCSignals_DeletesOldAckedRows(t *testing.T) {
 	}
 }
 
-// TestGCSignals_DeletesOldUnackedRows pins §2's "未 ack でも received_at が
+// TestGCSignals_DeletesOldDeadRows pins §2's "未 ack でも received_at が
 // cutoff より古い行を削除" — the dead-letter permanent-residency prevention
-// (design doc §2 table, GCSignals row).
-func TestGCSignals_DeletesOldUnackedRows(t *testing.T) {
+// (design doc §2 table, GCSignals row). [H1 follow-up, Opus review
+// 2026-08-26] this specifically dead-letters the row first (attempts >=
+// MaxSignalAttempts) before backdating — a merely-old-but-still-pending row
+// (attempts < MaxSignalAttempts) must NOT be reaped just for being old; see
+// TestGCSignals_NeverDeletesPendingRowsRegardlessOfAge below for that half
+// of the contract.
+func TestGCSignals_DeletesOldDeadRows(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	row := orchestrator.SignalIngestRow{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", []orchestrator.SignalIngestRow{row}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	// Drive attempts to MaxSignalAttempts so the row is dead.
+	for i := 0; i < orchestrator.MaxSignalAttempts; i++ {
+		if _, err := orchestrator.ClaimSignals(d.Conn, "ws-1", 10, orchestrator.MaxSignalAttempts); err != nil {
+			t.Fatalf("claim #%d: %v", i, err)
+		}
+	}
+	if _, err := d.Conn.Exec(`UPDATE signals SET received_at = ? WHERE id = 'evt-1'`, "2000-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("backdate received_at: %v", err)
+	}
+
+	n, err := orchestrator.GCSignals(d.Conn, 24*time.Hour, false)
+	if err != nil {
+		t.Fatalf("GCSignals: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("GCSignals deleted %d rows, want 1 (old dead row must be reaped)", n)
+	}
+}
+
+// TestGCSignals_NeverDeletesPendingRowsRegardlessOfAge pins the OTHER half
+// of §2's GCSignals contract (H1, Opus review 2026-08-26): a signal that is
+// still genuinely pending (unacked, attempts < MaxSignalAttempts) must
+// survive GC no matter how old received_at is — only acked or dead-lettered
+// rows are ever eligible. Without this, a signal nobody happened to claim
+// within the retention window would silently vanish despite never having
+// been given a single chance at delivery.
+func TestGCSignals_NeverDeletesPendingRowsRegardlessOfAge(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	row := orchestrator.SignalIngestRow{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"}
 	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", []orchestrator.SignalIngestRow{row}); err != nil {
@@ -679,8 +961,112 @@ func TestGCSignals_DeletesOldUnackedRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GCSignals: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("GCSignals deleted %d rows, want 1 (old unacked/dead row must be reaped)", n)
+	if n != 0 {
+		t.Fatalf("GCSignals deleted %d rows, want 0 (a never-claimed pending row must never be reaped)", n)
+	}
+	remaining, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	if err != nil {
+		t.Fatalf("ListSignals: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("got %d remaining signals, want 1", len(remaining))
+	}
+}
+
+// TestGCSignals_OlderThanZeroNeverDeletesPendingRows is H1's own reproduction
+// case (Opus review 2026-08-26, CONFIRMED critical data-loss bug): an
+// earlier version of GCSignals degenerated its WHERE clause to `1 = 1` at
+// olderThan<=0, deleting every signal in the workspace — including a
+// brand-new pending row that had just been ingested and never claimed even
+// once — reachable via `boid gc --older-than 0`, `POST /api/gc
+// {"older_than":"0s"}`, or an auto-GC loop misconfigured with
+// `gc.older_than: 0`. This pins the fix directly at olderThan=0, the exact
+// value that triggered the bug.
+func TestGCSignals_OlderThanZeroNeverDeletesPendingRows(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	row := orchestrator.SignalIngestRow{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", []orchestrator.SignalIngestRow{row}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	n, err := orchestrator.GCSignals(d.Conn, 0, false)
+	if err != nil {
+		t.Fatalf("GCSignals(olderThan=0): %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("GCSignals(olderThan=0) deleted %d rows, want 0 — a fresh pending signal must survive even an unbounded sweep", n)
+	}
+	remaining, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	if err != nil {
+		t.Fatalf("ListSignals: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("got %d remaining signals after GCSignals(0), want 1", len(remaining))
+	}
+	// The cursor must also be intact — an earlier bug variant left the
+	// cursor advanced past a deleted row, permanently orphaning it (the
+	// connector's own `occurred_at <= cursor` self-filter would then drop
+	// any re-send forever, since it never even reaches this store).
+	cur, err := orchestrator.GetSignalCursor(d.Conn, "ws-1", "svc", "pack/conn")
+	if err != nil {
+		t.Fatalf("GetSignalCursor: %v", err)
+	}
+	if cur == "" {
+		t.Fatal("cursor unexpectedly empty after a successful ingest")
+	}
+}
+
+// TestGCSignals_OlderThanZeroStillDeletesAckedAndDeadRows confirms
+// olderThan=0 disables the AGE floor only, not the STATE gate: acked and
+// dead-lettered rows remain eligible for immediate cleanup even when
+// freshly acked/dead-lettered (mirroring GCTriggerRuns'
+// TestGCTriggerRuns_DeletesOnlyFinishedRows, which does the same for
+// finished_at IS NOT NULL rows at olderThan=0).
+func TestGCSignals_OlderThanZeroStillDeletesAckedAndDeadRows(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	rows := []orchestrator.SignalIngestRow{
+		{ID: "evt-pending", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"},
+		{ID: "evt-acked", OccurredAt: "2026-08-20T02:00:00Z", Identity: "jira:B"},
+		{ID: "evt-dead", OccurredAt: "2026-08-20T03:00:00Z", Identity: "jira:C"},
+	}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", rows); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if err := orchestrator.AckSignals(d.Conn, "ws-1", []string{"evt-acked"}); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	for i := 0; i < orchestrator.MaxSignalAttempts; i++ {
+		if _, err := orchestrator.ClaimSignals(d.Conn, "ws-1", 1, orchestrator.MaxSignalAttempts); err != nil {
+			t.Fatalf("claim #%d: %v", i, err)
+		}
+	}
+	// evt-dead occurs earliest among the still-unacked rows (evt-pending
+	// occurs before evt-dead, actually — re-check: evt-pending is
+	// 01:00, so it's claimed FIRST by ClaimSignals' occurred_at ASC order,
+	// not evt-dead. Force evt-pending to stay pending by only claiming
+	// enough rounds against evt-dead specifically isn't controllable via
+	// the public API's ordering, so dead-letter by id directly instead —
+	// deterministic and avoids coupling this test to claim ordering.
+	if _, err := d.Conn.Exec(`UPDATE signals SET attempts = ? WHERE id = 'evt-dead'`, orchestrator.MaxSignalAttempts); err != nil {
+		t.Fatalf("force dead-letter evt-dead: %v", err)
+	}
+	if _, err := d.Conn.Exec(`UPDATE signals SET attempts = 0 WHERE id = 'evt-pending'`); err != nil {
+		t.Fatalf("reset evt-pending attempts: %v", err)
+	}
+
+	n, err := orchestrator.GCSignals(d.Conn, 0, false)
+	if err != nil {
+		t.Fatalf("GCSignals(olderThan=0): %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("GCSignals(olderThan=0) deleted %d rows, want 2 (evt-acked + evt-dead)", n)
+	}
+	remaining, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	if err != nil {
+		t.Fatalf("ListSignals: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != "evt-pending" {
+		t.Fatalf("remaining = %+v, want exactly evt-pending", remaining)
 	}
 }
 
@@ -711,6 +1097,14 @@ func TestGCSignals_DryRunDoesNotDelete(t *testing.T) {
 	row := orchestrator.SignalIngestRow{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"}
 	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", []orchestrator.SignalIngestRow{row}); err != nil {
 		t.Fatalf("ingest: %v", err)
+	}
+	// Dead-letter (not just "old and pending") — see
+	// TestGCSignals_DeletesOldDeadRows' doc comment for why a merely-old
+	// pending row is no longer eligible after the H1 fix.
+	for i := 0; i < orchestrator.MaxSignalAttempts; i++ {
+		if _, err := orchestrator.ClaimSignals(d.Conn, "ws-1", 10, orchestrator.MaxSignalAttempts); err != nil {
+			t.Fatalf("claim #%d: %v", i, err)
+		}
 	}
 	if _, err := d.Conn.Exec(`UPDATE signals SET received_at = ? WHERE id = 'evt-1'`, "2000-01-01T00:00:00Z"); err != nil {
 		t.Fatalf("backdate received_at: %v", err)
