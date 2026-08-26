@@ -452,7 +452,7 @@ r1 の「上書き不可の core review protocol prompt」はこの機構強制�
 - single-flight: 前回起こした判断タスクが未終了なら次を起こさない
 - 発火先は workspace が定義する通常の task (メタプロジェクトの scan script / behavior)
 
-connector の定期実行も同じ trigger 機構に乗せる (source 1 件 = 合成 trigger)。source の
+connector の定期実行も同じ trigger 機構に乗せる (source 1 件 = 導出 trigger)。source の
 宣言はメタプロジェクトの project.yaml (`signals.sources`) で行い、connector はその
 プロジェクトの sandbox で走る。詳細は `signal-ingest-detailed-design.md`。
 
@@ -587,7 +587,7 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 9. 実装は shadow-a (ingest 等価性)・shadow-b (知識配置) を Go 条件とする
 10. envelope schema v0 を机上検証で確定した (§5.2、2026-08-26。根拠は
     `signal-envelope-inventory.md`)
-11. CLI 最終形・inbox GC・connector 実行 (合成 trigger)・size limit・source 宣言場所は
+11. CLI 最終形・inbox GC・connector 実行 (導出 trigger)・size limit・source 宣言場所は
     詳細設計で決着した (`signal-ingest-detailed-design.md` §8、2026-08-26)
 
 ### 検証・実装と並行して決めること

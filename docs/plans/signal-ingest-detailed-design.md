@@ -14,11 +14,11 @@ TaskGCStore / API gateway / SecretStore) に乗せる。
 
 ```text
 project.yaml (メタプロジェクト)
-  signals.sources[] ──(hydrate)──▶ 合成 trigger "signal:<pack>/<connector>"
+  signals.sources[] ──(hydrate)──▶ 導出 trigger "signal:<pack>/<connector>"
   triggers[] (on: signals) ─────▶ 判断側 trigger
                 │
                 ▼ (既存 TriggerLoop が 1m 毎に評価)
-   ┌─ 合成 trigger 発火 ──▶ exec job (project sandbox 内で connector 実行)
+   ┌─ 導出 trigger 発火 ──▶ exec job (project sandbox 内で connector 実行)
    │      connector: gateway で外部 fetch → `boid signal ingest` (JSONL)
    │                                │
    │                                ▼
@@ -30,11 +30,11 @@ project.yaml (メタプロジェクト)
                         scan script → `boid signal list --claim` → 判断 → `boid signal ack`
 ```
 
-- **合成 trigger** = ユーザが `triggers:` に書くものと同じ内部表現 (`orchestrator.Trigger`)
-  を、daemon が `signals.sources` の 1 件から機械的に生成したもの (**source 1 件 =
-  trigger 1 本**)。「合成」は複数 trigger の組み合わせという意味ではなく「宣言から
-  自動生成される」の意。生成後は既存の trigger loop がユーザ定義 trigger と区別なく
-  評価・実行する
+- **導出 trigger** = ユーザが `triggers:` に書くものと同じ内部表現 (`orchestrator.Trigger`)
+  を、daemon が `signals.sources` の 1 件から導出したもの (**source 1 件 = trigger 1 本**)。
+  複数 trigger の組み合わせではなく、宣言からの自動生成。生成後は既存の trigger loop が
+  ユーザ定義 trigger と区別なく評価・実行する。対比で言うと、**通常の trigger の `run` は
+  プロジェクト内のスクリプトを指し、導出 trigger の `run` は Pack 内の connector を指す**
 - **「1m 毎に評価」は新設のポーリングではない**。1m は既存 TriggerLoop の評価解像度
   (`orchestrator.TriggerSweepResolution`) で、毎分やるのは「due か」の判定 =
   trigger_runs の timestamp 比較 (+ `on: signals` では未 ack の存在確認 1 クエリ) だけ。
@@ -194,7 +194,7 @@ if trig.On == "signals":
 
 ---
 
-## 5. Connector 実行 = 合成 trigger
+## 5. Connector 実行 = 導出 trigger
 
 ### 5.1 宣言 (メタプロジェクトの project.yaml)
 
@@ -208,7 +208,7 @@ signals:
         include_threads: true
 ```
 
-`ProjectMeta` に `Signals` を追加。hydrate 時に source 1 件を**合成 trigger**
+`ProjectMeta` に `Signals` を追加。hydrate 時に source 1 件を**導出 trigger**
 `{Name: "signal:<pack>/<connector>", Every: every, Run: exec "$BOID_CONNECTOR_EXEC"}` に
 展開して既存の trigger 列へ足す (名前衝突は load 時に検証)。これにより:
 
@@ -220,7 +220,7 @@ signals:
 
 ### 5.2 job 環境
 
-合成 trigger の発火は既存 `fireTrigger` → `StartExec` (exec job、readonly、project
+導出 trigger の発火は既存 `fireTrigger` → `StartExec` (exec job、readonly、project
 sandbox)。`StartExecRequest` に 2 点を追加する:
 
 - env: `BOID_SIGNAL_SERVICE` / `BOID_SIGNAL_CONNECTOR` / `BOID_SIGNAL_CONFIG` (config の
@@ -281,7 +281,7 @@ daemon 起動時 (`wire.go` の gateway 配線点) に新 package `internal/inte
    **起動エラー** — services の eager validation と同じ倒し方。§7.2 の照合検証の実装
 4. connector の `config` は manifest の `configSchema` で検証する。v0 は JSON Schema の
    極小 subset (type/object/properties/required、値型は string/number/boolean) を自前実装
-   (外部ライブラリ最小の規約)。検証失敗は**該当 connector の合成 trigger を作らない +
+   (外部ライブラリ最小の規約)。検証失敗は**該当 connector の導出 trigger を作らない +
    起動ログにエラー** (採点表 Q19)
 
 - `internal/integrationpack` は新 package なので architecture allowlist
@@ -306,7 +306,7 @@ daemon 起動時 (`wire.go` の gateway 配線点) に新 package `internal/inte
 |---|---|
 | `boid signal` CLI の最終形 | §3 (list/claim/ack + connector 用 ingest/cursor、workspace は token/flag) |
 | inbox の GC | acked 30 日で既存 GC tx に相乗り (§2) |
-| Connector の実行詳細 | 合成 trigger + project sandbox exec job + ingest 単位 tx (§5) |
+| Connector の実行詳細 | 導出 trigger + project sandbox exec job + ingest 単位 tx (§5) |
 | Signal 1 件の size limit | 既存 ValidateContentSize (64KiB) を行単位に適用 (§2) |
 | (新規に確定) source の宣言場所 | メタプロジェクトの project.yaml `signals.sources` (§1) |
 
@@ -325,7 +325,7 @@ Web UI 表示、service profile の複数 header/OAuth2 表現 (v0 の脱糖は�
 | **PR-2** | host API/CLI (`/api/signals`、`boid signal list/ack`) | Q14 (ack 冪等) |
 | **PR-3** | shim op 4 種 + `boid-signal` 組み込みスキル | Q14、(op checklist 11 ファイル) |
 | **PR-4** | config (`integrations.dir`・`uses:`) + `internal/integrationpack` + 脱糖 + 検証 | Q16、Q17、Q19、Q21 の骨格 |
-| **PR-5** | 合成 trigger + connector 実行 (env/bind/プロトコル) | Q11 (栞 self-exceeding)、Q12 (失敗可視化 = failStreak)、Q18、Q20 |
+| **PR-5** | 導出 trigger + connector 実行 (env/bind/プロトコル) | Q11 (栞 self-exceeding)、Q12 (失敗可視化 = failStreak)、Q18、Q20 |
 | **PR-6** | trigger `on: signals` 述語 | Q15 (debounce/single-flight テスト) |
 | **PR-7** | `boid task create --idempotency-key` | Q26 (新設: 下記) |
 
