@@ -19,16 +19,9 @@ import (
 
 	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
 )
-
-// defaultSignalWorkspaceSlug mirrors orchestrator.DefaultWorkspaceSlug
-// ("default") — signal-ingest-detailed-design.md §3.1: "--workspace 既定は
-// default slug". Kept as a local literal rather than an internal/orchestrator
-// import for one constant, matching cmd/project.go's existing precedent
-// (projectInitCmd's workspaceSlug default) of not adding a package import
-// just to spell a string every reader already knows.
-const defaultSignalWorkspaceSlug = "default"
 
 var signalCmd = &cobra.Command{
 	Use:   "signal",
@@ -73,10 +66,20 @@ func init() {
 	rootCmd.AddCommand(signalCmd)
 }
 
+// resolveSignalWorkspaceFlag defaults to orchestrator.DefaultWorkspaceSlug
+// ("default") when --workspace is omitted (signal-ingest-detailed-design.md
+// §3.1). Uses the orchestrator constant directly rather than a local
+// literal — cmd/ already imports internal/orchestrator in over 30 files
+// (task.go, project.go, ...) for exactly this "shared type/constant, no
+// behavior" reason (client-type-import-ok-behavior-ng), and it does not
+// affect the GOOS=windows/darwin portable-client build (Opus review, PR
+// #1011, F6: an earlier version of this file kept a duplicate local literal
+// instead, on the mistaken assumption that importing orchestrator here was
+// unsafe for that build).
 func resolveSignalWorkspaceFlag(cmd *cobra.Command) string {
 	ws, _ := cmd.Flags().GetString("workspace")
 	if ws == "" {
-		return defaultSignalWorkspaceSlug
+		return orchestrator.DefaultWorkspaceSlug
 	}
 	return ws
 }

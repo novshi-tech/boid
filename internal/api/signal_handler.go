@@ -54,11 +54,25 @@ func (h *SignalHandler) List(w http.ResponseWriter, r *http.Request) {
 		workspaceID = orchestrator.DefaultWorkspaceSlug
 	}
 
+	state := orchestrator.SignalState(q.Get("state"))
+	switch state {
+	case "", orchestrator.SignalStatePending, orchestrator.SignalStateDead, orchestrator.SignalStateAcked, orchestrator.SignalStateAll:
+		// valid (or empty, which ListSignals itself treats as "pending" —
+		// signal_store.go's signalStateCondition).
+	default:
+		// Validated here rather than left to ListSignals' own "unknown
+		// state" error (a plain error, not a *StatusError) so an invalid
+		// --state maps to 400 like an invalid --limit does, not a 500
+		// (Opus review, PR #1011: this asymmetry was flagged as F3).
+		writeError(w, http.StatusBadRequest, "invalid state: "+string(state))
+		return
+	}
+
 	filter := orchestrator.SignalFilter{
 		WorkspaceID: workspaceID,
 		Service:     q.Get("service"),
 		Connector:   q.Get("source"),
-		State:       orchestrator.SignalState(q.Get("state")),
+		State:       state,
 	}
 
 	if limitStr := q.Get("limit"); limitStr != "" {
@@ -114,7 +128,29 @@ func (h *SignalHandler) Ack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, AckSignalsResponse{Acked: req.IDs})
+	// Dedupe: req.IDs may contain repeats (e.g. a caller passing the same id
+	// twice in one `boid signal ack a a`), and AckSignalsResponse.Acked's own
+	// doc comment promises "the (de-duplicated) ids" — echoing req.IDs
+	// verbatim here would break that promise and make the CLI misreport
+	// "acked 3 signal(s)" for a single id repeated three times (Opus review,
+	// PR #1011, F4).
+	writeJSON(w, http.StatusOK, AckSignalsResponse{Acked: dedupeStrings(req.IDs)})
+}
+
+// dedupeStrings returns ss with duplicates removed, keeping first-seen
+// order. Small local helper rather than reusing orchestrator's own
+// dedupeStringsPreserveOrder (signal_store.go), which is unexported.
+func dedupeStrings(ss []string) []string {
+	seen := make(map[string]bool, len(ss))
+	out := make([]string, 0, len(ss))
+	for _, s := range ss {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // toWireSignals shapes store rows into the v0 envelope
