@@ -182,6 +182,18 @@ var Schema = []FieldSpec{
 	{Path: "services.*.auth.header", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.query", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.provider", Kind: KindString, Reload: ReloadRestartRequired},
+	// services.*.uses/endpoint/credentials.* (docs/plans/signal-driven-review.md
+	// §7.2, docs/plans/signal-ingest-detailed-design.md §6.1, PR-4): the
+	// Integration Pack service-profile-backed instance shape, mutually
+	// exclusive with base_url/auth above (validateServiceConfig in
+	// apigateway.go enforces that at document-decode time, same "Schema
+	// only governs which KEYS exist" split every other kind-conditional
+	// leaf here has). credentials.* is a second wildcard segment for the
+	// profile's declared credential slot names — same shape as
+	// oauth_providers.*.authorize_params.* below.
+	{Path: "services.*.uses", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.endpoint", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.credentials.*", Kind: KindString, Reload: ReloadRestartRequired},
 
 	// services_floor (docs/plans/api-gateway.md §3): the daemon-wide
 	// enabled-service floor, mirroring sandbox.allowed_domains' own
@@ -230,6 +242,12 @@ var Schema = []FieldSpec{
 	// under it would 404 as "unknown config key" the same way gateway.hosts
 	// would have without its own (KindOpaque) entry.
 	{Path: "oauth_providers.*.authorize_params.*", Kind: KindString, Reload: ReloadRestartRequired},
+
+	// integrations.dir (docs/plans/signal-ingest-detailed-design.md §6.1,
+	// PR-4): where internal/integrationpack.LoadPacks looks for installed
+	// Integration Packs. A single scalar leaf, same shape as
+	// web.public_url/web.http_addr above.
+	{Path: "integrations.dir", Kind: KindString, Reload: ReloadRestartRequired},
 }
 
 // segments splits a dotted path into its components. Exported for reuse by

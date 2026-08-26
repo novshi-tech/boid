@@ -465,6 +465,12 @@ var restartFieldExtractors = map[string]func(*config.Config) string{
 		return strconv.Itoa(c.Sandbox.EgressProxyPortHigh)
 	},
 	"services_floor": func(c *config.Config) string { return strings.Join(c.ServicesFloor, "\x00") },
+	// integrations.dir (docs/plans/signal-ingest-detailed-design.md §6.1,
+	// PR-4): a scalar leaf with no per-entry finer-grained diff (unlike
+	// services.*/gateway.forges.*/oauth_providers.*, this isn't a wildcard
+	// map — there is exactly one integrations.dir), so it gets an ordinary
+	// direct extractor like gc.*/web.* above.
+	"integrations.dir": func(c *config.Config) string { return c.Integrations.Dir },
 }
 
 // restartFieldExtractorExemptions documents every ReloadRestartRequired
@@ -514,6 +520,13 @@ var restartFieldExtractorExemptions = map[string]string{
 	"services.*.auth.header":     "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.query":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.provider":   "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	// services.*.uses/endpoint/credentials.* (docs/plans/signal-driven-review.md
+	// §7.2, docs/plans/signal-ingest-detailed-design.md §6.1, PR-4) — same
+	// reasoning as the base_url/auth septet above: changedServiceLeaves'
+	// per-id, per-field diff already covers all three.
+	"services.*.uses":          "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.endpoint":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.credentials.*": "covered by changedServiceLeaves' per-id, whole-map diff (finer-grained than a wildcard comparison)",
 
 	// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2) — same
 	// reasoning as the services.* septet above: changedOAuthProviderLeaves'
@@ -651,6 +664,21 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			}
 			if o.Auth.Provider != n.Auth.Provider {
 				changed = append(changed, name+".auth.provider")
+			}
+			// docs/plans/signal-driven-review.md §7.2, docs/plans/
+			// signal-ingest-detailed-design.md §6.1 (PR-4) additions — same
+			// "safer left to a restart" reasoning as every other leaf here
+			// (a mid-flight uses:/endpoint/credentials change would need
+			// the desugared apigateway.ServiceConfig this instance
+			// resolves to rebuilt against the Pack registry).
+			if o.Uses != n.Uses {
+				changed = append(changed, name+".uses")
+			}
+			if o.Endpoint != n.Endpoint {
+				changed = append(changed, name+".endpoint")
+			}
+			if !maps.Equal(o.Credentials, n.Credentials) {
+				changed = append(changed, name+".credentials")
 			}
 		}
 	}
