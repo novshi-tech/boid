@@ -477,6 +477,17 @@ func allMigrations() []migration {
 			path:               "migrations/0045_card_sti_migration.sql",
 			disableForeignKeys: true,
 		},
+		{
+			// docs/plans/signal-ingest-detailed-design.md §2 (PR-1): signal
+			// inbox の 2 テーブル (signals / signal_cursors). No skip
+			// function: brand-new tables with no pre-migration-system state
+			// to guard against, same reasoning as 0042/0043 above.
+			version: "0046_add_signal_inbox",
+			path:    "migrations/0046_add_signal_inbox.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return tableExists(tx, "signals")
+			},
+		},
 	}
 }
 

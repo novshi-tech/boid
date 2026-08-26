@@ -376,6 +376,41 @@ func TestGC_TriggerRunsCleanup_ViaTaskGCStore(t *testing.T) {
 	}
 }
 
+// TestGC_SignalsCleanup_ViaTaskGCStore pins that TaskGCStore.GC purges the
+// signal inbox in the SAME pass as tasks/jobs/actions/trigger_runs,
+// reporting the count on GCResult.Signals (docs/plans/
+// signal-ingest-detailed-design.md §2/§9: "inbox の GC: acked 30 日で既存
+// GC tx に相乗り").
+func TestGC_SignalsCleanup_ViaTaskGCStore(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	row := orchestrator.SignalIngestRow{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", []orchestrator.SignalIngestRow{row}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if err := orchestrator.AckSignals(d.Conn, "ws-1", []string{"evt-1"}); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	if _, err := d.Conn.Exec(`UPDATE signals SET acked_at = ? WHERE id = 'evt-1'`, "2000-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("backdate acked_at: %v", err)
+	}
+
+	gcStore := orchestrator.NewTaskGCStore(d.Conn)
+	result, err := gcStore.GC(30*24*time.Hour, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Signals != 1 {
+		t.Fatalf("result.Signals = %d, want 1", result.Signals)
+	}
+	var count int
+	if err := d.Conn.QueryRow(`SELECT COUNT(*) FROM signals`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("signals rows after gc = %d, want 0", count)
+	}
+}
+
 // makeRuntimeDir は runtimesDir 配下に fake の runtime ディレクトリを作成する。
 func makeRuntimeDir(t *testing.T, runtimesDir, runtimeID string) string {
 	t.Helper()

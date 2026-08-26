@@ -5,6 +5,10 @@ CREATE INDEX idx_actions_created_at_id ON actions(created_at, id);
 CREATE INDEX idx_project_workspaces_workspace_id
     ON project_workspaces(workspace_id);
 
+-- index: idx_signals_pending
+CREATE INDEX idx_signals_pending
+  ON signals(workspace_id, occurred_at) WHERE acked_at IS NULL;
+
 -- index: idx_task_identities_task_id
 CREATE INDEX idx_task_identities_task_id ON task_identities(task_id);
 
@@ -85,6 +89,33 @@ CREATE TABLE "secrets" (
     created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at      DATETIME NOT NULL DEFAULT (datetime('now')),
     UNIQUE(namespace, key)
+);
+
+-- table: signal_cursors
+CREATE TABLE signal_cursors (
+  workspace_id TEXT NOT NULL,
+  service      TEXT NOT NULL,
+  connector    TEXT NOT NULL,
+  cursor       TEXT NOT NULL DEFAULT '',
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, service, connector)
+);
+
+-- table: signals
+CREATE TABLE signals (
+  workspace_id TEXT NOT NULL,           -- workspaces.slug (FK は張らない: project_workspaces の前例)
+  service      TEXT NOT NULL,           -- service instance 名
+  connector    TEXT NOT NULL,           -- "<pack>/<connector>"
+  id           TEXT NOT NULL,           -- envelope id (connector が生成する安定 event key)
+  occurred_at  TEXT NOT NULL,           -- RFC3339 (tz-aware)
+  identity     TEXT NOT NULL,
+  url          TEXT NOT NULL DEFAULT '',
+  author       TEXT NOT NULL DEFAULT '',
+  title        TEXT NOT NULL DEFAULT '',
+  received_at  TEXT NOT NULL,           -- daemon 時計
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  acked_at     TEXT,
+  PRIMARY KEY (workspace_id, service, connector, id)
 );
 
 -- table: task_identities

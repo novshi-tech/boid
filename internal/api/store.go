@@ -400,6 +400,30 @@ type TriggerRunStore interface {
 	DeleteTriggerRun(id string) error
 }
 
+// SignalStore backs docs/plans/signal-ingest-detailed-design.md §2 (PR-1)'s
+// inbox store (internal/orchestrator/signal_store.go) — narrowed from
+// *orchestrator.TaskRepository the same way TriggerRunStore is. This PR
+// wires no handler onto it yet (PR-2 adds `GET /api/signals` /
+// `POST /api/signals/ack`, PR-3 adds the connector-facing ingest/cursor
+// ops, PR-6 adds the `on: signals` trigger predicate that calls
+// HasPendingSignals) — see the var _ assertion below for what proves
+// TaskRepository actually satisfies this shape today.
+//
+// GCSignals is deliberately NOT part of this interface: it is called
+// directly as a package function from within TaskGCStore.GC's existing
+// transaction (repository.go), the same way GCTriggerRuns is — not through
+// a per-workspace narrow interface like the methods above.
+type SignalStore interface {
+	IngestSignals(workspaceID, service, connector string, rows []orchestrator.SignalIngestRow) error
+	GetSignalCursor(workspaceID, service, connector string) (string, error)
+	ListSignals(filter orchestrator.SignalFilter) ([]*orchestrator.Signal, error)
+	ClaimSignals(workspaceID string, limit, maxAttempts int) ([]*orchestrator.Signal, error)
+	AckSignals(workspaceID string, ids []string) error
+	HasPendingSignals(workspaceID string, maxAttempts int) (bool, error)
+}
+
+var _ SignalStore = (*orchestrator.TaskRepository)(nil)
+
 type ProjectRepository interface {
 	CreateProject(project *orchestrator.Project) error
 	GetProject(id string) (*orchestrator.Project, error)
