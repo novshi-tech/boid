@@ -1,6 +1,8 @@
-package conformance
+package packconformance
 
 import (
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -8,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/integrationpack"
 	"github.com/novshi-tech/boid/internal/skills"
 )
 
@@ -53,7 +56,7 @@ import (
 // of real subcommand names, but that list would have to be hand-maintained
 // against cmd/'s cobra tree, and this package cannot import cmd/ to derive
 // it dynamically (cmd/ pulls in internal/db, which does not build inside a
-// boid sandbox — see internal/integrationpack/conformance's own package
+// boid sandbox — see packconformance's own package
 // doc comment on why a custom Pack author needs `go test` here to work
 // from inside one). A Pack author who trips this on ordinary English prose
 // should just avoid putting a bare verb directly after "boid " (say
@@ -94,17 +97,18 @@ func findBoidReferences(content string, builtinSkillNames []string) []boidRefere
 }
 
 // isSkillDoc reports whether path (whose basename is base, located
-// somewhere under skillsDir) is in scope for the boid-command-reference
-// scan: exactly "SKILL.md" at any depth, or a "*.md" file that sits
-// somewhere under a "references" directory.
-func isSkillDoc(skillsDir, path, base string) bool {
+// somewhere under skillRoot — one manifest-declared skills[].path) is in
+// scope for the boid-command-reference scan: exactly "SKILL.md" at any
+// depth, or a "*.md" file that sits somewhere under a "references"
+// directory.
+func isSkillDoc(skillRoot, path, base string) bool {
 	if base == "SKILL.md" {
 		return true
 	}
 	if filepath.Ext(base) != ".md" {
 		return false
 	}
-	rel, err := filepath.Rel(skillsDir, path)
+	rel, err := filepath.Rel(skillRoot, path)
 	if err != nil {
 		return false
 	}
@@ -131,12 +135,17 @@ type skillDocViolation struct {
 // boid's own commands — boid usage is the core's job (built-in skills,
 // docs/plans/signal-driven-review.md §8.2), not a Pack's.
 //
-// Scans every file in scope per isSkillDoc, at any depth under
-// <dir>/skills — independent of what the manifest happens to declare in
-// skills[], since an undeclared stray file shipped in the same directory
-// is just as visible to whatever eventually reads it. A Pack with no
-// skills/ directory at all trivially returns no violations (nothing to
-// scan).
+// Scans every file in scope per isSkillDoc, at any depth under EACH of the
+// manifest's declared skills[].path (integrationpack.Skill.Path) — NOT a
+// hardcoded "skills/" directory. This is a fix, not merely a refactor:
+// ParseManifest only validates Path's STRING shape (non-empty, relative,
+// no ".." escape via filepath.IsLocal — manifest.go), so a manifest is
+// free to declare skills[].path: "docs/whatever" and this check used to
+// silently scan the (nonexistent, unrelated) "skills/" directory, find
+// zero files, and report a clean PASS — the exact "0 scanned looks
+// identical to 0 violations" trap the returned scannedFiles count exists
+// to close. checkSkillsNoBoidCommands logs that count via t.Logf on every
+// run so it can never be silently zero without a human noticing.
 //
 // Separated from checkSkillsNoBoidCommands' *testing.T reporting so this
 // package's own tests can assert directly on what was found (see
@@ -146,52 +155,60 @@ type skillDocViolation struct {
 // fail against a negative fixture through the real t.Run/t.Errorf path
 // without also failing this package's own test suite. Pure functions sidestep
 // that entirely.
-func findSkillDocViolations(dir string) ([]skillDocViolation, error) {
-	skillsDir := filepath.Join(dir, "skills")
-	if _, err := os.Stat(skillsDir); os.IsNotExist(err) {
-		return nil, nil
-	}
-
+func findSkillDocViolations(dir string, m *integrationpack.Manifest) (violations []skillDocViolation, scannedFiles int, err error) {
 	builtinSkillNames := skills.EmbeddedSkillNames()
-	var violations []skillDocViolation
+	var errs []error
 
-	walkErr := filepath.WalkDir(skillsDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
+	for _, sk := range m.Skills {
+		skillRoot := filepath.Join(dir, sk.Path)
+		walkErr := filepath.WalkDir(skillRoot, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if !isSkillDoc(skillRoot, path, d.Name()) {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			scannedFiles++
+			rel, relErr := filepath.Rel(dir, path)
+			if relErr != nil {
+				rel = path
+			}
+			for _, ref := range findBoidReferences(string(data), builtinSkillNames) {
+				violations = append(violations, skillDocViolation{path: rel, ref: ref})
+			}
 			return nil
+		})
+		if walkErr != nil {
+			// Collected rather than returned immediately: one skill's
+			// broken/missing path should not hide findings (or a second
+			// broken path) among the manifest's other declared skills — same
+			// "report everything in one pass" posture as the rest of this
+			// package's checks.
+			errs = append(errs, fmt.Errorf("skill %q (path %q): %w", sk.Name, sk.Path, walkErr))
 		}
-		if !isSkillDoc(skillsDir, path, d.Name()) {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			rel = path
-		}
-		for _, ref := range findBoidReferences(string(data), builtinSkillNames) {
-			violations = append(violations, skillDocViolation{path: rel, ref: ref})
-		}
-		return nil
-	})
-	if walkErr != nil {
-		return violations, walkErr
 	}
-	return violations, nil
+	return violations, scannedFiles, errors.Join(errs...)
 }
 
 // checkSkillsNoBoidCommands is findSkillDocViolations' *testing.T reporter
 // — see that function's own doc comment for what it checks and why the
 // detection logic lives separately.
-func checkSkillsNoBoidCommands(t *testing.T, dir string) {
+func checkSkillsNoBoidCommands(t *testing.T, dir string, m *integrationpack.Manifest) {
 	t.Helper()
-	violations, err := findSkillDocViolations(dir)
+	violations, scannedFiles, err := findSkillDocViolations(dir, m)
+	// Always logged, pass or fail — a Pack author (or reviewer) reading
+	// "0 file(s) scanned" next to "PASS" should immediately suspect a
+	// skills[].path typo rather than assume a clean bill of health.
+	t.Logf("scanned %d skill doc file(s) across %d declared skill(s)", scannedFiles, len(m.Skills))
 	if err != nil {
-		t.Errorf("scan skills/: %v", err)
+		t.Errorf("scan declared skills: %v", err)
 	}
 	for _, v := range violations {
 		switch v.ref.kind {

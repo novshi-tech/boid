@@ -1,9 +1,11 @@
-package conformance
+package packconformance
 
 import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/novshi-tech/boid/internal/integrationpack"
 )
 
 // TestConformancePack_GoodPackPasses is the positive case, exercised
@@ -50,27 +52,93 @@ func TestParseManifestFile_BrokenManifestFails(t *testing.T) {
 // telling the reader to run boid commands (and naming a builtin skill) is
 // flagged.
 func TestFindSkillDocViolations_BoidCommandReferenceDetected(t *testing.T) {
-	violations, err := findSkillDocViolations("testdata/bad-skill-pack")
+	dir := "testdata/bad-skill-pack"
+	m, err := parseManifestFile(dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	violations, scanned, err := findSkillDocViolations(dir, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scanned == 0 {
+		t.Fatal("fixture assumption broken: scanned 0 files, so the violations below (if any) prove nothing")
 	}
 	if len(violations) == 0 {
 		t.Fatal("expected a skill mentioning boid commands to be flagged, got none")
 	}
-	t.Logf("found %d violation(s): %+v", len(violations), violations)
+	t.Logf("scanned %d file(s), found %d violation(s): %+v", scanned, len(violations), violations)
 }
 
 // TestFindSkillDocViolations_GoodPackHasNone is
 // TestFindSkillDocViolations_BoidCommandReferenceDetected's positive
 // counterpart at the same (pure-function) level.
 func TestFindSkillDocViolations_GoodPackHasNone(t *testing.T) {
-	violations, err := findSkillDocViolations("testdata/good-pack")
+	dir := "testdata/good-pack"
+	m, err := parseManifestFile(dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	violations, scanned, err := findSkillDocViolations(dir, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scanned == 0 {
+		t.Fatal("fixture assumption broken: scanned 0 files — this fixture is supposed to have skill docs to scan")
 	}
 	if len(violations) != 0 {
 		t.Errorf("expected no violations in the conforming fixture, got %+v", violations)
 	}
+}
+
+// TestFindSkillDocViolations_HonorsManifestDeclaredPath is the F2
+// regression test: the manifest declares skills[].path: "docs-api", NOT
+// "skills/fixture-api" — and there is no "skills/" directory anywhere in
+// this fixture at all. Before the F2 fix, findSkillDocViolations hardcoded
+// a scan of "<dir>/skills", so this fixture would have scanned 0 files and
+// silently passed despite its SKILL.md (at the manifest-declared path)
+// containing a real boid command reference — a Pack could relocate its
+// skill directory and this check would go blind. This pins that the scan
+// now actually follows the manifest.
+func TestFindSkillDocViolations_HonorsManifestDeclaredPath(t *testing.T) {
+	dir := "testdata/bad-skill-path-pack"
+	m, err := parseManifestFile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Skills) != 1 || m.Skills[0].Path == "skills" {
+		t.Fatalf("fixture assumption broken: want exactly 1 skill with a non-\"skills\" path, got %+v", m.Skills)
+	}
+	violations, scanned, err := findSkillDocViolations(dir, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scanned == 0 {
+		t.Fatal("expected the scan to follow manifest.Skills[].Path (\"docs-api\") and find the SKILL.md there, scanned 0 files")
+	}
+	if len(violations) == 0 {
+		t.Fatal("expected the boid command reference under the manifest-declared path to be flagged, got none")
+	}
+	t.Logf("scanned %d file(s) under manifest-declared path %q, found %d violation(s)", scanned, m.Skills[0].Path, len(violations))
+}
+
+// TestFindSkillDocViolations_MissingDeclaredPathIsAnError pins that a
+// manifest declaring a skills[].path that does not exist on disk surfaces
+// as an error (ParseManifest only validates Path's string shape, never
+// checks it against disk — see findSkillDocViolations' own doc comment),
+// rather than silently scanning nothing.
+func TestFindSkillDocViolations_MissingDeclaredPathIsAnError(t *testing.T) {
+	m := &integrationpack.Manifest{
+		Skills: []integrationpack.Skill{{Name: "ghost", Path: "does-not-exist"}},
+	}
+	_, scanned, err := findSkillDocViolations(t.TempDir(), m)
+	if err == nil {
+		t.Fatal("expected an error for a skills[].path that does not exist on disk, got nil")
+	}
+	if scanned != 0 {
+		t.Errorf("scanned = %d, want 0", scanned)
+	}
+	t.Logf("got expected error: %v", err)
 }
 
 // TestFindConnectorExecutableViolations_MissingExecutableDetected pins the

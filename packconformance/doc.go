@@ -1,9 +1,23 @@
-// Package conformance implements the Pack contract v1 conformance test
+// Package packconformance implements the Pack contract v1 conformance test
 // framework — docs/plans/signal-ingest-detailed-design.md §7.2 ("Pack が
 // 満たすべきもの", the Pack-author-facing half of the contract) and §7.3
 // ("conformance test は boid リポジトリに置き、公式 Pack は CI で常時通す。
 // custom Pack の作者も同じテストを手元で回せる"), docs/plans/signal-driven-
 // review.md §14 Q21/Q22.
+//
+// Deliberately at the MODULE ROOT (github.com/novshi-tech/boid/
+// packconformance), not under internal/ — a package under internal/ is
+// importable only from within github.com/novshi-tech/boid/... (Go's
+// internal-package import rule), so a custom Pack author's own,
+// completely separate Go module could never `import` it, no matter how it
+// phrased its own test file. That directly contradicts §7.3's "custom
+// Pack の作者も同じテストを手元で回せる" — confirmed by trying exactly that
+// import from an external module and getting "use of internal package
+// ... not allowed". testutil/ (this repo's existing test-helper package)
+// sits at the module root for the identical reason. See
+// scripts/check-internal-architecture.sh's own package-allowlist check,
+// which only enumerates internal/'s immediate children — moving this
+// package out of internal/ does not touch it.
 //
 // ConformancePack is the single entry point: given the directory of ONE
 // Pack version (a directory that itself contains integration.yaml —
@@ -28,11 +42,16 @@
 //     the Pack directory
 //
 // A custom (non-official) Pack author runs the exact same checks locally,
-// which is the whole point of putting this in a plain go test package
-// rather than a shell script or a boid subcommand:
+// from their OWN Go module (a plain `go get
+// github.com/novshi-tech/boid@latest` away — this package is at the
+// module root specifically so that works), which is the whole point of
+// putting this in a plain go test package rather than a shell script or a
+// boid subcommand:
+//
+//	import "github.com/novshi-tech/boid/packconformance"
 //
 //	func TestConformance(t *testing.T) {
-//	    conformance.ConformancePack(t, "/path/to/my-pack/1.0.0")
+//	    packconformance.ConformancePack(t, "/path/to/my-pack/1.0.0")
 //	}
 //
 // officialpacks_test.go is the other half of Q22 ("公式 Pack は CI で常時
@@ -41,4 +60,4 @@
 // ConformancePack against each. .github/workflows/blackbox-e2e.yml's
 // pack-conformance job sets that env var to a sibling actions/checkout of
 // novshi-tech/boid-api-skills and invokes it.
-package conformance
+package packconformance

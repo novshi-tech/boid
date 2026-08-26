@@ -1,4 +1,4 @@
-package conformance
+package packconformance
 
 import (
 	"fmt"
@@ -94,7 +94,7 @@ func ConformancePackOpts(t *testing.T, dir string, opts Options) {
 	}
 
 	t.Run("skill_no_boid_command_references", func(t *testing.T) {
-		checkSkillsNoBoidCommands(t, dir)
+		checkSkillsNoBoidCommands(t, dir, manifest)
 	})
 
 	t.Run("connector_executable", func(t *testing.T) {

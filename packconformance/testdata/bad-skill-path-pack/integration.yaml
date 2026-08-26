@@ -1,0 +1,28 @@
+apiVersion: boid.dev/v1
+kind: IntegrationPack
+metadata:
+  name: conformance-fixture
+  version: 0.1.0
+
+serviceProfiles:
+  - name: conformance-fixture
+    endpoint:
+      configurable: true
+    credentials:
+      - name: token
+        injection: bearer
+
+connectors:
+  - name: fetch-issues
+    executable: connectors/fetch-issues
+    serviceProfile: conformance-fixture
+
+skills:
+  - name: fixture-api
+    # Deliberately NOT "skills/fixture-api" — this fixture exists to prove
+    # findSkillDocViolations follows manifest.Skills[].Path (F2 fix)
+    # instead of a hardcoded "skills/" directory. There is no "skills/"
+    # directory anywhere in this fixture at all: the old hardcoded-path
+    # code would have scanned zero files and silently passed.
+    path: docs-api
+    requiresServiceProfile: conformance-fixture
