@@ -146,3 +146,171 @@ triggers:
 		t.Fatal("ReadProjectMeta() = nil error, want a rejection for the duplicate trigger name")
 	}
 }
+
+// --- signals.sources[] → derived trigger (docs/plans/
+// signal-ingest-detailed-design.md §5.1, PR-5) ---
+
+// TestReadProjectMeta_Signals_DerivesTrigger pins the end-to-end hydrate
+// path through the PUBLIC ReadProjectMeta entry point (unlike
+// signal_trigger_derive_test.go's white-box unit tests on
+// deriveSignalTriggers directly): a signals.sources[] entry must show up as
+// an ordinary Trigger in meta.Triggers, indistinguishable to the trigger
+// loop from a user-authored one except for the non-nil Connector field.
+func TestReadProjectMeta_Signals_DerivesTrigger(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+signals:
+  sources:
+    - connector: slack/mentions
+      service: slack-api
+      every: 10m
+      config:
+        include_threads: true
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if len(meta.Triggers) != 1 {
+		t.Fatalf("Triggers = %+v, want 1 derived entry", meta.Triggers)
+	}
+	trig := meta.Triggers[0]
+	if trig.Name != "signal:slack/mentions" || trig.Every != "10m" {
+		t.Errorf("derived trigger = %+v, unexpected", trig)
+	}
+	if trig.Connector == nil || trig.Connector.Pack != "slack" || trig.Connector.ConnectorName != "mentions" || trig.Connector.Service != "slack-api" {
+		t.Errorf("Connector = %+v, unexpected", trig.Connector)
+	}
+}
+
+// TestReadProjectMeta_Signals_CoexistsWithUserTriggers pins that a
+// signals.sources[] derived trigger and an ordinary user-authored
+// triggers[] entry both survive hydration side by side (no accidental
+// overwrite of one by the other).
+func TestReadProjectMeta_Signals_CoexistsWithUserTriggers(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+triggers:
+  - name: sweep
+    on: signals
+    every: 2m
+    run: python3 -m khi.app.scan
+signals:
+  sources:
+    - connector: slack/mentions
+      service: slack-api
+      every: 10m
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if len(meta.Triggers) != 2 {
+		t.Fatalf("Triggers = %+v, want 2 entries (1 user + 1 derived)", meta.Triggers)
+	}
+	if meta.Triggers[0].Name != "sweep" || meta.Triggers[0].Connector != nil {
+		t.Errorf("Triggers[0] = %+v, want the user-authored 'sweep' trigger with nil Connector", meta.Triggers[0])
+	}
+	if meta.Triggers[1].Name != "signal:slack/mentions" || meta.Triggers[1].Connector == nil {
+		t.Errorf("Triggers[1] = %+v, want the derived 'signal:slack/mentions' trigger with non-nil Connector", meta.Triggers[1])
+	}
+}
+
+// TestReadProjectMeta_Signals_CollidesWithUserTrigger_RejectedAtLoadTime pins
+// that a derived trigger name colliding with a user-authored trigger name is
+// caught by the SAME ValidateTriggers duplicate-name check a hand-authored
+// collision hits — no separate validation pass for signals.sources.
+func TestReadProjectMeta_Signals_CollidesWithUserTrigger_RejectedAtLoadTime(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+triggers:
+  - name: signal:slack/mentions
+    every: 5m
+    run: echo not-a-connector
+signals:
+  sources:
+    - connector: slack/mentions
+      service: slack-api
+      every: 10m
+`)
+	if _, err := projectspec.ReadProjectMeta(dir); err == nil {
+		t.Fatal("ReadProjectMeta() = nil error, want a rejection for the derived/user trigger name collision")
+	}
+}
+
+// TestReadProjectMeta_Signals_DuplicateSource_RejectedAtLoadTime pins the
+// same collision guard for two sources naming the identical connector.
+func TestReadProjectMeta_Signals_DuplicateSource_RejectedAtLoadTime(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+signals:
+  sources:
+    - connector: slack/mentions
+      service: slack-api
+      every: 10m
+    - connector: slack/mentions
+      service: slack-api-2
+      every: 20m
+`)
+	if _, err := projectspec.ReadProjectMeta(dir); err == nil {
+		t.Fatal("ReadProjectMeta() = nil error, want a rejection for the duplicate signals.sources entry")
+	}
+}
+
+// TestReadProjectMeta_Signals_Absent_NilNotError mirrors
+// TestReadProjectMeta_Triggers_Absent_NilNotError: a project.yaml with no
+// `signals:` key at all must not error and must leave meta.Triggers empty.
+func TestReadProjectMeta_Signals_Absent_NilNotError(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if len(meta.Triggers) != 0 {
+		t.Errorf("Triggers = %+v, want empty when project.yaml has no signals: key", meta.Triggers)
+	}
+}
+
+// TestReadProjectMeta_Signals_EveryBelowFloor_RejectedAtLoadTime pins that a
+// derived trigger's `every` is subject to the SAME TriggerSweepResolution
+// floor a user-authored trigger's every is (ValidateTriggers runs over the
+// combined list) — signals.sources gets no special exemption.
+func TestReadProjectMeta_Signals_EveryBelowFloor_RejectedAtLoadTime(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+signals:
+  sources:
+    - connector: slack/mentions
+      service: slack-api
+      every: 1s
+`)
+	if _, err := projectspec.ReadProjectMeta(dir); err == nil {
+		t.Fatal("ReadProjectMeta() = nil error, want a rejection for every below the sweep-resolution floor")
+	}
+}

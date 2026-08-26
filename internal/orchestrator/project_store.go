@@ -630,6 +630,8 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		out.DefaultTaskBehavior = ws.DefaultTaskBehavior
 	}
 
+	warnSignalConnectorServicesNotEnabled(projectID, workspaceID, out.Triggers, ws.Services)
+
 	return out, nil
 }
 

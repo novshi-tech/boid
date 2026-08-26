@@ -369,7 +369,7 @@ func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, pr
 		return "", err
 	}
 
-	result, err := s.Exec.StartExec(ctx, StartExecRequest{
+	req := StartExecRequest{
 		ProjectID: projectID,
 		Argv:      triggerRunArgv(trig.Run),
 		// PR-4 節「実行」: Readonly true 固定。boid op の allowlist は role
@@ -382,7 +382,24 @@ func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, pr
 		// 明記されている、N-5 Opus review)。
 		Readonly:    true,
 		DisplayName: "trigger:" + trig.Name,
-	})
+	}
+	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5): a
+	// hydrate-derived connector trigger's raw connector declaration is
+	// copied through VERBATIM — no Pack-registry resolution happens here
+	// (internal/api must not import internal/integrationpack; see
+	// TriggerConnector's own doc comment). sessionDispatcherAdapter.StartExec
+	// (internal/server/wire.go) is where this gets resolved into the
+	// connector job's actual env/bind/policy/service-allowlist. nil for
+	// every ordinary trigger — dispatch is completely unchanged for them.
+	if trig.Connector != nil {
+		req.Connector = &ConnectorRef{
+			Pack:          trig.Connector.Pack,
+			ConnectorName: trig.Connector.ConnectorName,
+			Service:       trig.Connector.Service,
+			Config:        trig.Connector.Config,
+		}
+	}
+	result, err := s.Exec.StartExec(ctx, req)
 	if err != nil {
 		if derr := s.Triggers.DeleteTriggerRun(run.ID); derr != nil {
 			// Both the dispatch AND its own cleanup failed — the claimed

@@ -24,6 +24,7 @@ import (
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/gitgateway"
+	"github.com/novshi-tech/boid/internal/integrationpack"
 	"github.com/novshi-tech/boid/internal/mtls"
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -63,6 +64,15 @@ type appRuntime struct {
 	// workspaceHomes above already follows. mountRoutes only mounts the
 	// route when this is non-nil.
 	oauthLogin api.OAuthLoginService
+	// packs is the daemon's loaded Integration Pack registry (docs/plans/
+	// signal-ingest-detailed-design.md §6.2/§5.2, PR-5), resolved once at
+	// buildRuntime startup (integrationpack.LoadPacks). Consumed by
+	// mountRoutes to construct sessionDispatcherAdapter, which resolves a
+	// signal-derived trigger's connector reference against it at StartExec
+	// time. nil is a legitimate value (integrations.dir does not exist —
+	// no Packs installed) — every connector-trigger StartExec then fails
+	// with a clear "pack not installed" error rather than a nil panic.
+	packs []*integrationpack.Pack
 }
 
 func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, map[string]orchestrator.HostCommandSpec, error) {
@@ -1441,6 +1451,24 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		PublicURL: boidCfg.Web.PublicURL,
 	}
 
+	// Integration Pack registry (docs/plans/signal-ingest-detailed-design.md
+	// §6.2, PR-4/PR-5): enumerate every installed Pack under
+	// integrations.dir ONCE at daemon startup — the same "daemon 起動時
+	// (wire.go の gateway 配線点)" point §6.2 names. A missing directory is
+	// NOT an error (LoadPacks' own doc comment: no Packs installed yet is a
+	// legitimate, common deployment state); every OTHER failure (a
+	// malformed manifest, a pack/version directory mismatch, ...) fails
+	// daemon startup outright (§6.2 item 3's "起動エラー" posture — the same
+	// eager-validation contract config.yaml's own services: entries already
+	// get, see config.Load's callers). packs feeds two independent
+	// consumers below: apiGwCreds' service registry (via ResolveServices,
+	// replacing the old services-only-minus-uses view) and
+	// sessionDispatcherAdapter's connector-trigger resolution (mountRoutes).
+	packs, err := integrationpack.LoadPacks(boidCfg.Integrations.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("daemon startup refused: load integration packs: %w", err)
+	}
+
 	// Daemon-side config-editing surface (docs/plans/volume-only-daemon.md
 	// §論点 f: `boid config get/set/unset/apply/edit`). verifyRestartExtractorCoverage
 	// (BLOCKER, codex review round 3) runs FIRST, before srv.liveConfig or
@@ -1535,17 +1563,27 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// API gateway HTTP handler (docs/plans/api-gateway.md PR1) — the same
 	// resolver-nil-means-unconfigured convention as gwResolver above (its
 	// own comment applies here verbatim, substituting "API gateway" for
-	// "git gateway"). apiGwCreds' service registry comes from boidCfg.
-	// Services (config.yaml `services:`), validated at config load time —
-	// see config.Config.APIGatewayServices' own "already validated"
-	// invariant note.
+	// "git gateway"). apiGwCreds' service registry is the FULL resolved
+	// list — free-form services: entries (config.Config.APIGatewayServices,
+	// validated at config load time) PLUS every `uses:` entry desugared
+	// against packs (integrationpack.ResolveServices, docs/plans/
+	// signal-ingest-detailed-design.md §6.2 item 2/PR-5's wiring — this
+	// replaces the PR-4-era boidCfg.APIGatewayServices() call, which
+	// deliberately excluded uses: entries; see that method's own doc
+	// comment). A uses: entry that fails to desugar (pack/profile/
+	// credential-slot mismatch) fails daemon startup outright, matching
+	// LoadPacks' own posture just above.
 	var apiGwResolver apigateway.SecretResolver
 	if secretStore != nil {
 		apiGwResolver = func(namespace, key string) (string, error) {
 			return secretStore.Get(namespace, key)
 		}
 	}
-	apiGwCreds := apigateway.NewCredentialProvider(boidCfg.APIGatewayServices(), apiGwResolver)
+	apiGwServices, err := integrationpack.ResolveServices(boidCfg, packs)
+	if err != nil {
+		return nil, fmt.Errorf("daemon startup refused: resolve integration pack services: %w", err)
+	}
+	apiGwCreds := apigateway.NewCredentialProvider(apiGwServices, apiGwResolver)
 
 	// OAuth2 TokenSource (docs/plans/api-gateway.md §6, PR2): wired with the
 	// same resolver as apiGwResolver above, plus a writer closure so a
@@ -1773,6 +1811,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// silently ON against a client that panics on first use.
 		workspaceHomes: workspaceHomeStore(dockerClient, srv.installID),
 		oauthLogin:     oauthLoginSvc,
+		packs:          packs,
 	}, nil
 }
 
@@ -1847,6 +1886,15 @@ func projectResolverFor(svc *api.ProjectAppService) sandbox.ProjectResolver {
 type sessionDispatcherAdapter struct {
 	service *api.ProjectAppService
 	runner  *dispatcher.Runner
+	// packs is the daemon's loaded Integration Pack registry (docs/plans/
+	// signal-ingest-detailed-design.md §5.2, PR-5), resolved once at
+	// buildRuntime startup and reused for every StartExec call whose
+	// StartExecRequest carries a Connector reference (fireTrigger's
+	// derived-trigger dispatch, internal/api/trigger_loop.go). nil-safe:
+	// resolveConnectorExec's own findInstalledPack fails loudly ("pack not
+	// installed") against a nil/empty packs rather than panicking. Every
+	// StartExec call with req.Connector == nil never consults this field.
+	packs []*integrationpack.Pack
 }
 
 func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.StartSessionRequest) (*api.StartSessionResult, error) {
@@ -1919,7 +1967,7 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 	}
 	meta := project.Meta
 
-	spec, err := dispatcher.BuildExecJobSpec(dispatcher.SessionJobInput{
+	input := dispatcher.SessionJobInput{
 		ProjectID:          project.ID,
 		ProjectWorkDir:     project.WorkDir,
 		ProjectName:        meta.Name,
@@ -1930,7 +1978,57 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 		AdditionalBindings: meta.AdditionalBindings,
 		SecretNamespace:    meta.SecretNamespace,
 		DockerEnabled:      meta.Capabilities.Docker != nil,
-	}, req.Argv, req.Interactive)
+	}
+
+	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5): a
+	// signal-derived trigger's connector job carries req.Connector — the
+	// ONLY caller that ever sets it is fireTrigger (internal/api/
+	// trigger_loop.go), firing a hydrate-derived Trigger.Connector != nil.
+	// Resolving it here (rather than at fireTrigger, which must not import
+	// internal/integrationpack — see TriggerConnector's own doc comment) is
+	// where the daemon's loaded Pack registry (a.packs) actually lives.
+	// A resolution failure (pack not installed, connector unknown, config
+	// schema violation) fails StartExec outright — fireTrigger's existing
+	// fail-open retry (dispatch failed this tick, retried next tick once
+	// `every` elapses again) is the SAME mechanism an ordinary dispatch
+	// failure already gets; no separate error path needed.
+	if req.Connector != nil {
+		resolved, rerr := resolveConnectorExec(a.packs, *req.Connector)
+		if rerr != nil {
+			return nil, &api.StatusError{Code: http.StatusBadRequest, Message: rerr.Error()}
+		}
+		// env (§5.2 item 1): merged on top of the project's own Env — a
+		// connector job still inherits ordinary project.yaml env, but the 4
+		// signal vars always win on a name collision (there should never be
+		// one in practice, but "the connector's own identity wins" is the
+		// safer direction if there is).
+		env := make(map[string]string, len(input.Env)+len(resolved.Env))
+		for k, v := range input.Env {
+			env[k] = v
+		}
+		for k, v := range resolved.Env {
+			env[k] = v
+		}
+		input.Env = env
+		// bind (§5.2 item 2): the existing Visibility.AdditionalBindings
+		// pass-through — append, don't replace, so a project's own
+		// AdditionalBindings (kit binaries, etc.) still reach the connector
+		// job's sandbox too.
+		input.AdditionalBindings = append(append([]orchestrator.BindMount(nil), input.AdditionalBindings...), resolved.Bind)
+		// 縮小 policy (§5.2 item 3, Q27): ConnectorBuiltinPolicies instead of
+		// the general set — see SessionJobInput.ConnectorPolicy's own doc
+		// comment.
+		input.ConnectorPolicy = true
+		// API gateway token service allowlist (§5.2 item 4): restrict to
+		// exactly the declared service.
+		input.APIGatewayServices = resolved.APIGatewayServices
+		// TokenContext.Service/Connector (§3.2/§5.2): the broker-side
+		// authorization for signal_ingest/signal_cursor_get.
+		input.SignalService = req.Connector.Service
+		input.SignalConnector = req.Connector.Pack + "/" + req.Connector.ConnectorName
+	}
+
+	spec, err := dispatcher.BuildExecJobSpec(input, req.Argv, req.Interactive)
 	if err != nil {
 		return nil, &api.StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
@@ -2063,7 +2161,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		r.Mount("/api/oauth", oauthLoginHandler.Routes())
 	}
 
-	sessionAdapter := &sessionDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner}
+	sessionAdapter := &sessionDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner, packs: runtime.packs}
 	// docs/plans/ingestion-identity.md PR-4 (B-5): the trigger sweep loop's
 	// "実行" section — daemon dispatches a due trigger's exec job through
 	// the SAME api.ExecDispatcher.StartExec `boid exec` uses. This can only

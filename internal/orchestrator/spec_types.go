@@ -452,6 +452,51 @@ type Trigger struct {
 	// `bash scripts/x.sh` と明示する側 (スクリプト作者) の責任で、daemon の
 	// 責任ではない。
 	Run string `yaml:"run" json:"run"`
+
+	// Connector, when non-nil, marks this Trigger as one hydrate-DERIVED
+	// from a project.yaml `signals.sources[]` entry (docs/plans/
+	// signal-ingest-detailed-design.md §5.1, PR-5: source 1 件 = trigger 1
+	// 本) — never set by a user-authored `triggers:` entry. yaml:"-": this
+	// is a runtime-only field computed by deriveSignalTriggers
+	// (signal_trigger_derive.go) from ProjectMeta.Signals, never itself
+	// read back out of project.yaml. fireTrigger (internal/api/
+	// trigger_loop.go) reads it to attach the connector job's extra env/
+	// bind/policy/service-allowlist (§5.2) — every trigger with a nil
+	// Connector dispatches exactly as before this PR.
+	Connector *TriggerConnector `yaml:"-" json:"connector,omitempty"`
+}
+
+// TriggerConnector is the resolved connector identity carried by a
+// hydrate-derived Trigger (Trigger.Connector, docs/plans/
+// signal-ingest-detailed-design.md §5.1/§5.2, PR-5). It holds only the RAW
+// declaration from project.yaml `signals.sources[]` — no Pack-registry
+// lookup happens at hydrate time (internal/orchestrator has no notion of an
+// Integration Pack registry; that lives in internal/integrationpack, which
+// only internal/server's daemon-startup wiring and dispatch-time connector
+// resolution ever import — see docs/plans/signal-ingest-detailed-design.md
+// §6.2's "internal/integrationpack は新 package" and this package's own
+// layering rule, scripts/check-internal-architecture.sh). Resolving Pack/
+// version/executable path against the loaded registry happens downstream,
+// at StartExec time (internal/server/wire.go's sessionDispatcherAdapter).
+type TriggerConnector struct {
+	// Pack is the "<pack>" half of signals.sources[].connector
+	// ("<pack>/<connector>").
+	Pack string
+	// ConnectorName is the "<connector>" half.
+	ConnectorName string
+	// Service is signals.sources[].service — the service instance name
+	// this connector is authorized to reach through the API gateway (§5.2:
+	// the connector job's gateway token is restricted to exactly this ONE
+	// service, never the workspace's full enabled set).
+	Service string
+	// Config is signals.sources[].config, decoded from YAML into Go's
+	// generic any shapes (map[string]any) — the same representation
+	// integrationpack.ConfigSchema.Validate consumes directly, so no
+	// intermediate JSON round-trip is needed until the connector job's
+	// BOID_SIGNAL_CONFIG env var is actually built. Never nil (an omitted
+	// `config:` block derives an empty, non-nil map) so callers can range
+	// over it unconditionally.
+	Config map[string]any
 }
 
 type ProjectMeta struct {
@@ -474,6 +519,16 @@ type ProjectMeta struct {
 	// を書けるのは project.yaml だけであり、workspace_envelope.go の
 	// decodeStrictNode は今後も unknown field として拒否し続ける。
 	Triggers []Trigger `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+	// Signals declares this (meta)project's signal sources (docs/plans/
+	// signal-ingest-detailed-design.md §5.1, PR-5). Only meaningful on a
+	// metaproject — a project whose sandbox is where Integration Pack
+	// connectors run — but nothing here enforces that; any project.yaml may
+	// declare it. Same top-level, project.yaml-only placement rationale as
+	// Triggers above (workspaceEnvelopeSpecFields does not list "signals"
+	// either, for the identical reason: a bind-mounted Pack directory is a
+	// property of ONE tracked-tree project, not something that generalizes
+	// across a workspace's projects).
+	Signals SignalsConfig `yaml:"signals,omitempty" json:"signals,omitempty"`
 	// SessionBehaviors is a free-naming dictionary (same "any key name"
 	// model as TaskBehaviors) from a use-case key (e.g. "shape") to a
 	// default harness_type/model for sessions launched for that use case.
@@ -521,6 +576,37 @@ type ProjectMeta struct {
 	// (docs/plans/workspace-default-project.md 論点e, PR6) as a carry-over
 	// from PR5's completion report.
 	NameSource string `yaml:"-" json:"name_source,omitempty"`
+}
+
+// SignalsConfig is ProjectMeta.Signals — project.yaml's `signals:` block
+// (docs/plans/signal-ingest-detailed-design.md §5.1, PR-5).
+type SignalsConfig struct {
+	// Sources declares this project's signal sources — each entry hydrates
+	// into exactly one derived Trigger (deriveSignalTriggers,
+	// signal_trigger_derive.go).
+	Sources []SignalSource `yaml:"sources,omitempty" json:"sources,omitempty"`
+}
+
+// SignalSource is one `signals.sources[]` entry.
+type SignalSource struct {
+	// Connector is "<pack>/<connector>" — the Integration Pack and the
+	// connector within it to run. No version: v0 requires exactly one
+	// installed version of a given Pack name (resolved at StartExec time
+	// against the loaded Pack registry, internal/server) — signals.sources
+	// itself carries no version pin (docs/plans/
+	// signal-ingest-detailed-design.md §5.1's example has none either,
+	// unlike config.yaml's `uses: <pack>/<profile>@<version>`).
+	Connector string `yaml:"connector" json:"connector"`
+	// Service is the service instance name (config.yaml `services:` key)
+	// this connector is authorized to reach through the API gateway.
+	Service string `yaml:"service" json:"service"`
+	// Every is a Go time.ParseDuration string — the derived trigger's poll
+	// interval (same field, same floor validation as Trigger.Every).
+	Every string `yaml:"every" json:"every"`
+	// Config is the connector's own configuration, validated against the
+	// Pack manifest's declared configSchema (integrationpack.ConfigSchema)
+	// at StartExec time — orchestrator itself never interprets it.
+	Config map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
 }
 
 type Project struct {

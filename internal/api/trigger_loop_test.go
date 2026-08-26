@@ -297,6 +297,58 @@ func TestSweepTriggers_NeverRunBefore_FiresExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestSweepTriggers_ConnectorTrigger_ThreadsConnectorRefIntoStartExec pins
+// docs/plans/signal-ingest-detailed-design.md §5.2: firing a hydrate-derived
+// connector trigger (Trigger.Connector != nil) must copy its Pack/
+// ConnectorName/Service/Config into StartExecRequest.Connector VERBATIM —
+// the raw declaration sessionDispatcherAdapter.StartExec later resolves
+// against the Pack registry. A plain schedule trigger (the test above) must
+// leave StartExecRequest.Connector nil; this test is the other half of that
+// branch.
+func TestSweepTriggers_ConnectorTrigger_ThreadsConnectorRefIntoStartExec(t *testing.T) {
+	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{
+			Name:  "signal:slack/mentions",
+			Every: "10m",
+			Run:   `exec "$BOID_CONNECTOR_EXEC"`,
+			Connector: &orchestrator.TriggerConnector{
+				Pack:          "slack",
+				ConnectorName: "mentions",
+				Service:       "slack-api",
+				Config:        map[string]any{"include_threads": true},
+			},
+		}}},
+	})
+	now := time.Now()
+
+	result, err := svc.SweepTriggers(context.Background(), now)
+	if err != nil {
+		t.Fatalf("SweepTriggers: %v", err)
+	}
+	if len(result.Fired) != 1 {
+		t.Fatalf("Fired = %+v, want exactly 1", result.Fired)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("StartExec calls = %d, want 1", len(exec.calls))
+	}
+	got := exec.calls[0]
+	if got.Connector == nil {
+		t.Fatal("StartExecRequest.Connector is nil, want the trigger's TriggerConnector copied through")
+	}
+	if got.Connector.Pack != "slack" || got.Connector.ConnectorName != "mentions" {
+		t.Errorf("Connector = %+v, want Pack=slack ConnectorName=mentions", got.Connector)
+	}
+	if got.Connector.Service != "slack-api" {
+		t.Errorf("Connector.Service = %q, want %q", got.Connector.Service, "slack-api")
+	}
+	if got.Connector.Config["include_threads"] != true {
+		t.Errorf("Connector.Config = %+v, want include_threads=true", got.Connector.Config)
+	}
+	if !got.Readonly {
+		t.Error("Readonly = false, want true — a connector trigger is dispatched through the exact same readonly exec path as every other trigger")
+	}
+}
+
 func TestSweepTriggers_EveryElapsed_FiresAgainOnlyAfterInterval(t *testing.T) {
 	svc, jobs, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
 		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "intake", Every: "10m", Run: "true"}}},

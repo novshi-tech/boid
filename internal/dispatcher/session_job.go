@@ -69,6 +69,28 @@ type SessionJobInput struct {
 	// (and shown in the TUI / Web UI). Empty falls back to "<harness>
 	// session" downstream.
 	DisplayName string
+
+	// ConnectorPolicy, when true, selects orchestrator.ConnectorBuiltinPolicies
+	// instead of the general DefaultBuiltinPolicies(RoleHook, []string{"boid",
+	// "fetch"}, ...) set (docs/plans/signal-ingest-detailed-design.md §5.2,
+	// Q27) — ONLY signal_ingest/signal_cursor_get are allowed, and no fetch
+	// builtin at all. Set only by sessionDispatcherAdapter.StartExec
+	// (internal/server/wire.go) when the firing StartExecRequest carries a
+	// connector reference; every other caller leaves this false (the zero
+	// value) and keeps the existing policy unchanged.
+	ConnectorPolicy bool
+
+	// APIGatewayServices, when non-nil, overrides the dispatcher-resolved
+	// (floor ∪ workspace) API gateway service allowlist for this job's token
+	// — copied straight onto JobSpec.APIGatewayServices (see that field's own
+	// doc comment for the full rationale and where it gets consumed).
+	APIGatewayServices []string
+
+	// SignalService / SignalConnector are copied straight onto
+	// JobSpec.SignalService/SignalConnector — see that field's own doc
+	// comment.
+	SignalService   string
+	SignalConnector string
 }
 
 // BuildSessionJobSpec converts a resolved SessionJobInput into a JobSpec
@@ -83,11 +105,22 @@ type SessionJobInput struct {
 // the cutover contract (docs/plans/git-gateway-cutover.md PR6) requires a
 // clone-based dispatch for every project-visible job.
 func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
-	builtinPolicies := orchestrator.DefaultBuiltinPolicies(
-		orchestrator.RoleHook,
-		[]string{"boid", "fetch"},
-		orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir},
-	)
+	pctx := orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir}
+	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5, Q27): a
+	// connector job gets the reduced, signal-ops-only policy instead of the
+	// general hook/exec set — see ConnectorPolicy's own doc comment.
+	// ConnectorBuiltinPolicies deliberately returns no "fetch" entry at all
+	// (§5.2: "fetch builtin も渡さない").
+	var builtinPolicies map[string]orchestrator.BuiltinPolicy
+	if input.ConnectorPolicy {
+		builtinPolicies = orchestrator.ConnectorBuiltinPolicies(pctx)
+	} else {
+		builtinPolicies = orchestrator.DefaultBuiltinPolicies(
+			orchestrator.RoleHook,
+			[]string{"boid", "fetch"},
+			pctx,
+		)
+	}
 	hostCommands := orchestrator.HostCommands(input.HostCommands).ToCommandDefs()
 
 	env := map[string]string{}
@@ -127,11 +160,14 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 			DockerEnabled:      input.DockerEnabled,
 			Clone:              cloneDecl,
 		},
-		BuiltinPolicies: builtinPolicies,
-		HostCommands:    hostCommands,
-		SecretNamespace: input.SecretNamespace,
-		Env:             env,
-		Interactive:     true, // sessions are PTY-attached by definition
+		BuiltinPolicies:    builtinPolicies,
+		HostCommands:       hostCommands,
+		SecretNamespace:    input.SecretNamespace,
+		Env:                env,
+		Interactive:        true, // sessions are PTY-attached by definition
+		APIGatewayServices: input.APIGatewayServices,
+		SignalService:      input.SignalService,
+		SignalConnector:    input.SignalConnector,
 	}
 	// Instruction is delivered through Env (BOID_USER_ANSWER), which the
 	// runner-inner-child threads into RunContext.UserAnswer. For the claude

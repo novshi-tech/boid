@@ -264,6 +264,39 @@ triggers:
 
 デバッグ用の手動起動口は `boid trigger run -p <project-ref> <name>` (`every` の経過に加えて `on: signals` の Signal 有無判定もバイパスするが、single-flight は尊重する) — 詳細は [CLI リファレンス](cli.md#サンドボックス操作) を参照。
 
+## `signals.sources[]`
+
+Integration Pack の connector を定期実行する宣言です (docs/plans/signal-ingest-detailed-design.md §5.1)。書けるのはメタプロジェクトの project.yaml のみで、`signals.sources[]` の 1 件は hydrate 時に `signal:<pack>/<connector>` という名前の**導出 trigger** (`triggers[]` に自動追加される通常の `Trigger`) へ展開されます — スケジュール・single-flight・履歴・GC は上記 `triggers[]` の機構をそのまま流用し、新しい機構は作られません。
+
+```yaml
+signals:
+  sources:
+    - connector: slack/mentions      # <pack>/<connector>
+      service: slack-api             # config.yaml services.<name> の instance 名
+      every: 10m
+      config:
+        include_threads: true
+```
+
+| キー | 型 | 必須 | 役割 |
+|---|---|---|---|
+| `connector` | string (`<pack>/<connector>`) | はい | 実行する Integration Pack の connector。`integrations.dir` に導入済みの Pack (`internal/integrationpack`) 名と、その `integration.yaml` の `connectors[].name` を `/` で連結した形式。バージョン指定は無い — 同名 Pack が 2 バージョン以上導入されている場合は起動時ではなく実行時 (`boid exec` 経由の StartExec) にエラーになる |
+| `service` | string | はい | この connector が API gateway 経由で到達できる service instance の名前 1 本 (`config.yaml` の `services.<name>`)。connector job の gateway token はこの 1 本にのみ絞られる — workspace の enabled services 全体ではない |
+| `every` | string (`time.ParseDuration`) | はい | 導出 trigger の `every` と同じ (`triggers[]` の `every` と同一のバリデーション・下限を共有) |
+| `config` | object | いいえ | connector 固有の設定。Pack の `configSchema` で検証され、JSON にエンコードされて `BOID_SIGNAL_CONFIG` env に渡される |
+
+**名前衝突**: `signal:<pack>/<connector>` が既存の `triggers[].name` と衝突する場合、または `signals.sources[]` 内で同じ `connector` が複数回宣言されている場合は project.yaml のロード時 (`boid project add`/`fetch`) にエラーになります。
+
+**connector job の権限**: 導出 trigger が発火すると、通常の `triggers[]` と同じ readonly exec job として起動されますが、権限は大きく絞られます (docs/plans/signal-ingest-detailed-design.md §5.2)。
+
+- 呼べる boid builtin op は `signal_ingest`・`signal_cursor_get` の 2 つだけ。`task_create` 等の通常 job が使える op は broker が拒否する
+- `fetch` builtin は渡されない — 外部到達は API gateway 経由のみ
+- API gateway token は `service:` で宣言した 1 service にのみ許可される
+- 解決済みの Pack ディレクトリが `/run/boid/integrations/<pack>` へ read-only bind mount される
+- `BOID_SIGNAL_SERVICE` / `BOID_SIGNAL_CONNECTOR` / `BOID_SIGNAL_CONFIG` / `BOID_CONNECTOR_EXEC` の 4 つの env が渡される — connector プロセスの契約は上記 doc の §5.3 を参照
+
+**service の有効化チェック**: `service:` で宣言した名前が、紐づく workspace の enabled services (`workspace.yaml` の `services:` + daemon 全体の floor) に含まれない場合、project.yaml のロードは失敗せず**警告ログ**のみが出ます (`boid project fetch` 自体は成功する)。ただし dispatch 時の API gateway token はこの workspace enabled services との積集合に絞られるため、宣言漏れの service は実行時に到達不能になります。
+
 ## 共通の構成要素
 
 ### KitRef

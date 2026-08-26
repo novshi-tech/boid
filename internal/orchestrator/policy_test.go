@@ -116,6 +116,66 @@ func TestDefaultBuiltinPolicies_FetchRoleInvariant(t *testing.T) {
 	}
 }
 
+// --- ConnectorBuiltinPolicies (docs/plans/signal-ingest-detailed-design.md
+// §5.2, PR-5, Q27) ---
+
+func TestConnectorBuiltinPolicies_OnlySignalIngestAndCursorGet(t *testing.T) {
+	policies := ConnectorBuiltinPolicies(PolicyContext{})
+	boidP, ok := policies["boid"]
+	if !ok {
+		t.Fatal("missing boid policy")
+	}
+	wantOps := []string{OpBoidSignalIngest, OpBoidSignalCursorGet}
+	if !opsEqual(boidP.AllowedOps, wantOps) {
+		t.Errorf("connector boid AllowedOps = %v, want %v", boidP.AllowedOps, wantOps)
+	}
+}
+
+// TestConnectorBuiltinPolicies_ExcludesGeneralBoidOps pins that NONE of the
+// general boidPolicy ops (task_create, signal_list, card_get, ...) leak
+// into the connector-scoped policy — a connector job cannot reach boid
+// state beyond its own source's ingest/cursor.
+func TestConnectorBuiltinPolicies_ExcludesGeneralBoidOps(t *testing.T) {
+	boidP := ConnectorBuiltinPolicies(PolicyContext{})["boid"]
+	forbidden := []string{
+		OpBoidTaskCreate, OpBoidTaskGet, OpBoidTaskUpdate, OpBoidCardGet, OpBoidCardList,
+		OpBoidSignalList, OpBoidSignalAck, OpBoidActionSend, OpBoidActionList,
+		OpBoidProjectList, OpBoidProjectBehaviors,
+	}
+	for _, op := range forbidden {
+		if boidP.Allows(op) {
+			t.Errorf("connector policy must NOT allow %q (general boidPolicy op leaking into the reduced connector policy)", op)
+		}
+	}
+}
+
+// TestConnectorBuiltinPolicies_NoFetchEntry pins §5.2's "fetch builtin も
+// 渡さない" — unlike DefaultBuiltinPolicies(RoleHook, []string{"boid",
+// "fetch"}, ...), ConnectorBuiltinPolicies never returns a "fetch" key at
+// all (not even an empty one) for BuildSessionJobSpec to select.
+func TestConnectorBuiltinPolicies_NoFetchEntry(t *testing.T) {
+	policies := ConnectorBuiltinPolicies(PolicyContext{})
+	if _, ok := policies["fetch"]; ok {
+		t.Error(`ConnectorBuiltinPolicies must not return a "fetch" entry (§5.2: connector の外部到達は gateway で足りる)`)
+	}
+	if len(policies) != 1 {
+		t.Errorf("ConnectorBuiltinPolicies returned %d entries, want exactly 1 (\"boid\")", len(policies))
+	}
+}
+
+func TestConnectorBuiltinPolicies_CwdRoots(t *testing.T) {
+	pctx := PolicyContext{ProjectDir: "/work/project", HomeDir: "/home/user"}
+	boidP := ConnectorBuiltinPolicies(pctx)["boid"]
+	for _, cwd := range []string{"/tmp", "/work/project", "/home/user"} {
+		if !boidP.AllowsCwd(cwd) {
+			t.Errorf("connector policy should allow cwd %q, AllowedCwdRoots=%v", cwd, boidP.AllowedCwdRoots)
+		}
+	}
+	if boidP.AllowsCwd("/etc") {
+		t.Error("connector policy should reject cwd /etc")
+	}
+}
+
 func opsEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
