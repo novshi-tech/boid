@@ -256,6 +256,9 @@ Pack の skill は source 側の知識 — 判断中の読み方・調べ方と�
 書き込み手順 — だけを扱い、boid コマンドには言及しない。boid の使い方は core の
 組み込みスキルが担う (§8.2)。
 
+Pack と boid の間の契約 (両側の義務・版管理・進化規則) は
+`signal-ingest-detailed-design.md` §7 (Pack contract v1) が正である。
+
 ### 6.3 Manifest 案
 
 ```yaml
@@ -588,7 +591,10 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 10. envelope schema v0 を机上検証で確定した (§5.2、2026-08-26。根拠は
     `signal-envelope-inventory.md`)
 11. CLI 最終形・inbox GC・connector 実行 (導出 trigger)・size limit・source 宣言場所は
-    詳細設計で決着した (`signal-ingest-detailed-design.md` §8、2026-08-26)
+    詳細設計で決着した (`signal-ingest-detailed-design.md` §9、2026-08-26)
+12. Pack と boid の間の契約は `signal-ingest-detailed-design.md` §7 (Pack contract v1) を
+    正とする — 両側の義務、apiVersion による版管理、追加のみの進化規則、conformance
+    test の検査対象
 
 ### 検証・実装と並行して決めること
 

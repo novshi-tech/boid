@@ -291,7 +291,50 @@ daemon 起動時 (`wire.go` の gateway 配線点) に新 package `internal/inte
 
 ---
 
-## 7. `boid task create --idempotency-key` (独立 PR)
+## 7. Pack と boid の契約 (Pack contract v1)
+
+Pack が依存してよい boid の面と、boid が Pack に要求する面を 1 箇所に列挙する。
+**この節が Pack 作者向け契約の正**であり、conformance test はこの節の機械検査可能な
+項目を実装する。manifest の `apiVersion: boid.dev/v1` はこの契約の版を指す。
+
+### 7.1 boid が Pack に提供するもの (Pack が依存してよい面)
+
+| 提供物 | 内容 | 安定性 |
+|---|---|---|
+| mount 位置 | Pack 一式を `/run/boid/integrations/<pack>` へ read-only bind | v1 で固定 |
+| connector 実行環境 | 宣言した project の sandbox の exec job。stdin は閉じられる | v1 で固定 |
+| env | `BOID_SIGNAL_SERVICE` / `BOID_SIGNAL_CONNECTOR` / `BOID_SIGNAL_CONFIG` (configSchema 検証済み JSON) / `BOID_CONNECTOR_EXEC` + 既存の `BOID_API_BASE` 等 | **追加のみ**。削除・意味変更は契約版を上げる |
+| 外部到達 | `$BOID_API_BASE/$BOID_SIGNAL_SERVICE/...` (credential 注入済み)。egress はこれ以外閉 | 既存 gateway 契約に従う |
+| 取り込み口 | `boid signal ingest` (stdin JSONL、1 行 64KiB、複数回呼び出し可、行単位 dedup) / `boid signal cursor` (自 source の栞) | envelope field は**追加のみ** |
+| 実行保証 | source ごとに single-flight。every 間隔・1m 解像度で起動。非ゼロ exit は失敗として記録・通知 (failStreak) され、次周期に再実行される | v1 で固定 |
+
+### 7.2 Pack が満たすべきもの (boid が要求する面)
+
+| 要求 | 内容 | 検査 |
+|---|---|---|
+| manifest | `integration.yaml` が §6 の schema に適合し、`apiVersion` が既知の版である。**未知 field はエラー** (strict decode。黙って無視しない) | loader (起動時) |
+| profile | 値 (endpoint 実値・credential) を持たない。credential slot と注入方法の宣言のみ | loader |
+| connector: 栞 | cursor より後だけを返す (外部検索の精度に任せず、取得後に `occurred_at <= cursor` を自分で落とす)。重複は許容される (dedup が受ける) | conformance test + shadow-a |
+| connector: 出力 | JSONL の必須 field (id / occurred_at / identity) を満たす。id は同一 event から決定的に生成する | `ingest` が行単位で検証・拒否 |
+| connector: 副作用 | 外部サービスへ書き込まない。gateway 以外へ到達しない | egress 機構 + レビュー |
+| connector: 終了 | 成功 0 / 失敗非ゼロ。部分成功でも ingest 済み分は有効 (再実行で収束する作りにする) | conformance test |
+| skill | source 側の知識のみを扱い、boid コマンドへの言及を含まない | conformance test (grep) |
+| 拡張禁止 | state machine・DB schema・boid の出力 model に触れない (そもそも到達手段が無い) | 構造 (採点表 Q16-18) |
+
+### 7.3 契約の進化規則
+
+- boid 側の提供面 (env・envelope field・CLI) は**追加のみ**。削除・意味変更をするときは
+  `apiVersion` を上げ、loader は未知の apiVersion の Pack を読み込まずエラーにする
+  (前方互換を装わない)
+- Pack は必要とする契約版を manifest の `apiVersion` で宣言する
+- conformance test は boid リポジトリに置き、公式 Pack は CI で常時通す (採点表 Q22)。
+  custom Pack の作者も同じテストを手元で回せる
+- manifest の strict decode と apiVersion 検査は PR-4 に含める。connector/skill 側の
+  conformance test は公式 Pack 化と同時に実装する
+
+---
+
+## 8. `boid task create --idempotency-key` (独立 PR)
 
 - `tasks.idempotency_key TEXT` (nullable) + partial unique index
   `(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL` (migration は実装時の次番号)
@@ -300,7 +343,7 @@ daemon 起動時 (`wire.go` の gateway 配線点) に新 package `internal/inte
 
 ---
 
-## 8. 本体 doc への反映 (この設計で決着した未決)
+## 9. 本体 doc への反映 (この設計で決着した未決)
 
 | §12 の未決 | 決着 |
 |---|---|
@@ -315,7 +358,7 @@ Web UI 表示、service profile の複数 header/OAuth2 表現 (v0 の脱糖は�
 
 ---
 
-## 9. PR 分割と採点表の割り当て
+## 10. PR 分割と採点表の割り当て
 
 本体 doc §14 のルール 4 に従い、C〜E を PR 単位へ割り直す。E (Q23-25) は全 PR で採点。
 
@@ -335,11 +378,11 @@ Web UI 表示、service profile の複数 header/OAuth2 表現 (v0 の脱糖は�
   (project, key) で一意であり、同一 key の再実行が新規作成せず既存 task の id を返す
   テストがある」
 - 公式 Pack 化 (slack/jira/bitbucket connector の実装。khi adapter の移植) と shadow-a は
-  この doc の範囲外 — PR-5 の後、別 doc なしで着手できる (conformance test = §5.3 の契約)
+  この doc の範囲外 — PR-5 の後、別 doc なしで着手できる (conformance test = §7 の契約)
 
 ---
 
-## 10. 実装時の既知の注意
+## 11. 実装時の既知の注意
 
 - `SetMaxOpenConns(1)`: 新しい loop は作らないので DB 競合の追加なし (trigger loop に相乗り)
 - trigger loop の due→busy→fire の順序と fail-open (`trigger_loop.go:441-466`) は触らない
