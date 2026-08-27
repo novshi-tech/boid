@@ -253,6 +253,29 @@ RUN apt-get update \
 
 RUN mkdir -p /opt/boid-host-tools
 
+# Integration Pack registry (docs/plans/signal-ingest-detailed-design.md
+# §6.1/§6.2): the daemon's `integrations.dir` (default /opt/boid/integrations)
+# is enumerated once at startup for installed Packs (internal/integrationpack.
+# LoadPacks). boid-api-skills is a separate public repo from this one, so the
+# official Packs (jira-cloud/bitbucket-cloud/slack) are fetched here via a
+# shallow, single-commit clone rather than depending on any host-local
+# checkout path (nose directive, 2026-08-27) — this Dockerfile must build
+# identically on any host, not just one with boid-api-skills already checked
+# out next to this repo. Pinned to a commit SHA, not a floating branch, for
+# the same reproducibility reason GH_VERSION above is pinned — bump
+# deliberately when a new Pack version needs to ship, and update
+# CredentialSlot/serviceProfile config alongside it if the Pack's manifest
+# shape changed.
+ARG BOID_API_SKILLS_REF=a37570e194ddbf2f8441d5b7fcb1805e3e88f653
+RUN git init -q /tmp/boid-api-skills \
+    && git -C /tmp/boid-api-skills remote add origin https://github.com/novshi-tech/boid-api-skills.git \
+    && git -C /tmp/boid-api-skills fetch --depth 1 origin "$BOID_API_SKILLS_REF" \
+    && git -C /tmp/boid-api-skills checkout -q FETCH_HEAD \
+    && mkdir -p /opt/boid/integrations \
+    && cp -r /tmp/boid-api-skills/jira-cloud /tmp/boid-api-skills/bitbucket-cloud /tmp/boid-api-skills/slack /opt/boid/integrations/ \
+    && rm -rf /tmp/boid-api-skills \
+    && chgrp -R 0 /opt/boid/integrations && chmod -R g=u /opt/boid/integrations
+
 # Arbitrary-uid (docs/plans/release-onboarding.md 決定1): `chmod g=u` on
 # /etc/passwd and /etc/group lets the RUNTIME self-registration snippet
 # (internal/selfuser, invoked from cmd/start.go / cmd/runner_container.go /
