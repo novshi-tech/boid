@@ -157,9 +157,24 @@ func fetchPolicy(_ Role, _ PolicyContext) BuiltinPolicy {
 // (docs/plans/signal-ingest-detailed-design.md §5.2, Q27):
 //
 //   - "boid" -> connectorPolicy(pctx): ONLY OpBoidSignalIngest /
-//     OpBoidSignalCursorGet are allowed. Nothing from the general boidPolicy
-//     set (task_create, card/action reads, ...) is reachable — a connector
-//     job cannot touch boid state beyond its own source's ingest/cursor.
+//     OpBoidSignalCursorGet / OpBoidJobDone are allowed. Nothing else from
+//     the general boidPolicy set (task_create, card/action reads, ...) is
+//     reachable — a connector job cannot touch boid state beyond its own
+//     source's ingest/cursor. OpBoidJobDone is included alongside those two
+//     (rather than excluded like every other general op) because it is not
+//     a "touch boid state" capability the §5.2 reduction is meant to deny —
+//     handleBoidBuiltin (internal/sandbox/broker.go) restricts it to the
+//     caller's OWN job id (entry.Context.JobID) regardless of policy, so
+//     granting it cannot reach another job/project. Omitting it was a real
+//     bug (found during shadow-a's 2026-08-27 2-hour observation): every
+//     connector job's in-container runner posts `boid job done` to report
+//     its own completion (internal/sandbox/runner/runner.go's postJobDone,
+//     the same mechanism every other non-foreground job relies on) — with
+//     job_done missing from AllowedOps, the broker rejected that call, and
+//     the daemon's "runtime exited without boid job done" fallback then
+//     forced every connector run's real (successful) exit_code=0 into a
+//     recorded exit_code=1/JobStatusFailed, which trigger_loop.go's
+//     trackFailStreak counted as a real failure on every single run.
 //   - NO "fetch" entry at all (§5.2: "fetch builtin も渡さない —
 //     connector の外部到達は gateway で足りる"): a connector job's only
 //     network path is the API gateway (already reached via
@@ -177,7 +192,7 @@ func ConnectorBuiltinPolicies(pctx PolicyContext) map[string]BuiltinPolicy {
 // function's doc comment for the full rationale.
 func connectorPolicy(pctx PolicyContext) BuiltinPolicy {
 	return BuiltinPolicy{
-		AllowedOps:      sortedOps(OpBoidSignalIngest, OpBoidSignalCursorGet),
+		AllowedOps:      sortedOps(OpBoidSignalIngest, OpBoidSignalCursorGet, OpBoidJobDone),
 		AllowedCwdRoots: boidCwdRoots(pctx),
 	}
 }

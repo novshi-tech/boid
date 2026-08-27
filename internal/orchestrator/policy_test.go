@@ -119,13 +119,18 @@ func TestDefaultBuiltinPolicies_FetchRoleInvariant(t *testing.T) {
 // --- ConnectorBuiltinPolicies (docs/plans/signal-ingest-detailed-design.md
 // §5.2, PR-5, Q27) ---
 
-func TestConnectorBuiltinPolicies_OnlySignalIngestAndCursorGet(t *testing.T) {
+// job_done is included alongside the two signal ops (fixed 2026-08-27,
+// shadow-a false-positive failStreak bug): it is not a "touch boid state"
+// capability — handleBoidBuiltin restricts it to the caller's own job id
+// regardless of policy — so it does not weaken the reduction this test
+// otherwise pins.
+func TestConnectorBuiltinPolicies_OnlySignalIngestCursorGetAndJobDone(t *testing.T) {
 	policies := ConnectorBuiltinPolicies(PolicyContext{})
 	boidP, ok := policies["boid"]
 	if !ok {
 		t.Fatal("missing boid policy")
 	}
-	wantOps := []string{OpBoidSignalIngest, OpBoidSignalCursorGet}
+	wantOps := []string{OpBoidJobDone, OpBoidSignalIngest, OpBoidSignalCursorGet}
 	if !opsEqual(boidP.AllowedOps, wantOps) {
 		t.Errorf("connector boid AllowedOps = %v, want %v", boidP.AllowedOps, wantOps)
 	}
