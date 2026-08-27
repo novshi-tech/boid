@@ -651,30 +651,12 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		c.Services = raw.Services
 	}
 
-	// uses: wiring gap warning (F3, review finding, MEDIUM): as of this PR,
-	// internal/integrationpack.ResolveServices exists but nothing in
-	// internal/server/wire.go calls it yet — the API gateway's
-	// CredentialProvider is still built from cfg.APIGatewayServices() alone
-	// (docs/plans/signal-ingest-detailed-design.md §6.2 item 2's actual
-	// wiring is PR-5 scope). A uses: entry parses/validates cleanly here,
-	// appears in `boid config get`, and even satisfies services_floor's own
-	// unknown-name check — yet is never registered with the gateway, so a
-	// sandbox's first request to it silently 502s with no clue why. Warn
-	// loudly at every config load (the same place services_floor's own
-	// unknown-name warning lives, just below) rather than let this look
-	// like a working configuration until PR-5 lands. Sorted for
-	// deterministic log output.
-	var usesNames []string
-	for name, sc := range c.Services {
-		if sc.Uses != "" {
-			usesNames = append(usesNames, name)
-		}
-	}
-	sort.Strings(usesNames)
-	for _, name := range usesNames {
-		slog.Warn("services: uses: is not yet resolved against any Integration Pack — internal/integrationpack.ResolveServices exists but is not yet wired into the API gateway (PR-5); this service will not be reachable from a sandbox until that wiring lands",
-			"service", name, "uses", c.Services[name].Uses)
-	}
+	// uses: 解決は internal/server/wire.go の daemon 起動時
+	// (integrationpack.LoadPacks → integrationpack.ResolveServices) で行う
+	// — PR-5 でそちらへ配線済み (かつては「まだ配線されていない」という
+	// warning がここにあったが、その前提は PR-5 で解消済みなので削除した)。
+	// このパッケージは Pack registry を持たないため、ここでは uses: の
+	// SYNTAX 検証 (validateServiceConfig) までしか行えない。
 
 	// services_floor: (docs/plans/api-gateway.md §3). Deliberately NOT
 	// validated against c.Services the way gateway.forges entries are
