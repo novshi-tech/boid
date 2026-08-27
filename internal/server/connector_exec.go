@@ -6,7 +6,6 @@ import (
 
 	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/integrationpack"
-	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 // connectorJobInput is resolveConnectorExec's output — everything
@@ -19,13 +18,6 @@ type connectorJobInput struct {
 	// BOID_CONNECTOR_EXEC. Merged into SessionJobInput.Env — no new
 	// dispatcher-level field needed, reusing the existing pass-through.
 	Env map[string]string
-	// Bind is the resolved Pack directory bind mount (§5.2 item 2): source
-	// is the Pack's host-visible directory, target is
-	// "/run/boid/integrations/<pack>", read-only (Mode left at its zero
-	// value — orchestrator.BindMount's "rw" | "" (ro default) convention).
-	// Appended to SessionJobInput.AdditionalBindings by the caller — same
-	// existing pass-through as Env.
-	Bind orchestrator.BindMount
 	// APIGatewayServices is always exactly [ref.Service] — copied onto
 	// SessionJobInput.APIGatewayServices (§5.2 item 4).
 	APIGatewayServices []string
@@ -75,17 +67,25 @@ func resolveConnectorExec(packs []*integrationpack.Pack, ref apiwire.ConnectorRe
 		return connectorJobInput{}, fmt.Errorf("connector %q: config: marshal: %w", ref.Pack+"/"+ref.ConnectorName, err)
 	}
 
-	target := "/run/boid/integrations/" + pack.Name
+	// No bind mount: the daemon and every job container are launched from
+	// the SAME base image (build/container/compose.yml 決定2 「daemon と
+	// job runner が同じ versioned base イメージから起動」) — pack.Dir
+	// (integrations.dir 配下の絶対パス, e.g. baked in at
+	// /opt/boid/integrations/<pack>/<version> by build/container/Dockerfile)
+	// already exists at the identical path inside the job container's own
+	// filesystem, no transport needed. A bind mount would in fact be WRONG
+	// here under the container backend's DooD (docker-out-of-docker) model:
+	// the daemon hands BindMount.Source to the HOST's docker/podman (not the
+	// daemon container's own filesystem) to resolve, so an image-baked,
+	// daemon-container-only path can never be a valid bind source — nose,
+	// 2026-08-27, after hitting exactly this ("mkdir /opt/boid: permission
+	// denied") trying to dispatch a jira-cloud connector job.
 	return connectorJobInput{
 		Env: map[string]string{
 			"BOID_SIGNAL_SERVICE":   ref.Service,
 			"BOID_SIGNAL_CONNECTOR": ref.Pack + "/" + ref.ConnectorName,
 			"BOID_SIGNAL_CONFIG":    configJSON,
-			"BOID_CONNECTOR_EXEC":   target + "/" + connector.Executable,
-		},
-		Bind: orchestrator.BindMount{
-			Source: pack.Dir,
-			Target: target,
+			"BOID_CONNECTOR_EXEC":   pack.Dir + "/" + connector.Executable,
 		},
 		APIGatewayServices: []string{ref.Service},
 	}, nil

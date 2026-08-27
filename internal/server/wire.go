@@ -2010,11 +2010,12 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 			env[k] = v
 		}
 		input.Env = env
-		// bind (§5.2 item 2): the existing Visibility.AdditionalBindings
-		// pass-through — append, don't replace, so a project's own
-		// AdditionalBindings (kit binaries, etc.) still reach the connector
-		// job's sandbox too.
-		input.AdditionalBindings = append(append([]orchestrator.BindMount(nil), input.AdditionalBindings...), resolved.Bind)
+		// No bind mount here (§5.2 item 2, revised 2026-08-27): daemon and
+		// job container share the same base image, so BOID_CONNECTOR_EXEC
+		// (set above via resolved.Env) already points at a path that exists
+		// inside the job container's own filesystem — see
+		// resolveConnectorExec's (connector_exec.go) own doc comment for why
+		// a bind mount would in fact be WRONG under DooD.
 		// 縮小 policy (§5.2 item 3, Q27): ConnectorBuiltinPolicies instead of
 		// the general set — see SessionJobInput.ConnectorPolicy's own doc
 		// comment.
