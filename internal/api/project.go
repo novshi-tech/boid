@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -299,6 +300,14 @@ func (h *ProjectHandler) StartExec(w http.ResponseWriter, r *http.Request) {
 // docs/plans/ingestion-identity.md PR-4 (B-5) 12 節「手動 1 巡の口」. The
 // project is resolved from the URL ref the same way every other project
 // route does; {name} is the trigger's project.yaml `name:`.
+//
+// {name} can contain a "/" — a signal-derived trigger is named
+// "signal:<pack>/<connector>" (signal_trigger_derive.go) — so cmd/trigger.go
+// url.PathEscape's it before sending. chi matches routes against the
+// request's ESCAPED path (the same contract SecretHandler's key param
+// already documents/handles, secret.go), so chi.URLParam hands this handler
+// the still-escaped "signal:jira-cloud%2Fassigned-issues" form, not the
+// literal trigger name — url.PathUnescape here mirrors SecretHandler's own.
 func (h *ProjectHandler) RunTrigger(w http.ResponseWriter, r *http.Request) {
 	if h.TriggerRunner == nil {
 		writeError(w, http.StatusNotImplemented, "trigger runner not wired")
@@ -309,7 +318,11 @@ func (h *ProjectHandler) RunTrigger(w http.ResponseWriter, r *http.Request) {
 	if project == nil {
 		return
 	}
-	name := chi.URLParam(r, "name")
+	name, err := url.PathUnescape(chi.URLParam(r, "name"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid trigger name")
+		return
+	}
 	result, err := h.TriggerRunner.RunTriggerNow(r.Context(), project.ID, name)
 	if err != nil {
 		writeServiceError(w, err)

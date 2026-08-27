@@ -7,8 +7,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -77,6 +79,51 @@ func TestProjectHandlerRunTrigger_ResolvesProjectAndForwardsTriggerName(t *testi
 	}
 	if runner.gotTrigger != "intake" {
 		t.Errorf("gotTrigger = %q, want intake", runner.gotTrigger)
+	}
+}
+
+// TestProjectHandlerRunTrigger_NameWithSlash_RoundTrips pins the contract a
+// signal-derived trigger name relies on: signal_trigger_derive.go names a
+// connector-derived trigger "signal:<pack>/<connector>" (e.g.
+// "signal:jira-cloud/assigned-issues"), and cmd/trigger.go's `boid trigger
+// run` url.PathEscape's it before sending — the exact "/" the routing must
+// not choke on. Unlike triggerRunRequest above (which injects the trigger
+// name directly into a synthetic chi.RouteContext, bypassing real HTTP path
+// parsing entirely), this test drives the handler through a real
+// httptest.Server so chi actually matches the request's escaped path — the
+// same "chi hands the handler the STILL-ESCAPED form" contract
+// TestSecretHandler_KeyWithSlash_GetAndDeleteRoundTrip (secret_test.go)
+// already pins for /secrets. Without an explicit url.PathUnescape in
+// RunTrigger (matching SecretHandler's own), TriggerRunner sees the literal
+// "signal:jira-cloud%2Fassigned-issues" instead of the real trigger name,
+// so `boid trigger run` can never fire a derived signal trigger.
+func TestProjectHandlerRunTrigger_NameWithSlash_RoundTrips(t *testing.T) {
+	const triggerName = "signal:jira-cloud/assigned-issues"
+	runner := &stubTriggerRunner{result: &TriggerRunNowResult{JobID: "job-1"}}
+	h := &ProjectHandler{
+		Service:       &stubProjectServiceForExec{project: &orchestrator.Project{ID: "proj-1"}},
+		TriggerRunner: runner,
+	}
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/proj-1/triggers/"+url.PathEscape(triggerName)+"/run", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST .../run: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var out TriggerRunNowResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !runner.called {
+		t.Fatal("expected TriggerRunner.RunTriggerNow to be called")
+	}
+	if runner.gotTrigger != triggerName {
+		t.Errorf("gotTrigger = %q, want %q (unescaped)", runner.gotTrigger, triggerName)
 	}
 }
 
