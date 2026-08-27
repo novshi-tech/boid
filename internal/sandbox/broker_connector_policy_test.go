@@ -92,6 +92,36 @@ func TestBroker_ConnectorPolicy_RejectsGeneralBoidOps(t *testing.T) {
 	}
 }
 
+// TestBroker_ConnectorPolicy_AllowsJobDoneForOwnJob pins the fix for the
+// shadow-a failStreak false-positive found 2026-08-27: a connector job's
+// in-container runner reports its own completion via `boid job done`
+// (internal/sandbox/runner/runner.go's postJobDone) exactly like every other
+// non-foreground job does. Before this fix, ConnectorBuiltinPolicies omitted
+// job_done from its AllowedOps entirely, so the broker rejected the
+// connector's own completion report — the daemon's "runtime exited without
+// boid job done" fallback then forced a real exit_code=0 into a recorded
+// exit_code=1/JobStatusFailed, which trackFailStreak (internal/api/
+// trigger_loop.go) counted as a real failure on every single successful run.
+// job_done is safe to grant here: the switch in handleBoidBuiltin restricts
+// it to the CALLER'S OWN job id (entry.Context.JobID), so this does not
+// widen the "connector cannot touch other boid state" boundary Q27 pins.
+func TestBroker_ConnectorPolicy_AllowsJobDoneForOwnJob(t *testing.T) {
+	broker, _ := newBrokerForListTest(t)
+	ctx := sandbox.TokenContext{
+		JobID: "j1", TaskID: "t1", ProjectID: "proj-1", WorkspaceID: "ws-1",
+		Role: testRoleHook, Service: "jira-cloud", Connector: "jira-cloud/assigned-issues",
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, realConnectorPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid", Cwd: "/tmp", Token: token,
+		Boid: &sandbox.BoidRequest{Op: sandbox.BoidOpJobDone, JobID: "j1"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("job_done for own job: exit=%d stderr=%q, want allowed by the real connector policy", resp.ExitCode, resp.Stderr)
+	}
+}
+
 // TestBroker_ConnectorPolicy_NoFetchBuiltin pins that a connector job's
 // policy map carries no "fetch" entry at all — the broker rejects a "fetch"
 // command outright for a token that never registered it (mirrors how "boid"
