@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/dockerres"
+	"github.com/novshi-tech/boid/internal/integrationpack"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -1234,6 +1235,169 @@ func TestResolveWorkspaceHome_MarkerRecordsTheCurrentExecutionGeneration(t *test
 	if marker.InitGeneration != workspaceHomeInitGeneration {
 		t.Errorf("marker.InitGeneration = %d, want %d — a marker that does not record the environment its run happened in cannot be checked against a later one",
 			marker.InitGeneration, workspaceHomeInitGeneration)
+	}
+}
+
+// --- Integration Pack skill discoverability (shadow-b follow-up,
+// docs/plans/signal-driven-review.md §6.4) ---
+
+// TestResolveWorkspaceHome_CreatesPackSkillSymlinks pins the end-to-end path:
+// a Pack loaded into Runner.Packs reaches the workspace home as a working
+// .claude/skills/<name> symlink, readable through to the Pack's own content.
+func TestResolveWorkspaceHome_CreatesPackSkillSymlinks(t *testing.T) {
+	setupWorkspaceHomeTestDirs(t)
+	r, be := newWorkspaceHomeTestRunnerWithBackend(t)
+
+	packDir := t.TempDir()
+	skillDir := filepath.Join(packDir, "skills", "jira-api")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("jira api reference"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.Packs = []*integrationpack.Pack{{
+		Name: "jira-cloud", Version: "1.0.0", Dir: packDir,
+		Manifest: integrationpack.Manifest{
+			Skills: []integrationpack.Skill{{Name: "jira-api", Path: filepath.Join("skills", "jira-api")}},
+		},
+	}}
+
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	if err != nil {
+		t.Fatalf("resolveWorkspaceHome: %v", err)
+	}
+	homeDir := be.dirFor(vol)
+	linkPath := filepath.Join(homeDir, ".claude", "skills", "jira-api")
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("stat symlink: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf(".claude/skills/jira-api is not a symlink (mode %s)", info.Mode())
+	}
+	data, err := os.ReadFile(filepath.Join(linkPath, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read through symlink: %v", err)
+	}
+	if string(data) != "jira api reference" {
+		t.Errorf("content through symlink = %q, want %q", data, "jira api reference")
+	}
+}
+
+// TestResolveWorkspaceHome_PackSkillSetChanged_ReInitializes pins the marker
+// side: a workspace already settled on one Pack skill set must re-init when
+// Runner.Packs changes (a Pack upgraded, added, or removed) — mirroring
+// TestResolveWorkspaceHome_MarkerFromAnOlderExecutionGeneration_ReInitializes
+// for PackSkillLinks instead of InitGeneration. Left unnoticed, a workspace
+// initialized before a Pack was added would never gain that Pack's skill
+// symlink until something else happened to force a re-init.
+func TestResolveWorkspaceHome_PackSkillSetChanged_ReInitializes(t *testing.T) {
+	setupWorkspaceHomeTestDirs(t)
+	r, be := newWorkspaceHomeTestRunnerWithBackend(t)
+
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+		t.Fatalf("first call (no Packs): %v", err)
+	}
+
+	packDir := t.TempDir()
+	skillDir := filepath.Join(packDir, "skills", "slack-api")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.Packs = []*integrationpack.Pack{{
+		Name: "slack", Version: "1.0.0", Dir: packDir,
+		Manifest: integrationpack.Manifest{
+			Skills: []integrationpack.Skill{{Name: "slack-api", Path: filepath.Join("skills", "slack-api")}},
+		},
+	}}
+
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	if err != nil {
+		t.Fatalf("second call (Pack added): %v", err)
+	}
+	linkPath := filepath.Join(be.dirFor(vol), ".claude", "skills", "slack-api")
+	if info, err := os.Lstat(linkPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf(".claude/skills/slack-api symlink missing after Runner.Packs changed (a home initialized before this Pack existed must re-init): stat err=%v", err)
+	}
+
+	// One-shot: settles on the second marker, no re-init on a third call with
+	// the same Packs.
+	runsBefore := be.runCount()
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+		t.Fatalf("third call: %v", err)
+	}
+	if be.runCount() != runsBefore {
+		t.Errorf("resolveWorkspaceHome re-ran init on an unchanged Pack set (runs %d -> %d)", runsBefore, be.runCount())
+	}
+}
+
+// TestResolveWorkspaceHome_PackRemoved_ReInitializesButLeavesStaleSymlink
+// pins the OTHER direction of set-change detection, and — deliberately — the
+// documented gap alongside it (workspaceHomeMarker.PackSkillLinks' own doc
+// comment): removing a Pack is detected (a re-init happens), but the
+// prelude only ever CREATES the current set's symlinks, so the previous
+// run's now-orphaned .claude/skills/<name> is left behind as a dangling
+// symlink rather than being cleaned up. If a future change adds a sweep
+// step, this test's second assertion should start failing and can be
+// flipped — that is the point of pinning the gap rather than leaving it
+// undocumented.
+func TestResolveWorkspaceHome_PackRemoved_ReInitializesButLeavesStaleSymlink(t *testing.T) {
+	setupWorkspaceHomeTestDirs(t)
+	r, be := newWorkspaceHomeTestRunnerWithBackend(t)
+
+	packDir := t.TempDir()
+	skillDir := filepath.Join(packDir, "skills", "jira-api")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.Packs = []*integrationpack.Pack{{
+		Name: "jira-cloud", Version: "1.0.0", Dir: packDir,
+		Manifest: integrationpack.Manifest{
+			Skills: []integrationpack.Skill{{Name: "jira-api", Path: filepath.Join("skills", "jira-api")}},
+		},
+	}}
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	if err != nil {
+		t.Fatalf("first call (Pack present): %v", err)
+	}
+	linkPath := filepath.Join(be.dirFor(vol), ".claude", "skills", "jira-api")
+	if info, err := os.Lstat(linkPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("setup: symlink not created: err=%v", err)
+	}
+
+	runsBefore := be.runCount()
+	// Removing packDir itself (not just clearing r.Packs) is what turns
+	// this into an actually-DANGLING symlink rather than one that merely
+	// stopped being listed — a review round (Opus round 2) found the
+	// original version of this test only proved the link entry survived,
+	// never that it stopped resolving to anything.
+	if err := os.RemoveAll(packDir); err != nil {
+		t.Fatal(err)
+	}
+	r.Packs = nil
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+		t.Fatalf("second call (Pack removed): %v", err)
+	}
+	if be.runCount() == runsBefore {
+		t.Fatal("removing a Pack did not trigger a re-init (the marker's set comparison should have detected it)")
+	}
+
+	// The documented gap: the symlink ENTRY is not swept, so Lstat still
+	// finds it...
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("stale symlink vanished on its own — the doc comment describing this as a known gap is now wrong: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected a dangling symlink at %q, got mode %s", linkPath, info.Mode())
+	}
+	// ...but it is genuinely DANGLING: the target packDir is gone, so
+	// following the link (Stat, not Lstat) fails. Claude Code's own skill
+	// discovery would find this entry and fail to read a SKILL.md through
+	// it.
+	if _, err := os.Stat(linkPath); err == nil {
+		t.Fatalf("expected %q to be a dangling symlink (target removed), but it still resolves", linkPath)
 	}
 }
 

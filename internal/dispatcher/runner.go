@@ -19,6 +19,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/gitgateway"
+	"github.com/novshi-tech/boid/internal/integrationpack"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
@@ -336,6 +337,18 @@ type Runner struct {
 	// narrow rather than open-ended: the API handler's own pre-check still runs,
 	// so what is lost is only the re-check under the registration.
 	ConfirmWorkspaceExists func(slug string) error
+
+	// Packs is the set of Integration Packs the daemon loaded at startup
+	// (internal/server/wire.go's buildRuntime, integrationpack.LoadPacks).
+	// resolveWorkspaceHome reads each Pack's Manifest.Skills to symlink them
+	// into every workspace home's .claude/skills/ — see packSkillLinks.
+	//
+	// nil (any dispatcher unit test that does not wire Packs, and any
+	// deployment with no Packs installed — LoadPacks' own "not a
+	// misconfiguration" posture) means no Pack skill symlinks are created;
+	// resolveWorkspaceHome behaves exactly as it did before this field
+	// existed.
+	Packs []*integrationpack.Pack
 
 	tokenMu          sync.Mutex
 	jobTokens        map[string]string

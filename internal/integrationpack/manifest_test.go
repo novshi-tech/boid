@@ -1,6 +1,7 @@
 package integrationpack
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -676,6 +677,131 @@ func TestParseManifest_SkillPathTraversalRejected(t *testing.T) {
 			t.Errorf("path %q: want error for a non-local path, got nil", p)
 		}
 	}
+}
+
+// TestParseManifest_SkillNameMustMatchAllowlist is the BLOCKER fix (Opus
+// review round 2) for a denylist that kept growing a new hole per round:
+// first "/" (filepath.Base("/") == "/" survives a naive single-component
+// check), then "." (filepath.IsLocal(".") is true), and finally a NUL byte
+// — filepath.IsLocal("\x00") is true, filepath.Base("\x00") == "\x00", and
+// bash strips NUL from a script it reads on stdin before executing it, so a
+// skill named "\x00" would turn "rm -rf -- '.claude/skills/<NUL>'" into "rm
+// -rf -- '.claude/skills/'" — the same "wipe every embedded skill's bind
+// target" failure the "/" case had, confirmed against a real shell, except
+// this one exits non-zero and never settles (no completion marker gets
+// written, so it repeats on every subsequent dispatch).
+//
+// skillNamePattern is a positive allowlist specifically to stop enumerating
+// denylist entries one review round at a time.
+func TestParseManifest_SkillNameMustMatchAllowlist(t *testing.T) {
+	rejected := []string{
+		"", ".", "..", "/", "//", "a/b", "/a", "../escape", "./x",
+		"\x00", "a\x00b", "a\nb", "a\tb", "a b", "-leading-dash",
+		"~home", "a*b", "a$b",
+	}
+	for _, name := range rejected {
+		yaml := "apiVersion: boid.dev/v1\nkind: IntegrationPack\nmetadata: {name: x, version: '1.0.0'}\n" +
+			"skills:\n  - name: \"" + escapeYAMLDoubleQuoted(name) + "\"\n    path: skills/x\n"
+		if _, err := ParseManifest([]byte(yaml)); err == nil {
+			t.Errorf("skill name %q (escaped %q): want a rejection, got nil", name, yaml)
+		}
+	}
+
+	accepted := []string{"jira-api", "bitbucket-api", "slack-api", "a", "a.b", "a_b", "a-b", "a123"}
+	for _, name := range accepted {
+		yaml := "apiVersion: boid.dev/v1\nkind: IntegrationPack\nmetadata: {name: x, version: '1.0.0'}\n" +
+			"skills:\n  - name: " + name + "\n    path: skills/x\n"
+		m, err := ParseManifest([]byte(yaml))
+		if err != nil {
+			t.Errorf("skill name %q: want acceptance, got error: %v", name, err)
+			continue
+		}
+		if len(m.Skills) != 1 || m.Skills[0].Name != name {
+			t.Errorf("skill name %q: got Skills = %+v", name, m.Skills)
+		}
+	}
+}
+
+// TestParseManifest_SkillPathMustMatchAllowlist is SF1 (Opus review round
+// 3): skills[].path had filepath.IsLocal alone, the exact denylist-only
+// posture skills[].name was moved off of after B3. filepath.IsLocal is
+// textual — it only rejects a ".." PATH ELEMENT — and does not stop a NUL
+// byte from turning several textually-"safe" segments into a real ".." once
+// something downstream (bash reading a heredoc-fed script) strips the NUL:
+// "a\x00../b" contains no ".." element as IsLocal sees it, but bash
+// executes it as "a../b" -> still not "..", but repeated segments compound:
+// ".\x00./.\x00./etc/passwd" survives IsLocal (no bare ".." anywhere) yet
+// bash-strips to "..../etc/passwd" which most shells/tools normalize
+// through repeated ".." style escapes depending on how many segments are
+// chained — packPathPattern closes this the same way skillNamePattern
+// closes B3, by allowlisting characters instead of denying specific
+// sequences.
+func TestParseManifest_SkillPathMustMatchAllowlist(t *testing.T) {
+	rejected := []string{
+		"\x00", "a\x00b", "skills/a\x00b", "a\nb",
+		".\x00./.\x00./.\x00./.\x00./.\x00./etc/passwd",
+	}
+	for _, p := range rejected {
+		yaml := "apiVersion: boid.dev/v1\nkind: IntegrationPack\nmetadata: {name: x, version: '1.0.0'}\n" +
+			"skills:\n  - name: s\n    path: \"" + escapeYAMLDoubleQuoted(p) + "\"\n"
+		if _, err := ParseManifest([]byte(yaml)); err == nil {
+			t.Errorf("skill path %q: want a rejection, got nil", p)
+		}
+	}
+
+	accepted := []string{"skills/jira-api", "connectors/mentions", "a", "a.b/c-d/e_f"}
+	for _, p := range accepted {
+		yaml := "apiVersion: boid.dev/v1\nkind: IntegrationPack\nmetadata: {name: x, version: '1.0.0'}\n" +
+			"skills:\n  - name: s\n    path: " + p + "\n"
+		if _, err := ParseManifest([]byte(yaml)); err != nil {
+			t.Errorf("skill path %q: want acceptance, got error: %v", p, err)
+		}
+	}
+}
+
+// TestParseManifest_ConnectorExecutableMustMatchAllowlist mirrors
+// TestParseManifest_SkillPathMustMatchAllowlist for connectors[].executable
+// — the same shell-reachable field pair SF1 flagged together.
+func TestParseManifest_ConnectorExecutableMustMatchAllowlist(t *testing.T) {
+	rejected := []string{"\x00", "a\x00b", "connectors/a\x00b"}
+	for _, p := range rejected {
+		yaml := "apiVersion: boid.dev/v1\nkind: IntegrationPack\nmetadata: {name: x, version: '1.0.0'}\n" +
+			"serviceProfiles:\n  - name: sp\n    endpoint: {configurable: false}\n" +
+			"connectors:\n  - name: c\n    executable: \"" + escapeYAMLDoubleQuoted(p) + "\"\n    serviceProfile: sp\n"
+		if _, err := ParseManifest([]byte(yaml)); err == nil {
+			t.Errorf("connector executable %q: want a rejection, got nil", p)
+		}
+	}
+
+	yaml := "apiVersion: boid.dev/v1\nkind: IntegrationPack\nmetadata: {name: x, version: '1.0.0'}\n" +
+		"serviceProfiles:\n  - name: sp\n    endpoint: {configurable: false}\n" +
+		"connectors:\n  - name: c\n    executable: connectors/mentions\n    serviceProfile: sp\n"
+	if _, err := ParseManifest([]byte(yaml)); err != nil {
+		t.Errorf("connector executable %q: want acceptance, got error: %v", "connectors/mentions", err)
+	}
+}
+
+// escapeYAMLDoubleQuoted renders s as the body of a YAML double-quoted
+// scalar, using \xNN escapes for every byte outside printable ASCII (and
+// backslash/quote themselves) — the minimal escaping needed to carry
+// arbitrary bytes, including NUL, through a YAML double-quoted string
+// exactly as TestParseManifest_SkillNameMustMatchAllowlist's rejected list
+// intends them to reach ParseManifest.
+func escapeYAMLDoubleQuoted(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' || c == '"':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case c >= 0x20 && c < 0x7f:
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "\\x%02x", c)
+		}
+	}
+	return b.String()
 }
 
 // TestParseManifest_MultipleYAMLDocumentsRejected pins F6 (recommended

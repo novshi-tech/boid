@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/novshi-tech/boid/internal/integrationpack"
 	"github.com/novshi-tech/boid/internal/skills"
 )
 
@@ -200,4 +201,150 @@ var workspaceHomeSkeletonDirs = func() []string {
 		dirs = append(dirs, filepath.Join(".claude", "skills", name))
 	}
 	return dirs
+}
+
+// packSkillLinks computes the PackSkillLink set for packs — implementing
+// docs/plans/signal-driven-review.md §6.4's last bullet ("job には利用する
+// skill だけを read-only mount する", i.e. discoverable at an agent's own
+// skill-search path, the same way embedded skills already are) for
+// Integration Pack skills, which until this existed were reachable only by
+// an explicit "read this path" instruction — a discoverability gap the
+// shadow-b evaluation surfaced. Two deliberate departures from §6.4's text,
+// not oversights — see PackSkillLink's own doc comment (workspace_init.go)
+// for the first, and the EVERY-skill-EVERY-home paragraph below for the
+// second:
+//
+//   - §6.4 does not distinguish bind mount from symlink; this uses a
+//     symlink because there is no host-visible directory to bind FROM
+//     (Integration Packs are baked into the very image the init container
+//     runs from, unlike embedded skills' per-installation materialization).
+//   - §6.4 says "利用する skill だけ" (only the skills a job actually
+//     uses); this links every skill from every loaded Pack into every
+//     workspace home instead.
+//
+// name validation is a single allowlist call
+// (integrationpack.ValidSkillName), not a denylist assembled here — a
+// denylist grew a new hole every review round this went through (Opus,
+// pre-merge): first "/" (filepath.Base("/") == "/" survives a naive
+// single-component check), then "." (filepath.IsLocal(".") is true), and
+// finally a NUL byte (filepath.IsLocal("\x00") is true, filepath.Base
+// unchanged by it, and bash strips NUL from a script it reads on stdin
+// before executing it — turning "rm -rf -- '.claude/skills/<NUL>'" into
+// "rm -rf -- '.claude/skills/'"). Each of those, left unrejected, wipes the
+// directory every embedded skill's bind target lives under, replacing it
+// with a symlink into the Pack — confirmed against a real shell, not just
+// reasoned about. ParseManifest is the PRIMARY gate for this (a manifest
+// failing it fails daemon startup outright, matching skills[].path's
+// existing filepath.IsLocal check); this call is defense in depth for a
+// PackSkillLink built some other way, not a second independent design.
+//
+// A second guard, embeddedSkillNames[skill.Name], rejects a Pack skill that
+// collides with an embedded one (boid-task/boid-orchestrate/boid-web/
+// boid-signal, internal/skills.EmbeddedSkillNames()). Without it, the same
+// rm -rf replaces that skill's bind-mounted directory with a symlink into
+// the Pack, silently breaking whichever embedded skill lost the race — v0
+// Packs happen not to collide today, but nothing enforced that. Note the
+// gap this does NOT close, and get the failure mode right (an earlier
+// version of this comment guessed wrong and a review round, Opus round 3,
+// corrected it against a real filesystem): if a FUTURE release adds an
+// embedded skill whose name a Pack skill already claimed,
+// workspaceHomeSkeletonDirs' mkdir -p for that name does NOT fail — `mkdir
+// -p` against a symlink that resolves to an existing directory (which the
+// Pack's still-present skill directory is) succeeds (exit 0), so the
+// prelude completes and no wedge happens there. The actual failure lands
+// one step later, at JOB START, not at workspace-home init: the runner's
+// own preflight (internal/sandbox/runner's verifyHomeSkeleton) os.Stat's
+// (follows the symlink) each skeleton path expecting the CONTAINER's own
+// uid to own it, finds the Pack's root-owned image content instead, and
+// refuses to start the harness — misdiagnosed by that check's own error
+// text as "the engine auto-created this as uid 0", since that is the only
+// cause it knows how to name. There IS a recovery path, just not an
+// automatic one: the operator remedy that error prints (rm -rf the bind
+// target under the workspace home, then redispatch) happens to unlink the
+// symlink correctly, because rm -rf on a symlink argument removes the link
+// itself rather than recursing into what it points at (the same POSIX
+// behavior TestBuildWorkspaceInitRequest_PackSkillSymlinkRerunDoesNotDeleteTarget
+// pins from the other direction).
+//
+// A skill failing either guard is skipped rather than failing the whole
+// dispatch — one malformed Pack, or one Pack that happens to reuse an
+// embedded skill's name, must not take every workspace's skill discovery
+// down with it.
+//
+// Two Packs declaring the same skill Name is not rejected either: both
+// entries land in the returned slice, in packs' own order, and the last one
+// wins when buildWorkspaceInitScript's rm+ln pair for that Name runs twice.
+// The same applies to two VERSIONS of one Pack both being present under
+// integrations.dir (LoadPacks enumerates every version directory, not just
+// the newest) — the winner is whichever sorts last out of os.ReadDir's
+// lexicographic version-directory order, which is not necessarily the
+// newest version ("1.10.0" < "1.2.0" < "1.9.0"). v0 has no Pack-namespacing
+// or version-pinning story to make either case an error rather than a
+// deployment-order footgun; today's deployment keeps exactly one version of
+// each of the three official Packs, and their skill names do not collide.
+//
+// EVERY loaded Pack's EVERY skill is linked into EVERY workspace home,
+// regardless of Skill.RequiresServiceProfile or whether the workspace has
+// any service instance configured for that profile at all — this ignores
+// docs/plans/signal-driven-review.md §6.4's stated design ("job には利用す
+// る skill だけを read-only mount する"), which called for per-JOB,
+// per-USED-skill mounting. Widening it to "every skill, every workspace
+// home" was a deliberate scope cut for this evaluation follow-up (a
+// workspace-scoped or job-scoped filter needs to resolve which service
+// instances a workspace actually configured, which resolveWorkspaceHome
+// does not currently do), not an oversight — but it does mean a workspace
+// with no Jira instance configured still gets a discoverable jira-api
+// skill, which is exactly the kind of irrelevant-service noise the
+// shadow-b evaluation this follow-up responds to was trying to reduce.
+// Revisit alongside §6.4 if that noise turns out to matter in practice.
+//
+// One more consequence of "every workspace home", specifically: the init
+// container ALWAYS runs from the daemon's own default image
+// (container_backend_workspace_init.go §D8), but a JOB container honors a
+// workspace's container_image override (resolveContainerImage). A
+// workspace with such an override gets Target symlinks pointing at
+// /opt/boid/integrations/... paths that exist in the init container's
+// image but may not exist in that workspace's own job image — a dangling
+// symlink, not a destructive one, but still a gap in the "same image, so
+// no bind mount needed" reasoning PackSkillLink's doc rests on.
+func packSkillLinks(packs []*integrationpack.Pack) []PackSkillLink {
+	names := skills.EmbeddedSkillNames()
+	embeddedSkillNames := make(map[string]bool, len(names))
+	for _, name := range names {
+		embeddedSkillNames[name] = true
+	}
+	var links []PackSkillLink
+	for _, pack := range packs {
+		for _, skill := range pack.Manifest.Skills {
+			if !integrationpack.ValidSkillName(skill.Name) {
+				continue
+			}
+			if embeddedSkillNames[skill.Name] {
+				continue
+			}
+			links = append(links, PackSkillLink{
+				Name:   skill.Name,
+				Target: filepath.Join(pack.Dir, skill.Path),
+			})
+		}
+	}
+	return links
+}
+
+// packSkillLinkMarkerStrings renders links as an order-insensitive set of
+// strings for workspaceHomeMarker.PackSkillLinks, comparable across runs the
+// same way workspaceHomeMarker.SkeletonDirs already is (equalStringSets).
+//
+// A changed set — a Pack upgraded to a new version directory, a skill
+// added/removed/renamed — must force a re-init, on the same footing as a
+// changed skeleton: left unnoticed, a symlink would keep pointing at a
+// version directory the current image no longer has, or a newly-added
+// skill would simply stay undiscoverable until something else happened to
+// force a re-init.
+func packSkillLinkMarkerStrings(links []PackSkillLink) []string {
+	out := make([]string, 0, len(links))
+	for _, link := range links {
+		out = append(out, link.Name+"="+link.Target)
+	}
+	return out
 }

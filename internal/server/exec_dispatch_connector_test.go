@@ -41,7 +41,10 @@ func (b *specCapturingBackend) Launch(ctx context.Context, spec sandbox.Spec, op
 // writeTestPack materializes a minimal, valid Integration Pack under
 // <dir>/slack/1.1.0/integration.yaml — enough for integrationpack.LoadPacks
 // to accept it and for resolveConnectorExec to resolve the "mentions"
-// connector against it.
+// connector against it. Also declares a "slack-api" skill (skills/slack-api/
+// SKILL.md, written alongside the manifest) — TestServer_New_WiresPacksIntoWorkspaceHomeSkillSymlinks
+// (workspace_home_pack_skill_wiring_test.go) uses that half; the connector
+// tests in this file don't touch it.
 func writeTestPack(t *testing.T, packsDir string) {
 	t.Helper()
 	verDir := filepath.Join(packsDir, "slack", "1.1.0")
@@ -66,9 +69,19 @@ connectors:
       type: object
       properties:
         include_threads: {type: boolean}
+skills:
+  - name: slack-api
+    path: skills/slack-api
 `
 	if err := os.WriteFile(filepath.Join(verDir, "integration.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
+	}
+	skillDir := filepath.Join(verDir, "skills", "slack-api")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("slack api reference\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
 	}
 }
 
@@ -79,6 +92,19 @@ connectors:
 // wires a specCapturingBackend instead of a bare noopBackend so the test can
 // inspect the dispatched sandbox.Spec.
 func newSmokeServerWithPacks(t *testing.T) (*testutil.TestServer, *specCapturingBackend, string) {
+	t.Helper()
+	be := &specCapturingBackend{}
+	ts, packsDir := newSmokeServerWithPacksBackend(t, be)
+	return ts, be, packsDir
+}
+
+// newSmokeServerWithPacksBackend is newSmokeServerWithPacks generalized over
+// the backend.SandboxBackend to wire in — split out so
+// workspace_home_pack_skill_wiring_test.go's TestServer_New_
+// WiresPacksIntoWorkspaceHomeSkillSymlinks can substitute a backend that
+// captures WorkspaceInitRequest calls instead of dispatched sandbox.Specs,
+// against the exact same Pack-on-disk + config.yaml setup.
+func newSmokeServerWithPacksBackend(t *testing.T, be backend.SandboxBackend) (*testutil.TestServer, string) {
 	t.Helper()
 
 	configHome := t.TempDir()
@@ -100,12 +126,11 @@ func newSmokeServerWithPacks(t *testing.T) (*testutil.TestServer, *specCapturing
 	sockPath := filepath.Join(tmpDir, "boid.sock")
 	dbPath := filepath.Join(tmpDir, "boid.db")
 
-	backend := &specCapturingBackend{}
 	srv, err := server.New(server.Config{
 		DBPath:     dbPath,
 		SocketPath: sockPath,
 		HTTPAddr:   "127.0.0.1:0",
-		Backend:    backend,
+		Backend:    be,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -115,7 +140,7 @@ func newSmokeServerWithPacks(t *testing.T) (*testutil.TestServer, *specCapturing
 	}
 	t.Cleanup(func() { _ = srv.Stop() })
 
-	return &testutil.TestServer{Server: srv, Client: client.NewUnixClient(sockPath)}, backend, packsDir
+	return &testutil.TestServer{Server: srv, Client: client.NewUnixClient(sockPath)}, packsDir
 }
 
 // TestServer_ExecDispatch_ConnectorReference_ResolvesEnv is the §5.2
