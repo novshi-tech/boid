@@ -544,6 +544,43 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 - 対象ケース: cross-service 調査、本文非開示、外部完了済みの done 提案、材料不足の保留
 - 評価: 提案の同等性、自発的な追加照会の有無、捏造の有無、API call 数・token・費用
 
+**実施結果と退役 (2026-08-27)** — shadow-a 完了後、khi の sweep trigger から同一
+targets を report-only の並走 behavior (khi 側 `sweep_shadow_b`) に配り、現行 sweep と
+提案を比較した。
+
+実施記録:
+
+- 成果 1: Pack skill が job から自動 discover されない配線欠落を発見し、boid #1025 で
+  修正した (Integration Pack skill を workspace HOME の `~/.claude/skills` へ symlink)
+- 成果 2: `khi/app/write.py` に readonly 由来の report 強制を実装した
+  (`_readonly_forces_report`、fail-closed — 「書かない」保証を prompt でなく機構に
+  持たせた)
+- 成果 3: 配線修正後 3 ペアの判断比較で verb は一致した (同等性は確認できた範囲では成立)
+
+退役の理由 (実験の前提が溶けた):
+
+- #1025 により Pack skill は real sweep 側からも同一に discoverable になり、shadow 側の
+  明示的な「Pack reference を先に読め」instruction も撤去した (specific な指示が読みの
+  打ち切り条件を作り精度を下げる観測のため)。結果、両系の差分から「知識の置き場」という
+  実験変数が消えた。検証対象 (Pack skill からの知識供給) は #1025 の時点で本番 real
+  sweep に既に効いており、検証対象と本番が同一物になった
+- 残った差分は report-only のフレーミング (出力契約が「would-propose を 1 行」) だけで、
+  これは読みの深さを系統的に抑制する交絡だと観測された (shadow 側だけ調査が浅い、が
+  3 ペアに共通)。以後の比較は仮説 B ではなくフレーミングの効果を測ってしまう
+- 本番の real sweep は書き込みが全て suggestion であり (機械遷移ゼロ、動かすのは人の
+  accept のみ)、shadow の「書かない」保証は本番が既に持つ保証の二重化だった。判断
+  チューニングの信号 (accept/reject) は本番にしか存在しない
+
+以後の扱い:
+
+- 仮説 B の採点は本番 real sweep の運用記録で行う (§14 グループ B を差し替え)
+- 本番チューニングの初期 backlog: (a) 判断プロトコルの `link` 経路に「合流と判断し直しを
+  分けない」を入れる (capture と同じ規律 — 新情報を既存 card の終了条件・子の成果物と
+  突き合わせる)。(b) Notion の読み経路の知識配置 — 経路自体は claude.ai コネクタで job
+  から到達可能と実証済み (Shape セッション・子タスクで実績あり) だが、Pack reference が
+  無く sweep は一度も到達していない。(c) メタプロジェクトへの KHI 標準ワークフロー
+  (設計成果物は Notion、リポジトリ PR ではない等) の明文化
+
 ### 10.5 失敗の読み方
 
 | 症状 | 見直す境界 |
@@ -563,7 +600,9 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
    connector 実行 (Pack runtime 最小)
 3. **公式 Pack 化** — slack/jira/bitbucket の connector と reference skill を Pack へ
 4. **shadow-a** — khi collector と並走し Signal 列を diff (§10.3)
-5. **shadow-b** — 判断タスクの skill を Pack skill へ差し替えて提案を diff (§10.4)
+5. **shadow-b** — 判断タスクの skill を Pack skill へ差し替えて提案を diff (§10.4)。
+   2026-08-27 に退役 (§10.4)。以降の判断品質の検証は本番 real sweep の観測で行い、
+   劣化が出たら該当 source を旧経路へ戻す (並走可能性は維持)
 6. **trigger source 追加と切替** — inbox updated trigger を追加し、khi の scan script を
    inbox 読みへ切替。旧 collector は並走のまま停止 → 削除
 7. **khi 縮退** — ingest 実装と再実装機構を削除し、判断方針・スキル・scan script だけを残す
@@ -587,7 +626,8 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 6. core は protocol prompt を供給しない。供給するのは `boid signal` の組み込みスキル (知識)
 7. 篩・batch 化は workspace の scan script の責務
 8. メタプロジェクトは存続する (khi は退役でなく縮退)
-9. 実装は shadow-a (ingest 等価性)・shadow-b (知識配置) を Go 条件とする
+9. 実装は shadow-a (ingest 等価性) を Go 条件とする。shadow-b は 2026-08-27 に退役
+   (§10.4) — 仮説 B は本番 real sweep の運用記録で採点する (§14 グループ B)
 10. envelope schema v0 を机上検証で確定した (§5.2、2026-08-26。根拠は
     `signal-envelope-inventory.md`)
 11. CLI 最終形・inbox GC・connector 実行 (導出 trigger)・size limit・source 宣言場所は
@@ -655,13 +695,15 @@ report のみ (書き込みなし) で並走させ、現行 sweep の提案と�
 
 ### B. shadow-b の Go 判定 — 知識配置 (§10.4)
 
+採点は shadow の比較記録ではなく本番運用の記録で行う (§10.4 の退役記録を参照)。
+
 | # | 命題 | 根拠の在り処 |
 |---|---|---|
-| Q5 | 同一対象への現行 sweep と Pack skill 版の提案比較記録があり、同等以上と判定されている | 比較記録 |
-| Q6 | サービス固有の調査手順が判断タスクの workspace prompt に残っておらず、Pack skill 側だけにある | prompt と skill の突き合わせ |
-| Q7 | Signal に本文がないケースで、agent が resource handle から外部を自発的に live 照会した実測がある | 該当 run の記録 |
-| Q8 | 材料不足のケースで捏造せず保留した実測がある | 該当 run の記録 |
-| Q9 | 評価に API call 数・token・実行時間・費用の実測が含まれている | 計測記録 |
+| Q5 | Pack skill 化後の本番 real sweep の提案が、切替後 1 週間の運用で人の accept を得続けており、判断劣化を示す差し戻し・修正の記録が無い | card の suggestion accept/reject 記録 |
+| Q6 | サービス固有の調査手順が判断タスクの workspace prompt に残っておらず、Pack skill 側だけにある | prompt と skill の突き合わせ (変更なし — shadow 不要で検査可能) |
+| Q7 | Signal に本文がないケースで、agent が resource handle から外部を自発的に live 照会した実測がある | 本番 real sweep の run 記録 |
+| Q8 | 材料不足のケースで捏造せず保留した実測がある | 本番 real sweep の run 記録 |
+| Q9 | 評価に API call 数・token・実行時間・費用の実測が含まれている | 本番 run の計測。baseline: 2026-08-27 の real sweep が Pack reference 未読のまま bitbucket-api を 12 call (大半が試行錯誤) した記録 |
 
 ### C. core ingest の実装 guard (§8)
 
