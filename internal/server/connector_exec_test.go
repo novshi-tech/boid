@@ -47,20 +47,17 @@ func TestResolveConnectorExec_HappyPath(t *testing.T) {
 	if got.Env["BOID_SIGNAL_CONNECTOR"] != "slack/mentions" {
 		t.Errorf("BOID_SIGNAL_CONNECTOR = %q, want slack/mentions", got.Env["BOID_SIGNAL_CONNECTOR"])
 	}
-	if got.Env["BOID_CONNECTOR_EXEC"] != "/run/boid/integrations/slack/connectors/mentions" {
-		t.Errorf("BOID_CONNECTOR_EXEC = %q, want /run/boid/integrations/slack/connectors/mentions", got.Env["BOID_CONNECTOR_EXEC"])
+	// daemon と job container は同じ base image を共有する (compose.yml
+	// 決定2「daemon と job runner が同じ versioned base イメージから起動」) —
+	// pack.Dir (daemon プロセスが読み取りに使う integrations.dir 配下の絶対
+	// パス) は job container 自身のファイルシステムにも同じ場所に既に
+	// 存在するので、bind mount で運ぶ必要が無い。BOID_CONNECTOR_EXEC は
+	// pack.Dir をそのまま指す。
+	if got.Env["BOID_CONNECTOR_EXEC"] != "/opt/boid/integrations/slack/1.1.0/connectors/mentions" {
+		t.Errorf("BOID_CONNECTOR_EXEC = %q, want /opt/boid/integrations/slack/1.1.0/connectors/mentions (pack.Dir, no bind mount)", got.Env["BOID_CONNECTOR_EXEC"])
 	}
 	if got.Env["BOID_SIGNAL_CONFIG"] != `{"include_threads":true}` {
 		t.Errorf("BOID_SIGNAL_CONFIG = %q, want {\"include_threads\":true}", got.Env["BOID_SIGNAL_CONFIG"])
-	}
-	if got.Bind.Source != "/opt/boid/integrations/slack/1.1.0" {
-		t.Errorf("Bind.Source = %q, want the Pack's Dir", got.Bind.Source)
-	}
-	if got.Bind.Target != "/run/boid/integrations/slack" {
-		t.Errorf("Bind.Target = %q, want /run/boid/integrations/slack", got.Bind.Target)
-	}
-	if got.Bind.Mode != "" {
-		t.Errorf("Bind.Mode = %q, want empty (read-only default)", got.Bind.Mode)
 	}
 	if len(got.APIGatewayServices) != 1 || got.APIGatewayServices[0] != "slack-api" {
 		t.Errorf("APIGatewayServices = %v, want [slack-api]", got.APIGatewayServices)

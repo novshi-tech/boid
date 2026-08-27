@@ -241,14 +241,25 @@ signals:
 ### 5.2 job 環境
 
 導出 trigger の発火は既存 `fireTrigger` → `StartExec` (exec job、readonly、project
-sandbox)。`StartExecRequest` に **4 点**を追加する (env・bind と、下記「権限の絞り」の
+sandbox)。`StartExecRequest` に **3 点**を追加する (env と、下記「権限の絞り」の
 縮小 policy・service allowlist。いずれも `SessionJobInput` → `BuildSessionJobSpec` への
 pass-through field):
 
 - env: `BOID_SIGNAL_SERVICE` / `BOID_SIGNAL_CONNECTOR` / `BOID_SIGNAL_CONFIG` (config の
   JSON) / `BOID_CONNECTOR_EXEC` (下記パス)
-- bind: 解決済み Pack ディレクトリ → `/run/boid/integrations/<pack>` (read-only)。
-  `Visibility.AdditionalBindings` の既存経路を使う
+
+**bind mount は使わない (2026-08-27、nose 指摘で訂正)。** 当初案は解決済み Pack
+ディレクトリを `/run/boid/integrations/<pack>` へ bind mount する形だったが、これは
+container backend の DooD (docker-out-of-docker) モデルと相容れない —
+`BindMount.Source` は daemon が host の docker/podman に渡す値であり、**daemon
+コンテナ自身のファイルシステム上のパスとして解決されるとは限らない**
+(`hostVisibleRuntimesDirFor` が `runtimes/` に対して既にやっている変換と同じ罠、
+§12.2 (M1) 参照)。daemon と job container は同じ base image から起動される
+(`build/container/compose.yml` 決定2) ので、`pack.Dir`
+(`integrations.dir` 配下の絶対パス、`build/container/Dockerfile` が焼き込む場所)
+は job container 自身のファイルシステムにも既に同じ path で存在する —
+`BOID_CONNECTOR_EXEC` を `pack.Dir` 直下に設定するだけで、bind mount という運搬
+自体が不要になる。
 
 connector が呼ぶ service は workspace の enabled services に入っている必要がある
 (検証は警告のみ、エラーにしない — 実装は `ProjectStore.GetWithWorkspace` から。
@@ -511,24 +522,32 @@ daemon 起動を拒否する (再現確認済み)。**PR-8 の初回デプロイ
 (例: `<repo>/packs/`) に向ける運用にして `.git` を配下に含めない、のどちらか。(a) の方が
 daemon 側だけで閉じる分シンプル。
 
-### 12.2 (M1) Pack bind mount の host-visible path 境界が未検証
+### 12.2 (M1) Pack bind mount の host-visible path 境界が未検証 — 解消済み (2026-08-27)
 
-`sessionDispatcherAdapter` は `pack.Dir` (`integrations.dir` 配下の絶対パス、daemon
-プロセス自身がファイル読み取りに使う path) をそのまま `orchestrator.BindMount.Source`
-として渡し、container backend の DooD (docker-out-of-docker) bind mount source に使う。
-これは daemon プロセスが動いているコンテナの中の path であり、実際に docker socket 越しに
-job container を起こす **docker daemon (ホスト)** から見た path とは限らない —
+当初 `sessionDispatcherAdapter` は `pack.Dir` (`integrations.dir` 配下の絶対パス、
+daemon プロセス自身がファイル読み取りに使う path) をそのまま
+`orchestrator.BindMount.Source` として渡し、container backend の DooD
+(docker-out-of-docker) bind mount source に使っていた。これは daemon プロセスが
+動いているコンテナの中の path であり、実際に docker socket 越しに job container を
+起こす **docker daemon (ホスト)** から見た path とは限らない —
 `hostVisibleRuntimesDirFor` (`internal/server/wire.go`) が `runtimes/` ディレクトリに
-対して既にやっている「host から見える path への変換」と同じ罠が Pack bind にも存在する。
-compose.yml が `integrations.dir` を daemon コンテナとホストの両方に**同一 path**で
-bind mount する運用であれば問題は起きないが、それを強制する仕組みは無い。ズレた構成では
-bind が空になり、connector 起動時に `BOID_CONNECTOR_EXEC` が指す path が ENOENT になる
-(原因の特定が難しい失敗モード)。
+対して既にやっている「host から見える path への変換」と同じ罠。shadow-a 着手時
+(公式 Pack を daemon image に焼き込み、実際に connector job を dispatch しようとして)
+`mkdir /opt/boid: permission denied` として実際に踏んだ。
 
-対応方針 (未実装): `hostVisibleRuntimesDirFor` と同様の host-visible path 解決を
-Pack bind にも適用するか、compose.yml のドキュメント/テンプレートで
-「daemon コンテナとホストで `integrations.dir` は同一 path でなければならない」という
-制約を明記し、起動時に検証する。
+**対応 (nose 指摘): bind mount 自体を撤去した。** daemon と job container は同じ
+base image から起動される (`build/container/compose.yml` 決定2) ので、`pack.Dir`
+は job container 自身のファイルシステムにも既に同じ path で存在する — host-visible
+path への変換という迂回路を用意するまでもなく、`BOID_CONNECTOR_EXEC` に `pack.Dir`
+をそのまま使えば足りた。§5.2 を修正し、`resolveConnectorExec`
+(`internal/server/connector_exec.go`) と `sessionDispatcherAdapter.StartExec`
+(`internal/server/wire.go`) から bind 追加処理を削除した。
+
+**ただしこれは「daemon と job が同じ image を共有する」という container backend の
+前提に依存する。** workspace が `container_image` を override している場合、その
+イメージに Pack が焼き込まれていなければ `BOID_CONNECTOR_EXEC` は ENOENT になる —
+custom image を使う workspace で Pack connector を使いたければ、その image 自体にも
+該当 Pack を焼き込む運用が前提になる (doc化のみ、未実装のバリデーションあり)。
 
 ### 12.3 (M2) HostCommands と同型の権限漏れが他フィールドにも残っている可能性
 

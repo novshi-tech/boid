@@ -78,7 +78,7 @@ connectors:
 // "slack" Pack, so buildRuntime's LoadPacks call actually finds it; (2)
 // wires a specCapturingBackend instead of a bare noopBackend so the test can
 // inspect the dispatched sandbox.Spec.
-func newSmokeServerWithPacks(t *testing.T) (*testutil.TestServer, *specCapturingBackend) {
+func newSmokeServerWithPacks(t *testing.T) (*testutil.TestServer, *specCapturingBackend, string) {
 	t.Helper()
 
 	configHome := t.TempDir()
@@ -115,15 +115,21 @@ func newSmokeServerWithPacks(t *testing.T) (*testutil.TestServer, *specCapturing
 	}
 	t.Cleanup(func() { _ = srv.Stop() })
 
-	return &testutil.TestServer{Server: srv, Client: client.NewUnixClient(sockPath)}, backend
+	return &testutil.TestServer{Server: srv, Client: client.NewUnixClient(sockPath)}, backend, packsDir
 }
 
-// TestServer_ExecDispatch_ConnectorReference_ResolvesEnvAndBind is the §5.2
-// end-to-end pin: env (item 1) and bind (item 2) actually reach the
-// dispatched sandbox.Spec when StartExecRequest.Connector names a real,
-// installed Pack connector.
-func TestServer_ExecDispatch_ConnectorReference_ResolvesEnvAndBind(t *testing.T) {
-	ts, backend := newSmokeServerWithPacks(t)
+// TestServer_ExecDispatch_ConnectorReference_ResolvesEnv is the §5.2
+// end-to-end pin: env (item 1) actually reaches the dispatched sandbox.Spec
+// when StartExecRequest.Connector names a real, installed Pack connector.
+// No bind mount is involved — daemon and job container share the same base
+// image (compose.yml 決定2), so BOID_CONNECTOR_EXEC points at pack.Dir
+// directly, a path already present inside the job container's own
+// filesystem (nose 2026-08-27: a DooD bind mount's source is resolved by
+// the HOST docker/podman, not the daemon container's own filesystem view —
+// daemon-container-only paths like an image-baked integrations.dir can
+// never be a valid bind source there).
+func TestServer_ExecDispatch_ConnectorReference_ResolvesEnv(t *testing.T) {
+	ts, backend, packsDir := newSmokeServerWithPacks(t)
 	projectDir := writeSmokeProject(t)
 
 	var project struct {
@@ -160,24 +166,18 @@ func TestServer_ExecDispatch_ConnectorReference_ResolvesEnvAndBind(t *testing.T)
 	if spec.Env["BOID_SIGNAL_CONNECTOR"] != "slack/mentions" {
 		t.Errorf("BOID_SIGNAL_CONNECTOR = %q, want slack/mentions", spec.Env["BOID_SIGNAL_CONNECTOR"])
 	}
-	if spec.Env["BOID_CONNECTOR_EXEC"] != "/run/boid/integrations/slack/connectors/mentions" {
-		t.Errorf("BOID_CONNECTOR_EXEC = %q, want /run/boid/integrations/slack/connectors/mentions", spec.Env["BOID_CONNECTOR_EXEC"])
+	wantExec := filepath.Join(packsDir, "slack", "1.1.0", "connectors", "mentions")
+	if spec.Env["BOID_CONNECTOR_EXEC"] != wantExec {
+		t.Errorf("BOID_CONNECTOR_EXEC = %q, want %q (pack.Dir directly, no bind mount)", spec.Env["BOID_CONNECTOR_EXEC"], wantExec)
 	}
 	if spec.Env["BOID_SIGNAL_CONFIG"] != `{"include_threads":true}` {
 		t.Errorf("BOID_SIGNAL_CONFIG = %q, want {\"include_threads\":true}", spec.Env["BOID_SIGNAL_CONFIG"])
 	}
 
-	foundBind := false
 	for _, m := range spec.Mounts {
 		if m.Target == "/run/boid/integrations/slack" {
-			foundBind = true
-			if !m.ReadOnly {
-				t.Errorf("Pack bind mount %+v should be read-only", m)
-			}
+			t.Errorf("unexpected Pack bind mount %+v — daemon and job container share the same base image, no bind mount should be added", m)
 		}
-	}
-	if !foundBind {
-		t.Errorf("no mount targeting /run/boid/integrations/slack found, mounts = %+v", spec.Mounts)
 	}
 }
 
