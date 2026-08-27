@@ -21,10 +21,13 @@ workspace ごとの永続 `$HOME` (workspace home) の作り方と、初回セ�
   ここだけ job ごとの tmpfs で隔離されていたが、隔離の対象だったファイル経路
   (`$HOME/.boid/output/payload_patch.json`) 自体が撤廃されたため overlay も撤去済み
   (詳細は [`docs/ja/reference/hook-contract.md`](../reference/hook-contract.md) 参照)
-- **volume の上に重なるのは組み込み skill の bind だけ**: `~/.claude/skills/<name>` に
-  組み込み skill が read-only で 1 本ずつ bind される。その中身は volume には残らない
-  (dispatch のたびに daemon が boid バイナリから展開したものを見せている)。
-  それ以外のパスは volume がそのまま見える
+- **volume の上に重なるのは組み込み skill の bind と Integration Pack skill の
+  symlink だけ**: `~/.claude/skills/<name>` に組み込み skill が read-only で
+  1 本ずつ bind される (中身は volume には残らない — dispatch のたびに daemon が
+  boid バイナリから展開したものを見せている)。加えて 2026-08-27 以降、公式
+  Integration Pack (jira-cloud/bitbucket-cloud/slack) が宣言する skill も
+  `~/.claude/skills/<name>` へ symlink される (詳細は下の「非 embedded skill の
+  コピーについて」参照)。それ以外のパスは volume がそのまま見える
 - **workspace をまたいでは共有されない**: workspace A の `$HOME` と workspace B の `$HOME` は
   別 volume。ホストの実 `$HOME` とも共有されない (`boid` daemon 自身の `$HOME` とも別)
 - **中身を直接見たいとき**: `docker volume inspect boid-ws-home-<installID8>-<slug>` の
@@ -277,21 +280,33 @@ bind mount** するので `init.sh` で扱う必要はありません (workspace
 実体を置きません)。 skill ごとに分けて mount するのは、下記の手動コピーで置いた
 非 embedded skill を隠さないためです。
 
-一方、bitbucket / jira のようなホスト側にだけ置いてある独自 skill
+> **2026-08-27 に変わりました**: jira-cloud / bitbucket-cloud / slack の公式
+> Integration Pack が宣言する skill (`jira-api` / `bitbucket-api` / `slack-api`)
+> は、いま **自動的に** `~/.claude/skills/<name>` へ symlink されます
+> (`/opt/boid/integrations/<pack>/<version>/skills/<name>` — daemon image に
+> 焼き込み済みで、bind mount すら要りません)。 **これらの名前を下記の手動コピー
+> 手順で置くと、次の workspace home init でその手動コピーは symlink に置き換わって
+> 消えます** (boid が「stale なディレクトリを新しい symlink で上書きする」動作を
+> 意図的にしているため — 詳細は `internal/dispatcher/skills_overlay.go` の
+> `packSkillLinks` を参照)。 手動コピーが必要なのは、**公式 Pack が存在しない
+> サービス**の独自 skill だけです。
+
+一方、公式 Pack が無いサービスのホスト側にだけ置いてある独自 skill
 (`~/.claude/skills/<name>/`) は `init.sh` からはコピーできません —
 `init.sh` は boid が起こす使い捨て container の中で実行されるので、
 ホストのファイルシステムにそもそも到達できないためです
 (mount されているのは workspace home だけです)。
 
 この種の skill を workspace で使いたい場合は、workspace セットアップ時に
-**人間が手動で** ホストの skill をコピーしてください:
+**人間が手動で** ホストの skill をコピーしてください (公式 Pack の名前
+`jira-api` / `bitbucket-api` / `slack-api` とは重ならない名前にすること):
 
 ```bash
 # workspace home は named volume なので、init.sh の中で行うのが確実です。
 # ホスト側から直接入れる場合は volume の Mountpoint を経由します:
 VOL=$(docker volume inspect -f '{{.Mountpoint}}' boid-ws-home-<installID8>-<slug>)
 mkdir -p "$VOL/.claude/skills"
-cp -r ~/.claude/skills/bitbucket "$VOL/.claude/skills/"
+cp -r ~/.claude/skills/my-custom-skill "$VOL/.claude/skills/"
 ```
 
 ## 初回ログイン
@@ -443,7 +458,8 @@ dry-run: would import /home/nosen/.local/share/boid/homes/khi into workspace "kh
 ### 移行後に init.sh が 1 回走ります
 
 これは仕様です。移行は「中身のコピー」なので、それだけでは boid 側の完了マーカー
-(script hash / 世代 / skeleton / volume identity) が**どれも変化しません**。
+(script hash / 世代 / skeleton / volume identity / Integration Pack skill 一覧)
+が**どれも変化しません**。
 何もしないと、ホスト時代の絶対パスが焼き込まれた toolchain がそのまま生き残り、
 `init.sh` は二度と走りません。そこで移行コマンドは 2 つの手段を**両方**取ります:
 

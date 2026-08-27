@@ -1468,6 +1468,76 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	if err != nil {
 		return nil, fmt.Errorf("daemon startup refused: load integration packs: %w", err)
 	}
+	// Third consumer of packs, alongside apiGwCreds' service registry and
+	// sessionDispatcherAdapter's connector-trigger resolution mentioned
+	// above: resolveWorkspaceHome symlinks each Pack's skills[] into every
+	// workspace home's .claude/skills/ — docs/plans/signal-driven-review.md
+	// §6.4's last bullet ("job には利用する skill だけを read-only mount す
+	// る"), implemented once the shadow-b evaluation surfaced that Pack
+	// skills were otherwise reachable only by an explicit "read this path"
+	// instruction (Claude Code's own skill discovery only scans
+	// .claude/skills/). See packSkillLinks' own doc comment
+	// (internal/dispatcher/skills_overlay.go) for the two deliberate
+	// departures from §6.4's text this implementation makes. Set directly
+	// on the already-built runner rather than threaded through WireConfig,
+	// since packs itself is not available until this point (it depends on
+	// boidCfg, loaded above at line ~1444, well after dispatcher.Wire ran
+	// at line ~1162).
+	//
+	// CORRECTION (Opus review round 2): an earlier version of this comment
+	// claimed the daemon_shutdown auto-reopen sweep runs "further down this
+	// function", implying this assignment usually wins a race against it.
+	// That is backwards — the sweep is at line ~1369-1397, roughly 100
+	// lines ABOVE this assignment, textually and in execution order. So on
+	// any restart that has a daemon_shutdown-aborted task to reopen, this
+	// is not a rare race at all: the reopen goroutine
+	// (workflow.ApplyAction("reopen") spawning runner.Dispatch via
+	// internal/api/workflow_action.go, with no synchronization against this
+	// line) is the ORDINARY path exercising a nil runner.Packs, not an edge
+	// case.
+	//
+	// It is also not merely "non-catastrophic": runner.Packs is a slice
+	// header (ptr+len+cap, 3 words), and a concurrent unsynchronized write
+	// to it is a data race in the Go memory model's own sense — a torn read
+	// on some platforms/optimizations could observe a non-nil ptr with a
+	// stale (too-large) len, and packSkillLinks' `for _, pack := range
+	// packs` would then dereference garbage. `go test -race` does not
+	// exercise this path (no test drives an auto-reopen concurrently with
+	// buildRuntime), so it would not be caught there either.
+	//
+	// CORRECTION (Opus review round 3): an earlier version of this comment
+	// estimated the fix as moving config.Load() (~line 1444) up. That
+	// overstated it — buildRuntime already calls config.Load() once, much
+	// earlier, at line ~1040 (its return value discarded; only the
+	// fail-loud-if-unreadable check matters there post-PR-4, see that
+	// call's own comment). The smaller fix is: keep that early load as is,
+	// and move JUST integrationpack.LoadPacks(cfg.Integrations.Dir) (~line
+	// 1467) plus `runner.Packs = packs` up to right after
+	// `runner.Backend = sandboxBackend` (~line 1239) — LoadPacks needs a
+	// *config.Config, which the line-1040 call already produced and could
+	// keep instead of discarding. That is one call to relocate, not two.
+	// Collapsing the two config.Load() calls into one is a SEPARATE, larger
+	// change this comment does not propose: line ~2124 elsewhere in this
+	// file already flags that the two loads are independent reads that
+	// could in principle disagree (a config.yaml edited between them), and
+	// merging them changes that property, not just where a value is read.
+	// Left undone here regardless: buildRuntime is a long,
+	// carefully-sequenced function (see the "already resolved at the very
+	// top" cross-references throughout it), and reordering statements
+	// within it deserves its own change and its own test, not a drive-by
+	// inside an unrelated feature. Tracked alongside the same existing
+	// pattern in runner.GatewayCredentials/WithProjectLock/
+	// ConfirmWorkspaceExists below, which are assigned after the same
+	// sweep for the same underlying reason (each depends on something not
+	// constructed until later in buildRuntime) and share this exposure.
+	//
+	// What DOES bound the damage if the race is lost without a torn read:
+	// workspaceHomeInitialized's PackSkillLinks comparison detects a
+	// nil-Packs init against a marker (or a subsequent real dispatch)
+	// recording a non-empty set, and re-inits once to add the missing
+	// symlinks — self-healing, at the cost of one extra init run for
+	// whichever workspace's reopen happened to race it.
+	runner.Packs = packs
 
 	// Daemon-side config-editing surface (docs/plans/volume-only-daemon.md
 	// §論点 f: `boid config get/set/unset/apply/edit`). verifyRestartExtractorCoverage

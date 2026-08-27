@@ -733,6 +733,218 @@ func TestBuildWorkspaceInitEnv_IsAContainerEnvironmentNotTheDaemonsOwn(t *testin
 // missing entry is not a cosmetic drift: the engine creates the absent bind
 // target itself, as uid 0, and neither the harness nor the daemon can chown it
 // back (論点 b-2).
+// --- 4. Integration Pack skill symlinks (shadow-b フォローアップ) ---
+//
+// Embedded skills reach .claude/skills/<name> via a host-visible bind mount
+// (skills_overlay.go) because their content is regenerated per installation.
+// Integration Pack skills are baked into the very image the init container
+// runs from (build/container/Dockerfile's `cp -r ... /opt/boid/integrations/`)
+// — daemon and job share one image, so there is no host-visible directory to
+// bind FROM. A symlink inside the init container is therefore the whole
+// mechanism: no bind mount, no daemon-side materialization step.
+
+// TestBuildWorkspaceInitRequest_PreludeCreatesPackSkillSymlinks pins that a
+// PackSkillLink becomes a working symlink at .claude/skills/<Name>, readable
+// through to the real content.
+func TestBuildWorkspaceInitRequest_PreludeCreatesPackSkillSymlinks(t *testing.T) {
+	homeDir := t.TempDir()
+	// Stands in for /opt/boid/integrations/jira-cloud/1.0.0/skills/jira-api —
+	// an image-baked path, never a bind-mount source.
+	packDir := t.TempDir()
+	skillDir := filepath.Join(packDir, "jira-cloud", "1.0.0", "skills", "jira-api")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := buildWorkspaceInitRequest(workspaceInitParams{
+		Slug:           "myws",
+		HomeSource:     "boid-ws-home-testinst-myws",
+		HomeTarget:     homeDir,
+		SkeletonDirs:   workspaceHomeSkeletonDirs(),
+		PackSkillLinks: []PackSkillLink{{Name: "jira-api", Target: skillDir}},
+		HomeID:         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("buildWorkspaceInitRequest: %v", err)
+	}
+
+	code, out := runWorkspaceInitWrapper(t, req)
+	if code != 0 {
+		t.Fatalf("wrapper exited %d, want 0\n%s", code, out)
+	}
+
+	linkPath := filepath.Join(homeDir, ".claude", "skills", "jira-api")
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("stat symlink: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf(".claude/skills/jira-api is not a symlink (mode %s)", info.Mode())
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != skillDir {
+		t.Errorf("symlink target = %q, want %q", target, skillDir)
+	}
+	data, err := os.ReadFile(filepath.Join(linkPath, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read through symlink: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Errorf("content through symlink = %q, want %q", data, "hello")
+	}
+}
+
+// TestBuildWorkspaceInitRequest_PackSkillSymlinkReplacesStaleDirectory pins
+// the recovery path for exactly the state found in production: a skill name
+// that was, before this wiring existed, manually copied into
+// .claude/skills/<name> as a real directory (e.g. jira-api/bitbucket-api,
+// hand-placed from a since-superseded checkout). The prelude must replace it
+// with the symlink rather than fail or nest inside it.
+func TestBuildWorkspaceInitRequest_PackSkillSymlinkReplacesStaleDirectory(t *testing.T) {
+	homeDir := t.TempDir()
+	staleDir := filepath.Join(homeDir, ".claude", "skills", "jira-api")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleDir, "SKILL.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	packDir := t.TempDir()
+	skillDir := filepath.Join(packDir, "jira-cloud", "1.0.0", "skills", "jira-api")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("fresh"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := buildWorkspaceInitRequest(workspaceInitParams{
+		Slug:           "myws",
+		HomeSource:     "boid-ws-home-testinst-myws",
+		HomeTarget:     homeDir,
+		SkeletonDirs:   workspaceHomeSkeletonDirs(),
+		PackSkillLinks: []PackSkillLink{{Name: "jira-api", Target: skillDir}},
+		HomeID:         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("buildWorkspaceInitRequest: %v", err)
+	}
+
+	code, out := runWorkspaceInitWrapper(t, req)
+	if code != 0 {
+		t.Fatalf("wrapper exited %d, want 0\n%s", code, out)
+	}
+
+	linkPath := filepath.Join(homeDir, ".claude", "skills", "jira-api")
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("stale directory was not replaced by a symlink (mode %s)", info.Mode())
+	}
+	data, err := os.ReadFile(filepath.Join(linkPath, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(data) != "fresh" {
+		t.Errorf("content = %q, want %q (stale directory should have been replaced)", data, "fresh")
+	}
+}
+
+// TestBuildWorkspaceInitRequest_PackSkillSymlinksRunBeforeUserScript mirrors
+// TestBuildWorkspaceInitRequest_PreludeRunsBeforeTheUserScript: the symlinks
+// are prelude, not user-script-visible-only-at-the-end state.
+func TestBuildWorkspaceInitRequest_PackSkillSymlinksRunBeforeUserScript(t *testing.T) {
+	packDir := t.TempDir()
+	skillDir := filepath.Join(packDir, "slack", "1.0.0", "skills", "slack-api")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	homeDir := t.TempDir()
+	script := `[ -L "$BOID_WORKSPACE_HOME/.claude/skills/slack-api" ] || exit 17` + "\n"
+	req, err := buildWorkspaceInitRequest(workspaceInitParams{
+		Slug:           "myws",
+		HomeSource:     "boid-ws-home-testinst-myws",
+		HomeTarget:     homeDir,
+		SkeletonDirs:   workspaceHomeSkeletonDirs(),
+		PackSkillLinks: []PackSkillLink{{Name: "slack-api", Target: skillDir}},
+		Script:         []byte(script),
+		ScriptExists:   true,
+		HomeID:         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("buildWorkspaceInitRequest: %v", err)
+	}
+
+	code, out := runWorkspaceInitWrapper(t, req)
+	if code == 17 {
+		t.Fatalf("init.sh observed no pack skill symlink — the prelude must run first\n%s", out)
+	}
+	if code != 0 {
+		t.Fatalf("wrapper exited %d, want 0\n%s", code, out)
+	}
+}
+
+// TestBuildWorkspaceInitRequest_PackSkillSymlinkRerunDoesNotDeleteTarget pins
+// the highest-blast-radius risk in this mechanism: "rm -rf -- <dest>"
+// removes a SYMLINK (dest, inside the workspace home) without following it
+// into the directory it points at (POSIX rm never recurses through a
+// symlink argument itself — it unlinks the link). Running the prelude twice
+// in a row — the ordinary "already initialized, dispatch again" case — must
+// leave the Pack's own image-baked content untouched on the second run.
+func TestBuildWorkspaceInitRequest_PackSkillSymlinkRerunDoesNotDeleteTarget(t *testing.T) {
+	packDir := t.TempDir()
+	skillDir := filepath.Join(packDir, "jira-cloud", "1.0.0", "skills", "jira-api")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("reference"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	homeDir := t.TempDir()
+	links := []PackSkillLink{{Name: "jira-api", Target: skillDir}}
+	req, err := buildWorkspaceInitRequest(workspaceInitParams{
+		Slug:           "myws",
+		HomeSource:     "boid-ws-home-testinst-myws",
+		HomeTarget:     homeDir,
+		SkeletonDirs:   workspaceHomeSkeletonDirs(),
+		PackSkillLinks: links,
+		HomeID:         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("buildWorkspaceInitRequest: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		code, out := runWorkspaceInitWrapper(t, req)
+		if code != 0 {
+			t.Fatalf("run %d: wrapper exited %d, want 0\n%s", i, code, out)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Fatalf("Pack's own content was removed by a re-run of the symlink prelude: %v", err)
+	}
+	linkPath := filepath.Join(homeDir, ".claude", "skills", "jira-api")
+	data, err := os.ReadFile(filepath.Join(linkPath, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read through symlink after re-run: %v", err)
+	}
+	if string(data) != "reference" {
+		t.Errorf("content through symlink after re-run = %q, want %q", data, "reference")
+	}
+}
+
 func TestWorkspaceHomeSkeletonDirs_CoversEveryPerSkillBindTarget(t *testing.T) {
 	got := make(map[string]bool)
 	for _, dir := range workspaceHomeSkeletonDirs() {

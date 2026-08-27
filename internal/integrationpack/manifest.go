@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,6 +21,48 @@ const ManifestAPIVersion = "boid.dev/v1"
 
 // ManifestKind is the only kind ParseManifest accepts.
 const ManifestKind = "IntegrationPack"
+
+// skillNamePattern is skills[].name's allowlist — see ParseManifest's use of
+// it for why this is a positive allowlist rather than another entry in a
+// denylist. Chosen to match ordinary directory-name conventions (what every
+// skills[].name in the three official Packs already looks like:
+// "jira-api", "bitbucket-api", "slack-api") rather than to be maximally
+// permissive: must start with a letter or digit (so a leading "-" cannot be
+// mistaken for a flag by anything that later shells out with the name
+// unquoted), and every character after that is a letter, digit, ".", "_",
+// or "-".
+var skillNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// packPathPattern is skills[].path and connectors[].executable's allowlist,
+// applied ON TOP OF filepath.IsLocal rather than instead of it (IsLocal
+// still does the real "cannot escape the Pack directory" work — this only
+// narrows what characters a path SEGMENT may contain). Same lesson
+// skillNamePattern's own doc comment describes, applied here before it
+// could repeat as a second denylist-of-the-week: a byte a downstream shell
+// strips or reinterprets (NUL being the concrete case B3 found, but a
+// denylist there would just start the same cycle over) can turn a
+// textually-local sequence of segments into something that resolves
+// differently once whatever consumes it actually runs it. Both fields
+// reach a shell exactly the way skills[].name does — Skill.Path becomes
+// PackSkillLink.Target, joined onto pack.Dir and handed to `ln -sfn` in
+// buildWorkspaceInitScript; Connector.Executable becomes
+// BOID_CONNECTOR_EXEC, exec'd by the job's own shell (internal/server's
+// connector_exec.go) — so both get the same allowlist treatment name did,
+// not a separate ad hoc fix.
+var packPathPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$`)
+
+// ValidSkillName reports whether name matches skills[].name's allowlist —
+// exported so a consumer of already-loaded Packs (internal/dispatcher's
+// packSkillLinks, which turns Skill.Name into a .claude/skills/<Name>
+// symlink basename) can apply the SAME check as defense in depth, rather
+// than reimplementing a second, potentially-divergent one. ParseManifest is
+// the primary gate (a manifest failing this fails daemon startup outright);
+// this export exists for the consumer that cannot assume every *Pack it is
+// ever handed came through ParseManifest (a test fixture, a future
+// constructor).
+func ValidSkillName(name string) bool {
+	return skillNamePattern.MatchString(name)
+}
 
 // CredentialInjection selects how a service profile's credential slot is
 // injected into a proxied request — a v0 subset of apigateway.AuthKind
@@ -325,8 +368,8 @@ func ParseManifest(data []byte) (*Manifest, error) {
 		// filepath.IsLocal (path/filepath) is exactly this guarantee:
 		// non-empty, relative, and never escapes its own directory via
 		// "..".
-		if !filepath.IsLocal(rc.Executable) {
-			return nil, fmt.Errorf("integrationpack: connectors[%q]: executable %q must be a non-empty path local to the Pack directory (no absolute path, no \"..\")", rc.Name, rc.Executable)
+		if !filepath.IsLocal(rc.Executable) || !packPathPattern.MatchString(rc.Executable) {
+			return nil, fmt.Errorf("integrationpack: connectors[%q]: executable %q must be a non-empty path local to the Pack directory (no absolute path, no \"..\") matching %s per path segment", rc.Name, rc.Executable, packPathPattern.String())
 		}
 		if rc.ServiceProfile == "" {
 			return nil, fmt.Errorf("integrationpack: connectors[%q]: serviceProfile is required", rc.Name)
@@ -355,6 +398,29 @@ func ParseManifest(data []byte) (*Manifest, error) {
 		if rs.Name == "" {
 			return nil, fmt.Errorf("integrationpack: skills: a skill name must not be empty")
 		}
+		// skillNamePattern, review finding (BLOCKER, Opus round 2): name is
+		// used downstream as a symlink basename joined straight into
+		// .claude/skills/<name> (internal/dispatcher's packSkillLinks /
+		// PackSkillLink) — a DENYLIST there (reject "/", ".", "..", ...)
+		// kept growing a new hole per review round, most recently a NUL
+		// byte: filepath.IsLocal("\x00") is true and filepath.Base("\x00")
+		// == "\x00", so it survived every denylist check, and bash strips
+		// NUL from a heredoc-fed script before executing it — turning `rm
+		// -rf -- '.claude/skills/<NUL>'` into `rm -rf -- '.claude/skills/'`
+		// (confirmed against a real shell), the same "wipe every embedded
+		// skill's bind target" failure the "/" case had, except this one
+		// exits non-zero and never writes a completion marker, so it
+		// repeats on every subsequent dispatch rather than settling.
+		// An ALLOWLIST closes the whole denylist-of-the-week pattern at
+		// once: this is validated once, at manifest load (a malformed
+		// manifest already fails daemon startup outright — see LoadPacks'
+		// own "検証失敗は起動エラー" posture), and internal/dispatcher's
+		// packSkillLinks keeps its own equivalent filter as defense in
+		// depth for any PackSkillLink built some other way (tests, a future
+		// constructor) rather than trusting this one gate transitively.
+		if !skillNamePattern.MatchString(rs.Name) {
+			return nil, fmt.Errorf("integrationpack: skills[%q]: name must match %s (used as a symlink basename under .claude/skills/)", rs.Name, skillNamePattern.String())
+		}
 		// F4 (MEDIUM) — same no-silent-first-match posture as
 		// serviceProfiles/connectors above.
 		if skillNames[rs.Name] {
@@ -364,8 +430,8 @@ func ParseManifest(data []byte) (*Manifest, error) {
 		// F5 (recommended) — same non-empty/local-path guarantee as
 		// connectors[].executable above; PR-5's selective skill mount
 		// resolves this relative to the Pack's own directory too.
-		if !filepath.IsLocal(rs.Path) {
-			return nil, fmt.Errorf("integrationpack: skills[%q]: path %q must be a non-empty path local to the Pack directory (no absolute path, no \"..\")", rs.Name, rs.Path)
+		if !filepath.IsLocal(rs.Path) || !packPathPattern.MatchString(rs.Path) {
+			return nil, fmt.Errorf("integrationpack: skills[%q]: path %q must be a non-empty path local to the Pack directory (no absolute path, no \"..\") matching %s per path segment", rs.Name, rs.Path, packPathPattern.String())
 		}
 		if rs.RequiresServiceProfile != "" && !profileNames[rs.RequiresServiceProfile] {
 			return nil, fmt.Errorf("integrationpack: skills[%q]: requiresServiceProfile %q is not declared under serviceProfiles", rs.Name, rs.RequiresServiceProfile)
