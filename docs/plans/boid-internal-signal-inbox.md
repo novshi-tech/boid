@@ -22,7 +22,7 @@
 
 ### 非ゴール
 
-- 記録 (`attrs_set` / `progress`) の廃止 — 監査ログとしての役割は残る (§4.7)
+- 記録 (`attrs_set` / `progress`) の廃止 — 監査ログとしての役割は残る (§4.6)
 - khi の判断ロジック (`khi/app/write.py`・`.claude/skills/khi-sweep/`) の変更
 - 外部 connector (slack/mentions ほか 2 本) の変更
 - `boid task create --idempotency-key` と `khi/domain/childid.py` の重複解消 —
@@ -184,7 +184,7 @@ boid 自身の action ──[core が直接]──▶ ┘                       
 (`is_signal` の docstring: `aborted` の task には `attrs_set` も `noted` も打てないので、
 通すと記録が残せず永久に再検知する)。
 
-処理済みの印が ack になれば (§4.4)、**印は signal 行に付くので相手の task status に一切
+処理済みの印が ack になれば (§4.3)、**印は signal 行に付くので相手の task status に一切
 依存しない**。よって対象軸は「弾かないと壊れる制約」ではなくなり、純粋に
 「見る価値があるか」の篩 = workspace の責務へ降格する。
 
@@ -196,70 +196,18 @@ boid 自身の action ──[core が直接]──▶ ┘                       
 | 対象軸 (card 宛かどうか) | **core** — ingest の範囲として (下記) |
 | ノイズ判定 (`self_authored` 等) | workspace — 現行のまま `screen.py` に残る |
 
+**actor 軸の「自分自身」は、その workspace で `signals.sources[]` を宣言している
+project の job / task を指す。** メタプロジェクトとはその宣言を持つ project のことなので、
+内部シグナル用の宣言を別に足す必要はない。複数の project が宣言していても、その全部を
+自己参照として落とせば閉じる。
+
 対象軸を core に置くのは「篩」としてではなく、**ingest の範囲**としてである。外部
 connector が「自分宛のメンションだけ取る」「アサインされた課題だけ取る」と決めているのと
 同じレイヤの判断であり、篩ではない。範囲を「card 型 task 宛の action」に置くと、
 `api_gateway_request` のような大量の雑音 (LLM task 1 回で 100 行超、`cursor.py` の
 docstring) が構造的に inbox へ入らない。
 
-### 4.3 宣言は要らない
-
-**project.yaml に新しいフィールドを足さない。**
-
-内部シグナルを受け取るのはメタプロジェクトだけであり、**メタプロジェクトとは
-`signals.sources[]` を宣言している project のことである**。つまりその宣言自体が既に
-「この project がメタプロジェクトである」を表しているので、内部シグナル専用の宣言は
-存在しなくてよい。
-
-```yaml
-signals:
-  sources:                               # この宣言を持つ project = メタプロジェクト
-    - connector: slack/mentions          # 既存のまま。1 文字も足さない
-      service: slack-cloud
-      every: 10m
-```
-
-- **§4.2 の actor 軸「自分自身の書き込み」は、その workspace で `signals` を宣言している
-  project の job / task を指す**
-- **複数の project が宣言していても、この設計は壊れない。** 宣言している project 全部の
-  書き込みを落とせば、どのメタプロジェクトも自走しない。代償は「A の動きを B が検知
-  できない」ことだが、A と B が別々の card 群を担当する前提なら見る必要が無い ——
-  同じ card を両方が担当するなら、それは 2 writer であって別の破綻である
-- **ただし inbox 側は複数のメタプロジェクトを想定していない。** `SignalFilter` は
-  WorkspaceID / Service / Connector / State / Limit しか持たず、`AckSignals` も
-  workspace スコープ (`internal/orchestrator/signal_store.go`) —— **inbox に「誰宛か」の
-  概念が無い**。複数居ると同じ pending 列を読み合い、**先に ack した方が勝って、もう
-  片方はその signal を二度と見られない**。これは内部シグナルに限らず**外部シグナルでも
-  同じように起きる既存機構の穴**であり、本 doc はそれを作りもしないし解きもしない (§8)
-- **それでも「1 workspace 1 個」の制約は課さない。** 上のとおり壊れるのは既存の signals
-  機構の側であって内部シグナルではないので、制約を課すなら signals 機構全体に課すのが筋。
-  内部シグナルにだけ新しい不変条件を持ち込むと、既存と一貫しないまま制約だけが増える
-  (既存の検証は project 単位で完結している、`internal/orchestrator/spec_loader.go:123`)
-- **`signals` を宣言した project が居ない workspace では、ingest する相手が居ないので
-  何も起きない。** 有効/無効のスイッチを別に用意する必要がない
-- envelope の `source.pack` に使う `boid` は予約名とし、Pack loader が同名の外部 Pack を
-  読み込むことを禁じる (§4.6)
-
-#### 検討して捨てた案: `signals.internal: true` のマーカー
-
-当初案は `SignalsConfig` に `internal: true` という兄弟フィールドを足し、それが
-「どの project がメタプロジェクトか」を core に教える形だった。**捨てた理由は、それが
-実在しない要求に対する先読みだったこと。**
-
-無効化したいケースを 3 つ検討した —— 移行中のロールバック、暴走時の緊急停止、内部
-シグナルの要らないメタプロジェクト。**どれも成立しない**: 前 2 つは `false` にするのと
-宣言ごと消すので結果が同じ (どちらも project.yaml の編集 + push + `boid project fetch`
-であり、`false` の方が速いわけでもない)、3 つめは card パイプラインを持つ以上、子の終端を
-拾わない構成に意味が無い。
-
-`false` を書く意味が無い bool はフラグではなくマーカーであり、**そのマーカーが指すものは
-`signals.sources[]` の有無から既に読み取れる**。加えてこの案は「1 workspace 1 個」という
-検証を要求していたが、既存の signals 機構はその制約を持っていない —— 内部シグナルのため
-だけに新しい不変条件を持ち込むことになっていた。
-
-この案を捨てたことで PR が 1 本まるごと消えた (§9)。
-
-### 4.4 処理済みの印を ack に一本化する
+### 4.3 処理済みの印を ack に一本化する
 
 現行、khi が「もう見た」と判断する根拠は 2 系統ある。
 
@@ -285,7 +233,7 @@ core は `MaxSignalAttempts = 5` (`internal/orchestrator/signal_store.go`)、khi
 ない (`--state dead` で見え、人が ack できる)。**core 側に揃える**のを推す — メタ
 プロジェクトごとに上限を変える必要が実証されていない。
 
-### 4.5 ingest の起こし方 (実装方式)
+### 4.4 ingest の起こし方 (実装方式)
 
 2 案ある。
 
@@ -325,7 +273,7 @@ action は流れない。
 存在する欠けである**。統合で直すのではなく、別件として切り出す (直したつもりで直って
 いない、が一番まずい)。
 
-### 4.6 envelope への写像
+### 4.5 envelope への写像
 
 `signal-envelope-inventory.md` §5 の schema v0 に載せる。
 
@@ -333,7 +281,7 @@ action は流れない。
 |---|---|---|
 | `id` | action の id | action は不変なので dedup が効く |
 | `occurred_at` | action の `created_at` | |
-| `source.pack` | `boid` | 予約名 (§4.3) |
+| `source.pack` | `boid` | 予約名。Pack loader が同名の外部 Pack を読み込むことを禁じる |
 | `source.connector` | `actions` | |
 | `source.service` | (空) | 外部サービスへ到達しないため |
 | `identity` | 対象 card の task id | 現行 khi の Target と同じ指し方 |
@@ -345,7 +293,7 @@ action は流れない。
 identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope に閉じない、という既存の
 契約の範囲内である。判断側は現行どおり task id を受け取る。
 
-### 4.7 記録に残る役割
+### 4.6 記録に残る役割
 
 `attrs_set` / `progress` は**廃止しない**。役割が 2 つに分かれ、片方だけが消える。
 
@@ -388,7 +336,7 @@ encode 側は残る。
 
 ## 6. 実装の勘所
 
-- **2 本の書き込み口を両方塞ぐ** (§4.5)。片方だけは無音の取りこぼしになる
+- **2 本の書き込み口を両方塞ぐ** (§4.4)。片方だけは無音の取りこぼしになる
 - **ingest 失敗で action の書き込みを巻き戻さない。** 同一 tx に載せるが、signal の
   INSERT 失敗が card の状態更新を巻き戻すのは因果が逆。ingest 側のエラーはログに残して
   action は成立させる (取りこぼした signal は次に同じ card が動いたときの signal で
@@ -414,7 +362,7 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 
 1. **core 側を入れる** (PR-1)。**khi は既に `signals.sources[]` を宣言しているので、
    この時点から内部 signal が inbox に入り始める。** khi はまだ読まないので pending の
-   まま溜まる (§4.3 でスイッチを廃したので、「入れるが流さない」段階は存在しない)。
+   まま溜まる (内部シグナル用のスイッチは無いので、「入れるが流さない」段階は存在しない)。
    **ロールバックの口は boid のデプロイを戻すこと** —— project.yaml 側にスイッチは無い
 2. **khi で並走観測** (PR-2)。現行どおり action 列を直読みしたまま、**inbox の内部
    signal 列と自分の検知結果を突き合わせてログに出す** (ack はしない)。ここで等価性を
@@ -443,8 +391,7 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 - **メタプロジェクト作成スキル** — §3 で統合の動機として参照しているが、設計は統合の
   完了後に行う (`signal-driven-review.md` §12「scan script の定型を組み込みスキル/
   テンプレとして配布するか」)
-- **1 workspace に複数のメタプロジェクトが居るときの inbox の取り合い** — §4.3 で触れた
-  とおり、`SignalFilter` にも `AckSignals` にも project の概念が無いので、複数居ると
+- **1 workspace に複数のメタプロジェクトが居るときの inbox の取り合い** — `SignalFilter` にも `AckSignals` にも project の概念が無いので、複数居ると
   同じ pending 列を読み合って先に ack した方が勝つ。**外部シグナルで既に成立している
   穴**であり、内部シグナルを足しても新しく生まれるものではない。解くなら inbox に
   「誰宛か」を持たせる話になり、それは signals 機構全体の設計変更なので本 doc の外
@@ -460,9 +407,6 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 | PR-3 | khi | 一括 ack のうえ inbox 一本読みへ切り替え。`--claim` を使う。`on: signals` trigger へ | Q16-Q19 |
 | PR-4 | khi | §5 の 848 行を撤去 | Q20-Q21 |
 | (独立) | khi | §8 の死にコード 1,600 行を削除 | — |
-
-**core 側は 1 本で済む。** §4.3 でマーカーを捨てたことで、project.yaml のスキーマ追加・
-その parse・「1 workspace 1 個」の検証を担う PR がまるごと不要になった。
 
 ---
 
@@ -484,13 +428,13 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 | # | 問い |
 |---|---|
 | Q5 | `signals` を宣言した project が居ない workspace で、既存の action 書き込み経路の挙動が 1 ビットも変わらないことをテストが示しているか |
-| Q6 | もう 1 本の書き込み口 (`dispatcher/store.go` の daemon 再起動時 abort) が範囲外である根拠が示されているか。加えて「子の abort で親 card に `child_closed` が立つか」を確認し、立たないなら別件として切り出したか (§4.5) |
+| Q6 | もう 1 本の書き込み口 (`dispatcher/store.go` の daemon 再起動時 abort) が範囲外である根拠が示されているか。加えて「子の abort で親 card に `child_closed` が立つか」を確認し、立たないなら別件として切り出したか (§4.4) |
 | Q7 | 自己参照の遮断が fail-close か — actor を判定できないケースで ingest しないことをテストが示しているか |
 | Q8 | メタプロジェクト自身の sweep task / trigger job が書いた action が inbox に入らないことを、実際の actor 文字列 (`task:<id>` と `task:`) でテストしているか |
 | Q9 | `api_gateway_request` のような card 宛でない action が inbox に入らないことをテストが示しているか |
 | Q10 | 同じ action が 2 度 ingest されても no-op であることをテストが示しているか (PRIMARY KEY dedup) |
 | Q11 | signal の INSERT が失敗しても action の書き込みが成立することをテストが示しているか (§6) |
-| Q12 | 1 workspace に `signals` を宣言した project が複数あっても壊れないか — その**全部**の job / task が自己参照として落ちることをテストが示しているか (§4.3 で「1 個」の制約を課さないと決めたので、複数居る前提で閉じている必要がある) |
+| Q12 | 1 workspace に `signals` を宣言した project が複数あっても壊れないか — その**全部**の job / task が自己参照として落ちることをテストが示しているか (「1 個」の制約は課さないので、複数居る前提で閉じている必要がある) |
 
 ### C. PR-2 (並走)
 
@@ -515,6 +459,6 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 
 | # | 問い |
 |---|---|
-| Q22 | この統合で workspace 側にも core 側にも**新たに**生まれた宣言・設定・機構がゼロか (core へ移すつもりが両側に増えていないか。§4.3 でマーカーを捨てた判断がそのまま維持されているか) |
+| Q22 | この統合で workspace 側にも core 側にも**新たに**生まれた宣言・設定・機構がゼロか (core へ移すつもりが両側に増えていないか) |
 | Q23 | `nvt-tasks` に card パイプラインを載せるとき、§5 の 848 行に相当するものを 1 行も書かずに済むか |
 | Q24 | attempts 上限が 3 から 5 に変わることによる運用上の変化 (dead になるまでの時間) が確認され、許容されているか |
