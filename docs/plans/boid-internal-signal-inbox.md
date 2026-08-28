@@ -22,11 +22,12 @@
 
 ### 非ゴール
 
-- 記録 (`attrs_set` / `progress`) の廃止 — 監査ログとしての役割は残る (§4.7)
-- khi の判断ロジック (`khi/app/write.py`・`.claude/skills/khi-sweep/`) の変更
+- **人が後から「あの巡は何をしたか」を追えなくすること** —— `progress` に残すのは続ける。
+  ただし**機械可読な記録の書式** (`khi_record` attrs / `khi-record v1 ` prefix) は用途ごと
+  無くなる (§4.7・§5.2)
+- khi の**判断の意味論** (verb の語彙・`khi-sweep` の判断方針) の変更 —— ただし
+  `write.py` から記録の自動付与は消える (§5.3)
 - 外部 connector (slack/mentions ほか 2 本) の変更
-- `boid task create --idempotency-key` と `khi/domain/childid.py` の重複解消 —
-  独立した論点なので別 doc に譲る (§8「この doc が扱わないもの」)
 
 ---
 
@@ -123,7 +124,8 @@ boid には現在メタプロジェクトが 2 つある。
 > khi-task-collector が十分安定するまで統合しない方針のため。
 
 その条件は満たされた。よって `nvt-tasks` に card パイプラインを載せる作業が次に来る。
-このとき §2.3 の 848 行は、**そのまま 2 個目のメタプロジェクトへ複製される**。
+このとき **§5 で数える 3,566 行が、そのまま 2 個目のメタプロジェクトへ複製される**
+(§2.3 の 848 行はそのうち「責務境界の表が core と定義している」ぶんだけを数えた値)。
 
 `signal-driven-review.md` §12 の未決リストには、もう 1 行こう書いてある:
 
@@ -371,46 +373,118 @@ identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope �
 
 ### 4.7 記録に残る役割
 
-`attrs_set` / `progress` は**廃止しない**。役割が 2 つに分かれ、片方だけが消える。
+現行の「記録」は 3 つの仕事を兼ねている。**印が ack になると、残るのは 1 つだけ。**
 
 | 記録の役割 | 統合後 |
 |---|---|
-| 次の巡が「もう見た」と分かる根拠 | **消える** (ack が担う) |
-| 人が後から「あの巡は何をしたか」を追う監査ログ | **残る** (`khi/app/write.py` が書き続ける) |
-| card の summary / attrs そのもの | **残る** (これは記録ではなく状態) |
+| 次の巡が「もう見た」と分かる根拠 | **消える** —— ack が担う |
+| 試行回数を数える材料 | **消える** —— core の attempts が担う |
+| 人が後から「あの巡は何をしたか」を追う監査ログ | **残る** —— ただし形が変わる (下記) |
+| card の summary / attrs そのもの | 残る (これは記録ではなく**状態**) |
 
-消えるのは `khi/domain/record.py` の **decode 側** (検知が記録を読み返す経路) であり、
-encode 側は残る。
+**残る監査ログは、機械可読である必要が無くなる。** 現行の記録は
+`khi/domain/record.py` が `khi_record` attrs と `khi-record v1 ` prefix 付き progress として
+**次の巡の自分が読み返すために**構造化している。読み返す相手が消えれば、**書式も消える**
+—— 人が読む progress を `boid task notify --progress` で残せば足りる。
+
+これが §5.2 で `domain/record.py` (327 + 369) を「decode 側だけ縮小」ではなく丸ごと
+消える側に置いた理由である。
 
 ---
 
-## 5. workspace 側から消えるもの (実測)
+## 5. 統合後、workspace 側に何が残るか
 
-| khi のモジュール | 本体 | テスト | 統合後 |
+**数え方を変えた。** 初版は現行のモジュールを 1 つずつ見て「消える / 縮小」を付けていたが、
+それだと**現行の構成そのものが暗黙の前提として残る**。実際それで `app/trigger.py` (498 行)
+が表から丸ごと抜けていた —— 「trigger は残るもの」と置いていたからである。ここでは
+**ゼロから組んだら何が要るか**を先に決め、現行をそこへ写像する。
+
+### 5.1 統合後の sweep に要る機能
+
+| 機能 | 実体 | 現在の置き場 |
+|---|---|---|
+| signal を読む | `boid signal list --claim` 1 発 | `adapters/inbox.py` |
+| identity で集約する | 対象 1 件 = card 1 枚に畳む | `app/trigger.py` の `merge_targets` |
+| 自分宛でないノイズを落とす | `self_authored` 等、**workspace ごとに違う篩** | `domain/screen.py` の一部 |
+| 対象一覧を組む | subagent へ渡す形にする | `app/trigger.py` の `instruction` |
+| 判断する | LLM | `.claude/skills/khi-sweep/SKILL.md` |
+| boid へ書く | verb → boid コマンド | `app/write.py` |
+| ack する | `boid signal ack` 1 発 | `adapters/inbox.py` |
+
+**この一覧に「栞」「試行回数」「処理済みの印」「action 列を読む」が無い。** それが統合の
+中身である。
+
+### 5.2 丸ごと消えるモジュール
+
+| モジュール | 本体 | テスト | なぜ消えるか |
 |---|---|---|---|
-| `domain/cursor.py` | 117 | 150 | **全消** (栞が不要) |
-| `adapters/file_cursor.py` | 57 | 73 | **全消** |
-| `domain/attempts.py` | 72 | 105 | **全消** (core の attempts へ) |
-| `domain/boid/action.py` | 135 | 139 | **全消** (action 列を読まない) |
-| 小計 | **381** | **467** | **848 行** |
-| `domain/record.py` の decode 側 | (327 の一部) | (369 の一部) | 縮小 |
-| `app/detect.py` の `plan_boid` | (375 の一部) | (195+414 の一部) | 縮小 |
-| `domain/screen.py` の `is_signal` | (138 の約半分) | (181 の一部) | core へ移動 |
-| `adapters/boid_store.py` の `list_actions` | (522 の一部) | (653 の一部) | 縮小 |
+| `app/trigger.py` | 498 | 824 | 5 つの仕事のうち 4 つ (並走防止・検知・記録・栞) が core へ移り、残る「sweep を起こす」は trigger の `run:` 数行になる |
+| `domain/record.py` | 327 | 369 | **「処理済みの印」そのもののモジュール。** encode の呼び出し元は write と trigger、decode の呼び出し元は `boid/action.py` だけ。印が ack になれば全部消える |
+| `adapters/inbox.py` | 196 | 292 | envelope → `Signal` のマッピングが要らなくなる (下記)。読みと ack は CLI 2 発 |
+| `domain/boid/action.py` | 135 | 139 | action 列を読まない |
+| `domain/cursor.py` | 117 | 150 | 栞が無くなる |
+| `domain/signal.py` | 117 | 95 | `mark_of`/`time_of_mark` は栞用。`Signal` 型の source-prefix 不変条件も、envelope の id をそのまま使えば不要 |
+| `domain/attempts.py` | 72 | 105 | core の attempts / dead へ |
+| `adapters/file_cursor.py` | 57 | 73 | 栞の永続化 |
+| **合計** | **1,519** | **2,047** | **3,566 行** |
 
-**確実に消えるのが 848 行。** 縮小分を足すと 1,000 行を超える見込みだが、正確な数は実装時に
-確定する。
+初版が挙げていた 848 行の **4.2 倍**である。差は「現行のモジュールを出発点にしたか、
+要る機能を出発点にしたか」だけで、統合の中身は何も変えていない。
 
-行数より重要なのは **消えるものの質**。栞と attempts は khi で最も壊れやすかった機構で、
-運用で踏んだバグはここから出ている — 「栞が自分自身を越えられない再検知ループ」
-「栞が assigned のまま settle せず deadlock」の 2 件は
-`signal-driven-review.md:428` が inbox の不変条件の設計根拠として引いているものであり、
-**core の inbox はその再発を構造的に防ぐ形で既に作られている**。統合とは、その防御を
-内部シグナルにも適用することに他ならない。
+### 5.3 大きく縮むモジュール
 
----
+| モジュール | 本体 | テスト | 残るもの |
+|---|---|---|---|
+| `app/detect.py` | 375 | 609 | `plan_boid` (action 列の計画) が消える。`plan_candidates` の篩は残る |
+| `domain/screen.py` | 138 | 181 | `is_signal` (S-9 の 2 段) が core へ。`self_authored` は workspace に残る |
+| `adapters/boid_store.py` | 522 | 653 | `list_actions` と action 系が消える |
+| `app/write.py` | 1008 | 1515 | verb の意味論は変わらないが、**記録の自動付与 (`encode_attrs`/`encode_progress`) が消える** |
 
-## 6. 実装の勘所
+### 5.4 別扱いだが、ゼロベースなら消える
+
+| モジュール | 本体 | テスト | 行き先 |
+|---|---|---|---|
+| `domain/childid.py` | 115 | 146 | `boid task create --idempotency-key` (#1012) と同じ仕事。初版は「独立した論点」として §8 に逃がしていたが、ゼロから組むなら子 id を自前で採番する理由が無い |
+
+### 5.5 消えるものの質
+
+行数より重要なのはここ。栞と attempts は khi で最も壊れやすかった機構で、運用で踏んだ
+バグはここから出ている —— 「栞が自分自身を越えられない再検知ループ」「栞が assigned の
+まま settle せず deadlock」の 2 件は `signal-driven-review.md:428` が inbox の不変条件の
+設計根拠として引いているものであり、**core の inbox はその再発を構造的に防ぐ形で既に
+作られている**。統合とは、その防御を内部シグナルにも適用することに他ならない。
+
+### 5.6 前提の見直し — 初版が現状に引っ張られていた 4 点
+
+| # | 初版の前提 | 実際 |
+|---|---|---|
+| 1 | `app/trigger.py` は残る (表に載せてすらいなかった) | 役割の 4/5 が core へ移り、残りは trigger の `run:` 数行 |
+| 2 | `domain/record.py` は decode 側だけ消える | encode 側も消える —— 記録は「処理済みの印」そのもので、印が ack になれば書く理由が無い |
+| 3 | `domain/signal.py` の `Signal` 型は残る | envelope をそのまま扱えば要らない。`inbox.py` が id に prefix を補っているハックも、この型の不変条件のためだけに存在する |
+| 4 | `domain/childid.py` は独立した論点 | `--idempotency-key` と同じ仕事。ゼロベースなら残す理由が無い |
+| 5 | 記録は「decode 側だけ消える」 | 読み返す相手 (次の巡の自分) が消えれば**書式そのものが要らない**。encode 側も消える (§4.7) |
+
+**5 つとも同じ誤り方をしている** —— 現行のモジュールを 1 つずつ見て「これは残るか」と
+問うたので、**モジュールが存在すること自体が残す理由**になっていた。要る機能から数え直すと
+逆になる。
+
+## 6. 先に決めること、実装の勘所
+
+### 6.1 trigger.py を消すと決まらないもの
+
+`app/trigger.py` の 5 つの仕事のうち 4 つは行き先が決まった (§5.2) が、**残る 1 つと、
+消える仕事の代わりが決まっていない**。実装に入る前にここを埋める。
+
+| 問い | 現行の答え | 統合後の候補 |
+|---|---|---|
+| **生きている sweep があるときに 2 枚目を立てない**のは誰か | `trigger.py` の `run_once` が先頭で `boid` に問い合わせて何もせず終わる | `on: signals` の single-flight は **trigger の重複**しか防がない —— sweep task が `every` を超えて生きていると次の発火が 2 枚目を立てうる。`boid task create --idempotency-key` (#1012) で畳むか、trigger の `run:` で 1 回問い合わせるか |
+| **誰がいつ ack するか** | sweep が記録を card に書く → **次の巡の** trigger が記録を読んで settled を判定 → ack。1 巡またぐのは記録が「完了の証拠」だから | sweep が**判断を書いた直後に自分で** ack する。**順序を逆にしてはいけない** —— ack を先に打つと、crash した signal が pending から消えたまま誰も処理していない状態になる |
+| **対象一覧を誰が組むか** | trigger が `instruction` に埋めて sweep に渡す (daemon 側から workspace の手順を指示するとバグる、の分担) | sweep task 自身が `boid signal list --claim` を読んで組む。trigger の `run:` は sweep を起こすだけになる |
+
+3 つとも「trigger job (LLM なし) と sweep task (LLM あり) の分担をどう引き直すか」という
+1 つの問いの側面である。
+
+### 6.2 実装の勘所
 
 - **2 本の書き込み口を両方塞ぐ** (§4.5)。片方だけは無音の取りこぼしになる
 - **書き込み元 project を `CreateAction` まで運ぶ経路が要る。** §4.3 の判定材料は
@@ -451,7 +525,7 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
    (並走中の pending は GC の対象外 —— `GCSignals` は acked と dead しか消さない
    ので、この一括 ack が唯一の回収経路になる)
 4. **khi を inbox 一本読みに切り替える** (PR-3)。action 列の直読みをやめ、`--claim` を使う
-5. **消す** (PR-4)。§5 の 848 行を撤去
+5. **消す** (PR-4)。§5.2 の 3,566 行を撤去し、§5.3 の 4 モジュールを縮める
 6. **`nvt-tasks` に載せる** — ここで初めて 2 個目のメタプロジェクトが立ち上がる。
    §3 の「複製」は発生しない
 
@@ -459,9 +533,6 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 
 ## 8. この doc が扱わないもの
 
-- **`khi/domain/childid.py` (115 + 146) と `boid task create --idempotency-key` (#1012) の
-  重複** — 内部シグナル統合とは独立した論点。子 id の採番と世代管理は検知ではなく書き込み
-  側の関心事であり、統合しても消えない
 - **khi の死にコード** — `adapters/{slack,jira,bitbucket,gateway}.py` (711) と
   `ports/source.py` (29)、`app/trigger.py` の `default_sources()`/`collect()`、および
   対応テスト 820 行。2026-08-27 カットオーバーでロールバック用に残置されたもので、
@@ -483,7 +554,7 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 | PR-1 | core | `CreateAction` での ingest。actor 軸の遮断、card 宛への範囲限定、envelope 写像、`pack: boid` の予約 | Q5-Q12 |
 | PR-2 | khi | 並走で等価性を観測 (ack しない) | Q13-Q15 |
 | PR-3 | khi | 一括 ack のうえ inbox 一本読みへ切り替え。`--claim` を使う。`on: signals` trigger へ | Q16-Q19 |
-| PR-4 | khi | §5 の 848 行を撤去 | Q20-Q21 |
+| PR-4 | khi | §5.2 の 3,566 行を撤去し、§5.3 を縮める | Q20-Q21 |
 | (独立) | khi | §8 の死にコード 1,600 行を削除 | — |
 
 ---
@@ -530,7 +601,7 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 | Q17 | 切り替え後、khi の読みが `boid signal list` 1 本になっているか (`boid action list` の呼び出しが検知経路から消えたか) |
 | Q18 | `--claim` を使っており、attempts が core 側で増えることを実データで確認したか |
 | Q19 | `on: signals` trigger へ移行し、子 task の終端で sweep が起きることを実データで確認したか |
-| Q20 | §5 の 848 行が実際に削除され、削除後もテストが通るか |
+| Q20 | §5.2 の 3,566 行が実際に削除され、削除後もテストが通るか。**`app/trigger.py` が消えているか** (初版の見積もりが落としていた最大のモジュール) |
 | Q21 | 撤去した機構に依存していた記述 (`khi-sweep` SKILL.md の「機構が持っているので気にしなくていいこと」節ほか) が追随して更新されているか |
 
 ### E. 全体 (どの段階でも)
@@ -538,5 +609,6 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 | # | 問い |
 |---|---|
 | Q22 | この統合で workspace 側にも core 側にも**新たに**生まれた宣言・設定・機構がゼロか (core へ移すつもりが両側に増えていないか) |
-| Q23 | `nvt-tasks` に card パイプラインを載せるとき、§5 の 848 行に相当するものを 1 行も書かずに済むか |
+| Q23 | `nvt-tasks` に card パイプラインを載せるとき、§5.1 の 7 機能だけで済むか — §5.2 に相当するものを 1 行も書かずに済むか |
 | Q24 | attempts 上限が 3 から 5 に変わることによる運用上の変化 (dead になるまでの時間) が確認され、許容されているか |
+| Q25 | §6.1 の 3 つ (並走防止の置き場・ack を打つ順序・対象一覧を誰が組むか) が実装前に決まっているか。とくに **ack を判断の書き込みより先に打っていない**か — 逆順だと crash した signal が pending から消えたまま誰も処理していない状態になる |
