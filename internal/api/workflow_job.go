@@ -8,7 +8,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req JobDoneRequest) (*Job, error) {
+func (s *TaskWorkflowService) CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error) {
 	job, err := s.Jobs.GetJob(jobID)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
@@ -111,7 +111,7 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 		if err := tx.UpdateTask(newTask); err != nil {
 			return err
 		}
-		return tx.CreateAction(action)
+		return tx.CreateAction(ctx, action)
 	}); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}

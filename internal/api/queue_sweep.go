@@ -111,7 +111,7 @@ func (s *TaskWorkflowService) recordWakeDue(ctx context.Context, taskID string) 
 			ToStatus:   fresh.Status,
 			Actor:      orchestrator.ActorFromContext(ctx),
 		}
-		return tx.CreateAction(action)
+		return tx.CreateAction(ctx, action)
 	})
 }
 
@@ -259,7 +259,12 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, ch
 			Payload:    payload,
 			Actor:      orchestrator.ActorDaemon,
 		}
-		if err := tx.CreateAction(action); err != nil {
+		// context.Background(): this sweep is daemon-originated bookkeeping
+		// (never a sandbox write — see the Actor above), so there is no
+		// TokenContext-carried writer project to thread through
+		// (docs/plans/boid-internal-signal-inbox.md §4.3's "daemon" row —
+		// always ingest-eligible on the actor axis).
+		if err := tx.CreateAction(context.Background(), action); err != nil {
 			return err
 		}
 		// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): same

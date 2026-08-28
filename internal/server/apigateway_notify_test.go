@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -163,7 +164,7 @@ func TestNewAPIGatewayRecorder_ActionRecordedButExcludedFromTimeline(t *testing.
 	// drop out) rather than passing vacuously if Build() dropped every
 	// Action. Without this, a regression that made Build() discard all
 	// actions would still pass the assertions below.
-	if err := tasks.CreateAction(&orchestrator.Action{
+	if err := tasks.CreateAction(context.Background(), &orchestrator.Action{
 		TaskID:     task.ID,
 		Type:       "progress",
 		Payload:    []byte(`{"message":"control row"}`),

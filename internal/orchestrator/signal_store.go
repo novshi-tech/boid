@@ -191,9 +191,13 @@ func IngestSignals(dbtx db.DBTX, workspaceID, service, connector string, rows []
 	if workspaceID == "" {
 		return fmt.Errorf("ingest signals: workspace id must not be empty")
 	}
-	if service == "" {
-		return fmt.Errorf("ingest signals: service must not be empty")
-	}
+	// service MAY be empty (docs/plans/boid-internal-signal-inbox.md §4.6):
+	// boid's own internal-signal source (InternalSignalPack/
+	// InternalSignalConnector, signal_ingest_bridge.go) never reaches an
+	// external service, so its envelope's source.service is deliberately
+	// "" — unlike workspaceID/connector, which every source (external or
+	// internal) always has, service has no fallback value that wouldn't
+	// misrepresent "no service instance was involved" as some real one.
 	if connector == "" {
 		return fmt.Errorf("ingest signals: connector must not be empty")
 	}

@@ -642,7 +642,7 @@ func applyAnsweredSideEffect(tx TxStore, taskID string) error {
 // would be wrong: `transition` is Manual:true on the card machine, reachable
 // against any card-carrying task, and a card with no task_triage row has
 // nothing to discard).
-func recordAndStripSuggestionIfPresent(tx TxStore, taskID string, transition *orchestrator.Action) error {
+func recordAndStripSuggestionIfPresent(ctx context.Context, tx TxStore, taskID string, transition *orchestrator.Action) error {
 	tt, err := tx.GetTaskTriage(taskID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -670,7 +670,7 @@ func recordAndStripSuggestionIfPresent(tx TxStore, taskID string, transition *or
 		Payload:    payload,
 		Actor:      transition.Actor,
 	}
-	if err := tx.CreateAction(discard); err != nil {
+	if err := tx.CreateAction(ctx, discard); err != nil {
 		return fmt.Errorf("record discarded suggestion: create action: %w", err)
 	}
 	stripped, sErr := orchestrator.StripDetailAttrs(tt.Detail, "suggestion")
@@ -746,7 +746,14 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 			Payload:    payload,
 			Actor:      orchestrator.ActorDaemon,
 		}
-		if err := tx.CreateAction(action); err != nil {
+		// context.Background(): this self-record is daemon-originated
+		// bookkeeping regardless of what triggered finalizeTerminal to run
+		// (a sandbox job completing, a dispatch error, ...) — the child_closed
+		// FACT itself is always attributed to the daemon (Actor above), never
+		// to whatever sandbox write happened to cause it, so there is no
+		// TokenContext-carried writer project to thread through here
+		// (docs/plans/boid-internal-signal-inbox.md §4.3's "daemon" row).
+		if err := tx.CreateAction(context.Background(), action); err != nil {
 			return err
 		}
 		// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): a child
@@ -909,7 +916,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			orchestrator.TaskTriageChildStatusClosed:
 		default:
 			cerr := fmt.Errorf("accept(go): child %q has unrecognized status %q", children[i].ID, children[i].Status)
-			s.recordDispatchError(taskID, task.Status, cerr)
+			s.recordDispatchError(ctx, taskID, task.Status, cerr)
 			return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
 		}
 	}
@@ -925,12 +932,12 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		}
 		if children[i].Spec == nil {
 			cerr := fmt.Errorf("accept(go): child %q is specced but has no spec", children[i].ID)
-			s.recordDispatchError(taskID, task.Status, cerr)
+			s.recordDispatchError(ctx, taskID, task.Status, cerr)
 			return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
 		}
 		if s.TaskCreator == nil {
 			cerr := fmt.Errorf("accept(go): TaskCreator not configured")
-			s.recordDispatchError(taskID, task.Status, cerr)
+			s.recordDispatchError(ctx, taskID, task.Status, cerr)
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
 		}
 		var instructions json.RawMessage
@@ -938,7 +945,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			marshaled, mErr := json.Marshal([]orchestrator.Instruction{{Message: children[i].Spec.Instruction}})
 			if mErr != nil {
 				cerr := fmt.Errorf("accept(go): marshal instruction: %w", mErr)
-				s.recordDispatchError(taskID, task.Status, cerr)
+				s.recordDispatchError(ctx, taskID, task.Status, cerr)
 				return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
 			}
 			instructions = marshaled
@@ -958,12 +965,12 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		})
 		if cErr != nil {
 			cerr := fmt.Errorf("accept(go): create child task %q: %w", children[i].ID, cErr)
-			s.recordDispatchError(taskID, task.Status, cerr)
+			s.recordDispatchError(ctx, taskID, task.Status, cerr)
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
 		}
 		if childTask.Status == orchestrator.TaskStatusPending {
 			cerr := fmt.Errorf("accept(go): child task %q (%s) was created but failed to auto-start (still pending)", children[i].ID, childTask.ID)
-			s.recordDispatchError(taskID, task.Status, cerr)
+			s.recordDispatchError(ctx, taskID, task.Status, cerr)
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
 		}
 		children[i].Status = orchestrator.TaskTriageChildStatusDispatched
@@ -1013,7 +1020,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		if err := tx.UpdateTask(applied); err != nil {
 			return err
 		}
-		if err := tx.CreateAction(action); err != nil {
+		if err := tx.CreateAction(ctx, action); err != nil {
 			return err
 		}
 		for _, c := range newlyDispatched {
@@ -1026,7 +1033,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 				Payload:    payload,
 				Actor:      orchestrator.ActorFromContext(ctx),
 			}
-			if err := tx.CreateAction(childAction); err != nil {
+			if err := tx.CreateAction(ctx, childAction); err != nil {
 				return fmt.Errorf("accept(go): record child_dispatched for %q: %w", c.ID, err)
 			}
 		}
@@ -1067,7 +1074,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			if err := applyAnsweredSideEffect(tx, taskID); err != nil {
 				return err
 			}
-		} else if err := recordAndStripSuggestionIfPresent(tx, taskID, action); err != nil {
+		} else if err := recordAndStripSuggestionIfPresent(ctx, tx, taskID, action); err != nil {
 			return err
 		}
 		newTask = applied
@@ -1105,7 +1112,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 				}
 			}
 		}
-		s.recordDispatchError(taskID, task.Status, txErr, orphanedChildTaskIDs...)
+		s.recordDispatchError(ctx, taskID, task.Status, txErr, orphanedChildTaskIDs...)
 		var statusErr *StatusError
 		if errors.As(txErr, &statusErr) {
 			return nil, statusErr

@@ -86,7 +86,7 @@ func (s *recordingTxStore) FindTaskByRef(ref, parentID, projectID string) (*orch
 func (s *recordingTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *recordingTxStore) CreateAction(action *orchestrator.Action) error {
+func (s *recordingTxStore) CreateAction(_ context.Context, action *orchestrator.Action) error {
 	s.actions = append(s.actions, action)
 	return nil
 }

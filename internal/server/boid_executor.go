@@ -237,12 +237,27 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "missing boid request"}
 	}
 
+	// docs/plans/boid-internal-signal-inbox.md §4.3/§6.2: this is the ONE
+	// place in the whole daemon that ever calls WithWriterProjectID — every
+	// sandbox-originated write reaches CreateAction's ingest step (via
+	// whichever api.* call below it takes) carrying ctx.ProjectID as its
+	// "who wrote this" fact, so orchestrator.CreateAction can tell a
+	// metaproject's own self-authored write (must not ingest — loop risk)
+	// from everything else, without threading sandbox.TokenContext itself
+	// through every intermediate call. Every OTHER ctx-building path in this
+	// codebase (HTTP handlers, daemon loops) never touches this key, so
+	// WriterProjectIDFromContext naturally reports "not a sandbox write" for
+	// all of them with zero special-casing there. Below, every call site
+	// that used to pass a bare context.Background() now passes goCtx (or a
+	// value built from it) so this stays attached all the way down.
+	goCtx = orchestrator.WithWriterProjectID(goCtx, ctx.ProjectID)
+
 	switch req.Op {
 	case sandbox.BoidOpJobDone:
 		if e.workflow == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job done unavailable"}
 		}
-		if _, err := e.workflow.CompleteJob(context.Background(), req.JobID, api.JobDoneRequest{
+		if _, err := e.workflow.CompleteJob(goCtx, req.JobID, api.JobDoneRequest{
 			ExitCode: req.ExitCode,
 			Output:   req.Output,
 		}); err != nil {
@@ -430,7 +445,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			}
 			applyReq.Payload = payload
 		}
-		if _, err := e.workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorTask(ctx.TaskID)), req.TaskID, applyReq); err != nil {
+		if _, err := e.workflow.ApplyAction(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.TaskID, applyReq); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{
@@ -450,7 +465,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(existing.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task notify is restricted to the current workspace"}
 		}
-		if err := e.tasks.NotifyTask(context.Background(), req.TaskID, req.Message, req.Ask, req.QuestionID, req.Progress, req.Done, req.Fail); err != nil {
+		if err := e.tasks.NotifyTask(goCtx, req.TaskID, req.Message, req.Ask, req.QuestionID, req.Progress, req.Done, req.Fail); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{
@@ -470,7 +485,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(existing.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task answer is restricted to the current workspace"}
 		}
-		if err := e.tasks.AnswerTask(orchestrator.WithActor(context.Background(), orchestrator.ActorTask(ctx.TaskID)), req.TaskID, req.QuestionID, req.Answer); err != nil {
+		if err := e.tasks.AnswerTask(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.TaskID, req.QuestionID, req.Answer); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{
@@ -680,7 +695,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.workflow == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send unavailable"}
 		}
-		if _, err := e.workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorTask(ctx.TaskID)), req.TaskID, api.ApplyActionRequest{
+		if _, err := e.workflow.ApplyAction(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.TaskID, api.ApplyActionRequest{
 			Type:    req.ActionType,
 			Payload: req.Payload,
 		}); err != nil {
@@ -904,7 +919,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.resolveOrCapture == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture unavailable"}
 		}
-		result, err := e.resolveOrCapture.ResolveOrCapture(context.Background(), api.ResolveOrCaptureRequest{
+		result, err := e.resolveOrCapture.ResolveOrCapture(goCtx, api.ResolveOrCaptureRequest{
 			ProjectID:   req.ProjectID,
 			Identity:    req.Identity,
 			Title:       req.Title,

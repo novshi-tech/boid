@@ -13,6 +13,7 @@ package orchestrator_test
 //   - a malformed cursor is a hard error, not silently "from the beginning"
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -50,7 +51,7 @@ func TestListActionsSince_CursorMonotonic_NoDuplicates(t *testing.T) {
 	var created []*orchestrator.Action
 	for i := 0; i < n; i++ {
 		a := &orchestrator.Action{TaskID: task.ID, Type: "noted", Payload: json.RawMessage(`{"i":` + strconv.Itoa(i) + `}`)}
-		if err := orchestrator.CreateAction(d.Conn, a); err != nil {
+		if err := orchestrator.CreateAction(context.Background(), d.Conn, a, nil); err != nil {
 			t.Fatalf("create action %d: %v", i, err)
 		}
 		created = append(created, a)
@@ -115,10 +116,10 @@ func TestListActionsSince_ProjectScoping_IsolatesOtherProject(t *testing.T) {
 	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
-	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{TaskID: task1.ID, Type: "noted"}); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task1.ID, Type: "noted"}, nil); err != nil {
 		t.Fatalf("create action1: %v", err)
 	}
-	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{TaskID: task2.ID, Type: "noted"}); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task2.ID, Type: "noted"}, nil); err != nil {
 		t.Fatalf("create action2: %v", err)
 	}
 
@@ -155,10 +156,10 @@ func TestListActionsSince_WorkspaceScoping_IsolatesOtherWorkspace(t *testing.T) 
 	if err := orchestrator.CreateTask(d.Conn, taskB); err != nil {
 		t.Fatalf("create taskB: %v", err)
 	}
-	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{TaskID: taskA.ID, Type: "noted"}); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: taskA.ID, Type: "noted"}, nil); err != nil {
 		t.Fatalf("create actionA: %v", err)
 	}
-	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{TaskID: taskB.ID, Type: "noted"}); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: taskB.ID, Type: "noted"}, nil); err != nil {
 		t.Fatalf("create actionB: %v", err)
 	}
 
@@ -186,10 +187,10 @@ func TestListActionsSince_TaskIDNarrowsWithinScope(t *testing.T) {
 	if err := orchestrator.CreateTask(d.Conn, task2); err != nil {
 		t.Fatalf("create task2: %v", err)
 	}
-	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{TaskID: task1.ID, Type: "noted"}); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task1.ID, Type: "noted"}, nil); err != nil {
 		t.Fatalf("create action1: %v", err)
 	}
-	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{TaskID: task2.ID, Type: "noted"}); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task2.ID, Type: "noted"}, nil); err != nil {
 		t.Fatalf("create action2: %v", err)
 	}
 

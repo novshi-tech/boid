@@ -118,7 +118,13 @@ func newAPIGatewayRecorder(tasks *orchestrator.TaskRepository) apigateway.Reques
 			Payload:    payload,
 			Actor:      orchestrator.ActorTask(taskID),
 		}
-		if err := tasks.CreateAction(action); err != nil {
+		// context.Background(): this recorder has no ctx of its own (the
+		// apigateway.RequestRecorder callback signature carries none) and
+		// api_gateway_request always targets the CALLING task itself
+		// (Actor: ActorTask(taskID) above) — never a card (docs/plans/
+		// boid-internal-signal-inbox.md §4.2/Q9), so target-axis excludes it
+		// from ingest regardless.
+		if err := tasks.CreateAction(context.Background(), action); err != nil {
 			slog.Warn("api gateway: record timeline action failed", "task_id", taskID, "error", err)
 		}
 	}

@@ -71,7 +71,7 @@ func (s *sweepFakeStore) FindTaskByRef(ref, parentID, projectID string) (*orches
 func (s *sweepFakeStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *sweepFakeStore) CreateAction(action *orchestrator.Action) error {
+func (s *sweepFakeStore) CreateAction(_ context.Context, action *orchestrator.Action) error {
 	s.actions[action.TaskID] = append(s.actions[action.TaskID], action)
 	return nil
 }

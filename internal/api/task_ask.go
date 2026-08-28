@@ -204,17 +204,24 @@ func (s *TaskAppService) consumePendingAnswer(task *orchestrator.Task, answer, a
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return "", &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
-	s.recordAnswerAction(task.ID, fromStatus, actor)
+	// context.Background(): consumePendingAnswer has no ctx of its own (the
+	// answer being delivered here was recorded earlier, possibly in a
+	// different request) — harmless either way, since "answer" only ever
+	// targets an awaiting task, and awaiting is execution-only (migration
+	// 0045's CHECK constraint), never a card (docs/plans/
+	// boid-internal-signal-inbox.md §4.2's target axis excludes it
+	// regardless).
+	s.recordAnswerAction(context.Background(), task.ID, fromStatus, actor)
 	return answer, nil
 }
 
 // recordAnswerAction writes the awaiting → executing "answer" audit action.
 // Best-effort: a failure is logged, never returned.
-func (s *TaskAppService) recordAnswerAction(taskID string, fromStatus orchestrator.TaskStatus, actor string) {
+func (s *TaskAppService) recordAnswerAction(ctx context.Context, taskID string, fromStatus orchestrator.TaskStatus, actor string) {
 	if s.Actions == nil {
 		return
 	}
-	if err := s.Actions.CreateAction(&orchestrator.Action{
+	if err := s.Actions.CreateAction(ctx, &orchestrator.Action{
 		TaskID:     taskID,
 		Type:       "answer",
 		FromStatus: fromStatus,
@@ -261,7 +268,7 @@ func (s *TaskAppService) answerBlocking(ctx context.Context, task *orchestrator.
 		if err := s.Tasks.UpdateTask(task); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
-		s.recordAnswerAction(task.ID, fromStatus, actor)
+		s.recordAnswerAction(ctx, task.ID, fromStatus, actor)
 		return nil
 	}
 

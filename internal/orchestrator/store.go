@@ -1,12 +1,14 @@
 package orchestrator
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"regexp"
 	"strings"
@@ -676,7 +678,20 @@ func TouchTaskUpdatedAt(dbtx db.DBTX, id string) error {
 	return nil
 }
 
-func CreateAction(dbtx db.DBTX, a *Action) error {
+// CreateAction inserts a, then — within the SAME statement's transaction —
+// ingests it into its target card's workspace inbox when eligible
+// (docs/plans/boid-internal-signal-inbox.md §4.5). resolver may be nil (no
+// metaproject lookup wired — e.g. most existing tests that don't care about
+// signals at all): IngestActionSignal treats that identically to "this
+// workspace declares no metaproject", a quiet no-op that leaves every other
+// behavior of this function untouched (Q5's "1 ビットも変わらない").
+//
+// ctx carries the write's origin project via WriterProjectIDFromContext
+// (signal_ingest_bridge.go) when this write came from inside a sandbox
+// (internal/server/boid_executor.go's ExecuteBoidBuiltin is the sole place
+// that ever sets it) — used only for the actor-axis self-reference check,
+// never for anything this function itself does with a.
+func CreateAction(ctx context.Context, dbtx db.DBTX, a *Action, resolver MetaProjectResolver) error {
 	if a.ID == "" {
 		a.ID = uuid.New().String()
 	}
@@ -693,6 +708,15 @@ func CreateAction(dbtx db.DBTX, a *Action) error {
 	if err != nil {
 		return fmt.Errorf("insert action: %w", err)
 	}
+
+	// Best-effort, deliberately not returned as an error (§6.2): a failed
+	// ingest must not roll back the action that already committed above —
+	// see IngestActionSignal's own doc comment for why (Q11).
+	if ingestErr := IngestActionSignal(ctx, dbtx, a, resolver); ingestErr != nil {
+		slog.Warn("internal signal ingest failed; action was still recorded",
+			"action_id", a.ID, "task_id", a.TaskID, "type", a.Type, "error", ingestErr)
+	}
+
 	return nil
 }
 

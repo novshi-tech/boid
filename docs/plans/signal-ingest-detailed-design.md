@@ -44,8 +44,15 @@ project.yaml (メタプロジェクト)
   精密化)。理由: connector job には sandbox の宿主 project が要る。workspace には project が
   無い場合があり、metaproject は現行 khi の trigger job が adapter を回している場所そのもの。
   inbox 自体は workspace 単位 (project → `project_workspaces` で解決)。
-- boid 内部シグナル (action 列) は v0 では inbox を通らない。scan script が
-  `boid action list` を直読みする現行のまま (inventory §6 の推し通り)。
+- **boid 内部シグナル (action 列) も inbox を通る** (2026-08-28、
+  `docs/plans/boid-internal-signal-inbox.md` で決着・PR-1 実装済み)。当初は
+  inventory §6 の推しどおり「scan script が `boid action list` を直読みする」
+  現行維持だったが、メタプロジェクトが 2 個目に増える時点でこの責務境界違反
+  (§3 の表が inbox・cursor・dedup を core の持ち物と定義しているのに、内部
+  シグナルだけ workspace 側に 848 行の複製機構が残る) が複製されることが
+  分かり、統合する判断に変わった。ingest は `orchestrator.CreateAction` が
+  action の書き込みと同一 tx で行う (`pack: boid` を予約名として envelope
+  に写像。詳細は同 doc §4)。
 
 ---
 
@@ -103,7 +110,7 @@ CREATE TABLE IF NOT EXISTS signal_cursors (
 | `ClaimSignals(dbtx, ws, limit, maxAttempts)` | **1 tx**: pending を昇順に limit 件 select → `attempts = attempts + 1` → 返す。dead は返さない (無限再配送の防止、khi の MAX_ATTEMPTS 相当。v0 は定数 5) |
 | `AckSignals(dbtx, ws, ids)` | `acked_at = now WHERE acked_at IS NULL`。**既 ack は no-op (冪等、Q14)**、未知 id はエラーで列挙 (typo 検出)。照合は **(workspace_id, id)** で行い、service/connector を跨いで一致した行は全て ack する (id は複合 PK の一部で workspace 内一意ではないため、規則をここで固定する) |
 | `HasPendingSignals(dbtx, ws, maxAttempts)` | trigger 述語用。**dead は数えない** — dead だけが残った workspace で trigger が永久に発火し続けるのを防ぐ |
-| `GCSignals(dbtx, olderThan, dryRun)` | acked が cutoff より古い行に加え、**未 ack でも received_at が cutoff より古い行を削除** (dead の永久残留を防ぐ。dead は 30 日間 `--state dead` で可視、それで拾われなければ他の 30 日 GC と同じ扱い) |
+| `GCSignals(dbtx, olderThan, dryRun)` | **pending (未 ack かつ attempts < max) の行は削除対象に絶対に入らない** — 対象は acked 行と dead 行 (未 ack かつ attempts >= max) のみで、cutoff はその 2 つにだけ効く (acked は acked_at、dead は received_at)。dead は 30 日間 `--state dead` で可視、それで拾われなければ他の 30 日 GC と同じ扱い。(記述訂正 2026-08-28: 旧記述「未 ack でも received_at が古ければ削除」は attempts < max の pending 行まで削除してしまう書き方だった — `internal/orchestrator/signal_store.go` の実装 (H1 修正済み) は当初からこの構造ゲート付きで、この表の記述が実装に追いついていなかっただけ) |
 
 - 細い interface を `internal/api/store.go` に追加 (`SignalStore`)、`TaskRepository` に
   一行 wrapper (`GCTriggerRuns` の型)。GC は `TaskGCStore.GC` の既存 tx 内に

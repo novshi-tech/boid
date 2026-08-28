@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -13,10 +14,29 @@ import (
 
 type TaskRepository struct {
 	db db.DBTX
+	// metaResolver backs CreateAction's internal-signal ingest decision
+	// (docs/plans/boid-internal-signal-inbox.md §4.3/§6.2). nil disables
+	// ingest entirely — CreateAction still writes the action row exactly as
+	// before (see IngestActionSignal's own nil-resolver short-circuit) — the
+	// same "unwired optional dependency degrades to a no-op, never a panic"
+	// convention every other optional field in this codebase follows (e.g.
+	// internal/server/boid_executor.go's boidBuiltinExecutor fields). Set via
+	// SetMetaProjectResolver post-construction, mirroring ProjectStore's own
+	// SetWorkspaceStore/SetHostCommands late-binding shape, rather than a
+	// NewTaskRepository parameter — the many existing call sites that
+	// construct a TaskRepository purely for task/action CRUD (tests
+	// included) do not need to thread a resolver they never use.
+	metaResolver MetaProjectResolver
 }
 
 func NewTaskRepository(db db.DBTX) *TaskRepository {
 	return &TaskRepository{db: db}
+}
+
+// SetMetaProjectResolver wires the metaproject lookup CreateAction's ingest
+// step needs — see the metaResolver field's own doc comment.
+func (r *TaskRepository) SetMetaProjectResolver(resolver MetaProjectResolver) {
+	r.metaResolver = resolver
 }
 
 func (r *TaskRepository) CreateTask(task *Task) error {
@@ -64,8 +84,22 @@ func (r *TaskRepository) ListChildren(parentID string) ([]*Task, error) {
 	return ListChildren(r.db, parentID)
 }
 
-func (r *TaskRepository) CreateAction(action *Action) error {
-	return CreateAction(r.db, action)
+// CreateAction persists action, then — within the SAME transaction —
+// ingests it into the target card's workspace inbox when eligible (docs/
+// plans/boid-internal-signal-inbox.md §4.5). Same dual-mode shape as
+// DeleteTask/IngestSignals/ClaimSignals above: nests inside an already-open
+// tx when r.db is one (the normal case — every production caller reaches
+// this from inside an existing WithinTx), or opens its own spanning
+// transaction when r.db is a raw *sql.DB, so the INSERT and the ingest can
+// never observe or commit independently of each other.
+func (r *TaskRepository) CreateAction(ctx context.Context, action *Action) error {
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return CreateAction(ctx, r.db, action, r.metaResolver)
+	}
+	return db.InTxDB(conn, func(tx db.DBTX) error {
+		return CreateAction(ctx, tx, action, r.metaResolver)
+	})
 }
 
 func (r *TaskRepository) ListActionsByTask(taskID string) ([]*Action, error) {

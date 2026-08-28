@@ -250,7 +250,7 @@ type capturingActionStore struct {
 	createdAction *orchestrator.Action
 }
 
-func (s *capturingActionStore) CreateAction(action *orchestrator.Action) error {
+func (s *capturingActionStore) CreateAction(_ context.Context, action *orchestrator.Action) error {
 	s.createdAction = action
 	return nil
 }
