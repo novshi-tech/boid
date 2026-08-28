@@ -202,33 +202,52 @@ connector が「自分宛のメンションだけ取る」「アサインされ�
 `api_gateway_request` のような大量の雑音 (LLM task 1 回で 100 行超、`cursor.py` の
 docstring) が構造的に inbox へ入らない。
 
-### 4.3 宣言の形
+### 4.3 宣言は要らない
 
-**`signals.sources[]` には載せない。** `SignalsConfig` に兄弟フィールドを 1 つ足す。
+**project.yaml に新しいフィールドを足さない。**
+
+内部シグナルを受け取るのはメタプロジェクトだけであり、**メタプロジェクトとは
+`signals.sources[]` を宣言している project のことである**。つまりその宣言自体が既に
+「この project がメタプロジェクトである」を表しているので、内部シグナル専用の宣言は
+存在しなくてよい。
 
 ```yaml
 signals:
-  internal: true                         # 追加: boid 自身の action を signal にする
-  sources:
-    - connector: slack/mentions          # 既存: Pack connector (変更なし)
+  sources:                               # この宣言を持つ project = メタプロジェクト
+    - connector: slack/mentions          # 既存のまま。1 文字も足さない
       service: slack-cloud
       every: 10m
 ```
 
-`sources[]` に相乗りさせない理由は、その配列が**実装上「1 件 = 1 導出 trigger」に
-展開される**ため (`internal/orchestrator/signal_trigger_derive.go` の
-`deriveSignalTriggers`)。内部シグナルは定期実行ではなく action が立つ瞬間に ingest する
-(§4.5) ので導出すべき trigger が無く、相乗りさせると「source なのに trigger を導出しない」
-という特例が既存経路に刺さる。さらに同じ関数が `service` と `every` を空文字で拒む
-(`signal_trigger_derive.go:59,62`) ため、外部サービスへ到達しない内部 source は
-そのままでは通らない。**別フィールドにすれば既存の 3 本の検証にも導出経路にも触らない。**
-
-- **この宣言が「どの project がメタプロジェクトか」を core に教える**。§4.2 の actor 軸
-  「自分自身の書き込み」は、この宣言をした project の job / task を指す
-- 1 workspace に複数の project が `internal: true` を宣言した場合は load 時に検証エラー
-  (inbox は workspace スコープなので、2 個あると互いの書き込みを拾い合う)
+- **§4.2 の actor 軸「自分自身の書き込み」は、その workspace で `signals` を宣言している
+  project の job / task を指す。** 複数の project が宣言していても論理は閉じる ——
+  その全部を自己参照として落とせばよい
+- **1 workspace 1 個という制約は課さない。** 既存の signals 機構も課していない
+  (検証は project 単位で完結する、`internal/orchestrator/spec_loader.go:123`)。
+  内部シグナルのためだけに新しい制約を持ち込むと、既存と一貫しない
+- **`signals` を宣言した project が居ない workspace では、ingest する相手が居ないので
+  何も起きない。** 有効/無効のスイッチを別に用意する必要がない
 - envelope の `source.pack` に使う `boid` は予約名とし、Pack loader が同名の外部 Pack を
   読み込むことを禁じる (§4.6)
+
+#### 検討して捨てた案: `signals.internal: true` のマーカー
+
+当初案は `SignalsConfig` に `internal: true` という兄弟フィールドを足し、それが
+「どの project がメタプロジェクトか」を core に教える形だった。**捨てた理由は、それが
+実在しない要求に対する先読みだったこと。**
+
+無効化したいケースを 3 つ検討した —— 移行中のロールバック、暴走時の緊急停止、内部
+シグナルの要らないメタプロジェクト。**どれも成立しない**: 前 2 つは `false` にするのと
+宣言ごと消すので結果が同じ (どちらも project.yaml の編集 + push + `boid project fetch`
+であり、`false` の方が速いわけでもない)、3 つめは card パイプラインを持つ以上、子の終端を
+拾わない構成に意味が無い。
+
+`false` を書く意味が無い bool はフラグではなくマーカーであり、**そのマーカーが指すものは
+`signals.sources[]` の有無から既に読み取れる**。加えてこの案は「1 workspace 1 個」という
+検証を要求していたが、既存の signals 機構はその制約を持っていない —— 内部シグナルのため
+だけに新しい不変条件を持ち込むことになっていた。
+
+この案を捨てたことで PR が 1 本まるごと消えた (§9)。
 
 ### 4.4 処理済みの印を ack に一本化する
 
@@ -368,8 +387,11 @@ encode 側は残る。
   判定できなかった」ときは ingest **しない**。判定できないまま通すと無限自走に倒れ、
   症状 (10 分ごとに sweep が起き続ける) から原因へ辿るのが難しい。逆向きの誤り
   (拾うべきものを落とす) は次の action で回復する
-- **`signals.internal: true` を宣言していない workspace では一切 ingest しない。** default
-  workspace が `nvt-tasks` に宣言を入れるまで、既存の挙動は 1 ビットも変わらない
+- **`signals` を宣言した project が居ない workspace では一切 ingest しない。** ingest 先が
+  存在しないので、判定するまでもなく何も起きない。default workspace が `nvt-tasks` に
+  `signals.sources[]` を入れるまで、そちらの挙動は 1 ビットも変わらない。
+  **逆に、既に宣言を持つ workspace (khi) では core を入れた時点から内部 signal が入り
+  始める** —— これは §7 の並走そのものなので、意図された挙動である
 - **GC は既存の 30 日ルールに乗せる** (`internal/api/gc.go`)。内部 signal 専用の保持期間を
   作らない
 
@@ -380,13 +402,21 @@ encode 側は残る。
 khi は本番稼働中なので、切り替えは並走で検証してから行う。shadow-a
 (`signal-driven-review.md` §10.3) と同じ形を踏襲する。
 
-1. **core 側を入れる** (PR-1〜2)。`signals.internal: true` を宣言しない限り誰の挙動も変わらない
-2. **khi で並走**。`signals.internal: true` を宣言し、inbox に内部 signal が入り始める。khi は
-   現行どおり action 列を直読みしたまま、**inbox の内容と自分の検知結果を突き合わせて
-   ログに出す** (ack はしない)。ここで等価性を採点する (§9 グループ B)
-3. **khi を inbox 一本読みに切り替える** (PR-3)。action 列の直読みをやめる
-4. **消す** (PR-4)。§5 の 848 行を撤去
-5. **`nvt-tasks` に載せる** — ここで初めて 2 個目のメタプロジェクトが立ち上がる。
+1. **core 側を入れる** (PR-1)。**khi は既に `signals.sources[]` を宣言しているので、
+   この時点から内部 signal が inbox に入り始める。** khi はまだ読まないので pending の
+   まま溜まる (§4.3 でスイッチを廃したので、「入れるが流さない」段階は存在しない)。
+   **ロールバックの口は boid のデプロイを戻すこと** —— project.yaml 側にスイッチは無い
+2. **khi で並走観測** (PR-2)。現行どおり action 列を直読みしたまま、**inbox の内部
+   signal 列と自分の検知結果を突き合わせてログに出す** (ack はしない)。ここで等価性を
+   採点する (§10 グループ C)
+3. **切り替え直前に、溜まった内部 signal を一括 ack する。** 並走中に入った分は khi が
+   action 列経由で**既に処理済み**なので、そのまま一本読みへ移ると過去の判断をやり直す
+   ことになる。`boid signal list --source boid/actions` で拾って ack する。
+   (並走中の pending は GC の対象外 —— `GCSignals` は acked と dead しか消さない
+   ので、この一括 ack が唯一の回収経路になる)
+4. **khi を inbox 一本読みに切り替える** (PR-3)。action 列の直読みをやめ、`--claim` を使う
+5. **消す** (PR-4)。§5 の 848 行を撤去
+6. **`nvt-tasks` に載せる** — ここで初めて 2 個目のメタプロジェクトが立ち上がる。
    §3 の「複製」は発生しない
 
 ---
@@ -410,12 +440,14 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 
 | PR | 側 | 内容 | 採点 |
 |---|---|---|---|
-| PR-1 | core | `signals.internal` の追加。parse・検証 (1 workspace 1 個)・`pack: boid` の予約 | Q1-Q4 |
-| PR-2 | core | `CreateAction` での ingest。actor 軸の遮断、card 宛への範囲限定、envelope 写像 | Q5-Q12 |
-| PR-3 | khi | `signals.internal: true` を宣言し、並走で等価性を観測 (ack しない) | Q13-Q15 |
-| PR-4 | khi | inbox 一本読みへ切り替え。`--claim` を使う。`on: signals` trigger へ | Q16-Q18 |
-| PR-5 | khi | §5 の 848 行を撤去 | Q19-Q20 |
+| PR-1 | core | `CreateAction` での ingest。actor 軸の遮断、card 宛への範囲限定、envelope 写像、`pack: boid` の予約 | Q5-Q12 |
+| PR-2 | khi | 並走で等価性を観測 (ack しない) | Q13-Q15 |
+| PR-3 | khi | 一括 ack のうえ inbox 一本読みへ切り替え。`--claim` を使う。`on: signals` trigger へ | Q16-Q19 |
+| PR-4 | khi | §5 の 848 行を撤去 | Q20-Q21 |
 | (独立) | khi | §8 の死にコード 1,600 行を削除 | — |
+
+**core 側は 1 本で済む。** §4.3 でマーカーを捨てたことで、project.yaml のスキーマ追加・
+その parse・「1 workspace 1 個」の検証を担う PR がまるごと不要になった。
 
 ---
 
@@ -432,20 +464,20 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 | Q3 | 「(b) を推す根拠が core 側コストだけである」は `signal-envelope-inventory.md` §6 の原文から引けるか |
 | Q4 | メタプロジェクトが 2 個目に増える予定は、`nvt-tasks` の実物 (project.yaml のコメント) から引けるか |
 
-### B. PR-1〜2 (core ingest)
+### B. PR-1 (core ingest)
 
 | # | 問い |
 |---|---|
-| Q5 | `signals.internal: true` を宣言していない workspace で、既存の action 書き込み経路の挙動が 1 ビットも変わらないことをテストが示しているか |
+| Q5 | `signals` を宣言した project が居ない workspace で、既存の action 書き込み経路の挙動が 1 ビットも変わらないことをテストが示しているか |
 | Q6 | もう 1 本の書き込み口 (`dispatcher/store.go` の daemon 再起動時 abort) が範囲外である根拠が示されているか。加えて「子の abort で親 card に `child_closed` が立つか」を確認し、立たないなら別件として切り出したか (§4.5) |
 | Q7 | 自己参照の遮断が fail-close か — actor を判定できないケースで ingest しないことをテストが示しているか |
 | Q8 | メタプロジェクト自身の sweep task / trigger job が書いた action が inbox に入らないことを、実際の actor 文字列 (`task:<id>` と `task:`) でテストしているか |
 | Q9 | `api_gateway_request` のような card 宛でない action が inbox に入らないことをテストが示しているか |
 | Q10 | 同じ action が 2 度 ingest されても no-op であることをテストが示しているか (PRIMARY KEY dedup) |
 | Q11 | signal の INSERT が失敗しても action の書き込みが成立することをテストが示しているか (§6) |
-| Q12 | 1 workspace に 2 つの project が `signals.internal: true` を宣言したとき load が失敗するか |
+| Q12 | 1 workspace に `signals` を宣言した project が複数あっても壊れないか — その**全部**の job / task が自己参照として落ちることをテストが示しているか (§4.3 で「1 個」の制約を課さないと決めたので、複数居る前提で閉じている必要がある) |
 
-### C. PR-3 (並走)
+### C. PR-2 (並走)
 
 | # | 問い |
 |---|---|
@@ -453,20 +485,21 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 | Q14 | 食い違いがあった場合、その原因が「core の絞りが違う」「khi の絞りが違う」のどちらか特定されているか |
 | Q15 | 並走中に khi の既存挙動 (action 列直読み) が変わっていないか |
 
-### D. PR-4〜5 (切り替えと撤去)
+### D. PR-3〜4 (切り替えと撤去)
 
 | # | 問い |
 |---|---|
-| Q16 | 切り替え後、khi の読みが `boid signal list` 1 本になっているか (`boid action list` の呼び出しが検知経路から消えたか) |
-| Q17 | `--claim` を使っており、attempts が core 側で増えることを実データで確認したか |
-| Q18 | `on: signals` trigger へ移行し、子 task の終端で sweep が起きることを実データで確認したか |
-| Q19 | §5 の 848 行が実際に削除され、削除後もテストが通るか |
-| Q20 | 撤去した機構に依存していた記述 (`khi-sweep` SKILL.md の「機構が持っているので気にしなくていいこと」節ほか) が追随して更新されているか |
+| Q16 | 切り替え前に、並走中に溜まった内部 signal を一括 ack したか (§7 手順 3)。ack せずに一本読みへ移ると、khi が action 列経由で既に処理済みの件を過去に遡ってやり直す |
+| Q17 | 切り替え後、khi の読みが `boid signal list` 1 本になっているか (`boid action list` の呼び出しが検知経路から消えたか) |
+| Q18 | `--claim` を使っており、attempts が core 側で増えることを実データで確認したか |
+| Q19 | `on: signals` trigger へ移行し、子 task の終端で sweep が起きることを実データで確認したか |
+| Q20 | §5 の 848 行が実際に削除され、削除後もテストが通るか |
+| Q21 | 撤去した機構に依存していた記述 (`khi-sweep` SKILL.md の「機構が持っているので気にしなくていいこと」節ほか) が追随して更新されているか |
 
 ### E. 全体 (どの段階でも)
 
 | # | 問い |
 |---|---|
-| Q21 | この統合で workspace 側に**新たに**生まれた機構がゼロか (core へ移すつもりが両側に増えていないか) |
-| Q22 | `nvt-tasks` に card パイプラインを載せるとき、§5 の 848 行に相当するものを 1 行も書かずに済むか |
-| Q23 | attempts 上限が 3 から 5 に変わることによる運用上の変化 (dead になるまでの時間) が確認され、許容されているか |
+| Q22 | この統合で workspace 側にも core 側にも**新たに**生まれた宣言・設定・機構がゼロか (core へ移すつもりが両側に増えていないか。§4.3 でマーカーを捨てた判断がそのまま維持されているか) |
+| Q23 | `nvt-tasks` に card パイプラインを載せるとき、§5 の 848 行に相当するものを 1 行も書かずに済むか |
+| Q24 | attempts 上限が 3 から 5 に変わることによる運用上の変化 (dead になるまでの時間) が確認され、許容されているか |
