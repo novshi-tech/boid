@@ -24,7 +24,7 @@
 
 - **人が後から「あの巡は何をしたか」を追えなくすること** —— `progress` に残すのは続ける。
   ただし**機械可読な記録の書式** (`khi_record` attrs / `khi-record v1 ` prefix) は用途ごと
-  無くなる (§4.7・§5.2)
+  無くなる (§5.2)
 - khi の**判断の意味論** (verb の語彙・`khi-sweep` の判断方針) の変更 —— ただし
   `write.py` から記録の自動付与は消える (§5.3)
 - 外部 connector (slack/mentions ほか 2 本) の変更
@@ -282,6 +282,20 @@ trigger job (上の表の 2 行目) —— exec job には task が無いので�
 見て判定しようとすると「どの project の exec job か分からない」行き止まりに入る。
 **project を直接見れば行き止まりが無い。**
 
+#### なぜ scan 側ではなく ingest 時に落とすのか
+
+signal は作っておいて、読む側 (sweep) が「これは自分の書き込みだ」と判定して ack する形も
+成立はする。**採らない理由が 3 つある。**
+
+1. **読む側には判定材料が無い。** envelope に載る書き手の情報は `author` (actor 文字列) で、
+   trigger job は `task:` —— どの project の exec job かが分からない。scan 側で弾くには
+   **envelope に書き込み元 project を足す拡張が要る**。ingest 時なら envelope は v0 のまま
+2. **量が無駄。** sweep は 1 巡で summary・suggestion・子 spec を書くので、8 対象なら
+   20〜30 action になる。それが全部 pending に入り、毎巡読まれて捨てられる。ingest 時に
+   落とせばゼロ
+3. **§4.2 の決定に反する。** actor 軸は core が持つと決めた。読む側で弾くと、それは
+   workspace 側の判定ロジックとして残る —— 現行 khi の `is_signal` がそのまま生き延びる
+
 #### 判定できないときは落とす (fail-close)
 
 `TokenContext` を持つ書き込みで `ProjectID` が解決できなかったときは **ingest しない**。
@@ -318,26 +332,16 @@ core は `MaxSignalAttempts = 5` (`internal/orchestrator/signal_store.go`)、khi
 ない (`--state dead` で見え、人が ack できる)。**core 側に揃える**のを推す — メタ
 プロジェクトごとに上限を変える必要が実証されていない。
 
-### 4.5 ingest の起こし方 (実装方式)
+### 4.5 ingest はいつ起こすか
 
-2 案ある。
+**`orchestrator.CreateAction` の中で、action の書き込みと同一 tx で ingest する。**
 
-| 案 | 形 | cursor | 取りこぼし | 発火の速さ |
-|---|---|---|---|---|
-| **(i) 書き込み時** | `orchestrator.CreateAction` の中で同一 tx で ingest | **不要** | 構造的にゼロ (同一 tx) | action が立った瞬間 |
-| (ii) 定期 derive | daemon が周期的に action 列を舐めて ingest | **必要** | cursor の正しさ次第 | 周期ぶん遅れる |
-
-**(i) を推す。** 理由は 3 つ。
-
-1. **cursor が要らない。** (ii) は khi の栞問題を core へ移すだけで、§1 のゴール 1 は
-   達成できても機構の総量は減らない
+1. **cursor が要らない。** action が立った瞬間に signal になるので、「どこまで読んだか」を
+   持つ主体が存在しない
 2. **dedup が PRIMARY KEY で効く。** action は不変で id を持つので、
    `(workspace_id, service, connector, id)` の `INSERT OR IGNORE` にそのまま乗る
    (`signal_store.go` の実装済みの不変条件)
-3. **`on: signals` trigger が即発火できる。** 現行 khi は `every: 10m` の素の schedule で
-   回っており、`on: signals` (#1010) を使えていない — boid 内部の変化が inbox に無いため
-   使うと取りこぼすからである。統合するとこの制約が消え、**子 task が終わった瞬間に
-   sweep が起きる**
+3. **`on: signals` trigger が即発火できる。** 子 task が終わった瞬間に sweep が起きる
 
 #### 書き込み口は 2 本ある — 片方は範囲外だが、確認した上で外すこと
 
@@ -377,25 +381,6 @@ action は流れない。
 `identity` が task id そのものである点は外部シグナル (`jira:ROOKPF-309` 等) と形が違うが、
 identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope に閉じない、という既存の
 契約の範囲内である。判断側は現行どおり task id を受け取る。
-
-### 4.7 記録に残る役割
-
-現行の「記録」は 3 つの仕事を兼ねている。**印が ack になると、残るのは 1 つだけ。**
-
-| 記録の役割 | 統合後 |
-|---|---|
-| 次の巡が「もう見た」と分かる根拠 | **消える** —— ack が担う |
-| 試行回数を数える材料 | **消える** —— core の attempts が担う |
-| 人が後から「あの巡は何をしたか」を追う監査ログ | **残る** —— ただし形が変わる (下記) |
-| card の summary / attrs そのもの | 残る (これは記録ではなく**状態**) |
-
-**残る監査ログは、機械可読である必要が無くなる。** 現行の記録は
-`khi/domain/record.py` が `khi_record` attrs と `khi-record v1 ` prefix 付き progress として
-**次の巡の自分が読み返すために**構造化している。読み返す相手が消えれば、**書式も消える**
-—— 人が読む progress を `boid task notify --progress` で残せば足りる。
-
-これが §5.2 で `domain/record.py` (327 + 369) を「decode 側だけ縮小」ではなく丸ごと
-消える側に置いた理由である。
 
 ---
 
@@ -438,6 +423,12 @@ identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope �
 初版が挙げていた 848 行の **4.2 倍**である。差は「現行のモジュールを出発点にしたか、
 要る機能を出発点にしたか」だけで、統合の中身は何も変えていない。
 
+**消えるのは書式であって、監査ログそのものではない。** 現行の記録は `record.py` が
+`khi_record` attrs と `khi-record v1 ` prefix 付き progress として、**次の巡の自分が
+読み返すために**構造化している。読み返す相手が ack に置き換われば書式は要らなくなるが、
+人が「あの巡は何をしたか」を追う口は残す —— `boid task notify --progress` に人が読む文を
+書けば足りる。card の summary / attrs も残る (これは記録ではなく**状態**)。
+
 ### 5.3 大きく縮むモジュール
 
 | モジュール | 本体 | テスト | 残るもの |
@@ -469,7 +460,7 @@ identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope �
 | 2 | `domain/record.py` は decode 側だけ消える | encode 側も消える —— 記録は「処理済みの印」そのもので、印が ack になれば書く理由が無い |
 | 3 | `domain/signal.py` の `Signal` 型は残る | envelope をそのまま扱えば要らない。`inbox.py` が id に prefix を補っているハックも、この型の不変条件のためだけに存在する |
 | 4 | `domain/childid.py` は独立した論点 | `--idempotency-key` と同じ仕事。ゼロベースなら残す理由が無い |
-| 5 | 記録は「decode 側だけ消える」 | 読み返す相手 (次の巡の自分) が消えれば**書式そのものが要らない**。encode 側も消える (§4.7) |
+| 5 | 記録は「decode 側だけ消える」 | 読み返す相手 (次の巡の自分) が消えれば**書式そのものが要らない**。encode 側も消える |
 
 **5 つとも同じ誤り方をしている** —— 現行のモジュールを 1 つずつ見て「これは残るか」と
 問うたので、**モジュールが存在すること自体が残す理由**になっていた。要る機能から数え直すと
