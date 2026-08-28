@@ -316,11 +316,35 @@ func TestIngestSignals_EmptyScopeRejected(t *testing.T) {
 	if err := orchestrator.IngestSignals(d.Conn, "", "svc", "pack/conn", []orchestrator.SignalIngestRow{row}); err == nil {
 		t.Fatal("IngestSignals with empty workspace id = nil error, want an error")
 	}
-	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "", "pack/conn", []orchestrator.SignalIngestRow{row}); err == nil {
-		t.Fatal("IngestSignals with empty service = nil error, want an error")
-	}
 	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "", []orchestrator.SignalIngestRow{row}); err == nil {
 		t.Fatal("IngestSignals with empty connector = nil error, want an error")
+	}
+}
+
+// TestIngestSignals_EmptyServiceAccepted pins the docs/plans/
+// boid-internal-signal-inbox.md §4.6 relaxation: service MAY be empty (only
+// workspace id and connector are hard-required). boid's own internal-signal
+// source (signal_ingest_bridge.go's InternalSignalPack/InternalSignalConnector)
+// relies on this — its envelope's source.service is deliberately "" (no
+// external service instance is ever involved), which toWireSignals
+// (internal/server/boid_executor.go) passes straight through from the
+// stored column, so storing "" here is what makes the envelope table's
+// "source.service = (空)" row actually hold at read time.
+func TestIngestSignals_EmptyServiceAccepted(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	row := orchestrator.SignalIngestRow{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "boid:task-1"}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "", "boid/actions", []orchestrator.SignalIngestRow{row}); err != nil {
+		t.Fatalf("IngestSignals with empty service: %v, want nil (service is optional)", err)
+	}
+	signals, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	if err != nil {
+		t.Fatalf("ListSignals: %v", err)
+	}
+	if len(signals) != 1 {
+		t.Fatalf("got %d signals, want 1", len(signals))
+	}
+	if signals[0].Service != "" {
+		t.Errorf("Service = %q, want empty", signals[0].Service)
 	}
 }
 

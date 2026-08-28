@@ -68,8 +68,8 @@ func (s apiTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) 
 	return s.tasks.ListChildren(parentID)
 }
 
-func (s apiTxStore) CreateAction(action *orchestrator.Action) error {
-	return s.actions.CreateAction(action)
+func (s apiTxStore) CreateAction(ctx context.Context, action *orchestrator.Action) error {
+	return s.actions.CreateAction(ctx, action)
 }
 
 func (s apiTxStore) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) {
@@ -147,13 +147,22 @@ func (s apiTxStore) UpdateJob(job *api.Job) error {
 
 type apiTransactor struct {
 	db *sql.DB
+	// metaResolver is threaded into every per-call actions repository this
+	// WithinTx builds (docs/plans/boid-internal-signal-inbox.md §6.2) — a
+	// fresh *orchestrator.TaskRepository is constructed on EVERY WithinTx
+	// call (wrapping that call's own open *sql.Tx), so the resolver set on
+	// the long-lived singleton (wire.go's taskRepo) is not automatically
+	// visible to these; each one needs its own SetMetaProjectResolver call.
+	metaResolver orchestrator.MetaProjectResolver
 }
 
 func (t apiTransactor) WithinTx(fn func(api.TxStore) error) error {
 	return db.InTxDB(t.db, func(tx db.DBTX) error {
+		actions := orchestrator.NewTaskRepository(tx)
+		actions.SetMetaProjectResolver(t.metaResolver)
 		store := apiTxStore{
 			tasks:   orchestrator.NewTaskRepository(tx),
-			actions: orchestrator.NewTaskRepository(tx),
+			actions: actions,
 			jobs:    dispatcher.NewJobRepository(tx),
 		}
 		return fn(store)

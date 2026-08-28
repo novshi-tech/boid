@@ -58,6 +58,43 @@ func TestBoidBuiltinExecutor_ActionSend_StampsActorTask(t *testing.T) {
 	}
 }
 
+// TestBoidBuiltinExecutor_ActionSend_StampsWriterProjectFromTokenContext pins
+// docs/plans/boid-internal-signal-inbox.md §4.3's self-reference block at its
+// single most load-bearing wire: ExecuteBoidBuiltin (boid_executor.go) must
+// call orchestrator.WithWriterProjectID(goCtx, ctx.ProjectID) before any
+// sandbox-originated write reaches CreateAction's ingest step, or a
+// metaproject's own sweep/trigger job writing to its own card would never be
+// recognized as self-authored — the loop docs/plans/boid-internal-signal-inbox.md
+// §4.3 names as "一番壊れやすい" (Opus review of PR #1031, finding F1: this
+// exact line had NO regression coverage — deleting it left every existing
+// test green).
+func TestBoidBuiltinExecutor_ActionSend_StampsWriterProjectFromTokenContext(t *testing.T) {
+	store := &capturingTaskStore{created: []*orchestrator.Task{
+		{ID: "t1", ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{}},
+	}}
+	workflow := &recordingWorkflow{}
+	exec := &boidBuiltinExecutor{
+		tasks:    &api.TaskAppService{Tasks: store},
+		workflow: workflow,
+	}
+	ctx := sandbox.TokenContext{TaskID: "caller-task", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:         sandbox.BoidOpActionSend,
+		TaskID:     "t1",
+		ActionType: "reopen",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	if !workflow.appliedHasWriter {
+		t.Fatal("appliedHasWriter = false, want true (ExecuteBoidBuiltin must stamp WithWriterProjectID on every sandbox-originated write)")
+	}
+	if workflow.appliedWriterProject != ctx.ProjectID {
+		t.Fatalf("appliedWriterProject = %q, want %q (TokenContext.ProjectID)", workflow.appliedWriterProject, ctx.ProjectID)
+	}
+}
+
 // TestBoidBuiltinExecutor_ActionSend_ChildSpecced_RejectsProjectOutsideWorkspace
 // pins the codex review Blocker fix: child_specced's payload carries its own
 // "project" field (the project accept(go) will later create/auto-start a

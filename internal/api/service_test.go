@@ -1831,7 +1831,7 @@ func (s *stubTx) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.T
 func (s *stubTx) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *stubTx) CreateAction(action *orchestrator.Action) error {
+func (s *stubTx) CreateAction(_ context.Context, action *orchestrator.Action) error {
 	s.createdAction = action
 	return nil
 }
@@ -1909,7 +1909,9 @@ type stubActionStore struct {
 	actions []*orchestrator.Action
 }
 
-func (s stubActionStore) CreateAction(action *orchestrator.Action) error { return nil }
+func (s stubActionStore) CreateAction(_ context.Context, action *orchestrator.Action) error {
+	return nil
+}
 func (s stubActionStore) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) {
 	return s.actions, nil
 }

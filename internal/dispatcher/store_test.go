@@ -1,6 +1,7 @@
 package dispatcher_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -219,13 +220,13 @@ func TestFindDaemonShutdownAbortedTasks_ReturnsShutdownTasks(t *testing.T) {
 	if _, err := d.Conn.Exec(`UPDATE tasks SET status = 'aborted' WHERE id = ?`, taskA.ID); err != nil {
 		t.Fatalf("set A aborted: %v", err)
 	}
-	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{
 		TaskID:     taskA.ID,
 		Type:       "abort",
 		FromStatus: orchestrator.TaskStatusExecuting,
 		ToStatus:   orchestrator.TaskStatusAborted,
 		Payload:    json.RawMessage(`{"code":"daemon_shutdown","message":"shutdown"}`),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("create A action: %v", err)
 	}
 
@@ -237,13 +238,13 @@ func TestFindDaemonShutdownAbortedTasks_ReturnsShutdownTasks(t *testing.T) {
 	if _, err := d.Conn.Exec(`UPDATE tasks SET status = 'aborted' WHERE id = ?`, taskB.ID); err != nil {
 		t.Fatalf("set B aborted: %v", err)
 	}
-	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{
 		TaskID:     taskB.ID,
 		Type:       "abort",
 		FromStatus: orchestrator.TaskStatusExecuting,
 		ToStatus:   orchestrator.TaskStatusAborted,
 		Payload:    json.RawMessage(`{"code":"dispatch_error","message":"hook failed"}`),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("create B action: %v", err)
 	}
 
@@ -283,23 +284,23 @@ func TestFindDaemonShutdownAbortedTasks_LatestAbortWins(t *testing.T) {
 	}
 
 	// First abort: daemon_shutdown
-	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{
 		TaskID:     task.ID,
 		Type:       "abort",
 		FromStatus: orchestrator.TaskStatusExecuting,
 		ToStatus:   orchestrator.TaskStatusAborted,
 		Payload:    json.RawMessage(`{"code":"daemon_shutdown"}`),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("create first abort: %v", err)
 	}
 	// Newer abort: dispatch_error (e.g. reopen then hook failed)
-	if err := orchestrator.CreateAction(d.Conn, &orchestrator.Action{
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{
 		TaskID:     task.ID,
 		Type:       "abort",
 		FromStatus: orchestrator.TaskStatusExecuting,
 		ToStatus:   orchestrator.TaskStatusAborted,
 		Payload:    json.RawMessage(`{"code":"dispatch_error"}`),
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("create second abort: %v", err)
 	}
 

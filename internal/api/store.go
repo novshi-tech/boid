@@ -306,7 +306,13 @@ type TaskStore interface {
 }
 
 type ActionStore interface {
-	CreateAction(action *orchestrator.Action) error
+	// CreateAction takes ctx so the internal-signal ingest step it performs
+	// (docs/plans/boid-internal-signal-inbox.md §4.5) can see the write's
+	// origin project via orchestrator.WriterProjectIDFromContext when this
+	// call was routed through internal/server/boid_executor.go's
+	// ExecuteBoidBuiltin (the only place that ever stamps it) — never
+	// consulted for anything else CreateAction does.
+	CreateAction(ctx context.Context, action *orchestrator.Action) error
 	ListActionsByTask(taskID string) ([]*orchestrator.Action, error)
 }
 

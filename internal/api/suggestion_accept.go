@@ -161,7 +161,7 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 		}
 		action.FromStatus = fresh.Status
 		action.ToStatus = applied.Status // non-transitioning: equals fresh.Status
-		if err := tx.CreateAction(action); err != nil {
+		if err := tx.CreateAction(ctx, action); err != nil {
 			return err
 		}
 
@@ -227,7 +227,7 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 		if err := tx.UpdateTask(verbApplied); err != nil {
 			return err
 		}
-		if err := tx.CreateAction(verbAction); err != nil {
+		if err := tx.CreateAction(ctx, verbAction); err != nil {
 			return err
 		}
 		switch sugg.Verb {

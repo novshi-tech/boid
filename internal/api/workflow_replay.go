@@ -94,7 +94,7 @@ func (s *TaskWorkflowService) ReplayHook(ctx context.Context, taskID string, req
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
-	s.persistFiredEvents(taskID, task.Status, replay.FiredEvents)
+	s.persistFiredEvents(ctx, taskID, task.Status, replay.FiredEvents)
 
 	// Re-fetch to return the persisted state.
 	updated, err := s.Tasks.GetTask(taskID)

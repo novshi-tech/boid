@@ -641,9 +641,13 @@ targets を report-only の並走 behavior (khi 側 `sweep_shadow_b`) に配り�
 
 ### 検証・実装と並行して決めること
 
-- boid 内部シグナル (action 列) の経路 — inbox へ統合するか、現行どおり workspace の
+- ~~boid 内部シグナル (action 列) の経路 — inbox へ統合するか、現行どおり workspace の
   scan script が `boid action list` を直読みし続けるか
-  (初期実装は後者を推す。`signal-envelope-inventory.md` §6)
+  (初期実装は後者を推す。`signal-envelope-inventory.md` §6)~~ **決着 (2026-08-28):
+  統合する。** `docs/plans/boid-internal-signal-inbox.md` 参照 — 責務境界の表 (§3) が
+  inbox・cursor・dedup を core の持ち物と定義しているのに現行は workspace 側に複製
+  機構が残っていること、メタプロジェクトが 2 個目に増える時点でその複製が量産される
+  ことが決め手。PR-1 (core ingest) 実装済み、PR-2/PR-3 (khi 側の切替・撤去) は別途。
 - Resource resolver を Pack contract に含めるか (据え置き)
 - Pack の発見・配布・install/update/signing/version pin の具体方式
   (pin を instance の `uses:` で行うか install 時に固定するかを含む)

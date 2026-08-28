@@ -21,12 +21,26 @@ import (
 // ApplyAction call so reopen-payload tests can assert what the executor
 // forwarded.
 type recordingWorkflow struct {
-	mu             sync.Mutex
-	appliedTaskID  string
-	appliedReq     api.ApplyActionRequest
-	appliedActor   string
-	applyCallCount int
-	applyErr       error
+	mu            sync.Mutex
+	appliedTaskID string
+	appliedReq    api.ApplyActionRequest
+	appliedActor  string
+	// appliedWriterProject / appliedHasWriter capture what
+	// orchestrator.WriterProjectIDFromContext sees on the ctx ApplyAction
+	// received — the regression guard for docs/plans/
+	// boid-internal-signal-inbox.md §4.3's self-reference block. This is a
+	// sibling of appliedActor above, same capture timing: without
+	// ExecuteBoidBuiltin's goCtx = orchestrator.WithWriterProjectID(goCtx,
+	// ctx.ProjectID) (boid_executor.go), appliedHasWriter would be false for
+	// every sandbox-originated ApplyAction call, and CreateAction's ingest
+	// step would never be able to tell a metaproject's own self-authored
+	// write apart from a human/daemon one — see
+	// TestBoidBuiltinExecutor_ActionSend_StampsWriterProjectFromTokenContext
+	// (boid_executor_action_send_test.go).
+	appliedWriterProject string
+	appliedHasWriter     bool
+	applyCallCount       int
+	applyErr             error
 
 	// PR-5a triage read surface
 	triageGets    []string
@@ -42,6 +56,7 @@ func (w *recordingWorkflow) ApplyAction(ctx context.Context, taskID string, req 
 	w.appliedTaskID = taskID
 	w.appliedReq = req
 	w.appliedActor = orchestrator.ActorFromContext(ctx)
+	w.appliedWriterProject, w.appliedHasWriter = orchestrator.WriterProjectIDFromContext(ctx)
 	w.applyCallCount++
 	if w.applyErr != nil {
 		return nil, w.applyErr

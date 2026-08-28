@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -213,7 +214,7 @@ func TestPersistFiredEvents_BroadcastsOnSuccess(t *testing.T) {
 		{KitID: "kit-b", HandlerID: "exit-gate-y", Kind: "exit_gate", Success: false, Error: "fail"},
 	}
 
-	svc.persistFiredEvents("task-pe-1", orchestrator.TaskStatusExecuting, events)
+	svc.persistFiredEvents(context.Background(), "task-pe-1", orchestrator.TaskStatusExecuting, events)
 
 	for i, fe := range events {
 		ev, ok := receiveEvent(t, ch, time.Second)
@@ -252,7 +253,7 @@ func TestPersistFiredEvents_NoBroadcastOnCommitFailure(t *testing.T) {
 		{KitID: "kit-a", HandlerID: "hook-x", Kind: "hook", Success: true},
 	}
 
-	svc.persistFiredEvents("task-pe-fail", orchestrator.TaskStatusExecuting, events)
+	svc.persistFiredEvents(context.Background(), "task-pe-fail", orchestrator.TaskStatusExecuting, events)
 
 	_, ok := receiveEvent(t, ch, 50*time.Millisecond)
 	if ok {

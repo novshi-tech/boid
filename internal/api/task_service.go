@@ -455,7 +455,12 @@ func (s *TaskAppService) auditInstructionsChange(taskID string, before, after or
 		Payload: payload,
 		Actor:   orchestrator.ActorHuman,
 	}
-	if err := s.Actions.CreateAction(action); err != nil {
+	// context.Background(): this call site has no ctx of its own (existing
+	// pre-PR-1 gap — see UpdateTask's own "Actor caveat" comment above for
+	// the same limitation on Actor) and Instructions is execution-only
+	// (never a card), so the target axis excludes this write from ingest
+	// regardless (docs/plans/boid-internal-signal-inbox.md §4.2).
+	if err := s.Actions.CreateAction(context.Background(), action); err != nil {
 		slog.Error("audit instructions change: create action", "task_id", taskID, "error", err)
 	}
 }

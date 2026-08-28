@@ -141,6 +141,25 @@ func TestLoadPacks_NameDirMismatchRejected(t *testing.T) {
 	}
 }
 
+// TestLoadPacks_ReservedBoidNameRejected pins docs/plans/
+// boid-internal-signal-inbox.md §4.6's reservation: "boid" is the pack name
+// boid's own internal-action signals ingest under (source.pack="boid"), so
+// LoadPacks must refuse to ever load a REAL Pack claiming it — otherwise an
+// installed Pack named "boid" could collide with (or be mistaken for)
+// internal signals under the same signals PRIMARY KEY.
+func TestLoadPacks_ReservedBoidNameRejected(t *testing.T) {
+	dir := t.TempDir()
+	writePack(t, dir, "boid", "1.0.0", jiraManifest("boid", "1.0.0"))
+
+	_, err := LoadPacks(dir)
+	if err == nil {
+		t.Fatal("want error for a Pack named \"boid\" (reserved), got nil")
+	}
+	if !strings.Contains(err.Error(), "boid") || !strings.Contains(err.Error(), "reserved") {
+		t.Errorf("error should say the name is reserved, got: %v", err)
+	}
+}
+
 // TestLoadPacks_MissingManifestRejected pins that a version directory with
 // no integration.yaml at all is a hard error, not a silent skip — the
 // curated integrations.dir layout (signal-driven-review.md §6.4) has no

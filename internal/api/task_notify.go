@@ -91,7 +91,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			Payload:    payload,
 			Actor:      orchestrator.ActorTask(taskID),
 		}
-		if err := s.Actions.CreateAction(action); err != nil {
+		if err := s.Actions.CreateAction(ctx, action); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
 		return nil
@@ -263,7 +263,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			Payload:    payload,
 			Actor:      orchestrator.ActorTask(taskID),
 		}
-		if err := s.Actions.CreateAction(action); err != nil {
+		if err := s.Actions.CreateAction(ctx, action); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
 	}

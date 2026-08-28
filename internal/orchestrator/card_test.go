@@ -1,6 +1,7 @@
 package orchestrator_test
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"testing"
@@ -400,9 +401,9 @@ func TestParkedFrom_DerivesFromLatestParkAction(t *testing.T) {
 	// one edge (working → parked) — the old three-way triaged/ready/working
 	// origin is gone along with those statuses themselves. "working" is the
 	// only currently-valid FromStatus a real park action ever carries.
-	if err := orchestrator.CreateAction(conn, &orchestrator.Action{
+	if err := orchestrator.CreateAction(context.Background(), conn, &orchestrator.Action{
 		TaskID: "t1", Type: "park", FromStatus: orchestrator.TaskStatusWorking, ToStatus: orchestrator.TaskStatusParked,
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("create park action: %v", err)
 	}
 
@@ -439,9 +440,9 @@ func TestParkedFrom_UsesMostRecentParkAction(t *testing.T) {
 	}
 	for i, a := range actions {
 		time.Sleep(time.Millisecond) // ensure created_at ordering is stable
-		if err := orchestrator.CreateAction(conn, &orchestrator.Action{
+		if err := orchestrator.CreateAction(context.Background(), conn, &orchestrator.Action{
 			TaskID: "t1", Type: a.typ, FromStatus: a.from, ToStatus: a.to,
-		}); err != nil {
+		}, nil); err != nil {
 			t.Fatalf("create action %d: %v", i, err)
 		}
 	}

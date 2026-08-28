@@ -453,7 +453,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 				return err
 			}
 		}
-		if err := tx.CreateAction(action); err != nil {
+		if err := tx.CreateAction(ctx, action); err != nil {
 			return err
 		}
 		// PR #987 review, LOW 10: a direct human card transition landing here
@@ -466,7 +466,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		// also execution-machine verb names (machine_execution.go), and
 		// IsCardTransitionAction's backing set is keyed on name only.
 		if sm.Name == orchestrator.CardMachineName && orchestrator.IsCardTransitionAction(req.Type) {
-			if err := recordAndStripSuggestionIfPresent(tx, newTask.ID, action); err != nil {
+			if err := recordAndStripSuggestionIfPresent(ctx, tx, newTask.ID, action); err != nil {
 				return err
 			}
 		}
@@ -665,14 +665,14 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			// remains visible in the timeline; abortOnDispatchError then logs
 			// the dispatcher-level error and transitions the task to aborted.
 			if result != nil {
-				s.persistFiredEvents(current.ID, current.Status, result.FiredEvents)
+				s.persistFiredEvents(ctx, current.ID, current.Status, result.FiredEvents)
 			}
 			slog.Error("dispatch loop error", "task_id", current.ID, "cycle", cycle, "error", err)
 			s.abortOnDispatchError(ctx, current, err)
 			return
 		}
 
-		s.persistFiredEvents(current.ID, current.Status, result.FiredEvents)
+		s.persistFiredEvents(ctx, current.ID, current.Status, result.FiredEvents)
 
 		// The awaiting trait is owned exclusively by ApplyAction("ask"/"answer")
 		// and is persisted to the DB inline as those actions run. Strip it
@@ -778,7 +778,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			if err := tx.UpdateTask(current); err != nil {
 				return err
 			}
-			return tx.CreateAction(action)
+			return tx.CreateAction(ctx, action)
 		}); err != nil {
 			slog.Error("auto-advance persist failed", "task_id", current.ID, "error", err)
 			return
@@ -812,7 +812,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 // failure mode this fix trades away in favor of leaving the children
 // running and recording their ids here for a human to inspect and
 // hand-abort if the transition really did fail for everyone.
-func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orchestrator.TaskStatus, err error, orphanedChildTaskIDs ...string) {
+func (s *TaskWorkflowService) recordDispatchError(ctx context.Context, taskID string, taskStatus orchestrator.TaskStatus, err error, orphanedChildTaskIDs ...string) {
 	if s.Tx == nil || taskID == "" || err == nil {
 		return
 	}
@@ -837,7 +837,7 @@ func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orch
 		Actor:      orchestrator.ActorDaemon,
 	}
 	if txErr := s.Tx.WithinTx(func(tx TxStore) error {
-		return tx.CreateAction(action)
+		return tx.CreateAction(ctx, action)
 	}); txErr != nil {
 		slog.Error("persist dispatch error failed", "task_id", taskID, "error", txErr)
 	}
@@ -862,7 +862,7 @@ func (s *TaskWorkflowService) abortOnDispatchError(ctx context.Context, task *or
 		code = "daemon_shutdown"
 		message = "daemon が停止したため中断されました。 起動時に自動 reopen されます。"
 	} else {
-		s.recordDispatchError(task.ID, task.Status, err)
+		s.recordDispatchError(ctx, task.ID, task.Status, err)
 	}
 
 	abortPayload, _ := json.Marshal(map[string]string{
@@ -882,7 +882,7 @@ func (s *TaskWorkflowService) abortOnDispatchError(ctx context.Context, task *or
 		if updErr := tx.UpdateTask(task); updErr != nil {
 			return updErr
 		}
-		return tx.CreateAction(abortAction)
+		return tx.CreateAction(ctx, abortAction)
 	}); txErr != nil {
 		slog.Error("abort on dispatch error: persist abort failed",
 			"task_id", task.ID, "error", txErr)
@@ -890,7 +890,7 @@ func (s *TaskWorkflowService) abortOnDispatchError(ctx context.Context, task *or
 	s.finalizeTerminal(ctx, task)
 }
 
-func (s *TaskWorkflowService) persistFiredEvents(taskID string, status orchestrator.TaskStatus, events []orchestrator.FiredEvent) {
+func (s *TaskWorkflowService) persistFiredEvents(ctx context.Context, taskID string, status orchestrator.TaskStatus, events []orchestrator.FiredEvent) {
 	if len(events) == 0 || s.Tx == nil {
 		return
 	}
@@ -912,7 +912,7 @@ func (s *TaskWorkflowService) persistFiredEvents(taskID string, status orchestra
 				ToStatus:   status,
 				Actor:      orchestrator.ActorDaemon,
 			}
-			if err := tx.CreateAction(action); err != nil {
+			if err := tx.CreateAction(ctx, action); err != nil {
 				return err
 			}
 		}

@@ -1090,9 +1090,18 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 
 	projectRepo := orchestrator.NewProjectRepository(srv.db)
 	taskRepo := orchestrator.NewTaskRepository(srv.db)
+	// docs/plans/boid-internal-signal-inbox.md §6.2: CreateAction's ingest
+	// step needs the metaproject lookup, and store (*orchestrator.ProjectStore,
+	// built above by buildProjectStore) already IS the hydrated meta cache
+	// every other project.yaml-derived read in this daemon uses — no new
+	// cache, no new import (ProjectStore already lives in
+	// internal/orchestrator alongside TaskRepository/CreateAction), just
+	// wiring the same instance into the one place that had no constructor-
+	// injected access to it yet.
+	taskRepo.SetMetaProjectResolver(store)
 	jobRepo := dispatcher.NewJobRepository(srv.db)
 	jobStore := jobStoreAdapter{repo: jobRepo}
-	tx := apiTransactor{db: srv.db}
+	tx := apiTransactor{db: srv.db, metaResolver: store}
 
 	boidBin, _ := os.Executable()
 	projectCatalog := orchestrator.DBProjectCatalog{DB: srv.db}

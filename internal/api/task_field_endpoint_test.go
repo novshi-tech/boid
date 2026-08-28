@@ -48,7 +48,9 @@ type fieldActionStore struct {
 	actions map[string][]*orchestrator.Action
 }
 
-func (s *fieldActionStore) CreateAction(_ *orchestrator.Action) error { return nil }
+func (s *fieldActionStore) CreateAction(_ context.Context, _ *orchestrator.Action) error {
+	return nil
+}
 func (s *fieldActionStore) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) {
 	return s.actions[taskID], nil
 }

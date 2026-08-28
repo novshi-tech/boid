@@ -79,6 +79,15 @@ func LoadPacks(dir string) ([]*Pack, error) {
 			continue
 		}
 		packName := pe.Name()
+		// "boid" is reserved (docs/plans/boid-internal-signal-inbox.md §4.6):
+		// boid's own internal-action signals ingest under source.pack="boid"
+		// (signal_ingest_bridge.go's InternalSignalPack, internal/orchestrator),
+		// so no REAL installed Pack may ever claim that name — a collision
+		// would let an external Pack's rows masquerade as (or shadow)
+		// internal signals under the same signals table PRIMARY KEY.
+		if packName == "boid" {
+			return nil, fmt.Errorf("integrationpack: %s: pack name %q is reserved for boid's own internal-signal source and cannot be used by an installed Pack", filepath.Join(dir, packName), packName)
+		}
 		packDir := filepath.Join(dir, packName)
 		verEntries, err := os.ReadDir(packDir)
 		if err != nil {
