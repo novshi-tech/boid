@@ -12,8 +12,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/novshi-tech/boid/internal/skills"
 )
 
 // This file covers the WRAPPER SCRIPT half of PR5 of
@@ -760,12 +758,12 @@ func TestBuildWorkspaceInitRequest_PreludeCreatesPackSkillSymlinks(t *testing.T)
 	}
 
 	req, err := buildWorkspaceInitRequest(workspaceInitParams{
-		Slug:           "myws",
-		HomeSource:     "boid-ws-home-testinst-myws",
-		HomeTarget:     homeDir,
-		SkeletonDirs:   workspaceHomeSkeletonDirs(),
-		PackSkillLinks: []PackSkillLink{{Name: "jira-api", Target: skillDir}},
-		HomeID:         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Slug:         "myws",
+		HomeSource:   "boid-ws-home-testinst-myws",
+		HomeTarget:   homeDir,
+		SkeletonDirs: workspaceHomeSkeletonDirs(),
+		SkillLinks:   []SkillLink{{Name: "jira-api", Target: skillDir}},
+		HomeID:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	})
 	if err != nil {
 		t.Fatalf("buildWorkspaceInitRequest: %v", err)
@@ -826,12 +824,12 @@ func TestBuildWorkspaceInitRequest_PackSkillSymlinkReplacesStaleDirectory(t *tes
 	}
 
 	req, err := buildWorkspaceInitRequest(workspaceInitParams{
-		Slug:           "myws",
-		HomeSource:     "boid-ws-home-testinst-myws",
-		HomeTarget:     homeDir,
-		SkeletonDirs:   workspaceHomeSkeletonDirs(),
-		PackSkillLinks: []PackSkillLink{{Name: "jira-api", Target: skillDir}},
-		HomeID:         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Slug:         "myws",
+		HomeSource:   "boid-ws-home-testinst-myws",
+		HomeTarget:   homeDir,
+		SkeletonDirs: workspaceHomeSkeletonDirs(),
+		SkillLinks:   []SkillLink{{Name: "jira-api", Target: skillDir}},
+		HomeID:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	})
 	if err != nil {
 		t.Fatalf("buildWorkspaceInitRequest: %v", err)
@@ -872,14 +870,14 @@ func TestBuildWorkspaceInitRequest_PackSkillSymlinksRunBeforeUserScript(t *testi
 	homeDir := t.TempDir()
 	script := `[ -L "$BOID_WORKSPACE_HOME/.claude/skills/slack-api" ] || exit 17` + "\n"
 	req, err := buildWorkspaceInitRequest(workspaceInitParams{
-		Slug:           "myws",
-		HomeSource:     "boid-ws-home-testinst-myws",
-		HomeTarget:     homeDir,
-		SkeletonDirs:   workspaceHomeSkeletonDirs(),
-		PackSkillLinks: []PackSkillLink{{Name: "slack-api", Target: skillDir}},
-		Script:         []byte(script),
-		ScriptExists:   true,
-		HomeID:         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Slug:         "myws",
+		HomeSource:   "boid-ws-home-testinst-myws",
+		HomeTarget:   homeDir,
+		SkeletonDirs: workspaceHomeSkeletonDirs(),
+		SkillLinks:   []SkillLink{{Name: "slack-api", Target: skillDir}},
+		Script:       []byte(script),
+		ScriptExists: true,
+		HomeID:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	})
 	if err != nil {
 		t.Fatalf("buildWorkspaceInitRequest: %v", err)
@@ -912,14 +910,14 @@ func TestBuildWorkspaceInitRequest_PackSkillSymlinkRerunDoesNotDeleteTarget(t *t
 	}
 
 	homeDir := t.TempDir()
-	links := []PackSkillLink{{Name: "jira-api", Target: skillDir}}
+	links := []SkillLink{{Name: "jira-api", Target: skillDir}}
 	req, err := buildWorkspaceInitRequest(workspaceInitParams{
-		Slug:           "myws",
-		HomeSource:     "boid-ws-home-testinst-myws",
-		HomeTarget:     homeDir,
-		SkeletonDirs:   workspaceHomeSkeletonDirs(),
-		PackSkillLinks: links,
-		HomeID:         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Slug:         "myws",
+		HomeSource:   "boid-ws-home-testinst-myws",
+		HomeTarget:   homeDir,
+		SkeletonDirs: workspaceHomeSkeletonDirs(),
+		SkillLinks:   links,
+		HomeID:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	})
 	if err != nil {
 		t.Fatalf("buildWorkspaceInitRequest: %v", err)
@@ -942,29 +940,5 @@ func TestBuildWorkspaceInitRequest_PackSkillSymlinkRerunDoesNotDeleteTarget(t *t
 	}
 	if string(data) != "reference" {
 		t.Errorf("content through symlink after re-run = %q, want %q", data, "reference")
-	}
-}
-
-func TestWorkspaceHomeSkeletonDirs_CoversEveryPerSkillBindTarget(t *testing.T) {
-	got := make(map[string]bool)
-	for _, dir := range workspaceHomeSkeletonDirs() {
-		got[dir] = true
-	}
-	want := []string{".claude", filepath.Join(".claude", "skills")}
-	for _, name := range skills.EmbeddedSkillNames() {
-		want = append(want, filepath.Join(".claude", "skills", name))
-	}
-	for _, w := range want {
-		if !got[w] {
-			t.Errorf("skeleton set is missing %q", w)
-		}
-	}
-	if len(got) != len(want) {
-		t.Errorf("skeleton set has %d entries, want exactly %d (%v)", len(got), len(want), want)
-	}
-	for _, dir := range workspaceHomeSkeletonDirs() {
-		if filepath.IsAbs(dir) {
-			t.Errorf("skeleton entry %q is absolute; entries are relative to the workspace home so the prep container never needs the host path", dir)
-		}
 	}
 }

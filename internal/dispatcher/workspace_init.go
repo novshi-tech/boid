@@ -190,65 +190,66 @@ type WorkspaceInitRequest struct {
 	// re-init.
 	HomeID string
 
-	// PackSkillLinks are the Integration Pack skills to symlink into
-	// .claude/skills/<Name> — implementing docs/plans/signal-driven-review.md
-	// §6.4's last bullet ("job には利用する skill だけを read-only mount す
-	// る", i.e. discoverable at an agent's own skill-search path, same as
-	// embedded skills) for Integration Packs, which until this existed were
-	// reachable only by an explicit "read this path" instruction — a
-	// discoverability gap the shadow-b evaluation surfaced and measured as
-	// hurting judgment quality. See packSkillLinks' own doc comment
-	// (skills_overlay.go) for the two deliberate departures from §6.4's
-	// text (symlink instead of bind mount; every skill/every home instead
-	// of only-what's-used), and PackSkillLink's own doc comment for why a
-	// symlink suffices here.
+	// SkillLinks are the skills to symlink into every entry of
+	// skillDiscoveryRoots — boid's own embedded set and every loaded
+	// Integration Pack's, assembled by skillLinks (skills_overlay.go).
+	//
+	// See that function's doc comment for how the set is built and what it
+	// deliberately does not filter, skillDiscoveryRoots for why a link is
+	// written into more than one directory, and SkillLink for why a symlink
+	// is the whole mechanism.
 	//
 	// Carried on the request for the same reason as SkeletonDirs just
 	// above, even though (like SkeletonDirs) no production executor reads
 	// this field back off the request — buildWorkspaceInitScript consumes
 	// it directly to assemble Script, and that is the only consumer today.
 	// The value carrying it here anyway: resolveWorkspaceHome computes
-	// packSkillLinks ONCE and passes that single value both into this
-	// struct (to build the script) and into the completion marker it
-	// writes afterward — so "what the script actually links" and "what the
-	// marker vouches for" are provably the same evaluation, not two calls
-	// to packSkillLinks that could in principle disagree if Runner.Packs
-	// were read twice.
-	PackSkillLinks []PackSkillLink
+	// skillLinks ONCE and passes that single value both into this struct
+	// (to build the script) and into the completion marker it writes
+	// afterward — so "what the script actually links" and "what the marker
+	// vouches for" are provably the same evaluation, not two calls to
+	// skillLinks that could in principle disagree if Runner.Packs were read
+	// twice.
+	SkillLinks []SkillLink
 }
 
-// PackSkillLink is one Integration Pack skill to make discoverable at
-// .claude/skills/<Name> inside a workspace home, by symlink rather than bind
-// mount.
+// SkillLink is one skill to make discoverable inside a workspace home, by
+// symlink rather than bind mount.
 //
-// Embedded skills (skills_overlay.go) need a bind mount because their
-// content is materialized fresh per installation into a host-visible
-// directory — there is no other way for a sibling job container to see it.
-// Integration Pack skills have no such directory: they are baked into the
-// very image the init container (and every job container) runs from
-// (build/container/Dockerfile's `cp -r ... /opt/boid/integrations/`), so
-// Target already exists inside this container before the prelude does
-// anything. A symlink is the entire mechanism — there is nothing to
+// Both kinds of skill are delivered this way, and both for the same reason:
+// Target is baked into the very image the init container (and every job
+// container) runs from, so it already exists inside this container before the
+// prelude does anything. Integration Packs are copied there by
+// build/container/Dockerfile's `cp -r ... /opt/boid/integrations/`; boid's own
+// embedded set is unpacked from the binary to embeddedSkillsImageDir by the
+// same Dockerfile. A symlink is the entire mechanism — there is nothing to
 // materialize and nothing to bind.
-type PackSkillLink struct {
-	// Name becomes the symlink's basename: .claude/skills/<Name>, joined
-	// with filepath.Join by buildWorkspaceInitScript — never interpolated
-	// as a raw path. It MUST match integrationpack.ValidSkillName's
-	// allowlist: packSkillLinks (skills_overlay.go), the only production
-	// constructor, checks exactly that before a Skill's manifest-declared
-	// name ever reaches this struct — a manifest's skills[].name cannot
-	// steer the wrapper outside .claude/skills/. (An earlier version of
-	// this filter was a denylist — filepath.IsLocal + matching
-	// filepath.Base — replaced after a review round found it kept missing
-	// individual unsafe names one at a time, most recently a NUL byte
-	// bash strips from a script it reads on stdin; see ValidSkillName's own
-	// doc comment.) A caller building a PackSkillLink some other way (a
-	// test, a future constructor) inherits the same obligation; this
-	// struct does not re-validate it.
+//
+// Until embedded skills were baked out, they were the exception: their
+// content was materialized fresh per installation into a host-visible
+// directory and bind-mounted in, because a sibling job container had no other
+// way to see it. See skills_overlay.go's header for what removing that
+// exception bought.
+type SkillLink struct {
+	// Name becomes the symlink's basename under each of skillDiscoveryRoots,
+	// joined with filepath.Join by buildWorkspaceInitScript — never
+	// interpolated as a raw path. For a Pack skill it MUST match
+	// integrationpack.ValidSkillName's allowlist: skillLinks
+	// (skills_overlay.go), the only production constructor, checks exactly
+	// that before a Skill's manifest-declared name ever reaches this struct,
+	// so a manifest's skills[].name cannot steer the wrapper outside a
+	// discovery root. (An earlier version of this filter was a denylist —
+	// filepath.IsLocal + matching filepath.Base — replaced after a review
+	// round found it kept missing individual unsafe names one at a time,
+	// most recently a NUL byte bash strips from a script it reads on stdin;
+	// see ValidSkillName's own doc comment.) A caller building a SkillLink
+	// some other way (a test, a future constructor) inherits the same
+	// obligation; this struct does not re-validate it.
 	Name string
-	// Target is the absolute, image-baked path the symlink points at
-	// (e.g. /opt/boid/integrations/jira-cloud/1.0.0/skills/jira-api) — never
-	// a bind-mount source, since no such host path exists for it.
+	// Target is the absolute, image-baked path the symlink points at —
+	// /opt/boid/skills/<name> for an embedded skill, or e.g.
+	// /opt/boid/integrations/jira-cloud/1.0.0/skills/jira-api for a Pack's.
+	// Never a bind-mount source, since no such host path exists for either.
 	Target string
 }
 
@@ -360,8 +361,8 @@ type workspaceInitParams struct {
 	// EnsureWorkspaceHomeVolume.
 	HomeID string
 
-	// PackSkillLinks mirrors WorkspaceInitRequest.PackSkillLinks — see there.
-	PackSkillLinks []PackSkillLink
+	// SkillLinks mirrors WorkspaceInitRequest.SkillLinks — see there.
+	SkillLinks []SkillLink
 
 	// heredocDelimiter overrides the randomly minted delimiter. Test-only:
 	// the collision refusal below is unreachable at 2^-128 odds, and a
@@ -411,14 +412,14 @@ func buildWorkspaceInitRequest(p workspaceInitParams) (WorkspaceInitRequest, err
 		return WorkspaceInitRequest{}, err
 	}
 	return WorkspaceInitRequest{
-		Slug:           p.Slug,
-		HomeSource:     p.HomeSource,
-		HomeTarget:     p.HomeTarget,
-		Env:            buildWorkspaceInitEnv(p.Slug, p.HomeTarget),
-		Script:         wrapper,
-		SkeletonDirs:   p.SkeletonDirs,
-		HomeID:         p.HomeID,
-		PackSkillLinks: p.PackSkillLinks,
+		Slug:         p.Slug,
+		HomeSource:   p.HomeSource,
+		HomeTarget:   p.HomeTarget,
+		Env:          buildWorkspaceInitEnv(p.Slug, p.HomeTarget),
+		Script:       wrapper,
+		SkeletonDirs: p.SkeletonDirs,
+		HomeID:       p.HomeID,
+		SkillLinks:   p.SkillLinks,
 	}, nil
 }
 
@@ -486,24 +487,37 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 		b.WriteString(workspaceInitStageCheckStatus(workspaceInitStagePrelude, workspaceInitPreludeExitCode))
 	}
 
-	if len(p.PackSkillLinks) > 0 {
-		// Integration Pack skills need no materialization step (unlike the
-		// mkdir -p above, which stages BIND TARGETS for content the daemon
-		// writes elsewhere): Target is already present in this very
-		// container, baked into its image. `rm -rf` before `ln -sfn` rather
-		// than relying on -f alone because the thing being replaced may be a
-		// real directory, not a stale symlink — exactly the state found in
-		// production before this wiring existed (a skill hand-copied into
-		// .claude/skills/<name> from a since-superseded checkout). `ln -sfn`
-		// alone would nest a symlink INSIDE such a directory rather than
-		// replacing it.
-		b.WriteString("\n# --- prelude: Integration Pack skill symlinks (docs/plans/signal-driven-review.md §6.4) ---\n")
-		for _, link := range p.PackSkillLinks {
-			dest := filepath.Join(".claude", "skills", link.Name)
-			b.WriteString("rm -rf -- " + shellQuoteDir(dest) + "\n")
-			b.WriteString(workspaceInitStageCheck(workspaceInitStagePrelude, workspaceInitPreludeExitCode))
-			b.WriteString("ln -sfn -- " + shellQuoteDir(link.Target) + " " + shellQuoteDir(dest) + "\n")
-			b.WriteString(workspaceInitStageCheck(workspaceInitStagePrelude, workspaceInitPreludeExitCode))
+	if len(p.SkillLinks) > 0 {
+		// Skills need no materialization step (unlike the mkdir -p above,
+		// which stages directories the engine would otherwise create as uid
+		// 0): Target is already present in this very container, baked into
+		// its image — see SkillLink.
+		//
+		// One link per skill PER ROOT, because the three harnesses boid
+		// dispatches do not share a discovery directory; see
+		// skillDiscoveryRoots for the table.
+		//
+		// `rm -rf` before `ln -sfn` rather than relying on -f alone because
+		// the thing being replaced may be a real directory, not a stale
+		// symlink. Two ways that happens, and the second is why this stays
+		// even now that boid never creates such a directory itself: a skill
+		// hand-copied into .claude/skills/<name> from a since-superseded
+		// checkout (the state found in production before Pack symlinks
+		// existed), and — for one migration only — the bind TARGET
+		// directories the pre-image-baking builds created for embedded
+		// skills, which survive in every workspace home this release
+		// upgrades. `ln -sfn` alone would nest the symlink INSIDE such a
+		// directory, leaving the skill at <root>/<name>/<name> where nothing
+		// discovers it.
+		b.WriteString("\n# --- prelude: skill symlinks (embedded + Integration Pack) ---\n")
+		for _, link := range p.SkillLinks {
+			for _, root := range skillDiscoveryRoots {
+				dest := filepath.Join(root, link.Name)
+				b.WriteString("rm -rf -- " + shellQuoteDir(dest) + "\n")
+				b.WriteString(workspaceInitStageCheck(workspaceInitStagePrelude, workspaceInitPreludeExitCode))
+				b.WriteString("ln -sfn -- " + shellQuoteDir(link.Target) + " " + shellQuoteDir(dest) + "\n")
+				b.WriteString(workspaceInitStageCheck(workspaceInitStagePrelude, workspaceInitPreludeExitCode))
+			}
 		}
 	}
 

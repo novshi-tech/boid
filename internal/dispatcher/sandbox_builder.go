@@ -16,7 +16,6 @@ import (
 	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
-	"github.com/novshi-tech/boid/internal/skills"
 )
 
 // SandboxRuntimeInfo carries the dispatcher-internal facts that are required
@@ -288,27 +287,6 @@ type SandboxRuntimeInfo struct {
 	// literals) — the env var is simply omitted in that case.
 	WorkspaceSlug string
 
-	// SkillsSourceDir is the host-visible directory Runner.Dispatch just
-	// materialized the embedded skill set into — <RuntimesDir>/skills, see
-	// embeddedSkillsDir / syncEmbeddedSkills (docs/plans/
-	// workspace-home-volume-persistence.md 論点 e-2, PR3).
-	//
-	// homeMounts turns it into one READ-ONLY bind per embedded skill,
-	// <SkillsSourceDir>/<name> → <HOME>/.claude/skills/<name>, layered on top
-	// of the workspace home bind. Per skill rather than one bind of the whole
-	// ~/.claude/skills directory on purpose: a directory-wide bind would hide
-	// any non-embedded skill the workspace's init.sh copied into the home,
-	// which internal/adapters/opencode/bindings.go documents as the supported
-	// way to expose host skills (bitbucket, jira, google-*, ...) to a harness.
-	// skills.EmbeddedSkillNames() enumerates the names, so the mount set
-	// tracks the embed directive rather than a hard-coded list.
-	//
-	// Empty (test wiring that never threaded it, the same minimal
-	// SandboxRuntimeInfo{} literals WorkspaceHomeVolume degrades for) means no
-	// skill binds at all — the HOME layer is then byte-for-byte what it was
-	// before PR3.
-	SkillsSourceDir string
-
 	// CloneHostBacked (docs/plans/volume-only-daemon.md §論点b, PR-2b "per-job
 	// clone at dispatch time") signals that Runner.Dispatch has already
 	// materialized CloneWorkspaceDir via dispatcher.PrepareJobCheckout
@@ -522,14 +500,13 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// reason. HOME still gets the workspace home bind or a private tmpfs
 		// fallback (docs/plans/home-workspace-volume.md Phase 4 PR2), exactly
 		// like the "no project visible" case below.
-		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeVolume, rt.SkillsSourceDir)...)
+		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeVolume)...)
 	case projectDir != "":
 		mounts = append(mounts, projectVisibilityMounts(
 			projectDir,
 			projectDir,
 			homeDir,
 			rt.WorkspaceHomeVolume,
-			rt.SkillsSourceDir,
 			spec.Visibility.Writable,
 			rt.WorkspacePeers,
 		)...)
@@ -537,7 +514,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// No project visible: HOME gets the workspace home bind (+ the
 		// embedded-skill binds) or a fresh tmpfs fallback, same as the Clone
 		// case above (docs/plans/home-workspace-volume.md Phase 4 PR2).
-		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeVolume, rt.SkillsSourceDir)...)
+		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeVolume)...)
 	}
 
 	// Sandbox-internal clone mounts (docs/plans/git-gateway-cutover.md PR5):
@@ -817,46 +794,28 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 //
 // # The answer comes from the MOUNT LIST, not from the runtime info
 //
-// The tempting gate is "rt.WorkspaceHomeVolume and rt.SkillsSourceDir are both
-// set", and it is wrong in both directions:
+// The tempting gate is "rt.WorkspaceHomeVolume is set", and it is not enough:
+// a ProfileInit sandbox (`boid kit init` / workspace configure) HAS that field
+// — Runner.Dispatch resolves the workspace home before it knows the profile —
+// yet the ProfileInit branch of the mount switch deliberately never mounts it.
+// $HOME there is the host's own, rbind-mounted read-only. Every entry would
+// then be a directory nothing was going to create, and the runner would fail
+// every such job.
 //
-//   - A ProfileInit sandbox (`boid kit init` / workspace configure) has both
-//     fields — Runner.Dispatch resolves the workspace home before it knows the
-//     profile — yet the ProfileInit branch of the mount switch deliberately
-//     never mounts it. $HOME there is the host's own, rbind-mounted read-only.
-//     Every entry would then be a directory nothing was going to create, and
-//     the runner would fail every such job.
-//   - The per-skill leaves (.claude/skills/<name>) ARE covered, by a read-only
-//     bind added a few lines above. Inside the container the bind is
-//     established before the runner starts, so os.Stat on a leaf reads the bind
-//     SOURCE — the daemon-materialized skills tree under the runtimes root —
-//     and not the directory inside the workspace HOME volume the check is
-//     about. Every leaf therefore passed unconditionally, on evidence about a
-//     different directory: not a weak check, an absent one, while its doc
-//     comment and its tests claimed a set it never covered (codex review of
-//     PR6, Minor 1).
-//
-// Reading the assembled mounts answers both at once, and keeps answering them
-// if the layout changes: a future mount laid over .claude would make THAT
-// unobservable in exactly the same way, and would drop out here for the same
-// reason rather than turning into an assertion about a bind source.
-//
-// # What the unverifiable leaves can still cost
-//
-// A leaf missing from the volume is still created by the engine as uid 0 — this
-// changes what is reported, not what happens. But for the whole life of every
-// container that has that skill the uid-0 directory is immediately covered by a
-// READ-ONLY bind, so nothing in the sandbox writes into it and nothing needs
-// to: embedded skills are regenerable content boid supplies, not state the
-// harness keeps. What the volume is left with is an empty, root-owned directory
-// that becomes visible only if a later release stops shipping that skill (the
-// bind disappears with it) — a leftover an operator clears with the same
-// host-side delete verifyHomeSkeleton already prints. It is categorically not
-// the failure the check exists for: that one is ~/.claude itself, which is an
-// ancestor of every leaf, is therefore created uid-0 alongside them, and IS
-// verified here.
+// Reading the assembled mounts answers that, and keeps answering it if the
+// layout changes: a mount laid over .claude (or .agents) would make THAT
+// directory unobservable — os.Stat would read the mount SOURCE rather than the
+// directory inside the workspace HOME volume this check is about — and it
+// drops out here rather than turning into an assertion about someone else's
+// filesystem. That failure was real while the per-skill leaves were covered by
+// read-only binds: every leaf passed unconditionally, on evidence about a
+// different directory, while this function's doc comment and its tests claimed
+// a set it never covered (codex review of PR6, Minor 1). Those binds are gone
+// and the skeleton no longer has leaves, so nothing shadows an entry today —
+// the filter stays because it is what makes that true rather than something
+// this function assumes.
 func homeSkeleton(homeDir string, rt SandboxRuntimeInfo, mounts []sandbox.Mount) (root string, dirs []string) {
-	if rt.WorkspaceHomeVolume == "" || rt.SkillsSourceDir == "" {
+	if rt.WorkspaceHomeVolume == "" {
 		return "", nil
 	}
 	covered := make(map[string]struct{}, len(mounts))
@@ -1256,17 +1215,18 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 // host path side by side in the same mount list, so nothing else has to move
 // with it.
 //
-// skillsSourceDir is <RuntimesDir>/skills (SandboxRuntimeInfo.SkillsSourceDir);
-// see that field's doc comment for why the binds are per-skill and read-only.
-// They carry no Guard: a source that has gone missing means the daemon's
-// materialize step and the mount disagree, and the job must fail rather than
-// start with a silently reduced skill set (決定 D4 — the same fail-loud
-// contract Runner.Dispatch applies to the materialize step itself).
+// It layers nothing on top of the home any more. PR3 of that plan added one
+// read-only bind per embedded skill here, sourced from a host-visible
+// directory the daemon re-materialized on every dispatch; the embedded set is
+// baked into the runner image now and reaches the home by symlink, written
+// once by the init container's prelude (skills_overlay.go). What that removes
+// from THIS function is the last mount whose source had to resolve on the
+// HOST filesystem rather than being a named volume.
 //
 // Shared by the Clone branch, the default (no-project) branch and
 // projectVisibilityMounts's HOME step below so all three switch over
 // identically.
-func homeMounts(homeDir, workspaceHomeVolume, skillsSourceDir string) []sandbox.Mount {
+func homeMounts(homeDir, workspaceHomeVolume string) []sandbox.Mount {
 	if workspaceHomeVolume == "" {
 		// No workspace home resolved: a plain private tmpfs, with no skills
 		// layered on. resolveWorkspaceHome never returns an empty directory
@@ -1277,25 +1237,13 @@ func homeMounts(homeDir, workspaceHomeVolume, skillsSourceDir string) []sandbox.
 			Type:   sandbox.MountTmpfs,
 		}}
 	}
-	mounts := []sandbox.Mount{
+	return []sandbox.Mount{
 		{
 			Source: workspaceHomeVolume,
 			Target: homeDir,
 			Type:   sandbox.MountBind,
 		},
 	}
-	if skillsSourceDir == "" {
-		return mounts
-	}
-	for _, name := range skills.EmbeddedSkillNames() {
-		mounts = append(mounts, sandbox.Mount{
-			Source:   filepath.Join(skillsSourceDir, name),
-			Target:   filepath.Join(homeDir, ".claude", "skills", name),
-			Type:     sandbox.MountBind,
-			ReadOnly: true,
-		})
-	}
-	return mounts
 }
 
 // projectVisibilityMounts returns the canonical mount layout that lets the
@@ -1303,7 +1251,7 @@ func homeMounts(homeDir, workspaceHomeVolume, skillsSourceDir string) []sandbox.
 // home bind, or a tmpfs fallback — see homeMounts) that shadows host files
 // but re-mounts the project on top.
 func projectVisibilityMounts(
-	origProjectDir, effectiveDir, homeDir, workspaceHomeVolume, skillsSourceDir string,
+	origProjectDir, effectiveDir, homeDir, workspaceHomeVolume string,
 	writable bool,
 	peers map[string]string,
 ) []sandbox.Mount {
@@ -1322,7 +1270,7 @@ func projectVisibilityMounts(
 	// on top of it, or a fresh tmpfs fallback when no workspace home is
 	// resolved (docs/plans/home-workspace-volume.md Phase 4 PR2;
 	// docs/plans/workspace-home-volume-persistence.md 論点 e-2 for the skills).
-	out = append(out, homeMounts(homeDir, workspaceHomeVolume, skillsSourceDir)...)
+	out = append(out, homeMounts(homeDir, workspaceHomeVolume)...)
 
 	// 3) re-mount the effective dir so the HOME mount (tmpfs or workspace
 	// bind) does not shadow it.

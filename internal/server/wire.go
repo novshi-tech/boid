@@ -1471,14 +1471,15 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// Third consumer of packs, alongside apiGwCreds' service registry and
 	// sessionDispatcherAdapter's connector-trigger resolution mentioned
 	// above: resolveWorkspaceHome symlinks each Pack's skills[] into every
-	// workspace home's .claude/skills/ — docs/plans/signal-driven-review.md
-	// §6.4's last bullet ("job には利用する skill だけを read-only mount す
-	// る"), implemented once the shadow-b evaluation surfaced that Pack
-	// skills were otherwise reachable only by an explicit "read this path"
-	// instruction (Claude Code's own skill discovery only scans
-	// .claude/skills/). See packSkillLinks' own doc comment
-	// (internal/dispatcher/skills_overlay.go) for the two deliberate
-	// departures from §6.4's text this implementation makes. Set directly
+	// skill discovery root of every workspace home —
+	// docs/plans/signal-driven-review.md §6.4's last bullet ("job には利用す
+	// る skill だけを read-only mount する"), implemented once the shadow-b
+	// evaluation surfaced that Pack skills were otherwise reachable only by
+	// an explicit "read this path" instruction, since a harness's skill
+	// discovery scans its own directories and not /opt/boid/integrations.
+	// See skillLinks' own doc comment
+	// (internal/dispatcher/skills_overlay.go) for the deliberate departures
+	// from §6.4's text this implementation makes. Set directly
 	// on the already-built runner rather than threaded through WireConfig,
 	// since packs itself is not available until this point (it depends on
 	// boidCfg, loaded above at line ~1444, well after dispatcher.Wire ran
@@ -1500,7 +1501,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// header (ptr+len+cap, 3 words), and a concurrent unsynchronized write
 	// to it is a data race in the Go memory model's own sense — a torn read
 	// on some platforms/optimizations could observe a non-nil ptr with a
-	// stale (too-large) len, and packSkillLinks' `for _, pack := range
+	// stale (too-large) len, and skillLinks' `for _, pack := range
 	// packs` would then dereference garbage. `go test -race` does not
 	// exercise this path (no test drives an auto-reopen concurrently with
 	// buildRuntime), so it would not be caught there either.
@@ -1532,10 +1533,9 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// constructed until later in buildRuntime) and share this exposure.
 	//
 	// What DOES bound the damage if the race is lost without a torn read:
-	// workspaceHomeInitialized's PackSkillLinks comparison detects a
-	// nil-Packs init against a marker (or a subsequent real dispatch)
-	// recording a non-empty set, and re-inits once to add the missing
-	// symlinks — self-healing, at the cost of one extra init run for
+	// workspaceHomeInitialized's SkillLinks comparison detects a nil-Packs
+	// init against a marker (or a subsequent real dispatch) recording the
+	// Packs' entries too, and re-inits once to add the missing symlinks — self-healing, at the cost of one extra init run for
 	// whichever workspace's reopen happened to race it.
 	runner.Packs = packs
 

@@ -146,31 +146,38 @@ type workspaceHomeMarker struct {
 	// Empty/absent means a marker from PR2-PR5, which vouched for no skeleton
 	// at all; the InitGeneration bump rejects those first.
 	SkeletonDirs []string `json:"skeleton_dirs,omitempty"`
-	// PackSkillLinks records the Integration Pack skill symlink set this
-	// marker's run created, as packSkillLinkMarkerStrings(name+"="+target)
-	// strings — the same "changed set forces re-init" treatment as
-	// SkeletonDirs, and for the same reason: like SkeletonDirs' mkdir -p,
+	// SkillLinks records the skill symlink set this marker's run created —
+	// boid's embedded skills and every loaded Pack's — as
+	// skillLinkMarkerStrings(name+"="+target) strings, given the same
+	// "changed set forces re-init" treatment as SkeletonDirs and for the
+	// same reason: like SkeletonDirs' mkdir -p,
 	// buildWorkspaceInitScript's symlink step only runs at all when the
 	// marker is stale, so a build that adds, removes or version-bumps a
-	// Pack skill needs an already-initialized home to be told its marker no
+	// skill needs an already-initialized home to be told its marker no
 	// longer describes the current set.
+	//
+	// This is where the embedded set's staleness is now caught. It used to
+	// be caught by SkeletonDirs, which carried one entry per embedded skill
+	// while those were bind targets; moving the embedded set onto symlinks
+	// moves that job here, and shrinks SkeletonDirs to a constant.
 	//
 	// This detects a stale set; it does not by itself REPAIR one. A Pack
 	// removed (or a skill renamed) between two runs is correctly detected —
 	// the string for it is simply absent from the current set — and the
 	// re-init this triggers creates every symlink the CURRENT set names, but
-	// nothing removes the now-orphaned .claude/skills/<old-name> the
-	// previous run left behind (buildWorkspaceInitScript has no "sweep
-	// unlisted names" step). That symlink dangles rather than resolving to
-	// anything useful, which is a smaller failure than the ones SkeletonDirs
-	// guards against (it does not lock the harness out of its home), but it
-	// is not nothing: Claude Code's skill scan still finds it.
+	// nothing removes the now-orphaned <root>/<old-name> the previous run
+	// left behind (buildWorkspaceInitScript has no "sweep unlisted names"
+	// step). That symlink dangles rather than resolving to anything useful,
+	// which is a smaller failure than the ones SkeletonDirs guards against
+	// (it does not lock the harness out of its home), but it is not nothing:
+	// a harness's skill scan still finds it.
 	//
-	// Empty/absent means either "no Packs were loaded when this marker was
-	// written" or "written before this field existed" — both cases converge
-	// on the current empty-vs-nonempty comparison in workspaceHomeInitialized
-	// doing the right thing without needing to tell them apart.
-	PackSkillLinks []string `json:"pack_skill_links,omitempty"`
+	// Empty/absent means "written before this field existed". Markers from
+	// the era of the pack_skill_links field this replaces are rejected by
+	// the InitGeneration bump that came with the rename, so no marker
+	// reaching this comparison can have meant something else by an empty
+	// value.
+	SkillLinks []string `json:"skill_links,omitempty"`
 	// InitGeneration records WHICH EXECUTION ENVIRONMENT ran the init this
 	// marker vouches for (workspaceHomeInitGeneration). A marker whose
 	// generation is not the current one triggers a re-init, exactly like a
@@ -210,6 +217,20 @@ type workspaceHomeMarker struct {
 //	    (dockerres.WorkspaceHomeVolumeName) rather than a bind of
 //	    <runtimesRoot>/homes/<slug>, and the home's identity moved from a file
 //	    inside it onto the volume's own label.
+//	3 — image-baked skills: the embedded skill set stopped arriving as one
+//	    read-only bind mount per skill and became symlinks into
+//	    embeddedSkillsImageDir, written by this same container's prelude into
+//	    every skillDiscoveryRoots entry. A generation-2 home is not equivalent
+//	    to a generation-3 one in a way no other field catches: its
+//	    .claude/skills/<name> entries are real DIRECTORIES (the old bind
+//	    targets, created by that era's skeleton), and a home whose marker still
+//	    matched would keep them — with nothing mounting over them any more,
+//	    leaving every embedded skill undiscoverable. The re-init's `rm -rf`
+//	    before `ln -sfn` is what converts them, and this bump is what makes it
+//	    run. It also retires the marker's pack_skill_links field in favour of
+//	    skill_links, whose value set is different (it now includes the embedded
+//	    skills), so a generation-2 marker's absent skill_links must not be read
+//	    as "no skills were linked".
 //
 // # Why an existing installation must re-init rather than be grandfathered
 //
@@ -252,7 +273,7 @@ type workspaceHomeMarker struct {
 // actually changes — every patch release, for every workspace. A generation
 // changes when the thing it names changes, which is what makes "the marker
 // disagrees" mean something.
-const workspaceHomeInitGeneration = 2
+const workspaceHomeInitGeneration = 3
 
 // resolveWorkspaceHome ensures the docker named volume that holds the
 // workspace identified by workspaceID exists and, if the workspace declares an
@@ -415,7 +436,7 @@ func (r *Runner) resolveWorkspaceHome(ctx context.Context, workspaceID string) (
 	scriptSHA := scriptSHA256Hex(scriptBytes, scriptExists)
 
 	skeleton := workspaceHomeSkeletonDirs()
-	packLinks := packSkillLinks(r.Packs)
+	links := skillLinks(r.Packs)
 	markerPath := workspaceHomeMarkerPath(metaDir, slug)
 
 	homeID, err = r.ensureWorkspaceHomeVolume(ctx, executor, slug, volumeName)
@@ -428,7 +449,7 @@ func (r *Runner) resolveWorkspaceHome(ctx context.Context, workspaceID string) (
 	// idempotent VolumeCreate is the whole engine cost — no container.
 	if marker, ok, err := readWorkspaceHomeMarker(markerPath); err != nil {
 		return "", "", "", fmt.Errorf("workspace home %q: read marker %q: %w", slug, markerPath, err)
-	} else if ok && workspaceHomeInitialized(marker, scriptSHA, skeleton, packLinks, homeID, slug, volumeName) {
+	} else if ok && workspaceHomeInitialized(marker, scriptSHA, skeleton, links, homeID, slug, volumeName) {
 		return volumeName, slug, homeID, nil
 	}
 
@@ -468,7 +489,7 @@ func (r *Runner) resolveWorkspaceHome(ctx context.Context, workspaceID string) (
 	// alone still does not prove the volume behind it survived.
 	if marker, ok, err := readWorkspaceHomeMarker(markerPath); err != nil {
 		return "", "", "", fmt.Errorf("workspace home %q: read marker %q: %w", slug, markerPath, err)
-	} else if ok && workspaceHomeInitialized(marker, scriptSHA, skeleton, packLinks, homeID, slug, volumeName) {
+	} else if ok && workspaceHomeInitialized(marker, scriptSHA, skeleton, links, homeID, slug, volumeName) {
 		return volumeName, slug, homeID, nil
 	}
 
@@ -492,12 +513,12 @@ func (r *Runner) resolveWorkspaceHome(ctx context.Context, workspaceID string) (
 		// script saw the host homes/<slug> path — which is why
 		// docs/examples/workspace-home-init.sh carries a helper whose only job
 		// is to rewrite absolute $HOME symlinks as relative ones.
-		HomeTarget:     hostHomeDir(),
-		SkeletonDirs:   skeleton,
-		PackSkillLinks: packLinks,
-		Script:         scriptBytes,
-		ScriptExists:   scriptExists,
-		HomeID:         homeID,
+		HomeTarget:   hostHomeDir(),
+		SkeletonDirs: skeleton,
+		SkillLinks:   links,
+		Script:       scriptBytes,
+		ScriptExists: scriptExists,
+		HomeID:       homeID,
 	})
 	if err != nil {
 		return "", "", "", err
@@ -507,10 +528,10 @@ func (r *Runner) resolveWorkspaceHome(ctx context.Context, workspaceID string) (
 	}
 
 	marker := workspaceHomeMarker{
-		ScriptSHA256:   scriptSHA,
-		HomeID:         homeID,
-		SkeletonDirs:   skeleton,
-		PackSkillLinks: packSkillLinkMarkerStrings(packLinks),
+		ScriptSHA256: scriptSHA,
+		HomeID:       homeID,
+		SkeletonDirs: skeleton,
+		SkillLinks:   skillLinkMarkerStrings(links),
 		// Recorded from the constant, never from the marker being replaced:
 		// this marker vouches for the run that just happened, in the
 		// environment this build runs inits in.
@@ -606,7 +627,7 @@ func (r *Runner) ensureWorkspaceHomeVolume(ctx context.Context, executor Workspa
 // homeID is never empty here: ensureWorkspaceHomeVolume refuses to return an
 // unlabelled volume at all, for reasons that are about convergence rather than
 // about trust — see its doc comment.
-func workspaceHomeInitialized(marker workspaceHomeMarker, scriptSHA string, skeleton []string, packLinks []PackSkillLink, homeID, slug, volumeName string) bool {
+func workspaceHomeInitialized(marker workspaceHomeMarker, scriptSHA string, skeleton []string, links []SkillLink, homeID, slug, volumeName string) bool {
 	if marker.ScriptSHA256 != scriptSHA {
 		return false
 	}
@@ -632,10 +653,10 @@ func workspaceHomeInitialized(marker workspaceHomeMarker, scriptSHA string, skel
 			"marker_skeleton", marker.SkeletonDirs, "current_skeleton", skeleton)
 		return false
 	}
-	if currentPackLinks := packSkillLinkMarkerStrings(packLinks); !equalStringSets(marker.PackSkillLinks, currentPackLinks) {
-		slog.Info("workspace home: completion marker records a different Integration Pack skill set (a Pack was added/removed/upgraded), re-running init",
+	if currentLinks := skillLinkMarkerStrings(links); !equalStringSets(marker.SkillLinks, currentLinks) {
+		slog.Info("workspace home: completion marker records a different skill symlink set (an embedded skill or a Pack was added/removed/upgraded), re-running init",
 			"workspace_slug", slug, "home_volume", volumeName,
-			"marker_pack_skill_links", marker.PackSkillLinks, "current_pack_skill_links", currentPackLinks)
+			"marker_skill_links", marker.SkillLinks, "current_skill_links", currentLinks)
 		return false
 	}
 	return true
@@ -648,7 +669,7 @@ func workspaceHomeInitialized(marker workspaceHomeMarker, scriptSHA string, skel
 // comparison needs it because that order comes from embed.FS's directory
 // listing, and a reordering there says nothing about what a home needs —
 // treating it as a change would re-run every workspace's init.sh across an
-// entire installation. The PackSkillLinks comparison added alongside it
+// entire installation. The SkillLinks comparison added alongside it
 // reuses the same reasoning for the same reason: LoadPacks' enumeration
 // order is a directory listing too.
 func equalStringSets(a, b []string) bool {

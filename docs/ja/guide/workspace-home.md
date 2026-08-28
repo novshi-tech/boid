@@ -21,13 +21,13 @@ workspace ごとの永続 `$HOME` (workspace home) の作り方と、初回セ�
   ここだけ job ごとの tmpfs で隔離されていたが、隔離の対象だったファイル経路
   (`$HOME/.boid/output/payload_patch.json`) 自体が撤廃されたため overlay も撤去済み
   (詳細は [`docs/ja/reference/hook-contract.md`](../reference/hook-contract.md) 参照)
-- **volume の上に重なるのは組み込み skill の bind と Integration Pack skill の
-  symlink だけ**: `~/.claude/skills/<name>` に組み込み skill が read-only で
-  1 本ずつ bind される (中身は volume には残らない — dispatch のたびに daemon が
-  boid バイナリから展開したものを見せている)。加えて 2026-08-27 以降、公式
-  Integration Pack (jira-cloud/bitbucket-cloud/slack) が宣言する skill も
-  `~/.claude/skills/<name>` へ symlink される (詳細は下の「非 embedded skill の
-  コピーについて」参照)。それ以外のパスは volume がそのまま見える
+- **volume の上には何も重ならない**: 以前は組み込み skill が
+  `~/.claude/skills/<name>` に read-only で 1 本ずつ bind されていたが、現在は
+  bind mount は 1 本も無い。組み込み skill も公式 Integration Pack
+  (jira-cloud/bitbucket-cloud/slack) の skill も runner image に焼き込まれており
+  (`/opt/boid/skills/<name>` と `/opt/boid/integrations/...`)、home の中には
+  **symlink だけ**が置かれる (詳細は下の「非 embedded skill のコピーについて」参照)。
+  job container が見るのは volume そのものだけ
 - **workspace をまたいでは共有されない**: workspace A の `$HOME` と workspace B の `$HOME` は
   別 volume。ホストの実 `$HOME` とも共有されない (`boid` daemon 自身の `$HOME` とも別)
 - **中身を直接見たいとき**: `docker volume inspect boid-ws-home-<installID8>-<slug>` の
@@ -218,9 +218,9 @@ yaml / json / xml / tar のような構造化データの type だけです (そ
     script 内で自分で設定すること。ホストにだけ入れてあるコマンドには到達できないので、
     image に無いツールは `init.sh` の中でインストールする
 - **準備ステップ (prep) は必ず走る**: 同じ container の中で、あなたの script より前に、
-  boid 自身が `~/.claude` / `~/.claude/skills` / `~/.claude/skills/<skill 名>`
-  (組み込み skill の bind 先) を作成する。`init.sh` を持たない workspace でも
-  この container は 1 回起動する。上記の識別トークンはここでは書かれない —
+  boid 自身が skill 探索ルート (`~/.claude` / `~/.claude/skills` / `~/.agents` /
+  `~/.agents/skills`) を作成し、その下に各 skill の symlink を張る。
+  `init.sh` を持たない workspace でもこの container は 1 回起動する。上記の識別トークンはここでは書かれない —
   volume の作成時に volume 自身の label に載るので、home の中にはトークンは存在しない
 - **失敗時は dispatch も失敗する**: `init.sh` が非ゼロ終了すると、その dispatch は
   「黙って初期化なしで走る」のではなく明示的にエラーとして fail する
@@ -274,22 +274,31 @@ go / volta 経由の node / codex / opencode のインストールなど、よ�
 
 #### 非 embedded skill のコピーについて
 
-boid 組み込みの skill (`/boid-task` 等) は dispatch のたびに daemon が
-boid バイナリから展開し、`~/.claude/skills/<name>` に **read-only で 1 本ずつ
-bind mount** するので `init.sh` で扱う必要はありません (workspace home の中には
-実体を置きません)。 skill ごとに分けて mount するのは、下記の手動コピーで置いた
-非 embedded skill を隠さないためです。
+boid 組み込みの skill (`/boid-task` 等) と公式 Integration Pack
+(jira-cloud / bitbucket-cloud / slack) が宣言する skill
+(`jira-api` / `bitbucket-api` / `slack-api`) は、どちらも runner image に
+焼き込まれていて、workspace home init のときに **symlink** が張られます。
+`init.sh` で扱う必要はありません (workspace home の中には実体を置きません)。
 
-> **2026-08-27 に変わりました**: jira-cloud / bitbucket-cloud / slack の公式
-> Integration Pack が宣言する skill (`jira-api` / `bitbucket-api` / `slack-api`)
-> は、いま **自動的に** `~/.claude/skills/<name>` へ symlink されます
-> (`/opt/boid/integrations/<pack>/<version>/skills/<name>` — daemon image に
-> 焼き込み済みで、bind mount すら要りません)。 **これらの名前を下記の手動コピー
-> 手順で置くと、次の workspace home init でその手動コピーは symlink に置き換わって
-> 消えます** (boid が「stale なディレクトリを新しい symlink で上書きする」動作を
-> 意図的にしているため — 詳細は `internal/dispatcher/skills_overlay.go` の
-> `packSkillLinks` を参照)。 手動コピーが必要なのは、**公式 Pack が存在しない
-> サービス**の独自 skill だけです。
+symlink の張り先は skill 1 つにつき 2 箇所です。
+
+| 張り先 | 読むハーネス |
+|---|---|
+| `~/.claude/skills/<name>` | Claude Code、opencode |
+| `~/.agents/skills/<name>` | codex、opencode |
+
+2 箇所に張るのは、3 つのハーネスが共通して読むディレクトリが存在しないためです。
+Claude Code は `~/.claude/skills` しか見ず、codex は `~/.agents/skills` しか
+見ません (opencode は両方見ます)。 `~/.agents/skills` はベンダー横断の規約
+なので、将来ハーネスを足すときはこちらで拾える見込みが高いです。
+
+> **これらの名前を下記の手動コピー手順で置くと、次の workspace home init で
+> その手動コピーは symlink に置き換わって消えます** (boid が「stale な
+> ディレクトリを新しい symlink で上書きする」動作を意図的にしているため —
+> 詳細は `internal/dispatcher/skills_overlay.go` の `skillLinks` を参照)。
+> 手動コピーが必要なのは、**公式 Pack が存在しないサービス**の独自 skill だけです。
+> なお symlink は `<root>/<name>` という 1 エントリなので、同じディレクトリに
+> 並べた手動コピーの skill を隠すことはありません。
 
 一方、公式 Pack が無いサービスのホスト側にだけ置いてある独自 skill
 (`~/.claude/skills/<name>/`) は `init.sh` からはコピーできません —

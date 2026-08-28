@@ -44,7 +44,7 @@ var skillNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // textually-local sequence of segments into something that resolves
 // differently once whatever consumes it actually runs it. Both fields
 // reach a shell exactly the way skills[].name does — Skill.Path becomes
-// PackSkillLink.Target, joined onto pack.Dir and handed to `ln -sfn` in
+// SkillLink.Target, joined onto pack.Dir and handed to `ln -sfn` in
 // buildWorkspaceInitScript; Connector.Executable becomes
 // BOID_CONNECTOR_EXEC, exec'd by the job's own shell (internal/server's
 // connector_exec.go) — so both get the same allowlist treatment name did,
@@ -53,7 +53,7 @@ var packPathPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-
 
 // ValidSkillName reports whether name matches skills[].name's allowlist —
 // exported so a consumer of already-loaded Packs (internal/dispatcher's
-// packSkillLinks, which turns Skill.Name into a .claude/skills/<Name>
+// skillLinks, which turns Skill.Name into a <discovery root>/<Name>
 // symlink basename) can apply the SAME check as defense in depth, rather
 // than reimplementing a second, potentially-divergent one. ParseManifest is
 // the primary gate (a manifest failing this fails daemon startup outright);
@@ -400,8 +400,8 @@ func ParseManifest(data []byte) (*Manifest, error) {
 		}
 		// skillNamePattern, review finding (BLOCKER, Opus round 2): name is
 		// used downstream as a symlink basename joined straight into
-		// .claude/skills/<name> (internal/dispatcher's packSkillLinks /
-		// PackSkillLink) — a DENYLIST there (reject "/", ".", "..", ...)
+		// <discovery root>/<name> (internal/dispatcher's skillLinks /
+		// SkillLink) — a DENYLIST there (reject "/", ".", "..", ...)
 		// kept growing a new hole per review round, most recently a NUL
 		// byte: filepath.IsLocal("\x00") is true and filepath.Base("\x00")
 		// == "\x00", so it survived every denylist check, and bash strips
@@ -415,8 +415,8 @@ func ParseManifest(data []byte) (*Manifest, error) {
 		// once: this is validated once, at manifest load (a malformed
 		// manifest already fails daemon startup outright — see LoadPacks'
 		// own "検証失敗は起動エラー" posture), and internal/dispatcher's
-		// packSkillLinks keeps its own equivalent filter as defense in
-		// depth for any PackSkillLink built some other way (tests, a future
+		// skillLinks keeps its own equivalent filter as defense in
+		// depth for any SkillLink built some other way (tests, a future
 		// constructor) rather than trusting this one gate transitively.
 		if !skillNamePattern.MatchString(rs.Name) {
 			return nil, fmt.Errorf("integrationpack: skills[%q]: name must match %s (used as a symlink basename under .claude/skills/)", rs.Name, skillNamePattern.String())

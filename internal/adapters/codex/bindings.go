@@ -21,19 +21,24 @@ import (
 // an explicit message from Run() (run.go) instead of silently falling back
 // to a bind that no longer exists.
 //
-// Embedded skills DO reach ~/.claude/skills/<name> as read-only bind mounts
-// again, one per skill — but the dispatcher declares them, not this method.
-// PR3 of docs/plans/workspace-home-volume-persistence.md (論点 e-2)
-// materializes the embedded set under the host-visible runtimes root
-// (internal/dispatcher/skills_overlay.go) and homeMounts layers it onto the
-// workspace home bind. In between, Phase 4 PR3 distributed them by copying
-// the content into the workspace home (skills.DeployAll straight into
-// <home>/.claude/skills); that write had to go once the home became a named
-// volume the daemon cannot write to.
+// Embedded skills DO reach the sandbox's $HOME, but by no mount at all, and
+// the dispatcher owns that too. They are baked into the runner image
+// (build/container/Dockerfile, internal/dispatcher's embeddedSkillsImageDir)
+// and symlinked into each of skillDiscoveryRoots by the workspace-home init
+// container's prelude. Two earlier mechanisms sat here: Phase 4 PR3 copied the
+// content into the workspace home (skills.DeployAll straight into
+// <home>/.claude/skills), which had to go once the home became a named volume
+// the daemon cannot write to; PR3 of
+// docs/plans/workspace-home-volume-persistence.md (論点 e-2) then replaced
+// that with one read-only bind per skill, sourced from a host-visible
+// directory the daemon re-materialized on every dispatch.
 //
-// Declaring them dispatcher-side rather than restoring them here is what
-// keeps this method nil: the mounts are a property of how boid stages a
-// sandbox, identical for every harness, not of what the codex CLI needs.
+// Keeping skill delivery dispatcher-side rather than restoring it here is what
+// keeps this method nil: how skills reach a home is a property of how boid
+// stages a sandbox, identical for every harness, not of what the codex CLI needs.
+// Which directories a harness then SCANS is the harness's own business, and
+// the three do not agree — see skillDiscoveryRoots for the table and why a
+// link is written into more than one place.
 //
 // The HarnessAdapter interface still requires this method; returning an
 // empty slice keeps the contract satisfied for any future $HOME-independent

@@ -27,10 +27,12 @@ var skillsFS embed.FS
 // failure. A general-purpose package naming its caller's layout is the bug,
 // not merely the stale value.
 //
-// The current production caller is internal/dispatcher's syncEmbeddedSkills,
-// which re-materializes the set on every dispatch and bind-mounts it into each
-// job read-only, one bind per skill (PR3, 論点 e-2) — informational, not a
-// precondition.
+// There is no longer a daemon-side production caller at all: the sandbox skill
+// set reaches a job by being baked into the runner image at build time
+// (build/container/Dockerfile copies internal/skills/data to
+// /opt/boid/skills) and symlinked into the workspace home by the init
+// container. What still calls in here is the HOST-skill sibling
+// (DeployHostSkills, deploy_host.go) behind `boid install-skills`.
 //
 // Every write below goes through the symlink-safe, fd-relative helpers in
 // safe_deploy.go rather than string-path-based os.MkdirAll/os.CreateTemp/

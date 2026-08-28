@@ -192,6 +192,19 @@ func TestResolveWorkspaceHome_VolumeWithoutAnIdentityLabel_FailsLoud(t *testing.
 	}
 }
 
+// baseSkeletonDirsForTest is the skeleton every real dispatch creates: each
+// skill discovery root and its parent. Cases that swap in a custom skeleton
+// build on top of it rather than replacing it outright, because the prelude's
+// symlink step writes into those roots — a skeleton that omits one is not a
+// smaller skeleton, it is a broken init.
+func baseSkeletonDirsForTest() []string {
+	var dirs []string
+	for _, root := range skillDiscoveryRoots {
+		dirs = append(dirs, filepath.Dir(root), root)
+	}
+	return dirs
+}
+
 // --- the skeleton set is now part of what the marker vouches for ------------
 
 // TestResolveWorkspaceHome_SkeletonSetChanged_ReInitializes is PR6's
@@ -209,7 +222,13 @@ func TestResolveWorkspaceHome_SkeletonSetChanged_ReInitializes(t *testing.T) {
 	setupWorkspaceHomeTestDirs(t)
 	r, be := newWorkspaceHomeTestRunnerWithBackend(t)
 
-	restore := swapSkeletonDirs(t, []string{".claude", ".claude/skills", ".claude/skills/boid-task"})
+	// Every real discovery root, plus one synthetic entry that stands in for
+	// whatever a future release might add. The roots have to be there: the
+	// prelude's symlink step writes into them, so a skeleton omitting one
+	// makes `ln -sfn` fail and the init container exit at stage "prelude"
+	// rather than reaching the marker this case is about.
+	base := baseSkeletonDirsForTest()
+	restore := swapSkeletonDirs(t, append(append([]string(nil), base...), ".boid-test/skeleton-a"))
 	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
@@ -218,16 +237,16 @@ func TestResolveWorkspaceHome_SkeletonSetChanged_ReInitializes(t *testing.T) {
 	}
 	restore()
 
-	// A release that ships one more embedded skill.
-	swapSkeletonDirs(t, []string{".claude", ".claude/skills", ".claude/skills/boid-task", ".claude/skills/boid-new"})
+	// A release that needs one more directory staged.
+	swapSkeletonDirs(t, append(append([]string(nil), base...), ".boid-test/skeleton-a", ".boid-test/skeleton-b"))
 	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("second resolve: %v", err)
 	}
 	if got := be.runCount(); got != 2 {
 		t.Errorf("init ran %d times, want 2 — a home whose skeleton predates a newly added skill must be re-prepared", got)
 	}
-	if got := be.lastRequest(t).SkeletonDirs; !contains(got, ".claude/skills/boid-new") {
-		t.Errorf("the re-run was not asked to create the new bind target; SkeletonDirs = %v", got)
+	if got := be.lastRequest(t).SkeletonDirs; !contains(got, ".boid-test/skeleton-b") {
+		t.Errorf("the re-run was not asked to create the newly added directory; SkeletonDirs = %v", got)
 	}
 }
 
@@ -240,13 +259,19 @@ func TestResolveWorkspaceHome_SkeletonSetReordered_DoesNotReInitialize(t *testin
 	setupWorkspaceHomeTestDirs(t)
 	r, be := newWorkspaceHomeTestRunnerWithBackend(t)
 
-	restore := swapSkeletonDirs(t, []string{".claude", ".claude/skills", ".claude/skills/a", ".claude/skills/b"})
+	base := baseSkeletonDirsForTest()
+	ordered := append(append([]string(nil), base...), ".boid-test/a", ".boid-test/b")
+	restore := swapSkeletonDirs(t, ordered)
 	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
 	restore()
 
-	swapSkeletonDirs(t, []string{".claude/skills/b", ".claude", ".claude/skills/a", ".claude/skills"})
+	reordered := append([]string(nil), ordered...)
+	for i, j := 0, len(reordered)-1; i < j; i, j = i+1, j-1 {
+		reordered[i], reordered[j] = reordered[j], reordered[i]
+	}
+	swapSkeletonDirs(t, reordered)
 	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("second resolve: %v", err)
 	}

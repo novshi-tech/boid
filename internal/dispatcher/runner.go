@@ -341,7 +341,7 @@ type Runner struct {
 	// Packs is the set of Integration Packs the daemon loaded at startup
 	// (internal/server/wire.go's buildRuntime, integrationpack.LoadPacks).
 	// resolveWorkspaceHome reads each Pack's Manifest.Skills to symlink them
-	// into every workspace home's .claude/skills/ — see packSkillLinks.
+	// into every workspace home's skill discovery roots — see skillLinks.
 	//
 	// nil (any dispatcher unit test that does not wire Packs, and any
 	// deployment with no Packs installed — LoadPacks' own "not a
@@ -512,35 +512,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	defer releaseHome()
 
 	workspaceHomeVolume, workspaceSlug, workspaceHomeID, err := r.resolveWorkspaceHome(ctx, workspaceID)
-	if err != nil {
-		r.failJob(j, err)
-		if cleanup != nil {
-			cleanup()
-		}
-		return "", err
-	}
-
-	// Embedded skills (docs/plans/workspace-home-volume-persistence.md 論点
-	// e-2, PR3): materializes the embedded skill set under the host-visible
-	// runtimes root, so /boid-task / /boid-orchestrate / /boid-web resolve
-	// inside the harness even though the claude/codex/opencode adapters no
-	// longer declare bind mounts for them (internal/adapters/*/bindings.go).
-	// The returned directory is threaded into rtInfo below, where homeMounts
-	// turns it into one read-only bind per skill.
-	//
-	// Phase 4 PR3 (docs/plans/home-workspace-volume.md) instead copy-synced
-	// the content into <workspace home>/.claude/skills — a direct daemon write
-	// into the workspace HOME, which PR6 turned into a named volume the daemon
-	// cannot write to at all. PR3 moved the destination; PR6 removed the last
-	// thing this call still did inside the home (creating the per-skill bind
-	// TARGETS) — see syncEmbeddedSkills for where creating and verifying them
-	// went, and why the materialize itself stays per-dispatch.
-	//
-	// A failure fails the dispatch outright, matching every other
-	// pre-BuildSandboxSpec error path in this function (including the init.sh
-	// failure just above) — a job started against a stale or missing skill
-	// set would otherwise silently misbehave instead of erroring loudly.
-	skillsSourceDir, err := r.syncEmbeddedSkills()
 	if err != nil {
 		r.failJob(j, err)
 		if cleanup != nil {
@@ -939,7 +910,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		CloneHostBacked:            cloneHostBacked,
 		WorkspaceHomeVolume:        workspaceHomeVolume,
 		WorkspaceSlug:              workspaceSlug,
-		SkillsSourceDir:            skillsSourceDir,
 		ContainerImage:             r.resolveContainerImage(workspaceID),
 	}
 	// Server socket is only exposed to jobs that have no broker policies

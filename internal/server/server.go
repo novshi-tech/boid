@@ -432,13 +432,16 @@ func New(cfg Config) (*Server, error) {
 	// produced kept looking like the canonical copy.
 	//
 	// PR3 of docs/plans/workspace-home-volume-persistence.md (論点 e-2, 決定
-	// D6) removes it, because that PR re-introduces bind-based delivery from
+	// D6) removed it, because that PR re-introduced bind-based delivery from
 	// a DIFFERENT root (<RuntimesDir>/skills, host-visible so a sibling
-	// container's bind source resolves — see dispatcher's embeddedSkillsDir)
-	// and having two materialization points, one of them dead, is the exact
-	// confusion 論点 e-2 had to untangle. Pinned by
-	// TestNew_DoesNotDeploySkillsBesideTheDB. Whatever an existing
-	// installation already has under <dataHome>/skills is left alone.
+	// container's bind source resolved) and having two materialization
+	// points, one of them dead, is the exact confusion 論点 e-2 had to
+	// untangle. There is no daemon-side materialization at all any more: the
+	// embedded set is baked into the runner image at build time
+	// (build/container/Dockerfile) and symlinked into each workspace home by
+	// the init container. Pinned by TestNew_DoesNotDeploySkillsBesideTheDB.
+	// Whatever an existing installation already has under <dataHome>/skills
+	// is left alone.
 
 	// Install identity (docs/plans/phase6-container-backend.md §PR6/§決定6):
 	// loaded (or generated once) here, alongside the other on-disk

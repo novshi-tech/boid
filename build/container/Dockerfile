@@ -276,6 +276,32 @@ RUN git init -q /tmp/boid-api-skills \
     && rm -rf /tmp/boid-api-skills \
     && chgrp -R 0 /opt/boid/integrations && chmod -R g=u /opt/boid/integrations
 
+# boid's own embedded skills (/boid-task, /boid-orchestrate, /boid-web,
+# /boid-signal), unpacked so they are a DIRECTORY rather than only bytes inside
+# the binary — internal/dispatcher's embeddedSkillsImageDir.
+#
+# The content is the same tree the binary embeds (internal/skills/deploy.go's
+# //go:embed data/...), copied straight from the build context rather than
+# extracted by running the binary. Within one image build the two cannot
+# disagree: both come from this same source tree. Copying MORE than the embed
+# directive names would be harmless (dispatcher drives the symlinks from
+# skills.EmbeddedSkillNames(), so an unlisted directory here is never linked)
+# and copying less is not possible.
+#
+# Why unpack at all, when the binary already carries them: the daemon used to
+# materialize this set per installation into a host-visible directory and
+# bind-mount it into each job, one bind per skill. That made skill delivery
+# depend on a path the HOST engine could resolve — the one thing in the job's
+# mount set that a non-DooD backend could not satisfy. Baked here, every
+# container started from this image already has the content, and the workspace
+# home only needs a symlink (skills_overlay.go).
+#
+# chgrp 0 + chmod g=u for the same arbitrary-uid reason as the block above: the
+# job container runs as whatever uid the operator's daemon does, and has to be
+# able to READ through the symlinks pointing here.
+COPY internal/skills/data /opt/boid/skills
+RUN chgrp -R 0 /opt/boid/skills && chmod -R g=u /opt/boid/skills
+
 # Arbitrary-uid (docs/plans/release-onboarding.md 決定1): `chmod g=u` on
 # /etc/passwd and /etc/group lets the RUNTIME self-registration snippet
 # (internal/selfuser, invoked from cmd/start.go / cmd/runner_container.go /
