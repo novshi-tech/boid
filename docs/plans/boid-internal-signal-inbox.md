@@ -239,46 +239,48 @@ boid 自身の action ──[core が直接]──▶ ┘                       
 ### 4.3 自己参照の遮断
 
 **この設計で一番壊れやすいのがここ。** 他の部分は誤ると取りこぼす (次の巡で回復する) が、
-ここを誤ると止まらなくなる。**ループの機序と現行 khi の止め方は §2.3 にある** —— ここでは
-統合が何を変えるかだけを書く。
+ここを誤ると止まらなくなる。
 
-#### 統合が変えるのは代償の大きさ
+#### ループが起きる条件
 
-ループそのものは統合で新しく生まれる危険ではない (§2.3)。変わるのは、遮断が効いていな
-かったときに何を失うかである。
+統合後は **card への書き込みが signal になる**。だから card に書く主体を数えれば、ループを
+作りうるものが特定できる。
 
-| | 現行 (schedule trigger) | 統合後 (`on: signals`) |
-|---|---|---|
-| 遮断が効いていないとき | trigger の exec job は毎巡走るが、対象ゼロなら sweep task を立てずに終わる | **pending signal が残っている限り毎巡発火し、sweep task (LLM) が立つ** |
-| コスト | exec job 1 本 | **LLM 1 巡ぶん、永久に** |
-
-`on: signals` の発火は `every` が下限なので暴走はしない。**止まらないだけである。**
-
-#### core の止め方
-
-**core は書き込み元を actor 文字列から推測しなくてよい。** sandbox から来る書き込みは
-`internal/server/boid_executor.go` が `TokenContext` を持って処理しており、
-`TokenContext.ProjectID` (`internal/sandbox/protocol.go:498`) がその書き込みを出した
-project そのものだからである。
-
-| 書き込み元 | ingest するか |
+| card に書く主体 | その書き込みが signal になると |
 |---|---|
-| `TokenContext.ProjectID` が `signals.sources[]` を宣言している project | **しない** (自己参照) |
+| **メタプロジェクト自身の job / task** (sweep task・trigger job・その子) | 自分が書いたもので自分がまた起きる → **ループ** |
+| 他 project の task | その project は sweep を持たない。起きるのはメタプロジェクトの sweep 1 回きりで、その sweep の書き込みは 1 行目で落ちるので次の周回に繋がらない |
+| daemon (`child_closed` / `wake_due` 等) | 外で起きた事実。**考え直す理由そのもの** |
+| 人 (Web UI から) | 同上 |
+
+**ループを作るのは 1 行目だけ。** そしてそれは「**メタプロジェクト自身の job / task が
+書いた**」という 1 つの条件で括れる。
+
+放置するとこうなる —— sweep が書く → signal になる → `on: signals` が発火する → sweep が
+立つ → また書く。**外部に何も起きていなくても `every` ごとに LLM が回り続ける。**
+`every` が発火の下限なので暴走はしない。**止まらないだけである。**
+
+#### 弾く仕組み
+
+**書き込み元の project がメタプロジェクトなら ingest しない。** 判定材料は 1 つで足りる。
+
+sandbox から来る書き込みは `internal/server/boid_executor.go` が `TokenContext` を持って
+処理しており、`TokenContext.ProjectID` (`internal/sandbox/protocol.go:498`) が**その書き込みを
+出した project そのもの**である。
+
+| 書き込み元 | ingest |
+|---|---|
+| `TokenContext.ProjectID` が `signals.sources[]` を宣言している project | **しない** |
 | `TokenContext.ProjectID` がそれ以外の project | する |
-| `human` / `daemon` (TokenContext を持たない) | する |
+| `human` / `daemon` (`TokenContext` を持たない) | する |
 
-判定材料はこの 1 つで足り、メタプロジェクトとは `signals.sources[]` を宣言している
-project のことなので、これ以上の宣言も要らない。複数の project が宣言していても、その
-全部を落とせば閉じる。
+メタプロジェクトとは `signals.sources[]` を宣言している project のことなので、判定のために
+追加の宣言を置く必要は無い。複数の project が宣言していても、その全部を落とせば閉じる。
 
-これで §2.3 の表の下 2 行が両方消える:
-
-- **引き直しが要らない** —— khi は actor の task id から behavior を毎巡引いている
-- **決め打ちが要らない** —— ここが決定的。`task:` (id 空) は「exec job が書いた」しか
-  意味せず、**どの project の exec job かは actor 文字列から永久に分からない**。khi が
-  決め打ちしているのは、task が無い以上そこから引けるものが何も無いからである。
-  **`TokenContext.ProjectID` は `TaskID` が空の exec job でも埋まっている** ので、
-  core 側にはその行き止まりが無い
+**`TokenContext.ProjectID` は `TaskID` が空の exec job でも埋まっている。** これが効くのは
+trigger job (上の表の 2 行目) —— exec job には task が無いので、actor 文字列 (`task:`) を
+見て判定しようとすると「どの project の exec job か分からない」行き止まりに入る。
+**project を直接見れば行き止まりが無い。**
 
 #### 判定できないときは落とす (fail-close)
 
