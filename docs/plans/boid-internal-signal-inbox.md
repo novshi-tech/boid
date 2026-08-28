@@ -15,8 +15,9 @@
 
 ## 1. ゴール
 
-1. **責務境界を実装に一致させる。** `signal-driven-review.md` §3 の表は cursor・dedup・attempts を core の
-   持ち物と定義している。現行は workspace (khi) がそれを持っている
+1. **責務境界を実装に一致させる。** `signal-driven-review.md` §3 の表は inbox・cursor・dedup を
+   core の持ち物と定義し、attempts は §8.1 の inbox 契約に入っている。現行は workspace (khi) が
+   それを持っている
 2. **メタプロジェクトが 2 個目に増えるときに複製される機構をゼロにする**
 3. workspace 側の検知コードを「篩と判断」だけに縮める
 
@@ -252,9 +253,17 @@ boid 自身の action ──[core が直接]──▶ ┘                       
 | 他 project の task | その project は sweep を持たない。起きるのはメタプロジェクトの sweep 1 回きりで、その sweep の書き込みは 1 行目で落ちるので次の周回に繋がらない |
 | daemon (`child_closed` / `wake_due` 等) | 外で起きた事実。**考え直す理由そのもの** |
 | 人 (Web UI から) | 同上 |
+| **人が運転する session job** (Shape セッション等) | メタプロジェクトの job なので 1 行目で落ちる — ただし理由は違う (下記) |
 
 **ループを作るのは 1 行目だけ。** そしてそれは「**メタプロジェクト自身の job / task が
 書いた**」という 1 つの条件で括れる。
+
+**最後の行だけは、落とす理由が「ループ」ではない。** 人が運転する session job は
+メタプロジェクトの job として走るので機構上は 1 行目と同じ扱いになるが、人はループを
+作らない。**それでも意図して落とす** — 現行も同じものを落としており (session job は task を
+持たないので actor が `task:` になり、`screen.py` の決め打ちに掛かる)、退行ではない。
+ただし「Shape が card を整形しても sweep が再検知しない」という既知の欠けを、core 側の
+機構として引き継ぐことになる。
 
 放置するとこうなる —— sweep が書く → signal になる → `on: signals` が発火する → sweep が
 立つ → また書く。**外部に何も起きていなくても `every` ごとに LLM が回り続ける。**
@@ -356,11 +365,12 @@ core は `MaxSignalAttempts = 5` (`internal/orchestrator/signal_store.go`)、khi
 (§4.2 の対象軸で落ちる)。card が dispatch されることは無いので、この経路に card 宛の
 action は流れない。
 
-**ただし「範囲外」で済ませずに、1 つ確認すること** — daemon 再起動で子 task が
-`aborted` になったとき、親 card に `child_closed` が立つか。立つなら `CreateAction`
-経由なので拾える。立たないなら khi は子の終端を見逃すが、**それは統合とは独立に現行から
-存在する欠けである**。統合で直すのではなく、別件として切り出す (直したつもりで直って
-いない、が一番まずい)。
+**この経路で子の終端を見逃さないことは確認済み。** daemon 再起動で子 task が `aborted` に
+なっても、`SweepReconcileChildren` (`internal/api/queue_sweep.go:141`、PR #987) が
+dispatched な子の実 status を周期的に照合し、`recordChildClosedOnParent`
+(`internal/api/workflow_card.go:711`) 経由で親 card に `child_closed` を書く。これは
+`CreateAction` を通るので内部シグナルとして拾える。加えて daemon_shutdown による abort は
+起動時に auto-reopen される (`internal/dispatcher/store.go:257`)。
 
 ### 4.6 envelope への写像
 
@@ -394,6 +404,7 @@ identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope �
 |---|---|---|
 | signal を読む | `boid signal list --claim` 1 発 | `adapters/inbox.py` |
 | identity で集約する | 対象 1 件 = card 1 枚に畳む | `app/trigger.py` の `merge_targets` |
+| **identity を既存 card へ解決する** | 外部シグナルは統合後も `jira:ROOKPF-309` 形式で来るので、内部シグナルが task id を直に持つようになっても消えない | `app/trigger.py` の `resolve_identities` |
 | 自分宛でないノイズを落とす | `self_authored` 等、**workspace ごとに違う篩** | `domain/screen.py` の一部 |
 | 対象一覧を組む | subagent へ渡す形にする | `app/trigger.py` の `instruction` |
 | 判断する | LLM | `.claude/skills/khi-sweep/SKILL.md` |
@@ -407,7 +418,7 @@ identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope �
 
 | モジュール | 本体 | テスト | なぜ消えるか |
 |---|---|---|---|
-| `app/trigger.py` | 498 | 824 | 5 つの仕事のうち 4 つ (並走防止・検知・記録・栞) が core へ移り、残る「sweep を起こす」は trigger の `run:` 数行になる |
+| `app/trigger.py` | 498 | 824 | `run_once` の 5 つの仕事のうち 4 つ (並走防止・検知・記録・栞) が core へ移る。**このモジュール自体は無くなるが、`resolve_identities` / `merge_targets` / `instruction` は消えるのではなく sweep 側へ移る** (§5.1 の該当行)。行き先の形は §6.1 の未決 3 次第 |
 | `domain/record.py` | 327 | 369 | **「処理済みの印」そのもののモジュール。** encode の呼び出し元は write と trigger、decode の呼び出し元は `boid/action.py` だけ。印が ack になれば全部消える |
 | `adapters/inbox.py` | 196 | 292 | envelope → `Signal` のマッピングが要らなくなる (下記)。読みと ack は CLI 2 発 |
 | `domain/boid/action.py` | 135 | 139 | action 列を読まない |
@@ -416,6 +427,11 @@ identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope �
 | `domain/attempts.py` | 72 | 105 | core の attempts / dead へ |
 | `adapters/file_cursor.py` | 57 | 73 | 栞の永続化 |
 | **合計** | **1,519** | **2,047** | **3,566 行** |
+
+**3,566 は「このリポジトリから削除できる行数」であって純減ではない。** `trigger.py` の
+`resolve_identities` / `merge_targets` / `instruction` は §5.1 が「統合後も要る機能」として
+挙げているものなので、別の形で書き直される。純減がいくつになるかは §6.1 の未決 3
+(対象一覧を誰が組むか) が決まってから確定する。
 
 **消えるのは書式であって、監査ログそのものではない。** 現行の記録は `record.py` が
 `khi_record` attrs と `khi-record v1 ` prefix 付き progress として、**次の巡の自分が
@@ -450,29 +466,44 @@ identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope �
 
 ## 6. 先に決めること、実装の勘所
 
-### 6.1 trigger.py を消すと決まらないもの
+### 6.1 実装前に決めること
 
-`app/trigger.py` の 5 つの仕事のうち 4 つは行き先が決まった (§5.2) が、**残る 1 つと、
-消える仕事の代わりが決まっていない**。実装に入る前にここを埋める。
+`app/trigger.py` の仕事のうち 4 つは行き先が決まった (§5.2)。**残りと、消える仕事の
+代わりが決まっていない。**
 
 | 問い | 現行の答え | 統合後の候補 |
 |---|---|---|
-| **生きている sweep があるときに 2 枚目を立てない**のは誰か | `trigger.py` の `run_once` が先頭で `boid` に問い合わせて何もせず終わる | `on: signals` の single-flight は **trigger の重複**しか防がない —— sweep task が `every` を超えて生きていると次の発火が 2 枚目を立てうる。`boid task create --idempotency-key` (#1012) で畳むか、trigger の `run:` で 1 回問い合わせるか |
-| **誰がいつ ack するか** | sweep が記録を card に書く → **次の巡の** trigger が記録を読んで settled を判定 → ack。1 巡またぐのは記録が「完了の証拠」だから | sweep が**判断を書いた直後に自分で** ack する。**順序を逆にしてはいけない** —— ack を先に打つと、crash した signal が pending から消えたまま誰も処理していない状態になる |
-| **対象一覧を誰が組むか** | trigger が `instruction` に埋めて sweep に渡す (daemon 側から workspace の手順を指示するとバグる、の分担) | sweep task 自身が `boid signal list --claim` を読んで組む。trigger の `run:` は sweep を起こすだけになる |
+| **生きている sweep があるときに 2 枚目を立てない**のは誰か | `trigger.py` の `run_once` が先頭で `boid` に問い合わせて何もせず終わる (`live_sweep_task`) | `on: signals` の single-flight は **trigger の重複**しか防がない —— sweep task が `every` を超えて生きていると次の発火が 2 枚目を立てうる。`boid task create --idempotency-key` (#1012) で畳むか、trigger の `run:` で 1 回問い合わせるか |
+| **対象一覧を誰が組むか** | trigger が `instruction` に埋めて sweep に渡す (daemon 側から workspace の手順を指示するとバグる、の分担) | sweep task 自身が `boid signal list --claim` を読んで組む。trigger の `run:` は sweep を起こすだけになる。**§5.2 の純減がこれで確定する** |
+| **1 巡で扱う上限をどう置くか** | `MAX_TARGETS` で溢れた分は次巡へ回し、**ack しない** (attempts は「sweep へ割り当てた回数」を記録から数えるので、回した分は消費されない) | core の `ClaimSignals` は **claim した回数**を数える。上限を残したまま `--claim` で読むと、**先送りした signal も試行を 1 回消費して 5 巡で dead に落ちる**。上限を撤廃するか、溢れた分は claim しない読み方 (`--limit` で絞る) にするか |
+| **篩で落とした signal を ack するか** | する (`CandidatePlan.screened_out`、2026-08-27 Fix 2) | ack しないと 5 claim で dead になって止まりはするが、**dead 列にノイズが積もる**。ack する側で揃えるのが素直 |
 
-3 つとも「trigger job (LLM なし) と sweep task (LLM あり) の分担をどう引き直すか」という
-1 つの問いの側面である。
+**ack を打つ順序は決定済み。** sweep が**判断を書いた直後に自分で** ack する。逆順に
+してはいけない —— ack を先に打つと、crash した signal が pending から消えたまま誰も
+処理していない状態になる。
 
 ### 6.2 実装の勘所
 
 - **2 本の書き込み口を両方塞ぐ** (§4.5)。片方だけは無音の取りこぼしになる
-- **書き込み元 project を `CreateAction` まで運ぶ経路が要る。** §4.3 の判定材料は
-  `TokenContext.ProjectID` だが、`CreateAction(dbtx, *Action)` はそれを受け取らないし、
-  `Action.Actor` にも載らない (`task:` は project を持たない)。`orchestrator.WithActor` が
-  actor を context で運んでいるのと同じ形にするか、シグネチャに足すかは実装時に決める。
-  **25 ある呼び出し元のうち project を知らないものが残れば、そこは判定不能 = fail-close の
-  対象**になる —— どれが該当するかを実装の最初に洗い出すこと
+- **書き込み元 project を `CreateAction` まで運ぶ経路が要る。** `CreateAction(dbtx, *Action)`
+  は `TokenContext.ProjectID` を受け取らないし、`Action.Actor` にも載らない (`task:` は
+  project を持たない)。ただし **sandbox 発の書き込みは `ExecuteBoidBuiltin`
+  (`internal/server/boid_executor.go:235`) という単一のチョークポイントを通る**ので、
+  運搬は 1 箇所で閉じられる。`CreateAction` に到達する leaf は 19 で、そのうち
+  TokenContext を持たないのは job_failed・start / update_instructions・
+  `apigateway_notify` の 3 経路だが、**いずれも書く相手が exec task であり card 宛では
+  ない**ので、対象軸 (§4.2) で先に落ちる —— fail-close で黙って落ちる card 宛の経路は
+  現行コードには無い
+- **メタプロジェクト集合の lookup をどの層でやるか決める。** 判定には `ProjectID` に加えて
+  「この workspace で `signals.sources[]` を宣言している project の集合」が要るが、それは
+  hydrate 済みの meta (in-memory キャッシュ、api 層) にしかなく、**`orchestrator/store.go` の
+  `CreateAction` からは見えない**。resolver を注入するか、ingest 判定自体を api 層へ
+  引き上げるか。`signal-ingest-detailed-design.md` §6.2 が Pack registry で踏んだのと
+  同型の層分離である
+- **fail-close の判定を actor 文字列でやらないこと。** `task_service.go:211-216` は
+  **sandbox から来た書き込みにも `ActorHuman` を決め打ちする** (コメントに明記がある) ——
+  actor は書き手の証拠として信用できない。判定は「context に project が載っているか」で
+  行う
 - **ingest 失敗で action の書き込みを巻き戻さない。** 同一 tx に載せるが、signal の
   INSERT 失敗が card の状態更新を巻き戻すのは因果が逆。ingest 側のエラーはログに残して
   action は成立させる (取りこぼした signal は次に同じ card が動いたときの signal で
@@ -492,7 +523,9 @@ identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope �
 core と khi を**同じ回で**切り替える。等価性は切り替え後の実データで採る (§10 グループ C)。
 
 1. **core を入れる** (PR-1)。この時点から khi の inbox に内部 signal が入り始める
-   —— khi は既に `signals.sources[]` を宣言しているため
+   —— khi は既に `signals.sources[]` を宣言しているため。**この窓の間、稼働中の khi が
+   内部 signal を二重判断することは無い** —— `khi/adapters/inbox.py:140-142` が未知の
+   pack (`boid`) を無視して落とすので、10 分ごとに warn ログが積もるだけになる
 2. **khi を切り替える** (PR-2)。inbox 一本読み・`--claim`・`on: signals` へ。
    **切り替え前に、1 と 2 の間に溜まった内部 signal を一括 ack して捨てる** ——
    その間 khi は action 列を直読みして処理しているので、そのまま読ませると同じ件を
@@ -527,10 +560,16 @@ core と khi を**同じ回で**切り替える。等価性は切り替え後の
 
 | PR | 側 | 内容 | 採点 |
 |---|---|---|---|
-| PR-1 | core | `CreateAction` での ingest。actor 軸の遮断、card 宛への範囲限定、envelope 写像、`pack: boid` の予約 | Q5-Q12 |
+| PR-1 | core | `CreateAction` での ingest。actor 軸の遮断、card 宛への範囲限定、envelope 写像、`pack: boid` の予約。**上流 2 doc の追随更新を含める** (下記) | Q5-Q12 |
 | PR-2 | khi | 一括 ack のうえ inbox 一本読みへ切り替え。`--claim` を使う。`on: signals` trigger へ | Q13-Q16 |
 | PR-3 | khi | §5.2 の 3,566 行を撤去し、§5.3 を縮める | Q17-Q21 |
 | (独立) | khi | §8 の死にコード 1,600 行を削除 | — |
+
+**PR-1 に含める doc 更新:** `signal-ingest-detailed-design.md:47`「boid 内部シグナルは v0 では
+inbox を通らない」と `signal-driven-review.md:644` の未決行は、この設計の採用と同時に矛盾に
+なる。加えて **`signal-ingest-detailed-design.md` §2 の `GCSignals` 仕様記述 (「未 ack でも
+古ければ削除」) は実装と食い違っており** (実装は pending を絶対に消さない、
+`signal_store.go:543`)、本統合とは独立に stale —— 同じ PR で直すのが安い。
 
 ---
 
@@ -552,7 +591,7 @@ core と khi を**同じ回で**切り替える。等価性は切り替え後の
 | # | 問い |
 |---|---|
 | Q5 | `signals` を宣言した project が居ない workspace で、既存の action 書き込み経路の挙動が 1 ビットも変わらないことをテストが示しているか |
-| Q6 | もう 1 本の書き込み口 (`dispatcher/store.go` の daemon 再起動時 abort) が範囲外である根拠が示されているか。加えて「子の abort で親 card に `child_closed` が立つか」を確認し、立たないなら別件として切り出したか (§4.5) |
+| Q6 | もう 1 本の書き込み口 (`dispatcher/store.go` の daemon 再起動時 abort) が範囲外である根拠が示されているか (§4.5)。子の終端は `SweepReconcileChildren` 経由で親 card に立つ、が前提になっているので**そこが実際に `CreateAction` を通ることをテストで押さえたか** |
 | Q7 | 自己参照の遮断が fail-close か — 書き込み元の project を解決できないケースで ingest しないことをテストが示しているか (§4.3) |
 | Q8 | メタプロジェクト自身の sweep task / trigger job が書いた action が inbox に入らないことをテストが示しているか。加えて**判定が actor 文字列ではなく書き込み元の project で行われている**か — `task:` (id 空) からはどの project の exec job か分からないので、そこを見て落とす実装は khi の決め打ちを core へ持ち込んだだけになる (§4.3) |
 | Q9 | `api_gateway_request` のような card 宛でない action が inbox に入らないことをテストが示しているか |
@@ -586,4 +625,6 @@ core と khi を**同じ回で**切り替える。等価性は切り替え後の
 | Q22 | この統合で workspace 側にも core 側にも**新たに**生まれた宣言・設定・機構がゼロか (core へ移すつもりが両側に増えていないか) |
 | Q23 | `nvt-tasks` に card パイプラインを載せるとき、§5.1 の 7 機能だけで済むか — §5.2 に相当するものを 1 行も書かずに済むか |
 | Q24 | attempts 上限が 3 から 5 に変わることによる運用上の変化 (dead になるまでの時間) が確認され、許容されているか |
-| Q25 | §6.1 の 3 つ (並走防止の置き場・ack を打つ順序・対象一覧を誰が組むか) が実装前に決まっているか。とくに **ack を判断の書き込みより先に打っていない**か — 逆順だと crash した signal が pending から消えたまま誰も処理していない状態になる |
+| Q25 | §6.1 の 4 つ (並走防止の置き場・対象一覧を誰が組むか・1 巡の上限・篩った signal の ack) が実装前に決まっているか |
+| Q26 | **ack を判断の書き込みより先に打っていない**か — 逆順だと crash した signal が pending から消えたまま誰も処理していない状態になる (§6.1) |
+| Q27 | §6.2 の 2 点が埋まっているか — メタプロジェクト集合の lookup をどの層でやるか (meta キャッシュは `orchestrator` から見えない) と、**fail-close の判定を actor 文字列でやっていない**こと (`task_service.go:211-216` は sandbox 発でも `ActorHuman` を決め打ちする) |
