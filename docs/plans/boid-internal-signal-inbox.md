@@ -220,11 +220,21 @@ signals:
 ```
 
 - **§4.2 の actor 軸「自分自身の書き込み」は、その workspace で `signals` を宣言している
-  project の job / task を指す。** 複数の project が宣言していても論理は閉じる ——
-  その全部を自己参照として落とせばよい
-- **1 workspace 1 個という制約は課さない。** 既存の signals 機構も課していない
-  (検証は project 単位で完結する、`internal/orchestrator/spec_loader.go:123`)。
-  内部シグナルのためだけに新しい制約を持ち込むと、既存と一貫しない
+  project の job / task を指す**
+- **複数の project が宣言していても、この設計は壊れない。** 宣言している project 全部の
+  書き込みを落とせば、どのメタプロジェクトも自走しない。代償は「A の動きを B が検知
+  できない」ことだが、A と B が別々の card 群を担当する前提なら見る必要が無い ——
+  同じ card を両方が担当するなら、それは 2 writer であって別の破綻である
+- **ただし inbox 側は複数のメタプロジェクトを想定していない。** `SignalFilter` は
+  WorkspaceID / Service / Connector / State / Limit しか持たず、`AckSignals` も
+  workspace スコープ (`internal/orchestrator/signal_store.go`) —— **inbox に「誰宛か」の
+  概念が無い**。複数居ると同じ pending 列を読み合い、**先に ack した方が勝って、もう
+  片方はその signal を二度と見られない**。これは内部シグナルに限らず**外部シグナルでも
+  同じように起きる既存機構の穴**であり、本 doc はそれを作りもしないし解きもしない (§8)
+- **それでも「1 workspace 1 個」の制約は課さない。** 上のとおり壊れるのは既存の signals
+  機構の側であって内部シグナルではないので、制約を課すなら signals 機構全体に課すのが筋。
+  内部シグナルにだけ新しい不変条件を持ち込むと、既存と一貫しないまま制約だけが増える
+  (既存の検証は project 単位で完結している、`internal/orchestrator/spec_loader.go:123`)
 - **`signals` を宣言した project が居ない workspace では、ingest する相手が居ないので
   何も起きない。** 有効/無効のスイッチを別に用意する必要がない
 - envelope の `source.pack` に使う `boid` は予約名とし、Pack loader が同名の外部 Pack を
@@ -433,6 +443,11 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 - **メタプロジェクト作成スキル** — §3 で統合の動機として参照しているが、設計は統合の
   完了後に行う (`signal-driven-review.md` §12「scan script の定型を組み込みスキル/
   テンプレとして配布するか」)
+- **1 workspace に複数のメタプロジェクトが居るときの inbox の取り合い** — §4.3 で触れた
+  とおり、`SignalFilter` にも `AckSignals` にも project の概念が無いので、複数居ると
+  同じ pending 列を読み合って先に ack した方が勝つ。**外部シグナルで既に成立している
+  穴**であり、内部シグナルを足しても新しく生まれるものではない。解くなら inbox に
+  「誰宛か」を持たせる話になり、それは signals 機構全体の設計変更なので本 doc の外
 
 ---
 
