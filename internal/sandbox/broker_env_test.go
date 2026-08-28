@@ -32,8 +32,8 @@ func TestHostCommandEnv_DefEnvOverlays(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin")
 
 	got := hostCommandEnv(map[string]string{
-		"FOO":   "bar",
-		"PATH":  "/custom/bin",
+		"FOO":  "bar",
+		"PATH": "/custom/bin",
 	})
 
 	// def.Env entries are appended; later entries take precedence in os/exec.

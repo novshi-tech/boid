@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	fetchTimeout     = 30 * time.Second
-	fetchMaxBodySize = int64(5 * 1024 * 1024) // 5 MB
+	fetchTimeout      = 30 * time.Second
+	fetchMaxBodySize  = int64(5 * 1024 * 1024) // 5 MB
 	fetchMaxRedirects = 5
 )
 

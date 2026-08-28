@@ -949,9 +949,9 @@ func TestBindMount_Optional_PropagatedFromKitYAML(t *testing.T) {
 // were the two entries of the retired BehaviorAliases table.
 func TestReadProjectMeta_LegacyNames_KeptVerbatim(t *testing.T) {
 	cases := []struct {
-		name     string
-		key      string
-		notMade  string
+		name    string
+		key     string
+		notMade string
 	}{
 		{name: "plan is not rewritten to supervisor", key: "plan", notMade: "supervisor"},
 		{name: "dev is not rewritten to executor", key: "dev", notMade: "executor"},
@@ -1173,8 +1173,6 @@ task_behaviors:
 	}
 }
 
-
-
 func behaviorKeys(meta *projectspec.ProjectMeta) []string {
 	out := make([]string, 0, len(meta.TaskBehaviors))
 	for k := range meta.TaskBehaviors {
@@ -1182,8 +1180,6 @@ func behaviorKeys(meta *projectspec.ProjectMeta) []string {
 	}
 	return out
 }
-
-
 
 // repoRootFromTestFile returns the absolute path to the boid repo root by
 // walking up from the location of this test file. The test file lives at
@@ -1262,8 +1258,6 @@ func TestReadProjectMeta_BoidSelfProjectYAML_LoadsInCanonicalForm(t *testing.T) 
 		}
 	}
 }
-
-
 
 func writeProjectYAML(t *testing.T, dir, content string) {
 	t.Helper()

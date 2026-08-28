@@ -248,10 +248,12 @@ func TestDeployAll_RejectsSymlinkBaseDirItself(t *testing.T) {
 
 // TestDeployAll_ErrorsDoNotNameACallerSpecificLocation pins that DeployAll's
 // own error text stays caller-neutral. internal/skills is a general-purpose
-// package: baseDir is whatever the caller passed, and since PR3 of
-// docs/plans/workspace-home-volume-persistence.md the production caller
-// (internal/dispatcher's syncEmbeddedSkills) passes <RuntimesDir>/skills, not
-// a workspace HOME. An error that says "workspace HOME %q" therefore sends
+// package: baseDir is whatever the caller passed, and the caller that made
+// this matter (internal/dispatcher, materializing the set under
+// <RuntimesDir>/skills for the per-skill bind mounts) has since been retired
+// along with those mounts — leaving DeployHostSkills, whose baseDir is
+// ~/.claude/skills. Neither is a workspace HOME. An error that says
+// "workspace HOME %q" therefore sends
 // whoever reads a failed job's Output to a directory that has nothing to do
 // with the failure — and would keep doing so for any future caller too. The
 // path itself is already in the message (%q), which is the only location

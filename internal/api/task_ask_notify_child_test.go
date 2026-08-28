@@ -104,7 +104,7 @@ func TestFireUserAskNotification_UnreadableParent_Notifies(t *testing.T) {
 	notifier := &recordingNotifier{}
 	svc := &TaskAppService{
 		Tasks:  &stubTaskStore{tasks: map[string]*orchestrator.Task{}}, // parent lookup misses
-		Jobs:   nil,                                                   // and no job store at all
+		Jobs:   nil,                                                    // and no job store at all
 		Notify: notifier,
 	}
 	task := &orchestrator.Task{ID: "child-1", ParentID: "ghost", ProjectID: "p1"}

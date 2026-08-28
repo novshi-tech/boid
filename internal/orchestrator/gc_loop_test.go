@@ -12,7 +12,7 @@ import (
 
 // fakeGCStore is a test double for GCStore.
 type fakeGCStore struct {
-	callCount atomic.Int64
+	callCount  atomic.Int64
 	alwaysFail bool
 }
 

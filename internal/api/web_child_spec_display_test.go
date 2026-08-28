@@ -119,8 +119,8 @@ func TestTaskDetailChildrenSection_RendersSpec(t *testing.T) {
 	html := buf.String()
 
 	for _, want := range []string{
-		"research",                                 // どの behavior で走るか
-		"rook-server",                              // どのプロジェクトで走るか
+		"research",    // どの behavior で走るか
+		"rook-server", // どのプロジェクトで走るか
 		"PR #1063 の実装を読んで競合の扱いを切り分ける", // 何をするのか
 	} {
 		if !strings.Contains(html, want) {

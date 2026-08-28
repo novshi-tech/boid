@@ -345,7 +345,7 @@ func TestMigration0029_IdempotentOnAlreadyDroppedTable(t *testing.T) {
 // docs/plans/workspace-db-consolidation.md: schema_migrations must gain
 // `state` and `input_hash` columns, and existing rows (every migration
 // version applied earlier in this same Apply() run) must read back with the
-// backward-compatible defaults ('committed' / '').
+// backward-compatible defaults ('committed' / ”).
 func TestMigration0031_AddsSchemaMigrationsStateAndInputHash(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {

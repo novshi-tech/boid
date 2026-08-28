@@ -7,9 +7,9 @@ import "embed"
 // inside a job sandbox). `boid install-skills` is the only caller.
 //
 // Deliberately a SEPARATE embed.FS from skillsFS (deploy.go), never merged
-// with it. skillsFS/DeployAll/EmbeddedSkillNames are load-bearing for
-// internal/dispatcher's per-job sandbox bind list
-// (skills_overlay.go:157,199, sandbox_builder.go:1286) — a host skill
+// with it. skillsFS is what build/container/Dockerfile unpacks into the runner
+// image, and EmbeddedSkillNames is what internal/dispatcher's skillLinks turns
+// into a symlink in every workspace home's skill discovery roots — a host skill
 // documents `boid workspace`/`boid web pair`/etc. host CLI operations that
 // make no sense, and may not even be reachable, from inside a job
 // container. Keeping the two embed.FS values and their entry points

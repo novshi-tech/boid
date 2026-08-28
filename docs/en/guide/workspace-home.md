@@ -23,10 +23,13 @@ project assigned to that workspace mounts this volume as its sandbox `$HOME`, re
   that isolation existed for (`$HOME/.boid/output/payload_patch.json`) was retired, and
   the overlay went with it — see
   [`docs/en/reference/hook-contract.md`](../reference/hook-contract.md)
-- **The only thing layered over the volume is the embedded-skill binds**: each embedded
-  skill is bind-mounted read-only at `~/.claude/skills/<name>`. Their contents are not
-  stored in the volume (the daemon unpacks them from the boid binary on every dispatch);
-  every other path shows the volume itself
+- **Nothing is layered over the volume**: embedded skills used to be bind-mounted
+  read-only at `~/.claude/skills/<name>`, one mount each; there are no bind mounts at
+  all now. Both the built-in skills and the official Integration Packs
+  (jira-cloud/bitbucket-cloud/slack) are baked into the runner image
+  (`/opt/boid/skills/<name>` and `/opt/boid/integrations/...`), and only **symlinks**
+  are placed in the home (see "Copying non-embedded skills" below). A job container
+  sees the volume and nothing else
 - **Not shared across workspaces**: workspace A's `$HOME` and workspace B's `$HOME` are
   different volumes, and neither is shared with the real host `$HOME` (nor with the
   `boid` daemon process's own `$HOME`)
@@ -196,9 +199,9 @@ described below still runs exactly once either way.
     them yourself if you need them. Commands installed only on the host are unreachable —
     install anything the image lacks from within `init.sh`
 - **The preparation step (prep) always runs**: ahead of your script, in that same
-  container, boid creates the bind-target skeleton (`~/.claude`, `~/.claude/skills`, and
-  `~/.claude/skills/<name>` for each built-in skill). A workspace with no `init.sh` still
-  gets exactly one container run. The identity token described above is not written here
+  container, boid creates the skill discovery roots (`~/.claude`, `~/.claude/skills`,
+  `~/.agents`, `~/.agents/skills`) and places each skill's symlink under them. A
+  workspace with no `init.sh` still gets exactly one container run. The identity token described above is not written here
   — it is stamped on the volume itself when the volume is created, so nothing inside the
   home carries it
 - **A failure fails dispatch**: a non-zero exit from `init.sh` does not silently skip
@@ -239,11 +242,50 @@ it with `boid workspace set-init-script <slug> -f docs/examples/workspace-home-i
 
 #### Copying non-embedded skills
 
-boid's built-in skills (`/boid-task` etc.) are extracted from the boid binary on
-every dispatch and **bind-mounted read-only, one mount per skill**, at
-`~/.claude/skills/<name>`, so `init.sh` never needs to handle them (no copy of them
-is stored inside the workspace home). They are mounted per skill rather than as one
-mount of the whole directory so that the hand-copied skills below stay visible.
+boid's built-in skills (`/boid-task` etc.) and the skills declared by the official
+Integration Packs (jira-cloud / bitbucket-cloud / slack — `jira-api`,
+`bitbucket-api`, `slack-api`) are all baked into the runner image, and reach a
+workspace home as **symlinks** written during workspace home init. `init.sh` never
+needs to handle them, and no copy of them is stored inside the workspace home.
+
+Each skill is linked into two places:
+
+| Link location | Harnesses that read it |
+|---|---|
+| `~/.claude/skills/<name>` | Claude Code, opencode |
+| `~/.agents/skills/<name>` | codex, opencode |
+
+Two, because no single directory is read by all three harnesses boid dispatches:
+Claude Code reads only `~/.claude/skills` and codex reads only `~/.agents/skills`
+(opencode reads both). `~/.agents/skills` is the cross-vendor convention, so a
+harness added later is likely to be covered by an entry that already exists.
+
+> **⚠️ Rolling back to an older boid**
+>
+> A home whose skills are symlinks **cannot be served by a build from before
+> the skills were baked into the image**. That build's prep step `mkdir -p`s
+> `.claude/skills/<name>` as a directory, its image has no `/opt/boid/skills`
+> for the symlinks to resolve to, and `mkdir -p` on a broken symlink fails
+> (`mkdir: cannot create directory: File exists`). Every dispatch of that
+> workspace then fails, and deleting the completion marker does not help.
+>
+> Recover by deleting the symlinks from the host side:
+>
+> ```bash
+> VOL=$(docker volume inspect -f '{{.Mountpoint}}' boid-ws-home-<installID8>-<slug>)
+> # under rootless podman, go through `podman unshare`
+> rm -rf "$VOL/.claude/skills" "$VOL/.agents"
+> ```
+>
+> Migrating forward is automatic: the re-init `rm -rf`s before it `ln -sfn`s,
+> so the old bind-target directories are replaced by symlinks.
+
+If you hand-copy a skill under one of those names, the next workspace home init
+replaces your copy with a symlink — boid deliberately overwrites a stale directory
+with the current link (see `skillLinks` in
+`internal/dispatcher/skills_overlay.go`). Hand-copying is only for services with no
+official Pack. Note that a symlink is a single entry at `<root>/<name>`, so it never
+hides another skill sitting beside it in the same directory.
 
 Host-only custom skills you keep under `~/.claude/skills/<name>/` (e.g. a bitbucket or
 jira skill) are a different story: `init.sh` cannot copy them, because it runs inside a

@@ -263,13 +263,13 @@ const (
 )
 
 type Hook struct {
-	ID         string        `yaml:"id" json:"id"`
-	Name       string        `yaml:"name,omitempty" json:"name,omitempty"`
-	Kind       HandlerKind   `yaml:"kind,omitempty" json:"kind,omitempty"`
-	Traits     HandlerTraits `yaml:"traits" json:"traits"`
-	Requires   []string      `yaml:"requires" json:"requires"`
-	Agent      string        `yaml:"agent,omitempty" json:"agent,omitempty"`
-	Kit        string        `yaml:"-" json:"kit,omitempty"`
+	ID       string        `yaml:"id" json:"id"`
+	Name     string        `yaml:"name,omitempty" json:"name,omitempty"`
+	Kind     HandlerKind   `yaml:"kind,omitempty" json:"kind,omitempty"`
+	Traits   HandlerTraits `yaml:"traits" json:"traits"`
+	Requires []string      `yaml:"requires" json:"requires"`
+	Agent    string        `yaml:"agent,omitempty" json:"agent,omitempty"`
+	Kit      string        `yaml:"-" json:"kit,omitempty"`
 	// Command is an inline shell command, run via `sh -c`
 	// (docs/plans/script-hook-removal.md). Mutually exclusive with Agent, and
 	// not allowed on agent-kind hooks. See DispatchPlanner.PlanHook for the
@@ -645,4 +645,3 @@ type WorkspaceSummary struct {
 	// workspaces-table-based, but callers should not assume non-empty).
 	Revision string `json:"revision,omitempty"`
 }
-
