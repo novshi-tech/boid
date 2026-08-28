@@ -469,6 +469,43 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 	b.WriteString(workspaceInitStageCheck(workspaceInitStagePrelude, workspaceInitPreludeExitCode))
 
 	if len(p.SkeletonDirs) > 0 {
+		// Before anything traverses these paths: refuse if any of them is a
+		// SYMLINK (Opus security review of this PR, finding 2).
+		//
+		// The workspace home is mounted read-write into every job of the
+		// workspace and persists across them, so a job can replace `.claude`
+		// (or any other skeleton entry) with a symlink pointing outside the
+		// home. `mkdir -p` follows it, and the `rm -rf` below then deletes
+		// <elsewhere>/skills/<name> recursively before planting boid's link
+		// there — demonstrated against a real shell, not merely reasoned about.
+		//
+		// The escape is bounded (the init container mounts ONLY the home: no
+		// docker socket, no daemon state volume, so the reachable victims are
+		// ephemeral image paths of the shape <attacker-chosen>/skills/<name>)
+		// which is why this is a check rather than a redesign. What made it
+		// worth adding NOW is that image-baked skills changed its reach: a
+		// workspace with no Integration Packs used to emit ZERO `rm -rf`, and
+		// now emits one per embedded skill per root, with `.agents` a brand-new
+		// traversable prefix.
+		//
+		// Refusing rather than repairing: `rm`-ing the link would be boid
+		// deleting something in a home an operator may have arranged
+		// deliberately, on a guess about intent. A stage-tagged exit names the
+		// path and lets a human decide. It also gives the job container's own
+		// preflight (verifyHomeSkeleton) one less way to be reached, since its
+		// error text can only explain this state as "the engine created it as
+		// uid 0", which is the wrong diagnosis.
+		b.WriteString("\n# --- prelude: refuse a symlinked skeleton path ---\n")
+		for _, dir := range p.SkeletonDirs {
+			b.WriteString("if [ -L " + shellQuoteDir(dir) + " ]; then\n")
+			b.WriteString("  printf 'boid: %s is a symlink; refusing to prepare this workspace home through it\\n' " +
+				shellQuoteDir(dir) + " >&2\n")
+			b.WriteString("  __boid_stage " + workspaceInitStagePrelude + " " +
+				strconv.Itoa(workspaceInitPreludeExitCode) + "; exit " +
+				strconv.Itoa(workspaceInitPreludeExitCode) + "\n")
+			b.WriteString("fi\n")
+		}
+
 		// umask 022 rather than the container's default, so the skeleton comes
 		// out 0755 — byte for byte what the daemon-side
 		// skills.MkdirAllNoSymlink produced (unix.Mkdirat(..., 0o755)) for the
@@ -509,8 +546,39 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 		// upgrades. `ln -sfn` alone would nest the symlink INSIDE such a
 		// directory, leaving the skill at <root>/<name>/<name> where nothing
 		// discovers it.
+		//
+		// Each Target is checked for existence FIRST, and a miss fails the whole
+		// run (codex/Opus review of this PR, finding 1). `ln -s` succeeds against
+		// a target that does not exist, so without this a runner image lacking
+		// /opt/boid/skills produces a home full of dangling links, an init that
+		// exits 0, and a completion marker written over it — after which nothing
+		// re-runs: the script hash, the generation, the home identity, the
+		// skeleton and this very link set all still match, so the home stays
+		// broken even after the image is fixed, until an operator deletes the
+		// marker by hand. That is the silent-and-permanent failure the old
+		// bind-mount route could not have: it sourced the CONTENT from the same
+		// binary that computed the NAMES, so the two could not disagree.
+		//
+		// The realistic trigger is not a corrupt image but ordinary skew: the
+		// name list comes from the DAEMON binary's embed.FS while Target names a
+		// path in the IMAGE, and a bare `boid start` from a fresh build against a
+		// stale local boid-runner:latest has exactly that shape.
+		//
+		// Failing the run rather than skipping the link, for both kinds of skill:
+		// a skipped link would reproduce the same silent-permanent outcome
+		// (skillLinks runs daemon-side and cannot see the image, so the marker
+		// would still record a link that was never made), and a Target missing
+		// from the image the init container itself runs from is an image/binary
+		// disagreement rather than one malformed Pack.
 		b.WriteString("\n# --- prelude: skill symlinks (embedded + Integration Pack) ---\n")
 		for _, link := range p.SkillLinks {
+			b.WriteString("if [ ! -d " + shellQuoteDir(link.Target) + " ]; then\n")
+			b.WriteString("  printf 'boid: skill %s is missing from this image at %s; the runner image and the boid binary disagree\\n' " +
+				shellQuoteDir(link.Name) + " " + shellQuoteDir(link.Target) + " >&2\n")
+			b.WriteString("  __boid_stage " + workspaceInitStagePrelude + " " +
+				strconv.Itoa(workspaceInitPreludeExitCode) + "; exit " +
+				strconv.Itoa(workspaceInitPreludeExitCode) + "\n")
+			b.WriteString("fi\n")
 			for _, root := range skillDiscoveryRoots {
 				dest := filepath.Join(root, link.Name)
 				b.WriteString("rm -rf -- " + shellQuoteDir(dest) + "\n")

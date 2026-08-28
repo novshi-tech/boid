@@ -260,6 +260,26 @@ Claude Code reads only `~/.claude/skills` and codex reads only `~/.agents/skills
 (opencode reads both). `~/.agents/skills` is the cross-vendor convention, so a
 harness added later is likely to be covered by an entry that already exists.
 
+> **⚠️ Rolling back to an older boid**
+>
+> A home whose skills are symlinks **cannot be served by a build from before
+> the skills were baked into the image**. That build's prep step `mkdir -p`s
+> `.claude/skills/<name>` as a directory, its image has no `/opt/boid/skills`
+> for the symlinks to resolve to, and `mkdir -p` on a broken symlink fails
+> (`mkdir: cannot create directory: File exists`). Every dispatch of that
+> workspace then fails, and deleting the completion marker does not help.
+>
+> Recover by deleting the symlinks from the host side:
+>
+> ```bash
+> VOL=$(docker volume inspect -f '{{.Mountpoint}}' boid-ws-home-<installID8>-<slug>)
+> # under rootless podman, go through `podman unshare`
+> rm -rf "$VOL/.claude/skills" "$VOL/.agents"
+> ```
+>
+> Migrating forward is automatic: the re-init `rm -rf`s before it `ln -sfn`s,
+> so the old bind-target directories are replaced by symlinks.
+
 If you hand-copy a skill under one of those names, the next workspace home init
 replaces your copy with a symlink — boid deliberately overwrites a stale directory
 with the current link (see `skillLinks` in

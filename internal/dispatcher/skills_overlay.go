@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"os"
 	"path/filepath"
 
 	"github.com/novshi-tech/boid/internal/integrationpack"
@@ -57,14 +58,63 @@ import (
 // It is a path inside the CONTAINER, never a host path and never a mount
 // source. The init container and the job container both see it because both
 // start from the image that baked it — the one assumption this rests on, and
-// the same one PackSkillLink's Target already rested on. A workspace with a
-// container_image override breaks that assumption for its JOB container (the
-// init container always runs from boid's own default image,
-// container_backend_workspace_init.go §D8), leaving symlinks that dangle
-// rather than resolve. That gap predates this change and is unchanged by it;
-// what changes is that it now covers the embedded skills too, which the binds
-// used to carry across any image.
-const embeddedSkillsImageDir = "/opt/boid/skills"
+// the same one Integration Pack targets already rested on.
+//
+// # Where that assumption does and does not hold
+//
+// buildWorkspaceInitScript checks each Target with `[ -d ]` before linking it
+// and fails the whole init if it is missing, so the INIT container's copy of
+// this path is verified rather than assumed. That covers the realistic skew —
+// a daemon binary newer than the runner image it launches — because the init
+// container runs from boid's own default image and so does every job by
+// default.
+//
+// It does not cover a workspace with a container_image override: the init
+// container still runs from boid's default image
+// (container_backend_workspace_init.go §D8), so the check passes, while the
+// JOB container runs the override and may have no /opt/boid/skills — leaving
+// links that dangle there and only there. That gap predates image-baked
+// skills (Pack targets always had it) but it did widen: the per-skill bind
+// mounts used to carry the embedded set across any image. An override image
+// that wants boid's skills has to bake this path itself.
+//
+// # The two names below
+//
+// defaultEmbeddedSkillsImageDir is the LITERAL, and it has to equal the
+// destination of build/container/Dockerfile's `COPY internal/skills/data`.
+// Nothing in Go can check that at compile time, so
+// TestEmbeddedSkillsImageDir_IsWhereTheDockerfileCopiesThem reads the
+// Dockerfile — the same trick, for the same reason, as
+// TestBoidRunnerProtocolLabel_IsBakedIntoTheImage. Without it a drift on
+// either side leaves every unit test green (both sides of every assertion
+// would move together) and every embedded skill a dangling symlink in
+// production.
+//
+// embeddedSkillsImageDir is the value actually used, a var so this package's
+// TestMain can point it at a directory that exists: the `[ -d ]` check above
+// makes a missing Target a hard failure, and /opt/boid/skills is not present
+// on a machine running `go test`. Production never reassigns it — same
+// convention as workspaceHomeSkeletonDirs. Runner.SkillsImageDir overrides it
+// per Runner, which is how a test in ANOTHER package (internal/server wires
+// its own dispatcher.Runner) reaches the same seam.
+const defaultEmbeddedSkillsImageDir = "/opt/boid/skills"
+
+// embeddedSkillsImageDir resolves the value actually used. Runner.SkillsImageDir
+// wins when set; otherwise BOID_TEST_IMAGE_SKILLS_DIR, which testutil/homeenv
+// points at a populated temp directory for the lifetime of a test binary (see
+// that package's imageSkillsEnv for why the seam is an env var: the suites that
+// need it live in several packages, and an unexported var here cannot be reached
+// from any of them); otherwise the real image path. Nothing in a deployment sets
+// the variable — boid builds the image that carries the real path.
+//
+// Read per call rather than at package init so a TestMain that sets it after
+// this package is initialized still takes effect.
+func embeddedSkillsImageDir() string {
+	if dir := os.Getenv("BOID_TEST_IMAGE_SKILLS_DIR"); dir != "" {
+		return dir
+	}
+	return defaultEmbeddedSkillsImageDir
+}
 
 // skillDiscoveryRoots are the directories, relative to a workspace home, that
 // every skill is symlinked into.
@@ -92,11 +142,20 @@ const embeddedSkillsImageDir = "/opt/boid/skills"
 //
 // Writing a link into both roots is what makes this list additive: covering a
 // new harness means appending its root, not choosing between the ones already
-// here. The cost is one symlink per skill per root, which is nothing, and the
-// duplication is invisible to each harness — none of them reads the other's
-// root, so none of them sees the same skill twice. (codex is the one that
-// would notice, since it reports same-named skills separately rather than
-// merging them; it does not read .claude/skills, so it does not.)
+// here. The cost is one symlink per skill per root, which is nothing on disk.
+//
+// The cost that is NOT nothing, and is accepted rather than absent: opencode
+// reads both roots, so every skill is presented to it twice. Claude Code and
+// codex each read exactly one of the two and cannot see the duplication at
+// all. Whether opencode merges the two entries or lists them separately is not
+// established here — codex is documented to list same-named skills separately
+// rather than merging, and opencode's docs say only that a nearer directory
+// overrides a farther one, which is about project-vs-global precedence and not
+// about two global roots. Presenting boid's four skills twice to one of three
+// harnesses was judged cheaper than either dropping a root (which loses a
+// harness outright) or making the link set depend on which harness a job will
+// use (which resolveWorkspaceHome cannot know: the home is prepared per
+// workspace, not per job).
 var skillDiscoveryRoots = []string{
 	filepath.Join(".claude", "skills"),
 	filepath.Join(".agents", "skills"),
@@ -211,7 +270,10 @@ var workspaceHomeSkeletonDirs = func() []string {
 // newest ("1.10.0" < "1.2.0" < "1.9.0"). v0 has no Pack-namespacing or
 // version-pinning story to make either an error rather than a
 // deployment-order footgun.
-func skillLinks(packs []*integrationpack.Pack) []SkillLink {
+func skillLinks(imageSkillsDir string, packs []*integrationpack.Pack) []SkillLink {
+	if imageSkillsDir == "" {
+		imageSkillsDir = embeddedSkillsImageDir()
+	}
 	names := skills.EmbeddedSkillNames()
 	embeddedSkillNames := make(map[string]bool, len(names))
 	links := make([]SkillLink, 0, len(names))
@@ -219,7 +281,7 @@ func skillLinks(packs []*integrationpack.Pack) []SkillLink {
 		embeddedSkillNames[name] = true
 		links = append(links, SkillLink{
 			Name:   name,
-			Target: filepath.Join(embeddedSkillsImageDir, name),
+			Target: filepath.Join(imageSkillsDir, name),
 		})
 	}
 	for _, pack := range packs {

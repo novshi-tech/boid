@@ -300,15 +300,22 @@ func isStaleTempName(name string) bool {
 // mechanism as the rest of this file.
 //
 // PR4 E2E investigation (docs/plans/home-workspace-volume.md): a name
-// matching isStaleTempName is not necessarily abandoned — two DeployAll
-// calls can legitimately run concurrently against the SAME baseDir, and
-// internal/dispatcher/skills_overlay.go calls DeployAll once per dispatch
-// with no cross-dispatch locking. That was originally because a workspace's
-// HOME directory is shared across every job dispatched against the
-// workspace; since PR3 of docs/plans/workspace-home-volume-persistence.md
-// baseDir is shared by every job of the whole INSTALLATION, so the overlap
-// this reasoning covers got wider, not narrower — which is precisely what
-// makes the single materialization point safe. Before this fix, cleanupStaleTempFiles
+// matching isStaleTempName is not necessarily abandoned — two DeployAll calls
+// can legitimately run concurrently against the SAME baseDir.
+//
+// The concurrency that motivated this is gone: internal/dispatcher used to
+// call DeployAll once per dispatch, with no cross-dispatch locking, first into
+// a workspace HOME shared by every job of that workspace and then (PR3 of
+// docs/plans/workspace-home-volume-persistence.md) into a directory shared by
+// every job of the whole INSTALLATION. Neither call exists any more — the
+// sandbox skill set is unpacked into the runner image at build time. What is
+// left is DeployHostSkills behind `boid install-skills`, which an operator can
+// still run twice at once against ~/.claude/skills.
+//
+// The machinery stays rather than being unwound with its original caller: it
+// costs nothing on a directory with one writer, and the property it provides —
+// a concurrent run's temp file is not reclaimed out from under it — is one a
+// future caller should not have to re-derive. Before this fix, cleanupStaleTempFiles
 // unlinked *every* name matching the pattern unconditionally — including
 // one a still-running, concurrently-executing DeployAll call had just
 // created and was about to renameat into place — producing exactly the

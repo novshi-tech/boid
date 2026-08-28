@@ -75,8 +75,10 @@ func TestHostSkillNames_MatchesDeployedSet(t *testing.T) {
 // TestDeployHostSkills_DoesNotAffectSandboxSkillSet is the regression guard
 // for the design invariant that host-facing skills (boid-cli-*, meant for
 // ~/.claude/skills/ on the machine running the boid CLI) must never leak
-// into internal/dispatcher's per-job sandbox bind list. That list is driven
-// entirely by EmbeddedSkillNames()/skillsFS (the original data/ embed) — if
+// into the sandbox skill set. That set is driven entirely by
+// EmbeddedSkillNames()/skillsFS (the original data/ embed), which
+// build/container/Dockerfile unpacks into the runner image and
+// internal/dispatcher's skillLinks symlinks into every workspace home — if
 // this ever regresses to share a source with hostSkillsFS, every job
 // container would start receiving host-ops skill content that documents
 // commands making no sense (or being unreachable) from inside a job.

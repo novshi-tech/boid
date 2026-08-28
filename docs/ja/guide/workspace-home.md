@@ -292,6 +292,26 @@ Claude Code は `~/.claude/skills` しか見ず、codex は `~/.agents/skills` �
 見ません (opencode は両方見ます)。 `~/.agents/skills` はベンダー横断の規約
 なので、将来ハーネスを足すときはこちらで拾える見込みが高いです。
 
+> **⚠️ 旧バージョンへのロールバックについて**
+>
+> skill が symlink になった home は、**image 焼き込み以前のビルドへ戻すと init が
+> 失敗するようになります**。 旧ビルドの prep は `.claude/skills/<name>` を
+> ディレクトリとして `mkdir -p` しますが、旧 image に `/opt/boid/skills` は無いので
+> symlink が壊れた状態になり、**壊れた symlink に対する `mkdir -p` は失敗する**ためです
+> (`mkdir: cannot create directory: File exists`)。
+> その workspace の dispatch は以後すべて失敗し、完了マーカーを消しても直りません。
+>
+> 復旧するには、ホスト側から home volume 内の symlink を削除してください。
+>
+> ```bash
+> VOL=$(docker volume inspect -f '{{.Mountpoint}}' boid-ws-home-<installID8>-<slug>)
+> # rootless podman なら podman unshare 経由で
+> rm -rf "$VOL/.claude/skills" "$VOL/.agents"
+> ```
+>
+> 前方 (新しい方へ) の移行は自動です。 再 init が `rm -rf` してから `ln -sfn` するので、
+> 旧 bind target のディレクトリは symlink に置き換わります。
+
 > **これらの名前を下記の手動コピー手順で置くと、次の workspace home init で
 > その手動コピーは symlink に置き換わって消えます** (boid が「stale な
 > ディレクトリを新しい symlink で上書きする」動作を意図的にしているため —

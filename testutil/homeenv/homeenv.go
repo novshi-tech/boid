@@ -31,6 +31,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/novshi-tech/boid/internal/skills"
 )
 
 // isolatedKeys is the exact set of environment variables Isolate overrides
@@ -49,7 +51,9 @@ import (
 //   - XDG_STATE_HOME: ~/.local/state/boid — daemon.LogFilePath.
 //   - DOCKER_HOST: the engine holding the workspace HOME volumes. See
 //     dockerSocketName's comment.
-var isolatedKeys = []string{"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "DOCKER_HOST"}
+//   - BOID_TEST_IMAGE_SKILLS_DIR: stands in for the runner IMAGE's
+//     /opt/boid/skills. See imageSkillsEnv's comment.
+var isolatedKeys = []string{"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "DOCKER_HOST", imageSkillsEnv}
 
 // clearedKeys are the remaining variables client.New(client.FromEnv) reads.
 // They are UNSET by Isolate rather than redirected, so "isolated" means empty
@@ -83,6 +87,31 @@ var clearedKeys = []string{"DOCKER_API_VERSION", "DOCKER_CERT_PATH", "DOCKER_TLS
 // address is the only isolation that works for every consumer, because the
 // engine handle is resolved deep inside buildRuntime rather than passed in.
 const dockerSocketName = "docker-engine-must-not-be-reachable.sock"
+
+// imageSkillsEnv names the variable that stands in for the runner IMAGE's
+// /opt/boid/skills, where build/container/Dockerfile unpacks boid's embedded
+// skills. internal/dispatcher's embeddedSkillsImageDir consults it.
+//
+// This is the odd one out on the list above: every other variable isolates a
+// root the tests would otherwise WRITE to, while this one supplies a directory
+// the test machine does not have at all. It joins the list for the same
+// underlying reason, though — a boid data root resolved from the environment
+// that must not be the developer's.
+//
+// It is needed because a workspace-home init now REFUSES to symlink a skill
+// whose target directory is absent, deliberately: `ln -s` succeeds against a
+// missing target, so without the check a runner image lacking /opt/boid/skills
+// produces a home full of dangling links behind a completion marker that says
+// the home is fine — silent, and permanent, since nothing afterwards re-runs.
+// The consequence for tests is that any suite reaching a real Dispatch needs
+// that path to exist, in whatever package it lives in, which is exactly the
+// "one list, not one per TestMain" problem this package was created for.
+//
+// TEST is in the name because nothing in a deployment sets it: boid builds the
+// image that carries the real path. A future container_image override that
+// wants to relocate the directory should get a real config field rather than
+// borrowing this.
+const imageSkillsEnv = "BOID_TEST_IMAGE_SKILLS_DIR"
 
 // original records each isolatedKeys entry as it was when this package was
 // initialized. Go initializes an imported package's variables before the
@@ -143,6 +172,10 @@ func Isolate() (cleanup func(), err error) {
 		// fails with ENOENT, which is precisely the "no engine reachable"
 		// degradation every workspace-home code path already handles.
 		"DOCKER_HOST": "unix://" + filepath.Join(dir, dockerSocketName),
+		// Unlike the entries above, this one is POPULATED below: the init
+		// prelude checks each skill target with `[ -d ]`, so an empty
+		// directory would fail every dispatch.
+		imageSkillsEnv: filepath.Join(dir, "image-skills"),
 	} {
 		if err := os.Setenv(key, val); err != nil {
 			_ = os.RemoveAll(dir)
@@ -151,6 +184,15 @@ func Isolate() (cleanup func(), err error) {
 	}
 	for _, key := range clearedKeys {
 		if err := os.Unsetenv(key); err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, err
+		}
+	}
+	// One empty directory per embedded skill, which is all the prelude's
+	// `[ -d ]` check looks at. A test that needs the link to RESOLVE to real
+	// content points its own SkillLink at its own fixture instead.
+	for _, name := range skills.EmbeddedSkillNames() {
+		if err := os.MkdirAll(filepath.Join(dir, "image-skills", name), 0o755); err != nil {
 			_ = os.RemoveAll(dir)
 			return nil, err
 		}

@@ -14,6 +14,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
+	"github.com/novshi-tech/boid/internal/skills"
 )
 
 // This file covers PR6 of docs/plans/workspace-home-volume-persistence.md:
@@ -688,4 +689,101 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestResolveWorkspaceHome_Generation2Home_ConvertsBindTargetsToSymlinks is the
+// one-time cutover, driven end to end.
+//
+// It is the case the whole generation bump exists for. A home initialized by a
+// build that delivered embedded skills as bind mounts has REAL DIRECTORIES at
+// .claude/skills/<name> — the old bind targets, created by that era's skeleton
+// — and nothing mounts over them any more. Left as they are, every embedded
+// skill is an empty directory and the harness finds none of them; the re-init's
+// `rm -rf` before `ln -sfn` is what converts them, and it only runs because the
+// marker is rejected.
+//
+// The marker seeded here is what a real generation-2 marker looked like: the
+// old skeleton (per-skill leaves under .claude/skills, no .agents entries) and
+// no skill_links at all, since that field was named pack_skill_links then and
+// carried only Integration Pack entries.
+//
+// Note that the generation is not the only thing that rejects it — the skeleton
+// and the link set disagree too, and either would trigger the re-init on its
+// own. That redundancy is deliberate but it does mean this case cannot pin the
+// generation constant by itself; TestResolveWorkspaceHome_MarkerFromAnOlderExecutionGeneration_ReInitializes
+// covers the constant, and this one covers the conversion.
+func TestResolveWorkspaceHome_Generation2Home_ConvertsBindTargetsToSymlinks(t *testing.T) {
+	embedded := skills.EmbeddedSkillNames()
+	if len(embedded) == 0 {
+		t.Skip("no embedded skills compiled into this binary")
+	}
+	setupWorkspaceHomeTestDirs(t)
+	r, be := newWorkspaceHomeTestRunnerWithBackend(t)
+
+	// The generation-2 skeleton: .claude only, with one leaf per embedded skill.
+	oldSkeleton := []string{".claude", filepath.Join(".claude", "skills")}
+	for _, name := range embedded {
+		oldSkeleton = append(oldSkeleton, filepath.Join(".claude", "skills", name))
+	}
+	homeDir, _ := seedInitializedWorkspaceHome(t, r, "myws", "", workspaceHomeMarker{
+		InitGeneration: 2,
+		SkeletonDirs:   oldSkeleton,
+	})
+
+	// What that build actually left in the home: a real directory per skill,
+	// which the engine (not boid) would have created as a bind target.
+	for _, name := range embedded {
+		leaf := filepath.Join(homeDir, ".claude", "skills", name)
+		if err := os.MkdirAll(leaf, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// And a hand-copied skill sitting beside them, which must survive: a
+	// symlink at <root>/<name> is one entry and shadows nothing else in the
+	// directory, unlike the whole-directory bind this replaced.
+	bystander := filepath.Join(homeDir, ".claude", "skills", "hand-copied")
+	if err := os.MkdirAll(bystander, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bystander, "SKILL.md"), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+		t.Fatalf("resolveWorkspaceHome: %v", err)
+	}
+	if be.runCount() != 1 {
+		t.Fatalf("init ran %d times, want 1 — a generation-2 home must be re-prepared", be.runCount())
+	}
+
+	for _, name := range embedded {
+		for _, root := range skillDiscoveryRoots {
+			rel := filepath.Join(root, name)
+			info, err := os.Lstat(filepath.Join(homeDir, rel))
+			if err != nil {
+				t.Errorf("%s missing after the cutover re-init: %v", rel, err)
+				continue
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				t.Errorf("%s is still %s, not a symlink — the old bind target was not converted, so this skill is undiscoverable", rel, info.Mode())
+				continue
+			}
+			target, rerr := os.Readlink(filepath.Join(homeDir, rel))
+			if rerr != nil {
+				t.Errorf("readlink %s: %v", rel, rerr)
+				continue
+			}
+			if want := filepath.Join(embeddedSkillsImageDir(), name); target != want {
+				t.Errorf("%s -> %q, want %q", rel, target, want)
+			}
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Join(bystander, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("the hand-copied skill beside the converted ones did not survive: %v", err)
+	}
+	if string(data) != "mine" {
+		t.Errorf("hand-copied skill content = %q, want %q", data, "mine")
+	}
 }

@@ -74,16 +74,15 @@ func skillsSyncTestSpec() *orchestrator.JobSpec {
 // wrapper writes both roots when handed a SkillLink;
 // TestSkillLinks_IncludesEmbeddedSkillsPointingAtTheImageDir proves the
 // embedded set turns into SkillLinks. Both would stay green if
-// resolveWorkspaceHome stopped passing skillLinks(r.Packs) into the request —
+// resolveWorkspaceHome stopped passing skillLinks into the request —
 // which is exactly the shape of this repo's recurring "both ends wired,
 // nothing crosses" failure, and the reason the per-skill-bind version of this
 // test existed before it.
 //
-// The symlinks DANGLE here, and that is not a defect of the test: Target is
-// embeddedSkillsImageDir, a path inside the runner image, which the machine
-// running `go test` has no reason to have. `ln -sfn` does not require its
-// target to exist, so what a dispatch is responsible for — the link, in the
-// right place, pointing at the right path — is fully observable without one.
+// Target is embeddedSkillsImageDir, a path inside the runner image; on a
+// machine running `go test` it resolves to the populated stand-in
+// testutil/homeenv installs for the whole test binary, because the prelude
+// refuses to link a target that is not there.
 func TestDispatch_EmbeddedSkills_ReachTheWorkspaceHomeAsSymlinks(t *testing.T) {
 	embedded := skills.EmbeddedSkillNames()
 	if len(embedded) == 0 {
@@ -121,7 +120,7 @@ func TestDispatch_EmbeddedSkills_ReachTheWorkspaceHomeAsSymlinks(t *testing.T) {
 				t.Errorf("readlink %s: %v", rel, err)
 				continue
 			}
-			if want := filepath.Join(embeddedSkillsImageDir, name); target != want {
+			if want := filepath.Join(embeddedSkillsImageDir(), name); target != want {
 				t.Errorf("%s -> %q, want the image-baked %q", rel, target, want)
 			}
 		}

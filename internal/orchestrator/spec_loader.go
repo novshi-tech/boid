@@ -764,4 +764,3 @@ func validateRejectRules(hostCommands HostCommands) error {
 	}
 	return nil
 }
-

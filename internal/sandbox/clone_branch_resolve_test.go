@@ -132,7 +132,7 @@ func TestResolveCloneBranchRef_MissingBaseBranchFallsBackToOriginHEAD(t *testing
 func TestResolveCloneBranchRef_ForkPointDoesNotResolveErrors(t *testing.T) {
 	f := &fakeGitRun{fail: map[string]error{
 		"rev-parse --verify --quiet origin/release/1.0": errors.New("not found"),
-		"rev-parse --verify --quiet does-not-exist":      errors.New("not found"),
+		"rev-parse --verify --quiet does-not-exist":     errors.New("not found"),
 	}}
 	_, err := ResolveCloneBranchRef(f.run, "release/1.0", "release/1.0", "does-not-exist")
 	if err == nil {

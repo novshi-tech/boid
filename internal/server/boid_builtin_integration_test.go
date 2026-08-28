@@ -143,9 +143,10 @@ func TestBoidBuiltinIntegration_RegisterAndCreateAcrossWorkspace(t *testing.T) {
 // TestBoidBuiltinIntegration_NameBasedPeerProjectCreate は peer project の
 // ID が UUID 形式でユーザが名前で指定した場合のフルパスを検証する。
 // 再現シナリオ: boid task create project_id: boid-kits
-//   → シム: BoidRequest{ProjectID:"boid-kits", CreatePatch:{project_id:"boid-kits",...}}
-//   → broker: resolves "boid-kits" → UUID, passes req.ProjectID=UUID to executor
-//   → executor (修正後): req.ProjectID != "" なので CreatePatch の名前を上書きし UUID を使う
+//
+//	→ シム: BoidRequest{ProjectID:"boid-kits", CreatePatch:{project_id:"boid-kits",...}}
+//	→ broker: resolves "boid-kits" → UUID, passes req.ProjectID=UUID to executor
+//	→ executor (修正後): req.ProjectID != "" なので CreatePatch の名前を上書きし UUID を使う
 func TestBoidBuiltinIntegration_NameBasedPeerProjectCreate(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 

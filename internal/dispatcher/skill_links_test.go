@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/integrationpack"
@@ -35,7 +36,7 @@ func TestSkillLinks_IncludesEmbeddedSkillsPointingAtTheImageDir(t *testing.T) {
 	}
 
 	byName := make(map[string]string)
-	for _, l := range skillLinks(nil) {
+	for _, l := range skillLinks("", nil) {
 		byName[l.Name] = l.Target
 	}
 	for _, name := range embedded {
@@ -44,13 +45,13 @@ func TestSkillLinks_IncludesEmbeddedSkillsPointingAtTheImageDir(t *testing.T) {
 			t.Errorf("skillLinks() has no entry for embedded skill %q", name)
 			continue
 		}
-		want := filepath.Join(embeddedSkillsImageDir, name)
+		want := filepath.Join(embeddedSkillsImageDir(), name)
 		if target != want {
 			t.Errorf("embedded skill %q Target = %q, want %q", name, target, want)
 		}
 	}
 	if len(byName) != len(embedded) {
-		t.Errorf("skillLinks(nil) returned %d links, want exactly the %d embedded skills", len(byName), len(embedded))
+		t.Errorf("skillLinks returned %d links, want exactly the %d embedded skills", len(byName), len(embedded))
 	}
 }
 
@@ -66,14 +67,14 @@ func TestSkillLinks_EmbeddedWinsOverCollidingPackSkill(t *testing.T) {
 	}
 	collidingName := embedded[0]
 
-	links := skillLinks([]*integrationpack.Pack{packWithSkill(collidingName, "skills/x")})
+	links := skillLinks("", []*integrationpack.Pack{packWithSkill(collidingName, "skills/x")})
 	var seen int
 	for _, l := range links {
 		if l.Name != collidingName {
 			continue
 		}
 		seen++
-		if want := filepath.Join(embeddedSkillsImageDir, collidingName); l.Target != want {
+		if want := filepath.Join(embeddedSkillsImageDir(), collidingName); l.Target != want {
 			t.Errorf("colliding name %q resolved to %q, want the embedded skill at %q", collidingName, l.Target, want)
 		}
 	}
@@ -215,5 +216,205 @@ func TestHomeMounts_DeclaresNoPerSkillBinds(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestSkillDiscoveryRoots_AreTheHarnessDirectoriesByName writes the two roots
+// down as literals, because every other assertion about them derives its
+// expectation from the same variable and so cannot notice a change to it.
+//
+// The values are not arbitrary and cannot be normalized away: each one is the
+// directory a specific harness scans, established by reading Claude Code's
+// binary (no ".agents" string in it at all, v2.1.250) and codex's and
+// opencode's published docs. `.agents/skills` in particular is what makes
+// codex discover skills at all — nothing else in this package would fail if it
+// silently became `.bogus/skills`.
+func TestSkillDiscoveryRoots_AreTheHarnessDirectoriesByName(t *testing.T) {
+	want := []string{
+		filepath.Join(".claude", "skills"), // Claude Code, opencode
+		filepath.Join(".agents", "skills"), // codex, opencode (cross-vendor)
+	}
+	if len(skillDiscoveryRoots) != len(want) {
+		t.Fatalf("skillDiscoveryRoots = %v, want %v", skillDiscoveryRoots, want)
+	}
+	for i := range want {
+		if skillDiscoveryRoots[i] != want[i] {
+			t.Errorf("skillDiscoveryRoots[%d] = %q, want %q — this is the directory a harness scans, not an internal name",
+				i, skillDiscoveryRoots[i], want[i])
+		}
+	}
+}
+
+// TestEmbeddedSkillsImageDir_IsWhereTheDockerfileCopiesThem pins the one
+// literal Go cannot check for itself: the constant naming a path inside the
+// runner image has to be the path the Dockerfile actually unpacks the skills
+// to.
+//
+// Without this, a drift on either side leaves every unit test green — both
+// sides of every assertion in this file derive from the constant, so they move
+// together — while production gets a home full of dangling symlinks. The
+// prelude's `[ -d ]` check turns that into a loud failure rather than a silent
+// one, but a loud failure on every dispatch of every workspace is still an
+// outage; catching it here costs a string compare.
+//
+// Same trick, for the same class of failure, as
+// TestBoidRunnerProtocolLabel_IsBakedIntoTheImage. Like that one it cannot pin
+// that a BUILT image carries the directory — only that the two sources of the
+// path agree.
+func TestEmbeddedSkillsImageDir_IsWhereTheDockerfileCopiesThem(t *testing.T) {
+	path := filepath.Join("..", "..", "build", "container", "Dockerfile")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	want := "COPY internal/skills/data " + defaultEmbeddedSkillsImageDir
+	if !strings.Contains(string(data), want) {
+		t.Errorf("build/container/Dockerfile does not contain %q\n"+
+			"Every embedded skill is symlinked into every workspace home at that exact path; if the image unpacks them somewhere else, the init container refuses to link them and every dispatch of every workspace fails.", want)
+	}
+}
+
+// TestBuildWorkspaceInitRequest_MissingSkillTargetFailsLoud is the guard for
+// the failure the image-baked route made possible and the bind-mount route
+// could not have: a runner image whose /opt/boid/skills is absent or stale.
+//
+// `ln -s` succeeds against a target that does not exist, so without the
+// prelude's `[ -d ]` check the init exits 0, resolveWorkspaceHome writes a
+// completion marker over a home full of dangling links, and nothing re-runs —
+// the script hash, the generation, the home identity, the skeleton and the link
+// set all still match, so the home stays broken even after the image is fixed.
+// That is why this is a hard failure rather than a skipped link.
+func TestBuildWorkspaceInitRequest_MissingSkillTargetFailsLoud(t *testing.T) {
+	homeDir := t.TempDir()
+
+	req, err := buildWorkspaceInitRequest(workspaceInitParams{
+		Slug:         "myws",
+		HomeSource:   "boid-ws-home-testinst-myws",
+		HomeTarget:   homeDir,
+		SkeletonDirs: workspaceHomeSkeletonDirs(),
+		SkillLinks: []SkillLink{{
+			Name:   "boid-task",
+			Target: filepath.Join(t.TempDir(), "not-unpacked-in-this-image"),
+		}},
+		HomeID: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("buildWorkspaceInitRequest: %v", err)
+	}
+
+	code, out := runWorkspaceInitWrapper(t, req)
+	if code != workspaceInitPreludeExitCode {
+		t.Fatalf("wrapper exited %d, want %d — a missing skill target must fail the init, not leave a dangling symlink behind a completion marker\n%s",
+			code, workspaceInitPreludeExitCode, out)
+	}
+	if stage := workspaceInitStageOf(out, code); stage != workspaceInitStagePrelude {
+		t.Errorf("stage = %q, want %q", stage, workspaceInitStagePrelude)
+	}
+	for _, root := range skillDiscoveryRoots {
+		if _, lerr := os.Lstat(filepath.Join(homeDir, root, "boid-task")); lerr == nil {
+			t.Errorf("%s was created even though its target is missing", filepath.Join(root, "boid-task"))
+		}
+	}
+}
+
+// TestBuildWorkspaceInitRequest_SymlinkedSkeletonPathIsRefused pins the
+// containment check on the paths the prelude is about to traverse.
+//
+// The workspace home is mounted read-write into every job and persists across
+// them, so a job can replace `.claude` with a symlink pointing outside the
+// home; `mkdir -p` follows it and the per-skill `rm -rf` then deletes
+// <elsewhere>/skills/<name> recursively. The escape is bounded (the init
+// container mounts only the home) but its REACH grew with image-baked skills:
+// a workspace with no Integration Packs used to emit zero `rm -rf` and now
+// emits one per embedded skill per root.
+func TestBuildWorkspaceInitRequest_SymlinkedSkeletonPathIsRefused(t *testing.T) {
+	homeDir := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "skills", "boid-task")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(victim, "keep-me"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(homeDir, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+
+	imageDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(imageDir, "boid-task"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	req, err := buildWorkspaceInitRequest(workspaceInitParams{
+		Slug:         "myws",
+		HomeSource:   "boid-ws-home-testinst-myws",
+		HomeTarget:   homeDir,
+		SkeletonDirs: workspaceHomeSkeletonDirs(),
+		SkillLinks:   []SkillLink{{Name: "boid-task", Target: filepath.Join(imageDir, "boid-task")}},
+		HomeID:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("buildWorkspaceInitRequest: %v", err)
+	}
+
+	code, out := runWorkspaceInitWrapper(t, req)
+	if code != workspaceInitPreludeExitCode {
+		t.Fatalf("wrapper exited %d, want %d — a symlinked skeleton path must be refused, not traversed\n%s",
+			code, workspaceInitPreludeExitCode, out)
+	}
+	if _, serr := os.Stat(filepath.Join(victim, "keep-me")); serr != nil {
+		t.Errorf("the prelude deleted content outside the workspace home through the symlink: %v", serr)
+	}
+}
+
+// TestBuildWorkspaceInitRequest_SymlinkStepFailureIsLoud pins that the stage
+// checks around the symlink step are actually load-bearing.
+//
+// The wrapper has no `set -e`, so without them a failing `rm -rf` or `ln -sfn`
+// is skipped over and the init container exits 0 — the marker gets written and
+// the job starts with an undiscoverable skill and nothing in any log. The
+// failure is reachable rather than theoretical: an engine-auto-created uid-0
+// discovery root (the 論点 b-2 condition this codebase measures) makes both
+// commands fail with EACCES, and that is most likely during the very cutover
+// that converts old bind-target directories.
+func TestBuildWorkspaceInitRequest_SymlinkStepFailureIsLoud(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode bits do not deny access")
+	}
+	homeDir := t.TempDir()
+	root := skillDiscoveryRoots[0]
+	if err := os.MkdirAll(filepath.Join(homeDir, root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Read+execute but not write: mkdir -p succeeds (the directory is already
+	// there) and the ln -sfn into it does not.
+	if err := os.Chmod(filepath.Join(homeDir, root), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(homeDir, root), 0o755) })
+
+	imageDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(imageDir, "boid-task"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	req, err := buildWorkspaceInitRequest(workspaceInitParams{
+		Slug:         "myws",
+		HomeSource:   "boid-ws-home-testinst-myws",
+		HomeTarget:   homeDir,
+		SkeletonDirs: workspaceHomeSkeletonDirs(),
+		SkillLinks:   []SkillLink{{Name: "boid-task", Target: filepath.Join(imageDir, "boid-task")}},
+		HomeID:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	})
+	if err != nil {
+		t.Fatalf("buildWorkspaceInitRequest: %v", err)
+	}
+
+	code, out := runWorkspaceInitWrapper(t, req)
+	if code != workspaceInitPreludeExitCode {
+		t.Fatalf("wrapper exited %d, want %d — a symlink step that cannot write must fail the init rather than report success\n%s",
+			code, workspaceInitPreludeExitCode, out)
+	}
+	if stage := workspaceInitStageOf(out, code); stage != workspaceInitStagePrelude {
+		t.Errorf("stage = %q, want %q", stage, workspaceInitStagePrelude)
 	}
 }

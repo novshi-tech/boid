@@ -59,11 +59,11 @@ func TestTraitExists_PresenceNotValue(t *testing.T) {
 
 func TestTraitGetString(t *testing.T) {
 	cases := []struct {
-		name      string
-		payload   string
-		trait     string
-		wantStr   string
-		wantOK    bool
+		name    string
+		payload string
+		trait   string
+		wantStr string
+		wantOK  bool
 	}{
 		{"top-level string", `{"msg":"hello"}`, "msg", "hello", true},
 		{"nested string", `{"lifecycle":{"done":{"message":"merged"}}}`, "lifecycle.done.message", "merged", true},

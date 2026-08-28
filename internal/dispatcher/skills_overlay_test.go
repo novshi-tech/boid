@@ -80,7 +80,7 @@ func TestSkillLinks_RejectsUnsafePackSkillNames(t *testing.T) {
 		{name: "a...b", skip: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			links := packLinksOnly(t, skillLinks([]*integrationpack.Pack{packWithSkill(tc.name, "skills/x")}))
+			links := packLinksOnly(t, skillLinks("", []*integrationpack.Pack{packWithSkill(tc.name, "skills/x")}))
 			found := len(links) == 1
 			if tc.skip && found {
 				t.Errorf("skillLinks(name=%q) kept %+v, want the skill rejected (unsafe Name)", tc.name, links)
@@ -105,7 +105,7 @@ func TestSkillLinks_RejectsPackNameCollidingWithEmbeddedSkill(t *testing.T) {
 	collidingName := embedded[0]
 
 	pack := packWithSkill(collidingName, "skills/x")
-	for _, l := range skillLinks([]*integrationpack.Pack{pack}) {
+	for _, l := range skillLinks("", []*integrationpack.Pack{pack}) {
 		if l.Name == collidingName && l.Target == filepath.Join(pack.Dir, "skills", "x") {
 			t.Fatalf("skillLinks let a Pack skill claim embedded skill name %q and point it into the Pack: %+v", collidingName, l)
 		}
@@ -118,7 +118,7 @@ func TestSkillLinks_RejectsPackNameCollidingWithEmbeddedSkill(t *testing.T) {
 // image — never a bind-mount source.
 func TestSkillLinks_PackTargetIsPackDirJoinPath(t *testing.T) {
 	pack := packWithSkill("jira-api", filepath.Join("skills", "jira-api"))
-	links := packLinksOnly(t, skillLinks([]*integrationpack.Pack{pack}))
+	links := packLinksOnly(t, skillLinks("", []*integrationpack.Pack{pack}))
 	if len(links) != 1 {
 		t.Fatalf("skillLinks kept %+v, want exactly 1 Pack link", links)
 	}
@@ -161,9 +161,9 @@ func TestSkillLinkMarkerStrings_DetectsTargetChange(t *testing.T) {
 // re-ran init.sh; the skeleton is a constant now, and this set is the only
 // thing left that notices.
 func TestSkillLinkMarkerStrings_DetectsAnAddedEmbeddedSkill(t *testing.T) {
-	before := skillLinks(nil)
+	before := skillLinks("", nil)
 	after := append(append([]SkillLink(nil), before...),
-		SkillLink{Name: "boid-newthing", Target: filepath.Join(embeddedSkillsImageDir, "boid-newthing")})
+		SkillLink{Name: "boid-newthing", Target: filepath.Join(embeddedSkillsImageDir(), "boid-newthing")})
 	if equalStringSets(skillLinkMarkerStrings(before), skillLinkMarkerStrings(after)) {
 		t.Error("a release that added an embedded skill did not register as a change; the new skill would stay undiscoverable in every already-initialized workspace home")
 	}

@@ -61,4 +61,3 @@ func TestValidWorkspaceSlug(t *testing.T) {
 		})
 	}
 }
-

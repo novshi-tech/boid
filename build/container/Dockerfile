@@ -296,11 +296,26 @@ RUN git init -q /tmp/boid-api-skills \
 # container started from this image already has the content, and the workspace
 # home only needs a symlink (skills_overlay.go).
 #
-# chgrp 0 + chmod g=u for the same arbitrary-uid reason as the block above: the
-# job container runs as whatever uid the operator's daemon does, and has to be
-# able to READ through the symlinks pointing here.
+# chgrp 0 for the same arbitrary-uid reason as the block above: the job
+# container runs as whatever uid the operator's daemon does, and has to be able
+# to read through the symlinks pointing here.
+#
+# `g=rX`, NOT the `g=u` the block above uses. That difference is the point. This
+# content is what /boid-task and /boid-orchestrate ARE, and those skills carry
+# approval contracts an agent is supposed to follow — so the agent must not be
+# able to rewrite them mid-job and have a subagent it launches afterwards read
+# the tampered version. `g=u` would grant exactly that: the copied files are
+# 644/755 root-owned, so g=u makes them group-WRITABLE, and the job runs with
+# supplementary group 0. Before this content moved into the image it reached a
+# job as a `ReadOnly: true` bind mount, so read-only is the property being
+# preserved here, not a new restriction.
+#
+# The blast radius is one container either way — /opt/boid is image content with
+# no volume over it, so a write lands in that container's own overlay and never
+# reaches another job — which is why this is worth one word rather than a
+# mechanism. (X, capital: search permission on directories, no +x on files.)
 COPY internal/skills/data /opt/boid/skills
-RUN chgrp -R 0 /opt/boid/skills && chmod -R g=u /opt/boid/skills
+RUN chgrp -R 0 /opt/boid/skills && chmod -R g=rX /opt/boid/skills
 
 # Arbitrary-uid (docs/plans/release-onboarding.md 決定1): `chmod g=u` on
 # /etc/passwd and /etc/group lets the RUNTIME self-registration snippet

@@ -220,17 +220,22 @@ type workspaceHomeMarker struct {
 //	3 — image-baked skills: the embedded skill set stopped arriving as one
 //	    read-only bind mount per skill and became symlinks into
 //	    embeddedSkillsImageDir, written by this same container's prelude into
-//	    every skillDiscoveryRoots entry. A generation-2 home is not equivalent
-//	    to a generation-3 one in a way no other field catches: its
-//	    .claude/skills/<name> entries are real DIRECTORIES (the old bind
-//	    targets, created by that era's skeleton), and a home whose marker still
-//	    matched would keep them — with nothing mounting over them any more,
-//	    leaving every embedded skill undiscoverable. The re-init's `rm -rf`
-//	    before `ln -sfn` is what converts them, and this bump is what makes it
-//	    run. It also retires the marker's pack_skill_links field in favour of
-//	    skill_links, whose value set is different (it now includes the embedded
-//	    skills), so a generation-2 marker's absent skill_links must not be read
-//	    as "no skills were linked".
+//	    every skillDiscoveryRoots entry. A generation-2 home holds real
+//	    DIRECTORIES at .claude/skills/<name> (the old bind targets, created by
+//	    that era's skeleton) with nothing mounting over them any more, so a home
+//	    whose marker still matched would keep them and every embedded skill
+//	    would be an empty directory. The re-init's `rm -rf` before `ln -sfn` is
+//	    what converts them.
+//
+//	    Unlike generations 1 and 2, this bump is not the only thing that
+//	    rejects the older marker — it is the third of three, and every one of
+//	    them fires. SkeletonDirs disagrees (the old set carried per-skill leaves
+//	    and no .agents entries) and SkillLinks disagrees (the field was named
+//	    pack_skill_links then, so it unmarshals to nil against a set that now
+//	    includes the embedded skills). The bump is kept anyway because it states
+//	    the reason: a marker that predates image-baked skills describes an
+//	    environment this build does not run inits in, and that should be true by
+//	    construction rather than by two value comparisons happening to differ.
 //
 // # Why an existing installation must re-init rather than be grandfathered
 //
@@ -436,7 +441,7 @@ func (r *Runner) resolveWorkspaceHome(ctx context.Context, workspaceID string) (
 	scriptSHA := scriptSHA256Hex(scriptBytes, scriptExists)
 
 	skeleton := workspaceHomeSkeletonDirs()
-	links := skillLinks(r.Packs)
+	links := skillLinks("", r.Packs)
 	markerPath := workspaceHomeMarkerPath(metaDir, slug)
 
 	homeID, err = r.ensureWorkspaceHomeVolume(ctx, executor, slug, volumeName)
