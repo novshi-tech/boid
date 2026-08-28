@@ -22,7 +22,7 @@
 
 ### 非ゴール
 
-- 記録 (`attrs_set` / `progress`) の廃止 — 監査ログとしての役割は残る (§4.6)
+- 記録 (`attrs_set` / `progress`) の廃止 — 監査ログとしての役割は残る (§4.7)
 - khi の判断ロジック (`khi/app/write.py`・`.claude/skills/khi-sweep/`) の変更
 - 外部 connector (slack/mentions ほか 2 本) の変更
 - `boid task create --idempotency-key` と `khi/domain/childid.py` の重複解消 —
@@ -173,18 +173,13 @@ boid 自身の action ──[core が直接]──▶ ┘                       
 のを止めるのは、ノイズの質の問題ではなく**構造的な自己参照の遮断**であり、どのメタ
 プロジェクトでも同じ形になる。むしろこれこそ §3 で複製される代表格である。
 
-さらに actor 軸については、**core の方が正確に判定できる**。現行 khi は action の actor に
-載った task id を `boid` で引き直し、behavior が `sweep` かどうかで判別している
-(`is_signal` の docstring が「自分が起こした task の id を覚えない (S-5)」ためだと説明して
-いる)。core は actor をスタンプした側なので、この引き直しが要らない。
-
 #### 対象軸は ack への一本化で不要になる
 
 現行が対象軸を必要としているのは、**記録を書けない相手を弾くため**である
 (`is_signal` の docstring: `aborted` の task には `attrs_set` も `noted` も打てないので、
 通すと記録が残せず永久に再検知する)。
 
-処理済みの印が ack になれば (§4.3)、**印は signal 行に付くので相手の task status に一切
+処理済みの印が ack になれば (§4.4)、**印は signal 行に付くので相手の task status に一切
 依存しない**。よって対象軸は「弾かないと壊れる制約」ではなくなり、純粋に
 「見る価値があるか」の篩 = workspace の責務へ降格する。
 
@@ -196,10 +191,7 @@ boid 自身の action ──[core が直接]──▶ ┘                       
 | 対象軸 (card 宛かどうか) | **core** — ingest の範囲として (下記) |
 | ノイズ判定 (`self_authored` 等) | workspace — 現行のまま `screen.py` に残る |
 
-**actor 軸の「自分自身」は、その workspace で `signals.sources[]` を宣言している
-project の job / task を指す。** メタプロジェクトとはその宣言を持つ project のことなので、
-内部シグナル用の宣言を別に足す必要はない。複数の project が宣言していても、その全部を
-自己参照として落とせば閉じる。
+**actor 軸の中身 —— 何が「自分自身」で、通すと何が起きるか —— は §4.3 に分けた。**
 
 対象軸を core に置くのは「篩」としてではなく、**ingest の範囲**としてである。外部
 connector が「自分宛のメンションだけ取る」「アサインされた課題だけ取る」と決めているのと
@@ -207,7 +199,78 @@ connector が「自分宛のメンションだけ取る」「アサインされ�
 `api_gateway_request` のような大量の雑音 (LLM task 1 回で 100 行超、`cursor.py` の
 docstring) が構造的に inbox へ入らない。
 
-### 4.3 処理済みの印を ack に一本化する
+### 4.3 自己参照の遮断
+
+**この設計で一番壊れやすいのがここ。** 他の部分は誤ると取りこぼす (次の巡で回復する) が、
+ここを誤ると止まらなくなる。
+
+#### ループの形
+
+メタプロジェクトの sweep task が card に書く (summary / suggestion / 子 spec) → その
+書き込みが action として残る → 統合後はその action が signal になる → pending signal が
+あるので `on: signals` trigger が発火する → sweep task が立つ → card を読んで、また書く。
+
+**外部に何も起きていなくても `every` ごとに LLM が回り続ける。止まる契機が無い。**
+
+これは統合で新しく生まれる危険ではない —— `khi/domain/screen.py` の docstring が既に
+「素通しにすると、khi 自身が起こした sweep task の完了がシグナルになり、10 分後の
+trigger が次の sweep を起こす無限自走になる」と書いている。**統合が変えるのは代償の
+大きさ**である:
+
+| | 現行 (schedule trigger) | 統合後 (`on: signals`) |
+|---|---|---|
+| 遮断が効いていないとき | trigger の exec job は毎巡走るが、対象ゼロなら sweep task を立てずに終わる | **pending signal が残っている限り毎巡発火し、sweep task (LLM) が立つ** |
+| コスト | exec job 1 本 | LLM 1 巡ぶん、永久に |
+
+`on: signals` の発火は `every` が下限なので暴走はしない。**止まらないだけである。**
+
+#### 現行 khi の止め方
+
+`khi/domain/screen.py` の `is_signal` が actor を見て落とす。
+
+| actor | khi の扱い | 根拠 |
+|---|---|---|
+| `human` / `daemon` | 通す | 人と daemon の書き込みは考え直す理由になる |
+| `task:<id>` | その task を引き、behavior が `sweep` なら落とす | 自分が起こした task の id を覚えていない (S-5) ので、毎巡引き直すしかない |
+| `task:` (id 空) | **決め打ちで落とす** | exec job には task が無く `ActorTask("")` になる。それを「workspace の trigger job = 自分」と見なしている |
+
+#### core の止め方
+
+**core は書き込み元を actor 文字列から推測しなくてよい。** sandbox から来る書き込みは
+`internal/server/boid_executor.go` が `TokenContext` を持って処理しており、
+`TokenContext.ProjectID` (`internal/sandbox/protocol.go:498`) がその書き込みを出した
+project そのものだからである。
+
+| 書き込み元 | ingest するか |
+|---|---|
+| `TokenContext.ProjectID` が `signals.sources[]` を宣言している project | **しない** (自己参照) |
+| `TokenContext.ProjectID` がそれ以外の project | する |
+| `human` / `daemon` (TokenContext を持たない) | する |
+
+判定材料はこの 1 つで足り、メタプロジェクトとは `signals.sources[]` を宣言している
+project のことなので、これ以上の宣言も要らない。複数の project が宣言していても、その
+全部を落とせば閉じる。
+
+これで現行 khi の 2 つが両方消える:
+
+- **引き直しが要らない** —— khi は actor の task id から behavior を毎巡引いている
+- **決め打ちが要らない** —— ここが決定的。`task:` (id 空) は「exec job が書いた」しか
+  意味せず、**どの project の exec job かは actor 文字列から永久に分からない**。khi が
+  決め打ちしているのは、task が無い以上そこから引けるものが何も無いからである。
+  **`TokenContext.ProjectID` は `TaskID` が空の exec job でも埋まっている** ので、
+  core 側にはその行き止まりが無い
+
+#### 判定できないときは落とす (fail-close)
+
+`TokenContext` を持つ書き込みで `ProjectID` が解決できなかったときは **ingest しない**。
+誤りの代償が非対称だから:
+
+- **通す側の誤りはループに倒れる。** 症状 (毎巡 sweep が起きる) から原因へ辿るのが難しく、
+  辿っている間も LLM のコストを払い続ける
+- **落とす側の誤りは次の action で回復する。** その card に次の動きがあれば、そのときの
+  signal で拾える
+
+### 4.4 処理済みの印を ack に一本化する
 
 現行、khi が「もう見た」と判断する根拠は 2 系統ある。
 
@@ -233,7 +296,7 @@ core は `MaxSignalAttempts = 5` (`internal/orchestrator/signal_store.go`)、khi
 ない (`--state dead` で見え、人が ack できる)。**core 側に揃える**のを推す — メタ
 プロジェクトごとに上限を変える必要が実証されていない。
 
-### 4.4 ingest の起こし方 (実装方式)
+### 4.5 ingest の起こし方 (実装方式)
 
 2 案ある。
 
@@ -273,7 +336,7 @@ action は流れない。
 存在する欠けである**。統合で直すのではなく、別件として切り出す (直したつもりで直って
 いない、が一番まずい)。
 
-### 4.5 envelope への写像
+### 4.6 envelope への写像
 
 `signal-envelope-inventory.md` §5 の schema v0 に載せる。
 
@@ -293,7 +356,7 @@ action は流れない。
 identity は「workspace 全体の共有語彙」(§3.3) であり pack-scope に閉じない、という既存の
 契約の範囲内である。判断側は現行どおり task id を受け取る。
 
-### 4.6 記録に残る役割
+### 4.7 記録に残る役割
 
 `attrs_set` / `progress` は**廃止しない**。役割が 2 つに分かれ、片方だけが消える。
 
@@ -336,15 +399,17 @@ encode 側は残る。
 
 ## 6. 実装の勘所
 
-- **2 本の書き込み口を両方塞ぐ** (§4.4)。片方だけは無音の取りこぼしになる
+- **2 本の書き込み口を両方塞ぐ** (§4.5)。片方だけは無音の取りこぼしになる
+- **書き込み元 project を `CreateAction` まで運ぶ経路が要る。** §4.3 の判定材料は
+  `TokenContext.ProjectID` だが、`CreateAction(dbtx, *Action)` はそれを受け取らないし、
+  `Action.Actor` にも載らない (`task:` は project を持たない)。`orchestrator.WithActor` が
+  actor を context で運んでいるのと同じ形にするか、シグネチャに足すかは実装時に決める。
+  **25 ある呼び出し元のうち project を知らないものが残れば、そこは判定不能 = fail-close の
+  対象**になる —— どれが該当するかを実装の最初に洗い出すこと
 - **ingest 失敗で action の書き込みを巻き戻さない。** 同一 tx に載せるが、signal の
   INSERT 失敗が card の状態更新を巻き戻すのは因果が逆。ingest 側のエラーはログに残して
   action は成立させる (取りこぼした signal は次に同じ card が動いたときの signal で
   カバーされる)
-- **自己参照の遮断は fail-close で書く。** 「この action の actor がメタプロジェクト自身か
-  判定できなかった」ときは ingest **しない**。判定できないまま通すと無限自走に倒れ、
-  症状 (10 分ごとに sweep が起き続ける) から原因へ辿るのが難しい。逆向きの誤り
-  (拾うべきものを落とす) は次の action で回復する
 - **`signals` を宣言した project が居ない workspace では一切 ingest しない。** ingest 先が
   存在しないので、判定するまでもなく何も起きない。default workspace が `nvt-tasks` に
   `signals.sources[]` を入れるまで、そちらの挙動は 1 ビットも変わらない。
@@ -428,9 +493,9 @@ khi は本番稼働中なので、切り替えは並走で検証してから行�
 | # | 問い |
 |---|---|
 | Q5 | `signals` を宣言した project が居ない workspace で、既存の action 書き込み経路の挙動が 1 ビットも変わらないことをテストが示しているか |
-| Q6 | もう 1 本の書き込み口 (`dispatcher/store.go` の daemon 再起動時 abort) が範囲外である根拠が示されているか。加えて「子の abort で親 card に `child_closed` が立つか」を確認し、立たないなら別件として切り出したか (§4.4) |
-| Q7 | 自己参照の遮断が fail-close か — actor を判定できないケースで ingest しないことをテストが示しているか |
-| Q8 | メタプロジェクト自身の sweep task / trigger job が書いた action が inbox に入らないことを、実際の actor 文字列 (`task:<id>` と `task:`) でテストしているか |
+| Q6 | もう 1 本の書き込み口 (`dispatcher/store.go` の daemon 再起動時 abort) が範囲外である根拠が示されているか。加えて「子の abort で親 card に `child_closed` が立つか」を確認し、立たないなら別件として切り出したか (§4.5) |
+| Q7 | 自己参照の遮断が fail-close か — 書き込み元の project を解決できないケースで ingest しないことをテストが示しているか (§4.3) |
+| Q8 | メタプロジェクト自身の sweep task / trigger job が書いた action が inbox に入らないことをテストが示しているか。加えて**判定が actor 文字列ではなく書き込み元の project で行われている**か — `task:` (id 空) からはどの project の exec job か分からないので、そこを見て落とす実装は khi の決め打ちを core へ持ち込んだだけになる (§4.3) |
 | Q9 | `api_gateway_request` のような card 宛でない action が inbox に入らないことをテストが示しているか |
 | Q10 | 同じ action が 2 度 ingest されても no-op であることをテストが示しているか (PRIMARY KEY dedup) |
 | Q11 | signal の INSERT が失敗しても action の書き込みが成立することをテストが示しているか (§6) |
