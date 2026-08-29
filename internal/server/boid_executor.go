@@ -562,11 +562,12 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// job (the launcher) when a round outruns its trigger's `timeout` —
 		// see api.TaskWaitRegistry. A missing job id or registry just means the
 		// wait is unattributable, never that it misbehaves.
-		// Deferred, not called after the wait: ExecuteBoidBuiltin returns
-		// immediately below either way, so the timing is identical, but a
-		// panic anywhere in the wait would otherwise strand the entry and make
-		// a later, unrelated round for the same job attributable to a task
-		// that is long gone.
+		// Register runs NOW (defer evaluates the call and its arguments at the
+		// defer statement); only the returned release is deferred. Deferred
+		// rather than called after the wait purely so the release cannot be
+		// skipped by a future early return added between here and the end of
+		// this case — ExecuteBoidBuiltin returns immediately below today, so
+		// the timing is otherwise identical.
 		defer e.tasks.TaskWaits.Register(ctx.JobID, existing.ID)()
 		outcome, err := e.tasks.WaitTaskTerminal(goCtx, existing.ID)
 		if err != nil {

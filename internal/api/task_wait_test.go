@@ -19,6 +19,12 @@ type scriptedTaskStore struct {
 	statuses []orchestrator.TaskStatus
 	calls    int
 	getErr   error
+	// getErrsFirst makes GetTask fail its first N calls with getErr, then
+	// succeed — a transient read failure rather than a permanent one.
+	getErrsFirst int
+	// failsForever makes GetTask return getErr on every call (getErrsFirst
+	// unset), for the permanent-failure cases.
+	failsForever bool
 	// resolvedID, when set, is what GetTask reports as the task's id — the
 	// prefix-resolution orchestrator.GetTask performs for ids >= 8 chars.
 	resolvedID string
@@ -38,7 +44,14 @@ func (s *scriptedTaskStore) statusAt(i int) orchestrator.TaskStatus {
 
 func (s *scriptedTaskStore) GetTask(id string) (*orchestrator.Task, error) {
 	if s.getErr != nil {
-		return nil, s.getErr
+		if s.getErrsFirst > 0 {
+			// Transient: fail the first N calls, then fall through.
+			s.getErrsFirst--
+			return nil, s.getErr
+		}
+		if s.getErrsFirst == 0 && s.failsForever {
+			return nil, s.getErr
+		}
 	}
 	i := s.calls
 	s.calls++
@@ -252,17 +265,46 @@ func TestWaitTaskTerminal_ContextCancelled(t *testing.T) {
 }
 
 // A task id that does not resolve is an error, not an endless wait — otherwise a
-// typo'd id would hold the trigger's exec job open until its timeout.
+// typo'd id would hold the trigger's exec job open until its timeout. The
+// SENTINEL is what says so: a bare error is a failed read, not a verdict.
 func TestWaitTaskTerminal_MissingTaskIsAnError(t *testing.T) {
 	store := &scriptedTaskStore{
 		stubTaskStore: &stubTaskStore{},
 		statuses:      []orchestrator.TaskStatus{orchestrator.TaskStatusExecuting},
-		getErr:        errors.New("task not found"),
+		getErr:        orchestrator.ErrTaskNotFound,
+		failsForever:  true,
 	}
 	svc := waitService(store, &listingActionStore{})
 
-	if _, err := svc.WaitTaskTerminal(context.Background(), "t1"); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := svc.WaitTaskTerminal(ctx, "t1"); err == nil {
 		t.Fatal("expected an error for an unresolvable task id")
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("the wait spun instead of ending on ErrTaskNotFound")
+	}
+}
+
+// The INITIAL resolve is retried on a transient failure, not just the poll.
+// It is the expensive read (five taskChildCountCols subqueries), so it is the
+// likelier of the two to hit a busy timeout — ending the wait there would fail
+// the round, release the trigger's single-flight, and let the next tick start a
+// second concurrent round against work that is still running.
+func TestWaitTaskTerminal_TransientErrorOnTheInitialResolveIsRetried(t *testing.T) {
+	store := &scriptedTaskStore{
+		stubTaskStore: &stubTaskStore{},
+		statuses:      []orchestrator.TaskStatus{orchestrator.TaskStatusDone},
+		getErrsFirst:  1,
+		getErr:        errors.New("database is locked"),
+	}
+	svc := waitService(store, &listingActionStore{})
+
+	outcome, err := svc.WaitTaskTerminal(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("WaitTaskTerminal: %v", err)
+	}
+	if outcome.Status != orchestrator.TaskStatusDone {
+		t.Errorf("status = %q, want done — a locked-database resolve must be retried", outcome.Status)
 	}
 }
 

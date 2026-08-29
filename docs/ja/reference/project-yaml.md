@@ -289,6 +289,8 @@ signals:
 | `connector` | string (`<pack>/<connector>`) | はい | 実行する Integration Pack の connector。`integrations.dir` に導入済みの Pack (`internal/integrationpack`) 名と、その `integration.yaml` の `connectors[].name` を `/` で連結した形式。バージョン指定は無い — 同名 Pack が 2 バージョン以上導入されている場合は起動時ではなく実行時 (`boid exec` 経由の StartExec) にエラーになる |
 | `service` | string | はい | この connector が API gateway 経由で到達できる service instance の名前 1 本 (`config.yaml` の `services.<name>`)。connector job の gateway token はこの 1 本にのみ絞られる — workspace の enabled services 全体ではない |
 | `every` | string (`time.ParseDuration`) | はい | 導出 trigger の `every` と同じ (`triggers[]` の `every` と同一のバリデーション・下限を共有) |
+
+> **`timeout` は書けません。** 導出 trigger には `timeout` が設定されないので、connector job は無制限に走ります。connector は外部 API を読んで inbox に書くだけの短命な job であり、`boid task wait` で task の終了を待つ `triggers[]` とは実行の形が違うためです。
 | `config` | object | いいえ | connector 固有の設定。Pack の `configSchema` で検証され、JSON にエンコードされて `BOID_SIGNAL_CONFIG` env に渡される |
 
 **名前衝突**: `signal:<pack>/<connector>` が既存の `triggers[].name` と衝突する場合、または `signals.sources[]` 内で同じ `connector` が複数回宣言されている場合は project.yaml のロード時 (`boid project add`/`fetch`) にエラーになります。

@@ -30,6 +30,11 @@ import (
 // it at any interval taxes every other daemon operation.
 const defaultWaitPollInterval = time.Second
 
+// waitFailureLogEvery bounds the log volume from a wait whose reads keep
+// failing for a reason that is not "no such task" — see the default branch of
+// WaitTaskTerminal's loop.
+const waitFailureLogEvery = 60
+
 // TaskStatusReader is the narrow re-read WaitTaskTerminal polls with, kept
 // separate from TaskStore so adding it did not have to touch every
 // implementation of that much larger interface.
@@ -95,19 +100,6 @@ func (s *TaskAppService) WaitTaskTerminal(ctx context.Context, taskID string) (T
 		return TaskOutcome{}, &StatusError{Code: http.StatusInternalServerError, Message: "task store is not configured"}
 	}
 
-	// Resolve once through the full lookup: it is the only read here that
-	// accepts an id prefix, and it is what turns an unresolvable id into an
-	// error instead of an endless wait. Every subsequent read is the narrow one
-	// against the id it returned.
-	task, err := s.Tasks.GetTask(taskID)
-	if err != nil {
-		return TaskOutcome{}, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
-	}
-	resolvedID := task.ID
-	if orchestrator.IsTerminalStatus(task.Status) {
-		return s.outcomeOf(resolvedID, task.Status), nil
-	}
-
 	interval := s.WaitPollInterval
 	if interval <= 0 {
 		interval = defaultWaitPollInterval
@@ -115,33 +107,64 @@ func (s *TaskAppService) WaitTaskTerminal(ctx context.Context, taskID string) (T
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// resolvedID is empty until the first successful full lookup. That lookup
+	// is the only read here that accepts an id prefix, and it is what turns an
+	// unresolvable id into an error instead of an endless wait; every read
+	// after it is the narrow one against the id it returned.
+	//
+	// It is retried on the same terms as the poll below rather than ending the
+	// wait, because it is the EXPENSIVE read (five taskChildCountCols
+	// subqueries) and therefore the likelier of the two to hit a busy timeout —
+	// exactly backwards from where a one-shot failure could be afforded.
+	var resolvedID string
+	failures := 0
 	for {
-		select {
-		case <-ctx.Done():
-			return TaskOutcome{}, ctx.Err()
-		case <-ticker.C:
+		var status orchestrator.TaskStatus
+		var err error
+		if resolvedID == "" {
+			var task *orchestrator.Task
+			task, err = s.Tasks.GetTask(taskID)
+			if err == nil {
+				resolvedID, status = task.ID, task.Status
+			}
+		} else {
+			status, err = s.readStatus(resolvedID)
 		}
 
-		status, err := s.readStatus(resolvedID)
-		if err != nil {
-			if errors.Is(err, orchestrator.ErrTaskNotFound) {
-				// The row is gone (deleted / GC'd) — it will not come back
-				// under this id, so waiting on it is pointless.
-				return TaskOutcome{}, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+		switch {
+		case err == nil:
+			failures = 0
+			if orchestrator.IsTerminalStatus(status) {
+				return s.outcomeOf(resolvedID, status), nil
 			}
+		case errors.Is(err, orchestrator.ErrTaskNotFound):
+			// No such task, or the row is gone (deleted / GC'd). It will not
+			// come back under this id, so waiting on it is pointless.
+			return TaskOutcome{}, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+		default:
 			// Any other read failure is transient by assumption — the pool is a
 			// single connection, so a busy-timeout under a dispatch or GC burst
 			// is an ordinary thing to see. Reporting it would end the wait,
 			// fail the caller's job, release the trigger's single-flight and
 			// let the NEXT tick start a second concurrent round of work that is
 			// still running — the exact property this op exists to establish,
-			// undone by one unlucky read. Log it and read again.
-			slog.Warn("task wait: could not read task status, retrying",
-				"task_id", resolvedID, "error", err)
-			continue
+			// undone by one unlucky read.
+			//
+			// Logged on the first failure and then every waitFailureLogEvery
+			// reads: a PERMANENT non-ErrTaskNotFound error (a read-only or
+			// closed database during a partial teardown) would otherwise emit
+			// one warning per second per waiter for as long as the daemon runs.
+			failures++
+			if failures == 1 || failures%waitFailureLogEvery == 0 {
+				slog.Warn("task wait: could not read the task, retrying",
+					"task_id", taskID, "resolved_id", resolvedID, "consecutive_failures", failures, "error", err)
+			}
 		}
-		if orchestrator.IsTerminalStatus(status) {
-			return s.outcomeOf(resolvedID, status), nil
+
+		select {
+		case <-ctx.Done():
+			return TaskOutcome{}, ctx.Err()
+		case <-ticker.C:
 		}
 	}
 }

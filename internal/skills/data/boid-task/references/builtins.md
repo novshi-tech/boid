@@ -208,7 +208,9 @@ boid task wait "$id"
   the task has not finished — so the call is rejected rather than parked.
 - Takes no flags. How long a round may run is the trigger's business, not the
   agent's: a per-call timeout would be a limit the daemon that launched you knows
-  nothing about.
+  nothing about. The trigger declares it instead, with `timeout:` in
+  project.yaml — an overrunning round is ended by the daemon, which aborts the
+  task this call is waiting on (`lifecycle.abort.code` = `trigger_timeout`).
 - The wait ends only on a terminal status or when the daemon cancels it (shutdown
   or sandbox disconnect). **It is not a timeout** — a task parked in a
   non-terminal resting state (`awaiting` on a question nobody answers, `pending`

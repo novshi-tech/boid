@@ -40,18 +40,19 @@ func TestValidateTriggers_TimeoutMustBePositive(t *testing.T) {
 	}
 }
 
-// A timeout shorter than `every` describes a round that is killed before the
-// next one may even start. That is always a mistake — the two are independent
-// numbers (how often to check vs. how long a round may take), and the daemon
-// cannot tell an author who mixed them up from one who meant it, so it says so
-// at load time rather than silently killing every round.
-func TestValidateTriggers_TimeoutBelowEveryIsRejected(t *testing.T) {
-	err := ValidateTriggers([]Trigger{{Name: "sweep", Every: "10m", Timeout: "2m", Run: "echo hi"}})
-	if err == nil {
-		t.Fatal("a timeout shorter than every must be rejected")
-	}
-	if !strings.Contains(err.Error(), "every") {
-		t.Errorf("err = %v, want it to explain the relationship to every", err)
+// A timeout SHORTER than `every` is accepted. `every: 1h, timeout: 10m` ("look
+// hourly; kill any round that runs past ten minutes") is a coherent thing to
+// ask for, and a round finishing before the next is due is the normal case.
+//
+// An earlier draft rejected it, on the stated grounds that confusing the two
+// fields was the likeliest cause. The real reason was mechanical: the sweep
+// checked the bound AFTER its `every`-due gate, so enforcement fired at
+// max(every, timeout) and the constraint hid that. The check now runs before
+// the gate, so there is nothing left to paper over — and this test exists to
+// stop the constraint being reintroduced on the plausible-sounding rationale.
+func TestValidateTriggers_TimeoutBelowEveryIsAccepted(t *testing.T) {
+	if err := ValidateTriggers([]Trigger{{Name: "sweep", Every: "1h", Timeout: "10m", Run: "echo hi"}}); err != nil {
+		t.Fatalf("timeout shorter than every must be accepted: %v", err)
 	}
 }
 

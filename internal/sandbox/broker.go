@@ -260,9 +260,14 @@ func (b *Broker) handleConn(conn net.Conn) {
 // something a blocking op gets by being blocking — it is opt-in per op from
 // here, and an op left off this list still blocks, just with nothing to unblock
 // it when the sandbox goes away: the daemon-side wait keeps running until the
-// daemon itself shuts down. That is a leak with no symptom at the call site,
-// which is why TestBroker_BlockingOps_GetConnectionScopedCancel pins the list
-// against the ops that actually block rather than leaving it to review.
+// daemon itself shuts down. That is a leak with no symptom at the call site.
+//
+// Two things guard it, neither of which can notice a NEW blocking op on its own
+// (see wiring-seams.md #31 — adding one means adding it here AND writing its
+// twin test): TestBroker_BlockingOps_ListIsPinned asserts this exact set, so a
+// silent removal fails, and each listed op has a conn-close test that drives
+// the live handleConn path — TestBroker_TaskAsk_ConnCloseCancelsContext and
+// TestBroker_TaskWait_ConnCloseCancelsContext.
 func isBlockingBoidRequest(req *ExecRequest) bool {
 	if req.Boid == nil {
 		return false

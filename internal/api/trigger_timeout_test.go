@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -82,11 +85,18 @@ func TestSweepTriggers_PastTimeout_EndsTheRunAsAFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if len(result.Completed) != 1 || result.Completed[0].ExitCode != TriggerTimeoutExitCode {
-		t.Fatalf("Completed = %+v, want exactly 1 with ExitCode=%d", result.Completed, TriggerTimeoutExitCode)
-	}
 	if len(result.Skipped) != 0 {
 		t.Fatalf("Skipped = %+v, want empty — an ended round is not a skip", result.Skipped)
+	}
+	// The completion is recorded off the sweep goroutine (the abort and the job
+	// stop can both block on the container engine, and runOnce is a single
+	// goroutine covering every project), so it arrives on the NEXT sweep.
+	if len(result.Completed) != 0 {
+		t.Fatalf("Completed = %+v, want empty in the tick that started the ending", result.Completed)
+	}
+	drained := waitForTimeoutCompletion(t, svc)
+	if len(drained) != 1 || drained[0].ExitCode != TriggerTimeoutExitCode {
+		t.Fatalf("stashed completion = %+v, want exactly 1 with ExitCode=%d", drained, TriggerTimeoutExitCode)
 	}
 	// NOT re-fired in the same tick. Unlike the self-heal path (which closes a
 	// row whose job was never really there and fires immediately), this tick
@@ -102,7 +112,9 @@ func TestSweepTriggers_PastTimeout_EndsTheRunAsAFailure(t *testing.T) {
 	}
 
 	// ...and the next tick does start a fresh round, so ending the overrun
-	// recovers rather than wedging the trigger.
+	// recovers rather than wedging the trigger. (waitForTimeoutCompletion
+	// above already drained the stashed completion, so it does not reappear
+	// here — a real tick would report it.)
 	next, err := svc.SweepTriggers(context.Background(), t0.Add(32*time.Minute))
 	if err != nil {
 		t.Fatalf("next sweep: %v", err)
@@ -143,6 +155,7 @@ func TestSweepTriggers_PastTimeout_AbortsTheTaskTheRoundWasWaitingOn(t *testing.
 	if _, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute)); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
+	waitForTimeoutCompletion(t, svc)
 
 	if tx.createdAction == nil {
 		t.Fatal("no action was recorded — the task the round was parked on was not ended")
@@ -180,15 +193,15 @@ func TestSweepTriggers_PastTimeout_NoRegisteredWaitStillEndsTheRun(t *testing.T)
 		t.Fatalf("seed run: %v", err)
 	}
 
-	result, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute))
-	if err != nil {
+	if _, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute)); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
+	drained := waitForTimeoutCompletion(t, svc)
 	if tx.createdAction != nil {
 		t.Errorf("action = %+v, want none — nothing was registered to end", tx.createdAction)
 	}
-	if len(result.Completed) != 1 || result.Completed[0].ExitCode != TriggerTimeoutExitCode {
-		t.Fatalf("Completed = %+v, want the run closed anyway", result.Completed)
+	if len(drained) != 1 || drained[0].ExitCode != TriggerTimeoutExitCode {
+		t.Fatalf("stashed completion = %+v, want the run closed anyway", drained)
 	}
 }
 
@@ -208,13 +221,33 @@ func TestTaskWaitRegistry(t *testing.T) {
 		t.Error("the entry must be gone after release")
 	}
 
-	// Releasing twice must not disturb a later registration for the same job.
-	release2 := reg.Register("job-1", "task-b")
 	release()
+}
+
+// A stale release must not evict a LATER registration for the same job. This is
+// reachable: a `run:` string can background two waits
+// (`boid task wait A & boid task wait B & wait`), each shim invocation opens its
+// own broker connection handled on its own goroutine, and they share a job id.
+// If the first one's release could drop the second one's entry, only one of the
+// two tasks would be abortable on timeout.
+//
+// The previous version of this test called the SAME release twice, which the
+// sync.Once guard short-circuits before it ever reaches the ownership check —
+// deleting that check left the suite green.
+func TestTaskWaitRegistry_StaleReleaseKeepsTheNewerRegistration(t *testing.T) {
+	reg := NewTaskWaitRegistry()
+
+	releaseA := reg.Register("job-1", "task-a")
+	releaseB := reg.Register("job-1", "task-b") // overwrites
+	releaseA()                                  // stale: task-a is no longer the entry
+
 	if got, ok := reg.TaskFor("job-1"); !ok || got != "task-b" {
-		t.Errorf("after a stale release, TaskFor = %q,%v, want task-b,true", got, ok)
+		t.Fatalf("TaskFor = %q,%v, want task-b,true — a stale release evicted the newer wait", got, ok)
 	}
-	release2()
+	releaseB()
+	if _, ok := reg.TaskFor("job-1"); ok {
+		t.Error("the owner's release must still clear the entry")
+	}
 }
 
 // A nil registry and an empty job id are both tolerated — a host-side or test
@@ -230,5 +263,232 @@ func TestTaskWaitRegistry_NilAndEmptyAreNoOps(t *testing.T) {
 	real.Register("", "task-a")()
 	if _, ok := real.TaskFor(""); ok {
 		t.Error("an empty job id must not be registered")
+	}
+}
+
+// The order timeOutTriggerRun's doc calls load-bearing: the TASK is ended before
+// the JOB is stopped. Reversed, stopping the job first races the executor's
+// deferred registry release, and the abort can be lost entirely — precisely the
+// outcome the registry exists to prevent. Asserting only that both happened
+// leaves that swap green.
+func TestSweepTriggers_PastTimeout_AbortsBeforeStoppingTheJob(t *testing.T) {
+	svc, jobs, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
+	})
+	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
+	order := &orderRecordingLifecycle{}
+	tx := &orderRecordingTx{order: order}
+	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
+		ID:        "round-task",
+		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
+		Status:    orchestrator.TaskStatusExecuting,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "sweep"},
+	}}
+	svc.Tx = tx
+	svc.Lifecycle = order
+	svc.TaskWaits = NewTaskWaitRegistry()
+	svc.TaskWaits.Register("job-1", "round-task")
+
+	t0 := time.Now()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	if _, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute)); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	waitForTimeoutCompletion(t, svc)
+
+	got := order.steps()
+	abortAt, stopAt := -1, -1
+	for i, step := range got {
+		if step == "abort" && abortAt < 0 {
+			abortAt = i
+		}
+		if step == "stop:rt-1" && stopAt < 0 {
+			stopAt = i
+		}
+	}
+	if abortAt < 0 {
+		t.Fatalf("steps = %v, want an abort", got)
+	}
+	if stopAt < 0 {
+		t.Fatalf("steps = %v, want the job stopped", got)
+	}
+	if abortAt > stopAt {
+		t.Errorf("steps = %v, want the abort BEFORE the job stop", got)
+	}
+}
+
+// orderRecordingLifecycle / orderRecordingTx share one ordered log so a test can
+// assert the RELATIVE order of the abort write and the job stop, not just that
+// both happened. Both are touched from the goroutine beginTimeOutTriggerRun
+// spawns, so the log is mutex-guarded.
+type orderRecordingLifecycle struct {
+	mu     sync.Mutex
+	steps_ []string
+}
+
+func (l *orderRecordingLifecycle) record(step string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.steps_ = append(l.steps_, step)
+}
+
+func (l *orderRecordingLifecycle) steps() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.steps_...)
+}
+
+func (l *orderRecordingLifecycle) CompleteJob(string, JobCompletion)       {}
+func (l *orderRecordingLifecycle) UnregisterJob(string)                    {}
+func (l *orderRecordingLifecycle) CleanupTaskWindow(string)                {}
+func (l *orderRecordingLifecycle) StopJobRuntime(runtimeID string)         { l.record("stop:" + runtimeID) }
+func (l *orderRecordingLifecycle) SignalJobRuntime(string, syscall.Signal) {}
+
+type orderRecordingTx struct {
+	stubTx
+	order *orderRecordingLifecycle
+}
+
+// WithinTx must hand the callback THIS wrapper, not the embedded stubTx —
+// stubTx.WithinTx passes itself, which would route CreateAction straight past
+// the override below and leave the ordering unobservable.
+func (s *orderRecordingTx) WithinTx(fn func(TxStore) error) error { return fn(s) }
+
+func (s *orderRecordingTx) CreateAction(ctx context.Context, action *orchestrator.Action) error {
+	if action != nil && action.Type == "abort" {
+		s.order.record("abort")
+	}
+	return s.stubTx.CreateAction(ctx, action)
+}
+
+// waitForTimeoutCompletion blocks until the goroutine beginTimeOutTriggerRun
+// spawned has finished, which it signals by parking a completion for the next
+// sweep to drain. Polled rather than slept on: the work is a few in-memory
+// writes, so it lands almost immediately, and a fixed sleep would be both
+// slower and flakier.
+func waitForTimeoutCompletion(t *testing.T, svc *TaskWorkflowService) []TriggerCompletionResult {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if drained := svc.drainTimeoutCompletions(); len(drained) > 0 {
+			return drained
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the timeout goroutine never recorded a completion")
+	return nil
+}
+
+// A TRANSIENT abort failure must leave the run in flight, so single-flight
+// stays held and the next tick tries again. Closing the run here would release
+// the slot for a task that is still running — the second-concurrent-round
+// failure this whole path exists to prevent.
+func TestSweepTriggers_PastTimeout_TransientAbortFailureKeepsTheRunInFlight(t *testing.T) {
+	svc, jobs, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
+	})
+	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
+	// A failing STORE surfaces as a 404 ("no such task"), which is correctly
+	// permanent — a task that is gone needs no abort. A genuinely transient
+	// failure is one inside the transaction, which ApplyAction propagates as a
+	// bare error rather than a *StatusError.
+	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
+		ID:        "round-task",
+		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
+		Status:    orchestrator.TaskStatusExecuting,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "sweep"},
+	}}
+	svc.Tx = &failingTx{err: errors.New("database is locked")}
+	svc.Lifecycle = &stubLifecycle{}
+	svc.TaskWaits = NewTaskWaitRegistry()
+	svc.TaskWaits.Register("job-1", "round-task")
+
+	t0 := time.Now()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	if _, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute)); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	// Give the goroutine time to run and decide NOT to complete.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, held := svc.timeoutHeld(run.ID); !held {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if drained := svc.drainTimeoutCompletions(); len(drained) != 0 {
+		t.Fatalf("stashed completion = %+v, want none — a transient abort failure must not close the run", drained)
+	}
+
+	// The run is still in flight, so the next tick retries rather than firing a
+	// fresh round against work that was never ended.
+	next, err := svc.SweepTriggers(context.Background(), t0.Add(32*time.Minute))
+	if err != nil {
+		t.Fatalf("next sweep: %v", err)
+	}
+	if len(next.Fired) != 0 {
+		t.Errorf("next tick Fired = %+v, want empty — the slot must still be held", next.Fired)
+	}
+}
+
+// failingTx fails the transaction body itself, the way a busy database does —
+// distinct from a failing store, which ApplyAction reports as a 404.
+type failingTx struct {
+	stubTx
+	err error
+}
+
+func (s *failingTx) WithinTx(fn func(TxStore) error) error {
+	if err := fn(s); err != nil {
+		return err
+	}
+	return s.err
+}
+
+// A task that refuses abort PERMANENTLY (a card, whose machine has no `abort`
+// rule, so ApplyAction 400s every time) must not wedge the trigger: the round
+// is ended without it. Retrying forever would leave single-flight held and the
+// trigger silently dead.
+func TestSweepTriggers_PastTimeout_PermanentAbortRefusalStillEndsTheRun(t *testing.T) {
+	svc, jobs, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
+	})
+	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
+	// A card: the card machine registers no `abort` rule, so ApplyAction
+	// rejects it with a 400 that will never become a success.
+	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
+		ID:        "a-card",
+		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeCard,
+		Status:    orchestrator.TaskStatusParked,
+		Card:      &orchestrator.CardAttrs{},
+	}}
+	svc.Tx = &stubTx{}
+	svc.Lifecycle = &stubLifecycle{}
+	svc.TaskWaits = NewTaskWaitRegistry()
+	svc.TaskWaits.Register("job-1", "a-card")
+
+	t0 := time.Now()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	if _, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute)); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	drained := waitForTimeoutCompletion(t, svc)
+	if len(drained) != 1 || drained[0].ExitCode != TriggerTimeoutExitCode {
+		t.Fatalf("stashed completion = %+v, want the run ended despite the refusal", drained)
 	}
 }

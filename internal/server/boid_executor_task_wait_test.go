@@ -240,12 +240,19 @@ func TestBoidBuiltinExecutor_TaskWait_RegistersTheWaitForTheTriggerSweep(t *test
 	goCtx, cancel := context.WithCancel(context.Background())
 	observed := make(chan string, 1)
 	go func() {
-		// Give the wait a moment to park, then read the registry the way
-		// SweepTriggers would before releasing it.
-		time.Sleep(50 * time.Millisecond)
-		taskID, _ := waits.TaskFor("job-1")
-		observed <- taskID
-		cancel()
+		// Poll until the wait has parked, then read the registry the way
+		// SweepTriggers would. A fixed sleep would be both slower and flakier
+		// under load.
+		defer cancel()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if taskID, ok := waits.TaskFor("job-1"); ok {
+				observed <- taskID
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		observed <- ""
 	}()
 
 	exec.ExecuteBoidBuiltin(goCtx, ctx, &sandbox.BoidRequest{
