@@ -239,6 +239,155 @@ func TestOAuth2TokenSource_AccessToken_DifferentAccounts_DoNotShareCache(t *test
 	}
 }
 
+// The two tests below close a gap in the #4 tests above: every credential
+// there is account-qualified (ubs, nvt) — the UNQUALIFIED credential never
+// appears. A regression that drops cred.account back to cred.provider at any
+// ONE of the three call sites that key off credentialID (cachedAccessToken's
+// memCache read, oauth2.go ~line 636; persistGrant's memCache write, ~line
+// 925; cachedAccessToken's secret-store fallback read, ~line 642) would make
+// an account-qualified request collide with the UNQUALIFIED slot specifically
+// — which #4's ubs/nvt-only tests cannot observe, since neither of their
+// credentials is ever the unqualified one. This is exactly the shape of the
+// freee migration window (docs/plans/api-gateway-credential-accounts.md "freee
+// の移行手順" steps 2-6): the unqualified and account-qualified credentials
+// exist side by side, and a single dropped `.account` here would silently
+// serve one accounting entity's access token to the other's request.
+//
+// Both tests seed distinct refresh tokens for the unqualified and the "ubs"
+// credential and use accountAwareTokenEndpointStub so the returned access
+// token's literal value ("AT-for-"+refresh_token) reveals which credential's
+// grant actually produced it — asserting only "no error"/"a token came back"
+// would not catch a cache collision, since the wrong token is still a
+// syntactically valid one.
+
+// TestOAuth2TokenSource_AccessToken_UnqualifiedThenAccount_AccountMustNotUseUnqualifiedCache
+// is order A: unqualified first, then account-qualified. Kills a memCache
+// READ regression (cachedAccessToken ~line 636) at step 2 (the account
+// request would otherwise be satisfied by the unqualified entry step 1 just
+// populated), a memCache WRITE regression (persistGrant ~line 925) at step 3
+// (the account request's result would otherwise have been written into the
+// unqualified slot, corrupting it), and a secret-store fallback READ
+// regression (cachedAccessToken ~line 642) at step 4, which forces a fresh
+// OAuth2TokenSource (empty memCache, same secret store — simulating a daemon
+// restart) so the account request can only be satisfied by reading its own
+// persisted access_token_cache key, never the unqualified one sitting
+// alongside it in the same store.
+func TestOAuth2TokenSource_AccessToken_UnqualifiedThenAccount_AccountMustNotUseUnqualifiedCache(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "oauth2:freee:refresh_token", "RT-default")
+	store.seed("ws-a", "oauth2:freee@ubs:refresh_token", "RT-ubs")
+
+	stub := newAccountAwareTokenEndpointStub(t)
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+
+	// 1. Unqualified request — populates the unqualified memCache/secret-store
+	// slot.
+	gotDefault, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
+	if err != nil {
+		t.Fatalf("AccessToken(default): %v", err)
+	}
+	if gotDefault != "AT-for-RT-default" {
+		t.Fatalf("AccessToken(default) = %q, want %q", gotDefault, "AT-for-RT-default")
+	}
+
+	// 2. Account-qualified request — must trigger its OWN refresh, not be
+	// satisfied by step 1's unqualified cache entry (memCache read).
+	gotUBS, err := ts.AccessToken("ws-a", credentialID{provider: "freee", account: "ubs"})
+	if err != nil {
+		t.Fatalf("AccessToken(ubs): %v", err)
+	}
+	if gotUBS != "AT-for-RT-ubs" {
+		t.Fatalf("AccessToken(ubs) = %q, want %q (must be ubs's own token, not the unqualified account's cached token — memCache read must key on account, not just provider)", gotUBS, "AT-for-RT-ubs")
+	}
+	if n := stub.callCount(); n != 2 {
+		t.Fatalf("token endpoint called %d times, want 2 (the unqualified and the ubs request must each trigger their own refresh)", n)
+	}
+
+	// 3. Re-check the unqualified slot — must still be the unqualified
+	// account's own token, not clobbered by step 2's memCache WRITE landing
+	// in the wrong (unqualified) slot.
+	gotDefaultAgain, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
+	if err != nil {
+		t.Fatalf("second AccessToken(default): %v", err)
+	}
+	if gotDefaultAgain != "AT-for-RT-default" {
+		t.Errorf("second AccessToken(default) = %q, want unchanged %q (ubs's refresh must not have overwritten the unqualified memCache entry — memCache write must key on account, not just provider)", gotDefaultAgain, "AT-for-RT-default")
+	}
+	if n := stub.callCount(); n != 2 {
+		t.Errorf("token endpoint called %d times after re-checking default, want still 2 (cache hit)", n)
+	}
+
+	// 4. Simulate a daemon restart (fresh memCache, same secret store): the
+	// account-qualified request must be satisfied from ITS OWN persisted
+	// access_token_cache, not the unqualified one sitting in the same store
+	// (secret-store fallback read must key on account, not just provider).
+	ts2 := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+	gotUBSAfterRestart, err := ts2.AccessToken("ws-a", credentialID{provider: "freee", account: "ubs"})
+	if err != nil {
+		t.Fatalf("AccessToken(ubs) after restart: %v", err)
+	}
+	if gotUBSAfterRestart != "AT-for-RT-ubs" {
+		t.Errorf("AccessToken(ubs) after restart = %q, want %q (secret-store fallback must read ubs's own access_token_cache key, not the unqualified one)", gotUBSAfterRestart, "AT-for-RT-ubs")
+	}
+	if n := stub.callCount(); n != 2 {
+		t.Errorf("token endpoint called %d times after restart re-check, want still 2 (secret-store cache hit, no refresh)", n)
+	}
+}
+
+// TestOAuth2TokenSource_AccessToken_AccountThenUnqualified_UnqualifiedMustNotUseAccountCache
+// is order B, the mirror of the test above: account-qualified first, then
+// unqualified. Step 3 kills the same memCache WRITE regression from the
+// opposite direction (the unqualified request would otherwise read back
+// ubs's token, written into the unqualified slot by step 2), and step 4
+// kills the same memCache READ regression from the opposite direction (once
+// the unqualified slot is populated by step 3, a re-check of ubs would
+// otherwise collide with it).
+func TestOAuth2TokenSource_AccessToken_AccountThenUnqualified_UnqualifiedMustNotUseAccountCache(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "oauth2:freee@ubs:refresh_token", "RT-ubs")
+	store.seed("ws-a", "oauth2:freee:refresh_token", "RT-default")
+
+	stub := newAccountAwareTokenEndpointStub(t)
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+
+	// 1. Account-qualified request first — populates the ubs memCache/
+	// secret-store slot.
+	gotUBS, err := ts.AccessToken("ws-a", credentialID{provider: "freee", account: "ubs"})
+	if err != nil {
+		t.Fatalf("AccessToken(ubs): %v", err)
+	}
+	if gotUBS != "AT-for-RT-ubs" {
+		t.Fatalf("AccessToken(ubs) = %q, want %q", gotUBS, "AT-for-RT-ubs")
+	}
+
+	// 2. Unqualified request — must trigger its OWN refresh, not be
+	// satisfied by step 1's ubs cache entry.
+	gotDefault, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
+	if err != nil {
+		t.Fatalf("AccessToken(default): %v", err)
+	}
+	if gotDefault != "AT-for-RT-default" {
+		t.Fatalf("AccessToken(default) = %q, want %q (must be the unqualified account's own token, not ubs's cached token)", gotDefault, "AT-for-RT-default")
+	}
+	if n := stub.callCount(); n != 2 {
+		t.Fatalf("token endpoint called %d times, want 2 (ubs and the unqualified request must each trigger their own refresh)", n)
+	}
+
+	// 3. Re-check ubs — must still be ubs's own token, not clobbered by step
+	// 2's memCache WRITE landing in the wrong (unqualified, i.e. ubs's own)
+	// slot from the other direction.
+	gotUBSAgain, err := ts.AccessToken("ws-a", credentialID{provider: "freee", account: "ubs"})
+	if err != nil {
+		t.Fatalf("second AccessToken(ubs): %v", err)
+	}
+	if gotUBSAgain != "AT-for-RT-ubs" {
+		t.Errorf("second AccessToken(ubs) = %q, want unchanged %q (the unqualified refresh must not have overwritten ubs's memCache entry)", gotUBSAgain, "AT-for-RT-ubs")
+	}
+	if n := stub.callCount(); n != 2 {
+		t.Errorf("token endpoint called %d times after re-checking ubs, want still 2 (cache hit)", n)
+	}
+}
+
 // TestOAuth2TokenSource_AccessToken_DifferentAccounts_SingleflightDoesNotCoalesce
 // is the concurrent half of #4 — the specific race D6 calls out as most
 // dangerous: concurrent callers for DIFFERENT accounts of the same provider

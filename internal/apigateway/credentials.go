@@ -251,10 +251,14 @@ func accountSecretKey(base, account string) string {
 // depends on namespace never being mixed up with account or name (a wrong
 // namespace resolves a DIFFERENT workspace's secret). Putting namespace
 // first also matches this package's own SecretResolver convention
-// (namespace, key). This is a stopgap for the three-bare-strings shape —
-// PR-2's credentialID type (docs/plans/api-gateway-credential-accounts.md
-// §3) folds name/account into one value and removes the ambiguity
-// structurally instead of by argument position.
+// (namespace, key). This is a stopgap for the three-bare-strings shape, and
+// it stays a stopgap even after PR-2 (docs/plans/api-gateway-credential-
+// accounts.md §3): Resolve's own signature is unchanged — name and account
+// are still two bare strings, not folded into one value. The credentialID
+// type §3 introduces lives one level down, inside the AuthOAuth2 case below
+// only: it is built from (rs.auth.Provider, account) right before being
+// handed to c.oauth.AccessToken, and never crosses back out as a parameter
+// here or in Inject.
 func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 	if c == nil {
 		return fmt.Errorf("apigateway: no credential provider configured")
