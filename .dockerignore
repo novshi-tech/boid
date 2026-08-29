@@ -11,3 +11,11 @@ docs/
 e2e/
 *.md
 LICENSE
+
+# The metaproject library's own unit tests. They are part of the boid repo (CI
+# runs them) but have no business inside a job's skills directory: an agent
+# browsing ~/.claude/skills/boid-metaproject/ should see the scripts it can run
+# and the docs it should read, not a test suite it will mistake for either.
+# go:embed already skips them for the same reason (a leading "_" is excluded
+# unless the pattern says all:) — this keeps COPY's copy of the tree in step.
+internal/skills/data/boid-metaproject/scripts/_tests/

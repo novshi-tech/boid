@@ -90,7 +90,7 @@ func TestDeployHostSkills_DoesNotAffectSandboxSkillSet(t *testing.T) {
 
 	got := append([]string(nil), skills.EmbeddedSkillNames()...)
 	sort.Strings(got)
-	want := []string{"boid-orchestrate", "boid-signal", "boid-task", "boid-web"}
+	want := []string{"boid-metaproject", "boid-orchestrate", "boid-signal", "boid-task", "boid-web"}
 
 	if len(got) != len(want) {
 		t.Fatalf("EmbeddedSkillNames() = %v, want %v (host skills must not appear here)", got, want)

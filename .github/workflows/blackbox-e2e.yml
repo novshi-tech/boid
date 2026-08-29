@@ -16,14 +16,26 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'internal/skills/data/**'
       - '.claude/skills/**'
+      # `internal/skills/data/**` used to be listed here, back when every
+      # embedded skill was markdown and `**.md` above would have covered it
+      # anyway. It stopped being true when boid-metaproject started shipping
+      # RUNNABLE scripts (its own unit tests are the metaproject-library job
+      # below): with the directory ignored wholesale, a change to that library
+      # ran no CI at all. `**.md` still skips a docs-only skill edit, which was
+      # the entry's real purpose.
   pull_request:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'internal/skills/data/**'
       - '.claude/skills/**'
+      # `internal/skills/data/**` used to be listed here, back when every
+      # embedded skill was markdown and `**.md` above would have covered it
+      # anyway. It stopped being true when boid-metaproject started shipping
+      # RUNNABLE scripts (its own unit tests are the metaproject-library job
+      # below): with the directory ignored wholesale, a change to that library
+      # ran no CI at all. `**.md` still skips a docs-only skill edit, which was
+      # the entry's real purpose.
 
 permissions:
   contents: read
@@ -106,6 +118,63 @@ jobs:
         # e2e/upstream (docs/plans/git-gateway-cutover.md PR7a) は実
         # git-http-backend 相手の clone/push 往復試験のため同じ理由でここに属す。
         run: go test -tags=e2e ./internal/sandbox/... ./e2e/upstream/...
+
+  metaproject-lib:
+    name: Metaproject library (python)
+    runs-on: ubuntu-24.04
+    # internal/skills/data/boid-metaproject/scripts is the detection/record
+    # machinery every boid METAPROJECT runs instead of vendoring its own copy
+    # (see that skill's SKILL.md for why a copy is the failure mode). It is
+    # baked into the runner image and executed inside job sandboxes, so it is
+    # production code that happens to be Python — it needs a test job like any
+    # other, and until this existed the whole tree was inside the workflow's
+    # paths-ignore.
+    #
+    # No dependency install step and no requirements file: the library is
+    # stdlib-only ON PURPOSE, because the runner image ships a bare python3
+    # (3.11, no pyyaml — that constraint is also why the sweep's knobs are
+    # flags rather than a config file). A `pip install` appearing here would
+    # mean the library had quietly grown a dependency the sandbox cannot
+    # satisfy, which is exactly the drift this job should fail on.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run metaproject library tests
+        working-directory: internal/skills/data/boid-metaproject/scripts
+        run: PYTHONPATH=. python3 -m unittest discover -s _tests -t _tests -v
+
+      - name: Assert the library imports nothing outside the standard library
+        working-directory: internal/skills/data/boid-metaproject/scripts
+        # A third-party import would pass the tests above on a GitHub runner
+        # and then fail inside every job sandbox, where nothing is installed.
+        run: |
+          python3 - <<'EOF'
+          import ast, pathlib, sys
+          stdlib = set(sys.stdlib_module_names)
+          bad = []
+          for f in sorted(pathlib.Path("boidmeta").rglob("*.py")):
+              for node in ast.walk(ast.parse(f.read_text())):
+                  names = []
+                  if isinstance(node, ast.Import):
+                      names = [a.name for a in node.names]
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                      names = [node.module]
+                  for name in names:
+                      top = name.split(".")[0]
+                      if top != "boidmeta" and top not in stdlib:
+                          bad.append(f"{f}: {name}")
+          if bad:
+              print("non-stdlib imports found (the job sandbox has none of these):")
+              print("\n".join(bad))
+              sys.exit(1)
+          print("stdlib-only: ok")
+          EOF
 
   race:
     name: Race detector
