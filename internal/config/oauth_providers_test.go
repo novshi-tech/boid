@@ -141,6 +141,22 @@ func TestLoadFromPath_OAuthProviders_EmptyNameRejected(t *testing.T) {
 	}
 }
 
+// TestLoadFromPath_OAuthProviders_AtSignInNameRejected pins docs/plans/
+// api-gateway-credential-accounts.md D1: an oauth_providers.<name> config
+// key containing "@" is rejected at config-load time, since PR-2's
+// account-qualified oauth2 credential key ("oauth2:<provider>@<account>:...")
+// reserves "@" to separate the provider name from an account qualifier.
+func TestLoadFromPath_OAuthProviders_AtSignInNameRejected(t *testing.T) {
+	content := "oauth_providers:\n  \"freee@ubs\":\n    token_endpoint: https://accounts.secure.freee.co.jp/public_api/token\n    client_id: cid\n"
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for a provider name containing \"@\", got nil")
+	}
+	if !strings.Contains(err.Error(), "@") {
+		t.Errorf("error should mention \"@\", got: %v", err)
+	}
+}
+
 // TestLoadFromPath_Services_OAuth2ProviderReferenceNotCrossValidated
 // documents a deliberate design choice: a services.*.auth.provider naming a
 // provider oauth_providers: does not declare is NOT a config-load error —

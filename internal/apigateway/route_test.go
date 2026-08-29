@@ -1,7 +1,9 @@
 package apigateway
 
 import (
+	"errors"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -11,6 +13,7 @@ func TestParsePath_Valid(t *testing.T) {
 		path        string
 		wantToken   string
 		wantService string
+		wantAccount string
 		wantPath    string
 	}{
 		{
@@ -67,6 +70,48 @@ func TestParsePath_Valid(t *testing.T) {
 			wantService: "myapp",
 			wantPath:    "/objects/a%2Fb",
 		},
+		// --- account qualifier (docs/plans/api-gateway-credential-accounts.md D1/D2) ---
+		{
+			name:        "service with account qualifier",
+			path:        "/api/tok123/freee@ubs/api/1/deals",
+			wantToken:   "tok123",
+			wantService: "freee",
+			wantAccount: "ubs",
+			wantPath:    "/api/1/deals",
+		},
+		{
+			name:        "account qualifier with digits, hyphen and underscore",
+			path:        "/api/tok123/freee@ubs-2_test/v1",
+			wantToken:   "tok123",
+			wantService: "freee",
+			wantAccount: "ubs-2_test",
+			wantPath:    "/v1",
+		},
+		{
+			name:        "account qualifier on root path (no tail)",
+			path:        "/api/tok123/freee@ubs",
+			wantToken:   "tok123",
+			wantService: "freee",
+			wantAccount: "ubs",
+			wantPath:    "/",
+		},
+		{
+			// "@" is a pchar (RFC 3986) so it does not need percent-encoding
+			// on the wire (D1) — this pins that an operator who percent-
+			// encodes it anyway ("%40") gets the exact same split. Both
+			// forms become the identical string "freee@ubs" once
+			// url.PathUnescape runs on the segment, and splitServiceAccount
+			// operates on that already-unescaped string — see its own doc
+			// comment for why there's no reason to treat the two forms
+			// differently here (unlike route.path, which never unescapes at
+			// all).
+			name:        "percent-encoded %40 splits the same as a literal @",
+			path:        "/api/tok123/freee%40ubs/v1",
+			wantToken:   "tok123",
+			wantService: "freee",
+			wantAccount: "ubs",
+			wantPath:    "/v1",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -74,14 +119,65 @@ func TestParsePath_Valid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parsePath(%q): unexpected error: %v", c.path, err)
 			}
-			if rt.token != c.wantToken || rt.service != c.wantService || rt.path != c.wantPath {
-				t.Errorf("parsePath(%q) = {token:%q service:%q path:%q}, want {token:%q service:%q path:%q}",
-					c.path, rt.token, rt.service, rt.path, c.wantToken, c.wantService, c.wantPath)
+			if rt.token != c.wantToken || rt.service != c.wantService || rt.account != c.wantAccount || rt.path != c.wantPath {
+				t.Errorf("parsePath(%q) = {token:%q service:%q account:%q path:%q}, want {token:%q service:%q account:%q path:%q}",
+					c.path, rt.token, rt.service, rt.account, rt.path, c.wantToken, c.wantService, c.wantAccount, c.wantPath)
 			}
 		})
 	}
 }
 
+// TestParsePath_InvalidAccount pins D11's account-name validation and the
+// malformed-service-segment shapes ("@" appearing more than once, nothing
+// before/after it) — every case here must be classified as errInvalidAccount
+// (Server.ServeHTTP maps this to 400), unlike every other parsePath failure
+// (404) — see TestParsePath_Invalid and errInvalidAccount's own doc comment.
+func TestParsePath_InvalidAccount(t *testing.T) {
+	cases := []string{
+		"/api/tok123/freee@/v1",                                // empty account after "@"
+		"/api/tok123/@ubs/v1",                                  // empty base service name before "@"
+		"/api/tok123/freee@ubs@nvt/v1",                         // two "@" in the segment
+		"/api/tok123/freee@ub.s/v1",                            // "." not in [A-Za-z0-9_-]
+		"/api/tok123/freee@ub%2Fs/v1",                          // percent-encoded "/" inside the account: decodes to "ub/s", "/" not allowed
+		"/api/tok123/freee@ub:s/v1",                            // ":" not in [A-Za-z0-9_-]
+		"/api/tok123/freee@" + strings.Repeat("a", 65) + "/v1", // 65 chars, over the 64 limit
+	}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			_, err := parsePath(p)
+			if err == nil {
+				t.Fatalf("parsePath(%q): want error, got nil", p)
+			}
+			if !errors.Is(err, errInvalidAccount) {
+				t.Errorf("parsePath(%q) error = %v, want it to wrap errInvalidAccount", p, err)
+			}
+		})
+	}
+}
+
+// TestParsePath_AccountExactly64CharsAccepted pins D11's boundary: exactly
+// 64 characters is still valid (the limit is "at most 64", not "fewer than
+// 64").
+func TestParsePath_AccountExactly64CharsAccepted(t *testing.T) {
+	account := strings.Repeat("a", 64)
+	rt, err := parsePath("/api/tok123/freee@" + account + "/v1")
+	if err != nil {
+		t.Fatalf("parsePath: unexpected error for a 64-character account: %v", err)
+	}
+	if rt.account != account {
+		t.Errorf("account = %q, want the 64-character name", rt.account)
+	}
+}
+
+// TestParsePath_Invalid pins that every case here is a 404 at the
+// Server.ServeHTTP level (TestServer_NotFoundForUnmatchedPath), NOT a 400 —
+// which is why each case must also assert errors.Is(err, errInvalidAccount)
+// is FALSE, not just err != nil. Server.ServeHTTP's 400-vs-404 split
+// (errInvalidAccount → 400, every other parsePath error → 404) has no test
+// pinning the "every other parsePath error is NOT errInvalidAccount" side:
+// mutating checkForTraversal (or the malformed-segment paths above) to wrap
+// its error in errInvalidAccount would silently reclassify these as 400s
+// while every test that only checks err != nil stays green.
 func TestParsePath_Invalid(t *testing.T) {
 	cases := []string{
 		"/",
@@ -94,8 +190,12 @@ func TestParsePath_Invalid(t *testing.T) {
 	}
 	for _, p := range cases {
 		t.Run(p, func(t *testing.T) {
-			if _, err := parsePath(p); err == nil {
-				t.Errorf("parsePath(%q): want error, got nil", p)
+			_, gotErr := parsePath(p)
+			if gotErr == nil {
+				t.Fatalf("parsePath(%q): want error, got nil", p)
+			}
+			if errors.Is(gotErr, errInvalidAccount) {
+				t.Errorf("parsePath(%q) error = %v, must NOT wrap errInvalidAccount (this case is a 404, not a 400)", p, gotErr)
 			}
 		})
 	}
@@ -112,6 +212,15 @@ func TestParsePath_Invalid(t *testing.T) {
 // segment into an extra path separator (see TestParsePath_Valid's
 // percent-encoded-slash case) — rejecting outright avoids that tension
 // entirely while still making escape impossible.
+//
+// Every case also asserts errors.Is(err, errInvalidAccount) is FALSE: a
+// traversal attempt must stay a 404 at Server.ServeHTTP (see
+// TestServer_TraversalReturnsNotFound), not a 400. checkForTraversal's error
+// wrapping its cause in errInvalidAccount (accidentally or otherwise) would
+// silently turn every case below into a 400 while leaving every other
+// assertion in this test green — this is the regression a review mutation
+// caught (400/404 boundary, docs/plans/api-gateway-credential-accounts.md
+// D11).
 func TestParsePath_TraversalCannotEscapeServiceRoot(t *testing.T) {
 	cases := []string{
 		"/api/tok123/myapp/..",
@@ -137,8 +246,12 @@ func TestParsePath_TraversalCannotEscapeServiceRoot(t *testing.T) {
 	}
 	for _, p := range cases {
 		t.Run(p, func(t *testing.T) {
-			if _, err := parsePath(p); err == nil {
-				t.Errorf("parsePath(%q): want error (traversal attempt), got nil", p)
+			_, err := parsePath(p)
+			if err == nil {
+				t.Fatalf("parsePath(%q): want error (traversal attempt), got nil", p)
+			}
+			if errors.Is(err, errInvalidAccount) {
+				t.Errorf("parsePath(%q) error = %v, must NOT wrap errInvalidAccount (a traversal attempt is a 404, not a 400)", p, err)
 			}
 		})
 	}

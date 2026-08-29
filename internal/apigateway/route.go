@@ -1,6 +1,7 @@
 package apigateway
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -18,6 +19,19 @@ const PathPrefix = "/api/"
 type route struct {
 	token   string
 	service string
+	// account is the optional credential-account qualifier embedded in the
+	// service path segment ("<service>@<account>" — docs/plans/
+	// api-gateway-credential-accounts.md D1/D2). Empty when the request
+	// named no account, in which case every downstream decision (authz,
+	// BaseURL, credential resolution) is byte-identical to pre-account-
+	// support behavior — service alone is ALWAYS the base name with any
+	// "@<account>" already stripped off by parsePath, never the raw
+	// "<service>@<account>" segment; account carries that qualifier
+	// separately so callers that must ignore it (authorization/BaseURL/
+	// readonly-write lookups, D4) and callers that must use it (credential
+	// resolution, D2/D3) each read the field they need without
+	// re-splitting the string themselves.
+	account string
 	// path is the request tail, EXACTLY as it appeared on the wire (still
 	// percent-encoded, always absolute, guaranteed to contain no ".." or "."
 	// segment — see parsePath/checkForTraversal). Deliberately NOT
@@ -86,6 +100,17 @@ func parsePath(reqPath string) (route, error) {
 		return route{}, fmt.Errorf("apigateway: path %q has a missing or malformed service segment", reqPath)
 	}
 
+	// account splitting happens on the DECODED service segment (docs/plans/
+	// api-gateway-credential-accounts.md D1/D11) — see splitServiceAccount's
+	// own doc comment for why operating post-unescape (rather than
+	// splitting the raw segment on a literal "@" before unescaping it) is
+	// the correct choice here, unlike route.path's byte-preservation
+	// requirement.
+	svcName, account, err := splitServiceAccount(service)
+	if err != nil {
+		return route{}, fmt.Errorf("apigateway: path %q: %w", reqPath, err)
+	}
+
 	if !strings.HasPrefix(tail, "/") {
 		tail = "/" + tail
 	}
@@ -93,7 +118,87 @@ func parsePath(reqPath string) (route, error) {
 		return route{}, fmt.Errorf("apigateway: path %q: %w", reqPath, err)
 	}
 
-	return route{token: token, service: service, path: tail}, nil
+	return route{token: token, service: svcName, account: account, path: tail}, nil
+}
+
+// errInvalidAccount marks the one parsePath failure class that must map to
+// HTTP 400, not 404 (docs/plans/api-gateway-credential-accounts.md D11):
+// the path IS the well-formed /api/<token>/<service>/<tail> shape — the
+// service segment is present and non-empty — but the account name embedded
+// in it ("<service>@<account>") fails validation. Every OTHER parsePath
+// error means the path doesn't match that shape at all (missing segment,
+// malformed percent-encoding, traversal attempt, ...) and stays a 404,
+// matching this function's long-standing contract (see its own doc
+// comment). Server.ServeHTTP tells the two apart with errors.Is.
+var errInvalidAccount = errors.New("apigateway: invalid account name in service segment")
+
+// splitServiceAccount splits a service path segment into its base service
+// name and optional account qualifier, on "@" (docs/plans/
+// api-gateway-credential-accounts.md D1). It is called on the segment
+// AFTER url.PathUnescape has already run (parsePath's own call site) —
+// deliberately, for two reasons:
+//
+//   - config load (internal/config's validateServiceConfig) rejects "@" in
+//     every services.<name> and oauth_providers.<name> value, so a decoded
+//     segment containing "@" can never collide with a legitimate
+//     unqualified service name — "@" appearing post-decode is unambiguous
+//     evidence of an account qualifier, never part of a real service name.
+//   - a literal "@" and its "%40" percent-encoded form become the exact
+//     same string once both are unescaped, and there is no reason a caller
+//     would want the two to mean something different here — treating them
+//     identically is also simply what "split after unescape" gives for
+//     free, with no special-casing needed. (Contrast this with route.path,
+//     which is deliberately NEVER unescaped or re-split — see its own doc
+//     comment — because an upstream REST resource path can legitimately
+//     use "%2F" to mean something other than a literal separator; a
+//     service NAME has no such legitimate use for a raw "@" that config
+//     load doesn't already forbid.)
+//
+// Returns errInvalidAccount (wrapped, with detail) for: more than one "@"
+// in the segment, an empty base name before "@", or an account name that
+// fails validateAccountName. A segment with no "@" at all is valid and
+// returns account == "" (D2 — account-less requests are parsed identically
+// to before this feature existed).
+func splitServiceAccount(service string) (name, account string, err error) {
+	parts := strings.Split(service, "@")
+	switch len(parts) {
+	case 1:
+		return service, "", nil
+	case 2:
+		name, account = parts[0], parts[1]
+	default:
+		return "", "", fmt.Errorf("service segment %q has %d \"@\" characters, want at most 1: %w", service, len(parts)-1, errInvalidAccount)
+	}
+	if name == "" {
+		return "", "", fmt.Errorf("service segment %q has no base service name before \"@\": %w", service, errInvalidAccount)
+	}
+	if err := validateAccountName(account); err != nil {
+		return "", "", fmt.Errorf("service segment %q: %w", service, err)
+	}
+	return name, account, nil
+}
+
+// validateAccountName enforces D11's account name character set:
+// alphanumeric, "-", "_" only, 1-64 characters. "@"/"/"/":" are rejected by
+// construction (they are not in the allowed set) — D11 calls those out
+// specifically because they would otherwise collide with, respectively, the
+// account separator itself, path-segment splitting, and secret-key/cache-key
+// construction (docs/plans/api-gateway-credential-accounts.md's credentialID
+// discussion, PR-2).
+func validateAccountName(account string) error {
+	if account == "" {
+		return fmt.Errorf("account name must not be empty: %w", errInvalidAccount)
+	}
+	if len(account) > 64 {
+		return fmt.Errorf("account name %q is %d characters, want at most 64: %w", account, len(account), errInvalidAccount)
+	}
+	for _, r := range account {
+		isAlnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !isAlnum && r != '-' && r != '_' {
+			return fmt.Errorf("account name %q contains %q, which is not one of [A-Za-z0-9_-]: %w", account, string(r), errInvalidAccount)
+		}
+	}
+	return nil
 }
 
 // checkForTraversal rejects tail outright if any "/"-delimited segment

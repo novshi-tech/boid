@@ -114,6 +114,44 @@ func TestLoadFromPath_Services_EmptyNameRejected(t *testing.T) {
 	}
 }
 
+// TestLoadFromPath_Services_AtSignInNameRejected pins docs/plans/
+// api-gateway-credential-accounts.md D1: "@" in a services.<name> config key
+// is rejected at config-load time, since apigateway.parsePath reserves "@"
+// in the path's service segment to separate the service name from an
+// optional credential-account qualifier ("freee@ubs") — a service literally
+// named "freee@ubs" would be indistinguishable from base service "freee"
+// requested with account "ubs".
+func TestLoadFromPath_Services_AtSignInNameRejected(t *testing.T) {
+	content := "services:\n  \"freee@ubs\":\n    base_url: https://api.freee.co.jp\n    auth: { kind: bearer, secret_key: k }\n"
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for a service name containing \"@\", got nil")
+	}
+	if !strings.Contains(err.Error(), "@") {
+		t.Errorf("error should mention \"@\", got: %v", err)
+	}
+}
+
+// TestLoadFromPath_Services_AtSignInUsesInstanceNameRejected is the uses:
+// (Integration Pack instance) counterpart of
+// TestLoadFromPath_Services_AtSignInNameRejected: a uses:-backed
+// services.<name> entry shares the exact same map key/validation path as a
+// free-form entry (validateServiceConfig runs before the uses:/base_url
+// branch splits), so the "@" rejection must apply to it too — this is the
+// internal/integrationpack.DesugarService instance-name path docs/plans/
+// api-gateway-credential-accounts.md's PR-1 scope calls out for
+// verification.
+func TestLoadFromPath_Services_AtSignInUsesInstanceNameRejected(t *testing.T) {
+	content := "services:\n  \"customer-jira@prod\":\n    uses: atlassian-jira/cloud-basic@1.0.0\n    endpoint: https://example.atlassian.net\n    credentials: { token: JIRA_TOKEN }\n"
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for a uses: instance name containing \"@\", got nil")
+	}
+	if !strings.Contains(err.Error(), "@") {
+		t.Errorf("error should mention \"@\", got: %v", err)
+	}
+}
+
 func TestLoadFromPath_Services_MissingBaseURLRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

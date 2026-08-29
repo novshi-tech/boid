@@ -342,6 +342,137 @@ func TestServer_ReadOnlyAllowsWriteForAllowlistedService(t *testing.T) {
 	}
 }
 
+// TestServer_AccountQualifiedRequest_ReachesUpstreamWithBaseServiceAuthorization
+// pins grading item #3 (docs/plans/api-gateway-credential-accounts.md D4):
+// a request to "freee@ubs" must be authorized, BaseURL-resolved, and
+// credential-resolved using the BASE service name "freee" — the workspace's
+// enabled-service set only ever lists "freee", never "freee@ubs", and the
+// request must still reach the upstream (not 403) once the account-
+// qualified secret exists.
+func TestServer_AccountQualifiedRequest_ReachesUpstreamWithBaseServiceAuthorization(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	// Only the BASE name "freee" is in the workspace's enabled-service set —
+	// "freee@ubs" is never listed anywhere (D4: no per-account authorization
+	// axis in PR-1).
+	token := registry.Register([]string{"freee"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}},
+	}, stubResolver(map[string]string{"ws-a/freee-token@ubs": "ubs-secret"}))
+	rec := &recordingRecorder{}
+	srv := NewServer(registry, creds, nil, rec.record)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/freee@ubs/api/1/deals", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
+	}
+	if gotAuth != "Bearer ubs-secret" {
+		t.Errorf("upstream saw Authorization = %q, want %q", gotAuth, "Bearer ubs-secret")
+	}
+	// D8: the recorder receives "name@account", not the base name alone.
+	if call := rec.last(); call.service != "freee@ubs" {
+		t.Errorf("recorder call.service = %q, want %q", call.service, "freee@ubs")
+	}
+}
+
+// TestServer_AccountQualifiedRequest_ReadOnlyWriteUsesBaseServiceConfig is
+// grading item #3's readonly-write half: a readonly job token's POST to
+// "freee@ubs" must be allowed exactly when the BASE service "freee" opted
+// into AllowReadOnlyWrite — the account qualifier has no config of its own
+// to consult (D4).
+func TestServer_AccountQualifiedRequest_ReadOnlyWriteUsesBaseServiceConfig(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"freee"}, "ws-a", "task-1", true /* readOnly */)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}, AllowReadOnlyWrite: true},
+	}, stubResolver(map[string]string{"ws-a/freee-token@ubs": "ubs-secret"}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/"+token+"/freee@ubs/api/1/deals", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("POST to freee@ubs on a read-only token, base service AllowReadOnlyWrite=true: status = %d, want 201 (body %q)", w.Code, w.Body.String())
+	}
+}
+
+// TestServer_AccountQualifiedRequest_NoFallbackReturnsBadGateway pins
+// grading item #2 at the full-request level (D3): "freee-token@ubs" does
+// not exist in the secret store, but the unqualified "freee-token" does —
+// the request must fail with 502, never silently proceed using the
+// unqualified (wrong-account) credential.
+func TestServer_AccountQualifiedRequest_NoFallbackReturnsBadGateway(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // must never be reached
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"freee"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}},
+	}, stubResolver(map[string]string{"ws-a/freee-token": "unqualified-secret"})) // no "freee-token@ubs" entry
+	rec := &recordingRecorder{}
+	srv := NewServer(registry, creds, nil, rec.record)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/freee@ubs/api/1/deals", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body %q)", w.Code, w.Body.String())
+	}
+	if call := rec.last(); call.status != http.StatusBadGateway || call.service != "freee@ubs" {
+		t.Errorf("recorder call = %+v, want status 502, service freee@ubs", call)
+	}
+}
+
+// TestServer_InvalidAccountNameReturnsBadRequest pins D11 at the
+// Server.ServeHTTP level: a well-formed /api/<token>/<service>/<tail>
+// path whose account name fails validation gets 400, distinct from the
+// 404 an unrecognized path shape gets (TestServer_NotFoundForUnmatchedPath)
+// — see errInvalidAccount's own doc comment for why the two must not be
+// conflated.
+func TestServer_InvalidAccountNameReturnsBadRequest(t *testing.T) {
+	registry := NewRegistry()
+	token := registry.Register([]string{"freee"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}},
+	}, stubResolver(nil))
+	srv := NewServer(registry, creds, nil, nil)
+
+	cases := []string{
+		"/api/" + token + "/freee@/v1",        // empty account
+		"/api/" + token + "/freee@ub.s/v1",    // "." not allowed
+		"/api/" + token + "/freee@ubs@nvt/v1", // two "@"
+	}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", p, nil)
+			srv.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400 (body %q)", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestServer_UnconfiguredServiceReturnsBadGateway(t *testing.T) {
 	registry := NewRegistry()
 	token := registry.Register([]string{"ghost"}, "ws-a", "", false)
@@ -492,6 +623,27 @@ func TestServer_NotFoundForUnmatchedPath(t *testing.T) {
 	srv.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+// TestServer_TraversalReturnsNotFound is TestServer_NotFoundForUnmatchedPath's
+// counterpart for a WELL-FORMED-looking path whose tail is a traversal
+// attempt: unlike TestServer_InvalidAccountNameReturnsBadRequest (a
+// malformed account segment, which IS a 400 per D11), a traversal attempt
+// must stay a 404 — Server.ServeHTTP only maps errors.Is(err,
+// errInvalidAccount) to 400, every other parsePath failure (including
+// checkForTraversal's) falls through to http.NotFound. Before this test, no
+// test exercised a traversal path at the Server.ServeHTTP level at all — only
+// parsePath directly (TestParsePath_TraversalCannotEscapeServiceRoot) — so a
+// review mutation that made checkForTraversal wrap errInvalidAccount would
+// have turned this into a 400 with no test noticing.
+func TestServer_TraversalReturnsNotFound(t *testing.T) {
+	srv := NewServer(NewRegistry(), NewCredentialProvider(nil, nil), nil, nil)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/tok123/myapp/../../etc/passwd", nil)
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body %q)", w.Code, w.Body.String())
 	}
 }
 

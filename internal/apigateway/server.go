@@ -2,6 +2,7 @@ package apigateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -32,7 +33,14 @@ type Server struct {
 type routeInfoKey struct{}
 
 type routeInfo struct {
-	service   string
+	service string
+	// account is the optional credential-account qualifier (docs/plans/
+	// api-gateway-credential-accounts.md) — carried alongside service
+	// (which is ALWAYS the base name, account already stripped — D4) so
+	// Rewrite's Inject call can resolve the right account-qualified
+	// credential (D2/D3) while every authz/BaseURL lookup upstream of it
+	// keeps using service alone.
+	account   string
 	namespace string
 	taskID    string
 	method    string
@@ -83,6 +91,23 @@ func (t failFastTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return nil, err
 	}
 	return t.base.RoundTrip(req)
+}
+
+// recordedServiceName returns the string every RequestRecorder/notifier/
+// log call in this file uses to identify "which service" a request
+// targeted: service unchanged when account is empty (byte-identical to
+// every pre-account-support call site, D2), or "service@account" when an
+// account was specified (docs/plans/api-gateway-credential-accounts.md D8
+// — RequestRecorder's own signature is unchanged; this is the one place
+// account is folded back in before handing off to it). This is
+// deliberately NOT what gets passed to CredentialProvider.Resolve/Inject or
+// used for Entry.Services/BaseURLFor/AllowsReadOnlyWrite lookups (D4) — all
+// of those take service and account as separate arguments/fields.
+func recordedServiceName(service, account string) string {
+	if account == "" {
+		return service
+	}
+	return service + "@" + account
 }
 
 // NewServer builds a Server. notifier may be nil (defaults to NoopNotifier);
@@ -143,29 +168,32 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			pr.Out.Header.Del("Proxy-Authorization")
 
 			if s.credentials != nil {
-				if err := s.credentials.Inject(pr.Out, info.service, info.namespace); err != nil {
+				if err := s.credentials.Inject(pr.Out, info.namespace, info.service, info.account); err != nil {
+					recSvc := recordedServiceName(info.service, info.account)
 					slog.Warn("apigateway: credential injection failed; aborting request (fail-fast, not forwarding unauthenticated)",
-						"service", info.service, "err", err)
-					s.notifier.NotifyCredentialError(info.service, err)
-					injectErr := fmt.Errorf("apigateway: credential injection failed for service %q: %w", info.service, err)
+						"service", recSvc, "err", err)
+					s.notifier.NotifyCredentialError(recSvc, err)
+					injectErr := fmt.Errorf("apigateway: credential injection failed for service %q: %w", recSvc, err)
 					pr.Out = pr.Out.WithContext(context.WithValue(pr.Out.Context(), injectionErrorKey{}, injectErr))
 				}
 			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			info, _ := resp.Request.Context().Value(routeInfoKey{}).(routeInfo)
+			recSvc := recordedServiceName(info.service, info.account)
 			if resp.StatusCode == http.StatusUnauthorized {
 				slog.Warn("apigateway: upstream rejected credentials (401); the configured secret may be expired or revoked",
-					"service", info.service)
-				s.notifier.NotifyUpstreamAuthFailure(info.service)
+					"service", recSvc)
+				s.notifier.NotifyUpstreamAuthFailure(recSvc)
 			}
-			s.recorder(info.taskID, info.method, info.service, info.path, resp.StatusCode)
+			s.recorder(info.taskID, info.method, recSvc, info.path, resp.StatusCode)
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			info, _ := r.Context().Value(routeInfoKey{}).(routeInfo)
-			slog.Warn("apigateway: upstream request failed", "service", info.service, "err", err)
-			s.recorder(info.taskID, info.method, info.service, info.path, http.StatusBadGateway)
+			recSvc := recordedServiceName(info.service, info.account)
+			slog.Warn("apigateway: upstream request failed", "service", recSvc, "err", err)
+			s.recorder(info.taskID, info.method, recSvc, info.path, http.StatusBadGateway)
 			// The response body sent to the SANDBOX never includes err's own
 			// text (codex review round 6 finding): a genuine transport
 			// failure (DNS lookup, connection refused, TLS handshake) from
@@ -178,7 +206,7 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			// principle. The full error (including hostname) is still
 			// logged server-side via slog.Warn above for operator
 			// diagnosis — only the sandbox-facing response is generic.
-			http.Error(w, "bad gateway: upstream request failed for service "+info.service, http.StatusBadGateway)
+			http.Error(w, "bad gateway: upstream request failed for service "+recSvc, http.StatusBadGateway)
 		},
 	}
 	return s
@@ -186,7 +214,10 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 
 // ServeHTTP parses the request path, authorizes it against the registry,
 // and — if allowed — rewrites it to the configured service's base URL and
-// proxies it with credentials injected. Unrecognized paths get 404;
+// proxies it with credentials injected. Unrecognized paths get 404; a
+// well-formed path whose account qualifier fails validation gets 400 (docs/
+// plans/api-gateway-credential-accounts.md D11 — see errInvalidAccount's own
+// doc comment for why this is the one parsePath failure that is NOT a 404);
 // unknown/expired tokens get 401; well-formed-but-disallowed service
 // requests get 403; a read-only token attempting a non-GET/HEAD method gets
 // 403; an unconfigured (or credential-broken) service gets 502/503.
@@ -196,6 +227,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// which would silently merge two logically-distinct path segments.
 	rt, err := parsePath(r.URL.EscapedPath())
 	if err != nil {
+		if errors.Is(err, errInvalidAccount) {
+			http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
@@ -232,10 +267,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized: invalid or expired job token", http.StatusUnauthorized)
 		return
 	}
+	// Authorization/BaseURL/readonly-write lookups all key on rt.service —
+	// the BASE service name, account already stripped by parsePath (docs/
+	// plans/api-gateway-credential-accounts.md D4): a workspace's enabled
+	// services list ("freee", never "freee@ubs") governs every account of
+	// that service uniformly. recSvc below is the "name@account" form (D8)
+	// used ONLY for what the recorder/notifier/log lines and sandbox-facing
+	// error text report, never for an authorization or config lookup.
+	recSvc := recordedServiceName(rt.service, rt.account)
 	allowed := entry.Services[rt.service]
 
 	if !allowed {
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusForbidden)
+		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusForbidden)
 		http.Error(w, "forbidden: service not permitted for this job token", http.StatusForbidden)
 		return
 	}
@@ -245,15 +288,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// this gate — see that field's own doc comment for why it must never be
 	// settable from project.yaml/task_behaviors.
 	if entry.ReadOnly && !isSafeMethod(r.Method) && !s.credentials.AllowsReadOnlyWrite(rt.service) {
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusForbidden)
+		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusForbidden)
 		http.Error(w, "forbidden: read-only job token may only use GET/HEAD", http.StatusForbidden)
 		return
 	}
 
 	baseURL, ok := s.credentials.BaseURLFor(rt.service)
 	if !ok {
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusBadGateway)
-		http.Error(w, "bad gateway: service "+rt.service+" is not configured", http.StatusBadGateway)
+		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusBadGateway)
+		http.Error(w, "bad gateway: service "+recSvc+" is not configured", http.StatusBadGateway)
 		return
 	}
 
@@ -261,7 +304,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// per-key miss handled by the Resolve pre-check just below — mirrors
 	// internal/gitgateway.Server.ServeHTTP's identical two-tier check.
 	if !s.credentials.Configured() {
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusServiceUnavailable)
+		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusServiceUnavailable)
 		http.Error(w, "service unavailable: api gateway has no secret resolver configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -275,13 +318,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// failure THERE (the narrow race window between this check and the
 	// actual round trip), aborts via failFastTransport rather than
 	// forwarding unauthenticated — see that type's own doc comment.
-	if err := s.credentials.Resolve(rt.service, entry.Namespace); err != nil {
+	//
+	// account is passed through unmodified (D3): there is no fallback to
+	// the account-less credential when an account-qualified one is missing.
+	if err := s.credentials.Resolve(entry.Namespace, rt.service, rt.account); err != nil {
 		slog.Warn("apigateway: credential resolution failed; refusing to forward (fail-fast)",
-			"service", rt.service, "namespace", entry.Namespace, "err", err)
-		s.notifier.NotifyCredentialError(rt.service, err)
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusBadGateway)
+			"service", recSvc, "namespace", entry.Namespace, "err", err)
+		s.notifier.NotifyCredentialError(recSvc, err)
+		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusBadGateway)
 		http.Error(w,
-			"bad gateway: api gateway credential resolution failed for service "+rt.service+": "+err.Error(),
+			"bad gateway: api gateway credential resolution failed for service "+recSvc+": "+err.Error(),
 			http.StatusBadGateway)
 		return
 	}
@@ -319,13 +365,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// no malformed percent-encoding, and basePath comes from a
 		// config.yaml base_url that internal/config already validated as a
 		// parseable absolute URL — this should be unreachable in practice.
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusBadGateway)
+		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusBadGateway)
 		http.Error(w, "bad gateway: could not construct upstream path: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
 	ctx := context.WithValue(r.Context(), routeInfoKey{}, routeInfo{
 		service:         rt.service,
+		account:         rt.account,
 		namespace:       entry.Namespace,
 		taskID:          entry.TaskID,
 		method:          r.Method,
