@@ -219,6 +219,13 @@ func (s *TaskWorkflowService) selfHealStaleTriggerRun(now time.Time, run *orches
 		return false
 	}
 	if err := s.Triggers.CompleteTriggerRun(run.ID, now, TriggerRunSelfHealExitCode); err != nil {
+		if errors.Is(err, orchestrator.ErrTriggerRunAlreadyFinished) {
+			// Closed by the timeout path first. The row is no longer in
+			// flight, so report it as healed (the caller must stop treating it
+			// as blocking) but record no completion — the winner already did.
+			slog.Debug("trigger reconcile: the stale run was already closed by the timeout path", "run_id", run.ID)
+			return true
+		}
 		slog.Warn("trigger reconcile: self-heal close failed; leaving run in-flight", "run_id", run.ID, "error", err)
 		return false
 	}
@@ -284,6 +291,17 @@ func (s *TaskWorkflowService) reconcileInFlight(now time.Time, completed *[]Trig
 			continue
 		}
 		if cerr := s.Triggers.CompleteTriggerRun(run.ID, now, exitCode); cerr != nil {
+			if errors.Is(cerr, orchestrator.ErrTriggerRunAlreadyFinished) {
+				// The timeout goroutine (finishTimeOutTriggerRun) closed it
+				// first. The row IS closed, so treating this as a failure and
+				// putting it back in stillInFlight would report the trigger as
+				// busy for a tick it is not, and hand a Skip to
+				// trackSkipStreak for a round that already ended. The winner
+				// reported the completion; this side stays quiet.
+				slog.Debug("trigger reconcile: the run was already closed by the timeout path",
+					"run_id", run.ID, "job_id", run.JobID)
+				continue
+			}
 			slog.Warn("trigger reconcile: complete trigger run failed; leaving run in-flight", "run_id", run.ID, "error", cerr)
 			stillInFlight[key] = run
 			continue
@@ -298,16 +316,20 @@ func (s *TaskWorkflowService) reconcileInFlight(now time.Time, completed *[]Trig
 // beginTimeOutTriggerRun ends a round that outlived its trigger's `timeout`,
 // off the sweep goroutine.
 //
-// Asynchronous because both halves of the work can block on the container
-// engine: Lifecycle.StopJobRuntime wraps Adopt+Stop in a 30 s deadline
-// (dispatcher.sessionControlCallTimeout), and ApplyAction("abort") reaches the
-// same call through finalizeTerminal → CleanupTaskWindow, once per runtime of
-// the aborted task. TriggerLoop.runOnce is a SINGLE goroutine on a 1-minute
-// ticker covering every project, so doing this inline would let one wedged
-// engine stop every trigger in the daemon from being evaluated at all. This
-// file already made the same correction once, for notify (notifyTimeout, N-3),
-// and workflow_job.go's own `go s.Lifecycle.StopJobRuntime(...)` is the
-// established shape.
+// Asynchronous because Lifecycle.StopJobRuntime below wraps Adopt+Stop in a
+// 30 s deadline (dispatcher.sessionControlCallTimeout) and runs synchronously.
+// TriggerLoop.runOnce is a SINGLE goroutine on a 1-minute ticker covering every
+// project, so doing that inline would let one wedged container engine stop
+// every trigger in the daemon from being evaluated at all. This file already
+// made the same correction once, for notify (notifyTimeout, N-3), and
+// workflow_job.go's own `go s.Lifecycle.StopJobRuntime(...)` is the established
+// shape.
+//
+// The abort is NOT a second reason, contrary to an earlier draft of this
+// comment: ApplyAction reaches CleanupTaskWindow only through finalizeTerminal,
+// which runs inside the `go func()` runDispatchLoop that applyAction launches
+// and never waits on — so ApplyAction("abort") returns without blocking on the
+// engine.
 //
 // The run is deliberately NOT closed before the work finishes. Leaving it in
 // flight keeps single-flight held, so no new round can start against a task
@@ -719,11 +741,6 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 	}
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
 
-	// Completions recorded off-thread by a previous tick's timeout handling
-	// (beginTimeOutTriggerRun) — reported here so trackFailStreak counts them
-	// like any other non-zero completion.
-	result.Completed = append(result.Completed, s.drainTimeoutCompletions()...)
-
 	inFlight, err := s.reconcileInFlight(now, &result.Completed)
 	if err != nil {
 		return result, fmt.Errorf("sweep triggers: %w", err)
@@ -733,6 +750,18 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 	if err != nil {
 		return result, fmt.Errorf("sweep triggers: list projects: %w", err)
 	}
+
+	// Completions recorded off-thread by a previous tick's timeout handling
+	// (beginTimeOutTriggerRun) — reported here so trackFailStreak counts them
+	// like any other non-zero completion.
+	//
+	// Drained AFTER the two early returns above, not before: draining empties
+	// pendingTimeouts, so a drain followed by `return result, err` destroys
+	// those completions outright — runOnce discards the result on error and
+	// never reaches trackFailStreak. The tick where that matters is exactly
+	// the likely one: a database busy enough to fail ListInFlightTriggerRuns
+	// is a database busy enough for a round to have timed out.
+	result.Completed = append(result.Completed, s.drainTimeoutCompletions()...)
 	for _, p := range projects {
 		meta := s.hydrateMetaForTriggers(ctx, p.ID)
 		if meta == nil || len(meta.Triggers) == 0 {
@@ -845,7 +874,7 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 					// StartedAt isn't available here) that self-corrects
 					// next tick once reconcileInFlight's own read picks up
 					// this row with its real StartedAt.
-					result.Skipped = append(result.Skipped, TriggerSkip{TriggerKey: key, Since: now, Every: every})
+					result.Skipped = append(result.Skipped, TriggerSkip{TriggerKey: key, Since: now, Every: every, Timeout: trig.TriggerTimeout()})
 					continue
 				}
 				// フェイルオープン (12 節 B-5 既定案): dispatch/record failed,
@@ -1120,9 +1149,18 @@ func (l *TriggerLoop) trackSkipStreak(ctx context.Context, now time.Time, skippe
 		// multiple counts crossings of THRESHOLD, not of `every` — naming the
 		// threshold here (and `every` beside it) keeps the two apart now that
 		// they differ by a fraction rather than a whole number.
-		l.notify(ctx, skip.TriggerKey, fmt.Sprintf(
-			"trigger %s/%s: single-flight で %s 詰まっています (`every` %s、詰まり閾値 %s の %d 倍以上)",
-			skip.ProjectID, skip.TriggerName, overrun.Round(time.Second), skip.Every, threshold, multiple))
+		if skip.Timeout > 0 {
+			// A declared bound was crossed, which means the daemon is ending
+			// the round — saying only "詰まっています" would read as "nothing is
+			// happening, go look", when the opposite is true.
+			l.notify(ctx, skip.TriggerKey, fmt.Sprintf(
+				"trigger %s/%s: 1 巡が %s 走って timeout (%s) を超えました。daemon が打ち切ります (超過 %d 回目)",
+				skip.ProjectID, skip.TriggerName, overrun.Round(time.Second), skip.Timeout, multiple))
+		} else {
+			l.notify(ctx, skip.TriggerKey, fmt.Sprintf(
+				"trigger %s/%s: single-flight で %s 詰まっています (`every` %s、詰まり閾値 %s の %d 倍以上)",
+				skip.ProjectID, skip.TriggerName, overrun.Round(time.Second), skip.Every, threshold, multiple))
+		}
 		// With a declared `timeout` this fires exactly when the bound is
 		// crossed and keeps firing while the ending has not succeeded — which
 		// is the point: an ending that cannot complete leaves the row in

@@ -727,3 +727,120 @@ func TestSweepTriggers_PastTimeout_LosingTheCloseRaceReportsNothing(t *testing.T
 		t.Fatalf("stashed completion = %+v, want none — the loser must not report the round a second time", drained)
 	}
 }
+
+// Draining empties pendingTimeouts, so a drain followed by an error return
+// destroys those completions — runOnce discards the result on error and never
+// reaches trackFailStreak. The tick where that matters is the likely one: a
+// database busy enough to fail the reconcile pass is busy enough for a round to
+// have timed out. Pinned by making the sweep fail and asserting the stashed
+// completion survives for the next tick.
+func TestSweepTriggers_StashedCompletionSurvivesASweepError(t *testing.T) {
+	svc, _, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
+	})
+	svc.stashTimeoutCompletion(TriggerCompletionResult{
+		TriggerKey: TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"},
+		ExitCode:   TriggerTimeoutExitCode,
+	})
+	svc.Projects = failingProjectRepository{ProjectRepository: svc.Projects}
+
+	if _, err := svc.SweepTriggers(context.Background(), time.Now()); err == nil {
+		t.Fatal("expected the sweep to fail")
+	}
+	if drained := svc.drainTimeoutCompletions(); len(drained) != 1 {
+		t.Fatalf("stashed completions after a failed sweep = %+v, want the entry still there", drained)
+	}
+}
+
+type failingProjectRepository struct {
+	ProjectRepository
+}
+
+func (failingProjectRepository) ListProjects() ([]*orchestrator.Project, error) {
+	return nil, errors.New("database is locked")
+}
+
+// When the timeout path wins the close race, the reconcile pass must not report
+// the run as still in flight. Treating the sentinel as a failure would mark the
+// trigger busy for a tick it is not, and hand trackSkipStreak a Skip for a
+// round that already ended.
+//
+// The race is a TOCTOU — the row IS listed as in flight when reconcile reads it
+// and is closed by the goroutine before the update lands — so it has to be
+// staged with a store whose list and close disagree; seeding a closed row
+// instead would simply drop it from the in-flight list and never reach the
+// branch at all.
+func TestSweepTriggers_ReconcileLosingTheCloseRaceDoesNotHoldTheSlot(t *testing.T) {
+	svc, jobs, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Run: "true"}}},
+	})
+	// The job has exited, so reconcileInFlight tries to close the row...
+	jobs.set(&Job{ID: "job-1", Status: JobStatusCompleted, ExitCode: 1})
+	t0 := time.Now()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	// ...but the timeout goroutine closed it between the list and the update.
+	svc.Triggers = failingCloseTriggerStore{
+		TriggerRunStore: svc.Triggers,
+		err:             orchestrator.ErrTriggerRunAlreadyFinished,
+	}
+
+	result, err := svc.SweepTriggers(context.Background(), t0.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(result.Completed) != 0 {
+		t.Errorf("Completed = %+v, want empty — the winner already reported it", result.Completed)
+	}
+	// The loser must not report the run as busy. Distinguished by `Since`:
+	// reconcile holding the slot yields a Skip dated from when the RUN started,
+	// while the Skip this fixture legitimately produces is dated NOW, from the
+	// create race the stub causes (it fakes the close, so the real row is still
+	// open and the single-flight UNIQUE index rejects a new create — an
+	// artifact of staging a TOCTOU, not product behavior).
+	for _, skip := range result.Skipped {
+		if skip.Since.Equal(t0) {
+			t.Errorf("Skipped = %+v — reconcile reported the run busy since it started, though its row is closed", skip)
+		}
+	}
+}
+
+// A CompleteTriggerRun failure that is NOT a lost race must also not stash: the
+// row stays in flight, the next tick retries, and reporting a completion we
+// failed to persist would let a second round start against a row that is still
+// claimed. The lost-race sibling is pinned above; this is the other branch.
+func TestSweepTriggers_PastTimeout_CloseFailureReportsNothing(t *testing.T) {
+	svc, jobs, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
+	})
+	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
+	svc.Tx = &stubTx{}
+	svc.Lifecycle = &stubLifecycle{}
+	svc.TaskWaits = NewTaskWaitRegistry()
+
+	t0 := time.Now()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	svc.Triggers = failingCloseTriggerStore{TriggerRunStore: svc.Triggers, err: errors.New("database is locked")}
+
+	svc.beginTimeOutTriggerRun(context.Background(), TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"},
+		run, 30*time.Minute)
+	waitForTimeoutGoroutine(t, svc, run.ID)
+
+	if drained := svc.drainTimeoutCompletions(); len(drained) != 0 {
+		t.Fatalf("stashed completion = %+v, want none — the close never landed", drained)
+	}
+}
+
+type failingCloseTriggerStore struct {
+	TriggerRunStore
+	err error
+}
+
+func (s failingCloseTriggerStore) CompleteTriggerRun(id string, finishedAt time.Time, exitCode int) error {
+	return s.err
+}
