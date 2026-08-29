@@ -175,6 +175,30 @@ var Schema = []FieldSpec{
 	// not merely a suggestion — for base_url to use a non-https scheme. See
 	// validateServiceConfig's own doc comment in apigateway.go.
 	{Path: "services.*.allow_insecure", Kind: KindBool, Reload: ReloadRestartRequired},
+	// services.*.allow_readonly_write / services.*.require_account (PR
+	// #1040 opus review, item 1): both fields have existed on
+	// config.ServiceConfig (apigateway.go) since before this PR —
+	// allow_readonly_write was never registered here at all (git log -S
+	// confirms it), and require_account (docs/plans/
+	// api-gateway-credential-accounts.md D5) copied that gap by following
+	// the adjacent field's pattern rather than schema.go's own
+	// registration. Without a Schema entry, ValidateKnownKeys rejects ANY
+	// config.yaml document that sets either key as an "unknown config
+	// key" — which breaks every `boid config apply -f`/`edit`/`set`/
+	// `unset` path (MutateConfig re-validates the WHOLE document, so even
+	// an unrelated `boid config set` fails once either field is present
+	// anywhere in the document). Both are ReloadRestartRequired, the same
+	// class every other services.* leaf in this block has: the API
+	// gateway's CredentialProvider (apigateway.NewCredentialProvider) is
+	// built exactly once, in wire.go's buildRuntime at daemon startup, and
+	// applyDynamicConfigLocked never rebuilds it — see changedServiceLeaves'
+	// own doc comment (internal/server/config_edit.go) for the identical
+	// reasoning already applied to base_url/auth.*/uses/endpoint/
+	// credentials.*/username. See TestServiceConfigSchema_Exhaustive
+	// (service_schema_exhaustive_test.go) for the reflection-based guard
+	// against a third field repeating this same gap.
+	{Path: "services.*.allow_readonly_write", Kind: KindBool, Reload: ReloadRestartRequired},
+	{Path: "services.*.require_account", Kind: KindBool, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.kind", Kind: KindEnum, Reload: ReloadRestartRequired,
 		EnumValues: []string{"bearer", "basic", "header", "query", "oauth2"}},
 	{Path: "services.*.auth.secret_key", Kind: KindString, Reload: ReloadRestartRequired},

@@ -219,8 +219,11 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 // plans/api-gateway-credential-accounts.md D11 — see errInvalidAccount's own
 // doc comment for why this is the one parsePath failure that is NOT a 404);
 // unknown/expired tokens get 401; well-formed-but-disallowed service
-// requests get 403; a read-only token attempting a non-GET/HEAD method gets
-// 403; an unconfigured (or credential-broken) service gets 502/503.
+// requests get 403; an allowed service configured with require_account:
+// true (docs/plans/api-gateway-credential-accounts.md D5) rejects an
+// account-less request with 400; a read-only token attempting a non-GET/HEAD
+// method gets 403; an unconfigured (or credential-broken) service gets
+// 502/503.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// EscapedPath, not r.URL.Path — see parsePath's own doc comment: net/http
 	// decodes %2F into a literal "/" in .Path before a handler ever sees it,
@@ -280,6 +283,45 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !allowed {
 		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusForbidden)
 		http.Error(w, "forbidden: service not permitted for this job token", http.StatusForbidden)
+		return
+	}
+
+	// ServiceConfig.RequireAccount (docs/plans/api-gateway-credential-
+	// accounts.md D5) is checked here — AFTER the authorization gate above,
+	// BEFORE every other gate below — deliberately, on both sides of that
+	// placement:
+	//
+	//   - Not before authorization: doing so would leak, to a job token that
+	//     cannot even reach this service (entry.Services[rt.service] ==
+	//     false), whether the service happens to require an account at all.
+	//     A job with no legitimate reason to know this service exists would
+	//     learn a fact about its configuration. Checking after `allowed` is
+	//     already established means this can only ever fire for a service
+	//     the caller is genuinely permitted to use — the same reasoning
+	//     that already governs which fields of entry/rt the recorder/error
+	//     text below are allowed to mention.
+	//   - Before the readonly-write gate (rather than after it): missing an
+	//     account is a property of the REQUEST'S SHAPE — it applies
+	//     identically to a GET and a POST — whereas the readonly-write gate
+	//     is specifically about which HTTP METHODS a readonly token may use.
+	//     Resolving the request-shape defect first means a readonly token's
+	//     GET without an account to a require_account service gets the same
+	//     400 a write request would (not a silent pass-through that only a
+	//     later stage would have caught), and a request that supplies both
+	//     defects (readonly token, unsafe method, AND no account) reports
+	//     the more fundamental "this request cannot possibly succeed as
+	//     written" defect rather than the narrower "this token cannot use
+	//     this method" one.
+	//
+	// Every check from here down (BaseURLFor/Configured/Resolve) is either
+	// insensitive to account presence or already documented as having no
+	// fallback for a missing account-qualified credential (D3) — this gate
+	// exists purely so the caller gets a targeted, actionable 400 instead of
+	// discovering the same problem several stages later as a 502 from the
+	// Resolve pre-check below.
+	if rt.account == "" && s.credentials.RequiresAccount(rt.service) {
+		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusBadRequest)
+		http.Error(w, "bad request: service "+rt.service+" requires a credential-account qualifier — request \"/"+rt.service+"@<account>/...\" instead of \"/"+rt.service+"/...\"", http.StatusBadRequest)
 		return
 	}
 

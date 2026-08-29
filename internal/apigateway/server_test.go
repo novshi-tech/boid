@@ -442,6 +442,165 @@ func TestServer_AccountQualifiedRequest_NoFallbackReturnsBadGateway(t *testing.T
 	}
 }
 
+// TestServer_RequireAccount_RejectsAccountlessRequest pins grading item #9's
+// first half (docs/plans/api-gateway-credential-accounts.md D5): a service
+// configured with require_account: true rejects an account-less request
+// with 400, and the recorder sees that 400 the same way it sees an existing
+// 403/502 rejection (recSvc == the base name, since there is no account to
+// fold in).
+func TestServer_RequireAccount_RejectsAccountlessRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // must never be reached
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"freee"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}, RequireAccount: true},
+	}, stubResolver(map[string]string{"ws-a/freee-token": "unqualified-secret"}))
+	rec := &recordingRecorder{}
+	srv := NewServer(registry, creds, nil, rec.record)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/freee/api/1/deals", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %q)", w.Code, w.Body.String())
+	}
+	if call := rec.last(); call.status != http.StatusBadRequest || call.service != "freee" {
+		t.Errorf("recorder call = %+v, want status 400, service freee", call)
+	}
+}
+
+// TestServer_RequireAccount_AllowsAccountQualifiedRequest pins grading item
+// #9's companion check: an account-QUALIFIED request to the same
+// require_account: true service must NOT be rejected — the gate only fires
+// on a missing account, never on the presence of one.
+func TestServer_RequireAccount_AllowsAccountQualifiedRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"freee"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}, RequireAccount: true},
+	}, stubResolver(map[string]string{"ws-a/freee-token@ubs": "ubs-secret"}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/freee@ubs/api/1/deals", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
+	}
+}
+
+// TestServer_RequireAccount_DefaultFalseServiceUnaffected pins grading item
+// #9's second half: a service that does NOT set require_account (the
+// default, false) must keep accepting an account-less request exactly as it
+// did before this field existed — registered side-by-side with a
+// require_account: true service so a regression in either direction (the
+// flag leaking across services, or the gate firing unconditionally) would
+// show up here.
+func TestServer_RequireAccount_DefaultFalseServiceUnaffected(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"freee", "myapp"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}, RequireAccount: true},
+		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "myapp-token"}},
+	}, stubResolver(map[string]string{
+		"ws-a/freee-token@ubs": "ubs-secret",
+		"ws-a/myapp-token":     "myapp-secret",
+	}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/myapp/v1/users", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("account-less request to a require_account: false (default) service: status = %d, want 200 (body %q)", w.Code, w.Body.String())
+	}
+}
+
+// TestServer_RequireAccount_UnauthorizedServiceReturns403NotBadRequest pins
+// the check-ordering decision in Server.ServeHTTP (docs/plans/
+// api-gateway-credential-accounts.md D5 implementation note): the
+// require_account gate is checked AFTER authorization, not before, so a job
+// token that isn't even permitted to use a require_account: true service
+// gets the ordinary 403 "forbidden" — it must never learn, via a 400
+// instead, that the service it can't reach happens to require an account.
+func TestServer_RequireAccount_UnauthorizedServiceReturns403NotBadRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // must never be reached
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	// "freee" is NOT in this token's allowed service set.
+	token := registry.Register([]string{"myapp"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}, RequireAccount: true},
+	}, stubResolver(nil))
+	rec := &recordingRecorder{}
+	srv := NewServer(registry, creds, nil, rec.record)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/freee/api/1/deals", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body %q)", w.Code, w.Body.String())
+	}
+	if call := rec.last(); call.status != http.StatusForbidden {
+		t.Errorf("recorder call = %+v, want status 403", call)
+	}
+}
+
+// TestServer_RequireAccount_PrecedesReadOnlyWriteGate pins the OTHER half of
+// the check-ordering decision in Server.ServeHTTP: require_account is
+// checked BEFORE the readonly-write gate, not after. A readonly job token
+// issuing an unsafe method (POST) with no account, against a service that
+// is BOTH require_account: true AND does NOT opt into AllowReadOnlyWrite,
+// gets 400 ("supply an account") rather than 403 ("readonly token can't
+// write here") — the missing-account defect applies to the request
+// regardless of method, so it is reported first; the narrower
+// method-specific gate never even runs for a request this malformed.
+func TestServer_RequireAccount_PrecedesReadOnlyWriteGate(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // must never be reached
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"freee"}, "ws-a", "task-1", true /* readOnly */)
+	creds := NewCredentialProvider([]ServiceConfig{
+		// RequireAccount: true, AllowReadOnlyWrite left false (default) —
+		// both gates would independently reject this request; the test
+		// asserts WHICH one reports first.
+		{Name: "freee", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}, RequireAccount: true},
+	}, stubResolver(nil))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/"+token+"/freee/api/1/deals", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %q) — require_account should be checked before the readonly-write gate", w.Code, w.Body.String())
+	}
+}
+
 // TestServer_InvalidAccountNameReturnsBadRequest pins D11 at the
 // Server.ServeHTTP level: a well-formed /api/<token>/<service>/<tail>
 // path whose account name fails validation gets 400, distinct from the

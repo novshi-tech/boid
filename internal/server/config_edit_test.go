@@ -254,6 +254,91 @@ func TestApplyConfigYAML_Services_RestartRequiredWarning(t *testing.T) {
 	}
 }
 
+// TestApplyConfigYAML_Services_RequireAccountAndAllowReadOnlyWrite_RestartRequiredWarning
+// is TestApplyConfigYAML_Services_RestartRequiredWarning's counterpart for
+// the two fields PR #1040's opus review (item 1) found missing from
+// internal/config/schema.go entirely: services.<name>.require_account
+// (docs/plans/api-gateway-credential-accounts.md D5) and
+// services.<name>.allow_readonly_write. Before that fix, ApplyConfigYAML
+// itself failed outright ("unknown config key") for a document containing
+// either — this test now pins BOTH that the document is accepted AND that
+// changing either leaf produces its own named restart-required warning
+// (via changedServiceLeaves), the same per-leaf granularity every other
+// services.* field gets.
+func TestApplyConfigYAML_Services_RequireAccountAndAllowReadOnlyWrite_RestartRequiredWarning(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	if _, err := srv.ApplyConfigYAML([]byte(
+		"services:\n  freee:\n    base_url: https://api.freee.co.jp\n    auth: { kind: oauth2, provider: freee }\n    require_account: false\n    allow_readonly_write: false\n"),
+		"", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (create): %v", err)
+	}
+
+	result, err := srv.ApplyConfigYAML([]byte(
+		"services:\n  freee:\n    base_url: https://api.freee.co.jp\n    auth: { kind: oauth2, provider: freee }\n    require_account: true\n    allow_readonly_write: true\n"),
+		"", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigYAML (change): %v", err)
+	}
+	var gotRequireAccount, gotAllowReadOnlyWrite bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "services.freee.require_account requires") {
+			gotRequireAccount = true
+		}
+		if strings.Contains(w, "services.freee.allow_readonly_write requires") {
+			gotAllowReadOnlyWrite = true
+		}
+	}
+	if !gotRequireAccount || !gotAllowReadOnlyWrite {
+		t.Errorf("Warnings = %v, want require_account + allow_readonly_write leaf warnings", result.Warnings)
+	}
+}
+
+// TestMutateConfig_UnrelatedKey_SucceedsWithRequireAccountPresent is the
+// direct repro test for the actual bug the opus review found (item 1): once
+// a config.yaml document contained services.<name>.require_account (or
+// allow_readonly_write), EVERY subsequent boid config set/unset/apply/edit
+// failed with "unknown config key: services.<name>.require_account" — even
+// one setting a totally unrelated key — because MutateConfig re-validates
+// the WHOLE on-disk document (config.ValidateYAML), not just the leaf being
+// changed. Before internal/config/schema.go registered these two fields,
+// this test failed with exactly that error; it now pins that an unrelated
+// `boid config set web.public_url ...` succeeds against a document that
+// already has require_account/allow_readonly_write set.
+func TestMutateConfig_UnrelatedKey_SucceedsWithRequireAccountPresent(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	if _, err := srv.ApplyConfigYAML([]byte(
+		"services:\n  freee:\n    base_url: https://api.freee.co.jp\n    auth: { kind: oauth2, provider: freee }\n    require_account: true\n    allow_readonly_write: true\n"),
+		"", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (seed require_account/allow_readonly_write): %v", err)
+	}
+
+	// The unrelated key: web.public_url has nothing to do with services.*
+	// at all. Pre-fix, this failed anyway because MutateConfig validates
+	// the full document, and the document above already had the
+	// then-unknown keys in it.
+	if _, err := srv.MutateConfig(api.ConfigMutateRequest{
+		Op:    api.ConfigMutateSet,
+		Key:   "web.public_url",
+		Value: []string{"https://boid.example.com"},
+	}); err != nil {
+		t.Fatalf("MutateConfig(set web.public_url) failed against a document containing require_account/allow_readonly_write: %v", err)
+	}
+
+	data, _, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "https://boid.example.com") {
+		t.Errorf("ConfigYAML() = %s, want it to reflect the unrelated set", got)
+	}
+	if !strings.Contains(got, "require_account: true") {
+		t.Errorf("ConfigYAML() = %s, want require_account to survive the unrelated set", got)
+	}
+}
+
 // TestApplyConfigYAML_OAuthProviders_RestartRequiredWarning mirrors
 // TestApplyConfigYAML_Services_RestartRequiredWarning for
 // oauth_providers.<name> (docs/plans/api-gateway.md §6/§論点4, PR2,

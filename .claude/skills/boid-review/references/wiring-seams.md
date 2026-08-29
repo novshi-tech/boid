@@ -1033,9 +1033,39 @@ first four links are self-defending; the last two are not.
   exemption) is not, by itself, evidence that the value reaches a live consumer — that
   requires a *second*, independent check on the `buildStartConfig`/`server.Config` half, which
   today only exists per-key (a dedicated test for that one field), never generically.
-- **Past break**: none yet — flagged during PR #858 review (log.level) as a gap the PR itself
-  happened to close correctly for its own key (see Guard below), not as an existing bug.
-- **Guard**: End A has the generic, exhaustive tests named above. End B has **no generic
+- **Past break**: none yet for the End A↔B chain described above — flagged during PR #858
+  review (log.level) as a gap the PR itself happened to close correctly for its own key (see
+  Guard below), not as an existing bug. A DIFFERENT, EARLIER break in the same chain DID ship
+  twice: `config.ServiceConfig.AllowReadOnlyWrite` and (later) `.RequireAccount`
+  (`internal/config/apigateway.go`) both existed as real, `Config.UnmarshalYAML`-decoded
+  struct fields — daemon startup (`config.Load`) accepted a config.yaml setting either one
+  just fine — while never getting a `Schema` entry AT ALL (not "added to `Schema` but missing
+  from `restartFieldExtractors`/exemptions" — missing from `Schema` itself, a step before End
+  A's own described failure mode even begins). `ValidateKnownKeys` — the walk `boid config
+  apply -f`/`edit`/`set`/`unset` all go through (`internal/config/validate.go`) — rejects any
+  key with no `Schema` entry as "unknown config key", so every one of those CLI paths failed
+  outright for a document containing either field; since `MutateConfig`
+  (`internal/server/config_edit.go`) re-validates the WHOLE on-disk document even for a
+  single-key `set`, an operator's config.yaml containing `require_account` bricked EVERY
+  subsequent `boid config set`, including ones touching a totally unrelated key. `git log -S`
+  confirms `allow_readonly_write` shipped with this gap from its very first commit;
+  `require_account` (docs/plans/api-gateway-credential-accounts.md D5) then repeated it by
+  copying the adjacent field's pattern rather than `schema.go`'s own registration. Found by
+  opus review of PR #1040, fixed in the same PR. See seam #32 below for the sibling
+  End-A→B-mirror gap the same review round found in the OTHER direction (config → apigateway
+  propagation, as opposed to config → CLI schema).
+- **Guard**: End A has the generic, exhaustive tests named above, PLUS (as of the
+  `services.*` break documented in Past break) `TestServiceConfigSchema_Exhaustive`
+  (`internal/config/service_schema_exhaustive_test.go`) — a reflection-based walk of every
+  `config.ServiceConfig` (and nested `ServiceAuthConfig`) field asserting `ResolveField` finds
+  a matching `Schema` entry, which is what actually would have caught the `require_account`/
+  `allow_readonly_write` gap (the plain per-path `TestResolveField_KnownPaths` table only
+  catches a MISSING entry if someone remembers to add the corresponding table row — this test
+  needs no such reminder, since it derives every expected path from the struct itself). This
+  guard exists only for `config.ServiceConfig`; no equivalent exhaustive walk exists yet for
+  `config.OAuthProviderConfig`/`ForgeConfig` or any other `Schema`-backed struct — a field
+  added to one of those still relies on someone extending its own hand-written
+  `TestResolveField_KnownPaths` rows. End B has **no generic
   test** — only per-key coverage as each key's own PR happens to add it, e.g.
   `TestBuildStartConfig_LogLevelFromConfig`/`TestBuildStartConfig_LogLevelUnset_Empty`
   (`cmd/start_test.go`) for `log.level`, or `TestBuildStartConfig_UsesDefaults`'s assertions on
@@ -1821,3 +1851,70 @@ enforcement point between them.
   cover this one. Note also `internal/sandbox/broker_streaming_linux.go`'s `handleStreamingExec`
   calls `b.Handle(req)` with `baseContext()` unconditionally; a blocking boid op arriving with
   `Streaming=true` would bypass this seam entirely.
+
+## 32. config.ServiceConfig → apigateway.ServiceConfig two-path propagation (services.* / uses:)
+
+Whether a `config.ServiceConfig` field (`internal/config/apigateway.go`) with runtime meaning
+for the API gateway actually reaches the `apigateway.ServiceConfig`
+(`internal/apigateway/credentials.go`) `NewCredentialProvider` builds its registry from — a
+hand-written field mirror like seam #23's, except this mirror has **two independent
+conversion functions**, not one, because `services.<name>` has two mutually-exclusive shapes
+(docs/plans/signal-driven-review.md §7.2's `uses:` desugaring, on top of PR1's original
+free-form `base_url`/`auth`).
+
+- **End A (config schema)**: `config.ServiceConfig`'s fields, decoded by `Config.UnmarshalYAML`
+  and mirrored into `internal/config/schema.go`'s `services.*.*` `Schema` entries — see seam
+  #19's Past-break note for the `allow_readonly_write`/`require_account` gap at exactly this
+  link (a field existing on the struct with no `Schema` entry at all).
+- **End B1 (free-form path)**: `Config.APIGatewayServices()` (`internal/config/apigateway.go`)
+  — converts every `services.<name>` entry WITHOUT `uses:` set into `apigateway.ServiceConfig`,
+  by hand, one field assignment per line.
+- **End B2 (`uses:` path)**: `integrationpack.DesugarService` (`internal/integrationpack/
+  resolve.go`) — converts every `services.<name>` entry WITH `uses:` set into the SAME
+  `apigateway.ServiceConfig` shape, resolving `BaseURL`/`Auth` from the referenced Integration
+  Pack service profile instead of copying them from `config.ServiceConfig` directly, but still
+  copying every OTHER field (`AllowReadOnlyWrite`, `RequireAccount`) straight from
+  `config.ServiceConfig` the same way End B1 does.
+- **End C (consumer)**: `integrationpack.ResolveServices` concatenates End B1's output with End
+  B2's (one call to `DesugarService` per `uses:` entry) into the single flat
+  `[]apigateway.ServiceConfig` list `internal/server/wire.go`'s `buildRuntime` passes to
+  `apigateway.NewCredentialProvider` — see seam #19's carve-out for why this reaches a live
+  `*config.Config` directly (`boidCfg`) rather than through `cmd/start.go`'s `server.Config`.
+- **Invariant**: a `config.ServiceConfig` field with runtime meaning for BOTH shapes (i.e. not
+  something `uses:`-exclusive like `Endpoint`/`Credentials`, or `base_url`/`auth`-exclusive
+  like `BaseURL`/`Auth` itself) must be copied by BOTH End B1 and End B2 — a field wired into
+  only one silently behaves as its zero value for every service declared the other way.
+- **Past break**: none in production — caught mid-development, twice, by the SAME shape of
+  review finding, each time for the newest field added to `config.ServiceConfig`:
+  `AllowReadOnlyWrite` (an earlier version of `DesugarService` never read it at all, End B2
+  silently dropping it for every `uses:` entry — `TestDesugarService_PropagatesAllowReadOnlyWrite`,
+  `internal/integrationpack/resolve_test.go`, is the regression test) and `RequireAccount`
+  (PR-4, docs/plans/api-gateway-credential-accounts.md D5, landed already correctly wired into
+  both End B1 and End B2 — `TestDesugarService_PropagatesRequireAccount` pins it — but its own
+  hand-written test only exists because someone remembered to add it for this specific field,
+  same "no reminder built in" gap seam #23's Past-break entry flags for its own field-by-field
+  test). Opus review of PR #1040 (item 4) flagged that neither field had a test that would
+  catch a THIRD field repeating either omission.
+- **Guard**: `TestServiceConfigFieldPropagation_Exhaustive`
+  (`internal/integrationpack/field_propagation_exhaustive_test.go`) — a reflection-based walk
+  that finds every `config.ServiceConfig` field sharing both its name and its Go type with an
+  `apigateway.ServiceConfig` field (today: `AllowReadOnlyWrite`, `RequireAccount`; `BaseURL`
+  also matches by name/type but is excluded with a documented reason, since End B1 and End B2
+  deliberately read it from different SOURCE fields — `BaseURL` itself vs. `Endpoint`) and
+  round-trips a distinguishing value through BOTH End B1 and End B2, failing loudly (naming
+  which path dropped it) if either does not carry it through. A same-name/same-type field added
+  to both structs is picked up automatically; the test's own `want` set assertion forces a
+  conscious acknowledgment the first time that happens, rather than a silent pass. Verified by
+  mutation while writing this seam entry: commenting out `DesugarService`'s
+  `RequireAccount: sc.RequireAccount` line fails this test immediately, naming exactly that
+  field and path.
+- **When you touch it**: adding a field to `config.ServiceConfig` that should reach the live
+  API gateway registry (regardless of whether the service was declared `base_url`/`auth` or
+  `uses:`) means: (1) add its `Schema` entry (seam #19), (2) add the field to
+  `apigateway.ServiceConfig`, (3) copy it in `Config.APIGatewayServices()` (End B1), (4) copy
+  it in `DesugarService` (End B2) — unless the field is genuinely exclusive to one shape, in
+  which case add it to `serviceConfigPassthroughExclusions`
+  (`field_propagation_exhaustive_test.go`) with a reason, the same way `BaseURL` already is.
+  `TestServiceConfigFieldPropagation_Exhaustive` re-verifies (3)+(4) with no test-file edit
+  needed as long as the field's name and type match on both structs; `TestServiceConfigSchema_
+  Exhaustive` (seam #19) re-verifies (1) the same way.

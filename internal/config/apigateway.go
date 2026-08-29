@@ -72,6 +72,35 @@ type ServiceConfig struct {
 	// an operator must explicitly opt each service in.
 	AllowReadOnlyWrite bool `yaml:"allow_readonly_write,omitempty"`
 
+	// RequireAccount, when true, rejects (400) any request to this service
+	// that omits the credential-account qualifier (docs/plans/
+	// api-gateway-credential-accounts.md D5 — the request path's service
+	// segment must be "<name>@<account>", not "<name>" alone). It is the
+	// safety valve the design doc's "freee の移行手順" leans on: once an
+	// operator has moved every real caller over to an explicit account
+	// (`freee@ubs` / `freee@nvt`), flipping this on makes a caller that
+	// forgot the "@<account>" qualifier fail loudly (400) instead of
+	// silently resolving whatever account-less secret happens to still be
+	// sitting in the store — the exact "指定漏れが既定アカウントへ落ちる事故"
+	// this field exists to close off. Defaults to false, so every existing
+	// services.<name> entry's behavior is byte-identical until an operator
+	// opts in explicitly (D5's own "既定 false なので既存 service の挙動は
+	// 変わらない").
+	//
+	// Deliberately config.yaml-only (never a project.yaml/task_behaviors
+	// field) — the same posture AllowReadOnlyWrite above documents, and for
+	// the same reason: this is a gateway-level credential-selection
+	// constraint the daemon operator controls, not something a job running
+	// inside the repo should ever be able to toggle. Letting project.yaml
+	// turn this OFF would let a prompt-injected agent silently defeat the
+	// very safety net it exists to provide (an account-less request that
+	// should fail loudly instead reaching whatever credential the
+	// account-less key happens to resolve to); letting it turn this ON
+	// would let a job unilaterally start rejecting its own account-less
+	// requests, an odd but still daemon-operator-only decision about how
+	// THIS service's credentials are meant to be selected.
+	RequireAccount bool `yaml:"require_account,omitempty"`
+
 	// Uses references an installed Integration Pack's service profile
 	// instead of hand-writing BaseURL/Auth (docs/plans/signal-driven-review.md
 	// §7.2, docs/plans/signal-ingest-detailed-design.md §6.1). Format:
@@ -461,6 +490,7 @@ func (c Config) APIGatewayServices() []apigateway.ServiceConfig {
 				Provider:  sc.Auth.Provider,
 			},
 			AllowReadOnlyWrite: sc.AllowReadOnlyWrite,
+			RequireAccount:     sc.RequireAccount,
 		})
 	}
 	return out

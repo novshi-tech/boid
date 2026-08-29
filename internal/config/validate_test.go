@@ -113,6 +113,45 @@ services_floor:
 	}
 }
 
+// TestValidateYAML_Services_RequireAccountAndAllowReadOnlyWrite_Accepted
+// pins the PR #1040 opus review finding (item 1, docs/plans/
+// api-gateway-credential-accounts.md): services.<name>.require_account
+// (D5) and services.<name>.allow_readonly_write both existed on
+// config.ServiceConfig and loaded fine at daemon startup (config.Load),
+// but neither ever got an internal/config/schema.go entry — so
+// ValidateKnownKeys rejected ANY document that set either one as an
+// "unknown config key", which meant `boid config apply -f`/`edit`/`set`/
+// `unset` could never round-trip a config.yaml that had them, and (per
+// MutateConfig's whole-document re-validate) `boid config set` on an
+// UNRELATED key failed the same way once either field was present anywhere
+// in the document. See
+// TestMutateConfig_UnrelatedKey_SucceedsWithRequireAccountPresent
+// (internal/server/config_edit_test.go) for that second-order repro.
+func TestValidateYAML_Services_RequireAccountAndAllowReadOnlyWrite_Accepted(t *testing.T) {
+	data := []byte(`
+services:
+  freee:
+    base_url: https://api.freee.co.jp
+    auth: { kind: oauth2, provider: freee }
+    require_account: true
+    allow_readonly_write: true
+`)
+	cfg, err := ValidateYAML(data)
+	if err != nil {
+		t.Fatalf("ValidateYAML: %v", err)
+	}
+	sc, ok := cfg.Services["freee"]
+	if !ok {
+		t.Fatal("services.freee missing from decoded config")
+	}
+	if !sc.RequireAccount {
+		t.Error("RequireAccount = false, want true")
+	}
+	if !sc.AllowReadOnlyWrite {
+		t.Error("AllowReadOnlyWrite = false, want true")
+	}
+}
+
 func TestValidateYAML_UnknownServiceField(t *testing.T) {
 	data := []byte("services:\n  myapp:\n    bsae_url: https://myapp.example.com\n")
 	_, err := ValidateYAML(data)

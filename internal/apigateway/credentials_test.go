@@ -40,6 +40,30 @@ func TestCredentialProvider_KnowsServiceAndBaseURLFor(t *testing.T) {
 	}
 }
 
+// TestCredentialProvider_RequiresAccount pins docs/plans/api-gateway-
+// credential-accounts.md D5 at the CredentialProvider level: RequiresAccount
+// reflects each service's own ServiceConfig.RequireAccount independently,
+// and an unknown service reports false (see RequiresAccount's own doc
+// comment for why false, specifically, is the right answer there — it
+// preserves BaseURLFor as the single source of truth for "is this service
+// real").
+func TestCredentialProvider_RequiresAccount(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}, RequireAccount: true},
+		{Name: "myapp", BaseURL: "https://myapp.example.com", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
+	}, nil)
+
+	if !c.RequiresAccount("freee") {
+		t.Error(`RequiresAccount("freee") = false, want true`)
+	}
+	if c.RequiresAccount("myapp") {
+		t.Error(`RequiresAccount("myapp") = true, want false (default)`)
+	}
+	if c.RequiresAccount("unknown") {
+		t.Error(`RequiresAccount("unknown") = true, want false`)
+	}
+}
+
 func TestCredentialProvider_InvalidBaseURLSkipped(t *testing.T) {
 	c := NewCredentialProvider([]ServiceConfig{
 		{Name: "broken", BaseURL: "https://example.com/%zz", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "x"}},
@@ -504,6 +528,9 @@ func TestCredentialProvider_NilProviderFailsClosed(t *testing.T) {
 	}
 	if _, ok := c.BaseURLFor("myapp"); ok {
 		t.Error("nil CredentialProvider.BaseURLFor: ok = true, want false")
+	}
+	if c.RequiresAccount("myapp") {
+		t.Error("nil CredentialProvider.RequiresAccount = true, want false")
 	}
 	if err := c.Resolve("ws-a", "myapp", ""); err == nil {
 		t.Error("nil CredentialProvider.Resolve: want error, got nil")

@@ -74,6 +74,30 @@ func TestDesugarService_PropagatesAllowReadOnlyWrite(t *testing.T) {
 	}
 }
 
+// TestDesugarService_PropagatesRequireAccount mirrors
+// TestDesugarService_PropagatesAllowReadOnlyWrite exactly, for
+// config.ServiceConfig.RequireAccount (docs/plans/api-gateway-credential-
+// accounts.md D5): a uses: entry must be able to opt into require_account
+// the same way a free-form base_url/auth entry does via
+// config.APIGatewayServices() — this is the propagation path
+// config.APIGatewayServices() itself never exercises, since a uses: entry
+// is excluded from its output (that method's own doc comment).
+func TestDesugarService_PropagatesRequireAccount(t *testing.T) {
+	sc := config.ServiceConfig{
+		Uses:           "jira-cloud/jira-cloud@1.2.0",
+		Endpoint:       "https://example.atlassian.net",
+		Credentials:    map[string]string{"token": "JIRA_TOKEN"},
+		RequireAccount: true,
+	}
+	got, err := DesugarService("customer-jira", sc, bearerPack(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.RequireAccount {
+		t.Error("RequireAccount = false, want true (config value was dropped by DesugarService)")
+	}
+}
+
 // TestDesugarService_PackNotInstalled pins Q19's "pack 不在" startup-error
 // case: a uses: reference naming a pack/version that isn't among the loaded
 // Packs is a config error, not a nil/zero-value fallback.

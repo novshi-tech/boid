@@ -512,14 +512,18 @@ var restartFieldExtractorExemptions = map[string]string{
 	// diff (called separately, just above the generic loop) already gives
 	// finer-grained warnings than comparing a single wildcard schema entry
 	// ever could.
-	"services.*.base_url":        "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.allow_insecure":  "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.kind":       "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.secret_key": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.username":   "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.header":     "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.query":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.provider":   "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.base_url":       "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.allow_insecure": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	// services.*.allow_readonly_write/require_account (PR #1040 opus
+	// review, item 1) — same reasoning as allow_insecure just above.
+	"services.*.allow_readonly_write": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.require_account":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.kind":            "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.secret_key":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.username":        "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.header":          "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.query":           "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.provider":        "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	// services.*.uses/endpoint/credentials.* (docs/plans/signal-driven-review.md
 	// §7.2, docs/plans/signal-ingest-detailed-design.md §6.1, PR-4) — same
 	// reasoning as the base_url/auth septet above: changedServiceLeaves'
@@ -649,6 +653,18 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			}
 			if o.AllowInsecure != n.AllowInsecure {
 				changed = append(changed, name+".allow_insecure")
+			}
+			// allow_readonly_write / require_account (PR #1040 opus
+			// review, item 1): same per-leaf diff treatment as every
+			// other services.* field in this function — see the
+			// restartFieldExtractorExemptions entries for these two paths
+			// (below) for why they are exempt from the generic loop
+			// instead of getting their own restartFieldExtractors entry.
+			if o.AllowReadOnlyWrite != n.AllowReadOnlyWrite {
+				changed = append(changed, name+".allow_readonly_write")
+			}
+			if o.RequireAccount != n.RequireAccount {
+				changed = append(changed, name+".require_account")
 			}
 			if o.Auth.Kind != n.Auth.Kind {
 				changed = append(changed, name+".auth.kind")
