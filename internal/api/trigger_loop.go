@@ -372,12 +372,14 @@ func (s *TaskWorkflowService) finishTimeOutTriggerRun(
 			"project_id", key.ProjectID, "trigger", key.TriggerName)
 	}
 	if taskID, ok := s.TaskWaits.TaskFor(jobID); ok {
-		if _, err := s.ApplyAction(ctx, taskID, ApplyActionRequest{
+		if _, err := s.applyAction(ctx, taskID, ApplyActionRequest{
 			Type: "abort",
 			Payload: timeoutAbortPayload(fmt.Sprintf(
 				"trigger %s/%s: この巡は timeout (%s) を超えたので打ち切りました (実行時間 %s)",
 				key.ProjectID, key.TriggerName, timeout, overrun.Round(time.Second))),
-		}); err != nil {
+			// actionPayloadOnly: the reason belongs on the abort action, not
+			// merged into the task's own payload — see the option's doc.
+		}, applyActionOptions{actionPayloadOnly: true}); err != nil {
 			if isPermanentAbortRefusal(err) {
 				// The task cannot be aborted and never will be — the card
 				// machine has no `abort` rule, so a registry entry pointing at
@@ -494,7 +496,10 @@ func (s *TaskWorkflowService) drainTimeoutCompletions() []TriggerCompletionResul
 // timeoutAbortPayload renders the abort action payload a timed-out round
 // records. The shape matches abortOnDispatchError's (code + message) so
 // `boid task show --field lifecycle.abort.code` reads the same way for every
-// daemon-initiated abort.
+// daemon-initiated abort — and, like that path, it lands ONLY on the action:
+// the caller passes applyActionOptions{actionPayloadOnly: true}, without which
+// ApplyAction's generic merge would write these two keys into the task's own
+// payload and silently replace an existing `message` there.
 func timeoutAbortPayload(message string) json.RawMessage {
 	payload, err := json.Marshal(map[string]string{"code": "trigger_timeout", "message": message})
 	if err != nil {

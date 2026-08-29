@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -425,14 +426,7 @@ func TestSweepTriggers_PastTimeout_TransientAbortFailureKeepsTheRunInFlight(t *t
 	if _, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute)); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	// Give the goroutine time to run and decide NOT to complete.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, held := svc.timeoutHeld(run.ID); !held {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitForTimeoutGoroutine(t, svc, run.ID)
 	if drained := svc.drainTimeoutCompletions(); len(drained) != 0 {
 		t.Fatalf("stashed completion = %+v, want none — a transient abort failure must not close the run", drained)
 	}
@@ -574,13 +568,7 @@ func TestSweepTriggers_PastTimeout_FailingTaskReadIsTransientNotPermanent(t *tes
 	if _, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute)); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, held := svc.timeoutHeld(run.ID); !held {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitForTimeoutGoroutine(t, svc, run.ID)
 	if drained := svc.drainTimeoutCompletions(); len(drained) != 0 {
 		t.Fatalf("stashed completion = %+v, want none — a failed READ is not a task refusing abort", drained)
 	}
@@ -621,5 +609,121 @@ func TestSweepTriggers_PastTimeout_MissingTaskIsPermanent(t *testing.T) {
 	drained := waitForTimeoutCompletion(t, svc)
 	if len(drained) != 1 || drained[0].ExitCode != TriggerTimeoutExitCode {
 		t.Fatalf("stashed completion = %+v, want the run ended (nothing to abort)", drained)
+	}
+}
+
+// The timeout reason must land ONLY on the abort action, never merged into the
+// task's own payload. ApplyAction's generic merge writes a non-side-effect
+// action's payload into `task.Exec.Payload`, so a `{code, message}` abort
+// reason would silently replace an existing top-level `message` there — an
+// ordinary key for signal-derived work, and visible afterwards in
+// `boid task show --field payload`, the Web UI, and `boid task payload` if the
+// task is later reopened (aborted → executing is a first-class edge).
+//
+// abortOnDispatchError, the other daemon-initiated abort, avoids this by
+// writing the action directly; this path keeps ApplyAction for its legality
+// check and opts out of the merge instead.
+func TestSweepTriggers_PastTimeout_AbortReasonDoesNotOverwriteTheTaskPayload(t *testing.T) {
+	svc, jobs, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
+	})
+	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
+	tx := &stubTx{}
+	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
+		ID:        "round-task",
+		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
+		Status:    orchestrator.TaskStatusExecuting,
+		Exec: &orchestrator.ExecAttrs{
+			Behavior: "sweep",
+			Payload:  []byte(`{"message":"the real work item","other":1}`),
+		},
+	}}
+	svc.Tx = tx
+	svc.Lifecycle = &stubLifecycle{}
+	svc.TaskWaits = NewTaskWaitRegistry()
+	svc.TaskWaits.Register("job-1", "round-task")
+
+	t0 := time.Now()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	if _, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute)); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	waitForTimeoutCompletion(t, svc)
+
+	// The reason IS on the action — that is what lifecycle.abort.code reads.
+	if tx.createdAction == nil || !strings.Contains(string(tx.createdAction.Payload), "trigger_timeout") {
+		t.Fatalf("action payload = %v, want the trigger_timeout reason", tx.createdAction)
+	}
+	// ...and NOT in the task's payload.
+	if tx.updatedTask == nil || tx.updatedTask.Exec == nil {
+		t.Fatal("no task update recorded")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(tx.updatedTask.Exec.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal task payload: %v", err)
+	}
+	if got := payload["message"]; got != "the real work item" {
+		t.Errorf("task payload message = %v, want it untouched — the abort reason overwrote it", got)
+	}
+	if _, leaked := payload["code"]; leaked {
+		t.Errorf("task payload = %v, want no `code` key — the abort reason leaked into the task", payload)
+	}
+}
+
+// waitForTimeoutGoroutine blocks until the goroutine holding runID has
+// released it, and FAILS if it never does. The earlier version of this wait
+// just broke out of its loop on the deadline, so a slow goroutine turned the
+// "nothing was stashed" assertion that follows into a vacuous pass.
+func waitForTimeoutGoroutine(t *testing.T, svc *TaskWorkflowService, runID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, held := svc.timeoutHeld(runID); !held {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the timeout goroutine never released the run — the assertions after this would be vacuous")
+}
+
+// The loser of the close race must NOT report a completion. Two closers race
+// for the same row: reconcileInFlight (the job reached a terminal status,
+// which the abort itself causes) and this goroutine. The store guard makes the
+// second write fail; this pins the loop's half — that the goroutine then stays
+// quiet, instead of stashing a second completion and counting one round twice
+// against the fail streak.
+func TestSweepTriggers_PastTimeout_LosingTheCloseRaceReportsNothing(t *testing.T) {
+	svc, jobs, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
+	})
+	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
+	svc.Tx = &stubTx{}
+	svc.Lifecycle = &stubLifecycle{}
+	svc.TaskWaits = NewTaskWaitRegistry()
+
+	t0 := time.Now()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	// The other closer got there first — exactly what reconcileInFlight does
+	// when it sees the job terminal while this goroutine is still working.
+	if err := svc.Triggers.CompleteTriggerRun(run.ID, t0.Add(time.Minute), 1); err != nil {
+		t.Fatalf("seed the winning close: %v", err)
+	}
+
+	// Drive the timeout path directly: with the row already closed it is no
+	// longer in flight, so a full sweep would not reach the branch at all.
+	svc.beginTimeOutTriggerRun(context.Background(), TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"},
+		run, 30*time.Minute)
+	waitForTimeoutGoroutine(t, svc, run.ID)
+
+	if drained := svc.drainTimeoutCompletions(); len(drained) != 0 {
+		t.Fatalf("stashed completion = %+v, want none — the loser must not report the round a second time", drained)
 	}
 }

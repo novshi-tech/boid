@@ -165,11 +165,15 @@ func DeleteTriggerRun(dbtx db.DBTX, id string) error {
 	return nil
 }
 
-// CompleteTriggerRun records a run's terminal outcome. Idempotent in the
-// sense that re-completing an already-finished row just overwrites
-// finished_at/exit_code with the new values (the trigger sweep loop only
-// ever calls this once per row in normal operation, but a fail-open retry
-// path — see trigger_loop.go — must not error on a second call).
+// CompleteTriggerRun records a run's terminal outcome, exactly once per row.
+//
+// It is NOT idempotent, deliberately: a second call on an already-finished row
+// is refused with ErrTriggerRunAlreadyFinished rather than overwriting
+// finished_at/exit_code. It used to overwrite, on the stated grounds that a
+// fail-open retry path must not error on a second call — but no caller
+// double-calls (selfHealStaleTriggerRun, reconcileInFlight and
+// finishTimeOutTriggerRun each close a row once), and overwriting hid a real
+// race between the two independent closers. See the guard's own comment below.
 func CompleteTriggerRun(dbtx db.DBTX, id string, finishedAt time.Time, exitCode int) error {
 	if id == "" {
 		return fmt.Errorf("complete trigger run: id must not be empty")
