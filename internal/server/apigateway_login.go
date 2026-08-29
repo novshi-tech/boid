@@ -43,6 +43,7 @@ func (a *apiGatewayLoginAdapter) StartLogin(namespace, provider, redirectURI, ac
 	return &api.OAuthLoginStart{
 		SessionID:               start.SessionID,
 		Flow:                    string(start.Flow),
+		Account:                 start.Account,
 		AuthorizeURL:            start.AuthorizeURL,
 		UserCode:                start.UserCode,
 		VerificationURI:         start.VerificationURI,

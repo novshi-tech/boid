@@ -1002,6 +1002,44 @@ func TestLoginManager_CompleteLogin_Loopback_WithAccount_PersistsAccountQualifie
 	}
 }
 
+// TestLoginManager_CompleteLogin_Manual_WithAccount_PriorReadIsAccountQualified
+// pins docs/plans/api-gateway-credential-accounts.md review item #3:
+// exchangeAndPersist's priorRefreshToken read (used ONLY to detect "the
+// provider did not rotate, skip the write" — persistGrant's own doc comment)
+// must be keyed by the ACCOUNT-QUALIFIED credential
+// (OAuthSecretKey(cred.secretPrefix(), ...)), never by cfg.Name/provider
+// alone. If that read were mistakenly keyed by the unqualified provider name
+// instead, a fresh --account login whose provider happens to return the
+// exact same refresh_token already sitting under the UNQUALIFIED key (seeded
+// here to simulate a prior unqualified login) would look like "unrotated",
+// and persistGrant would skip writing the account-qualified key entirely —
+// the account-qualified credential would then never be written at all, even
+// though CompleteLogin reports success. This regression is otherwise
+// invisible: every existing WithAccount test's provider only ever returns a
+// refresh_token that has never been seen at any OTHER key before.
+func TestLoginManager_CompleteLogin_Manual_WithAccount_PriorReadIsAccountQualified(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "oauth2:freee:refresh_token", "RT1")
+	tokenSrv := newSequencedServer(t, cannedResp{http.StatusOK, tokenJSON("AT1", "RT1", 3600)})
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "freee", ClientID: "cid", TokenEndpoint: tokenSrv.url(),
+		Flow: LoginFlowManual, AuthorizationEndpoint: "https://accounts.secure.freee.co.jp/public_api/authorize",
+	}}, store.resolver(), store.writer())
+	lm := NewLoginManager(ts)
+
+	start, err := lm.StartLogin("ws-a", "freee", "", "ubs")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	if err := lm.CompleteLogin(start.SessionID, "OOB-CODE", ""); err != nil {
+		t.Fatalf("CompleteLogin: %v", err)
+	}
+
+	if v, _ := store.get("ws-a", "oauth2:freee@ubs:refresh_token"); v != "RT1" {
+		t.Errorf("persisted refresh_token at oauth2:freee@ubs:refresh_token = %q, want RT1 (must not be suppressed by the UNQUALIFIED key already holding the same value)", v)
+	}
+}
+
 func TestLoginManager_CompleteLogin_Manual_WithAccount_PersistsAccountQualifiedKey(t *testing.T) {
 	store := newMemSecretStore()
 	store.seed("ws-a", "freee-secret", "shh-client-secret")
@@ -1064,6 +1102,38 @@ func TestLoginManager_StartDevice_WithAccount_PersistsAccountQualifiedKey(t *tes
 	}
 	if got := tokenSrv.formAt(0).Get("client_secret"); got != "shh-gh-secret" {
 		t.Errorf("client_secret = %q, want shh-gh-secret (D7: client_secret_key must not be account-qualified)", got)
+	}
+}
+
+// TestLoginManager_StartDevice_WithAccount_PriorReadIsAccountQualified is
+// TestLoginManager_CompleteLogin_Manual_WithAccount_PriorReadIsAccountQualified's
+// device-flow counterpart (docs/plans/api-gateway-credential-accounts.md
+// review item #3) — pollDeviceGrant has its OWN, independent
+// priorRefreshToken read (it does not go through exchangeAndPersist at all),
+// so a regression there is a SEPARATE mutation from the manual/loopback one
+// and needs its own test to catch it.
+func TestLoginManager_StartDevice_WithAccount_PriorReadIsAccountQualified(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "oauth2:github:refresh_token", "RT1")
+	deviceSrv := newSequencedServer(t, cannedResp{http.StatusOK, deviceAuthJSON("DC1", "USER-CODE", "https://example.com/device", "", 30, 1)})
+	tokenSrv := newSequencedServer(t, cannedResp{http.StatusOK, tokenJSON("AT1", "RT1", 3600)})
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "github", ClientID: "cid", TokenEndpoint: tokenSrv.url(),
+		Flow: LoginFlowDevice, DeviceAuthorizationEndpoint: deviceSrv.url(),
+	}}, store.resolver(), store.writer())
+	lm := NewLoginManager(ts)
+
+	start, err := lm.StartLogin("ws-a", "github", "", "ubs")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	status, errMsg := waitForStatus(t, lm, start.SessionID, 5*time.Second)
+	if status != LoginStatusComplete {
+		t.Fatalf("status = %v (%s), want complete", status, errMsg)
+	}
+
+	if v, _ := store.get("ws-a", "oauth2:github@ubs:refresh_token"); v != "RT1" {
+		t.Errorf("persisted refresh_token at oauth2:github@ubs:refresh_token = %q, want RT1 (must not be suppressed by the UNQUALIFIED key already holding the same value)", v)
 	}
 }
 

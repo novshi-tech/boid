@@ -61,8 +61,12 @@ type OAuthLoginService interface {
 // narrow service interface with its own DTOs, not a concrete backend
 // package's types" convention api.SecretHandler/api.WorkspaceHandler follow.
 type OAuthLoginStart struct {
-	SessionID               string
-	Flow                    string
+	SessionID string
+	Flow      string
+	// Account mirrors apigateway.LoginStart.Account — see that field's own
+	// doc comment for why it exists (version-skew detection, docs/plans/
+	// api-gateway-credential-accounts.md review item #2).
+	Account                 string
 	AuthorizeURL            string
 	UserCode                string
 	VerificationURI         string
@@ -112,8 +116,15 @@ type oauthLoginStartRequest struct {
 }
 
 type oauthLoginStartResponse struct {
-	SessionID               string `json:"session_id"`
-	Flow                    string `json:"flow"`
+	SessionID string `json:"session_id"`
+	Flow      string `json:"flow"`
+	// Account echoes back oauthLoginStartRequest.Account — see
+	// api.OAuthLoginStart.Account's own doc comment for why (an older CLI
+	// build talking to THIS daemon never reads this field at all, so
+	// omitempty here costs it nothing; a newer CLI build uses it to detect
+	// the reverse skew — see cmd/secret_oauth.go's own oauthLoginStartResponse
+	// and its post-Start comparison).
+	Account                 string `json:"account,omitempty"`
 	AuthorizeURL            string `json:"authorize_url,omitempty"`
 	UserCode                string `json:"user_code,omitempty"`
 	VerificationURI         string `json:"verification_uri,omitempty"`
@@ -182,6 +193,7 @@ func (h *OAuthLoginHandler) Start(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, oauthLoginStartResponse{
 		SessionID:               start.SessionID,
 		Flow:                    start.Flow,
+		Account:                 start.Account,
 		AuthorizeURL:            start.AuthorizeURL,
 		UserCode:                start.UserCode,
 		VerificationURI:         start.VerificationURI,

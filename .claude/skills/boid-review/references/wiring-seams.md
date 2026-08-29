@@ -1402,11 +1402,18 @@ DTOs, per the `cmd/login.go` precedent of not importing server-internal unexport
   package). A JSON field renamed on the End C struct without the identical rename on this one
   silently breaks the CLI (a field either vanishes on decode, or double-decodes as its zero
   value) with NO compiler error on either side — struct tags are strings, not types.
-- **Invariant**: every field that must reach the CLI (`SessionID`/`Flow`/`AuthorizeURL`/
-  `UserCode`/`VerificationURI`/`VerificationURIComplete`/`IntervalSeconds`/`ExpiresInSeconds`)
-  must be present, correctly JSON-tagged, and correctly copied at EVERY one of the five ends
-  above — a `SortedByName`/`Name`-only-style test at any single hop would not catch a dropped
-  field the same way seam #23's own past break didn't.
+- **Invariant**: every field that must reach the CLI (`SessionID`/`Flow`/`Account`/
+  `AuthorizeURL`/`UserCode`/`VerificationURI`/`VerificationURIComplete`/`IntervalSeconds`/
+  `ExpiresInSeconds`) must be present, correctly JSON-tagged, and correctly copied at EVERY one
+  of the five ends above — a `SortedByName`/`Name`-only-style test at any single hop would not
+  catch a dropped field the same way seam #23's own past break didn't. This is NOT
+  response-direction-only: `oauthLoginStartRequest.Account` (End C, `internal/api/
+  oauth_login.go`) and its DUPLICATED mirror on `cmd/secret_oauth.go`'s own
+  `oauthLoginStartRequest` (End E) must carry the identical `json:"account,omitempty"` tag —
+  renaming one side's tag compiles cleanly on BOTH sides (struct tags are strings, not types,
+  the exact same failure shape already described above for the response struct) and makes
+  `--account` silently do nothing: the field just fails to decode server-side, StartLogin runs
+  an ordinary unqualified login, and no error surfaces anywhere in the round trip.
 - **Past break**: caught in review (boid-review self-check before PR3's first push): End B
   (`apiGatewayLoginAdapter`) shipped with ZERO test coverage at all — `internal/api/
   oauth_login_test.go` only exercises End C against a HAND-ROLLED FAKE `OAuthLoginService`
@@ -1448,6 +1455,50 @@ DTOs, per the `cmd/login.go` precedent of not importing server-internal unexport
   `ExpiresInSeconds`/ticker `interval` short enough that the goroutine self-terminates almost
   immediately — never leave one running against a placeholder that could resolve to a REAL
   host on the network.
+- **Credential-accounts PR-3 update (2026-08-30)**: `docs/plans/
+  api-gateway-credential-accounts.md` D9 (`boid secret oauth login --account`) touched all FIVE
+  ends this entry documents, in both directions:
+  - `LoginManager.StartLogin`'s signature (End A) grew a fourth plain-string parameter:
+    `(namespace, provider, redirectURI, account string)` — four adjacent, same-typed strings a
+    call site can permute and still have it compile, the identical hazard seam #21's
+    Credential-accounts PR-1 update already called out for `Resolve`/`Inject`'s three adjacent
+    strings (`namespace, name, account`). `api.OAuthLoginService.StartLogin` (End C's interface)
+    and `apiGatewayLoginAdapter.StartLogin` (End B) mirror the same four-parameter order, so a
+    reorder at any one of these three call sites (End A/B/C) would silently swap `redirectURI`
+    and `account` at runtime with no compiler error — `redirectURI` is ignored for
+    device/manual flows and `account` is validated (non-empty must match `[A-Za-z0-9_-]{1,64}`),
+    so the failure would likely surface as a confusing validation error on `redirectURI`'s value
+    rather than a clean type mismatch, making it easy to misdiagnose.
+  - Request DIRECTION also gained a duplicated field for the first time on this seam:
+    `oauthLoginStartRequest.Account`, independently declared on both End C
+    (`internal/api/oauth_login.go`) and End E (`cmd/secret_oauth.go`) — see the Invariant note
+    above for why a JSON-tag rename on only one side is a silent, compiler-invisible break, the
+    same shape as every RESPONSE field this entry already tracked, just running the other way.
+  - Item 2 of this same review round (docs/plans/api-gateway-credential-accounts.md) added
+    `Account` to the RESPONSE side too — `apigateway.LoginStart.Account` (End A) through
+    `api.OAuthLoginStart.Account` (End B) and both `oauthLoginStartResponse.Account` structs
+    (End C/End E) — specifically so the CLI (End E) can detect a daemon (End A-D) old enough to
+    silently ignore `--account` altogether (an old daemon's request DTO has no `account` field
+    to decode into, so `StartLogin` there runs an ordinary unqualified login and this new
+    response field always comes back `""` regardless of what the CLI asked for). This is the
+    same "five places, not two" list the "When you touch it" bullet above already gives.
+  - **Guard extension**: `TestAPIGatewayLoginAdapter_StartLogin_AccountFieldMapping`
+    (`internal/server/apigateway_login_test.go`, End A→B for `Account` specifically — the
+    existing `_FieldMapping` test only asserted `Account == ""` for an unqualified call and
+    would not have caught a dropped/swapped `Account` copy line on its own),
+    `TestOAuthLoginHandler_Start_ResponseEchoesAccount` (`internal/api/oauth_login_test.go`, End
+    C's response-side wire encoding), `TestSecretOAuthLogin_AccountEchoMismatch_
+    AbortsBeforeComplete`/`TestSecretOAuthLogin_AccountEchoMatch_Proceeds`/
+    `TestSecretOAuthLogin_NoAccountFlag_NoEchoMismatchFalsePositive` (`cmd/secret_oauth_test.go`,
+    End E's actual version-skew-detection behavior — not just wire encoding, the CLI's real
+    abort-before-any-flow-dispatch decision), and `TestLoginManager_CompleteLogin_Manual_
+    WithAccount_PriorReadIsAccountQualified` /
+    `TestLoginManager_StartDevice_WithAccount_PriorReadIsAccountQualified`
+    (`internal/apigateway/login_test.go`, End A only — pins that `exchangeAndPersist`'s and
+    `pollDeviceGrant`'s OWN, independent `priorRefreshToken` reads stay keyed by the
+    account-qualified credential; a regression to the unqualified `cfg.Name` key here survives
+    every pre-existing test in the tree, since none of them seed the SAME refresh_token value
+    under the unqualified key first).
 
 ## 25. orchestrator.Action.Actor ctx propagation
 

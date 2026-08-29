@@ -41,6 +41,7 @@ func setupSecretOAuthLoginCmd(t *testing.T, srv *httptest.Server, timeout time.D
 		_ = cmd.Flags().Set("namespace", prevNamespace)
 		cmd.Flags().Set("timeout", prevTimeout.String())
 		cmd.Flags().Set("account", prevAccount)
+		cmd.Flags().Lookup("account").Changed = false
 	})
 
 	out := &bytes.Buffer{}
@@ -63,6 +64,17 @@ func setupSecretOAuthLoginCmd(t *testing.T, srv *httptest.Server, timeout time.D
 	if err := cmd.Flags().Set("account", ""); err != nil {
 		t.Fatalf("set account flag: %v", err)
 	}
+	// Set() above unconditionally marks the flag Changed=true, which would
+	// otherwise make every test that uses this helper look, to
+	// cmd.Flags().Changed("account"), exactly like a real invocation that
+	// passed `--account ""` explicitly — runSecretOAuthLogin treats that as
+	// a hard error (see its own doc comment on that check). Resetting
+	// Changed back to false here restores the "flag never touched" state a
+	// real, single-invocation process would start in; a test that DOES want
+	// to simulate `--account <anything>` (including an explicitly empty
+	// one) calls cmd.Flags().Set("account", ...) itself AFTER this helper
+	// returns, which re-sets Changed=true again for that one test.
+	cmd.Flags().Lookup("account").Changed = false
 	return out
 }
 
@@ -405,7 +417,8 @@ func TestSecretOAuthLogin_AccountFlag_SentToServer(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			gotAccount = req.Account
 			writeJSONResponse(t, w, oauthLoginStartResponse{
-				SessionID: "sess-1", Flow: "manual", AuthorizeURL: "https://accounts.secure.freee.co.jp/public_api/authorize",
+				SessionID: "sess-1", Flow: "manual", Account: req.Account,
+				AuthorizeURL: "https://accounts.secure.freee.co.jp/public_api/authorize",
 			})
 		case r.Method == "POST" && r.URL.Path == "/api/oauth/login/sess-1/complete":
 			writeJSONResponse(t, w, map[string]string{"status": "complete"})
@@ -487,6 +500,136 @@ func TestSecretOAuthLogin_InvalidAccountRejectedClientSide(t *testing.T) {
 	}
 	if serverHit {
 		t.Error("daemon was contacted despite an invalid --account")
+	}
+}
+
+// TestSecretOAuthLogin_ExplicitEmptyAccountRejectedClientSide pins the review
+// item #2 fix (docs/plans/api-gateway-credential-accounts.md): an explicit
+// `--account ""` must be rejected exactly like any other invalid --account —
+// NOT silently treated as "no account requested" the way an omitted flag is.
+// Without this, the CLI would reach the daemon with account == "" and write
+// the UNQUALIFIED credential, while the gateway's own request routing 400s an
+// inbound request whose account segment is empty (D3/D11) — a login that
+// "succeeds" here would be writing to a key that, once PR-4's
+// require_account ships, no request could ever read back.
+func TestSecretOAuthLogin_ExplicitEmptyAccountRejectedClientSide(t *testing.T) {
+	var serverHit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverHit = true
+		t.Errorf("unexpected request %s %s — an explicit --account \"\" must be rejected before any daemon round trip", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	setupSecretOAuthLoginCmd(t, srv, time.Second, "")
+	if err := secretOAuthLoginCmd.Flags().Set("account", ""); err != nil {
+		t.Fatalf("set account flag: %v", err)
+	}
+	err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"freee"})
+	if err == nil {
+		t.Fatal("want error for an explicit --account \"\", got nil")
+	}
+	if serverHit {
+		t.Error("daemon was contacted despite an explicit --account \"\"")
+	}
+}
+
+// TestSecretOAuthLogin_AccountEchoMismatch_AbortsBeforeComplete pins review
+// item #2: if the daemon's /api/oauth/login response does not echo back the
+// --account this CLI just sent — the CLI/newer-than-daemon version-skew
+// case, where an old daemon build silently has no `account` field on its
+// request DTO at all and always runs an unqualified login — this command
+// must abort BEFORE dispatching to any flow (never open a browser tab, never
+// wait on a device code, never call .../complete). Simulates the old daemon
+// literally by never setting Account on the start response.
+func TestSecretOAuthLogin_AccountEchoMismatch_AbortsBeforeComplete(t *testing.T) {
+	var completeHit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login":
+			// An old daemon's response — no "account" field at all, exactly
+			// as if oauthLoginStartResponse.Account did not exist yet.
+			writeJSONResponse(t, w, oauthLoginStartResponse{
+				SessionID: "sess-1", Flow: "manual", AuthorizeURL: "https://accounts.secure.freee.co.jp/public_api/authorize",
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login/sess-1/complete":
+			completeHit = true
+			writeJSONResponse(t, w, map[string]string{"status": "complete"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	setupSecretOAuthLoginCmd(t, srv, time.Second, "OOB-CODE\n")
+	if err := secretOAuthLoginCmd.Flags().Set("account", "ubs"); err != nil {
+		t.Fatalf("set account flag: %v", err)
+	}
+	err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"freee"})
+	if err == nil {
+		t.Fatal("want error for an account echo mismatch, got nil")
+	}
+	if completeHit {
+		t.Error(".../complete was called despite an account echo mismatch — the CLI must abort before dispatching to any flow")
+	}
+}
+
+// TestSecretOAuthLogin_AccountEchoMatch_Proceeds is
+// TestSecretOAuthLogin_AccountEchoMismatch_AbortsBeforeComplete's positive
+// counterpart: when the daemon DOES echo back the requested --account, the
+// login proceeds exactly as before this check existed.
+func TestSecretOAuthLogin_AccountEchoMatch_Proceeds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login":
+			writeJSONResponse(t, w, oauthLoginStartResponse{
+				SessionID: "sess-1", Flow: "manual", Account: "ubs",
+				AuthorizeURL: "https://accounts.secure.freee.co.jp/public_api/authorize",
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login/sess-1/complete":
+			writeJSONResponse(t, w, map[string]string{"status": "complete"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	setupSecretOAuthLoginCmd(t, srv, time.Second, "OOB-CODE\n")
+	if err := secretOAuthLoginCmd.Flags().Set("account", "ubs"); err != nil {
+		t.Fatalf("set account flag: %v", err)
+	}
+	if err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"freee"}); err != nil {
+		t.Fatalf("runSecretOAuthLogin: %v", err)
+	}
+}
+
+// TestSecretOAuthLogin_NoAccountFlag_NoEchoMismatchFalsePositive is the
+// no-account-requested counterpart of the two tests above: an old daemon
+// that never sets Account on its response (because the field does not exist
+// for it) must NOT be flagged as a mismatch when --account was never passed
+// in the first place — both sides are "" and that is exactly what "no
+// account" has always looked like on the wire (D2).
+func TestSecretOAuthLogin_NoAccountFlag_NoEchoMismatchFalsePositive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login":
+			writeJSONResponse(t, w, oauthLoginStartResponse{
+				SessionID: "sess-1", Flow: "manual", AuthorizeURL: "https://accounts.secure.freee.co.jp/public_api/authorize",
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login/sess-1/complete":
+			writeJSONResponse(t, w, map[string]string{"status": "complete"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	setupSecretOAuthLoginCmd(t, srv, time.Second, "OOB-CODE\n")
+	if err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"freee"}); err != nil {
+		t.Fatalf("runSecretOAuthLogin: %v", err)
 	}
 }
 

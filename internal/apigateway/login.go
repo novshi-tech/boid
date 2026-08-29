@@ -123,6 +123,20 @@ type LoginStart struct {
 	SessionID string
 	Flow      LoginFlow
 
+	// Account echoes back the account StartLogin was actually called with —
+	// "" for an ordinary unqualified login, byte-identical to every caller
+	// that predates this field. This exists SOLELY so a caller across a
+	// version-skew boundary (an older daemon build that does not know about
+	// --account at all) can detect that mismatch: an old daemon's StartLogin
+	// unconditionally ignores whatever account its own outdated request DTO
+	// never had a field for, always returning "" here regardless of what the
+	// CLI asked for — see cmd/secret_oauth.go's own post-Start comparison for
+	// why silently proceeding on that mismatch is dangerous (a login the
+	// CLI believes is account-qualified would actually overwrite the
+	// unqualified credential, freee-refresh-token-rotation and all —
+	// docs/plans/api-gateway-credential-accounts.md review item #2).
+	Account string
+
 	// loopback/manual only.
 	AuthorizeURL string
 
@@ -332,7 +346,7 @@ func (m *LoginManager) startLoopback(namespace string, cfg OAuthProviderConfig, 
 	}
 	m.put(p)
 
-	return &LoginStart{SessionID: p.id, Flow: LoginFlowLoopback, AuthorizeURL: authURL}, nil
+	return &LoginStart{SessionID: p.id, Flow: LoginFlowLoopback, Account: account, AuthorizeURL: authURL}, nil
 }
 
 // startManual implements docs/plans/api-gateway.md §7's manual/OOB flow: no
@@ -358,7 +372,7 @@ func (m *LoginManager) startManual(namespace string, cfg OAuthProviderConfig, ac
 	}
 	m.put(p)
 
-	return &LoginStart{SessionID: p.id, Flow: LoginFlowManual, AuthorizeURL: authURL}, nil
+	return &LoginStart{SessionID: p.id, Flow: LoginFlowManual, Account: account, AuthorizeURL: authURL}, nil
 }
 
 // buildAuthorizeURL builds the RFC 6749 §3.1 authorization request URL
@@ -615,6 +629,7 @@ func (m *LoginManager) startDevice(namespace string, cfg OAuthProviderConfig, ac
 	return &LoginStart{
 		SessionID:               p.id,
 		Flow:                    LoginFlowDevice,
+		Account:                 account,
 		UserCode:                dresp.UserCode,
 		VerificationURI:         dresp.VerificationURI,
 		VerificationURIComplete: dresp.VerificationURIComplete,

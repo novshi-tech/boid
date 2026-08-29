@@ -118,6 +118,27 @@ func TestAPIGatewayLoginAdapter_StartLogin_FieldMapping(t *testing.T) {
 	if start.IntervalSeconds != 0 || start.ExpiresInSeconds != 0 {
 		t.Errorf("device-only numeric fields non-zero for a manual flow: %+v", start)
 	}
+	if start.Account != "" {
+		t.Errorf("Account = %q, want empty for an unqualified StartLogin call", start.Account)
+	}
+}
+
+// TestAPIGatewayLoginAdapter_StartLogin_AccountFieldMapping is
+// TestAPIGatewayLoginAdapter_StartLogin_FieldMapping's account-qualified
+// counterpart (docs/plans/api-gateway-credential-accounts.md review item #2)
+// — pins that the account StartLogin was called with survives this adapter's
+// hand-written field-by-field copy into api.OAuthLoginStart just like every
+// other field seam #24's Invariant lists.
+func TestAPIGatewayLoginAdapter_StartLogin_AccountFieldMapping(t *testing.T) {
+	adapter, _ := newTestLoginAdapter(t, "https://example.com/token")
+
+	start, err := adapter.StartLogin("ws-a", "freee-provider", "", "ubs")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	if start.Account != "ubs" {
+		t.Errorf("Account = %q, want ubs", start.Account)
+	}
 }
 
 func TestAPIGatewayLoginAdapter_StartLogin_UnknownProviderError(t *testing.T) {

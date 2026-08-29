@@ -315,6 +315,38 @@ func TestOAuthLoginHandler_Start_OmittedAccountFieldMeansUnqualified(t *testing.
 	}
 }
 
+// TestOAuthLoginHandler_Start_ResponseEchoesAccount pins docs/plans/
+// api-gateway-credential-accounts.md review item #2's response half: the
+// account OAuthLoginStart.Account carries back from StartLogin reaches the
+// wire response's "account" field — the CLI's own version-skew guard
+// (cmd/secret_oauth.go's post-Start comparison) depends on this actually
+// being on the wire, not just present on the Go struct.
+func TestOAuthLoginHandler_Start_ResponseEchoesAccount(t *testing.T) {
+	fake := &fakeOAuthLoginService{
+		providers:   map[string]string{"freee": "freee-provider"},
+		startResult: &OAuthLoginStart{SessionID: "sess-1", Flow: "manual", Account: "ubs"},
+	}
+	srv := newOAuthLoginTestServer(fake)
+	defer srv.Close()
+
+	body, _ := json.Marshal(oauthLoginStartRequest{Service: "freee", Account: "ubs"})
+	resp, err := http.Post(srv.URL+"/api/oauth/login", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var out oauthLoginStartResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Account != "ubs" {
+		t.Errorf("response account = %q, want ubs", out.Account)
+	}
+}
+
 // TestOAuthLoginHandler_Start_AcceptsProviderName pins that the login
 // argument may name an oauth_providers.<name> directly, not only a
 // services.<name> entry.
