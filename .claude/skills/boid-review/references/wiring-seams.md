@@ -1700,3 +1700,39 @@ enforcement point between them.
   restricted value at ONE place (`BuildSessionJobSpec`, not the caller) is the pattern this PR
   converged on after the fix — prefer extending that one function's `if input.ConnectorPolicy`
   block over adding a second call site that has to remember to replicate it.
+
+## 31. blocking brokered op ↔ per-connection cancellation (`isBlockingBoidRequest`)
+
+- **Files**: `internal/sandbox/broker.go` (`handleConn`, `isBlockingBoidRequest`, `watchConnClose`),
+  plus every op that blocks server-side (today: `BoidOpTaskAsk`, `BoidOpTaskWait`).
+- **What connects to what**: `handleConn` runs a request on `b.baseContext()` — the broker's
+  daemon-lifetime context — and only wraps it in a connection-scoped `context.WithCancel` +
+  `go watchConnClose(conn, cancel)` when `isBlockingBoidRequest(&req)` returns true. That predicate
+  is an **explicit per-op allowlist**, not a property derived from the op's behavior.
+- **Invariant**: every op whose executor blocks must be listed in `isBlockingBoidRequest`.
+- **Why it is a seam and not a detail**: an op left off the list still works, still blocks, and
+  passes every op-specific test — it just never learns that its caller died. The daemon-side wait
+  keeps running (holding a goroutine, a connection FD, and whatever it polls) until daemon
+  shutdown. There is **no symptom at the call site**: the sandbox is already gone, and nothing
+  else severs it — there is no server-side write/idle deadline anywhere on the broker path and no
+  client-side timeout in `brokerclient`.
+- **Past break (self-review, PR #1032)**: `task_wait` shipped its first draft with doc comments in
+  three files (`internal/api/task_wait.go`, `internal/sandbox/protocol.go`,
+  `internal/server/boid_executor.go`) plus the agent-facing
+  `internal/skills/data/boid-task/references/builtins.md` all stating that the broker cancels the
+  wait "on daemon shutdown / sandbox disconnect" — while `isBlockingAskRequest` (as it was then
+  named) was hard-coded to `req.Boid.Op == BoidOpTaskAsk`. The comments were copied from `task_ask`
+  along with the executor shape; the mechanism was not. A workspace killing its own
+  `boid task wait` (a `timeout` in the `run:` string, `boid job kill`, an OOM'd job container)
+  would have leaked a poller per abandoned round.
+- **Guard**: `TestBroker_TaskWait_ConnCloseCancelsContext`
+  (`internal/sandbox/broker_task_wait_test.go`) and its twin
+  `TestBroker_TaskAsk_ConnCloseCancelsContext` (`internal/sandbox/broker_test.go`) drive the live
+  `handleConn` path over a real socket, close the connection mid-call, and assert the executor's
+  context is cancelled. Both use `ctxBlockingExecutor`. Verified by mutation: removing
+  `BoidOpTaskWait` from the switch fails the first test in ~2s.
+- **When you touch it**: adding a blocking op means adding it to `isBlockingBoidRequest` AND
+  writing its conn-close twin test — the `boid-add-builtin` checklist's three registries do not
+  cover this one. Note also `internal/sandbox/broker_streaming_linux.go`'s `handleStreamingExec`
+  calls `b.Handle(req)` with `baseContext()` unconditionally; a blocking boid op arriving with
+  `Streaming=true` would bypass this seam entirely.

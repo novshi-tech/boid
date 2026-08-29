@@ -238,10 +238,10 @@ func (b *Broker) handleConn(conn net.Conn) {
 	}
 
 	ctx := b.baseContext()
-	// A blocking ask holds this connection open until an answer arrives. Tie a
+	// A blocking op holds this connection open until its event arrives. Tie a
 	// per-connection context to the socket so that if the sandbox dies (or the
 	// daemon shuts down) the server-side wait unblocks instead of leaking.
-	if isBlockingAskRequest(&req) {
+	if isBlockingBoidRequest(&req) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)
 		defer cancel()
@@ -252,10 +252,27 @@ func (b *Broker) handleConn(conn net.Conn) {
 	_ = json.NewEncoder(conn).Encode(resp) // best-effort; peer may have hung up
 }
 
-// isBlockingAskRequest reports whether req is a `boid task ask` builtin call,
-// which the broker must handle by holding the connection open.
-func isBlockingAskRequest(req *ExecRequest) bool {
-	return req.Boid != nil && req.Boid.Op == BoidOpTaskAsk
+// isBlockingBoidRequest reports whether req is a builtin call the broker must
+// handle by holding the connection open, so handleConn gives it a context tied
+// to the socket rather than the daemon-lifetime one.
+//
+// EVERY blocking op has to be listed here. The connection-scoped cancel is not
+// something a blocking op gets by being blocking — it is opt-in per op from
+// here, and an op left off this list still blocks, just with nothing to unblock
+// it when the sandbox goes away: the daemon-side wait keeps running until the
+// daemon itself shuts down. That is a leak with no symptom at the call site,
+// which is why TestBroker_BlockingOps_GetConnectionScopedCancel pins the list
+// against the ops that actually block rather than leaving it to review.
+func isBlockingBoidRequest(req *ExecRequest) bool {
+	if req.Boid == nil {
+		return false
+	}
+	switch req.Boid.Op {
+	case BoidOpTaskAsk, BoidOpTaskWait:
+		return true
+	default:
+		return false
+	}
 }
 
 // watchConnClose cancels the connection context when the peer closes the socket.

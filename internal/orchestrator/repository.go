@@ -47,6 +47,13 @@ func (r *TaskRepository) GetTask(id string) (*Task, error) {
 	return GetTask(r.db, id)
 }
 
+// GetTaskStatus satisfies api.TaskStatusReader — the narrow read
+// api.TaskAppService.WaitTaskTerminal polls with. See GetTaskStatus (store.go)
+// for why it is not GetTask.
+func (r *TaskRepository) GetTaskStatus(id string) (TaskStatus, error) {
+	return GetTaskStatus(r.db, id)
+}
+
 func (r *TaskRepository) ListTasks(filter TaskFilter) ([]*Task, error) {
 	return ListTasks(r.db, filter)
 }

@@ -16,8 +16,9 @@ import (
 const boidShimUsage = `Usage: boid <command> [subcommand] [flags]
 
 Commands:
-  task     Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen,
-           current, instructions, env, payload, attachments list, attachments get)
+  task     Manage tasks (create, show, update, list, notify, answer, ask, wait, delete, import,
+           reopen, current, instructions, env, payload, attachments list, attachments get,
+           identity link, identity unlink, identity resolve, resolve-or-capture)
   card     Read cards (get, list)
   signal   Scan and ack the signal inbox (list, ack, ingest, cursor)
   job      Manage jobs (done, list, show, log)

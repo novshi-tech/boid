@@ -87,8 +87,14 @@ const (
 	//
 	// Scoped like every other task op: the broker resolves the task and the
 	// executor rejects one outside the caller's workspace. The wait ends only
-	// on a terminal status or on the broker cancelling the request context
-	// (daemon shutdown / sandbox disconnect), so it cannot outlive its caller.
+	// on a terminal status or on the broker cancelling the request context —
+	// which for a sandbox disconnect depends on this op staying listed in
+	// isBlockingBoidRequest (broker.go); dropped from there it still blocks,
+	// with only daemon shutdown left to end it.
+	//
+	// It is NOT a timeout. A task parked in a non-terminal resting state
+	// (`awaiting` on an unanswered question, `pending` with auto_start off)
+	// waits indefinitely; bounding a round belongs to whoever launched it.
 	BoidOpTaskWait BoidOp = "task_wait"
 
 	// Phase 5b PR1 task-context RPCs (docs/plans/phase5-shim-and-task-context.md):

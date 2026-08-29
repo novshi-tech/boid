@@ -525,8 +525,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// single-flight and failStreak cover the work instead of the launcher
 		// (see sandbox.BoidOpTaskWait's own doc comment).
 		//
-		// goCtx is cancelled by the broker on daemon shutdown / sandbox
-		// disconnect, so the wait cannot outlive its caller.
+		// goCtx is cancelled by the broker on daemon shutdown and, because
+		// task_wait is listed in sandbox.isBlockingBoidRequest, on sandbox
+		// disconnect too — so the wait cannot outlive its caller. It is not a
+		// timeout: a task that parks in a non-terminal resting state waits
+		// indefinitely, and bounding that is the trigger's job.
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait unavailable"}
 		}
@@ -540,20 +543,28 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(existing.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait is restricted to the current workspace"}
 		}
-		if req.TaskID == ctx.TaskID {
+		// Compare the RESOLVED id, never the raw one the caller typed: GetTask
+		// falls back to a `id LIKE <prefix>%` match for anything >= 8 chars, so
+		// `boid task wait <first 8 chars of my own id>` resolves to the calling
+		// task while the raw strings differ — the guard would not fire and the
+		// job would block on itself forever, which is the deadlock it exists to
+		// prevent. Prefixes are ordinary input here (`boid task show <prefix>`
+		// works), so this is reachable by accident. Same rule as the resolved-id
+		// note on the identity ops further down this file.
+		if existing.ID == ctx.TaskID {
 			// Waiting on yourself never returns: this job IS the reason the
 			// task has not reached a terminal status. Fail rather than hold the
 			// caller open until something else kills it.
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait cannot wait on the calling task"}
 		}
-		outcome, err := e.tasks.WaitTaskTerminal(goCtx, req.TaskID)
+		outcome, err := e.tasks.WaitTaskTerminal(goCtx, existing.ID)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		if outcome.Succeeded() {
-			return &sandbox.ExecResponse{Stdout: fmt.Sprintf("task %s: %s\n", req.TaskID, outcome.Status)}
+			return &sandbox.ExecResponse{Stdout: fmt.Sprintf("task %s: %s\n", outcome.ID, outcome.Status)}
 		}
-		stderr := fmt.Sprintf("task %s: %s", req.TaskID, outcome.Status)
+		stderr := fmt.Sprintf("task %s: %s", outcome.ID, outcome.Status)
 		if reason := api.FormatAbortReason(outcome); reason != "" {
 			stderr += " (" + reason + ")"
 		}

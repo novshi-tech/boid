@@ -6,8 +6,13 @@ package sandbox_test
 // blocking op, task_ask.
 
 import (
+	"context"
+	"encoding/json"
+	"net"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
@@ -71,5 +76,64 @@ func TestBroker_BoidTaskWait_PassesTaskIDThrough(t *testing.T) {
 	}
 	if got := exec.calls[0].TaskID; got != "round-7" {
 		t.Errorf("executor saw task id %q, want round-7", got)
+	}
+}
+
+// The seam that makes an abandoned wait recoverable: handleConn only gives a
+// request a connection-scoped context when isBlockingBoidRequest says so, and
+// that is an explicit per-op list. Dropped from it, task_wait still blocks —
+// with nothing left to unblock it but daemon shutdown, and no symptom at the
+// call site. This is the task_wait twin of
+// TestBroker_TaskAsk_ConnCloseCancelsContext; both ops that block need one,
+// which is what keeps the list honest.
+func TestBroker_TaskWait_ConnCloseCancelsContext(t *testing.T) {
+	exec := &ctxBlockingExecutor{started: make(chan struct{}), released: make(chan struct{})}
+	sockPath := filepath.Join(t.TempDir(), "broker.sock")
+	broker := &sandbox.Broker{SocketPath: sockPath, BoidExecutor: exec}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := broker.Start(ctx); err != nil {
+		t.Fatalf("start broker: %v", err)
+	}
+
+	projectDir := t.TempDir()
+	policies := map[string]sandbox.BuiltinPolicy{
+		"boid": {AllowedOps: map[string]struct{}{string(sandbox.BoidOpTaskWait): {}}},
+	}
+	token := broker.Register(nil, policies, sandbox.TokenContext{
+		JobID:      "j1",
+		ProjectID:  "p1",
+		ProjectDir: projectDir,
+	})
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	req := sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskWait, TaskID: "round-7"},
+	}
+	if err := json.NewEncoder(conn).Encode(&req); err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+
+	select {
+	case <-exec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("executor never started blocking")
+	}
+
+	// Simulate sandbox death: close the connection without reading the response.
+	conn.Close()
+
+	select {
+	case <-exec.released:
+		// good: the per-connection context was cancelled by the close watcher.
+	case <-time.After(2 * time.Second):
+		t.Fatal("the wait was not cancelled when the connection closed — is task_wait still listed in isBlockingBoidRequest?")
 	}
 }

@@ -192,14 +192,16 @@ reaches the daemon's consecutive-failure notification at all. Waiting makes the
 free:
 
 ```bash
-id=$(boid task create <<'SPEC'
+# `boid task create` prints `task created: <id> (<status>)`, so take field 3.
+id=$(boid task create <<'SPEC' | awk '{print $3}'
 title: 'sweep'
 behavior: sweep
 auto_start: true
 description: |
   ...
 SPEC
-) && boid task wait "${id#task created: }"
+)
+boid task wait "$id"
 ```
 
 - **Do not wait on your own task.** It can never return — your job is the reason
@@ -208,7 +210,9 @@ SPEC
   agent's: a per-call timeout would be a limit the daemon that launched you knows
   nothing about.
 - The wait ends only on a terminal status or when the daemon cancels it (shutdown
-  or sandbox disconnect). It is not itself a timeout.
+  or sandbox disconnect). **It is not a timeout** — a task parked in a
+  non-terminal resting state (`awaiting` on a question nobody answers, `pending`
+  with `auto_start: false`) waits indefinitely.
 
 ## boid task import
 

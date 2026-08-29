@@ -121,7 +121,12 @@ func TestBoidBuiltinExecutor_TaskWait_RejectsWaitingOnItself(t *testing.T) {
 	seedTask(t, conn, "t-self", orchestrator.TaskStatusExecuting)
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}, TaskID: "t-self"}
 
-	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+	// Bounded: without the guard this call blocks forever, and an unbounded
+	// context would take the whole package down on the Go test timeout rather
+	// than naming the missing guard.
+	goCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp := exec.ExecuteBoidBuiltin(goCtx, ctx, &sandbox.BoidRequest{
 		Op: sandbox.BoidOpTaskWait, TaskID: "t-self",
 	})
 	if resp.ExitCode == 0 {
@@ -139,7 +144,9 @@ func TestBoidBuiltinExecutor_TaskWait_RejectsTaskOutsideWorkspace(t *testing.T) 
 	seedTask(t, conn, "t-other", orchestrator.TaskStatusExecuting)
 	ctx := sandbox.TokenContext{ProjectID: "proj-2", AllowedProjectIDs: []string{"proj-2"}}
 
-	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+	goCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp := exec.ExecuteBoidBuiltin(goCtx, ctx, &sandbox.BoidRequest{
 		Op: sandbox.BoidOpTaskWait, TaskID: "t-other",
 	})
 	if resp.ExitCode == 0 {
@@ -169,5 +176,51 @@ func TestBoidBuiltinExecutor_TaskWait_CancelledContextIsNotSuccess(t *testing.T)
 	})
 	if resp.ExitCode == 0 {
 		t.Fatal("a cancelled wait must not report success")
+	}
+}
+
+// The self-wait guard must compare the RESOLVED id. orchestrator.GetTask falls
+// back to a `id LIKE <prefix>%` match for anything >= 8 chars, so passing the
+// first 8 characters of the calling task's own id resolves to that very task
+// while the raw strings differ — comparing req.TaskID lets the job block on
+// itself forever, which is the deadlock the guard exists to prevent. Prefixes
+// are ordinary input here (`boid task show <prefix>` works), so this is
+// reachable by accident, not only by attack.
+func TestBoidBuiltinExecutor_TaskWait_SelfWaitGuardResistsAnIDPrefix(t *testing.T) {
+	exec, conn := taskWaitExecutor(t)
+	const fullID = "abcdef12-3456-7890-abcd-ef1234567890"
+	seedTask(t, conn, fullID, orchestrator.TaskStatusExecuting)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}, TaskID: fullID}
+
+	goCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp := exec.ExecuteBoidBuiltin(goCtx, ctx, &sandbox.BoidRequest{
+		Op: sandbox.BoidOpTaskWait, TaskID: "abcdef12",
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("waiting on the calling task by id prefix should be rejected")
+	}
+	if !strings.Contains(resp.Stderr, "calling task") {
+		t.Errorf("stderr = %q, want the self-wait rejection (got a timeout instead?)", resp.Stderr)
+	}
+}
+
+// A round reported on stdout/stderr must name the resolved id, not whatever
+// prefix the caller happened to type — the line is what a human reads in
+// `boid job log` to find the task.
+func TestBoidBuiltinExecutor_TaskWait_ReportsTheResolvedID(t *testing.T) {
+	exec, conn := taskWaitExecutor(t)
+	const fullID = "fedcba98-7654-3210-fedc-ba9876543210"
+	seedTask(t, conn, fullID, orchestrator.TaskStatusDone)
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op: sandbox.BoidOpTaskWait, TaskID: "fedcba98",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, fullID) {
+		t.Errorf("stdout = %q, want the resolved id", resp.Stdout)
 	}
 }
