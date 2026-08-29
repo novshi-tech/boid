@@ -236,6 +236,21 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 	if name == "" {
 		return fmt.Errorf("services: a service name must not be empty")
 	}
+	// docs/plans/api-gateway-credential-accounts.md D1: "@" in the request
+	// path's service segment separates the service name from an optional
+	// credential-account qualifier ("freee@ubs" — apigateway.parsePath). A
+	// services.<name> config key containing "@" would be permanently
+	// unreachable (parsePath would always parse everything from the first
+	// "@" onward as an account, never as part of the service name) and,
+	// worse, would make the two constructs ambiguous — rejected outright at
+	// config-load time, the same "fail loud with the offending name" posture
+	// every other leaf in this function has. Applies uniformly to a
+	// uses:-backed entry too (this check runs before the uses:/base_url
+	// branch below), since a Pack-profile-backed instance's name is the same
+	// services.<name> map key a free-form entry's is.
+	if strings.Contains(name, "@") {
+		return fmt.Errorf("services[%q]: service name must not contain \"@\" — the gateway path reserves \"@\" to separate a service name from an optional credential-account qualifier (docs/plans/api-gateway-credential-accounts.md)", name)
+	}
 
 	// uses: (docs/plans/signal-driven-review.md §7.2, docs/plans/
 	// signal-ingest-detailed-design.md §6.1): a Pack-profile-backed instance
@@ -598,6 +613,14 @@ func validateOAuthProviderConfig(name string, pc OAuthProviderConfig) error {
 	}
 	if name == "" {
 		return fmt.Errorf("oauth_providers: a provider name must not be empty")
+	}
+	// docs/plans/api-gateway-credential-accounts.md D1: PR-2's account-
+	// qualified oauth2 credential key is "oauth2:<provider>@<account>:...",
+	// so a provider name containing "@" would collide with that separator —
+	// rejected here for the same reason services.<name> rejects it above
+	// (validateServiceConfig).
+	if strings.Contains(name, "@") {
+		return fmt.Errorf("oauth_providers[%q]: provider name must not contain \"@\" — the account-qualified credential key reserves \"@\" to separate a provider name from an account qualifier (docs/plans/api-gateway-credential-accounts.md)", name)
 	}
 	if pc.TokenEndpoint == "" {
 		return fmt.Errorf("oauth_providers[%q]: missing required \"token_endpoint\" field", name)

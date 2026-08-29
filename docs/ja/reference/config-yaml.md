@@ -370,6 +370,46 @@ sandbox からは `BOID_API_BASE` 環境変数 (`https://<gateway>/api/<job-toke
 
 workspace 単位の有効化は `services_floor` (daemon 全体) + workspace 自身の `Services` リスト (`boid workspace services add/remove/list`、[CLI リファレンス](./cli.md#workspace) 参照) の additive union です。`services_floor` に書いた名前が `services` に存在しない場合は起動時に warning が出ますが、config load 自体は失敗しません。
 
+### credential account 修飾 (`<service>@<account>`) — 1 service 複数 credential
+
+同じ `services.<name>` 定義を複数の credential セット (例: 複数の Freee 事業所) で
+使い分けたい場合、sandbox 側は path の service セグメントに `@<account>` を付けて
+呼びます。
+
+```
+$BOID_API_BASE/freee@ubs/api/1/deals?company_id=123456
+$BOID_API_BASE/freee@nvt/api/1/deals?company_id=789012
+$BOID_API_BASE/freee/api/1/deals?company_id=123456          # account 無し = 従来どおり
+```
+
+- **対応する auth.kind**: `bearer` / `basic` / `header` / `query` (static kind)。
+  この形で account を付けると、`auth.secret_key` を secret store から引く際の
+  キーが `<secret_key>@<account>` に変わります (account 無しなら従来と完全に
+  同一のキー)。`oauth2` kind は account 修飾に未対応 — account を付けて
+  `oauth2` service を呼ぶと 502 になります (対応予定)。
+- **account 名の文字種**: 英数字・`-`・`_` のみ、1〜64 文字。それ以外の文字
+  (`@`・`/`・`:` を含む) や、空の account 名、`@` が 2 個以上あるパスは
+  **400** で拒否されます (path の形自体が不正な場合の 404 とは区別されます)。
+- **フォールバックしない**: `<secret_key>@<account>` が secret store に無い
+  場合、`<secret_key>` (account 無しのキー) へは決して落ちません。502 に
+  なります — 意図しない account の credential で書き込んでしまう事故を
+  構造的に防ぐためです。
+- **認可 (workspace の有効 service 一覧) は account 無しの base 名で判定**:
+  workspace の `services` リストには `freee` とだけ書けば、`freee@ubs` /
+  `freee@nvt` のどちらも通ります。account ごとに個別の認可設定は無く、同一
+  workspace の job であれば同じ service の任意の account に触れます。
+  `allow_readonly_write` などの service 単位の設定も base 名 (`freee`) の
+  ものが account 修飾リクエストにそのまま適用されます。
+- **監査ログ**: `boid task action list`/`boid job log` 等に記録される
+  service 名は `freee@ubs` のように account 込みの形です。
+- `services.<name>` / `oauth_providers.<name>` の名前自体に `@` を含めることは
+  できません (config load エラー) — path 上で account の区切りとして予約
+  されているためです。
+
+設計の詳細・却下案・PR 分割は
+[`docs/plans/api-gateway-credential-accounts.md`](../../plans/api-gateway-credential-accounts.md)
+を参照してください。
+
 ### `services.<name>.uses` — Integration Pack の service profile から生成する
 
 `base_url`/`auth` を手書きする代わりに、導入済みの Integration Pack (下記 `integrations.dir`) が宣言する service profile を参照して instance を作れます (docs/plans/signal-driven-review.md §7、docs/plans/signal-ingest-detailed-design.md §6)。
