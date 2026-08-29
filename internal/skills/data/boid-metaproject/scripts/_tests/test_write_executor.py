@@ -7,6 +7,8 @@ verb ごとに boid へ何を書くか、差分ガード (S-8) がどこで効�
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import unittest
 
 from boidmeta.write import CommandError, Executor, Result, validate
@@ -427,6 +429,48 @@ class SpecTest(unittest.TestCase):
         self.assertTrue(cli.actions("child_specced"))
 
 
+class BehaviorAvailabilityTest(unittest.TestCase):
+    """`_refuse_absent_behavior` の 3 分岐。**「読めなかった」と「1 つも無い」を同じ側に
+    倒さない** —— 2026-08-29 のレビューで mutation (`not available` → `available is
+    None`) が生き残った箇所。"""
+
+    BASE = dict(SpecTest.BASE)
+
+    def test_a_declared_behavior_passes(self):
+        cli = FakeCLI(behaviors={"p-uuid-1": ("implement", "respond")})
+        run("spec", cli, **self.BASE)
+        self.assertTrue(cli.actions("child_specced"))
+
+    def test_an_undeclared_behavior_is_refused_and_names_the_real_values(self):
+        cli = FakeCLI(behaviors={"p-uuid-1": ("respond", "review")})
+        with self.assertRaises(CommandError) as caught:
+            run("spec", cli, **self.BASE)
+        message = str(caught.exception)
+        self.assertIn("respond", message)
+        self.assertIn("review", message)
+        self.assertFalse(cli.actions("child_specced"))
+
+    def test_a_project_declaring_no_behaviors_is_refused(self):
+        """**空は「読めなかった」ではない。** behavior を 1 つも持たない project へは
+        何も dispatch できないので、通すと人が Go を押した瞬間に落ち、card は parked の
+        まま・子は specced のままで詰まる (この関数が防ぎたい当のもの)。"""
+        cli = FakeCLI(behaviors={"p-uuid-1": ()})
+        with self.assertRaises(CommandError) as caught:
+            run("spec", cli, **self.BASE)
+        self.assertIn("task_behaviors", str(caught.exception))
+        self.assertFalse(cli.actions("child_specced"))
+
+    def test_an_unreadable_list_passes_but_says_so(self):
+        """一時的な不調で巡の判断そのものを失わせない。**ただし黙って通さない** ——
+        後から人が「なぜ実在しない behavior の子ができたのか」を追う手がかりが要る。"""
+        cli = FakeCLI()  # 既定は「照合できない」(None)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            run("spec", cli, **self.BASE)
+        self.assertTrue(cli.actions("child_specced"))
+        self.assertIn("読めなかった", err.getvalue())
+
+
 class UrgencyTest(unittest.TestCase):
     """urgency は並び順だけの属性になった (設計 `docs/plans/suggestion-as-state-transition.md`
     §3.6)。card の可視性を左右する時代の `triage` 送信・`someday` の captured カーブアウトは
@@ -776,6 +820,32 @@ class ReportModeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DryRunAllowlistTest(unittest.TestCase):
+    """`_CLI_WRITES` は**許可リスト**なので、載せ忘れは「黙って本物を書く」側に倒れる。
+
+    `--report` の約束は「何も残さない」で、attempts を進めるのも立派な副作用
+    (5 回で signal が dead に落ちる)。write からまだ呼ばれない口も含めて、
+    `BoidCLI` の書き込みメソッドが全部止まることを固定する。"""
+
+    WRITES = ("send_action", "update_description", "notify_progress", "notify",
+              "link_identity", "resolve_or_capture", "ack_signals", "claim_signals")
+
+    def test_every_boid_cli_write_is_intercepted(self):
+        from boidmeta.write import _CLI_WRITES
+        for name in self.WRITES:
+            with self.subTest(method=name):
+                self.assertIn(name, _CLI_WRITES)
+
+    def test_the_allowlist_names_only_real_methods(self):
+        """架空のメソッド名を並べても止まらない —— 綴りが実物とずれた瞬間に
+        そのメソッドは素通しになる。"""
+        from boidmeta.boid_store import BoidCLI
+        from boidmeta.write import _CLI_WRITES
+        for name in _CLI_WRITES:
+            with self.subTest(method=name):
+                self.assertTrue(hasattr(BoidCLI, name), f"BoidCLI に {name} が無い")
 
 
 class DropChildTest(unittest.TestCase):

@@ -1,79 +1,64 @@
-"""sweep task 自身が起動直後に対象一覧を組む (2026-08-28、PR-2 §6.1 決定事項 2)。
+"""1 巡の骨格 —— inbox を読み、対象を組み、自分の description に書く。
 
-    対象一覧を誰が組むか: sweep task 自身が起動直後に `boid signal list --claim` を
-    叩いて対象を組む。trigger の `run:` は sweep task を起こすだけにする
-    (daemon 側から workspace の手順を指示するとバグる、という既存の教訓に沿う)
+sweep task が**最初の一手**として実行する。入口は
+`scripts/sweep_targets.py --judge-skill /<スキル> [--max-targets N]`。
 
-    python3 ~/.claude/skills/boid-metaproject/scripts/sweep_targets.py --judge-skill /<スキル>
+やること:
 
-`.boid/project.yaml` の `sweep` behavior の `default_instruction` が、最初の一手として
-これを実行する。やることは:
-
-1. `boid signal list` で pending signal を読む (`boidmeta.inbox`)。**副作用は無い**
+1. `boid signal list` で pending signal を読む (`inbox`)。**副作用は無い**
 2. identity を解決し (`resolve_identities`)、篩いをかけて対象へ畳む
-   (`merge_targets`、`app/detect.plan_candidates`)
-3. 機構が決定的に落とした signal (self-authored、aborted 合流) はその場で ack する ——
-   判断が要らないので、判断待ちの subagent を待たずに ack してよい (§6.1 決定事項 4
-   「篩いで落とした signal を ack するか: ack する」)
-4. **判断に回す signal を `boid signal claim` で名指しする** (2026-08-29、boid #1033)
-5. 残った対象を自分の description に書き込む (`instruction`、`boid task update`)。
-   以降は `sweep` behavior の instruction が対象ごとに subagent を fork する
+   (`merge_targets`、`detect.plan_candidates`)
+3. 機構が決定的に落とした signal はその場で ack する —— 判断が要らないので、
+   判断待ちの subagent を待たずに決着させてよい
+4. **判断に回す signal を `boid signal claim` で名指しする**
+5. 残った対象を自分の description に書き込む (`instruction`)。以降は sweep behavior の
+   instruction が対象ごとに subagent を fork する
 
-**target になった signal は ack しない。** 判断が要るので、担当した subagent が判断を
-書いた直後に自分で ack する (`app/write.py` の `Executor._record`、§6.1 決定事項 6
-「ack を打つ順序: sweep が判断を書いた直後に自分で ack する。ack を先に打ってはいけない」)。
+## 何を claim するか
 
-**boid-pack で identity (= task id) を解決できなかった signal も ack しない**
-(2026-08-28、Opus レビュー finding 7)。「本当に task が無い」のか「daemon の瞬断等で
-一時的に引けなかっただけ」かを区別できないので、対象にもせず (`capture` の誤爆を
-防ぐ)、ack もしない (誤って恒久ロスさせない) —— 次巡の読みに委ねる。
-**ただし claim はする** (2026-08-29): 「渡そうとしたが解決できなかった」も 1 回の
-試行であって、これを数えないと真に解決できない signal が永久に毎巡返り続ける。
-5 回で boid 側の `MaxSignalAttempts` により dead に落ちる、という緩やかな諦め方は
-そのまま残る。
-
-## 何を claim するか (2026-08-29、boid #1033)
-
-`attempts` は「諦めるまでの回数」なので、数える対象は「判断に回した」でなければ
-ならない。この巡が claim するのは 2 種類だけ:
+`attempts` は「諦めるまでの回数」なので、数える対象は**判断に回した**ものでなければ
+ならない。claim するのは 2 種類だけ:
 
 - **target になった signal** —— subagent に渡す
-- **identity を解決できなかった boid signal** —— 渡そうとして失敗した
+- **identity を解決できなかった boid signal** —— 渡そうとして失敗した。数えないと
+  真に解決できない signal が永久に毎巡返り続ける
 
 claim しないもの:
 
 - **篩いで落とした signal** —— 同じ巡でそのまま ack するので数える意味が無い
-- **`MAX_TARGETS` から溢れて次巡送りにした signal** —— **これがこの変更の目的**。
-  旧 `list --claim` は読み出しが返した行を一律で数えたので、`CLAIM_LIMIT`
-  (`MAX_TARGETS * 4`) と `MAX_TARGETS` の差 (最大 24 件) が毎巡課金され、5 巡で
-  誰も判断していない signal が無言で dead に落ちていた
+- **`max_targets` から溢れて次巡送りにした signal** —— 読み出しが返した行を一律で
+  数える形 (`boid signal list --claim`) はここを壊していた。`max_targets` と読む件数の
+  差が毎巡課金され、5 巡で**誰も判断していない signal が無言で dead に落ちる**
 
-## khi 自身の書き込みを落とす篩いは boid core が持っている (2026-08-29)
+3 つの集合 (`to_claim` / `screened_out` / どちらでもない) は重ならない。重なると
+ack が先に飛んで、まだ判断していない signal が決着する。
 
-旧 `_split_own_writes`/`_is_own_write` (boid-pack signal の `author` を引いて
-「khi 自身の sweep task が書いたか」を判定していた、旧 S-9 の actor 軸) は削除した。
-**同じ判定を boid core が ingest の時点で行っている** ——
+## target になった signal は ack しない
+
+判断が要るので、担当した subagent が判断を書いた直後に自分で ack する
+(`write` の `Executor._record`)。ack を先に打つと、subagent が crash した signal が
+pending から消えたまま誰も処理していない状態になる。
+
+**identity を解決できなかった boid signal も ack しない。** 「本当に task が無い」のか
+「daemon の瞬断で一時的に引けなかっただけ」かを区別できないので、対象にもせず
+(`capture` の誤爆を防ぐ)、ack もしない (誤って恒久ロスさせない)。claim はするので、
+真に解決できないものは boid 側の `MaxSignalAttempts` でいずれ dead に落ちる。
+
+## 自分自身の書き込みを落とす篩いはここに無い
+
+boid core が ingest の時点で同じ判定をする ——
 `internal/orchestrator/signal_ingest_bridge.go` の `IngestActionSignal` が、書き込み元
-job の project (`WriterProjectIDFromContext`) が対象 workspace のメタプロジェクトと
-一致する action を ingest しない (§4.3 actor 軸)。khi の sweep task も、そこから
-fork される subagent も、`respond` の子 task も全部 khi-task-collector project の
-sandbox で走るので、書いた action は inbox に載らない。
+job の project が対象 workspace のメタプロジェクトなら ingest しない。sweep task も、
+そこから fork される subagent も、その子 task も全部そのメタプロジェクトの sandbox で
+走るので、書いた action はここへ届かない。
 
-実データでも確認済み (2026-08-29): PR-1 デプロイ後 24 時間で inbox に載った
-boid-pack signal は 2 件だけで、どちらも**ホスト側 CLI から手で打った動作確認用の
-notify** (sandbox 経由でないので `WriterProjectIDFromContext` が writer を持たず、
-遮断の対象外になる)。同じ期間に khi の sweep task が card へ書いた action
-(`attrs_set`/`child_added`/`child_specced` 等) は 1 件も ingest されていない。
+**`actor == "daemon"` の action (子 task 終端の `child_closed` 等) は意図して通る** ——
+「外で仕事が終わった」検知そのものであって、自分の書き込みではない。
 
-なお **`actor == "daemon"` の action (子 task 終端の `child_closed` 等) は意図して
-通る** —— 「外で仕事が終わった」検知そのものであって、khi 自身の書き込みではない。
+## dead-letter は core に乗る
 
-## khi 独自の attempts は撤去した (§6.1 決定事項 5)
-
-**2026-08-29、PR-2やり直しv2 で `domain/attempts.py` をファイルごと削除し、
-`plan_candidates` から `records`/`max_attempts` 引数自体を消した**。dead-letter は
-boid 側の `MaxSignalAttempts` (5、`--claim` が進める、
-`internal/skills/data/boid-signal/SKILL.md`「Dead Signals」) にそのまま乗る。
+独自の attempts 機構は持たない。`claim` が進める `attempts` が
+`MaxSignalAttempts` (5) に達した signal を core が dead にし、pending の一覧から外す。
 """
 from __future__ import annotations
 
@@ -86,7 +71,7 @@ from boidmeta.boid_store import BoidCLI, BoidError
 from boidmeta.detect import MAX_TARGETS, Target, plan_candidates
 from boidmeta.signal import Signal
 
-#: boid 内部 action 由来の signal の `Signal.source` (`adapters/inbox.PACK_TO_SOURCE`)。
+#: boid 内部 action 由来の signal の `Signal.source` (`inbox` の写像 (envelope の `source.pack` そのまま))。
 #: **この source だけ identity が task id そのもの** —— `resolve_identities` 参照。
 BOID_SOURCE = "boid"
 
@@ -118,7 +103,7 @@ class Round:
     to_claim: frozenset[str] = frozenset()
     #: この巡で読んだ signal の件数。`read - len(to_claim) - len(screened_out)` が
     #: 「次巡送りにした件数」で、**それを人が見られるようにするのがこのフィールドの
-    #: 唯一の役目** —— 溢れは無言で起きるので、`READ_LIMIT` と `MAX_TARGETS` の差が
+    #: 唯一の役目** —— 溢れは無言で起きるので、`READ_MULTIPLIER` と `MAX_TARGETS` の差が
     #: 実運用で効いているかどうかを実データで判断する材料が他に無い。
     read: int = 0
     ok: bool = True
@@ -126,7 +111,7 @@ class Round:
     @property
     def deferred(self) -> int:
         """この巡が触らなかった signal の件数 (`MAX_TARGETS` 溢れ)。次巡そのまま
-        読み直される。**0 でない巡が続くなら `READ_LIMIT`/`MAX_TARGETS` を見直す
+        読み直される。**0 でない巡が続くなら `READ_MULTIPLIER`/`MAX_TARGETS` を見直す
         合図**。"""
         return max(0, self.read - len(self.to_claim) - len(self.screened_out))
 
@@ -162,10 +147,9 @@ def build(cli, *, max_targets: int = MAX_TARGETS, limit: int | None = None) -> "
     candidates = plan_candidates(
         candidates_input,
         resolved=resolved,
-        taken=frozenset(),
         max_targets=max_targets,
     )
-    targets = merge_targets(candidates.targets, ())
+    targets = merge_targets(candidates.targets)
     # **溢れた signal はここに入らない。** `plan_candidates` が `max_targets` で
     # 切った分は targets にも screened_out にも現れないので、claim もされず
     # ack もされず、次巡そのまま読み直される。
@@ -213,7 +197,7 @@ def resolve_identities(cli, signals: Sequence[Signal]) -> Mapping[str, tuple[str
     return resolved
 
 
-def merge_targets(boid_targets: Sequence[Target], candidate_targets: Sequence[Target]) -> tuple[Target, ...]:
+def merge_targets(targets: Sequence[Target]) -> tuple[Target, ...]:
     """同じ task への対象を 1 つにまとめる。
 
     **2 対象にすると 2 枚の subagent が同じ task に同時に書く。** `app/detect.
@@ -223,14 +207,9 @@ def merge_targets(boid_targets: Sequence[Target], candidate_targets: Sequence[Ta
     plan_candidates を通るようになったため)。そのケースを畳むのがこの関数の役目 ——
     合流時に候補側の identity を拾う。
 
-    引数を 2 本取る形は 2026-08-27 カットオーバー当時の名残 (boid Plan.targets /
-    非 boid CandidatePlan.targets を別々に持っていた)。2026-08-28 以降は 1 回の
-    `plan_candidates` 呼び出しの結果を `merge_targets(candidates.targets, ())` の形で
-    渡すのが通常の呼び方になったが、シグネチャは変えていない (2 本取れることが害には
-    ならず、テストの互換性を保てる)。
     """
     merged: dict[str, Target] = {}
-    for target in [*boid_targets, *candidate_targets]:
+    for target in targets:
         key = target.task_id or f"identity:{target.identity}"
         existing = merged.get(key)
         if existing is None:

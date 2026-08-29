@@ -22,33 +22,33 @@ class SignalTest(unittest.TestCase):
         """`at` は栞になる。naive を許すと、比較する相手 (adapter が parse した since) の
         tz 有無次第で `TypeError` が実行時に飛ぶか、9 時間ずれた窓を読む。"""
         with self.assertRaises(ValueError):
-            Signal(source="slack", event_key="slack:C1:1.0", identity="slack-thread:1.0", at=T0.replace(tzinfo=None))
+            Signal(source="slack", namespace="slack/c", event_key="slack/c:C1:1.0", identity="slack-thread:1.0", at=T0.replace(tzinfo=None))
 
-    def test_the_event_key_source_must_match_the_source_field(self):
+    def test_the_event_key_namespace_must_match_the_namespace_field(self):
         """**この 2 つがズレると壊れ方が静か。** 栞は `source` をキーに保存されるので、
         jira の event を slack の栞として書くと、次の巡は slack を jira の時刻から
         読み直す (取りこぼすか、全件読み直す)。"""
         with self.assertRaises(ValueError):
-            Signal(source="slack", event_key="jira:X-1:issue:2026-08-22", identity="jira:X-1", at=T0)
+            Signal(source="slack", namespace="slack-cloud/mentions",
+                   event_key="jira-cloud/assigned-issues:X-1:issue:2026-08-22",
+                   identity="jira:X-1", at=T0)
 
-    def test_a_source_containing_the_separator_is_rejected(self):
-        """source は event_key の先頭を占める —— `:` を含むと `source_of` が別の
-        ところで切り、`childid` が別の source を子 ref に埋める。"""
+    def test_an_empty_namespace_is_rejected(self):
+        """namespace は event_key の先頭を占め、`childid` が子 ref に埋める。空だと
+        「どの source instance のものか」を失う。"""
         with self.assertRaises(ValueError):
-            Signal(source="a:b", event_key="a:b:1", identity="x", at=T0)
+            Signal(source="slack", namespace="", event_key="slack/c:C1:1.0", identity="x", at=T0)
 
     def test_an_empty_identity_is_rejected(self):
         """identity は sweep task の instruction に載る「対象の指し方」そのもの。
         空だと subagent が何を読めばよいか分からない候補が 1 行立つだけになる。"""
         with self.assertRaises(ValueError):
-            Signal(source="slack", event_key="slack:C1:1.0", identity="", at=T0)
+            Signal(source="slack", namespace="slack/c", event_key="slack/c:C1:1.0", identity="", at=T0)
 
     def test_it_carries_the_author_and_url_but_no_body(self):
         """**中身は持たない** (§5.1「検知は中身を見ない」)。`author` は self-authored の
         篩い (`domain/screen.py`) が読み、`url` は人と subagent が原文へ辿る入口。"""
-        signal = Signal(
-            source="slack",
-            event_key="slack:C1:1.0",
+        signal = Signal(source="slack", namespace="slack/c", event_key="slack/c:C1:1.0",
             identity="slack-thread:1.0",
             at=T0,
             author="self",

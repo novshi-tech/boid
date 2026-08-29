@@ -109,7 +109,7 @@ class MappingTest(unittest.TestCase):
         この形でも厳密に戻る。"""
         row = _envelope("slack", "mentions", "slack:C1:1.0", "slack-thread:1.0")
         signals, _ok = _read([row])
-        self.assertEqual(signals[0].event_key, "slack:slack:C1:1.0")
+        self.assertEqual(signals[0].event_key, "slack/mentions:slack:C1:1.0")
         self.assertEqual(inbox.envelope_id_of(signals[0].event_key), "slack:C1:1.0")
 
     def test_author_and_url_ride_along_but_title_is_discarded(self):
@@ -182,7 +182,7 @@ class ReadTest(unittest.TestCase):
 class ClaimTest(unittest.TestCase):
     def test_claim_uses_the_original_envelope_ids(self):
         cli = FakeCLI()
-        self.assertTrue(inbox.claim(cli, ("jira-cloud:ROOKPF-1:2026-08-27T00:00:00Z", "slack:C1:1.0")))
+        self.assertTrue(inbox.claim(cli, ("jira-cloud/assigned-issues:ROOKPF-1:2026-08-27T00:00:00Z", "slack-cloud/mentions:C1:1.0")))
         self.assertEqual(cli.claimed, [["ROOKPF-1:2026-08-27T00:00:00Z", "C1:1.0"]])
 
     def test_no_keys_does_not_call_the_cli(self):
@@ -194,14 +194,14 @@ class ClaimTest(unittest.TestCase):
         """課金できなかった巡は signal が dead へ 1 歩近づかないだけ。ack と違い
         恒久ロスにならないので、1 件ずつの再試行はしない。"""
         cli = FakeCLI(claim_error=RuntimeError("boom"))
-        self.assertFalse(inbox.claim(cli, ("slack:C1:1.0", "slack:C1:2.0")))
+        self.assertFalse(inbox.claim(cli, ("slack/mentions:C1:1.0", "slack/mentions:C1:2.0")))
         self.assertEqual(len(cli.claimed), 1, "一括 1 回で諦める")
 
 
 class AckTest(unittest.TestCase):
     def test_ack_uses_the_original_envelope_ids(self):
         cli = FakeCLI()
-        self.assertTrue(inbox.ack(cli, ("jira-cloud:ROOKPF-1:2026-08-27T00:00:00Z",)))
+        self.assertTrue(inbox.ack(cli, ("jira-cloud/assigned-issues:ROOKPF-1:2026-08-27T00:00:00Z",)))
         self.assertEqual(cli.ack_calls, [["ROOKPF-1:2026-08-27T00:00:00Z"]])
 
     def test_no_keys_does_not_call_the_cli(self):
@@ -211,14 +211,14 @@ class AckTest(unittest.TestCase):
 
     def test_a_clean_batch_is_one_call(self):
         cli = FakeCLI()
-        inbox.ack(cli, ("slack:C1:1.0", "slack:C1:2.0"))
+        inbox.ack(cli, ("slack/mentions:C1:1.0", "slack/mentions:C1:2.0"))
         self.assertEqual(cli.ack_calls, [["C1:1.0", "C1:2.0"]])
 
     def test_one_bad_id_does_not_block_the_rest(self):
         """`boid signal ack` は 1 件でも未知の id が混じると呼び出し全体を失敗させる。
         取り逃しは恒久ロスなので、ここだけ 1 件ずつ再試行する。"""
         cli = FakeCLI(ack_errors=["C1:bad"])
-        self.assertFalse(inbox.ack(cli, ("slack:C1:1.0", "slack:C1:bad", "slack:C1:2.0")))
+        self.assertFalse(inbox.ack(cli, ("slack/mentions:C1:1.0", "slack/mentions:C1:bad", "slack/mentions:C1:2.0")))
         self.assertEqual(sorted(cli.acked), ["C1:1.0", "C1:2.0"])
 
 

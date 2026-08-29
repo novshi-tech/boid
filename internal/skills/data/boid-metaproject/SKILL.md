@@ -61,9 +61,10 @@ signals:
 
 Each entry becomes a derived trigger the daemon runs on its own. `connector` is
 `<pack>/<connector>` from an installed Integration Pack; `service` is the gateway
-service instance that connector reaches through. Ask `boid workspace services
-list <workspace>` for what the workspace can reach, and read the pack's
-`integration.yaml` for the connector's `configSchema`.
+service instance that connector reaches through. **From a terminal on the host**
+(these are host-side commands — the sandbox shim has no `workspace` subcommand
+at all), `boid workspace services list <workspace>` says what the workspace can
+reach; the pack's own `integration.yaml` gives the connector's `configSchema`.
 
 **Give a first run a small window.** A connector with no bookmark yet reads
 "everything since the beginning" unless its config bounds it, and the first
@@ -124,13 +125,30 @@ task_behaviors:
 
         **`boid task notify --done` を打つのはあなただけ。** subagent は打たない
         (打つと sweep task ごと終了し、走っている兄弟が道連れになる)。全対象の結果が
-        返ってから、あなたが `--done` に対象数と結果の要点を書いて打つ。
+        返ってから、あなたが `--done` を打つ。**最初の一手が出した件数の行
+        (`signal N 件を読み、…`) をそのまま含めること** —— 溢れや篩い落としは他に
+        人の目に触れる場所が無い。
 ```
 
-`readonly: false` is required, and not for the reason people assume: the API
-gateway would let a read-only job do GETs just fine, but the judgment subagent
-writes its payload to a file in the project directory, and a read-only job's
-project directory is mounted read-only.
+**`readonly: false` is required, and leaving it out fails silently.** A behavior
+that does not say otherwise is read-only — that is the daemon's fail-safe
+default for every name except `executor`. The trap is what a read-only sweep
+does: `write.py` asks the daemon `boid task current --field readonly` on every
+invocation and, unless the answer is exactly `false`, forces `--report` mode,
+where it prints what it *would* have written and writes nothing. So a
+metaproject that forgets this line reads its inbox, claims signals, forks
+judgment subagents, and records none of it — exit code 0 throughout. Five rounds
+later the claimed signals are dead, the inbox has nothing pending, and
+`on: signals` stops firing. Nothing anywhere reports an error.
+
+That check is deliberate (it stops a prompt-injected subagent from dropping
+`--report` to escape a read-only shadow run), which is why it fails closed. It
+just means the behavior's `readonly` is load-bearing rather than cosmetic.
+
+It is *not* about the filesystem. Under the clone model a job's project
+directory is always mounted read-write and `readonly` is enforced at the gateway
+instead (transport-RO), so "I moved the payload to /tmp" does not make a
+read-only sweep work.
 
 `--judge-skill` and `--max-targets` are flags rather than a config file on
 purpose — the runner image has no YAML parser, and the behavior instruction is
@@ -164,10 +182,13 @@ what the judgment skill should point at rather than restate.
 
 ## Adding a source to an existing metaproject
 
-Add the `signals.sources[]` entry, `git push`, then `boid project fetch
-<project>` — `reload` does not pick up project.yaml. Then watch one round: `boid
-signal list --workspace <ws>` should show the new pack's rows, and the sweep's
-own report line says how many it read, claimed, acked, and deferred.
+Add the `signals.sources[]` entry, `git push`, then — **from the host** —
+`boid project fetch <project>`. `reload` does not pick up project.yaml, and
+`fetch` does not exist in the sandbox shim. Then watch one round: `boid signal
+list --workspace <ws>` (host-side; inside a job the workspace is fixed by the
+job's own token and there is no `--workspace` flag) should show the new pack's
+rows, and the sweep's own report line says how many it read, claimed, acked, and
+deferred.
 
 If the source produces more than the round can hold, the report's deferred count
 stays above zero every round. That is the signal to raise `--max-targets` or
@@ -176,20 +197,31 @@ free.
 
 ## When the sweep isn't doing anything
 
-Work down the chain; each step tells you whether to keep going.
+Work down the chain; each step tells you whether to keep going. **These are
+host-side commands.** The sandbox shim has no `workspace` subcommand and its
+`signal list` takes no `--workspace` (the job's own token fixes it), so run
+these from a terminal on the machine the daemon runs on — a job cannot diagnose
+its own workspace.
 
 1. **Is anything arriving?** `boid signal list --workspace <ws> --state all`.
    Empty means the connectors aren't producing — check their derived trigger jobs,
    not the sweep.
-2. **Is the trigger firing?** `on: signals` deliberately does not fire on an empty
-   inbox. If rows are pending and nothing fires, look for a round still in flight
-   holding single-flight.
-3. **Did the round read them?** The sweep task's `--done` report carries the
-   counts. Read > 0 but targets 0 means the sieve dropped everything — that is a
-   judgment-skill question, not a machinery one.
-4. **Are signals dying?** `--state dead` shows rows claimed five times without
-   ever being acked. A dead row means something was handed to a judgment repeatedly
-   and the judgment never wrote anything for it.
+2. **Is any of it still alive?** `--state pending` versus `--state dead`. This
+   comes before "is the trigger firing", because a dead row looks exactly like a
+   live one in the `all` listing and yet `on: signals` counts only pending ones —
+   an inbox whose unacked rows have all died is silent with nothing in flight and
+   nothing wrong upstream. A row dies after being claimed five times without ever
+   being acked, so a wall of dead rows means judgments were started and wrote
+   nothing: check `readonly` on the sweep behavior first (see §3 — a read-only
+   sweep produces exactly this), then the judgment skill.
+3. **Is the trigger firing?** With pending rows and no firing, look for a round
+   still in flight holding single-flight (`boid job list`, or a `[sweep]` task not
+   in a terminal status).
+4. **Did the round read them?** `boid job log <the sweep task's job>` — the first
+   move prints `signal N 件を読み、対象 M 件 (claim …、ack …、次巡送り K 件)`. Read
+   > 0 with targets 0 means the sieve dropped everything, which is a
+   judgment-skill question rather than a machinery one. A `次巡送り` that stays
+   above zero every round means the source outruns `--max-targets`.
 
 ## What this skill does not cover
 

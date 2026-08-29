@@ -29,8 +29,7 @@ unlike child_added's create-or-noop」)。片方だけ送ると詰むので、�
 必ず 2 本を送り切ること。
 
 **title だけの子が残るとその task は永久に終われない。** spec の無い子は dispatch されず
-`open` のまま残り、khi の done 判断基準 (`.claude/skills/khi-sweep/SKILL.md` —— 全子が
-終端であること) を永久に満たさない —— ゴールの分解「終わった件は閉じられる」が死ぬ。
+`open` のまま残り、判断スキルの done 基準 (`--judge-skill` が指すもの —— 全子が終端であること) を永久に満たさない —— ゴールの分解「終わった件は閉じられる」が死ぬ。
 2026-08-21 に本番で踏んだ形。
 """
 from __future__ import annotations
@@ -39,7 +38,7 @@ import hashlib
 import re
 import unicodedata
 
-from boidmeta.event_key import source_of
+from boidmeta.event_key import namespace_from_key
 
 #: id の先頭。boid 側に文字種の制約は無い (child の id は単なる文字列比較) ので、
 #: これは人が Web UI の子一覧を見たときの目印。
@@ -84,7 +83,7 @@ def normalize_work(work: str) -> str:
         # **素朴に切らない。** 先頭 40 文字が一致する 2 つの仕事 (「… in the worker」と
         # 「… in the consumer」) が同じ id になり、2 つめの spec が `AddDetailChild` の
         # create-or-noop に吸われて**子が現れない**。title だけの子が残ったまま親は
-        # 全子 closed にならず、khi の done 判断基準が永久に成立しない。
+        # 全子 closed にならず、判断スキルの done 基準が永久に成立しない。
         # signal 側 (`child_id`) と同じく digest へ退避して一意性を保つ。
         digest = _digest(normalized)
         keep = MAX_WORK_CHARS - len(digest) - 1
@@ -101,13 +100,13 @@ def child_id(work: str, signal: str) -> str:
     """
     if not signal:
         raise ValueError("起点シグナルの event_key が空")
-    source_of(signal)  # 形の検証。語彙外なら ValueError が飛ぶ
+    namespace_from_key(signal)  # 形の検証。namespace を取り出せない key なら ValueError
     candidate = f"{PREFIX}:{normalize_work(work)}:{signal}"
     if len(candidate) <= MAX_CHILD_ID_CHARS:
         return candidate
     # 異常に長い event_key のときだけ。**決定的**であることが要る —— リトライのたびに
     # 別 id になると冪等性 (S-12) が壊れるので、乱数や時刻は使わない。
-    return f"{PREFIX}:{normalize_work(work)}:{source_of(signal)}:{_digest(signal)}"
+    return f"{PREFIX}:{normalize_work(work)}:{namespace_from_key(signal)}:{_digest(signal)}"
 
 
 def _digest(text: str) -> str:

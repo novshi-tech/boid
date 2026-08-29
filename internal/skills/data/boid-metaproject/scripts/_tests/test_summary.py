@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import unittest
 
+from boidmeta import summary
 from boidmeta.summary import MARKER, MAX_DESCRIPTION_BYTES, merge
 
 HUMAN = "これは私が書いたメモ。\n消えては困る。\n"
@@ -79,6 +80,27 @@ class SizeTest(unittest.TestCase):
 
     def test_a_short_body_is_left_alone(self):
         self.assertNotIn("以下略", merge(HUMAN, BODY))
+
+
+class LegacyMarkerTest(unittest.TestCase):
+    """マーカーを改名した日に既存 card が壊れないこと。
+
+    `_human_part` が旧マーカーを知らないと、その card の機械領域は「人の領域」として
+    凍りつき、二度と上書きされないまま新しい領域が下に積まれる —— 同じ話が 2 つ並ぶ。
+    永続データの形を変える移行はロールバックではなく**読み側の互換**で担保する。
+    """
+
+    def test_an_old_machine_region_is_replaced_not_frozen(self):
+        old = "人のメモ\n\n<!-- khi:summary -->\n古い機械領域"
+        merged = summary.merge(old, "新しい本文")
+        self.assertIn("人のメモ", merged)
+        self.assertNotIn("古い機械領域", merged)
+        self.assertIn(summary.MARKER, merged)
+        self.assertNotIn("khi:summary", merged)
+
+    def test_the_new_marker_is_what_gets_written(self):
+        self.assertEqual(summary.MARKER, "<!-- boid:summary -->")
+        self.assertIn("<!-- khi:summary -->", summary.LEGACY_MARKERS)
 
 
 if __name__ == "__main__":

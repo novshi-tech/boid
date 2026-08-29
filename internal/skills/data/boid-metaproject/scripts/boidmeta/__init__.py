@@ -4,7 +4,7 @@
 焼き込まれ、全 sandbox の `~/.claude/skills/boid-metaproject/scripts/` に現れる。**
 メタプロジェクト側のリポジトリへコピーするものではない —— コピーすると boid の
 card 状態機械や action 語彙の写しがメタプロジェクトの数だけ増え、片方だけ古くなる。
-khi で実際に起きた形: 状態遷移表が 4 箇所に散り、`PAYLOAD_CONSUMING` の欠落で
+最初のメタプロジェクト (khi-task-collector) で実際に起きた形: 状態遷移表が 4 箇所に散り、`PAYLOAD_CONSUMING` の欠落で
 `drop-child` が 2026-08-23 に本番で無言に失敗した。
 
 ## 層

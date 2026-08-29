@@ -13,7 +13,7 @@ Slack のスレッド全文を展開し、Jira の description を ADF から平
 
 かつては boid だけ別の型 (`domain/boid/action.Action`、削除済み) で読んでいた —— 対象を task id で
 指し、栞が boid 発行の opaque cursor だったため。**PR-1 (boid core) が内部 action を
-signal inbox へ ingest するようになり、PR-2 で khi 側の読み口も
+signal inbox へ ingest するようになり、読み口も
 `boid signal list --claim` に一本化されたので、その差は消えた**
 (`domain/boid/` は 2026-08-29 に削除)。boid 由来の signal は `source == "boid"` で、
 `identity` が task id そのものである点だけが他 source と違う
@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from boidmeta.event_key import source_of
+from boidmeta.event_key import namespace_from_key
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,11 @@ class Signal:
     """
 
     source: str
+    #: event_key の namespace (`<service>/<connector>`、service が空なら
+    #: `<pack>/<connector>`)。**`source` とは別物** —— `source` は pack で、
+    #: 「boid 内部 action か」の判定にだけ使う。同じ pack の service instance が
+    #: 2 つあると `source` は同じでも namespace は違う。
+    namespace: str
     event_key: str
     identity: str
     at: datetime
@@ -59,15 +64,15 @@ class Signal:
             raise ValueError("Signal.at は tz-aware な datetime である必要がある")
         if not self.identity:
             raise ValueError("Signal.identity は空にできない")
-        # **event_key の source と `source` フィールドの一致は、この型の要**。
-        # `domain/childid.child_id` が event_key から source を取り出して子 task の
-        # `ref` に埋める (`source_of(signal)`) ので、ズレると同じ出来事に別々の ref が
-        # 付いて子の重複起票になる。`adapters/inbox` の namespace 付与 (`_to_signal`)
-        # とその逆変換 (`envelope_id_of`) もこの不変条件の上に立っている。
-        # `source_of` は語彙外や本体の無い key も同時に弾く。
-        key_source = source_of(self.event_key)
-        if key_source != self.source:
+        if not self.namespace:
+            raise ValueError("Signal.namespace は空にできない")
+        # **event_key の namespace と `namespace` フィールドの一致は、この型の要**。
+        # `childid.child_id` が event_key から namespace を取り出して子 task の `ref`
+        # に埋めるので、ズレると同じ出来事に別々の ref が付いて子が重複起票される。
+        # ack/claim の逆変換 (`event_key.envelope_id_of`) も同じ前提に立つ。
+        key_namespace = namespace_from_key(self.event_key)
+        if key_namespace != self.namespace:
             raise ValueError(
-                f"Signal.source と event_key の source が食い違う: "
-                f"{self.source!r} vs {key_source!r} ({self.event_key!r})"
+                f"Signal.namespace と event_key の namespace が食い違う: "
+                f"{self.namespace!r} vs {key_namespace!r} ({self.event_key!r})"
             )

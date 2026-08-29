@@ -32,7 +32,8 @@ RESOLVED = {"jira:X-1": ("triage-1", "parked"), "slack-thread:100.0": ("triage-2
 def slack(ts: str, *, thread: str = "100.0", author: str | None = None, minutes: int = 0, url: str | None = None) -> Signal:
     return Signal(
         source="slack",
-        event_key=f"slack:C1:{ts}",
+        namespace="slack-cloud/mentions",
+        event_key=f"slack-cloud/mentions:C1:{ts}",
         identity=f"slack-thread:{thread}",
         at=T0 + timedelta(minutes=minutes),
         author=author,
@@ -42,8 +43,9 @@ def slack(ts: str, *, thread: str = "100.0", author: str | None = None, minutes:
 
 def jira(key: str = "X-1", *, updated: str = "2026-08-22T00:00", minutes: int = 0) -> Signal:
     return Signal(
-        source="jira",
-        event_key=f"jira:{key}:issue:{updated}",
+        source="jira-cloud",
+        namespace="jira-cloud/assigned-issues",
+        event_key=f"jira-cloud/assigned-issues:{key}:issue:{updated}",
         identity=f"jira:{key}",
         at=T0 + timedelta(minutes=minutes),
     )
@@ -51,8 +53,9 @@ def jira(key: str = "X-1", *, updated: str = "2026-08-22T00:00", minutes: int = 
 
 def bitbucket(comment: str, *, key: str = "X-1", author: str | None = None, minutes: int = 0) -> Signal:
     return Signal(
-        source="bitbucket",
-        event_key=f"bitbucket:repo:1:comment:{comment}",
+        source="bitbucket-cloud",
+        namespace="bitbucket-cloud/pr-comments",
+        event_key=f"bitbucket-cloud/pr-comments:repo:1:comment:{comment}",
         identity=f"jira:{key}",
         at=T0 + timedelta(minutes=minutes),
         author=author,
@@ -70,7 +73,7 @@ class TargetTest(unittest.TestCase):
         subagent から見て「既存 task を 1 件担当する」は両者で同じ仕事。"""
         result = plan([jira()])
         self.assertEqual([(t.task_id, t.identity) for t in result.targets], [("triage-1", "jira:X-1")])
-        self.assertEqual(result.targets[0].signals, ("jira:X-1:issue:2026-08-22T00:00",))
+        self.assertEqual(result.targets[0].signals, ("jira-cloud/assigned-issues:X-1:issue:2026-08-22T00:00",))
 
     def test_an_unresolved_identity_becomes_a_new_candidate(self):
         """**task id を持たない対象**。起票するかどうかは subagent が決める (S-15) ので、
@@ -124,7 +127,7 @@ class TargetShapeTest(unittest.TestCase):
         from boidmeta.detect import Target
 
         with self.assertRaises(ValueError):
-            Target(signals=("slack:C1:1.0",))
+            Target(signals=("slack-cloud/mentions:C1:1.0",))
 
 
 class ScreeningTest(unittest.TestCase):
@@ -229,7 +232,7 @@ class ScreenedOutEventKeysTest(unittest.TestCase):
 
     def test_a_self_authored_signal_is_screened_out(self):
         result = plan([slack("1.0", thread="999.0", author="self")])
-        self.assertEqual(result.screened_out, frozenset({"slack:C1:1.0"}))
+        self.assertEqual(result.screened_out, frozenset({"slack-cloud/mentions:C1:1.0"}))
 
     def test_a_self_authored_group_screens_out_every_member(self):
         """group 全体が篩いの対象 (`self_authored` は群で判定する)。"""
@@ -237,13 +240,13 @@ class ScreenedOutEventKeysTest(unittest.TestCase):
             slack("1.0", thread="999.0", author="self", minutes=0),
             slack("2.0", thread="999.0", author="self", minutes=1),
         ])
-        self.assertEqual(result.screened_out, frozenset({"slack:C1:1.0", "slack:C1:2.0"}))
+        self.assertEqual(result.screened_out, frozenset({"slack-cloud/mentions:C1:1.0", "slack-cloud/mentions:C1:2.0"}))
 
     def test_an_aborted_status_merge_is_screened_out(self):
         """`NO_RECORD_STATUSES` (現状 aborted のみ) への合流 —— card 機械 v2 は
         attrs_set/noted を受け付けないので記録を書けない。"""
         result = plan([jira()], resolved={"jira:X-1": ("triage-1", "aborted")})
-        self.assertEqual(result.screened_out, frozenset({"jira:X-1:issue:2026-08-22T00:00"}))
+        self.assertEqual(result.screened_out, frozenset({"jira-cloud/assigned-issues:X-1:issue:2026-08-22T00:00"}))
 
     def test_a_regular_target_is_not_screened_out(self):
         """(c) target 化された signal はまだ判断待ち —— ack してはいけない。"""
@@ -251,11 +254,6 @@ class ScreenedOutEventKeysTest(unittest.TestCase):
         self.assertTrue(result.targets, "前提: target が実際に立っていること")
         self.assertEqual(result.screened_out, frozenset())
 
-    def test_a_merge_into_an_already_taken_target_is_not_screened_out(self):
-        """(c) 既存 target への合流も同様 —— 対象は増えるが判断はまだ済んでいない。"""
-        result = plan([jira()], taken=frozenset({"triage-1"}), max_targets=1)
-        self.assertTrue(result.targets)
-        self.assertEqual(result.screened_out, frozenset())
 
     def test_an_overflowed_signal_is_not_screened_out(self):
         """(d) 篩い 6 (`max_targets`) で溢れた signal は次巡に回るだけ —— 判断は
@@ -273,23 +271,6 @@ class LimitTest(unittest.TestCase):
         signals = [slack(f"{i}.0", thread=f"t{i}", minutes=i) for i in range(5)]
         result = plan(signals, max_targets=2)
         self.assertEqual(len(result.targets), 2)
-
-    def test_merging_into_an_already_taken_task_does_not_consume_a_slot(self):
-        """boid シグナルと非 boid シグナルが同じ task に来ることがある。**枠を二重に
-        消費させない** —— 合流するだけで subagent は 1 枚のまま。
-
-        枠を使い切った状態 (`taken` 1 件で `max_targets` 1) でも合流は通る。ここで
-        溢れさせると、その巡は boid シグナルだけを見た subagent が判断することになり、
-        **同じ件の Jira 側の新着が無かったことにされる**。
-        """
-        result = plan([jira()], taken=frozenset({"triage-1"}), max_targets=1)
-        self.assertEqual([(t.task_id, t.identity) for t in result.targets], [("triage-1", "jira:X-1")])
-
-    def test_a_new_candidate_respects_the_slots_the_boid_plan_took(self):
-        """合流でない対象は枠を食う。boid 側が使った枠は残り枠から引かれる ——
-        `max_targets` は「1 巡に起こす subagent の総数」であって source ごとではない。"""
-        result = plan([slack("1.0", thread="900.0")], taken=frozenset({"triage-1"}), max_targets=1)
-        self.assertEqual(result.targets, ())
 
 
 if __name__ == "__main__":  # pragma: no cover

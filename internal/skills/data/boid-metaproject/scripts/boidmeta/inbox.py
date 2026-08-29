@@ -22,7 +22,10 @@ boid の connector が inbox に書いた envelope 列を読み、`signal.Signal
 pack 名を別名へ写すと、その対応表がメタプロジェクトごとの設定項目になり、
 子 task の `ref` にも焼き付く。
 
-`Signal.event_key` は `<source>:<envelope の id>` (`event_key.event_key_of`)。
+`Signal.event_key` は `<service>/<connector>:<envelope の id>`
+(`event_key.namespace_of` + `event_key_of`)。**pack だけを鍵にしない** —— id は
+workspace で一意ではないので、同じ pack の instance が 2 つあると別々の出来事が
+1 本の鍵に潰れ、判断前に ack される。
 ack / claim は元の envelope id へ戻して打つ (`event_key.envelope_id_of`)。
 
 **読めない行は 1 件だけ諦める。** 壊れた envelope 1 件で巡全体を止めない。
@@ -33,14 +36,14 @@ import sys
 from datetime import datetime, timezone
 from typing import Mapping, Sequence
 
-from boidmeta.event_key import envelope_id_of, event_key_of
+from boidmeta.event_key import envelope_id_of, event_key_of, namespace_of
 from boidmeta.signal import Signal
 
 #: `boid signal list --limit N` の既定値。読みは副作用が無いので、判断する件数より
 #: 広く読んでよい —— この既定は「1 巡で無制限に読もうとしない」ための上限であって、
 #: 課金の綱渡りではない (旧 `list --claim` 時代は claim 件数の上限を兼ねており、
 #: `MAX_TARGETS` から離すほど「見ただけの signal」が dead へ近づいた)。呼び出し側
-#: (`sweep.READ_LIMIT`) が対象上限に見合う値を渡す。
+#: (`sweep.READ_MULTIPLIER`) が対象上限に見合う値を渡す。
 DEFAULT_LIMIT = 50
 
 def read_pending(cli, *, limit: int = DEFAULT_LIMIT) -> "tuple[tuple[Signal, ...], bool]":
@@ -84,10 +87,9 @@ def claim(cli, event_keys: Sequence[str]) -> bool:
     近づかないだけで、判断そのものは進む —— ここで巡を止める方が損失が大きい。
     次巡また同じ signal を読み直すので、そこで課金し直せばよい。
 
-    **`ack` のような 1 件ずつの再試行はしない。** ack が再試行するのは「1 件の
-    逆変換ミスで他の正しい signal まで恒久的に取り逃す」のを避けるためだが、
-    claim は落としても次巡やり直せる (恒久ロスにならない) ので、失敗した巡を
-    そのまま諦める方が単純で害が無い。
+    **`ack` のような 1 件ずつの再試行はしない。** ack が再試行するのは取り逃しが
+    恒久ロスだからで、claim は落としても次巡やり直せる。失敗した巡をそのまま諦める
+    方が単純で害が無い。
     """
     if not event_keys:
         return True
@@ -116,8 +118,8 @@ def ack(cli, event_keys: Sequence[str]) -> bool:
     `boid signal ack <id>...` は typo guard 付き —— **1 件でも boid 側に無い id が
     混じると、呼び出し全体が失敗し、他の正しい id も 1 件も ack されない**
     (`internal/skills/data/boid-signal/SKILL.md`「存在しない id は呼び出し全体を
-    失敗させる」)。`envelope_id_of` の逆変換が外れた 1 件 (既知の限界、モジュール
-    docstring 参照) に他の正しい signal を巻き込まないよう、バッチ呼び出しが失敗した
+    失敗させる」)。**取り逃しは恒久ロス**なので、1 件の未知 id (同時に GC された、
+    別経路で消えた等) に他の正しい signal を巻き込まないよう、バッチ呼び出しが失敗した
     ときだけ 1 件ずつ再試行する —— 大半の巡はバッチが通るので、subprocess の増加は
     失敗時だけに限られる。
     """
@@ -151,12 +153,25 @@ def _to_signal(row: object) -> "Signal | None":
     if not isinstance(row, Mapping):
         return None
 
-    source_block = row.get("source")
-    pack = source_block.get("pack") if isinstance(source_block, Mapping) else None
-    if not isinstance(pack, str) or not pack:
-        print(f"[inbox] source.pack の無い envelope を無視した: {row.get('id')!r}", file=sys.stderr)
+    source_block = row.get("source") if isinstance(row.get("source"), Mapping) else {}
+    pack = source_block.get("pack")
+    connector = source_block.get("connector")
+    service = source_block.get("service") or ""
+    if not isinstance(pack, str) or not pack or not isinstance(connector, str) or not connector:
+        print(
+            f"[inbox] source.pack / source.connector の無い envelope を無視した: {row.get('id')!r}",
+            file=sys.stderr,
+        )
         return None
     source = pack
+    # **namespace は service instance まで含める。** id は workspace で一意ではない
+    # ので、pack だけで鍵を作ると別 instance の同じ id が 1 本に潰れる
+    # (`event_key` のモジュール docstring)。
+    try:
+        namespace = namespace_of(service=str(service), connector=connector, pack=pack)
+    except ValueError as exc:
+        print(f"[inbox] source から namespace を組めない envelope を無視した ({row.get('id')!r}): {exc}", file=sys.stderr)
+        return None
 
     raw_id = row.get("id")
     identity = row.get("identity")
@@ -182,7 +197,15 @@ def _to_signal(row: object) -> "Signal | None":
     # ack/claim の逆変換が「元から付いていたのか」を区別できない (`event_key` の
     # モジュール docstring)。
     try:
-        return Signal(source=source, event_key=event_key_of(source, raw_id), identity=identity, at=at, author=author, url=url)
+        return Signal(
+            source=source,
+            namespace=namespace,
+            event_key=event_key_of(namespace, raw_id),
+            identity=identity,
+            at=at,
+            author=author,
+            url=url,
+        )
     except ValueError as exc:
         # 不変条件を満たさない envelope。この 1 件だけ諦め、同じ巡の他の envelope は
         # 道連れにしない。

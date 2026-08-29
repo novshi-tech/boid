@@ -15,7 +15,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from boidmeta.detect import MAX_TARGETS
-from boidmeta.sweep import build, main
+from boidmeta.sweep import DEFAULT_WRITE_COMMAND, build, main
 
 T0 = datetime(2026, 8, 28, 0, 0, tzinfo=timezone.utc)
 
@@ -69,7 +69,9 @@ def boid_envelope(action_id: str = "a1", *, task_id: str = "triage-1", minutes: 
     row: dict = {
         "id": action_id,
         "occurred_at": _rfc3339(T0 + timedelta(minutes=minutes)),
-        "source": {"pack": "boid", "connector": "actions", "service": "boid"},
+        # 内部 action の envelope は service が空 (実データで確認)。`namespace_of` の
+        # pack フォールバックを踏む唯一の経路なので、そこを忠実にしておく。
+        "source": {"pack": "boid", "connector": "actions", "service": ""},
         "identity": task_id,
     }
     if author is not None:
@@ -262,14 +264,14 @@ class WhatGetsClaimedTest(unittest.TestCase):
     def test_target_signals_are_claimed(self):
         cli = FakeCLI(signals=[slack_envelope()])
         round_ = build(cli)
-        self.assertEqual(round_.to_claim, frozenset({"slack:C1:1.0"}))
+        self.assertEqual(round_.to_claim, frozenset({"slack-cloud/mentions:C1:1.0"}))
 
     def test_screened_out_signals_are_not_claimed(self):
         """篩いで落とした signal は同じ巡でそのまま ack する —— 判断に回していない
         ので数えない。"""
         cli = FakeCLI(signals=[slack_envelope(author="self")])
         round_ = build(cli)
-        self.assertEqual(round_.screened_out, frozenset({"slack:C1:1.0"}))
+        self.assertEqual(round_.screened_out, frozenset({"slack-cloud/mentions:C1:1.0"}))
         self.assertEqual(round_.to_claim, frozenset())
 
     def test_an_unresolvable_boid_signal_is_claimed(self):
@@ -280,7 +282,7 @@ class WhatGetsClaimedTest(unittest.TestCase):
         round_ = build(cli)
         self.assertEqual(round_.targets, ())
         self.assertEqual(round_.screened_out, frozenset())
-        self.assertEqual(round_.to_claim, frozenset({"boid:a1"}))
+        self.assertEqual(round_.to_claim, frozenset({"boid/actions:a1"}))
 
     def test_signals_that_overflow_max_targets_are_neither_claimed_nor_acked(self):
         """**旧 `list --claim` が壊していたのがここ。** 読み出しが返した行を一律で
@@ -294,7 +296,7 @@ class WhatGetsClaimedTest(unittest.TestCase):
         self.assertEqual(len(round_.to_claim), MAX_TARGETS, "claim するのは対象になった分だけ")
         self.assertEqual(round_.screened_out, frozenset())
         claimed_or_acked = round_.to_claim | round_.screened_out
-        read_keys = {f"slack:{s['id']}" for s in signals}
+        read_keys = {f"slack-cloud/mentions:{s['id']}" for s in signals}
         deferred = read_keys - claimed_or_acked
         self.assertEqual(len(deferred), 3, "溢れた 3 件はどちらの集合にも入らない")
         self.assertEqual(round_.deferred, 3, "溢れた件数が人から見えること")
@@ -314,7 +316,7 @@ class MergeTest(unittest.TestCase):
         )
         targets = build(cli).targets
         self.assertEqual(len(targets), 1)
-        self.assertEqual(set(targets[0].signals), {"boid:a1", "bitbucket-cloud:khi-task-collector:1:comment:7"})
+        self.assertEqual(set(targets[0].signals), {"boid/actions:a1", "bitbucket-cloud/pr-comments:khi-task-collector:1:comment:7"})
 
 
 class ScreeningTest(unittest.TestCase):
@@ -323,14 +325,14 @@ class ScreeningTest(unittest.TestCase):
         round_ = build(cli)
         targets, screened_out = round_.targets, round_.screened_out
         self.assertEqual(targets, ())
-        self.assertEqual(screened_out, frozenset({"slack:C1:1.0"}))
+        self.assertEqual(screened_out, frozenset({"slack-cloud/mentions:C1:1.0"}))
 
     def test_an_aborted_merge_is_screened_and_acked(self):
         cli = FakeCLI(identities={"jira:KT-1": ("triage-1", "aborted")}, signals=[bitbucket_envelope()])
         round_ = build(cli)
         targets, screened_out = round_.targets, round_.screened_out
         self.assertEqual(targets, ())
-        self.assertEqual(screened_out, frozenset({"bitbucket-cloud:khi-task-collector:1:comment:7"}))
+        self.assertEqual(screened_out, frozenset({"bitbucket-cloud/pr-comments:khi-task-collector:1:comment:7"}))
 
     def test_a_pack_the_library_has_never_heard_of_still_maps(self):
         """**対応表が無いことの確認。** 新しい connector を足しても、この層に手を
@@ -348,7 +350,7 @@ class ScreeningTest(unittest.TestCase):
         self.assertEqual(round_.targets[0].identity, "github:novshi-tech/boid#1033")
         self.assertEqual(
             round_.to_claim,
-            frozenset({"github:novshi-tech/boid#1033:2026-08-28T00:00:00Z"}),
+            frozenset({"github-api/assigned-issues:novshi-tech/boid#1033:2026-08-28T00:00:00Z"}),
         )
 
 
@@ -359,7 +361,7 @@ class JiraNamespaceTest(unittest.TestCase):
         cli = FakeCLI(signals=[real_jira_envelope()])
         targets = build(cli).targets
         self.assertEqual(len(targets), 1)
-        self.assertEqual(targets[0].signals, (f"jira-cloud:{real_jira_envelope()['id']}",))
+        self.assertEqual(targets[0].signals, (f"jira-cloud/assigned-issues:{real_jira_envelope()['id']}",))
 
     def test_main_acks_screened_signals_with_the_original_envelope_id(self):
         """ack は namespace を補う前の元の envelope id で打つ。"""
@@ -382,6 +384,32 @@ class FlagsTest(unittest.TestCase):
         main(["--judge-skill", "/nvt-sweep"], cli=cli, stdout=io.StringIO())
         (_call, _task, description), = cli.named("update_description")
         self.assertIn("/nvt-sweep", description)
+
+    def test_the_write_command_defaults_to_this_skills_absolute_path(self):
+        """**組み込みスキルとして配る意味がここに出る。** メタプロジェクト側にコピーが
+        無いので、モジュール名や相対パスを書いた description を渡すと subagent は
+        `No module named ...` で何も記録できず、それでも巡は exit 0 で終わる。"""
+        cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
+        main(["--judge-skill", "/judge"], cli=cli, stdout=io.StringIO())
+        (_call, _task, description), = cli.named("update_description")
+        self.assertIn("~/.claude/skills/boid-metaproject/scripts/write.py", description)
+        self.assertEqual(DEFAULT_WRITE_COMMAND, "python3 ~/.claude/skills/boid-metaproject/scripts/write.py")
+
+    def test_an_overridden_write_command_reaches_the_description(self):
+        cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
+        main(["--judge-skill", "/judge", "--write-command", "python3 /opt/other/write.py"],
+             cli=cli, stdout=io.StringIO())
+        (_call, _task, description), = cli.named("update_description")
+        self.assertIn("python3 /opt/other/write.py", description)
+
+    def test_max_targets_reaches_build_through_main(self):
+        """`build(max_targets=...)` を直接呼ぶテストだけだと、`main` がフラグを
+        `build` へ渡し忘れても気づけない (2026-08-29 のレビューで実際に mutation が
+        生き残った)。"""
+        signals = [slack_envelope(ts=f"{i}.0", thread=f"{i}00.0", minutes=i) for i in range(6)]
+        cli = FakeCLI(signals=signals, own_task_id="sweep-1")
+        main(["--judge-skill", "/judge", "--max-targets", "2"], cli=cli, stdout=io.StringIO())
+        self.assertEqual(len(cli.claimed), 2, "claim されるのは対象になった 2 件だけ")
 
     def test_max_targets_caps_the_round(self):
         signals = [slack_envelope(ts=f"{i}.0", thread=f"{i}00.0", minutes=i) for i in range(6)]

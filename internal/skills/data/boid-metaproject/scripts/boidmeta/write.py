@@ -92,6 +92,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
@@ -101,7 +102,7 @@ from boidmeta import inbox
 from boidmeta.boid_store import BoidCLI, BoidError, detail_of
 from boidmeta import summary
 from boidmeta.childid import child_id, normalize_work
-from boidmeta.event_key import source_of
+from boidmeta.event_key import namespace_from_key
 
 #: Go の `time.RFC3339` (`2006-01-02T15:04:05Z07:00`) が受ける形だけを通す。
 #: `T` とオフセットのコロンは必須、`Z` は大文字のみ、秒の小数は任意。
@@ -399,7 +400,7 @@ def _field(verb: str, name: str, value: object, *, required: bool) -> object:
 
 def _require_event_key(where: str, key: str) -> None:
     try:
-        source_of(key)
+        namespace_from_key(key)
     except ValueError as exc:
         raise CommandError(f"{where}: event_key の形でない: {key!r} ({exc})") from exc
 
@@ -739,11 +740,38 @@ class Executor:
 
         **照合できないときは通す。** 目的は「dispatch できない子を作らない」ことであって、
         `boid project behaviors` の可用性に判断を人質に取ることではない。読めないから
-        書かない、にすると一時的な不調でその巡の判断そのものが失われる。
+        書かない、にすると一時的な不調でその巡の判断そのものが失われる。**ただし
+        「読めなかった」(`None`) と「1 つも宣言していない」(空) は別物**で、後者は
+        まさに dispatch できない project なので拒む —— この 2 つを同じ「通す」側に
+        倒していたのが 2026-08-29 のレビューで見つかった穴 (mutation M10 が生き残った)。
+
+        **通した巡は stderr に残す。** ここは窓であって保証ではないので、後から人が
+        「なぜ実在しない behavior の子ができたのか」を追える手がかりが要る。
         """
         available = self.cli.behaviors_of(project_id)
-        if not available or behavior in available:
+        if available is None:
+            # 読めなかった。**照合できないときは通す** —— 目的は「dispatch できない子を
+            # 作らない」ことであって、`boid project behaviors` の可用性に判断を人質に
+            # 取ることではない。ただしこれは窓であって保証ではないので、後から人が
+            # 「なぜ通ったのか」を追えるように残す (`behaviors_of` は project ごとに
+            # 結果をキャッシュするので、1 巡の中では 1 回しか出ない)。
+            print(
+                f"[write] project {project_ref} の behavior 一覧を読めなかった —— "
+                f"{behavior!r} の実在を確認せずに spec を書く",
+                file=sys.stderr,
+            )
             return
+        if behavior in available:
+            return
+        if not available:
+            # **空は「読めなかった」ではない。** behavior を 1 つも宣言していない
+            # project は、まさに何も dispatch できない project —— ここを `None` と
+            # 同じ「通す」側に倒すと、人が Go を押した瞬間に落ちて card が parked の
+            # まま詰まる (この関数が防ぎたい当のもの)。
+            raise CommandError(
+                f"project {project_ref} は task_behaviors を 1 つも宣言していない。"
+                "その project へは子を dispatch できない"
+            )
         raise CommandError(
             f"project {project_ref} は behavior {behavior!r} を持っていない "
             f"(持っている値: {', '.join(sorted(available))})。"
@@ -774,7 +802,7 @@ class Executor:
     def _do_park(self, c: Mapping[str, object]) -> Result:
         """park を suggest する (設計 §3.7: 「park を suggest (現行は即時実行 → 提案型に
         揃える)」)。v1 は `park` action を直接打っていたが、v2 では `park` が
-        human-only の直接遷移になった (boid PR #987) ので、khi は他の suggestion verb と
+        human-only の直接遷移になった (boid PR #987) ので、判断側は他の suggestion verb と
         同じ `attrs_set{suggestion:...}` でしか触れない。wake 条件必須 (S-13) は
         `_check_verb_rules` が引き続き守る —— params に載せて運ぶ。
         """
@@ -853,6 +881,11 @@ _CLI_WRITES: Mapping[str, object] = MappingProxyType(
         # `inbox.ack` が呼ぶ。dry-run では ack もしない —— 試し打ちで本物の signal が
         # 処理済み扱いになると、`--report` の「何も残さない」約束が崩れる。
         "ack_signals": None,
+        # `inbox.claim` は今のところ write からは呼ばれないが、**これは allowlist**
+        # なので載せ忘れは「黙って本物を書く」側に倒れる。attempts を進めるのは
+        # 立派な副作用 (5 回で signal が dead に落ちる) で、試し打ちで消費される
+        # 筋合いは無い。verb が 1 つ増えた日に気づける形にしておく。
+        "claim_signals": None,
     }
 )
 

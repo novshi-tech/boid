@@ -1,4 +1,4 @@
-"""自己発言 (khi/boid 自身が書いた発言) を落とす篩い (設計 §7.1 第2相、直す項目 4)。
+"""自己発言 (メタプロジェクト自身が書いた発言) を落とす篩い。
 
 以前は adapters (`jira.py`/`bitbucket.py`) がそれぞれ独自に self-authored 判定ロジックを
 持っていた。**同じ関心事が 2 箇所に散っていた** — ここへ 1 箇所にまとめる。
@@ -62,11 +62,12 @@ def self_authored(candidates: Sequence[Authored], *, mine: str = SELF) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 旧: boid source 由来 signal の 2 段の絞り。
+# 旧: boid source 由来 signal の 2 段の絞り (「自分自身の書き込みを落とす」) は
+# ここにも `sweep` にも無い。**boid core が ingest の時点で同じ判定をする** ——
+# `internal/orchestrator/signal_ingest_bridge.go` の `IngestActionSignal` が、書き込み元
+# job の project が対象 workspace のメタプロジェクトなら signal を書かない。メタ
+# プロジェクトの task も、そこから fork される subagent も、その子 task も全部その
+# project の sandbox で走るので、書いた action は inbox に載らない。
 #
-# **2026-08-29、PR-2やり直しv2 で `is_signal` を削除した。** `app/detect.plan_boid`
-# (boid source 専用の計画組み立て、`boid action list` を読んでシグナルを拾っていた
-# 旧経路) だけが使っていたが、khi の検知が `boid signal list --claim` の inbox 読みへ
-# 一本化されたのに伴い `plan_boid` ごと削除したため道連れにした。同じ役目 (khi 自身の
-# 書き込みを落とす) は `app/sweep_targets._is_own_write` が signal 単位で肩代わりする。
-# ---------------------------------------------------------------------------
+# `actor == "daemon"` の action (子 task 終端の `child_closed` 等) は意図して通る ——
+# 「外で仕事が終わった」検知そのもので、自分の書き込みではない。

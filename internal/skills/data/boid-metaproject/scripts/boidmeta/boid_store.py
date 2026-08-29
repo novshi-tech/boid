@@ -41,8 +41,8 @@
   `received_at`/`attempts`/`acked_at` を持つ (`internal/skills/data/boid-signal/SKILL.md`)。
   `boid signal ack <id>...` は id 単位で idempotent (既に ack 済みでも成功) だが、
   存在しない id は呼び出し全体を失敗させる (typo guard)。
-- **2026-08-28、PR-2 (khi inbox 一本化) で `--claim` を使う側に切り替えた。** boid 内部
-  action も signal inbox 経由になった (PR-1、boid core 側) のに合わせ、khi 独自の
+- **2026-08-28 に `--claim` を使う側に切り替えた。** boid 内部
+  action も signal inbox 経由になった (boid core 側) のに合わせ、workspace 側の独自
   attempts (`domain/attempts.py`、3 回) を撤去して boid 側の `MaxSignalAttempts` (5) に
   そのまま乗る。`--claim` は選択と同時に `attempts` を進めるので、誰も ack しない
   signal はいずれ boid 側で dead になる (`internal/skills/data/boid-signal/SKILL.md`
@@ -66,7 +66,7 @@ DEFAULT_TIMEOUT_SECONDS = 60.0
 #: `boid signal list --limit N` の既定値 (2026-08-27 カットオーバー設計の確定事項)。
 #: shim (`internal/sandbox/boid_shim.go` の `parseBoidSignalList`) 自体には
 #: `action list` のような hard cap は無いが、1 巡で無制限に読もうとしないための
-#: 上限として khi 側で明示する。
+#: 上限としてここで明示する。
 DEFAULT_SIGNAL_LIST_LIMIT = 1000
 
 #: payload を消費する action type。これ以外に payload を付けると daemon が消費せず
@@ -77,8 +77,7 @@ DEFAULT_SIGNAL_LIST_LIMIT = 1000
 #: `internal/api/suggestion_accept.go`) に完全にバイパスされ、`sideEffectConsumesPayload`
 #: を経由する汎用マージパイプラインへ一度も到達しないので、そもそも `task.Payload` へ
 #: 誤って merge される心配が無い (旧 `scripts/daemon_sync.py` の集合には無かったが、
-#: boid のソースで確認した)。過剰に厳しいと「daemon が正しく消費するのに khi が
-#: 送らせない」で詰まる。
+#: boid のソースで確認した)。過剰に厳しいと「daemon が正しく消費するのに送らせない」で詰まる。
 #: (`reopen` は payload に `instruction` があるときだけ条件付きで消費するのでこの集合には
 #: 入れない。`reopen_triaged` は v1 の決定17 name-rewrite ルーティング専用の名前で、
 #: card 機械分離により v2 では両機械とも素の `reopen` を使うため消滅した
@@ -268,7 +267,7 @@ class BoidCLI:
     def task_field(self, task_id: str, field: str) -> str:
         """task の 1 フィールドを引く (`boid task show <id> --field <path>`)。
 
-        S-9 の actor 判別に使う —— khi は「自分が起こした task の id」を覚えない (S-5) ので、
+        S-9 の actor 判別に使う —— この機構は「自分が起こした task の id」を覚えないので、
         **action に現れた actor の task を引いて behavior を見る**。`task triage --list` の
         行にも `task list` の出力にも behavior は載っていないので、経路はここだけ。
 
@@ -315,7 +314,7 @@ class BoidCLI:
 
         **2026-08-29、boid #1033 で `--claim` を渡さない側に戻した。** `--claim` は
         読み出しが返した行に一律で `attempts` を +1 する形で、「読んだ」と「判断に
-        回した」を区別できなかった —— khi は合流を見込んで `MAX_TARGETS * 4` 行読み、
+        回した」を区別できなかった —— 読み手は合流を見込んで対象上限の数倍を読み、
         判断するのは最大 `MAX_TARGETS` 件なので、次巡送りにしただけの行の attempts が
         毎巡焼かれ、5 巡で誰も判断していない signal が dead に落ちる。読みは無料に
         戻し、判断に回す行は `claim_signals` で名指しする。
@@ -343,8 +342,8 @@ class BoidCLI:
 
         **ack と同じ typo guard がある** —— 1 件でも boid 側に無い id が混じると
         呼び出し全体が失敗し、何も課金されない。id は同じ巡の `list_signals` が
-        返したものをそのまま渡すので、外れるとすれば `envelope_id_of` の逆変換
-        (`adapters/inbox.py` の既知の限界) が外れたときだけ。
+        返したものをそのまま渡すので、通常は外れない (外れるとすれば、読んでから
+        claim するまでに GC 等でその行が消えた場合)。
         """
         if not ids:
             return

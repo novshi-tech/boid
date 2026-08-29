@@ -1,13 +1,16 @@
 """サマリーの境界マーカー —— card の description を人の領域と機械の領域に割る。
 
     人の編集を巻き戻さないため、境界マーカーを置く。マーカーより上は人の領域、
-    下は khi が毎回上書きする。
+    下は機構が毎回上書きする。
 
 サマリーは**毎回書き直す**ので (原文のコピーは持たない)、この境界が無いと人が足した
 メモが毎巡消える。しかも消えたことに気づく手段が無い —— 人からは「書いたはずのものが
 無い」としか見えない。
 
 マーカーは HTML コメントなので、Web UI (goldmark が raw HTML を落とす) では読者に見えない。
+
+**マーカーの文字列は card の description に永続する。** 一度書いたら変えられない類の
+値で、変えるときは旧い方を読み続ける手当て (`LEGACY_MARKERS`) が要る。
 
 **マーカーが無い本文は丸ごと人の領域として扱う。** 起票時の原文がこれに当たる ——
 消すと「そもそも何の件か」の出所が失われる。
@@ -16,7 +19,17 @@ from __future__ import annotations
 
 import re
 
-MARKER = "<!-- khi:summary -->"
+MARKER = "<!-- boid:summary -->"
+
+#: 最初のメタプロジェクト (khi-task-collector) が書いていたマーカー。**読むだけ、
+#: もう書かない。**
+#:
+#: マーカーの改名は片道ドアに見えるが、片道にしないための唯一の手当てがこれ。
+#: `_human_part` は「マーカーの無い本文は丸ごと人の領域」と読む —— 旧マーカーを
+#: 認識しないまま改名すると、既存 card の機械領域がその瞬間から人の領域として凍り、
+#: 二度と上書きされないまま新しい領域がその下に積まれる (同じ内容が 2 つ並ぶ)。
+#: 両方読んで新しい方だけ書けば、次の `summary` で静かに移行する。
+LEGACY_MARKERS = ("<!-- khi:summary -->",)
 
 #: `description` の上限 (バイト)。boid は 64KiB (`orchestrator.MaxContentBytes`) で
 #: 弾くので、そこより余裕を取る。超えると**サマリーが 1 文字も書けない**ので、
@@ -24,22 +37,22 @@ MARKER = "<!-- khi:summary -->"
 MAX_DESCRIPTION_BYTES = 56 * 1024
 
 #: 切ったことを人に見せる印。黙って切ると「LLM が途中で書くのをやめた」と読まれる。
-TRUNCATION_MARK = "\n\n… (以下略。長すぎたので khi が切った)"
+TRUNCATION_MARK = "\n\n… (以下略。長すぎたので切った)"
 
 
 def merge(current: str, body: str) -> str:
-    """`current` (task の現在の description) の khi 領域を `body` で差し替える。
+    """`current` (card の現在の description) の機械領域を `body` で差し替える。
 
     冪等 —— 同じ `body` で 2 回呼んでも結果は変わらない。差分ガード (S-8) はこの性質に
     乗っていて、「変わっていないなら書かない」を「merge の結果が現在値と同じか」で判定できる。
     """
     human = _human_part(current)
-    khi = body.strip()
+    machine = body.strip()
     budget = MAX_DESCRIPTION_BYTES - len((human + "\n\n" + MARKER + "\n").encode("utf-8"))
-    khi = _truncate(khi, budget)
+    machine = _truncate(machine, budget)
     if not human:
-        return f"{MARKER}\n{khi}"
-    return f"{human}\n\n{MARKER}\n{khi}"
+        return f"{MARKER}\n{machine}"
+    return f"{human}\n\n{MARKER}\n{machine}"
 
 
 #: 行バッジ (queue 一覧) に出す 1 行の上限。狭い列なので長くしても読まれない。
@@ -78,17 +91,22 @@ def headline(body: str) -> str:
 
 
 def _human_part(current: str) -> str:
-    """マーカーより上 (人の領域)。マーカーが無ければ全体が人の領域。"""
-    head, marker, _tail = current.partition(MARKER)
-    if not marker:
-        return current.strip()
-    return head.strip()
+    """マーカーより上 (人の領域)。マーカーが無ければ全体が人の領域。
+
+    **旧マーカーも認識する** (`LEGACY_MARKERS`)。認識しないと、マーカーを改名した
+    瞬間に既存 card の機械領域が人の領域として凍りつく。
+    """
+    for marker_text in (MARKER, *LEGACY_MARKERS):
+        head, marker, _tail = current.partition(marker_text)
+        if marker:
+            return head.strip()
+    return current.strip()
 
 
 def _truncate(text: str, budget: int) -> str:
     """UTF-8 で `budget` バイトに収める。**人の領域は切らない** ので、budget が尽きて
-    いれば khi 側は空になる (それでも超える場合は人の領域だけで上限を超えており、
-    khi にできることは無い —— boid の 400 で気づく)。
+    いれば機械領域は空になる (それでも超える場合は人の領域だけで上限を超えており、
+    機構にできることは無い —— boid の 400 で気づく)。
     """
     if budget <= 0:
         return ""

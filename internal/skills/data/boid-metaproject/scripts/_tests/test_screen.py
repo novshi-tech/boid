@@ -25,7 +25,9 @@ def candidate(event_key: str, author: str | None, hour: float = 1) -> Signal:
     いま `Authored` を満たすのはこれだけなので、スタブを置くと「実際に流れてくる値で
     通るか」を誰も見ていない状態になる。
     """
-    return Signal(source="jira", event_key=event_key, identity="jira:X", at=at(hour), author=author)
+    return Signal(source="jira-cloud", namespace="jira-cloud/assigned-issues",
+                  event_key=f"jira-cloud/assigned-issues:{event_key}", identity="jira:X",
+                  at=at(hour), author=author)
 
 
 class SelfAuthoredTest(unittest.TestCase):

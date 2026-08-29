@@ -1,61 +1,96 @@
-"""event_key の書式 —— `<source>:<connector が発行した id>`。
+"""event_key の書式 —— `<namespace>:<connector が発行した id>`。
 
-**source を先頭に置くのは、event_key 1 本から source を復元できるようにするため。**
-記録 CLI (`write`) は subagent から event_key の文字列しか受け取らない —— そこから
-子 id を組む (`childid.child_id`) にも、ack する元の envelope id へ戻すにも、source が
-要る。別フィールドで持ち回る形にすると、その 2 つの経路それぞれに引数が 1 本増え、
-LLM が埋めるフィールドも 1 つ増える。
+## namespace は「どの source instance か」を一意に指す
 
-**付与は無条件。** connector が発行した id が偶然 `"<source>:"` で始まっていても
-剥がさず、もう一度付ける。条件付きにすると `envelope_id_of` の逆変換が
-「元から付いていたのか、こちらが付けたのか」を区別できなくなり、**ack が別の id で
-飛んで無言に失敗する**。khi の初期実装がこの形で、「既知の限界」として docstring に
-書かれたまま運用されていた。無条件なら最初の `:` で切るだけで厳密に戻せる。
+inbox の行は `(workspace_id, service, connector, id)` で索かれる —— **id だけでは
+一意にならない** (migration 0046 が明記)。同じ workspace に同じ pack の service
+instance が 2 つ居れば (jira サイト 2 つ、等)、両方が `PROJ-1:<時刻>` のような同じ
+id を発行しうる。
 
-見た目の代償は、id が自分で source を名乗る connector で `slack:slack:C1:1.0` の
-ように重なること。**connector 側は id に source を含めなくてよい** (含めても壊れない)。
+id だけ、あるいは pack + id を鍵にすると、その 2 行が 1 本の event_key に潰れる。
+潰れると 1 巡の中で **同じ鍵が「篩いで落とした」と「判断に回す」の両方に入り**、
+`sweep` は ack を先に打つので、**まだ判断していない signal が判断前に決着する**。
+2026-08-29 のレビューで実際に再現した。
+
+なので namespace は `<service>/<connector>` —— service instance 名は workspace の
+config のキーなので一意で、connector 名がその中を割る。service が空の envelope
+(boid 内部 action) だけ pack で代用する。
+
+## 付与は無条件
+
+connector が発行した id が偶然 `"<namespace>:"` で始まっていても剥がさず、もう一度
+付ける。条件付きにすると `envelope_id_of` の逆変換が「元から付いていたのか、こちらが
+付けたのか」を区別できなくなり、**ack が別の id で飛んで無言に失敗する**。無条件なら
+最初の `:` で切るだけで厳密に戻せる。
+
+## 残っている限界 (core 側)
+
+`boid signal ack <id>` は `(workspace_id, id)` だけで照合し、service/connector を
+問わず**同じ id の行を全部 ack する** (`orchestrator.AckSignals` の doc comment が
+そう明言している)。event_key を一意にしてもここは変わらない —— 2 つの instance が
+同じ id を出していれば、片方を ack すると両方が決着する。1 巡の中では対象の組み立てが
+先に済んでいるので判断そのものは行われるが、sweep がその間に死ぬと片方を取り逃す。
+解くなら ack を `(service, connector, id)` に絞る core 側の変更が要る。
 """
 from __future__ import annotations
 
 
-def event_key_of(source: str, envelope_id: str) -> str:
-    """envelope の `source.pack` と `id` から event_key を組む。"""
-    if not source:
-        raise ValueError("source が空")
-    if ":" in source:
-        raise ValueError(f"source に区切り文字 ':' を含められない: {source!r}")
+def namespace_of(*, service: str, connector: str, pack: str) -> str:
+    """envelope の source ブロックから event_key の namespace を組む。
+
+    `service` が空 (boid 内部 action) のときだけ `pack` で代用する —— 内部 action に
+    service instance という概念が無いため。
+    """
+    origin = service or pack
+    if not origin:
+        raise ValueError("service も pack も空")
+    if not connector:
+        raise ValueError("connector が空")
+    for part in (origin, connector):
+        if ":" in part:
+            raise ValueError(f"namespace の部品に区切り文字 ':' を含められない: {part!r}")
+    return f"{origin}/{connector}"
+
+
+def event_key_of(namespace: str, envelope_id: str) -> str:
+    """namespace と envelope の id から event_key を組む。"""
+    if not namespace:
+        raise ValueError("namespace が空")
+    if ":" in namespace:
+        raise ValueError(f"namespace に区切り文字 ':' を含められない: {namespace!r}")
     if not envelope_id:
         raise ValueError("envelope id が空")
-    return f"{source}:{envelope_id}"
+    return f"{namespace}:{envelope_id}"
 
 
-def source_of(event_key: str) -> str:
-    """event_key の source。
+def namespace_from_key(event_key: str) -> str:
+    """event_key の namespace。
 
     **黙って落とさない。** event_key はこの機構自身が組み立てるものなので、区切りが
-    無い / 本体が空なのは呼び出し側のバグであり、握り潰すと「source が分からないまま
-    子 id を組む」という追いにくい壊れ方になる。
+    無い / 本体が空なのは呼び出し側のバグであり、握り潰すと「どの source instance の
+    ものか分からないまま子 ref を組む」という追いにくい壊れ方になる。
     """
-    source, separator, rest = event_key.partition(":")
+    namespace, separator, rest = event_key.partition(":")
     if not separator:
-        raise ValueError(f"event_key に source の区切りが無い: {event_key!r}")
-    if not source:
-        raise ValueError(f"event_key の source が空: {event_key!r}")
+        raise ValueError(f"event_key に namespace の区切りが無い: {event_key!r}")
+    if not namespace:
+        raise ValueError(f"event_key の namespace が空: {event_key!r}")
     if not rest:
-        # `jira:` のような prefix だけの key。source は読めるが「どの出来事か」を
-        # 指していない —— 記録に書けばその source の全イベントと同じキーになる。
+        # `jira-cloud/assigned-issues:` のような prefix だけの key。namespace は
+        # 読めるが「どの出来事か」を指していない —— 子 ref に使えばその source の
+        # 全イベントが同じ id に潰れる。
         raise ValueError(f"event_key に本体が無い: {event_key!r}")
-    return source
+    return namespace
 
 
 def envelope_id_of(event_key: str) -> str:
     """event_key から connector が発行した元の id を戻す (`event_key_of` の逆)。
 
     `boid signal claim` / `boid signal ack` は**元の id** で打つ —— inbox の行は
-    connector が発行した id で索かれるので、source を付けたままでは見つからず、
+    connector が発行した id で索かれるので、namespace を付けたままでは見つからず、
     typo guard で呼び出し全体が失敗する。
 
     付与が無条件なので、最初の `:` で切るだけで厳密に戻る (モジュール docstring)。
     """
-    source_of(event_key)  # 形の検証。ここで落ちるなら組み立て側のバグ
+    namespace_from_key(event_key)  # 形の検証。ここで落ちるなら組み立て側のバグ
     return event_key.partition(":")[2]

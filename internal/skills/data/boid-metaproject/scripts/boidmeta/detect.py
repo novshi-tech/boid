@@ -11,9 +11,9 @@
 boid を叩く部分 (どの status を引くか、actor の behavior をどう解決するか) は
 呼び出し側にある。ここは値を受けて値を返すだけ。
 
-**2026-08-29、PR-2やり直しv2 で `plan_boid`/`Plan` (boid source 専用の計画組み立て) と、
-`dead letter` (khi 独自の attempts 機構、`domain/attempts.py`) を削除した。**
-`plan_boid` は 2026-08-28 の PR-2 (khi inbox 一本化) で `run_once`/
+**2026-08-29 に `plan_boid`/`Plan` (boid source 専用の計画組み立て) と、
+`dead letter` (workspace 側の独自 attempts 機構、`domain/attempts.py`) を削除した。**
+`plan_boid` は 2026-08-28 の inbox 一本化 で `run_once`/
 `app/sweep_targets.py` のどちらからも呼ばれなくなり (`boid action list` を読む検知は
 `boid signal list --claim` の inbox 読みに一本化された)、ロールバック用にコードだけ
 残っていたが、依存先 (`domain.attempts`/`domain.boid.action.cursor_of`/
@@ -25,7 +25,7 @@ boid を叩く部分 (どの status を引くか、actor の behavior をどう�
 だった —— この関数は元々「0 以下なら何も枯渇させない」規約だったので、実質的な
 挙動は変わらない)。**時刻栞 (`Scan`/`domain.signal.mark_of`) を進める側
 (`CandidatePlan.scans`、`domain/cursor.Bookmarks`/`advance`) も同時に削除した** ——
-唯一の呼び出し元 `app/sweep_targets.py` はこの栞を読んでおらず (khi の検知が
+唯一の呼び出し元 (`sweep`) はこの栞を読んでおらず (検知が
 `boid signal list --claim` の pending/ack へ一本化されているため)、栞ファイル
 (`adapters/file_cursor.py`) も同時に削除した。**残っていた `Scan` (`NamedTuple`) を
 持つ `domain/cursor.py` も 2026-08-29 に削除した** —— 型として参照する側が既に無かった。
@@ -33,15 +33,15 @@ boid を叩く部分 (どの status を引くか、actor の behavior をどう�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import AbstractSet, Mapping, Sequence
+from typing import Mapping, Sequence
 
 from boidmeta.screen import self_authored
 from boidmeta.signal import Signal
 
 #: 記録を書けない status (篩い 5)。**`done` は入らない** —— done の card には I-5b の
 #: service 層ガード (`internal/api/attrs_set_done.go`) 経由で attrs_set が通り、
-#: khi はそこへ `observed`/`reopen` を書ける (S-9 の再燃経路)。auto-reopen 機構
-#: (`SweepReopen`) 自体は card 機械 v2 で撤去済み (設計 §3.3) —— 再燃は khi が
+#: 判断側はそこへ `observed`/`reopen` を書ける (S-9 の再燃経路)。auto-reopen 機構
+#: (`SweepReopen`) 自体は card 機械 v2 で撤去済み (設計 §3.3) —— 再燃は判断側が
 #: `reopen` を suggest して人の accept を経る形に代わった。
 #:
 #: **`dropped` も 2026-08-25 (PR-K レビュー MEDIUM 2) にここから外したが、これは
@@ -51,7 +51,7 @@ from boidmeta.signal import Signal
 #: identity を保持するが drop は手放す、という意図的な非対称性)。identity が無い
 #: card は `resolve_identity` に解決先を持たないので、**`resolved` (呼び出し側が
 #: identity → (task_id, status) で解決した結果) に dropped の task_id が乗ること
-#: は通常の巡では起きない** —— そのソースが再燃しても khi は新規候補として扱い、
+#: は通常の巡では起きない** —— そのソースが再燃しても新規候補として扱われ、
 #: 別の (元の card とは無関係な) task を `capture` する。
 #:
 #: **ただし「今日到達しうる経路」が実在する — 将来の変更を待つ話ではない。**
@@ -103,7 +103,7 @@ class Target:
 
 # ---------------------------------------------------------------------------
 # 非 boid source (slack / jira / bitbucket) —— boid source (旧 `plan_boid`/`Plan`) は
-# 2026-08-29、PR-2やり直しv2 で削除した (このファイルのモジュール docstring 参照)。
+# 2026-08-29 に削除した (このファイルのモジュール docstring 参照)。
 # ---------------------------------------------------------------------------
 
 
@@ -121,8 +121,8 @@ class CandidatePlan:
     signal (既存 target への合流も含む) と、篩い 6 (`max_targets`) で溢れて次巡に
     回った signal。どちらも「次に見るべきもの」であり続ける必要がある。
 
-    **2026-08-29、PR-2やり直しv2 で `scans`/`assignments`/`abandoned` を削除した。**
-    khi 独自の attempts 機構 (`domain/attempts.py`、dead letter 判定) を撤去し boid 側の
+    **2026-08-29 に `scans`/`assignments`/`abandoned` を削除した。**
+    workspace 側の独自 attempts 機構 を撤去し boid 側の
     `MaxSignalAttempts` にそのまま乗ったのに伴い、`assignments` (割り当ての記録) と
     `abandoned` (dead letter の記録) はどちらも `Record` を生成するだけの死んだ経路に
     なっていた —— 唯一の呼び出し元 `app/sweep_targets.py` の `build()` はこの 2
@@ -140,7 +140,6 @@ def plan_candidates(
     signals: Sequence[Signal],
     *,
     resolved: Mapping[str, tuple[str, str]],
-    taken: AbstractSet[str] = frozenset(),
     max_targets: int = MAX_TARGETS,
 ) -> CandidatePlan:
     """非 boid source のシグナルから、この巡の計画を組む。
@@ -153,10 +152,7 @@ def plan_candidates(
     新規候補になる。**status まで持つ**のは篩い 5 が status で判定するため —— 「open な
     task の集合に居るか」で判定すると `done` まで落ちて、S-9 の再燃経路が死ぬ。
 
-    `taken` は boid 側の計画が既に枠を取っている task id。同じ task に両方からシグナルが
-    来たとき、**枠を二重に消費させない** (合流するだけで subagent は 1 枚のまま)。
-
-    **2026-08-29、PR-2やり直しv2 で `records`/`max_attempts` を削除した。** khi 独自の
+    **2026-08-29 に `records`/`max_attempts` を削除した。** workspace 側の独自
     attempts 機構を撤去したので、settled/dead letter 判定はもう行わない —— `signals`
     に渡ってくるのは `boid signal list --claim` が返す未処理 (pending) の signal
     そのものであり、「もう決着した event_key」を除く必要が無くなった (旧実装の
@@ -170,7 +166,7 @@ def plan_candidates(
     targets: list[Target] = []
     #: 機構の篩いで「判断済み」と決定的に結論した event_key (2026-08-27、Fix 2)。
     screened_out: set[str] = set()
-    slots = set(taken)
+    slots: set[str] = set()
 
     for identity, group in grouped.items():
         task_id, status = resolved.get(identity, ("", ""))
@@ -178,7 +174,7 @@ def plan_candidates(
             # 篩い 5: aborted のみ (2026-08-25 訂正、PR-K レビュー MEDIUM 2)。card 機械
             # v2 はこの status に到達しないので、通常タスクの aborted を拾う必要は無い。
             #
-            # **`done` は落とさない** —— done の card には khi が `reopen` を suggest
+            # **`done` は落とさない** —— done の card には `reopen` を suggest
             # できる経路が開いている (I-5b ガード)。ここで落とすと「終わったと思って
             # いた件に続きが来た」が二度と検知されず、シグナルは栞に跨がれて**静かに
             # 消える**。設計が「現行実装は観測側が done を除外していたためこの経路が
