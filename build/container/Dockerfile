@@ -277,8 +277,8 @@ RUN git init -q /tmp/boid-api-skills \
     && chgrp -R 0 /opt/boid/integrations && chmod -R g=u /opt/boid/integrations
 
 # boid's own embedded skills (/boid-task, /boid-orchestrate, /boid-web,
-# /boid-signal), unpacked so they are a DIRECTORY rather than only bytes inside
-# the binary — internal/dispatcher's embeddedSkillsImageDir.
+# /boid-signal, /boid-metaproject), unpacked so they are a DIRECTORY rather than
+# only bytes inside the binary — internal/dispatcher's embeddedSkillsImageDir.
 #
 # The content is the same tree the binary embeds (internal/skills/deploy.go's
 # //go:embed data/...), copied straight from the build context rather than

@@ -15,6 +15,31 @@ import (
 // dispatch context being canceled (daemon shutdown). Checks both the ctx
 // directly and the error chain so wrapped child-ctx cancellations are
 // covered.
+// SideEffectConsumesPayload names the action types whose own side effect
+// already consumes the action payload, so ApplyAction must NOT additionally
+// merge that payload into the task's own — see the merge site below for what
+// the pollution looks like.
+//
+// Exported, and a package-level var rather than a literal inside ApplyAction,
+// so a test can compare it against the COPY of this set that the
+// boid-metaproject skill's python client carries
+// (internal/skills/data/boid-metaproject/scripts/boidmeta/boid_store.py's
+// PAYLOAD_CONSUMING). That copy has to exist — the client refuses to send a
+// payload with a type that would be merged, and it cannot ask the daemon at
+// call time — and a copy nobody checks is exactly how `child_dropped` came to
+// be missing from it for weeks after boid #982 added it here, silently
+// breaking one whole verb in production. Both halves live in one repo now;
+// TestSideEffectConsumesPayload_MatchesMetaprojectClient is what makes that
+// worth anything.
+var SideEffectConsumesPayload = map[string]bool{
+	"park":          true,
+	"attrs_set":     true,
+	"child_added":   true,
+	"child_specced": true,
+	"child_dropped": true,
+	"noted":         true,
+}
+
 func isShutdownErr(ctx context.Context, err error) bool {
 	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
 		return true
@@ -33,7 +58,7 @@ type applyActionOptions struct {
 	// The generic merge below is right for an agent describing its work, and
 	// wrong for the daemon describing why it intervened: a `{code, message}`
 	// abort reason merged into a task whose payload already has a `message`
-	// silently replaces it — the same pollution sideEffectConsumesPayload
+	// silently replaces it — the same pollution SideEffectConsumesPayload
 	// exists to prevent, on a path the daemon takes routinely and without
 	// anyone asking. abortOnDispatchError avoids it by writing the action
 	// directly and never touching the task payload; this flag is how a caller
@@ -326,14 +351,6 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 	// ("answered" used to be in this map too — it now bypasses this entire
 	// function via applyAnswered, workflow_action.go's own early redirect
 	// above, so it never reaches this point at all.)
-	sideEffectConsumesPayload := map[string]bool{
-		"park":          true,
-		"attrs_set":     true,
-		"child_added":   true,
-		"child_specced": true,
-		"child_dropped": true,
-		"noted":         true,
-	}
 
 	// Payload is execution-only (design doc §3.2) — a card has no field to
 	// merge action.Payload into at all, so this generic merge is scoped to
@@ -344,7 +361,7 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 	// that incidental write structurally impossible instead of merely
 	// pointless — see design doc §7's "card の行に嘘の behavior 一式" row for
 	// the same reasoning applied to this sibling field.
-	if !opts.actionPayloadOnly && !reopenPayloadConsumed && !sideEffectConsumesPayload[req.Type] && newTask.Exec != nil {
+	if !opts.actionPayloadOnly && !reopenPayloadConsumed && !SideEffectConsumesPayload[req.Type] && newTask.Exec != nil {
 		merged, err := orchestrator.MergePayload(newTask.Exec.Payload, action.Payload)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: "payload merge: " + err.Error()}
@@ -429,7 +446,7 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 	// identical reason: non-transitioning, payload fully consumed (never
 	// merged into task.Payload) — an unconditional UpdateTask(newTask) here
 	// would risk the same stale-status-stomp race. ("answered" no longer
-	// reaches this function at all — see the sideEffectConsumesPayload
+	// reaches this function at all — see the SideEffectConsumesPayload
 	// comment above.)
 	//
 	// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): "nothing new to

@@ -16,14 +16,26 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'internal/skills/data/**'
       - '.claude/skills/**'
+      # `internal/skills/data/**` used to be listed here, back when every
+      # embedded skill was markdown and `**.md` above would have covered it
+      # anyway. It stopped being true when boid-metaproject started shipping
+      # RUNNABLE scripts (its own unit tests are the metaproject-library job
+      # below): with the directory ignored wholesale, a change to that library
+      # ran no CI at all. `**.md` still skips a docs-only skill edit, which was
+      # the entry's real purpose.
   pull_request:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'internal/skills/data/**'
       - '.claude/skills/**'
+      # `internal/skills/data/**` used to be listed here, back when every
+      # embedded skill was markdown and `**.md` above would have covered it
+      # anyway. It stopped being true when boid-metaproject started shipping
+      # RUNNABLE scripts (its own unit tests are the metaproject-library job
+      # below): with the directory ignored wholesale, a change to that library
+      # ran no CI at all. `**.md` still skips a docs-only skill edit, which was
+      # the entry's real purpose.
 
 permissions:
   contents: read
@@ -106,6 +118,81 @@ jobs:
         # e2e/upstream (docs/plans/git-gateway-cutover.md PR7a) は実
         # git-http-backend 相手の clone/push 往復試験のため同じ理由でここに属す。
         run: go test -tags=e2e ./internal/sandbox/... ./e2e/upstream/...
+
+  metaproject-lib:
+    name: Metaproject library (python)
+    runs-on: ubuntu-24.04
+    # internal/skills/data/boid-metaproject/scripts is the detection/record
+    # machinery every boid METAPROJECT runs instead of vendoring its own copy
+    # (see that skill's SKILL.md for why a copy is the failure mode). It is
+    # baked into the runner image and executed inside job sandboxes, so it is
+    # production code that happens to be Python — it needs a test job like any
+    # other, and until this existed the whole tree was inside the workflow's
+    # paths-ignore.
+    #
+    # No dependency install step and no requirements file: the library is
+    # stdlib-only ON PURPOSE, because the runner image ships a bare python3
+    # (3.11, no pyyaml — that constraint is also why the sweep's knobs are
+    # flags rather than a config file). A `pip install` appearing here would
+    # mean the library had quietly grown a dependency the sandbox cannot
+    # satisfy, which is exactly the drift this job should fail on.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run metaproject library tests
+        working-directory: internal/skills/data/boid-metaproject/scripts
+        # The run count is asserted, not just the exit code. `unittest
+        # discover` exits 0 on python 3.11 when it discovers NOTHING, so a
+        # rename or a move of _tests/ would turn this job green while testing
+        # nothing at all — "0 scanned" and "0 failures" look identical from the
+        # outside. packconformance closes the same trap by reporting its own
+        # scanned-file count; this is the cheap version.
+        run: |
+          set -o pipefail
+          PYTHONPATH=. python3 -m unittest discover -s _tests -t _tests -v 2>&1 | tee result.txt
+          ran=$(sed -n 's/^Ran \([0-9]*\) tests\?.*/\1/p' result.txt | tail -1)
+          echo "discovered and ran: ${ran:-0}"
+          if [ "${ran:-0}" -lt 200 ]; then
+            echo "::error::expected the metaproject library suite to run at least 200 tests, got ${ran:-0} — did _tests/ move?"
+            exit 1
+          fi
+
+      - name: Assert the library imports nothing outside the standard library
+        working-directory: internal/skills/data/boid-metaproject/scripts
+        # A third-party import would pass the tests above on a GitHub runner
+        # and then fail inside every job sandbox, where nothing is installed.
+        run: |
+          python3 - <<'EOF'
+          import ast, pathlib, sys
+          stdlib = set(sys.stdlib_module_names)
+          bad = []
+          scanned = sorted(pathlib.Path(".").glob("*.py")) + sorted(pathlib.Path("boidmeta").rglob("*.py"))
+          for f in scanned:
+              for node in ast.walk(ast.parse(f.read_text())):
+                  names = []
+                  if isinstance(node, ast.Import):
+                      names = [a.name for a in node.names]
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                      names = [node.module]
+                  for name in names:
+                      top = name.split(".")[0]
+                      if top != "boidmeta" and top not in stdlib:
+                          bad.append(f"{f}: {name}")
+          if bad:
+              print("non-stdlib imports found (the job sandbox has none of these):")
+              print("\n".join(bad))
+              sys.exit(1)
+          if len(scanned) < 10:
+              print(f"only {len(scanned)} files scanned — the tree moved, and 0 violations would mean nothing")
+              sys.exit(1)
+          print(f"stdlib-only: ok ({len(scanned)} files)")
+          EOF
 
   race:
     name: Race detector

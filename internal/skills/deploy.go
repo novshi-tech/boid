@@ -10,7 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:embed data/boid-web data/boid-orchestrate data/boid-task data/boid-signal
+//go:embed data/boid-web data/boid-orchestrate data/boid-task data/boid-signal data/boid-metaproject
 var skillsFS embed.FS
 
 // DeployAll extracts all embedded skill directories under baseDir.

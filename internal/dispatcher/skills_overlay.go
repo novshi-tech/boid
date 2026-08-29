@@ -9,7 +9,8 @@ import (
 )
 
 // This file owns the daemon side of how skills — boid's own embedded set
-// (/boid-task, /boid-orchestrate, /boid-web, /boid-signal) and every
+// (/boid-task, /boid-orchestrate, /boid-web, /boid-signal, /boid-metaproject)
+// and every
 // Integration Pack's — reach a job's sandbox.
 //
 // # One mechanism, after three
@@ -151,7 +152,7 @@ func embeddedSkillsImageDir() string {
 // established here — codex is documented to list same-named skills separately
 // rather than merging, and opencode's docs say only that a nearer directory
 // overrides a farther one, which is about project-vs-global precedence and not
-// about two global roots. Presenting boid's four skills twice to one of three
+// about two global roots. Presenting boid's own skills twice to one of three
 // harnesses was judged cheaper than either dropping a root (which loses a
 // harness outright) or making the link set depend on which harness a job will
 // use (which resolveWorkspaceHome cannot know: the home is prepared per

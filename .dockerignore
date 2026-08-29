@@ -11,3 +11,23 @@ docs/
 e2e/
 *.md
 LICENSE
+
+# The metaproject library's own unit tests. They are part of the boid repo (CI
+# runs them) but have no business inside a job's skills directory: an agent
+# browsing ~/.claude/skills/boid-metaproject/ should see the scripts it can run
+# and the docs it should read, not a test suite it will mistake for either.
+#
+# go:embed happens to skip them too (a leading "_" is excluded unless the
+# pattern says all:), but the two exclusions are NOT the same rule and do not
+# produce the same tree: that same underscore rule also drops
+# scripts/boidmeta/__init__.py from the embedded copy, which this COPY keeps.
+# Harmless — DeployAll has no production caller (the image path is what jobs
+# see) and boidmeta still imports as a namespace package — but do not read
+# either exclusion as a statement about the other.
+internal/skills/data/boid-metaproject/scripts/_tests/
+
+# Python bytecode from running those tests locally. Without this, a developer
+# who ran the suite before `docker build` ships .pyc files into
+# /opt/boid/skills — stale ones, since the image's python is 3.11 and the
+# host's may not be.
+**/__pycache__/
