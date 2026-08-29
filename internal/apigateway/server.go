@@ -168,7 +168,7 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			pr.Out.Header.Del("Proxy-Authorization")
 
 			if s.credentials != nil {
-				if err := s.credentials.Inject(pr.Out, info.service, info.account, info.namespace); err != nil {
+				if err := s.credentials.Inject(pr.Out, info.namespace, info.service, info.account); err != nil {
 					recSvc := recordedServiceName(info.service, info.account)
 					slog.Warn("apigateway: credential injection failed; aborting request (fail-fast, not forwarding unauthenticated)",
 						"service", recSvc, "err", err)
@@ -321,7 +321,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//
 	// account is passed through unmodified (D3): there is no fallback to
 	// the account-less credential when an account-qualified one is missing.
-	if err := s.credentials.Resolve(rt.service, rt.account, entry.Namespace); err != nil {
+	if err := s.credentials.Resolve(entry.Namespace, rt.service, rt.account); err != nil {
 		slog.Warn("apigateway: credential resolution failed; refusing to forward (fail-fast)",
 			"service", recSvc, "namespace", entry.Namespace, "err", err)
 		s.notifier.NotifyCredentialError(recSvc, err)

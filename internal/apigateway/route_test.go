@@ -169,6 +169,15 @@ func TestParsePath_AccountExactly64CharsAccepted(t *testing.T) {
 	}
 }
 
+// TestParsePath_Invalid pins that every case here is a 404 at the
+// Server.ServeHTTP level (TestServer_NotFoundForUnmatchedPath), NOT a 400 —
+// which is why each case must also assert errors.Is(err, errInvalidAccount)
+// is FALSE, not just err != nil. Server.ServeHTTP's 400-vs-404 split
+// (errInvalidAccount → 400, every other parsePath error → 404) has no test
+// pinning the "every other parsePath error is NOT errInvalidAccount" side:
+// mutating checkForTraversal (or the malformed-segment paths above) to wrap
+// its error in errInvalidAccount would silently reclassify these as 400s
+// while every test that only checks err != nil stays green.
 func TestParsePath_Invalid(t *testing.T) {
 	cases := []string{
 		"/",
@@ -181,8 +190,12 @@ func TestParsePath_Invalid(t *testing.T) {
 	}
 	for _, p := range cases {
 		t.Run(p, func(t *testing.T) {
-			if _, err := parsePath(p); err == nil {
-				t.Errorf("parsePath(%q): want error, got nil", p)
+			_, gotErr := parsePath(p)
+			if gotErr == nil {
+				t.Fatalf("parsePath(%q): want error, got nil", p)
+			}
+			if errors.Is(gotErr, errInvalidAccount) {
+				t.Errorf("parsePath(%q) error = %v, must NOT wrap errInvalidAccount (this case is a 404, not a 400)", p, gotErr)
 			}
 		})
 	}
@@ -199,6 +212,15 @@ func TestParsePath_Invalid(t *testing.T) {
 // segment into an extra path separator (see TestParsePath_Valid's
 // percent-encoded-slash case) — rejecting outright avoids that tension
 // entirely while still making escape impossible.
+//
+// Every case also asserts errors.Is(err, errInvalidAccount) is FALSE: a
+// traversal attempt must stay a 404 at Server.ServeHTTP (see
+// TestServer_TraversalReturnsNotFound), not a 400. checkForTraversal's error
+// wrapping its cause in errInvalidAccount (accidentally or otherwise) would
+// silently turn every case below into a 400 while leaving every other
+// assertion in this test green — this is the regression a review mutation
+// caught (400/404 boundary, docs/plans/api-gateway-credential-accounts.md
+// D11).
 func TestParsePath_TraversalCannotEscapeServiceRoot(t *testing.T) {
 	cases := []string{
 		"/api/tok123/myapp/..",
@@ -224,8 +246,12 @@ func TestParsePath_TraversalCannotEscapeServiceRoot(t *testing.T) {
 	}
 	for _, p := range cases {
 		t.Run(p, func(t *testing.T) {
-			if _, err := parsePath(p); err == nil {
-				t.Errorf("parsePath(%q): want error (traversal attempt), got nil", p)
+			_, err := parsePath(p)
+			if err == nil {
+				t.Fatalf("parsePath(%q): want error (traversal attempt), got nil", p)
+			}
+			if errors.Is(err, errInvalidAccount) {
+				t.Errorf("parsePath(%q) error = %v, must NOT wrap errInvalidAccount (a traversal attempt is a 404, not a 400)", p, err)
 			}
 		})
 	}

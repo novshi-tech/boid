@@ -241,7 +241,19 @@ func accountSecretKey(base, account string) string {
 // whose secret was never set fails here exactly like any other missing
 // secret. oauth2 with a non-empty account is rejected outright (PR-2 scope)
 // — see the AuthOAuth2 case below.
-func (c *CredentialProvider) Resolve(name, account, namespace string) error {
+//
+// namespace is deliberately the FIRST parameter, not adjacent to the other
+// two string args: with three plain strings in a row, a call site that
+// accidentally writes them in the wrong order (e.g. (service, namespace,
+// account)) still compiles, and workspace-scoped credential isolation
+// depends on namespace never being mixed up with account or name (a wrong
+// namespace resolves a DIFFERENT workspace's secret). Putting namespace
+// first also matches this package's own SecretResolver convention
+// (namespace, key). This is a stopgap for the three-bare-strings shape —
+// PR-2's credentialID type (docs/plans/api-gateway-credential-accounts.md
+// §3) folds name/account into one value and removes the ambiguity
+// structurally instead of by argument position.
+func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 	if c == nil {
 		return fmt.Errorf("apigateway: no credential provider configured")
 	}
@@ -287,8 +299,9 @@ func (c *CredentialProvider) Resolve(name, account, namespace string) error {
 //
 // account behaves exactly as documented on Resolve — same accountSecretKey
 // composition for the static kinds, same fail-closed oauth2 rejection when
-// non-empty.
-func (c *CredentialProvider) Inject(req *http.Request, name, account, namespace string) error {
+// non-empty. namespace is the first parameter for the same reason documented
+// on Resolve.
+func (c *CredentialProvider) Inject(req *http.Request, namespace, name, account string) error {
 	if c == nil {
 		return fmt.Errorf("apigateway: no credential provider configured")
 	}

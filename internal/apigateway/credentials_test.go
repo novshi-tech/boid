@@ -74,7 +74,7 @@ func TestCredentialProvider_Configured(t *testing.T) {
 
 func TestCredentialProvider_Resolve_UnknownService(t *testing.T) {
 	c := NewCredentialProvider(nil, stubResolver(nil))
-	if err := c.Resolve("nonexistent", "", "ws-a"); err == nil {
+	if err := c.Resolve("ws-a", "nonexistent", ""); err == nil {
 		t.Error("Resolve(nonexistent): want error")
 	}
 }
@@ -83,7 +83,7 @@ func TestCredentialProvider_Resolve_SecretMiss(t *testing.T) {
 	c := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: "https://myapp.example.com", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "missing-key"}},
 	}, stubResolver(nil))
-	if err := c.Resolve("myapp", "", "ws-a"); err == nil {
+	if err := c.Resolve("ws-a", "myapp", ""); err == nil {
 		t.Error("Resolve with a secret-store miss: want error")
 	}
 }
@@ -105,7 +105,7 @@ func TestCredentialProvider_Resolve_NoAccount_UsesUnqualifiedSecretKey(t *testin
 		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}},
 	}, resolver)
 
-	if err := c.Resolve("freee", "", "ws-a"); err != nil {
+	if err := c.Resolve("ws-a", "freee", ""); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if gotKey != "freee-token" {
@@ -128,7 +128,7 @@ func TestCredentialProvider_Inject_NoAccount_UsesUnqualifiedSecretKey(t *testing
 	}, resolver)
 
 	req, _ := http.NewRequest("GET", "https://api.freee.co.jp/api/1/companies", nil)
-	if err := c.Inject(req, "freee", "", "ws-a"); err != nil {
+	if err := c.Inject(req, "ws-a", "freee", ""); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
 	if gotKey != "freee-token" {
@@ -153,7 +153,7 @@ func TestCredentialProvider_Resolve_AccountUsesQualifiedSecretKey(t *testing.T) 
 		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}},
 	}, resolver)
 
-	if err := c.Resolve("freee", "ubs", "ws-a"); err != nil {
+	if err := c.Resolve("ws-a", "freee", "ubs"); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if gotKey != "freee-token@ubs" {
@@ -171,12 +171,12 @@ func TestCredentialProvider_Resolve_AccountDoesNotFallBackToUnqualified(t *testi
 		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "freee-token"}},
 	}, stubResolver(map[string]string{"ws-a/freee-token": "unqualified-secret"}))
 
-	if err := c.Resolve("freee", "ubs", "ws-a"); err == nil {
+	if err := c.Resolve("ws-a", "freee", "ubs"); err == nil {
 		t.Error("Resolve(freee, account=ubs) with no \"freee-token@ubs\" secret set: want error (no fallback to the unqualified key), got nil")
 	}
 	// Sanity: the unqualified key itself still resolves fine — proves the
 	// failure above is genuinely about account-scoping, not a broken stub.
-	if err := c.Resolve("freee", "", "ws-a"); err != nil {
+	if err := c.Resolve("ws-a", "freee", ""); err != nil {
 		t.Errorf("Resolve(freee, account=\"\") should still succeed: %v", err)
 	}
 }
@@ -191,7 +191,7 @@ func TestCredentialProvider_Inject_AccountDoesNotFallBackToUnqualified(t *testin
 	}, stubResolver(map[string]string{"ws-a/freee-token": "unqualified-secret"}))
 
 	req, _ := http.NewRequest("GET", "https://api.freee.co.jp/api/1/companies", nil)
-	if err := c.Inject(req, "freee", "ubs", "ws-a"); err == nil {
+	if err := c.Inject(req, "ws-a", "freee", "ubs"); err == nil {
 		t.Error("Inject(freee, account=ubs) with no \"freee-token@ubs\" secret set: want error (no fallback to the unqualified key), got nil")
 	}
 	if req.Header.Get("Authorization") != "" {
@@ -213,7 +213,7 @@ func TestCredentialProvider_Resolve_OAuth2WithAccountFailsClosed(t *testing.T) {
 	}, nil)
 	c.SetOAuth2TokenSource(&stubOAuth2TokenSource{tokens: map[string]string{"ws-a/freee": "at-123"}})
 
-	if err := c.Resolve("freee", "ubs", "ws-a"); err == nil {
+	if err := c.Resolve("ws-a", "freee", "ubs"); err == nil {
 		t.Error("Resolve for an oauth2-kind service with a non-empty account: want error (PR-2 scope), got nil")
 	}
 }
@@ -228,7 +228,7 @@ func TestCredentialProvider_Inject_OAuth2WithAccountFailsClosed(t *testing.T) {
 	c.SetOAuth2TokenSource(&stubOAuth2TokenSource{tokens: map[string]string{"ws-a/freee": "at-123"}})
 
 	req, _ := http.NewRequest("GET", "https://api.freee.co.jp/api/1/companies", nil)
-	if err := c.Inject(req, "freee", "ubs", "ws-a"); err == nil {
+	if err := c.Inject(req, "ws-a", "freee", "ubs"); err == nil {
 		t.Error("Inject for an oauth2-kind service with a non-empty account: want error (PR-2 scope), got nil")
 	}
 	if req.Header.Get("Authorization") != "" {
@@ -245,7 +245,7 @@ func TestCredentialProvider_Resolve_OAuth2NoTokenSourceConfigured(t *testing.T) 
 	c := NewCredentialProvider([]ServiceConfig{
 		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
 	}, stubResolver(nil))
-	if err := c.Resolve("freee", "", "ws-a"); err == nil {
+	if err := c.Resolve("ws-a", "freee", ""); err == nil {
 		t.Error("Resolve for an oauth2-kind service with no TokenSource wired: want error, got nil")
 	}
 }
@@ -281,7 +281,7 @@ func TestCredentialProvider_Resolve_OAuth2_DelegatesToTokenSource(t *testing.T) 
 	stub := &stubOAuth2TokenSource{tokens: map[string]string{"ws-a/freee": "at-123"}}
 	c.SetOAuth2TokenSource(stub)
 
-	if err := c.Resolve("freee", "", "ws-a"); err != nil {
+	if err := c.Resolve("ws-a", "freee", ""); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if len(stub.calls) != 1 || stub.calls[0] != "ws-a/freee" {
@@ -295,7 +295,7 @@ func TestCredentialProvider_Resolve_OAuth2_TokenSourceError(t *testing.T) {
 	}, nil)
 	c.SetOAuth2TokenSource(&stubOAuth2TokenSource{err: errors.New("refresh failed")})
 
-	if err := c.Resolve("freee", "", "ws-a"); err == nil {
+	if err := c.Resolve("ws-a", "freee", ""); err == nil {
 		t.Error("Resolve when the TokenSource errors: want error, got nil")
 	}
 }
@@ -307,7 +307,7 @@ func TestCredentialProvider_Inject_OAuth2_SetsBearerHeader(t *testing.T) {
 	c.SetOAuth2TokenSource(&stubOAuth2TokenSource{tokens: map[string]string{"ws-a/freee": "at-456"}})
 
 	req, _ := http.NewRequest("GET", "https://api.freee.co.jp/api/1/companies", nil)
-	if err := c.Inject(req, "freee", "", "ws-a"); err != nil {
+	if err := c.Inject(req, "ws-a", "freee", ""); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer at-456" {
@@ -330,7 +330,7 @@ func TestCredentialProvider_Inject_OAuth2_DifferentServicesSameProvider(t *testi
 
 	for _, svc := range []string{"freee-accounting", "freee-hr"} {
 		req, _ := http.NewRequest("GET", "https://api.freee.co.jp/x", nil)
-		if err := c.Inject(req, svc, "", "ws-a"); err != nil {
+		if err := c.Inject(req, "ws-a", svc, ""); err != nil {
 			t.Fatalf("Inject(%s): %v", svc, err)
 		}
 		if got := req.Header.Get("Authorization"); got != "Bearer shared-token" {
@@ -372,7 +372,7 @@ func TestCredentialProvider_Inject_Bearer(t *testing.T) {
 	}, stubResolver(map[string]string{"ws-a/myapp-token": "secret123"}))
 
 	req, _ := http.NewRequest("GET", "https://myapp.example.com/v1/users", nil)
-	if err := c.Inject(req, "myapp", "", "ws-a"); err != nil {
+	if err := c.Inject(req, "ws-a", "myapp", ""); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer secret123" {
@@ -386,7 +386,7 @@ func TestCredentialProvider_Inject_Basic(t *testing.T) {
 	}, stubResolver(map[string]string{"ws-a/bb-token": "tok"}))
 
 	req, _ := http.NewRequest("GET", "https://api.bitbucket.org/2.0/repositories", nil)
-	if err := c.Inject(req, "bb", "", "ws-a"); err != nil {
+	if err := c.Inject(req, "ws-a", "bb", ""); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
 	user, pass, ok := req.BasicAuth()
@@ -404,7 +404,7 @@ func TestCredentialProvider_Inject_Header(t *testing.T) {
 	}, stubResolver(map[string]string{"ws-a/ops-key": "opskey123"}))
 
 	req, _ := http.NewRequest("GET", "https://ops.example.com/status", nil)
-	if err := c.Inject(req, "ops", "", "ws-a"); err != nil {
+	if err := c.Inject(req, "ws-a", "ops", ""); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
 	if got := req.Header.Get("X-Api-Key"); got != "opskey123" {
@@ -418,7 +418,7 @@ func TestCredentialProvider_Inject_Query(t *testing.T) {
 	}, stubResolver(map[string]string{"ws-a/legacy-key": "qkey"}))
 
 	req, _ := http.NewRequest("GET", "https://legacy.example.com/v1/status?foo=bar", nil)
-	if err := c.Inject(req, "legacy", "", "ws-a"); err != nil {
+	if err := c.Inject(req, "ws-a", "legacy", ""); err != nil {
 		t.Fatalf("Inject: %v", err)
 	}
 	q := req.URL.Query()
@@ -437,7 +437,7 @@ func TestCredentialProvider_Inject_OAuth2NoTokenSourceConfigured(t *testing.T) {
 		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
 	}, stubResolver(nil))
 	req, _ := http.NewRequest("GET", "https://api.freee.co.jp/api/1/companies", nil)
-	if err := c.Inject(req, "freee", "", "ws-a"); err == nil {
+	if err := c.Inject(req, "ws-a", "freee", ""); err == nil {
 		t.Fatal("Inject for an oauth2-kind service with no TokenSource wired: want error, got nil")
 	}
 	if req.Header.Get("Authorization") != "" {
@@ -450,7 +450,7 @@ func TestCredentialProvider_Inject_NoResolverConfigured(t *testing.T) {
 		{Name: "myapp", BaseURL: "https://myapp.example.com", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "myapp-token"}},
 	}, nil)
 	req, _ := http.NewRequest("GET", "https://myapp.example.com/v1/users", nil)
-	if err := c.Inject(req, "myapp", "", "ws-a"); err == nil {
+	if err := c.Inject(req, "ws-a", "myapp", ""); err == nil {
 		t.Fatal("Inject with no resolver configured: want error, got nil")
 	}
 }
@@ -461,7 +461,7 @@ func TestCredentialProvider_MultiNamespaceIsolation(t *testing.T) {
 	}, stubResolver(map[string]string{"ws-a/myapp-token": "secret-a", "ws-b/myapp-token": "secret-b"}))
 
 	reqA, _ := http.NewRequest("GET", "https://myapp.example.com/x", nil)
-	if err := c.Inject(reqA, "myapp", "", "ws-a"); err != nil {
+	if err := c.Inject(reqA, "ws-a", "myapp", ""); err != nil {
 		t.Fatalf("Inject (ws-a): %v", err)
 	}
 	if got := reqA.Header.Get("Authorization"); got != "Bearer secret-a" {
@@ -469,7 +469,7 @@ func TestCredentialProvider_MultiNamespaceIsolation(t *testing.T) {
 	}
 
 	reqB, _ := http.NewRequest("GET", "https://myapp.example.com/x", nil)
-	if err := c.Inject(reqB, "myapp", "", "ws-b"); err != nil {
+	if err := c.Inject(reqB, "ws-b", "myapp", ""); err != nil {
 		t.Fatalf("Inject (ws-b): %v", err)
 	}
 	if got := reqB.Header.Get("Authorization"); got != "Bearer secret-b" {
@@ -485,11 +485,11 @@ func TestCredentialProvider_NilProviderFailsClosed(t *testing.T) {
 	if _, ok := c.BaseURLFor("myapp"); ok {
 		t.Error("nil CredentialProvider.BaseURLFor: ok = true, want false")
 	}
-	if err := c.Resolve("myapp", "", "ws-a"); err == nil {
+	if err := c.Resolve("ws-a", "myapp", ""); err == nil {
 		t.Error("nil CredentialProvider.Resolve: want error, got nil")
 	}
 	req, _ := http.NewRequest("GET", "https://example.com", nil)
-	if err := c.Inject(req, "myapp", "", "ws-a"); err == nil {
+	if err := c.Inject(req, "ws-a", "myapp", ""); err == nil {
 		t.Error("nil CredentialProvider.Inject: want error, got nil")
 	}
 }

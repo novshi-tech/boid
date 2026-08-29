@@ -626,6 +626,27 @@ func TestServer_NotFoundForUnmatchedPath(t *testing.T) {
 	}
 }
 
+// TestServer_TraversalReturnsNotFound is TestServer_NotFoundForUnmatchedPath's
+// counterpart for a WELL-FORMED-looking path whose tail is a traversal
+// attempt: unlike TestServer_InvalidAccountNameReturnsBadRequest (a
+// malformed account segment, which IS a 400 per D11), a traversal attempt
+// must stay a 404 — Server.ServeHTTP only maps errors.Is(err,
+// errInvalidAccount) to 400, every other parsePath failure (including
+// checkForTraversal's) falls through to http.NotFound. Before this test, no
+// test exercised a traversal path at the Server.ServeHTTP level at all — only
+// parsePath directly (TestParsePath_TraversalCannotEscapeServiceRoot) — so a
+// review mutation that made checkForTraversal wrap errInvalidAccount would
+// have turned this into a 400 with no test noticing.
+func TestServer_TraversalReturnsNotFound(t *testing.T) {
+	srv := NewServer(NewRegistry(), NewCredentialProvider(nil, nil), nil, nil)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/tok123/myapp/../../etc/passwd", nil)
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body %q)", w.Code, w.Body.String())
+	}
+}
+
 func TestServer_QueryAuthInjectionPreservesExistingParams(t *testing.T) {
 	var gotQuery string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1186,6 +1186,22 @@ workspace back onto the `"default"` secret namespace.
   `TestServer_ProxiesWithOAuth2Injection` (`internal/apigateway/server_test.go`) for the
   oauth2 kind's own End C/D round trip. See seam #23 for the surrounding config↔apigateway
   wiring PR2 also added.
+- **Credential-accounts PR-1 update (2026-08-29)**: `docs/plans/
+  api-gateway-credential-accounts.md` added a THIRD plain-string parameter (`account`) to
+  both `CredentialProvider.Resolve` and `.Inject`, alongside `name` and `namespace` — three
+  adjacent strings a call site can permute and still have it compile. `Server.ServeHTTP`'s
+  own two call sites (the fail-fast pre-check and `Rewrite`'s inject) were changed to pass
+  `namespace` FIRST: `Resolve(namespace, name, account string)` /
+  `Inject(req *http.Request, namespace, name, account string)` — matching this package's
+  own `SecretResolver(namespace, key string)` convention, and reducing (not eliminating —
+  `name`/`account` are still adjacent same-typed strings) the chance of an accidental
+  argument-order swap silently resolving one workspace's credential under a DIFFERENT
+  workspace's namespace. Both call sites in `Server.ServeHTTP` and every test call site in
+  `credentials_test.go` were updated together in the same change — the End C/D shape this
+  entry documents is otherwise exactly what a partial reorder (only one of the two call
+  sites) would break. `Resolve`'s own doc comment carries the same rationale, and notes this
+  is a stopgap until PR-2's `credentialID` type folds `name`/`account` into one value and
+  removes the ambiguity structurally.
 
 ## 22. orchestrator.Action → timeline.Build renderability
 

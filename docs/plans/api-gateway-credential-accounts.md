@@ -237,6 +237,18 @@ normalize 対象ではない (空は空のまま = 修飾なし)。
 PR-1 単体で static kind の service は使えるようになるが、freee は oauth2 なので
 PR-2 まで到達して初めて実用になる。
 
+**PR-2 で決める必要がある残課題: connector exec 経路の account 未対応**
+(レビューで発見、2026-08-29)。`internal/server/connector_exec.go` の
+`resolveConnectorExec` は `APIGatewayServices: []string{ref.Service}` と
+`Env["BOID_SIGNAL_SERVICE"] = ref.Service` の両方に `ref.Service` の生文字列を
+そのまま入れている。ここは workspace の `services` 一覧以外で `Entry.Services`
+を作る唯一の経路であり、`signals.sources[].service` に `freee@ubs` と書くと
+`Entry.Services` は `{"freee@ubs"}` になる。一方 `Server.ServeHTTP` の認可判定は
+base 名 (`freee`) で引く (D4) ので、この経路だけ **常に 403** になる —
+fail-closed なので危険ではないが、原因不明の 403 として観測される。account
+修飾が実用になる PR-2 で、この経路も base/account を分割して扱うか、connector
+経路では account 修飾を明示的に非対応として弾くかを決める必要がある。
+
 ドキュメント (`docs/ja/reference/config-yaml.md`、boid-api-skills 側の
 `freee-api` スキル) の更新は各 PR に含める。
 
