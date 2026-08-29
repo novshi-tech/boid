@@ -51,6 +51,13 @@ type TaskWorkflowService struct {
 	// notifyUrgencyRaised entirely). Nil is tolerated (no-op), same as
 	// TaskAppService.Notify's contract.
 	Notifier Notifier
+	// TaskWaits is the shared registry recording which task each in-flight
+	// `boid task wait` is parked on (see TaskWaitRegistry). SweepTriggers reads
+	// it to know WHAT to end when a round outruns its trigger's `timeout` — the
+	// task doing the work, not just the job that launched it. Nil is tolerated
+	// (a timed-out round then only has its job stopped), same convention as
+	// every other optional dependency here.
+	TaskWaits *TaskWaitRegistry
 	// Triggers backs docs/plans/ingestion-identity.md PR-4 (B-5)'s
 	// trigger_runs single-flight/execution-record read+write
 	// (SweepTriggers/RunTriggerNow, trigger_loop.go). Nil is tolerated —

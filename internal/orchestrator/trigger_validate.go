@@ -53,9 +53,42 @@ func ValidateTriggers(triggers []Trigger) error {
 		if every <= 0 {
 			return fmt.Errorf("project.yaml: triggers[%d] (%s): every must be > 0, got %q", i, trig.Name, trig.Every)
 		}
+		if trig.Timeout != "" {
+			timeout, terr := time.ParseDuration(trig.Timeout)
+			if terr != nil {
+				return fmt.Errorf("project.yaml: triggers[%d] (%s): timeout: %w", i, trig.Name, terr)
+			}
+			if timeout <= 0 {
+				return fmt.Errorf("project.yaml: triggers[%d] (%s): timeout must be > 0, got %q (omit the field for no bound)", i, trig.Name, trig.Timeout)
+			}
+			if timeout < every {
+				// A round killed before the next one may even start is always a
+				// mistake, and the most likely one is confusing the two fields
+				// (how often to look vs. how long a round may run). The daemon
+				// cannot tell that apart from someone who meant it, so it says
+				// so here rather than silently killing every round.
+				return fmt.Errorf("project.yaml: triggers[%d] (%s): timeout (%q) is shorter than every (%q) — every rounds would be killed before the next was due; the two are independent (how often to look vs. how long a round may run)", i, trig.Name, trig.Timeout, trig.Every)
+			}
+		}
 		if every < TriggerSweepResolution {
 			return fmt.Errorf("project.yaml: triggers[%d] (%s): every (%q) is below the daemon's effective sweep resolution (%s) — it would silently run only once per sweep tick, not as often as written", i, trig.Name, trig.Every, TriggerSweepResolution)
 		}
 	}
 	return nil
+}
+
+// TriggerTimeout resolves Timeout for the sweep loop. Zero means unbounded —
+// both for an omitted field and for an unparseable one, which ValidateTriggers
+// rejects at load time so it cannot reach a running daemon. Falling back to
+// "unbounded" rather than to some default keeps a malformed value from
+// inventing a bound nobody wrote.
+func (t Trigger) TriggerTimeout() time.Duration {
+	if t.Timeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(t.Timeout)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }

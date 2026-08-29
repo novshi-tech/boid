@@ -557,7 +557,14 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			// caller open until something else kills it.
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait cannot wait on the calling task"}
 		}
+		// Record what this job is parked on for the duration of the wait, so
+		// the trigger sweep can end the TASK (the work) rather than only this
+		// job (the launcher) when a round outruns its trigger's `timeout` —
+		// see api.TaskWaitRegistry. A missing job id or registry just means the
+		// wait is unattributable, never that it misbehaves.
+		release := e.tasks.TaskWaits.Register(ctx.JobID, existing.ID)
 		outcome, err := e.tasks.WaitTaskTerminal(goCtx, existing.ID)
+		release()
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}

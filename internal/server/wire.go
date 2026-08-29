@@ -1270,7 +1270,15 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// surface in task timelines without polling. Completion broadcasts live
 	// in TaskWorkflowService.CompleteJob (where exit-code semantics are known).
 	runner.JobEvents = hubJobEventSink{hub: hub}
+	// One registry shared by the two services that need the two halves of the
+	// same fact: the brokered task_wait op writes it (which task this job is
+	// parked on), and the trigger sweep reads it (what to end when a round
+	// outruns its `timeout`). Built here because `workflow` is constructed
+	// before taskSvc.
+	taskWaits := api.NewTaskWaitRegistry()
+
 	workflow := &api.TaskWorkflowService{
+		TaskWaits:   taskWaits,
 		Tasks:       taskRepo,
 		Jobs:        jobStore,
 		Projects:    projectRepo,
@@ -1795,6 +1803,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		RuntimesDir:        runtimesRoot,
 		Notify:             notifySvc,
 		BlockingAsk:        api.NewBlockingAskRegistry(),
+		TaskWaits:          taskWaits,
 		AskDisconnectGrace: boidCfg.TaskAsk.DisconnectGrace,
 	}
 	// Late-bind workflow.TaskCreator to taskSvc now that taskSvc exists

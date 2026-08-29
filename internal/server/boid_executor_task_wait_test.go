@@ -224,3 +224,38 @@ func TestBoidBuiltinExecutor_TaskWait_ReportsTheResolvedID(t *testing.T) {
 		t.Errorf("stdout = %q, want the resolved id", resp.Stdout)
 	}
 }
+
+// The wait must record itself in the shared registry while parked, and clear
+// the entry when it ends. That link is what lets the trigger sweep end the TASK
+// (the work) rather than only the job (the launcher) when a round outruns its
+// trigger's `timeout` — without it, a timed-out round leaves the work running,
+// frees single-flight, and the next tick starts a second concurrent round.
+func TestBoidBuiltinExecutor_TaskWait_RegistersTheWaitForTheTriggerSweep(t *testing.T) {
+	exec, conn := taskWaitExecutor(t)
+	seedTask(t, conn, "t-running", orchestrator.TaskStatusExecuting)
+	waits := api.NewTaskWaitRegistry()
+	exec.tasks.TaskWaits = waits
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}, JobID: "job-1"}
+
+	goCtx, cancel := context.WithCancel(context.Background())
+	observed := make(chan string, 1)
+	go func() {
+		// Give the wait a moment to park, then read the registry the way
+		// SweepTriggers would before releasing it.
+		time.Sleep(50 * time.Millisecond)
+		taskID, _ := waits.TaskFor("job-1")
+		observed <- taskID
+		cancel()
+	}()
+
+	exec.ExecuteBoidBuiltin(goCtx, ctx, &sandbox.BoidRequest{
+		Op: sandbox.BoidOpTaskWait, TaskID: "t-running",
+	})
+
+	if got := <-observed; got != "t-running" {
+		t.Errorf("registry during the wait = %q, want t-running", got)
+	}
+	if _, ok := waits.TaskFor("job-1"); ok {
+		t.Error("the entry must be released once the wait ends")
+	}
+}

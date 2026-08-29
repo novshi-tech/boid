@@ -231,6 +231,7 @@ triggers:
     run: python3 scripts/intake_tick.py
   - name: sweep
     every: 1h
+    timeout: 30m       # 1 巡の実行時間の上限 (省略時は無制限)
     run: bash scripts/sweep_tick.sh
   - name: signal-sweep
     on: signals        # 省略時 "schedule"
@@ -243,13 +244,18 @@ triggers:
 | `name` | string | はい | このプロジェクト内でトリガを一意に識別する名前。空文字列・重複はロード時にエラー。`boid trigger run <name>` で参照する名前でもある |
 | `on` | string (`schedule` \| `signals`) | いいえ (既定 `schedule`) | トリガの発火条件を選ぶ (docs/plans/signal-ingest-detailed-design.md §4)。`schedule` (既定/省略時) は `every` 経過のみで発火する従来どおりの挙動。`signals` は `every` 経過に加えて、このプロジェクトが紐づく workspace に未 ack の Signal が 1 件以上あることを要求する — 詳細は下記「`on: signals` の意味論」を参照。それ以外の値はロード時にエラー |
 | `every` | string (`time.ParseDuration`) | はい | 前回の起動から次に起こすまでの最小間隔 (例: `10m`、`1h`)。`0` 以下は拒否。**実効下限は daemon の sweep 周期 (1 分)** — それより短い値 (例: `1s`) はロード時に拒否される。「毎秒」のように sweep 周期より高い頻度は表現できない。`on: signals` でも必須で、この場合は発火間隔の下限 = debounce 窓としても働く |
+| `timeout` | string (`time.ParseDuration`) | いいえ (省略時は無制限) | **1 巡** の実行時間の上限 (例: `30m`)。超過した巡は daemon が打ち切り、失敗として記録する (下記「タイムアウト」)。`0` 以下、および `every` より短い値はロード時に拒否される — `every` は「どれくらいの頻度で見に行くか」、`timeout` は「1 巡がどれくらいの長さまで許されるか」で、**別々の問い**である。混同して `timeout < every` にすると、次の巡が来る前に毎回打ち切られることになる |
 | `run` | string | はい | サンドボックス内で `sh -c` に渡されるコマンド文字列 (スクリプトパスではない)。sandbox の `/bin/sh` は dash なので bashism は `bash scripts/x.sh` のように明示すること。stdin は daemon 側が `exec 0</dev/null` 相当で閉じた状態で実行される (対話的な入力を待つスクリプトは書けない — attach するクライアントが存在しないため、閉じないと永久にハングする) |
 
 **実行の性質:**
 
 - 常に `Readonly: true` 固定の exec job として起動される (`boid exec --readonly` と同じ経路)。readonly でも `boid task create` / `boid task action-send` 等の boid op は通る (readonly はサンドボックスのファイルシステム書き込み可否だけを制御し、op の allowlist には影響しない)
 - **single-flight**: 同じ `(project, trigger)` の組は同時に 1 つしか走らない。前回がまだ実行中なら次の周期は見送られる (DB の部分 UNIQUE インデックスで強制される — 複数 daemon プロセスが同じ DB を共有する場合でも保証される)。`on: signals` でもこの機構に変更はない
-- 詰まり (`in-flight` が異常に長く続く) や連続失敗はログと通知でのみ検出される。**トリガ自身のコマンドにタイムアウトは無い** — 実行が返らないコマンドは daemon 側からは止められないので、`run:` に渡すコマンド自身がタイムアウトを持つこと (例: `timeout 300 python3 scripts/intake_tick.py`)
+- **タイムアウト**: `timeout` を宣言すると、その時間を超えた巡を daemon が打ち切り、`trigger_runs` を失敗として閉じる。失敗は連続失敗の通知 (3 回連続で通知) にそのまま乗る。宣言しなければ無制限で、詰まりはログと通知でのみ検出される
+    - 打ち切りは**起こされた task の方を abort する** — `run:` が `boid task wait` で task の終了を待っている場合、止めるべきは待っている job (起動係) ではなく走っている task (仕事本体) だから。job だけ止めると task が走り続けたまま single-flight が解放され、次の周期が同じ仕事の 2 巡目を並走させてしまう
+    - abort の理由は `lifecycle.abort.code` に `trigger_timeout` として記録される (`boid task show <id> --field lifecycle.abort.code`)
+    - 打ち切った tick では次の巡を起こさない。次の sweep tick (最大 1 分後) が改めて発火判定をする
+    - **`run:` の中に `timeout 300 ...` を書く必要はもう無い。** その形は daemon から見えない上限になるので、`timeout:` フィールドで宣言すること
 - daemon は `run:` の中身を一切解釈しない。何個 task を作るか・どう判断するかはスクリプト側の責務
 
 **`on: signals` の意味論:**

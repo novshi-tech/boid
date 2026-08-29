@@ -15,6 +15,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -187,6 +188,18 @@ const TriggerRunSelfHealExitCode = -1
 // trigger_runs row of its own).
 const TriggerDispatchFailureExitCode = -2
 
+// TriggerTimeoutExitCode is the sentinel SweepTriggers records for a run ended
+// by its trigger's own `timeout` — distinct from the other two so the three
+// failure classes stay apart in logs and notifications (self-heal = a job was
+// dispatched but its outcome was never observed; dispatch failure = the job was
+// never dispatched; this = the round ran and took too long).
+//
+// It flows into TriggerCompletionResult like any other non-zero exit, which is
+// the whole point: with a declared bound, "this is taking too long" stops being
+// something trackSkipStreak has to GUESS at from `every` and becomes an
+// ordinary failure trackFailStreak already knows how to count.
+const TriggerTimeoutExitCode = -3
+
 // selfHealStaleTriggerRun force-closes run if it has been in flight, unable
 // to resolve to a real job's terminal state, for at least
 // TriggerRunSelfHealGrace (N-1, Opus review). Returns true when it closed
@@ -273,6 +286,91 @@ func (s *TaskWorkflowService) reconcileInFlight(now time.Time, completed *[]Trig
 		}
 	}
 	return stillInFlight, nil
+}
+
+// timeOutTriggerRun ends a round that outlived its trigger's `timeout`.
+//
+// Order is load-bearing. The TASK is ended first, because it is the work: the
+// job is a launcher that happens to still be alive because it is parked in
+// `boid task wait`. Stopping only the job would leave the task running, release
+// single-flight, and let the next tick start a SECOND concurrent round of the
+// same work — strictly worse than the overrun it was meant to cure. Stopping
+// the job afterwards is belt-and-braces: aborting the task makes the wait
+// return on its own, but a job wedged for some other reason would not notice.
+//
+// A round with no registered wait (an ordinary trigger whose `run:` does the
+// work inline, or one whose registry entry was lost to a daemon restart) simply
+// has no task to end — the job is stopped and the run is closed, which is all
+// the daemon could ever have done for it.
+func (s *TaskWorkflowService) timeOutTriggerRun(
+	ctx context.Context,
+	now time.Time,
+	key TriggerKey,
+	run *orchestrator.TriggerRun,
+	timeout time.Duration,
+	completed *[]TriggerCompletionResult,
+) {
+	overrun := now.Sub(run.StartedAt)
+	slog.Warn("trigger sweep: round exceeded its timeout; ending it",
+		"project_id", key.ProjectID, "trigger", key.TriggerName,
+		"run_id", run.ID, "job_id", run.JobID, "timeout", timeout, "ran_for", overrun.Round(time.Second))
+
+	if s.TaskWaits == nil {
+		// Both halves of the link are wired in one place (wire.go builds ONE
+		// registry and hands it to this service and to TaskAppService). A nil
+		// here means only one end got it, which would otherwise degrade in
+		// complete silence: every timed-out round would stop its job and leave
+		// the task running, exactly the failure the registry exists to prevent.
+		slog.Warn("trigger sweep: no task-wait registry wired; a timed-out round can only stop its job, not the task it started",
+			"project_id", key.ProjectID, "trigger", key.TriggerName)
+	}
+	if taskID, ok := s.TaskWaits.TaskFor(run.JobID); ok {
+		if _, err := s.ApplyAction(ctx, taskID, ApplyActionRequest{
+			Type: "abort",
+			Payload: mustAbortPayload(fmt.Sprintf(
+				"trigger %s/%s: この巡は timeout (%s) を超えたので打ち切りました (実行時間 %s)",
+				key.ProjectID, key.TriggerName, timeout, overrun.Round(time.Second))),
+		}); err != nil {
+			// Logged, not fatal: the job is still stopped and the run still
+			// closed below, so the trigger recovers either way — it just leaves
+			// a task behind that a human has to look at, which is strictly
+			// better than leaving the trigger wedged.
+			slog.Warn("trigger sweep: could not abort the task the timed-out round was waiting on",
+				"project_id", key.ProjectID, "trigger", key.TriggerName, "task_id", taskID, "error", err)
+		}
+	}
+
+	if s.Lifecycle != nil && run.JobID != "" {
+		if job, err := s.Jobs.GetJob(run.JobID); err == nil && job != nil && job.RuntimeID != "" {
+			s.Lifecycle.StopJobRuntime(job.RuntimeID)
+		}
+	}
+
+	if err := s.Triggers.CompleteTriggerRun(run.ID, now, TriggerTimeoutExitCode); err != nil {
+		// Leave it in flight: the next tick sees the same overrun and tries
+		// again. Reporting a completion we failed to persist would let a
+		// second round start against a row that is still claimed.
+		slog.Warn("trigger sweep: could not close the timed-out run; retrying next tick",
+			"project_id", key.ProjectID, "trigger", key.TriggerName, "run_id", run.ID, "error", err)
+		return
+	}
+	if completed != nil {
+		*completed = append(*completed, TriggerCompletionResult{TriggerKey: key, ExitCode: TriggerTimeoutExitCode})
+	}
+}
+
+// mustAbortPayload renders the abort action payload timeOutTriggerRun records.
+// The shape matches abortOnDispatchError's (code + message) so `boid task show
+// --field lifecycle.abort.code` reads the same way for every daemon-initiated
+// abort.
+func mustAbortPayload(message string) json.RawMessage {
+	payload, err := json.Marshal(map[string]string{"code": "trigger_timeout", "message": message})
+	if err != nil {
+		// Marshalling two string fields cannot fail; fall back to the code
+		// alone rather than dropping the abort.
+		return json.RawMessage(`{"code":"trigger_timeout"}`)
+	}
+	return payload
 }
 
 // triggerIsDue reports whether every has elapsed since key's last recorded
@@ -541,6 +639,21 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 				continue
 			}
 			if run, busy := inFlight[key]; busy {
+				// A declared bound is enforced here rather than inside
+				// reconcileInFlight because this is the only place that has
+				// BOTH the in-flight run and the trigger definition it came
+				// from — reconcileInFlight walks trigger_runs rows, which carry
+				// no `timeout`.
+				if timeout := trig.TriggerTimeout(); timeout > 0 && now.Sub(run.StartedAt) >= timeout {
+					s.timeOutTriggerRun(ctx, now, key, run, timeout, &result.Completed)
+					// Not re-fired in this tick, unlike the self-heal path
+					// (which closes a row whose job was never really there).
+					// This one just ended a LIVE round abnormally; deciding the
+					// next one on state mutated a few lines ago is worth
+					// avoiding for the one sweep interval it costs. The next
+					// tick re-evaluates from scratch, `on: signals` included.
+					continue
+				}
 				result.Skipped = append(result.Skipped, TriggerSkip{TriggerKey: key, Since: run.StartedAt, Every: every})
 				continue
 			}

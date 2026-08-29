@@ -31,6 +31,11 @@ type TaskAppService struct {
 	// command was killed by a harness command-timeout). Zero falls back to
 	// defaultAskDisconnectGrace.
 	AskDisconnectGrace time.Duration
+	// TaskWaits is the registry the brokered task_wait op records itself in
+	// while parked, so the trigger sweep can tell which task a job is waiting
+	// on. Shared with TaskWorkflowService (wire.go builds one). Nil disables the
+	// attribution; the wait itself still works.
+	TaskWaits *TaskWaitRegistry
 	// WaitPollInterval is how often WaitTaskTerminal re-reads a task row while
 	// blocked on it. Zero falls back to defaultWaitPollInterval — same
 	// convention as AskDisconnectGrace above.
