@@ -163,7 +163,7 @@ func TestOAuth2TokenSource_CacheHit_NoRefreshCall(t *testing.T) {
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL, ClientID: "cid"}}, store.resolver(), store.writer())
 	ts.Now = func() time.Time { return ref }
 
-	got, err := ts.AccessToken("ws-a", "freee")
+	got, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestOAuth2TokenSource_NoCachedAccessToken_RefreshesUsingRefreshTokenOnly(t 
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL, ClientID: "cid"}}, store.resolver(), store.writer())
 	ts.Now = func() time.Time { return ref }
 
-	got, err := ts.AccessToken("ws-a", "freee")
+	got, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestOAuth2TokenSource_WithinMargin_Refreshes(t *testing.T) {
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 	ts.Now = func() time.Time { return ref }
 
-	got, err := ts.AccessToken("ws-a", "freee")
+	got, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestOAuth2TokenSource_RefreshTokenRotation_PersistsNewValue(t *testing.T) {
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT", "RT-new", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
 	if v, _ := store.get("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken)); v != "RT-new" {
@@ -256,7 +256,7 @@ func TestOAuth2TokenSource_RefreshTokenNotRotated_KeepsExisting(t *testing.T) {
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT", "", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
 	if v, _ := store.get("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken)); v != "RT-stable" {
@@ -277,7 +277,7 @@ func TestOAuth2TokenSource_PersistenceOrder_RefreshTokenWriteFailureAborts(t *te
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-should-not-be-used", "RT-new", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	got, err := ts.AccessToken("ws-a", "freee")
+	got, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err == nil {
 		t.Fatalf("AccessToken: want error when refresh_token persist fails, got token %q", got)
 	}
@@ -311,7 +311,7 @@ func TestOAuth2TokenSource_AccessTokenPersistFailureIsNotFatal(t *testing.T) {
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "RT-new", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	got, err := ts.AccessToken("ws-a", "freee")
+	got, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("AccessToken: want no error (refresh_token succeeded), got %v", err)
 	}
@@ -340,7 +340,7 @@ func TestOAuth2TokenSource_NonRotatingProvider_RefreshTokenWriteFailureIsNotFata
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	got, err := ts.AccessToken("ws-a", "freee")
+	got, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("AccessToken: want no error (refresh_token was never rotated, so the failing write is never attempted), got %v", err)
 	}
@@ -364,7 +364,7 @@ func TestOAuth2TokenSource_RotatingProvider_ExplicitlySameValue_SkipsWrite(t *te
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "RT-stable", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("AccessToken: want no error (refresh_token value unchanged), got %v", err)
 	}
 }
@@ -385,7 +385,7 @@ func TestOAuth2TokenSource_Singleflight_ConcurrentCallsCoalesce(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], errs[i] = ts.AccessToken("ws-a", "freee")
+			results[i], errs[i] = ts.AccessToken("ws-a", credentialID{provider: "freee"})
 		}(i)
 	}
 	// Give every goroutine a chance to reach the token endpoint (or at
@@ -416,7 +416,7 @@ func TestOAuth2TokenSource_SingleflightKeyReleasedAfterCompletion(t *testing.T) 
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 	ts.Now = func() time.Time { return ref }
 
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("first AccessToken: %v", err)
 	}
 	if n := stub.callCount(); n != 1 {
@@ -428,7 +428,7 @@ func TestOAuth2TokenSource_SingleflightKeyReleasedAfterCompletion(t *testing.T) 
 	// released, this call would hang forever waiting on a call that already
 	// finished.
 	ts.Now = func() time.Time { return ref.Add(1 * time.Hour) }
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("second AccessToken: %v", err)
 	}
 	if n := stub.callCount(); n != 2 {
@@ -439,7 +439,7 @@ func TestOAuth2TokenSource_SingleflightKeyReleasedAfterCompletion(t *testing.T) 
 func TestOAuth2TokenSource_UnknownProvider_Error(t *testing.T) {
 	store := newMemSecretStore()
 	ts := NewOAuth2TokenSource(nil, store.resolver(), store.writer())
-	if _, err := ts.AccessToken("ws-a", "nonexistent"); err == nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "nonexistent"}); err == nil {
 		t.Fatal("AccessToken for an unconfigured provider: want error, got nil")
 	} else if !strings.Contains(err.Error(), "not configured") {
 		t.Errorf("error %q does not mention the provider being unconfigured", err.Error())
@@ -451,7 +451,7 @@ func TestOAuth2TokenSource_NoRefreshTokenConfigured_Error(t *testing.T) {
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT", "", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	if _, err := ts.AccessToken("ws-a", "freee"); err == nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err == nil {
 		t.Fatal("AccessToken with no refresh_token seeded: want error, got nil")
 	} else if !strings.Contains(err.Error(), "refresh_token") {
 		t.Errorf("error %q does not mention refresh_token", err.Error())
@@ -476,7 +476,7 @@ func TestOAuth2TokenSource_TokenEndpointErrorResponse_Surfaces(t *testing.T) {
 	stub := newTokenEndpointStub(t, http.StatusBadRequest, string(body))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	_, err := ts.AccessToken("ws-a", "freee")
+	_, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err == nil {
 		t.Fatal("AccessToken: want error for a token-endpoint error response, got nil")
 	}
@@ -510,7 +510,7 @@ func TestOAuth2TokenSource_TransportErrorDoesNotLeakTokenEndpointHost(t *testing
 	closedListener.Close()
 
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: deadTokenEndpoint}}, store.resolver(), store.writer())
-	_, gotErr := ts.AccessToken("ws-a", "freee")
+	_, gotErr := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if gotErr == nil {
 		t.Fatal("AccessToken: want error for a transport failure, got nil")
 	}
@@ -528,7 +528,7 @@ func TestOAuth2TokenSource_ExpiresInMissing_FallsBackConservatively(t *testing.T
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 	ts.Now = func() time.Time { return ref }
 
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
 	wantExpiry := ref.Add(fallbackAccessTokenLifetime).Unix()
@@ -558,7 +558,7 @@ func TestOAuth2TokenSource_ExplicitNonPositiveExpiresIn_TreatedAsAlreadyExpired(
 
 	// The first call still gets the token the endpoint actually returned —
 	// this isn't rejected outright as an error.
-	got, err := ts.AccessToken("ws-a", "freee")
+	got, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestOAuth2TokenSource_ExplicitNonPositiveExpiresIn_TreatedAsAlreadyExpired(
 	// refresh again rather than treating this token as valid for
 	// fallbackAccessTokenLifetime — proving expires_in:0 did not fall into
 	// the same branch as a genuinely omitted expires_in.
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("second AccessToken: %v", err)
 	}
 	if n := stub.callCount(); n != 2 {
@@ -590,7 +590,7 @@ func TestOAuth2TokenSource_ClientSecretResolvedAndSent(t *testing.T) {
 		Name: "freee", TokenEndpoint: stub.srv.URL, ClientID: "the-client-id", ClientSecretKey: "freee-client-secret",
 	}}, store.resolver(), store.writer())
 
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
 	if got := stub.lastForm.Get("client_id"); got != "the-client-id" {
@@ -616,7 +616,7 @@ func TestOAuth2TokenSource_NoClientSecretKey_OmitsClientSecretParam(t *testing.T
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT1", "", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL, ClientID: "cid"}}, store.resolver(), store.writer())
 
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
 	if stub.lastForm.Has("client_secret") {
@@ -640,7 +640,7 @@ func TestOAuth2TokenSource_MemCache_AvoidsRedundantRefreshAfterAccessTokenPersis
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "RT-new", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	got1, err := ts.AccessToken("ws-a", "freee")
+	got1, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("first AccessToken: %v", err)
 	}
@@ -654,7 +654,7 @@ func TestOAuth2TokenSource_MemCache_AvoidsRedundantRefreshAfterAccessTokenPersis
 	// access_token was never actually persisted (write failure injected
 	// above) — a secret-store-only cache would find nothing here and
 	// refresh again. memCache must short-circuit that.
-	got2, err := ts.AccessToken("ws-a", "freee")
+	got2, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("second AccessToken: %v", err)
 	}
@@ -680,7 +680,7 @@ func TestOAuth2TokenSource_MemCache_AvoidsRedundantRefreshAfterSingleflightWindo
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "RT-new", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("first AccessToken: %v", err)
 	}
 	if n := stub.callCount(); n != 1 {
@@ -690,7 +690,7 @@ func TestOAuth2TokenSource_MemCache_AvoidsRedundantRefreshAfterSingleflightWindo
 	// The singleflight map entry for this key is already gone (Do deletes
 	// it once fn returns) — a second call here exercises a completely fresh
 	// AccessToken -> cachedAccessToken path, not a coalesced wait.
-	got, err := ts.AccessToken("ws-a", "freee")
+	got, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("second AccessToken: %v", err)
 	}
@@ -729,7 +729,7 @@ func TestOAuth2TokenSource_TokenEndpointRedirect_Refused(t *testing.T) {
 	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: tokenEndpoint.URL}}, store.resolver(), store.writer())
 
-	_, err := ts.AccessToken("ws-a", "freee")
+	_, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err == nil {
 		t.Fatal("AccessToken: want error when the token endpoint redirects, got nil")
 	}
@@ -755,7 +755,7 @@ func TestOAuth2TokenSource_ShortLivedToken_ConsideredFreshImmediatelyAfterRefres
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 	ts.Now = func() time.Time { return ref }
 
-	got1, err := ts.AccessToken("ws-a", "freee")
+	got1, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("first AccessToken: %v", err)
 	}
@@ -771,7 +771,7 @@ func TestOAuth2TokenSource_ShortLivedToken_ConsideredFreshImmediatelyAfterRefres
 	// this token "within the 5-minute margin of expiring" (since it only
 	// lives 60s total) and refresh again. The effective (clamped) margin
 	// computed at refresh time must prevent that.
-	got2, err := ts.AccessToken("ws-a", "freee")
+	got2, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("second AccessToken: %v", err)
 	}
@@ -786,7 +786,7 @@ func TestOAuth2TokenSource_ShortLivedToken_ConsideredFreshImmediatelyAfterRefres
 	// margin), it must still refresh — proving this isn't just "never
 	// refresh a short-lived token again".
 	ts.Now = func() time.Time { return ref.Add(55 * time.Second) } // 5s remaining
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("third AccessToken: %v", err)
 	}
 	if n := stub.callCount(); n != 2 {
@@ -809,14 +809,14 @@ func TestOAuth2TokenSource_NormalLifetimeToken_MarginUnaffectedByShortLivedClamp
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 	ts.Now = func() time.Time { return ref }
 
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("first AccessToken: %v", err)
 	}
 
 	// 10 minutes remaining (outside the 5-minute margin) — must still be
 	// considered fresh.
 	ts.Now = func() time.Time { return ref.Add(50 * time.Minute) }
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("second AccessToken: %v", err)
 	}
 	if n := stub.callCount(); n != 1 {
@@ -827,7 +827,7 @@ func TestOAuth2TokenSource_NormalLifetimeToken_MarginUnaffectedByShortLivedClamp
 	// as the plain (unclamped) case: expiresIn(3600s)/2 = 1800s, comfortably
 	// larger than the 5-minute margin, so the clamp never engages here.
 	ts.Now = func() time.Time { return ref.Add(58 * time.Minute) }
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("third AccessToken: %v", err)
 	}
 	if n := stub.callCount(); n != 2 {
@@ -854,7 +854,7 @@ func TestOAuth2TokenSource_SingleflightRecheck_AvoidsRefreshWhenAnotherGoroutine
 	// directly invoking Do with the same key — the shape AccessToken itself
 	// would produce for a caller that stalled between its own cache check
 	// and entering t.sf.Do.
-	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("goroutine A's AccessToken: %v", err)
 	}
 	if n := stub.callCount(); n != 1 {
@@ -867,7 +867,7 @@ func TestOAuth2TokenSource_SingleflightRecheck_AvoidsRefreshWhenAnotherGoroutine
 	// caller that would have "won" a brand-new singleflight slot (since
 	// there is no in-flight call to join) but must still re-check the
 	// cache before actually refreshing.
-	got, err := ts.refreshWithRecheck("ws-a", OAuthProviderConfig{Name: "freee", TokenEndpoint: stub.srv.URL})
+	got, err := ts.refreshWithRecheck("ws-a", credentialID{provider: "freee"}, OAuthProviderConfig{Name: "freee", TokenEndpoint: stub.srv.URL})
 	if err != nil {
 		t.Fatalf("refreshWithRecheck: %v", err)
 	}
@@ -902,7 +902,7 @@ func TestOAuth2TokenSource_EmptyAndDefaultNamespace_ShareSingleflightAndMemCache
 	}
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, normalizingResolver, normalizingWriter)
 
-	if _, err := ts.AccessToken("", "freee"); err != nil {
+	if _, err := ts.AccessToken("", credentialID{provider: "freee"}); err != nil {
 		t.Fatalf("AccessToken(\"\"): %v", err)
 	}
 	if n := stub.callCount(); n != 1 {
@@ -912,7 +912,7 @@ func TestOAuth2TokenSource_EmptyAndDefaultNamespace_ShareSingleflightAndMemCache
 	// A second call under the EXPLICIT "default" namespace must reuse the
 	// same cached token — it is, per SecretStore's own normalization, the
 	// identical row "" just populated.
-	got, err := ts.AccessToken("default", "freee")
+	got, err := ts.AccessToken("default", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("AccessToken(\"default\"): %v", err)
 	}
@@ -937,7 +937,7 @@ func TestOAuth2TokenSource_TokenEndpointErrorResponse_UnrecognizedCodeNotEchoed(
 	stub := newTokenEndpointStub(t, http.StatusBadRequest, string(body))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
-	_, err := ts.AccessToken("ws-a", "freee")
+	_, err := ts.AccessToken("ws-a", credentialID{provider: "freee"})
 	if err == nil {
 		t.Fatal("AccessToken: want error, got nil")
 	}
@@ -963,7 +963,7 @@ func TestOAuth2TokenSource_ClientCredentials_PostsGrantTypeAndScope(t *testing.T
 		Scopes: []string{"https://api.example.com/.default"},
 	}}, store.resolver(), store.writer())
 
-	got, err := ts.AccessToken("ws-a", "az")
+	got, err := ts.AccessToken("ws-a", credentialID{provider: "az"})
 	if err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
@@ -1003,7 +1003,7 @@ func TestOAuth2TokenSource_ClientCredentials_NoRefreshTokenNeeded(t *testing.T) 
 		Grant: GrantClientCredentials,
 	}}, store.resolver(), store.writer())
 
-	got, err := ts.AccessToken("ws-a", "az")
+	got, err := ts.AccessToken("ws-a", credentialID{provider: "az"})
 	if err != nil {
 		t.Fatalf("AccessToken: %v (client_credentials must not require a pre-seeded refresh_token)", err)
 	}
@@ -1027,7 +1027,7 @@ func TestOAuth2TokenSource_ClientCredentials_EmptyResolvedSecret_Errors(t *testi
 		Grant: GrantClientCredentials,
 	}}, store.resolver(), store.writer())
 
-	if _, err := ts.AccessToken("ws-a", "az"); err == nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "az"}); err == nil {
 		t.Fatal("AccessToken with an empty resolved client_secret: want error, got nil")
 	} else if !strings.Contains(err.Error(), "client_secret") {
 		t.Errorf("error %q does not mention client_secret", err.Error())
@@ -1053,7 +1053,7 @@ func TestOAuth2TokenSource_ClientCredentials_DoesNotPersistRefreshToken(t *testi
 		Grant: GrantClientCredentials,
 	}}, store.resolver(), store.writer())
 
-	if _, err := ts.AccessToken("ws-a", "az"); err != nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "az"}); err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
 	if v, err := store.get("ws-a", OAuthSecretKey("az", oauthFieldRefreshToken)); err == nil {
@@ -1071,7 +1071,7 @@ func TestOAuth2TokenSource_ClientCredentials_DoesNotPersistRefreshToken(t *testi
 
 func TestOAuth2TokenSource_NilReceiver_ReturnsError(t *testing.T) {
 	var ts *OAuth2TokenSource
-	if _, err := ts.AccessToken("ws-a", "freee"); err == nil {
+	if _, err := ts.AccessToken("ws-a", credentialID{provider: "freee"}); err == nil {
 		t.Error("nil *OAuth2TokenSource.AccessToken: want error, got nil")
 	}
 }

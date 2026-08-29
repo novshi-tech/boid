@@ -192,14 +192,81 @@ var ValidOAuthGrants = map[OAuthGrant]bool{
 // SecretResolver's own doc comment for the identical rationale.
 type SecretWriter func(namespace, key, value string) error
 
+// credentialID identifies ONE credential set within an oauth2 provider
+// (docs/plans/api-gateway-credential-accounts.md §3/D6). It exists because
+// PR-1's cfg.Name (an OAuthProviderConfig's own Name field) was doing THREE
+// jobs at once: (a) the t.providers[...] lookup key, (b) a component of the
+// secret-store key (OAuthSecretKey(cfg.Name, field)), and (c) a component
+// of the singleflight/memCache key (namespace+"\x00"+provider). Account
+// support splits these into two axes that must NOT be conflated: (a) never
+// varies with account — an account-qualified request still looks up the
+// SAME oauth_providers.<name> config entry, since accounts share one OAuth
+// app (D7) — while (b) and (c) both DO vary with account, since that is the
+// entire point of an account qualifier (docs/plans/
+// api-gateway-credential-accounts.md §"credential identity"). credentialID
+// is the identity for (b)/(c) alone; provider lookup (a) still uses the
+// bare provider string directly (see AccessToken's own t.providers[cred.
+// provider] lookup).
+//
+// secretPrefix and cacheKey are the ONLY two functions in this package that
+// assemble a secret-store or singleflight/memCache key out of (provider,
+// account) — every other call site in oauth2.go/login.go builds its key by
+// calling one of these two methods (via OAuthSecretKey(cred.secretPrefix(),
+// field) for the former) rather than concatenating provider/account
+// strings itself. This single-construction-site property is what the doc's
+// D6 "most dangerous" warning is protecting: if a second, independent way
+// to build these keys existed, it would be possible for one to end up
+// account-qualified while the other stays bare — which is exactly the
+// "different accounts silently share a credential" failure mode this
+// feature exists to prevent, just reached through a code-review gap
+// instead of a design gap.
+type credentialID struct {
+	// provider is the oauth_providers.<name> lookup key — NEVER varies with
+	// account (see this type's own doc comment).
+	provider string
+	// account is the optional credential-account qualifier (docs/plans/
+	// api-gateway-credential-accounts.md D1/D2). "" means unqualified,
+	// making secretPrefix/cacheKey byte-identical to every call site that
+	// predates this feature (D2).
+	account string
+}
+
+// secretPrefix returns the provider-identity component every oauth2
+// secret-store key is built from: provider alone when account is empty
+// (byte-identical to every pre-account-support OAuthSecretKey(provider,
+// field) call, D2), or "provider@account" otherwise (D1's "@" separator).
+// Every OAuthSecretKey call in this package passes THIS method's result as
+// its first argument — never a bare cfg.Name/cred.provider directly — so a
+// grep for OAuthSecretKey( call sites is sufficient to audit that no key is
+// built without going through this method (see this type's own doc
+// comment).
+func (c credentialID) secretPrefix() string {
+	if c.account == "" {
+		return c.provider
+	}
+	return c.provider + "@" + c.account
+}
+
+// cacheKey returns the singleflight/memCache key for this credential within
+// ns (already-normalized — see normalizeNamespace's own doc comment: ns
+// must be the output of that function, never a raw caller-supplied
+// namespace). Byte-identical to the pre-account-support
+// namespace+"\x00"+provider format when account is empty (D2). The ONLY
+// place these keys are constructed (D6) — AccessToken/cachedAccessToken/
+// persistGrant all call this rather than concatenating namespace/provider/
+// account themselves.
+func (c credentialID) cacheKey(ns string) string {
+	return ns + "\x00" + c.secretPrefix()
+}
+
 // OAuth2AccessTokenSource resolves a currently-valid access token for a
-// (namespace, provider) pair, refreshing it first if needed. Implemented by
-// *OAuth2TokenSource; CredentialProvider depends on this narrow interface —
-// not the concrete type — so CredentialProvider's own tests can substitute
-// a fake without exercising a real token endpoint (see
+// (namespace, credentialID) pair, refreshing it first if needed. Implemented
+// by *OAuth2TokenSource; CredentialProvider depends on this narrow
+// interface — not the concrete type — so CredentialProvider's own tests can
+// substitute a fake without exercising a real token endpoint (see
 // CredentialProvider.SetOAuth2TokenSource).
 type OAuth2AccessTokenSource interface {
-	AccessToken(namespace, provider string) (string, error)
+	AccessToken(namespace string, cred credentialID) (string, error)
 }
 
 // oauthSecretField names the two pieces of per-(namespace, provider) OAuth2
@@ -453,45 +520,48 @@ func NewOAuth2TokenSource(providers []OAuthProviderConfig, resolver SecretResolv
 // in particular avoids the double-refresh-within-one-request shape entirely
 // for the common case: Resolve's own refresh already left a fresh entry in
 // memCache by the time Inject's call reaches this same recheck.
-func (t *OAuth2TokenSource) AccessToken(namespace, provider string) (string, error) {
+func (t *OAuth2TokenSource) AccessToken(namespace string, cred credentialID) (string, error) {
 	if t == nil {
 		return "", fmt.Errorf("apigateway: no OAuth2 token source configured")
 	}
-	cfg, ok := t.providers[provider]
+	cfg, ok := t.providers[cred.provider]
 	if !ok {
-		return "", fmt.Errorf("apigateway: oauth2 provider %q is not configured (oauth_providers: in config.yaml)", provider)
+		return "", fmt.Errorf("apigateway: oauth2 provider %q is not configured (oauth_providers: in config.yaml)", cred.provider)
 	}
 	if t.resolver == nil {
-		return "", fmt.Errorf("apigateway: oauth2 provider %q: no secret resolver configured", provider)
+		return "", fmt.Errorf("apigateway: oauth2 provider %q: no secret resolver configured", cred.provider)
 	}
 
 	// Normalized ONCE, here, at the sole entry point every other method in
 	// this file receives namespace from (codex review round 5, Major
 	// finding): internal/dispatcher.SecretStore.normalizeNamespace treats ""
 	// and "default" as the exact same underlying row, but this package's own
-	// singleflight/memCache keys (namespace+"\x00"+provider) did not apply
-	// that same normalization — so a caller passing "" (Registry.Entry.
-	// Namespace's own documented shape for a workspace-unlinked project) and
-	// a caller passing "default" (an explicit default-workspace-linked
-	// project) were treated as two DIFFERENT keys despite reading/writing
-	// the identical secret-store row, letting both trigger independent
-	// concurrent refreshes against the same refresh_token — precisely the
-	// rotation race the whole singleflight design exists to prevent.
-	// Normalizing here means cachedAccessToken/refreshWithRecheck/refresh/
-	// the singleflight key below, and the resolver/writer calls threaded
-	// through them, all agree with the SecretStore's own notion of which
-	// row they're touching.
+	// singleflight/memCache keys (credentialID.cacheKey, namespace+"\x00"+
+	// secretPrefix) did not apply that same normalization — so a caller
+	// passing "" (Registry.Entry.Namespace's own documented shape for a
+	// workspace-unlinked project) and a caller passing "default" (an
+	// explicit default-workspace-linked project) were treated as two
+	// DIFFERENT keys despite reading/writing the identical secret-store row,
+	// letting both trigger independent concurrent refreshes against the same
+	// refresh_token — precisely the rotation race the whole singleflight
+	// design exists to prevent. Normalizing here means cachedAccessToken/
+	// refreshWithRecheck/refresh/the singleflight key below, and the
+	// resolver/writer calls threaded through them, all agree with the
+	// SecretStore's own notion of which row they're touching. account is
+	// deliberately NOT normalized — it is not a namespace, and "" already
+	// means "unqualified" unambiguously (credentialID.secretPrefix's own doc
+	// comment).
 	namespace = normalizeNamespace(namespace)
 
-	if accessToken, expiresAt, margin, ok := t.cachedAccessToken(namespace, provider); ok {
+	if accessToken, expiresAt, margin, ok := t.cachedAccessToken(namespace, cred); ok {
 		if freshEnough(t.now(), expiresAt, margin) {
 			return accessToken, nil
 		}
 	}
 
-	key := namespace + "\x00" + provider
+	key := cred.cacheKey(namespace)
 	return t.sf.Do(key, func() (string, error) {
-		return t.refreshWithRecheck(namespace, cfg)
+		return t.refreshWithRecheck(namespace, cred, cfg)
 	})
 }
 
@@ -501,13 +571,13 @@ func (t *OAuth2TokenSource) AccessToken(namespace, provider string) (string, err
 // before this call ever entered it" without needing to fabricate a genuine
 // goroutine-scheduling race. Re-checks the cache (see AccessToken's own doc
 // comment for why) and only calls refresh if it's still actually needed.
-func (t *OAuth2TokenSource) refreshWithRecheck(namespace string, cfg OAuthProviderConfig) (string, error) {
-	if accessToken, expiresAt, margin, ok := t.cachedAccessToken(namespace, cfg.Name); ok {
+func (t *OAuth2TokenSource) refreshWithRecheck(namespace string, cred credentialID, cfg OAuthProviderConfig) (string, error) {
+	if accessToken, expiresAt, margin, ok := t.cachedAccessToken(namespace, cred); ok {
 		if freshEnough(t.now(), expiresAt, margin) {
 			return accessToken, nil
 		}
 	}
-	return t.refresh(namespace, cfg)
+	return t.refresh(namespace, cred, cfg)
 }
 
 func (t *OAuth2TokenSource) now() time.Time {
@@ -543,7 +613,7 @@ func (t *OAuth2TokenSource) httpClient() *http.Client {
 
 // cachedAccessToken returns a currently-cached access_token/expires_at (and
 // the margin to check it against — see the returned value's own doc
-// comment below) for (namespace, provider), checking the in-process
+// comment below) for (namespace, cred), checking the in-process
 // memCache first (populated by refresh on every successful token-endpoint
 // round trip, regardless of whether the secret-store persist below
 // succeeded — see memCache's own doc comment) and falling back to the
@@ -561,15 +631,15 @@ func (t *OAuth2TokenSource) httpClient() *http.Client {
 // after a daemon restart for a genuinely short-lived-token provider (a
 // narrow, self-correcting gap — see refresh's own doc comment on where the
 // clamped margin actually gets computed and cached going forward).
-func (t *OAuth2TokenSource) cachedAccessToken(namespace, provider string) (accessToken string, expiresAt time.Time, margin time.Duration, ok bool) {
+func (t *OAuth2TokenSource) cachedAccessToken(namespace string, cred credentialID) (accessToken string, expiresAt time.Time, margin time.Duration, ok bool) {
 	t.memMu.Lock()
-	entry, found := t.memCache[namespace+"\x00"+provider]
+	entry, found := t.memCache[cred.cacheKey(namespace)]
 	t.memMu.Unlock()
 	if found {
 		return entry.accessToken, entry.expiresAt, entry.margin, true
 	}
 
-	raw, err := t.resolver(namespace, OAuthSecretKey(provider, oauthFieldAccessTokenCache))
+	raw, err := t.resolver(namespace, OAuthSecretKey(cred.secretPrefix(), oauthFieldAccessTokenCache))
 	if err != nil || raw == "" {
 		return "", time.Time{}, 0, false
 	}
@@ -581,9 +651,9 @@ func (t *OAuth2TokenSource) cachedAccessToken(namespace, provider string) (acces
 }
 
 // refresh performs exactly one token-endpoint round trip for (namespace,
-// cfg.Name) — never called directly by AccessToken; always through t.sf.Do,
+// cred) — never called directly by AccessToken; always through t.sf.Do,
 // which coalesces every concurrent caller that decided a refresh was needed
-// for the same (namespace, provider) key onto whichever goroutine's call
+// for the same (namespace, credentialID) key onto whichever goroutine's call
 // actually runs this function. That IS docs/plans/api-gateway.md §6's
 // singleflight requirement in full: this function has no locking of its
 // own, because by the time it runs it is already the only in-flight refresh
@@ -596,16 +666,31 @@ func (t *OAuth2TokenSource) cachedAccessToken(namespace, provider string) (acces
 // refreshClientCredentials before ever touching the refresh_token secret-
 // store field. Every other (default) provider keeps the original
 // refresh_token grant behavior unchanged.
-func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (string, error) {
+//
+// cred.secretPrefix() (not cfg.Name directly, docs/plans/
+// api-gateway-credential-accounts.md D6) is what the refresh_token
+// secret-store key is built from — cfg.Name alone would silently ignore
+// cred.account and read/write the WRONG (unqualified) credential for an
+// account-qualified request. cfg.ClientSecretKey, by contrast, is resolved
+// unqualified below (D7) — see that resolver call's own comment.
+func (t *OAuth2TokenSource) refresh(namespace string, cred credentialID, cfg OAuthProviderConfig) (string, error) {
 	if cfg.Grant == GrantClientCredentials {
-		return t.refreshClientCredentials(namespace, cfg)
+		return t.refreshClientCredentials(namespace, cred, cfg)
 	}
 
-	refreshToken, err := t.resolver(namespace, OAuthSecretKey(cfg.Name, oauthFieldRefreshToken))
+	refreshToken, err := t.resolver(namespace, OAuthSecretKey(cred.secretPrefix(), oauthFieldRefreshToken))
 	if err != nil || refreshToken == "" {
-		return "", fmt.Errorf("apigateway: oauth2 provider %q: no refresh_token configured for namespace %q — run `boid secret set` (docs/plans/api-gateway.md PR2: manual grant) or complete login (PR3, `boid secret oauth login %s`)", cfg.Name, namespace, cfg.Name)
+		return "", fmt.Errorf("apigateway: oauth2 provider %q: no refresh_token configured for namespace %q (credential %q) — run `boid secret set` (docs/plans/api-gateway.md PR2: manual grant) or complete login (PR3, `boid secret oauth login %s`)", cfg.Name, namespace, cred.secretPrefix(), cfg.Name)
 	}
 
+	// client_secret_key is a PROVIDER-level (OAuth app) value, never
+	// account-level (docs/plans/api-gateway-credential-accounts.md D7:
+	// "client_secret は account で修飾しない") — resolved from cfg.
+	// ClientSecretKey exactly as configured, with no secretPrefix
+	// involvement at all. Qualifying this key by account would make it
+	// unresolvable the moment an operator adds a second account, since
+	// nothing else in config.yaml ever writes an account-qualified
+	// client_secret.
 	var clientSecret string
 	if cfg.ClientSecretKey != "" {
 		clientSecret, err = t.resolver(namespace, cfg.ClientSecretKey)
@@ -622,16 +707,16 @@ func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (
 	// persistRefreshToken=true: this is the ordinary refresh_token grant —
 	// persistGrant's existing "only write if genuinely rotated" logic
 	// applies exactly as before this function was split.
-	return t.persistGrant(namespace, cfg, resp, refreshToken, true)
+	return t.persistGrant(namespace, cred, cfg, resp, refreshToken, true)
 }
 
 // refreshClientCredentials performs the RFC 6749 §4.4 client_credentials
-// grant round trip for (namespace, cfg.Name) — the GrantClientCredentials
+// grant round trip for (namespace, cred) — the GrantClientCredentials
 // branch of refresh, above. Unlike the refresh_token path, there is no
 // existing grant state to read first (no refresh_token, no authorization
 // code): the only prerequisite is a resolved, non-empty client_secret
 // (RFC 6749 §4.4.2 requires a confidential client).
-func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cfg OAuthProviderConfig) (string, error) {
+func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cred credentialID, cfg OAuthProviderConfig) (string, error) {
 	// cfg.ClientSecretKey == "" is already rejected at config load
 	// (internal/config.validateOAuthProviderConfig, docs/plans/
 	// api-gateway.md §6-補) for a client_credentials provider — this
@@ -646,6 +731,11 @@ func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cfg OAuth
 	// otherwise turn into an opaque invalid_client 502 from the token
 	// endpoint (docs/plans/api-gateway.md §6-補's own "空値だけは素通りして
 	// 分かりにくい 502 になる" note).
+	//
+	// Resolved from cfg.ClientSecretKey UNQUALIFIED (D7 — see refresh's own
+	// comment on the identical resolver call): a client_credentials
+	// provider's client_secret is exactly as account-agnostic as any other
+	// provider's.
 	clientSecret, err := t.resolver(namespace, cfg.ClientSecretKey)
 	if err != nil {
 		return "", fmt.Errorf("apigateway: oauth2 provider %q: resolve client_secret_key %q (namespace %q): %w", cfg.Name, cfg.ClientSecretKey, namespace, err)
@@ -668,7 +758,7 @@ func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cfg OAuth
 	// on priorRefreshToken/resp.RefreshToken happening to both be "" (this
 	// path never even reads a prior refresh_token, so priorRefreshToken is
 	// always "" here regardless).
-	return t.persistGrant(namespace, cfg, resp, "", false)
+	return t.persistGrant(namespace, cred, cfg, resp, "", false)
 }
 
 // persistGrant durably persists a successful token-endpoint response —
@@ -677,6 +767,15 @@ func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cfg OAuth
 // PR3): every one of these needs the IDENTICAL persistence-order guarantee
 // (docs/plans/api-gateway.md §6) and memCache population regardless of
 // which grant type actually produced resp.
+//
+// cred (docs/plans/api-gateway-credential-accounts.md D6) is what every
+// secret-store/memCache key this function writes is built from — via
+// cred.secretPrefix()/cred.cacheKey(namespace), never cfg.Name directly (see
+// credentialID's own doc comment for why a second construction path would
+// reintroduce the exact cross-account mixing this type exists to prevent).
+// login.go's call sites (which do not support --account until PR-3) always
+// pass credentialID{provider: cfg.Name} — account "" — so their behavior is
+// byte-identical to before this parameter existed (D2).
 //
 // priorRefreshToken is whatever refresh_token value the caller already had
 // on hand BEFORE this grant (refresh's own current value for a refresh;
@@ -713,7 +812,7 @@ func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cfg OAuth
 // there in the response — is what keeps that window as small as a single
 // synchronous secret-store write, instead of spanning the network round
 // trip AND every subsequent step of this function.
-func (t *OAuth2TokenSource) persistGrant(namespace string, cfg OAuthProviderConfig, resp oauthTokenResponse, priorRefreshToken string, persistRefreshToken bool) (string, error) {
+func (t *OAuth2TokenSource) persistGrant(namespace string, cred credentialID, cfg OAuthProviderConfig, resp oauthTokenResponse, priorRefreshToken string, persistRefreshToken bool) (string, error) {
 	// Phase 1 (see doc comment above): refresh_token first, and fatal if it
 	// fails — even though the new access_token is sitting right here in
 	// `resp`, using (or persisting) it would mean handing out a token this
@@ -742,7 +841,7 @@ func (t *OAuth2TokenSource) persistGrant(namespace string, cfg OAuthProviderConf
 	// resp.RefreshToken is by definition "different from what we already
 	// had" and is always written — there is nothing to skip yet.
 	if persistRefreshToken && resp.RefreshToken != "" && resp.RefreshToken != priorRefreshToken {
-		if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldRefreshToken), resp.RefreshToken); err != nil {
+		if err := t.writer(namespace, OAuthSecretKey(cred.secretPrefix(), oauthFieldRefreshToken), resp.RefreshToken); err != nil {
 			slog.Error("apigateway: oauth2 refresh_token persist failed after a successful token-endpoint round trip — the grant may now be UNRECOVERABLE if the provider rotates refresh_token on use; re-run login/`boid secret set` if subsequent refreshes fail",
 				"provider", cfg.Name, "namespace", namespace, "error", err)
 			return "", fmt.Errorf("apigateway: oauth2 provider %q: persist refreshed refresh_token: %w", cfg.Name, err)
@@ -823,7 +922,7 @@ func (t *OAuth2TokenSource) persistGrant(namespace string, cfg OAuthProviderConf
 	if t.memCache == nil {
 		t.memCache = make(map[string]oauthMemCacheEntry)
 	}
-	t.memCache[namespace+"\x00"+cfg.Name] = oauthMemCacheEntry{accessToken: resp.AccessToken, expiresAt: expiresAt, margin: effectiveMargin}
+	t.memCache[cred.cacheKey(namespace)] = oauthMemCacheEntry{accessToken: resp.AccessToken, expiresAt: expiresAt, margin: effectiveMargin}
 	t.memMu.Unlock()
 
 	// Single write, single key (oauthFieldAccessTokenCache's own doc
@@ -837,7 +936,7 @@ func (t *OAuth2TokenSource) persistGrant(namespace string, cfg OAuthProviderConf
 		// happen" fallbacks.
 		slog.Warn("apigateway: oauth2 access_token cache marshal failed (refresh_token already safely persisted; not fatal — an in-process cache still has the fresh token)",
 			"provider", cfg.Name, "namespace", namespace, "error", err)
-	} else if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldAccessTokenCache), string(cacheJSON)); err != nil {
+	} else if err := t.writer(namespace, OAuthSecretKey(cred.secretPrefix(), oauthFieldAccessTokenCache), string(cacheJSON)); err != nil {
 		slog.Warn("apigateway: oauth2 access_token cache persist failed (refresh_token already safely persisted; not fatal — an in-process cache still has the fresh token)",
 			"provider", cfg.Name, "namespace", namespace, "error", err)
 	}

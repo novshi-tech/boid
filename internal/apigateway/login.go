@@ -461,6 +461,15 @@ func (m *LoginManager) exchangeAndPersist(p *pendingLogin, cfg OAuthProviderConf
 		return fmt.Errorf("apigateway: oauth2 provider %q: authorization_code grant: %w", cfg.Name, err)
 	}
 
+	// cred: `boid secret oauth login --account` is PR-3 scope (docs/plans/
+	// api-gateway-credential-accounts.md PR 分割) — this file never sets
+	// account, so cred.secretPrefix()/cacheKey are byte-identical to cfg.Name
+	// alone (D2). Still routed through credentialID, not cfg.Name directly,
+	// so this package has exactly ONE way to build an oauth2 secret/cache
+	// key (credentialID's own doc comment) — not "every call site except
+	// login.go".
+	cred := credentialID{provider: cfg.Name}
+
 	// priorRefreshToken: best-effort read of whatever the secret store
 	// already held (empty for a genuine first-ever login) — see
 	// persistGrant's own doc comment for why this is the correct value to
@@ -471,8 +480,8 @@ func (m *LoginManager) exchangeAndPersist(p *pendingLogin, cfg OAuthProviderConf
 	// layer) — worst case, a genuinely rotated refresh_token that happens
 	// to collide byte-for-byte with a stale unreadable value gets an
 	// extra, harmless re-write.
-	priorRefreshToken, _ := m.tokens.resolver(p.namespace, OAuthSecretKey(cfg.Name, oauthFieldRefreshToken))
-	if _, err := m.tokens.persistGrant(p.namespace, cfg, resp, priorRefreshToken, true); err != nil {
+	priorRefreshToken, _ := m.tokens.resolver(p.namespace, OAuthSecretKey(cred.secretPrefix(), oauthFieldRefreshToken))
+	if _, err := m.tokens.persistGrant(p.namespace, cred, cfg, resp, priorRefreshToken, true); err != nil {
 		return err
 	}
 	return requireRefreshToken(cfg.Name, resp.RefreshToken, priorRefreshToken)
@@ -629,8 +638,12 @@ func (m *LoginManager) pollDeviceGrant(ctx context.Context, cancel context.Cance
 		resp, errCode, err := m.tokens.postFormToTokenEndpoint(cfg.TokenEndpoint, form, cfg.Name, rfc8628DeviceTokenErrorCodes)
 		switch {
 		case err == nil:
-			priorRefreshToken, _ := m.tokens.resolver(p.namespace, OAuthSecretKey(cfg.Name, oauthFieldRefreshToken))
-			if _, persistErr := m.tokens.persistGrant(p.namespace, cfg, resp, priorRefreshToken, true); persistErr != nil {
+			// cred: see exchangeAndPersist's identical comment — device flow
+			// does not support --account either (PR-3 scope), so this is
+			// always the unqualified credential (D2).
+			cred := credentialID{provider: cfg.Name}
+			priorRefreshToken, _ := m.tokens.resolver(p.namespace, OAuthSecretKey(cred.secretPrefix(), oauthFieldRefreshToken))
+			if _, persistErr := m.tokens.persistGrant(p.namespace, cred, cfg, resp, priorRefreshToken, true); persistErr != nil {
 				slog.Error("apigateway: oauth2 device login grant obtained but persistence failed — the grant is lost; re-run `boid secret oauth login`",
 					"provider", cfg.Name, "namespace", p.namespace, "error", persistErr)
 				p.setResult(LoginStatusFailed, persistErr.Error())
