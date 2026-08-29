@@ -34,6 +34,7 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 		OpBoidTaskAnswer,
 		OpBoidTaskAsk,
 		OpBoidTaskDelete,
+		OpBoidTaskWait,
 		OpBoidTaskCurrent,
 		OpBoidTaskInstructions,
 		OpBoidTaskEnv,

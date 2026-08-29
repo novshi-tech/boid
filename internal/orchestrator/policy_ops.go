@@ -22,6 +22,7 @@ const (
 	OpBoidTaskAnswer = "task_answer"
 	OpBoidTaskAsk    = "task_ask"
 	OpBoidTaskDelete = "task_delete"
+	OpBoidTaskWait   = "task_wait"
 
 	// Phase 5b PR1 task-context RPCs (docs/plans/phase5-shim-and-task-context.md).
 	OpBoidTaskCurrent      = "task_current"

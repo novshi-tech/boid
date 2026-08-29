@@ -76,6 +76,21 @@ const (
 	BoidOpTaskAsk    BoidOp = "task_ask"
 	BoidOpTaskDelete BoidOp = "task_delete"
 
+	// BoidOpTaskWait blocks until the named task reaches a terminal status and
+	// reports how it ended (exit 0 for done, non-zero otherwise). It exists so
+	// a trigger's `run:` command can live exactly as long as the task it
+	// started: with the launcher exiting in seconds, the trigger's own
+	// single-flight measures the launcher rather than the work, and a failed
+	// round never reaches TriggerLoop.trackFailStreak at all — the workspace
+	// has to re-derive it. Waiting closes both gaps with no bookkeeping of its
+	// own.
+	//
+	// Scoped like every other task op: the broker resolves the task and the
+	// executor rejects one outside the caller's workspace. The wait ends only
+	// on a terminal status or on the broker cancelling the request context
+	// (daemon shutdown / sandbox disconnect), so it cannot outlive its caller.
+	BoidOpTaskWait BoidOp = "task_wait"
+
 	// Phase 5b PR1 task-context RPCs (docs/plans/phase5-shim-and-task-context.md):
 	// pull-based replacements for the dispatch-time context files
 	// ($HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}).

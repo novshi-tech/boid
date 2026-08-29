@@ -31,6 +31,10 @@ type TaskAppService struct {
 	// command was killed by a harness command-timeout). Zero falls back to
 	// defaultAskDisconnectGrace.
 	AskDisconnectGrace time.Duration
+	// WaitPollInterval is how often WaitTaskTerminal re-reads a task row while
+	// blocked on it. Zero falls back to defaultWaitPollInterval — same
+	// convention as AskDisconnectGrace above.
+	WaitPollInterval time.Duration
 	// Identities backs docs/plans/ingestion-identity.md PR-1 (B-1)'s identity
 	// index — the non-transactional path the brokered task_identity_link /
 	// _unlink / _resolve ops (boid_executor.go) call through. The drop side

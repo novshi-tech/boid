@@ -518,6 +518,46 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: answer}
+	case sandbox.BoidOpTaskWait:
+		// Blocks until the task ends, then reports how it ended through the
+		// exit code — `done` is the only success. This is what lets a trigger's
+		// `run:` live as long as the task it started, so the trigger's own
+		// single-flight and failStreak cover the work instead of the launcher
+		// (see sandbox.BoidOpTaskWait's own doc comment).
+		//
+		// goCtx is cancelled by the broker on daemon shutdown / sandbox
+		// disconnect, so the wait cannot outlive its caller.
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait unavailable"}
+		}
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait requires a task id"}
+		}
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait is restricted to the current workspace"}
+		}
+		if req.TaskID == ctx.TaskID {
+			// Waiting on yourself never returns: this job IS the reason the
+			// task has not reached a terminal status. Fail rather than hold the
+			// caller open until something else kills it.
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait cannot wait on the calling task"}
+		}
+		outcome, err := e.tasks.WaitTaskTerminal(goCtx, req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if outcome.Succeeded() {
+			return &sandbox.ExecResponse{Stdout: fmt.Sprintf("task %s: %s\n", req.TaskID, outcome.Status)}
+		}
+		stderr := fmt.Sprintf("task %s: %s", req.TaskID, outcome.Status)
+		if reason := api.FormatAbortReason(outcome); reason != "" {
+			stderr += " (" + reason + ")"
+		}
+		return &sandbox.ExecResponse{ExitCode: 1, Stderr: stderr + "\n"}
 	case sandbox.BoidOpTaskList:
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task list unavailable"}

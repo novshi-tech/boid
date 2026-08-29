@@ -401,6 +401,15 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task reopen requires a task id"}
 		}
+	case BoidOpTaskWait:
+		// Unlike task_ask, an empty TaskID is NOT filled in from the token
+		// context: waiting on your own task deadlocks (you are the reason it
+		// has not finished), so an omitted id is a mistake worth naming rather
+		// than a default worth supplying. Project authorization runs in the
+		// executor, as for every other task op here.
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task wait requires a task id"}
+		}
 	case BoidOpTaskNotify:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task notify requires a task id"}

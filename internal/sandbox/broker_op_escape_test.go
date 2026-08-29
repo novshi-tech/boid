@@ -43,6 +43,14 @@ func TestBroker_BoidTaskDelete_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskDelete, TaskID: "t1"})
 }
 
+// task_wait is a blocking RPC like task_ask, and for the same reason the gate
+// is testable without ever entering the wait: the policy check runs before the
+// broker looks at the request at all, so a denied caller gets a rejection
+// rather than a held connection.
+func TestBroker_BoidTaskWait_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskWait, TaskID: "t1"})
+}
+
 // task_ask is a blocking RPC, but the policy gate fires before the blocking
 // path, so a plain policy-reject is clean (verified: the gate rejects and the
 // broker returns synchronously without holding the connection).
@@ -206,6 +214,7 @@ var opEscapeCoverage = map[string]opCoverage{
 	"BoidOpTaskAnswer": {escapeTest: "TestBroker_BoidTaskAnswer_PolicyReject"},
 	"BoidOpTaskAsk":    {escapeTest: "TestBroker_BoidTaskAsk_PolicyReject"},
 	"BoidOpTaskDelete": {escapeTest: "TestBroker_BoidTaskDelete_PolicyReject"},
+	"BoidOpTaskWait":   {escapeTest: "TestBroker_BoidTaskWait_PolicyReject"},
 
 	// Phase 5b PR1 task-context ops (docs/plans/phase5-shim-and-task-context.md).
 	"BoidOpTaskCurrent":      {escapeTest: "TestBroker_BoidTaskCurrent_PolicyReject"},

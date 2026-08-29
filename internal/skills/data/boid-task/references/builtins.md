@@ -13,6 +13,7 @@ These `boid` subcommands are available inside the supervisor's sandbox via the s
 - [boid task ask](#boid-task-ask)
 - [boid task answer](#boid-task-answer)
 - [boid task delete](#boid-task-delete)
+- [boid task wait](#boid-task-wait)
 - [boid task import](#boid-task-import)
 - [boid action send](#boid-action-send)
 - [boid agent stop](#boid-agent-stop)
@@ -172,6 +173,42 @@ boid task delete <task-id> [--force]
 ```
 
 `--force` is required for non-terminal tasks. Supervisors should prefer aborting a live child (see `boid action send --type abort`) over deleting it.
+
+## boid task wait
+
+```bash
+boid task wait <task-id>
+```
+
+Blocks until the named task reaches a terminal status, then exits **0 only if it
+finished `done`** — any other terminal status exits non-zero with the abort
+reason on stderr.
+
+Its reason for existing is the trigger contract. A trigger's `run:` normally
+starts a task and exits within seconds, so the trigger's own single-flight is
+measuring the launcher rather than the work, and a round that failed never
+reaches the daemon's consecutive-failure notification at all. Waiting makes the
+`run:` command live exactly as long as the task it started, and both fall out for
+free:
+
+```bash
+id=$(boid task create <<'SPEC'
+title: 'sweep'
+behavior: sweep
+auto_start: true
+description: |
+  ...
+SPEC
+) && boid task wait "${id#task created: }"
+```
+
+- **Do not wait on your own task.** It can never return — your job is the reason
+  the task has not finished — so the call is rejected rather than parked.
+- Takes no flags. How long a round may run is the trigger's business, not the
+  agent's: a per-call timeout would be a limit the daemon that launched you knows
+  nothing about.
+- The wait ends only on a terminal status or when the daemon cancels it (shutdown
+  or sandbox disconnect). It is not itself a timeout.
 
 ## boid task import
 
