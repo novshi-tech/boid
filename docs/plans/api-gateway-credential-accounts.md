@@ -1,5 +1,12 @@
 # API gateway: 1 service 複数 credential (account 修飾)
 
+ステータス: PR-1 (path 分割・static kind の account 対応) マージ済み (#1037)。
+PR-2 (credentialID・oauth2 の account 対応) マージ済み (#1038)。PR-3
+(`boid secret oauth login --account`) マージ済み (#1039)。PR-4
+(`services.<name>.require_account`) は本 PR で実装完了 — これで PR 分割は
+全て完了。`internal/server/connector_exec.go` の base/account 分割は本 PR
+のスコープに含めず、独立の後続タスクへ送った（下記「PR 分割」節参照）。
+
 ## 目的
 
 1 つの `services.<name>` 定義に対して、複数の credential セットを切り替えて使えるようにする。
@@ -225,20 +232,21 @@ normalize 対象ではない (空は空のまま = 修飾なし)。
 
 ## PR 分割
 
-- **PR-1**: `parsePath` の `(name, account)` 分割 + `route.account` + config
-  validation (D1, D11)。static auth kind (bearer/basic/header/query) の
-  secret key 修飾まで。認可・BaseURL・readonly が base 名で引かれることを
-  テストで固定する (D4)
-- **PR-2**: `credentialID` 導入と oauth2 の account 対応 (D6, D7)。
-  singleflight/memCache キーの分離をテストで固定する
-- **PR-3**: `boid secret oauth login --account` (D9)
-- **PR-4**: `services.<name>.require_account` (D5)
+- **PR-1 (マージ済み、#1037)**: `parsePath` の `(name, account)` 分割 +
+  `route.account` + config validation (D1, D11)。static auth kind
+  (bearer/basic/header/query) の secret key 修飾まで。認可・BaseURL・
+  readonly が base 名で引かれることをテストで固定する (D4)
+- **PR-2 (マージ済み、#1038)**: `credentialID` 導入と oauth2 の account 対応
+  (D6, D7)。singleflight/memCache キーの分離をテストで固定する
+- **PR-3 (マージ済み、#1039)**: `boid secret oauth login --account` (D9)
+- **PR-4 (本 PR)**: `services.<name>.require_account` (D5)。これで PR 分割
+  は全て完了 — このプロジェクトの設計・実装は本 PR で完結する
 
 PR-1 単体で static kind の service は使えるようになるが、freee は oauth2 なので
 PR-2 まで到達して初めて実用になる。
 
-**決定済み: connector exec 経路の account 未対応 (レビューで発見・PR-2 で決定、
-2026-08-29、実装は PR-4 以降に送る — PR-3 では実装しなかったため)**。
+**決定済み・未実装: connector exec 経路の account 未対応 (レビューで発見・
+PR-2 で決定、2026-08-29。PR-4 でも実装しないと判断 — 独立の後続タスクへ送る)**。
 `internal/server/connector_exec.go` の
 `resolveConnectorExec` は `APIGatewayServices: []string{ref.Service}` と
 `Env["BOID_SIGNAL_SERVICE"] = ref.Service` の両方に `ref.Service` の生文字列を
@@ -254,8 +262,13 @@ fail-closed なので危険ではないが、原因不明の 403 として観測
 `BOID_SIGNAL_SERVICE` には `ref.Service` (base@account のまま、D8 の
 「recorder には name@account をそのまま渡す」と同じ扱い) を入れる形にする。
 connector 経路専用の再実装はしない — 既存 `parsePath` 側のロジックをそのまま
-借りる、小さく機械的な修正の見込み。この PR (PR-2) では `connector_exec.go` に
-一切手を入れない。
+借りる、小さく機械的な修正の見込み。
+
+本 PR (PR-4) でもこの分割には手を入れていない — `signals.sources[].service`
+に account 修飾を書く実運用の要求がまだ無く、この PR のスコープ (D5の
+`require_account` 実装) と直接の依存関係も無いため、独立に着手できる
+後続タスクとして残す。既存の connector exec 経路は account 修飾された
+service を指す設定さえ書かなければ (= 現行運用のまま) 何の影響も受けない。
 
 ドキュメント (`docs/ja/reference/config-yaml.md`、boid-api-skills 側の
 `freee-api` スキル) の更新は各 PR に含める。

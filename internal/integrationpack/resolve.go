@@ -149,6 +149,13 @@ func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack)
 			Query:     slot.Query,
 		},
 		AllowReadOnlyWrite: sc.AllowReadOnlyWrite,
+		// RequireAccount (docs/plans/api-gateway-credential-accounts.md D5):
+		// copied straight from sc.RequireAccount, the same "propagate the
+		// flat bool through unchanged" treatment AllowReadOnlyWrite above
+		// gets — a uses: entry opts into requiring an account qualifier
+		// exactly the same way a free-form base_url/auth entry does via
+		// config.APIGatewayServices().
+		RequireAccount: sc.RequireAccount,
 	}, nil
 }
 

@@ -877,6 +877,50 @@ services:
 	}
 }
 
+// TestLoadFromPath_Services_RequireAccount pins docs/plans/api-gateway-
+// credential-accounts.md D5, mirroring
+// TestLoadFromPath_Services_AllowReadOnlyWrite's own shape exactly:
+// require_account parses into ServiceConfig.RequireAccount and propagates
+// through APIGatewayServices to the apigateway.ServiceConfig the gateway
+// actually gates requests against — a gap here would make the config-level
+// opt-in a no-op at the gateway, and an existing config.yaml that never
+// mentions require_account at all must keep loading with the field false
+// (D5's "既定 false なので既存 service の挙動は変わらない").
+func TestLoadFromPath_Services_RequireAccount(t *testing.T) {
+	content := `
+services:
+  freee:
+    base_url: https://api.freee.co.jp
+    require_account: true
+    auth: { kind: bearer, secret_key: k }
+  myapp:
+    base_url: https://myapp.example.com
+    auth: { kind: bearer, secret_key: k }
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Services["freee"].RequireAccount {
+		t.Error("Services[freee].RequireAccount = false, want true")
+	}
+	if cfg.Services["myapp"].RequireAccount {
+		t.Error("Services[myapp].RequireAccount = true, want false (existing config without require_account must be unaffected)")
+	}
+
+	services := cfg.APIGatewayServices()
+	byRequireAccount := make(map[string]bool, len(services))
+	for _, s := range services {
+		byRequireAccount[s.Name] = s.RequireAccount
+	}
+	if !byRequireAccount["freee"] {
+		t.Error("APIGatewayServices()[freee].RequireAccount = false, want true (config value was dropped in translation)")
+	}
+	if byRequireAccount["myapp"] {
+		t.Error("APIGatewayServices()[myapp].RequireAccount = true, want false")
+	}
+}
+
 func TestLoadFromPath_ServicesFloor_Valid(t *testing.T) {
 	content := `
 services:

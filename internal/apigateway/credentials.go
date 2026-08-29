@@ -71,6 +71,12 @@ type ServiceConfig struct {
 	// (fail-closed): a service must be explicitly opted in by whoever
 	// controls config.yaml.
 	AllowReadOnlyWrite bool
+	// RequireAccount is this ServiceConfig's post-validation mirror of
+	// config.ServiceConfig.RequireAccount (see that field's own doc comment
+	// for the full rationale) — the same relationship AllowReadOnlyWrite
+	// above already has to its own config counterpart. docs/plans/
+	// api-gateway-credential-accounts.md D5.
+	RequireAccount bool
 }
 
 // SecretResolver resolves a secret-store key reference, scoped to a
@@ -89,6 +95,7 @@ type resolvedService struct {
 	auth               ServiceAuth
 	baseURL            *url.URL
 	allowReadOnlyWrite bool
+	requireAccount     bool
 }
 
 // CredentialProvider knows which services the gateway can reach (name →
@@ -120,7 +127,7 @@ func NewCredentialProvider(services []ServiceConfig, resolver SecretResolver) *C
 				"service", s.Name, "base_url", s.BaseURL, "error", err)
 			continue
 		}
-		m[s.Name] = resolvedService{auth: s.Auth, baseURL: u, allowReadOnlyWrite: s.AllowReadOnlyWrite}
+		m[s.Name] = resolvedService{auth: s.Auth, baseURL: u, allowReadOnlyWrite: s.AllowReadOnlyWrite, requireAccount: s.RequireAccount}
 	}
 	return &CredentialProvider{services: m, resolver: resolver}
 }
@@ -207,6 +214,41 @@ func (c *CredentialProvider) AllowsReadOnlyWrite(name string) bool {
 	}
 	rs, ok := c.services[name]
 	return ok && rs.allowReadOnlyWrite
+}
+
+// RequiresAccount reports whether name's ServiceConfig opted into rejecting
+// account-less requests (ServiceConfig.RequireAccount's own doc comment,
+// docs/plans/api-gateway-credential-accounts.md D5). An unknown service (or
+// a nil CredentialProvider) reports false.
+//
+// This is NOT the same "unknown => fail-closed-by-being-false" shape
+// AllowsReadOnlyWrite's own doc comment argues for (there, false is the
+// stricter, safer default). Here false is instead the choice that
+// PRESERVES an existing, more specific signal: Server.ServeHTTP only ever
+// reaches this call after entry.Services[name] has already confirmed the
+// WORKSPACE allows name — but that list is populated independently of this
+// CredentialProvider's own registry (a workspace's enabled-services list
+// and config.yaml's services: map can drift, or a services.<name> entry can
+// fail validateServiceConfig and be silently dropped by
+// config.APIGatewayServices), so a name that clears the authorization check
+// is not guaranteed to be a KEY in c.services at all. For such a name,
+// BaseURLFor(name) already returns ok=false and Server.ServeHTTP reports
+// 502 "service ... is not configured" immediately afterward — the correct,
+// pre-existing diagnosis for "this service isn't really registered". If
+// RequiresAccount instead defaulted to true for an unknown name, an
+// account-less request to it would be misreported as 400 "account
+// required" — plausible-sounding but wrong advice for a service that isn't
+// configured at all — and that wrong answer would be returned BEFORE
+// ServeHTTP ever reaches the BaseURLFor check that has the right one. false
+// keeps BaseURLFor the single source of truth for "is this service real";
+// RequiresAccount only ever has an opinion once a service definitely
+// exists.
+func (c *CredentialProvider) RequiresAccount(name string) bool {
+	if c == nil {
+		return false
+	}
+	rs, ok := c.services[name]
+	return ok && rs.requireAccount
 }
 
 // accountSecretKey returns the SecretStore key a static auth kind (bearer/

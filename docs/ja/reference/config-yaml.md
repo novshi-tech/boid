@@ -354,6 +354,7 @@ services_floor:
 | `services.<name>.base_url` | string | (必須) | upstream の base URL。sandbox からは見えない — sandbox が見るのは論理名 `<name>` だけ。`https` 以外のスキームは `allow_insecure: true` が無いと config load 自体が失敗する |
 | `services.<name>.allow_insecure` | bool | `false` | `base_url` に `https` 以外のスキームを許可する明示的な opt-in。無いまま `http://` 等を指定すると config load エラー (内部テスト API 等 TLS が無い環境向けの意図的な抜け道であり、黙って許可はしない) |
 | `services.<name>.allow_readonly_write` | bool | `false` | readonly な job token (`task.readonly`/`command.readonly`) でもこの service への GET/HEAD 以外のメソッドを許可する opt-in。既定は fail-closed で readonly job は 403。**config.yaml (daemon 側) にしか置けない** — project.yaml / task_behaviors には無い。repo 側から書き込み許可を付与できてしまうと readonly ゲートの意味が無くなるため (prompt injection されたエージェントが自分で自分に書き込み権限を与えられてしまう) |
+| `services.<name>.require_account` | bool | `false` | この service への account 無しリクエストを 400 で拒否する opt-in (下記「credential account 修飾」節)。既定は false で既存 service の挙動は変わらない。**config.yaml (daemon 側) にしか置けない** — project.yaml / task_behaviors には無い (`allow_readonly_write` と同じ理由) |
 | `services.<name>.auth.kind` | string | (必須) | `bearer` / `basic` / `header` / `query` / `oauth2` のいずれか |
 | `services.<name>.auth.secret_key` | string | kind により必須 | secret store 参照キー (`bearer`/`basic`/`header`/`query` で必須。`oauth2` では未使用) |
 | `services.<name>.auth.username` | string | `basic` のみ必須 | Basic 認証の username |
@@ -411,6 +412,16 @@ $BOID_API_BASE/freee/api/1/deals?company_id=123456          # account 無し = �
 - `services.<name>` / `oauth_providers.<name>` の名前自体に `@` を含めることは
   できません (config load エラー) — path 上で account の区切りとして予約
   されているためです。
+- **`services.<name>.require_account: true`** を立てた service は、account
+  無しのリクエスト (`$BOID_API_BASE/freee/...`) を **400** で拒否します。
+  指定漏れが既定 (account 無し) の credential へ黙って落ちる事故を防ぐための
+  安全弁で、既定は `false` (既存 service の挙動は変わらない)。認可
+  (`entry.Services`) より後・readonly ゲートより前でチェックされるため、
+  その service を触れない job token には通常どおり 403 が返り (400 では
+  「この service は account 必須」という情報を漏らさない)、account さえ
+  付いていれば readonly job の書き込み許可判定は従来どおり base 名の
+  `allow_readonly_write` に従います。運用手順 (freee の移行手順) は設計 doc
+  「freee の移行手順」節を参照してください。
 
 設計の詳細・却下案・PR 分割は
 [`docs/plans/api-gateway-credential-accounts.md`](../../plans/api-gateway-credential-accounts.md)
