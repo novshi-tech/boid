@@ -31,9 +31,12 @@ func (a *apiGatewayLoginAdapter) KnowsProvider(name string) bool {
 
 // StartLogin implements api.OAuthLoginService, translating
 // apigateway.LoginStart into api.OAuthLoginStart's own (identically shaped,
-// independently typed) DTO.
-func (a *apiGatewayLoginAdapter) StartLogin(namespace, provider, redirectURI string) (*api.OAuthLoginStart, error) {
-	start, err := a.logins.StartLogin(namespace, provider, redirectURI)
+// independently typed) DTO. account is forwarded to
+// apigateway.LoginManager.StartLogin verbatim — see that method's own doc
+// comment for the account-qualified login contract (docs/plans/
+// api-gateway-credential-accounts.md D9).
+func (a *apiGatewayLoginAdapter) StartLogin(namespace, provider, redirectURI, account string) (*api.OAuthLoginStart, error) {
+	start, err := a.logins.StartLogin(namespace, provider, redirectURI, account)
 	if err != nil {
 		return nil, err
 	}

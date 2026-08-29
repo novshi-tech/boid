@@ -98,7 +98,7 @@ func TestAPIGatewayLoginAdapter_ProviderForService(t *testing.T) {
 func TestAPIGatewayLoginAdapter_StartLogin_FieldMapping(t *testing.T) {
 	adapter, _ := newTestLoginAdapter(t, "https://example.com/token")
 
-	start, err := adapter.StartLogin("ws-a", "freee-provider", "")
+	start, err := adapter.StartLogin("ws-a", "freee-provider", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestAPIGatewayLoginAdapter_StartLogin_FieldMapping(t *testing.T) {
 
 func TestAPIGatewayLoginAdapter_StartLogin_UnknownProviderError(t *testing.T) {
 	adapter, _ := newTestLoginAdapter(t, "https://example.com/token")
-	if _, err := adapter.StartLogin("ws-a", "nonexistent-provider", ""); err == nil {
+	if _, err := adapter.StartLogin("ws-a", "nonexistent-provider", "", ""); err == nil {
 		t.Fatal("want error for an unconfigured provider, got nil")
 	}
 }
@@ -135,7 +135,7 @@ func TestAPIGatewayLoginAdapter_CompleteLoginAndStatus_Success(t *testing.T) {
 	defer tokenSrv.Close()
 
 	adapter, store := newTestLoginAdapter(t, tokenSrv.URL)
-	start, err := adapter.StartLogin("ws-a", "freee-provider", "")
+	start, err := adapter.StartLogin("ws-a", "freee-provider", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -158,6 +158,51 @@ func TestAPIGatewayLoginAdapter_CompleteLoginAndStatus_Success(t *testing.T) {
 	}
 }
 
+// TestAPIGatewayLoginAdapter_StartLogin_WithAccount_PersistsAccountQualifiedRefreshTokenKey
+// pins the full production wiring — api.OAuthLoginService's StartLogin
+// signature, through apiGatewayLoginAdapter, into a REAL
+// apigateway.LoginManager + apigateway.CredentialProvider — for docs/plans/
+// api-gateway-credential-accounts.md's reviewer scoring table #10: a login
+// with --account persists to `oauth2:<provider>@<account>:refresh_token`,
+// and leaves the unqualified key untouched (D3 — no fallback either
+// direction).
+func TestAPIGatewayLoginAdapter_StartLogin_WithAccount_PersistsAccountQualifiedRefreshTokenKey(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "AT1", "refresh_token": "RT1", "expires_in": 3600})
+	}))
+	defer tokenSrv.Close()
+
+	adapter, store := newTestLoginAdapter(t, tokenSrv.URL)
+	start, err := adapter.StartLogin("ws-a", "freee-provider", "", "ubs")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	if err := adapter.CompleteLogin(start.SessionID, "OOB-CODE", ""); err != nil {
+		t.Fatalf("CompleteLogin: %v", err)
+	}
+
+	if v, _ := store.resolver()("ws-a", "oauth2:freee-provider@ubs:refresh_token"); v != "RT1" {
+		t.Errorf("persisted refresh_token at oauth2:freee-provider@ubs:refresh_token = %q, want RT1", v)
+	}
+	if v, _ := store.resolver()("ws-a", "oauth2:freee-provider:refresh_token"); v != "" {
+		t.Errorf("unqualified key oauth2:freee-provider:refresh_token = %q, want empty (account-qualified login must not touch it, D3)", v)
+	}
+}
+
+// TestAPIGatewayLoginAdapter_StartLogin_InvalidAccountRejected pins the
+// server-side half of PR-3's account validation requirement: an invalid
+// --account is rejected here (through the same production adapter/
+// LoginManager path a real `boid secret oauth login --account` request
+// reaches), not just by the CLI's own pre-flight check
+// (cmd/secret_oauth_test.go's TestSecretOAuthLogin_InvalidAccountRejectedClientSide).
+func TestAPIGatewayLoginAdapter_StartLogin_InvalidAccountRejected(t *testing.T) {
+	adapter, _ := newTestLoginAdapter(t, "https://example.com/token")
+	if _, err := adapter.StartLogin("ws-a", "freee-provider", "", "not valid!"); err == nil {
+		t.Fatal("want error for an invalid --account, got nil")
+	}
+}
+
 func TestAPIGatewayLoginAdapter_LoginStatus_UnknownSession(t *testing.T) {
 	adapter, _ := newTestLoginAdapter(t, "https://example.com/token")
 	if _, _, ok := adapter.LoginStatus("no-such-session"); ok {
@@ -167,7 +212,7 @@ func TestAPIGatewayLoginAdapter_LoginStatus_UnknownSession(t *testing.T) {
 
 func TestAPIGatewayLoginAdapter_CompleteLogin_ErrorPropagates(t *testing.T) {
 	adapter, _ := newTestLoginAdapter(t, "https://example.com/token")
-	start, err := adapter.StartLogin("ws-a", "freee-provider", "")
+	start, err := adapter.StartLogin("ws-a", "freee-provider", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}

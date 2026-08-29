@@ -38,8 +38,11 @@ type OAuthLoginService interface {
 	// apigateway.LoginManager.StartLogin's own doc comment for the full
 	// per-flow contract (redirectURI is only meaningful for the loopback
 	// flow; the CLI always supplies it regardless of which flow the
-	// service turns out to use).
-	StartLogin(namespace, provider, redirectURI string) (*OAuthLoginStart, error)
+	// service turns out to use). account is the optional credential-account
+	// qualifier (docs/plans/api-gateway-credential-accounts.md D9) — ""
+	// means unqualified, byte-identical to every call site that predates
+	// this parameter.
+	StartLogin(namespace, provider, redirectURI, account string) (*OAuthLoginStart, error)
 	// CompleteLogin finishes a loopback or manual session — see
 	// apigateway.LoginManager.CompleteLogin's own doc comment (state is
 	// ignored for manual, which never had one to check).
@@ -94,6 +97,18 @@ type oauthLoginStartRequest struct {
 	// StartLogin's own doc comment for why a single request suffices for
 	// every flow this way.
 	RedirectURI string `json:"redirect_uri,omitempty"`
+	// Account is the optional credential-account qualifier `boid secret
+	// oauth login --account` (docs/plans/api-gateway-credential-accounts.md
+	// D9) sends — omitted (the zero value "") means unqualified, so an
+	// older CLI build (or any hand-rolled request) that never sets this
+	// field behaves byte-for-byte as it did before this field existed —
+	// the JSON `omitempty` mirrors that on the wire. Format validation
+	// happens in StartLogin (apigateway.LoginManager.StartLogin, reusing
+	// the exact rule parsePath enforces on an inbound gateway request's
+	// account qualifier — D11) rather than here, so this handler stays free
+	// of any internal/apigateway import (this file's own "narrow service
+	// interface with its own DTOs" convention, doc comment above).
+	Account string `json:"account,omitempty"`
 }
 
 type oauthLoginStartResponse struct {
@@ -159,7 +174,7 @@ func (h *OAuthLoginHandler) Start(w http.ResponseWriter, r *http.Request) {
 		}
 		provider = req.Service
 	}
-	start, err := h.Service.StartLogin(req.Namespace, provider, req.RedirectURI)
+	start, err := h.Service.StartLogin(req.Namespace, provider, req.RedirectURI, req.Account)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

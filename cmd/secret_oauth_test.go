@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,6 +32,7 @@ func setupSecretOAuthLoginCmd(t *testing.T, srv *httptest.Server, timeout time.D
 	prevCtx := cmd.Context()
 	prevNamespace, _ := cmd.Flags().GetString("namespace")
 	prevTimeout, _ := cmd.Flags().GetDuration("timeout")
+	prevAccount, _ := cmd.Flags().GetString("account")
 	t.Cleanup(func() {
 		cmd.SetContext(prevCtx)
 		cmd.SetOut(nil)
@@ -38,6 +40,7 @@ func setupSecretOAuthLoginCmd(t *testing.T, srv *httptest.Server, timeout time.D
 		cmd.SetIn(nil)
 		_ = cmd.Flags().Set("namespace", prevNamespace)
 		cmd.Flags().Set("timeout", prevTimeout.String())
+		cmd.Flags().Set("account", prevAccount)
 	})
 
 	out := &bytes.Buffer{}
@@ -50,6 +53,15 @@ func setupSecretOAuthLoginCmd(t *testing.T, srv *httptest.Server, timeout time.D
 	}
 	if err := cmd.Flags().Set("timeout", timeout.String()); err != nil {
 		t.Fatalf("set timeout flag: %v", err)
+	}
+	// --account defaults to "" (no account) for every test using this
+	// helper — this package-level cobra command is a shared singleton
+	// (this function's own doc comment), so a prior test's --account value
+	// must never leak into one that doesn't set it itself. Tests that DO
+	// want an account call cmd.Flags().Set("account", ...) themselves after
+	// this helper returns.
+	if err := cmd.Flags().Set("account", ""); err != nil {
+		t.Fatalf("set account flag: %v", err)
 	}
 	return out
 }
@@ -378,6 +390,103 @@ func TestSecretOAuthLogin_UnrecognizedFlowReturnsError(t *testing.T) {
 	err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"freee"})
 	if err == nil {
 		t.Fatal("want error for an unrecognized flow, got nil")
+	}
+}
+
+// TestSecretOAuthLogin_AccountFlag_SentToServer pins docs/plans/
+// api-gateway-credential-accounts.md D9: `--account` reaches the daemon's
+// POST /api/oauth/login request unchanged.
+func TestSecretOAuthLogin_AccountFlag_SentToServer(t *testing.T) {
+	var gotAccount string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login":
+			var req oauthLoginStartRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			gotAccount = req.Account
+			writeJSONResponse(t, w, oauthLoginStartResponse{
+				SessionID: "sess-1", Flow: "manual", AuthorizeURL: "https://accounts.secure.freee.co.jp/public_api/authorize",
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login/sess-1/complete":
+			writeJSONResponse(t, w, map[string]string{"status": "complete"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	setupSecretOAuthLoginCmd(t, srv, time.Second, "OOB-CODE\n")
+	if err := secretOAuthLoginCmd.Flags().Set("account", "ubs"); err != nil {
+		t.Fatalf("set account flag: %v", err)
+	}
+	if err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"freee"}); err != nil {
+		t.Fatalf("runSecretOAuthLogin: %v", err)
+	}
+	if gotAccount != "ubs" {
+		t.Errorf("start request account = %q, want ubs", gotAccount)
+	}
+}
+
+// TestSecretOAuthLogin_NoAccountFlag_OmitsAccountField pins the HTTP API
+// backward-compatibility half of D9: when --account is never passed, the
+// wire request must be byte-for-byte what it was before this flag existed —
+// asserted here by inspecting the RAW request body, not just the decoded
+// struct field (a decoded "" is indistinguishable from "the field was never
+// there" — the raw-body check is what actually pins `omitempty`).
+func TestSecretOAuthLogin_NoAccountFlag_OmitsAccountField(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login":
+			gotBody, _ = io.ReadAll(r.Body)
+			writeJSONResponse(t, w, oauthLoginStartResponse{
+				SessionID: "sess-1", Flow: "manual", AuthorizeURL: "https://accounts.secure.freee.co.jp/public_api/authorize",
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login/sess-1/complete":
+			writeJSONResponse(t, w, map[string]string{"status": "complete"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	setupSecretOAuthLoginCmd(t, srv, time.Second, "OOB-CODE\n")
+	if err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"freee"}); err != nil {
+		t.Fatalf("runSecretOAuthLogin: %v", err)
+	}
+	if strings.Contains(string(gotBody), "account") {
+		t.Errorf("request body = %s, want no \"account\" field at all (omitempty)", gotBody)
+	}
+}
+
+// TestSecretOAuthLogin_InvalidAccountRejectedClientSide pins that an
+// invalid --account (docs/plans/api-gateway-credential-accounts.md D11,
+// enforced by apigateway.ValidateAccountName — the same rule the daemon and
+// the gateway's own request routing apply) is rejected by this command
+// BEFORE any daemon round trip — a login the daemon would reject anyway
+// should fail as early and cheaply as possible, and never open the loopback
+// listener or POST anything.
+func TestSecretOAuthLogin_InvalidAccountRejectedClientSide(t *testing.T) {
+	var serverHit bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverHit = true
+		t.Errorf("unexpected request %s %s — an invalid --account must be rejected before any daemon round trip", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	setupSecretOAuthLoginCmd(t, srv, time.Second, "")
+	if err := secretOAuthLoginCmd.Flags().Set("account", "not valid!"); err != nil {
+		t.Fatalf("set account flag: %v", err)
+	}
+	err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"freee"})
+	if err == nil {
+		t.Fatal("want error for an invalid --account, got nil")
+	}
+	if serverHit {
+		t.Error("daemon was contacted despite an invalid --account")
 	}
 }
 

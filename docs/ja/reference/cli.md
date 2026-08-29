@@ -248,7 +248,7 @@ API トークン等を暗号化して保存します。鍵は `~/.local/share/bo
 | `boid secret get <key> [-n NAMESPACE \| --namespace NAMESPACE]` | 値を取得 |
 | `boid secret list [-n NAMESPACE \| --namespace NAMESPACE]` | キー一覧 |
 | `boid secret delete <key> [-n NAMESPACE \| --namespace NAMESPACE]` | 削除 |
-| `boid secret oauth login <service> [-n NAMESPACE] [--timeout DURATION]` | API gateway の OAuth2 サービスに対して初回認証を行う (device/loopback/manual、`docs/plans/api-gateway.md` §7 参照)。`<service>` は `config.yaml` の `services.<name>` エントリ名 (`oauth_providers` の provider 名ではない) |
+| `boid secret oauth login <service> [-n NAMESPACE] [--timeout DURATION] [--account NAME]` | API gateway の OAuth2 サービスに対して初回認証を行う (device/loopback/manual、`docs/plans/api-gateway.md` §7 参照)。`<service>` は `config.yaml` の `services.<name>` エントリ名 (`oauth_providers` の provider 名ではない)。`--account` は同一 service に複数 credential を持たせる修飾子 (省略時は無修飾、`docs/plans/api-gateway-credential-accounts.md` D9) — 英数字・`-`・`_`、1〜64文字 |
 
 ## Workspace
 

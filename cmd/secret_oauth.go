@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/spf13/cobra"
 )
@@ -50,6 +51,12 @@ type oauthLoginStartRequest struct {
 	Service     string `json:"service"`
 	Namespace   string `json:"namespace"`
 	RedirectURI string `json:"redirect_uri,omitempty"`
+	// Account mirrors internal/api/oauth_login.go's oauthLoginStartRequest.
+	// Account (docs/plans/api-gateway-credential-accounts.md D9) — omitted
+	// (the zero value "") when --account was not passed, which is byte-
+	// identical on the wire to every request this CLI sent before this
+	// field existed.
+	Account string `json:"account,omitempty"`
 }
 
 type oauthLoginStartResponse struct {
@@ -102,6 +109,12 @@ var secretOAuthLoginCmd = &cobra.Command{
 func init() {
 	secretOAuthLoginCmd.Flags().StringP("namespace", "n", "default", "Secret namespace (workspace)")
 	secretOAuthLoginCmd.Flags().Duration("timeout", 5*time.Minute, "How long to wait for the user to finish authorizing")
+	// --account (docs/plans/api-gateway-credential-accounts.md D9): omitted
+	// (the zero value "") means the ordinary unqualified login every prior
+	// version of this command performed — see runSecretOAuthLogin's own
+	// validation of this flag for why an explicit value is checked against
+	// apigateway.ValidateAccountName before ever reaching the daemon.
+	secretOAuthLoginCmd.Flags().String("account", "", "Credential account qualifier (e.g. `boid secret oauth login freee --account ubs`); omit for the unqualified default credential")
 	secretOAuthCmd.AddCommand(secretOAuthLoginCmd)
 	secretCmd.AddCommand(secretOAuthCmd)
 }
@@ -115,6 +128,31 @@ func runSecretOAuthLogin(cmd *cobra.Command, args []string) error {
 	timeout, err := cmd.Flags().GetDuration("timeout")
 	if err != nil {
 		return fmt.Errorf("secret oauth login: %w", err)
+	}
+	account, err := cmd.Flags().GetString("account")
+	if err != nil {
+		return fmt.Errorf("secret oauth login: %w", err)
+	}
+	// Validated HERE, client-side, against the exact same rule the daemon
+	// applies (apigateway.LoginManager.StartLogin, via the unexported
+	// validateAccountName route.go already enforces on every gateway
+	// request's account qualifier — D11) rather than a hand-rolled check:
+	// reusing apigateway.ValidateAccountName (its exported form) is what
+	// guarantees the CLI can never accept an account name the daemon (and,
+	// transitively, the gateway's own request routing) would reject — see
+	// that function's own doc comment for why a second, independently
+	// written check here would risk drifting out of sync with it. account
+	// == "" (the flag's default, --account never passed) is deliberately
+	// NOT validated — an empty account means "no account", not "an invalid
+	// account name" (ValidateAccountName's own doc comment makes the same
+	// carve-out). A genuinely invalid --account is rejected HERE, before
+	// opening a loopback listener or making any daemon round trip at all —
+	// a login the daemon would reject anyway should fail as early and
+	// cheaply as possible.
+	if account != "" {
+		if err := apigateway.ValidateAccountName(account); err != nil {
+			return fmt.Errorf("secret oauth login: invalid --account: %w", err)
+		}
 	}
 
 	c := client.FromContext(cmd.Context())
@@ -136,7 +174,7 @@ func runSecretOAuthLogin(cmd *cobra.Command, args []string) error {
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), oauthLoginRequestTimeout)
 	defer cancel()
-	req := oauthLoginStartRequest{Service: service, Namespace: namespace, RedirectURI: redirectURI}
+	req := oauthLoginStartRequest{Service: service, Namespace: namespace, RedirectURI: redirectURI, Account: account}
 	var start oauthLoginStartResponse
 	if err := c.DoContext(ctx, "POST", "/api/oauth/login", req, &start); err != nil {
 		_ = ln.Close()

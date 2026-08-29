@@ -19,9 +19,9 @@ type fakeOAuthLoginService struct {
 	providers      map[string]string // service -> provider
 	knownProviders map[string]bool   // oauth_providers.<name> that exist
 
-	startResult                               *OAuthLoginStart
-	startErr                                  error
-	gotNamespace, gotProvider, gotRedirectURI string
+	startResult                                           *OAuthLoginStart
+	startErr                                              error
+	gotNamespace, gotProvider, gotRedirectURI, gotAccount string
 
 	completeErr                      error
 	gotCompleteID, gotCode, gotState string
@@ -40,8 +40,8 @@ func (f *fakeOAuthLoginService) KnowsProvider(name string) bool {
 	return f.knownProviders[name]
 }
 
-func (f *fakeOAuthLoginService) StartLogin(namespace, provider, redirectURI string) (*OAuthLoginStart, error) {
-	f.gotNamespace, f.gotProvider, f.gotRedirectURI = namespace, provider, redirectURI
+func (f *fakeOAuthLoginService) StartLogin(namespace, provider, redirectURI, account string) (*OAuthLoginStart, error) {
+	f.gotNamespace, f.gotProvider, f.gotRedirectURI, f.gotAccount = namespace, provider, redirectURI, account
 	if f.startErr != nil {
 		return nil, f.startErr
 	}
@@ -259,6 +259,59 @@ func TestOAuthLoginHandler_Complete_ErrorReturns400(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestOAuthLoginHandler_Start_ForwardsAccount pins docs/plans/
+// api-gateway-credential-accounts.md D9: the request's optional "account"
+// field reaches StartLogin unchanged.
+func TestOAuthLoginHandler_Start_ForwardsAccount(t *testing.T) {
+	fake := &fakeOAuthLoginService{
+		providers:   map[string]string{"freee": "freee-provider"},
+		startResult: &OAuthLoginStart{SessionID: "sess-1", Flow: "manual"},
+	}
+	srv := newOAuthLoginTestServer(fake)
+	defer srv.Close()
+
+	body, _ := json.Marshal(oauthLoginStartRequest{Service: "freee", Account: "ubs"})
+	resp, err := http.Post(srv.URL+"/api/oauth/login", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if fake.gotAccount != "ubs" {
+		t.Errorf("StartLogin called with account %q, want ubs", fake.gotAccount)
+	}
+}
+
+// TestOAuthLoginHandler_Start_OmittedAccountFieldMeansUnqualified pins the
+// HTTP API backward-compatibility half of D9 (PR-3 task description: "account
+// 無しのリクエスト（フィールド欠落）が現行と完全に同じ挙動になること"): a
+// request whose raw JSON body has NO "account" key at all — exactly what
+// every CLI build older than this feature sends — must reach StartLogin
+// with account == "", identical to an explicit empty string.
+func TestOAuthLoginHandler_Start_OmittedAccountFieldMeansUnqualified(t *testing.T) {
+	fake := &fakeOAuthLoginService{
+		providers:   map[string]string{"freee": "freee-provider"},
+		startResult: &OAuthLoginStart{SessionID: "sess-1", Flow: "manual"},
+	}
+	srv := newOAuthLoginTestServer(fake)
+	defer srv.Close()
+
+	body := `{"service":"freee"}`
+	resp, err := http.Post(srv.URL+"/api/oauth/login", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if fake.gotAccount != "" {
+		t.Errorf("StartLogin called with account %q, want empty (the request body never had an \"account\" field)", fake.gotAccount)
 	}
 }
 

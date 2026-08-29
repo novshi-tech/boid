@@ -169,6 +169,43 @@ func TestParsePath_AccountExactly64CharsAccepted(t *testing.T) {
 	}
 }
 
+// TestValidateAccountName_MatchesParsePathAccountValidation pins docs/plans/
+// api-gateway-credential-accounts.md PR-3's central requirement: `boid
+// secret oauth login --account` (cmd/secret_oauth.go, via the exported
+// ValidateAccountName) and the gateway's own request-routing validation
+// (parsePath -> splitServiceAccount -> the unexported validateAccountName)
+// must agree on EVERY account name tried here, not just the ones each
+// side's own test file happens to pick. A login the CLI accepts but the
+// gateway would reject as part of an invalid "<service>@<account>" path
+// segment creates a credential that can never be read back through the
+// gateway — a permanently unreachable secret disguised as a successful
+// login (see PR-3's task description: "login は成功するのに gateway からは
+// 絶対に引けない credential"). Each account is round-tripped through
+// url.PathEscape/PathUnescape so this can drive parsePath with arbitrary
+// bytes (space, ".", ":", "@", non-ASCII, ...) without any of them being
+// misread as an extra "/" path separator.
+func TestValidateAccountName_MatchesParsePathAccountValidation(t *testing.T) {
+	cases := []string{
+		"", "ubs", "nvt", "ubs-2", "ubs_2", "UBS", "0",
+		strings.Repeat("a", 64), strings.Repeat("a", 65),
+		"ub.s", "ub/s", "ub:s", "ub@s", "ub s", "日本語",
+	}
+	for _, account := range cases {
+		t.Run(account, func(t *testing.T) {
+			wantErr := ValidateAccountName(account) != nil
+
+			path := "/api/tok123/freee@" + url.PathEscape(account) + "/v1"
+			_, err := parsePath(path)
+			gotErr := err != nil
+
+			if wantErr != gotErr {
+				t.Errorf("account %q: ValidateAccountName err=%v (want err=%v), parsePath(%q) err=%v (want err=%v) — CLI and gateway validation disagree",
+					account, ValidateAccountName(account), wantErr, path, err, wantErr)
+			}
+		})
+	}
+}
+
 // TestParsePath_Invalid pins that every case here is a 404 at the
 // Server.ServeHTTP level (TestServer_NotFoundForUnmatchedPath), NOT a 400 —
 // which is why each case must also assert errors.Is(err, errInvalidAccount)
