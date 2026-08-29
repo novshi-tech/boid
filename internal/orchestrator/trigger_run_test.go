@@ -417,3 +417,58 @@ func TestTriggerRuns_CascadeDeletedWithProject(t *testing.T) {
 		t.Errorf("trigger_runs rows after project delete = %d, want 0 (cascade)", count)
 	}
 }
+
+// The row has TWO closers that do not coordinate — reconcileInFlight (job
+// reached a terminal status) and the trigger-timeout path — and they overlap in
+// an ordinary window: aborting the task makes the parked `boid task wait`
+// return, which exits the job, which the next tick sees as terminal while the
+// timeout goroutine is still inside StopJobRuntime's 30-second deadline.
+// Without the `finished_at IS NULL` guard the second write silently rewrites
+// the first's finished_at/exit_code and the caller believes it closed the row,
+// so one round is counted twice against the fail streak.
+func TestCompleteTriggerRun_SecondCloseIsRefused(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	now := time.Now().UTC()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: now}
+	if err := orchestrator.CreateTriggerRun(d.Conn, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	first := now.Add(5 * time.Second)
+	if err := orchestrator.CompleteTriggerRun(d.Conn, run.ID, first, 1); err != nil {
+		t.Fatalf("first close: %v", err)
+	}
+
+	err := orchestrator.CompleteTriggerRun(d.Conn, run.ID, first.Add(time.Minute), -3)
+	if err == nil {
+		t.Fatal("the second close must be refused, not silently applied")
+	}
+	if !errors.Is(err, orchestrator.ErrTriggerRunAlreadyFinished) {
+		t.Fatalf("err = %v, want ErrTriggerRunAlreadyFinished so the loser can tell a race from a failure", err)
+	}
+
+	// The first writer's values survive.
+	latest, lerr := orchestrator.LatestTriggerRun(d.Conn, "proj-1", "sweep")
+	if lerr != nil {
+		t.Fatalf("LatestTriggerRun: %v", lerr)
+	}
+	if latest.ExitCode == nil || *latest.ExitCode != 1 {
+		t.Errorf("ExitCode = %v, want 1 (the first writer's) — the second close overwrote it", latest.ExitCode)
+	}
+	if latest.FinishedAt == nil || !latest.FinishedAt.Equal(first) {
+		t.Errorf("FinishedAt = %v, want %v (the first writer's)", latest.FinishedAt, first)
+	}
+}
+
+// A row that does not exist reports the same sentinel: both are "my write did
+// not land", and no caller needs to tell them apart.
+func TestCompleteTriggerRun_UnknownIDIsTheSameSentinel(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	err := orchestrator.CompleteTriggerRun(d.Conn, "no-such-run", time.Now().UTC(), 0)
+	if !errors.Is(err, orchestrator.ErrTriggerRunAlreadyFinished) {
+		t.Fatalf("err = %v, want ErrTriggerRunAlreadyFinished", err)
+	}
+}

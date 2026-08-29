@@ -244,7 +244,7 @@ triggers:
 | `name` | string | はい | このプロジェクト内でトリガを一意に識別する名前。空文字列・重複はロード時にエラー。`boid trigger run <name>` で参照する名前でもある |
 | `on` | string (`schedule` \| `signals`) | いいえ (既定 `schedule`) | トリガの発火条件を選ぶ (docs/plans/signal-ingest-detailed-design.md §4)。`schedule` (既定/省略時) は `every` 経過のみで発火する従来どおりの挙動。`signals` は `every` 経過に加えて、このプロジェクトが紐づく workspace に未 ack の Signal が 1 件以上あることを要求する — 詳細は下記「`on: signals` の意味論」を参照。それ以外の値はロード時にエラー |
 | `every` | string (`time.ParseDuration`) | はい | 前回の起動から次に起こすまでの最小間隔 (例: `10m`、`1h`)。`0` 以下は拒否。**実効下限は daemon の sweep 周期 (1 分)** — それより短い値 (例: `1s`) はロード時に拒否される。「毎秒」のように sweep 周期より高い頻度は表現できない。`on: signals` でも必須で、この場合は発火間隔の下限 = debounce 窓としても働く |
-| `timeout` | string (`time.ParseDuration`) | いいえ (省略時は無制限) | **1 巡** の実行時間の上限 (例: `30m`)。超過した巡は daemon が打ち切り、失敗として記録する (下記「タイムアウト」)。`0` 以下、および `every` より短い値はロード時に拒否される — `every` は「どれくらいの頻度で見に行くか」、`timeout` は「1 巡がどれくらいの長さまで許されるか」で、**別々の問い**である。混同して `timeout < every` にすると、次の巡が来る前に毎回打ち切られることになる |
+| `timeout` | string (`time.ParseDuration`) | いいえ (省略時は無制限) | **1 巡** の実行時間の上限 (例: `30m`)。超過した巡は daemon が打ち切り、失敗として記録する (下記「タイムアウト」)。`0` 以下はロード時に拒否される。`every` との大小関係は問わない — **別々の問い**だから (`every` は「どれくらいの頻度で見に行くか」、`timeout` は「1 巡がどれくらいの長さまで許されるか」)。`every: 1h` + `timeout: 10m` (「1 時間ごとに見る、10 分を超えた巡は打ち切る」) も有効 |
 | `run` | string | はい | サンドボックス内で `sh -c` に渡されるコマンド文字列 (スクリプトパスではない)。sandbox の `/bin/sh` は dash なので bashism は `bash scripts/x.sh` のように明示すること。stdin は daemon 側が `exec 0</dev/null` 相当で閉じた状態で実行される (対話的な入力を待つスクリプトは書けない — attach するクライアントが存在しないため、閉じないと永久にハングする) |
 
 **実行の性質:**
@@ -289,9 +289,9 @@ signals:
 | `connector` | string (`<pack>/<connector>`) | はい | 実行する Integration Pack の connector。`integrations.dir` に導入済みの Pack (`internal/integrationpack`) 名と、その `integration.yaml` の `connectors[].name` を `/` で連結した形式。バージョン指定は無い — 同名 Pack が 2 バージョン以上導入されている場合は起動時ではなく実行時 (`boid exec` 経由の StartExec) にエラーになる |
 | `service` | string | はい | この connector が API gateway 経由で到達できる service instance の名前 1 本 (`config.yaml` の `services.<name>`)。connector job の gateway token はこの 1 本にのみ絞られる — workspace の enabled services 全体ではない |
 | `every` | string (`time.ParseDuration`) | はい | 導出 trigger の `every` と同じ (`triggers[]` の `every` と同一のバリデーション・下限を共有) |
-
-> **`timeout` は書けません。** 導出 trigger には `timeout` が設定されないので、connector job は無制限に走ります。connector は外部 API を読んで inbox に書くだけの短命な job であり、`boid task wait` で task の終了を待つ `triggers[]` とは実行の形が違うためです。
 | `config` | object | いいえ | connector 固有の設定。Pack の `configSchema` で検証され、JSON にエンコードされて `BOID_SIGNAL_CONFIG` env に渡される |
+
+**`timeout` は書けません**: 導出 trigger には `timeout` が設定されないので、connector job は無制限に走ります。connector は外部 API を読んで inbox に書くだけの短命な job であり、`boid task wait` で task の終了を待つ `triggers[]` とは実行の形が違うためです。
 
 **名前衝突**: `signal:<pack>/<connector>` が既存の `triggers[].name` と衝突する場合、または `signals.sources[]` 内で同じ `connector` が複数回宣言されている場合は project.yaml のロード時 (`boid project add`/`fetch`) にエラーになります。
 

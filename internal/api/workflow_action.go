@@ -39,6 +39,15 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 
 	task, err := s.Tasks.GetTask(taskID)
 	if err != nil {
+		// 404 only for the sentinel. Mapping EVERY read failure to "no such
+		// task" makes a busy/locked database indistinguishable from a deleted
+		// row, and callers do branch on that: SweepTriggers' timeout handling
+		// reads a 4xx as "this task will never accept an abort" and ends the
+		// round without it — leaving the task running with single-flight
+		// released, which is the failure that whole path exists to prevent.
+		if !errors.Is(err, orchestrator.ErrTaskNotFound) {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 

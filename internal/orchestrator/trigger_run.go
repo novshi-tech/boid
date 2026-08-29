@@ -180,8 +180,18 @@ func CompleteTriggerRun(dbtx db.DBTX, id string, finishedAt time.Time, exitCode 
 	// here would make that comparison drift the same way started_at's
 	// ordering did.
 	finishedAt = finishedAt.UTC()
+	// `finished_at IS NULL` makes this a claim, not a blind write: the row has
+	// TWO closers that do not coordinate. reconcileInFlight closes a run whose
+	// job reached a terminal status, and the trigger-timeout path
+	// (api.finishTimeOutTriggerRun) closes one it is ending — and those overlap
+	// in an ordinary window, because aborting the task makes the parked
+	// `boid task wait` return, which exits the job, which the very next tick
+	// sees as terminal while the timeout goroutine is still inside
+	// StopJobRuntime's 30-second deadline. Without the guard the row is closed
+	// twice with different exit codes, and the second write silently rewrites
+	// finished_at/exit_code over the first.
 	res, err := dbtx.Exec(
-		`UPDATE trigger_runs SET finished_at = ?, exit_code = ? WHERE id = ?`,
+		`UPDATE trigger_runs SET finished_at = ?, exit_code = ? WHERE id = ? AND finished_at IS NULL`,
 		finishedAt, exitCode, id,
 	)
 	if err != nil {
@@ -192,10 +202,20 @@ func CompleteTriggerRun(dbtx db.DBTX, id string, finishedAt time.Time, exitCode 
 		return fmt.Errorf("complete trigger run: rows affected: %w", err)
 	}
 	if n == 0 {
-		return fmt.Errorf("complete trigger run: no row with id %q", id)
+		// Either no such row, or someone else closed it first. Both are
+		// reported through ErrTriggerRunAlreadyFinished so a caller that races
+		// can tell "my write did not land" from a real failure and skip
+		// whatever it would have done on the strength of having closed it
+		// (reporting a completion, in the timeout path's case).
+		return fmt.Errorf("%w: id %q", ErrTriggerRunAlreadyFinished, id)
 	}
 	return nil
 }
+
+// ErrTriggerRunAlreadyFinished is returned by CompleteTriggerRun when the row
+// was already closed (or does not exist) — a lost race against the other
+// closer, not a failure to talk to the database.
+var ErrTriggerRunAlreadyFinished = errors.New("trigger run is already finished")
 
 // ListInFlightTriggerRuns returns every row with finished_at IS NULL, across
 // every project/trigger — the single query the trigger sweep loop's

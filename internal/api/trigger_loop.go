@@ -404,6 +404,17 @@ func (s *TaskWorkflowService) finishTimeOutTriggerRun(
 	}
 
 	if err := s.Triggers.CompleteTriggerRun(runID, now, TriggerTimeoutExitCode); err != nil {
+		if errors.Is(err, orchestrator.ErrTriggerRunAlreadyFinished) {
+			// reconcileInFlight got there first — the abort made the parked
+			// `boid task wait` return, the job exited, and a tick observed that
+			// while this goroutine was still inside StopJobRuntime. It already
+			// reported the completion with the job's real exit code, so
+			// stashing a second one here would count one round twice against
+			// the fail streak.
+			slog.Info("trigger sweep: the timed-out run was already closed by the reconcile pass",
+				"project_id", key.ProjectID, "trigger", key.TriggerName, "run_id", runID)
+			return
+		}
 		// Leave it in flight: the next tick sees the same overrun and tries
 		// again. Reporting a completion we failed to persist would let a
 		// second round start against a row that is still claimed.
@@ -771,6 +782,19 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 			if run, busy := inFlight[key]; busy {
 				if timeout := trig.TriggerTimeout(); timeout > 0 && now.Sub(run.StartedAt) >= timeout {
 					s.beginTimeOutTriggerRun(ctx, key, run, timeout)
+					// Recorded as a Skip as well, NOT `continue`d past. The
+					// ending is asynchronous and can fail (a locked database, a
+					// task whose project meta will not load), and while it does
+					// the row stays in flight — so without this the key appears
+					// in neither Skipped nor Fired, which is exactly the "wedged
+					// with no notification ever firing" gap this function's own
+					// comment above closes for on:signals. trackSkipStreak sizes
+					// its threshold from the declared timeout, so this notifies
+					// only once the bound is actually crossed, and stops as soon
+					// as the ending succeeds and the row closes.
+					result.Skipped = append(result.Skipped, TriggerSkip{
+						TriggerKey: key, Since: run.StartedAt, Every: every, Timeout: timeout,
+					})
 					continue
 				}
 			}
@@ -1094,10 +1118,12 @@ func (l *TriggerLoop) trackSkipStreak(ctx context.Context, now time.Time, skippe
 		l.notify(ctx, skip.TriggerKey, fmt.Sprintf(
 			"trigger %s/%s: single-flight で %s 詰まっています (`every` %s、詰まり閾値 %s の %d 倍以上)",
 			skip.ProjectID, skip.TriggerName, overrun.Round(time.Second), skip.Every, threshold, multiple))
-		// NOTE: with a declared `timeout` this is nearly unreachable — the
-		// sweep ends an overrunning round before it can be skipped past the
-		// threshold. It survives as the only stuck signal for triggers that
-		// declare no bound.
+		// With a declared `timeout` this fires exactly when the bound is
+		// crossed and keeps firing while the ending has not succeeded — which
+		// is the point: an ending that cannot complete leaves the row in
+		// flight, and this is the only path that says so. It stops on the tick
+		// after the row closes. For a trigger with no declared bound it remains
+		// the guess it always was.
 	}
 	for key := range l.skipStreak {
 		if !skippedThisTick[key] {

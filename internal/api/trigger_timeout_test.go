@@ -85,8 +85,15 @@ func TestSweepTriggers_PastTimeout_EndsTheRunAsAFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if len(result.Skipped) != 0 {
-		t.Fatalf("Skipped = %+v, want empty — an ended round is not a skip", result.Skipped)
+	// Still recorded as a Skip: the ending is asynchronous and can fail, and
+	// while it has not succeeded the row stays in flight. Dropping it here
+	// would make a round that cannot be ended appear in neither Skipped nor
+	// Fired — wedged with no notification ever firing.
+	if len(result.Skipped) != 1 {
+		t.Fatalf("Skipped = %+v, want 1 (the round is still in flight until the ending lands)", result.Skipped)
+	}
+	if result.Skipped[0].Timeout != 30*time.Minute {
+		t.Errorf("Skipped[0].Timeout = %v, want 30m — trackSkipStreak sizes its threshold from this", result.Skipped[0].Timeout)
 	}
 	// The completion is recorded off the sweep goroutine (the abort and the job
 	// stop can both block on the container engine, and runOnce is a single
@@ -393,10 +400,10 @@ func TestSweepTriggers_PastTimeout_TransientAbortFailureKeepsTheRunInFlight(t *t
 		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
 	})
 	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
-	// A failing STORE surfaces as a 404 ("no such task"), which is correctly
-	// permanent — a task that is gone needs no abort. A genuinely transient
-	// failure is one inside the transaction, which ApplyAction propagates as a
-	// bare error rather than a *StatusError.
+	// A transient failure inside the transaction. ApplyAction reports it as a
+	// 500, which isPermanentAbortRefusal treats as retryable — only a 4xx
+	// ("this task will never accept an abort") ends the round without the
+	// abort.
 	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
 		ID:        "round-task",
 		ProjectID: "proj-1",
@@ -441,8 +448,11 @@ func TestSweepTriggers_PastTimeout_TransientAbortFailureKeepsTheRunInFlight(t *t
 	}
 }
 
-// failingTx fails the transaction body itself, the way a busy database does —
-// distinct from a failing store, which ApplyAction reports as a 404.
+// failingTx fails the transaction body itself, the way a busy database does.
+// ApplyAction wraps that as a 500, which isPermanentAbortRefusal reads as
+// transient — distinct from a failing STORE, which now also 500s (a read
+// failure is not a missing row) but was the case that made the two
+// indistinguishable before ApplyAction's error mapping was tightened.
 type failingTx struct {
 	stubTx
 	err error
@@ -490,5 +500,126 @@ func TestSweepTriggers_PastTimeout_PermanentAbortRefusalStillEndsTheRun(t *testi
 	drained := waitForTimeoutCompletion(t, svc)
 	if len(drained) != 1 || drained[0].ExitCode != TriggerTimeoutExitCode {
 		t.Fatalf("stashed completion = %+v, want the run ended despite the refusal", drained)
+	}
+}
+
+// A round whose ending keeps failing must stay visible to the stuck detector.
+// Without the Skip record it appears in neither Skipped nor Fired, and both
+// notification paths go quiet while the trigger is wedged — the same gap
+// SweepTriggers' own comment closes for on:signals.
+func TestSweepTriggers_PastTimeout_EndingThatKeepsFailingStaysSkipped(t *testing.T) {
+	svc, jobs, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
+	})
+	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
+	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
+		ID:        "round-task",
+		ProjectID: "proj-1",
+		Type:      orchestrator.TaskTypeExecution,
+		Status:    orchestrator.TaskStatusExecuting,
+		Exec:      &orchestrator.ExecAttrs{Behavior: "sweep"},
+	}}
+	svc.Tx = &failingTx{err: errors.New("database is locked")}
+	svc.Lifecycle = &stubLifecycle{}
+	svc.TaskWaits = NewTaskWaitRegistry()
+	svc.TaskWaits.Register("job-1", "round-task")
+
+	t0 := time.Now()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	for _, at := range []time.Duration{31 * time.Minute, 32 * time.Minute} {
+		result, err := svc.SweepTriggers(context.Background(), t0.Add(at))
+		if err != nil {
+			t.Fatalf("sweep at +%v: %v", at, err)
+		}
+		if len(result.Skipped) != 1 {
+			t.Fatalf("sweep at +%v: Skipped = %+v, want 1 — a wedged ending must stay visible", at, result.Skipped)
+		}
+		if len(result.Fired) != 0 {
+			t.Fatalf("sweep at +%v: Fired = %+v, want empty — the slot is still held", at, result.Fired)
+		}
+	}
+}
+
+// A failing task STORE must be transient, not permanent. ApplyAction used to
+// map every GetTask error to 404, which made a busy/locked read
+// indistinguishable from a deleted row — and isPermanentAbortRefusal reads a
+// 4xx as "this task will never accept an abort", so one unlucky read at the
+// moment a round times out would skip the abort, kill the launcher, close the
+// run, release single-flight, and leave the task running for the next tick to
+// start a second round alongside. orchestrator.GetTask returns the
+// ErrTaskNotFound sentinel for a genuinely missing row, so the two ARE
+// distinguishable; this pins that they are distinguished.
+func TestSweepTriggers_PastTimeout_FailingTaskReadIsTransientNotPermanent(t *testing.T) {
+	svc, jobs, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
+	})
+	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
+	// A read failure, NOT ErrTaskNotFound.
+	svc.Tasks = &stubTaskStore{err: errors.New("database is locked")}
+	svc.Tx = &stubTx{}
+	svc.Lifecycle = &stubLifecycle{}
+	svc.TaskWaits = NewTaskWaitRegistry()
+	svc.TaskWaits.Register("job-1", "round-task")
+
+	t0 := time.Now()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	if _, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute)); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, held := svc.timeoutHeld(run.ID); !held {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if drained := svc.drainTimeoutCompletions(); len(drained) != 0 {
+		t.Fatalf("stashed completion = %+v, want none — a failed READ is not a task refusing abort", drained)
+	}
+
+	// The slot is still held, so no second round starts against work that was
+	// never ended.
+	next, err := svc.SweepTriggers(context.Background(), t0.Add(32*time.Minute))
+	if err != nil {
+		t.Fatalf("next sweep: %v", err)
+	}
+	if len(next.Fired) != 0 {
+		t.Errorf("next tick Fired = %+v, want empty", next.Fired)
+	}
+}
+
+// A genuinely missing task (the sentinel) IS permanent — there is nothing to
+// abort, so the round must be ended rather than retried forever.
+func TestSweepTriggers_PastTimeout_MissingTaskIsPermanent(t *testing.T) {
+	svc, jobs, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
+		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
+	})
+	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
+	svc.Tasks = &stubTaskStore{err: orchestrator.ErrTaskNotFound}
+	svc.Tx = &stubTx{}
+	svc.Lifecycle = &stubLifecycle{}
+	svc.TaskWaits = NewTaskWaitRegistry()
+	svc.TaskWaits.Register("job-1", "gone-task")
+
+	t0 := time.Now()
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	if _, err := svc.SweepTriggers(context.Background(), t0.Add(31*time.Minute)); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	drained := waitForTimeoutCompletion(t, svc)
+	if len(drained) != 1 || drained[0].ExitCode != TriggerTimeoutExitCode {
+		t.Fatalf("stashed completion = %+v, want the run ended (nothing to abort)", drained)
 	}
 }
