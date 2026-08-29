@@ -238,10 +238,10 @@ func (b *Broker) handleConn(conn net.Conn) {
 	}
 
 	ctx := b.baseContext()
-	// A blocking ask holds this connection open until an answer arrives. Tie a
+	// A blocking op holds this connection open until its event arrives. Tie a
 	// per-connection context to the socket so that if the sandbox dies (or the
 	// daemon shuts down) the server-side wait unblocks instead of leaking.
-	if isBlockingAskRequest(&req) {
+	if isBlockingBoidRequest(&req) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)
 		defer cancel()
@@ -252,10 +252,32 @@ func (b *Broker) handleConn(conn net.Conn) {
 	_ = json.NewEncoder(conn).Encode(resp) // best-effort; peer may have hung up
 }
 
-// isBlockingAskRequest reports whether req is a `boid task ask` builtin call,
-// which the broker must handle by holding the connection open.
-func isBlockingAskRequest(req *ExecRequest) bool {
-	return req.Boid != nil && req.Boid.Op == BoidOpTaskAsk
+// isBlockingBoidRequest reports whether req is a builtin call the broker must
+// handle by holding the connection open, so handleConn gives it a context tied
+// to the socket rather than the daemon-lifetime one.
+//
+// EVERY blocking op has to be listed here. The connection-scoped cancel is not
+// something a blocking op gets by being blocking — it is opt-in per op from
+// here, and an op left off this list still blocks, just with nothing to unblock
+// it when the sandbox goes away: the daemon-side wait keeps running until the
+// daemon itself shuts down. That is a leak with no symptom at the call site.
+//
+// Two things guard it, neither of which can notice a NEW blocking op on its own
+// (see wiring-seams.md #31 — adding one means adding it here AND writing its
+// twin test): TestBroker_BlockingOps_ListIsPinned asserts this exact set, so a
+// silent removal fails, and each listed op has a conn-close test that drives
+// the live handleConn path — TestBroker_TaskAsk_ConnCloseCancelsContext and
+// TestBroker_TaskWait_ConnCloseCancelsContext.
+func isBlockingBoidRequest(req *ExecRequest) bool {
+	if req.Boid == nil {
+		return false
+	}
+	switch req.Boid.Op {
+	case BoidOpTaskAsk, BoidOpTaskWait:
+		return true
+	default:
+		return false
+	}
 }
 
 // watchConnClose cancels the connection context when the peer closes the socket.
@@ -400,6 +422,15 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 	case BoidOpTaskReopen:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task reopen requires a task id"}
+		}
+	case BoidOpTaskWait:
+		// Unlike task_ask, an empty TaskID is NOT filled in from the token
+		// context: waiting on your own task deadlocks (you are the reason it
+		// has not finished), so an omitted id is a mistake worth naming rather
+		// than a default worth supplying. Project authorization runs in the
+		// executor, as for every other task op here.
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task wait requires a task id"}
 		}
 	case BoidOpTaskNotify:
 		if boidReq.TaskID == "" {

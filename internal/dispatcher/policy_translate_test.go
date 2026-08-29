@@ -25,6 +25,7 @@ func TestOpConstantsMirror(t *testing.T) {
 		{orchestrator.OpBoidTaskAnswer, string(sandbox.BoidOpTaskAnswer)},
 		{orchestrator.OpBoidTaskAsk, string(sandbox.BoidOpTaskAsk)},
 		{orchestrator.OpBoidTaskDelete, string(sandbox.BoidOpTaskDelete)},
+		{orchestrator.OpBoidTaskWait, string(sandbox.BoidOpTaskWait)},
 		{orchestrator.OpBoidTaskCurrent, string(sandbox.BoidOpTaskCurrent)},
 		{orchestrator.OpBoidTaskInstructions, string(sandbox.BoidOpTaskInstructions)},
 		{orchestrator.OpBoidTaskEnv, string(sandbox.BoidOpTaskEnv)},

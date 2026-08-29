@@ -53,9 +53,43 @@ func ValidateTriggers(triggers []Trigger) error {
 		if every <= 0 {
 			return fmt.Errorf("project.yaml: triggers[%d] (%s): every must be > 0, got %q", i, trig.Name, trig.Every)
 		}
+		if trig.Timeout != "" {
+			timeout, terr := time.ParseDuration(trig.Timeout)
+			if terr != nil {
+				return fmt.Errorf("project.yaml: triggers[%d] (%s): timeout: %w", i, trig.Name, terr)
+			}
+			if timeout <= 0 {
+				return fmt.Errorf("project.yaml: triggers[%d] (%s): timeout must be > 0, got %q (omit the field for no bound)", i, trig.Name, trig.Timeout)
+			}
+			// Deliberately NOT rejected when timeout < every. `every: 1h,
+			// timeout: 10m` ("look hourly; kill any round that runs past ten
+			// minutes") is a coherent thing to ask for, and a round finishing
+			// before the next one is due is the normal case, not a mistake.
+			// An earlier draft rejected it — but only because the sweep checked
+			// the bound after its `every`-due gate, which made enforcement
+			// actually fire at max(every, timeout); the constraint was papering
+			// over that. The check now runs before the gate (SweepTriggers), so
+			// there is nothing left to paper over.
+		}
 		if every < TriggerSweepResolution {
 			return fmt.Errorf("project.yaml: triggers[%d] (%s): every (%q) is below the daemon's effective sweep resolution (%s) — it would silently run only once per sweep tick, not as often as written", i, trig.Name, trig.Every, TriggerSweepResolution)
 		}
 	}
 	return nil
+}
+
+// TriggerTimeout resolves Timeout for the sweep loop. Zero means unbounded —
+// both for an omitted field and for an unparseable one, which ValidateTriggers
+// rejects at load time so it cannot reach a running daemon. Falling back to
+// "unbounded" rather than to some default keeps a malformed value from
+// inventing a bound nobody wrote.
+func (t Trigger) TriggerTimeout() time.Duration {
+	if t.Timeout == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(t.Timeout)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }

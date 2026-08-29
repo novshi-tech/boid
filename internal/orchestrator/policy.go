@@ -105,6 +105,7 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidTaskAnswer,
 			OpBoidTaskAsk,
 			OpBoidTaskDelete,
+			OpBoidTaskWait,
 			OpBoidTaskCurrent,
 			OpBoidTaskInstructions,
 			OpBoidTaskEnv,

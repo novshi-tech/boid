@@ -51,6 +51,23 @@ type TaskWorkflowService struct {
 	// notifyUrgencyRaised entirely). Nil is tolerated (no-op), same as
 	// TaskAppService.Notify's contract.
 	Notifier Notifier
+	// TaskWaits is the shared registry recording which task each in-flight
+	// `boid task wait` is parked on (see TaskWaitRegistry). SweepTriggers reads
+	// it to know WHAT to end when a round outruns its trigger's `timeout` — the
+	// task doing the work, not just the job that launched it. Nil is tolerated
+	// (a timed-out round then only has its job stopped), same convention as
+	// every other optional dependency here.
+	TaskWaits *TaskWaitRegistry
+	// timeoutMu guards timingOut and pendingTimeouts, both touched by the
+	// sweep goroutine AND by the goroutines beginTimeOutTriggerRun spawns.
+	timeoutMu sync.Mutex
+	// timingOut is the set of trigger_runs ids a timeout goroutine currently
+	// holds, so a tick that fires while a slow abort is still running does not
+	// spawn a second one for the same run.
+	timingOut map[string]struct{}
+	// pendingTimeouts carries completions recorded off the sweep goroutine
+	// until the next sweep can report them (see stashTimeoutCompletion).
+	pendingTimeouts []TriggerCompletionResult
 	// Triggers backs docs/plans/ingestion-identity.md PR-4 (B-5)'s
 	// trigger_runs single-flight/execution-record read+write
 	// (SweepTriggers/RunTriggerNow, trigger_loop.go). Nil is tolerated —

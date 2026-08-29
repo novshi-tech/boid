@@ -452,6 +452,26 @@ type Trigger struct {
 	// `bash scripts/x.sh` と明示する側 (スクリプト作者) の責任で、daemon の
 	// 責任ではない。
 	Run string `yaml:"run" json:"run"`
+	// Timeout is a Go time.ParseDuration string bounding how long ONE round of
+	// this trigger may take. Empty (the default, and what every trigger written
+	// before this field existed carries) means unbounded.
+	//
+	// It is a different question from Every and must not be derived from it.
+	// Every says how OFTEN to look; Timeout says how LONG a round may run.
+	// Before this field existed the daemon had no answer to the second
+	// question at all, so trackSkipStreak approximated it as
+	// TriggerStuckOverrunMultiplier × Every — which has the wrong shape:
+	// shortening the polling interval tightened the "this is taking too long"
+	// judgement, even though nothing about the work changed. Workspaces
+	// answered it their own way instead, by smuggling `timeout 300` into the
+	// front of their own Run string, where the daemon that launched the job
+	// cannot see it.
+	//
+	// Enforced by the sweep loop (internal/api/trigger_loop.go): an overrunning
+	// round is ended and reported as a failure, so it reaches trackFailStreak
+	// like any other. "Taking too long" therefore stops being something the
+	// daemon has to GUESS at and becomes something it ENFORCES.
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 
 	// Connector, when non-nil, marks this Trigger as one hydrate-DERIVED
 	// from a project.yaml `signals.sources[]` entry (docs/plans/

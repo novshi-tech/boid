@@ -518,6 +518,69 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: answer}
+	case sandbox.BoidOpTaskWait:
+		// Blocks until the task ends, then reports how it ended through the
+		// exit code — `done` is the only success. This is what lets a trigger's
+		// `run:` live as long as the task it started, so the trigger's own
+		// single-flight and failStreak cover the work instead of the launcher
+		// (see sandbox.BoidOpTaskWait's own doc comment).
+		//
+		// goCtx is cancelled by the broker on daemon shutdown and, because
+		// task_wait is listed in sandbox.isBlockingBoidRequest, on sandbox
+		// disconnect too — so the wait cannot outlive its caller. It is not a
+		// timeout: a task that parks in a non-terminal resting state waits
+		// indefinitely, and bounding that is the trigger's job.
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait unavailable"}
+		}
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait requires a task id"}
+		}
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait is restricted to the current workspace"}
+		}
+		// Compare the RESOLVED id, never the raw one the caller typed: GetTask
+		// falls back to a `id LIKE <prefix>%` match for anything >= 8 chars, so
+		// `boid task wait <first 8 chars of my own id>` resolves to the calling
+		// task while the raw strings differ — the guard would not fire and the
+		// job would block on itself forever, which is the deadlock it exists to
+		// prevent. Prefixes are ordinary input here (`boid task show <prefix>`
+		// works), so this is reachable by accident. Same rule as the resolved-id
+		// note on the identity ops further down this file.
+		if existing.ID == ctx.TaskID {
+			// Waiting on yourself never returns: this job IS the reason the
+			// task has not reached a terminal status. Fail rather than hold the
+			// caller open until something else kills it.
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait cannot wait on the calling task"}
+		}
+		// Record what this job is parked on for the duration of the wait, so
+		// the trigger sweep can end the TASK (the work) rather than only this
+		// job (the launcher) when a round outruns its trigger's `timeout` —
+		// see api.TaskWaitRegistry. A missing job id or registry just means the
+		// wait is unattributable, never that it misbehaves.
+		// Register runs NOW (defer evaluates the call and its arguments at the
+		// defer statement); only the returned release is deferred. Deferred
+		// rather than called after the wait purely so the release cannot be
+		// skipped by a future early return added between here and the end of
+		// this case — ExecuteBoidBuiltin returns immediately below today, so
+		// the timing is otherwise identical.
+		defer e.tasks.TaskWaits.Register(ctx.JobID, existing.ID)()
+		outcome, err := e.tasks.WaitTaskTerminal(goCtx, existing.ID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if outcome.Succeeded() {
+			return &sandbox.ExecResponse{Stdout: fmt.Sprintf("task %s: %s\n", outcome.ID, outcome.Status)}
+		}
+		stderr := fmt.Sprintf("task %s: %s", outcome.ID, outcome.Status)
+		if reason := api.FormatAbortReason(outcome); reason != "" {
+			stderr += " (" + reason + ")"
+		}
+		return &sandbox.ExecResponse{ExitCode: 1, Stderr: stderr + "\n"}
 	case sandbox.BoidOpTaskList:
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task list unavailable"}

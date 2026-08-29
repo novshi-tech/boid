@@ -16,8 +16,9 @@ import (
 const boidShimUsage = `Usage: boid <command> [subcommand] [flags]
 
 Commands:
-  task     Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen,
-           current, instructions, env, payload, attachments list, attachments get)
+  task     Manage tasks (create, show, update, list, notify, answer, ask, wait, delete, import,
+           reopen, current, instructions, env, payload, attachments list, attachments get,
+           identity link, identity unlink, identity resolve, resolve-or-capture)
   card     Read cards (get, list)
   signal   Scan and ack the signal inbox (list, ack, ingest, cursor)
   job      Manage jobs (done, list, show, log)
@@ -182,6 +183,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskAsk(args[2:])
 		case "delete":
 			return parseBoidTaskDelete(args[2:])
+		case "wait":
+			return parseBoidTaskWait(args[2:])
 		case "identity":
 			if len(args) < 3 {
 				return nil, fmt.Errorf("boid shim: missing boid task identity subcommand")
@@ -741,6 +744,24 @@ func parseBoidTaskList(args []string) (*BoidRequest, error) {
 	}
 
 	return req, nil
+}
+
+// parseBoidTaskWait builds the BoidRequest for `boid task wait <task-id>`.
+//
+// Takes no flags on purpose. Everything a caller might reach for here — how
+// long to wait, how often to check — belongs to whoever bounds the job from
+// the outside, not to the agent typing the command: a per-call `--timeout`
+// would be a duration the daemon does not know about, which is exactly the
+// split that put `timeout 300` inside a workspace's own `run:` string while
+// the trigger that launched it had no idea any limit applied.
+func parseBoidTaskWait(args []string) (*BoidRequest, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("boid shim: task wait requires a task id")
+	}
+	if len(args) > 1 {
+		return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task wait", args[1])
+	}
+	return &BoidRequest{Op: BoidOpTaskWait, TaskID: args[0]}, nil
 }
 
 func parseBoidTaskReopen(args []string) (*BoidRequest, error) {

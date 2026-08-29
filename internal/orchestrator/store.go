@@ -437,6 +437,32 @@ func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 	return t, nil
 }
 
+// GetTaskStatus reads ONLY a task's status, by exact id.
+//
+// Split out from GetTask because GetTask is not a cheap read: taskSelectCols is
+// followed by taskChildCountCols, five correlated `SELECT COUNT(*) FROM tasks c
+// WHERE c.parent_id = t.id` subqueries, and tasks(parent_id) is deliberately
+// unindexed (docs: the index was judged not to pay for itself) — so each call
+// costs five scans of the tasks table. That is fine for a one-shot lookup and
+// wrong for something polled once a second per waiter, on a pool that is a
+// single connection (internal/db/db.go's SetMaxOpenConns(1)) shared by every
+// dispatch, sweep and web request.
+//
+// No prefix fallback, unlike GetTask: this is for callers that already resolved
+// an id and are re-reading it, so a partial id here means the caller skipped
+// the resolve rather than that it wants a lookup.
+func GetTaskStatus(dbtx db.DBTX, id string) (TaskStatus, error) {
+	var status string
+	err := dbtx.QueryRow(`SELECT status FROM tasks WHERE id = ?`, id).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrTaskNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get task status: %w", err)
+	}
+	return TaskStatus(status), nil
+}
+
 func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	var conditions []string
 	var args []any

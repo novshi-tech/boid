@@ -13,6 +13,7 @@ These `boid` subcommands are available inside the supervisor's sandbox via the s
 - [boid task ask](#boid-task-ask)
 - [boid task answer](#boid-task-answer)
 - [boid task delete](#boid-task-delete)
+- [boid task wait](#boid-task-wait)
 - [boid task import](#boid-task-import)
 - [boid action send](#boid-action-send)
 - [boid agent stop](#boid-agent-stop)
@@ -172,6 +173,48 @@ boid task delete <task-id> [--force]
 ```
 
 `--force` is required for non-terminal tasks. Supervisors should prefer aborting a live child (see `boid action send --type abort`) over deleting it.
+
+## boid task wait
+
+```bash
+boid task wait <task-id>
+```
+
+Blocks until the named task reaches a terminal status, then exits **0 only if it
+finished `done`** — any other terminal status exits non-zero with the abort
+reason on stderr.
+
+Its reason for existing is the trigger contract. A trigger's `run:` normally
+starts a task and exits within seconds, so the trigger's own single-flight is
+measuring the launcher rather than the work, and a round that failed never
+reaches the daemon's consecutive-failure notification at all. Waiting makes the
+`run:` command live exactly as long as the task it started, and both fall out for
+free:
+
+```bash
+# `boid task create` prints `task created: <id> (<status>)`, so take field 3.
+id=$(boid task create <<'SPEC' | awk '{print $3}'
+title: 'sweep'
+behavior: sweep
+auto_start: true
+description: |
+  ...
+SPEC
+)
+boid task wait "$id"
+```
+
+- **Do not wait on your own task.** It can never return — your job is the reason
+  the task has not finished — so the call is rejected rather than parked.
+- Takes no flags. How long a round may run is the trigger's business, not the
+  agent's: a per-call timeout would be a limit the daemon that launched you knows
+  nothing about. The trigger declares it instead, with `timeout:` in
+  project.yaml — an overrunning round is ended by the daemon, which aborts the
+  task this call is waiting on (`lifecycle.abort.code` = `trigger_timeout`).
+- The wait ends only on a terminal status or when the daemon cancels it (shutdown
+  or sandbox disconnect). **It is not a timeout** — a task parked in a
+  non-terminal resting state (`awaiting` on a question nobody answers, `pending`
+  with `auto_start: false`) waits indefinitely.
 
 ## boid task import
 

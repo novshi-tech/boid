@@ -22,7 +22,32 @@ func isShutdownErr(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
+// applyActionOptions carries behavior only in-package callers can ask for.
+// Not on ApplyActionRequest, which is the wire type every external entry point
+// (HTTP, Web UI, brokered action_send, `boid action send`) decodes into — none
+// of them may choose this.
+type applyActionOptions struct {
+	// actionPayloadOnly records req.Payload on the ACTION and keeps it out of
+	// the task's own payload.
+	//
+	// The generic merge below is right for an agent describing its work, and
+	// wrong for the daemon describing why it intervened: a `{code, message}`
+	// abort reason merged into a task whose payload already has a `message`
+	// silently replaces it — the same pollution sideEffectConsumesPayload
+	// exists to prevent, on a path the daemon takes routinely and without
+	// anyone asking. abortOnDispatchError avoids it by writing the action
+	// directly and never touching the task payload; this flag is how a caller
+	// that still wants the state machine's legality check (a card has no
+	// `abort` rule, and the trigger-timeout path must be able to tell that
+	// apart from a transient failure) gets the same guarantee.
+	actionPayloadOnly bool
+}
+
 func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error) {
+	return s.applyAction(ctx, taskID, req, applyActionOptions{})
+}
+
+func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, req ApplyActionRequest, opts applyActionOptions) (*ActionApplication, error) {
 	// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: action payload
 	// size cap. This is action_send's single implementation — HTTP API, Web
 	// UI, brokered action_send (boid_executor.go's BoidOpActionSend), and
@@ -39,7 +64,15 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 
 	task, err := s.Tasks.GetTask(taskID)
 	if err != nil {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+		// statusErrorForGetTaskErr, not a blanket 404: mapping EVERY read
+		// failure to "no such task" makes a busy/locked database
+		// indistinguishable from a deleted row, and callers do branch on that
+		// — SweepTriggers' timeout handling reads a 4xx as "this task will
+		// never accept an abort" and ends the round without it, leaving the
+		// task running with single-flight released, which is the failure that
+		// whole path exists to prevent. (The helper is the same one this
+		// function's own Tx block below already uses.)
+		return nil, statusErrorForGetTaskErr(err)
 	}
 
 	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): the
@@ -311,7 +344,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// that incidental write structurally impossible instead of merely
 	// pointless — see design doc §7's "card の行に嘘の behavior 一式" row for
 	// the same reasoning applied to this sibling field.
-	if !reopenPayloadConsumed && !sideEffectConsumesPayload[req.Type] && newTask.Exec != nil {
+	if !opts.actionPayloadOnly && !reopenPayloadConsumed && !sideEffectConsumesPayload[req.Type] && newTask.Exec != nil {
 		merged, err := orchestrator.MergePayload(newTask.Exec.Payload, action.Payload)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: "payload merge: " + err.Error()}

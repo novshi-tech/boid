@@ -8,6 +8,7 @@ package orchestrator_test
 
 import (
 	"testing"
+	"time"
 
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -312,5 +313,52 @@ signals:
 `)
 	if _, err := projectspec.ReadProjectMeta(dir); err == nil {
 		t.Fatal("ReadProjectMeta() = nil error, want a rejection for every below the sweep-resolution floor")
+	}
+}
+
+// TestReadProjectMeta_Triggers_TimeoutDecodes crosses the seam every other
+// timeout test skips: project.yaml → Trigger.Timeout. Each of those constructs
+// `Trigger{Timeout: "30m"}` in Go, so a wrong yaml tag (`yaml:"timeouts"`)
+// would leave all of them green while the feature is silently dead in
+// production — project.yaml is decoded non-strictly, so the typo would not even
+// error. Same reason TestReadProjectMeta_Triggers_OnSignals_DecodesAsString
+// exists for `on`.
+func TestReadProjectMeta_Triggers_TimeoutDecodes(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+triggers:
+  - name: sweep
+    on: signals
+    every: 2m
+    timeout: 30m
+    run: python3 -m khi.app.scan
+  - name: unbounded
+    every: 10m
+    run: python3 scripts/intake_tick.py
+`)
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadProjectMeta: %v", err)
+	}
+	if len(meta.Triggers) != 2 {
+		t.Fatalf("triggers = %d, want 2", len(meta.Triggers))
+	}
+	if got := meta.Triggers[0].Timeout; got != "30m" {
+		t.Errorf("triggers[0].Timeout = %q, want %q — check the yaml tag", got, "30m")
+	}
+	if got := meta.Triggers[0].TriggerTimeout(); got != 30*time.Minute {
+		t.Errorf("triggers[0].TriggerTimeout() = %v, want 30m", got)
+	}
+	// An omitted timeout must stay unbounded, not pick up a default.
+	if got := meta.Triggers[1].Timeout; got != "" {
+		t.Errorf("triggers[1].Timeout = %q, want empty", got)
+	}
+	if got := meta.Triggers[1].TriggerTimeout(); got != 0 {
+		t.Errorf("triggers[1].TriggerTimeout() = %v, want 0 (unbounded)", got)
 	}
 }
