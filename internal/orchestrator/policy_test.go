@@ -52,6 +52,7 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 		OpBoidTaskResolveOrCapture,
 		OpBoidActionList,
 		OpBoidSignalList,
+		OpBoidSignalClaim,
 		OpBoidSignalAck,
 	}
 	if !opsEqual(boidP.AllowedOps, wantOps) {
@@ -80,6 +81,9 @@ func TestDefaultBuiltinPolicies_HookBoidExcludesConnectorOnlySignalOps(t *testin
 	}
 	if !boidP.Allows(OpBoidSignalAck) {
 		t.Error("hook×boid should allow signal_ack")
+	}
+	if !boidP.Allows(OpBoidSignalClaim) {
+		t.Error("hook×boid should allow signal_claim (the explicit half of the read/claim split)")
 	}
 }
 

@@ -83,6 +83,12 @@ const (
 	// boidPolicy (see boidPolicy's own doc comment in policy.go).
 	OpBoidSignalList = "signal_list"
 	OpBoidSignalAck  = "signal_ack"
+	// OpBoidSignalClaim backs `boid signal claim <id>...` — the explicit
+	// "these are the rows I handed to a judgment" half of the read/claim
+	// split (2026-08-29). Granted by the same general boidPolicy as
+	// signal_list/signal_ack: a job that may read its workspace's inbox and
+	// ack a row may also say which rows it took.
+	OpBoidSignalClaim = "signal_claim"
 
 	// OpBoidSignalIngest / OpBoidSignalCursorGet mirror
 	// sandbox.BoidOpSignalIngest / BoidOpSignalCursorGet — declared here for

@@ -1107,6 +1107,20 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return signalsJSONResponse(listed)
+	case sandbox.BoidOpSignalClaim:
+		if e.signals == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal claim unavailable"}
+		}
+		if req.WorkspaceID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal claim requires a workspace"}
+		}
+		if len(req.SignalIDs) == 0 {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal claim requires at least one id"}
+		}
+		if err := e.signals.ClaimSignalIDs(req.WorkspaceID, req.SignalIDs); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{ExitCode: 0}
 	case sandbox.BoidOpSignalAck:
 		if e.signals == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal ack unavailable"}

@@ -296,13 +296,35 @@ const (
 	// written a judgment for it, the same "workspace membership is the
 	// gate, not role" posture as BoidOpCardList/BoidOpActionList.
 	//
-	// BoidOpSignalList's --claim flag routes to ClaimSignals (attempts++)
-	// instead of the plain read ListSignals — see BoidRequest.Claim.
 	// BoidOpSignalAck is idempotent by construction: AckSignals only ever
 	// sets acked_at WHERE acked_at IS NULL, so acking an already-acked id is
 	// a no-op success, not an error (design doc §2, Q14).
+	//
+	// BoidOpSignalList's --claim flag routes to ClaimSignals (attempts++)
+	// instead of the plain read ListSignals — see BoidRequest.Claim.
+	// **--claim is DEPRECATED (2026-08-29)**: use a plain `signal list`
+	// followed by BoidOpSignalClaim naming the rows actually handed to a
+	// judgment. It is kept working so a daemon carrying this change and a
+	// workspace still on the old two-step do not have to switch in the same
+	// instant (project.yaml + workspace code arrive via `boid project fetch`,
+	// which is a separate step from deploying the daemon) — the version-skew
+	// hazard docs/plans/... §12.3 names. Remove it once no workspace calls it.
 	BoidOpSignalList BoidOp = "signal_list"
 	BoidOpSignalAck  BoidOp = "signal_ack"
+
+	// BoidOpSignalClaim backs `boid signal claim <id>...`: charge one attempt
+	// against exactly these rows, because they are the ones being handed to a
+	// judgment (orchestrator.ClaimSignalIDs carries the full rationale).
+	//
+	// It exists because `attempts` is the dead-letter counter and --claim
+	// could only ever count what a READ returned. A consumer that reads wider
+	// than it judges — khi lists MAX_TARGETS*4 rows so several signals
+	// collapsing onto one card still fill its slots, then judges at most
+	// MAX_TARGETS — charged every row it merely looked at, retiring signals
+	// nobody ever judged after five such rounds. Splitting the two makes
+	// reading free and leaves the counter measuring the thing it is named
+	// after.
+	BoidOpSignalClaim BoidOp = "signal_claim"
 
 	// BoidOpSignalIngest / BoidOpSignalCursorGet back `boid signal ingest`
 	// (stdin JSONL) / `boid signal cursor` from inside a connector's exec

@@ -289,15 +289,17 @@ var opEscapeCoverage = map[string]opCoverage{
 	// really does cross workspaces if left unchecked).
 	"BoidOpActionList": {escapeTest: "TestBroker_BoidActionList_WorkspaceIDMismatchDenied"},
 
-	// BoidOpSignalList / BoidOpSignalAck (docs/plans/
+	// BoidOpSignalList / BoidOpSignalClaim / BoidOpSignalAck (docs/plans/
 	// signal-ingest-detailed-design.md §3.2, PR-3): part of the general
 	// boidPolicy — workspace scoping is broker-injected unconditionally
 	// (there is no flag to widen it), exercised by
 	// TestBroker_BoidSignalList_InjectsOwnWorkspace /
+	// TestBroker_BoidSignalClaim_InjectsOwnWorkspace /
 	// TestBroker_BoidSignalAck_InjectsOwnWorkspace in broker_signal_test.go;
 	// the plain policy-gate manifest entry points are below.
-	"BoidOpSignalList": {escapeTest: "TestBroker_BoidSignalList_PolicyReject"},
-	"BoidOpSignalAck":  {escapeTest: "TestBroker_BoidSignalAck_PolicyReject"},
+	"BoidOpSignalList":  {escapeTest: "TestBroker_BoidSignalList_PolicyReject"},
+	"BoidOpSignalClaim": {escapeTest: "TestBroker_BoidSignalClaim_PolicyReject"},
+	"BoidOpSignalAck":   {escapeTest: "TestBroker_BoidSignalAck_PolicyReject"},
 
 	// BoidOpSignalIngest / BoidOpSignalCursorGet (§3.2): declared but
 	// DELIBERATELY excluded from the general boidPolicy (see boidPolicy's

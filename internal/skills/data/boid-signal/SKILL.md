@@ -1,9 +1,10 @@
 ---
 name: boid-signal
 description: Read and decide on the boid signal inbox from inside a sandboxed
-  task. Explains `boid signal list`/`boid signal ack` and what "ack" means
-  (this Signal has a written judgment) — for a scan-loop task whose job is to
-  scan a workspace's inbox and make a judgment call per item. Not a contract
+  task. Explains `boid signal list`/`boid signal claim`/`boid signal ack`, what
+  "claim" means (I am handing this to a judgment) and what "ack" means (this
+  Signal has a written judgment) — for a scan-loop task whose job is to scan a
+  workspace's inbox and make a judgment call per item. Not a contract
   or a connector guide — connectors never run judgment code and never use
   this skill.
 ---
@@ -26,37 +27,47 @@ up to your own instructions/behavior.
 ## The loop
 
 ```
-boid signal list --claim   # read + claim a batch of pending Signals
+boid signal list                     # read pending Signals (no side effect)
+  ... decide which of them you are actually going to judge this round ...
+boid signal claim <id> [<id> ...]    # "these are the ones I'm handing to a judgment"
   ... make a judgment about each one (create/update a task, notify, etc.) ...
-boid signal ack <id> [<id> ...]   # mark them decided
+boid signal ack <id> [<id> ...]      # mark them decided
 ```
 
-`--claim` is the mode a scan loop normally wants: it selects pending Signals
-**and** increments each one's attempts counter in the same call (see "Claim
-vs. plain list" below). Without `--claim`, `list` is a pure read with no side
-effect — useful for a one-off look, but a repeated scan loop should use
-`--claim` so a Signal nobody ever acks eventually stops being handed out
-(see "Dead Signals" below).
+**Reading is free; claiming is the declaration that costs something.** `list`
+never changes anything, so read as widely as you like — more than you intend
+to judge is fine and normal (several Signals often collapse onto one task, so
+you cannot tell how many you need until you have looked at them). `claim`
+charges one attempt against exactly the ids you name, which is what
+eventually retires a Signal nobody can ever handle (see "Dead Signals").
+
+**Claim what you hand to a judgment, including the ones you expect to fail.**
+If you looked at a Signal and could not resolve what it refers to, claiming it
+is correct — you tried, and five such rounds should give up. What you must NOT
+claim is a Signal you never looked at (one you deferred to the next round
+because this round was already full): charging that one retires a Signal
+nobody ever judged.
 
 ## `boid signal list`
 
 ```
-boid signal list [--claim] [--source <pack>/<connector>] [--state <state>] [--limit N]
+boid signal list [--source <pack>/<connector>] [--state <state>] [--limit N]
 ```
 
 - No flags: the caller's own workspace's **pending** (unacked, not yet dead)
-  Signals, oldest `occurred_at` first, JSON to stdout.
-- `--claim`: same selection, but each returned Signal's `attempts` is
-  incremented as part of the same call — use this in a scan loop, not a
-  one-off `list --state all` for debugging.
+  Signals, oldest `occurred_at` first, JSON to stdout. Pure read — call it as
+  often and as widely as you want.
 - `--source <pack>/<connector>`: narrow to one connector's Signals (e.g.
-  `--source slack/mentions`). Not compatible with `--claim` — claim always
-  operates workspace-wide; combine them and the call is rejected.
+  `--source slack/mentions`).
 - `--state pending|dead|acked|all`: look at a different slice than the
-  default (`pending`). Not compatible with `--claim` except the default
-  `pending` — same reason as `--source` above.
+  default (`pending`).
 - `--limit N`: cap the batch size (default is generous; set this explicitly
-  in a scan loop so one run never tries to process an unbounded batch).
+  in a scan loop so one run never tries to read an unbounded batch).
+- `--claim`: **deprecated.** Selects pending Signals AND increments `attempts`
+  on every row it returns, in one call. It cannot tell "I read this" apart
+  from "I handed this to a judgment", so a loop that reads wider than it
+  judges retires Signals it never judged. Use `list` + `claim` instead. Still
+  accepted so a workspace can switch at its own pace.
 
 The reply is a JSON object with a `signals` array — the SAME envelope shape
 the host-side `GET /api/signals` API uses, so the two are interchangeable
@@ -95,6 +106,34 @@ what `--source` filters on together as `<pack>/<connector>` (e.g.
 you need to correlate a Signal with an existing boid task, that's your own
 judgment logic, not something this command resolves for you.
 
+## `boid signal claim <id>...`
+
+```
+boid signal claim <id> [<id> ...]
+```
+
+Charges one attempt against exactly these Signals. Say it once per round, for
+the Signals you are about to judge — the counter it moves is what makes a
+Signal eventually "dead" (below) if nothing ever acks it, so it is the
+inbox's only defense against a loop that keeps picking up the same stuck
+Signal forever without making progress.
+
+Same typo guard as ack: an id that doesn't exist in your workspace fails the
+whole call and charges nothing. Claiming an already-acked id is harmless — it
+is not an error, and nothing is charged (there is nothing left to judge).
+
+**Why this is separate from `list`.** `attempts` is a give-up counter, so what
+it counts has to be "handed to a judgment". A single read-and-charge call can
+only count "returned by the read", and those are not the same number for any
+loop that reads more rows than it processes in a round. Splitting them makes
+reading free and leaves the counter measuring the thing it is named after.
+
+**Why not a timeout instead.** A clock cannot tell "this Signal is
+unprocessable" from "nothing was running to process it" — a workspace down
+for a week would retire every Signal that arrived meanwhile. `attempts` has
+the property a clock does not: no consumer, no decay. (boid's own GC encodes
+the same ruling: it refuses to delete a pending Signal on age alone.)
+
 ## `boid signal ack <id>...`
 
 ```
@@ -117,22 +156,13 @@ Ack matches by id alone, not by (service, connector, id) — if the very same
 id string happens to appear under two different connectors (unusual, but
 possible), acking it acks both rows. In practice this only matters if you're
 deliberately cross-referencing ids across connectors; normally you ack
-exactly the ids `list --claim` just handed you.
-
-## Claim vs. plain list
-
-- `list` (no `--claim`): read-only, safe to call repeatedly, does not affect
-  what a later `--claim` call selects.
-- `list --claim`: increments `attempts` on every Signal it returns. This is
-  what makes a Signal eventually "dead" (see below) if nothing ever acks it —
-  it is the inbox's only defense against a scan loop that keeps claiming the
-  same stuck Signal forever without making progress.
+exactly the ids you claimed.
 
 ## Dead Signals
 
 A Signal that's been claimed enough times without ever being acked becomes
-**dead** — `list --claim` stops returning it, so a broken judgment loop can't
-spin on it forever. Dead Signals are not deleted; a human (or a
+**dead** — a `pending` listing stops returning it, so a broken judgment loop
+can't spin on it forever. Dead Signals are not deleted; a human (or a
 `--state dead` listing) can still see and manually ack them. You don't need
 to do anything special about this in normal operation — it's a safety net,
 not something your scan loop needs to check for on every run.

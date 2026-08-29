@@ -235,6 +235,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 		switch args[1] {
 		case "list":
 			return parseBoidSignalList(args[2:])
+		case "claim":
+			return parseBoidSignalClaim(args[2:])
 		case "ack":
 			return parseBoidSignalAck(args[2:])
 		case "ingest":
@@ -912,6 +914,27 @@ func parseBoidSignalList(args []string) (*BoidRequest, error) {
 		}
 	}
 
+	return req, nil
+}
+
+// parseBoidSignalClaim builds the BoidRequest for `boid signal claim
+// <id>...` — "these are the rows I am handing to a judgment" (see
+// BoidOpSignalClaim's doc comment in protocol.go). Positional ids only, the
+// same shape as `signal ack`: what to charge is never a flag, because the
+// whole point of the op is that the caller names the rows itself.
+func parseBoidSignalClaim(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpSignalClaim}
+
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid signal claim", arg)
+		}
+		req.SignalIDs = append(req.SignalIDs, arg)
+	}
+
+	if len(req.SignalIDs) == 0 {
+		return nil, fmt.Errorf("boid shim: boid signal claim requires at least one id")
+	}
 	return req, nil
 }
 

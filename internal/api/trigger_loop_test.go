@@ -1314,6 +1314,10 @@ func (f *fakeSignalStore) ListSignals(orchestrator.SignalFilter) ([]*orchestrato
 func (f *fakeSignalStore) ClaimSignals(string, int, int) ([]*orchestrator.Signal, error) {
 	return nil, fmt.Errorf("fakeSignalStore: ClaimSignals not implemented (unused by SweepTriggers)")
 }
+func (f *fakeSignalStore) ClaimSignalIDs(string, []string) error {
+	return nil
+}
+
 func (f *fakeSignalStore) AckSignals(string, []string) error {
 	return fmt.Errorf("fakeSignalStore: AckSignals not implemented (unused by SweepTriggers)")
 }

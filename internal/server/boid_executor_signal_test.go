@@ -9,6 +9,7 @@ package server
 // harmless end to end through this layer too.
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -30,8 +31,13 @@ type fakeSignalStore struct {
 		workspaceID        string
 		limit, maxAttempts int
 	}
-	claimResult []*orchestrator.Signal
-	claimErr    error
+	claimResult  []*orchestrator.Signal
+	claimErr     error
+	claimIDCalls []struct {
+		workspaceID string
+		ids         []string
+	}
+	claimIDErr  error
 	ackCalls    [][]string
 	ackedIDs    map[string]bool
 	ackErr      error
@@ -63,6 +69,14 @@ func (f *fakeSignalStore) ClaimSignals(workspaceID string, limit, maxAttempts in
 		return nil, f.claimErr
 	}
 	return f.claimResult, nil
+}
+
+func (f *fakeSignalStore) ClaimSignalIDs(workspaceID string, ids []string) error {
+	f.claimIDCalls = append(f.claimIDCalls, struct {
+		workspaceID string
+		ids         []string
+	}{workspaceID, ids})
+	return f.claimIDErr
 }
 
 func (f *fakeSignalStore) AckSignals(workspaceID string, ids []string) error {
@@ -224,6 +238,75 @@ func TestBoidBuiltinExecutor_SignalList_ReturnsEmptyArrayNotNull(t *testing.T) {
 	}
 	if !strings.Contains(resp.Stdout, `"signals": []`) {
 		t.Fatalf("stdout = %q, want an empty (never null) signals array in the envelope", resp.Stdout)
+	}
+}
+
+// --- signal_ack ---
+
+// --- signal_claim ---
+
+func TestBoidBuiltinExecutor_SignalClaim_Unavailable(t *testing.T) {
+	e := &boidBuiltinExecutor{}
+	resp := e.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{}, &sandbox.BoidRequest{Op: sandbox.BoidOpSignalClaim, SignalIDs: []string{"s1"}})
+	if resp.ExitCode == 0 {
+		t.Fatal("a nil signal store should be reported, not silently succeed")
+	}
+}
+
+func TestBoidBuiltinExecutor_SignalClaim_RequiresWorkspaceAndIDs(t *testing.T) {
+	fake := &fakeSignalStore{}
+	e := &boidBuiltinExecutor{signals: fake}
+
+	resp := e.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{}, &sandbox.BoidRequest{Op: sandbox.BoidOpSignalClaim, SignalIDs: []string{"s1"}})
+	if resp.ExitCode == 0 {
+		t.Error("missing workspace should be rejected")
+	}
+	resp = e.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{}, &sandbox.BoidRequest{Op: sandbox.BoidOpSignalClaim, WorkspaceID: "ws-1"})
+	if resp.ExitCode == 0 {
+		t.Error("an empty id list should be rejected")
+	}
+	if len(fake.claimIDCalls) != 0 {
+		t.Fatalf("store must not be called on a rejected request, calls=%+v", fake.claimIDCalls)
+	}
+}
+
+// The executor forwards the caller's ids verbatim: which rows are charged is
+// the caller's declaration, never something the executor re-derives.
+func TestBoidBuiltinExecutor_SignalClaim_ForwardsIDsVerbatim(t *testing.T) {
+	fake := &fakeSignalStore{}
+	e := &boidBuiltinExecutor{signals: fake}
+
+	resp := e.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{}, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpSignalClaim,
+		WorkspaceID: "ws-1",
+		SignalIDs:   []string{"s1", "s2"},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	if len(fake.claimIDCalls) != 1 {
+		t.Fatalf("claim calls = %+v, want exactly one", fake.claimIDCalls)
+	}
+	got := fake.claimIDCalls[0]
+	if got.workspaceID != "ws-1" || len(got.ids) != 2 || got.ids[0] != "s1" || got.ids[1] != "s2" {
+		t.Fatalf("claim call = %+v, want ws-1 with [s1 s2]", got)
+	}
+}
+
+func TestBoidBuiltinExecutor_SignalClaim_StoreErrorSurfaces(t *testing.T) {
+	fake := &fakeSignalStore{claimIDErr: fmt.Errorf("unknown id(s) in workspace %q: typo", "ws-1")}
+	e := &boidBuiltinExecutor{signals: fake}
+
+	resp := e.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{}, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpSignalClaim,
+		WorkspaceID: "ws-1",
+		SignalIDs:   []string{"typo"},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("a store error must not be reported as success")
+	}
+	if !strings.Contains(resp.Stderr, "typo") {
+		t.Errorf("stderr %q should carry the store's own message (the caller needs to know WHICH id was wrong)", resp.Stderr)
 	}
 }
 

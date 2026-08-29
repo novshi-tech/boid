@@ -21,8 +21,9 @@ func signalListBoidPolicies() map[string]sandbox.BuiltinPolicy {
 	return map[string]sandbox.BuiltinPolicy{
 		"boid": {
 			AllowedOps: map[string]struct{}{
-				string(sandbox.BoidOpSignalList): {},
-				string(sandbox.BoidOpSignalAck):  {},
+				string(sandbox.BoidOpSignalList):  {},
+				string(sandbox.BoidOpSignalClaim): {},
+				string(sandbox.BoidOpSignalAck):   {},
 			},
 			AllowedCwdRoots: []string{"/tmp"},
 		},
@@ -47,6 +48,10 @@ func signalIngestBoidPolicies() map[string]sandbox.BuiltinPolicy {
 
 func TestBroker_BoidSignalList_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpSignalList})
+}
+
+func TestBroker_BoidSignalClaim_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpSignalClaim, SignalIDs: []string{"sig-1"}})
 }
 
 func TestBroker_BoidSignalAck_PolicyReject(t *testing.T) {
@@ -98,6 +103,58 @@ func TestBroker_BoidSignalList_InjectsOwnWorkspace(t *testing.T) {
 	}
 	if len(exec.calls) != 1 || exec.calls[0].WorkspaceID != "ws-1" {
 		t.Fatalf("broker should inject the caller's own workspace regardless of the request's own value, calls=%+v", exec.calls)
+	}
+}
+
+// signal_claim gets the same broker-injected workspace scoping as
+// signal_list/signal_ack: there is no flag to widen it, and a hand-crafted
+// request naming another workspace must not be able to charge attempts
+// against that workspace's inbox.
+func TestBroker_BoidSignalClaim_InjectsOwnWorkspace(t *testing.T) {
+	broker, exec := newBrokerForListTest(t)
+	ctx := sandbox.TokenContext{
+		JobID:       "j1",
+		TaskID:      "t1",
+		ProjectID:   "proj-1",
+		WorkspaceID: "ws-1",
+		Role:        testRoleHook,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, signalListBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:          sandbox.BoidOpSignalClaim,
+			WorkspaceID: "ws-other",
+			SignalIDs:   []string{"sig-1"},
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].WorkspaceID != "ws-1" {
+		t.Fatalf("broker should inject the caller's own workspace regardless of the request's own value, calls=%+v", exec.calls)
+	}
+}
+
+func TestBroker_BoidSignalClaim_RequiresAtLeastOneID(t *testing.T) {
+	broker, exec := newBrokerForListTest(t)
+	ctx := sandbox.TokenContext{JobID: "j1", TaskID: "t1", ProjectID: "proj-1", WorkspaceID: "ws-1", Role: testRoleHook}
+	token := broker.Register(map[string]sandbox.CommandDef{}, signalListBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpSignalClaim},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("an empty id list should be rejected at the broker, before the executor is reached")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not have been called, calls=%+v", exec.calls)
 	}
 }
 
