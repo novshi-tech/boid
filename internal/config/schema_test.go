@@ -25,6 +25,13 @@ func TestResolveField_KnownPaths(t *testing.T) {
 		// docs/plans/api-gateway.md §2/§3.
 		{"services.myapp.base_url", true},
 		{"services.myapp.allow_insecure", true},
+		// PR #1040 opus review, item 1: both existed on config.ServiceConfig
+		// but had no schema.go entry at all — see
+		// TestValidateYAML_Services_RequireAccountAndAllowReadOnlyWrite_Accepted
+		// (validate_test.go) for the resulting "unknown config key" bug this
+		// pins the fix for.
+		{"services.myapp.allow_readonly_write", true},
+		{"services.myapp.require_account", true},
 		{"services.myapp.auth.kind", true},
 		{"services.myapp.auth.secret_key", true},
 		{"services.myapp", false}, // whole entry, not a Set/Get leaf — same as gateway.forges.github
@@ -134,6 +141,8 @@ func TestSchema_ReloadClassification(t *testing.T) {
 		"web.http_addr":                        true,
 		"log.level":                            true,
 		"services.myapp.base_url":              true,
+		"services.myapp.allow_readonly_write":  true,
+		"services.myapp.require_account":       true,
 		"services_floor":                       true,
 		"oauth_providers.freee.token_endpoint": true,
 	}

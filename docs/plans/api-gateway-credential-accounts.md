@@ -124,7 +124,15 @@ oauth2.go       AccessToken     credentialID で secret key / singleflight /
                                 memCache のキーを組む (D6)
 login.go        StartLogin      account を pendingLogin まで持ち回る
 config          validate        service 名に "@" を禁止 (D1)
-                                services.<name>.require_account (D5)
+config          schema.go       services.<name>.require_account (D5) を
+                                Schema に登録 — こちらが実際に必要だった変更
+                                (PR-4 実装時、validate 側の追加だけで済むと
+                                誤認していた。RequireAccount は単なる bool
+                                フィールドで validateServiceConfig 側の検証は
+                                無く、config CLI 経由で読み書きできるように
+                                internal/config/schema.go の Schema に
+                                エントリを足す方が本体だった — レビューで
+                                発覚、#1040 で修正)
 ```
 
 `OAuth2AccessTokenSource` interface は
@@ -210,6 +218,22 @@ normalize 対象ではない (空は空のまま = 修飾なし)。
 アカウント単位ではない。同一 OAuth アプリに複数ユーザが認可する形を前提とする。
 別アプリを使いたい場合は provider を分ける (既存機構で表現できる)。
 
+**D7 補足: `grant: client_credentials` の provider では account 修飾に分離効果が無い**
+(opus レビュー、item 3、2026-08-30 発見)。`refreshClientCredentials`
+(`internal/apigateway/oauth2.go`) は refresh_token を一切読まず、D7 どおり
+無修飾の `cfg.ClientSecretKey` だけでトークンを取得する。したがって
+`myservice@typo` のような **存在しない account を指定してもリクエストは成功し**、
+返るのは無修飾と同じアプリ資格情報になる。D3 の「他 account へフォールバックしない」
+には違反しない (そもそも account 修飾された credential という概念自体がこの
+grant には存在しない) が、この種の provider では `require_account: true` は
+「account を書け」という記法上の強制以上の分離効果を持たない — singleflight/
+memCache キー (D6) は account ごとに分かれるが、実際に取得されるトークンは
+どの account 名でも同一になる。挙動は
+`TestOAuth2TokenSource_ClientCredentialsGrant_WithAccount_QualifiesCacheButNotClientSecret`
+(`internal/apigateway/oauth2_account_test.go`) で固定済み。freee は
+`grant: authorization_code` (manual flow) なので、下記の freee 移行手順には
+影響しない。
+
 **D8. recorder には `name@account` をそのまま渡す**
 
 `RequestRecorder` のシグネチャは変えない。`service` フィールドに `freee@ubs` が
@@ -267,11 +291,38 @@ connector 経路専用の再実装はしない — 既存 `parsePath` 側のロ�
 本 PR (PR-4) でもこの分割には手を入れていない — `signals.sources[].service`
 に account 修飾を書く実運用の要求がまだ無く、この PR のスコープ (D5の
 `require_account` 実装) と直接の依存関係も無いため、独立に着手できる
-後続タスクとして残す。既存の connector exec 経路は account 修飾された
-service を指す設定さえ書かなければ (= 現行運用のまま) 何の影響も受けない。
+後続タスクとして残す。
 
-ドキュメント (`docs/ja/reference/config-yaml.md`、boid-api-skills 側の
-`freee-api` スキル) の更新は各 PR に含める。
+**PR-4 で「account 修飾された service を指す設定さえ書かなければ影響を受けない」
+という前提が崩れる点に注意** (opus レビュー、item 2、2026-08-30 発見)。
+`apigateway.Server.ServeHTTP` は `entry.Services[rt.service]` による認可判定の
+直後に `ServiceConfig.RequireAccount` を見て、account 無しのリクエストを 400 で
+弾く (D5、`internal/apigateway/server.go`)。connector exec 経路は
+`resolveConnectorExec` が組んだ job token の `Entry.Services` にも同じ
+`RequireAccount` フラグが乗るので:
+
+- `signals.sources[].service: freee` (無修飾・現行の書き方のまま) →
+  `entry.Services["freee"]` は true (認可は通る) が、`freee` に
+  `require_account: true` を立てた時点で **connector job の gateway 呼び出しが
+  400** になる。account 修飾を一切書いていなくても壊れる
+- `signals.sources[].service: freee@ubs` (account 修飾を書いた場合) → 上記の
+  「決定済み・未実装」節の 403 (`Entry.Services` が `{"freee@ubs"}` になり、
+  base 名 `freee` で引く認可判定と一致しない)
+
+つまり **`require_account: true` を立てた service には connector exec の動く
+経路が存在しない** — 修飾の有無に関わらず、400 (無修飾) か 403 (修飾あり) の
+どちらかで必ず落ちる。現時点で `freee` を指す connector は無いので実害は無いが、
+後続タスク (上記の split) の前提条件としてここに明記する。既存の connector exec
+経路が実際に無傷なのは、`require_account: true` を **立てていない** service を
+指す設定を書いている間だけ。
+
+ドキュメント (`docs/ja/reference/config-yaml.md`) の更新は各 PR に含める。
+**boid-api-skills 側の `freee-api` スキルは別リポジトリなので、この PR (PR-4)
+には含められない** (opus レビュー、item 6、2026-08-30 訂正 — 旧記述は「各 PR
+に含める」としていたが実態と合わない)。account 修飾した path の書き方
+(`freee@ubs` 等) へスキル側を更新する作業は、下記「freee の移行手順」の前提
+として別途必要 — 手順のステップ 6 (`require_account: true` を立てる) より前に、
+スキルが呼ぶ URL が account 修飾済みになっている必要がある。
 
 ## freee の移行手順
 
@@ -296,12 +347,18 @@ UBS 側も **login し直して新しい grant を取る**。
 3. `boid secret oauth login freee --account nvt` で NVT の grant を取る
 4. `$BOID_API_BASE/freee@ubs/...` と `$BOID_API_BASE/freee@nvt/...` の両方が通る
    ことを実ジョブで確認する。company_id が期待どおり別事業所を指すかまで見る
-5. `services.freee.require_account: true` を立てて daemon に反映する
-6. `boid secret delete oauth2:freee:refresh_token` と
+5. boid-api-skills 側の `freee-api` スキル (別リポジトリ、上記「PR 分割」節末尾
+   参照) を、無修飾の `/freee/...` ではなく account 修飾した
+   `/freee@ubs/...` / `/freee@nvt/...` を呼ぶよう更新し、デプロイする。次の
+   ステップ 6 (`require_account: true`) より前に完了させること — さもないと
+   ステップ 6 の直後からスキル自身が無修飾リクエストを送って 400 で落ち始める
+6. `services.freee.require_account: true` を立てて daemon に反映する
+7. `boid secret delete oauth2:freee:refresh_token` と
    `boid secret delete oauth2:freee:access_token_cache` で旧キーを消す
 
-5 を 2〜4 より先にやると、その間の無修飾リクエストが 400 で落ちる。6 を 5 より
-先にやると、その間の無修飾リクエストが 502 で落ちる。順序は守る。
+6 を 2〜5 より先にやると、その間の無修飾リクエスト (旧スキルからのものを含む) が
+400 で落ちる。7 を 6 より先にやると、その間の無修飾リクエストが 502 で落ちる。
+順序は守る。
 
 なお 2 の「独立した grant」が freee 側で成立するか (同一ユーザ・同一 OAuth アプリ
 で複数の refresh_token を同時に保持できるか) は実測で確認する。もし freee が
