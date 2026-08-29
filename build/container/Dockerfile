@@ -266,13 +266,13 @@ RUN mkdir -p /opt/boid-host-tools
 # deliberately when a new Pack version needs to ship, and update
 # CredentialSlot/serviceProfile config alongside it if the Pack's manifest
 # shape changed.
-ARG BOID_API_SKILLS_REF=fcb133d87e587bad7a90d525336cbaa65a5bdcc1
+ARG BOID_API_SKILLS_REF=f141b4c4a14f770fd3bf5d813b7b5ad8c6ccec50
 RUN git init -q /tmp/boid-api-skills \
     && git -C /tmp/boid-api-skills remote add origin https://github.com/novshi-tech/boid-api-skills.git \
     && git -C /tmp/boid-api-skills fetch --depth 1 origin "$BOID_API_SKILLS_REF" \
     && git -C /tmp/boid-api-skills checkout -q FETCH_HEAD \
     && mkdir -p /opt/boid/integrations \
-    && cp -r /tmp/boid-api-skills/jira-cloud /tmp/boid-api-skills/bitbucket-cloud /tmp/boid-api-skills/slack /tmp/boid-api-skills/github /tmp/boid-api-skills/gmail /tmp/boid-api-skills/msgraph /opt/boid/integrations/ \
+    && cp -r /tmp/boid-api-skills/jira-cloud /tmp/boid-api-skills/bitbucket-cloud /tmp/boid-api-skills/slack /tmp/boid-api-skills/github /tmp/boid-api-skills/gmail /tmp/boid-api-skills/msgraph /tmp/boid-api-skills/freee /opt/boid/integrations/ \
     && rm -rf /tmp/boid-api-skills \
     && chgrp -R 0 /opt/boid/integrations && chmod -R g=u /opt/boid/integrations
 
