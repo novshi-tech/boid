@@ -237,17 +237,24 @@ normalize 対象ではない (空は空のまま = 修飾なし)。
 PR-1 単体で static kind の service は使えるようになるが、freee は oauth2 なので
 PR-2 まで到達して初めて実用になる。
 
-**PR-2 で決める必要がある残課題: connector exec 経路の account 未対応**
-(レビューで発見、2026-08-29)。`internal/server/connector_exec.go` の
+**決定済み: connector exec 経路の account 未対応 (レビューで発見・PR-2 で決定、
+2026-08-29、実装は PR-3 以降に送る)**。`internal/server/connector_exec.go` の
 `resolveConnectorExec` は `APIGatewayServices: []string{ref.Service}` と
 `Env["BOID_SIGNAL_SERVICE"] = ref.Service` の両方に `ref.Service` の生文字列を
 そのまま入れている。ここは workspace の `services` 一覧以外で `Entry.Services`
 を作る唯一の経路であり、`signals.sources[].service` に `freee@ubs` と書くと
 `Entry.Services` は `{"freee@ubs"}` になる。一方 `Server.ServeHTTP` の認可判定は
 base 名 (`freee`) で引く (D4) ので、この経路だけ **常に 403** になる —
-fail-closed なので危険ではないが、原因不明の 403 として観測される。account
-修飾が実用になる PR-2 で、この経路も base/account を分割して扱うか、connector
-経路では account 修飾を明示的に非対応として弾くかを決める必要がある。
+fail-closed なので危険ではないが、原因不明の 403 として観測される。
+
+**方針: split する**。`route.go` の `splitServiceAccount`/`validateAccountName`
+を小さな exported helper 経由で `resolveConnectorExec` から再利用し、
+`ref.Service` を base/account に分割してから `APIGatewayServices` には base 名を、
+`BOID_SIGNAL_SERVICE` には `ref.Service` (base@account のまま、D8 の
+「recorder には name@account をそのまま渡す」と同じ扱い) を入れる形にする。
+connector 経路専用の再実装はしない — 既存 `parsePath` 側のロジックをそのまま
+借りる、小さく機械的な修正の見込み。この PR (PR-2) では `connector_exec.go` に
+一切手を入れない。
 
 ドキュメント (`docs/ja/reference/config-yaml.md`、boid-api-skills 側の
 `freee-api` スキル) の更新は各 PR に含める。

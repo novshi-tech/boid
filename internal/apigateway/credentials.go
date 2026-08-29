@@ -239,8 +239,10 @@ func accountSecretKey(base, account string) string {
 // secret-store key (accountSecretKey) — D3: there is no fallback to the
 // account-less key when the qualified one is missing, so a non-empty account
 // whose secret was never set fails here exactly like any other missing
-// secret. oauth2 with a non-empty account is rejected outright (PR-2 scope)
-// — see the AuthOAuth2 case below.
+// secret. For oauth2 it is folded into a credentialID (PR-2, D6) and handed
+// to c.oauth.AccessToken, which applies the identical no-fallback contract
+// through OAuthSecretKey(cred.secretPrefix(), ...) — see AccessToken's own
+// doc comment.
 //
 // namespace is deliberately the FIRST parameter, not adjacent to the other
 // two string args: with three plain strings in a row, a call site that
@@ -249,10 +251,14 @@ func accountSecretKey(base, account string) string {
 // depends on namespace never being mixed up with account or name (a wrong
 // namespace resolves a DIFFERENT workspace's secret). Putting namespace
 // first also matches this package's own SecretResolver convention
-// (namespace, key). This is a stopgap for the three-bare-strings shape —
-// PR-2's credentialID type (docs/plans/api-gateway-credential-accounts.md
-// §3) folds name/account into one value and removes the ambiguity
-// structurally instead of by argument position.
+// (namespace, key). This is a stopgap for the three-bare-strings shape, and
+// it stays a stopgap even after PR-2 (docs/plans/api-gateway-credential-
+// accounts.md §3): Resolve's own signature is unchanged — name and account
+// are still two bare strings, not folded into one value. The credentialID
+// type §3 introduces lives one level down, inside the AuthOAuth2 case below
+// only: it is built from (rs.auth.Provider, account) right before being
+// handed to c.oauth.AccessToken, and never crosses back out as a parameter
+// here or in Inject.
 func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 	if c == nil {
 		return fmt.Errorf("apigateway: no credential provider configured")
@@ -263,14 +269,18 @@ func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 	}
 	switch rs.auth.Kind {
 	case AuthOAuth2:
-		if account != "" {
-			return fmt.Errorf("apigateway: service %q: account-qualified credentials (%q) are not supported for auth.kind %q yet — PR-2 で対応予定 (docs/plans/api-gateway-credential-accounts.md)", name, account, AuthOAuth2)
-		}
 		if c.oauth == nil {
 			return fmt.Errorf("apigateway: service %q uses auth kind %q, but no OAuth2 TokenSource is configured (docs/plans/api-gateway.md PR2 — SetOAuth2TokenSource)", name, AuthOAuth2)
 		}
-		if _, err := c.oauth.AccessToken(namespace, rs.auth.Provider); err != nil {
-			return fmt.Errorf("apigateway: oauth2 access token for service %q (provider %q, namespace %q): %w", name, rs.auth.Provider, namespace, err)
+		// credentialID (docs/plans/api-gateway-credential-accounts.md §3,
+		// D6, PR-2): account "" here produces a credentialID whose
+		// secretPrefix/cacheKey are byte-identical to the pre-account-support
+		// form (D2) — see credentialID's own doc comment. This is the ONLY
+		// place in this file a credentialID is constructed for an oauth2
+		// request; c.oauth.AccessToken is the only thing that reads it.
+		cred := credentialID{provider: rs.auth.Provider, account: account}
+		if _, err := c.oauth.AccessToken(namespace, cred); err != nil {
+			return fmt.Errorf("apigateway: oauth2 access token for service %q (provider %q, account %q, namespace %q): %w", name, rs.auth.Provider, account, namespace, err)
 		}
 		return nil
 	case AuthBearer, AuthBasic, AuthHeader, AuthQuery:
@@ -298,8 +308,8 @@ func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 // independent SecretStore reads, cheap in the common case).
 //
 // account behaves exactly as documented on Resolve — same accountSecretKey
-// composition for the static kinds, same fail-closed oauth2 rejection when
-// non-empty. namespace is the first parameter for the same reason documented
+// composition for the static kinds, same credentialID composition for
+// oauth2. namespace is the first parameter for the same reason documented
 // on Resolve.
 func (c *CredentialProvider) Inject(req *http.Request, namespace, name, account string) error {
 	if c == nil {
@@ -311,15 +321,14 @@ func (c *CredentialProvider) Inject(req *http.Request, namespace, name, account 
 	}
 	switch rs.auth.Kind {
 	case AuthOAuth2:
-		if account != "" {
-			return fmt.Errorf("apigateway: service %q: account-qualified credentials (%q) are not supported for auth.kind %q yet — PR-2 で対応予定 (docs/plans/api-gateway-credential-accounts.md)", name, account, AuthOAuth2)
-		}
 		if c.oauth == nil {
 			return fmt.Errorf("apigateway: service %q uses auth kind %q, but no OAuth2 TokenSource is configured (docs/plans/api-gateway.md PR2 — SetOAuth2TokenSource)", name, AuthOAuth2)
 		}
-		token, err := c.oauth.AccessToken(namespace, rs.auth.Provider)
+		// See Resolve's identical credentialID construction comment.
+		cred := credentialID{provider: rs.auth.Provider, account: account}
+		token, err := c.oauth.AccessToken(namespace, cred)
 		if err != nil {
-			return fmt.Errorf("apigateway: oauth2 access token for service %q (provider %q, namespace %q): %w", name, rs.auth.Provider, namespace, err)
+			return fmt.Errorf("apigateway: oauth2 access token for service %q (provider %q, account %q, namespace %q): %w", name, rs.auth.Provider, account, namespace, err)
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 		return nil

@@ -931,7 +931,7 @@ func TestLoginManager_StartLogin_EmptyNamespaceSharesMemCacheWithDefault(t *test
 	// AccessToken("default", ...) must find the SAME memCache entry the
 	// login above just populated — not trigger a second, unnecessary
 	// refresh because it was cached under a different ("") key.
-	got, err := ts.AccessToken("default", "freee")
+	got, err := ts.AccessToken("default", credentialID{provider: "freee"})
 	if err != nil {
 		t.Fatalf("AccessToken(\"default\"): %v", err)
 	}

@@ -1199,9 +1199,22 @@ workspace back onto the `"default"` secret namespace.
   workspace's namespace. Both call sites in `Server.ServeHTTP` and every test call site in
   `credentials_test.go` were updated together in the same change — the End C/D shape this
   entry documents is otherwise exactly what a partial reorder (only one of the two call
-  sites) would break. `Resolve`'s own doc comment carries the same rationale, and notes this
-  is a stopgap until PR-2's `credentialID` type folds `name`/`account` into one value and
-  removes the ambiguity structurally.
+  sites) would break. `Resolve`'s own doc comment carries the same rationale, and (as of the
+  PR-2 update below) is explicit that this stays a stopgap rather than getting resolved
+  structurally.
+- **Credential-accounts PR-2 update (2026-08-29)**: `Resolve`/`Inject`'s own signature did
+  NOT change — `name`/`account` are still two adjacent bare strings, exactly as PR-1 left
+  them; the PR-1 note above overpromised. What PR-2 actually did: `OAuth2TokenSource.
+  AccessToken` (`internal/apigateway/oauth2.go`) changed from `(namespace, provider string)`
+  to `(namespace string, cred credentialID)`, and `credentialID{provider: rs.auth.Provider,
+  account: account}` is now assembled inline, once, inside `Resolve`/`Inject`'s `AuthOAuth2`
+  case (`internal/apigateway/credentials.go`) right before that call — the only place either
+  function builds one. `credentialID` never crosses back out as a `Resolve`/`Inject`
+  parameter or return value; it exists purely to stop `oauth2.go`'s own internals (secret-store
+  key, singleflight key, memCache key — see seam entry's `cred.secretPrefix()`/`cred.
+  cacheKey()`) from re-deriving three different account-qualified strings by hand from
+  separately-passed `provider`/`account` args. See seam #23 End D for the call site's exact
+  current shape.
 
 ## 22. orchestrator.Action → timeline.Build renderability
 
@@ -1299,9 +1312,14 @@ resolver closures) chained together, spanning `internal/config` → `internal/se
   `oauth == nil`, which `Resolve`/`Inject` treat as a normal (loud, non-panicking) error case,
   not a nil-deref crash.
 - **End D (consumer)**: `CredentialProvider.Resolve`/`Inject`'s `AuthOAuth2` branch
-  (`internal/apigateway/credentials.go`) calls `c.oauth.AccessToken(namespace,
-  rs.auth.Provider)` — `rs.auth.Provider` (from `services.<name>.auth.provider`) is looked up
-  against `OAuth2TokenSource.providers`, itself keyed by `OAuthProviderConfig.Name` from End B/C.
+  (`internal/apigateway/credentials.go`) builds `cred := credentialID{provider:
+  rs.auth.Provider, account: account}` and calls `c.oauth.AccessToken(namespace, cred)`
+  (credential-accounts PR-2, docs/plans/api-gateway-credential-accounts.md §3 — see seam #21's
+  PR-2 update note; `AccessToken`'s signature used to be `(namespace, provider string)`
+  before that PR). `rs.auth.Provider` (from `services.<name>.auth.provider`, `cred.provider`
+  here) is looked up against `OAuth2TokenSource.providers`, itself keyed by
+  `OAuthProviderConfig.Name` from End B/C — `cred.account` plays no part in that lookup, only
+  in the secret-store/cache keys `AccessToken` derives internally.
   A `provider` string that doesn't match any `oauth_providers.<name>` key produces a clear
   "oauth2 provider %q is not configured" error (`oauth2.go`'s `AccessToken`) — deliberately NOT
   a config-load failure (see `TestLoadFromPath_Services_OAuth2ProviderReferenceNotCrossValidated`,

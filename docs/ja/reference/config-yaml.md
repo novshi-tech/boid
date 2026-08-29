@@ -382,11 +382,17 @@ $BOID_API_BASE/freee@nvt/api/1/deals?company_id=789012
 $BOID_API_BASE/freee/api/1/deals?company_id=123456          # account 無し = 従来どおり
 ```
 
-- **対応する auth.kind**: `bearer` / `basic` / `header` / `query` (static kind)。
-  この形で account を付けると、`auth.secret_key` を secret store から引く際の
-  キーが `<secret_key>@<account>` に変わります (account 無しなら従来と完全に
-  同一のキー)。`oauth2` kind は account 修飾に未対応 — account を付けて
-  `oauth2` service を呼ぶと 502 になります (対応予定)。
+- **対応する auth.kind**: `bearer` / `basic` / `header` / `query` (static kind)
+  と `oauth2` の両方。static kind で account を付けると、`auth.secret_key` を
+  secret store から引く際のキーが `<secret_key>@<account>` に変わります
+  (account 無しなら従来と完全に同一のキー)。`oauth2` kind で account を付けると、
+  `oauth2:<provider>:refresh_token` / `oauth2:<provider>:access_token_cache`
+  が `oauth2:<provider>@<account>:refresh_token` /
+  `oauth2:<provider>@<account>:access_token_cache` に変わります —
+  詳細は下記「daemon 単一リフレッシャ + 先回りリフレッシュ」節。
+  `oauth_providers.<name>.client_secret_key` は例外で、account を付けても
+  **修飾されません** (下記参照) — provider (OAuth アプリ) 単位の値であって
+  account 単位ではないためです。
 - **account 名の文字種**: 英数字・`-`・`_` のみ、1〜64 文字。それ以外の文字
   (`@`・`/`・`:` を含む) や、空の account 名、`@` が 2 個以上あるパスは
   **400** で拒否されます (path の形自体が不正な場合の 404 とは区別されます)。
@@ -549,6 +555,26 @@ secret store に保持される値は namespace ごと (workspace ごと) に以
 
 - `oauth2:<provider>:refresh_token`
 - `oauth2:<provider>:access_token_cache` (リフレッシュ結果のキャッシュ、`{"access_token":"...","expires_at":<Unix秒>}` の JSON。access_token と expires_at を1キーにまとめているのは、2キーに分けると片方だけの書き込み失敗で不整合な組が残るのを防ぐため — codexレビューで指摘)
+
+**account 修飾時のキー形** (上記「credential account 修飾」節、
+docs/plans/api-gateway-credential-accounts.md D6): `$BOID_API_BASE/freee@ubs/...`
+のように account を付けてリクエストすると、この 2 キーは
+`oauth2:<provider>@<account>:refresh_token` /
+`oauth2:<provider>@<account>:access_token_cache` になります
+(`internal/apigateway.credentialID.secretPrefix()` が `<provider>@<account>`
+を組み立てる唯一の箇所)。account 無しの場合と完全に独立したキーなので、
+`boid secret oauth login freee` (account 無し) と将来の
+`boid secret oauth login freee --account ubs` は互いに影響しません。
+singleflight・in-process キャッシュ (`memCache`) のキーも同様に
+account ごとに分離されており、あるアカウントのリフレッシュが別アカウントの
+access token を返すことはありません。フォールバックも一切ありません — 上記
+「credential account 修飾」節の D3 と同じく、`oauth2:freee@ubs:refresh_token`
+が無ければ `oauth2:freee:refresh_token` へは決して落ちず、502 になります。
+
+一方 `oauth_providers.<name>.client_secret_key` は account を付けても
+**修飾されません** — 同じ OAuth アプリ (provider) を複数アカウントで共有する
+前提のため、`client_secret_key` の解決キーは account の有無にかかわらず
+常に config.yaml に書いたとおりの値です。
 
 ### `boid secret oauth login <service>` — 初回認証 (PR3)
 

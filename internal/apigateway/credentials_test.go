@@ -199,40 +199,51 @@ func TestCredentialProvider_Inject_AccountDoesNotFallBackToUnqualified(t *testin
 	}
 }
 
-// TestCredentialProvider_Resolve_OAuth2WithAccountFailsClosed pins PR-1's
-// scope boundary: oauth2-kind account support is PR-2's job
-// (docs/plans/api-gateway-credential-accounts.md PR 分割) — a non-empty
-// account against an oauth2 service must fail loudly here rather than
-// silently ignore the account and resolve the unqualified token (which
-// would be the D3 "silent fallback" failure mode this whole feature exists
-// to prevent, just reached through the oauth2 branch instead of the static
-// one).
-func TestCredentialProvider_Resolve_OAuth2WithAccountFailsClosed(t *testing.T) {
+// TestCredentialProvider_Resolve_OAuth2WithAccount_DelegatesWithCredentialID
+// pins PR-2's D6 wiring at the CredentialProvider boundary: a non-empty
+// account against an oauth2 service must reach OAuth2AccessTokenSource.
+// AccessToken as a credentialID carrying THAT account (not silently
+// dropped, and not resolved against the account-less provider entry — the
+// D3 "silent fallback" failure mode this whole feature exists to prevent).
+// stubOAuth2TokenSource's own key composition (secretPrefix, this file's
+// doc comment) is what makes "ws-a/freee@ubs" only match when account
+// actually arrived intact.
+func TestCredentialProvider_Resolve_OAuth2WithAccount_DelegatesWithCredentialID(t *testing.T) {
 	c := NewCredentialProvider([]ServiceConfig{
 		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
 	}, nil)
-	c.SetOAuth2TokenSource(&stubOAuth2TokenSource{tokens: map[string]string{"ws-a/freee": "at-123"}})
+	stub := &stubOAuth2TokenSource{tokens: map[string]string{"ws-a/freee@ubs": "at-ubs"}}
+	c.SetOAuth2TokenSource(stub)
 
-	if err := c.Resolve("ws-a", "freee", "ubs"); err == nil {
-		t.Error("Resolve for an oauth2-kind service with a non-empty account: want error (PR-2 scope), got nil")
+	if err := c.Resolve("ws-a", "freee", "ubs"); err != nil {
+		t.Fatalf("Resolve(freee, account=ubs): %v", err)
+	}
+	if len(stub.calls) != 1 || stub.calls[0] != "ws-a/freee@ubs" {
+		t.Errorf("AccessToken calls = %v, want exactly [\"ws-a/freee@ubs\"]", stub.calls)
 	}
 }
 
-// TestCredentialProvider_Inject_OAuth2WithAccountFailsClosed is
-// TestCredentialProvider_Resolve_OAuth2WithAccountFailsClosed's Inject
-// counterpart.
-func TestCredentialProvider_Inject_OAuth2WithAccountFailsClosed(t *testing.T) {
+// TestCredentialProvider_Inject_OAuth2WithAccount_DelegatesWithCredentialID
+// is TestCredentialProvider_Resolve_OAuth2WithAccount_DelegatesWithCredentialID's
+// Inject counterpart, additionally checking that the account-scoped token
+// (not some other account's, not the unqualified one) lands in the
+// Authorization header.
+func TestCredentialProvider_Inject_OAuth2WithAccount_DelegatesWithCredentialID(t *testing.T) {
 	c := NewCredentialProvider([]ServiceConfig{
 		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
 	}, nil)
-	c.SetOAuth2TokenSource(&stubOAuth2TokenSource{tokens: map[string]string{"ws-a/freee": "at-123"}})
+	stub := &stubOAuth2TokenSource{tokens: map[string]string{
+		"ws-a/freee":     "at-unqualified",
+		"ws-a/freee@ubs": "at-ubs",
+	}}
+	c.SetOAuth2TokenSource(stub)
 
 	req, _ := http.NewRequest("GET", "https://api.freee.co.jp/api/1/companies", nil)
-	if err := c.Inject(req, "ws-a", "freee", "ubs"); err == nil {
-		t.Error("Inject for an oauth2-kind service with a non-empty account: want error (PR-2 scope), got nil")
+	if err := c.Inject(req, "ws-a", "freee", "ubs"); err != nil {
+		t.Fatalf("Inject(freee, account=ubs): %v", err)
 	}
-	if req.Header.Get("Authorization") != "" {
-		t.Error("Inject must leave req unmodified when it errors")
+	if got := req.Header.Get("Authorization"); got != "Bearer at-ubs" {
+		t.Errorf("Authorization header = %q, want %q (the ubs-account token, not the unqualified one)", got, "Bearer at-ubs")
 	}
 }
 
@@ -255,21 +266,30 @@ func TestCredentialProvider_Resolve_OAuth2NoTokenSourceConfigured(t *testing.T) 
 // singleflight/persistence-order behavior is exercised directly against
 // *OAuth2TokenSource in oauth2_test.go; these tests only need to prove
 // CredentialProvider calls through to whatever OAuth2AccessTokenSource it
-// was given, and injects its result as a Bearer header.
+// was given — with the credentialID it was actually handed, account
+// included — and injects its result as a Bearer header.
+//
+// Keys are "namespace/" + cred.secretPrefix() (credentialID's own account-
+// qualification format, oauth2.go) — "namespace/provider" when cred.account
+// is empty (byte-identical to every pre-PR-2 call site in this file) or
+// "namespace/provider@account" otherwise, so a test can tell "the
+// unqualified token was used" apart from "the wrong/right account's token
+// was used" just by which map key was looked up.
 type stubOAuth2TokenSource struct {
-	tokens map[string]string // "namespace/provider" -> access token
+	tokens map[string]string // "namespace/" + cred.secretPrefix() -> access token
 	err    error
-	calls  []string // "namespace/provider" call log
+	calls  []string // same key shape, call log
 }
 
-func (s *stubOAuth2TokenSource) AccessToken(namespace, provider string) (string, error) {
-	s.calls = append(s.calls, namespace+"/"+provider)
+func (s *stubOAuth2TokenSource) AccessToken(namespace string, cred credentialID) (string, error) {
+	key := namespace + "/" + cred.secretPrefix()
+	s.calls = append(s.calls, key)
 	if s.err != nil {
 		return "", s.err
 	}
-	tok, ok := s.tokens[namespace+"/"+provider]
+	tok, ok := s.tokens[key]
 	if !ok {
-		return "", errors.New("stubOAuth2TokenSource: no token for " + namespace + "/" + provider)
+		return "", errors.New("stubOAuth2TokenSource: no token for " + key)
 	}
 	return tok, nil
 }
