@@ -24,6 +24,14 @@ func TestParseBoidRequest_Signal_DispatchesToSubcommands(t *testing.T) {
 		t.Fatal("expected Claim=true")
 	}
 
+	req, err = parseBoidRequest([]string{"signal", "claim", "sig-1"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if req.Op != BoidOpSignalClaim {
+		t.Fatalf("op = %q, want %q", req.Op, BoidOpSignalClaim)
+	}
+
 	req, err = parseBoidRequest([]string{"signal", "ack", "sig-1"})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -96,6 +104,42 @@ func TestParseBoidSignalList_Rejects(t *testing.T) {
 	}
 	for name, args := range cases {
 		if _, err := parseBoidSignalList(args); err == nil {
+			t.Errorf("%s: expected an error, got success", name)
+		}
+	}
+}
+
+// `signal claim` takes positional ids and nothing else — the whole point of
+// the op is that the caller names the rows it is handing to a judgment, so
+// there is no flag that could select rows on its behalf (that is what the
+// deprecated `list --claim` did, and why it could not tell "read" from
+// "handed to a judgment").
+func TestParseBoidSignalClaim(t *testing.T) {
+	req, err := parseBoidSignalClaim([]string{"sig-1", "sig-2"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if req.Op != BoidOpSignalClaim {
+		t.Fatalf("op = %q, want %q", req.Op, BoidOpSignalClaim)
+	}
+	want := []string{"sig-1", "sig-2"}
+	if len(req.SignalIDs) != len(want) {
+		t.Fatalf("SignalIDs = %v, want %v", req.SignalIDs, want)
+	}
+	for i, id := range want {
+		if req.SignalIDs[i] != id {
+			t.Errorf("SignalIDs[%d] = %q, want %q", i, req.SignalIDs[i], id)
+		}
+	}
+}
+
+func TestParseBoidSignalClaim_Rejects(t *testing.T) {
+	cases := map[string][]string{
+		"no ids":     {},
+		"stray flag": {"--limit", "3"},
+	}
+	for name, args := range cases {
+		if _, err := parseBoidSignalClaim(args); err == nil {
 			t.Errorf("%s: expected an error, got success", name)
 		}
 	}

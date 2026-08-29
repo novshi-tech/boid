@@ -123,6 +123,7 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidTaskResolveOrCapture,
 			OpBoidActionList,
 			OpBoidSignalList,
+			OpBoidSignalClaim,
 			OpBoidSignalAck,
 		),
 		AllowedCwdRoots: boidCwdRoots(pctx),

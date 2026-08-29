@@ -245,6 +245,10 @@ func (r *TaskRepository) ClaimSignals(workspaceID string, limit, maxAttempts int
 	return claimed, nil
 }
 
+func (r *TaskRepository) ClaimSignalIDs(workspaceID string, ids []string) error {
+	return ClaimSignalIDs(r.db, workspaceID, ids)
+}
+
 func (r *TaskRepository) AckSignals(workspaceID string, ids []string) error {
 	return AckSignals(r.db, workspaceID, ids)
 }

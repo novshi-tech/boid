@@ -664,6 +664,13 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		// op), so the broker unconditionally overwrites whatever a
 		// hand-crafted request set here.
 		boidReq.WorkspaceID = entry.Context.WorkspaceID
+	case BoidOpSignalClaim:
+		// Same broker-injected workspace scoping as signal_list/signal_ack —
+		// never caller-supplied.
+		if len(boidReq.SignalIDs) == 0 {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid signal claim requires at least one id"}
+		}
+		boidReq.WorkspaceID = entry.Context.WorkspaceID
 	case BoidOpSignalAck:
 		if len(boidReq.SignalIDs) == 0 {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid signal ack requires at least one id"}

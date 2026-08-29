@@ -424,6 +424,9 @@ type SignalStore interface {
 	GetSignalCursor(workspaceID, service, connector string) (string, error)
 	ListSignals(filter orchestrator.SignalFilter) ([]*orchestrator.Signal, error)
 	ClaimSignals(workspaceID string, limit, maxAttempts int) ([]*orchestrator.Signal, error)
+	// ClaimSignalIDs charges one attempt against exactly the ids named — the
+	// explicit half of the read/claim split (orchestrator.ClaimSignalIDs).
+	ClaimSignalIDs(workspaceID string, ids []string) error
 	AckSignals(workspaceID string, ids []string) error
 	HasPendingSignals(workspaceID string, maxAttempts int) (bool, error)
 }

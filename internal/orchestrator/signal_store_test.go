@@ -1149,3 +1149,147 @@ func TestGCSignals_DryRunDoesNotDelete(t *testing.T) {
 		t.Fatalf("dry-run must not delete: got %d remaining, want 1", len(remaining))
 	}
 }
+
+// ---- ClaimSignalIDs (explicit claim, 2026-08-29) -------------------------
+//
+// The invariant this whole op exists for: attempts must count "handed to a
+// judgment", not "returned by a read". ClaimSignals (the read-and-count
+// form behind `list --claim`) cannot tell those apart — a consumer that
+// reads wider than it judges (khi reads MAX_TARGETS*4 rows and judges at
+// most MAX_TARGETS of them) burns an attempt on every row it merely LOOKED
+// at, and five such rounds silently retire a signal nobody ever judged.
+
+func TestClaimSignalIDs_IncrementsOnlyTheNamedRows(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	rows := []orchestrator.SignalIngestRow{
+		{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"},
+		{ID: "evt-2", OccurredAt: "2026-08-20T01:01:00Z", Identity: "jira:B"},
+		{ID: "evt-3", OccurredAt: "2026-08-20T01:02:00Z", Identity: "jira:C"},
+	}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", rows); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	if err := orchestrator.ClaimSignalIDs(d.Conn, "ws-1", []string{"evt-2"}); err != nil {
+		t.Fatalf("ClaimSignalIDs: %v", err)
+	}
+
+	got := map[string]int{}
+	listed, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	if err != nil {
+		t.Fatalf("ListSignals: %v", err)
+	}
+	for _, s := range listed {
+		got[s.ID] = s.Attempts
+	}
+	want := map[string]int{"evt-1": 0, "evt-2": 1, "evt-3": 0}
+	for id, n := range want {
+		if got[id] != n {
+			t.Errorf("attempts[%s] = %d, want %d (a row the caller did not claim must not be charged)", id, got[id], n)
+		}
+	}
+}
+
+func TestClaimSignalIDs_UnknownIDErrorsWithoutIncrementing(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	row := orchestrator.SignalIngestRow{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", []orchestrator.SignalIngestRow{row}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	err := orchestrator.ClaimSignalIDs(d.Conn, "ws-1", []string{"evt-1", "evt-typo"})
+	if err == nil {
+		t.Fatal("ClaimSignalIDs with an unknown id = nil error, want an error")
+	}
+	if !strings.Contains(err.Error(), "evt-typo") {
+		t.Errorf("error %q should name the unknown id", err.Error())
+	}
+
+	listed, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	if err != nil {
+		t.Fatalf("ListSignals: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Attempts != 0 {
+		t.Fatalf("evt-1 was charged despite the call erroring on evt-typo: %+v", listed)
+	}
+}
+
+func TestClaimSignalIDs_AckedRowIsNotCharged(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	row := orchestrator.SignalIngestRow{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", []orchestrator.SignalIngestRow{row}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if err := orchestrator.AckSignals(d.Conn, "ws-1", []string{"evt-1"}); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+
+	// Claiming something already judged is meaningless, not an error: the
+	// row exists (so the typo guard is satisfied) but there is nothing left
+	// to hand to a judgment.
+	if err := orchestrator.ClaimSignalIDs(d.Conn, "ws-1", []string{"evt-1"}); err != nil {
+		t.Fatalf("ClaimSignalIDs on an acked row: %v", err)
+	}
+	listed, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	if err != nil {
+		t.Fatalf("ListSignals: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Attempts != 0 {
+		t.Fatalf("an acked row must not be charged: %+v", listed)
+	}
+}
+
+func TestClaimSignalIDs_ReachesDeadAtMaxAttempts(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	row := orchestrator.SignalIngestRow{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", []orchestrator.SignalIngestRow{row}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	// The poison-pill guard has to keep working through the explicit path:
+	// a signal handed to a judgment MaxSignalAttempts times without ever
+	// being acked must leave `pending` on its own.
+	for i := 0; i < orchestrator.MaxSignalAttempts; i++ {
+		if err := orchestrator.ClaimSignalIDs(d.Conn, "ws-1", []string{"evt-1"}); err != nil {
+			t.Fatalf("claim %d: %v", i+1, err)
+		}
+	}
+
+	pending, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStatePending})
+	if err != nil {
+		t.Fatalf("ListSignals(pending): %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("after %d claims the signal is still pending: %+v", orchestrator.MaxSignalAttempts, pending)
+	}
+	dead, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateDead})
+	if err != nil {
+		t.Fatalf("ListSignals(dead): %v", err)
+	}
+	if len(dead) != 1 {
+		t.Fatalf("after %d claims the signal is not dead: %+v", orchestrator.MaxSignalAttempts, dead)
+	}
+}
+
+func TestListSignals_DoesNotChargeAttempts(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	row := orchestrator.SignalIngestRow{ID: "evt-1", OccurredAt: "2026-08-20T01:00:00Z", Identity: "jira:A"}
+	if err := orchestrator.IngestSignals(d.Conn, "ws-1", "svc", "pack/conn", []orchestrator.SignalIngestRow{row}); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	// The whole point of splitting list from claim: reading is free, so a
+	// consumer may read far more rows than it intends to judge.
+	for i := 0; i < 3; i++ {
+		if _, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStatePending}); err != nil {
+			t.Fatalf("list %d: %v", i+1, err)
+		}
+	}
+	listed, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	if err != nil {
+		t.Fatalf("ListSignals: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Attempts != 0 {
+		t.Fatalf("a plain list charged an attempt: %+v", listed)
+	}
+}

@@ -27,7 +27,9 @@ project.yaml (メタプロジェクト)
    └─ on: signals trigger ──▶ 未 ack Signal があり every 経過なら発火
                                     │
                                     ▼
-                        scan script → `boid signal list --claim` → 判断 → `boid signal ack`
+                        scan script → `boid signal list` → 篩う
+                                    → `boid signal claim <判断に回す id>`
+                                    → 判断 → `boid signal ack`
 ```
 
 - **導出 trigger** = ユーザが `triggers:` に書くものと同じ内部表現 (`orchestrator.Trigger`)
@@ -138,13 +140,25 @@ boid signal ack  [--workspace <slug>] <id>...
 
 | shim コマンド | op 定数 | 用途 |
 |---|---|---|
-| `boid signal list [--claim] [--source ...] [--state ...] [--limit N] [--json]` | `signal_list` | scan script が読む。`--claim` は ClaimSignals (attempts++ 込み) |
+| `boid signal list [--source ...] [--state ...] [--limit N] [--json]` | `signal_list` | scan script が読む。**副作用なし** |
+| `boid signal claim <id>...` | `signal_claim` | **判断に回す行を名指しして attempts++** (2026-08-29 新設) |
 | `boid signal ack <id>...` | `signal_ack` | 判断後の決着。冪等 |
 | `boid signal ingest` | `signal_ingest` | connector 専用。stdin の JSONL を取り込む |
 | `boid signal cursor` | `signal_cursor_get` | connector 専用。自 source の栞を返す |
 
-- **policy の割り当て (重要)**: 一般の `boidPolicy` へ足すのは `signal_list`・`signal_ack`
-  の 2 op **だけ**。`signal_ingest`・`signal_cursor_get` は宣言 (protocol / mirror /
+- **`list --claim` は deprecated (2026-08-29)**。読み出しが返した行に一律 attempts++ する
+  形は「読んだ」と「判断に回した」を区別できず、**読みが判断より広い consumer** (khi は
+  合流を見込んで `MAX_TARGETS * 4` 行読み、判断するのは最大 `MAX_TARGETS`) が、次巡送りに
+  しただけの行の attempts を焼く。5 巡で誰も判断していない signal が dead に落ちる。
+  `list` (副作用なし) + `claim <id>...` (名指し) に分けた。**時間経過による失効には
+  しない** —— 時計は「処理できない signal」と「処理する側が居なかった」を区別できず、
+  workspace が 1 週間止まればその間に届いた signal を全部失効させる (`GCSignals` が
+  pending 行を時間だけで消さないのは同じ理由で、実際に data-loss bug として直した経緯が
+  ある)。互換のため `--claim` は当面残す —— daemon のデプロイと workspace 側の
+  `boid project fetch` は別の手順なので、同時に切り替えられない。
+
+- **policy の割り当て (重要)**: 一般の `boidPolicy` へ足すのは `signal_list`・
+  `signal_claim`・`signal_ack` の 3 op **だけ**。`signal_ingest`・`signal_cursor_get` は宣言 (protocol / mirror /
   escape-manifest) はするが一般 policy へは**入れない** — 付与は PR-5 の connector 専用
   縮小 policy のみ。通常 job から ingest / cursor は常に拒否される (PR-3 の時点では
   「誰も呼べない op」として存在する)。checklist の手順 3 を機械的に適用しないこと

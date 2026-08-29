@@ -390,6 +390,15 @@ func ListSignals(dbtx db.DBTX, filter SignalFilter) ([]*Signal, error) {
 // selected — this is the "no infinite redelivery" guard (design doc §2,
 // khi's MAX_ATTEMPTS equivalent).
 //
+// DEPRECATED (2026-08-29): prefer ListSignals + ClaimSignalIDs. Charging on
+// the READ conflates "I looked at this" with "I handed this to a judgment",
+// and those differ for any consumer that reads wider than it judges — see
+// ClaimSignalIDs' doc comment for what that costs. Kept working so a daemon
+// carrying the split and a workspace still on the old one-step call do not
+// have to switch in the same instant (a workspace's code arrives via `boid
+// project fetch`, a separate step from deploying the daemon). Remove once no
+// workspace calls it.
+//
 // Like IngestSignals, this does a select then a write that must be one
 // atomic unit — see IngestSignals' own doc comment for the transaction
 // contract callers must uphold, and TaskRepository.ClaimSignals for the
@@ -449,6 +458,106 @@ func ClaimSignals(dbtx db.DBTX, workspaceID string, limit, maxAttempts int) ([]*
 	return claimed, nil
 }
 
+// ClaimSignalIDs charges one attempt against exactly the ids named. It is the
+// EXPLICIT half of the read/claim split (2026-08-29): `boid signal list`
+// reads with no side effect, `boid signal claim <id>...` says which of those
+// rows were actually handed to a judgment.
+//
+// ClaimSignals above answers both questions in one step, and that is the
+// problem it exists to fix. `attempts` is the dead-letter counter — five
+// increments and MaxSignalAttempts retires the row — so what it counts had
+// better be "handed to a judgment". ClaimSignals can only count "returned by
+// the read", and a consumer whose read is deliberately WIDER than its
+// judgment charges every row it merely looked at: khi lists MAX_TARGETS*4
+// rows so that several signals collapsing onto one card still fill its
+// target slots, then judges at most MAX_TARGETS of them, and the remainder
+// it explicitly deferred to the next round has already been charged. Five
+// such rounds retire a signal nobody ever judged, silently.
+//
+// Deliberately NOT replaced by a time-based expiry, which is the other
+// obvious way to stop a signal nobody can process. A clock cannot tell "this
+// signal is unprocessable" from "the consumer was not running" — the whole
+// khi workspace being down for a week would retire every signal that arrived
+// meanwhile. GCSignals below already encodes that ruling: it refuses to
+// delete a pending row on age alone, no matter what olderThan says, after
+// exactly that shape turned out to be a data-loss bug (its own [H1] note).
+// attempts has the property a clock does not: no consumer, no decay.
+//
+// Same typo guard and all-or-nothing failure as AckSignals — see its doc
+// comment. An already-acked row is NOT charged (there is nothing left to
+// hand to a judgment) but is not an error either: the row exists, so the
+// caller named something real.
+func ClaimSignalIDs(dbtx db.DBTX, workspaceID string, ids []string) error {
+	if workspaceID == "" {
+		return fmt.Errorf("claim signals: workspace id must not be empty")
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	placeholders, args, err := requireSignalIDsExist(dbtx, "claim signals", workspaceID, ids)
+	if err != nil {
+		return err
+	}
+
+	if _, err := dbtx.Exec(
+		`UPDATE signals SET attempts = attempts + 1
+		 WHERE workspace_id = ? AND acked_at IS NULL AND id IN (`+placeholders+`)`,
+		args...,
+	); err != nil {
+		return fmt.Errorf("claim signals: update: %w", err)
+	}
+	return nil
+}
+
+// requireSignalIDsExist is the shared pre-flight both AckSignals and
+// ClaimSignalIDs run: dedupe the ids, confirm every one of them matches a
+// row in workspaceID, and hand back the placeholder list and args (workspace
+// id first, then the unique ids) for the caller's own UPDATE.
+//
+// The existence check is the typo guard (§2). It runs BEFORE the write and
+// fails the whole call, so a caller that mistyped one id never has to work
+// out which of the others partially applied.
+func requireSignalIDsExist(dbtx db.DBTX, op, workspaceID string, ids []string) (placeholders string, args []any, err error) {
+	unique := dedupeStringsPreserveOrder(ids)
+	placeholders = strings.TrimSuffix(strings.Repeat("?,", len(unique)), ",")
+
+	args = make([]any, 0, len(unique)+1)
+	args = append(args, workspaceID)
+	for _, id := range unique {
+		args = append(args, id)
+	}
+
+	existing := map[string]bool{}
+	rows, qerr := dbtx.Query(`SELECT DISTINCT id FROM signals WHERE workspace_id = ? AND id IN (`+placeholders+`)`, args...)
+	if qerr != nil {
+		return "", nil, fmt.Errorf("%s: lookup: %w", op, qerr)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if serr := rows.Scan(&id); serr != nil {
+			return "", nil, fmt.Errorf("%s: scan: %w", op, serr)
+		}
+		existing[id] = true
+	}
+	if rerr := rows.Err(); rerr != nil {
+		return "", nil, fmt.Errorf("%s: rows: %w", op, rerr)
+	}
+
+	var unknown []string
+	for _, id := range unique {
+		if !existing[id] {
+			unknown = append(unknown, id)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return "", nil, fmt.Errorf("%s: unknown id(s) in workspace %q: %s", op, workspaceID, strings.Join(unknown, ", "))
+	}
+	return placeholders, args, nil
+}
+
 // AckSignals marks each id acked within workspaceID (acked_at = now WHERE
 // acked_at IS NULL — already-acked rows are left untouched, making re-ack a
 // no-op success rather than an error). Matching is by (workspace_id, id)
@@ -467,42 +576,9 @@ func AckSignals(dbtx db.DBTX, workspaceID string, ids []string) error {
 		return nil
 	}
 
-	unique := dedupeStringsPreserveOrder(ids)
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(unique)), ",")
-
-	existing := map[string]bool{}
-	args := make([]any, 0, len(unique)+1)
-	args = append(args, workspaceID)
-	for _, id := range unique {
-		args = append(args, id)
-	}
-	rows, err := dbtx.Query(`SELECT DISTINCT id FROM signals WHERE workspace_id = ? AND id IN (`+placeholders+`)`, args...)
+	placeholders, args, err := requireSignalIDsExist(dbtx, "ack signals", workspaceID, ids)
 	if err != nil {
-		return fmt.Errorf("ack signals: lookup: %w", err)
-	}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return fmt.Errorf("ack signals: scan: %w", err)
-		}
-		existing[id] = true
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("ack signals: rows: %w", err)
-	}
-	rows.Close()
-
-	var unknown []string
-	for _, id := range unique {
-		if !existing[id] {
-			unknown = append(unknown, id)
-		}
-	}
-	if len(unknown) > 0 {
-		sort.Strings(unknown)
-		return fmt.Errorf("ack signals: unknown id(s) in workspace %q: %s", workspaceID, strings.Join(unknown, ", "))
+		return err
 	}
 
 	updateArgs := append([]any{formatSignalTime(time.Now())}, args...)

@@ -77,6 +77,7 @@ func TestBroker_ConnectorPolicy_RejectsGeneralBoidOps(t *testing.T) {
 	forbidden := []*sandbox.BoidRequest{
 		{Op: sandbox.BoidOpTaskCreate},
 		{Op: sandbox.BoidOpSignalList},
+		{Op: sandbox.BoidOpSignalClaim, SignalIDs: []string{"sig-1"}},
 		{Op: sandbox.BoidOpSignalAck, SignalIDs: []string{"sig-1"}},
 		{Op: sandbox.BoidOpCardList},
 		{Op: sandbox.BoidOpActionSend},
