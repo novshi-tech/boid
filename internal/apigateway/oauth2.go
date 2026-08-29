@@ -773,9 +773,12 @@ func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cred cred
 // cred.secretPrefix()/cred.cacheKey(namespace), never cfg.Name directly (see
 // credentialID's own doc comment for why a second construction path would
 // reintroduce the exact cross-account mixing this type exists to prevent).
-// login.go's call sites (which do not support --account until PR-3) always
-// pass credentialID{provider: cfg.Name} — account "" — so their behavior is
-// byte-identical to before this parameter existed (D2).
+// login.go's call sites (exchangeAndPersist/pollDeviceGrant) pass
+// credentialID{provider: cfg.Name, account: p.account} — p.account is
+// whatever `boid secret oauth login --account` (D9, PR-3) StartLogin was
+// given for that pendingLogin, "" for the overwhelmingly common unqualified
+// login, which keeps that case byte-identical to before this parameter
+// existed (D2).
 //
 // priorRefreshToken is whatever refresh_token value the caller already had
 // on hand BEFORE this grant (refresh's own current value for a refresh;

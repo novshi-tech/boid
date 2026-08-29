@@ -2,6 +2,7 @@ package apigateway
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -238,7 +239,7 @@ func TestLoginManager_StartLogin_UnknownProvider(t *testing.T) {
 	store := newMemSecretStore()
 	ts := NewOAuth2TokenSource(nil, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
-	if _, err := lm.StartLogin("ws-a", "nope", ""); err == nil {
+	if _, err := lm.StartLogin("ws-a", "nope", "", ""); err == nil {
 		t.Fatal("want error for an unconfigured provider, got nil")
 	}
 }
@@ -247,7 +248,7 @@ func TestLoginManager_StartLogin_NoFlowConfigured(t *testing.T) {
 	store := newMemSecretStore()
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: "https://example.com/token", ClientID: "cid"}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
-	if _, err := lm.StartLogin("ws-a", "freee", ""); err == nil {
+	if _, err := lm.StartLogin("ws-a", "freee", "", ""); err == nil {
 		t.Fatal("want error when the provider has no Flow configured, got nil")
 	}
 }
@@ -267,7 +268,7 @@ func TestLoginManager_StartLogin_ClientCredentials_RejectedWithDedicatedMessage(
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	_, err := lm.StartLogin("ws-a", "az", "")
+	_, err := lm.StartLogin("ws-a", "az", "", "")
 	if err == nil {
 		t.Fatal("StartLogin against a client_credentials provider: want error, got nil")
 	}
@@ -286,7 +287,7 @@ func TestLoginManager_StartLoopback_RequiresRedirectURI(t *testing.T) {
 		Flow: LoginFlowLoopback, AuthorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
-	if _, err := lm.StartLogin("ws-a", "google", ""); err == nil {
+	if _, err := lm.StartLogin("ws-a", "google", "", ""); err == nil {
 		t.Fatal("want error when redirect_uri is empty for a loopback provider, got nil")
 	}
 }
@@ -299,7 +300,7 @@ func TestLoginManager_StartLoopback_Success(t *testing.T) {
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback")
+	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -326,7 +327,7 @@ func TestLoginManager_StartManual_Success(t *testing.T) {
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "freee", "")
+	start, err := lm.StartLogin("ws-a", "freee", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -353,7 +354,7 @@ func TestLoginManager_CompleteLogin_Loopback_Success(t *testing.T) {
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback")
+	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -411,7 +412,7 @@ func TestLoginManager_CompleteLogin_Loopback_ConfidentialClient_SendsBothPKCEAnd
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "atlassian", "http://127.0.0.1:9999/callback")
+	start, err := lm.StartLogin("ws-a", "atlassian", "http://127.0.0.1:9999/callback", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -438,7 +439,7 @@ func TestLoginManager_CompleteLogin_Loopback_StateMismatchRejected(t *testing.T)
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback")
+	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -462,7 +463,7 @@ func TestLoginManager_CompleteLogin_MissingCodeRejected(t *testing.T) {
 		Flow: LoginFlowLoopback, AuthorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
-	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback")
+	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -489,7 +490,7 @@ func TestLoginManager_CompleteLogin_AlreadyCompletedRejected(t *testing.T) {
 		Flow: LoginFlowLoopback, AuthorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
-	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback")
+	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -516,7 +517,7 @@ func TestLoginManager_CompleteLogin_ExpiredSessionRejected(t *testing.T) {
 	lm := NewLoginManager(ts)
 	lm.Now = func() time.Time { return ref }
 
-	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback")
+	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -550,7 +551,7 @@ func TestLoginManager_CompleteLogin_Loopback_RetryAfterFailureRejected(t *testin
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback")
+	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -600,7 +601,7 @@ func TestLoginManager_StartDevice_SendsScopesClientIDAndAuthorizeParams(t *testi
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "github", "")
+	start, err := lm.StartLogin("ws-a", "github", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -644,7 +645,7 @@ func TestLoginManager_CompleteLogin_WrongFlowRejected(t *testing.T) {
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "github", "")
+	start, err := lm.StartLogin("ws-a", "github", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -668,7 +669,7 @@ func TestLoginManager_CompleteLogin_Manual_Success(t *testing.T) {
 	store.seed("ws-a", "freee-secret", "shh-client-secret")
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "freee", "")
+	start, err := lm.StartLogin("ws-a", "freee", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -714,7 +715,7 @@ func TestLoginManager_CompleteLogin_NoRefreshTokenReturnedAndNoneOnFile_Fails(t 
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "freee", "")
+	start, err := lm.StartLogin("ws-a", "freee", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -740,7 +741,7 @@ func TestLoginManager_CompleteLogin_NoRefreshTokenReturnedButAlreadyOnFile_Succe
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback")
+	start, err := lm.StartLogin("ws-a", "google", "http://127.0.0.1:9999/callback", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -770,7 +771,7 @@ func TestLoginManager_StartDevice_Success(t *testing.T) {
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "github", "")
+	start, err := lm.StartLogin("ws-a", "github", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -812,7 +813,7 @@ func TestLoginManager_StartDevice_AccessDeniedFails(t *testing.T) {
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "github", "")
+	start, err := lm.StartLogin("ws-a", "github", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -837,7 +838,7 @@ func TestLoginManager_StartDevice_SlowDownThenSucceeds(t *testing.T) {
 	// Keep the test fast: override the RFC-mandated 5s slow_down backoff.
 	lm.SlowDownIncrement = 10 * time.Millisecond
 
-	start, err := lm.StartLogin("ws-a", "github", "")
+	start, err := lm.StartLogin("ws-a", "github", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -862,7 +863,7 @@ func TestLoginManager_StartDevice_ExpiresWithoutCompletion(t *testing.T) {
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("ws-a", "github", "")
+	start, err := lm.StartLogin("ws-a", "github", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -878,7 +879,7 @@ func TestLoginManager_StartDevice_MissingDeviceAuthorizationEndpoint(t *testing.
 		Name: "github", ClientID: "cid", TokenEndpoint: "https://example.com/token", Flow: LoginFlowDevice,
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
-	if _, err := lm.StartLogin("ws-a", "github", ""); err == nil {
+	if _, err := lm.StartLogin("ws-a", "github", "", ""); err == nil {
 		t.Fatal("want error when device_authorization_endpoint is unset, got nil")
 	}
 }
@@ -917,7 +918,7 @@ func TestLoginManager_StartLogin_EmptyNamespaceSharesMemCacheWithDefault(t *test
 	}}, store.resolver(), store.writer())
 	lm := NewLoginManager(ts)
 
-	start, err := lm.StartLogin("", "freee", "")
+	start, err := lm.StartLogin("", "freee", "", "")
 	if err != nil {
 		t.Fatalf("StartLogin(\"\"): %v", err)
 	}
@@ -940,6 +941,261 @@ func TestLoginManager_StartLogin_EmptyNamespaceSharesMemCacheWithDefault(t *test
 	}
 	if n := tokenSrv.callCount(); n != 1 {
 		t.Errorf("after AccessToken(\"default\"): token endpoint called %d times, want still 1 (StartLogin(\"\") and AccessToken(\"default\") must share one memCache key)", n)
+	}
+}
+
+// --- --account (docs/plans/api-gateway-credential-accounts.md D9, PR-3) ---
+//
+// This section pins the reviewer scoring table's #10 ("login で取得した
+// grant が oauth2:<provider>@<account>:refresh_token に書かれることがテスト
+// で示されているか") for all three flows, since PR-3's task description
+// specifically calls out the device flow as the one most likely to lose
+// account somewhere in its asynchronous (StartLogin returns immediately;
+// pollDeviceGrant persists later, from a background goroutine)
+// pendingLogin round trip. It also pins D7 (client_secret_key is never
+// account-qualified) and D3 (an account-qualified login never touches — and
+// never falls back to — the unqualified key) alongside each flow's
+// account-qualified persistence, and StartLogin's own account-name
+// validation (D11, shared with parsePath — route_test.go's
+// TestValidateAccountName_MatchesParsePathAccountValidation pins that the
+// RULE itself is identical; the test below pins that StartLogin actually
+// APPLIES it).
+
+func TestLoginManager_CompleteLogin_Loopback_WithAccount_PersistsAccountQualifiedKey(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "atlassian-secret", "shh-confidential-secret")
+	tokenSrv := newSequencedServer(t, cannedResp{http.StatusOK, tokenJSON("AT1", "RT1", 3600)})
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "atlassian", ClientID: "cid", ClientSecretKey: "atlassian-secret", TokenEndpoint: tokenSrv.url(),
+		Flow: LoginFlowLoopback, AuthorizationEndpoint: "https://auth.atlassian.com/authorize",
+	}}, store.resolver(), store.writer())
+	lm := NewLoginManager(ts)
+
+	start, err := lm.StartLogin("ws-a", "atlassian", "http://127.0.0.1:9999/callback", "ubs")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	u, _ := url.Parse(start.AuthorizeURL)
+	if err := lm.CompleteLogin(start.SessionID, "AUTH-CODE", u.Query().Get("state")); err != nil {
+		t.Fatalf("CompleteLogin: %v", err)
+	}
+
+	// Literal key strings (not OAuthSecretKey/credentialID) — see this
+	// section's own doc comment.
+	if v, _ := store.get("ws-a", "oauth2:atlassian@ubs:refresh_token"); v != "RT1" {
+		t.Errorf("persisted refresh_token at oauth2:atlassian@ubs:refresh_token = %q, want RT1", v)
+	}
+	if v, _ := store.get("ws-a", "oauth2:atlassian:refresh_token"); v != "" {
+		t.Errorf("unqualified key oauth2:atlassian:refresh_token = %q, want empty (account-qualified login must not touch it, D3)", v)
+	}
+
+	// D7: client_secret_key resolution is never account-qualified. If
+	// exchangeAndPersist had qualified this lookup by mistake, it would have
+	// missed the seeded "atlassian-secret" entry (memSecretStore.resolver
+	// errors on a missing key) and CompleteLogin above would have failed
+	// outright, rather than silently sending a wrong value — so this
+	// assertion is really pinning "the login succeeded with the value seeded
+	// under the UNQUALIFIED key", which is only possible if the resolver was
+	// queried with that exact key.
+	if got := tokenSrv.formAt(0).Get("client_secret"); got != "shh-confidential-secret" {
+		t.Errorf("client_secret = %q, want shh-confidential-secret (D7: client_secret_key must not be account-qualified)", got)
+	}
+}
+
+// TestLoginManager_CompleteLogin_Manual_WithAccount_PriorReadIsAccountQualified
+// pins docs/plans/api-gateway-credential-accounts.md review item #3:
+// exchangeAndPersist's priorRefreshToken read (used ONLY to detect "the
+// provider did not rotate, skip the write" — persistGrant's own doc comment)
+// must be keyed by the ACCOUNT-QUALIFIED credential
+// (OAuthSecretKey(cred.secretPrefix(), ...)), never by cfg.Name/provider
+// alone. If that read were mistakenly keyed by the unqualified provider name
+// instead, a fresh --account login whose provider happens to return the
+// exact same refresh_token already sitting under the UNQUALIFIED key (seeded
+// here to simulate a prior unqualified login) would look like "unrotated",
+// and persistGrant would skip writing the account-qualified key entirely —
+// the account-qualified credential would then never be written at all, even
+// though CompleteLogin reports success. This regression is otherwise
+// invisible: every existing WithAccount test's provider only ever returns a
+// refresh_token that has never been seen at any OTHER key before.
+func TestLoginManager_CompleteLogin_Manual_WithAccount_PriorReadIsAccountQualified(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "oauth2:freee:refresh_token", "RT1")
+	tokenSrv := newSequencedServer(t, cannedResp{http.StatusOK, tokenJSON("AT1", "RT1", 3600)})
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "freee", ClientID: "cid", TokenEndpoint: tokenSrv.url(),
+		Flow: LoginFlowManual, AuthorizationEndpoint: "https://accounts.secure.freee.co.jp/public_api/authorize",
+	}}, store.resolver(), store.writer())
+	lm := NewLoginManager(ts)
+
+	start, err := lm.StartLogin("ws-a", "freee", "", "ubs")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	if err := lm.CompleteLogin(start.SessionID, "OOB-CODE", ""); err != nil {
+		t.Fatalf("CompleteLogin: %v", err)
+	}
+
+	if v, _ := store.get("ws-a", "oauth2:freee@ubs:refresh_token"); v != "RT1" {
+		t.Errorf("persisted refresh_token at oauth2:freee@ubs:refresh_token = %q, want RT1 (must not be suppressed by the UNQUALIFIED key already holding the same value)", v)
+	}
+}
+
+func TestLoginManager_CompleteLogin_Manual_WithAccount_PersistsAccountQualifiedKey(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "freee-secret", "shh-client-secret")
+	tokenSrv := newSequencedServer(t, cannedResp{http.StatusOK, tokenJSON("AT1", "RT1", 3600)})
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "freee", ClientID: "cid", ClientSecretKey: "freee-secret", TokenEndpoint: tokenSrv.url(),
+		Flow: LoginFlowManual, AuthorizationEndpoint: "https://accounts.secure.freee.co.jp/public_api/authorize",
+	}}, store.resolver(), store.writer())
+	lm := NewLoginManager(ts)
+
+	start, err := lm.StartLogin("ws-a", "freee", "", "ubs")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	if err := lm.CompleteLogin(start.SessionID, "OOB-CODE", ""); err != nil {
+		t.Fatalf("CompleteLogin: %v", err)
+	}
+
+	if v, _ := store.get("ws-a", "oauth2:freee@ubs:refresh_token"); v != "RT1" {
+		t.Errorf("persisted refresh_token at oauth2:freee@ubs:refresh_token = %q, want RT1", v)
+	}
+	if v, _ := store.get("ws-a", "oauth2:freee:refresh_token"); v != "" {
+		t.Errorf("unqualified key oauth2:freee:refresh_token = %q, want empty (account-qualified login must not touch it, D3)", v)
+	}
+	if got := tokenSrv.formAt(0).Get("client_secret"); got != "shh-client-secret" {
+		t.Errorf("client_secret = %q, want shh-client-secret (D7: client_secret_key must not be account-qualified)", got)
+	}
+}
+
+// TestLoginManager_StartDevice_WithAccount_PersistsAccountQualifiedKey is the
+// device-flow half of this section — the one PR-3's task description flags
+// as most likely to lose account, since it must survive being carried
+// through pendingLogin into a background goroutine (pollDeviceGrant) that
+// runs well after StartLogin itself has returned.
+func TestLoginManager_StartDevice_WithAccount_PersistsAccountQualifiedKey(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "gh-secret", "shh-gh-secret")
+	deviceSrv := newSequencedServer(t, cannedResp{http.StatusOK, deviceAuthJSON("DC1", "USER-CODE", "https://example.com/device", "", 30, 1)})
+	tokenSrv := newSequencedServer(t, cannedResp{http.StatusOK, tokenJSON("AT1", "RT1", 3600)})
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "github", ClientID: "cid", ClientSecretKey: "gh-secret", TokenEndpoint: tokenSrv.url(),
+		Flow: LoginFlowDevice, DeviceAuthorizationEndpoint: deviceSrv.url(),
+	}}, store.resolver(), store.writer())
+	lm := NewLoginManager(ts)
+
+	start, err := lm.StartLogin("ws-a", "github", "", "ubs")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	status, errMsg := waitForStatus(t, lm, start.SessionID, 5*time.Second)
+	if status != LoginStatusComplete {
+		t.Fatalf("status = %v (%s), want complete", status, errMsg)
+	}
+
+	if v, _ := store.get("ws-a", "oauth2:github@ubs:refresh_token"); v != "RT1" {
+		t.Errorf("persisted refresh_token at oauth2:github@ubs:refresh_token = %q, want RT1", v)
+	}
+	if v, _ := store.get("ws-a", "oauth2:github:refresh_token"); v != "" {
+		t.Errorf("unqualified key oauth2:github:refresh_token = %q, want empty (account-qualified login must not touch it, D3)", v)
+	}
+	if got := tokenSrv.formAt(0).Get("client_secret"); got != "shh-gh-secret" {
+		t.Errorf("client_secret = %q, want shh-gh-secret (D7: client_secret_key must not be account-qualified)", got)
+	}
+}
+
+// TestLoginManager_StartDevice_WithAccount_PriorReadIsAccountQualified is
+// TestLoginManager_CompleteLogin_Manual_WithAccount_PriorReadIsAccountQualified's
+// device-flow counterpart (docs/plans/api-gateway-credential-accounts.md
+// review item #3) — pollDeviceGrant has its OWN, independent
+// priorRefreshToken read (it does not go through exchangeAndPersist at all),
+// so a regression there is a SEPARATE mutation from the manual/loopback one
+// and needs its own test to catch it.
+func TestLoginManager_StartDevice_WithAccount_PriorReadIsAccountQualified(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "oauth2:github:refresh_token", "RT1")
+	deviceSrv := newSequencedServer(t, cannedResp{http.StatusOK, deviceAuthJSON("DC1", "USER-CODE", "https://example.com/device", "", 30, 1)})
+	tokenSrv := newSequencedServer(t, cannedResp{http.StatusOK, tokenJSON("AT1", "RT1", 3600)})
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "github", ClientID: "cid", TokenEndpoint: tokenSrv.url(),
+		Flow: LoginFlowDevice, DeviceAuthorizationEndpoint: deviceSrv.url(),
+	}}, store.resolver(), store.writer())
+	lm := NewLoginManager(ts)
+
+	start, err := lm.StartLogin("ws-a", "github", "", "ubs")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	status, errMsg := waitForStatus(t, lm, start.SessionID, 5*time.Second)
+	if status != LoginStatusComplete {
+		t.Fatalf("status = %v (%s), want complete", status, errMsg)
+	}
+
+	if v, _ := store.get("ws-a", "oauth2:github@ubs:refresh_token"); v != "RT1" {
+		t.Errorf("persisted refresh_token at oauth2:github@ubs:refresh_token = %q, want RT1 (must not be suppressed by the UNQUALIFIED key already holding the same value)", v)
+	}
+}
+
+// TestLoginManager_CompleteLogin_NoAccount_PersistsLiteralUnqualifiedRefreshTokenKey
+// pins that an account-LESS login (the overwhelmingly common case, and the
+// only case that existed before this feature) still writes to EXACTLY the
+// same key it always did — asserted against a hardcoded literal string,
+// deliberately NOT built via OAuthSecretKey/credentialID, so a latent bug in
+// either of those two helpers could not hide a regression here the way it
+// would in every other test in this file that (correctly, for their own
+// purposes) goes through them.
+func TestLoginManager_CompleteLogin_NoAccount_PersistsLiteralUnqualifiedRefreshTokenKey(t *testing.T) {
+	store := newMemSecretStore()
+	tokenSrv := newSequencedServer(t, cannedResp{http.StatusOK, tokenJSON("AT1", "RT1", 3600)})
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "freee", ClientID: "cid", TokenEndpoint: tokenSrv.url(),
+		Flow: LoginFlowManual, AuthorizationEndpoint: "https://accounts.secure.freee.co.jp/public_api/authorize",
+	}}, store.resolver(), store.writer())
+	lm := NewLoginManager(ts)
+
+	start, err := lm.StartLogin("ws-a", "freee", "", "")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	if err := lm.CompleteLogin(start.SessionID, "OOB-CODE", ""); err != nil {
+		t.Fatalf("CompleteLogin: %v", err)
+	}
+	if v, _ := store.get("ws-a", "oauth2:freee:refresh_token"); v != "RT1" {
+		t.Errorf("persisted refresh_token at literal key oauth2:freee:refresh_token = %q, want RT1", v)
+	}
+}
+
+// TestLoginManager_StartLogin_InvalidAccountRejected pins the server-side
+// half of PR-3's account validation requirement (the CLI-side half is
+// route_test.go's TestValidateAccountName_MatchesParsePathAccountValidation
+// plus cmd/secret_oauth_test.go's
+// TestSecretOAuthLogin_InvalidAccountRejectedClientSide): StartLogin rejects
+// an account name parsePath's own splitServiceAccount would also reject,
+// wrapping the exact same errInvalidAccount sentinel — not a
+// separately-worded validation error that happens to also fail.
+func TestLoginManager_StartLogin_InvalidAccountRejected(t *testing.T) {
+	store := newMemSecretStore()
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "freee", ClientID: "cid", TokenEndpoint: "https://example.com/token",
+		Flow: LoginFlowManual, AuthorizationEndpoint: "https://accounts.secure.freee.co.jp/public_api/authorize",
+	}}, store.resolver(), store.writer())
+	lm := NewLoginManager(ts)
+
+	// "" is deliberately excluded from this table: StartLogin treats an
+	// empty account as "no account requested" and never calls
+	// validateAccountName on it at all (StartLogin's own doc comment) — the
+	// exact same carve-out ValidateAccountName's doc comment documents for
+	// its own callers. Only non-empty, malformed names belong here.
+	cases := []string{"not valid!", "ub s", "ub@s", strings.Repeat("a", 65)}
+	for _, account := range cases {
+		t.Run(account, func(t *testing.T) {
+			if _, err := lm.StartLogin("ws-a", "freee", "", account); err == nil {
+				t.Fatalf("StartLogin with account %q: want error, got nil", account)
+			} else if !errors.Is(err, errInvalidAccount) {
+				t.Errorf("StartLogin with account %q: error = %v, want it to wrap errInvalidAccount (same rule parsePath enforces)", account, err)
+			}
+		})
 	}
 }
 

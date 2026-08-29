@@ -238,7 +238,8 @@ PR-1 単体で static kind の service は使えるようになるが、freee �
 PR-2 まで到達して初めて実用になる。
 
 **決定済み: connector exec 経路の account 未対応 (レビューで発見・PR-2 で決定、
-2026-08-29、実装は PR-3 以降に送る)**。`internal/server/connector_exec.go` の
+2026-08-29、実装は PR-4 以降に送る — PR-3 では実装しなかったため)**。
+`internal/server/connector_exec.go` の
 `resolveConnectorExec` は `APIGatewayServices: []string{ref.Service}` と
 `Env["BOID_SIGNAL_SERVICE"] = ref.Service` の両方に `ref.Service` の生文字列を
 そのまま入れている。ここは workspace の `services` 一覧以外で `Entry.Services`

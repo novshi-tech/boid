@@ -201,6 +201,32 @@ func validateAccountName(account string) error {
 	return nil
 }
 
+// ValidateAccountName is validateAccountName's exported form (docs/plans/
+// api-gateway-credential-accounts.md D9/D11, PR-3). `boid secret oauth
+// login --account` (cmd/secret_oauth.go) and the daemon-side
+// LoginManager.StartLogin (login.go — same package, so it calls
+// validateAccountName directly) both gate an account name on this exact
+// rule, deliberately never re-implementing it: a login that accepted an
+// account name parsePath's own splitServiceAccount would reject creates a
+// credential the gateway can never route a request to — a permanently
+// unreachable secret-store entry that looks like a successful login. This
+// export exists SOLELY so cmd (a different package tree, talking to the
+// daemon over HTTP rather than sharing this package's internals) can share
+// the identical check rather than hand-rolling its own character-class
+// test that could silently drift from this one.
+//
+// Like validateAccountName itself, this rejects "" (D11 requires a
+// non-empty account) — callers for whom an empty string legitimately means
+// "no account was requested at all" (both cmd/secret_oauth.go's --account
+// flag, whose zero value is "", and LoginManager.StartLogin's own account
+// parameter) must check account != "" themselves before calling this, the
+// same way splitServiceAccount only ever calls the unexported
+// validateAccountName when an "@" was actually present in the path
+// segment.
+func ValidateAccountName(account string) error {
+	return validateAccountName(account)
+}
+
 // checkForTraversal rejects tail outright if any "/"-delimited segment
 // decodes (via url.PathUnescape) to ".." or ".", INCLUDING when that ".."
 // or "." only appears after decoding an ENCODED slash ("%2f"/"%2F") inside

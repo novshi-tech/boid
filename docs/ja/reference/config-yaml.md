@@ -563,13 +563,21 @@ docs/plans/api-gateway-credential-accounts.md D6): `$BOID_API_BASE/freee@ubs/...
 `oauth2:<provider>@<account>:access_token_cache` になります
 (`internal/apigateway.credentialID.secretPrefix()` が `<provider>@<account>`
 を組み立てる唯一の箇所)。account 無しの場合と完全に独立したキーなので、
-`boid secret oauth login freee` (account 無し) と将来の
+`boid secret oauth login freee` (account 無し) と
 `boid secret oauth login freee --account ubs` は互いに影響しません。
 singleflight・in-process キャッシュ (`memCache`) のキーも同様に
 account ごとに分離されており、あるアカウントのリフレッシュが別アカウントの
 access token を返すことはありません。フォールバックも一切ありません — 上記
 「credential account 修飾」節の D3 と同じく、`oauth2:freee@ubs:refresh_token`
 が無ければ `oauth2:freee:refresh_token` へは決して落ちず、502 になります。
+
+`boid secret oauth login <service> --account <name>` (下記) は account 名を
+gateway の path 分割 (`splitServiceAccount`) と全く同じ規則で検証します —
+英数字・`-`・`_`、1〜64文字。CLI 側は daemon に送る前に
+`apigateway.ValidateAccountName` (route.go の検証ロジックをそのまま公開した
+もの) で先に弾き、daemon 側 (`LoginManager.StartLogin`) でも同じ関数の
+非公開版を通して同じ規則を適用します — 二重実装ではなく単一の検証ロジックを
+両側から呼ぶ形です。
 
 一方 `oauth_providers.<name>.client_secret_key` は account を付けても
 **修飾されません** — 同じ OAuth アプリ (provider) を複数アカウントで共有する
@@ -591,6 +599,12 @@ boid secret oauth login freee --namespace <workspace-namespace>
 ```
 
 `--namespace` (既定 `default`) は `boid secret set/get` と同じ workspace namespace の指定です。`--timeout` (既定 5 分) は「ユーザーがブラウザ/別端末での認証を完了するまで CLI がどれだけ待つか」で、daemon 側のセッション有効期限 (loopback/manual は 10 分、device は provider が申告した `expires_in`) とは独立です。
+
+`--account <name>` (docs/plans/api-gateway-credential-accounts.md D9、省略時は無修飾) を付けると、この login で得た grant は `oauth2:<provider>@<account>:refresh_token` に書かれます (上記「credential account 修飾」節参照) — device/loopback/manual のどの flow でも同じです:
+
+```bash
+boid secret oauth login freee --account ubs --namespace <workspace-namespace>
+```
 
 ### 初回 grant の手動投入 (login flow を使わない場合)
 

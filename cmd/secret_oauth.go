@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/spf13/cobra"
 )
@@ -50,11 +51,25 @@ type oauthLoginStartRequest struct {
 	Service     string `json:"service"`
 	Namespace   string `json:"namespace"`
 	RedirectURI string `json:"redirect_uri,omitempty"`
+	// Account mirrors internal/api/oauth_login.go's oauthLoginStartRequest.
+	// Account (docs/plans/api-gateway-credential-accounts.md D9) — omitted
+	// (the zero value "") when --account was not passed, which is byte-
+	// identical on the wire to every request this CLI sent before this
+	// field existed.
+	Account string `json:"account,omitempty"`
 }
 
 type oauthLoginStartResponse struct {
-	SessionID               string `json:"session_id"`
-	Flow                    string `json:"flow"`
+	SessionID string `json:"session_id"`
+	Flow      string `json:"flow"`
+	// Account echoes back oauthLoginStartRequest.Account — see
+	// runSecretOAuthLogin's post-Start comparison for why this CLI checks it
+	// against the --account value it just sent (docs/plans/
+	// api-gateway-credential-accounts.md review item #2: an OLDER daemon that
+	// predates --account silently drops the request field and always leaves
+	// this "", which this CLI must treat as a version-skew failure rather
+	// than a quiet no-op).
+	Account                 string `json:"account,omitempty"`
 	AuthorizeURL            string `json:"authorize_url,omitempty"`
 	UserCode                string `json:"user_code,omitempty"`
 	VerificationURI         string `json:"verification_uri,omitempty"`
@@ -102,6 +117,12 @@ var secretOAuthLoginCmd = &cobra.Command{
 func init() {
 	secretOAuthLoginCmd.Flags().StringP("namespace", "n", "default", "Secret namespace (workspace)")
 	secretOAuthLoginCmd.Flags().Duration("timeout", 5*time.Minute, "How long to wait for the user to finish authorizing")
+	// --account (docs/plans/api-gateway-credential-accounts.md D9): omitted
+	// (the zero value "") means the ordinary unqualified login every prior
+	// version of this command performed — see runSecretOAuthLogin's own
+	// validation of this flag for why an explicit value is checked against
+	// apigateway.ValidateAccountName before ever reaching the daemon.
+	secretOAuthLoginCmd.Flags().String("account", "", "Credential account qualifier (e.g. `boid secret oauth login freee --account ubs`); omit for the unqualified default credential")
 	secretOAuthCmd.AddCommand(secretOAuthLoginCmd)
 	secretCmd.AddCommand(secretOAuthCmd)
 }
@@ -115,6 +136,57 @@ func runSecretOAuthLogin(cmd *cobra.Command, args []string) error {
 	timeout, err := cmd.Flags().GetDuration("timeout")
 	if err != nil {
 		return fmt.Errorf("secret oauth login: %w", err)
+	}
+	account, err := cmd.Flags().GetString("account")
+	if err != nil {
+		return fmt.Errorf("secret oauth login: %w", err)
+	}
+	// Validated HERE, client-side, against the exact same rule the daemon
+	// applies (apigateway.LoginManager.StartLogin, via the unexported
+	// validateAccountName route.go already enforces on every gateway
+	// request's account qualifier — D11) rather than a hand-rolled check:
+	// reusing apigateway.ValidateAccountName (its exported form) is what
+	// guarantees the CLI can never accept an account name the daemon (and,
+	// transitively, the gateway's own request routing) would reject — see
+	// that function's own doc comment for why a second, independently
+	// written check here would risk drifting out of sync with it. account
+	// == "" because --account was never passed at all is deliberately NOT
+	// validated — an empty account then means "no account", not "an
+	// invalid account name" (ValidateAccountName's own doc comment makes
+	// the same carve-out).
+	//
+	// An EXPLICIT `--account ""`, however, IS validated (and therefore
+	// always rejected, since ValidateAccountName("") errors on an empty
+	// name — D11 requires non-empty): cmd.Flags().Changed("account") is
+	// what tells the two cases apart, since account itself is "" either
+	// way. Without this, `boid secret oauth login freee --account ""`
+	// would silently reach StartLogin with account == "" and write the
+	// UNQUALIFIED credential — while the gateway's own request routing
+	// (parsePath -> splitServiceAccount -> validateAccountName, route.go)
+	// already 400s an inbound request whose account segment is empty. That
+	// asymmetry is exactly what docs/plans/api-gateway-credential-accounts.
+	// md D3 (never silently fall back to the unqualified default) rules
+	// out, and it gets worse once PR-4's `require_account: true` ships:
+	// the unqualified key this mistake wrote to becomes a credential NO
+	// request can ever be routed to again — a "successful" login that is
+	// permanently unreachable. A genuinely invalid (or explicitly empty)
+	// --account is rejected HERE, before opening a loopback listener or
+	// making any daemon round trip at all — a login the daemon would
+	// reject anyway should fail as early and cheaply as possible.
+	//
+	// The daemon side (apigateway.LoginManager.StartLogin) does NOT get
+	// this same "explicit empty" guard, and deliberately so: its account
+	// parameter arrives as a plain JSON field on oauthLoginStartRequest,
+	// where "the field was omitted" and "the field was sent as \"\"" are
+	// already indistinguishable by the time StartLogin sees them (both
+	// decode to the Go zero value "") — there is no server-side equivalent
+	// of cobra's Changed() to tell them apart. Catching the mistake here,
+	// client-side, before it is even serialized onto the wire, is what
+	// makes the daemon-side ambiguity moot in practice.
+	if account != "" || cmd.Flags().Changed("account") {
+		if err := apigateway.ValidateAccountName(account); err != nil {
+			return fmt.Errorf("secret oauth login: invalid --account: %w", err)
+		}
 	}
 
 	c := client.FromContext(cmd.Context())
@@ -136,11 +208,33 @@ func runSecretOAuthLogin(cmd *cobra.Command, args []string) error {
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), oauthLoginRequestTimeout)
 	defer cancel()
-	req := oauthLoginStartRequest{Service: service, Namespace: namespace, RedirectURI: redirectURI}
+	req := oauthLoginStartRequest{Service: service, Namespace: namespace, RedirectURI: redirectURI, Account: account}
 	var start oauthLoginStartResponse
 	if err := c.DoContext(ctx, "POST", "/api/oauth/login", req, &start); err != nil {
 		_ = ln.Close()
 		return fmt.Errorf("secret oauth login: %w", err)
+	}
+
+	// Version-skew guard (docs/plans/api-gateway-credential-accounts.md
+	// review item #2): start.Account must echo back exactly what this CLI
+	// just sent. It won't when the daemon predates --account entirely — an
+	// old oauthLoginStartRequest decoder simply has no "account" field to
+	// populate, so StartLogin there runs an ordinary UNQUALIFIED login and
+	// always reports back Account == "" no matter what account held.
+	// Continuing past that point would let the daemon silently persist this
+	// login's grant to the unqualified credential while the caller believes
+	// --account was honored — for a refresh-token-ROTATING provider (freee
+	// is the motivating case), that overwrite invalidates whatever grant
+	// already lived at the unqualified key, with no error and no obvious
+	// link back to this command. Checked BEFORE dispatching to any flow, so
+	// a mismatch aborts before ever opening a browser tab or waiting on a
+	// device code — there is nothing to complete. account == "" (no
+	// --account requested) is unaffected: an old daemon that also doesn't
+	// know the field returns "" either way, so this never misfires for the
+	// overwhelmingly common unqualified case.
+	if start.Account != account {
+		_ = ln.Close()
+		return fmt.Errorf("secret oauth login: requested --account %q but the daemon's response did not echo it back (got %q) — the daemon is likely older than this CLI and does not support --account; upgrade the daemon before using --account, or omit it", account, start.Account)
 	}
 
 	switch start.Flow {
