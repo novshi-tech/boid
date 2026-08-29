@@ -266,7 +266,7 @@ RUN mkdir -p /opt/boid-host-tools
 # deliberately when a new Pack version needs to ship, and update
 # CredentialSlot/serviceProfile config alongside it if the Pack's manifest
 # shape changed.
-ARG BOID_API_SKILLS_REF=bbaf03d3b8c8016a1d1dbdaa656b34c67343d613
+ARG BOID_API_SKILLS_REF=fcb133d87e587bad7a90d525336cbaa65a5bdcc1
 RUN git init -q /tmp/boid-api-skills \
     && git -C /tmp/boid-api-skills remote add origin https://github.com/novshi-tech/boid-api-skills.git \
     && git -C /tmp/boid-api-skills fetch --depth 1 origin "$BOID_API_SKILLS_REF" \
