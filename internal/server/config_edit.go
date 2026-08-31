@@ -539,6 +539,11 @@ var restartFieldExtractorExemptions = map[string]string{
 	// services.*.username (feat/credential-slot-instance-username) — same
 	// reasoning as the uses:/endpoint/credentials.* trio above.
 	"services.*.username": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	// services.*.endpoint_secret_key / services.*.username_secret_key
+	// (docs/plans/api-gateway-credential-accounts.md D13) — same reasoning
+	// as endpoint/username just above.
+	"services.*.endpoint_secret_key": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.username_secret_key": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 
 	// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2) — same
 	// reasoning as the services.* septet above: changedOAuthProviderLeaves'
@@ -713,6 +718,12 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			if o.Endpoint != n.Endpoint {
 				changed = append(changed, name+".endpoint")
 			}
+			// endpoint_secret_key (docs/plans/api-gateway-credential-
+			// accounts.md D13) — same per-leaf diff treatment as endpoint
+			// itself just above.
+			if o.EndpointSecretKey != n.EndpointSecretKey {
+				changed = append(changed, name+".endpoint_secret_key")
+			}
 			if !maps.Equal(o.Credentials, n.Credentials) {
 				changed = append(changed, name+".credentials")
 			}
@@ -723,6 +734,11 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			// rebuilt against the Pack registry).
 			if o.Username != n.Username {
 				changed = append(changed, name+".username")
+			}
+			// username_secret_key (D13) — same per-leaf diff treatment as
+			// username itself just above.
+			if o.UsernameSecretKey != n.UsernameSecretKey {
+				changed = append(changed, name+".username_secret_key")
 			}
 		}
 	}

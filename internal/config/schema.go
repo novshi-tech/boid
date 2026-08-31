@@ -228,8 +228,19 @@ var Schema = []FieldSpec{
 	// ever binds SecretStore key references.
 	{Path: "services.*.uses", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.endpoint", Kind: KindString, Reload: ReloadRestartRequired},
+	// services.*.endpoint_secret_key / services.*.username_secret_key
+	// (docs/plans/api-gateway-credential-accounts.md D13): registered here
+	// from day one, unlike the D12 leaves two entries above whose own
+	// comment records what happens to a services.* leaf that skips this
+	// step (TestServiceConfigSchema_Exhaustive would also catch it — these
+	// two new fields on config.ServiceConfig are reflectively walked by
+	// that test automatically, so omitting either entry here fails `go
+	// test` immediately rather than only surfacing at `boid config`
+	// runtime).
+	{Path: "services.*.endpoint_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.credentials.*", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.username", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.username_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 
 	// services_floor (docs/plans/api-gateway.md §3): the daemon-wide
 	// enabled-service floor, mirroring sandbox.allowed_domains' own

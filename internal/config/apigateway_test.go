@@ -381,6 +381,129 @@ services:
 	}
 }
 
+// TestLoadFromPath_Services_UsesEndpointSecretKeyValid pins D13's
+// (docs/plans/api-gateway-credential-accounts.md) uses:-only counterpart to
+// TestLoadFromPath_Services_BaseURLSecretKeyValid: a Pack-instance entry may
+// source its endpoint/username from the secret store instead of the
+// literal endpoint/username fields, resolving per namespace with no account
+// qualifier needed — the motivating case (docs/ja/reference/config-yaml.md)
+// being a Pack instantiated once but reused unchanged across workspaces
+// that are really different tenants of the same product.
+func TestLoadFromPath_Services_UsesEndpointSecretKeyValid(t *testing.T) {
+	content := `
+services:
+  jira-cloud:
+    uses: jira-cloud/jira-cloud@1.0.0
+    endpoint_secret_key: JIRA_BASE_URL
+    username_secret_key: JIRA_USERNAME
+    credentials:
+      token: JIRA_API_TOKEN
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sc := cfg.Services["jira-cloud"]
+	if sc.EndpointSecretKey != "JIRA_BASE_URL" {
+		t.Errorf("EndpointSecretKey = %q, want JIRA_BASE_URL", sc.EndpointSecretKey)
+	}
+	if sc.UsernameSecretKey != "JIRA_USERNAME" {
+		t.Errorf("UsernameSecretKey = %q, want JIRA_USERNAME", sc.UsernameSecretKey)
+	}
+}
+
+// TestLoadFromPath_Services_UsesEndpointAndEndpointSecretKeyMutuallyExclusive
+// pins D13's mutual-exclusivity rule for the uses:-only endpoint pair,
+// mirroring TestLoadFromPath_Services_BaseURLAndBaseURLSecretKeyMutuallyExclusive.
+func TestLoadFromPath_Services_UsesEndpointAndEndpointSecretKeyMutuallyExclusive(t *testing.T) {
+	content := `
+services:
+  jira-cloud:
+    uses: jira-cloud/jira-cloud@1.0.0
+    endpoint: https://example.atlassian.net
+    endpoint_secret_key: JIRA_BASE_URL
+    credentials:
+      token: JIRA_API_TOKEN
+`
+	err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content)
+	if err == nil {
+		t.Fatal("want error for endpoint and endpoint_secret_key both set, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error %q does not mention mutual exclusivity", err.Error())
+	}
+}
+
+// TestLoadFromPath_Services_UsesUsernameAndUsernameSecretKeyMutuallyExclusive
+// pins D13's mutual-exclusivity rule for the uses:-only top-level username
+// pair — NOT to be confused with
+// TestLoadFromPath_Services_UsernameAndUsernameSecretKeyMutuallyExclusive
+// above, which pins the same rule for the free-form auth.username /
+// auth.username_secret_key pair instead.
+func TestLoadFromPath_Services_UsesUsernameAndUsernameSecretKeyMutuallyExclusive(t *testing.T) {
+	content := `
+services:
+  jira-cloud:
+    uses: jira-cloud/jira-cloud@1.0.0
+    endpoint: https://example.atlassian.net
+    username: alice@example.com
+    username_secret_key: JIRA_USERNAME
+    credentials:
+      token: JIRA_API_TOKEN
+`
+	err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content)
+	if err == nil {
+		t.Fatal("want error for username and username_secret_key both set, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error %q does not mention mutual exclusivity", err.Error())
+	}
+}
+
+// TestLoadFromPath_Services_EndpointSecretKeyWithoutUsesRejected is
+// TestLoadFromPath_Services_EndpointWithoutUsesRejected's
+// endpoint_secret_key: counterpart (D13) — same "only means anything
+// alongside uses:" reasoning.
+func TestLoadFromPath_Services_EndpointSecretKeyWithoutUsesRejected(t *testing.T) {
+	content := `
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    endpoint_secret_key: SHOULD_NOT_BE_HERE
+    auth: { kind: bearer, secret_key: k }
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for endpoint_secret_key: without uses:, got nil")
+	}
+	if !strings.Contains(err.Error(), "endpoint_secret_key") || !strings.Contains(err.Error(), "uses") {
+		t.Errorf("error should mention both endpoint_secret_key and uses, got: %v", err)
+	}
+}
+
+// TestLoadFromPath_Services_TopLevelUsernameSecretKeyWithoutUsesRejected is
+// TestLoadFromPath_Services_UsernameWithoutUsesRejected's
+// username_secret_key: counterpart (D13) — same "only means anything
+// alongside uses:" reasoning as the top-level Username field. NOT to be
+// confused with auth.username_secret_key (D12, free-form entries), which is
+// unaffected by this check.
+func TestLoadFromPath_Services_TopLevelUsernameSecretKeyWithoutUsesRejected(t *testing.T) {
+	content := `
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    username_secret_key: SHOULD_NOT_BE_HERE
+    auth: { kind: bearer, secret_key: k }
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for top-level username_secret_key: without uses:, got nil")
+	}
+	if !strings.Contains(err.Error(), "username_secret_key") || !strings.Contains(err.Error(), "uses") {
+		t.Errorf("error should mention both username_secret_key and uses, got: %v", err)
+	}
+}
+
 func TestLoadFromPath_Services_HeaderMissingHeaderNameRejected(t *testing.T) {
 	content := `
 services:
