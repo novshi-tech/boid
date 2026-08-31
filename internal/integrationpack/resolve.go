@@ -37,8 +37,12 @@ func findPack(packs []*Pack, pack, version string) (*Pack, bool) {
 //     validation, e.g. in a test).
 //  2. pack/version must match an entry in packs ("pack 不在").
 //  3. profile must be declared in that pack's manifest.
-//  4. the profile's endpoint requirement must match what sc provides: if
-//     Endpoint.Configurable, sc.Endpoint must be non-empty; otherwise v0 has
+//  4. sc.Endpoint and sc.EndpointSecretKey must not both be set (docs/plans/
+//     api-gateway-credential-accounts.md D13 — mutually exclusive, the same
+//     "already checked once at config-load time, re-checked here" posture
+//     item 1 above has). The profile's endpoint requirement must then match
+//     what sc provides: if Endpoint.Configurable, at least one of
+//     sc.Endpoint/sc.EndpointSecretKey must be non-empty; otherwise v0 has
 //     no Pack-declared default endpoint to fall back to (see
 //     ServiceProfile.Endpoint's own doc comment), so ANY use of such a
 //     profile is rejected in v0 — "endpoint 要求違反" covers both
@@ -46,11 +50,14 @@ func findPack(packs []*Pack, pack, version string) (*Pack, bool) {
 //  5. the profile must declare exactly one credential slot, sc.Credentials
 //     must bind it ("slot 未 bind"), and must not carry any OTHER key
 //     ("未知 slot").
-//  6. (feat/credential-slot-instance-username) if that slot's injection is
-//     basic and it declares usernameFrom: instance, sc.Username must be
-//     non-empty and colon-free (RFC 7617 §2); if the slot does NOT declare
-//     usernameFrom: instance (a Pack-fixed username, or any non-basic
-//     injection), sc.Username must be empty — there is no slot for an
+//  6. (feat/credential-slot-instance-username, extended by D13) sc.Username
+//     and sc.UsernameSecretKey must not both be set. If that slot's
+//     injection is basic and it declares usernameFrom: instance, exactly one
+//     of sc.Username (non-empty and colon-free, RFC 7617 §2, checked here)
+//     or sc.UsernameSecretKey (colon-checked later instead, at request time,
+//     once the secret store resolves it) must be set; if the slot does NOT
+//     declare usernameFrom: instance (a Pack-fixed username, or any
+//     non-basic injection), neither may be set — there is no slot for an
 //     instance-supplied value to fill.
 //
 // The returned apigateway.ServiceConfig's AllowReadOnlyWrite is copied

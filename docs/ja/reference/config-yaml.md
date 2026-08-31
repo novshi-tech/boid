@@ -484,10 +484,10 @@ services:
 | キー | 型 | 説明 |
 |---|---|---|
 | `services.<name>.uses` | string (`<pack>/<profile>@<version>`) | 導入済み Pack の service profile への参照。`base_url`/`auth` と排他 (両方書くと config load エラー) |
-| `services.<name>.endpoint` | string | profile が `endpoint.configurable: true` を宣言している場合のみ指定可 (指定必須)。それ以外では指定するとエラー。`endpoint_secret_key` と排他 |
+| `services.<name>.endpoint` | string | profile が `endpoint.configurable: true` を宣言している場合のみ指定可 (指定必須 — `endpoint_secret_key` とどちらか一方)。それ以外では指定するとエラー |
 | `services.<name>.endpoint_secret_key` | string | `endpoint` の代わりに secret store から endpoint を引くためのキー参照 (D13)。`endpoint` と排他。詳細は下記 |
 | `services.<name>.credentials.<slot>` | string | profile が宣言する credential slot 名へ secret store の key を bind する。値そのものはここに書かない |
-| `services.<name>.username` | string | profile の credential slot が Basic 認証 (`injection: basic`) かつ `usernameFrom: instance` を宣言している場合のみ指定可 (指定必須)。平文の設定値 (例: Jira Cloud の Atlassian アカウントのメールアドレス) であり secret ではないため `credentials:` とは別の top-level フィールドになっている。profile が固定 username (`username:`) を宣言している場合や basic 以外の injection では指定するとエラー。`username_secret_key` と排他 |
+| `services.<name>.username` | string | profile の credential slot が Basic 認証 (`injection: basic`) かつ `usernameFrom: instance` を宣言している場合のみ指定可 (指定必須 — `username_secret_key` とどちらか一方)。平文の設定値 (例: Jira Cloud の Atlassian アカウントのメールアドレス) であり secret ではないため `credentials:` とは別の top-level フィールドになっている。profile が固定 username (`username:`) を宣言している場合や basic 以外の injection では指定するとエラー |
 | `services.<name>.username_secret_key` | string | `username` の代わりに secret store から username を引くためのキー参照 (D13)。`username` と排他。**`auth.username_secret_key` (D12、free-form service 専用) とは別のフィールド** — `uses:` entry には `auth:` block 自体が書けないため、この top-level フィールドが `uses:` 側の唯一の置き場所になっている |
 
 daemon 起動時に `internal/integrationpack` が `uses:` を実際の `base_url`/`auth` へ脱糖して API gateway の service registry に登録する。参照する Pack が未導入・profile 未宣言・credential slot 不一致・(basic + `usernameFrom: instance` の場合の) username 未指定などは daemon の起動エラーになる (`services` の他エントリと同じ eager validation)。

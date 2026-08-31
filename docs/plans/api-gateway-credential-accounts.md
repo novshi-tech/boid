@@ -293,8 +293,8 @@ secret 化できる (`endpoint_secret_key` / (top-level) `username_secret_key`)*
 1 workspace で使ったあと、**別の workspace (namespace) でも同じ Pack を
 別テナント向けに使いたい**ケース (実例: khi workspace は kameda-hi/aolani の
 Jira、default workspace は urban-b の Jira — 実際に本番で default 側だけ
-`jira-cloud-ubs` という2つ目の named instance を仮置きして運用したあと、
-このD13で1本化した)。ただし account 修飾 (`@`) は使わない —
+`jira-cloud-ubs` という2つ目の named instance を仮置きして運用中 —
+このD13で1本化する予定)。ただし account 修飾 (`@`) は使わない —
 workspace(namespace) は元々1つの identity にしか対応しないので、
 `accountSecretKey` の account 部分を常に空文字のまま使うだけで足りる
 (D2 の「account無し = 無修飾キー」がそのまま効く)。
