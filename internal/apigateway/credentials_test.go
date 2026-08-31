@@ -28,15 +28,38 @@ func TestCredentialProvider_KnowsServiceAndBaseURLFor(t *testing.T) {
 	if c.KnowsService("unknown") {
 		t.Error("KnowsService(unknown) = true, want false")
 	}
-	u, ok := c.BaseURLFor("myapp")
-	if !ok {
-		t.Fatal("BaseURLFor(myapp): not found")
+	u, err := c.BaseURLFor("ws-a", "myapp", "")
+	if err != nil {
+		t.Fatalf("BaseURLFor(myapp): %v", err)
 	}
 	if u.String() != "https://myapp.example.com/api" {
 		t.Errorf("BaseURLFor(myapp) = %q, want %q", u.String(), "https://myapp.example.com/api")
 	}
-	if _, ok := c.BaseURLFor("unknown"); ok {
-		t.Error("BaseURLFor(unknown): ok = true, want false")
+	if _, err := c.BaseURLFor("ws-a", "unknown", ""); err == nil {
+		t.Error("BaseURLFor(unknown): want error, got nil")
+	}
+}
+
+// TestCredentialProvider_BaseURLFor_LiteralNeverCallsResolver pins the
+// backward-compatibility/perf property docs/plans/api-gateway-credential-
+// accounts.md D12 requires: a service with a literal BaseURL (the pre-D12,
+// overwhelmingly common shape) must resolve with ZERO secret-store calls —
+// a resolver that panics on any call proves BaseURLFor never touches it for
+// this service, regardless of namespace/account.
+func TestCredentialProvider_BaseURLFor_LiteralNeverCallsResolver(t *testing.T) {
+	panicResolver := func(namespace, key string) (string, error) {
+		panic("resolver must never be called for a literal base_url service")
+	}
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "myapp", BaseURL: "https://myapp.example.com/api", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "myapp-token"}},
+	}, panicResolver)
+
+	u, err := c.BaseURLFor("ws-a", "myapp", "ubs")
+	if err != nil {
+		t.Fatalf("BaseURLFor: %v", err)
+	}
+	if u.String() != "https://myapp.example.com/api" {
+		t.Errorf("BaseURLFor = %q, want %q", u.String(), "https://myapp.example.com/api")
 	}
 }
 
@@ -526,8 +549,8 @@ func TestCredentialProvider_NilProviderFailsClosed(t *testing.T) {
 	if c.KnowsService("myapp") {
 		t.Error("nil CredentialProvider.KnowsService = true, want false")
 	}
-	if _, ok := c.BaseURLFor("myapp"); ok {
-		t.Error("nil CredentialProvider.BaseURLFor: ok = true, want false")
+	if _, err := c.BaseURLFor("ws-a", "myapp", ""); err == nil {
+		t.Error("nil CredentialProvider.BaseURLFor: want error, got nil")
 	}
 	if c.RequiresAccount("myapp") {
 		t.Error("nil CredentialProvider.RequiresAccount = true, want false")
@@ -538,6 +561,217 @@ func TestCredentialProvider_NilProviderFailsClosed(t *testing.T) {
 	req, _ := http.NewRequest("GET", "https://example.com", nil)
 	if err := c.Inject(req, "ws-a", "myapp", ""); err == nil {
 		t.Error("nil CredentialProvider.Inject: want error, got nil")
+	}
+}
+
+// --- D12: base_url_secret_key / auth.username_secret_key ---
+// docs/plans/api-gateway-credential-accounts.md D12 — the Jira-Cloud-shaped
+// case: a service whose upstream TENANT (subdomain) and login identity, not
+// just the token, differ per account.
+
+// TestCredentialProvider_BaseURLFor_SecretBacked_NoAccount_UsesUnqualifiedKey
+// pins D2 for the new axis: an account-less request against a
+// BaseURLSecretKey-backed service resolves the bare key, byte-identical in
+// shape to how auth.secret_key already behaves.
+func TestCredentialProvider_BaseURLFor_SecretBacked_NoAccount_UsesUnqualifiedKey(t *testing.T) {
+	var gotKey string
+	resolver := func(namespace, key string) (string, error) {
+		gotKey = key
+		return "https://aolani.atlassian.net", nil
+	}
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "jira-api", BaseURLSecretKey: "JIRA_BASE_URL", Auth: ServiceAuth{Kind: AuthBasic, Username: "x", SecretKey: "k"}},
+	}, resolver)
+
+	u, err := c.BaseURLFor("ws-a", "jira-api", "")
+	if err != nil {
+		t.Fatalf("BaseURLFor: %v", err)
+	}
+	if gotKey != "JIRA_BASE_URL" {
+		t.Errorf("resolver was asked for key %q, want %q", gotKey, "JIRA_BASE_URL")
+	}
+	if u.String() != "https://aolani.atlassian.net" {
+		t.Errorf("BaseURLFor = %q, want %q", u.String(), "https://aolani.atlassian.net")
+	}
+}
+
+// TestCredentialProvider_BaseURLFor_SecretBacked_AccountUsesQualifiedKey
+// pins the "credential identity" composition for base_url: account "ubs"
+// against base_url_secret_key "JIRA_BASE_URL" resolves "JIRA_BASE_URL@ubs",
+// and the two accounts resolve to genuinely DIFFERENT hosts — this is the
+// actual motivating scenario (Jira Cloud: one service definition, one
+// tenant per account).
+func TestCredentialProvider_BaseURLFor_SecretBacked_AccountUsesQualifiedKey(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "jira-api", BaseURLSecretKey: "JIRA_BASE_URL", Auth: ServiceAuth{Kind: AuthBasic, Username: "x", SecretKey: "k"}},
+	}, stubResolver(map[string]string{
+		"ws-a/JIRA_BASE_URL":     "https://aolani.atlassian.net",
+		"ws-a/JIRA_BASE_URL@ubs": "https://urban-b.atlassian.net",
+	}))
+
+	uDefault, err := c.BaseURLFor("ws-a", "jira-api", "")
+	if err != nil {
+		t.Fatalf("BaseURLFor(account=\"\"): %v", err)
+	}
+	if uDefault.Host != "aolani.atlassian.net" {
+		t.Errorf("BaseURLFor(account=\"\") host = %q, want %q", uDefault.Host, "aolani.atlassian.net")
+	}
+
+	uUbs, err := c.BaseURLFor("ws-a", "jira-api", "ubs")
+	if err != nil {
+		t.Fatalf("BaseURLFor(account=ubs): %v", err)
+	}
+	if uUbs.Host != "urban-b.atlassian.net" {
+		t.Errorf("BaseURLFor(account=ubs) host = %q, want %q", uUbs.Host, "urban-b.atlassian.net")
+	}
+}
+
+// TestCredentialProvider_BaseURLFor_SecretBacked_NoFallback pins D3 for the
+// new axis: an account-qualified base_url_secret_key that isn't set in the
+// secret store must fail, even though the unqualified key exists — no
+// silent fallback to a different (or no) account's upstream target.
+func TestCredentialProvider_BaseURLFor_SecretBacked_NoFallback(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "jira-api", BaseURLSecretKey: "JIRA_BASE_URL", Auth: ServiceAuth{Kind: AuthBasic, Username: "x", SecretKey: "k"}},
+	}, stubResolver(map[string]string{"ws-a/JIRA_BASE_URL": "https://aolani.atlassian.net"}))
+
+	if _, err := c.BaseURLFor("ws-a", "jira-api", "ubs"); err == nil {
+		t.Error("BaseURLFor(account=ubs) with no \"JIRA_BASE_URL@ubs\" secret set: want error, got nil")
+	}
+}
+
+// TestCredentialProvider_BaseURLFor_SecretBacked_MalformedURLRejected proves
+// the resolved secret-store VALUE is validated with the same rules a
+// literal base_url gets at config-load time (ValidateBaseURL) — a
+// malformed value fails closed instead of producing a nil/garbage URL the
+// caller might dereference.
+func TestCredentialProvider_BaseURLFor_SecretBacked_MalformedURLRejected(t *testing.T) {
+	cases := map[string]string{
+		"not a url at all":             "not a url at all",
+		"missing scheme":               "aolani.atlassian.net",
+		"has a query":                  "https://aolani.atlassian.net?x=1",
+		"non-https, no allow_insecure": "http://aolani.atlassian.net",
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := NewCredentialProvider([]ServiceConfig{
+				{Name: "jira-api", BaseURLSecretKey: "JIRA_BASE_URL", Auth: ServiceAuth{Kind: AuthBasic, Username: "x", SecretKey: "k"}},
+			}, stubResolver(map[string]string{"ws-a/JIRA_BASE_URL": value}))
+			if _, err := c.BaseURLFor("ws-a", "jira-api", ""); err == nil {
+				t.Errorf("BaseURLFor with resolved value %q: want error, got nil", value)
+			}
+		})
+	}
+}
+
+// TestCredentialProvider_BaseURLFor_SecretBacked_AllowInsecurePermitsHTTP
+// proves AllowInsecure reaches the runtime validation path for a
+// secret-backed base_url exactly as it does for a literal one.
+func TestCredentialProvider_BaseURLFor_SecretBacked_AllowInsecurePermitsHTTP(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "internal", BaseURLSecretKey: "INTERNAL_BASE_URL", AllowInsecure: true, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
+	}, stubResolver(map[string]string{"ws-a/INTERNAL_BASE_URL": "http://internal.example.com"}))
+
+	u, err := c.BaseURLFor("ws-a", "internal", "")
+	if err != nil {
+		t.Fatalf("BaseURLFor: %v", err)
+	}
+	if u.String() != "http://internal.example.com" {
+		t.Errorf("BaseURLFor = %q, want %q", u.String(), "http://internal.example.com")
+	}
+}
+
+// TestCredentialProvider_Inject_UsernameSecretKey_AccountQualified pins the
+// auth.username_secret_key half of D12: two accounts of the same service
+// resolve DIFFERENT Basic-auth usernames (the Jira Cloud case — a different
+// login email per tenant), and account "" still resolves the unqualified
+// key (D2).
+func TestCredentialProvider_Inject_UsernameSecretKey_AccountQualified(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "jira-api", BaseURL: "https://aolani.atlassian.net", Auth: ServiceAuth{Kind: AuthBasic, UsernameSecretKey: "JIRA_USERNAME", SecretKey: "JIRA_API_TOKEN"}},
+	}, stubResolver(map[string]string{
+		"ws-a/JIRA_USERNAME":      "naoki.nose@kameda-hi.co.jp",
+		"ws-a/JIRA_USERNAME@ubs":  "nose@urban-b.com",
+		"ws-a/JIRA_API_TOKEN":     "tok-aolani",
+		"ws-a/JIRA_API_TOKEN@ubs": "tok-ubs",
+	}))
+
+	reqDefault, _ := http.NewRequest("GET", "https://aolani.atlassian.net/rest/api/2/issue", nil)
+	if err := c.Inject(reqDefault, "ws-a", "jira-api", ""); err != nil {
+		t.Fatalf("Inject(account=\"\"): %v", err)
+	}
+	user, pass, _ := reqDefault.BasicAuth()
+	if user != "naoki.nose@kameda-hi.co.jp" || pass != "tok-aolani" {
+		t.Errorf("Inject(account=\"\") BasicAuth = (%q, %q), want (%q, %q)", user, pass, "naoki.nose@kameda-hi.co.jp", "tok-aolani")
+	}
+
+	reqUbs, _ := http.NewRequest("GET", "https://urban-b.atlassian.net/rest/api/2/issue", nil)
+	if err := c.Inject(reqUbs, "ws-a", "jira-api", "ubs"); err != nil {
+		t.Fatalf("Inject(account=ubs): %v", err)
+	}
+	user, pass, _ = reqUbs.BasicAuth()
+	if user != "nose@urban-b.com" || pass != "tok-ubs" {
+		t.Errorf("Inject(account=ubs) BasicAuth = (%q, %q), want (%q, %q)", user, pass, "nose@urban-b.com", "tok-ubs")
+	}
+}
+
+// TestCredentialProvider_Inject_UsernameSecretKey_ColonRejectedAtRuntime
+// pins the runtime re-application of the RFC 7617 §2 colon check
+// config.validateServiceConfig only ever runs against a LITERAL
+// auth.username at config-load time — a resolved secret-store value can't
+// be checked until now.
+func TestCredentialProvider_Inject_UsernameSecretKey_ColonRejectedAtRuntime(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "jira-api", BaseURL: "https://aolani.atlassian.net", Auth: ServiceAuth{Kind: AuthBasic, UsernameSecretKey: "JIRA_USERNAME", SecretKey: "k"}},
+	}, stubResolver(map[string]string{
+		"ws-a/JIRA_USERNAME": "bad:username",
+		"ws-a/k":             "tok",
+	}))
+
+	req, _ := http.NewRequest("GET", "https://aolani.atlassian.net/x", nil)
+	if err := c.Inject(req, "ws-a", "jira-api", ""); err == nil {
+		t.Error("Inject with a resolved username containing \":\": want error, got nil")
+	}
+	if req.Header.Get("Authorization") != "" {
+		t.Error("Inject must leave req unmodified when it errors")
+	}
+}
+
+// TestCredentialProvider_Resolve_UsernameSecretKey_FailsFastBeforeInject
+// proves the username_secret_key resolution/validation runs inside Resolve
+// too (the fail-fast pre-check Server.ServeHTTP relies on), not only inside
+// Inject — a broken username secret must 502 before ever proxying, the same
+// posture SecretKey itself already has.
+func TestCredentialProvider_Resolve_UsernameSecretKey_FailsFastBeforeInject(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "jira-api", BaseURL: "https://aolani.atlassian.net", Auth: ServiceAuth{Kind: AuthBasic, UsernameSecretKey: "JIRA_USERNAME", SecretKey: "k"}},
+	}, stubResolver(map[string]string{"ws-a/k": "tok"})) // JIRA_USERNAME deliberately missing
+
+	if err := c.Resolve("ws-a", "jira-api", ""); err == nil {
+		t.Error("Resolve with a missing username_secret_key secret: want error, got nil")
+	}
+}
+
+// TestCredentialProvider_Inject_LiteralUsername_NeverCallsResolverForUsername
+// pins the zero-cost backward-compat property for the username half: a
+// service using the literal auth.Username (no UsernameSecretKey) must never
+// ask the resolver for anything but the token's own SecretKey.
+func TestCredentialProvider_Inject_LiteralUsername_NeverCallsResolverForUsername(t *testing.T) {
+	var gotKeys []string
+	resolver := func(namespace, key string) (string, error) {
+		gotKeys = append(gotKeys, key)
+		return "tok", nil
+	}
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "bb", BaseURL: "https://api.bitbucket.org/2.0", Auth: ServiceAuth{Kind: AuthBasic, Username: "x-bitbucket-api-token-auth", SecretKey: "bb-token"}},
+	}, resolver)
+
+	req, _ := http.NewRequest("GET", "https://api.bitbucket.org/2.0/repositories", nil)
+	if err := c.Inject(req, "ws-a", "bb", ""); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if len(gotKeys) != 1 || gotKeys[0] != "bb-token" {
+		t.Errorf("resolver calls = %v, want exactly [\"bb-token\"] (username is literal, must never be resolved)", gotKeys)
 	}
 }
 

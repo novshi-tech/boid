@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -25,8 +24,25 @@ type ServiceAuthConfig struct {
 	// Required for bearer/basic/header/query; unused for oauth2.
 	SecretKey string `yaml:"secret_key,omitempty"`
 	// Username is the Basic-auth username. Required (and only meaningful)
-	// for kind: basic.
+	// for kind: basic — mutually exclusive with UsernameSecretKey (exactly
+	// one of the two is required for kind: basic; see validateServiceConfig).
 	Username string `yaml:"username,omitempty"`
+	// UsernameSecretKey, when set (kind: basic only), resolves the
+	// Basic-auth username from the secret store instead of using the
+	// literal Username above — account-qualified the same way SecretKey
+	// already is (docs/plans/api-gateway-credential-accounts.md D12).
+	// Motivating case: a Jira-Cloud-shaped service where the login email
+	// differs per tenant/account, not just the token. A secret-store value
+	// is not a "secret" in the traditional sense here (an email address is
+	// config, not confidential material) — this deliberately reuses the
+	// existing account-qualified secret-key mechanism rather than growing
+	// the config SHAPE (docs/plans/api-gateway-credential-accounts.md's own
+	// "却下 3": a services.<name>.accounts.<x> nested block was rejected
+	// for the OAuth case, and re-proposing an equivalent nested block here
+	// for Basic-auth services was considered and rejected again for the
+	// same reason — a growing schema costs more than the secret-store's
+	// mild semantic mismatch for two non-secret leaf values).
+	UsernameSecretKey string `yaml:"username_secret_key,omitempty"`
 	// Header is the header name to set. Required (and only meaningful) for
 	// kind: header.
 	Header string `yaml:"header,omitempty"`
@@ -46,8 +62,19 @@ type ServiceConfig struct {
 	// BaseURL is the upstream base URL (scheme + host, optionally a path
 	// prefix) — never exposed to the sandbox; only the logical service name
 	// in the route path is (docs/plans/api-gateway.md §1).
-	BaseURL string            `yaml:"base_url"`
+	BaseURL string            `yaml:"base_url,omitempty"`
 	Auth    ServiceAuthConfig `yaml:"auth"`
+	// BaseURLSecretKey, when set, resolves BaseURL from the secret store
+	// instead of using the literal field above — account-qualified the
+	// same way auth.secret_key already is (docs/plans/api-gateway-
+	// credential-accounts.md D12). Mutually exclusive with BaseURL; exactly
+	// one is required for a free-form (non-uses:) entry. Motivating case:
+	// Jira Cloud, where the whole upstream tenant (subdomain) differs per
+	// account, not just the credential — this is the same "extend the
+	// existing account-qualified secret-key mechanism rather than grow the
+	// config shape" trade-off UsernameSecretKey documents; see that field's
+	// own doc comment for the full rationale (却下 3).
+	BaseURLSecretKey string `yaml:"base_url_secret_key,omitempty"`
 	// AllowInsecure must be explicitly set to true for BaseURL to use any
 	// scheme other than "https" (codex review finding, round 4: a bare
 	// warning-only posture is not fail-closed — an operator who never reads
@@ -207,28 +234,17 @@ var validServiceAuthKinds = map[string]bool{
 // config.yaml load" invariant). serviceName/fieldName only name the
 // offending services.<name> entry/key in the returned error — fieldName is
 // "base_url" or "endpoint" depending on the caller.
+// This is now a thin wrapper around apigateway.ValidateBaseURL (docs/plans/
+// api-gateway-credential-accounts.md D12) — the SAME check needs to run at
+// request time too, for a services.<name>.base_url_secret_key-backed
+// service whose real base_url isn't known until the secret store resolves
+// it, and internal/apigateway cannot import this package back (the
+// dependency runs config -> apigateway, not the reverse), so the
+// implementation lives there and this function delegates rather than the
+// two packages drifting apart on the same rules. Error text/wording is
+// unchanged — callers/tests asserting on it are unaffected.
 func ValidateServiceURL(serviceName, fieldName, rawURL string, allowInsecure bool) error {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("services[%q]: %q must be an absolute URL with a scheme and host (got %q)", serviceName, fieldName, rawURL)
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("services[%q]: %q must not include a query string or fragment (got %q) — the sandbox's own query string is always forwarded as-is; use auth.kind: query for a fixed, injected query parameter instead", serviceName, fieldName, rawURL)
-	}
-	if u.Scheme != "https" && !allowInsecure {
-		return fmt.Errorf(
-			"services[%q]: %q scheme %q is not https, so this service's injected credential would cross the network in cleartext — "+
-				"set \"allow_insecure: true\" on this service if that is intentional (e.g. an internal test/staging API with no TLS yet)",
-			serviceName, fieldName, u.Scheme)
-	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return fmt.Errorf("services[%q]: %q scheme %q is not supported — the gateway only ever speaks http or https to the upstream, regardless of \"allow_insecure\"", serviceName, fieldName, u.Scheme)
-	}
-	if u.Scheme != "https" {
-		slog.Warn("services: URL does not use https — this service's injected credential will cross the network to the upstream in cleartext",
-			"service", serviceName, "field", fieldName, "url", rawURL, "scheme", u.Scheme)
-	}
-	return nil
+	return apigateway.ValidateBaseURL(serviceName, fieldName, rawURL, allowInsecure)
 }
 
 // validateServiceConfig validates one services.<name> entry, returning a
@@ -295,6 +311,16 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 		if sc.BaseURL != "" {
 			return fmt.Errorf("services[%q]: \"uses\" and \"base_url\" are mutually exclusive — base_url comes from the resolved Integration Pack service profile instead", name)
 		}
+		// base_url_secret_key (docs/plans/api-gateway-credential-accounts.md
+		// D12) has no meaning for a uses: entry either, for the exact same
+		// reason base_url itself does not — the profile's endpoint (sc.
+		// Endpoint) is the only source DesugarService ever reads a uses:
+		// entry's base_url from. Rejected here rather than silently
+		// ignored, matching every other stray-field-under-uses: check in
+		// this function.
+		if sc.BaseURLSecretKey != "" {
+			return fmt.Errorf("services[%q]: \"uses\" and \"base_url_secret_key\" are mutually exclusive — base_url comes from the resolved Integration Pack service profile instead", name)
+		}
 		if sc.Auth != (ServiceAuthConfig{}) {
 			return fmt.Errorf("services[%q]: \"uses\" and \"auth\" are mutually exclusive — credential injection comes from the resolved Integration Pack service profile instead (set \"credentials\" to bind SecretStore keys to the profile's declared slots)", name)
 		}
@@ -341,20 +367,38 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 		return fmt.Errorf("services[%q]: \"username\" requires \"uses\" to be set (for a free-form entry, use \"auth.username\" instead)", name)
 	}
 
-	if sc.BaseURL == "" {
-		return fmt.Errorf("services[%q]: missing required \"base_url\" field", name)
+	// base_url / base_url_secret_key (docs/plans/api-gateway-credential-
+	// accounts.md D12): mutually exclusive, exactly one required for a
+	// free-form entry.
+	if sc.BaseURL == "" && sc.BaseURLSecretKey == "" {
+		return fmt.Errorf("services[%q]: missing required \"base_url\" (or \"base_url_secret_key\") field", name)
 	}
-	// Parsed and scheme/host-checked here, at config-load time, rather than
-	// left for apigateway.NewCredentialProvider's own defensive parse to
-	// discover later (internal/server/wire.go). That constructor's doc
-	// comment states an "already validated by config load" invariant for
-	// exactly this reason — a malformed base_url should fail `boid start`
-	// loudly (the same posture gateway.forges.*.host gets), not silently
-	// vanish from the gateway's service registry with only a log warning
-	// once the daemon is already running. ValidateServiceURL is the exact
-	// same check the uses: branch's own "endpoint" field above shares (F1).
-	if err := ValidateServiceURL(name, "base_url", sc.BaseURL, sc.AllowInsecure); err != nil {
-		return err
+	if sc.BaseURL != "" && sc.BaseURLSecretKey != "" {
+		return fmt.Errorf("services[%q]: \"base_url\" and \"base_url_secret_key\" are mutually exclusive", name)
+	}
+	if sc.BaseURL != "" {
+		// Parsed and scheme/host-checked here, at config-load time, rather
+		// than left for apigateway.NewCredentialProvider's own defensive
+		// parse to discover later (internal/server/wire.go). That
+		// constructor's doc comment states an "already validated by config
+		// load" invariant for exactly this reason — a malformed base_url
+		// should fail `boid start` loudly (the same posture
+		// gateway.forges.*.host gets), not silently vanish from the
+		// gateway's service registry with only a log warning once the
+		// daemon is already running. ValidateServiceURL is the exact same
+		// check the uses: branch's own "endpoint" field above shares (F1).
+		//
+		// This invariant does NOT extend to base_url_secret_key (D12): that
+		// value doesn't exist at config-load time — it lives in the secret
+		// store, resolved and validated by
+		// apigateway.CredentialProvider.BaseURLFor at request time instead
+		// (ValidateBaseURL — the same shared implementation this call
+		// delegates to). A malformed base_url_secret_key VALUE therefore
+		// fails at request time (502), not at `boid start` — an accepted,
+		// necessary trade-off of deferring the value to the secret store.
+		if err := ValidateServiceURL(name, "base_url", sc.BaseURL, sc.AllowInsecure); err != nil {
+			return err
+		}
 	}
 	if !validServiceAuthKinds[sc.Auth.Kind] {
 		return fmt.Errorf("services[%q]: auth.kind: unrecognized %q (want one of bearer, basic, header, query, oauth2)", name, sc.Auth.Kind)
@@ -365,8 +409,13 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 			return fmt.Errorf("services[%q]: auth.kind bearer requires \"secret_key\"", name)
 		}
 	case apigateway.AuthBasic:
-		if sc.Auth.Username == "" {
-			return fmt.Errorf("services[%q]: auth.kind basic requires \"username\"", name)
+		// auth.username / auth.username_secret_key (D12): mutually
+		// exclusive, exactly one required.
+		if sc.Auth.Username == "" && sc.Auth.UsernameSecretKey == "" {
+			return fmt.Errorf("services[%q]: auth.kind basic requires \"username\" (or \"username_secret_key\")", name)
+		}
+		if sc.Auth.Username != "" && sc.Auth.UsernameSecretKey != "" {
+			return fmt.Errorf("services[%q]: auth.username and auth.username_secret_key are mutually exclusive", name)
 		}
 		// RFC 7617 §2: the userid (username) component of a Basic
 		// credential must not contain a colon — the credential is built as
@@ -378,6 +427,11 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 		// just base64-encodes "username:password" verbatim), so this would
 		// otherwise pass config-load cleanly and only surface as a
 		// confusing upstream 401 at request time.
+		//
+		// Only checked for the literal Username here — a
+		// UsernameSecretKey-backed value doesn't exist at config-load time
+		// (D12); CredentialProvider.resolveUsername re-applies this exact
+		// check once the secret store resolves it, at request time.
 		if strings.Contains(sc.Auth.Username, ":") {
 			return fmt.Errorf("services[%q]: auth.username %q must not contain \":\" (RFC 7617 §2 — the Basic credential is built as \"username:secret\", so a colon in the username changes what the upstream parses as each half)", name, sc.Auth.Username)
 		}
@@ -479,15 +533,18 @@ func (c Config) APIGatewayServices() []apigateway.ServiceConfig {
 			continue
 		}
 		out = append(out, apigateway.ServiceConfig{
-			Name:    name,
-			BaseURL: sc.BaseURL,
+			Name:             name,
+			BaseURL:          sc.BaseURL,
+			BaseURLSecretKey: sc.BaseURLSecretKey,
+			AllowInsecure:    sc.AllowInsecure,
 			Auth: apigateway.ServiceAuth{
-				Kind:      apigateway.AuthKind(sc.Auth.Kind),
-				SecretKey: sc.Auth.SecretKey,
-				Username:  sc.Auth.Username,
-				Header:    sc.Auth.Header,
-				Query:     sc.Auth.Query,
-				Provider:  sc.Auth.Provider,
+				Kind:              apigateway.AuthKind(sc.Auth.Kind),
+				SecretKey:         sc.Auth.SecretKey,
+				Username:          sc.Auth.Username,
+				UsernameSecretKey: sc.Auth.UsernameSecretKey,
+				Header:            sc.Auth.Header,
+				Query:             sc.Auth.Query,
+				Provider:          sc.Auth.Provider,
 			},
 			AllowReadOnlyWrite: sc.AllowReadOnlyWrite,
 			RequireAccount:     sc.RequireAccount,

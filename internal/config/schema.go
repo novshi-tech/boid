@@ -171,6 +171,12 @@ var Schema = []FieldSpec{
 	// enforces that at document-decode time, not here — Schema only
 	// governs which KEYS exist, not their kind-conditional requiredness).
 	{Path: "services.*.base_url", Kind: KindString, Reload: ReloadRestartRequired},
+	// services.*.base_url_secret_key / services.*.auth.username_secret_key
+	// (docs/plans/api-gateway-credential-accounts.md D12): registered here
+	// from day one — see the allow_readonly_write/require_account comment
+	// two entries below for what happens to a services.* leaf that skips
+	// this step (TestServiceConfigSchema_Exhaustive would also catch it).
+	{Path: "services.*.base_url_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 	// services.*.allow_insecure (codex review round 4 finding): required —
 	// not merely a suggestion — for base_url to use a non-https scheme. See
 	// validateServiceConfig's own doc comment in apigateway.go.
@@ -203,6 +209,7 @@ var Schema = []FieldSpec{
 		EnumValues: []string{"bearer", "basic", "header", "query", "oauth2"}},
 	{Path: "services.*.auth.secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.username", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.username_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.header", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.query", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.provider", Kind: KindString, Reload: ReloadRestartRequired},
