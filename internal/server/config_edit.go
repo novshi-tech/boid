@@ -514,6 +514,11 @@ var restartFieldExtractorExemptions = map[string]string{
 	// ever could.
 	"services.*.base_url":       "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.allow_insecure": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	// services.*.base_url_secret_key / services.*.auth.username_secret_key
+	// (docs/plans/api-gateway-credential-accounts.md D12) — same reasoning
+	// as base_url/auth.username just above.
+	"services.*.base_url_secret_key":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.username_secret_key": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	// services.*.allow_readonly_write/require_account (PR #1040 opus
 	// review, item 1) — same reasoning as allow_insecure just above.
 	"services.*.allow_readonly_write": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
@@ -651,6 +656,12 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			if o.BaseURL != n.BaseURL {
 				changed = append(changed, name+".base_url")
 			}
+			// base_url_secret_key (docs/plans/api-gateway-credential-
+			// accounts.md D12) — same per-leaf diff treatment as base_url
+			// itself just above.
+			if o.BaseURLSecretKey != n.BaseURLSecretKey {
+				changed = append(changed, name+".base_url_secret_key")
+			}
 			if o.AllowInsecure != n.AllowInsecure {
 				changed = append(changed, name+".allow_insecure")
 			}
@@ -674,6 +685,12 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			}
 			if o.Auth.Username != n.Auth.Username {
 				changed = append(changed, name+".auth.username")
+			}
+			// auth.username_secret_key (docs/plans/api-gateway-credential-
+			// accounts.md D12) — same per-leaf diff treatment as
+			// auth.username itself just above.
+			if o.Auth.UsernameSecretKey != n.Auth.UsernameSecretKey {
+				changed = append(changed, name+".auth.username_secret_key")
 			}
 			if o.Auth.Header != n.Auth.Header {
 				changed = append(changed, name+".auth.header")

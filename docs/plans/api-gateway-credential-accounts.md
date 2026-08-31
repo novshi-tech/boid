@@ -3,9 +3,13 @@
 ステータス: PR-1 (path 分割・static kind の account 対応) マージ済み (#1037)。
 PR-2 (credentialID・oauth2 の account 対応) マージ済み (#1038)。PR-3
 (`boid secret oauth login --account`) マージ済み (#1039)。PR-4
-(`services.<name>.require_account`) は本 PR で実装完了 — これで PR 分割は
-全て完了。`internal/server/connector_exec.go` の base/account 分割は本 PR
-のスコープに含めず、独立の後続タスクへ送った（下記「PR 分割」節参照）。
+(`services.<name>.require_account`) マージ済み (#1040) — ここまでで当初の
+PR 分割は完了。`internal/server/connector_exec.go` の base/account 分割は
+このスコープに含めず、独立の後続タスクへ送った（下記「PR 分割」節参照）。
+
+PR-5 (D12: `base_url_secret_key` / `auth.username_secret_key`) — Jira Cloud
+のような「テナントごとに subdomain もログインアカウントも変わる」service を
+1 つの `services.<name>` 定義で扱えるようにする拡張。詳細は下記 D12 節。
 
 ## 目的
 
@@ -253,6 +257,34 @@ memCache キー (D6) は account ごとに分かれるが、実際に取得さ�
 
 英数字・`-`・`_` のみ、1〜64 文字。`@` `/` `:` は禁止 (キー構成とパス分割の両方を
 壊すため)。`parsePath` で弾き、400 を返す。
+
+**D12. base_url / auth.username も account で修飾できる
+(`base_url_secret_key` / `auth.username_secret_key`)**
+
+動機は Jira Cloud のような「同一プロダクトだがテナントごとにサブドメインも
+ログインアカウントも変わる」service。D1〜D11 の account 修飾は
+`auth.secret_key` (と oauth2 の refresh_token) しか対象にしておらず、
+base_url とauth.username は service 定義に1個で固定だった。そのため今は
+`jira-api` / `jira-api-ubs` のように service 自体を複製している。
+
+機構は D1 の `accountSecretKey` をそのまま base_url と username にも
+広げるだけ — `services.<name>.base_url_secret_key` /
+`services.<name>.auth.username_secret_key` を新設し、値を secret store から
+account 修飾キー (`<key>@<account>`、無指定なら `<key>`) で引く。
+`services.<name>.accounts.<x>: {...}` のような入れ子ブロックは追加しない
+(却下 3 と同じ理由 — account 追加のたびに config 編集 + daemon 再起動が要る
+構造化ブロックより、secret 投入だけで完結する既存軸の再利用のほうが運用が
+軽い)。base_url も username も本来「秘密」ではない (ドメイン名・メール
+アドレス) が、config のスキーマを増やすより、既存の account 修飾済み
+secret-key 機構をそのまま延長するトレードオフを取る。
+
+**D4 との関係:** D4「認可判定は base service 名で行う」は変わらない —
+`Entry.Services[name]` / `AllowsReadOnlyWrite(name)` は今回も account を
+落とした名前で引く。変わるのは `BaseURLFor` が namespace/account も受け取り、
+`base_url_secret_key` を立てた service だけ account ごとに異なる upstream を
+解決するようになった点だけ。D4 が当時 `BaseURLFor` を「base 名で引く」例に
+挙げていたのは、その時点で account という軸自体が存在しなかったからであり、
+ルーティング先を account ごとに変えないことを別途決めていたわけではない。
 
 ## PR 分割
 

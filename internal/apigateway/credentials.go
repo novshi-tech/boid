@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // AuthKind selects how the gateway injects credentials into a proxied
@@ -36,7 +37,7 @@ const (
 // ServiceAuth is the resolved (post config-validation) shape of one
 // service's auth block. Which fields are meaningful depends on Kind:
 //   - bearer: SecretKey
-//   - basic:  Username, SecretKey
+//   - basic:  Username or UsernameSecretKey, SecretKey
 //   - header: Header, SecretKey
 //   - query:  Query, SecretKey
 //   - oauth2: Provider (names a CredentialProvider's wired OAuth2AccessTokenSource
@@ -48,6 +49,15 @@ type ServiceAuth struct {
 	Header    string
 	Query     string
 	Provider  string
+	// UsernameSecretKey, when non-empty (kind: basic only), resolves the
+	// Basic-auth username from the secret store instead of using the
+	// literal Username field — account-qualified via the same
+	// accountSecretKey composition SecretKey already uses (docs/plans/
+	// api-gateway-credential-accounts.md D12). Mutually exclusive with
+	// Username; config.validateServiceConfig enforces that at load time.
+	// Motivating case: a Jira-Cloud-shaped service where the login email
+	// differs per tenant/account, not just the token.
+	UsernameSecretKey string
 }
 
 // ServiceConfig declares one logical service the gateway can proxy to:
@@ -57,6 +67,25 @@ type ServiceConfig struct {
 	Name    string
 	BaseURL string
 	Auth    ServiceAuth
+	// BaseURLSecretKey, when non-empty, resolves BaseURL from the secret
+	// store instead of using the literal BaseURL field — account-qualified
+	// via the same accountSecretKey composition auth.SecretKey already uses
+	// (docs/plans/api-gateway-credential-accounts.md D12). Mutually
+	// exclusive with BaseURL; config.validateServiceConfig enforces that at
+	// load time. Motivating case: Jira Cloud, where the whole upstream
+	// tenant (subdomain) differs per account, not just the credential —
+	// D4's "1 service, credential 差し替えで使い回す" axis extended to the
+	// routing target as well as the secret.
+	BaseURLSecretKey string
+	// AllowInsecure mirrors config.ServiceConfig.AllowInsecure — needed here
+	// (unlike before D12) because a BaseURLSecretKey-backed base_url can
+	// only be validated (https-unless-allowed, absolute URL, no query/
+	// fragment) at REQUEST time, once the secret store value is known,
+	// never at config-load time the way a literal BaseURL is. Unused when
+	// BaseURLSecretKey is empty — the literal BaseURL path was already
+	// validated by config.validateServiceConfig before this ServiceConfig
+	// was ever built.
+	AllowInsecure bool
 	// AllowReadOnlyWrite opts this ONE service out of the ordinary
 	// read-only→GET/HEAD-only gate (Server.ServeHTTP, isSafeMethod).
 	// docs/plans/api-gateway.md §論点 (2026-08-14 追加決定): readonly job
@@ -90,10 +119,22 @@ type ServiceConfig struct {
 type SecretResolver func(namespace, key string) (string, error)
 
 // resolvedService is a ServiceConfig with its base_url pre-parsed once at
-// construction time, so per-request handling never re-parses it.
+// construction time, so per-request handling never re-parses it — UNLESS
+// baseURLSecretKey is set (D12), in which case baseURL is nil and the real
+// URL is resolved lazily, per (namespace, account), on every BaseURLFor
+// call: there is no literal value to pre-parse until the secret store is
+// consulted, mirroring how oauth2's access token is already resolved lazily
+// per request rather than cached at construction time. Exactly one of
+// baseURL/baseURLSecretKey is set for any resolvedService in the map (D12).
 type resolvedService struct {
-	auth               ServiceAuth
-	baseURL            *url.URL
+	auth             ServiceAuth
+	baseURL          *url.URL
+	baseURLSecretKey string
+	// allowInsecure is only consulted when baseURLSecretKey is set — see
+	// BaseURLFor. A literal baseURL was already https-validated (or
+	// explicitly allowed not to be) by config.validateServiceConfig before
+	// NewCredentialProvider ever ran.
+	allowInsecure      bool
 	allowReadOnlyWrite bool
 	requireAccount     bool
 }
@@ -112,15 +153,31 @@ type CredentialProvider struct {
 
 // NewCredentialProvider builds a CredentialProvider from the daemon's
 // configured services and the resolver used to fetch each service's secret
-// value. A service whose base_url fails to parse, or parses without both a
-// scheme and a host, is skipped with a warning rather than aborting
+// value. A service whose LITERAL base_url fails to parse, or parses without
+// both a scheme and a host, is skipped with a warning rather than aborting
 // construction — config.yaml validation (internal/config) is expected to
 // have already rejected this at load time, so reaching this point is
 // defensive-only, matching internal/config.GatewayConfig.HostConfigs's own
-// "already validated" invariant note.
+// "already validated" invariant note. This "already validated by config
+// load" invariant does NOT extend to a BaseURLSecretKey-backed service
+// (D12): that service's real base_url string does not exist yet at
+// config-load time (it lives in the secret store, account-qualified), so
+// there is nothing to parse/skip here — such a service is always admitted
+// into the map in secret-backed mode, and BaseURLFor validates the resolved
+// value at request time instead (see that method's own doc comment).
 func NewCredentialProvider(services []ServiceConfig, resolver SecretResolver) *CredentialProvider {
 	m := make(map[string]resolvedService, len(services))
 	for _, s := range services {
+		if s.BaseURLSecretKey != "" {
+			m[s.Name] = resolvedService{
+				auth:               s.Auth,
+				baseURLSecretKey:   s.BaseURLSecretKey,
+				allowInsecure:      s.AllowInsecure,
+				allowReadOnlyWrite: s.AllowReadOnlyWrite,
+				requireAccount:     s.RequireAccount,
+			}
+			continue
+		}
 		u, err := url.Parse(s.BaseURL)
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			slog.Warn("apigateway: service has an invalid base_url; skipping",
@@ -190,17 +247,59 @@ func (c *CredentialProvider) OAuth2ProviderFor(service string) (provider string,
 	return rs.auth.Provider, true
 }
 
-// BaseURLFor returns the parsed upstream base URL for name, or ok=false when
-// name is unknown (or c is nil).
-func (c *CredentialProvider) BaseURLFor(name string) (u *url.URL, ok bool) {
+// BaseURLFor returns the upstream base URL for (name, account). For a
+// LITERAL base_url service this is the pre-parsed value from
+// NewCredentialProvider — a zero-cost lookup, no resolver call, byte-
+// identical to the pre-D12 behavior. For a BaseURLSecretKey-backed service
+// (D12) it resolves "<key>@<account>" (or the bare key when account is
+// empty — D2) from the secret store, scoped to namespace, and validates the
+// result with the same rules config.ValidateServiceURL enforces at
+// config-load time for a literal base_url (ValidateBaseURL — the shared
+// implementation both call): an absolute URL, no query/fragment, https
+// unless the service's AllowInsecure opted out. namespace/account are
+// therefore ignored entirely for a literal-base_url service (D4 is
+// unaffected there: no service's AUTHORIZATION axis changes because of this
+// method — see docs/plans/api-gateway-credential-accounts.md D12's own
+// scope note).
+//
+// Returns an error — never a bare ok=false — because a secret-backed
+// resolution has real failure modes (missing secret, malformed URL value)
+// that deserve a specific message, the same shape Resolve/Inject already
+// use for credential resolution. Server.ServeHTTP logs the full error
+// server-side but must never echo it (or the resolved URL) to the sandbox —
+// see that call site's own comment.
+func (c *CredentialProvider) BaseURLFor(namespace, name, account string) (*url.URL, error) {
 	if c == nil {
-		return nil, false
+		return nil, fmt.Errorf("apigateway: no credential provider configured")
 	}
 	rs, ok := c.services[name]
 	if !ok {
-		return nil, false
+		return nil, fmt.Errorf("apigateway: service %q is not configured", name)
 	}
-	return rs.baseURL, true
+	if rs.baseURL != nil {
+		return rs.baseURL, nil
+	}
+	if c.resolver == nil {
+		return nil, fmt.Errorf("apigateway: no secret resolver configured for service %q", name)
+	}
+	key := accountSecretKey(rs.baseURLSecretKey, account)
+	raw, err := c.resolver(namespace, key)
+	if err != nil {
+		return nil, fmt.Errorf("apigateway: resolve base_url secret %q for service %q (namespace %q): %w", key, name, namespace, err)
+	}
+	if err := ValidateBaseURL(name, "base_url", raw, rs.allowInsecure); err != nil {
+		return nil, fmt.Errorf("apigateway: resolved base_url for service %q (namespace %q, account %q) failed validation: %w", name, namespace, account, err)
+	}
+	// ValidateBaseURL already proved raw parses cleanly with a scheme and
+	// host — this second Parse cannot fail in practice; err is checked
+	// anyway rather than assumed away, matching this file's own posture on
+	// "should be unreachable" paths elsewhere (server.go's upstreamURL
+	// parse has the identical shape).
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("apigateway: resolved base_url for service %q parsed cleanly during validation but failed on re-parse: %w", name, err)
+	}
+	return u, nil
 }
 
 // AllowsReadOnlyWrite reports whether name's ServiceConfig opted into the
@@ -329,6 +428,20 @@ func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 		if c.resolver == nil {
 			return fmt.Errorf("apigateway: no secret resolver configured for service %q", name)
 		}
+		// AuthBasic-only: a UsernameSecretKey-backed username (D12) has to
+		// resolve (and pass the RFC 7617 colon check) here too, not just in
+		// Inject — this is the fail-fast pre-check Server.ServeHTTP relies
+		// on to 502 before ever proxying, so a broken username secret must
+		// surface here exactly like a broken SecretKey secret does just
+		// below. rs.auth.Kind is checked rather than unconditionally
+		// calling resolveUsername, which would silently no-op (return
+		// rs.auth.Username, nil) for bearer/header/query anyway — the
+		// explicit guard just makes the AuthBasic-only intent visible.
+		if rs.auth.Kind == AuthBasic {
+			if _, err := c.resolveUsername(namespace, name, account, rs); err != nil {
+				return err
+			}
+		}
 		key := accountSecretKey(rs.auth.SecretKey, account)
 		if _, err := c.resolver(namespace, key); err != nil {
 			return fmt.Errorf("apigateway: resolve secret %q for service %q (namespace %q): %w", key, name, namespace, err)
@@ -337,6 +450,38 @@ func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 	default:
 		return fmt.Errorf("apigateway: service %q has unrecognized auth kind %q", name, rs.auth.Kind)
 	}
+}
+
+// resolveUsername returns the Basic-auth username to inject for rs: the
+// literal rs.auth.Username when UsernameSecretKey is empty (byte-identical
+// to pre-D12 behavior, no resolver call), or the account-qualified
+// (accountSecretKey — the same composition SecretKey uses) secret-store
+// value otherwise (docs/plans/api-gateway-credential-accounts.md D12).
+//
+// The RFC 7617 §2 "must not contain a colon" check
+// config.validateServiceConfig applies at config-load time for a literal
+// Username (a Basic credential is built as "username:password", split on
+// the FIRST colon, so a colon in the username changes what the upstream
+// parses as each half) is re-applied here for a resolved secret-store
+// value, which cannot be checked until this point — net/http's
+// SetBasicAuth has no validation of its own, it just base64-encodes
+// verbatim.
+func (c *CredentialProvider) resolveUsername(namespace, name, account string, rs resolvedService) (string, error) {
+	if rs.auth.UsernameSecretKey == "" {
+		return rs.auth.Username, nil
+	}
+	if c.resolver == nil {
+		return "", fmt.Errorf("apigateway: no secret resolver configured for service %q", name)
+	}
+	key := accountSecretKey(rs.auth.UsernameSecretKey, account)
+	username, err := c.resolver(namespace, key)
+	if err != nil {
+		return "", fmt.Errorf("apigateway: resolve username secret %q for service %q (namespace %q): %w", key, name, namespace, err)
+	}
+	if strings.Contains(username, ":") {
+		return "", fmt.Errorf("apigateway: resolved auth.username_secret_key value for service %q must not contain \":\" (RFC 7617 §2 — the Basic credential is built as \"username:secret\", so a colon in the username changes what the upstream parses as each half)", name)
+	}
+	return username, nil
 }
 
 // Inject resolves name/account's configured secret — scoped to namespace —
@@ -390,7 +535,11 @@ func (c *CredentialProvider) Inject(req *http.Request, namespace, name, account 
 	case AuthBearer:
 		req.Header.Set("Authorization", "Bearer "+secret)
 	case AuthBasic:
-		req.SetBasicAuth(rs.auth.Username, secret)
+		username, err := c.resolveUsername(namespace, name, account, rs)
+		if err != nil {
+			return err
+		}
+		req.SetBasicAuth(username, secret)
 	case AuthHeader:
 		req.Header.Set(rs.auth.Header, secret)
 	case AuthQuery:

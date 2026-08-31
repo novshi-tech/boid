@@ -277,6 +277,110 @@ services:
 	}
 }
 
+// TestLoadFromPath_Services_BaseURLSecretKeyValid pins docs/plans/
+// api-gateway-credential-accounts.md D12: base_url_secret_key is a valid
+// alternative to a literal base_url — a service that sets only the former
+// must load cleanly (no "missing required base_url" error, and no attempt
+// to URL-validate a value that doesn't exist at config-load time).
+func TestLoadFromPath_Services_BaseURLSecretKeyValid(t *testing.T) {
+	content := `
+services:
+  jira-api:
+    base_url_secret_key: JIRA_BASE_URL
+    require_account: true
+    auth: { kind: basic, username_secret_key: JIRA_USERNAME, secret_key: JIRA_API_TOKEN }
+`
+	if err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content); err != nil {
+		t.Fatalf("want no error for a valid base_url_secret_key/username_secret_key service, got %v", err)
+	}
+}
+
+// TestLoadFromPath_Services_BaseURLAndBaseURLSecretKeyMutuallyExclusive pins
+// D12's mutual-exclusivity rule: a service must not set both base_url and
+// base_url_secret_key.
+func TestLoadFromPath_Services_BaseURLAndBaseURLSecretKeyMutuallyExclusive(t *testing.T) {
+	content := `
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    base_url_secret_key: MYAPP_BASE_URL
+    auth: { kind: bearer, secret_key: k }
+`
+	err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content)
+	if err == nil {
+		t.Fatal("want error for base_url and base_url_secret_key both set, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error %q does not mention mutual exclusivity", err.Error())
+	}
+}
+
+// TestLoadFromPath_Services_MissingBaseURLAndBaseURLSecretKeyRejected pins
+// D12's "exactly one required" half: neither base_url nor
+// base_url_secret_key set is still an error, the same as pre-D12.
+func TestLoadFromPath_Services_MissingBaseURLAndBaseURLSecretKeyRejected(t *testing.T) {
+	content := `
+services:
+  myapp:
+    auth: { kind: bearer, secret_key: k }
+`
+	if err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content); err == nil {
+		t.Fatal("want error for neither base_url nor base_url_secret_key set, got nil")
+	}
+}
+
+// TestLoadFromPath_Services_UsernameSecretKeyValid is
+// TestLoadFromPath_Services_BaseURLSecretKeyValid's auth.username_secret_key
+// counterpart in isolation (a literal base_url, only the username sourced
+// from the secret store) — proves the two new fields are independently
+// usable, not only together.
+func TestLoadFromPath_Services_UsernameSecretKeyValid(t *testing.T) {
+	content := `
+services:
+  jira-api:
+    base_url: https://aolani.atlassian.net
+    auth: { kind: basic, username_secret_key: JIRA_USERNAME, secret_key: JIRA_API_TOKEN }
+`
+	if err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content); err != nil {
+		t.Fatalf("want no error for a valid username_secret_key service, got %v", err)
+	}
+}
+
+// TestLoadFromPath_Services_UsernameAndUsernameSecretKeyMutuallyExclusive
+// pins D12's mutual-exclusivity rule for the auth.username pair.
+func TestLoadFromPath_Services_UsernameAndUsernameSecretKeyMutuallyExclusive(t *testing.T) {
+	content := `
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    auth: { kind: basic, username: x, username_secret_key: MYAPP_USERNAME, secret_key: k }
+`
+	err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content)
+	if err == nil {
+		t.Fatal("want error for auth.username and auth.username_secret_key both set, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error %q does not mention mutual exclusivity", err.Error())
+	}
+}
+
+// TestLoadFromPath_Services_MissingUsernameAndUsernameSecretKeyRejected pins
+// D12's "exactly one required" half for kind: basic, unchanged from pre-D12
+// (TestLoadFromPath_Services_BasicMissingUsernameRejected already covers the
+// bare "no username at all" case — this one is the same scenario stated
+// against the new pair of fields for clarity).
+func TestLoadFromPath_Services_MissingUsernameAndUsernameSecretKeyRejected(t *testing.T) {
+	content := `
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    auth: { kind: basic, secret_key: k }
+`
+	if err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content); err == nil {
+		t.Fatal("want error for neither auth.username nor auth.username_secret_key set, got nil")
+	}
+}
+
 func TestLoadFromPath_Services_HeaderMissingHeaderNameRejected(t *testing.T) {
 	content := `
 services:
@@ -651,6 +755,29 @@ services:
 	}
 	if !strings.Contains(err.Error(), "uses") || !strings.Contains(err.Error(), "base_url") {
 		t.Errorf("error should mention both uses and base_url, got: %v", err)
+	}
+}
+
+// TestLoadFromPath_Services_UsesExclusiveWithBaseURLSecretKeyRejected is
+// UsesExclusiveWithBaseURLRejected's base_url_secret_key: counterpart
+// (docs/plans/api-gateway-credential-accounts.md D12) — a uses: entry's
+// base_url always comes from the resolved Integration Pack profile's
+// endpoint, never from base_url_secret_key either.
+func TestLoadFromPath_Services_UsesExclusiveWithBaseURLSecretKeyRejected(t *testing.T) {
+	content := `
+services:
+  customer-jira:
+    uses: jira-cloud/jira-cloud@1.2.0
+    base_url_secret_key: JIRA_BASE_URL
+    credentials:
+      token: JIRA_TOKEN
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for uses: + base_url_secret_key:, got nil")
+	}
+	if !strings.Contains(err.Error(), "uses") || !strings.Contains(err.Error(), "base_url_secret_key") {
+		t.Errorf("error should mention both uses and base_url_secret_key, got: %v", err)
 	}
 }
 

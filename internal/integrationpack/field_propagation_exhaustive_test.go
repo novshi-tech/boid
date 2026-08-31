@@ -21,6 +21,21 @@ var serviceConfigPassthroughExclusions = map[string]string{
 		"of its own) — the two paths deliberately read DIFFERENT source " +
 		"fields into this one field, so a naive same-name/same-type " +
 		"passthrough check would be wrong here.",
+	// BaseURLSecretKey (docs/plans/api-gateway-credential-accounts.md D12)
+	// is a string field, which this test cannot yet synthesize a
+	// distinguishing value for (see the Kind() != reflect.Bool check
+	// below) — but more fundamentally, it has no meaning for a uses: entry
+	// at all: a uses:-backed service's base_url always comes from
+	// sc.Endpoint (the same reason BaseURL itself is excluded above), never
+	// from a literal-or-secret-backed pair of fields the way a free-form
+	// entry's does. validateServiceConfig rejects setting
+	// base_url_secret_key alongside uses: outright, so DesugarService never
+	// even sees a populated value to (not) propagate.
+	"BaseURLSecretKey": "a uses: entry's base_url always comes from " +
+		"sc.Endpoint via DesugarService (the same reason BaseURL itself " +
+		"is excluded above) — base_url_secret_key has no meaning for a " +
+		"uses: entry, and validateServiceConfig rejects setting it " +
+		"alongside uses:.",
 }
 
 // TestServiceConfigFieldPropagation_Exhaustive is the item-4 exhaustiveness
@@ -116,7 +131,11 @@ func TestServiceConfigFieldPropagation_Exhaustive(t *testing.T) {
 		})
 	}
 
-	want := map[string]bool{"AllowReadOnlyWrite": true, "RequireAccount": true}
+	// AllowInsecure (docs/plans/api-gateway-credential-accounts.md D12) is a
+	// new same-name/same-type field on BOTH structs as of this change — see
+	// the DesugarService/resolve.go propagation this test's own failure
+	// pointed at before that fix landed.
+	want := map[string]bool{"AllowReadOnlyWrite": true, "RequireAccount": true, "AllowInsecure": true}
 	if len(checked) != len(want) {
 		t.Fatalf("round-trip-checked fields = %v, want exactly %v — a new same-name/same-type field appeared on both structs: give it a round-trip check (it will run automatically) and update `want` here, or add it to serviceConfigPassthroughExclusions with a reason", checked, want)
 	}

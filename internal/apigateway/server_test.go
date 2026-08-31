@@ -45,6 +45,17 @@ func (r *recordingRecorder) count() int {
 	return len(r.calls)
 }
 
+// expectedBasicAuthHeader returns the exact "Authorization" header value
+// net/http's own SetBasicAuth produces for (username, password) — used
+// instead of hand-rolling base64 in a test, so the expectation and the
+// production code (CredentialProvider.Inject's req.SetBasicAuth call) are
+// guaranteed to agree on the encoding.
+func expectedBasicAuthHeader(username, password string) string {
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	req.SetBasicAuth(username, password)
+	return req.Header.Get("Authorization")
+}
+
 func TestServer_ProxiesWithBearerInjection(t *testing.T) {
 	var gotAuth, gotPath, gotQuery string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -448,6 +459,183 @@ func TestServer_AccountQualifiedRequest_NoFallbackReturnsBadGateway(t *testing.T
 // with 400, and the recorder sees that 400 the same way it sees an existing
 // 403/502 rejection (recSvc == the base name, since there is no account to
 // fold in).
+// TestServer_JiraCloudScenario_OneServiceTwoAccountsDifferentHostAndUsername
+// is docs/plans/api-gateway-credential-accounts.md D12's actual motivating
+// case, proven end-to-end through Server.ServeHTTP: ONE services.<name>
+// entry (base_url_secret_key + auth.username_secret_key), two accounts,
+// each request landing on a DIFFERENT upstream server with a DIFFERENT
+// Basic-auth username — the thing two separate services.jira-api /
+// services.jira-api-ubs entries had to exist for before this feature.
+func TestServer_JiraCloudScenario_OneServiceTwoAccountsDifferentHostAndUsername(t *testing.T) {
+	var aolaniAuth, ubsAuth string
+	aolani := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		aolaniAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer aolani.Close()
+	ubs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ubsAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ubs.Close()
+
+	registry := NewRegistry()
+	// Only the base name "jira-api" is in the workspace's enabled-service
+	// set — D4 is unaffected by D12, an account is never separately
+	// authorized.
+	token := registry.Register([]string{"jira-api"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{
+			Name:             "jira-api",
+			BaseURLSecretKey: "JIRA_BASE_URL",
+			// AllowInsecure: httptest.NewServer's fake upstreams are plain
+			// http, not https — real Jira Cloud tenants are always https
+			// (ValidateBaseURL's ordinary posture); this is a test-fixture
+			// concession only.
+			AllowInsecure:  true,
+			RequireAccount: true,
+			Auth:           ServiceAuth{Kind: AuthBasic, UsernameSecretKey: "JIRA_USERNAME", SecretKey: "JIRA_API_TOKEN"},
+		},
+	}, stubResolver(map[string]string{
+		"ws-a/JIRA_BASE_URL@aolani":  aolani.URL,
+		"ws-a/JIRA_USERNAME@aolani":  "naoki.nose@kameda-hi.co.jp",
+		"ws-a/JIRA_API_TOKEN@aolani": "tok-aolani",
+		"ws-a/JIRA_BASE_URL@ubs":     ubs.URL,
+		"ws-a/JIRA_USERNAME@ubs":     "nose@urban-b.com",
+		"ws-a/JIRA_API_TOKEN@ubs":    "tok-ubs",
+	}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	wAolani := httptest.NewRecorder()
+	reqAolani := httptest.NewRequest("GET", "/api/"+token+"/jira-api@aolani/rest/api/2/issue/PROJ-1", nil)
+	srv.ServeHTTP(wAolani, reqAolani)
+	if wAolani.Code != http.StatusOK {
+		t.Fatalf("aolani: status = %d, want 200 (body %q)", wAolani.Code, wAolani.Body.String())
+	}
+	wantAolani := expectedBasicAuthHeader("naoki.nose@kameda-hi.co.jp", "tok-aolani")
+	if aolaniAuth != wantAolani {
+		t.Errorf("aolani upstream saw Authorization = %q, want %q", aolaniAuth, wantAolani)
+	}
+
+	wUbs := httptest.NewRecorder()
+	reqUbs := httptest.NewRequest("GET", "/api/"+token+"/jira-api@ubs/rest/api/2/issue/PROJ-1", nil)
+	srv.ServeHTTP(wUbs, reqUbs)
+	if wUbs.Code != http.StatusOK {
+		t.Fatalf("ubs: status = %d, want 200 (body %q)", wUbs.Code, wUbs.Body.String())
+	}
+	wantUbs := expectedBasicAuthHeader("nose@urban-b.com", "tok-ubs")
+	if ubsAuth != wantUbs {
+		t.Errorf("ubs upstream saw Authorization = %q, want %q", ubsAuth, wantUbs)
+	}
+
+	// The two accounts must genuinely have reached DIFFERENT servers — not
+	// the same one twice with different auth, which would prove nothing
+	// about base_url actually varying by account.
+	if aolani.URL == ubs.URL {
+		t.Fatal("test setup bug: aolani and ubs upstream servers have the same URL")
+	}
+}
+
+// TestServer_JiraCloudScenario_AccountlessRequestRejected is the D5 half of
+// the same scenario: require_account: true still rejects an account-less
+// request the same way it always has, unaffected by base_url also being
+// secret-backed now.
+func TestServer_JiraCloudScenario_AccountlessRequestRejected(t *testing.T) {
+	registry := NewRegistry()
+	token := registry.Register([]string{"jira-api"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{
+			Name:             "jira-api",
+			BaseURLSecretKey: "JIRA_BASE_URL",
+			RequireAccount:   true,
+			Auth:             ServiceAuth{Kind: AuthBasic, UsernameSecretKey: "JIRA_USERNAME", SecretKey: "JIRA_API_TOKEN"},
+		},
+	}, stubResolver(map[string]string{"ws-a/JIRA_BASE_URL@aolani": "https://aolani.atlassian.net"}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/jira-api/rest/api/2/issue/PROJ-1", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %q)", w.Code, w.Body.String())
+	}
+}
+
+// TestServer_BaseURLSecretKeyMissingSecretDoesNotLeakToSandbox is
+// TestServer_TransportErrorDoesNotLeakUpstreamHostToSandbox's D12
+// counterpart: a BaseURLSecretKey whose secret-store value is malformed
+// (or missing) must fail with a generic 502, never echoing the offending
+// value (which — for base_url — could itself be a real internal hostname)
+// to the sandbox-facing response body. The full detail is still expected to
+// reach the server-side log (not asserted here — see that sibling test's
+// own doc comment for why only the sandbox-facing channel matters for this
+// property).
+func TestServer_BaseURLSecretKeyMissingSecretDoesNotLeakToSandbox(t *testing.T) {
+	registry := NewRegistry()
+	token := registry.Register([]string{"jira-api"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "jira-api", BaseURLSecretKey: "JIRA_BASE_URL", Auth: ServiceAuth{Kind: AuthBasic, Username: "x", SecretKey: "k"}},
+	}, stubResolver(map[string]string{
+		// JIRA_BASE_URL deliberately resolves to a malformed value that
+		// nonetheless contains a distinctive, greppable "hostname-shaped"
+		// substring, so the test can prove it never reaches the response
+		// body.
+		"ws-a/JIRA_BASE_URL": "not-a-valid-url-internal-secret-host.example.corp",
+		"ws-a/k":             "tok",
+	}))
+	rec := &recordingRecorder{}
+	srv := NewServer(registry, creds, nil, rec.record)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/jira-api/rest/api/2/issue/PROJ-1", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body %q)", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "internal-secret-host") {
+		t.Errorf("response body leaks the resolved base_url value: %q", w.Body.String())
+	}
+}
+
+// TestServer_JiraCloudScenario_ReadOnlyWriteUsesBaseServiceConfig is D4's
+// AllowReadOnlyWrite half, re-pinned for a BaseURLSecretKey-backed service
+// (D12): a readonly job token's POST to "jira-api@ubs" is allowed exactly
+// when the BASE service "jira-api" opted into AllowReadOnlyWrite — the
+// account-qualified base_url this request also resolves through has no
+// authorization configuration of its own to consult.
+func TestServer_JiraCloudScenario_ReadOnlyWriteUsesBaseServiceConfig(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"jira-api"}, "ws-a", "task-1", true /* readOnly */)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{
+			Name:               "jira-api",
+			BaseURLSecretKey:   "JIRA_BASE_URL",
+			AllowInsecure:      true,
+			AllowReadOnlyWrite: true,
+			Auth:               ServiceAuth{Kind: AuthBasic, Username: "x", SecretKey: "k"},
+		},
+	}, stubResolver(map[string]string{
+		"ws-a/JIRA_BASE_URL@ubs": upstream.URL,
+		"ws-a/k@ubs":             "tok",
+	}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/"+token+"/jira-api@ubs/rest/api/2/issue", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("POST to jira-api@ubs on a read-only token, base service AllowReadOnlyWrite=true: status = %d, want 201 (body %q)", w.Code, w.Body.String())
+	}
+}
+
 func TestServer_RequireAccount_RejectsAccountlessRequest(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK) // must never be reached

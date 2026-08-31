@@ -141,6 +141,18 @@ func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack)
 	return apigateway.ServiceConfig{
 		Name:    instanceName,
 		BaseURL: sc.Endpoint,
+		// AllowInsecure (docs/plans/api-gateway-credential-accounts.md D12):
+		// a uses: entry's BaseURL above is always the literal sc.Endpoint —
+		// never secret-backed — so apigateway.CredentialProvider.BaseURLFor
+		// never actually consults this field for a uses:-derived service
+		// (that only happens on the BaseURLSecretKey path, which a uses:
+		// entry can never take — validateServiceConfig rejects setting
+		// base_url_secret_key alongside uses:). Propagated anyway, straight
+		// from sc.AllowInsecure (already used above to validate sc.Endpoint
+		// via ValidateServiceURL), so the two ServiceConfig structs stay in
+		// sync on every shared field — TestServiceConfigFieldPropagation_
+		// Exhaustive (field_propagation_exhaustive_test.go) enforces this.
+		AllowInsecure: sc.AllowInsecure,
 		Auth: apigateway.ServiceAuth{
 			Kind:      apigateway.AuthKind(slot.Injection),
 			SecretKey: secretKey,

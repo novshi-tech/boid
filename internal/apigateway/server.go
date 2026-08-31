@@ -335,8 +335,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	baseURL, ok := s.credentials.BaseURLFor(rt.service)
-	if !ok {
+	// BaseURLFor takes namespace/account now (docs/plans/api-gateway-
+	// credential-accounts.md D12) so a BaseURLSecretKey-backed service can
+	// resolve a per-account upstream target — but D4 is unaffected: this is
+	// still called AFTER the base-name authorization/RequireAccount/
+	// AllowsReadOnlyWrite gates above, none of which change. err's full
+	// text (which, for a secret-backed service, may embed the resolved
+	// hostname) is logged server-side only; the sandbox-facing response
+	// below stays as generic as the pre-D12 "service ... is not configured"
+	// text always was — never echoing err.Error() — matching the same
+	// hostname-non-disclosure posture ErrorHandler's own doc comment
+	// documents for a transport failure.
+	baseURL, err := s.credentials.BaseURLFor(entry.Namespace, rt.service, rt.account)
+	if err != nil {
+		slog.Warn("apigateway: base_url resolution failed; refusing to forward (fail-fast)",
+			"service", recSvc, "namespace", entry.Namespace, "err", err)
 		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusBadGateway)
 		http.Error(w, "bad gateway: service "+recSvc+" is not configured", http.StatusBadGateway)
 		return

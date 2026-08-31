@@ -351,13 +351,15 @@ services_floor:
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `services.<name>.base_url` | string | (必須) | upstream の base URL。sandbox からは見えない — sandbox が見るのは論理名 `<name>` だけ。`https` 以外のスキームは `allow_insecure: true` が無いと config load 自体が失敗する |
+| `services.<name>.base_url` | string | `base_url_secret_key` と排他で必須 | upstream の base URL。sandbox からは見えない — sandbox が見るのは論理名 `<name>` だけ。`https` 以外のスキームは `allow_insecure: true` が無いと config load 自体が失敗する |
+| `services.<name>.base_url_secret_key` | string | `base_url` と排他で必須 | `base_url` の代わりに secret store から base_url を引くためのキー参照 (下記「credential account 修飾」節の D12)。account 修飾 (`<key>@<account>`) に対応 — テナントごとに subdomain が変わる service (Jira Cloud 等) 向け。値は secret store 経由でしか分からないため config load 時の URL 検証はできず、request 時に検証される |
 | `services.<name>.allow_insecure` | bool | `false` | `base_url` に `https` 以外のスキームを許可する明示的な opt-in。無いまま `http://` 等を指定すると config load エラー (内部テスト API 等 TLS が無い環境向けの意図的な抜け道であり、黙って許可はしない) |
 | `services.<name>.allow_readonly_write` | bool | `false` | readonly な job token (`task.readonly`/`command.readonly`) でもこの service への GET/HEAD 以外のメソッドを許可する opt-in。既定は fail-closed で readonly job は 403。**config.yaml (daemon 側) にしか置けない** — project.yaml / task_behaviors には無い。repo 側から書き込み許可を付与できてしまうと readonly ゲートの意味が無くなるため (prompt injection されたエージェントが自分で自分に書き込み権限を与えられてしまう) |
 | `services.<name>.require_account` | bool | `false` | この service への account 無しリクエストを 400 で拒否する opt-in (下記「credential account 修飾」節)。既定は false で既存 service の挙動は変わらない。**config.yaml (daemon 側) にしか置けない** — project.yaml / task_behaviors には無い (`allow_readonly_write` と同じ理由) |
 | `services.<name>.auth.kind` | string | (必須) | `bearer` / `basic` / `header` / `query` / `oauth2` のいずれか |
 | `services.<name>.auth.secret_key` | string | kind により必須 | secret store 参照キー (`bearer`/`basic`/`header`/`query` で必須。`oauth2` では未使用) |
-| `services.<name>.auth.username` | string | `basic` のみ必須 | Basic 認証の username |
+| `services.<name>.auth.username` | string | `basic` のみ、`auth.username_secret_key` と排他で必須 | Basic 認証の username |
+| `services.<name>.auth.username_secret_key` | string | `basic` のみ、`auth.username` と排他で必須 | `auth.username` の代わりに secret store から username を引くためのキー参照 (D12)。account 修飾に対応 — テナントごとにログインアカウントが変わる service 向け |
 | `services.<name>.auth.header` | string | `header` のみ必須 | 注入するヘッダ名 |
 | `services.<name>.auth.query` | string | `query` のみ必須 | 注入するクエリパラメータ名 |
 | `services.<name>.auth.provider` | string | `oauth2` のみ必須 | `oauth_providers.<name>` を参照する OAuth2 provider 名 (下記)。config load 時に参照先の存在はクロスチェックしない — 未宣言の provider を指すと request 時に 502 (`apigateway: oauth2 provider "..." is not configured`) になる |
@@ -422,6 +424,42 @@ $BOID_API_BASE/freee/api/1/deals?company_id=123456          # account 無し = �
   付いていれば readonly job の書き込み許可判定は従来どおり base 名の
   `allow_readonly_write` に従います。運用手順 (freee の移行手順) は設計 doc
   「freee の移行手順」節を参照してください。
+
+#### base_url / auth.username も account で修飾する (D12)
+
+freee のように「同じ upstream・同じ認証方式でアカウントだけ違う」service だけでなく、
+Jira Cloud のように「アカウントごとにテナント (subdomain) もログインメールアドレスも
+違う」service も、この機構は 1 つの `services.<name>` 定義で扱えます。
+`base_url` の代わりに `base_url_secret_key` を、`auth.username` の代わりに
+`auth.username_secret_key` を指定すると、値を account 修飾済みの secret
+store キーから解決します — 修飾のされ方は `auth.secret_key` と全く同じです。
+
+```yaml
+services:
+  jira-api:
+    base_url_secret_key: JIRA_BASE_URL     # secret store: JIRA_BASE_URL / JIRA_BASE_URL@ubs
+    require_account: true
+    auth:
+      kind: basic
+      username_secret_key: JIRA_USERNAME   # secret store: JIRA_USERNAME / JIRA_USERNAME@ubs
+      secret_key: JIRA_API_TOKEN           # secret store: JIRA_API_TOKEN / JIRA_API_TOKEN@ubs
+```
+
+```bash
+boid secret set JIRA_BASE_URL@ubs   https://urban-b.atlassian.net
+boid secret set JIRA_USERNAME@ubs   nose@urban-b.com
+boid secret set JIRA_API_TOKEN@ubs  <token>
+```
+
+- `base_url` と `base_url_secret_key`、`auth.username` と `auth.username_secret_key`
+  はそれぞれ排他 — どちらか一方が必須です。
+- `base_url_secret_key` の値は secret store から取得するまで分からないため、
+  config load 時点では URL の形 (絶対URL・スキーム・query/fragment 無し) を
+  検証できません。検証は request 時 (`BaseURLFor`) に行われ、不正な値は
+  502 になります (sandbox 向けの応答には解決後の URL は含まれません)。
+- `uses:` (下記 Integration Pack 経由の service) では `base_url_secret_key`
+  は使えません — `uses:` の base_url は常に resolved profile の endpoint
+  (`sc.endpoint`) から決まります。
 
 設計の詳細・却下案・PR 分割は
 [`docs/plans/api-gateway-credential-accounts.md`](../../plans/api-gateway-credential-accounts.md)
