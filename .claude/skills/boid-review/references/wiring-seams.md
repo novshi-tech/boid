@@ -1969,3 +1969,33 @@ free-form `base_url`/`auth`).
   `RequireAccount` already did) — `DesugarService` originally omitted it (an easy miss since
   `apigateway.ServiceConfig` had no `AllowInsecure` field at all before D12), caught by this
   same walker the moment the field existed on both structs.
+- **D13 update**: `docs/plans/api-gateway-credential-accounts.md` D13 (PR #1043) added a THIRD
+  field shape neither the Guard bullet above nor the "When you touch it" recipe's exclusion-map
+  escape hatch actually covers: a field whose config-side NAME does not match its
+  `apigateway.ServiceConfig`/`ServiceAuth` destination field's name at all. `EndpointSecretKey`
+  (a new top-level `config.ServiceConfig` field, `uses:`-only) feeds
+  `apigateway.ServiceConfig.BaseURLSecretKey` — not a same-name field the walker's
+  `gwFieldsByName[scField.Name]` lookup can ever find, so `BaseURLSecretKey` is neither
+  round-tripped for this field NOR reachable to add to
+  `serviceConfigPassthroughExclusions`/`serviceConfigFreeFormOnlyFields` — those maps only skip a
+  field the loop would otherwise reach, and the loop never reaches `EndpointSecretKey` at all
+  (the lookup misses and the iteration just moves on, silently). The new top-level
+  `UsernameSecretKey` (also `uses:`-only) has the analogous problem one level worse: its
+  destination, `apigateway.ServiceAuth.UsernameSecretKey`, is on the NESTED `Auth` struct, but
+  `UsernameSecretKey` itself lives at the TOP level of `config.ServiceConfig` (a `uses:` entry's
+  `auth:` block must stay the zero value, so there is no `config.ServiceAuthConfig` counterpart
+  for it to live on instead) — so it is invisible to BOTH the top-level walker (no matching
+  top-level `apigateway.ServiceConfig` field) AND `TestServiceConfigFieldPropagation_Exhaustive_
+  Auth` (that walker starts from `config.ServiceAuthConfig`'s fields, which `UsernameSecretKey`
+  is not one of). Neither gap can be closed by editing an exclusion map or a `want` set; both are
+  closed instead by dedicated, hand-written tests in `internal/integrationpack/resolve_d13_test.go`
+  (`TestDesugarService_EndpointSecretKey_PropagatesToBaseURLSecretKey`,
+  `TestDesugarService_UsernameSecretKey_PropagatesToAuthUsernameSecretKey`) — the same "per-field
+  test because no generic walker can reach it" pattern `TestDesugarService_
+  PropagatesAllowReadOnlyWrite`/`_PropagatesRequireAccount` used before either exhaustive walker
+  existed, both mutation-verified (deleting the one-line propagation in `DesugarService` fails
+  the dedicated test and the D13 money test alike). **When you touch this seam next**: before
+  trusting either exhaustive walker's silence as "this field is covered," check whether the new
+  field's own destination field NAME matches on the struct it's compared against — if it
+  doesn't (or the field lives on a different nesting level than its destination), the walker
+  will not even attempt it, and a hand-written test is the only guard that exists.

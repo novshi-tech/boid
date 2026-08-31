@@ -338,6 +338,45 @@ func TestApplyConfigYAML_Services_BaseURLSecretKeyAndUsernameSecretKey_RestartRe
 	}
 }
 
+// TestApplyConfigYAML_Services_EndpointSecretKeyAndUsernameSecretKey_RestartRequiredWarning
+// is TestApplyConfigYAML_Services_BaseURLSecretKeyAndUsernameSecretKey_
+// RestartRequiredWarning's D13 (docs/plans/api-gateway-credential-
+// accounts.md) counterpart, for the uses:-only fields
+// services.<name>.endpoint_secret_key / services.<name>.username_secret_key
+// — added proactively (not after a review round finding the gap, unlike its
+// D12 sibling) since the exact same "registered in
+// restartFieldExtractorExemptions but never verified to actually fire"
+// mistake is now a documented, known-repeatable class for this feature
+// line.
+func TestApplyConfigYAML_Services_EndpointSecretKeyAndUsernameSecretKey_RestartRequiredWarning(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	if _, err := srv.ApplyConfigYAML([]byte(
+		"services:\n  jira-cloud:\n    uses: jira-cloud/jira-cloud@1.0.0\n    endpoint_secret_key: JIRA_BASE_URL\n    username_secret_key: JIRA_USERNAME\n    credentials: { token: JIRA_API_TOKEN }\n"),
+		"", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (create): %v", err)
+	}
+
+	result, err := srv.ApplyConfigYAML([]byte(
+		"services:\n  jira-cloud:\n    uses: jira-cloud/jira-cloud@1.0.0\n    endpoint_secret_key: JIRA_BASE_URL_V2\n    username_secret_key: JIRA_USERNAME_V2\n    credentials: { token: JIRA_API_TOKEN }\n"),
+		"", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigYAML (change): %v", err)
+	}
+	var gotEndpointSecretKey, gotUsernameSecretKey bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "services.jira-cloud.endpoint_secret_key requires") {
+			gotEndpointSecretKey = true
+		}
+		if strings.Contains(w, "services.jira-cloud.username_secret_key requires") {
+			gotUsernameSecretKey = true
+		}
+	}
+	if !gotEndpointSecretKey || !gotUsernameSecretKey {
+		t.Errorf("Warnings = %v, want endpoint_secret_key + username_secret_key leaf warnings", result.Warnings)
+	}
+}
+
 // TestMutateConfig_UnrelatedKey_SucceedsWithRequireAccountPresent is the
 // direct repro test for the actual bug the opus review found (item 1): once
 // a config.yaml document contained services.<name>.require_account (or

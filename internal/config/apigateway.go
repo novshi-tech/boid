@@ -42,6 +42,16 @@ type ServiceAuthConfig struct {
 	// for Basic-auth services was considered and rejected again for the
 	// same reason — a growing schema costs more than the secret-store's
 	// mild semantic mismatch for two non-secret leaf values).
+	//
+	// NOT the same config path as the top-level ServiceConfig.
+	// UsernameSecretKey (services.<name>.username_secret_key, no "auth."
+	// prefix, uses:-entries only — D13). This field only ever applies to a
+	// free-form entry (a uses: entry's Auth block must be the exact zero
+	// value, validateServiceConfig); the top-level field only ever applies
+	// to a uses: entry (mirroring where the existing literal Username
+	// fields already live on each shape). See that field's own doc comment
+	// for why the two look similar but are scoped to mutually-exclusive
+	// entry shapes.
 	UsernameSecretKey string `yaml:"username_secret_key,omitempty"`
 	// Header is the header name to set. Required (and only meaningful) for
 	// kind: header.
@@ -147,6 +157,26 @@ type ServiceConfig struct {
 	// (internal/integrationpack.DesugarService enforces the pairing since
 	// this package has no access to the profile that decides it).
 	Endpoint string `yaml:"endpoint,omitempty"`
+	// EndpointSecretKey, when set, resolves the profile's
+	// endpoint.configurable slot from the secret store instead of using
+	// the literal Endpoint above — account-qualified/namespace-qualified
+	// the same way BaseURLSecretKey already is for a free-form entry
+	// (docs/plans/api-gateway-credential-accounts.md D13). Mutually
+	// exclusive with Endpoint. Only meaningful — and only accepted by
+	// validateServiceConfig — when Uses is set, mirroring Endpoint's own
+	// scoping.
+	//
+	// Motivating case: a Pack instance (e.g. jira-cloud) declared once but
+	// used from multiple workspaces, each of which is really a different
+	// tenant of the same underlying product — the free-form path's D12
+	// rationale (BaseURLSecretKey's own doc comment) applies identically
+	// here: reuse the secret store's per-namespace value isolation rather
+	// than grow the config shape with a second named instance per tenant.
+	// Whether an entry actually NEEDS this (vs. the literal Endpoint) is
+	// Pack-profile-dependent, same as Endpoint's own optionality —
+	// internal/integrationpack.DesugarService enforces the pairing once
+	// the Pack registry is known.
+	EndpointSecretKey string `yaml:"endpoint_secret_key,omitempty"`
 	// Credentials binds each of the resolved service profile's declared
 	// credential slot names to a SecretStore key reference — never a
 	// plaintext value, the same convention ServiceAuthConfig.SecretKey
@@ -172,6 +202,23 @@ type ServiceConfig struct {
 	// injection) is internal/integrationpack.DesugarService's job (Q16: this
 	// package cannot reach the Pack registry).
 	Username string `yaml:"username,omitempty"`
+	// UsernameSecretKey, when set, resolves the profile's INSTANCE-SPECIFIC
+	// Basic-auth username slot from the secret store instead of using the
+	// literal Username above — account-qualified/namespace-qualified the
+	// same way ServiceAuthConfig.UsernameSecretKey already is for a
+	// free-form entry (docs/plans/api-gateway-credential-accounts.md D13).
+	// Mutually exclusive with Username. Only meaningful — and only accepted
+	// by validateServiceConfig — when Uses is set, mirroring Username's own
+	// scoping; whether the resolved profile's slot actually accepts it (as
+	// opposed to declaring its own fixed username, or using a non-basic
+	// injection) is internal/integrationpack.DesugarService's job, same as
+	// Username itself.
+	//
+	// NOT the same config path as ServiceAuthConfig.UsernameSecretKey
+	// (services.<name>.auth.username_secret_key, free-form entries only) —
+	// see that field's own doc comment for why the two look similar but are
+	// scoped to mutually-exclusive entry shapes.
+	UsernameSecretKey string `yaml:"username_secret_key,omitempty"`
 }
 
 // ParseUsesReference parses a services.<name>.uses value of the form
@@ -347,6 +394,32 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 				return err
 			}
 		}
+		// endpoint / endpoint_secret_key (docs/plans/api-gateway-credential-
+		// accounts.md D13): mutually exclusive. Unlike base_url_secret_key
+		// (which uses: forbids outright — base_url comes from Endpoint, so
+		// base_url_secret_key has no meaning here), endpoint_secret_key IS
+		// meaningful for a uses: entry: it is this shape's own namespace-
+		// scoped-identity mechanism, parallel to base_url_secret_key's role
+		// on the free-form path. Checked AFTER the literal-Endpoint
+		// ValidateServiceURL call above (that call only ever fires when
+		// Endpoint is non-empty, so ordering doesn't matter for correctness,
+		// but mirrors D12's base_url/base_url_secret_key check placement).
+		// Not validated as a URL here — that value doesn't exist at
+		// config-load time; apigateway.CredentialProvider.BaseURLFor
+		// resolves and validates it at request time instead (same deferral
+		// base_url_secret_key already documents).
+		if sc.Endpoint != "" && sc.EndpointSecretKey != "" {
+			return fmt.Errorf("services[%q]: \"endpoint\" and \"endpoint_secret_key\" are mutually exclusive", name)
+		}
+		// username / username_secret_key (D13): mutually exclusive. Whether
+		// either is actually REQUIRED depends on the resolved profile's
+		// credential slot (unknown here — Q16), so neither is required by
+		// this package; internal/integrationpack.DesugarService enforces
+		// that half once the Pack registry is known, the same split
+		// Username's own doc comment already documents.
+		if sc.Username != "" && sc.UsernameSecretKey != "" {
+			return fmt.Errorf("services[%q]: \"username\" and \"username_secret_key\" are mutually exclusive", name)
+		}
 		return nil
 	}
 	// endpoint:/credentials:/username: only mean anything alongside uses:
@@ -360,11 +433,22 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 	if sc.Endpoint != "" {
 		return fmt.Errorf("services[%q]: \"endpoint\" requires \"uses\" to be set", name)
 	}
+	// endpoint_secret_key (D13) is the uses:-only counterpart to Endpoint —
+	// same stray-field rejection, same reason.
+	if sc.EndpointSecretKey != "" {
+		return fmt.Errorf("services[%q]: \"endpoint_secret_key\" requires \"uses\" to be set", name)
+	}
 	if len(sc.Credentials) > 0 {
 		return fmt.Errorf("services[%q]: \"credentials\" requires \"uses\" to be set", name)
 	}
 	if sc.Username != "" {
 		return fmt.Errorf("services[%q]: \"username\" requires \"uses\" to be set (for a free-form entry, use \"auth.username\" instead)", name)
+	}
+	// username_secret_key (D13) is the uses:-only counterpart to the
+	// top-level Username — same stray-field rejection, same reason; the
+	// free-form equivalent lives at auth.username_secret_key instead (D12).
+	if sc.UsernameSecretKey != "" {
+		return fmt.Errorf("services[%q]: \"username_secret_key\" requires \"uses\" to be set (for a free-form entry, use \"auth.username_secret_key\" instead)", name)
 	}
 
 	// base_url / base_url_secret_key (docs/plans/api-gateway-credential-

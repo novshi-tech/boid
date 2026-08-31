@@ -90,6 +90,28 @@ var serviceConfigFreeFormOnlyFields = map[string]string{
 // first time that happens, so an omission from either conversion path is
 // caught here rather than the next time an operator's config.yaml happens
 // to exercise the gap.
+//
+// NOT exhaustive despite the name, in one specific way (docs/plans/
+// api-gateway-credential-accounts.md D13): config.ServiceConfig.
+// EndpointSecretKey and the top-level config.ServiceConfig.
+// UsernameSecretKey are both real, shipped fields, but this walker matches
+// purely on exact name+type equality against apigateway.ServiceConfig —
+// EndpointSecretKey's DesugarService destination is apigateway.
+// ServiceConfig.BaseURLSecretKey (a DIFFERENT name, same reason BaseURL/
+// Endpoint already need serviceConfigPassthroughExclusions above), and the
+// top-level UsernameSecretKey's destination is the NESTED apigateway.
+// ServiceAuth.UsernameSecretKey (invisible here for the same reason
+// Username itself is — apigateway.ServiceConfig has no top-level Username/
+// UsernameSecretKey field at all). Neither name-mismatch case can be fixed
+// by adding an entry to either exclusion map above (those only skip a field
+// this loop WOULD otherwise reach) — the loop simply never reaches either
+// field in the first place. Both are covered instead by dedicated,
+// hand-written tests in resolve_d13_test.go
+// (TestDesugarService_EndpointSecretKey_PropagatesToBaseURLSecretKey /
+// TestDesugarService_UsernameSecretKey_PropagatesToAuthUsernameSecretKey),
+// the same "per-field test because a generic walker can't reach it" pattern
+// TestDesugarService_PropagatesAllowReadOnlyWrite/_PropagatesRequireAccount
+// used before this exhaustive walker existed at all.
 func TestServiceConfigFieldPropagation_Exhaustive(t *testing.T) {
 	scType := reflect.TypeOf(config.ServiceConfig{})
 	gwType := reflect.TypeOf(apigateway.ServiceConfig{})

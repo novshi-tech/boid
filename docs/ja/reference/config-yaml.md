@@ -459,7 +459,9 @@ boid secret set JIRA_API_TOKEN@ubs  <token>
   502 になります (sandbox 向けの応答には解決後の URL は含まれません)。
 - `uses:` (下記 Integration Pack 経由の service) では `base_url_secret_key`
   は使えません — `uses:` の base_url は常に resolved profile の endpoint
-  (`sc.endpoint`) から決まります。
+  (`sc.endpoint`) から決まります。`uses:` 側にも同じ発想の secret 化機構が
+  別途あります — 下記「endpoint / username も account (正確には namespace)
+  ごとに secret 化する (D13)」を参照してください。
 
 設計の詳細・却下案・PR 分割は
 [`docs/plans/api-gateway-credential-accounts.md`](../../plans/api-gateway-credential-accounts.md)
@@ -482,9 +484,11 @@ services:
 | キー | 型 | 説明 |
 |---|---|---|
 | `services.<name>.uses` | string (`<pack>/<profile>@<version>`) | 導入済み Pack の service profile への参照。`base_url`/`auth` と排他 (両方書くと config load エラー) |
-| `services.<name>.endpoint` | string | profile が `endpoint.configurable: true` を宣言している場合のみ指定可 (指定必須)。それ以外では指定するとエラー |
+| `services.<name>.endpoint` | string | profile が `endpoint.configurable: true` を宣言している場合のみ指定可 (指定必須 — `endpoint_secret_key` とどちらか一方)。それ以外では指定するとエラー |
+| `services.<name>.endpoint_secret_key` | string | `endpoint` の代わりに secret store から endpoint を引くためのキー参照 (D13)。`endpoint` と排他。詳細は下記 |
 | `services.<name>.credentials.<slot>` | string | profile が宣言する credential slot 名へ secret store の key を bind する。値そのものはここに書かない |
-| `services.<name>.username` | string | profile の credential slot が Basic 認証 (`injection: basic`) かつ `usernameFrom: instance` を宣言している場合のみ指定可 (指定必須)。平文の設定値 (例: Jira Cloud の Atlassian アカウントのメールアドレス) であり secret ではないため `credentials:` とは別の top-level フィールドになっている。profile が固定 username (`username:`) を宣言している場合や basic 以外の injection では指定するとエラー |
+| `services.<name>.username` | string | profile の credential slot が Basic 認証 (`injection: basic`) かつ `usernameFrom: instance` を宣言している場合のみ指定可 (指定必須 — `username_secret_key` とどちらか一方)。平文の設定値 (例: Jira Cloud の Atlassian アカウントのメールアドレス) であり secret ではないため `credentials:` とは別の top-level フィールドになっている。profile が固定 username (`username:`) を宣言している場合や basic 以外の injection では指定するとエラー |
+| `services.<name>.username_secret_key` | string | `username` の代わりに secret store から username を引くためのキー参照 (D13)。`username` と排他。**`auth.username_secret_key` (D12、free-form service 専用) とは別のフィールド** — `uses:` entry には `auth:` block 自体が書けないため、この top-level フィールドが `uses:` 側の唯一の置き場所になっている |
 
 daemon 起動時に `internal/integrationpack` が `uses:` を実際の `base_url`/`auth` へ脱糖して API gateway の service registry に登録する。参照する Pack が未導入・profile 未宣言・credential slot 不一致・(basic + `usernameFrom: instance` の場合の) username 未指定などは daemon の起動エラーになる (`services` の他エントリと同じ eager validation)。
 
@@ -505,6 +509,40 @@ credentials:
 ```
 
 例2の profile を使う instance は `services.<name>.username` を必ず指定する (前掲の `customer-jira` 例)。例1の profile を使う instance は `username:` を指定してはいけない (指定するとエラー — 埋める slot が無い)。
+
+#### endpoint / username も namespace ごとに secret 化する (D13)
+
+D12 の `base_url_secret_key`/`auth.username_secret_key` は free-form service (`base_url`/`auth` を手書きする形) だけが対象でした。`uses:` の `endpoint`/`username` にも同じ発想の secret 化があります — ただし動機はやや違います。1つの Pack instance を**複数の workspace (namespace) から使い回したいが、workspace ごとに実は別テナントを指したい**ケースが対象で、D12 のような account (`@ubs` 等) 修飾は使いません。1 namespace は元々1つの identity にしか対応しないので、修飾なしの secret key を workspace (namespace) ごとに違う値でセットするだけで十分です。
+
+```yaml
+services:
+  jira-cloud:
+    uses: jira-cloud/jira-cloud@1.0.0
+    endpoint_secret_key: JIRA_BASE_URL     # secret store: JIRA_BASE_URL (namespaceごとに別値)
+    username_secret_key: JIRA_USERNAME     # secret store: JIRA_USERNAME (namespaceごとに別値)
+    credentials:
+      token: JIRA_API_TOKEN                # secret store: JIRA_API_TOKEN (namespaceごとに別値)
+```
+
+```bash
+# khi workspace (namespace: khi) — 例: 亀田さんの Jira
+boid secret set JIRA_BASE_URL -n khi      https://aolani.atlassian.net
+boid secret set JIRA_USERNAME -n khi      naoki.nose@kameda-hi.co.jp
+
+# default workspace (namespace: default) — 例: UBS の Jira
+boid secret set JIRA_BASE_URL             https://urban-b.atlassian.net
+boid secret set JIRA_USERNAME             nose@urban-b.com
+```
+
+`services.jira-cloud` の config.yaml エントリは1つのままで、`$BOID_API_BASE/jira-cloud/...` を叩いた job がどの workspace に属するかだけで、実際に届く先 (テナント) が変わります。
+
+- `endpoint`/`endpoint_secret_key`、`username`/`username_secret_key` はそれぞれ排他です。
+- `endpoint_secret_key` の値は secret store から取得するまで分からないため、D12 の `base_url_secret_key` と同じく config load 時点では URL の形を検証できません。検証は request 時に行われ、不正な値は 502 になります。
+- account 修飾 (`@ubs` 等) と組み合わせることも技術的には可能ですが (`accountSecretKey` はどちらの経路でも同じ関数)、1 namespace が複数 identity を同時に必要とする場合にのみ意味があります — jira-cloud のような「1 namespace = 1 identity」なケースでは不要です。
+
+設計の詳細は
+[`docs/plans/api-gateway-credential-accounts.md`](../../plans/api-gateway-credential-accounts.md)
+の D13 を参照してください。
 
 ---
 

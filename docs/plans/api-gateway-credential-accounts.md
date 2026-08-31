@@ -286,6 +286,43 @@ secret-key 機構をそのまま延長するトレードオフを取る。
 挙げていたのは、その時点で account という軸自体が存在しなかったからであり、
 ルーティング先を account ごとに変えないことを別途決めていたわけではない。
 
+**D13. Pack instance (`uses:`) の endpoint / username も同じ機構で
+secret 化できる (`endpoint_secret_key` / (top-level) `username_secret_key`)**
+
+動機は D12 と同じだが対象が `uses:` 側: jira-cloud のような Pack instance を
+1 workspace で使ったあと、**別の workspace (namespace) でも同じ Pack を
+別テナント向けに使いたい**ケース (実例: khi workspace は kameda-hi/aolani の
+Jira、default workspace は urban-b の Jira — 実際に本番で default 側だけ
+`jira-cloud-ubs` という2つ目の named instance を仮置きして運用中 —
+このD13で1本化する予定)。ただし account 修飾 (`@`) は使わない —
+workspace(namespace) は元々1つの identity にしか対応しないので、
+`accountSecretKey` の account 部分を常に空文字のまま使うだけで足りる
+(D2 の「account無し = 無修飾キー」がそのまま効く)。
+
+`internal/integrationpack.DesugarService` が最終的に組み立てるのは
+D12 と全く同じ `apigateway.ServiceConfig`/`apigateway.ServiceAuth` の struct
+なので (Explore調査で確認済み: 2つの経路が合流する唯一の型)、
+ランタイム側 (`BaseURLFor`・`Inject`・`accountSecretKey`) は一切変更不要。
+足したのは config スキーマ2個だけ:
+
+- `services.<name>.endpoint_secret_key` — `Endpoint` の代わり。
+  `DesugarService` はこれが立っていれば `apigateway.ServiceConfig.BaseURL`
+  ではなく既存の `BaseURLSecretKey` を埋める
+- `services.<name>.username_secret_key` (top-level、`auth.` 配下ではない) —
+  `Username` の代わり。`uses:` entry の `Auth` block は zero value 固定
+  (`uses:`と`auth:`は排他) なので、この username 系フィールドは
+  `Username`/`UsernameSecretKey` とも top-level にしか置けない。
+  D12 の `auth.username_secret_key` (free-form 専用) とは**別の config パス**
+  — 名前が似ているが指す先も適用範囲も違うので、両方のフィールドの
+  doc comment に相互参照を書いた
+
+**既知だが未解消の非対称性 (nose 指摘、この場では速度優先で受容):**
+Pack instance 側の username 系フィールドが `Auth.Username`/
+`Auth.UsernameSecretKey` ではなく top-level に生えているのは、
+「同じ概念が2つの違う struct 形状に散る」という気持ち悪さを残す。
+直すなら `uses:` entry も内部的に `Auth` 相当の構造へ寄せる設計変更が
+要るが、今回はスコープに含めない。
+
 ## PR 分割
 
 - **PR-1 (マージ済み、#1037)**: `parsePath` の `(name, account)` 分割 +
