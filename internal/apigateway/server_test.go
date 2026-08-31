@@ -599,6 +599,41 @@ func TestServer_BaseURLSecretKeyMissingSecretDoesNotLeakToSandbox(t *testing.T) 
 	}
 }
 
+// TestServer_BaseURLSecretKeyResolutionFailureNotifies is
+// TestServer_CredentialResolutionFailureFailsFastWithoutContactingUpstream's
+// base_url counterpart (opus review, PR #1042, F4): a
+// base_url_secret_key resolution failure is the same class of "this
+// service's secret-store-backed config is broken" problem an operator
+// wants NotifyCredentialError for — before this fix, only the auth
+// credential's own Resolve pre-check notified; a broken base_url_secret_key
+// specifically produced no notification at all.
+func TestServer_BaseURLSecretKeyResolutionFailureNotifies(t *testing.T) {
+	registry := NewRegistry()
+	token := registry.Register([]string{"jira-api"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "jira-api", BaseURLSecretKey: "JIRA_BASE_URL", Auth: ServiceAuth{Kind: AuthBasic, Username: "x", SecretKey: "k"}},
+	}, stubResolver(nil)) // JIRA_BASE_URL is not in the secret store at all
+
+	var notifiedService string
+	var notifiedErr error
+	notifier := NotifierFuncs{CredentialError: func(service string, err error) {
+		notifiedService = service
+		notifiedErr = err
+	}}
+	srv := NewServer(registry, creds, notifier, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/jira-api/rest/api/2/issue/PROJ-1", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body %q)", w.Code, w.Body.String())
+	}
+	if notifiedService != "jira-api" || notifiedErr == nil {
+		t.Errorf("NotifyCredentialError not called for the base_url resolution failure: service=%q err=%v", notifiedService, notifiedErr)
+	}
+}
+
 // TestServer_JiraCloudScenario_ReadOnlyWriteUsesBaseServiceConfig is D4's
 // AllowReadOnlyWrite half, re-pinned for a BaseURLSecretKey-backed service
 // (D12): a readonly job token's POST to "jira-api@ubs" is allowed exactly

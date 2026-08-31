@@ -294,6 +294,50 @@ func TestApplyConfigYAML_Services_RequireAccountAndAllowReadOnlyWrite_RestartReq
 	}
 }
 
+// TestApplyConfigYAML_Services_BaseURLSecretKeyAndUsernameSecretKey_RestartRequiredWarning
+// is TestApplyConfigYAML_Services_RequireAccountAndAllowReadOnlyWrite_
+// RestartRequiredWarning's counterpart for the D12 (docs/plans/api-gateway-
+// credential-accounts.md) fields base_url_secret_key and
+// auth.username_secret_key. Opus review (PR #1042, F2) found that
+// registering these two leaves in restartFieldExtractorExemptions (they
+// claim to be "covered by changedServiceLeaves' per-id, per-field diff")
+// was never actually verified — mutation-confirmed: deleting BOTH new
+// diff blocks from changedServiceLeaves still left
+// TestRestartFieldExtractors_ExhaustiveCoverage green, since that test only
+// requires the leaf to appear in one of the two maps, not that the diff
+// detection actually fires. This test pins the same "changing the leaf
+// produces its own named restart-required warning" contract every other
+// services.* field already gets, the same way its
+// RequireAccount/AllowReadOnlyWrite sibling above does.
+func TestApplyConfigYAML_Services_BaseURLSecretKeyAndUsernameSecretKey_RestartRequiredWarning(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	if _, err := srv.ApplyConfigYAML([]byte(
+		"services:\n  jira-api:\n    base_url_secret_key: JIRA_BASE_URL\n    auth: { kind: basic, username_secret_key: JIRA_USERNAME, secret_key: JIRA_API_TOKEN }\n"),
+		"", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (create): %v", err)
+	}
+
+	result, err := srv.ApplyConfigYAML([]byte(
+		"services:\n  jira-api:\n    base_url_secret_key: JIRA_BASE_URL_V2\n    auth: { kind: basic, username_secret_key: JIRA_USERNAME_V2, secret_key: JIRA_API_TOKEN }\n"),
+		"", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigYAML (change): %v", err)
+	}
+	var gotBaseURLSecretKey, gotUsernameSecretKey bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "services.jira-api.base_url_secret_key requires") {
+			gotBaseURLSecretKey = true
+		}
+		if strings.Contains(w, "services.jira-api.auth.username_secret_key requires") {
+			gotUsernameSecretKey = true
+		}
+	}
+	if !gotBaseURLSecretKey || !gotUsernameSecretKey {
+		t.Errorf("Warnings = %v, want base_url_secret_key + auth.username_secret_key leaf warnings", result.Warnings)
+	}
+}
+
 // TestMutateConfig_UnrelatedKey_SucceedsWithRequireAccountPresent is the
 // direct repro test for the actual bug the opus review found (item 1): once
 // a config.yaml document contained services.<name>.require_account (or

@@ -313,7 +313,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//     written" defect rather than the narrower "this token cannot use
 	//     this method" one.
 	//
-	// Every check from here down (BaseURLFor/Configured/Resolve) is either
+	// Every check from here down (Configured/BaseURLFor/Resolve) is either
 	// insensitive to account presence or already documented as having no
 	// fallback for a missing account-qualified credential (D3) — this gate
 	// exists purely so the caller gets a targeted, actionable 400 instead of
@@ -335,6 +335,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Systemic "no secret resolver at all" case, distinct from an ordinary
+	// per-key miss handled by the Resolve pre-check just below — mirrors
+	// internal/gitgateway.Server.ServeHTTP's identical two-tier check.
+	// Checked BEFORE BaseURLFor (opus review, PR #1042, F5): a
+	// BaseURLSecretKey-backed service (D12) also needs c.resolver, so if it
+	// is nil entirely, THIS systemic diagnosis (503 "no secret resolver
+	// configured") is the accurate one for that service too — checking it
+	// AFTER BaseURLFor would instead surface BaseURLFor's own generic "not
+	// configured" 502, misdiagnosing a daemon-wide problem as "only this
+	// one service is broken". A literal-base_url service's behavior is
+	// unchanged either way: it never touches c.resolver inside BaseURLFor,
+	// but already needed a working resolver for its own auth credential a
+	// few lines below regardless, so moving this check earlier costs it
+	// nothing.
+	if !s.credentials.Configured() {
+		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusServiceUnavailable)
+		http.Error(w, "service unavailable: api gateway has no secret resolver configured", http.StatusServiceUnavailable)
+		return
+	}
+
 	// BaseURLFor takes namespace/account now (docs/plans/api-gateway-
 	// credential-accounts.md D12) so a BaseURLSecretKey-backed service can
 	// resolve a per-account upstream target — but D4 is unaffected: this is
@@ -345,22 +365,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// below stays as generic as the pre-D12 "service ... is not configured"
 	// text always was — never echoing err.Error() — matching the same
 	// hostname-non-disclosure posture ErrorHandler's own doc comment
-	// documents for a transport failure.
+	// documents for a transport failure. NotifyCredentialError is called
+	// here too (opus review F4) — a secret-backed base_url that fails to
+	// resolve is the same class of "this service's secret-store-backed
+	// config is broken" problem the Resolve pre-check just below already
+	// notifies on; before this fix an operator relying on that
+	// notification channel had no signal at all for a broken
+	// base_url_secret_key specifically.
 	baseURL, err := s.credentials.BaseURLFor(entry.Namespace, rt.service, rt.account)
 	if err != nil {
 		slog.Warn("apigateway: base_url resolution failed; refusing to forward (fail-fast)",
 			"service", recSvc, "namespace", entry.Namespace, "err", err)
+		s.notifier.NotifyCredentialError(recSvc, err)
 		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusBadGateway)
 		http.Error(w, "bad gateway: service "+recSvc+" is not configured", http.StatusBadGateway)
-		return
-	}
-
-	// Systemic "no secret resolver at all" case, distinct from an ordinary
-	// per-key miss handled by the Resolve pre-check just below — mirrors
-	// internal/gitgateway.Server.ServeHTTP's identical two-tier check.
-	if !s.credentials.Configured() {
-		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusServiceUnavailable)
-		http.Error(w, "service unavailable: api gateway has no secret resolver configured", http.StatusServiceUnavailable)
 		return
 	}
 

@@ -331,7 +331,8 @@ func (c *CredentialProvider) AllowsReadOnlyWrite(name string) bool {
 // fail validateServiceConfig and be silently dropped by
 // config.APIGatewayServices), so a name that clears the authorization check
 // is not guaranteed to be a KEY in c.services at all. For such a name,
-// BaseURLFor(name) already returns ok=false and Server.ServeHTTP reports
+// BaseURLFor(namespace, name, account) already returns a non-nil error
+// ("service %q is not configured") and Server.ServeHTTP reports
 // 502 "service ... is not configured" immediately afterward — the correct,
 // pre-existing diagnosis for "this service isn't really registered". If
 // RequiresAccount instead defaulted to true for an unknown name, an

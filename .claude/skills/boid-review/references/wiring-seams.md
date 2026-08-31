@@ -1245,6 +1245,20 @@ workspace back onto the `"default"` secret namespace.
   cacheKey()`) from re-deriving three different account-qualified strings by hand from
   separately-passed `provider`/`account` args. See seam #23 End D for the call site's exact
   current shape.
+- **Credential-accounts D12 update (2026-08-31)**: a THIRD `CredentialProvider` method now
+  takes the same `(namespace, name, account)` shape `Resolve`/`Inject` do —
+  `BaseURLFor(namespace, name, account string) (*url.URL, error)`, changed from its pre-D12
+  `BaseURLFor(name string) (*url.URL, bool)`. Needed because a `base_url_secret_key`-backed
+  service (docs/plans/api-gateway-credential-accounts.md D12) resolves its upstream URL from
+  the secret store the same account-qualified way `auth.secret_key` already does — a literal
+  `base_url` service's call is still zero-cost (no resolver touched, `rs.baseURL` returned
+  directly). `Server.ServeHTTP`'s call site (`internal/apigateway/server.go`) was updated to
+  pass `entry.Namespace, rt.service, rt.account` — the exact same three values its
+  `Resolve`/`Inject` calls just below already use, now THREE call sites in this one function
+  that must stay in sync on argument order instead of two. When you touch any of the three,
+  verify all three still agree on the `(namespace, name, account)` order — a partial reorder
+  of only one would compile cleanly (three same-typed strings) and silently resolve the wrong
+  workspace's data for whichever call site was missed.
 
 ## 22. orchestrator.Action → timeline.Build renderability
 
@@ -1897,24 +1911,61 @@ free-form `base_url`/`auth`).
   catch a THIRD field repeating either omission.
 - **Guard**: `TestServiceConfigFieldPropagation_Exhaustive`
   (`internal/integrationpack/field_propagation_exhaustive_test.go`) — a reflection-based walk
-  that finds every `config.ServiceConfig` field sharing both its name and its Go type with an
-  `apigateway.ServiceConfig` field (today: `AllowReadOnlyWrite`, `RequireAccount`; `BaseURL`
-  also matches by name/type but is excluded with a documented reason, since End B1 and End B2
-  deliberately read it from different SOURCE fields — `BaseURL` itself vs. `Endpoint`) and
-  round-trips a distinguishing value through BOTH End B1 and End B2, failing loudly (naming
-  which path dropped it) if either does not carry it through. A same-name/same-type field added
-  to both structs is picked up automatically; the test's own `want` set assertion forces a
-  conscious acknowledgment the first time that happens, rather than a silent pass. Verified by
-  mutation while writing this seam entry: commenting out `DesugarService`'s
-  `RequireAccount: sc.RequireAccount` line fails this test immediately, naming exactly that
-  field and path.
+  that finds every TOP-LEVEL `config.ServiceConfig` field sharing both its name and its Go type
+  with a TOP-LEVEL `apigateway.ServiceConfig` field (today: `AllowReadOnlyWrite`,
+  `RequireAccount`, `AllowInsecure` — round-tripped through BOTH End B1 and End B2;
+  `BaseURLSecretKey` — round-tripped through End B1 ONLY, via `serviceConfigFreeFormOnlyFields`,
+  since End B2 has no equivalent concept at all; `BaseURL` itself is fully excluded via
+  `serviceConfigPassthroughExclusions`, since End B1 and End B2 deliberately read it from
+  different SOURCE fields — `BaseURL` vs. `Endpoint`) and round-trips a distinguishing value
+  (bool or string; the walker synthesizes both kinds) through the applicable path(s), failing
+  loudly (naming which path dropped it) if either does not carry it through. A same-name/
+  same-type field added to both TOP-LEVEL structs is picked up automatically; the test's own
+  `want` set assertion forces a conscious acknowledgment the first time that happens, rather
+  than a silent pass. Verified by mutation while writing this seam entry: commenting out
+  `DesugarService`'s `RequireAccount: sc.RequireAccount` line fails this test immediately,
+  naming exactly that field and path.
+
+  **This walker does NOT descend into the nested `Auth` block** — `config.ServiceConfig.Auth`
+  is type `ServiceAuthConfig`, `apigateway.ServiceConfig.Auth` is type `ServiceAuth`; those are
+  different Go types, so the walker's own `gwField.Type != scField.Type` check always skips
+  `Auth` before ever looking inside it. This is exactly the hole `auth.username_secret_key`
+  (D12) fell through (Opus review, PR #1042, F1): it shipped with zero coverage proving
+  `Config.APIGatewayServices()` propagates `config.ServiceAuthConfig.UsernameSecretKey` into
+  `apigateway.ServiceAuth.UsernameSecretKey` — mutation-confirmed, deleting that one
+  propagation line left `go test ./...` green end-to-end. The nested block has its OWN separate
+  guard, `TestServiceConfigFieldPropagation_Exhaustive_Auth` (same file) — it walks
+  `config.ServiceAuthConfig` against `apigateway.ServiceAuth` by name+type the same way, but
+  checks ONLY End B1 (never End B2): a `uses:` entry's `auth:` block must be the exact zero
+  value (`validateServiceConfig` rejects setting `uses:` and `auth:` together), so
+  `DesugarService` never reads `sc.Auth` at all — there is no meaningful "did this survive End
+  B2" question to ask for ANY `ServiceAuthConfig` field, not just the new one.
 - **When you touch it**: adding a field to `config.ServiceConfig` that should reach the live
   API gateway registry (regardless of whether the service was declared `base_url`/`auth` or
   `uses:`) means: (1) add its `Schema` entry (seam #19), (2) add the field to
   `apigateway.ServiceConfig`, (3) copy it in `Config.APIGatewayServices()` (End B1), (4) copy
   it in `DesugarService` (End B2) — unless the field is genuinely exclusive to one shape, in
-  which case add it to `serviceConfigPassthroughExclusions`
-  (`field_propagation_exhaustive_test.go`) with a reason, the same way `BaseURL` already is.
-  `TestServiceConfigFieldPropagation_Exhaustive` re-verifies (3)+(4) with no test-file edit
-  needed as long as the field's name and type match on both structs; `TestServiceConfigSchema_
-  Exhaustive` (seam #19) re-verifies (1) the same way.
+  which case add it to `serviceConfigPassthroughExclusions` (fully excluded, e.g. `BaseURL`) or
+  `serviceConfigFreeFormOnlyFields` (End B1-only, e.g. `BaseURLSecretKey`)
+  (`field_propagation_exhaustive_test.go`) with a reason. If the field lives on the NESTED
+  `auth:` block instead (`ServiceAuthConfig`/`ServiceAuth`), the top-level walker above will
+  never see it at all — verify `TestServiceConfigFieldPropagation_Exhaustive_Auth`'s own `want`
+  set picks it up instead (it only ever needs End B1, per the note above).
+  `TestServiceConfigFieldPropagation_Exhaustive`(`_Auth`) re-verifies the propagation with no
+  test-file edit needed as long as the field's name and type match on both structs (top-level
+  or nested, respectively); `TestServiceConfigSchema_Exhaustive` (seam #19) re-verifies (1) the
+  same way.
+- **D12 update (2026-08-31)**: `docs/plans/api-gateway-credential-accounts.md` D12 added
+  `BaseURLSecretKey`/`AllowInsecure` to the top-level struct pair and `UsernameSecretKey` to the
+  nested `Auth` pair — the Opus review of PR #1042 that shipped D12 found the two gaps
+  described in the Guard bullet above (F1): `BaseURLSecretKey` sat in
+  `serviceConfigPassthroughExclusions` with no coverage anywhere else, and `UsernameSecretKey`
+  was invisible to the walker entirely (nested field, different Auth-vs-ServiceAuth types).
+  Fixed by (a) generalizing the top-level walker to also synthesize string values and to
+  support an End-B1-only check category (`serviceConfigFreeFormOnlyFields`), and (b) adding the
+  sibling `TestServiceConfigFieldPropagation_Exhaustive_Auth` test for the nested block — see
+  both tests' own doc comments for the full reasoning. `AllowInsecure` itself needed no special
+  casing (round-trips through both End B1 and End B2 exactly like `AllowReadOnlyWrite`/
+  `RequireAccount` already did) — `DesugarService` originally omitted it (an easy miss since
+  `apigateway.ServiceConfig` had no `AllowInsecure` field at all before D12), caught by this
+  same walker the moment the field existed on both structs.
