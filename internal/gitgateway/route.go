@@ -6,9 +6,8 @@ import (
 	"strings"
 )
 
-// Smart HTTP endpoint names (git-http-backend(1)). These are the only three
-// endpoints the gateway forwards — docs/plans/git-gateway-cutover.md PR3:
-// "git smart HTTP は 2 endpoint のみ".
+// Smart HTTP endpoint names (git-http-backend(1)). These are the only
+// endpoints the gateway forwards.
 const (
 	EndpointInfoRefs    = "info/refs"
 	EndpointUploadPack  = "git-upload-pack"
@@ -21,9 +20,7 @@ const PathPrefix = "/j/"
 
 // Operation is the git operation implied by a request, derived from the
 // endpoint name (and, for info/refs, the ?service= query parameter) rather
-// than the HTTP method — docs/plans/git-gateway-cutover.md PR3: "push は
-// git-receive-pack、fetch は git-upload-pack で判別 (endpoint 名 + service
-// query param 両方)".
+// than the HTTP method.
 type Operation string
 
 const (
@@ -32,12 +29,9 @@ const (
 )
 
 // RepoKey identifies a repo by its normalized "<host>/<owner>/<repo>" form —
-// always suffix-free. docs/plans/git-gateway-cutover.md PR3 節の設計調整:
-// PR2 の Opus レビューで NormalizeOriginURL の HTTPS/SSH 非対称
-// (HTTPS 入力は suffix なし passthrough、SSH 入力は suffix 付与) が浮上した。
-// gateway はこの非対称を吸収する層として、".git" suffix の有無を問わず
-// 同じ RepoKey に正規化する — 登録時 (Registry.Register) も lookup 時
-// (parsePath 経由) も必ずこの型を経由させ、吸収ロジックを一箇所に閉じる。
+// always suffix-free, absorbing the ".git"-suffix asymmetry between HTTPS
+// and SSH origin URLs. Both Registry.Register and parsePath (lookup) route
+// through NewRepoKey to keep that normalization in one place.
 type RepoKey string
 
 // NewRepoKey builds a normalized RepoKey from path components, stripping a

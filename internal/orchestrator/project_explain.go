@@ -3,7 +3,7 @@ package orchestrator
 import "sort"
 
 // FieldProvenance classifies where a workspace-default-mergeable field's
-// EFFECTIVE value came from (docs/plans/workspace-default-project.md 論点e).
+// EFFECTIVE value came from.
 type FieldProvenance string
 
 const (
@@ -11,7 +11,7 @@ const (
 	// (or, for task_behaviors, defines this canonical behavior name).
 	ProvenanceProjectYAML FieldProvenance = "project.yaml"
 	// ProvenanceWorkspaceDefault means project.yaml left the field/key unset
-	// and the workspace's default project definition supplied it (決定1/決定5).
+	// and the workspace's default project definition supplied it.
 	ProvenanceWorkspaceDefault FieldProvenance = "workspace default"
 	// ProvenanceUnset means neither project.yaml nor the workspace default
 	// supplied a value — the field is genuinely empty / the behavior key
@@ -21,16 +21,14 @@ const (
 	// AND the linked workspace's default project definition could not be
 	// read (a real error, not "no workspace linked" / "not configured" /
 	// os.ErrNotExist) — so it is genuinely unknown whether a workspace
-	// default would have supplied one. Codex review round 1 Major: without
-	// this distinction, a workspace load failure was misreported as
-	// ProvenanceUnset ("neither source supplied a value"), which is a
-	// stronger claim than the code can actually back up — an ordinary
-	// dispatch hitting the identical error would hydration-fail, not
-	// silently treat the field as unset.
+	// default would have supplied one. Without this distinction, a
+	// workspace load failure would be misreported as ProvenanceUnset
+	// ("neither source supplied a value"), a stronger claim than the code
+	// can actually back up.
 	ProvenanceUnavailable FieldProvenance = "workspace unavailable"
 )
 
-// BaseBranchSnapshotNote documents 決定2's tradeoff for --explain output:
+// BaseBranchSnapshotNote documents a tradeoff surfaced by --explain output:
 // BaseBranch is resolved and snapshotted onto the task row at task-creation
 // time (task_create.go), so changing the workspace default's base_branch (or
 // project.yaml's) after a task already exists does NOT retroactively change
@@ -40,11 +38,10 @@ const (
 // every existing task too.
 const BaseBranchSnapshotNote = "base_branch is snapshotted onto each task at creation time; changing project.yaml or the workspace default afterward only affects NEW tasks, not tasks that already exist. task_behaviors are resolved at dispatch time and are not snapshotted."
 
-// ProjectExplain is the field-provenance view of a project's effective meta
-// (docs/plans/workspace-default-project.md 論点e, PR6). It answers "where
-// did this value come from" for the 4 fields a workspace default definition
-// can supply: task_behaviors (per canonical behavior name), base_branch,
-// fork_point, default_task_behavior.
+// ProjectExplain is the field-provenance view of a project's effective
+// meta. It answers "where did this value come from" for the 4 fields a
+// workspace default definition can supply: task_behaviors (per canonical
+// behavior name), base_branch, fork_point, default_task_behavior.
 type ProjectExplain struct {
 	ProjectID   string `json:"project_id"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
@@ -115,14 +112,12 @@ func (e *ProjectExplain) TaskBehaviorNames() []string {
 // GetWithWorkspace call fail outright. When true, a field that would
 // otherwise read as ProvenanceUnset instead reads as ProvenanceUnavailable:
 // "unset" asserts nothing supplies a value, which is a claim this function
-// cannot back up when the workspace side could not even be read (Codex
-// review round 1 Major).
+// cannot back up when the workspace side could not even be read.
 //
-// The task_behaviors comparison is done on names as written (決定4, 論点j),
-// the same way GetWithWorkspace's own merge compares them. Neither input map
-// is mutated: rawMeta.TaskBehaviors is a shared cached map that concurrent
-// hydrate/dispatch calls may be reading (Codex review round 1 Major — an
-// earlier version mutated it in place on every read-only /explain call).
+// The task_behaviors comparison is done on names as written, the same way
+// GetWithWorkspace's own merge compares them. Neither input map is mutated:
+// rawMeta.TaskBehaviors is a shared cached map that concurrent
+// hydrate/dispatch calls may be reading.
 func ComputeProjectExplain(projectID, workspaceID string, rawMeta *ProjectMeta, wsMeta *WorkspaceMeta, workspaceUnavailable bool) *ProjectExplain {
 	out := &ProjectExplain{
 		ProjectID:              projectID,

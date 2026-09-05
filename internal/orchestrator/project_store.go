@@ -17,67 +17,52 @@ type ProjectStore struct {
 	metas          map[string]*ProjectMeta
 	workspaceIDs   map[string]string // projectID → workspaceID (empty if unlinked)
 	workspaceStore *WorkspaceStore
-	// hostCommands is the daemon's aggregated host_commands config
-	// (docs/plans/workspace-db-consolidation.md host_commands 実定義の集約先):
-	// the full HostCommandSpec definitions keyed by name, which
+	// hostCommands is the daemon's aggregated host_commands config: the
+	// full HostCommandSpec definitions keyed by name, which
 	// WorkspaceMeta.HostCommands (a []string of reference names only) is
 	// resolved against at GetWithWorkspace hydration time. Wired via
-	// SetHostCommands — see internal/server/wire.go's buildProjectStore.
+	// SetHostCommands.
 	hostCommands map[string]HostCommandSpec
-	// statuses tracks each project's in-memory health (docs/plans/
-	// volume-only-daemon.md §論点a: "status field ('ready'/'degraded' 相当)
-	// の in-memory ... 実装"). A project with no entry is implicitly "ready"
-	// (StatusReady is the zero value of ProjectStatus.State) — see Status's
-	// doc comment. This is intentionally NOT persisted to the DB (the plan
-	// doc calls out either choice as invariant-satisfying); it resets to
-	// "ready" for every project on daemon restart, which is fine because
-	// LoadAll re-derives it on every startup anyway.
+	// statuses tracks each project's in-memory health. A project with no
+	// entry is implicitly "ready" (StatusReady is the zero value of
+	// ProjectStatus.State) — see Status's doc comment. Intentionally not
+	// persisted to the DB; it resets to "ready" for every project on daemon
+	// restart, since LoadAll re-derives it on every startup anyway.
 	statuses map[string]ProjectStatus
-	// reposRoot is <data_dir>/repos (docs/plans/volume-only-daemon.md §論点b
-	// layout), set via SetReposRoot. LoadAll uses it purely for a nicer
-	// degraded-status message: a project whose WorkDir falls outside this
-	// prefix AND fails to load as a bare repo is very likely a pre-cutover
-	// project registered against a host filesystem directory (the "移行
-	// path" §論点a describes), so it gets pointed at `boid project add
-	// <git-url>` instead of a generic parse/read error. Empty (the
-	// zero value) just skips that message upgrade — every other
-	// invariant-driven behavior (never hard-delete, always mark degraded)
-	// holds regardless of whether this was ever configured.
+	// reposRoot is <data_dir>/repos, set via SetReposRoot. LoadAll uses it
+	// purely for a nicer degraded-status message: a project whose WorkDir
+	// falls outside this prefix AND fails to load as a bare repo is likely a
+	// pre-cutover project registered against a host filesystem directory,
+	// so it gets pointed at `boid project add <git-url>` instead of a
+	// generic parse/read error. Empty (never configured) just skips that
+	// message upgrade.
 	reposRoot string
 	// deriveProjectID, when set via SetDeriveProjectIDFunc, recomputes the
 	// id a git-URL registration would derive from a project's current
-	// UpstreamURL (Codex round-3 Major review, PR7: reconcileExpectedProjectID
-	// must not treat "expectedID carries the url- prefix" alone as proof
-	// that expectedID was actually derived from a URL — a hand-authored
-	// `id: url-custom` in project.yaml carries the same prefix without ever
-	// having been derived). Wired from internal/server/wire.go's
-	// buildProjectStore to internal/api.DeriveProjectIDFromURL.
-	// orchestrator cannot import internal/api directly to call this itself:
-	// internal/dispatcher (which the derivation depends on for URL
-	// normalization/slugging) already imports orchestrator, and
-	// internal/api imports both — importing api from here would cycle.
-	// nil in any ProjectStore built without this wiring (e.g. a test
-	// constructing orchestrator.NewProjectStore() directly without calling
-	// the setter); reconcileExpectedProjectID treats "cannot verify" as
-	// "do not ignore the drift", never as "ignore it anyway" — see that
-	// method's doc comment.
+	// UpstreamURL — used to verify that an id carrying
+	// URLDerivedProjectIDPrefix was actually derived from a URL, rather than
+	// hand-authored to merely look that way. Wired from
+	// internal/server/wire.go's buildProjectStore to
+	// internal/api.DeriveProjectIDFromURL; orchestrator cannot import
+	// internal/api directly (would cycle through internal/dispatcher). nil
+	// in any ProjectStore built without this wiring;
+	// reconcileExpectedProjectID treats "cannot verify" as "do not ignore
+	// the drift".
 	deriveProjectID func(upstreamURL string) (string, error)
 }
 
 // SetDeriveProjectIDFunc wires the git-URL-to-project-id derivation used by
-// reconcileExpectedProjectID to verify that a url-derived expectedID (see
-// URLDerivedProjectIDPrefix) was ACTUALLY derived from the project's current
-// UpstreamURL, not merely a hand-authored id: value that happens to share
-// the "url-" prefix. See the deriveProjectID field's doc comment for why
-// this is injected rather than called directly.
+// reconcileExpectedProjectID to verify that a url-derived expectedID was
+// ACTUALLY derived from the project's current UpstreamURL, not merely a
+// hand-authored id: value that happens to share the prefix.
 func (s *ProjectStore) SetDeriveProjectIDFunc(fn func(upstreamURL string) (string, error)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deriveProjectID = fn
 }
 
-// ProjectStatus is a project's in-memory health snapshot (docs/plans/
-// volume-only-daemon.md §論点a). See Status/MarkDegraded/MarkReady.
+// ProjectStatus is a project's in-memory health snapshot. See
+// Status/MarkDegraded/MarkReady.
 type ProjectStatus struct {
 	// State is StatusReady or StatusDegraded.
 	State string
@@ -90,10 +75,9 @@ const (
 	// fetch/load failure has been observed since (the zero value / default
 	// for any project with no statuses entry).
 	StatusReady = "ready"
-	// StatusDegraded means the project's row is preserved (per the
-	// on-startup-auto-prune-retirement invariant, docs/plans/
-	// volume-only-daemon.md §論点a) but its project.yaml/bare-repo could not
-	// be loaded — see ProjectStatus.Message for why.
+	// StatusDegraded means the project's row is preserved but its
+	// project.yaml/bare-repo could not be loaded — see ProjectStatus.Message
+	// for why.
 	StatusDegraded = "degraded"
 )
 
@@ -116,9 +100,7 @@ func (s *ProjectStore) SetReposRoot(dir string) {
 }
 
 // MarkDegraded records that projectID's project.yaml/bare-repo could not be
-// loaded, without touching its DB row or its (possibly still-cached) Meta —
-// this is the "エラー化 (status field で可視化)" half of docs/plans/
-// volume-only-daemon.md §論点a's on-startup-auto-prune-retirement invariant.
+// loaded, without touching its DB row or its (possibly still-cached) Meta.
 // Overwrites any prior status for projectID.
 func (s *ProjectStore) MarkDegraded(projectID, message string) {
 	s.mu.Lock()
@@ -206,14 +188,10 @@ func (s *ProjectStore) Load(workDir string) (*ProjectMeta, error) {
 		return nil, err
 	}
 	if meta.ID == "" {
-		// docs/plans/workspace-default-project.md 論点h 案1 (PR7) only makes
-		// `id:` optional for the git-URL / bare-repo registration path,
-		// which has a URL to derive a fallback id from
-		// (internal/api's deriveProjectIDFromURL). This is the LEGACY
-		// host-filesystem `boid project add <dir>` path (Codex review,
-		// PR7 round 1 Major): there is no URL here to derive anything
-		// from, so an id-less project.yaml must keep failing exactly as it
-		// did before this PR — caching under the empty-string key would
+		// This is the legacy host-filesystem `boid project add <dir>` path,
+		// which has no URL to derive a fallback id from (unlike the
+		// bare-repo registration path), so an id-less project.yaml must
+		// fail outright — caching under the empty-string key would
 		// silently corrupt the map and let a project register with an
 		// empty DB primary key.
 		return nil, fmt.Errorf("%s: project.yaml: id is required (this legacy host-directory registration path has no git URL to derive a fallback id from — see docs/plans/workspace-default-project.md 論点h)", workDir)
@@ -226,18 +204,17 @@ func (s *ProjectStore) Load(workDir string) (*ProjectMeta, error) {
 }
 
 // LoadBareRepo reads .boid/project.yaml from a daemon-managed bare git
-// repository's HEAD (docs/plans/volume-only-daemon.md §論点a/b) and stores
-// the meta in memory — the bare-repo counterpart to Load. Used both by
-// ProjectAppService.CreateProjectFromGitURL (first load right after a fresh
-// `git clone --bare`) and ProjectAppService.FetchProject (`boid project
-// fetch <id>`, reload after `git fetch --all`).
+// repository's HEAD and stores the meta in memory — the bare-repo
+// counterpart to Load. Used both by ProjectAppService.CreateProjectFromGitURL
+// (first load right after a fresh `git clone --bare`) and
+// ProjectAppService.FetchProject (`boid project fetch <id>`, reload after
+// `git fetch --all`).
 func (s *ProjectStore) LoadBareRepo(bareRepoPath string) (*ProjectMeta, error) {
 	meta, err := ReadProjectMetaFromBareRepo(bareRepoPath)
 	if err != nil {
 		return nil, err
 	}
 	if meta.ID == "" {
-		// docs/plans/workspace-default-project.md 論点h 案1 (PR7):
 		// project.yaml exists but omits `id:`. There is no id to cache
 		// under yet (caching under "" would corrupt the map) — the only
 		// caller of this method, CreateProjectFromGitURL, derives a
@@ -251,20 +228,16 @@ func (s *ProjectStore) LoadBareRepo(bareRepoPath string) (*ProjectMeta, error) {
 	return meta, nil
 }
 
-// reconcileExpectedProjectID implements 論点h 案1
-// (docs/plans/workspace-default-project.md, PR7): project.yaml's own `id:`
-// field is optional, and once a project has been registered under an id
-// ACTUALLY derived from its git upstream URL (verified below, not merely
-// carrying URLDerivedProjectIDPrefix — see the Major fix note), that id
-// must never change out from under it — existing tasks reference it
-// directly.
+// reconcileExpectedProjectID implements the rule that project.yaml's own
+// `id:` field is optional, and once a project has been registered under an
+// id ACTUALLY derived from its git upstream URL (verified below, not merely
+// carrying URLDerivedProjectIDPrefix), that id must never change out from
+// under it — existing tasks reference it directly.
 //
 //   - meta.ID == "": project.yaml never declared an id (or dropped it) —
 //     always adopt expectedID, the id this project is already registered
-//     under. This is the common no-op case on every reload of a
-//     project.yaml that has always omitted `id:`. Unconditional regardless
-//     of expectedID's provenance: an id-less project.yaml has nothing of
-//     its own to prefer over the registered id either way.
+//     under. Unconditional regardless of expectedID's provenance: an
+//     id-less project.yaml has nothing of its own to prefer either way.
 //   - meta.ID != expectedID AND expectedID is verified to have been
 //     DERIVED FROM upstreamURL (via s.deriveProjectID, when wired): a
 //     project.yaml that gained (or kept) an explicit `id:` after this
@@ -272,14 +245,10 @@ func (s *ProjectStore) LoadBareRepo(bareRepoPath string) (*ProjectMeta, error) {
 //     warning), not rejected — switching to project.yaml's id would detach
 //     every existing task from this project.
 //   - meta.ID != expectedID otherwise — including when expectedID merely
-//     LOOKS url-derived (carries URLDerivedProjectIDPrefix) but does not
-//     actually match what s.deriveProjectID(upstreamURL) produces (Codex
-//     round-3 Major review, PR7: a hand-authored `id: url-custom` must not
-//     get this treatment just because it shares the prefix a genuinely
-//     derived id would carry — that would silently swallow a real id
-//     change), or when s.deriveProjectID is unset/errors and there is
-//     nothing to verify against: left untouched. The caller still treats
-//     this as a mismatch and rejects it, unchanged from before this PR.
+//     LOOKS url-derived (carries the prefix) but does not actually match
+//     what s.deriveProjectID(upstreamURL) produces, or when
+//     s.deriveProjectID is unset/errors: left untouched. The caller still
+//     treats this as a mismatch and rejects it.
 func (s *ProjectStore) reconcileExpectedProjectID(meta *ProjectMeta, expectedID, upstreamURL string) {
 	if meta.ID == "" {
 		meta.ID = expectedID
@@ -297,16 +266,12 @@ func (s *ProjectStore) reconcileExpectedProjectID(meta *ProjectMeta, expectedID,
 }
 
 // isVerifiedURLDerivedID reports whether id was ACTUALLY derived from
-// upstreamURL via s.deriveProjectID (Codex round-4 review, PR7: round-3's
-// fix only closed this gap inside reconcileExpectedProjectID itself — the
-// id carrying URLDerivedProjectIDPrefix is not, on its own, proof of
-// provenance. Both call sites that previously trusted the bare prefix
-// (reconcileExpectedProjectID above, for a STILL-PRESENT project.yaml whose
-// id: drifted, and LoadAll's/FetchProject's missing-project.yaml fallback,
-// for a project.yaml that disappeared entirely) share this same check now,
-// so a hand-authored `id: url-custom` that never actually came from a URL
-// derivation gets the ordinary drift/degrade treatment in both places, not
-// just one).
+// upstreamURL via s.deriveProjectID — carrying URLDerivedProjectIDPrefix is
+// not, on its own, proof of provenance. Shared by reconcileExpectedProjectID
+// (a still-present project.yaml whose id: drifted) and LoadAll's
+// missing-project.yaml fallback, so a hand-authored `id: url-custom` that
+// never actually came from a URL derivation gets the ordinary drift/degrade
+// treatment in both places.
 //
 // Returns false (never ignore) whenever verification cannot be performed —
 // id doesn't even look url-derived, upstreamURL is empty, no derive func is
@@ -326,15 +291,11 @@ func (s *ProjectStore) isVerifiedURLDerivedID(id, upstreamURL string) bool {
 	return err == nil && derived == id
 }
 
-// LoadBareRepoExpectingID is LoadBareRepo's id-validated counterpart (PR-2a
-// codex round-3 M2 fix). Pre-fix, LoadBareRepo cached the freshly-read meta
-// under its OWN id BEFORE any caller got a chance to check it against the id
-// the caller actually expected — so if project A's project.yaml `id:`
-// drifted (upstream rename) to collide with an already-registered,
-// completely unrelated project B, A's load silently overwrote B's cache
-// entry, and the caller's own mismatch-cleanup branch (a bare Remove(meta.ID))
-// then deleted that just-clobbered entry outright — corrupting B's in-memory
-// state even though B itself was never touched on disk.
+// LoadBareRepoExpectingID is LoadBareRepo's id-validated counterpart. Unlike
+// LoadBareRepo, it never caches the freshly-read meta under its own id
+// before confirming it matches expectedID — otherwise, if project A's
+// project.yaml `id:` drifted to collide with an already-registered,
+// unrelated project B, A's load could silently overwrite B's cache entry.
 //
 // Used by FetchProject (via the Meta interface) and LoadAll below — both
 // call sites already have a specific expected id to validate the freshly-
@@ -367,37 +328,24 @@ func (s *ProjectStore) LoadBareRepoExpectingID(bareRepoPath, expectedID, upstrea
 	return meta, nil
 }
 
-// LoadExpectingID is Load's id-validated counterpart — see
-// LoadBareRepoExpectingID's doc comment for the full M2 rationale, which
-// applies identically to the legacy host-dir registration path LoadAll
-// dispatches to here.
+// LoadExpectingID is Load's id-validated counterpart — the legacy host-dir
+// registration path LoadAll dispatches to here.
 func (s *ProjectStore) LoadExpectingID(workDir, expectedID string) (*ProjectMeta, error) {
 	meta, err := ReadProjectMetaWithKits(workDir)
 	if err != nil {
 		return nil, err
 	}
 	if meta.ID == "" {
-		// Codex round-3 Minor 2 review: byte-for-byte match Load's own
-		// explicit rejection (above) instead of silently falling through to
-		// the meta.ID != expectedID mismatch branch below. Before this
-		// check, an id-less project.yaml on this legacy host-directory path
-		// returned (meta, nil) here — meta.ID == "" is never equal to a
-		// non-empty expectedID, so LoadAll's caller still ended up
-		// rejecting/degrading the project either way, but via a generic
-		// "id %q does not match" message instead of this path's own
-		// specific, actionable error — a return-contract/diagnostic
-		// difference from pre-PR7 behavior, not merely an unchanged outcome.
+		// Byte-for-byte match Load's own explicit rejection above, rather
+		// than silently falling through to the generic mismatch branch
+		// below, so this gives its own specific, actionable error.
 		return nil, fmt.Errorf("%s: project.yaml: id is required (this legacy host-directory registration path has no git URL to derive a fallback id from — see docs/plans/workspace-default-project.md 論点h)", workDir)
 	}
-	// Deliberately NOT reconcileExpectedProjectID (Codex review, PR7 round-2
-	// Major): docs/plans/workspace-default-project.md 論点h 案1 only makes
-	// `id:` optional for the git-URL / bare-repo path, which has a URL to
-	// derive a fallback id from — see Load's own doc comment for why this
-	// legacy host-directory path must keep rejecting an id-less
-	// project.yaml outright, on first load AND on every reload alike. An
-	// ordinary legacy project's project.yaml losing its `id:` (or drifting
-	// to a different one) must keep failing exactly as it did before this
-	// PR, not silently inherit expectedID.
+	// Deliberately NOT reconcileExpectedProjectID: `id:` is optional only
+	// for the git-URL / bare-repo path, which has a URL to derive a
+	// fallback id from. This legacy host-directory path must keep rejecting
+	// an id-less or drifted project.yaml outright rather than silently
+	// inheriting expectedID.
 	if meta.ID != expectedID {
 		return meta, nil
 	}
@@ -417,27 +365,21 @@ func (s *ProjectStore) Get(id string) (*ProjectMeta, bool) {
 }
 
 // GetWithWorkspace returns a ProjectMeta hydrated with workspace-level
-// capabilities, host_commands, additional_bindings, env, SecretNamespace
-// injection, and — since docs/plans/workspace-default-project.md PR4 — the
+// capabilities, host_commands, env, SecretNamespace injection, and the
 // workspace's default project definition (task_behaviors / base_branch /
 // fork_point / default_task_behavior), which project.yaml's own values
-// override field by field (決定1) and canonical-behavior-name by name
-// (決定4).
+// override field by field and canonical-behavior-name by name.
 //
 // Hydration rules:
 //   - If the project has no linked workspace, returns the cached meta unchanged.
 //   - If linked: always injects meta.SecretNamespace = workspaceID.
 //   - On workspace.yaml load success: merges Capabilities, host_commands,
-//     additional_bindings, Env, and the workspace default project definition.
+//     Env, and the workspace default project definition.
 //   - On os.ErrNotExist (degraded window): logs a warning, returns meta with
 //     only SecretNamespace injected (no error) — the workspace default is
 //     NOT applied in this window either, same as every other workspace-level
 //     field.
 //   - On other errors: returns nil and the error.
-//
-// The kit mechanism (ws.Kits resolved via a KitResolver and merged in here)
-// was retired in docs/plans/workspace-db-consolidation.md Phase 2.5 PR6; see
-// the NOTE in the body below for what used to live here.
 //
 // The returned *ProjectMeta is a fresh copy when hydration occurs; callers
 // must not mutate the value returned when workspaceID is empty (it is the
@@ -479,13 +421,10 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		return nil, fmt.Errorf("project %q: load workspace %q: %w", projectID, workspaceID, err)
 	}
 
-	// MAJOR 1 (codex review, 3rd pass): expand ${VAR} placeholders in ws.Env
-	// before anything below reads it. The DB/yaml-stored ws value stays raw
-	// (see expandWorkspaceRuntimeForDispatch's doc comment) — ws is
-	// reassigned to a clone here so every block below (the Env merge)
-	// transparently sees expanded values without needing its own expansion
-	// step. Mirrors ExpandHostCommandsForDispatch's clone+expand treatment of
-	// workspace.HostCommands' resolved definitions.
+	// Expand ${VAR} placeholders in ws.Env before anything below reads it.
+	// The DB/yaml-stored ws value stays raw (see
+	// expandWorkspaceRuntimeForDispatch's doc comment); ws is reassigned to
+	// a clone here so every block below transparently sees expanded values.
 	ws = expandWorkspaceRuntimeForDispatch(ws)
 
 	// Capabilities: workspace overrides project (e.g. enables docker proxy).
@@ -493,12 +432,10 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		out.Capabilities = ws.Capabilities
 	}
 
-	// workspace default project definition (docs/plans/
-	// workspace-default-project.md 決定4, 論点j, PR4): a workspace-level
-	// task_behaviors entry fills in any behavior name project.yaml does not
-	// already define. A name project.yaml ALSO defines wins outright — no
-	// per-field merge inside one behavior, decision4's "同名は project.yaml 側が
-	// 丸ごと勝つ". Names are compared verbatim on both sides.
+	// workspace default project definition: a workspace-level task_behaviors
+	// entry fills in any behavior name project.yaml does not already define.
+	// A name project.yaml ALSO defines wins outright — no per-field merge
+	// inside one behavior. Names are compared verbatim on both sides.
 	//
 	// This MUST run before the host_commands/env blocks below: they iterate
 	// out.TaskBehaviors to inject ws.HostCommands/ws.Env into every
@@ -518,56 +455,15 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		}
 	}
 
-	// NOTE (docs/plans/workspace-db-consolidation.md Phase 2.5 PR6): this used
-	// to be where ws.Kits was resolved (resolveKitRef/ReadKitMeta) and merged
-	// into out.HostCommands/AdditionalBindings/Env and every TaskBehavior via
-	// MergeKitRuntime/MergeKitMetaIntoBehavior. That whole kit-aggregation
-	// path was already dead on the committed/DB-backed path before PR6 (see
-	// workspace_migration.go's materializeKitRuntimeIntoWorkspace doc
-	// comment: the workspaces table has no Kits column, so a DB-backed
-	// WorkspaceMeta always comes back with Kits == nil) — PR6 removed the
-	// code itself as part of retiring the kit mechanism. ws.Kits is kept as a
-	// vestigial field (dead, never populated by DB-backed rows) until PR7
-	// deletes it outright.
-
-	// NOTE (docs/plans/home-workspace-volume.md Phase 4 PR4): this used to be
-	// where ws.AdditionalBindings (BLOCKER 2, docs/plans/
-	// workspace-db-consolidation.md codex review) was merged into both
-	// out.AdditionalBindings and every TaskBehavior.AdditionalBindings — a
-	// workspace-level vestige of the kit mechanism (decision 4). That field
-	// was retired outright in Phase 4 PR4: the $HOME workspace volume
-	// contract (Phase 4 PR1/PR2) removes the need for a workspace to declare
-	// extra host bind mounts at all, so there is nothing left for this block
-	// to read — WorkspaceMeta has no AdditionalBindings field any more (see
-	// its own doc comment). out.AdditionalBindings / every
-	// TaskBehavior.AdditionalBindings can still be populated today, but only
-	// via project.yaml's own AdditionalBindings (see spec_loader.go's
-	// ReadProjectMetaWithKits, which merges meta.AdditionalBindings into each
-	// behavior — this workspace-level merge was its only other feed).
-
-	// workspace.HostCommands (docs/plans/workspace-db-consolidation.md PR3
-	// cutover) is a []string of reference names into the daemon's
-	// aggregated host_commands config (s.hostCommands, wired via
-	// SetHostCommands) — unlike ws.Kits above, no path/allow/env/reject
-	// definitions travel with the workspace itself. Each resolved name is
-	// merged the same way workspace kits are merged above: into the
-	// top-level meta.HostCommands (session jobs bypass behaviors and read
-	// this directly) and into every TaskBehavior.HostCommands (task hooks
-	// read behavior.HostCommands via the planner). Precedence matches the
-	// kit block: project.yaml wins on a name conflict. In practice the two
-	// paths should never actually conflict on a *different* definition for
-	// the same name — the aggregated config is exactly the union of every
-	// installed kit's host_commands (see LoadHostCommandsFromKits), so a
-	// name resolved here carries the identical HostCommandSpec a workspace
-	// kit reference would have produced.
-	// MINOR (codex review): the condition used to also require
-	// len(s.hostCommands) > 0, which meant that when the daemon's
-	// aggregated host_commands map was empty (no kits installed / not yet
-	// wired), a workspace.HostCommands reference silently produced neither
-	// the "unresolved" warning below nor any error — the whole block was
-	// skipped outright. Checking only ws.HostCommands here means every
-	// referenced name always gets resolved-or-warned, including the
-	// aggregated-empty case.
+	// workspace.HostCommands is a []string of reference names into the
+	// daemon's aggregated host_commands config (s.hostCommands, wired via
+	// SetHostCommands). Each resolved name is merged into the top-level
+	// meta.HostCommands (session jobs bypass behaviors and read this
+	// directly) and into every TaskBehavior.HostCommands (task hooks read
+	// behavior.HostCommands via the planner); project.yaml wins on a name
+	// conflict. Checking only ws.HostCommands here (not also
+	// len(s.hostCommands) > 0) means every referenced name always gets
+	// resolved-or-warned, even when the aggregated config is empty.
 	if len(ws.HostCommands) > 0 {
 		resolved := make(HostCommands, len(ws.HostCommands))
 		for _, name := range ws.HostCommands {
@@ -612,14 +508,12 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		}
 	}
 
-	// BaseBranch / ForkPoint / DefaultTaskBehavior (決定1, 決定5): empty means
-	// "unspecified" — project.yaml wins whenever it set a non-empty value;
-	// otherwise the workspace default (itself possibly also empty) is
-	// inherited. Assigning ws.X onto an already-non-empty out.X would
-	// clobber project.yaml's own value, so each is gated on out.X being
-	// empty first. There is deliberately no way to explicitly un-set an
-	// inherited value back to empty — see 決定5's own rationale
-	// (spec_types.go's field-presence tracking gap this accepts).
+	// BaseBranch / ForkPoint / DefaultTaskBehavior: empty means "unspecified"
+	// — project.yaml wins whenever it set a non-empty value; otherwise the
+	// workspace default (itself possibly also empty) is inherited. Each is
+	// gated on out.X being empty first so ws.X never clobbers an
+	// already-set project.yaml value. There is deliberately no way to
+	// explicitly un-set an inherited value back to empty.
 	if out.BaseBranch == "" {
 		out.BaseBranch = ws.BaseBranch
 	}
@@ -635,18 +529,15 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	return out, nil
 }
 
-// Explain returns the field-provenance view of projectID's effective meta
-// (docs/plans/workspace-default-project.md 論点e, PR6) — for each of the 4
-// workspace-default-mergeable fields, whether the effective value came from
-// project.yaml or the workspace's default project definition. Unlike
-// GetWithWorkspace, this never returns an error for a missing/unreadable
-// workspace: the degraded window (workspace.yaml absent, or no workspace
-// linked / workspace store unconfigured) is reported as "no workspace
-// default applied" (ProvenanceUnset), the same treatment GetWithWorkspace
-// itself gives that window. A real load failure (not os.ErrNotExist) is
-// reported as ProvenanceUnavailable instead — distinct from "unset" because
-// this function genuinely cannot tell whether a workspace default would
-// have supplied a value (Codex review round 1 Major; see
+// Explain returns the field-provenance view of projectID's effective meta —
+// for each of the 4 workspace-default-mergeable fields, whether the
+// effective value came from project.yaml or the workspace's default
+// project definition. Unlike GetWithWorkspace, this never returns an error
+// for a missing/unreadable workspace: the degraded window is reported as
+// "no workspace default applied" (ProvenanceUnset). A real load failure
+// (not os.ErrNotExist) is reported as ProvenanceUnavailable instead —
+// distinct from "unset" because this function genuinely cannot tell
+// whether a workspace default would have supplied a value (see
 // ComputeProjectExplain's own doc comment for the classification rule).
 func (s *ProjectStore) Explain(projectID string) (*ProjectExplain, error) {
 	s.mu.RLock()
@@ -684,8 +575,7 @@ func (s *ProjectStore) Set(id string, meta *ProjectMeta) {
 }
 
 // SetSynthesizedMeta caches a meta value that was synthesized rather than
-// read from a project.yaml (docs/plans/workspace-default-project.md PR5,
-// §現状の実測5 / 論点d) — the project.yaml-less registration path
+// read from a project.yaml — the project.yaml-less registration path
 // (CreateProjectFromGitURL) and its reload counterpart (FetchProject). Unlike
 // the bare Set above, this also clears any prior degraded status: a
 // successful synthesis means the project is usable again (the workspace
@@ -699,43 +589,31 @@ func (s *ProjectStore) SetSynthesizedMeta(id string, meta *ProjectMeta) {
 }
 
 // synthesizeMetaForReload builds a minimal ProjectMeta for a project.yaml-less
-// project on daemon startup/reload (docs/plans/workspace-default-project.md
-// §現状の実測5) — LoadAll's fallback when gitShowHEAD classifies the failure
-// as GitHeadReadFailurePathAbsent (project.yaml was never committed, not a
-// corrupt repo). Only ID and Name are populated here: TaskBehaviors /
-// BaseBranch / ForkPoint / DefaultTaskBehavior are deliberately left empty so
-// GetWithWorkspace's existing workspace-default merge (決定2: composed
-// dynamically on every hydrate, not snapshotted here) fills them in from
-// whatever the workspace's CURRENT default project definition is — exactly
-// the same as a project.yaml-bearing project whose own fields are empty.
+// project on daemon startup/reload — LoadAll's fallback when gitShowHEAD
+// classifies the failure as GitHeadReadFailurePathAbsent (project.yaml was
+// never committed, not a corrupt repo). Only ID and Name are populated here:
+// TaskBehaviors / BaseBranch / ForkPoint / DefaultTaskBehavior are
+// deliberately left empty so GetWithWorkspace's existing workspace-default
+// merge (composed dynamically on every hydrate, not snapshotted here) fills
+// them in from whatever the workspace's CURRENT default project definition
+// is — exactly the same as a project.yaml-bearing project whose own fields
+// are empty.
 //
-// Name is recovered in priority order (Codex review, PR5 round 1 P1: a
-// FIRST-EVER reload — a fresh *ProjectStore built at daemon startup, before
-// any candidate has ever been cached — has no "previously-cached Name" to
-// fall back on; re-deriving from UpstreamURL alone would then silently
-// discard an explicit --name given at registration time, since the derived
-// and explicit names can legitimately differ):
+// Name is recovered in priority order (a first-ever reload has no
+// previously-cached Name to fall back on; re-deriving from UpstreamURL
+// alone would then silently discard an explicit --name given at
+// registration time, since the derived and explicit names can legitimately
+// differ):
 //
 //  1. the project's own previously-cached Name (a reload after the first —
-//     the common case — always has this: it survives unconditionally, both
-//     an explicit --name and a derived one).
+//     the common case — always has this).
 //  2. candidate.WorkDir's own directory basename, ".git" stripped — the bare
-//     repo's path is BareRepoPath(dataDir, workspaceSlug, projectName), i.e.
-//     its last path segment IS the exact name (explicit --name or derived)
-//     CreateProjectFromGitURL used at registration time, whichever it was.
-//     This reproduces the true add-time name on a cold-start first reload
-//     even when it was an explicit --name that DeriveProjectNameFromURL(
-//     candidate.UpstreamURL) alone could never recover.
+//     repo's last path segment IS the exact name (explicit --name or
+//     derived) CreateProjectFromGitURL used at registration time.
 //  3. re-derived from the DB-persisted UpstreamURL via
 //     DeriveProjectNameFromURL, only when WorkDir's basename cannot be used
-//     (empty, or a WorkDir that for some reason isn't a bare-repo path — see
-//     IsBareRepoDir's own gate, which is what routed this candidate here in
-//     the first place, so this branch is essentially unreachable in
-//     practice; kept only as a last-resort fallback).
-//  4. empty (still better than removing the project outright — an empty
-//     Name only degrades name-based ref resolution / workspace apply, which
-//     already has its own explicit refusal for that case,
-//     refuseIfAnyRegisteredProjectNameUnavailable).
+//     (essentially unreachable in practice; kept as a last-resort fallback).
+//  4. empty (still better than removing the project outright).
 func (s *ProjectStore) synthesizeMetaForReload(candidate *Project) *ProjectMeta {
 	s.mu.RLock()
 	prev, hadPrev := s.metas[candidate.ID]
@@ -762,10 +640,10 @@ func (s *ProjectStore) synthesizeMetaForReload(candidate *Project) *ProjectMeta 
 
 // MetaProjectIDs returns the ids of every project linked to workspaceID
 // (via SetWorkspaceID/the workspaceIDs map) whose cached meta declares
-// signals.sources[] — i.e. workspaceID's metaprojects (docs/plans/
-// boid-internal-signal-inbox.md §4.3/§6.2). Satisfies MetaProjectResolver
-// (signal_ingest_bridge.go); nil (never a non-nil empty slice) when
-// workspaceID has none, so a caller's len()==0 check works either way.
+// signals.sources[] — i.e. workspaceID's metaprojects. Satisfies
+// MetaProjectResolver (signal_ingest_bridge.go); nil (never a non-nil empty
+// slice) when workspaceID has none, so a caller's len()==0 check works
+// either way.
 //
 // A project whose meta was never Set (in-memory cache miss — e.g. one still
 // mid-registration) is simply absent from this scan, not an error: the same
@@ -816,25 +694,21 @@ func (s *ProjectStore) Remove(id string) {
 // LoadAll reads project.yaml for each registered project — dispatching to
 // LoadBareRepo for a git-URL registered project (IsBareRepoDir) or Load for
 // a filesystem-checkout registered project (the pre-volume-only model,
-// still supported for `boid project init` — see docs/plans/
-// volume-only-daemon.md §論点a's migration-path note: existing dir-based
-// registrations are left alone, not auto-migrated) — and records each
-// project's workspaceID so that GetWithWorkspace can hydrate at call time.
+// still supported for `boid project init`; existing dir-based registrations
+// are left alone, not auto-migrated) — and records each project's
+// workspaceID so that GetWithWorkspace can hydrate at call time.
 //
 // Per-project errors are returned in the original order. When the inner
 // error is a *ProjectMigrationError, the candidate's project ID is stamped
-// onto every Issue in the returned error so downstream callers (e.g. the
-// boid start parent picking issues out via errors.As) can drive
-// auto-migration without parsing strings — this is the one case
-// internal/server/wire.go's buildProjectStore still treats as fail-fast.
+// onto every Issue in the returned error so downstream callers can drive
+// auto-migration via errors.As — this remains the one fail-fast case.
 // Every OTHER per-project failure (missing dir, YAML parse error, corrupt
 // or unreachable bare repo, project.yaml missing from a bare repo's HEAD...)
 // is wrapped as *ProjectMissingError and, in addition to being returned
 // here, is recorded via MarkDegraded before this method returns — callers
-// no longer need a second pass to implement the docs/plans/
-// volume-only-daemon.md §論点a auto-prune-retirement invariant themselves;
-// LoadAll already leaves every failed candidate in the StatusDegraded state
-// with its DB row (and any previously cached Meta) untouched.
+// need no second pass: LoadAll already leaves every failed candidate in the
+// StatusDegraded state with its DB row (and any previously cached Meta)
+// untouched.
 func (s *ProjectStore) LoadAll(projects []*Project) []error {
 	s.mu.RLock()
 	reposRoot := s.reposRoot
@@ -849,50 +723,33 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 		} else {
 			meta, loadErr = s.LoadExpectingID(candidate.WorkDir, candidate.ID)
 		}
-		// MAJOR 4 sibling (PR-2a codex round-2 review, originally flagged
-		// for FetchProject specifically — this is the exact same "upstream
-		// project.yaml id: changed" case hit on every daemon startup/reload
-		// instead, since LoadAll is what backs both): a mismatch here is
-		// treated exactly like any other load failure for candidate.ID.
-		//
-		// M2 (PR-2a codex round-3 review): unlike before this fix,
+		// A mismatch here (upstream project.yaml id: changed) is treated
+		// exactly like any other load failure for candidate.ID.
 		// LoadBareRepoExpectingID/LoadExpectingID never cache a mismatched
-		// meta under its own (drifted) id in the first place — see either
-		// method's doc comment — so there is no phantom entry to clean up
-		// here any more, and no risk of this branch's cleanup clobbering an
-		// unrelated already-registered project whose id happens to equal
-		// the drifted meta.ID.
+		// meta under its own (drifted) id in the first place, so there is
+		// no phantom entry to clean up and no risk of clobbering an
+		// unrelated already-registered project.
 		if loadErr == nil && meta.ID != candidate.ID {
 			loadErr = fmt.Errorf("project.yaml id %q does not match the registered project id %q; re-register manually", meta.ID, candidate.ID)
 		}
 		if loadErr != nil {
-			// §現状の実測5 / PR5 fallback: a project.yaml that was simply
-			// never committed (GitHeadReadFailurePathAbsent) must NOT
-			// degrade/remove a project registered via the no-project.yaml
-			// path (CreateProjectFromGitURL's own workspace-default
-			// fallback) — every OTHER failure kind (HeadUnresolved / Other,
-			// and the id-mismatch case just above, which is never a
-			// *GitHeadReadError) still falls through to the existing
+			// A project.yaml that was simply never committed
+			// (GitHeadReadFailurePathAbsent) must NOT degrade/remove a
+			// project registered via the no-project.yaml path
+			// (CreateProjectFromGitURL's own workspace-default fallback) —
+			// every OTHER failure kind still falls through to the existing
 			// remove+degrade handling below unchanged.
 			//
-			// Gated on candidate.ID being VERIFIED url-derived (Codex review,
-			// PR5 round 2 Major, tightened by round-4 Major fix — PR7):
+			// Gated on candidate.ID being VERIFIED url-derived:
 			// GitHeadReadFailurePathAbsent alone cannot tell "registered
 			// without a project.yaml on purpose" apart from "an ordinary
 			// project.yaml-bearing project whose file was deleted upstream
-			// by mistake" — both read back identically. Checking
-			// candidate.ID's PREFIX alone is not enough either: a
-			// hand-authored `id: url-custom` that happened to be committed
-			// at some point, then had its project.yaml deleted upstream,
-			// would also match a bare prefix check and get silently routed
-			// to the workspace-default fallback below instead of degrading
-			// — isVerifiedURLDerivedID additionally confirms candidate.ID
-			// equals what candidate.UpstreamURL actually derives to (the
-			// same verification reconcileExpectedProjectID applies for a
-			// still-present project.yaml's id: drift). An ordinary project
-			// hitting PathAbsent still degrades below exactly as before,
-			// rather than silently swapping its task_behaviors for the
-			// workspace default with no degraded signal at all.
+			// by mistake" — both read back identically, and checking
+			// candidate.ID's prefix alone would also let a hand-authored
+			// `id: url-custom` whose project.yaml was later deleted slip
+			// through undetected. isVerifiedURLDerivedID additionally
+			// confirms candidate.ID equals what candidate.UpstreamURL
+			// actually derives to.
 			var headErr *GitHeadReadError
 			if errors.As(loadErr, &headErr) && headErr.Kind == GitHeadReadFailurePathAbsent && s.isVerifiedURLDerivedID(candidate.ID, candidate.UpstreamURL) {
 				synthesized := s.synthesizeMetaForReload(candidate)
@@ -917,20 +774,18 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 	return errs
 }
 
-// degradedMessageFor upgrades a generic load-failure message to the
-// docs/plans/volume-only-daemon.md §論点a migration-path guidance when the
-// project's WorkDir is neither a bare repo (LoadAll already ruled that out
-// via IsBareRepoDir before calling this) nor under the daemon's own
-// bare-repo storage root — i.e. it looks like a pre-cutover, host-filesystem
-// project registration. reposRoot empty (never configured — e.g. most
-// tests, which do not call SetReposRoot) skips the upgrade entirely; the
-// plain wrapped error text is still informative on its own.
+// degradedMessageFor upgrades a generic load-failure message to migration-
+// path guidance when the project's WorkDir is neither a bare repo (LoadAll
+// already ruled that out via IsBareRepoDir before calling this) nor under
+// the daemon's own bare-repo storage root — i.e. it looks like a
+// pre-cutover, host-filesystem project registration. reposRoot empty (never
+// configured) skips the upgrade entirely; the plain wrapped error text is
+// still informative on its own.
 func degradedMessageFor(candidate *Project, wrapped error, reposRoot string) string {
 	if reposRoot == "" {
 		return wrapped.Error()
 	}
-	// PathIsUnderResolved (PR-2a codex round-2 Blocker 2 sibling sweep):
-	// this decision has no destructive side effect (it only picks which
+	// This decision has no destructive side effect (it only picks which
 	// wording to show), so a resolution error just falls back to the
 	// lexical-only PathIsUnder rather than failing the whole startup load
 	// loop over a message-wording concern.
@@ -945,22 +800,17 @@ func degradedMessageFor(candidate *Project, wrapped error, reposRoot string) str
 }
 
 // PathIsUnder reports whether path is root itself or a descendant of it.
-// Exported (PR-2a codex round-1 Blocker 2/Major 2) so internal/api's
-// ProjectAppService can reuse the exact same containment check
-// degradedMessageFor already relies on, both to defend BareRepoPath's
-// computed destination against a traversal-capable projectName
-// (SafeBareRepoPath below) and to classify a project's WorkDir as
-// daemon-managed vs. legacy without duplicating this logic.
+// Exported so internal/api's ProjectAppService can reuse the exact same
+// containment check degradedMessageFor already relies on, both to defend
+// BareRepoPath's computed destination against a traversal-capable
+// projectName (SafeBareRepoPath below) and to classify a project's WorkDir
+// as daemon-managed vs. legacy.
 //
 // This is a purely LEXICAL check (filepath.Rel on the two strings as
 // given) — it does not resolve symlinks, so a symlinked ANCESTOR directory
-// can make an out-of-tree location appear to be "under root" (PR-2a codex
-// round-2 Blocker 2: replacing <dataDir>/repos/<workspace> with a symlink
-// to /srv/shared still lexically joins under the right prefix, even though
-// os.RemoveAll on the resulting path actually recurses into wherever the
-// symlink points). Callers that go on to WRITE or DELETE at path based on
-// this answer — SafeBareRepoPath below and internal/api's
-// isManagedBareRepoPath (rm-time/fetch-time classification) — MUST use
+// can make an out-of-tree location appear to be "under root". Callers that
+// go on to WRITE or DELETE at path based on this answer — SafeBareRepoPath
+// below and internal/api's isManagedBareRepoPath — MUST use
 // PathIsUnderResolved instead; this lexical-only form remains appropriate
 // for degradedMessageFor's cosmetic (no side effect) message-wording
 // decision below.
@@ -973,9 +823,9 @@ func PathIsUnder(root, path string) bool {
 }
 
 // PathIsUnderResolved is PathIsUnder with symlink resolution applied to
-// BOTH root and path before the lexical comparison (PR-2a codex round-2
-// Blocker 2), so a symlinked ancestor directory cannot make an escaped
-// location appear contained. Two different resolution strategies are
+// BOTH root and path before the lexical comparison, so a symlinked ancestor
+// directory cannot make an escaped location appear contained. Two
+// different resolution strategies are
 // needed depending on whether root/path already exist on disk:
 //
 //   - Already exists (the common rm-time/fetch-time case: an
@@ -1048,16 +898,14 @@ func resolveExistingAncestor(p string) (string, error) {
 // error. Two classifications:
 //   - *ProjectMigrationError: schema migration is needed. Preserved as the
 //     typed error with ProjectID filled on each Issue so callers can drive
-//     auto-migration via errors.As. This remains the one fail-fast case
-//     (internal/server/wire.go's buildProjectStore still refuses daemon
-//     startup for it) — everything else below is degrade-not-fail-fast.
+//     auto-migration via errors.As. This remains the one fail-fast case —
+//     everything else below is degrade-not-fail-fast.
 //   - everything else: returned as *ProjectMissingError (see that type's
 //     doc comment for why the name stayed even though its scope broadened
-//     well past "missing") so callers mark the project degraded — per
-//     docs/plans/volume-only-daemon.md §論点a's invariant, a missing dir, a
-//     YAML parse error, and a corrupt/unreachable bare repo are all handled
-//     identically: preserve the DB row, surface the failure via status, and
-//     let daemon startup continue.
+//     well past "missing") so callers mark the project degraded — a
+//     missing dir, a YAML parse error, and a corrupt/unreachable bare repo
+//     are all handled identically: preserve the DB row, surface the
+//     failure via status, and let daemon startup continue.
 //
 // dir is the project work directory, used to populate
 // ProjectMissingError.Dir for diagnostics. It is ignored on the migration

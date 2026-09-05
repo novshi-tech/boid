@@ -1,64 +1,42 @@
 // Package dockerres is the single source of truth for the names and labels
-// boid puts on the docker resources it creates.
+// boid puts on the docker resources it creates, shared by internal/reap,
+// internal/dispatcher, and internal/sandbox/dockerproxy so their naming and
+// containment rules cannot drift apart (see
+// docs/plans/workspace-home-volume-persistence.md 論点 a).
 //
-// It exists because the three packages that have to agree on those strings
-// cannot import each other. internal/reap must stay importable from cmd
-// without pulling in internal/dispatcher's dependency graph (DB,
-// orchestrator, sqlite — see internal/reap's own package doc: `boid reap`
-// has to work "even when the daemon is unable to start"), and
-// internal/sandbox/dockerproxy sits below both. The pre-existing answer was
-// to hand-copy each literal into every package and warn about drift in a doc
-// comment; docs/plans/workspace-home-volume-persistence.md 論点 a turns that
-// drift into data loss — a containment rule that guards
-// "boid-ws-home-" in one package and a name generator that emits
-// "boid-ws-home" in another silently destroys a workspace's credentials —
-// so the strings moved here instead.
-//
-// The dependency direction dispatcher → reap → dockerproxy is unchanged;
-// all three (and cmd) may import this package. To keep that true this
-// package MUST stay a leaf: no boid imports at all, and nothing from the
-// standard library beyond basic string handling.
+// This package MUST stay a leaf: no boid imports at all, and nothing from
+// the standard library beyond basic string handling.
 //
 // # The two volume-name prefixes are not interchangeable
 //
 // ReservedVolumeNamePrefix ("boid-ws-") is the namespace boid owns. It is
 // deliberately WIDER than the set of volumes that must survive: it is also
 // the prefix of the per-workspace docker NETWORK names WorkspaceNetworkName
-// produces. dockerproxy's policy denies a sandboxed docker client creating
-// or deleting a VOLUME in this namespace (a job could otherwise name its
-// scratch volume exactly like boid's and have boid's own per-job reaper
-// delete the real one — docs/plans/workspace-home-volume-persistence.md
-// 論点 a 経路 4). It must never be applied to networks: boid creates those
+// produces. It must never be applied to networks: boid creates those
 // itself and the sandbox is not the one naming them.
 //
 // WorkspaceHomeVolumePrefix ("boid-ws-home-") is the NARROWER set the
 // reapers skip. Only these volumes hold state that cannot be regenerated
-// (harness credentials, a ~1.5GB toolchain). A workspace network is
-// recreated on demand by ensureWorkspaceNetwork, so reap is still free to
-// destroy it — which is why the skip rules key off this prefix and not the
-// reserved one.
+// (harness credentials, a ~1.5GB toolchain) — a workspace network is
+// recreated on demand, so reap is still free to destroy it.
 package dockerres
 
 import "strings"
 
 // Label keys boid puts on the docker resources it creates.
 //
-// LabelJobID / LabelWorkspace / LabelInstallID are the pre-existing job
-// resource labels (docs/plans/phase6-container-backend.md §決定 6/9):
-// boid.job_id + boid.workspace on every job container,
-// boid.install_id whenever the install has an id. Both reapers enumerate on
-// them — containerBackend.ReapOrphans filters on the presence of
-// boid.job_id, reap.Run on boid.install_id=<id>.
+// LabelJobID / LabelWorkspace / LabelInstallID are the job resource labels:
+// boid.job_id + boid.workspace on every job container, boid.install_id
+// whenever the install has an id. Both reapers enumerate on them —
+// containerBackend.ReapOrphans filters on the presence of boid.job_id,
+// reap.Run on boid.install_id=<id>.
 //
 // LabelWorkspaceHome / LabelWorkspaceHomeInstallID are the workspace HOME
-// volume's own labels, and the reason they are separate keys rather than
-// reuses of the ones above is precisely that the ones above are enumeration
-// filters: a persistent volume carrying boid.install_id would be listed —
-// and unconditionally force-removed — by reap.Run on every daemon startup
-// (docs/plans/workspace-home-volume-persistence.md 論点 a 経路 1), and one
-// carrying boid.job_id would be listed by reapOrphanVolumes (経路 2). The
-// install scope still has to be recorded somewhere, so it gets its own key
-// that no existing filter looks at.
+// volume's own labels, kept separate from the job labels above precisely
+// because those are enumeration filters a persistent home volume must not
+// match (docs/plans/workspace-home-volume-persistence.md 論点 a): matching
+// boid.install_id or boid.job_id would get it force-removed by one of the
+// reapers' sweeps.
 const (
 	LabelJobID     = "boid.job_id"
 	LabelWorkspace = "boid.workspace"
@@ -76,55 +54,26 @@ const (
 
 	// LabelWorkspaceHomeID carries a per-volume identity token: 32 bytes of
 	// crypto/rand, hex-encoded, minted when the volume is created and never
-	// changed afterwards (PR6 of
-	// docs/plans/workspace-home-volume-persistence.md, 論点 b).
+	// changed afterwards. It lets the daemon distinguish "the home my
+	// completion marker describes" from "a different home that happens to
+	// have the same name" — the name alone is a pure function of (install
+	// id, slug), so a volume deleted and re-created comes back under the
+	// same name, empty.
 	//
-	// It is what lets the daemon tell "the home my completion marker
-	// describes" from "a different home that happens to have the same name".
-	// The name alone cannot: it is a pure function of (install id, slug), so
-	// a volume deleted and re-created comes back under exactly the same name,
-	// empty, and a marker left over from the previous incarnation would
-	// short-circuit init over it.
-	//
-	// The mechanism is one VolumeCreate, which is why this is a LABEL rather
-	// than a file inside the volume. VolumeCreate is idempotent AND returns
-	// the EXISTING volume's own labels for a name that already exists
-	// (measured against podman 4.9.3, 2026-07-27: three creates of one name
-	// with different label sets all returned 201 carrying the FIRST call's
-	// labels). So "make sure the volume exists" and "read its identity" are
-	// the same single call, and the fast path of a settled workspace never has
-	// to start a container.
-	//
-	// What that costs is stated rather than implied: this detects the volume
-	// being replaced, not its CONTENTS being replaced underneath a surviving
-	// volume. A file inside the volume would cover the latter, but nothing on
-	// the daemon side can read one — that is the whole premise of the
-	// volume-only pivot — so such a file could only ever be written, never
-	// checked. See internal/dispatcher/workspace_home.go's
-	// workspaceHomeMarker.HomeID for the full account of what moved and why.
+	// This is a LABEL rather than a file inside the volume because
+	// VolumeCreate is idempotent and returns an existing volume's labels
+	// for a name that already exists, so "ensure the volume exists" and
+	// "read its identity" collapse into one call. See
+	// internal/dispatcher/workspace_home.go's workspaceHomeMarker.HomeID
+	// for how this is consumed.
 	LabelWorkspaceHomeID = "boid.workspace_home_id"
 
 	// LabelWorkspaceInit carries the workspace slug of a throwaway workspace
-	// HOME init container (docs/plans/workspace-home-volume-persistence.md
-	// 論点 c, PR5). Its own key for the same reason LabelWorkspaceHome has
-	// one, but the consequence of getting it wrong is different in kind:
-	//
-	//   - boid.job_id would put the container in containerBackend.ReapOrphans'
-	//     primary sweep, which lists on the mere PRESENCE of that key and
-	//     removes with Force+RemoveVolumes. An init container is routinely
-	//     minutes into a ~1.5GB toolchain download, so a daemon restart would
-	//     kill it mid-install.
-	//   - worse, the job id read off that label would then land in
-	//     ReapReport.ReapedJobIDs / FailedJobIDs, which drive MarkStale and
-	//     gate auto-reopen — so a workspace init would corrupt the job
-	//     accounting of unrelated tasks (a remove failure alone suppresses
-	//     another task's auto-reopen for that whole boot).
-	//   - boid.install_id would put it in internal/reap.Run's own sweep.
-	//
-	// Being invisible to those sweeps is not the same as being nobody's
-	// problem: containerBackend.reapOrphanWorkspaceInitContainers enumerates
-	// on THIS key at startup so a container orphaned by a daemon crash is
-	// still collected, without touching the job accounting above.
+	// HOME init container. It has its own key, distinct from boid.job_id and
+	// boid.install_id, so an init container mid-toolchain-download is
+	// invisible to both reapers' sweeps — see
+	// containerBackend.reapOrphanWorkspaceInitContainers for the dedicated
+	// startup sweep that still collects one orphaned by a daemon crash.
 	LabelWorkspaceInit = "boid.workspace_init"
 
 	// LabelWorkspaceInitInstallID carries the install id for the init
@@ -144,8 +93,8 @@ const (
 	WorkspaceHomeVolumePrefix = ReservedVolumeNamePrefix + "home-"
 
 	// WorkspaceInitContainerPrefix namespaces the throwaway CONTAINER that
-	// prepares a workspace HOME (PR5). Note this is a container namespace, not
-	// a volume one: it shares ReservedVolumeNamePrefix's leading text purely
+	// prepares a workspace HOME. Note this is a container namespace, not a
+	// volume one: it shares ReservedVolumeNamePrefix's leading text purely
 	// so `docker ps`/`docker volume ls` output reads consistently, and
 	// IsReservedVolumeName must never be pointed at it — a sandboxed docker
 	// client naming its own container is not the threat that predicate is
@@ -203,12 +152,10 @@ func SanitizeNamePart(s string) string {
 // WorkspaceNetworkName returns the deterministic docker network name a
 // Workspace-scoped Launch and the runner's matching dockerproxy
 // SetWorkspaceNetwork call both compute independently for the SAME
-// (installID, workspace) pair (docs/plans/phase6-container-backend.md §決定5,
-// "internal network は workspace 単位で分離する"). It has to be a pure
-// function of just those two values — not cached state on either side —
-// because the two call sites construct their own pieces of a job's sandbox
-// independently and must still land on the same network without
-// coordinating directly.
+// (installID, workspace) pair. It must be a pure function of just those two
+// values — not cached state on either side — because the two call sites
+// construct their own pieces of a job's sandbox independently and must
+// still land on the same network without coordinating directly.
 //
 // installID scopes the name so two independent boid installations sharing
 // one docker engine never collide.
@@ -218,39 +165,25 @@ func WorkspaceNetworkName(installID, workspace string) string {
 
 // WorkspaceHomeVolumeName returns the deterministic name of a workspace's
 // persistent HOME volume, following WorkspaceNetworkName's convention.
+// dispatcher.resolveWorkspaceHome returns this name, and both the job
+// container and the init container mount it at the harness's $HOME.
 //
-// As of PR6 of docs/plans/workspace-home-volume-persistence.md this IS the
-// workspace home: dispatcher.resolveWorkspaceHome returns this name, the job
-// container and the init container both mount it at the harness's $HOME, and
-// the containment rules PR1 built around WorkspaceHomeVolumePrefix are what
-// keep the reapers and a sandboxed docker client away from it. Living in the
-// same file as that prefix is what makes "the generator emits a name the skip
-// rules recognize" true by construction rather than by review (see the
-// package doc).
-//
-// Determinism is load-bearing in a second way here: it is also what makes the
-// name recomputable from (install id, slug) alone, so nothing has to persist
-// the mapping. The volume's IDENTITY — which incarnation of that name a
-// completion marker describes — is a separate matter and lives in
-// LabelWorkspaceHomeID, precisely because the name cannot express it.
+// Determinism makes the name recomputable from (install id, slug) alone, so
+// nothing has to persist the mapping. The volume's IDENTITY — which
+// incarnation of that name a completion marker describes — is a separate
+// matter and lives in LabelWorkspaceHomeID, precisely because the name
+// cannot express it.
 func WorkspaceHomeVolumeName(installID, workspace string) string {
 	return WorkspaceHomeVolumePrefix + installIDPart(installID) + "-" + SanitizeNamePart(workspace)
 }
 
 // WorkspaceInitContainerName returns the deterministic name of the throwaway
-// container that runs a workspace HOME's prep + init.sh
-// (docs/plans/workspace-home-volume-persistence.md 論点 c, PR5), following
+// container that runs a workspace HOME's prep + init.sh, following
 // WorkspaceNetworkName's convention.
 //
-// Determinism is the mechanism, not a convenience. The flock that serializes
-// init runs (dispatcher.acquireWorkspaceHomeLock) is released when its process
-// dies, but a container outlives the process that created it — so after a
-// daemon crash the next dispatch would start a second init while the first one
-// is still writing into the same home, breaking Phase 4's "同時 dispatch でも
-// 実行は 1 回" contract (docs/plans/home-workspace-volume.md:83). Two runs
-// computing the same name means the engine itself rejects the second create
-// with a 409, which the caller resolves by waiting for (or removing) the
-// incumbent instead of racing it.
+// Determinism is the mechanism, not a convenience: after a daemon crash
+// mid-init, the next dispatch computes the SAME name, so the engine itself
+// rejects a second create with a 409 rather than racing the incumbent init.
 func WorkspaceInitContainerName(installID, workspace string) string {
 	return WorkspaceInitContainerPrefix + installIDPart(installID) + "-" + SanitizeNamePart(workspace)
 }
@@ -269,16 +202,9 @@ func installIDPart(installID string) string {
 }
 
 // IsValidVolumeName reports whether name matches docker's own volume-name
-// grammar, `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`.
-//
-// This is the guard docs/plans/workspace-home-volume-persistence.md 論点 e
-// requires for its option (i): the container backend classifies a mount
-// source as a named volume purely by "it does not start with /"
-// (internal/sandbox/realization.classifySource), so a relative path that
-// reaches the mount list by accident would otherwise be handed to
-// VolumeCreate as if it were a volume name. Rejecting it turns a confusing
-// engine-side error (or, worse, a silently auto-created junk volume) into a
-// fail-closed Launch error naming the offending source.
+// grammar, `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`. Rejecting an invalid name turns a
+// confusing engine-side error (or a silently auto-created junk volume) into
+// a fail-closed Launch error naming the offending source.
 func IsValidVolumeName(name string) bool {
 	if name == "" {
 		return false

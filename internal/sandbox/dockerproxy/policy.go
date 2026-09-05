@@ -28,31 +28,16 @@ func deny(reason string) Verdict { return Verdict{Allow: false, Reason: reason} 
 // never alternatives:
 //
 //   - dockerres.IsReservedVolumeName — the static "boid-ws-" namespace boid
-//     names itself and can therefore recognize without asking anyone (PR1,
-//     docs/plans/workspace-home-volume-persistence.md 論点 a).
+//     names itself and can therefore recognize without asking anyone.
 //   - names, the set discovered at daemon startup by inspecting the daemon's
 //     OWN container (internal/dispatcher.DetectDaemonStateVolumes). These
 //     cannot be recognized by shape: under the compose deploy the daemon's
-//     entire persistent state lives in a volume the COMPOSE PROJECT names
-//     ("boid_boid_state" — build/container/compose.yml's `name: boid` plus the
-//     `boid_state` key), so boid does not choose the string and cannot pattern
-//     match it. It shares no prefix with anything boid generates, which is
-//     exactly why PR1's prefix rule left the single highest-value volume in
-//     the deployment — boid.db, secret.key, tls/ca.key, web_secret, install_id
-//     — mountable from inside any `capabilities.docker` job.
+//     entire persistent state lives in a volume the COMPOSE PROJECT names,
+//     so boid does not choose the string and cannot pattern match it.
 //
-// Two cheaper-looking alternatives were considered and rejected by the owner
-// (2026-07-26): denying a blanket "boid_"/"boid-" prefix (misfires on an
-// operator's own `boid_myapp` volume, and stops protecting anything the
-// moment the compose project is renamed), and denying every mount whose
-// volume is not in the job's own ledger (the tightest rule available, but it
-// breaks legitimate sibling use such as testcontainers reusing a fixture
-// volume).
-//
-// The zero value is valid and means "static prefix only" — the exact pre-PR
-// behavior. That is deliberate: bare `boid start` has no state volume to
-// protect, and a detection failure must not silently swap one rule for
-// another (see TestZeroReservedVolumes_behavesExactlyLikePR1).
+// The zero value is valid and means "static prefix only". That is
+// deliberate: bare `boid start` has no state volume to protect, and a
+// detection failure must not silently swap one rule for another.
 type ReservedVolumes struct {
 	// names is the runtime half. Kept unexported and only ever built by
 	// NewReservedVolumes so a caller cannot mutate a Server's live policy
@@ -101,8 +86,7 @@ func (r ReservedVolumes) IsReserved(name string) bool {
 // an operator staring at a 403 needs to tell them apart: "you tried to touch
 // another workspace's HOME" is a very different report from "you tried to
 // mount the daemon's own secrets". Empty for the static half, whose existing
-// message ("reserved by boid") is unchanged so PR1's tests still describe the
-// behavior they were written for.
+// message ("reserved by boid") is unchanged.
 func (r ReservedVolumes) explain(name string) string {
 	if _, ok := r.names[name]; ok {
 		return " — it is this boid daemon's own state volume (boid.db, secret.key," +
@@ -132,18 +116,11 @@ func stripVersion(path string) string {
 // body is the request body bytes (may be nil for GET/HEAD).
 //
 // denyHostPortPublish gates the HostConfig.PortBindings / PublishAllPorts
-// checks in checkContainersCreate (Blocker 2, PR6 codex review). It must
-// be true only for the container backend's Server — once
-// Server.SetWorkspaceNetwork has configured a real per-job workspace
-// network (see its own doc comment) — and false for every other caller,
-// most importantly the pre-PR6 userns backend's Server
-// (internal/dispatcher.Runner.startDockerProxy, which never calls
-// SetWorkspaceNetwork). §決定5's "host への port publish は非サポート" is a
-// container-backend-only guarantee: the userns backend has always allowed
-// a sandboxed docker client (a TestContainers sibling, `docker run -p`,
-// `docker run -P`, ...) to publish a port to the host, and denying it
-// unconditionally (the pre-fix behavior) would silently turn every one of
-// those existing userns hooks into a 403.
+// checks in checkContainersCreate. It must be true only for the container
+// backend's Server, once Server.SetWorkspaceNetwork has configured a real
+// per-job workspace network — denying it unconditionally would turn a
+// legitimate `docker run -p`/`docker run -P` sibling use into a 403 for a
+// caller with no workspace network to publish onto instead.
 //
 // reserved is the volume-name set the three name-dependent branches below
 // consult (POST /volumes/create's Name, DELETE /volumes/{name}, and
@@ -152,9 +129,8 @@ func stripVersion(path string) string {
 // engine handle: this function stays a pure function of its arguments so it
 // remains auditable and so no policy decision can depend on a live query
 // whose answer could change (or hang) mid-request. See ReservedVolumes for
-// what goes in it and why the daemon's own state volume cannot be recognized
-// by shape the way the "boid-ws-" namespace can. The zero value reproduces
-// the pre-existing behavior exactly.
+// what goes in it. The zero value reproduces the pre-existing behavior
+// exactly.
 func CheckRequest(method, path string, body []byte, denyHostPortPublish bool, reserved ReservedVolumes) Verdict {
 	bare := stripVersion(path)
 	method = strings.ToUpper(method)
@@ -172,8 +148,7 @@ func CheckRequest(method, path string, body []byte, denyHostPortPublish bool, re
 
 	// The two volume-destruction shapes isAllowedMutating deliberately
 	// refuses, spelled out here so the client gets a reason it can act on
-	// rather than the generic "unknown mutating endpoint" fail-closed
-	// message (docs/plans/workspace-home-volume-persistence.md 論点 a 経路 4).
+	// rather than the generic "unknown mutating endpoint" fail-closed message.
 	if method == "DELETE" && matchesPattern(bare, "/volumes/*") {
 		// Reaching here means isAllowedMutating's own name check refused it.
 		_, name := scopeTarget(bare)
@@ -185,8 +160,7 @@ func CheckRequest(method, path string, body []byte, denyHostPortPublish bool, re
 		// container currently references, and the workspace HOME volumes of
 		// every OTHER workspace are exactly in that state during any given
 		// job. The request carries no name to inspect, so the endpoint is
-		// closed outright. This is the only sandbox-visible behavior change
-		// PR1 makes; the other prunes (containers/images/networks/system)
+		// closed outright. The other prunes (containers/images/networks/system)
 		// stay allowed because none of them touches volumes.
 		return deny("volumes/prune: pruning volumes is not permitted — it would destroy boid's persistent workspace HOME volumes, which no container in this job references")
 	}
@@ -216,18 +190,16 @@ func CheckRequest(method, path string, body []byte, denyHostPortPublish bool, re
 // isAllowedMutating returns true for mutating endpoints that are explicitly safe
 // (no body inspection needed, transparent pass-through allowed).
 //
-// Two volume endpoints that used to be listed here no longer are
-// (docs/plans/workspace-home-volume-persistence.md 論点 a 経路 4):
-// POST /volumes/prune is gone entirely, and DELETE /volumes/{name} moved out
-// of the pattern list into a name-dependent branch. CheckRequest turns both
-// refusals into an explicit deny reason.
+// POST /volumes/prune is denied entirely elsewhere, and DELETE /volumes/{name}
+// is a name-dependent branch rather than a pattern here — CheckRequest turns
+// both refusals into an explicit deny reason.
 //
 // reserved is threaded in (rather than the DELETE branch calling
-// dockerres.IsReservedVolumeName directly, as it did in PR1) so the static
-// namespace and the runtime-detected daemon state volume are consulted
-// through ONE predicate. A second, independently-maintained call site is how
-// the two halves drift apart — see internal/dockerres' package doc for the
-// failure mode that whole package exists to prevent.
+// dockerres.IsReservedVolumeName directly) so the static namespace and the
+// runtime-detected daemon state volume are consulted through ONE predicate.
+// A second, independently-maintained call site is how the two halves drift
+// apart — see internal/dockerres' package doc for the failure mode that
+// whole package exists to prevent.
 func isAllowedMutating(method, bare string, reserved ReservedVolumes) bool {
 	switch method {
 	case "POST":
@@ -334,21 +306,17 @@ type hostConfig struct {
 	CgroupParent      string            `json:"CgroupParent"`
 	// PortBindings / PublishAllPorts: publishing a sibling container's port
 	// to the host would let it be reached directly by host IP, bypassing
-	// the workspace internal network entirely (docs/plans/
-	// phase6-container-backend.md §PR6, §決定5: "host への port publish は
-	// 非サポート (internal network から host published port へは届かない)").
-	// PublishAllPorts (docker CLI's `-P` — auto-publish every EXPOSEd port
-	// to a random host port) is the exact same host-escape shape as an
-	// explicit PortBindings entry. Both are gated together on
-	// denyHostPortPublish (Blocker 2, PR6 codex review) — see
+	// the workspace internal network entirely. PublishAllPorts (docker
+	// CLI's `-P` — auto-publish every EXPOSEd port to a random host port)
+	// is the exact same host-escape shape as an explicit PortBindings
+	// entry. Both are gated together on denyHostPortPublish — see
 	// CheckRequest's doc comment for why this is not an unconditional deny.
 	PortBindings    map[string]interface{} `json:"PortBindings"`
 	PublishAllPorts bool                   `json:"PublishAllPorts"`
 
 	// VolumesFrom inherits ANOTHER container's entire mount set
 	// (docker run --volumes-from). It is denied outright whenever it is
-	// non-empty — docs/plans/workspace-home-volume-persistence.md 論点 a
-	// 経路 7, PR1 codex review Blocker 2.
+	// non-empty.
 	//
 	// The reserved-name rule that guards Mounts/Binds/volumes-create cannot
 	// be applied here, because the request never names a volume: it names a
@@ -363,10 +331,9 @@ type hostConfig struct {
 	// Denying costs a sandboxed client nothing real: it can mount its own
 	// named volumes into as many sibling containers as it likes via Mounts,
 	// which is the modern spelling of the same thing and stays allowed. The
-	// only capability lost is inheriting mounts from a container whose mount
-	// set this policy never got to inspect — including, once PR6 lands and
-	// the job container itself mounts the workspace HOME volume, that very
-	// container.
+	// only capability lost is inheriting mounts from a container whose
+	// mount set this policy never got to inspect — including the job
+	// container itself, once it mounts the workspace HOME volume.
 	VolumesFrom []string `json:"VolumesFrom"`
 }
 
@@ -375,35 +342,24 @@ type mountSpec struct {
 
 	// Source is the named volume (or host path, for Type=bind) the mount
 	// attaches. checkContainersCreate rejects any Source in boid's reserved
-	// volume namespace, REGARDLESS of Type
-	// (docs/plans/workspace-home-volume-persistence.md 論点 a 経路 6, PR1
-	// codex review Blocker 2). Before this field existed, a mount was only
-	// inspected via VolumeOptions, so a sandboxed client could attach the
-	// real workspace HOME volume to a throwaway container and `rm -rf` its
-	// mountpoint: the volume object survives every containment 経路 4 added
-	// (nothing is created, nothing is deleted) while the credentials and
-	// toolchain inside it are gone.
+	// volume namespace, REGARDLESS of Type: without this, a sandboxed
+	// client could attach the real workspace HOME volume to a throwaway
+	// container and `rm -rf` its mountpoint, since the volume object itself
+	// survives (nothing is created, nothing is deleted) while the
+	// credentials and toolchain inside it are gone. This is also the
+	// branch that closes off the daemon's own state volume: mounting it
+	// needs no write access at all. See ReservedVolumes for why that name
+	// has to be discovered at runtime rather than matched.
 	//
-	// This is also the branch that closes the daemon's OWN state volume
-	// (docs/plans/workspace-home-volume-persistence.md, "未解決" → resolved):
-	// mounting it needs no write access at all, so the other two name paths
-	// (create/delete) were never what stood between a `capabilities.docker`
-	// job and `cat /state/.local/share/boid/secret.key`. See ReservedVolumes
-	// for why that name has to be discovered at runtime rather than matched.
-	//
-	// Why the check ignores Type rather than firing only on
-	// strings.ToLower(Type)=="volume": the policy would otherwise have to
-	// model the engine's own Type normalization exactly — what an omitted
-	// Type defaults to, how a future or vendor-specific type name is
-	// resolved, whether docker and podman agree — and any divergence becomes
-	// a bypass. This file already treats that class of parser differential as
-	// the threat model to design against (see the
-	// TestParserDifferential_* cases and the case-insensitive field matching
-	// they pin). Checking Source unconditionally makes the rule independent
-	// of that modelling: for Type=bind a reserved Source is already denied by
-	// the blanket bind rule, and for every other type a Source inside boid's
-	// namespace has no legitimate meaning for a sandboxed client, so nothing
-	// legitimate is lost by refusing it.
+	// The check ignores Type rather than firing only on
+	// strings.ToLower(Type)=="volume" because the policy would otherwise
+	// have to model the engine's own Type normalization exactly — what an
+	// omitted Type defaults to, how docker and podman resolve a
+	// vendor-specific type — and any divergence becomes a bypass. Checking
+	// Source unconditionally sidesteps that: for Type=bind a reserved
+	// Source is already denied by the blanket bind rule, and for every
+	// other type a Source inside boid's namespace has no legitimate
+	// meaning for a sandboxed client.
 	Source string `json:"Source"`
 
 	VolumeOptions *volumeOpts `json:"VolumeOptions"`
@@ -573,8 +529,7 @@ type networksCreateBody struct {
 // name docker returns the existing volume with 201 rather than an error. A
 // sandboxed client naming boid's own (deterministic, therefore guessable)
 // workspace HOME volume would thus "create" the real one, get it recorded
-// in the job's ledger, and have Reap delete it when the job ends —
-// docs/plans/workspace-home-volume-persistence.md 論点 a 経路 4.
+// in the job's ledger, and have Reap delete it when the job ends.
 type volumesCreateBody struct {
 	Name       string            `json:"Name"`
 	DriverOpts map[string]string `json:"DriverOpts"`

@@ -18,9 +18,8 @@ import (
 	"github.com/novshi-tech/boid/internal/dockerres"
 )
 
-// container_backend_workspace_init.go is the container backend's half of PR5
-// of docs/plans/workspace-home-volume-persistence.md (論点 c): run one
-// WorkspaceInitRequest in a throwaway container that mounts the workspace home.
+// container_backend_workspace_init.go runs one WorkspaceInitRequest in a
+// throwaway container that mounts the workspace home.
 //
 // # Why this is not Launch
 //
@@ -30,12 +29,12 @@ import (
 // a diagnostics collector on exit, per-job TLS material, a workspace network,
 // a sandbox spec bind-mounted in. None of that applies to an init run: there is
 // no job row it belongs to, nothing attaches to it, and every one of those
-// side effects would have to be un-done or special-cased. This is the same
-// primitives (§D10), used directly.
+// side effects would have to be un-done or special-cased. This uses the same
+// primitives directly instead.
 
 const (
 	// workspaceInitConflictWaitTimeout bounds how long a run waits for an
-	// incumbent container holding its name to finish (§D6).
+	// incumbent container holding its name to finish.
 	//
 	// Generous on purpose: what it is waiting for is a toolchain install
 	// (~1.5GB measured — go, node via volta, claude, codex, opencode), and the
@@ -101,8 +100,8 @@ func waitResponseEngineError(res container.WaitResponse) error {
 // instead of leaving it open makes a receive resolve to nil immediately, and
 // nil then reaches two places that render it uselessly — err.Error() PANICS
 // (in containerSession.waitLoop, the sole ContainerWait owner for a session,
-// running unsupervised in its own goroutine per §決定 7, so the panic takes
-// the whole daemon down rather than failing one job), and `%w` formats as
+// running unsupervised in its own goroutine, so the panic takes the whole
+// daemon down rather than failing one job), and `%w` formats as
 // `%!w(<nil>)` (on the workspace-init path, whose error is all an operator
 // gets — the container is already gone).
 func waitChannelError(err error) error {
@@ -117,77 +116,60 @@ func waitChannelError(err error) error {
 // assembled wrapper to `bash -s` on its stdin, and reports whether it
 // succeeded.
 //
-// § D4 — network. The container is left on the ENGINE'S DEFAULT BRIDGE:
-// neither NetworkMode nor NetworkingConfig is set, and ensureWorkspaceNetwork
-// is deliberately not called. Three reasons, in order of weight:
+// # Network
 //
-//   - The per-workspace network a JOB gets is `Internal: true` and reaches the
-//     outside world only through the allowlist egress proxy. An init.sh exists
-//     to download a toolchain; under that allowlist essentially every installer
-//     fails, so putting the init container there would make the feature not
-//     work at all.
-//   - Connecting it to the compose project's own `boid_default` network
-//     instead was rejected: doing so needs the daemon to identify its own
-//     container, and the field that would carry that (ContainerBackendOptions.
-//     SelfContainerID, sourced from os.Getenv("HOSTNAME")) is EMPTY on a live
-//     rootless podman deploy — measured 2026-07-26, the same measurement that
-//     made DetectDaemonStateVolumes read /proc/self/mountinfo instead. The
-//     property actually needed here is only "can reach the internet", and the
-//     default bridge provides it without depending on self-identification.
-//   - There is nothing on boid's internal network for it to talk to. The git
-//     gateway, egress proxy, broker and dockerproxy all serve JOBS; an init run
-//     has no job token, no broker cert and no clone to do.
+// The container is left on the engine's default bridge: neither NetworkMode
+// nor NetworkingConfig is set, and ensureWorkspaceNetwork is deliberately
+// not called. The per-workspace network a job gets is `Internal: true` and
+// reaches the outside world only through the allowlist egress proxy, under
+// which essentially every installer fails — but an init.sh exists to
+// download a toolchain, so putting the init container there would make the
+// feature not work at all. There is also nothing on boid's internal
+// network for it to talk to (the git gateway, egress proxy, broker and
+// dockerproxy all serve jobs; an init run has no job token, no broker cert
+// and no clone to do).
 //
-// The consequence — that this container has unrestricted egress — is part of
-// the trusted boundary, stated rather than implied: boid chooses the image,
-// boid assembles the script, boid starts the container. Nothing here runs
-// inside a sandboxed job (論点 c's A vs A'), and the script itself is the
+// The consequence — that this container has unrestricted egress — is part
+// of the trusted boundary, stated rather than implied: boid chooses the
+// image, boid assembles the script, boid starts the container. Nothing
+// here runs inside a sandboxed job, and the script itself is the
 // operator's own init.sh, which has never been sandboxed.
 //
-// § D8 — image. Always b.defaultImage; a workspace's own ContainerImage
-// override is deliberately NOT honored:
+// # Image
 //
-//   - There is no path to it from here. The override is resolved by
-//     Runner.resolveContainerImage, an independent WorkspaceLookup.Load that
-//     runs later in Dispatch, and resolveWorkspaceHome (which owns the init
-//     lock) runs before it. Threading it in would add a second workspace
-//     lookup on the init path for no gain.
-//   - The prep does not need it. What the wrapper uses is bash, coreutils and
-//     whatever the operator's init.sh reaches for, all of which the base
-//     image has. An override exists to add things to a JOB's environment, and
-//     nothing in the init path consults them.
-//   - Honoring it would put an override's own failure modes on the path that
-//     prepares the home. resolveImage rejects an override whose
-//     boid.runner_protocol label is absent or stale, and an override can also
-//     simply be unpullable; either would leave the workspace unable to prepare
-//     its home at all, rather than unable to run one job. (Through 2026-07-28
-//     this was worse still — nothing baked the label, so EVERY override was
-//     rejected — but the argument does not depend on that, which is why it
-//     survives the label being baked.)
+// Always b.defaultImage; a workspace's own ContainerImage override is
+// deliberately not honored. There is no path to it from here (the override
+// is resolved later in Dispatch, after resolveWorkspaceHome), the prep
+// does not need it (bash, coreutils and whatever the operator's init.sh
+// reaches for are all in the base image), and honoring it would put an
+// override's own failure modes — an unpullable image, a stale
+// boid.runner_protocol label — on the path that prepares the home, leaving
+// the workspace unable to prepare its home at all rather than unable to
+// run one job.
 func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceInitRequest) error {
 	homeMount, err := workspaceInitHomeMount(req)
 	if err != nil {
 		return err
 	}
-	// §D4 — the init container does NOT go through Launch, so it does not go
+	// The init container does not go through Launch, so it does not go
 	// through ensureNamedVolumes either. Without this call ContainerCreate
 	// would happily auto-create the volume implicitly, unlabeled: the name
 	// checks in reap and dockerproxy would still recognize it (they key off
-	// the name prefix), but every label-based check would not — including the
-	// identity resolveWorkspaceHome compares its completion marker against,
-	// which would then be permanently absent and wedge this workspace (see
-	// Runner.ensureWorkspaceHomeVolume for why that cannot be repaired by
-	// re-running).
+	// the name prefix), but every label-based check would not — including
+	// the identity resolveWorkspaceHome compares its completion marker
+	// against, which would then be permanently absent and wedge this
+	// workspace (see Runner.ensureWorkspaceHomeVolume for why that cannot be
+	// repaired by re-running).
 	//
 	// resolveWorkspaceHome has normally already created it moments ago; this
-	// is idempotent and re-creates it with the SAME identity if it vanished in
-	// between, so the marker written afterwards stays accurate either way.
+	// is idempotent and re-creates it with the SAME identity if it vanished
+	// in between, so the marker written afterwards stays accurate either way.
 	//
-	// The ANSWER is checked, not just the call (codex review of PR6, Major 1).
-	// A volume that survived reports the identity it was born with and the
-	// request's CandidateID is discarded, so "it came back as something else"
-	// means a third incarnation of this name is in place — and preparing THAT
-	// while resolveWorkspaceHome goes on to stamp a marker recording req.HomeID
+	// The answer is checked, not just the call: a volume that survived
+	// reports the identity it was born with and the request's CandidateID
+	// is discarded, so "it came back as something else" means a third
+	// incarnation of this name is in place — and preparing THAT while
+	// resolveWorkspaceHome goes on to stamp a marker recording req.HomeID
 	// produces a marker that vouches for contents nobody prepared. See
 	// verifyWorkspaceHomeIdentity for what the check does and does not close.
 	got, err := b.EnsureWorkspaceHomeVolume(ctx, WorkspaceHomeVolumeRequest{
@@ -216,17 +198,17 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	hostCfg := &container.HostConfig{
 		Init:   &initTrue,
 		Mounts: []mount.Mount{homeMount},
-		// UsernsMode (§D7): "" on every engine but rootless podman, where it
-		// is "keep-id". Without it every directory and file this run creates
-		// lands on the host owned by a subuid, and PR3's prepareBindTarget
-		// then refuses the very skeleton this run just made — turning a
-		// working install into a dispatch that fails on every job with the
+		// UsernsMode: "" on every engine but rootless podman, where it is
+		// "keep-id". Without it every directory and file this run creates
+		// lands on the host owned by a subuid, and prepareBindTarget then
+		// refuses the very skeleton this run just made — turning a working
+		// install into a dispatch that fails on every job with the
 		// poisoned-bind-target error. Same cached probe the job containers use.
 		UsernsMode: b.resolveUsernsMode(ctx),
 	}
 	cfg := &container.Config{
 		Image: image,
-		// §D8: the image's own ENTRYPOINT is
+		// The image's own ENTRYPOINT is
 		// ["/usr/local/bin/boid","runner-container"], which would look for a
 		// sandbox spec that does not exist. Launch never sets Entrypoint
 		// because a job container is exactly what that entrypoint is for; this
@@ -265,56 +247,32 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	if exitCode != 0 {
 		return workspaceInitFailure(req.Slug, exitCode, output)
 	}
-	// A successful init keeps its output, in two forms at two levels.
+	// A successful init keeps its output, in two forms at two levels: the
+	// script that ran is the OPERATOR's (init.sh), not boid's, and its most
+	// likely failure mode is exiting 0 while leaving the home subtly wrong
+	// — precisely the case with no error message to carry the evidence.
 	//
-	// Through PR9 this logged only byte COUNTS and let the bytes go: the
-	// container is removed on return, so exit 0 meant the run left no record
-	// of itself anywhere. That reads as reasonable — a success has nothing to
-	// explain — and is wrong for this particular container, because the
-	// script it ran is the OPERATOR's (init.sh), not boid's. The failure mode
-	// an operator's install script actually has is exiting 0 while leaving
-	// the home subtly wrong, which is precisely the case with no error
-	// message to carry the evidence. Measured cost of not having it: the
-	// 2026-07-28 dogfood, where an init that exited 0 left every volta shim
-	// dangling and the investigation had to replay the whole volume under an
-	// overlay mount to find out what the installer had said.
+	// The INFO line is a small, unconditional tail (workspaceInitSuccessTailLimit
+	// bytes), written on every first dispatch of every workspace as long as
+	// log.level has not been raised past its default — "unconditional" here
+	// means "not gated behind opting into more logging", not "immune to
+	// log.level" outright (see workspaceInitSuccessTailLimit's own doc
+	// comment). An operator who never touches log.level still gets the last
+	// words of the script that just ran.
 	//
-	// The INFO line stays exactly what it was through PR #852: a small,
-	// UNCONDITIONAL tail (workspaceInitSuccessTailLimit bytes), written on
-	// every first dispatch of every workspace as long as log.level has not
-	// been RAISED past its default — "unconditional" here means "not gated
-	// behind opting into more logging", not "immune to log.level" outright:
-	// config.LogLevelNames also accepts warn and error, either of which
-	// silences this INFO line same as any other (see
-	// workspaceInitSuccessTailLimit's own doc comment). That is deliberate
-	// and does not get "upgraded" to Debug here — an operator who never
-	// touches log.level still gets the last words of the script that just
-	// ran.
-	//
-	// The DEBUG line is the PR #858 follow-up this comment used to describe
-	// as future work: config.yaml's log.level (internal/config.LogConfig,
-	// internal/daemon.ApplyLogLevel) now lets an operator turn slog.Debug ON,
-	// so a second line carries the FULL retained window for whoever actually
-	// needs to replay more than the last couple of dozen lines.
+	// The DEBUG line carries the FULL retained window for whoever needs to
+	// replay more than the last couple of dozen lines.
 	//
 	// It passes output itself, NOT output.String(), and that is load-bearing
-	// rather than cosmetic (independent review of this PR, NB-1): Go
-	// evaluates a call's arguments before the call runs, so an inline
-	// output.String() would materialize the whole retained window — up to
-	// workspaceInitOutputLimit bytes, copied fresh — on EVERY successful
-	// init, whether or not slog.Debug's own Enabled check then discards the
-	// record. A *workspaceInitOutput satisfies fmt.Stringer, so passing the
-	// value itself lets slog defer that conversion to whichever
-	// Handler.Handle ends up rendering the record, and Handle is never
-	// invoked for a level the logger has disabled. Measured with
-	// workspaceInitOutputStringCalls (internal/dispatcher/
-	// container_backend_workspace_init_test.go): 0 calls with debug off, 1
-	// with it on, against both a slog.NewTextHandler and the real default
-	// handler production actually uses. This is also why the line still adds
-	// no new unbounded cost either way: whichever path renders it reads
-	// exactly what workspaceInitOutput already retains, itself capped at
-	// workspaceInitOutputLimit, so turning log.level: debug on trades log
-	// volume for detail, never memory for detail.
+	// rather than cosmetic: Go evaluates a call's arguments before the call
+	// runs, so an inline output.String() would materialize the whole
+	// retained window — up to workspaceInitOutputLimit bytes, copied fresh
+	// — on EVERY successful init, whether or not slog.Debug's own Enabled
+	// check then discards the record. A *workspaceInitOutput satisfies
+	// fmt.Stringer, so passing the value itself lets slog defer that
+	// conversion to whichever Handler.Handle ends up rendering the record,
+	// and Handle is never invoked for a level the logger has disabled
+	// (pinned by workspaceInitOutputStringCalls in this package's test file).
 	//
 	// The message deliberately does NOT start with "workspace home init
 	// completed" (the INFO line's own message): a runbook that greps that
@@ -348,25 +306,18 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 //
 // An operator who wants the whole retained window does not get it by raising
 // this constant; they set log.level: debug and get it from the DEBUG line
-// RunWorkspaceInit logs right alongside this one (carrying the full
-// retention-bounded window — see PR #858, which introduced log.level, for
-// how that knob reaches this process).
+// RunWorkspaceInit logs right alongside this one, carrying the full
+// retention-bounded window.
 const workspaceInitSuccessTailLimit = 2000
 
 // workspaceInitHomeMount turns req's home into the one mount the init
-// container gets: a VOLUME mount of the workspace's own named volume (PR6, 論点
-// a/e).
+// container gets: a volume mount of the workspace's own named volume.
 //
-// Fail-closed on an absolute source, which is the exact inverse of what this
-// function guarded through PR5 — and the inversion is the point. The home was a
-// host directory then, and docker reads a RELATIVE mount source as a volume
-// name, so a path that stopped being absolute would have silently prepared a
-// brand new empty volume and reported success. Now the home IS a volume name,
-// and an absolute value would silently bind some host directory into the
-// container instead: the init would appear to succeed, the marker would be
-// stamped, and the workspace's real home would never be prepared. Both eras
-// fail the same way when the two representations are confused, so the check
-// tracks which representation is current rather than being dropped.
+// Fail-closed on an absolute source: the home is a docker named volume, and
+// docker reads a relative mount source as a volume name — so an absolute
+// value would silently bind some host directory into the container
+// instead. The init would appear to succeed, the marker would be stamped,
+// and the workspace's real home would never be prepared.
 //
 // The name is validated against docker's own grammar as well, for the reason
 // dockerres.IsValidVolumeName exists: a mount source is classified as a named
@@ -377,7 +328,7 @@ func workspaceInitHomeMount(req WorkspaceInitRequest) (mount.Mount, error) {
 }
 
 // workspaceHomeVolumeMount is the shared body: the init container (above) and
-// PR8's extraction container (containerBackend.ImportWorkspaceHome) mount the
+// the extraction container (containerBackend.ImportWorkspaceHome) mount the
 // same volume at the same path, and the checks below are exactly as
 // load-bearing for the second as for the first — an extraction that bound a
 // host directory instead would report success while the workspace's real home
@@ -402,26 +353,24 @@ func workspaceHomeVolumeMount(slug, source, target string) (mount.Mount, error) 
 }
 
 // EnsureWorkspaceHomeVolume creates the workspace HOME volume if it is not
-// there and reports the identity it carries afterwards (PR6, 論点 a/b).
+// there and reports the identity it carries afterwards.
 //
 // One VolumeCreate does both jobs. The Engine API returns an already-existing
 // volume for a create of the same name — 201, the existing volume, the
-// EXISTING labels, request labels discarded (measured against podman 4.9.3 on
-// 2026-07-27: three creates of one name carrying different label sets all came
-// back with the first call's labels). So a fresh volume gets req.CandidateID
-// stamped on it and a surviving one reports whatever it was born with, which is
-// what makes "this volume was deleted and re-created since the marker was
-// written" observable at all.
+// EXISTING labels, request labels discarded. So a fresh volume gets
+// req.CandidateID stamped on it and a surviving one reports whatever it was
+// born with, which is what makes "this volume was deleted and re-created
+// since the marker was written" observable at all.
 //
 // It follows that the identity CANNOT be updated afterwards, and everything
 // downstream is built on that: see Runner.ensureWorkspaceHomeVolume for why an
 // unlabelled volume is a hard error rather than a re-init.
 //
-// The labels are 論点 a's decision, unchanged: boid.workspace_home +
-// boid.workspace_home_install_id and NOTHING else, because each of the three
-// job labels is an enumeration filter that would put a persistent volume into a
-// reaper's sweep. The identity label joins them; it is likewise a key nothing
-// enumerates on.
+// The labels are unchanged from the workspace home design: boid.workspace_home
+// + boid.workspace_home_install_id and nothing else, because each of the
+// three job labels is an enumeration filter that would put a persistent
+// volume into a reaper's sweep. The identity label joins them; it is
+// likewise a key nothing enumerates on.
 func (b *containerBackend) EnsureWorkspaceHomeVolume(ctx context.Context, req WorkspaceHomeVolumeRequest) (string, error) {
 	if !dockerres.IsValidVolumeName(req.Name) {
 		return "", fmt.Errorf("workspace home volume name %q is not a valid docker volume name", req.Name)
@@ -488,9 +437,9 @@ func (b *containerBackend) EnsureWorkspaceHomeVolume(ctx context.Context, req Wo
 // it re-creates one under the same name and then writes into it. A replacement
 // landing after this check therefore passes no check at all — it is mounted by
 // name, and the job's agent and the migration's tar share a volume rather than
-// failing loudly. PR8's codex review recorded that as Blocker 2; the fix is an
-// exclusion rather than another comparison, because no comparison here can be
-// atomic with ContainerCreate. See workspaceHomeInFlight.
+// failing loudly. The fix there is an exclusion rather than another
+// comparison, because no comparison here can be atomic with ContainerCreate.
+// See workspaceHomeInFlight.
 func verifyWorkspaceHomeIdentity(volumeName, want, got string) error {
 	if want == "" || want == got {
 		return nil
@@ -513,15 +462,14 @@ func verifyWorkspaceHomeIdentity(volumeName, want, got string) error {
 }
 
 // createWorkspaceInitContainer creates the container, resolving a name
-// conflict once (§D6).
+// conflict once.
 //
 // The conflict is not an error condition to be papered over — it is the
 // mechanism. A flock serializes inits within one daemon process and vanishes
 // when that process dies; the container does not. So after a crash-and-restart
 // the engine's own "a container with that name already exists" is the only
-// thing standing between the next dispatch and two inits writing into one home
-// concurrently, which is precisely the Phase 4 contract
-// (docs/plans/home-workspace-volume.md:83) that would otherwise break.
+// thing standing between the next dispatch and two inits writing into one
+// home concurrently.
 func (b *containerBackend) createWorkspaceInitContainer(ctx context.Context, opts client.ContainerCreateOptions, name, slug string) (string, error) {
 	res, err := b.api.ContainerCreate(ctx, opts)
 	if err == nil {
@@ -563,12 +511,12 @@ func (b *containerBackend) createWorkspaceInitContainer(ctx context.Context, opt
 //  1. Does the incumbent still exist? Only errdefs.IsNotFound says "no".
 //     Every other inspect error — a 500 from an engine busy serving that same
 //     download, a socket timeout, a proxy hiccup — means the state is UNKNOWN,
-//     and this returns it as an error instead of proceeding. The first version
-//     of this code collapsed all errors into "it vanished" and went straight
-//     to a force remove, which turned a transient engine hiccup into a killed
-//     install; that is precisely what §D6's 「running なら完了を待つ。force
-//     kill しない」forbids. errdefs.IsNotFound is the same predicate
-//     internal/reap/reap.go uses for the same distinction.
+//     and this returns it as an error instead of proceeding. Collapsing all
+//     errors into "it vanished" and going straight to a force remove would
+//     turn a transient engine hiccup into a killed install: a running
+//     incumbent must have its completion waited for, never force-killed.
+//     errdefs.IsNotFound is the same predicate internal/reap/reap.go uses
+//     for the same distinction.
 //
 //  2. Is it boid's, and is it THIS workspace's? The deterministic name is
 //     reserved by nothing. `docker run --name boid-ws-init-<install8>-<slug> …`
@@ -658,10 +606,8 @@ func (b *containerBackend) clearWorkspaceInitContainer(ctx context.Context, name
 			// The wait is here to establish ONE fact — the incumbent is no
 			// longer running — because the very next statement force removes
 			// it. An engine that answered with an error established nothing, so
-			// removing anyway would be §D6's forbidden "SIGKILL a 25-minute
-			// download" taken on an unread field. (The earlier version of this
-			// select discarded the response entirely, so there was not even a
-			// StatusCode to reason about.)
+			// removing anyway would risk killing a container that may still be
+			// mid-install, taken on an unread field.
 			if eerr := waitResponseEngineError(res); eerr != nil {
 				return fmt.Errorf(
 					"the engine put an error in the wait response for the workspace init container %q (id %s) already holding this "+
@@ -787,8 +733,8 @@ func (b *containerBackend) verifyWorkspaceInitIncumbent(name, slug string, incum
 // between the first byte and a post-start attach would be lost, and here that
 // output is the entire diagnosis of a failed run.
 //
-// stdin is an io.Reader rather than the init wrapper's string because PR8's
-// extraction container (containerBackend.ImportWorkspaceHome) needs the SAME
+// stdin is an io.Reader rather than the init wrapper's string because the
+// extraction container (containerBackend.ImportWorkspaceHome) needs the same
 // lifecycle with a multi-GB tar on that stream — see this function's write step
 // for why streaming rather than buffering is the whole point there.
 func (b *containerBackend) runWorkspaceHomeContainer(ctx context.Context, id, slug string, stdin io.Reader) (int, *workspaceInitOutput, error) {
@@ -805,8 +751,7 @@ func (b *containerBackend) runWorkspaceHomeContainer(ctx context.Context, id, sl
 	defer hijack.Close()
 
 	// No TTY, so the stream carries docker's 8-byte-header framing; the same
-	// demux Launch's sessions use (stdout and stderr deliberately combined —
-	// §決定8's "TTY/非 TTY とも単一結合").
+	// demux Launch's sessions use (stdout and stderr deliberately combined).
 	outCh := make(chan *workspaceInitOutput, 1)
 	go func() {
 		out := newWorkspaceInitOutput()
@@ -832,10 +777,10 @@ func (b *containerBackend) runWorkspaceHomeContainer(ctx context.Context, id, sl
 	// its whole script from stdin and will not run the last command until it
 	// sees one, and `tar -xf -` will not finish its last entry without one.
 	//
-	// io.Copy, not a buffered write: the extraction payload is a whole workspace
-	// home (4.3GB on the machine PR8 was written for) arriving over the daemon's
-	// own request body, and materializing it would put it in the daemon's heap
-	// on its way from one socket to another.
+	// io.Copy, not a buffered write: the extraction payload is a whole
+	// multi-GB workspace home arriving over the daemon's own request body,
+	// and materializing it would put it in the daemon's heap on its way
+	// from one socket to another.
 	if _, err := io.Copy(hijack.Conn, stdin); err != nil {
 		hijack.Close()
 		<-outCh
@@ -867,12 +812,10 @@ func (b *containerBackend) runWorkspaceHomeContainer(ctx context.Context, id, sl
 	case werr := <-waitRes.Error:
 		hijack.Close()
 		<-outCh
-		// Same class of fault as the wait-response branch just above, and
-		// described the same way. PR #863 gave the JOB path both of its
-		// engine-fault branches wording that names the engine; this one was
-		// left as a bare `wait: %w`, which reads as an ordinary step failure
-		// and sends an operator to init.sh for something init.sh had no part
-		// in (next-session-container-backend-followups.md #4).
+		// Same class of fault as the wait-response branch just above, worded
+		// the same way — naming the engine rather than reading as an
+		// ordinary step failure that would send an operator to init.sh for
+		// something init.sh had no part in.
 		return 0, nil, fmt.Errorf(
 			"the engine's wait for the init container failed outright, so the container's exit status is "+
 				"unknown (this is not init.sh failing): %w", waitChannelError(werr))
@@ -897,7 +840,7 @@ func (b *containerBackend) runWorkspaceHomeContainer(ctx context.Context, id, sl
 }
 
 // reapOrphanWorkspaceInitContainers collects init containers left behind by a
-// crashed daemon (§D5).
+// crashed daemon.
 //
 // Deliberately separate from ReapOrphans' primary loop, and deliberately
 // silent in backend.ReapReport. The primary loop enumerates on the PRESENCE of
@@ -998,12 +941,11 @@ func (b *containerBackend) reapOrphanWorkspaceInitContainers(ctx context.Context
 //     conflict resolution; the failure mode costs an install.
 //   - anything else, including the empty string. Podman's docker-compat
 //     endpoint does answer in docker's vocabulary for the states that matter
-//     here — measured 2026-07-27 against podman 4.9.3's own socket, `GET
-//     /v1.41/containers/json?all=true` returning State values of
-//     "created"/"exited"/"running" — which is why the allowlist is useful on
-//     that engine at all rather than matching nothing. But that measurement
-//     covers the states those containers happened to be in, not the shim's
-//     whole mapping, so it is a reason to expect the allowlist to fire, never a
+//     here (`GET /v1.41/containers/json?all=true` returning State values of
+//     "created"/"exited"/"running"), which is why the allowlist is useful on
+//     that engine at all rather than matching nothing. But that covers only
+//     the states those containers happened to be in, not the shim's whole
+//     mapping, so it is a reason to expect the allowlist to fire, never a
 //     reason to treat an unrecognized answer as terminal.
 func workspaceInitContainerIsTerminal(state container.ContainerState) bool {
 	switch state {

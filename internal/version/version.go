@@ -1,5 +1,4 @@
-// Package version resolves boid's own version identity, per
-// docs/plans/release-onboarding.md 穴2 ("バージョン identity が存在しない").
+// Package version resolves boid's own version identity.
 //
 // There are two independent build shapes to reconcile:
 //
@@ -35,17 +34,15 @@ var buildVersion string
 
 // exactReleaseTagPattern matches ONLY a bare "vMAJOR.MINOR.PATCH" string —
 // no pre-release suffix, no build metadata, no pseudo-version shape. This is
-// deliberately narrower than semver itself: 穴2's rule treats anything that
-// isn't exactly this shape (pseudo-version, "+dirty", "(devel)", a
-// git-describe-shaped string, a pre-release tag) as a local build, on the
-// grounds that a wrong guess here would send `boid start` after an image
-// tag/ref that doesn't exist (and "+" is not even a legal docker tag
-// character) rather than falling back to a safe local-build path.
+// deliberately narrower than semver itself: anything that isn't exactly
+// this shape (pseudo-version, "+dirty", "(devel)", a git-describe-shaped
+// string, a pre-release tag) is treated as a local build, since a wrong
+// guess here would send `boid start` after an image tag/ref that doesn't
+// exist rather than falling back to a safe local-build path.
 var exactReleaseTagPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 
-// IsExactRelease reports whether v names an exact release tag under 穴2's
-// rule. See exactReleaseTagPattern's doc comment for what disqualifies a
-// string.
+// IsExactRelease reports whether v names an exact release tag. See
+// exactReleaseTagPattern's doc comment for what disqualifies a string.
 func IsExactRelease(v string) bool {
 	return exactReleaseTagPattern.MatchString(v)
 }
@@ -77,35 +74,29 @@ func IsReleaseBuild() bool {
 }
 
 // BoidRunnerImageRepo is the GHCR repository .github/workflows/
-// blackbox-e2e.yml's container-image job publishes to (docs/plans/
-// release-onboarding.md 決定4/PR3): a tag push building an exact release
-// (BOID_VERSION non-empty there, mirroring IsExactRelease's own rule)
-// additionally publishes "$BoidRunnerImageRepo:<the release tag>" —
-// exactly the ref DefaultContainerImage names for a release build.
+// blackbox-e2e.yml's container-image job publishes to: a tag push building
+// an exact release additionally publishes "$BoidRunnerImageRepo:<the
+// release tag>" — exactly the ref DefaultContainerImage names for a
+// release build.
 const BoidRunnerImageRepo = "ghcr.io/novshi-tech/boid-runner"
 
 // LocalBuildImage is the bare, unqualified tag scripts/deploy-container.sh's
-// local `docker build` step produces (its own `-t boid-runner:latest`,
-// stacked alongside the git-SHA-derived IMAGE_TAG it also applies) and
-// build/container/compose.yml's daemon service ultimately resolves to
-// whenever a caller hasn't overridden BOID_IMAGE — the local-checkout dev
-// workflow's own default. DefaultContainerImage falls back to this exact
-// string for any non-release build (穴2's broad rule) since there is no
-// GHCR ref to name for a build that was never published.
+// local `docker build` step produces and build/container/compose.yml's
+// daemon service resolves to whenever a caller hasn't overridden
+// BOID_IMAGE — the local-checkout dev workflow's own default.
+// DefaultContainerImage falls back to this for any non-release build,
+// since there is no GHCR ref to name for a build that was never published.
 const LocalBuildImage = "boid-runner:latest"
 
 // DefaultContainerImage returns the image ref a boid binary should default
 // to launching (job containers) or pulling (the compose daemon service)
-// for its OWN version identity — docs/plans/release-onboarding.md 穴4's
-// "pull の既定 ref にレジストリが無い" fix. For an exact release build
-// (IsReleaseBuild), this is that release's own GHCR tag, matching exactly
-// what the CI publish step (BoidRunnerImageRepo's own doc comment) pushes
-// for the same tag. For every other build shape — dev checkout, pseudo-
-// version, "+dirty", "(devel)" (穴2's rule is deliberately broad here, see
-// exactReleaseTagPattern's doc comment) — there is no corresponding
-// published GHCR ref to name, so this instead names LocalBuildImage, the
-// bare local tag scripts/deploy-container.sh's own local build step
-// produces and e2e/run-container.sh's local-build flow already depends on.
+// for its OWN version identity. For an exact release build (IsReleaseBuild),
+// this is that release's own GHCR tag, matching what the CI publish step
+// (BoidRunnerImageRepo's own doc comment) pushes for the same tag. For
+// every other build shape — dev checkout, pseudo-version, "+dirty",
+// "(devel)" — there is no corresponding published GHCR ref to name, so
+// this instead names LocalBuildImage, the bare local tag
+// scripts/deploy-container.sh's own local build step produces.
 func DefaultContainerImage() string {
 	if v := Version(); IsExactRelease(v) {
 		return BoidRunnerImageRepo + ":" + v

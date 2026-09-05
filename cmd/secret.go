@@ -60,15 +60,10 @@ func init() {
 // secretStdinIsInteractive reports whether stdin is a terminal, and so
 // whether `boid secret set` should prompt rather than read the stream.
 //
-// The test is "is stdin a character device", not "is stdin a pipe". Through
-// 2026-08-07 this asked os.ModeNamedPipe instead, which recognised
-// `printf ... | boid secret set K` but NOT `boid secret set K < file` — a
-// redirected regular file matches neither ModeNamedPipe nor ModeCharDevice,
-// so the redirect fell through to the interactive branch and the command sat
-// waiting for a human that a restore script does not have. Asking about
-// ModeCharDevice inverts the question so that every non-terminal stdin
-// (pipe, regular file, /dev/null, a closed fd) is read as a stream, which is
-// what a caller who redirected anything at all meant.
+// The test is "is stdin a character device", not "is stdin a pipe": a
+// redirected regular file is neither a pipe nor a terminal, so checking
+// ModeCharDevice (rather than ModeNamedPipe) is what correctly routes both
+// a piped and a redirected-from-file stdin to the stream-reading branch.
 func secretStdinIsInteractive(stat os.FileInfo) bool {
 	return stat.Mode()&os.ModeCharDevice != 0
 }
@@ -76,12 +71,9 @@ func secretStdinIsInteractive(stat os.FileInfo) bool {
 // readPipedSecretValue reads all of r as a secret value.
 //
 // Unless raw is set, exactly ONE trailing newline is stripped — the one a
-// shell here-string, `echo`, or a text file's final line terminator adds,
-// which is never part of the value the caller meant. Everything else is
-// preserved byte for byte. The pre-2026-08-07 implementation read through a
-// bufio.Scanner and rejoined the lines with "\n", which could not represent
-// a value whose trailing newlines were significant (they were all dropped)
-// and quietly rewrote any \r\n input; reading the stream whole avoids both.
+// shell here-string, `echo`, or a text file's final line terminator adds.
+// Everything else, including any further trailing newlines, is preserved
+// byte for byte.
 func readPipedSecretValue(r io.Reader, raw bool) (string, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
@@ -99,7 +91,6 @@ func runSecretSet(cmd *cobra.Command, args []string) error {
 	namespace, _ := cmd.Flags().GetString("namespace")
 	raw, _ := cmd.Flags().GetBool("raw")
 
-	// Read value from stdin
 	var value string
 	stat, statErr := os.Stdin.Stat()
 	// A stdin that cannot even be stat'd is not a terminal to prompt at, so

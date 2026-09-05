@@ -17,8 +17,7 @@ const (
 
 // WithCLITokenAuthenticated returns ctx marked as already authenticated by
 // NewCLITokenAuthMiddleware (the dedicated CLI TCP listener,
-// Config.CLIAddr/CLIToken, PR-3 Option 4 host-mode redesign — round-2 codex
-// review Blocker 1). Handlers mounted behind BOTH that listener and a
+// Config.CLIAddr/CLIToken). Handlers mounted behind BOTH that listener and a
 // transport this package's other middlewares guard (the shared router `r`
 // in internal/server/wire.go is reused across the UNIX socket, the Web UI's
 // TCP listener, and this dedicated CLI listener) must check

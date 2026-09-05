@@ -1,21 +1,18 @@
 package orchestrator
 
-// docs/plans/ingestion-identity.md PR-1 (B-1): identity 索引の store 層。
+// identity 索引の store 層。
 //
 // 外部キー (`jira:ROOKPF-289` / `slack:1785803139.540489` 等) から task を
-// 引く索引で、認証の identity → principal と同じ構造 (I-1)。不変条件は 2 つ:
+// 引く索引で、認証の identity → principal と同じ構造。不変条件は 2 つ:
 //
 //   - 1 つの task は identity を複数持てる
 //   - 1 つの identity は project スコープで高々 1 つの task にしか紐付かない
-//     (UNIQUE(project_id, identity)、migration 0041)。2 枚目の link 要求は
-//     silent newest-wins ではなく ErrIdentityConflict で拒否する
+//     (UNIQUE(project_id, identity))。2 枚目の link 要求は silent
+//     newest-wins ではなく ErrIdentityConflict で拒否する
 //
-// identity は `<namespace>:<key>` の不透明文字列として扱う (I-2)。ここで
-// 行う検証は「空でないこと」だけで、namespace の意味も key の妥当性も
-// workspace 側の知識であり daemon は解釈しない。
-//
-// この PR だけでは挙動は変わらない — 書き手 (workspace の一括投入) も読み手
-// (PR-2 の宛先解決) もまだ居ない土台。
+// identity は `<namespace>:<key>` の不透明文字列として扱う。ここで行う検証は
+// 「空でないこと」だけで、namespace の意味も key の妥当性も workspace 側の
+// 知識であり daemon は解釈しない。
 
 import (
 	"database/sql"
@@ -33,13 +30,12 @@ import (
 // doc comment.
 var ErrIdentityConflict = errors.New("identity already linked to a different task")
 
-// LinkIdentity binds identity (scoped to projectID, I-3) to taskID. Linking
+// LinkIdentity binds identity (scoped to projectID) to taskID. Linking
 // an identity that already points at taskID is a no-op success (idempotent —
 // a workspace resend of the same push must not fail). Linking an identity
 // that already points at a DIFFERENT task returns ErrIdentityConflict; the
 // existing binding is left untouched (this store never does silent
-// newest-wins — see match_card.py's build_key_index() note in the design
-// doc for the bug class this replaces).
+// newest-wins).
 func LinkIdentity(dbtx db.DBTX, projectID, identity, taskID string) error {
 	if identity == "" {
 		return fmt.Errorf("link identity: identity must not be empty")
@@ -104,10 +100,10 @@ func UnlinkIdentity(dbtx db.DBTX, projectID, identity string) error {
 	return nil
 }
 
-// UnlinkAllForTask releases every identity bound to taskID (I-6: drop
-// releases the task's identities so the same external keys can be re-linked
-// to a fresh task later). Called from the service layer immediately after a
-// `drop` transition commits — never from done (I-5: done holds identities).
+// UnlinkAllForTask releases every identity bound to taskID — drop releases
+// the task's identities so the same external keys can be re-linked to a
+// fresh task later. Called from the service layer immediately after a
+// `drop` transition commits — never from done (done holds identities).
 func UnlinkAllForTask(dbtx db.DBTX, taskID string) error {
 	if _, err := dbtx.Exec(`DELETE FROM task_identities WHERE task_id = ?`, taskID); err != nil {
 		return fmt.Errorf("unlink all identities for task: %w", err)

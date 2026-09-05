@@ -43,13 +43,8 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 		return &ExecResponse{ExitCode: 0, Stdout: boidShimUsage}, nil
 	}
 
-	// broker TCP wire completion (docs/plans/phase6-cutover-followups.md
-	// §⓪): a container-backend job never gets BOID_BROKER_SOCKET at all —
-	// only BOID_BROKER_TLS_ADDR (see main.go's shimMain identical gate for
-	// the host-command entry point). Reject only when BOTH are empty;
-	// every send call below now goes through sendExecRequest ->
-	// brokerclient.SendJSONFromEnv, which is the actual transport-selection
-	// decision point.
+	// A container-backend job only gets BOID_BROKER_TLS_ADDR, never
+	// BOID_BROKER_SOCKET; reject only when both are unset.
 	if os.Getenv("BOID_BROKER_SOCKET") == "" && os.Getenv("BOID_BROKER_TLS_ADDR") == "" {
 		return nil, fmt.Errorf("boid shim: neither BOID_BROKER_SOCKET nor BOID_BROKER_TLS_ADDR is set")
 	}
@@ -59,22 +54,14 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 		return runFetchShim(args[1:])
 	}
 
-	// Phase 5b PR1 task-context ops (docs/plans/phase5-shim-and-task-context.md):
-	// `boid task current` / `instructions` / `env` / `payload` get their own
-	// request/response path instead of flowing through parseBoidRequest /
-	// the generic send below — they read BOID_TASK_ID / BOID_JOB_ID from the
-	// environment instead of a positional id, and support a client-side
-	// --format (json|yaml) for their full-object output that the broker
-	// itself has no opinion on (it always replies JSON).
+	// `task current`/`instructions`/`env`/`payload` read BOID_TASK_ID/BOID_JOB_ID
+	// from the environment and take their own request/response path.
 	if len(args) >= 2 && args[0] == "task" {
 		if op, ok := taskContextOps[args[1]]; ok {
 			return runTaskContextShim(op, args)
 		}
-		// Phase 5b PR2 attachments subcommands
-		// (docs/plans/phase5-shim-and-task-context.md): `boid task
-		// attachments list` / `get <name>` get their own request/response
-		// path too — a positional attachment name and binary (base64) reply
-		// don't fit taskContextOps' shape.
+		// `task attachments list`/`get <name>` also take their own path: a
+		// positional name and binary (base64) reply don't fit taskContextOps.
 		if args[1] == "attachments" {
 			return runTaskAttachmentsShim(args[2:])
 		}
@@ -252,12 +239,7 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 }
 
 // parseBoidProjectBehaviors builds the BoidRequest for `boid project
-// behaviors <project-ref>` (docs/plans/workspace-default-project.md follow-up:
-// giving sandbox-side callers the same task_behaviors visibility
-// `boid project behaviors` already gives host-side callers). The ref is
-// forwarded as-is (UUID, exact name, or partial name) — the broker resolves
-// it via ProjectResolver and enforces AllowsProject, mirroring `boid task
-// create`/`boid task list`'s project_id handling.
+// behaviors <project-ref>`.
 func parseBoidProjectBehaviors(args []string) (*BoidRequest, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("boid shim: project behaviors requires a project ref")
@@ -268,11 +250,8 @@ func parseBoidProjectBehaviors(args []string) (*BoidRequest, error) {
 	return &BoidRequest{Op: BoidOpProjectBehaviors, ProjectID: args[0]}, nil
 }
 
-// parseBoidProjectList builds the BoidRequest for `boid project list`
-// (no arguments — the result is always scoped to the caller's own workspace
-// via TokenContext.AllowedProjectIDs, so there is nothing for the caller to
-// parameterize; a workspace-wide daemon listing like the host-only `boid
-// project list` is intentionally not offered here).
+// parseBoidProjectList builds the BoidRequest for `boid project list`, always
+// scoped to the caller's own workspace.
 func parseBoidProjectList(args []string) (*BoidRequest, error) {
 	if len(args) > 0 {
 		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid project list", args[0])
@@ -280,15 +259,10 @@ func parseBoidProjectList(args []string) (*BoidRequest, error) {
 	return &BoidRequest{Op: BoidOpProjectList}, nil
 }
 
-// parseBoidAgentStop builds the BoidRequest for `boid agent stop <job-id>`.
-// The agent (claude) invokes this to ask the daemon to terminate its own
-// claude process while leaving the surrounding go-native runner alive — the
-// runner then posts `boid job done` through the broker directly (a Go call,
-// internal/sandbox/runner.postJobDone — not a shell EXIT trap) once the
-// child exits, completing the job normally with the session id intact (the
-// session-id payload patch was already applied via `--payload-patch` before
-// the agent started). The job id is the current job (BOID_JOB_ID); broker
-// rejects calls targeting any other job.
+// parseBoidAgentStop builds the BoidRequest for `boid agent stop <job-id>`,
+// asking the daemon to terminate the agent process while the job's runner
+// stays alive to complete the job normally. Broker rejects targeting any job
+// other than the caller's own.
 func parseBoidAgentStop(args []string) (*BoidRequest, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("boid shim: agent stop requires a job id")
@@ -333,8 +307,7 @@ func parseBoidJobDone(args []string) (*BoidRequest, error) {
 				return nil, err
 			}
 			i = next
-			// host 側 cmd/job.go runJobDone と挙動を揃える: missing file は
-			// silent skip し、output 空で boid job done を送る。
+			// Missing file is a silent skip, sending job done with empty output.
 			content, err := readFlagContent(value)
 			if err == nil {
 				req.Output = string(content)
@@ -366,16 +339,8 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 			i = next
 			filePath = value
 		case arg == "--idempotency-key" || strings.HasPrefix(arg, "--idempotency-key="):
-			// docs/plans/signal-ingest-detailed-design.md §8: mirrors
-			// cmd/task.go's host-side --idempotency-key flag, which the
-			// sandboxed `boid task create` command lacked entirely (the
-			// primary use case — a judgment task minting a child task — runs
-			// INSIDE the sandbox, so without this the flag form was
-			// unusable at its main call site; the YAML spec's
-			// `idempotency_key:` field already worked via the generic
-			// map-forward below). Set on the map AFTER parsing the spec
-			// (below) so the flag wins over a same-named spec field, same
-			// precedence as runTaskCreate on the host side.
+			// Applied after the spec is parsed so the flag wins over a
+			// same-named spec field.
 			value, next, err := takeStringFlagValue(args, i, "--idempotency-key")
 			if err != nil {
 				return nil, err
@@ -400,9 +365,8 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	}
 
 	// Unmarshal the entire YAML spec into a generic map so that every field
-	// is forwarded without explicit enumeration. The API server applies its
-	// own schema and (per Phase 2-3) silently drops deprecated task-row
-	// override keys (readonly / worktree / branch_prefix / base_branch).
+	// is forwarded without explicit enumeration; the API server applies its
+	// own schema and drops deprecated task-row override keys.
 	var v map[string]any
 	if err := yaml.Unmarshal(data, &v); err != nil {
 		return nil, fmt.Errorf("boid shim: parse task spec: %w", err)
@@ -474,12 +438,8 @@ func parseBoidTaskShow(args []string) (*BoidRequest, error) {
 
 func parseBoidTaskUpdate(args []string) (*BoidRequest, error) {
 	// --payload-patch routes to a distinct op (BoidOpTaskUpdatePayloadPatch)
-	// with its own merge semantics (orchestrator.MergePayloadPatch, gated by
-	// the firing hook's own Traits.Produces — see
-	// api.TaskAppService.UpdateTaskPayloadPatch) and its own JobID-based
-	// scoping (mirrors task_instructions/env/payload, wiring-seams.md #13),
-	// so it is parsed by a dedicated function rather than folded into
-	// `merged` alongside the top-level-shallow-merge flags below.
+	// with its own merge semantics and JobID-based scoping, so it is parsed
+	// by a dedicated function rather than folded into `merged` below.
 	for _, arg := range args {
 		if arg == "--payload-patch" || strings.HasPrefix(arg, "--payload-patch=") {
 			return parseBoidTaskUpdatePayloadPatch(args)
@@ -569,19 +529,13 @@ func parseBoidTaskUpdate(args []string) (*BoidRequest, error) {
 }
 
 // parseBoidTaskUpdatePayloadPatch builds the BoidRequest for `boid task
-// update --payload-patch <value>` (docs/plans/phase5-shim-and-task-context.md
-// decision 6/PR7: the job_done payload_patch direct-pass RPC). Unlike every
-// other `task update` flag it is JobID-scoped (BOID_JOB_ID env, mirroring
-// the Phase 5b PR1 task-context subcommands) rather than a positional task
-// id — the merge needs to resolve the calling job's own HandlerID — so it
-// is parsed alone: a positional task id or any other `task update` flag
-// alongside it is rejected outright rather than silently ignored, since the
-// two request shapes (BoidOpTaskUpdate's top-level shallow merge vs this
-// op's trait-mode-aware merge) must not be conflated.
+// update --payload-patch <value>`. Unlike other `task update` flags it is
+// JobID-scoped rather than a positional task id, so it must be parsed alone:
+// a positional task id or any other `task update` flag alongside it is
+// rejected.
 //
 // value follows curl's `@` convention: a bare value is inline patch content,
-// `@<path>` reads a file, and `@-` reads stdin (the form the plan doc's
-// decision 6 documents, e.g. `boid task update --payload-patch @-`).
+// `@<path>` reads a file, and `@-` reads stdin.
 func parseBoidTaskUpdatePayloadPatch(args []string) (*BoidRequest, error) {
 	var source string
 	var seen bool
@@ -617,15 +571,10 @@ func parseBoidTaskUpdatePayloadPatch(args []string) (*BoidRequest, error) {
 	if err := yaml.Unmarshal(data, &v); err != nil {
 		return nil, fmt.Errorf("boid shim: parse payload patch: %w", err)
 	}
-	// yaml.v3 decodes a mapping with a non-string key (bool/int/null — see
-	// coordinator.go's parseHandlerResult doc comment for the historical
-	// `on:` -> `true:` PyYAML round-trip incident) as
-	// map[interface{}]interface{}, which json.Marshal below cannot handle.
-	// yamlutil.NormalizeKeys is the SAME shared normalization the file-based
-	// path applies (Phase 5b PR7 codex review Major 2, wiring-seams.md #17)
-	// — without it, identical payload_patch content would behave
-	// differently (or error outright) depending on whether it traveled via
-	// the file fallback or this CLI.
+	// yaml.v3 decodes a mapping with a non-string key as
+	// map[interface{}]interface{}, which json.Marshal below cannot handle;
+	// NormalizeKeys must match the file-based path's normalization so
+	// identical content behaves the same via either route.
 	v = yamlutil.NormalizeKeys(v)
 	patchJSON, err := json.Marshal(v)
 	if err != nil {
@@ -646,13 +595,9 @@ func parseBoidTaskUpdatePayloadPatch(args []string) (*BoidRequest, error) {
 
 // readPayloadPatchSource resolves a --payload-patch value following curl's
 // `@` convention (bare value = inline content, `@<path>` = file, `@-` =
-// stdin), enforcing PayloadPatchMaxBytes on every branch. Unlike
-// readFlagContent (shared by --payload-file/--patch-file/etc, deliberately
-// left uncapped for consistency with those existing flags), this content
-// crosses the broker RPC boundary into the daemon process, so an unbounded
-// read is a real OOM vector for a shared, long-lived process — Phase 5b PR7
-// codex review Major 3, wiring-seams.md #17. The broker re-checks the same
-// cap independently (internal/sandbox/broker.go) as defense in depth.
+// stdin), enforcing PayloadPatchMaxBytes on every branch since this content
+// crosses the broker RPC boundary into the daemon process. The broker
+// re-checks the same cap independently as defense in depth.
 func readPayloadPatchSource(source string) ([]byte, error) {
 	if !strings.HasPrefix(source, "@") {
 		if len(source) > PayloadPatchMaxBytes {
@@ -749,13 +694,8 @@ func parseBoidTaskList(args []string) (*BoidRequest, error) {
 }
 
 // parseBoidTaskWait builds the BoidRequest for `boid task wait <task-id>`.
-//
-// Takes no flags on purpose. Everything a caller might reach for here — how
-// long to wait, how often to check — belongs to whoever bounds the job from
-// the outside, not to the agent typing the command: a per-call `--timeout`
-// would be a duration the daemon does not know about, which is exactly the
-// split that put `timeout 300` inside a workspace's own `run:` string while
-// the trigger that launched it had no idea any limit applied.
+// Takes no flags on purpose — any bound on how long to wait belongs to
+// whoever dispatches the job, not to the agent typing the command.
 func parseBoidTaskWait(args []string) (*BoidRequest, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("boid shim: task wait requires a task id")
@@ -793,15 +733,10 @@ func parseBoidTaskReopen(args []string) (*BoidRequest, error) {
 	return req, nil
 }
 
-// parseBoidCardGet builds the BoidRequest for `boid card get <task-id>`, the
-// single-card half of the card read surface (docs/plans/
-// cross-project-issue-triage.md Phase 1 PR-5a). Renamed from
-// `boid task triage <task-id>` (a single ambiguous "task id or --list" form)
-// to an explicit `get`/`list` subcommand pair by docs/plans/
-// card-model-cleanup.md PR-3 §4 — wire rename only, the op and its scoping
-// are unchanged. Kept as its own command (not folded into `boid task show`)
-// because it returns the card's own projection (api.CardView: kind/urgency/
-// suggestion/detail/children/parked_from), not orchestrator.Task's columns.
+// parseBoidCardGet builds the BoidRequest for `boid card get <task-id>`,
+// the single-card half of the card read surface. Kept separate from `boid
+// task show` because it returns the card's own projection, not
+// orchestrator.Task's columns.
 func parseBoidCardGet(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpCardGet}
 
@@ -826,10 +761,7 @@ func parseBoidCardGet(args []string) (*BoidRequest, error) {
 
 // parseBoidCardList builds the BoidRequest for
 // `boid card list [--status S] [--project-id P] [--workspace-id W]`, the
-// collection half of the card read surface (docs/plans/
-// cross-project-issue-triage.md Phase 1 PR-5a). Renamed from
-// `boid task triage --list [...]` by docs/plans/card-model-cleanup.md PR-3
-// §4 — wire rename only, filters and scoping are unchanged.
+// collection half of the card read surface.
 func parseBoidCardList(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpCardList}
 
@@ -867,13 +799,9 @@ func parseBoidCardList(args []string) (*BoidRequest, error) {
 
 // parseBoidSignalList builds the BoidRequest for `boid signal list [--claim]
 // [--source <pack>/<connector>] [--state pending|dead|acked|all]
-// [--limit N] [--json]` (docs/plans/signal-ingest-detailed-design.md §3.2,
-// PR-3). There is deliberately no --workspace-id flag here — workspace
-// scoping is broker-injected from the job token, never caller-supplied (see
-// BoidRequest.Service's doc comment in protocol.go). --json is accepted for
-// symmetry with the host CLI's `-o json` (§3.1) but is currently a no-op:
-// every sandbox-side list op (card list, action list) already replies with
-// JSON unconditionally.
+// [--limit N] [--json]`. There is deliberately no --workspace-id flag —
+// workspace scoping is broker-injected from the job token. --json is a
+// no-op: every sandbox-side list op already replies with JSON.
 func parseBoidSignalList(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpSignalList}
 
@@ -918,10 +846,7 @@ func parseBoidSignalList(args []string) (*BoidRequest, error) {
 }
 
 // parseBoidSignalClaim builds the BoidRequest for `boid signal claim
-// <id>...` — "these are the rows I am handing to a judgment" (see
-// BoidOpSignalClaim's doc comment in protocol.go). Positional ids only, the
-// same shape as `signal ack`: what to charge is never a flag, because the
-// whole point of the op is that the caller names the rows itself.
+// <id>...`. Positional ids only, same shape as `signal ack`.
 func parseBoidSignalClaim(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpSignalClaim}
 
@@ -938,10 +863,9 @@ func parseBoidSignalClaim(args []string) (*BoidRequest, error) {
 	return req, nil
 }
 
-// parseBoidSignalAck builds the BoidRequest for `boid signal ack <id>...`
-// (design doc §3.2). Takes one or more positional ids; AckSignals is
-// idempotent per id (Q14), so repeating an id already acked in a prior call
-// is a no-op success, not an error.
+// parseBoidSignalAck builds the BoidRequest for `boid signal ack <id>...`.
+// Takes one or more positional ids; AckSignals is idempotent per id, so
+// repeating an already-acked id is a no-op success, not an error.
 func parseBoidSignalAck(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpSignalAck}
 
@@ -959,9 +883,8 @@ func parseBoidSignalAck(args []string) (*BoidRequest, error) {
 }
 
 // signalConnectorEnv reads the connector's own identity from the
-// environment (design doc §3.2: "ingest/cursor の source/service は引数で
-// はなく env...から取る") — never a CLI flag, so a connector process cannot
-// address another source's inbox rows / cursor.
+// environment, never a CLI flag, so a connector process cannot address
+// another source's inbox rows / cursor.
 func signalConnectorEnv() (service, connector string, err error) {
 	service = os.Getenv("BOID_SIGNAL_SERVICE")
 	connector = os.Getenv("BOID_SIGNAL_CONNECTOR")
@@ -971,14 +894,11 @@ func signalConnectorEnv() (service, connector string, err error) {
 	return service, connector, nil
 }
 
-// parseBoidSignalIngest builds the BoidRequest for `boid signal ingest`
-// (design doc §3.2, §5.3): connector-only, takes no arguments, and reads its
-// JSONL body from stdin. The shim caps the read at PayloadPatchMaxBytes
-// (design doc: "既存 PayloadPatchMaxBytes と同値") and errors on overflow
-// rather than silently truncating — the broker independently re-checks the
-// same cap (defense in depth, matching BoidOpTaskUpdatePayloadPatch's
-// PayloadPatch precedent). Parsing/validating each JSONL line happens
-// server-side in the executor, not here.
+// parseBoidSignalIngest builds the BoidRequest for `boid signal ingest`:
+// connector-only, takes no arguments, and reads its JSONL body from stdin,
+// capped at PayloadPatchMaxBytes (errors on overflow rather than silently
+// truncating). Parsing/validating each JSONL line happens server-side in
+// the executor, not here.
 func parseBoidSignalIngest(args []string) (*BoidRequest, error) {
 	if len(args) != 0 {
 		return nil, fmt.Errorf("boid shim: boid signal ingest takes no arguments (unexpected %q)", args[0])
@@ -1004,9 +924,9 @@ func parseBoidSignalIngest(args []string) (*BoidRequest, error) {
 	}, nil
 }
 
-// parseBoidSignalCursor builds the BoidRequest for `boid signal cursor`
-// (design doc §3.2, §5.3): connector-only, takes no arguments, returns the
-// caller's own (service, connector)'s stored cursor.
+// parseBoidSignalCursor builds the BoidRequest for `boid signal cursor`:
+// connector-only, takes no arguments, returns the caller's own
+// (service, connector)'s stored cursor.
 func parseBoidSignalCursor(args []string) (*BoidRequest, error) {
 	if len(args) != 0 {
 		return nil, fmt.Errorf("boid shim: boid signal cursor takes no arguments (unexpected %q)", args[0])
@@ -1023,10 +943,9 @@ func parseBoidSignalCursor(args []string) (*BoidRequest, error) {
 }
 
 // parseBoidTaskIdentityLink builds the BoidRequest for
-// `boid task identity link <identity> <task-id> [--project-id P]`
-// (docs/plans/ingestion-identity.md PR-1, B-1). project_id is optional — the
-// broker defaults it from the token's own context when omitted, exactly
-// like `boid task create`.
+// `boid task identity link <identity> <task-id> [--project-id P]`.
+// project_id is optional — the broker defaults it from the token's own
+// context when omitted, exactly like `boid task create`.
 func parseBoidTaskIdentityLink(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpTaskIdentityLink}
 	var positional []string
@@ -1095,8 +1014,7 @@ func parseBoidTaskIdentityUnlink(args []string) (*BoidRequest, error) {
 // parseBoidTaskIdentityResolve builds the BoidRequest for
 // `boid task identity resolve <identity> [--project-id P]`. A miss is
 // represented by the executor as a distinct exit code
-// (sandbox.IdentityNotFoundExitCode), not a shim-level error — see
-// BoidOpTaskIdentityResolve's own doc comment in protocol.go.
+// (sandbox.IdentityNotFoundExitCode), not a shim-level error.
 func parseBoidTaskIdentityResolve(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpTaskIdentityResolve}
 	var positional []string
@@ -1130,11 +1048,7 @@ func parseBoidTaskIdentityResolve(args []string) (*BoidRequest, error) {
 
 // parseBoidTaskResolveOrCapture builds the BoidRequest for
 // `boid task resolve-or-capture <identity> [--title T]
-// [--description D | --description-file F] [--project-id P]`
-// (docs/plans/ingestion-identity.md PR-2, B-2). --description-file supports
-// "-" for stdin (readFlagContent, same convention as `boid task update
-// --patch-file`) since description can carry a full Jira issue body / Slack
-// thread transcript — too large to pass comfortably as a single argv value.
+// [--description D | --description-file F] [--project-id P]`.
 // Title/description are only used by the executor when Identity is
 // unresolved; a caller that only wants to check for an existing binding can
 // omit both.
@@ -1322,10 +1236,8 @@ func parseBoidTaskAnswer(args []string) (*BoidRequest, error) {
 
 // parseBoidTaskAsk builds the BoidRequest for `boid task ask <question>`.
 // The question is the positional argument(s); flags are rejected. TaskID is
-// intentionally left empty — the broker fills it from the token's current
-// task, so the agent does not have to pass its own id (matching the skill's
-// `ANSWER=$(boid task ask "<question>")` form). The broker holds the
-// connection open until the user/supervisor answers (no timeout, decision C1).
+// left empty — the broker fills it from the token's current task. The
+// broker holds the connection open until the user/supervisor answers.
 func parseBoidTaskAsk(args []string) (*BoidRequest, error) {
 	parts := make([]string, 0, len(args))
 	for _, a := range args {
@@ -1389,11 +1301,8 @@ func parseBoidActionSend(args []string) (*BoidRequest, error) {
 
 // parseBoidActionList builds the BoidRequest for `boid action list
 // [--project-id P] [--workspace-id W] [--task T] [--since CURSOR]
-// [--limit N]` (docs/plans/ingestion-identity.md PR-3, B-3). All flags are
-// optional: with none given, the result is scoped to the caller's own
-// workspace (broker default, see broker.go's BoidOpActionList case) and
-// starts from the beginning (Since == "" — "from the beginning" per
-// orchestrator.DecodeActionCursor's own contract).
+// [--limit N]`. All flags are optional: with none given, the result is
+// scoped to the caller's own workspace and starts from the beginning.
 func parseBoidActionList(args []string) (*BoidRequest, error) {
 	req := &BoidRequest{Op: BoidOpActionList}
 

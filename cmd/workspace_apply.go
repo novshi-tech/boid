@@ -83,8 +83,7 @@ func runWorkspaceApply(cmd *cobra.Command, args []string) error {
 	// *WorkspaceEnvelopeApply values above) so POST /api/workspaces/apply
 	// sees exactly the field presence the source file had — see
 	// SplitWorkspaceEnvelopeDocuments's doc comment for why re-marshaling
-	// the decoded struct would lose that distinction now that
-	// WorkspaceEnvelopeSpec's fields no longer carry `omitempty` (Blocker 1).
+	// the decoded struct would lose that distinction.
 	rawDocs, err := orchestrator.SplitWorkspaceEnvelopeDocuments(data)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", workspaceApplyFile, err)
@@ -113,10 +112,9 @@ func runWorkspaceApply(cmd *cobra.Command, args []string) error {
 // applyOneWorkspaceDocument POSTs raw (one document's original bytes) to
 // POST /api/workspaces/apply?dry_run=<dryRun> — the daemon parses it,
 // upserts the workspace metadata, and (if spec.projects is present)
-// reconciles project assignments, all inside one transaction (docs/plans/
-// volume-only-daemon.md PR-1d codex round-1 Blocker 2). Prints the same
+// reconciles project assignments, all inside one transaction. Prints the
 // dry-run diff / created-or-updated / project attach-detach / missing-
-// project warning output the pre-atomic client-side implementation did.
+// project warning output.
 func applyOneWorkspaceDocument(c *client.Client, out, stderr io.Writer, slug string, raw []byte, projects []orchestrator.WorkspaceEnvelopeProject, dryRun bool) error {
 	path := "/api/workspaces/apply"
 	if dryRun {
@@ -155,25 +153,16 @@ func applyOneWorkspaceDocument(c *client.Client, out, stderr io.Writer, slug str
 }
 
 // printWorkspaceApplyMissingProjects reports the spec.projects[] entries that
-// did not resolve to a registered project.
-//
-// Through 2026-08-07 this only described what to do in prose ("Register it
-// separately ... then re-apply"), which the onboarding dogfood found to be
-// the expensive half of a restore: the document being applied ALREADY carries
-// each project's git URL, so every one of those registrations was a command
-// the reader had to reconstruct by hand — thirteen times, in that run. The
-// URL is right here, so hand back the exact line to run instead.
-//
-// A project whose entry carries no url gets prose still, deliberately: a
-// command line with a `<git-url>` placeholder in it looks pasteable and is
-// not, and `boid project add` would fail on it. Saying that the document has
-// no url is both true and the actual next step (find the URL).
+// did not resolve to a registered project. When the document carries that
+// project's git URL, the exact `boid project add` line to run is printed
+// (rather than just prose), since the reader would otherwise have to
+// reconstruct it by hand; an entry with no url gets prose only, since a
+// command line with a `<git-url>` placeholder looks pasteable but is not.
 //
 // missing is authoritative for WHICH projects are unresolved — it comes from
-// the daemon's own name resolution (ProjectAppService.resolveWorkspaceApply
-// ProjectNames) — while projects is only the lookup table for their URLs, so
-// an entry missing from the table degrades to the no-url wording rather than
-// being dropped from the report.
+// the daemon's own name resolution — while projects is only the lookup
+// table for their URLs, so an entry missing from the table degrades to the
+// no-url wording rather than being dropped from the report.
 func printWorkspaceApplyMissingProjects(stderr io.Writer, slug string, missing []string, projects []orchestrator.WorkspaceEnvelopeProject) {
 	urlByName := make(map[string]string, len(projects))
 	for _, p := range projects {
@@ -217,9 +206,8 @@ func printWorkspaceApplyProjectChanges(out io.Writer, dryRun bool, slug string, 
 	}
 }
 
-// printWorkspaceApplyInitScriptChange reports what the apply did (or would do)
-// to the workspace's init.sh — PR9 of
-// docs/plans/workspace-home-volume-persistence.md, 論点 d.
+// printWorkspaceApplyInitScriptChange reports what the apply did (or would
+// do) to the workspace's init.sh.
 //
 // Printed as its own line rather than folded into printWorkspaceApplyDiff's
 // field list, because it is not a WorkspaceMeta field and did not land in the
@@ -257,8 +245,7 @@ func printWorkspaceApplyInitScriptChange(out io.Writer, dryRun bool, slug string
 // structured YAML data (lists/maps/scalars), not free text, so a field-level
 // before/after is both simpler to implement correctly and, arguably, more
 // legible than diffing two marshaled yaml blobs would be. Colored (red '-'/
-// green '+') when out is a TTY, plain otherwise (docs/plans/
-// volume-only-daemon.md PR-1d unilateral decision — flagged in the PR body).
+// green '+') when out is a TTY, plain otherwise.
 func printWorkspaceApplyDiff(out io.Writer, slug string, exists bool, current, proposed *orchestrator.WorkspaceMeta) {
 	color := diffColorEnabled(out)
 	if exists {
@@ -303,11 +290,9 @@ func colorizeDiffLine(enabled bool, code, s string) string {
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
 
-// diffColorEnabled reports whether out is a terminal (docs/plans/
-// volume-only-daemon.md PR-1d unilateral decision: "colored unified diff,
-// printed to stdout. If terminal not a TTY, plain text"). Only *os.File
-// values can be a terminal; anything else (a *bytes.Buffer in tests, a pipe)
-// is never colored.
+// diffColorEnabled reports whether out is a terminal. Only *os.File values
+// can be a terminal; anything else (a *bytes.Buffer in tests, a pipe) is
+// never colored.
 func diffColorEnabled(out io.Writer) bool {
 	f, ok := out.(*os.File)
 	if !ok {

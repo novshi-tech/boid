@@ -43,12 +43,11 @@ type DispatchPlanner struct {
 // HarnessAdapter builds its own argv from CLI conventions, so an empty Argv
 // flows through fine. Non-agent hooks (shell-bound) require a resolved
 // Command. The Evaluator may synthesize a command-less agent hook when the
-// behavior declares none of its own (Phase 3-e kit-retirement fallback); the
-// relaxed validation here is what makes those virtual hooks dispatch-ready.
+// behavior declares none of its own; the relaxed validation here is what
+// makes those virtual hooks dispatch-ready.
 //
-// Command is an inline shell command (docs/plans/script-hook-removal.md):
-// see validateHookCommandFields for the exclusivity rules between Command /
-// Agent / Kind.
+// Command is an inline shell command: see validateHookCommandFields for the
+// exclusivity rules between Command / Agent / Kind.
 func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc, error) {
 	if event == nil {
 		return nil, nil, fmt.Errorf("hook event is required")
@@ -75,9 +74,9 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	// and agent), take the first after filtering.
 	instruction := selectInstruction(task, event.Hook.Agent)
 
-	// Phase 3-d: every hook flows through a HarnessAdapter. The mapping
-	// resolves recognised agents (claude-code / codex / opencode) to their
-	// dedicated adapter; everything else — including hooks with no `agent:`
+	// Every hook flows through a HarnessAdapter. The mapping resolves
+	// recognised agents (claude-code / codex / opencode) to their dedicated
+	// adapter; everything else — including hooks with no `agent:`
 	// declaration and instruction-less hooks — falls through to the shell
 	// adapter, which forwards the hook script's argv straight to exec.
 	harnessType := harnessTypeForAgent(event.Hook.Agent)
@@ -85,8 +84,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	var argv []string
 	switch {
 	case event.Hook.Command != "":
-		// script-hook-removal (docs/plans/script-hook-removal.md): inline
-		// command hook, run via the shell adapter.
+		// Inline command hook, run via the shell adapter.
 		argv = []string{"sh", "-c", event.Hook.Command}
 	case event.Hook.Kind == HandlerKindAgent:
 		// argv stays nil; the HarnessAdapter builds its own from CLI
@@ -122,9 +120,8 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 			AdditionalBindings: behavior.AdditionalBindings,
 			Writable:           !IsReadonly(task),
 			DockerEnabled:      meta.Capabilities.Docker != nil,
-			// docs/plans/git-gateway-cutover.md PR6 cutover: dispatcher no
-			// longer resolves a host-repo worktree, it clones inside the
-			// sandbox and resolves the declared branch there.
+			// dispatcher clones inside the sandbox and resolves the
+			// declared branch there, rather than a host-repo worktree.
 			Clone: BuildCloneDeclaration(task, meta.ForkPoint),
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
@@ -139,8 +136,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		// All hook jobs allocate a PTY: agent hooks (HarnessType="claude")
 		// need it so the harness' TUI behaves correctly, and pure shell hooks
 		// rely on it for live stdout streaming to the Web UI's WebSocket
-		// attach endpoint (see e2e/scenarios/hook-attach-smoke). Phase 3-c
-		// can revisit per-harness PTY hints if a non-PTY harness lands.
+		// attach endpoint.
 		Interactive: true,
 	}
 	return spec, nil, nil
@@ -172,18 +168,8 @@ func validateHookCommandFields(h *Hook) error {
 // taskBusinessEnv returns env vars derived from business-level task fields
 // that hook scripts may need at runtime. Surfaces the task's base branch
 // and, when the task has an awaiting trait, the user answer and question ID.
-//
-// Note: session-id resume has been removed (task-ask-rpc / reopen session id
-// removal). Every dispatch is a fresh agent process; harness-specific session
-// resume env vars are no longer surfaced.
-//
-// BOID_PARENT_BRANCH was removed in
-// docs/plans/branch-policy-simplification.md Phase 1: the per-task
-// "boid/<id8>" branch it exposed no longer exists, and grep across
-// production project.yaml / e2e scripts found zero real use of the env var
-// (nose 2026-07-15 decision) — so rather than redefine it to parent.BaseBranch
-// (a weaker, largely redundant signal now that clone-mode child tasks share
-// no branch machinery with their parent), it is dropped entirely.
+// Every dispatch is a fresh agent process; no harness-specific session
+// resume env vars are surfaced.
 func taskBusinessEnv(task *Task) map[string]string {
 	if task == nil || task.Exec == nil {
 		return nil
@@ -237,10 +223,10 @@ func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *
 
 // harnessTypeForAgent maps a hook's agent declaration (project.yaml
 // `hooks: agent: ...`) to the HarnessType the runner should hand it off to.
-// Phase 3-d makes the resolver total: anything that does not match a known
-// agent (including an empty string when no `agent:` is set) resolves to
-// "shell" so the hook still runs under the adapter pipeline. The mapping
-// must stay in sync with the runner-inner-child adapter switch in
+// The resolver is total: anything that does not match a known agent
+// (including an empty string when no `agent:` is set) resolves to "shell"
+// so the hook still runs under the adapter pipeline. The mapping must stay
+// in sync with the runner-inner-child adapter switch in
 // internal/sandbox/runner/runner_linux.go.
 func harnessTypeForAgent(agent string) string {
 	switch agent {
@@ -272,18 +258,15 @@ func selectInstruction(task *Task, agent string) *RoutedInstruction {
 }
 
 // SnapshotTask projects a Task down to the business-metadata subset
-// TaskSnapshot carries (see its doc comment) — through the Phase 5b PR6
-// cutover, also historically materialized at the now-deleted
-// $HOME/.boid/context/task.yaml. Exported so internal/api's Phase 5b PR1
-// `boid task current` RPC (docs/plans/phase5-shim-and-task-context.md)
-// reuses the exact same projection instead of re-deriving it.
+// TaskSnapshot carries (see its doc comment). Exported so internal/api's
+// `boid task current` RPC reuses the exact same projection instead of
+// re-deriving it.
 //
 // Readonly is populated from task.Exec.Readonly directly, the same field
 // IsReadonly reads — there is no second source of truth to drift against.
-// Behavior/Readonly are execution-only (design doc §3.2); SnapshotTask is
-// only ever called from PlanHook, which already requires task.Exec != nil
-// (see its own guard above), so this reads task.Exec unconditionally rather
-// than degrading to zero values a card could never legitimately produce.
+// SnapshotTask is only ever called from PlanHook, which already requires
+// task.Exec != nil, so this reads task.Exec unconditionally rather than
+// degrading to zero values a card could never legitimately produce.
 func SnapshotTask(task *Task) *TaskSnapshot {
 	if task == nil || task.Exec == nil {
 		return nil

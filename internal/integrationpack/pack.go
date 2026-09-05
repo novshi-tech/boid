@@ -14,13 +14,11 @@ type Pack struct {
 	Name string
 	// Version is the manifest's own metadata.version — LoadPacks has
 	// already checked this equals the <version> directory segment it was
-	// found under (docs/plans/signal-ingest-detailed-design.md §6.2's
-	// explicit v0 restriction).
+	// found under (an explicit v0 restriction).
 	Version string
 	// Dir is the absolute directory containing this Pack version's
-	// integration.yaml — the bind-mount source PR-5's derived trigger uses
-	// (docs/plans/signal-ingest-detailed-design.md §7.1 "mount 位置": Pack
-	// 一式を /run/boid/integrations/<pack> へ read-only bind).
+	// integration.yaml — the bind-mount source a derived trigger uses to
+	// mount the Pack read-only into a job sandbox.
 	Dir string
 	// Manifest is this Pack's fully parsed, structurally-validated
 	// integration.yaml content.
@@ -43,27 +41,24 @@ func (p *Pack) ServiceProfile(name string) (*ServiceProfile, bool) {
 // LoadPacks enumerates <dir>/<pack-name>/<version>/integration.yaml,
 // strict-decoding and validating each manifest found (ParseManifest), and
 // additionally checking that the manifest's own metadata.name/
-// metadata.version agree with the directory it was installed under
-// (docs/plans/signal-ingest-detailed-design.md §6.2: "<ver> ディレクトリ名
-// が manifest の version と一致しない Pack は v0 では起動エラー" — the same
-// "don't silently trust whichever is right" posture extends to name).
+// metadata.version agree with the directory it was installed under — a
+// mismatch in either direction is a v0 startup error, never silently
+// trusted.
 //
 // dir not existing at all is NOT an error — it returns (nil, nil), the
 // same as an empty dir: the default integrations.dir
 // (/opt/boid/integrations) will not exist on a deployment with no Packs
-// installed yet, and that is not a misconfiguration (docs/plans/
-// signal-ingest-detailed-design.md §6.1). Every OTHER failure — a version
-// directory with no integration.yaml at all, a manifest that fails
-// ParseManifest, a name/version mismatch against the installation
-// directory — IS a hard error naming the offending path: PR-4's "検証失敗
-// は起動エラー" posture (§6.2 item 3), matching how config.yaml's own
-// services: entries fail config.Load() loudly rather than being skipped.
+// installed yet, and that is not a misconfiguration. Every OTHER failure —
+// a version directory with no integration.yaml at all, a manifest that
+// fails ParseManifest, a name/version mismatch against the installation
+// directory — IS a hard error naming the offending path, matching how
+// config.yaml's own services: entries fail config.Load() loudly rather
+// than being skipped.
 //
 // dir's own immediate children that are not directories (e.g. a stray
 // README.md) are skipped; the expected layout is a curated directory
-// containing ONLY Pack subdirectories (docs/plans/signal-driven-review.md
-// §6.4's `/opt/boid/integrations/<pack>/<version>/` tree), not an arbitrary
-// repo checkout root.
+// containing ONLY Pack subdirectories (`/opt/boid/integrations/<pack>/
+// <version>/`), not an arbitrary repo checkout root.
 func LoadPacks(dir string) ([]*Pack, error) {
 	packEntries, err := os.ReadDir(dir)
 	if err != nil {
@@ -79,12 +74,12 @@ func LoadPacks(dir string) ([]*Pack, error) {
 			continue
 		}
 		packName := pe.Name()
-		// "boid" is reserved (docs/plans/boid-internal-signal-inbox.md §4.6):
-		// boid's own internal-action signals ingest under source.pack="boid"
-		// (signal_ingest_bridge.go's InternalSignalPack, internal/orchestrator),
-		// so no REAL installed Pack may ever claim that name — a collision
-		// would let an external Pack's rows masquerade as (or shadow)
-		// internal signals under the same signals table PRIMARY KEY.
+		// "boid" is reserved: boid's own internal-action signals ingest
+		// under source.pack="boid" (signal_ingest_bridge.go's
+		// InternalSignalPack, internal/orchestrator), so no REAL installed
+		// Pack may ever claim that name — a collision would let an
+		// external Pack's rows masquerade as (or shadow) internal signals
+		// under the same signals table PRIMARY KEY.
 		if packName == "boid" {
 			return nil, fmt.Errorf("integrationpack: %s: pack name %q is reserved for boid's own internal-signal source and cannot be used by an installed Pack", filepath.Join(dir, packName), packName)
 		}

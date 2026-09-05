@@ -15,7 +15,7 @@ import (
 // these as derived traits (rather than firing an immediate state transition
 // inside NotifyTask), the runtime is allowed to exit cleanly via SIGUSR1 →
 // bash EXIT trap → `boid job done` before the dispatch loop advances the
-// state. See docs/plans/lifecycle-accountability.md (Phase 2.c follow-up).
+// state.
 type Lifecycle struct {
 	Executed bool         `json:"executed"`
 	Done     *DoneReport  `json:"done,omitempty"`
@@ -134,19 +134,9 @@ func failReportFromPayload(payload json.RawMessage) *FailReport {
 
 // IsInstructionsEditable reports whether a task's instructions can be edited,
 // given its type and current status. Instructions are an execution-only
-// concept (ExecAttrs.Instructions — a Card has no instructions field at all,
-// design doc §3.2's field attribution table), so this is only ever true for
-// an execution task sitting in "pending" (avoiding races with in-flight
-// handlers / post-execution mutations).
-//
-// Before card-model-cleanup PR-2 this delegated to
-// IsPreDispatchEditableStatus, which — once card machine v2 folded
-// captured/triaged into parked — also returned true for a parked card; that
-// was already dead-end behavior (task_service.go's caller had nowhere
-// meaningful to write a parked card's "instructions" even then), not an
-// intentional editing surface. The ExecAttrs split now makes writing
-// instructions onto a card structurally impossible, so this predicate is
-// narrowed to match.
+// concept (ExecAttrs.Instructions — a Card has no instructions field at all),
+// so this is only ever true for an execution task sitting in "pending"
+// (avoiding races with in-flight handlers / post-execution mutations).
 func IsInstructionsEditable(taskType TaskType, status TaskStatus) bool {
 	return taskType == TaskTypeExecution && status == TaskStatusPending
 }

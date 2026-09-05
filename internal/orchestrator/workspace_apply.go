@@ -8,8 +8,7 @@ import (
 )
 
 // WorkspaceApplyResult reports what ApplyWorkspaceEnvelope did (or, for
-// dryRun=true, would do) for one workspace envelope document
-// (docs/plans/volume-only-daemon.md PR-1d codex round-1 Blocker 2).
+// dryRun=true, would do) for one workspace envelope document.
 type WorkspaceApplyResult struct {
 	Slug string `json:"slug"`
 	// Created is true when slug had no workspaces row before this call.
@@ -32,9 +31,9 @@ type WorkspaceApplyResult struct {
 	// AlreadyAttachedProjects were already assigned to Slug and left alone;
 	// DetachedProjects were previously assigned to Slug but absent from the
 	// applied document's spec.projects[] list, so they were reassigned to
-	// DefaultWorkspaceSlug (Blocker 1's second half: FieldsPresent["projects"]
-	// must be honored as "replace the whole assignment set", not just
-	// "attach anything additionally listed").
+	// DefaultWorkspaceSlug: FieldsPresent["projects"] is honored as "replace
+	// the whole assignment set", not just "attach anything additionally
+	// listed".
 	AttachedProjects        []string `json:"attached_projects,omitempty"`
 	AlreadyAttachedProjects []string `json:"already_attached_projects,omitempty"`
 	DetachedProjects        []string `json:"detached_projects,omitempty"`
@@ -48,8 +47,7 @@ type WorkspaceApplyResult struct {
 
 	// InitScriptAction reports what this apply did — or, for a dry run, would
 	// do — to the workspace's init.sh: "written", "cleared", "unchanged", or
-	// empty when the document carried no spec.init_script key at all (PR9 of
-	// docs/plans/workspace-home-volume-persistence.md, 論点 d).
+	// empty when the document carried no spec.init_script key at all.
 	//
 	// Also filled in by the caller, and for a stronger reason than
 	// MissingProjects: init.sh is a FILE on the daemon, not a row this
@@ -63,22 +61,18 @@ type WorkspaceApplyResult struct {
 	// internal/api/workspace.go) — non-fatal notices about the applied
 	// document that a direct HTTP caller (not going through `boid workspace
 	// apply`, which already warns client-side) would otherwise never see,
-	// e.g. a retired spec.additional_bindings key that was silently dropped
-	// (PR-1d codex round-2 Minor). Left empty by ApplyWorkspaceEnvelope
-	// itself.
+	// e.g. a retired spec.additional_bindings key that was silently dropped.
+	// Left empty by ApplyWorkspaceEnvelope itself.
 	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ApplyWorkspaceEnvelope upserts apply's workspace metadata and (when
 // apply.FieldsPresent["projects"] is true) reconciles its project
-// attach/detach bookkeeping, all in a SINGLE database transaction
-// (docs/plans/volume-only-daemon.md PR-1d codex round-1 Blocker 2): either
+// attach/detach bookkeeping, all in a SINGLE database transaction: either
 // every change this call makes commits, or none of them do. This replaces
-// the previous client-side "GET current, merge, PUT metadata, then
-// separately attach each project one HTTP call at a time" dance
-// (cmd/workspace_apply.go's old applyOneWorkspace/applyWorkspaceProjects),
-// which had no way to roll back the metadata write if a later project
-// assignment failed.
+// a previous client-side "GET current, merge, PUT metadata, then separately
+// attach each project one HTTP call at a time" dance, which had no way to
+// roll back the metadata write if a later project assignment failed.
 //
 // projectIDsByName maps each spec.projects[].name entry that DID resolve
 // to a registered project (via ProjectAppService.ResolveProjectRef) to that
@@ -95,9 +89,9 @@ type WorkspaceApplyResult struct {
 // dryRun runs every read and write statement below — including the
 // workspace upsert and the project_workspaces mutations — against a real
 // transaction, then rolls back instead of committing. This means a dry run
-// exercises the exact same validation/constraint path a real apply would
-// (Major 1, codex round-1: a dry-run that stopped short of touching the DB
-// could report success on a document a real apply would go on to reject).
+// exercises the exact same validation/constraint path a real apply would,
+// rather than stopping short of touching the DB and reporting success on a
+// document a real apply would go on to reject.
 func ApplyWorkspaceEnvelope(conn *sql.DB, apply *WorkspaceEnvelopeApply, projectIDsByName map[string]string, dryRun bool) (*WorkspaceApplyResult, error) {
 	slug := apply.Envelope.Metadata.Name
 	if err := ValidWorkspaceSlug(slug); err != nil {
@@ -153,12 +147,11 @@ func ApplyWorkspaceEnvelope(conn *sql.DB, apply *WorkspaceEnvelopeApply, project
 	}
 
 	if dryRun {
-		// PR-1d codex round-2 Minor: newRevision above was read from a row
-		// this same transaction is about to roll back — it was never
-		// actually committed, so reporting it would hand the caller an
-		// ETag for a revision that does not exist in the DB. Leave
-		// Revision at its zero value, honoring the field's own "empty for
-		// dry run" doc comment.
+		// newRevision above was read from a row this same transaction is
+		// about to roll back — it was never actually committed, so
+		// reporting it would hand the caller an ETag for a revision that
+		// does not exist in the DB. Leave Revision at its zero value,
+		// honoring the field's own "empty for dry run" doc comment.
 		return result, nil
 	}
 	result.Revision = newRevision
@@ -172,10 +165,9 @@ func ApplyWorkspaceEnvelope(conn *sql.DB, apply *WorkspaceEnvelopeApply, project
 // applyWorkspaceProjectAssignments reconciles project_workspaces membership
 // for slug against targetIDsByName's values: every target ID is attached
 // (or left alone if already attached), and every project currently
-// attached to slug but absent from the target set is detached —
-// reassigned to DefaultWorkspaceSlug, mirroring
-// WorkspaceRepository.Remove's own reassign-to-default precedent for "this
-// project no longer belongs to a workspace that governs it."
+// attached to slug but absent from the target set is detached — reassigned
+// to DefaultWorkspaceSlug, mirroring WorkspaceRepository.Remove's own
+// reassign-to-default precedent.
 func applyWorkspaceProjectAssignments(tx *sql.Tx, slug string, targetIDsByName map[string]string) (attached, already, detached []string, err error) {
 	current, err := currentWorkspaceProjectIDs(tx, slug)
 	if err != nil {

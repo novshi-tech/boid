@@ -6,26 +6,27 @@ import (
 	"sync"
 )
 
-// workspaceHomeInFlight serializes a workspace HOME volume's DESTRUCTIVE
-// replacement (Runner.ImportWorkspaceHome) against the two things that must not
-// overlap it — the dispatches about to mount that volume (Runner.Dispatch) and
-// the removal of the workspace itself (api.WorkspaceHandler.Remove) — across the
-// intervals neither the flock nor the engine covers.
+// workspaceHomeInFlight serializes a workspace HOME volume's destructive
+// replacement (Runner.ImportWorkspaceHome) against the two things that must
+// not overlap it — the dispatches about to mount that volume
+// (Runner.Dispatch) and the removal of the workspace itself
+// (api.WorkspaceHandler.Remove) — across the intervals neither the flock nor
+// the engine covers. See docs/plans/workspace-home-volume-persistence.md for
+// the full race analysis this closes.
 //
-// Three participants, three behaviours, none of them arbitrary: a DISPATCH that
-// meets a migration WAITS, a MIGRATION that meets either of the others is
-// REFUSED, and a REMOVAL is refused by a migration and ignores dispatches
-// entirely. Each asymmetry is argued at the function that implements it.
+// Three participants, three behaviours: a dispatch that meets a migration
+// WAITS, a migration that meets either of the others is REFUSED, and a
+// removal is refused by a migration but ignores dispatches entirely. Each
+// asymmetry is argued at the function that implements it.
 //
-// # The dispatch window (codex review of PR8 round 1, Blocker 2)
+// # The dispatch window
 //
-// resolveWorkspaceHome takes the per-workspace flock only on its SLOW path. A
-// settled workspace — matching completion marker, matching volume identity —
-// returns from the fast path holding nothing, and its dispatch then spends a
-// while building a sandbox spec, staging a clone and assembling mounts before
-// containerBackend.Launch finally asks the engine for a container. Across that
-// whole span the workspace home is unprotected, and the migration takes exactly
-// three steps to turn that into two writers:
+// resolveWorkspaceHome only takes the per-workspace flock on its slow path;
+// a settled workspace returns from the fast path holding nothing, and its
+// dispatch then spends real time building a sandbox spec before
+// containerBackend.Launch finally mounts the volume by name. Across that
+// span a migration can remove and re-create the volume under a dispatch
+// that already resolved the old one:
 //
 //	dispatch: resolve volume A, observe identity A          ...
 //	migration:                          remove A, create B, extract into B
@@ -33,35 +34,28 @@ import (
 //	                                                  -> B, ContainerCreate(B)
 //	both:                                             the agent and tar in B
 //
-// PR6's verifyWorkspaceHomeIdentity was offered as the answer and is not one.
-// It compares the identity the dispatch's OWN VolumeCreate answered with
-// against the one resolved earlier, which does catch a replacement that lands
-// before that call — but the comparison is not atomic with ContainerCreate, and
-// a replacement landing between them is mounted by name with nothing left to
-// compare. containerBackend.ensureNamedVolumes' own doc comment says as much
-// ("the window it narrows without closing"); what was wrong was the plan doc's
-// conclusion that the job side would therefore always fail loudly.
+// verifyWorkspaceHomeIdentity narrows this window (it compares the identity
+// the dispatch's own VolumeCreate answered against the one resolved
+// earlier) but is not atomic with ContainerCreate, so a replacement landing
+// between them is mounted by name with nothing left to compare.
 //
 // # Why an in-memory registry rather than a longer-lived flock
 //
-// Both parties are goroutines in ONE process. A boid installation runs one
-// daemon, and the migration exists only as a route on that daemon's HTTP
-// server, so there is no second process for a file lock to talk to that the
-// engine's own 409 does not already handle. Extending the flock instead —
-// making the fast path take it, and holding it from resolve until Launch
-// returns — would stretch a file lock across the entire project-registry-
-// guarded dispatch section, where it would interleave with Runner.
-// WithProjectLock (api.ProjectAppService.projectMu) and with the git gateway's
-// own staging in an order nobody could establish by reading either side. A
-// mutex-guarded map with an explicit begin/release is the smaller thing that
-// actually holds.
+// Both parties are goroutines in one process — a boid installation runs one
+// daemon, and the migration exists only as a route on it — so there is no
+// second process for a file lock to talk to that the engine's own 409 does
+// not already handle. Extending the flock across the whole dispatch instead
+// would interleave it with Runner.WithProjectLock and the git gateway's own
+// staging in an order nobody could establish by reading either side; a
+// mutex-guarded map with an explicit begin/release is the smaller thing
+// that actually holds.
 //
-// # The third participant: `boid workspace remove` (codex round 2, Major 1)
+// # The third participant: `boid workspace remove`
 //
-// A removal deletes the workspace ROW and then the home VOLUME
-// (api.WorkspaceHandler.Remove). Left outside the registry it produced the one
-// state the API layer's own comment says cannot happen — a HOME volume with no
-// workspace row — with no crash and no engine failure involved:
+// A removal deletes the workspace row and then the home volume
+// (api.WorkspaceHandler.Remove). Left outside the registry it can produce a
+// HOME volume with no workspace row, with no crash or engine failure
+// involved:
 //
 //	import:  GetWorkspace("myws") -> ok
 //	remove:                          delete the row, delete the volume
@@ -71,41 +65,29 @@ import (
 //	                                 extract the operator's credentials into it
 //	import:  200 OK
 //
-// What survives is a volume full of harness credentials that `boid workspace
-// remove` can no longer target (it 404s on the missing row), that `boid gc`
-// reports as an orphan, and that nothing will ever mount.
+// What survives is a volume full of harness credentials that `boid
+// workspace remove` can no longer target (404s on the missing row), that
+// `boid gc` reports as an orphan, and that nothing will ever mount.
 //
-// Removals therefore register here too, and a migration is refused while one is
-// in flight (and vice versa). That is HALF the fix. The other half cannot live
-// in a registry at all: a removal that starts and finishes before the migration
-// registers leaves nothing to observe, so the migration also CONFIRMS the row
-// while holding its registration — see Runner.ConfirmWorkspaceExists.
+// Removals therefore register here too: a migration is refused while one is
+// in flight, and vice versa. A removal that starts and finishes before the
+// migration registers leaves nothing to observe, so the migration also
+// confirms the row while holding its registration — see
+// Runner.ConfirmWorkspaceExists.
 //
 // # What this does NOT close
 //
-//   - Another PROCESS. The registry is per-daemon. A second daemon against the
-//     same engine could still migrate while this one dispatches. The flock
-//     covers those two on the slow path only, exactly as before; nothing here
-//     changes that, and two daemons sharing one installation is already
-//     unsupported.
-//   - The remaining delete-only paths: `boid reap --include-workspace-homes`,
-//     an operator's own `docker volume rm`. They are deliberately left out,
-//     because they only DELETE. A dispatch whose home is deleted under it gets
-//     a fresh volume from its own ensureNamedVolumes, carrying an identity that
-//     is not the resolved one, and fails loudly — the case
-//     verifyWorkspaceHomeIdentity genuinely does cover. The migration is
-//     singular in deleting, RE-CREATING under the same name, and then WRITING:
-//     that is what produces a volume which passes an identity check the
-//     dispatch never gets to make, and what this registry exists for.
-//     `boid workspace remove` was in this bullet until codex round 2, on that
-//     same argument. The argument was right about the DISPATCH side and blind
-//     to the migration side, where the removal is not the destroyer but the
-//     victim: it deletes a row the migration is about to build a volume for.
-//   - Deletion landing between ensureNamedVolumes and ContainerCreate, from any
-//     of those paths. The engine then implicitly creates an unlabelled volume
-//     for the mount and the job runs with an empty home. Unchanged by this PR
-//     and unchanged in kind: it is the residual window PR1's
-//     containment/PR6's identity check always described.
+//   - Another process: the registry is per-daemon, and two daemons sharing
+//     one installation is already unsupported.
+//   - The remaining delete-only paths (`boid reap --include-workspace-homes`,
+//     an operator's own `docker volume rm`): they only delete, so a
+//     dispatch whose home vanishes gets a fresh volume with an identity
+//     that is not the resolved one and fails loudly — the case
+//     verifyWorkspaceHomeIdentity already covers. The migration is unique
+//     in deleting, re-creating under the same name, and then writing.
+//   - Deletion landing between ensureNamedVolumes and ContainerCreate, from
+//     any of those paths: the engine implicitly creates an unlabelled
+//     volume and the job runs with an empty home. Unchanged by this file.
 //
 // The zero value is ready to use; a *Runner embeds one by value.
 type workspaceHomeInFlight struct {
@@ -133,28 +115,26 @@ type workspaceHomeInFlight struct {
 // beginDispatch registers a dispatch's interest in slug's home volume and
 // returns the function that releases it.
 //
-// A migration already in flight makes this WAIT rather than fail. The asymmetry
-// with beginMigration is deliberate and is the important design decision here:
+// A migration already in flight makes this WAIT rather than fail. The
+// asymmetry with beginMigration is deliberate:
 //
-//   - Refusing a MIGRATION costs an operator, who is at a terminal watching the
-//     command, one retry — and costs nothing else, because the refusal happens
-//     before the volume is touched (Runner.ImportWorkspaceHome's step 1 is both
-//     the destruction and the in-use check).
+//   - Refusing a MIGRATION costs an operator, at a terminal watching the
+//     command, one retry — and nothing else, because the refusal happens
+//     before the volume is touched.
 //   - Refusing a DISPATCH costs a failed job. Dispatches come out of hook
-//     evaluation, not from a person; a failure there is recorded on the task,
-//     is visible in the timeline, and may abort work that was going fine — all
-//     for a condition that clears itself in seconds.
+//     evaluation, not from a person, for a condition that clears itself in
+//     seconds.
 //
-// The wait is also not new behaviour so much as an extension of the existing
-// one: a dispatch whose marker does NOT match already blocks on this
-// workspace's flock for however long a concurrent init or migration takes.
-// This gives the fast path the same property, which it lacked only because it
-// takes no lock at all.
+// This extends existing behavior rather than adding new: a dispatch whose
+// marker does NOT match already blocks on this workspace's flock for
+// however long a concurrent init or migration takes. This just gives the
+// fast path the same property, which it lacked only because it takes no
+// lock at all.
 //
-// It is bounded by ctx and by nothing else. A bound of its own would have to
-// end in a refusal, which is the outcome this design just rejected; and the
-// thing being waited for is bounded already, since a migration lives inside one
-// HTTP request whose context dies with its connection.
+// Bounded by ctx and nothing else: a bound of its own would have to end in
+// a refusal, the outcome this design rejected, and the thing being waited
+// for is already bounded (a migration lives inside one HTTP request whose
+// context dies with its connection).
 func (w *workspaceHomeInFlight) beginDispatch(ctx context.Context, slug string) (release func(), err error) {
 	for {
 		w.mu.Lock()

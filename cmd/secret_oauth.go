@@ -13,15 +13,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// This file implements `boid secret oauth login <service>` (docs/plans/
-// api-gateway.md §7 "初回認証", PR3): the CLI's half of the three-flow
-// initial OAuth2 grant the daemon's internal/apigateway.LoginManager
-// orchestrates. Per §7's role split ("CLI = ブラウザ側、daemon = Web サーバ
-// 側"), this file's job is narrow: talk to the daemon's /api/oauth/login*
-// endpoints, display whatever the user needs to see (an authorize URL, a
-// device user_code, a QR code), and forward whatever comes back from the
-// browser/device flow to the daemon — it never touches a PKCE verifier,
-// client_secret, or refresh_token itself.
+// This file implements `boid secret oauth login <service>`: the CLI's half
+// of the three-flow initial OAuth2 grant the daemon's
+// internal/apigateway.LoginManager orchestrates. This file's job is narrow:
+// talk to the daemon's /api/oauth/login* endpoints, display whatever the
+// user needs to see (an authorize URL, a device user_code), and forward
+// whatever comes back from the browser/device flow to the daemon — it
+// never touches a PKCE verifier, client_secret, or refresh_token itself.
 
 // oauthLoginRequestTimeout bounds each individual daemon round trip
 // (POST .../login, GET .../login/{id}, POST .../login/{id}/complete) —
@@ -31,31 +29,21 @@ const oauthLoginRequestTimeout = 30 * time.Second
 
 // oauthLoginPollSleep/oauthLoginNow are indirections over time.Sleep/
 // time.Now so tests can drive the device-flow poll loop without a real
-// wall-clock wait — overridden only by this file's own tests, always the
-// real functions in production (mirrors internal/apigateway.OAuth2TokenSource.
-// Now's identical override convention, applied here to a plain package var
-// since there is no single receiver struct instance to hang a field on).
+// wall-clock wait. Always the real functions in production.
 var (
 	oauthLoginPollSleep = time.Sleep
 	oauthLoginNow       = time.Now
 )
 
 // Wire DTOs mirroring internal/api/oauth_login.go's unexported request/
-// response shapes — duplicated here rather than imported, the same
-// established pattern cmd/login.go's deviceAuthRequest/deviceAuthResponse
-// already follow for POST /api/auth/device (see that file's own doc
-// comment for the full rationale: those server-side types are deliberately
-// unexported, since internal/api/oauth_login.go is a server-internal
-// handler, not a shared client/server contract package).
+// response shapes — duplicated here rather than imported, since that
+// server-side handler package is not a shared client/server contract package.
 type oauthLoginStartRequest struct {
 	Service     string `json:"service"`
 	Namespace   string `json:"namespace"`
 	RedirectURI string `json:"redirect_uri,omitempty"`
-	// Account mirrors internal/api/oauth_login.go's oauthLoginStartRequest.
-	// Account (docs/plans/api-gateway-credential-accounts.md D9) — omitted
-	// (the zero value "") when --account was not passed, which is byte-
-	// identical on the wire to every request this CLI sent before this
-	// field existed.
+	// Account is omitted (zero value "") when --account was not passed,
+	// byte-identical on the wire to a request with no account qualifier.
 	Account string `json:"account,omitempty"`
 }
 
@@ -63,12 +51,9 @@ type oauthLoginStartResponse struct {
 	SessionID string `json:"session_id"`
 	Flow      string `json:"flow"`
 	// Account echoes back oauthLoginStartRequest.Account — see
-	// runSecretOAuthLogin's post-Start comparison for why this CLI checks it
-	// against the --account value it just sent (docs/plans/
-	// api-gateway-credential-accounts.md review item #2: an OLDER daemon that
-	// predates --account silently drops the request field and always leaves
-	// this "", which this CLI must treat as a version-skew failure rather
-	// than a quiet no-op).
+	// runSecretOAuthLogin's post-Start comparison, which checks it against
+	// the --account value just sent to detect an older daemon that silently
+	// drops the field and always leaves this "".
 	Account                 string `json:"account,omitempty"`
 	AuthorizeURL            string `json:"authorize_url,omitempty"`
 	UserCode                string `json:"user_code,omitempty"`
@@ -117,11 +102,8 @@ var secretOAuthLoginCmd = &cobra.Command{
 func init() {
 	secretOAuthLoginCmd.Flags().StringP("namespace", "n", "default", "Secret namespace (workspace)")
 	secretOAuthLoginCmd.Flags().Duration("timeout", 5*time.Minute, "How long to wait for the user to finish authorizing")
-	// --account (docs/plans/api-gateway-credential-accounts.md D9): omitted
-	// (the zero value "") means the ordinary unqualified login every prior
-	// version of this command performed — see runSecretOAuthLogin's own
-	// validation of this flag for why an explicit value is checked against
-	// apigateway.ValidateAccountName before ever reaching the daemon.
+	// --account omitted (zero value "") means the ordinary unqualified
+	// login; see runSecretOAuthLogin's own validation of this flag.
 	secretOAuthLoginCmd.Flags().String("account", "", "Credential account qualifier (e.g. `boid secret oauth login freee --account ubs`); omit for the unqualified default credential")
 	secretOAuthCmd.AddCommand(secretOAuthLoginCmd)
 	secretCmd.AddCommand(secretOAuthCmd)
@@ -141,48 +123,20 @@ func runSecretOAuthLogin(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("secret oauth login: %w", err)
 	}
-	// Validated HERE, client-side, against the exact same rule the daemon
-	// applies (apigateway.LoginManager.StartLogin, via the unexported
-	// validateAccountName route.go already enforces on every gateway
-	// request's account qualifier — D11) rather than a hand-rolled check:
-	// reusing apigateway.ValidateAccountName (its exported form) is what
-	// guarantees the CLI can never accept an account name the daemon (and,
-	// transitively, the gateway's own request routing) would reject — see
-	// that function's own doc comment for why a second, independently
-	// written check here would risk drifting out of sync with it. account
-	// == "" because --account was never passed at all is deliberately NOT
-	// validated — an empty account then means "no account", not "an
-	// invalid account name" (ValidateAccountName's own doc comment makes
-	// the same carve-out).
+	// Validated HERE, client-side, by reusing apigateway.ValidateAccountName
+	// (the same rule the daemon applies), so the CLI can never accept an
+	// account name the daemon would reject. account == "" because --account
+	// was never passed is deliberately NOT validated — that means "no
+	// account", not "an invalid account name". An EXPLICIT `--account ""`
+	// IS validated (and always rejected, since an empty name is invalid):
+	// cmd.Flags().Changed("account") is what tells the two cases apart,
+	// since account itself is "" either way.
 	//
-	// An EXPLICIT `--account ""`, however, IS validated (and therefore
-	// always rejected, since ValidateAccountName("") errors on an empty
-	// name — D11 requires non-empty): cmd.Flags().Changed("account") is
-	// what tells the two cases apart, since account itself is "" either
-	// way. Without this, `boid secret oauth login freee --account ""`
-	// would silently reach StartLogin with account == "" and write the
-	// UNQUALIFIED credential — while the gateway's own request routing
-	// (parsePath -> splitServiceAccount -> validateAccountName, route.go)
-	// already 400s an inbound request whose account segment is empty. That
-	// asymmetry is exactly what docs/plans/api-gateway-credential-accounts.
-	// md D3 (never silently fall back to the unqualified default) rules
-	// out, and it gets worse once PR-4's `require_account: true` ships:
-	// the unqualified key this mistake wrote to becomes a credential NO
-	// request can ever be routed to again — a "successful" login that is
-	// permanently unreachable. A genuinely invalid (or explicitly empty)
-	// --account is rejected HERE, before opening a loopback listener or
-	// making any daemon round trip at all — a login the daemon would
-	// reject anyway should fail as early and cheaply as possible.
-	//
-	// The daemon side (apigateway.LoginManager.StartLogin) does NOT get
-	// this same "explicit empty" guard, and deliberately so: its account
-	// parameter arrives as a plain JSON field on oauthLoginStartRequest,
-	// where "the field was omitted" and "the field was sent as \"\"" are
-	// already indistinguishable by the time StartLogin sees them (both
-	// decode to the Go zero value "") — there is no server-side equivalent
-	// of cobra's Changed() to tell them apart. Catching the mistake here,
-	// client-side, before it is even serialized onto the wire, is what
-	// makes the daemon-side ambiguity moot in practice.
+	// Without this, `boid secret oauth login freee --account ""` would
+	// silently write the UNQUALIFIED credential — a login that looks
+	// successful but, once `require_account: true` is set, becomes
+	// permanently unreachable by any request. Rejecting it here, before any
+	// daemon round trip, fails as early and cheaply as possible.
 	if account != "" || cmd.Flags().Changed("account") {
 		if err := apigateway.ValidateAccountName(account); err != nil {
 			return fmt.Errorf("secret oauth login: invalid --account: %w", err)
@@ -194,11 +148,8 @@ func runSecretOAuthLogin(cmd *cobra.Command, args []string) error {
 	// Always open a local RFC 8252 §7.3 loopback listener up front,
 	// regardless of which flow the service turns out to use — opening a
 	// port is cheap, and it lets a single request/response round trip with
-	// the daemon suffice for every flow instead of a "tell me the flow
-	// first, then maybe open a listener" second hop (see
-	// apigateway.LoginManager.StartLogin's own doc comment). Closed
-	// immediately below for device/manual, whose redirect_uri is never the
-	// loopback one.
+	// the daemon suffice for every flow. Closed immediately below for
+	// device/manual, whose redirect_uri is never the loopback one.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return fmt.Errorf("secret oauth login: open local listener: %w", err)
@@ -215,23 +166,14 @@ func runSecretOAuthLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("secret oauth login: %w", err)
 	}
 
-	// Version-skew guard (docs/plans/api-gateway-credential-accounts.md
-	// review item #2): start.Account must echo back exactly what this CLI
-	// just sent. It won't when the daemon predates --account entirely — an
-	// old oauthLoginStartRequest decoder simply has no "account" field to
-	// populate, so StartLogin there runs an ordinary UNQUALIFIED login and
-	// always reports back Account == "" no matter what account held.
-	// Continuing past that point would let the daemon silently persist this
-	// login's grant to the unqualified credential while the caller believes
-	// --account was honored — for a refresh-token-ROTATING provider (freee
-	// is the motivating case), that overwrite invalidates whatever grant
-	// already lived at the unqualified key, with no error and no obvious
-	// link back to this command. Checked BEFORE dispatching to any flow, so
-	// a mismatch aborts before ever opening a browser tab or waiting on a
-	// device code — there is nothing to complete. account == "" (no
-	// --account requested) is unaffected: an old daemon that also doesn't
-	// know the field returns "" either way, so this never misfires for the
-	// overwhelmingly common unqualified case.
+	// Version-skew guard: start.Account must echo back exactly what this
+	// CLI just sent. It won't when the daemon predates --account entirely —
+	// an old decoder has no "account" field to populate and always reports
+	// back "". Continuing past that point would let the daemon silently
+	// persist this login's grant to the unqualified credential, invalidating
+	// whatever grant already lived there for a refresh-token-rotating
+	// provider. Checked before dispatching to any flow, so a mismatch aborts
+	// before opening a browser tab or waiting on a device code.
 	if start.Account != account {
 		_ = ln.Close()
 		return fmt.Errorf("secret oauth login: requested --account %q but the daemon's response did not echo it back (got %q) — the daemon is likely older than this CLI and does not support --account; upgrade the daemon before using --account, or omit it", account, start.Account)
@@ -255,15 +197,10 @@ func runSecretOAuthLogin(cmd *cobra.Command, args []string) error {
 // printAuthorizeURL prints an authorize/verification URL for the user to
 // open.
 //
-// No terminal QR code is rendered for any flow. Earlier revisions offered
-// one for the device and manual/OOB flows on the theory that a QR is an
-// invitation to finish the flow ON ANOTHER DEVICE — technically true for
-// those two, but not how this command is actually used: whoever runs
-// `boid secret oauth login` is already at the terminal the URL is printed
-// on, and opening it there is strictly less work than scanning. What the
-// QR did deliver was screens of block characters to scroll past before the
-// prompt. (`boid web pair` still renders one — enrolling a phone is that
-// command's entire purpose, so there the other device is the point.)
+// No terminal QR code is rendered for any flow: whoever runs `boid secret
+// oauth login` is already at the terminal the URL is printed on, so opening
+// it there is less work than scanning a QR. (`boid web pair` still renders
+// one, since enrolling a phone is that command's entire purpose.)
 func printAuthorizeURL(cmd *cobra.Command, label, rawURL string) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s:\n\n  %s\n\n", label, rawURL)
 }
@@ -283,11 +220,10 @@ func completeOAuthLogin(cmd *cobra.Command, c *client.Client, sessionID, code, s
 	return nil
 }
 
-// runOAuthManualFlow implements the manual/OOB flow (docs/plans/
-// api-gateway.md §7: freee and any other provider whose only redirect_uri
-// is urn:ietf:wg:oauth:2.0:oob) — the provider displays the code directly
-// in the browser after consent; there is no redirect for this CLI to
-// intercept, so the user copies it by hand.
+// runOAuthManualFlow implements the manual/OOB flow (freee and any other
+// provider whose only redirect_uri is urn:ietf:wg:oauth:2.0:oob) — the
+// provider displays the code directly in the browser after consent; there
+// is no redirect for this CLI to intercept, so the user copies it by hand.
 func runOAuthManualFlow(cmd *cobra.Command, c *client.Client, start oauthLoginStartResponse) error {
 	printAuthorizeURL(cmd, "Open this URL in a browser to authorize", start.AuthorizeURL)
 	fmt.Fprint(cmd.ErrOrStderr(), "Paste the code shown after authorizing: ")
@@ -310,13 +246,12 @@ type oauthCallbackResult struct {
 	err         error
 }
 
-// runOAuthLoopbackFlow implements the loopback flow (docs/plans/
-// api-gateway.md §7, RFC 8252 §7.3): serves a one-shot HTTP handler on the
-// listener StartLogin's redirect_uri already named, waits for the browser
-// to land on it (or the caller-supplied timeout to elapse), and forwards
-// whatever code/state arrived to CompleteLogin — the daemon is the one that
-// actually checks state against the PKCE session it holds (this function
-// never sees the verifier at all).
+// runOAuthLoopbackFlow implements the loopback flow (RFC 8252 §7.3): serves
+// a one-shot HTTP handler on the listener StartLogin's redirect_uri already
+// named, waits for the browser to land on it (or the caller-supplied
+// timeout to elapse), and forwards whatever code/state arrived to
+// CompleteLogin — the daemon is the one that actually checks state against
+// the PKCE session it holds (this function never sees the verifier at all).
 func runOAuthLoopbackFlow(cmd *cobra.Command, c *client.Client, ln net.Listener, start oauthLoginStartResponse, timeout time.Duration) error {
 	// "on THIS machine" is load-bearing: the callback lands on this
 	// machine's own 127.0.0.1 listener, so the browser must be here.
@@ -369,14 +304,12 @@ func runOAuthLoopbackFlow(cmd *cobra.Command, c *client.Client, ln net.Listener,
 	}
 }
 
-// runOAuthDeviceFlow implements the device flow (docs/plans/api-gateway.md
-// §7, RFC 8628): displays the user_code/verification URI and polls the
-// daemon's own session status — NOT the provider directly; the daemon's
-// LoginManager already polls the provider's token endpoint in the
-// background at its own cadence (docs/plans/api-gateway.md §7: "device
-// flow の polling は daemon 側で行う"), so this loop is just checking in on
-// that, decoupled from whatever backoff (RFC 8628 §3.5 slow_down) the
-// daemon's own poll is doing against the real provider.
+// runOAuthDeviceFlow implements the device flow (RFC 8628): displays the
+// user_code/verification URI and polls the daemon's own session status —
+// NOT the provider directly. The daemon's LoginManager already polls the
+// provider's token endpoint in the background at its own cadence, so this
+// loop is just checking in on that, decoupled from whatever backoff
+// (RFC 8628 §3.5 slow_down) the daemon's own poll is doing.
 func runOAuthDeviceFlow(cmd *cobra.Command, c *client.Client, start oauthLoginStartResponse, timeout time.Duration) error {
 	fmt.Fprintf(cmd.ErrOrStderr(), "Go to: %s\n", start.VerificationURI)
 	fmt.Fprintf(cmd.ErrOrStderr(), "Enter code: %s\n\n", start.UserCode)

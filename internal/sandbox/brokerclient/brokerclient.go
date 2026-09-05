@@ -9,16 +9,13 @@
 // broker decodes (internal/sandbox/protocol.go: ExecRequest / ExecResponse /
 // BoidRequest) field-for-field; keep the json tags in sync.
 //
-// Two transports (docs/plans/phase6-cutover-followups.md §⓪ "broker TCP
-// wire completion"): SendJSON dials the broker's UNIX socket — the original,
-// still-current mechanism for the userns backend, where the sandbox and the
-// daemon share a mount namespace so a bind-mounted socket file is always
-// reachable. SendJSONTLS dials the broker's TCP(mTLS) listener instead — the
-// only mechanism a container-backend job's SIBLING container can use, since
-// it has no access to the daemon container's own filesystem at all. Every
-// real caller in this repo picks between the two via SendJSONFromEnv (or,
-// for JobDone, the equivalent map-driven decision) rather than choosing a
-// transport itself — see its own doc comment for the exact selection rule.
+// Two transports: SendJSON dials the broker's UNIX socket, reachable when
+// the sandbox and the daemon share a mount namespace. SendJSONTLS dials the
+// broker's TCP(mTLS) listener instead — the mechanism a container-backend
+// job's sibling container uses, since it has no access to the daemon
+// container's own filesystem. Every real caller in this repo picks between
+// the two via SendJSONFromEnv (or, for JobDone, the equivalent map-driven
+// decision) rather than choosing a transport itself.
 package brokerclient
 
 import (
@@ -75,15 +72,10 @@ func SendJSON(socket string, req any, resp any) error {
 // client certificate/key at certPath/keyPath, trusting the CA certificate at
 // caPath, and verifying the server's own certificate against serverName —
 // the TCP+mTLS counterpart to SendJSON's plain UNIX dial. This is the
-// transport a container-backend job's sibling container uses (docs/plans/
-// phase6-cutover-followups.md §⓪): the per-job client cert/key/ca trio
-// certPath/keyPath/caPath name is bind-mounted read-only by
-// internal/dispatcher/container_backend.go's Launch at a fixed
-// container-internal path (containerBrokerTLSDir), and addr/serverName are
-// the compose service DNS name (+ port) and SAN the broker's own
-// mtls.CA.ServerTLSConfig("127.0.0.1", "localhost",
-// composeBrokerServiceName) call issued its listener cert for — see
-// internal/server/server.go's Start.
+// transport a container-backend job's sibling container uses: the per-job
+// client cert/key/ca trio is bind-mounted read-only by
+// internal/dispatcher/container_backend.go's Launch, and addr/serverName
+// match the listener cert issued by internal/server/server.go's Start.
 //
 // Real callers should not build this argument list by hand — SendJSONFromEnv
 // (or, for JobDone, its own equivalent) reads the exact same five values out
@@ -181,18 +173,11 @@ func DialFromEnv() (net.Conn, error) {
 // os.Getenv would not necessarily reflect it).
 //
 // Selection rule: TLS (SendJSONTLS) when BOID_BROKER_TLS_ADDR is non-empty
-// — the container backend's own delivery mechanism — otherwise UNIX
-// (SendJSON) when BOID_BROKER_SOCKET is non-empty — the userns backend's
-// unchanged mechanism, and every other pre-this-feature caller/test. TLS
-// wins when both are set (see EnvBrokerTLSAddr's own const-block doc
-// comment for why a container-backend job coincidentally also carrying a
-// stale/unreachable BOID_BROKER_SOCKET value is not a conflict this
-// function needs to resolve any other way). Neither set is a genuine error
-// case, not a silent no-op: every non-ProfileInit, non-foreground job has
-// SOME broker transport (internal/dispatcher/runner.go's own broker
-// registration gate) by the time either JobDone or the shim's entry point
-// runs, so an empty lookup here means broker wiring is broken, and the
-// caller needs to know.
+// — the container backend's delivery mechanism — otherwise UNIX (SendJSON)
+// when BOID_BROKER_SOCKET is non-empty. TLS wins when both are set. Neither
+// set is a genuine error: every dispatched job has some broker transport by
+// the time JobDone or the shim's entry point runs, so an empty lookup means
+// broker wiring is broken and the caller needs to know.
 func sendJSONWithLookup(lookup func(string) string, req, resp any) error {
 	if addr := lookup(EnvBrokerTLSAddr); addr != "" {
 		return SendJSONTLS(addr,
@@ -251,12 +236,6 @@ type execResponse struct {
 // spec.Env directly, not os.Environ() — see sendJSONWithLookup's own doc
 // comment for why) — JobDone picks TLS vs UNIX from it via the exact same
 // rule SendJSONFromEnv applies to the current process's real environment.
-// Before docs/plans/phase6-cutover-followups.md §⓪ this parameter was a
-// bare `socket string`; every caller (there is exactly one,
-// internal/sandbox/runner/runner.go's postJobDone) now passes spec.Env
-// wholesale instead of extracting BOID_BROKER_SOCKET itself, so a
-// container-backend job's BOID_BROKER_TLS_* keys are visible to this
-// function too.
 //
 // cwd must be the sandbox working directory (the same cwd the EXIT trap ran in)
 // because the broker validates it against the token's project/worktree root

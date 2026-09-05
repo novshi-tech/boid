@@ -13,13 +13,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// workspaceServicesCmd groups the API gateway service-enablement CLI vocab
-// docs/plans/api-gateway.md §論点5 confirms: "boid workspace services
-// add/remove/list <ws> <service> 系。allowed_domains の既存語彙に揃える" —
-// mirroring the add/remove/list shape (rather than a single --from-file
-// whole-document replace, the way allowed_domains/extra_repos are edited
-// today) since granular single-service enable/disable is the expected
-// common case for this field specifically.
+// workspaceServicesCmd groups the API gateway service-enablement CLI vocab,
+// mirroring allowed_domains' add/remove/list shape since granular
+// single-service enable/disable is the expected common case for this field.
 var workspaceServicesCmd = &cobra.Command{
 	Use:   "services",
 	Short: "Manage a workspace's enabled API gateway services (docs/plans/api-gateway.md)",
@@ -103,20 +99,14 @@ func runWorkspaceServicesList(cmd *cobra.Command, args []string) error {
 }
 
 // addServiceNames returns current with each of names appended, deduplicated
-// (case-sensitive — service names are config.yaml map keys, not domains;
-// see orchestrator.ResolveEnabledServices's own doc comment for the same
-// distinction at resolution time). Order is preserved: existing entries
-// first, then newly-added ones in the order given.
+// (case-sensitive — service names are config.yaml map keys, not domains).
+// Order is preserved: existing entries first, then newly-added ones in the
+// order given.
 //
-// Every name (both current's own entries and the newly-added ones) is
-// whitespace-trimmed before comparison/storage — matching
+// Every name is whitespace-trimmed before comparison/storage, matching
 // orchestrator.ResolveEnabledServices's own trim at dispatch-resolution
-// time (codex review finding: a stored " foo " entry effectively enabled
-// "foo" at dispatch time via that trim, but `services remove foo` — a raw,
-// untrimmed comparison — could never match it, so the entry was
-// unremovable through this CLI). Trimming here means every value this
-// command ever WRITES is already normalized, so a subsequent add/remove/
-// dispatch-resolution all agree on the same string.
+// time — otherwise a stored " foo " entry could be enabled at dispatch but
+// never matched (and so never removable) by a raw, untrimmed comparison.
 func addServiceNames(current, names []string) []string {
 	seen := make(map[string]bool, len(current)+len(names))
 	out := make([]string, 0, len(current)+len(names))
@@ -140,13 +130,8 @@ func addServiceNames(current, names []string) []string {
 // removeServiceNames returns current with every entry in names dropped,
 // preserving the relative order of what remains. Both current's own entries
 // and names are whitespace-trimmed before comparison — see addServiceNames'
-// own doc comment for why. A retained entry is written back TRIMMED too
-// (codex review round 2 finding: an earlier version compared trimmed but
-// appended the original, untrimmed `s` — so removing "foo" from
-// [" foo ", " bar "] correctly dropped " foo " but wrote back " bar "
-// unchanged instead of finishing the normalize-on-storage this whole fix is
-// for; every value this command writes should end up trimmed, not just the
-// one entry a given call happens to touch).
+// own doc comment for why — and a retained entry is written back TRIMMED
+// too, so every value this command writes ends up normalized.
 func removeServiceNames(current, names []string) []string {
 	remove := make(map[string]bool, len(names))
 	for _, s := range names {
@@ -167,31 +152,14 @@ func removeServiceNames(current, names []string) []string {
 // add and remove need.
 //
 // This deliberately goes through POST /api/workspaces/apply (the envelope
-// path, `boid workspace apply`'s own endpoint) rather than a GET-full-meta +
-// PUT /api/workspaces/{slug} (the create/edit path `boid workspace edit`
-// uses): PUT decodes through workspaceMetaStrict
-// (internal/orchestrator/workspace_meta_strict.go), which — by that type's
-// own documented "PR3 の deliberate scope boundary" — has NO field for
-// task_behaviors / base_branch / fork_point / default_task_behavior. A
-// GET-then-PUT round trip of the FULL meta therefore either 400s outright
-// ("field task_behaviors not found in type orchestrator.workspaceMetaStrict",
-// confirmed empirically) or, had the strict decoder tolerated the extra
-// keys, would have silently WIPED those four fields on every services
-// add/remove — UpdateIfRevisionMatches performs an unconditional whole-row
-// column write from whatever workspaceMetaStrict decoded, and that type has
-// no field to carry them through. Neither outcome is acceptable for a
-// command whose entire contract is "touch only the services list".
-//
-// The apply endpoint's envelope decode (decodeWorkspaceEnvelopeSpec) is
-// presence-gated per spec.* key (WorkspaceEnvelopeApply.FieldsPresent) and
-// DOES support task_behaviors/base_branch/fork_point/default_task_behavior.
-// Submitting a document whose spec carries ONLY the "services" key — built
-// here as a bare map, NOT by marshaling a orchestrator.WorkspaceEnvelopeSpec
-// struct literal, since that type's fields deliberately carry no `omitempty`
-// (missing-vs-empty is load-bearing there) and would emit every other field
-// as an explicit empty value, clearing them exactly the way the PUT path
-// would have — means every other field (host_commands, env, task_behaviors,
-// projects, init_script, ...) is left completely untouched server-side.
+// path) rather than GET-full-meta + PUT /api/workspaces/{slug} (the
+// create/edit path `boid workspace edit` uses): PUT's strict decoder has no
+// field for task_behaviors/base_branch/fork_point/default_task_behavior, so
+// a round trip through it would either 400 or silently wipe those fields.
+// The apply envelope is presence-gated per spec.* key instead, so a
+// document built here as a bare map with only "services" set leaves every
+// other field (host_commands, env, task_behaviors, projects, init_script,
+// ...) completely untouched server-side.
 func mutateWorkspaceServices(cmd *cobra.Command, slug string, names []string, transform func(current, names []string) []string) error {
 	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
 		return err

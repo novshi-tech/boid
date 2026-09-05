@@ -16,18 +16,11 @@ const statusPipeFD = 3
 
 // statusPipeEnvKey is set by Spawn — and only by Spawn — to declare that fd 3
 // really is the status pipe write-end it wired. Everything that touches fd 3
-// by its hard-coded number must gate on this.
-//
-// BOID_DAEMON_CHILD is NOT usable for that check: build/container/compose.yml
-// sets it too, and runs `boid start` directly (cmd/start.go's --foreground
-// does the same), so runDaemonChild is reached with NOTHING attached to fd 3.
-// In that shape fd 3 is simply the lowest free descriptor, and server.New's
-// db.Open lands the SQLite database on it. Closing or writing to it then
-// destroys an unrelated file: on 2026-07-31 the containerized daemon started
-// cleanly, closed fd 3 as its "startup ok" signal, and every subsequent query
-// failed with SQLITE_IOERR_FSTAT (1802) / SQLITE_CORRUPT (11) because the
-// database's descriptor was gone (fstat(3) = EBADF) while its -wal/-shm
-// descriptors stayed open.
+// by its hard-coded number must gate on this: without it (e.g. when
+// `boid start` is invoked directly with nothing wired to fd 3), fd 3 is
+// just the lowest free descriptor and may belong to something else
+// entirely (server.New's SQLite db.Open has landed there before) —
+// closing or writing to it then corrupts that unrelated resource.
 const statusPipeEnvKey = "BOID_STARTUP_STATUS_PIPE"
 
 // statusPipeFile returns fd 3 as an *os.File only when this process was

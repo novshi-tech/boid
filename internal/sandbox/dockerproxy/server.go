@@ -54,24 +54,19 @@ func (s *Server) SetReservedVolumeNames(names []string) {
 	s.reservedVolumes = NewReservedVolumes(names)
 }
 
-// SetWorkspaceNetwork configures the "sibling の workspace network 強制注入"
-// behavior (docs/plans/phase6-container-backend.md §PR6, §決定5): once set,
-// every POST /containers/create request this Server forwards has its
+// SetWorkspaceNetwork configures forced workspace-network injection: once
+// set, every POST /containers/create request this Server forwards has its
 // top-level NetworkingConfig REPLACED with `{EndpointsConfig: {network:
 // {}}}` before it reaches the upstream Docker daemon — discarding whatever
 // network configuration the sandboxed client asked for, not merging with
-// it. This is dockerproxy's half of §決定5's sibling connectivity contract:
-// "job → sibling の到達は container IP + container port の直アクセス" only
-// works, and stays scoped to the job's own workspace, if every sibling a
-// job creates always lands on that job's workspace network regardless of
-// what the client (a docker CLI, TestContainers, ...) running inside the
-// sandbox requested.
+// it. This keeps job → sibling reachability (container IP + container port,
+// direct access) scoped to the job's own workspace: every sibling a job
+// creates always lands on that job's workspace network regardless of what
+// the client (a docker CLI, TestContainers, ...) running inside the sandbox
+// requested.
 //
-// Empty (the zero value, and every pre-PR6 caller — production wiring of a
-// real per-job workspace network name is PR6-residual/PR7 territory, see
-// the plan doc's PR6 §8 note) preserves the prior behavior exactly: no
-// body rewrite at all, matching every existing e2e/unit test's "current
-// e2e is policy-only, no data-plane rewrite" baseline.
+// Empty (the zero value) preserves the prior behavior exactly: no body
+// rewrite at all.
 func (s *Server) SetWorkspaceNetwork(network string) {
 	s.workspaceNetwork = network
 }
@@ -105,18 +100,8 @@ func (s *Server) Serve(ln net.Listener) error {
 // ServeTLS wraps ln in tlsConfig (expected to require and verify a client
 // certificate — see internal/mtls.CA.ServerTLSConfig) and serves on it,
 // blocking until Close is called. This is the TCP(mTLS) counterpart to the
-// per-sandbox UNIX socket Serve already uses
-// (docs/plans/phase6-container-backend.md §PR4/§決定5: "dockerproxy... 現行
-// の per-sandbox UNIX socket bind は温存... 追加: TCP(mTLS) listener").
-// Policy allowlist logic (CheckRequest / serveHTTP above) is untouched —
-// only the transport differs.
-//
-// No production caller wires this into a real per-job or per-daemon
-// listener in PR4: the userns backend keeps using Serve with its
-// per-sandbox UNIX socket (internal/dispatcher.Runner.startDockerProxy)
-// unchanged, and choosing when/how the container backend binds this TCP
-// listener (per-daemon vs. per-job, and the per-job client cert /
-// jobID→DockerEnabled scoping from §決定5) is PR5/PR6 scope.
+// per-sandbox UNIX socket Serve already uses. Policy allowlist logic
+// (CheckRequest / serveHTTP above) is untouched — only the transport differs.
 func (s *Server) ServeTLS(ln net.Listener, tlsConfig *tls.Config) error {
 	return s.Serve(tls.NewListener(ln, tlsConfig))
 }
@@ -166,12 +151,10 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// denyHostPortPublish = "is this the container backend's Server"
-	// (Blocker 2, PR6 codex review) — reuses the same field
-	// SetWorkspaceNetwork already treats as "container backend configured a
-	// real workspace network" (see its own doc comment on why empty is
-	// equivalent to "never called"), rather than adding a second bool this
-	// Server would have to keep in sync with it.
+	// denyHostPortPublish = "is this the container backend's Server" —
+	// reuses the same field SetWorkspaceNetwork already treats as
+	// "container backend configured a real workspace network", rather than
+	// adding a second bool this Server would have to keep in sync with it.
 	verdict := CheckRequest(method, r.URL.Path, bodyBytes, s.workspaceNetwork != "", s.reservedVolumes)
 	if !verdict.Allow {
 		slog.Warn("docker proxy: DENY", "method", method, "path", r.URL.Path, "reason", verdict.Reason)
@@ -181,12 +164,11 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	slog.Debug("docker proxy: ALLOW", "method", method, "path", r.URL.Path)
 
-	// §決定5's forced network injection (see SetWorkspaceNetwork's doc
-	// comment): runs AFTER the policy check above (a request that was
-	// going to be denied stays denied — no reason to rewrite a body this
-	// proxy is about to reject anyway) and BEFORE forwarding, so the
-	// upstream Docker daemon never sees the client's original network
-	// choice for a container this job creates.
+	// Forced network injection (see SetWorkspaceNetwork's doc comment):
+	// runs AFTER the policy check above (a request that was going to be
+	// denied stays denied) and BEFORE forwarding, so the upstream Docker
+	// daemon never sees the client's original network choice for a
+	// container this job creates.
 	if s.workspaceNetwork != "" && method == "POST" && bare == "/containers/create" {
 		bodyBytes = injectWorkspaceNetwork(bodyBytes, s.workspaceNetwork)
 	}

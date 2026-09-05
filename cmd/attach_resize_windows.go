@@ -16,13 +16,9 @@ import (
 const resizePollInterval = 250 * time.Millisecond
 
 // watchTerminalResize calls onResize whenever the console's dimensions
-// change, and returns an idempotent stop func the caller defers.
-//
-// Windows has no SIGWINCH (see attach_resize_unix.go for the signal-driven
-// version), and no console-resize event is reachable through
-// golang.org/x/term, so this polls. onResize fires only on an ACTUAL
-// change, not on every tick: the remote end would otherwise get four
-// pointless resize RPCs per second for the whole session.
+// change (polling, since Windows has no SIGWINCH), and returns an
+// idempotent stop func the caller defers. onResize fires only on an actual
+// change, not on every tick.
 func watchTerminalResize(onResize func()) (stop func()) {
 	done := make(chan struct{})
 

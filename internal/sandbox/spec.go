@@ -68,14 +68,9 @@ type Spec struct {
 	// inherited and no broker job-done callback fires on exit. Hook jobs leave
 	// this false so the runner posts `boid job done` through the broker.
 	// Broker socket path and token are carried in Env (BOID_BROKER_SOCKET /
-	// BOID_BROKER_TOKEN).
-	//
-	// Phase 6 PR8 (docs/plans/phase6-container-backend.md §決定 9) retired the
-	// sibling PayloadPatchPath field: agents / hook scripts now apply their
-	// payload patch immediately via the broker's `boid task update
-	// --payload-patch` RPC instead of writing a well-known
-	// $HOME/.boid/output/payload_patch.json the runner used to read back as
-	// the job-done output — see runner.resolveJobOutput's doc comment.
+	// BOID_BROKER_TOKEN). Agents / hook scripts apply their payload patch
+	// immediately via the broker's `boid task update --payload-patch` RPC —
+	// see runner.resolveJobOutput's doc comment.
 	Foreground bool
 
 	// --- Bookkeeping ---
@@ -104,21 +99,19 @@ type Spec struct {
 
 	// Clone declares the opt-in sandbox-internal clone + branch resolution
 	// sequence runner-inner-child performs before handing off to the
-	// harness (docs/plans/git-gateway-cutover.md PR5). Zero value
-	// (Clone.Enabled == false) is a no-op — see CloneSpec's doc comment.
+	// harness. Zero value (Clone.Enabled == false) is a no-op — see
+	// CloneSpec's doc comment.
 	Clone CloneSpec
 
-	// ContainerImage is the container backend's image-selection input
-	// (docs/plans/phase6-container-backend.md §PR5, §決定 2/11): the
+	// ContainerImage is the container backend's image-selection input: the
 	// workspace-level `orchestrator.WorkspaceMeta.ContainerImage` override,
 	// threaded through unchanged from SandboxRuntimeInfo.ContainerImage by
 	// BuildSandboxSpec. Empty means "use the backend's configured default
-	// image" (the shared boid base image, §決定 2). The userns backend
-	// never reads this field — it has no notion of images. When non-empty,
+	// image" (the shared boid base image). When non-empty,
 	// containerBackend.Launch treats it as a workspace override that must
-	// pass the "derived from the boid base image" check (§決定 11) before
-	// use: `docker inspect` the image and require the
-	// `boid.runner_protocol` label to match, rejecting Launch otherwise.
+	// pass the "derived from the boid base image" check before use:
+	// `docker inspect` the image and require the `boid.runner_protocol`
+	// label to match, rejecting Launch otherwise.
 	ContainerImage string
 
 	// HomeSkeletonRoot is the absolute in-sandbox path the workspace HOME is
@@ -135,8 +128,7 @@ type Spec struct {
 	// in-container absolute path>. Those differ by exactly this prefix, and
 	// naming the wrong one sends the operator to a path that does not exist:
 	// they delete nothing, the uid-0 directory survives, and the next job fails
-	// the same check — a loop the error itself caused (codex review of PR6,
-	// Major 2).
+	// the same check — a loop the error itself caused.
 	//
 	// Empty when HomeSkeletonDirs is empty. A non-empty skeleton with no root
 	// is a wiring bug and the runner fails the job rather than resolving the
@@ -179,10 +171,9 @@ type Spec struct {
 	// that leaves exposed (a stale, empty, root-owned leaf survives in the
 	// volume, harmlessly, until a release stops shipping that skill).
 	//
-	// Verification lives HERE rather than on the daemon side because PR6 of
-	// docs/plans/workspace-home-volume-persistence.md made the home a docker
-	// named volume: the daemon can neither stat nor repair anything inside it.
-	// 論点 e-2 requires the check to sit outside whatever creates these
+	// Verification lives HERE rather than on the daemon side because the home
+	// is a docker named volume: the daemon can neither stat nor repair
+	// anything inside it. The check must sit outside whatever creates these
 	// directories (the init container's prelude does), and the job container
 	// satisfies that while also being the only place that observes the state
 	// the harness will actually meet — after the engine's auto-creation, as the

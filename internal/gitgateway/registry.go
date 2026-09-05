@@ -26,27 +26,18 @@ func (p Permission) Allows(op Operation) bool {
 
 // Entry is one job token's authorization: which repos it may reach and at
 // what permission level, plus the secret-store namespace credential
-// resolution should use for this token. docs/plans/git-gateway-cutover.md
-// PR3 の許可集合 (自 project は fetch+push or fetch のみ、workspace peer は
-// fetch のみ、read-only 追加許可 repo も fetch のみ) はすべて呼び出し側
-// (PR4 の dispatch 配線) が Repos map の構築時に表現する — Registry 自体は
-// 集合の形を知らない。Namespace follows the same pattern (post-cutover 改善
-// §1 workspace-scoped PAT namespace): the caller passes it in at Register
-// time (from orchestrator.JobSpec.SecretNamespace), and Registry just carries
-// it alongside Repos for Server.ServeHTTP to pass through to
-// CredentialProvider.Inject.
+// resolution should use for this token. The caller builds Repos and
+// Namespace at Register time — Registry itself doesn't know their shape,
+// and just carries Namespace alongside Repos for Server.ServeHTTP to pass
+// through to CredentialProvider.Inject.
 type Entry struct {
 	Token     string
 	Namespace string
 	Repos     map[RepoKey]Permission
 }
 
-// Registry is the job-token → allowed-repo-set store. It is a deliberately
-// simple sync.RWMutex-guarded map (docs/plans/git-gateway-cutover.md PR3
-// 実装ヒント: 「job token レジストリは sync.RWMutex で守った map[token]entry
-// の素朴実装で足りる」); PR4 adds the dispatch-time Register/Unregister
-// call sites and a richer lifecycle, but the shape here doesn't need to
-// change for that.
+// Registry is the job-token → allowed-repo-set store: a sync.RWMutex-guarded
+// map[token]*Entry.
 type Registry struct {
 	mu      sync.RWMutex
 	entries map[string]*Entry
@@ -58,8 +49,7 @@ func NewRegistry() *Registry {
 }
 
 // Register creates a new entry with a freshly generated token, scoped to
-// namespace (the registering job's orchestrator.JobSpec.SecretNamespace —
-// post-cutover 改善 §1), and returns the token.
+// namespace, and returns the token.
 func (r *Registry) Register(repos map[RepoKey]Permission, namespace string) string {
 	token := GenerateToken()
 	r.RegisterToken(token, repos, namespace)
@@ -67,9 +57,8 @@ func (r *Registry) Register(repos map[RepoKey]Permission, namespace string) stri
 }
 
 // RegisterToken creates (or replaces) an entry under an explicit token,
-// scoped to namespace. This is useful for callers (and tests) that already
-// have a token value to correlate with — e.g. PR4 dispatch, which will want
-// the gateway job token alongside the job id in logs.
+// scoped to namespace — useful for callers (and tests) that already have a
+// token value to correlate with (e.g. alongside a job id in logs).
 func (r *Registry) RegisterToken(token string, repos map[RepoKey]Permission, namespace string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

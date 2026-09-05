@@ -49,8 +49,8 @@ func runTaskArtifacts(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get task: %w", err)
 	}
 
-	// parse payload.artifact. Payload is execution-only (design doc §3.2) —
-	// a card task (task.Exec == nil) simply has no artifact to find.
+	// Payload is execution-only — a card task (task.Exec == nil) simply has
+	// no artifact to find.
 	var payload map[string]json.RawMessage
 	if task.Exec != nil && len(task.Exec.Payload) > 0 {
 		_ = json.Unmarshal(task.Exec.Payload, &payload)
@@ -97,7 +97,6 @@ func runTaskArtifacts(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// parse artifact for output
 	var v any
 	if err := json.Unmarshal(artifactRaw, &v); err != nil {
 		return fmt.Errorf("parse artifact: %w", err)
@@ -150,13 +149,11 @@ func runTaskTree(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list tasks: %w", err)
 	}
 
-	// build index
 	byID := make(map[string]*orchestrator.Task, len(tasks))
 	for i := range tasks {
 		byID[tasks[i].ID] = &tasks[i]
 	}
 
-	// build children map
 	children := make(map[string][]*orchestrator.Task)
 	for i := range tasks {
 		t := &tasks[i]

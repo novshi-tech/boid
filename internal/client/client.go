@@ -22,28 +22,16 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// Client is a boid daemon API client. It is transport-agnostic at the call
-// site (Do/GetRaw/... all build requests against baseURL) — NewUnixClient
-// and NewClient's "https" branch are the two constructors that decide what
-// baseURL and httpClient actually mean underneath.
+// Client is a boid daemon API client, transport-agnostic at the call site
+// (Do/GetRaw/... all build requests against baseURL).
 type Client struct {
-	// socketPath is set only for a unix-scheme client (NewUnixClient / a
-	// "unix://" NewClient url) and is empty for an https-scheme client.
-	// Three callers actually inspect this: IsUnix() (the base
-	// discriminator — every branch that switches on transport goes
-	// through it), SocketPath() (root.PersistentPreRunE passes it to
-	// client.EnsureRunningAt so autostart probes the same socket the CLI
-	// is about to talk to), and ProbeAlive() (which uses it to skip the
-	// TCP-dial branch on unix clients). AttachJob no longer touches it —
-	// Phase 3 PR3's WebSocket unification routes attach through
-	// httpClient's DialContext just like every other request.
+	// socketPath is set only for a unix-scheme client and empty for an
+	// https-scheme client; it is the base discriminator IsUnix() checks.
 	socketPath string
 	// baseURL is the origin every Do*/GetRaw*/PostRaw/PutRaw* request is
-	// built against: the fixed "http://boid" placeholder for a unix client
-	// (the DialContext below ignores the request's host/port entirely and
-	// always dials socketPath directly — only the scheme+host need to be
-	// *present* so net/http's Transport accepts the request at all) or the
-	// real "https://host[:port]" origin for a remote profile.
+	// built against: a fixed placeholder for a unix client (the DialContext
+	// below dials socketPath directly regardless of host/port) or the real
+	// "https://host[:port]" origin for a remote profile.
 	baseURL    string
 	httpClient *http.Client
 }
@@ -64,30 +52,18 @@ func NewUnixClient(socketPath string) *Client {
 	}
 }
 
-// NewClient builds a Client from a profile URL (docs/plans/
-// cli-remote-connection.md "Transport 分岐"): the scheme decides transport.
+// NewClient builds a Client from a profile URL; the scheme decides transport:
 //
-//   - "unix://<path>" — a local UNIX socket, dialed exactly like
-//     NewUnixClient(<path>). token is ignored (decision 4: a local socket
-//     needs no Bearer auth — connecting to it already implies local user
-//     trust).
+//   - "unix://<path>" — a local UNIX socket, dialed like NewUnixClient.
+//     token is ignored (a local socket already implies local user trust).
 //   - "https://<host>[:port]" — TCP + TLS, with token sent as
 //     "Authorization: Bearer <token>" on every request (including same-
-//     origin redirects; decision 7 rejects cross-origin ones outright — see
-//     sameOriginCheckRedirect).
-//   - "http://<loopback-host>[:port]" — PR-3 Option 4 host-mode redesign
-//     (docs/plans/volume-only-daemon.md §論点c, nose directive
-//     2026-07-25): the `boid` CLI's own host-mode orchestration
-//     (cmd/host.go) dials the container-backend daemon's dedicated CLI
-//     TCP listener this way — a shared-secret Bearer token
-//     (BOID_CLI_TOKEN) instead of TLS, since host mode already owns the
-//     daemon container's lifecycle end to end (no cert to verify, no
-//     remote network hop to encrypt). Restricted to a loopback hostname
-//     (127.0.0.1/::1/localhost) — see newHTTPClient's own doc comment —
-//     so this scheme can never be (mis)used to send a Bearer token in
-//     cleartext to a genuinely remote host; decision 4's original
-//     "plain-HTTP remote daemons are not supported" verdict still holds
-//     for anything that isn't loopback.
+//     origin redirects; see sameOriginCheckRedirect for cross-origin ones).
+//   - "http://<loopback-host>[:port]" — used by the CLI's own host-mode
+//     orchestration to reach the container-backend daemon's CLI listener
+//     with a shared-secret Bearer token instead of TLS. Restricted to a
+//     loopback hostname (see newHTTPClient) so a Bearer token can never be
+//     sent in cleartext to a genuinely remote host.
 //   - anything else — a hard error.
 func NewClient(rawURL, token string) (*Client, error) {
 	u, err := url.Parse(rawURL)
@@ -97,13 +73,8 @@ func NewClient(rawURL, token string) (*Client, error) {
 	switch u.Scheme {
 	case "unix":
 		path := unixSocketPathFromURL(u)
-		// A "unix://" URL with no path (or one that resolves to just "/",
-		// which url.Parse leaves for "unix:///" alone) is nonsense — every
-		// downstream codepath (net.Dial("unix", ""), IsUnix() → false,
-		// autostart's socket-path probe, dialing the filesystem root as
-		// a socket) either errors indirectly or silently misbehaves.
-		// Reject at construction so the diagnostic points at the actual
-		// mistake (the URL) instead of a scattered side-effect further down.
+		// An empty or "/" path is nonsense here; reject at construction so
+		// the error points at the URL rather than a scattered side effect.
 		if path == "" || path == "/" {
 			return nil, fmt.Errorf("unix client url %q: missing socket path", rawURL)
 		}
@@ -118,24 +89,14 @@ func NewClient(rawURL, token string) (*Client, error) {
 }
 
 // SocketPath returns the UNIX socket path this Client was built to dial,
-// or "" for an https-scheme Client. root.PersistentPreRunE passes this to
-// EnsureRunningAt so the autostart probe hits the same socket the CLI is
-// about to talk to (docs/plans/cli-remote-connection.md PR1 codex review).
+// or "" for an https-scheme Client.
 func (c *Client) SocketPath() string { return c.socketPath }
 
 // ProbeAlive reports whether the daemon behind this client is reachable
 // within timeout, at the transport layer only (no auth, no request body).
-// Used by cmd/completion.go so shell TAB completion can skip a daemon that
-// is not going to answer without blocking the shell on a full API request.
-//
-// The probe is scheme-aware:
-//   - unix: net.DialTimeout("unix", ...) as before
-//   - https: net.DialTimeout("tcp", host[:port default 443], ...) — just a
-//     TCP connect, not a TLS handshake, since the point is "is anyone
-//     listening on that port at all" not "is the cert valid" (a TLS-level
-//     failure means the daemon IS up and the follow-up API request will
-//     surface the real error to the user; a transport-level connect
-//     failure means no daemon).
+// For an https client this is a bare TCP connect, not a TLS handshake — a
+// TLS failure means the daemon IS up and a follow-up API request will
+// surface the real error; only a transport-level failure means no daemon.
 func (c *Client) ProbeAlive(timeout time.Duration) bool {
 	if c.IsUnix() {
 		conn, err := net.DialTimeout("unix", c.socketPath, timeout)
@@ -159,18 +120,8 @@ func (c *Client) ProbeAlive(timeout time.Duration) bool {
 
 // probeDialAddress rebuilds the "host:port" address ProbeAlive dials for
 // an https-scheme Client, or ("", false) when the client has no usable
-// baseURL. Split from ProbeAlive so a unit test can assert the address
-// construction (in particular the IPv6 case where a naive
-// `strings.Contains(":")` on u.Host would leave `[::1]` port-less) —
-// without a live listener to actually dial.
-//
-// It uses Hostname()+Port()+JoinHostPort so IPv6 literals rebuild
-// correctly: `https://[::1]` would land in u.Host as "[::1]" which
-// naive colon inspection misclassifies as "has a port" and leaves us
-// dialing a bracketed-but-portless address. Hostname() strips the
-// brackets, Port() gives us just the port (or "" so we fall back to the
-// https default), and JoinHostPort re-brackets the IPv6 hostname before
-// pasting the port back on.
+// baseURL. Uses Hostname()+Port()+JoinHostPort rather than naive colon
+// splitting so IPv6 literals like "[::1]" rebuild correctly.
 func (c *Client) probeDialAddress() (string, bool) {
 	if c.baseURL == "" {
 		return "", false
@@ -186,14 +137,9 @@ func (c *Client) probeDialAddress() (string, bool) {
 	return net.JoinHostPort(u.Hostname(), port), true
 }
 
-// unixSocketPathFromURL recovers the filesystem path from a "unix://" URL.
-// The documented config schema (docs/plans/cli-remote-connection.md) always
-// writes a triple-slash absolute path ("unix:///run/user/1000/boid.sock"),
-// which url.Parse puts entirely into Path with an empty Host. A caller that
-// only types two slashes ("unix://relative/path") would instead land the
-// first path segment in Host — reassembling Host+Path here tolerates that
-// typo instead of silently truncating the path to what followed the first
-// "/".
+// unixSocketPathFromURL recovers the filesystem path from a "unix://" URL,
+// tolerating a two-slash typo ("unix://relative/path", which url.Parse
+// lands in Host rather than Path) by reassembling Host+Path.
 func unixSocketPathFromURL(u *url.URL) string {
 	if u.Host != "" {
 		return u.Host + u.Path
@@ -201,22 +147,16 @@ func unixSocketPathFromURL(u *url.URL) string {
 	return u.Path
 }
 
-// IsUnix reports whether c dials a local UNIX socket (NewUnixClient, or
-// NewClient given a "unix://" url) rather than a remote HTTPS origin. root's
-// PersistentPreRunE uses this to decide whether daemon autostart applies
-// (decision 6: autostart only ever makes sense for a daemon this same host
-// can spawn).
+// IsUnix reports whether c dials a local UNIX socket rather than a remote
+// HTTPS origin. Used to decide whether daemon autostart applies.
 func (c *Client) IsUnix() bool {
 	return c.socketPath != ""
 }
 
 // newHTTPSClient builds an https-scheme Client. transport, when nil,
-// defaults to http.DefaultTransport at request time (bearerTransport.base);
-// tests pass a transport pinned to a httptest.NewTLSServer's certificate
-// (via that server's own Client().Transport) so the Bearer-header and
-// same-origin-redirect behavior can be exercised without disabling TLS
-// verification process-wide — production callers (NewClient) always pass
-// nil and get the system cert store.
+// defaults to http.DefaultTransport at request time; tests pass a
+// transport pinned to a test server's certificate so TLS verification
+// doesn't need to be disabled process-wide.
 func newHTTPSClient(u *url.URL, token string, transport http.RoundTripper) (*Client, error) {
 	if u.Host == "" {
 		return nil, fmt.Errorf("https client url %q: missing host", u.String())
@@ -231,24 +171,14 @@ func newHTTPSClient(u *url.URL, token string, transport http.RoundTripper) (*Cli
 	}, nil
 }
 
-// newHTTPClient builds an http (no TLS) scheme Client — PR-3 Option 4
-// host-mode redesign (docs/plans/volume-only-daemon.md §論点c). Same
-// bearerTransport/sameOriginCheckRedirect wiring as newHTTPSClient, minus
-// TLS entirely: host mode's whole point is that the `boid` CLI itself
-// already owns the daemon container's lifecycle (cmd/host.go), so there is
-// no independent trust decision left for a certificate to make — the
-// Bearer token (BOID_CLI_TOKEN, checked by
-// auth.NewCLITokenAuthMiddleware) is the only credential.
-//
-// Rejects a non-loopback host outright (Minor safety net, not load-bearing
-// for the single-user threat model this exists under — CLAUDE.md's
-// セキュリティモデル section — but cheap insurance against a named
-// profile or hand-edited config accidentally sending BOID_CLI_TOKEN in
-// cleartext to a genuinely remote host): only 127.0.0.1/::1/localhost are
-// accepted. transport, when nil, defaults to http.DefaultTransport at
-// request time (bearerTransport.base) — tests pass a transport pinned to
-// an httptest.NewServer's client so this can be exercised without a real
-// loopback listener.
+// newHTTPClient builds an http (no TLS) scheme Client for the CLI's
+// host-mode orchestration, which already owns the daemon container's
+// lifecycle end to end and so has no independent trust decision left for a
+// certificate to make — the Bearer token is the only credential. Rejects a
+// non-loopback host as cheap insurance against sending that token in
+// cleartext to a genuinely remote host. transport, when nil, defaults to
+// http.DefaultTransport at request time; tests pass one pinned to a test
+// server's client instead of a real loopback listener.
 func newHTTPClient(u *url.URL, token string, transport http.RoundTripper) (*Client, error) {
 	if u.Host == "" {
 		return nil, fmt.Errorf("http client url %q: missing host", u.String())
@@ -270,13 +200,9 @@ func newHTTPClient(u *url.URL, token string, transport http.RoundTripper) (*Clie
 }
 
 // bearerTransport injects "Authorization: Bearer <token>" into every
-// outgoing request (RFC 6750; matches internal/api/auth/bearer_verifier.go's
-// case-insensitive scheme parsing on the server side). It applies the
-// header fresh on every RoundTrip call rather than relying on net/http's
-// own "copy headers to the redirected request" behavior, so it naturally
-// re-applies on a same-origin redirect and is never even asked to apply to
-// a cross-origin one — sameOriginCheckRedirect (below) rejects that hop
-// before net/http builds the request this RoundTripper would see.
+// outgoing request. It applies the header fresh on every RoundTrip call
+// rather than relying on net/http's redirect header-copying, so it
+// naturally re-applies on a same-origin redirect.
 type bearerTransport struct {
 	token string
 	base  http.RoundTripper
@@ -295,20 +221,14 @@ func (t *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return base.RoundTrip(req)
 }
 
-// sameOriginCheckRedirect implements decision 7 (docs/plans/
-// cli-remote-connection.md): an https-scheme Client must never follow a
-// redirect to a different origin (scheme+host) than the request that
-// triggered it — a compromised or merely misconfigured remote daemon must
-// not be able to redirect this CLI's Bearer token to an arbitrary
-// third-party host. Same-origin redirects (e.g. path canonicalization)
-// still work exactly like net/http's own default policy, including the
-// same 10-hop cap.
+// sameOriginCheckRedirect rejects a redirect to a different origin
+// (scheme+host) than the request that triggered it, so a compromised or
+// misconfigured remote daemon can't redirect this CLI's Bearer token to an
+// arbitrary third-party host. Same-origin redirects still work like
+// net/http's own default policy, including the 10-hop cap.
 func sameOriginCheckRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) == 0 {
-		// net/http only invokes CheckRedirect once a redirect has actually
-		// happened, always with the triggering request already in via — this
-		// guards a hypothetical empty via defensively rather than relying on
-		// that invariant to avoid an index panic.
+		// Defensive: net/http always populates via before calling this.
 		return nil
 	}
 	if len(via) >= 10 {
@@ -338,35 +258,16 @@ func DefaultSocketPath() string {
 }
 
 // defaultCLIAddrHost is the loopback literal DefaultCLIAddr always binds/
-// dials — mirrors newHTTPClient's own loopback-only restriction (a Bearer
-// token has no business leaving the local host on this transport).
+// dials — mirrors newHTTPClient's own loopback-only restriction.
 const defaultCLIAddrHost = "127.0.0.1"
 
 // DefaultCLIAddr resolves the "host:port" the container-backend daemon's
-// dedicated CLI TCP listener binds/is published on, and that `boid`'s
-// host-mode orchestration (cmd/host.go, BOID_MODE=container — nose's
-// Option 4 redesign of PR-3, docs/plans/volume-only-daemon.md §論点c)
-// dials once the daemon container is confirmed healthy. cmd/start.go's own
-// buildStartConfig uses this exact same value to bind
-// server.Config.CLIAddr — a single source of truth for the literal so the
-// two ends can never drift apart silently, and build/container/compose.yml
-// publishes the identical port on the host's own loopback interface
-// (`127.0.0.1:8442:8442`).
-//
-// Fixed at "127.0.0.1:8442" — no BOID_CLI_ADDR override (round-2 codex
-// review Major 2, removed here; a PORT-only override used to be honored,
-// but nothing ever propagated it into build/container/compose.yml's own
-// hardcoded `127.0.0.1:8442:8442` port-publish or into the daemon
-// container's own listener bind, so an operator setting it would have the
-// host CLI poll a port the daemon was never actually reachable on for the
-// full hostModeStartTimeout, then time out). This literal must always
-// match compose.yml's own hardcoded port until a real end-to-end plumbed
-// override (host CLI dial port AND compose's published port AND the
-// container's own bound port, all three, kept in lockstep) is worth the
-// complexity — not needed for this single-user, same-host deployment
-// shape. A genuinely remote daemon (a named `https://` profile,
-// profiles.Resolve) is unaffected — that path has its own, independently
-// configurable port as part of the profile URL.
+// dedicated CLI TCP listener binds/is published on, dialed by the CLI's
+// host-mode orchestration once the daemon container is confirmed healthy.
+// cmd/start.go's buildStartConfig uses this same value to bind
+// server.Config.CLIAddr, and build/container/compose.yml publishes the
+// identical port — all three must be kept in lockstep if this literal
+// ever changes; there is no runtime override.
 func DefaultCLIAddr() string {
 	return defaultCLIAddrHost + ":8442"
 }
@@ -495,18 +396,13 @@ func (c *Client) ListJobs(filter apiwire.JobListFilter) ([]apiwire.JobWithContex
 }
 
 // wsAttachClientMsg / wsAttachServerMsg mirror the wire format
-// internal/api/ws_attach.go's wsClientMsg/wsServerMsg define (docs/plans/
-// cli-remote-connection.md Phase 3 PR3: "フレーム構成 (既存 ws_attach.go の
-// 仕様に準拠)"). Kept as an independent copy rather than an import — those
-// server-side types are unexported, and internal/client's own architecture
-// rule (TestClientDoesNotDependOnBehavior in architecture_test.go) treats
-// the JSON wire contract, not internal/api's Go types, as the sharing
-// boundary with the server. Keep both structs' field sets in sync by hand
-// if ws_attach.go's frame shape ever changes.
+// internal/api/ws_attach.go's wsClientMsg/wsServerMsg define. Kept as an
+// independent copy rather than an import since the JSON wire contract, not
+// internal/api's Go types, is the sharing boundary with the server — keep
+// both structs' field sets in sync by hand if the frame shape ever changes.
 //
 // input_close has no counterpart in wsServerMsg — it is a client→server-only
-// frame type (see attachSendInputClose) that ws_attach.go's read loop
-// switches on alongside "input"/"resize".
+// frame type (see attachSendInputClose).
 type wsAttachClientMsg struct {
 	Type string `json:"type"`
 	Data string `json:"data,omitempty"` // base64-encoded, "input" only
@@ -530,28 +426,13 @@ type wsAttachServerMsg struct {
 	Rendered bool `json:"rendered,omitempty"`
 }
 
-// AttachJob opens a live interactive attach to jobID over WebSocket
-// (docs/plans/cli-remote-connection.md Phase 3 PR3: "WebSocket attach
-// 一本化") and blocks until the job's process exits (the server sends an
-// "exit" frame, or the socket closes normally) or the caller detaches
-// (stdin.Read returning ErrAttachDetached — see cmd/attach.go's
-// detachReader). Works identically for a unix-scheme Client (the WS
-// handshake dials over the same UNIX socket via c.httpClient's
-// DialContext) and an https-scheme one (the handshake request carries the
-// same Authorization: Bearer header every other request on c.httpClient
-// does, via bearerTransport) — reusing c.httpClient rather than building a
-// separate one is what gives WS attach Bearer auth for free, and is the
-// point of "一本化": one transport, one auth path, for both local and
-// remote profiles alike.
-//
-// This replaces the old raw net.Dial("unix", ...) + hand-written
-// `Upgrade: boid-attach` implementation, which only ever worked for a unix
-// socket Client — an https-scheme Client had no socketPath to dial at all,
-// so remote attach previously just returned a "not yet supported" error —
-// and duplicated a second attach transport alongside the Web UI's existing
-// WebSocket one for no reason beyond history (decision 5, docs/plans/
-// cli-remote-connection.md: two attach transports serving the same purpose
-// is a maintenance burden the plan explicitly rejects).
+// AttachJob opens a live interactive attach to jobID over WebSocket and
+// blocks until the job's process exits (the server sends an "exit" frame,
+// or the socket closes normally) or the caller detaches (stdin.Read
+// returning ErrAttachDetached — see cmd/attach.go's detachReader). Works
+// identically for a unix-scheme Client and an https-scheme one, since both
+// route through c.httpClient (its DialContext for unix, its
+// bearerTransport for the Bearer header) rather than a separate transport.
 //
 // stdin may be nil (no input forwarding) — used by
 // TestServerJobRuntimeAttachAndResize (internal/server/server_phase3_test.go),
@@ -577,54 +458,35 @@ type AttachOptions struct {
 
 // Reconnect pacing. These are vars only so tests can shrink them.
 var (
-	// defaultAttachReconnectWindow is sized for the failure this whole
-	// mechanism exists for: an idle attach dropped by an intermediary
-	// (Cloudflare Tunnel, NAT), where the daemon and the job are both
-	// perfectly healthy and the only thing that failed was the wire.
-	// Those recover in seconds; a few minutes of retrying also covers a
+	// defaultAttachReconnectWindow covers a dropped-but-healthy connection
+	// (e.g. an intermediary like Cloudflare Tunnel or NAT reaping an idle
+	// attach); those recover in seconds, and a few minutes also covers a
 	// tunnel process being restarted underneath a long-lived session.
 	defaultAttachReconnectWindow = 3 * time.Minute
 	attachReconnectInitialWait   = 500 * time.Millisecond
 	attachReconnectMaxWait       = 5 * time.Second
 
-	// attachKeepalivePeriod mirrors ws_attach.go's wsKeepalivePeriod: the
-	// server pings idle connections, and so does this side. Pinging from
-	// both ends is deliberate rather than redundant — an intermediary that
-	// meters the two directions separately (or drops one of them) is left
-	// with no idle direction to reap.
+	// attachKeepalivePeriod mirrors ws_attach.go's wsKeepalivePeriod — both
+	// ends ping idle connections, since an intermediary that meters the two
+	// directions separately can otherwise leave one direction unreaped.
 	attachKeepalivePeriod = 30 * time.Second
 	attachPingTimeout     = 10 * time.Second
 
-	// attachDialTimeout bounds one WS handshake. Without it a reconnect
-	// dial can park forever: c.httpClient's transport pools idle
-	// connections, and a machine resuming from sleep can hand that pool a
-	// connection whose peer is gone but which was never reset (the laptop
-	// was not on the network to receive the FIN/RST), so the handshake
-	// neither completes nor errors. attachOnce would then never return, the
-	// reconnect loop would never reach its deadline check, and the session
-	// would be lost silently. Cancelling the request also evicts that dead
-	// connection from net/http's idle pool, so the next attempt dials fresh
-	// rather than re-wedging on the same socket.
-	//
-	// Sized well above a real handshake (a local UNIX socket or a tunnelled
-	// HTTPS origin both answer in well under a second) and well below
-	// defaultAttachReconnectWindow, so a genuinely slow network still gets
-	// several attempts inside the window.
+	// attachDialTimeout bounds one WS handshake. Without it, a pooled idle
+	// connection whose peer is gone (e.g. a laptop resuming from sleep) can
+	// leave a dial neither completing nor erroring, parking the reconnect
+	// loop forever; cancelling also evicts that dead connection from
+	// net/http's idle pool so the next attempt dials fresh.
 	attachDialTimeout = 20 * time.Second
 )
 
-// Reconnect (2026-08-10) is what makes an idle interactive session
-// survivable: nothing in boid ever timed an attach out, but with no
-// traffic on an idle PTY the network did it for us, and the CLI had no way
-// back — `boid agent claude` never prints the job id it attached to, so a
-// dropped session was simply lost. On an unexpected drop this redials with
-// backoff and resumes the transcript from where it left off (the
-// ?replay_offset= / "attach" frame pair, see ws_attach.go), so the user's
-// screen picks up mid-stream instead of repainting the whole session.
-//
-// A drop is "unexpected" only when the server did NOT say the job was
-// over: an "exit" frame, an "error" frame, a clean WS close, or a local
-// detach (Ctrl-]) all return straight away, exactly as before.
+// On an unexpected drop (the connection breaking without the server
+// having said the job was over) this redials with backoff and resumes the
+// transcript from where it left off (the ?replay_offset= / "attach" frame
+// pair, see ws_attach.go), so the user's screen picks up mid-stream
+// instead of repainting the whole session. An "exit" frame, an "error"
+// frame, a clean WS close, or a local detach (Ctrl-]) all return straight
+// away instead of reconnecting.
 func (c *Client) AttachJob(jobID string, stdin io.Reader, stdout io.Writer, opts AttachOptions) error {
 	if stdout == nil {
 		stdout = io.Discard
@@ -666,14 +528,9 @@ func (c *Client) AttachJob(jobID string, stdin io.Reader, stdout io.Writer, opts
 			return err
 		}
 		if !st.notifiedDrop {
-			// Only the first failure of this outage gets a notice — with
-			// backoff up to attachReconnectMaxWait, a stubborn network can
-			// mean several attachOnce failures per outage, and re-flashing
-			// this notice on every one of them (see attachNotifyTransientf's
-			// doc comment for why even one flash isn't free) buys nothing:
-			// the user already knows it's retrying from the first notice.
-			// attachOnce clears the flag again once a connection actually
-			// comes back up, so the NEXT outage still gets its own notice.
+			// Only the first failure of this outage gets a notice; attachOnce
+			// clears the flag once a connection comes back up, so the next
+			// outage still gets its own.
 			attachNotifyTransientf(opts.Notify, "connection lost (%v); reconnecting...", err)
 			st.notifiedDrop = true
 		}
@@ -738,22 +595,11 @@ func attachNotifyf(w io.Writer, format string, args ...any) {
 }
 
 // attachNotifyTransientf is attachNotifyf for a notice that fires WHILE the
-// job may still be producing output on the same terminal (the "connection
-// lost; reconnecting..." notice mid reconnect loop). opts.Notify is usually
-// os.Stderr, kept separate from stdout (the job's PTY stream) specifically
-// so boid's own chatter can't corrupt a TUI harness's screen — but stdout
-// and stderr still share one physical screen when both point at the user's
-// tty, so a plain "\r\n...\r\n" (attachNotifyf's shape) forces two real line
-// feeds that permanently scroll/displace whatever a full-screen program
-// (vim, another agent, ...) has drawn there, independent of which fd wrote
-// them. This variant stays on the current row — \r returns to column 0
-// without advancing a line, \x1b[2K clears stale content from that row
-// first, and \x1b[s/\x1b[u save and restore the cursor so the job's next
-// write still lands exactly where it left off instead of drifting onto our
-// notice. Reserve attachNotifyf's plain form for messages written right
-// before returning control to the shell (nothing else will land on that
-// row afterward, so advancing past it is what makes the final message
-// readable rather than overwritten).
+// job may still be producing output on the same terminal. Unlike
+// attachNotifyf's plain "\r\n...\r\n" (which would permanently
+// scroll/displace whatever a full-screen program has drawn), this stays on
+// the current row: \r + \x1b[2K clear it in place, and \x1b[s/\x1b[u save
+// and restore the cursor so the job's next write lands where it left off.
 func attachNotifyTransientf(w io.Writer, format string, args ...any) {
 	if w == nil {
 		return
@@ -819,29 +665,16 @@ func (c *Client) attachOnce(ctx context.Context, st *attachState) (done bool, er
 		url += "?replay_offset=" + strconv.FormatInt(st.offset, 10)
 	}
 	// The dial gets its own bounded context (see attachDialTimeout); the
-	// established connection does NOT inherit it. websocket.Dial hands the
-	// handshake context to http.Client.Do and keeps the 101 response body as
-	// the connection's ReadWriteCloser, but net/http clears that request's
-	// canceler the moment it sees a writable (protocol-switched) body, so
-	// cancelling here after a successful Dial cannot close the long-lived
-	// attach that follows. coder/websocket relies on the same property for
-	// its own HTTPClient.Timeout handling.
+	// established connection does NOT inherit it — net/http clears the
+	// request's canceler once it sees the protocol-switched response body,
+	// so cancelling after a successful Dial cannot close the attach itself.
 	dialCtx, cancelDial := context.WithTimeout(ctx, attachDialTimeout)
 	defer cancelDial()
 	conn, resp, err := websocket.Dial(dialCtx, url, &websocket.DialOptions{
 		HTTPClient: c.httpClient,
-		// Origin deliberately mirrors c.baseURL itself rather than one of
-		// the server's allowedOrigins() patterns (localhost/127.0.0.1/
-		// [::1]/public_url — those exist for a *browser*'s cross-origin WS
-		// connect; see ws_attach.go's allowedOrigins doc comment). A direct
-		// Go http.Client dial's Origin and Host are the same origin by
-		// construction, and websocket.Accept's authenticateOrigin already
-		// short-circuits to "allowed" whenever Origin's host equals the
-		// request Host — true here unconditionally — before it ever
-		// consults the pattern list. Sending it at all (rather than
-		// omitting the header entirely, which authenticateOrigin also
-		// allows) is just explicit-over-implicit: it documents at the wire
-		// level which origin this connection claims to be from.
+		// Origin mirrors c.baseURL: a direct Go http.Client dial's Origin
+		// and Host are the same origin by construction, so the server's
+		// origin check always allows it regardless of its pattern list.
 		HTTPHeader: http.Header{"Origin": []string{c.baseURL}},
 	})
 	if err != nil {
@@ -851,18 +684,11 @@ func (c *Client) attachOnce(ctx context.Context, st *attachState) (done bool, er
 	st.everConnected = true
 	st.notifiedDrop = false
 
-	// Disable coder/websocket's 32768-byte default read limit. The daemon
-	// replays a job's whole accumulated transcript on connect, and that
-	// transcript is unbounded — with the stock limit, attaching to any job
-	// that had printed more than ~24 KB (the raw size whose base64 payload
-	// fills 32768 bytes) failed outright with "websocket: message too big:
-	// read limited at 32769 bytes" instead of showing output. Newer
-	// daemons chunk their output frames (ws_attach.go's
-	// maxOutputChunkBytes), but a freshly-updated CLI routinely attaches to
-	// an already-running older daemon, so the client must not depend on
-	// that. No cap is substituted for the default: any finite ceiling would
-	// just move the same failure to a longer job, and the peer here is the
-	// user's own daemon.
+	// Disable coder/websocket's 32768-byte default read limit: the daemon
+	// replays a job's whole accumulated transcript on connect, which is
+	// unbounded, and the client cannot assume the daemon chunks it. No cap
+	// is substituted for the default — any finite ceiling just moves the
+	// same failure to a longer job.
 	conn.SetReadLimit(-1)
 
 	connCtx, cancel := context.WithCancel(ctx)
@@ -964,12 +790,8 @@ func (c *Client) attachOnce(ctx context.Context, st *attachState) (done bool, er
 }
 
 // attachDialError extracts a server-provided error message from a failed
-// WS handshake response, mirroring the old raw-Upgrade AttachJob's
-// {"error": "..."} decoding (WSAttachHandler.ServeHTTP's 401 response, and
-// any other pre-upgrade failure, writes that same JSON shape). Falls back
-// to err unchanged when there is no response body or it isn't the expected
-// shape — websocket.Dial's own error already describes the underlying
-// failure either way.
+// WS handshake response's {"error": "..."} body. Falls back to err
+// unchanged when there is no response body or it isn't the expected shape.
 func attachDialError(resp *http.Response, err error) error {
 	if resp == nil || resp.Body == nil {
 		return err
@@ -1015,22 +837,10 @@ func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Write
 		case "attach":
 			offset = msg.Offset
 			if msg.Rendered {
-				// A rendered screen dump describes an entire screen with
-				// absolute positioning, so it has to land on a cleared one
-				// or it is drawn over whatever was already there.
-				//
-				// Deliberately NARROWER than the Web UI terminal's own wipe
-				// condition (web/static/boid-terminal.js also resets at
-				// offset 0): that client owns a whole xterm and can clear it
-				// freely, while this one writes into the user's real
-				// terminal, where a plain from-the-top replay — `boid exec`
-				// on the non-interactive transport, which never gets a
-				// rendered snapshot — must not erase what the user had on
-				// screen before they ran the command.
-				//
-				// ED 2 + CUP home rather than a full RIS for the same
-				// reason: a reset would also drop scrollback the user may
-				// still want.
+				// A rendered screen dump uses absolute positioning, so it
+				// must land on a cleared screen. ED 2 + CUP home rather
+				// than a full RIS, since a reset would also drop scrollback
+				// the user may still want.
 				if _, writeErr := stdout.Write([]byte("\x1b[2J\x1b[H")); writeErr != nil {
 					return offset, true, writeErr
 				}
@@ -1045,17 +855,9 @@ func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Write
 			}
 			offset += int64(len(data))
 		case "exit":
-			// The exit frame's Code field is a spec-reserved slot
-			// (docs/plans/cli-remote-connection.md "フレーム構成":
-			// `exit: {code}`). Today the server always sends 0 there —
-			// exit codes are actually surfaced via a separate REST call
-			// (cmd/exec.go's fetchExecExitCode), NOT through this frame,
-			// so AttachJob has no need to return one. Wiring an actual
-			// exit code through this path (server-side capture + a
-			// method-signature bump on Client.AttachJob) is tracked as
-			// an unresolved point in the plan doc; deliberately not
-			// silently returning msg.Code today would mislead callers
-			// into using a value that is always 0.
+			// msg.Code is always 0 today — exit codes are surfaced via a
+			// separate REST call (cmd/exec.go's fetchExecExitCode), not
+			// this frame — so it is deliberately not returned here.
 			return offset, true, nil
 		case "error":
 			// Terminal by choice: the server states a reason (bad job,
@@ -1084,12 +886,9 @@ func attachSendInputClose(ctx context.Context, conn *websocket.Conn) error {
 // classifyAttachWSError decides whether a failed Read means the attach is
 // over (finished=true, with the error normalized to nil when it is merely
 // how a clean teardown surfaces) or merely that the connection broke
-// (finished=false, error preserved for the reconnect loop to report).
-//
-// The split matters most for io.EOF and net.ErrClosed: the pre-reconnect
-// normalizeAttachWSError folded both into "attach finished, no error",
-// which is exactly how an intermediary reaping an idle connection
-// (Cloudflare Tunnel, NAT) came out looking like a job that ended.
+// (finished=false, error preserved for the reconnect loop to report) — the
+// split matters most for io.EOF/net.ErrClosed, which an intermediary
+// reaping an idle connection can also produce.
 func classifyAttachWSError(err error) (finished bool, normalized error) {
 	if err == nil {
 		return true, nil
@@ -1251,27 +1050,13 @@ func (c *Client) GetRaw(path string) (statusCode int, body []byte, err error) {
 
 // GetRawWithAcceptAndRevision performs a GET request with a custom Accept
 // header, returning the raw response body/status alongside the response's
-// ETag header value VERBATIM, quotes included (Minor 2, codex review round
-// 1; fixed round 2 — see below) — used by `boid config get`/`apply -f`/
-// `edit` (cmd/config.go) to capture the daemon's current config.yaml
+// ETag header value VERBATIM, quotes included — used by `boid config
+// get`/`apply -f`/`edit` to capture the daemon's current config.yaml
 // revision for a later POST's If-Match. config.yaml's GET response body is
-// raw YAML, not JSON, so unlike `boid workspace edit` (which reads
-// apiwire.WorkspaceDetail.Revision straight out of a JSON body via Do), there is
-// no JSON field to carry the revision — the ETag response header is the
-// only place it exists on the wire.
-//
-// Pre-fix (round 1) this stripped the surrounding quotes here, so every
-// subsequent If-Match this value was round-tripped into
-// (PostRawWithIfMatch/PutRawWithIfMatch below, which just
-// req.Header.Set("If-Match", ifMatch) verbatim) sent a bare, unquoted token
-// — valid enough for this daemon's own unquoteETag-on-receipt tolerance
-// (internal/api/workspace.go), but not standard entity-tag syntax
-// (RFC 7232 §2.3: an entity-tag is always DQUOTE ... DQUOTE, optionally
-// W/-prefixed), which a strict intermediary on a remote deployment could
-// reject outright. Returning the header untouched and letting the server's
-// existing unquoteETag do the unwrapping keeps the wire format standard end
-// to end while changing nothing about how ifMatch is used client-side (it
-// stays an opaque string, never parsed here).
+// raw YAML, not JSON, so the ETag header is the only place the revision
+// exists on the wire. The quotes are kept (rather than stripped here) so
+// the value stays standard entity-tag syntax (RFC 7232 §2.3) when it is
+// round-tripped verbatim into a later If-Match header.
 func (c *Client) GetRawWithAcceptAndRevision(path, accept string) (statusCode int, body []byte, revision string, err error) {
 	req, err := http.NewRequest("GET", c.baseURL+path, nil)
 	if err != nil {
@@ -1296,14 +1081,10 @@ func (c *Client) GetRawWithAcceptAndRevision(path, accept string) (statusCode in
 
 // PostStream performs a POST request whose body is STREAMED from body rather
 // than buffered, returning the raw response status code and body regardless of
-// status (PostRaw's shape, PostRaw's rationale).
-//
-// It exists for `boid workspace import-home` (PR8 of
-// docs/plans/workspace-home-volume-persistence.md, 論点 f), whose body is a tar
-// of an entire workspace home — 4.3GB on the machine that feature was written
-// for. Every other method here takes a []byte, which for this payload would
-// mean holding the whole archive in the CLI's heap on its way to a local
-// socket.
+// status. It exists for `boid workspace import-home`, whose body is a tar of
+// an entire workspace home — every other method here takes a []byte, which
+// for a payload that size would mean holding the whole archive in the CLI's
+// heap on its way to a local socket.
 //
 // Two consequences of streaming, both deliberate:
 //
@@ -1339,21 +1120,11 @@ func (c *Client) PostStream(ctx context.Context, path, contentType string, body 
 }
 
 // PostRaw performs a POST request with a custom Content-Type and raw body,
-// returning the raw response status code and body regardless of status
-// (mirrors PutRawWithIfMatch's rationale) — used by `boid workspace apply`
-// (cmd/workspace_apply.go, one raw envelope document per POST
-// /api/workspaces/apply) and `boid project migrate`'s daemon push
-// (cmd/project_migrate.go, POST /api/workspaces) so each caller can
-// distinguish the status codes its own body can provoke (409 conflict, 400
-// bad field/reference, 200 success) instead of losing that distinction to a
-// single generic error string.
-//
-// Historical note: this doc comment used to cite `boid workspace import`
-// (docs/plans/workspace-db-consolidation.md PR5 Step E) as the motivating
-// caller — that command, and the POST /api/workspaces/import endpoint it
-// drove, were both retired 2026-07-28 (see cmd/workspace.go's
-// runWorkspaceImportDeprecated); PostRaw itself is unaffected, since its two
-// remaining callers above always used it independently of that one.
+// returning the raw response status code and body regardless of status —
+// used by `boid workspace apply` and `boid project migrate`'s daemon push
+// so each caller can distinguish the status codes its own body can provoke
+// (409 conflict, 400 bad field/reference, 200 success) instead of losing
+// that distinction to a single generic error string.
 func (c *Client) PostRaw(path, contentType string, body []byte) (statusCode int, respBody []byte, err error) {
 	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
@@ -1377,10 +1148,10 @@ func (c *Client) PostRaw(path, contentType string, body []byte) (statusCode int,
 // PutRawWithIfMatch performs a PUT request with a custom Content-Type and
 // (optional) If-Match header, returning the raw response status code and
 // body regardless of status — unlike Do/DoWithContentType, which collapse
-// every 4xx/5xx into a generic error. Used by `boid workspace edit`
-// (docs/plans/workspace-db-consolidation.md PR4 Step E/H) so the CLI can
-// distinguish 412 (stale revision) from 428 (missing If-Match) from 200
-// (success) instead of losing that distinction to a single error string.
+// every 4xx/5xx into a generic error. Used by `boid workspace edit` so the
+// CLI can distinguish 412 (stale revision) from 428 (missing If-Match)
+// from 200 (success) instead of losing that distinction to a single error
+// string.
 func (c *Client) PutRawWithIfMatch(path, contentType string, body []byte, ifMatch string) (statusCode int, respBody []byte, err error) {
 	req, err := http.NewRequest(http.MethodPut, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
@@ -1407,10 +1178,9 @@ func (c *Client) PutRawWithIfMatch(path, contentType string, body []byte, ifMatc
 // PostRawWithIfMatch performs a POST request with a custom Content-Type and
 // (optional) If-Match header, returning the raw response status code and
 // body regardless of status — the POST counterpart of PutRawWithIfMatch,
-// used by `boid config apply -f`/`edit` (BLOCKER 1, codex review round 1)
-// so the CLI can distinguish 412 (stale revision) from 428 (missing
-// If-Match) from 200 (success) instead of losing that distinction to a
-// single error string.
+// used by `boid config apply -f`/`edit` so the CLI can distinguish 412
+// (stale revision) from 428 (missing If-Match) from 200 (success) instead
+// of losing that distinction to a single error string.
 func (c *Client) PostRawWithIfMatch(path, contentType string, body []byte, ifMatch string) (statusCode int, respBody []byte, err error) {
 	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {

@@ -18,19 +18,9 @@ type BrokerRegisterRequest struct {
 type BrokerRegisterResponse struct {
 	Token  string `json:"token"`
 	Socket string `json:"socket"`
-	// ResolvedHostCommands used to echo back
-	// dispatcher.ResolveHostCommands' absolute-path-keyed map so `boid exec`
-	// could feed it into SandboxRuntimeInfo (matching shim bind-mount
-	// targets to broker policy keys without re-resolving on the client
-	// side). That map has been dead weight since the Phase 5 5a-3 cutover
-	// retired the shim's absolute-host-path bind mount scheme
-	// (SandboxRuntimeInfo.ResolvedHostCommands was deleted, hostCommandMounts
-	// and buildHostCommandNamesEnv with it — see
-	// docs/plans/phase5-shim-and-task-context.md 5a PR3). No client reads
-	// this field any more; it is retained as omitempty for one release so
-	// any stale caller decoding the response doesn't blow up on a missing
-	// key, and will be removed outright once no versions of the CLI still
-	// speak the older shape.
+	// ResolvedHostCommands is no longer read by any client; kept as
+	// omitempty for one release so a stale caller decoding this response
+	// doesn't break on a missing key.
 	ResolvedHostCommands map[string]orchestrator.CommandDef `json:"resolved_host_commands,omitempty"`
 }
 

@@ -14,15 +14,8 @@ import (
 // path is left untouched unless the write fully succeeds.
 //
 // The temp file's name is derived from path's own basename (".<base>.*")
-// rather than hardcoded. It used to be the literal ".config.yaml.*", which was
-// the same string for config.yaml and stayed correct only as long as this
-// function had exactly one caller; PR9 of
-// docs/plans/workspace-home-volume-persistence.md added a second (a
-// workspace's init.sh, dispatcher.WorkspaceInitScriptStore.Write), and a
-// crash-leftover named ".config.yaml.1234" sitting next to a workspace's
-// init.sh is a false lead for whoever finds it. Behaviour for the original
-// caller is unchanged: filepath.Base("…/config.yaml") is "config.yaml", so the
-// pattern it gets is byte-identical to the old constant.
+// so a crash-leftover file names the caller it came from, since this
+// function has more than one caller.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) (retErr error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")

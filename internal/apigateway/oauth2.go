@@ -15,11 +15,9 @@ import (
 
 // OAuthProviderConfig is the resolved shape of one config.yaml
 // oauth_providers.<name> entry (internal/config.OAuthProviderConfig, which
-// this package deliberately does not import — see doc.go's "self-contained
-// leaf package" rationale) — the token-endpoint identity an
-// OAuth2TokenSource needs to perform a refresh_token grant for that provider
-// (docs/plans/api-gateway.md §論点4/§6: "config.yaml の oauth_providers:
-// ブロック。client_secret のみ SecretStore 参照").
+// this package deliberately does not import — see doc.go) — the
+// token-endpoint identity an OAuth2TokenSource needs to perform a
+// refresh_token grant for that provider.
 type OAuthProviderConfig struct {
 	// Name is the provider's config.yaml key (oauth_providers.<Name>) — the
 	// same string a services.*.auth.provider entry references.
@@ -32,53 +30,46 @@ type OAuthProviderConfig struct {
 	// travels as a plain string rather than a secret-store reference.
 	ClientID string
 	// ClientSecretKey is a secret-store key reference (never a plaintext
-	// value) for a confidential client's client_secret (docs/plans/
-	// api-gateway.md §7: "confidential client の client_secret を daemon 側
-	// にのみ置く"). Empty for a public client (PKCE, no client_secret) —
-	// callRefreshTokenEndpoint simply omits client_secret from the token request
-	// when this resolves to "".
+	// value) for a confidential client's client_secret. Empty for a public
+	// client (PKCE, no client_secret) — callRefreshTokenEndpoint simply
+	// omits client_secret from the token request when this resolves to "".
 	ClientSecretKey string
 	// Scopes is consumed by login.go's authorization-URL construction
 	// (loopback/manual flows) and device-authorization request (device
-	// flow) — docs/plans/api-gateway.md §7 "flow の三段構え", PR3. Never
-	// consumed by this file's refresh_token grant — see
+	// flow). Never consumed by this file's refresh_token grant — see
 	// callRefreshTokenEndpoint's own doc comment for why.
 	Scopes []string
 
 	// Flow selects which of the three RFC-defined initial-grant flows
-	// (docs/plans/api-gateway.md §7 "flow の三段構え", PR3) `boid secret
-	// oauth login <service>` uses for this provider: LoginFlowDevice (RFC
-	// 8628 device authorization grant), LoginFlowLoopback (RFC 6749
-	// authorization code grant + PKCE, RFC 8252 loopback redirect), or
-	// LoginFlowManual (authorization code grant via the OOB
-	// urn:ietf:wg:oauth:2.0:oob redirect URI, no PKCE — freee's shape).
-	// Empty ("") means this provider has no login flow configured at all —
-	// AccessToken's refresh_token grant (this file) works regardless (an
-	// operator can always seed refresh_token via `boid secret set`, PR2's
-	// own documented fallback), but login.go's LoginManager.StartLogin
-	// rejects it with a clear "no flow configured" error rather than
-	// guessing.
+	// `boid secret oauth login <service>` uses for this provider:
+	// LoginFlowDevice (RFC 8628 device authorization grant),
+	// LoginFlowLoopback (RFC 6749 authorization code grant + PKCE, RFC
+	// 8252 loopback redirect), or LoginFlowManual (authorization code
+	// grant via the OOB urn:ietf:wg:oauth:2.0:oob redirect URI, no PKCE —
+	// freee's shape). Empty ("") means this provider has no login flow
+	// configured at all — AccessToken's refresh_token grant (this file)
+	// works regardless (an operator can always seed refresh_token via
+	// `boid secret set`), but login.go's LoginManager.StartLogin rejects
+	// it with a clear "no flow configured" error rather than guessing.
 	//
 	// MUST be empty when Grant is GrantClientCredentials — client_credentials
-	// (§6-補) has no login flow at all (no user authorization step exists to
+	// has no login flow at all (no user authorization step exists to
 	// select a flow for). internal/config.validateOAuthProviderConfig
 	// rejects a config.yaml entry that sets both at load time; StartLogin
 	// below also defensively rejects it at request time.
 	Flow LoginFlow
 
 	// Grant selects which RFC 6749 grant refresh() (this file) performs for
-	// this provider: GrantAuthorizationCode (the default — every flow this
-	// file supported before §6-補: a refresh_token grant, that refresh_token
-	// itself obtained via one of Flow's three initial flows) or
-	// GrantClientCredentials (RFC 6749 §4.4, "2-legged" / app-only — no user
-	// authorization step, no refresh_token concept at all; see docs/plans/
-	// api-gateway.md §6-補). Deliberately a SEPARATE axis from Flow, not a
-	// fourth Flow value — see ValidOAuthGrants' own doc comment for why
-	// conflating them would break the "config load acceptance and
-	// StartLogin's switch can never silently drift apart" invariant
-	// ValidLoginFlows exists to protect. Empty ("") means
-	// GrantAuthorizationCode, for the same "an existing PR2/PR3 config.yaml
-	// must keep loading unmodified" reason Flow's own zero value does.
+	// this provider: GrantAuthorizationCode (the default: a refresh_token
+	// grant, that refresh_token itself obtained via one of Flow's three
+	// initial flows) or GrantClientCredentials (RFC 6749 §4.4, "2-legged" /
+	// app-only — no user authorization step, no refresh_token concept at
+	// all). Deliberately a SEPARATE axis from Flow, not a fourth Flow
+	// value — see ValidOAuthGrants' own doc comment for why conflating
+	// them would break the "config load acceptance and StartLogin's switch
+	// can never silently drift apart" invariant ValidLoginFlows exists to
+	// protect. Empty ("") means GrantAuthorizationCode, so an existing
+	// config.yaml keeps loading unmodified.
 	Grant OAuthGrant
 
 	// AuthorizationEndpoint is the provider's OAuth2 authorization endpoint
@@ -98,12 +89,10 @@ type OAuthProviderConfig struct {
 	// extensions RFC 6749/8628 don't standardize but real providers need,
 	// e.g. Google's `access_type=offline`/`prompt=consent` (without which
 	// Google does not reissue a refresh_token on a repeat login once the
-	// user has already granted consent once — docs/plans/api-gateway.md's
-	// own "Google の device flow は認可可能な scope がかなり絞られている"
-	// note is the same class of Google-specific quirk). Deliberately a
-	// per-provider config map rather than hardcoded Google-specific
-	// behavior in this leaf package, matching this config's existing
-	// declarative style. internal/config.validateOAuthProviderConfig
+	// user has already granted consent once). Deliberately a per-provider
+	// config map rather than hardcoded Google-specific behavior in this
+	// leaf package, matching this config's existing declarative style.
+	// internal/config.validateOAuthProviderConfig
 	// rejects any key here that collides with a protocol-reserved
 	// parameter (client_id, redirect_uri, response_type, scope, state,
 	// code_challenge, code_challenge_method, device_code, grant_type) —
@@ -112,9 +101,8 @@ type OAuthProviderConfig struct {
 	AuthorizeParams map[string]string
 }
 
-// LoginFlow selects which of the three RFC-defined initial-grant flows
-// docs/plans/api-gateway.md §7 describes a provider uses for `boid secret
-// oauth login <service>` (PR3).
+// LoginFlow selects which of the three RFC-defined initial-grant flows a
+// provider uses for `boid secret oauth login <service>`.
 type LoginFlow string
 
 const (
@@ -122,21 +110,19 @@ const (
 	// redirect at all, the CLI displays a short user_code + verification
 	// URI and the daemon polls DeviceAuthorizationEndpoint/TokenEndpoint in
 	// the background until the user completes the grant elsewhere
-	// (docs/plans/api-gateway.md §7 flow table: Microsoft/GitHub).
+	// (Microsoft/GitHub use this flow).
 	LoginFlowDevice LoginFlow = "device"
 	// LoginFlowLoopback is RFC 6749's authorization code grant with RFC
 	// 7636 PKCE, using an RFC 8252 §7.3 loopback redirect_uri the CLI binds
-	// dynamically (docs/plans/api-gateway.md §7 flow table: Google/
-	// Atlassian).
+	// dynamically (Google/Atlassian use this flow).
 	LoginFlowLoopback LoginFlow = "loopback"
 	// LoginFlowManual is RFC 6749's authorization code grant via the
 	// urn:ietf:wg:oauth:2.0:oob redirect URI — the provider displays the
 	// code directly in the browser instead of redirecting anywhere, and
-	// the user pastes it into the CLI by hand. No PKCE (docs/plans/
-	// api-gateway.md §7: "PKCE 非対応プロバイダ (freee) では...confidential
-	// client の client_secret を daemon 側にのみ置くことで同等の性質を担保
-	// する" — ClientSecretKey, not a code_verifier, is what keeps the code
-	// alone unusable off the daemon for this flow).
+	// the user pastes it into the CLI by hand. No PKCE (freee, a PKCE-less
+	// provider, is this flow's motivating case) — ClientSecretKey, not a
+	// code_verifier, is what keeps the code alone unusable off the daemon
+	// for this flow.
 	LoginFlowManual LoginFlow = "manual"
 )
 
@@ -152,16 +138,16 @@ var ValidLoginFlows = map[LoginFlow]bool{
 }
 
 // OAuthGrant selects which RFC 6749 grant OAuth2TokenSource.refresh performs
-// for a provider (docs/plans/api-gateway.md §6-補). A separate axis from
-// LoginFlow — see OAuthProviderConfig.Grant's own doc comment for why the
-// two are never merged into one enum.
+// for a provider. A separate axis from LoginFlow — see
+// OAuthProviderConfig.Grant's own doc comment for why the two are never
+// merged into one enum.
 type OAuthGrant string
 
 const (
 	// GrantAuthorizationCode is the default — every 3-legged (delegated)
-	// grant this package supported before §6-補: refresh() sends
-	// grant_type=refresh_token against a refresh_token obtained through one
-	// of LoginFlow's three initial-authorization flows.
+	// grant: refresh() sends grant_type=refresh_token against a
+	// refresh_token obtained through one of LoginFlow's three
+	// initial-authorization flows.
 	GrantAuthorizationCode OAuthGrant = "authorization_code"
 	// GrantClientCredentials is RFC 6749 §4.4's 2-legged / app-only grant
 	// (Service Principal): refresh() sends grant_type=client_credentials
@@ -169,8 +155,7 @@ const (
 	// confidential client is REQUIRED, RFC 6749 §4.4.2) + scope. No user
 	// authorization step, no authorization code, no PKCE, no redirect_uri,
 	// and — unlike every other grant this package performs — no
-	// refresh_token in the response to persist (docs/plans/api-gateway.md
-	// §6-補: "refresh_token という概念が無い").
+	// refresh_token in the response to persist.
 	GrantClientCredentials OAuthGrant = "client_credentials"
 )
 
@@ -192,20 +177,17 @@ var ValidOAuthGrants = map[OAuthGrant]bool{
 // SecretResolver's own doc comment for the identical rationale.
 type SecretWriter func(namespace, key, value string) error
 
-// credentialID identifies ONE credential set within an oauth2 provider
-// (docs/plans/api-gateway-credential-accounts.md §3/D6). It exists because
-// PR-1's cfg.Name (an OAuthProviderConfig's own Name field) was doing THREE
-// jobs at once: (a) the t.providers[...] lookup key, (b) a component of the
-// secret-store key (OAuthSecretKey(cfg.Name, field)), and (c) a component
-// of the singleflight/memCache key (namespace+"\x00"+provider). Account
-// support splits these into two axes that must NOT be conflated: (a) never
-// varies with account — an account-qualified request still looks up the
-// SAME oauth_providers.<name> config entry, since accounts share one OAuth
-// app (D7) — while (b) and (c) both DO vary with account, since that is the
-// entire point of an account qualifier (docs/plans/
-// api-gateway-credential-accounts.md §"credential identity"). credentialID
-// is the identity for (b)/(c) alone; provider lookup (a) still uses the
-// bare provider string directly (see AccessToken's own t.providers[cred.
+// credentialID identifies ONE credential set within an oauth2 provider. A
+// bare provider name is doing THREE jobs at once: (a) the t.providers[...]
+// lookup key, (b) a component of the secret-store key
+// (OAuthSecretKey(provider, field)), and (c) a component of the
+// singleflight/memCache key (namespace+"\x00"+provider). Account support
+// splits these into two axes that must NOT be conflated: (a) never varies
+// with account — an account-qualified request still looks up the SAME
+// oauth_providers.<name> config entry, since accounts share one OAuth app —
+// while (b) and (c) both DO vary with account. credentialID is the
+// identity for (b)/(c) alone; provider lookup (a) still uses the bare
+// provider string directly (see AccessToken's own t.providers[cred.
 // provider] lookup).
 //
 // secretPrefix and cacheKey are the ONLY two functions in this package that
@@ -213,33 +195,27 @@ type SecretWriter func(namespace, key, value string) error
 // account) — every other call site in oauth2.go/login.go builds its key by
 // calling one of these two methods (via OAuthSecretKey(cred.secretPrefix(),
 // field) for the former) rather than concatenating provider/account
-// strings itself. This single-construction-site property is what the doc's
-// D6 "most dangerous" warning is protecting: if a second, independent way
-// to build these keys existed, it would be possible for one to end up
-// account-qualified while the other stays bare — which is exactly the
-// "different accounts silently share a credential" failure mode this
-// feature exists to prevent, just reached through a code-review gap
-// instead of a design gap.
+// strings itself. This single-construction-site property matters: if a
+// second, independent way to build these keys existed, one could end up
+// account-qualified while the other stays bare — "different accounts
+// silently share a credential".
 type credentialID struct {
 	// provider is the oauth_providers.<name> lookup key — NEVER varies with
 	// account (see this type's own doc comment).
 	provider string
-	// account is the optional credential-account qualifier (docs/plans/
-	// api-gateway-credential-accounts.md D1/D2). "" means unqualified,
-	// making secretPrefix/cacheKey byte-identical to every call site that
-	// predates this feature (D2).
+	// account is the optional credential-account qualifier. "" means
+	// unqualified, making secretPrefix/cacheKey byte-identical to every
+	// call site that predates this feature.
 	account string
 }
 
 // secretPrefix returns the provider-identity component every oauth2
-// secret-store key is built from: provider alone when account is empty
-// (byte-identical to every pre-account-support OAuthSecretKey(provider,
-// field) call, D2), or "provider@account" otherwise (D1's "@" separator).
-// Every OAuthSecretKey call in this package passes THIS method's result as
-// its first argument — never a bare cfg.Name/cred.provider directly — so a
-// grep for OAuthSecretKey( call sites is sufficient to audit that no key is
-// built without going through this method (see this type's own doc
-// comment).
+// secret-store key is built from: provider alone when account is empty, or
+// "provider@account" otherwise. Every OAuthSecretKey call in this package
+// passes THIS method's result as its first argument — never a bare
+// cfg.Name/cred.provider directly — so a grep for OAuthSecretKey( call
+// sites is sufficient to audit that no key is built without going through
+// this method.
 func (c credentialID) secretPrefix() string {
 	if c.account == "" {
 		return c.provider
@@ -251,10 +227,10 @@ func (c credentialID) secretPrefix() string {
 // ns (already-normalized — see normalizeNamespace's own doc comment: ns
 // must be the output of that function, never a raw caller-supplied
 // namespace). Byte-identical to the pre-account-support
-// namespace+"\x00"+provider format when account is empty (D2). The ONLY
-// place these keys are constructed (D6) — AccessToken/cachedAccessToken/
-// persistGrant all call this rather than concatenating namespace/provider/
-// account themselves.
+// namespace+"\x00"+provider format when account is empty. The ONLY place
+// these keys are constructed — AccessToken/cachedAccessToken/persistGrant
+// all call this rather than concatenating namespace/provider/account
+// themselves.
 func (c credentialID) cacheKey(ns string) string {
 	return ns + "\x00" + c.secretPrefix()
 }
@@ -271,15 +247,13 @@ type OAuth2AccessTokenSource interface {
 
 // oauthSecretField names the two pieces of per-(namespace, provider) OAuth2
 // grant state an OAuth2TokenSource reads/writes through the secret store —
-// never a plaintext config.yaml value (docs/plans/api-gateway.md §6:
-// "SecretStore (workspace namespace 付き) に保持するもの: refresh_token、
-// access_token、expires_at").
+// never a plaintext config.yaml value.
 //
 // access_token and expires_at are stored TOGETHER under one key
 // (oauthFieldAccessTokenCache, a small JSON blob — see
-// oauthAccessTokenCache) rather than as two independent secret-store keys
-// (codex review round 3, Major finding): with two keys, a refresh that
-// successfully persists access_token but then fails to persist expires_at
+// oauthAccessTokenCache) rather than as two independent secret-store keys:
+// with two keys, a refresh that successfully persists access_token but
+// then fails to persist expires_at
 // (or vice versa) leaves a MISMATCHED pair durably on disk — a stale
 // expires_at is silently believed to describe a brand-new access_token (or
 // a stale access_token silently inherits a brand-new expires_at, the worse
@@ -307,7 +281,7 @@ type oauthAccessTokenCache struct {
 // internal/dispatcher (this package's own established pattern; see
 // token.go's GenerateToken and singleflight.go's own doc comment for the
 // identical rationale). AccessToken (this file) and LoginManager.StartLogin
-// (login.go, PR3) are the only two call sites — see each one's own doc
+// (login.go) are the only two call sites — see each one's own doc
 // comment for why applying this exactly once, at that single entry point,
 // is what keeps every downstream key (singleflight, memCache, and login.go's
 // own pendingLogin.namespace) consistent with what the SecretStore itself
@@ -326,11 +300,9 @@ func normalizeNamespace(ns string) string {
 
 // OAuthSecretKey returns the secret-store key an OAuth2TokenSource reads or
 // writes for one (provider, field) pair. Exported so an operator's `boid
-// secret set` invocation (docs/plans/api-gateway.md PR2 scope note: "初回
-// grant は当面 boid secret set で refresh_token を手動投入して動作確認でき
-// る形にする") and this package's own tests share the exact same naming
-// convention, rather than two independently-typed-out string literals
-// silently drifting apart. The "oauth2:" prefix keeps this namespaced apart
+// secret set` invocation and this package's own tests share the exact same
+// naming convention, rather than two independently-typed-out string
+// literals silently drifting apart. The "oauth2:" prefix keeps this namespaced apart
 // from any other secret-store key a service's static auth kinds
 // (bearer/basic/header/query) might use in the same secret-store namespace.
 func OAuthSecretKey(provider, field string) string {
@@ -339,16 +311,15 @@ func OAuthSecretKey(provider, field string) string {
 
 // DefaultOAuth2RefreshMargin is how far before expires_at an
 // OAuth2TokenSource proactively refreshes an access token, absent an
-// explicit override (docs/plans/api-gateway.md §6: "expires_at より margin
-// 手前で更新"). Comfortably covers the gateway's own request latency plus
+// explicit override. Comfortably covers the gateway's own request latency plus
 // ordinary clock skew, while staying well inside every provider's shortest
 // observed access-token lifetime (freee: 6h; Google/GitHub/Microsoft: ~1h).
 const DefaultOAuth2RefreshMargin = 5 * time.Minute
 
 // fallbackAccessTokenLifetime is used only when a token endpoint response
 // omits expires_in entirely (RFC 6749 §5.1 marks it OPTIONAL, though every
-// provider docs/plans/api-gateway.md targets does send it in practice). A
-// conservative, deliberately short default: without it, a provider omitting
+// provider this package targets does send it in practice). A conservative,
+// deliberately short default: without it, a provider omitting
 // expires_in would compute expiresAt == refresh time, making EVERY
 // subsequent AccessToken call refresh again (DefaultOAuth2RefreshMargin
 // would always be past a zero-length "valid" window) — a refresh storm
@@ -357,11 +328,10 @@ const DefaultOAuth2RefreshMargin = 5 * time.Minute
 // single-use restriction) for never hammering the endpoint on every single
 // gateway request.
 //
-// Deliberately SHORT (codex review round 3, Major finding), not a
-// generous "typical OAuth2 token lifetime" guess like 55 minutes: PR2 has
-// no reactive refresh-on-401 path at all (docs/plans/api-gateway.md §6:
-// out of scope until buffered-retry is designed), so an assumed lifetime
-// that overshoots a provider's REAL (but unstated) token lifetime means
+// Deliberately SHORT, not a generous "typical OAuth2 token lifetime" guess
+// like 55 minutes: this package has no reactive refresh-on-401 path at
+// all, so an assumed lifetime that overshoots a provider's REAL (but
+// unstated) token lifetime means
 // every request in that gap gets a genuinely-expired access token and a
 // guaranteed upstream 401 — for as long as the wrong assumption holds. A
 // short fallback bounds that window tightly at the cost of occasional
@@ -371,9 +341,8 @@ const DefaultOAuth2RefreshMargin = 5 * time.Minute
 // before this constant's own duration elapses, not after.
 const fallbackAccessTokenLifetime = 10 * time.Minute
 
-// OAuth2TokenSource is the daemon's single OAuth2 refresher (docs/plans/
-// api-gateway.md §6 "daemon 単一リフレッシャの原則"): every oauth2-kind
-// service's Resolve/Inject call funnels through the one instance
+// OAuth2TokenSource is the daemon's single OAuth2 refresher: every
+// oauth2-kind service's Resolve/Inject call funnels through the one instance
 // internal/server/wire.go constructs, so two sandboxed jobs — or two
 // concurrent requests from the same job — hitting the same (namespace,
 // provider) grant at once are coalesced into a single token-endpoint round
@@ -401,9 +370,9 @@ type OAuth2TokenSource struct {
 
 	// memCache is a same-process, best-effort cache of the access token a
 	// refresh most recently obtained, keyed by "namespace\x00provider" —
-	// populated unconditionally on every successful refresh (codex review
-	// round 1, Major finding), independent of whether the secret-store
-	// access_token/expires_at persist (refresh's own "Phase 2") succeeded.
+	// populated unconditionally on every successful refresh, independent
+	// of whether the secret-store access_token/expires_at persist
+	// (refresh's own "Phase 2") succeeded.
 	// It exists to close two narrow-but-real gaps a secret-store-only cache
 	// has:
 	//
@@ -468,8 +437,8 @@ func NewOAuth2TokenSource(providers []OAuthProviderConfig, resolver SecretResolv
 		memCache:      make(map[string]oauthMemCacheEntry),
 		HTTPClient: &http.Client{
 			Timeout: 20 * time.Second,
-			// codex review round 1, Major finding: without an explicit
-			// CheckRedirect, Go's default http.Client redirect policy
+			// Without an explicit CheckRedirect, Go's default http.Client
+			// redirect policy
 			// follows a 307/308 response (preserving method AND body, per
 			// RFC 7538/7231) to WHATEVER scheme the Location header names —
 			// including a downgrade from the config-validated https
@@ -498,18 +467,16 @@ func NewOAuth2TokenSource(providers []OAuthProviderConfig, resolver SecretResolv
 // AccessToken returns a currently-valid access token for (namespace,
 // provider), proactively refreshing it first when there is no cached
 // access_token yet, the cached expires_at cannot be parsed, or the cached
-// token is within RefreshMargin of expiring (docs/plans/api-gateway.md §6
-// "先回りリフレッシュ"). "No cached access_token yet" is the expected PR2
-// dogfood starting state right after an operator seeds only a refresh_token
-// via `boid secret set` (docs/plans/api-gateway.md PR分割 PR2) — not an
-// error.
+// token is within RefreshMargin of expiring. "No cached access_token yet"
+// is the expected starting state right after an operator seeds only a
+// refresh_token via `boid secret set` — not an error.
 //
 // Concurrent callers for the SAME (namespace, provider) that all decide a
 // refresh is needed are coalesced into a single token-endpoint round trip
 // via t.sf — see refresh's own doc comment for why only one of them actually
 // performs it. The cache is re-checked a SECOND time once inside t.sf.Do,
-// immediately before calling refresh (codex review round 2, Major finding):
-// a caller can decide "needs refresh" from its OWN cache read, then stall
+// immediately before calling refresh: a caller can decide "needs refresh"
+// from its OWN cache read, then stall
 // (goroutine scheduling) long enough for a DIFFERENT caller's refresh for
 // the same key to complete and release the singleflight slot entirely —
 // singleflightGroup, like golang.org/x/sync/singleflight, only coalesces
@@ -533,24 +500,21 @@ func (t *OAuth2TokenSource) AccessToken(namespace string, cred credentialID) (st
 	}
 
 	// Normalized ONCE, here, at the sole entry point every other method in
-	// this file receives namespace from (codex review round 5, Major
-	// finding): internal/dispatcher.SecretStore.normalizeNamespace treats ""
-	// and "default" as the exact same underlying row, but this package's own
+	// this file receives namespace from:
+	// internal/dispatcher.SecretStore.normalizeNamespace treats "" and
+	// "default" as the exact same underlying row, but this package's own
 	// singleflight/memCache keys (credentialID.cacheKey, namespace+"\x00"+
-	// secretPrefix) did not apply that same normalization — so a caller
-	// passing "" (Registry.Entry.Namespace's own documented shape for a
-	// workspace-unlinked project) and a caller passing "default" (an
-	// explicit default-workspace-linked project) were treated as two
-	// DIFFERENT keys despite reading/writing the identical secret-store row,
-	// letting both trigger independent concurrent refreshes against the same
+	// secretPrefix) must apply that same normalization, or a caller passing
+	// "" and a caller passing "default" would be treated as two DIFFERENT
+	// keys despite reading/writing the identical secret-store row, letting
+	// both trigger independent concurrent refreshes against the same
 	// refresh_token — precisely the rotation race the whole singleflight
 	// design exists to prevent. Normalizing here means cachedAccessToken/
 	// refreshWithRecheck/refresh/the singleflight key below, and the
 	// resolver/writer calls threaded through them, all agree with the
 	// SecretStore's own notion of which row they're touching. account is
 	// deliberately NOT normalized — it is not a namespace, and "" already
-	// means "unqualified" unambiguously (credentialID.secretPrefix's own doc
-	// comment).
+	// means "unqualified" unambiguously.
 	namespace = normalizeNamespace(namespace)
 
 	if accessToken, expiresAt, margin, ok := t.cachedAccessToken(namespace, cred); ok {
@@ -654,25 +618,22 @@ func (t *OAuth2TokenSource) cachedAccessToken(namespace string, cred credentialI
 // cred) — never called directly by AccessToken; always through t.sf.Do,
 // which coalesces every concurrent caller that decided a refresh was needed
 // for the same (namespace, credentialID) key onto whichever goroutine's call
-// actually runs this function. That IS docs/plans/api-gateway.md §6's
-// singleflight requirement in full: this function has no locking of its
-// own, because by the time it runs it is already the only in-flight refresh
-// for this key.
+// actually runs this function: this function has no locking of its own,
+// because by the time it runs it is already the only in-flight refresh for
+// this key.
 //
-// Dispatches on cfg.Grant (docs/plans/api-gateway.md §6-補): a
-// GrantClientCredentials provider has no refresh_token at all — for it,
-// "refresh" means "obtain a fresh access_token via grant_type=
-// client_credentials", not literally refresh anything — so this branches to
-// refreshClientCredentials before ever touching the refresh_token secret-
-// store field. Every other (default) provider keeps the original
-// refresh_token grant behavior unchanged.
+// Dispatches on cfg.Grant: a GrantClientCredentials provider has no
+// refresh_token at all — for it, "refresh" means "obtain a fresh
+// access_token via grant_type=client_credentials", not literally refresh
+// anything — so this branches to refreshClientCredentials before ever
+// touching the refresh_token secret-store field. Every other (default)
+// provider keeps the original refresh_token grant behavior unchanged.
 //
-// cred.secretPrefix() (not cfg.Name directly, docs/plans/
-// api-gateway-credential-accounts.md D6) is what the refresh_token
+// cred.secretPrefix() (not cfg.Name directly) is what the refresh_token
 // secret-store key is built from — cfg.Name alone would silently ignore
 // cred.account and read/write the WRONG (unqualified) credential for an
 // account-qualified request. cfg.ClientSecretKey, by contrast, is resolved
-// unqualified below (D7) — see that resolver call's own comment.
+// unqualified below — see that resolver call's own comment.
 func (t *OAuth2TokenSource) refresh(namespace string, cred credentialID, cfg OAuthProviderConfig) (string, error) {
 	if cfg.Grant == GrantClientCredentials {
 		return t.refreshClientCredentials(namespace, cred, cfg)
@@ -684,10 +645,9 @@ func (t *OAuth2TokenSource) refresh(namespace string, cred credentialID, cfg OAu
 	}
 
 	// client_secret_key is a PROVIDER-level (OAuth app) value, never
-	// account-level (docs/plans/api-gateway-credential-accounts.md D7:
-	// "client_secret は account で修飾しない") — resolved from cfg.
-	// ClientSecretKey exactly as configured, with no secretPrefix
-	// involvement at all. Qualifying this key by account would make it
+	// account-level — resolved from cfg.ClientSecretKey exactly as
+	// configured, with no secretPrefix involvement at all. Qualifying this
+	// key by account would make it
 	// unresolvable the moment an operator adds a second account, since
 	// nothing else in config.yaml ever writes an account-qualified
 	// client_secret.
@@ -718,21 +678,19 @@ func (t *OAuth2TokenSource) refresh(namespace string, cred credentialID, cfg OAu
 // (RFC 6749 §4.4.2 requires a confidential client).
 func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cred credentialID, cfg OAuthProviderConfig) (string, error) {
 	// cfg.ClientSecretKey == "" is already rejected at config load
-	// (internal/config.validateOAuthProviderConfig, docs/plans/
-	// api-gateway.md §6-補) for a client_credentials provider — this
-	// resolver call and the empty-value check right below it are what
-	// catch the OTHER half of that same requirement: a client_secret_key
-	// that IS set but resolves to an empty string (an operator ran `boid
-	// secret set` for the key but left the value blank, or never ran it at
-	// all and the resolver happens to return "" rather than an error).
-	// Config load cannot see the resolved secret value, so this is the
-	// earliest point that can — and it must fail loudly rather than
-	// silently omit client_secret from the form below, which would
-	// otherwise turn into an opaque invalid_client 502 from the token
-	// endpoint (docs/plans/api-gateway.md §6-補's own "空値だけは素通りして
-	// 分かりにくい 502 になる" note).
+	// (internal/config.validateOAuthProviderConfig) for a
+	// client_credentials provider — this resolver call and the
+	// empty-value check right below it are what catch the OTHER half of
+	// that same requirement: a client_secret_key that IS set but resolves
+	// to an empty string (an operator ran `boid secret set` for the key
+	// but left the value blank, or never ran it at all and the resolver
+	// happens to return "" rather than an error). Config load cannot see
+	// the resolved secret value, so this is the earliest point that can —
+	// and it must fail loudly rather than silently omit client_secret from
+	// the form below, which would otherwise turn into an opaque
+	// invalid_client 502 from the token endpoint.
 	//
-	// Resolved from cfg.ClientSecretKey UNQUALIFIED (D7 — see refresh's own
+	// Resolved from cfg.ClientSecretKey UNQUALIFIED (see refresh's own
 	// comment on the identical resolver call): a client_credentials
 	// provider's client_secret is exactly as account-agnostic as any other
 	// provider's.
@@ -749,8 +707,7 @@ func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cred cred
 		return "", fmt.Errorf("apigateway: oauth2 provider %q: client_credentials grant: %w", cfg.Name, err)
 	}
 
-	// persistRefreshToken=false (docs/plans/api-gateway.md §6-補, "persistGrant
-	// は refresh_token を書かない"): a client_credentials response has no
+	// persistRefreshToken=false: a client_credentials response has no
 	// refresh_token to persist by design (RFC 6749 §4.4.3's example response
 	// omits it entirely), but RFC 6749 §4.4.3 does not actually FORBID a
 	// non-compliant IdP from including one anyway — this flag makes the
@@ -763,22 +720,20 @@ func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cred cred
 
 // persistGrant durably persists a successful token-endpoint response —
 // shared by refresh (refresh_token grant, above) and login.go's
-// CompleteLogin/pollDeviceGrant (authorization_code / device_code grant,
-// PR3): every one of these needs the IDENTICAL persistence-order guarantee
-// (docs/plans/api-gateway.md §6) and memCache population regardless of
-// which grant type actually produced resp.
+// CompleteLogin/pollDeviceGrant (authorization_code / device_code grant):
+// every one of these needs the IDENTICAL persistence-order guarantee and
+// memCache population regardless of which grant type actually produced
+// resp.
 //
-// cred (docs/plans/api-gateway-credential-accounts.md D6) is what every
-// secret-store/memCache key this function writes is built from — via
-// cred.secretPrefix()/cred.cacheKey(namespace), never cfg.Name directly (see
-// credentialID's own doc comment for why a second construction path would
-// reintroduce the exact cross-account mixing this type exists to prevent).
-// login.go's call sites (exchangeAndPersist/pollDeviceGrant) pass
+// cred is what every secret-store/memCache key this function writes is
+// built from — via cred.secretPrefix()/cred.cacheKey(namespace), never
+// cfg.Name directly (see credentialID's own doc comment for why a second
+// construction path would reintroduce the exact cross-account mixing this
+// type exists to prevent). login.go's call sites
+// (exchangeAndPersist/pollDeviceGrant) pass
 // credentialID{provider: cfg.Name, account: p.account} — p.account is
-// whatever `boid secret oauth login --account` (D9, PR-3) StartLogin was
-// given for that pendingLogin, "" for the overwhelmingly common unqualified
-// login, which keeps that case byte-identical to before this parameter
-// existed (D2).
+// whatever `boid secret oauth login --account` StartLogin was given for
+// that pendingLogin, "" for the overwhelmingly common unqualified login.
 //
 // priorRefreshToken is whatever refresh_token value the caller already had
 // on hand BEFORE this grant (refresh's own current value for a refresh;
@@ -790,8 +745,7 @@ func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cred cred
 // even consulted).
 //
 // persistRefreshToken is false ONLY for the client_credentials grant
-// (refreshClientCredentials, docs/plans/api-gateway.md §6-補 "persistGrant
-// は refresh_token を書かない") — every other caller (the refresh_token
+// (refreshClientCredentials) — every other caller (the refresh_token
 // grant's own refresh, and login.go's CompleteLogin/pollDeviceGrant for the
 // authorization_code/device_code grants) passes true, preserving this
 // function's original behavior unchanged. When false, Phase 1 below is
@@ -800,8 +754,8 @@ func (t *OAuth2TokenSource) refreshClientCredentials(namespace string, cred cred
 // §4.4.3's example omits it, but nothing in the RFC text forbids an IdP
 // from sending one anyway).
 //
-// PERSISTENCE ORDER (docs/plans/api-gateway.md §6, load-bearing — do not
-// reorder): once the token endpoint responds, the (possibly rotated)
+// PERSISTENCE ORDER (load-bearing — do not reorder): once the token
+// endpoint responds, the (possibly rotated)
 // refresh_token is written to the secret store FIRST, and only once that
 // write has succeeded does this function persist access_token/expires_at
 // and return the access token for use. A provider that rotates
@@ -826,8 +780,8 @@ func (t *OAuth2TokenSource) persistGrant(namespace string, cred credentialID, cf
 	// even HAS a refresh_token concept (client_credentials does not — see
 	// the parameter's own doc comment) AND the provider genuinely rotated
 	// (resp.RefreshToken non-empty AND different from what the caller
-	// already had) — codex review round 3, Major finding: not every
-	// provider rotates refresh_token on refresh (Google never does; freee
+	// already had): not every provider rotates refresh_token on refresh
+	// (Google never does; freee
 	// always does — RFC 6749 §5.1 makes the response field OPTIONAL
 	// specifically so a client can tell "unchanged" from "rotated" apart),
 	// and an EARLIER version of this function re-persisted the same,
@@ -866,9 +820,9 @@ func (t *OAuth2TokenSource) persistGrant(namespace string, cred credentialID, cf
 			"provider", cfg.Name, "namespace", namespace, "fallback", fallbackAccessTokenLifetime)
 		expiresIn = fallbackAccessTokenLifetime
 	case *resp.ExpiresIn <= 0:
-		// Field explicitly present with a non-positive value (codex review
-		// round 6, Major finding): treat the access token as ALREADY
-		// expired rather than granting it fallbackAccessTokenLifetime's
+		// Field explicitly present with a non-positive value: treat the
+		// access token as ALREADY expired rather than granting it
+		// fallbackAccessTokenLifetime's
 		// generous benefit of the doubt. expiresIn stays 0, so expiresAt
 		// below computes to exactly t.now() — this call still returns the
 		// access token once (the token endpoint DID return a 200 with one),
@@ -883,25 +837,25 @@ func (t *OAuth2TokenSource) persistGrant(namespace string, cred credentialID, cf
 	}
 	expiresAt := t.now().Add(expiresIn)
 
-	// effectiveMargin (codex review round 2, Major finding): t.margin()
-	// clamped to at most half of THIS token's own declared lifetime
-	// (expiresIn), computed exactly once, here, at the moment expiresIn is
-	// known — never re-derived later from however much of that lifetime
-	// happens to remain at some future check (that alternative was tried
-	// and reverted: it broke the ordinary case, since a NORMAL long-lived
-	// token that has simply decayed down near t.margin() would then also
-	// get its margin shrunk, defeating proactive refresh entirely — see
+	// effectiveMargin: t.margin() clamped to at most half of THIS token's
+	// own declared lifetime (expiresIn), computed exactly once, here, at
+	// the moment expiresIn is known — never re-derived later from however
+	// much of that lifetime happens to remain at some future check (that
+	// alternative was tried and reverted: it broke the ordinary case,
+	// since a NORMAL long-lived token that has simply decayed down near
+	// t.margin() would then also get its margin shrunk, defeating
+	// proactive refresh entirely — see
 	// TestOAuth2TokenSource_WithinMargin_Refreshes). Computed once here,
 	// this only ever shrinks the margin for a provider whose access-token
 	// lifetime is itself shorter than (or comparable to) t.margin() (5
-	// minutes by default — none of PR2's targeted providers are actually
-	// this short-lived: freee is ~6h, Google/GitHub/Microsoft ~1h), so a
-	// freshly-obtained such token is immediately usable rather than being
-	// judged "already needs refresh" the instant it's minted — which would
-	// otherwise force every single AccessToken call to refresh again (a
-	// live-lock), and reproduce the same-request double-refresh shape
-	// (Resolve then Inject, docs/plans/api-gateway.md §6) for exactly the
-	// tokens short-lived enough to trigger it. For every normal-lifetime
+	// minutes by default — none of this package's targeted providers are
+	// actually this short-lived: freee is ~6h, Google/GitHub/Microsoft
+	// ~1h), so a freshly-obtained such token is immediately usable rather
+	// than being judged "already needs refresh" the instant it's minted —
+	// which would otherwise force every single AccessToken call to
+	// refresh again (a live-lock), and reproduce the same-request
+	// double-refresh shape (Resolve then Inject) for exactly the tokens
+	// short-lived enough to trigger it. For every normal-lifetime
 	// token, expiresIn/2 is comfortably larger than t.margin(), so this is
 	// a no-op and effectiveMargin == t.margin(), unchanged from before this
 	// fix.
@@ -916,8 +870,8 @@ func (t *OAuth2TokenSource) persistGrant(namespace string, cred credentialID, cf
 	// process caller (e.g. this same request's own Inject call, right after
 	// Resolve's precheck triggered this very refresh) into a second,
 	// possibly-failing network round trip for a token this process already
-	// has in hand. See memCache's own doc comment (codex review round 1,
-	// Major finding) for the full rationale; this is purely a same-process
+	// has in hand. See memCache's own doc comment for the full rationale;
+	// this is purely a same-process
 	// optimization layered on top of the secret-store persistence below,
 	// never a substitute for it — Phase 1 (refresh_token) above is still
 	// what makes the grant itself durably safe.
@@ -970,10 +924,10 @@ func (f *flexibleInt) UnmarshalJSON(data []byte) error {
 
 // oauthTokenResponse is the RFC 6749 §5.1 successful token response shape,
 // restricted to the fields this package actually reads. ExpiresIn is a
-// POINTER (codex review round 6, Major finding) so refresh can tell
-// "the field was absent" (nil — every provider docs/plans/api-gateway.md
-// targets always sends it in practice; the fallback path exists only for
-// the rare one that doesn't) apart from "the field was explicitly present
+// POINTER so refresh can tell "the field was absent" (nil — every provider
+// this package targets always sends it in practice; the fallback path
+// exists only for the rare one that doesn't) apart from "the field was
+// explicitly present
 // with a non-positive value" (non-nil, <= 0 — RFC 6749 gives this no
 // defined meaning, but the most sensible reading is "this token endpoint
 // is telling us the access_token it just issued is already expired/
@@ -1003,14 +957,14 @@ type oauthErrorResponse struct {
 // back to its caller (and, from there, potentially into Server.ServeHTTP's
 // sandbox-facing 502 body — see postFormToTokenEndpoint's own doc comment)
 // when the value is a MEMBER of the recognizedErrorCodes set the caller
-// passes it (codex review round 5, Major finding): oerr.Error is otherwise
-// an arbitrary, unvalidated string straight from the response body — a
+// passes it: oerr.Error is otherwise an arbitrary, unvalidated string
+// straight from the response body — a
 // non-compliant or compromised token endpoint (an external threat surface
 // even in boid's single-user threat model: the attacker here is the remote
 // OAuth2 provider or an on-path party, never another local process) could
-// stuff it with a hostname, PII, or anything else, and round 4's fix
-// (dropping ErrorDescription) alone would not have caught THAT field
-// carrying the same risk.
+// stuff it with a hostname, PII, or anything else — dropping
+// ErrorDescription alone would not have caught THAT field carrying the
+// same risk.
 var rfc6749TokenErrorCodes = map[string]bool{
 	"invalid_request":        true,
 	"invalid_client":         true,
@@ -1046,26 +1000,26 @@ var rfc8628DeviceTokenErrorCodes = map[string]bool{
 // POST to cfg.TokenEndpoint with an application/x-www-form-urlencoded body
 // carrying grant_type=refresh_token, refresh_token, client_id, and (when
 // configured) client_secret — the "client_secret_post"-style client
-// authentication the providers docs/plans/api-gateway.md targets (freee,
-// Google, GitHub, Microsoft) all accept for this grant, rather than HTTP
-// Basic auth (RFC 6749 §2.3.1's alternative): keeping this package to the
-// one shape avoids a per-provider auth-method config knob PR2 does not need
-// yet. Named callRefreshTokenEndpoint (not the original callTokenEndpoint)
-// since §6-補 added a second, sibling grant-specific form builder —
-// callClientCredentialsTokenEndpoint, below — and postFormToTokenEndpoint
-// remains the one shared low-level HTTP+parse routine both (and login.go's
-// authorization_code/device_code grants) funnel through.
+// authentication the providers this package targets (freee, Google,
+// GitHub, Microsoft) all accept for this grant, rather than HTTP Basic
+// auth (RFC 6749 §2.3.1's alternative): keeping this package to the one
+// shape avoids a per-provider auth-method config knob. Named
+// callRefreshTokenEndpoint (not callTokenEndpoint) since there is a second,
+// sibling grant-specific form builder — callClientCredentialsTokenEndpoint,
+// below — and postFormToTokenEndpoint remains the one shared low-level
+// HTTP+parse routine both (and login.go's authorization_code/device_code
+// grants) funnel through.
 //
 // Deliberately never sends `scope`: RFC 6749 §6 allows a refresh request to
 // narrow an already-granted scope, but doing so correctly is
-// provider-specific territory neither of PR2's targeted providers needs
-// (freee has no scope concept on refresh at all). cfg.Scopes IS sent by
+// provider-specific territory none of this package's targeted providers
+// needs (freee has no scope concept on refresh at all). cfg.Scopes IS sent by
 // login.go's exchangeAuthorizationCode/pollDeviceGrant (the initial grant,
 // not a refresh) — see OAuthProviderConfig.Scopes' own doc comment. This
 // "never send scope" judgment is specific to the refresh_token grant — it
 // does NOT extend to callClientCredentialsTokenEndpoint below, which MUST
-// send scope (docs/plans/api-gateway.md §6-補: Azure AD's client_credentials
-// requires `scope=https://<resource>/.default`); the two functions
+// send scope (Azure AD's client_credentials requires
+// `scope=https://<resource>/.default`); the two functions
 // deliberately do not share a single form-building helper so this
 // per-grant judgment stays visible at each call site rather than becoming
 // an implicit shared default one of them has to override.
@@ -1089,8 +1043,8 @@ func (t *OAuth2TokenSource) callRefreshTokenEndpoint(cfg OAuthProviderConfig, re
 // 6749 §4.4.2 mandates a confidential client; refreshClientCredentials
 // already rejects an empty clientSecret before this function is ever
 // called), and — unlike callRefreshTokenEndpoint above — scope, whenever
-// cfg.Scopes is non-empty (docs/plans/api-gateway.md §6-補: Azure AD's
-// client_credentials REQUIRES `scope=https://<resource>/.default`; RFC 6749
+// cfg.Scopes is non-empty (Azure AD's client_credentials REQUIRES
+// `scope=https://<resource>/.default`; RFC 6749
 // §3.3 makes scope OPTIONAL in general, but this grant has no prior
 // delegated consent to inherit a scope from the way an authorization_code
 // exchange does, so a provider that needs one at all needs it on every
@@ -1130,23 +1084,17 @@ func (t *OAuth2TokenSource) callClientCredentialsTokenEndpoint(cfg OAuthProvider
 // the device_code poll) — see either var's own doc comment for why an
 // unrecognized value is never surfaced verbatim.
 //
-// Every error path below is deliberately SANITIZED before it is returned
-// (codex review round 4, Major finding): a raw Go net/http transport error
-// (from httpClient().Do failing — DNS lookup, connection refused, TLS
-// handshake, ...) typically embeds endpoint's real host:port verbatim in
-// its error string, and this function's caller chain (refresh -> AccessToken
-// -> CredentialProvider.Resolve/Inject, or login.go's CompleteLogin/
-// pollDeviceGrant reached the same way from an HTTP handler) is exactly what
-// Server.ServeHTTP's pre-existing fail-fast precheck echoes into the
-// SANDBOX-facing 502 response body (`"bad gateway: ...: " + err.Error()`,
-// internal/apigateway/server.go — a path PR1 already hardened against this
-// exact leak for its own ReverseProxy.ErrorHandler, see
-// TestServer_TransportErrorDoesNotLeakUpstreamHostToSandbox's own doc
-// comment, but did not need to harden here since no static auth kind's
-// Resolve error had ever contained an upstream hostname before oauth2
-// existed). Directly contradicts docs/plans/api-gateway.md §1's "upstream
-// の実 URL は sandbox からは見えない (見せる必要もない)" design principle.
-// Every branch therefore logs the FULL raw detail via slog.Warn (server-side
+// Every error path below is deliberately SANITIZED before it is returned:
+// a raw Go net/http transport error (from httpClient().Do failing — DNS
+// lookup, connection refused, TLS handshake, ...) typically embeds
+// endpoint's real host:port verbatim in its error string, and this
+// function's caller chain (refresh -> AccessToken ->
+// CredentialProvider.Resolve/Inject, or login.go's
+// CompleteLogin/pollDeviceGrant reached the same way from an HTTP handler)
+// is exactly what Server.ServeHTTP's pre-existing fail-fast precheck
+// echoes into the SANDBOX-facing 502 response body (see
+// TestServer_TransportErrorDoesNotLeakUpstreamHostToSandbox). Every branch
+// therefore logs the FULL raw detail via slog.Warn (server-side
 // diagnosis only) and returns a generic, hostname-free message upward — the
 // one exception is oerr.Error when it is a recognized code, kept in the
 // returned message since it is genuinely useful to the caller and never

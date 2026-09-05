@@ -63,24 +63,19 @@ type Usage struct {
 
 // RunContext is the input to HarnessAdapter.Run. It bundles everything the
 // adapter needs to fork the agent process, manage its lifecycle, and return
-// the captured payload. Phase 3-b draft; see docs/plans/agent-aware-boid.md
-// "Phase 3-b" section.
+// the captured payload.
 //
 // Run() owns the following responsibilities internally:
-//  1. signal.Notify(SIGUSR1) → child SIGTERM (Go signal.Notify auto-bypasses
-//     inherited sigprocmask block / SIG_IGN — verified by Phase 3-b PoC).
+//  1. signal.Notify(SIGUSR1) → child SIGTERM.
 //  2. signal.Notify(SIGWINCH) → forward to child.
-//  3. cmd.SysProcAttr.Setsid = true so child sits in its own session/pgrp
-//     (Python start_new_session=True equivalent).
+//  3. cmd.SysProcAttr.Setsid = true so child sits in its own session/pgrp.
 //  4. Exit code normalisation (stop signal terminations are reported as 0
 //     via Result.StoppedByDaemon).
 //  5. Applying a freshly-generated session id via the payload-patch broker
 //     RPC (`boid task update --payload-patch @-`) so the jsonl transcript
 //     path is recorded in the task's artifact even when the child terminates
-//     abnormally (SIGKILL, OOM). Phase 6 PR8 (docs/plans/
-//     phase6-container-backend.md §決定 9) retired the prior
-//     $HOME/.boid/output/payload_patch.json file write this used to do —
-//     see internal/adapters/claude/run.go's sendTaskUpdatePayloadPatch.
+//     abnormally (SIGKILL, OOM) — see internal/adapters/claude/run.go's
+//     sendTaskUpdatePayloadPatch.
 type RunContext struct {
 	// JobID is the broker job_done key and transcript correlation id.
 	JobID string
@@ -122,16 +117,12 @@ type RunContext struct {
 
 	// SkillsDir is the absolute path of the directory where harness-visible
 	// skills are exposed (~/.claude/skills for Claude). Reserved for future
-	// use; PR1 does not act on it (skill bind-mounts are wired in the
-	// dispatcher under Phase 3-b PR2).
+	// use; not currently read by any adapter.
 	SkillsDir string
 
 	// Argv is the literal program + arguments to exec. Only the shell adapter
 	// consumes this field — claude / codex / opencode build their own argv
-	// from their CLI conventions and ignore Argv entirely. Phase 3-d added
-	// Argv so non-agent hooks and `boid exec` can flow through the same
-	// adapter pipeline as agent jobs instead of branching to a separate
-	// runExecArgv path in the runner-inner-child.
+	// from their CLI conventions and ignore Argv entirely.
 	Argv []string
 
 	// StdinBytes, when non-empty, is piped into the child's stdin instead of
@@ -166,12 +157,11 @@ type Result struct {
 // Each supported harness (claude, codex, opencode, …) provides one implementation.
 // The boid core calls these methods without knowing which harness is in use.
 //
-// Phase 3-b shrank the interface to two members: Run() owns the entire agent
-// process lifecycle (session resolve, fork, signal handling, payload capture,
-// exit normalisation), and Usage() exposes post-run token metrics. Signal
-// stop is delivered out-of-band via api.JobLifecycle.SignalJobRuntime so the
-// daemon does not need to round-trip through the adapter to nudge a running
-// agent.
+// Run() owns the entire agent process lifecycle (session resolve, fork,
+// signal handling, payload capture, exit normalisation), and Usage() exposes
+// post-run token metrics. Signal stop is delivered out-of-band via
+// api.JobLifecycle.SignalJobRuntime so the daemon does not need to
+// round-trip through the adapter to nudge a running agent.
 type HarnessAdapter interface {
 	// Run forks the agent process, manages its signal lifecycle, and returns
 	// its exit status. Any payload patch the harness itself needs to apply
@@ -195,20 +185,11 @@ type HarnessAdapter interface {
 	// dispatcher fills it from os/user so the call is pure (testable without
 	// touching the environment).
 	//
-	// Phase 4 PR3 (docs/plans/home-workspace-volume.md) retired every
-	// non-trivial implementation of this method (claude / codex / opencode
-	// all return nil now): CLI state dirs, resolved-binary PATH entries, and
-	// embedded-skill binds are superseded by the workspace HOME volume —
-	// Runner.Dispatch bind-mounts a persistent per-workspace home directory
-	// at the sandbox's $HOME (internal/dispatcher/workspace_home.go), so that
-	// state simply already exists at the right paths without any
-	// adapter-declared bind. The embedded skills are bind-mounted once more
-	// as of PR3 of docs/plans/workspace-home-volume-persistence.md, but by
-	// the dispatcher (internal/dispatcher/skills_overlay.go + homeMounts) —
-	// staging a sandbox is boid's job and is identical across harnesses,
-	// which is why that did not bring these implementations back. The method
-	// is kept on the interface for a future $HOME-independent bind a harness
-	// might need; returning nil (or an empty slice) is the expected steady
-	// state.
+	// All current adapters (claude / codex / opencode / shell) return nil:
+	// harness state and skills reach the sandbox via the workspace HOME
+	// volume and dispatcher-owned mounts instead (see
+	// internal/dispatcher/workspace_home.go and skills_overlay.go). The
+	// method stays on the interface for a future $HOME-independent bind a
+	// harness might need.
 	Bindings(homeDir string) []BindMount
 }

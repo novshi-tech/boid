@@ -21,15 +21,10 @@ import (
 // point is to emit yaml (to stdout, or -o/--output <path>), not a
 // json/yaml/plain-text rendering of a structured response object.
 //
-// Both the single-slug and --all cases hit GET /api/workspaces/export (the
-// atomic snapshot endpoint, docs/plans/volume-only-daemon.md PR-1d codex
-// round-1 Blocker 3) rather than composing the document client-side from
-// separate GET /api/workspaces/{slug} + GET /api/projects?workspace_id=...
-// calls: the old per-workspace two-request loop could straddle a concurrent
-// `workspace assign` moving a project between two workspaces mid-export,
-// losing or duplicating that project across the exported documents. A
-// single daemon-side transaction (orchestrator.SnapshotWorkspacesForExport)
-// closes that window.
+// Both the single-slug and --all cases hit GET /api/workspaces/export — a
+// single atomic daemon-side snapshot (orchestrator.SnapshotWorkspacesForExport)
+// rather than a per-workspace GET+GET loop that could straddle a concurrent
+// `workspace assign` and lose or duplicate a project across the export.
 func runWorkspaceExport(cmd *cobra.Command, args []string) error {
 	var path string
 	if workspaceExportAll {
@@ -78,28 +73,18 @@ func runWorkspaceExport(cmd *cobra.Command, args []string) error {
 // checkExportedWorkspaceEnvelopes decodes the raw export response with the
 // SAME decoder `boid workspace apply -f` uses, requires every document to be a
 // COMPLETE one, returns the number of documents found (for the "exported N
-// workspace(s)" message), and prints the two advisory warnings the pre-atomic
-// client-side export used to (a project with no captured upstream_url yet, an
-// env value that looks like a host filesystem path).
+// workspace(s)" message), and prints two advisory warnings (a project with no
+// captured upstream_url yet, an env value that looks like a host filesystem
+// path).
 //
-// The decode is a GATE, not a best-effort courtesy (PR9 codex round 4, Major 1).
-// It used to swallow its own error and return 0, so a 200 whose body is not a
-// restorable set of Workspace documents — a daemon bug, a proxy's error page,
-// an emitter defect like the one workspace_envelope_marshal.go exists for — was
-// written to -o/--output and announced as "exported 0 workspace(s)", a line an
-// operator reads as success. `boid workspace export` is the endorsed backup
-// path (docs/plans/volume-only-daemon.md §論点g); a file it wrote that its own
-// `apply` cannot read is the one outcome that must never be silent, and the
-// only moment it can be caught is before the file exists.
+// The decode is a GATE, not a best-effort courtesy: a response that is not a
+// restorable set of Workspace documents must fail loudly here, before a file
+// claiming "exported N workspace(s)" gets written to -o/--output — the only
+// moment that failure can still be caught. An EMPTY body is refused the same
+// way, and by the decoder itself.
 //
-// An EMPTY body is refused by the same reasoning, and by the decoder itself: a
-// zero-byte backup restores nothing, and `apply` rejects it.
-//
-// The WARNINGS stay best-effort in the other direction — they are advisory, and
-// nothing below can fail the export once the documents passed the checks above.
-// They are also printed only AFTER every document has been accepted: a refused
-// export wrote no file, so warnings about what is in it would describe
-// something that does not exist.
+// The WARNINGS stay best-effort in the other direction, and are printed only
+// after every document has been accepted.
 func checkExportedWorkspaceEnvelopes(stderr io.Writer, data []byte) (int, error) {
 	docs, err := orchestrator.DecodeWorkspaceEnvelopeDocuments(data)
 	if err != nil {
@@ -124,42 +109,13 @@ func checkExportedWorkspaceEnvelopes(stderr io.Writer, data []byte) (int, error)
 }
 
 // checkExportedDocumentIsComplete requires one exported document to carry
-// spec.init_script (PR9 codex round 4 final, Major 1) — the version-skew half
-// of "a file this command wrote can always be restored".
-//
-// # Why decoding successfully is not enough
-//
-// The decoder deliberately treats a missing spec.init_script as a legitimate
-// value: "leave this workspace's init.sh alone" (see
-// orchestrator.WorkspaceEnvelopeSpec.InitScript). So a response that predates
-// PR9 — a daemon with no notion of an init.sh at all — decodes cleanly, applies
-// cleanly, and restores a workspace whose HOME volume then has no toolchain in
-// it and whose next dispatch cannot start a harness. The decode gate above
-// cannot see that: it asks whether `apply` can READ the response, and the answer
-// is yes.
-//
-// The skew is reachable rather than theoretical. Every `boid workspace *`
-// command is scopeRemote, so a new CLI routinely talks to whatever daemon is at
-// the other end of the socket, and this PR's own init-script commands already
-// carry explicit handling for a daemon that predates them
-// (fetchWorkspaceInitScript's "HTTP 404 with no ETag" branch).
-//
-// # Why this is an export-side requirement only
-//
-// `boid workspace apply` must keep ACCEPTING a document with no
-// spec.init_script, and TestWorkspaceApply_AcceptsADocumentWithNoInitScriptKey
-// pins that it does. The two surfaces read the same absence differently because
-// they are answering different questions:
-//
-//   - apply reads a document a human may have WRITTEN, to state a change. One
-//     that adjusts env alone has no business restating an init.sh it is not
-//     touching, and "absent = don't touch" is what makes a partial document
-//     expressible at all. Requiring the key here would force every hand-written
-//     apply file to carry a copy of the whole script;
-//   - export writes a document meant to RESTORE the workspace as a whole. There
-//     is no partial export — the daemon emits every field on every document —
-//     so an absent key cannot mean "don't touch"; it can only mean the daemon
-//     did not know the field exists.
+// spec.init_script, the version-skew half of "a file this command wrote can
+// always be restored": the decoder treats a missing spec.init_script as
+// "leave this workspace's init.sh alone" for `apply` (which must keep
+// accepting a hand-written document that never mentions it), but for
+// `export` — which always emits every field — an absent key can only mean
+// the daemon predates init.sh support, and restoring such a document would
+// silently leave the workspace's HOME volume with no toolchain.
 func checkExportedDocumentIsComplete(doc *orchestrator.WorkspaceEnvelopeApply) error {
 	if doc.FieldsPresent["init_script"] {
 		return nil
@@ -173,21 +129,18 @@ func checkExportedDocumentIsComplete(doc *orchestrator.WorkspaceEnvelopeApply) e
 }
 
 // hostPathPattern matches an env value that looks like it references a host
-// filesystem path (docs/plans/volume-only-daemon.md §論点g「env の host path
-// 依存」) — an absolute path under /home, /opt, /mnt, or /root, either at the
-// start of the value or after a ':' (PATH-style) or '=' separator. This is a
-// heuristic advisory check, not a validator: it deliberately also flags
-// container-internal paths that happen to share a prefix, EXCEPT the ones
-// containerSafeHostPathPrefixes whitelists (Minor 1, codex round-1) — export
-// still proceeds either way.
+// filesystem path: an absolute path under /home, /opt, /mnt, or /root,
+// either at the start of the value or after a ':' (PATH-style) or '='
+// separator. This is a heuristic advisory check, not a validator — export
+// still proceeds either way — and containerSafeHostPathPrefixes exempts
+// paths that are valid inside the sandbox despite matching.
 var hostPathPattern = regexp.MustCompile(`(?:^|[:=])(/(?:home|opt|mnt|root)(?:/[^:=]*)?)`)
 
 // containerSafeHostPathPrefixes are absolute path prefixes that superficially
 // match hostPathPattern but are legitimate, valid-inside-the-sandbox paths,
-// not a leaked host filesystem reference (Minor 1, codex round-1): the boid
-// user's home inside the container is /home/boid, so e.g.
-// "GOPATH: /home/boid/go" is exactly the plan doc's own documented example
-// of a correct workspace env value, not a mistake to warn about.
+// not a leaked host filesystem reference: the boid user's home inside the
+// container is /home/boid, so e.g. "GOPATH: /home/boid/go" is a correct
+// workspace env value, not a mistake to warn about.
 var containerSafeHostPathPrefixes = []string{
 	"/home/boid/",
 	"/opt/boid/",

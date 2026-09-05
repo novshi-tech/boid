@@ -12,28 +12,22 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// SweepWake implements 決定12's wake evaluation as a periodic, decision-only
-// sweep (clock + task DB only, no agent judgment) — REDUCED, as of card
-// machine v2 (docs/plans/suggestion-as-state-transition-impl.md §3.4, §C),
-// to a pure fact-recording role. v1's SweepWake resolved a parked task's
-// origin (via ParkedFrom) and applied the matching wake_triaged/wake_ready/
-// wake_working transition itself — the daemon deciding, on its own, what a
-// re-surfaced card should become. Design doc §3.3's "機械遷移ゼロ" retires
-// that: v2's card machine has exactly one park origin (working) and no
-// wake_* rules at all, so there is nothing left to resolve. SweepWake now
-// only records that orchestrator.ShouldWake fired (recordWakeDue) — a
-// wake_due action, no transition, no suggestion. khi reads wake_due off the
-// action log and decides what (if anything) to suggest.
+// SweepWake is a periodic, decision-only sweep (clock + task DB only, no
+// agent judgment) that only records that orchestrator.ShouldWake fired
+// (recordWakeDue) — a wake_due action, no transition, no suggestion. khi
+// reads wake_due off the action log and decides what (if anything) to
+// suggest. Card machine v2 has exactly one park origin (working) and no
+// wake_* rules at all, so there is nothing for this sweep to resolve
+// beyond recording the fact.
 //
 // A failure evaluating or recording one task is logged and does not abort
-// the sweep — the same posture v1 established. Returns the ids of tasks
-// wake_due was recorded for this tick.
+// the sweep. Returns the ids of tasks wake_due was recorded for this tick.
 func (s *TaskWorkflowService) SweepWake(ctx context.Context, now time.Time) (woken []string, err error) {
 	if s.Tasks == nil || s.TaskTriage == nil || s.Tx == nil {
 		return nil, nil
 	}
-	// 論点11: this is the machine-driven wake sweep (決定12, no human in the
-	// loop) — must never be confused with a human action.
+	// This is the machine-driven wake sweep, no human in the loop — must
+	// never be confused with a human action.
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
 	parked, err := s.Tasks.ListTasks(orchestrator.TaskFilter{Status: string(orchestrator.TaskStatusParked)})
 	if err != nil {
@@ -80,15 +74,12 @@ func (s *TaskWorkflowService) SweepWake(ctx context.Context, now time.Time) (wok
 }
 
 // recordWakeDue is SweepWake's actual write: a non-transitioning "wake_due"
-// action, self-recorded the same way child_dispatched/child_closed are
-// (tx.CreateAction directly — never routed through sm.Apply/ApplyAction; see
-// machine_card.go's own doc comment for why wake_due is registered Manual:false,
-// FromStatus "*" purely so IsManualAction/Apply still treat the name as
-// "known"). Clears tt.WakeAt/WakeTaskID in the SAME transaction — the fields
-// that made orchestrator.ShouldWake return true in the first place — which is
-// what stops this from firing every tick forever: with no transition to rely
-// on (v1's wake_* rules consumed the condition implicitly, by moving the task
-// OUT of parked), consuming the condition here is the only mechanism left.
+// action, self-recorded directly via tx.CreateAction (never routed through
+// sm.Apply/ApplyAction). Clears tt.WakeAt/WakeTaskID in the same
+// transaction — the fields that made orchestrator.ShouldWake return true
+// in the first place — which is what stops this from firing every tick
+// forever: with no transition to consume the condition implicitly,
+// clearing it here is the only mechanism left.
 func (s *TaskWorkflowService) recordWakeDue(ctx context.Context, taskID string) error {
 	return s.Tx.WithinTx(func(tx TxStore) error {
 		tt, err := tx.GetTaskTriage(taskID)
@@ -116,28 +107,19 @@ func (s *TaskWorkflowService) recordWakeDue(ctx context.Context, taskID string) 
 }
 
 // SweepReconcileChildren re-checks every dispatched child of every working
-// card against its REAL current task status, self-healing any whose
+// card against its real current task status, self-healing any whose
 // task_triage.detail entry still says "dispatched" after the real task
-// already reached done/aborted (PR #987 review, HIGH 8). This is bare
-// bookkeeping over detail.children[].status, NOT a card transition — it does
-// not touch task.Status, so it does not reopen design doc §3.3's "機械遷移
-// ゼロ" (card machine v2 has zero rules moving a card's own status; this
-// sweep only keeps a CHILD's recorded status from drifting from reality).
+// already reached done/aborted. This is bare bookkeeping over
+// detail.children[].status, NOT a card transition — it never touches
+// task.Status.
 //
-// v1's SweepTriage did this same reconciliation as a side effect of
-// evaluating auto-done every tick (決定15) — deleting auto-done along with
-// it (see this PR's orchestrator-layer commit) took the reconciliation with
-// it too, which was collateral, not intentional: without a periodic
-// re-check, a "dispatched" entry that never gets its child_closed
-// self-record (recordChildClosedOnParent hitting a transient DB error, or a
-// child GC'd out from under it — orchestrator/store.go's GCTasks deletes a
-// terminal task's row independent of any parent) sticks forever, and khi
-// reads "a child is still running" off that stale entry and never suggests
-// "done" for a card that has, in reality, already finished (a permanently
-// stale working card).
+// Without this periodic re-check, a "dispatched" entry that never gets its
+// child_closed self-record (a transient DB error, or a child GC'd out
+// from under it) would stick forever, and khi would read "a child is still
+// running" off that stale entry and never suggest "done" for a card that
+// has, in reality, already finished.
 //
-// A failure evaluating one task is logged and does not abort the sweep —
-// the same posture SweepWake established.
+// A failure evaluating one task is logged and does not abort the sweep.
 func (s *TaskWorkflowService) SweepReconcileChildren(ctx context.Context, _ time.Time) error {
 	if s.Tasks == nil || s.TaskTriage == nil {
 		return nil
@@ -184,16 +166,11 @@ func (s *TaskWorkflowService) reconcileDispatchedChildren(taskID string, childre
 			// ShouldWake's fail-open posture toward a missing reference: a
 			// reference that no longer exists must not strand the card forever.
 			if errors.Is(err, orchestrator.ErrTaskNotFound) {
-				// PR #987 review round 2, MEDIUM N3: mutating children[i] here
-				// alone is NOT enough — this local slice is discarded by
-				// SweepReconcileChildren's caller (it never calls
-				// UpsertTaskTriage with it), so without this persistence call
-				// the "closed" mapping never survives past this one function
-				// call, and the sweep re-derives (and re-discards) the exact
-				// same no-op result every single tick forever. v1's
-				// ShouldAutoDone consumed this same in-memory mutation within
-				// the SAME tick it was made — v2 has no such consumer, so the
-				// mutation must persist itself now.
+				// Mutating children[i] alone is not enough: this local slice is
+				// discarded by the caller (it never calls UpsertTaskTriage with
+				// it), so without persisting here the "closed" mapping never
+				// survives past this call, and the sweep re-derives the same
+				// no-op result every tick forever.
 				children[i].Status = orchestrator.TaskTriageChildStatusClosed
 				s.recordVanishedChildClosedOnParent(taskID, children[i].TaskRef)
 			} else {
@@ -210,12 +187,11 @@ func (s *TaskWorkflowService) reconcileDispatchedChildren(taskID string, childre
 }
 
 // recordVanishedChildClosedOnParent persists a vanished child's "closed"
-// mapping onto its parent's task_triage sidecar (PR #987 review round 2,
-// MEDIUM N3) — the vanished-child sibling of recordChildClosedOnParent
-// (workflow_card.go), which cannot be reused directly here since it takes
-// a real child *orchestrator.Task (task.ID/task.ParentID/task.Status), and a
-// vanished child has none of those available — only the parent's own task ID
-// and the dangling TaskRef string survive in task_triage.detail.children.
+// mapping onto its parent's task_triage sidecar — the vanished-child
+// sibling of recordChildClosedOnParent (workflow_card.go), which cannot be
+// reused directly here since it takes a real child *orchestrator.Task, and
+// a vanished child has none of those fields available — only the parent's
+// own task ID and the dangling TaskRef string survive.
 func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, childTaskRef string) {
 	if s.Tx == nil {
 		return
@@ -248,8 +224,7 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, ch
 		// "child_id" (not "child_task_id"), matching recordChildClosedOnParent's
 		// existing child_closed payload key exactly (workflow_card.go) — a
 		// future consumer reading this payload by key must not silently miss
-		// vanished-child rows because they alone spelled the same value
-		// differently (coordinator review, LOW: payload key mismatch).
+		// vanished-child rows because they alone spelled the value differently.
 		payload, _ := json.Marshal(map[string]string{"child_id": childTaskRef, "child_status": "vanished"})
 		action := &orchestrator.Action{
 			TaskID:     parentTaskID,
@@ -261,18 +236,13 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, ch
 		}
 		// context.Background(): this sweep is daemon-originated bookkeeping
 		// (never a sandbox write — see the Actor above), so there is no
-		// TokenContext-carried writer project to thread through
-		// (docs/plans/boid-internal-signal-inbox.md §4.3's "daemon" row —
-		// always ingest-eligible on the actor axis).
+		// TokenContext-carried writer project to thread through.
 		if err := tx.CreateAction(context.Background(), action); err != nil {
 			return err
 		}
-		// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): same
-		// updated_at bump recordChildClosedOnParent's real-child path applies
-		// (workflow_card.go) — a vanished child is still a child_closed event
-		// from the parent's point of view, gated the same way on `changed`
-		// (the `if !changed { return nil }` above already short-circuited a
-		// repeat sweep tick finding nothing new).
+		// Same updated_at bump recordChildClosedOnParent's real-child path
+		// applies (workflow_card.go): a vanished child is still a
+		// child_closed event from the parent's point of view.
 		return tx.TouchTaskUpdatedAt(parentTaskID)
 	}); err != nil {
 		slog.Error("vanished child_closed self-record failed", "task_id", parentTaskID, "child_task_id", childTaskRef, "error", err)
@@ -282,14 +252,13 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, ch
 // QueueSweepStore is the interface QueueSweepLoop needs — narrowed from
 // *TaskWorkflowService so the loop can be unit tested against a fake.
 //
-// SweepTriage (決定15/16) and SweepReopen (I-5) are GONE as of card machine
-// v2 — both were machine-driven transitions (auto-done, auto-reopen) the
-// redesign retires entirely (design doc §3.3: "機械遷移ゼロ"). done/reopen
-// are now suggested by khi and applied only by a human's accept, through the
-// ordinary ApplyAction/accept(verb) path — there is nothing left for a
-// periodic sweep to decide on their behalf. SweepReconcileChildren (above)
-// is NOT one of those machine-driven transitions — it survives because it
-// never touches task.Status.
+// SweepTriage and SweepReopen are gone as of card machine v2: both were
+// machine-driven transitions (auto-done, auto-reopen) the redesign retires
+// entirely. done/reopen are now suggested by khi and applied only by a
+// human's accept, through the ordinary ApplyAction/accept(verb) path —
+// there is nothing left for a periodic sweep to decide on their behalf.
+// SweepReconcileChildren (above) is not one of those transitions — it
+// survives because it never touches task.Status.
 type QueueSweepStore interface {
 	SweepWake(ctx context.Context, now time.Time) ([]string, error)
 	SweepReconcileChildren(ctx context.Context, now time.Time) error

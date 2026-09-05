@@ -3,10 +3,8 @@ package apigateway
 // RequestRecorder is called once per request the gateway authorizes far
 // enough to know which service/path it targets — i.e. every request past a
 // well-formed-route 404, whether it ultimately succeeds, is rejected
-// (401/403/502/503), or fails upstream. docs/plans/api-gateway.md §論点3
-// ("確定: method + service + path + status を timeline に。body は記録しない")
-// — deliberately narrow: no headers, no query string, no request/response
-// body, ever.
+// (401/403/502/503), or fails upstream. Deliberately narrow: no headers, no
+// query string, no request/response body, ever.
 //
 // taskID is the originating task (Registry Entry.TaskID); empty for a
 // taskless job, in which case a real recorder is expected to skip recording

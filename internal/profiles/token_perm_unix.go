@@ -9,10 +9,10 @@ import (
 )
 
 // warnIfTokenPermsLoose logs a warning when the token file's permission
-// bits are looser than tokenFilePerm (decision 2: "起動時に権限緩ければ
-// 警告"). Not a hard error — the token is still usable, and refusing to
-// read it would turn a merely-suspicious filesystem state into an outage;
-// `chmod 600` is adequate remediation once the operator is told.
+// bits are looser than tokenFilePerm. Not a hard error — the token is
+// still usable, and refusing to read it would turn a merely-suspicious
+// filesystem state into an outage; `chmod 600` is adequate remediation
+// once the operator is told.
 func warnIfTokenPermsLoose(path string, mode fs.FileMode) {
 	if perm := mode.Perm(); perm&^tokenFilePerm != 0 {
 		slog.Warn("token file has looser permissions than required; run chmod 600",

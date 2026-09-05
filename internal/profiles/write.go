@@ -27,8 +27,7 @@ const configLockName = "config.lock"
 // cmd/web.go's set-url/set-addr (web.public_url / web.addr mutations).
 // All those writers hitting the same flock file guarantees a "read →
 // modify → write" cycle in one process cannot interleave with another's
-// and silently lose data (the whole reason MutateConfig existed to
-// begin with — codex PR2 review round 2).
+// and silently lose data.
 //
 // The lock file itself is created 0600 in the config directory (which is
 // created 0755 if missing). A caller is responsible for releasing:
@@ -71,7 +70,7 @@ func LockConfigMutation(cfgPath string) (release func(), err error) {
 //     files (token files — the mutator's `login` caller writes the token
 //     inside this lock so no concurrent login on the SAME profile can end
 //     up with a token file whose URL disagrees with the config entry
-//     written next; codex PR2 review round 2)
+//     written next)
 //   - WriteConfig(cfgPath, newCfg) atomically (temp+rename), still inside
 //     the lock, so no other process observes an intermediate state
 //   - release the flock on return

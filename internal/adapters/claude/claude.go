@@ -1,14 +1,11 @@
 // Package claude implements adapters.HarnessAdapter for Claude Code.
 //
-// Package placement: internal/adapters/claude/ (internal/adapters/ hosts the
-// shared interface; each harness sub-package hosts its implementation).
-//
-// Stopping convention (Phase 3-b): SIGUSR1 is delivered to the runtime
-// process group by api.JobLifecycle.SignalJobRuntime. Run()'s
-// signal.Notify(SIGUSR1) handler intercepts it and forwards SIGTERM to the
-// claude child only, normalising the resulting exit status into
-// Result.StoppedByDaemon=true. There is no separate "stop agent" entry on
-// the adapter — the daemon owns the signal, the adapter owns the response.
+// Stopping convention: SIGUSR1 is delivered to the runtime process group by
+// api.JobLifecycle.SignalJobRuntime. Run()'s signal.Notify(SIGUSR1) handler
+// intercepts it and forwards SIGTERM to the claude child only, normalising
+// the resulting exit status into Result.StoppedByDaemon=true. There is no
+// separate "stop agent" entry on the adapter — the daemon owns the signal,
+// the adapter owns the response.
 package claude
 
 import (
@@ -25,8 +22,8 @@ func New() *Adapter {
 	return &Adapter{}
 }
 
-// Usage is not yet implemented. It will be wired in Phase 4 when the jobs
-// table gains usage columns and the jsonl read path is finalised.
+// Usage is not yet implemented; awaits the jobs table gaining usage columns
+// and a jsonl read path.
 func (a *Adapter) Usage(_ context.Context, _ string) (adapters.Usage, error) {
 	return adapters.Usage{}, nil
 }

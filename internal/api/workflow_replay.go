@@ -17,13 +17,10 @@ func (s *TaskWorkflowService) ReplayHook(ctx context.Context, taskID string, req
 	}
 
 	// Hydrate with workspace.yaml so workspace-level task_behaviors are
-	// visible to the replayed hook, matching the dispatch-loop's own meta
-	// (docs/plans/workspace-default-project.md §PR分割案 PR2, §現状の実測4's
-	// "hook replay" row). No fallback to bare Get here (unlike CreateTask):
-	// a bare-Get miss already 500'd before this switch, so GetWithWorkspace
-	// erroring for ANY reason — including the two new failure modes it can
-	// produce that bare Get never could (workspace.yaml corrupt,
-	// host_commands conflict) — keeps landing on the exact same 500.
+	// visible to the replayed hook, matching the dispatch-loop's own meta.
+	// No fallback to bare Get here (unlike CreateTask): a bare-Get miss
+	// already 500'd before this switch, so GetWithWorkspace erroring for ANY
+	// reason keeps landing on the exact same 500.
 	meta, err := s.Meta.GetWithWorkspace(ctx, task.ProjectID)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
@@ -51,13 +48,13 @@ func (s *TaskWorkflowService) ReplayHook(ctx context.Context, taskID string, req
 	// ReplayHook is a generic per-task endpoint (any task ID, including a
 	// card's), so — unlike Wake/Dispatch/autoDone/autoReopen/CompleteJob,
 	// each of which only ever runs against one definite side of the split —
-	// the governing machine must be resolved dynamically per task (PR-B).
-	// card-model-cleanup PR-2: machineFor is a pure function of task.Type now,
-	// so it cannot fail. A card reaching this far still fails fast just below
-	// — Coordinator.ReplayHook's lookupBehavior(meta, task) returns
-	// (TaskBehavior{}, false) for a nil task.Exec, which surfaces as "behavior
-	// not found" (400), the same as a card with an unmatched behavior name
-	// always did.
+	// the governing machine must be resolved dynamically per task.
+	// machineFor is a pure function of task.Type, so it cannot fail. A card
+	// reaching this far still fails fast just below —
+	// Coordinator.ReplayHook's lookupBehavior(meta, task) returns
+	// (TaskBehavior{}, false) for a nil task.Exec, which surfaces as
+	// "behavior not found" (400), the same as a card with an unmatched
+	// behavior name always did.
 	sm := machineFor(task)
 	replay, err := s.Coordinator.ReplayHook(ctx, task, meta, sm, req.HookID)
 	if err != nil {
@@ -69,11 +66,9 @@ func (s *TaskWorkflowService) ReplayHook(ctx context.Context, taskID string, req
 	// row — never wholesale-assign replay.FinalPayload, which is built from
 	// the task snapshot taken BEFORE the hook ran and would silently discard
 	// any out-of-band write the hook made mid-flight (e.g. via
-	// `boid task update --payload-patch`), exactly the bug
+	// `boid task update --payload-patch`), the same class of bug
 	// DispatchResult.PayloadDelta's doc comment describes for
-	// runDispatchLoop (Phase 5b PR7 codex review Blocker 1, wiring-seams.md
-	// #17) — this callsite had the same class of bug in an even blunter
-	// form (assignment, not even a merge).
+	// runDispatchLoop.
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		latest, err := tx.GetTask(taskID)
 		if err != nil {

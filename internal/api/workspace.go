@@ -16,19 +16,15 @@ import (
 type WorkspaceHandler struct {
 	Service ProjectService
 	// Homes, when non-nil, is the engine-backed view of workspace HOME
-	// volumes (docs/plans/workspace-home-volume-persistence.md 論点 a-2, PR7)
-	// used for Show's size reporting and Remove's home deletion. Left nil,
-	// both features degrade gracefully: Show omits WorkspaceDetail.Home,
-	// Remove reports home_deleted=false with no attempt made — the same
-	// degradation an empty RuntimesDir used to produce, now keyed on the
-	// feature's only actual dependency. See WorkspaceHomeStore's doc comment.
+	// volumes used for Show's size reporting and Remove's home deletion.
+	// Left nil, both features degrade gracefully: Show omits
+	// WorkspaceDetail.Home, Remove reports home_deleted=false.
 	Homes WorkspaceHomeStore
 
-	// HomeImporter, when non-nil, serves POST /api/workspaces/{slug}/home/import
-	// — PR8's migration of a pre-PR6 host home directory into the workspace's
-	// HOME volume (docs/plans/workspace-home-volume-persistence.md 論点 f).
-	// Left nil the route answers 501, the same "the daemon has no runner to do
-	// this" degradation a nil Homes produces for the size/delete surface.
+	// HomeImporter, when non-nil, serves
+	// POST /api/workspaces/{slug}/home/import, migrating a pre-existing host
+	// home directory into the workspace's HOME volume. Left nil, the route
+	// answers 501.
 	HomeImporter WorkspaceHomeImporter
 }
 
@@ -36,65 +32,27 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.List)
 	r.Post("/", h.Create)
-	// "/export" and "/apply" are static path segments at this same router
-	// level as "/{slug}" — chi's radix tree gives a static segment priority
-	// over a wildcard one at the same depth, but only for the METHOD each
-	// static route actually registers, not the path as a whole: GET
-	// /api/workspaces/export resolves to ExportEnvelope below (never
-	// Show), but PUT/DELETE /api/workspaces/export — no static route
-	// registers those methods on "/export" — fall through to "/{slug}"
-	// and hit Update/Remove("export") instead, same as any other slug.
-	// Likewise GET /api/workspaces/apply falls through to Show("apply"),
-	// since only POST is registered here. "/import" is NOT the same shape,
-	// despite being reachable the same way: its own POST registration was
-	// removed 2026-07-28 (see TestWorkspaceHandler_ImportRouteRemoved), so
-	// it registers nothing at all and a workspace named "import" is now
-	// indistinguishable from one named "team-a" on every method, POST's 405
-	// included. The shadowed set is exactly {"export", "apply"}.
+	// "/export" and "/apply" are static path segments at this router level,
+	// so GET/POST on those literal names always resolve here (ExportEnvelope
+	// / Apply) rather than falling through to "/{slug}" (Show / Create) —
+	// the shadowed set is exactly {"export","apply"} on the methods each
+	// static route claims; other methods (and slugs like "import", whose
+	// POST route was removed) fall through normally.
 	//
-	// ValidWorkspaceSlug (workspace_slug.go) has no reserved-word list, so a
-	// workspace really can be created under either name. What that costs is
-	// bigger than the one shadowed request: `boid workspace edit` and `boid
-	// workspace remove` each issue a preflight GET /api/workspaces/{slug}
-	// before their real call (cmd/workspace.go), so for a workspace named
-	// "export" it is not just `workspace show` that breaks but `workspace
-	// edit` and `workspace remove` as well — all three failing with
-	// ExportEnvelope's "exactly one of ?all=true or ?name=<slug> is
-	// required", an error naming a query parameter the operator never used.
-	// For the latter two the way through is --force, which is precisely the
-	// flag that discards edit's If-Match CAS and skips remove's
-	// destructive-delete confirmation; `workspace show` has no flags at all,
-	// so the only way to read a colliding workspace's definition is `boid
-	// workspace export <slug>` (which goes through ?name= and works). Every
-	// other subcommand is unaffected — create, list, apply, export, and the
-	// "/{slug}/..." sub-routes (init-script, home/import), which chi
-	// backtracks to correctly past the static node.
-	//
-	// That was raised as a follow-up when this comment was first written and
-	// has since been CLOSED AS ACCEPTED (nose, 2026-07-28) rather than fixed
-	// — this is the decision record, not a still-open item. Both alternatives
-	// cost more than the collision does. Reserving the names turns a workspace
-	// already created under one of them into a workspace the daemon then
-	// refuses to LOAD, not merely to create: ValidWorkspaceSlug runs on the
-	// read path too (workspace_repository.go's loadWorkspaceMeta returns its
-	// error before the SELECT, and workspace_store.go's yaml-mode List
-	// silently drops the entries that fail it), so what already exists
-	// becomes unreadable rather than merely un-creatable. Moving the envelope routes off the bare
-	// "/{name}" segment is an API change every client — the CLI included —
-	// would have to follow, to buy back two names nobody has asked for.
-	// TestWorkspaceRouteShadowing_AcceptedCollision pins the accepted
-	// behaviour so a later change to it is a deliberate one.
+	// ValidWorkspaceSlug has no reserved-word list, so a workspace really
+	// can be created under either name. That collision is an accepted
+	// tradeoff, not a bug: reserving the names would make an already-
+	// existing workspace of that name unreadable (ValidWorkspaceSlug runs
+	// on the read path too), which costs more than the collision does. See
+	// TestWorkspaceRouteShadowing_AcceptedCollision.
 	r.Get("/export", h.ExportEnvelope)
 	r.Post("/apply", h.Apply)
 	r.Get("/{slug}", h.Show)
-	// PR8 (論点 f). Nested under the slug rather than a top-level
-	// "/import-home" so the target is a path parameter like every other
-	// per-workspace operation, and so a future "/{slug}/home/..." surface
-	// (export, prune) has an obvious place to live.
+	// Nested under the slug rather than a top-level "/import-home" so the
+	// target is a path parameter like every other per-workspace operation.
 	r.Post("/{slug}/home/import", h.ImportHome)
-	// PR9 (論点 d), the surface PR8's comment above anticipated: the
-	// workspace's init.sh, read and written through the daemon because the
-	// file lives in the daemon's own volume. See workspace_init_script.go.
+	// The workspace's init.sh, read and written through the daemon because
+	// the file lives in the daemon's own volume. See workspace_init_script.go.
 	r.Get("/{slug}/init-script", h.GetInitScript)
 	r.Put("/{slug}/init-script", h.PutInitScript)
 	r.Put("/{slug}", h.Update)
@@ -102,11 +60,10 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	return r
 }
 
-// workspaceBodyMaxBytes caps a workspace yaml request body at 1 MiB
-// (docs/plans/workspace-db-consolidation.md 「API 追加」設計判断: 「body 上限:
-// 1 MiB (workspace yaml は数 KB 想定、DoS 防御)」). Workspace yaml documents
-// are a handful of KB at most — anything larger is either a mistake or an
-// attempt to make the daemon buffer an unbounded body in memory.
+// workspaceBodyMaxBytes caps a workspace yaml request body at 1 MiB.
+// Workspace yaml documents are a handful of KB at most — anything larger
+// is either a mistake or an attempt to make the daemon buffer an
+// unbounded body in memory.
 const workspaceBodyMaxBytes = 1 << 20 // 1 MiB
 
 func (h *WorkspaceHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -170,10 +127,10 @@ func setWorkspaceETag(w http.ResponseWriter, detail *WorkspaceDetail) {
 	}
 }
 
-// Create handles POST /api/workspaces (docs/plans/workspace-db-consolidation.md
-// PR4 Step C). The body is a yaml document with the target slug inlined
-// (`slug: foo`) alongside the workspace meta fields — there is no URL
-// parameter for the new slug, since the daemon does not yet know it.
+// Create handles POST /api/workspaces. The body is a yaml document with
+// the target slug inlined (`slug: foo`) alongside the workspace meta
+// fields — there is no URL parameter for the new slug, since the daemon
+// does not yet know it.
 func (h *WorkspaceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	data, ok := readWorkspaceYAMLBody(w, r)
 	if !ok {
@@ -217,10 +174,10 @@ func (h *WorkspaceHandler) Show(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// Update handles PUT /api/workspaces/{slug} (Step E): whole-document
-// replace, gated by If-Match unless ?force=true is passed (decision 17 —
-// PUT + If-Match, no PATCH). See ProjectAppService.UpdateWorkspace for the
-// exact status code contract (428 missing If-Match, 412 stale If-Match).
+// Update handles PUT /api/workspaces/{slug}: whole-document replace,
+// gated by If-Match unless ?force=true is passed. See
+// ProjectAppService.UpdateWorkspace for the exact status code contract
+// (428 missing If-Match, 412 stale If-Match).
 func (h *WorkspaceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 	data, ok := readWorkspaceYAMLBody(w, r)
@@ -245,67 +202,38 @@ func (h *WorkspaceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// Remove handles DELETE /api/workspaces/{slug} (Step F). The reserved
-// default slug and re-assignment of any still-assigned project are enforced
-// at the service/repository layer (ProjectAppService.RemoveWorkspace →
+// Remove handles DELETE /api/workspaces/{slug}. The reserved default slug
+// and re-assignment of any still-assigned project are enforced at the
+// service/repository layer (ProjectAppService.RemoveWorkspace →
 // orchestrator.WorkspaceRepository.Remove's transaction).
 //
-// docs/plans/home-workspace-volume.md Phase 4 PR5 adds home deletion on top
-// of the pre-existing row removal: the workspace row is always removed first
-// (via h.Service.RemoveWorkspace), and only then does this attempt to delete
-// slug's home — trusted-side deletion, since a sandboxed job or a remote CLI
-// client has no way to reach the daemon's docker socket itself (and, since
-// PR1 of docs/plans/workspace-home-volume-persistence.md, is denied the
-// boid-ws- volume namespace outright even when it has one). A home-deletion
-// failure — most plausibly the engine's 409 for a volume a running job still
-// holds, see WorkspaceRemoveResponse.HomeDeleteError — is reported in the
-// response but does not turn this into an error response: the row is already
-// gone, and the plan doc explicitly allows this "part-completed" outcome (see
-// WorkspaceRemoveResponse's doc comment) rather than trying to make the two
-// deletions atomic.
+// The workspace row is removed first (h.Service.RemoveWorkspace); only
+// then does this attempt to delete the workspace's home volume —
+// trusted-side, since only the daemon can reach its own docker socket. A
+// home-deletion failure (e.g. the engine's 409 for a volume a running job
+// still holds) is reported in the response rather than turned into an
+// error: the row is already gone, and a part-completed outcome here is an
+// accepted tradeoff over trying to make the two deletions atomic.
 //
-// What that tolerance does NOT extend to is interleaving with
-// `boid workspace import-home` (PR8 round-2 codex review, Major 1): a
-// part-completed remove leaves a volume an operator can delete by hand, while an
-// overlapping migration leaves a volume full of credentials that no dispatch can
-// mount and this very endpoint can no longer target. Both deletions therefore
-// run inside the exclusion taken below.
+// Both deletions run inside the exclusion held below so they cannot
+// interleave with `boid workspace import-home`, which would otherwise
+// leave a volume full of credentials that no dispatch can mount and this
+// endpoint can no longer target.
 //
-// A workspace has a THIRD piece — its init.sh — and that one is deleted by
-// RemoveWorkspace itself, not here (PR9 codex round 3, Major 3). Not left
-// behind: dispatch resolves a script from the SLUG alone, so the next
-// workspace created with the same name would inherit the removed one's script
-// and run it against a brand-new, empty HOME volume, with no way to clean it
-// up first (every /{slug}/init-script route 404s once the row is gone). Not
-// deleted from here either, because a second service call means a second
-// critical section, and an apply landing between the two upserted the slug,
-// wrote a script, answered 200 — and had that script deleted by the removal
-// still finishing. The service does both under one hold of its mutex; this
-// function only reports the outcome.
+// The workspace's init.sh is a third piece, deleted by RemoveWorkspace
+// itself (not here) under the service's own mutex, so it can't be
+// inherited by a later workspace created under the same slug before
+// cleanup runs.
 func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 
-	// Both deletions run inside this bracket (codex round 2 of PR8, Major 1).
-	//
-	// The two of them are not atomic and are not meant to be — the part-completed
-	// outcome is documented above — but they must not INTERLEAVE with
-	// `boid workspace import-home`, which deletes this workspace's HOME volume,
-	// re-creates it under the same name and extracts the operator's credentials
-	// into it. A migration that lands anywhere around these two statements leaves
-	// a populated HOME volume whose workspace row is gone: `boid gc` reports it as
-	// an orphan, no dispatch can ever mount it, and `boid workspace remove` — the
-	// obvious cleanup — 404s on the row it no longer has. Held across BOTH
-	// statements rather than just the volume deletion, because it is the ROW's
-	// disappearance that the migration has to be excluded from.
-	//
-	// Refused rather than queued when a migration is already running: see
-	// dispatcher's workspaceHomeInFlight.beginRemoval for why this one refuses
-	// where a dispatch waits. Nothing has been changed at that point, so the
-	// operator loses only the retry.
-	//
-	// A nil HomeImporter means no runner is wired, so no migration can be running
-	// in this daemon either and there is nothing to exclude — the same off-switch
-	// reading a nil Homes gets.
+	// Held across both the row removal and the home-volume deletion below —
+	// not just the volume deletion — because it is the row's disappearance
+	// that `boid workspace import-home` must be excluded from. Refused
+	// (not queued) when a migration is already running: nothing has
+	// changed yet, so the operator only loses a retry. A nil HomeImporter
+	// means no migration can be running in this daemon either, so there is
+	// nothing to exclude.
 	if h.HomeImporter != nil {
 		release, err := h.HomeImporter.BeginWorkspaceHomeRemoval(slug)
 		if err != nil {
@@ -315,11 +243,10 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 		defer release()
 	}
 
-	// The row AND the workspace's init.sh, in one call because they have to be
-	// excluded from a concurrent apply together (PR9 codex round 3, Major 3 —
-	// see ProjectAppService.RemoveWorkspace). The script's fate comes back in
-	// the result rather than being raised: by the time it is touched the row
-	// is already gone.
+	// The row and the workspace's init.sh are removed together (see
+	// ProjectAppService.RemoveWorkspace) since both must be excluded from a
+	// concurrent apply. The script's fate comes back in the result rather
+	// than as an error: by the time it's touched the row is already gone.
 	removal, err := h.Service.RemoveWorkspace(slug)
 	if err != nil {
 		writeServiceError(w, err)
@@ -354,44 +281,27 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// Apply handles POST /api/workspaces/apply?dry_run=<bool> (docs/plans/
-// volume-only-daemon.md PR-1d codex round-1 Blocker 2/Major 1): the body is
+// Apply handles POST /api/workspaces/apply?dry_run=<bool>: the body is
 // exactly one apiVersion:boid.dev/v1 kind:Workspace yaml document (a
-// multi-document body — more than one "---"-separated document — is
-// rejected; `boid workspace apply` sends one request per document, which is
-// exactly what gives each document its own all-or-nothing DB transaction
-// rather than sharing one across an entire multi-workspace file).
-// dry_run=true runs every read/write the real apply would (same
-// validation, same DB statements) but rolls back instead of committing.
+// multi-document body is rejected; `boid workspace apply` sends one
+// request per document, giving each its own all-or-nothing DB
+// transaction). dry_run=true runs every read/write a real apply would but
+// rolls back instead of committing.
 //
-// ?dry_run is parsed with strconv.ParseBool (PR-1d codex round-2 Major: the
-// previous `== "true"` check failed OPEN — "True", "1", or a typo silently
-// fell through to a real commit instead of the requested preview). An
-// unparseable value is now rejected with 400 rather than defaulting to
-// mutation, and which mode ran is always logged at INFO so a caller can
-// confirm from the server log which path a given request actually took.
+// dry_run is parsed carefully because a permissive parse here would
+// silently turn into a real commit instead of the requested preview:
+//   - strconv.ParseBool rejects an unparseable value with 400 rather than
+//     defaulting to mutation.
+//   - Presence (url.Values.Has), not non-emptiness, gates parsing, so
+//     `?dry_run=` or `?dry_run` (no value) is rejected rather than treated
+//     as absent.
+//   - The query string is parsed explicitly via url.ParseQuery rather than
+//     r.URL.Query(), which silently takes only the first value of a
+//     repeated key and swallows a malformed-query error — both now surface
+//     as 400 instead of falling through to a real commit.
 //
-// Presence, not non-emptiness, gates parsing (PR-1d codex round-3 Major):
-// the round-2 fix still checked `raw != ""`, so `?dry_run=` (empty value) or
-// `?dry_run` (no `=` at all — reachable via `?dry_run=${DRY_RUN}` with an
-// unset shell variable) produced raw=="" and fell through as if the
-// parameter were absent entirely, silently performing a real commit for a
-// caller who explicitly asked for dry_run. url.Values.Has reports whether
-// the key was present in the query string at all, independent of its value,
-// so an explicitly-empty dry_run now reaches strconv.ParseBool("") — which
-// fails — and is rejected with 400, same as any other unparseable value.
-//
-// The query string is parsed explicitly with url.ParseQuery rather than the
-// convenience r.URL.Query() (PR-1d codex round-4 Minor): (1) Query() returns
-// only the FIRST value for a repeated key, so `?dry_run=false&dry_run=true`
-// silently used "false" and performed a real commit even though the
-// request also said "true" elsewhere — ambiguous/contradictory input, now
-// rejected with 400 rather than picking one arbitrarily; (2) Query() also
-// silently discards the underlying ParseQuery error (e.g. an unescaped ';'
-// separator, rejected by net/url since Go 1.17), which can make a key
-// disappear from the parsed result entirely rather than surface the
-// malformed request — a malformed query string is now itself a 400 instead
-// of silently degrading to "no dry_run param at all" (a real commit).
+// Which mode ran is always logged at INFO so a caller can confirm from the
+// server log which path a given request actually took.
 func (h *WorkspaceHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	dryRun := false
 	query, err := url.ParseQuery(r.URL.RawQuery)
@@ -427,13 +337,9 @@ func (h *WorkspaceHandler) Apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// PR-1d codex round-2 Minor: `boid workspace apply` (cmd/workspace_apply.go)
-	// already warns client-side when a document still carries a retired
+	// `boid workspace apply` already warns client-side about a retired
 	// spec.additional_bindings key, but a caller hitting this endpoint
-	// directly (not through the CLI) never saw that warning at all — the
-	// key was silently parsed and discarded. Surface the same warning here
-	// so every caller of this endpoint gets it, not just the CLI's own
-	// pre-parse.
+	// directly never saw that warning — surface it here too.
 	if docs[0].AdditionalBindingsDropped {
 		slog.Warn("workspace apply: spec.additional_bindings is no longer supported and was dropped",
 			"workspace", docs[0].Envelope.Metadata.Name)
@@ -451,11 +357,10 @@ func (h *WorkspaceHandler) Apply(w http.ResponseWriter, r *http.Request) {
 }
 
 // ExportEnvelope handles GET /api/workspaces/export?all=true or
-// ?name=<slug> (docs/plans/volume-only-daemon.md PR-1d codex round-1
-// Blocker 3): returns one or more apiVersion:boid.dev/v1 kind:Workspace
+// ?name=<slug>: returns one or more apiVersion:boid.dev/v1 kind:Workspace
 // yaml documents built from a single atomic DB snapshot
-// (ProjectAppService.ExportWorkspaceEnvelopes / orchestrator.
-// SnapshotWorkspacesForExport), "---"-separated when more than one.
+// (ProjectAppService.ExportWorkspaceEnvelopes), "---"-separated when more
+// than one.
 func (h *WorkspaceHandler) ExportEnvelope(w http.ResponseWriter, r *http.Request) {
 	all := r.URL.Query().Get("all") == "true"
 	name := r.URL.Query().Get("name")

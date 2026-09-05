@@ -16,22 +16,15 @@ import (
 // uses to create directories and write files under a path the DAEMON walks
 // but a JOB controls.
 //
-// The original such path was DeployAll's baseDir, workspace HOME's
-// `.claude/skills`: rw bind mounted into the sandbox for the whole lifetime
-// of every job dispatched against the workspace, so every path component
-// under it — including baseDir's own skill directories and their
-// subdirectories, not merely the leaf files — had to be treated as
+// MkdirAllNoSymlink is the current concrete case: the dispatcher calls it
+// to create the per-skill bind TARGETS inside the workspace HOME, which is
+// rw bind mounted into the sandbox for the whole lifetime of every job
+// dispatched against that workspace. Every path component under such a
+// directory — not merely the leaf files — has to be treated as
 // attacker-controlled: a compromised job can replace any of them with a
-// symlink to an arbitrary host path between two DeployAll calls, or
-// concurrently with one in flight, hoping the daemon (which runs as a real,
-// uid 1000 user) writes through it.
-//
-// PR3 of docs/plans/workspace-home-volume-persistence.md moved DeployAll's
-// own destination out of the workspace HOME (to <RuntimesDir>/skills, which
-// no job can reach) but did not retire the concern — it split it out into
-// MkdirAllNoSymlink, which the dispatcher calls to create the per-skill bind
-// TARGETS inside the workspace HOME, i.e. squarely back inside the
-// job-controlled tree the reasoning below is about.
+// symlink to an arbitrary host path between two calls, or concurrently with
+// one in flight, hoping the daemon (which runs as a real, uid 1000 user)
+// writes through it.
 //
 // A Lstat/EvalSymlinks pre-check cannot close this: a concurrent job can
 // swap a real directory for a symlink in the window between the check and
@@ -45,8 +38,6 @@ import (
 // this way, later renames of the *name* that led to it cannot affect
 // operations already using that fd (Linux resolves fd-relative operations
 // against the open file description, not the path).
-//
-// PR #789 codex review (2026-07-17), Blocker 1.
 
 // MkdirAllNoSymlink creates dir and every missing component leading to it,
 // using the same symlink-refusing openat2 walk DeployAll writes through (see
@@ -54,15 +45,12 @@ import (
 // owns the resulting directory. dir must be absolute; creating an
 // already-existing directory is a no-op.
 //
-// It exists for PR3 of docs/plans/workspace-home-volume-persistence.md (論点
-// e-2 決定 D3): the dispatcher stops copy-syncing skill CONTENT into the
-// workspace HOME and instead bind-mounts each embedded skill in from a
-// host-visible runtime dir, so it has to pre-create the bind TARGETS
-// (<home>/.claude and <home>/.claude/skills/<name>) itself — the directories
-// DeployAll's own walk used to create as a side effect of writing there. A
-// missing bind target would otherwise be auto-created by the container engine
-// as uid 0, which locks the uid 1000 harness out of ~/.claude/.credentials.json
-// (measured; see the plan doc's 論点 b-2).
+// The dispatcher calls this to pre-create the per-skill bind TARGETS
+// (<home>/.claude and <home>/.claude/skills/<name>) inside the workspace
+// HOME before bind-mounting each embedded skill in from a host-visible
+// runtime dir. A missing bind target would otherwise be auto-created by the
+// container engine as uid 0, which locks the uid 1000 harness out of
+// ~/.claude/.credentials.json.
 //
 // Those targets sit inside a directory the job owns read-write, which is
 // precisely why this is not an os.MkdirAll: a job that leaves ~/.claude
@@ -175,9 +163,8 @@ func openOrCreateDirNoSymlink(parentFd int, name string) (int, error) {
 
 // classifySafeOpenError turns the symlink-rejection errnos (ELOOP: a
 // component was a symlink; EXDEV: RESOLVE_BENEATH would have crossed a
-// mount boundary) into a message naming the offending component, per the
-// review's "clear error message" requirement, without losing the
-// underlying errno for %w-based inspection by callers/tests.
+// mount boundary) into a message naming the offending component, without
+// losing the underlying errno for %w-based inspection by callers/tests.
 func classifySafeOpenError(name string, err error) error {
 	if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.EXDEV) {
 		return fmt.Errorf("symlink 混入を検出 (component %q): %w", name, err)
@@ -214,11 +201,10 @@ func openFileNoSymlinkIfExists(dirFd int, name string) (*os.File, bool, error) {
 // string), then fsync dirFd itself so the rename is durable across a crash
 // right after this call returns (mirrors
 // internal/dispatcher/workspace_home.go's writeWorkspaceHomeMarker's temp ->
-// sync -> close -> rename -> parent-dir-sync pattern; PR #789 review
-// Should-fix #1). Without the two Sync calls, a SIGKILL or power loss
-// between write and rename can leave dest holding a partially written file
-// or, on some filesystems/journaling modes, an unlinked rename that never
-// made it to disk.
+// sync -> close -> rename -> parent-dir-sync pattern). Without the two Sync
+// calls, a SIGKILL or power loss between write and rename can leave dest
+// holding a partially written file or, on some filesystems/journaling
+// modes, an unlinked rename that never made it to disk.
 func writeFileSafeAt(dirFd int, name string, data []byte, perm os.FileMode) (retErr error) {
 	tmpName, tmp, err := createUniqueTempFile(dirFd, name, perm)
 	if err != nil {
@@ -299,33 +285,16 @@ func isStaleTempName(name string) bool {
 // the same symlink-safe (unlinkat on a verified fd, not a path string)
 // mechanism as the rest of this file.
 //
-// PR4 E2E investigation (docs/plans/home-workspace-volume.md): a name
-// matching isStaleTempName is not necessarily abandoned — two DeployAll calls
-// can legitimately run concurrently against the SAME baseDir.
-//
-// The concurrency that motivated this is gone: internal/dispatcher used to
-// call DeployAll once per dispatch, with no cross-dispatch locking, first into
-// a workspace HOME shared by every job of that workspace and then (PR3 of
-// docs/plans/workspace-home-volume-persistence.md) into a directory shared by
-// every job of the whole INSTALLATION. Neither call exists any more — the
-// sandbox skill set is unpacked into the runner image at build time. What is
-// left is DeployHostSkills behind `boid install-skills`, which an operator can
-// still run twice at once against ~/.claude/skills.
-//
-// The machinery stays rather than being unwound with its original caller: it
-// costs nothing on a directory with one writer, and the property it provides —
-// a concurrent run's temp file is not reclaimed out from under it — is one a
-// future caller should not have to re-derive. Before this fix, cleanupStaleTempFiles
-// unlinked *every* name matching the pattern unconditionally — including
-// one a still-running, concurrently-executing DeployAll call had just
-// created and was about to renameat into place — producing exactly the
-// "rename ... no such file or directory" failure this fix closes: the
-// victim call's own createUniqueTempFile succeeded, but its later
-// renameat found the file gone, unlinked out from under it by another
-// call's cleanup pass. tempFileOwnerAlive distinguishes a genuinely
-// abandoned temp file (its creating PID, encoded in the name by
-// createUniqueTempFile, no longer exists) from one whose owner is still
-// alive and presumably still writing it — only the former is reaped here.
+// A name matching isStaleTempName is not necessarily abandoned: two calls
+// (e.g. two concurrent `boid install-skills` runs against the same
+// ~/.claude/skills) can legitimately run at once against the same baseDir,
+// and unlinking every matching name unconditionally would delete a
+// sibling's temp file moments before its own renameat, producing a spurious
+// "rename ... no such file or directory" failure. tempFileOwnerAlive
+// distinguishes a genuinely abandoned temp file (its creating PID, encoded
+// in the name by createUniqueTempFile, no longer exists) from one whose
+// owner is still alive and presumably still writing it — only the former
+// is reaped here.
 func cleanupStaleTempFiles(dirFd int) error {
 	dupFd, err := unix.Dup(dirFd)
 	if err != nil {

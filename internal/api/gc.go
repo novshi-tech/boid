@@ -44,13 +44,11 @@ func (s *GCAppService) Run(olderThan time.Duration, dryRun bool) (*orchestrator.
 type GCHandler struct {
 	Service GCService
 	// Homes, when non-nil, is the engine-backed view of workspace HOME
-	// volumes (docs/plans/workspace-home-volume-persistence.md 論点 a-2, PR7)
-	// used to list them and their sizes in the response (docs/plans/
-	// home-workspace-volume.md Phase 4 PR5: "サイズ可視化のみで開始、自動
-	// prune なし"). Left nil, the response omits workspace_homes entirely —
-	// no size listing, and (unchanged since PR5) no home is ever deleted by
-	// GC either way. See WorkspaceHomeStore's doc comment for why the engine
-	// handle, rather than a runtimes directory, is the gate.
+	// volumes used to list them and their sizes in the response (visibility
+	// only, no auto-prune). Left nil, the response omits workspace_homes
+	// entirely — no size listing, and no home is ever deleted by GC either
+	// way. See WorkspaceHomeStore's doc comment for why the engine handle,
+	// rather than a runtimes directory, is the gate.
 	Homes WorkspaceHomeStore
 	// Workspaces, when set, is consulted to flag orphaned homes (a workspace
 	// HOME volume with no corresponding workspace row) in the
@@ -78,29 +76,25 @@ type gcResponse struct {
 	Runtimes   int64 `json:"runtimes"`
 	SandboxTmp int64 `json:"sandbox_tmp"`
 	Devices    int64 `json:"devices"`
-	// TriggerRuns is the count of finished trigger_runs rows deleted (N-2,
-	// Opus review) — see orchestrator.GCTriggerRuns.
+	// TriggerRuns is the count of finished trigger_runs rows deleted — see
+	// orchestrator.GCTriggerRuns.
 	TriggerRuns int64 `json:"trigger_runs"`
 	// Signals is the count of signals rows deleted — see
-	// orchestrator.GCSignals (docs/plans/signal-ingest-detailed-design.md
-	// §2/§9).
+	// orchestrator.GCSignals.
 	Signals int64 `json:"signals"`
 	DryRun  bool  `json:"dry_run,omitempty"`
-	// WorkspaceHomes lists every workspace HOME volume's size
-	// (docs/plans/home-workspace-volume.md Phase 4 PR5) — visibility only,
-	// never auto-pruned by GC. Omitted entirely when GCHandler.Homes was not
-	// wired, and empty (with WorkspaceHomesListError set) when the listing
-	// could not be produced or trusted.
+	// WorkspaceHomes lists every workspace HOME volume's size — visibility
+	// only, never auto-pruned by GC. Omitted entirely when GCHandler.Homes
+	// was not wired, and empty (with WorkspaceHomesListError set) when the
+	// listing could not be produced or trusted.
 	WorkspaceHomes []WorkspaceHomeSize `json:"workspace_homes,omitempty"`
 	// WorkspaceHomesListError is non-empty when no trustworthy listing could
-	// be produced, and carries the reason. Two failures land here:
-	//
-	//   - the engine's volume enumeration failed, so there is no listing at
-	//     all (PR7 round-2 codex review, Major 2);
-	//   - WorkspaceSlugLister.List failed, so orphan detection could not be
-	//     trusted and WorkspaceHomes is reported empty rather than with every
-	//     entry silently mismarked Orphan=true (codex PR #791 review,
-	//     Should-fix #3 — see ListWorkspaceHomeSizes's doc comment).
+	// be produced, and carries the reason. Two failures land here: the
+	// engine's volume enumeration failed, so there is no listing at all; or
+	// WorkspaceSlugLister.List failed, so orphan detection could not be
+	// trusted and WorkspaceHomes is reported empty rather than with every
+	// entry silently mismarked Orphan=true (see ListWorkspaceHomeSizes's doc
+	// comment).
 	//
 	// One field for both because the CLI's action is the same either way: say
 	// the listing is unavailable and why, instead of printing nothing —
@@ -148,13 +142,11 @@ func (h *GCHandler) Run(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case err != nil:
 			// The engine could not enumerate the volumes at all. Reported to
-			// the caller, not merely logged (PR7 round-2 codex review, Major
-			// 2): the daemon log is not where a `boid gc` operator is looking,
-			// and an omitted section with no reason is byte-identical to "this
-			// install has no workspace home volumes" — so a wedged engine read
-			// as a clean install. The host-path implementation this replaced
-			// set listErr on its own enumeration failure, which makes going
-			// quiet here a regression rather than a pre-existing gap.
+			// the caller, not merely logged: the daemon log is not where a
+			// `boid gc` operator is looking, and an omitted section with no
+			// reason is byte-identical to "this install has no workspace
+			// home volumes" — so a wedged engine would read as a clean
+			// install.
 			//
 			// It shares WorkspaceHomesListError with the lister-failure case
 			// deliberately: both mean "no trustworthy listing, and here is

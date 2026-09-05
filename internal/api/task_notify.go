@@ -18,28 +18,19 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// NotifyTask invokes the configured notify command for the given task.
-// Returns 501 when no notifier is wired and ask is empty (notifications disabled in config).
-// When ask is non-empty the task is transitioned to awaiting; the notification is
-// best-effort and skipped if no notifier is configured. questionID identifies the
-// Q&A turn (generated when empty).
-// When progress is non-empty (progress mode), no hook fires and no state transition
-// occurs — only a progress Action is written to the timeline.
-// ask and progress are mutually exclusive.
+// NotifyTask invokes the configured notify command for taskID. Returns 501
+// when no notifier is wired and ask is empty. With ask set, the task
+// transitions to awaiting (notification is best-effort); questionID
+// identifies the Q&A turn (generated when empty). With progress set, only
+// a progress Action is written — no hook fires, no state transition. ask
+// and progress are mutually exclusive.
 //
-// Note: ask transitions the task to awaiting but does NOT spawn a resume
-// dispatch when the user replies. The session-id resume path was removed
-// (every dispatch is a fresh agent process); only `boid task ask` (the
-// blocking RPC) can deliver an answer back to a live agent.
+// ask does NOT spawn a resume dispatch when the user replies — only the
+// blocking `boid task ask` RPC can deliver an answer back to a live agent.
 //
-// Actor note (論点11): every Action this writes is stamped
-// orchestrator.ActorTask(taskID) — treated as the task's own self-report.
-// This call is reachable both from inside a sandbox (`boid task notify`,
-// the common case) and from the host-side HTTP route, so a human operator
-// calling `boid task notify --done` from outside a task also gets logged as
-// `task:<id>` rather than `human`. Defensible under "this call always means
-// the task itself is signalling its own progress/outcome", but worth this
-// note for anyone auditing the actions log.
+// Every Action this writes is stamped orchestrator.ActorTask(taskID), even
+// when called from the host-side HTTP route by a human operator: this call
+// always represents the task's own self-report.
 func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, progress, done, fail string) error {
 	// ask / progress / done / fail are mutually exclusive: each represents a
 	// distinct lifecycle signal (Q&A pause, FYI-only progress, success
@@ -67,15 +58,10 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		if err != nil {
 			return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 		}
-		// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: action
-		// payload size cap. This method writes actions.payload directly via
-		// s.Actions.CreateAction, bypassing ApplyAction (one of the 4
-		// mandatory ValidateContentSize entry points) entirely — see
-		// orchestrator.MaxContentBytes's own doc comment for why this call
-		// site needed its own check added rather than being covered by
-		// that "4 entry points" claim. progress is an agent-supplied free
-		// string (`boid task notify --progress`), not a daemon-generated
-		// fixed format, so it needs the same cap action_send gets.
+		// Action payload size cap: this writes actions.payload directly via
+		// s.Actions.CreateAction, bypassing ApplyAction's built-in check, so
+		// this call site needs its own — progress is an agent-supplied free
+		// string, not a daemon-generated fixed format.
 		if err := orchestrator.ValidateContentSize("action payload", []byte(progress)); err != nil {
 			return &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
@@ -102,12 +88,10 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 	}
 
 	// Lifecycle-accountability hard gate: only root tasks (parent_id == "")
-	// fire user-facing notify hooks. Child tasks signal their parent supervisor
-	// via the awaiting state transition (for ask mode) or are silently dropped
-	// (for FYI mode) — the supervisor's monitoring loop is the canonical
-	// delivery path. This is a daemon-level invariant rather than a project.yaml
-	// hook expression, so child tasks cannot accidentally page the user when a
-	// project author forgets the condition. See docs/plans/lifecycle-accountability.md.
+	// fire user-facing notify hooks. Child tasks signal their parent
+	// supervisor via the awaiting transition (ask mode) or are silently
+	// dropped (FYI mode) — a daemon-level invariant so a project author
+	// can't accidentally make a child task page the user.
 	fireUserNotify := task.ParentID == ""
 
 	// Without ask, a working notifier is required to surface the FYI — but only
@@ -178,22 +162,17 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		return nil
 	}
 
-	// Lifecycle signal: persist the agent's intent and stop the running jobs via the adapter.
+	// Lifecycle signal: persist the agent's intent and stop the running jobs.
 	//
-	// --ask still goes through ApplyAction(ask): the awaiting transition is
-	// synchronous (the agent expects the task to be visibly in `awaiting`
-	// immediately after the call returns so the parent supervisor's polling
-	// loop sees it).
+	// --ask goes through ApplyAction(ask) synchronously: the agent expects
+	// the task to be visibly `awaiting` as soon as the call returns.
 	//
-	// --done / --fail record a `done_request` / `fail_request` action
-	// directly WITHOUT calling ApplyAction. The state transition fires later
-	// via the condition-based auto rule (`lifecycle.executed && lifecycle.done`
-	// → done; ditto for fail), which only kicks in after the runtime has
-	// cleanly exited and the go-native runner has called `boid job done`
-	// through the broker (internal/sandbox/runner.postJobDone — not a shell
-	// EXIT trap). This avoids the race where ApplyAction(done)'s spawned
-	// dispatch loop SIGTERM'd the still-running runtime, leaving the job
-	// marked failed.
+	// --done / --fail record a `done_request`/`fail_request` action
+	// directly, WITHOUT ApplyAction. The actual transition fires later via
+	// the condition-based auto rule, once the runtime has cleanly exited and
+	// `boid job done` lands through the broker — this avoids a race where
+	// ApplyAction(done)'s dispatch loop would SIGTERM the still-running
+	// runtime and leave the job marked failed.
 	if s.Workflow == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
 	}
@@ -231,14 +210,10 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		} else {
 			actionType, msg = "fail_request", fail
 		}
-		// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: action
-		// payload size cap — see the matching progress-mode comment above
-		// for why this call site (bypasses ApplyAction) needs its own
-		// check. done/fail messages are agent-supplied free strings
-		// (`boid task notify --done/--fail`), not a daemon-generated fixed
-		// format. Checked before verifyDoneClaim's git-heavy
-		// anti-confabulation gate so an oversized message fails fast
-		// without paying that cost.
+		// Action payload size cap (same reasoning as the progress-mode check
+		// above: this call bypasses ApplyAction). Checked before
+		// verifyDoneClaim's git-heavy gate so an oversized message fails
+		// fast without paying that cost.
 		if err := orchestrator.ValidateContentSize("action payload", []byte(msg)); err != nil {
 			return &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
@@ -269,21 +244,14 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 	}
 
 	// Stop the agent of each running hook job gracefully. StopAgent delivers
-	// SIGUSR1 to the runtime pgrp; claude.Adapter.Run()'s signal.Notify handler
-	// translates that into a SIGTERM toward the claude child and returns with
-	// Result.StoppedByDaemon=true so the surrounding runner-inner-child still
-	// posts `boid job done` through the broker (a direct Go call,
-	// internal/sandbox/runner.postJobDone).
+	// SIGUSR1 to the runtime pgrp, which the adapter translates into a
+	// SIGTERM toward the child process; the runner still posts `boid job
+	// done` through the broker afterward.
 	//
-	// Crucially, we do NOT call CompleteJob preemptively here. CompleteJob's
+	// We deliberately do NOT call CompleteJob preemptively here: its
 	// finalize releases the broker token, which would reject the runner's
-	// follow-up `boid job done` as "invalid token" — silently dropping the
-	// job's output and breaking the next hook's resume. By letting the
-	// runner-inner-child be the sole CompleteJob caller (through the broker),
-	// the standard completion path runs to completion normally. (The agent's
-	// own session-id payload patch is unaffected either way — it is applied
-	// immediately via `--payload-patch` before the agent even starts, not at
-	// job-done time.)
+	// follow-up `boid job done` as "invalid token" and silently drop the
+	// job's output. The runner remains the sole CompleteJob caller.
 	if s.Jobs != nil {
 		jobs, err := s.Jobs.ListJobsByTask(taskID)
 		if err == nil {
@@ -324,25 +292,18 @@ func notifyModeName(ask, done, fail string) string {
 // false-match.
 var releaseCommitRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
-// verifyDoneClaim guards `notify --done` against two confabulation patterns
-// observed in supervisor agents (2026-05-30): (1) reporting done while child
-// tasks are still open — a parent owns its children's lifecycle and a premature
-// done orphans them; and (2) citing a release commit that does not exist in the
-// repository — a fabricated success report. A rejected claim is returned as a
-// StatusError so the agent's `notify` call fails loudly (the runtime is NOT
-// signalled to stop) and it must actually wait / re-verify. All git checks are
-// best-effort: any inconclusive result (missing repo, exec/network error,
-// timeout) skips the check so infrastructure hiccups never block a real done.
+// verifyDoneClaim guards `notify --done` against two confabulation patterns:
+// (1) reporting done while child tasks are still open — a parent owns its
+// children's lifecycle and a premature done orphans them; and (2) citing a
+// release commit that does not exist in the repository. A rejected claim
+// returns a StatusError so the agent must actually wait / re-verify. All
+// git checks are best-effort: any inconclusive result skips the check so
+// infrastructure hiccups never block a real done.
 //
-// Before checking, we `git fetch origin` in the project work_dir (see
-// gitFetchOrigin): sandbox-internal clones (git-gateway-cutover) never share
-// an object database with the project work_dir, so a commit the agent made
-// inside the sandbox is only visible here once it has been pushed to origin
-// and fetched back. This makes the semantics "only commits pushed to origin
-// pass release verification" (docs/plans/git-gateway-cutover.md PR1) — a
-// change that is a no-op in the current shared-worktree world (the fetch adds
-// objects but never removes ones already present locally) and load-bearing
-// once sandbox clones land.
+// Before checking, a `git fetch origin` runs in the project work_dir (see
+// gitFetchOrigin): sandbox-internal clones don't share an object database
+// with the project work_dir, so a commit made inside the sandbox is only
+// visible here once pushed to origin and fetched back.
 func (s *TaskAppService) verifyDoneClaim(ctx context.Context, task *orchestrator.Task) *StatusError {
 	if task.OpenChildCount > 0 {
 		return &StatusError{
@@ -427,12 +388,8 @@ func releaseClaim(payload json.RawMessage) (commit, branch string, pushed bool) 
 
 // gitFetchOrigin best-effort runs `git fetch origin` in workdir before the
 // cat-file / ls-remote checks below. It never blocks the caller: any failure
-// (no origin remote, network error, timeout, binary missing) is logged and
-// swallowed, and the subsequent checks simply run against whatever is already
-// in the local object database — exactly as they did before this call existed.
-// See verifyDoneClaim for why this fetch is necessary once sandbox-internal
-// clones (git-gateway-cutover) no longer share an object store with the
-// project work_dir.
+// is logged and swallowed, and the subsequent checks run against whatever
+// is already in the local object database.
 func gitFetchOrigin(ctx context.Context, workdir string) {
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -501,12 +458,9 @@ func (s *TaskAppService) AnswerTask(ctx context.Context, taskID, questionID, ans
 		}
 	}
 
-	// The only supported delivery path is the blocking RPC: the agent must be
-	// parked inside `boid task ask` for the answer to reach it. Legacy
-	// `notify --ask` calls exit the agent and the daemon no longer dispatches a
-	// resume hook, so an answer there has nowhere to land — reject with a clear
-	// error rather than silently flipping the task back to executing with no
-	// live agent behind it.
+	// The only supported delivery path is the blocking RPC: the agent must
+	// be parked inside `boid task ask` for the answer to reach it —
+	// otherwise there is no live agent to flip the task back to executing for.
 	return s.answerBlocking(ctx, task, answer)
 }
 

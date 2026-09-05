@@ -49,20 +49,10 @@ var webRevokeAllCmd = &cobra.Command{
 	RunE:        runWebRevokeAll,
 }
 
-// webSetURLCmd / webSetAddrCmd used to be scopeLocal, editing
-// ~/.config/boid/config.yaml on THIS host directly (docs/plans/
-// workspace-db-consolidation.md decision 6) — that only ever worked
-// because the CLI and the (bare-metal) daemon happened to run on the same
-// host with the same $XDG_CONFIG_HOME. Under the compose daemon
-// (docs/plans/release-onboarding.md 決定2/穴8) config.yaml lives inside the
-// boid_state named volume, unreachable from a host-side file write at all.
-//
-// PR5 (release-onboarding.md 穴8 (b)) folds both into the existing
-// scopeRemote `boid config set` machinery (POST /api/config/mutate,
-// cmd/config.go) instead of inventing a second config-mutation path — the
-// daemon performs the read-modify-write atomically and the change reaches
-// whichever host actually runs the daemon, host mode or a genuine remote
-// --profile alike.
+// webSetURLCmd / webSetAddrCmd are scopeRemote: they go through the same
+// `boid config set` machinery (POST /api/config/mutate, cmd/config.go) so
+// the daemon performs the read-modify-write on config.yaml, wherever it
+// actually runs (docs/plans/release-onboarding.md 穴8 (b)).
 var webSetURLCmd = &cobra.Command{
 	Use:         "set-url <URL>",
 	Short:       "Set the public URL in config.yaml (web.public_url, via `config set`)",
@@ -207,10 +197,8 @@ func runWebSetAddr(cmd *cobra.Command, args []string) error {
 }
 
 // webConfigMutateSet is `boid web set-url`/`set-addr`'s shared
-// implementation (docs/plans/release-onboarding.md 穴8 (b)): a single POST
-// /api/config/mutate call, identical in shape to cmd/config.go's
-// runConfigSet — the daemon performs the read-modify-write atomically, so
-// this never needs to see config.yaml's full document at all.
+// implementation: a single POST /api/config/mutate call, identical in
+// shape to cmd/config.go's runConfigSet.
 func webConfigMutateSet(cmd *cobra.Command, key, value string) error {
 	c := client.FromContext(cmd.Context())
 	var result apiwire.ConfigMutateResult

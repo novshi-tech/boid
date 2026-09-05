@@ -1,28 +1,13 @@
-// Package selfuser implements the runtime half of "決定 1 の実装形" in
-// docs/plans/release-onboarding.md: the arbitrary-uid image
-// (build/container/Dockerfile) no longer bakes a fixed `useradd --uid
-// ${BOID_UID}` entry, so a container started as an arbitrary `--user
-// <uid>:0` (the OpenShift-style gid-0 convention) has no matching
-// /etc/passwd row. Tooling that does an os/user-style lookup for the
-// running uid (ssh, some git credential helpers, `id`, coreutils' `whoami`)
-// breaks on that unknown-uid the moment it is asked, so both Go entrypoints
-// that can be that "first thing to run in the container" — `boid start`
-// (cmd/start.go, the compose daemon service) and `boid runner-container`
-// (cmd/runner_container.go, every job container's own entrypoint) — call
-// EnsureRuntimeUserRegistered() once at startup to close that gap.
-//
-// This mirrors the plan doc's shell-level sketch:
-//
-//	if ! getent passwd "$(id -u)" >/dev/null; then
-//	  echo "boid:x:$(id -u):$(id -g)::/home/boid:/bin/bash" >> /etc/passwd
-//	fi
-//
-// done in Go per the doc's explicit recommendation (§決定 1 の実装形 1 —
-// "Go 側推奨"), plus PasswdSelfRegisterShellSnippet below for the one
-// consumer Go-side registration cannot reach: the workspace init.sh
-// wrapper, whose container overrides the image ENTRYPOINT with a bare
-// `/bin/bash -s` and so never runs boid's own Go code at all (docs/plans/
-// release-onboarding.md's "届かない第 3 の consumer").
+// Package selfuser registers a synthetic /etc/passwd entry for the
+// container's runtime uid: the arbitrary-uid image no longer bakes a fixed
+// `useradd` entry, so a container started as an arbitrary `--user <uid>:0`
+// (the OpenShift-style gid-0 convention) has no matching /etc/passwd row,
+// which breaks any tooling that does an os/user-style lookup (ssh, some git
+// credential helpers, `id`, coreutils' `whoami`). Both Go entrypoints that
+// can be the first thing to run in the container — `boid start` and `boid
+// runner-container` — call EnsureRuntimeUserRegistered() at startup to
+// close that gap; PasswdSelfRegisterShellSnippet covers the one consumer
+// Go-side registration cannot reach (see its own doc comment).
 package selfuser
 
 import (
@@ -50,22 +35,15 @@ const DefaultShell = "/bin/bash"
 // EnsureRuntimeUserRegistered, for the one consumer that never runs boid's
 // own Go code: the workspace init.sh wrapper
 // (internal/dispatcher/workspace_init.go's buildWorkspaceInitScript), whose
-// container overrides the image ENTRYPOINT with `/bin/bash -s`
-// (internal/dispatcher/container_backend_workspace_init.go). init.sh
+// container overrides the image ENTRYPOINT with `/bin/bash -s`. init.sh
 // commonly touches toolchain installers that do an `id`/ssh/git passwd
-// lookup (go/volta/claude/codex install scripts), so the same registration
-// this package does in Go has to happen here too, ahead of the user's own
-// script.
+// lookup, so the same registration this package does in Go has to happen
+// here too, ahead of the user's own script.
 //
 // Deliberately silent and non-fatal on every branch: a getent hit is a
-// no-op (the common case — most non-container callers of this wrapper,
-// e.g. a developer running init.sh by hand outside a container, already
-// have a real passwd entry for their uid), and a failed append (permission
-// denied, read-only /etc/passwd, ...) must not abort the wrapper — the
-// workspace init flow has no `set -e` and every other stage checks its own
-// exit status explicitly (buildWorkspaceInitScript's own doc comment); this
-// is not one of those stages and should never be able to fail the run on
-// its own.
+// no-op, and a failed append (permission denied, read-only /etc/passwd,
+// ...) must not abort the wrapper — the workspace init flow has no `set -e`
+// and this is not one of the stages that checks its own exit status.
 const PasswdSelfRegisterShellSnippet = "" +
 	"# arbitrary-uid self-registration (docs/plans/release-onboarding.md\n" +
 	"# 決定1/PR2, internal/selfuser package): this container's runtime uid\n" +
@@ -75,13 +53,11 @@ const PasswdSelfRegisterShellSnippet = "" +
 	"getent passwd \"$(id -u)\" >/dev/null 2>&1 || " +
 	"echo \"boid:x:$(id -u):$(id -g)::${HOME:-/home/boid}:/bin/bash\" >> /etc/passwd 2>/dev/null || true\n"
 
-// EnsureRuntimeUserRegistered is the Go-side self-registration call
-// (docs/plans/release-onboarding.md §決定1 実装形1's "Go 側推奨"). It is
+// EnsureRuntimeUserRegistered is the Go-side self-registration call. It is
 // best-effort and never fails the caller's startup: on any error (most
 // commonly a bare-host `boid start` where the process's real uid already
 // has a passwd entry and nothing needs doing, or one where /etc/passwd
-// isn't writable by this process at all) it logs at Debug and returns,
-// exactly the "log-and-continue" contract EnsurePasswdEntry documents.
+// isn't writable by this process at all) it logs at Debug and returns.
 func EnsureRuntimeUserRegistered() {
 	uid, gid := os.Getuid(), os.Getgid()
 	home := os.Getenv("HOME")
@@ -162,36 +138,18 @@ func passwdHasUID(passwdPath string, uid int) (bool, error) {
 	return false, nil
 }
 
-// ApplyGroupWritableUmask sets the process umask to 002 (docs/plans/
-// release-onboarding.md §決定1 実装形2's recommended fix for
-// runtime-generated files): `chmod g=u` at image-build time only reaches
-// directories that exist at build time, but boid.db/its WAL files/the
-// job-container TLS material under BOID_RUNTIME_DIR are all created at
-// RUNTIME, under whatever umask the process that creates them is running
-// with. The default umask (022) clears the group-write bit, so a file one
-// uid creates comes out unreadable-for-write by any OTHER uid running with
-// the same supplementary group 0 — silently reintroducing the single-fixed-
-// uid assumption gid-0 arbitrary-uid was supposed to remove. 002 keeps
-// owner permissions exactly as before (it only ever CLEARS bits, never
-// sets them) and additionally clears the group-write-deny bit, so a
-// default-mode (0644/0755) caller picks up group-write.
+// ApplyGroupWritableUmask sets the process umask to 002 so runtime-created
+// files (boid.db and its WAL files, job-container TLS material under
+// BOID_RUNTIME_DIR) stay group-writable: the default umask (022) clears the
+// group-write bit, so a file one uid creates would otherwise be
+// unreadable-for-write by any OTHER uid running with the same
+// supplementary group 0 — reintroducing the single-fixed-uid assumption
+// gid-0 arbitrary-uid was meant to remove. 002 only ever clears bits, never
+// sets them, so owner permissions are unaffected.
 //
-// This does NOT cover everything, and callers should not read it as
-// "any uid change is now safe": secret.key and the internal mTLS CA
-// key/cert (internal/dispatcher/secret_keyfile.go, internal/mtls/ca.go)
-// are written 0600 — OWNER-ONLY, with no group bits requested in the
-// first place — so umask 002 has nothing to preserve there; a umask can
-// only CLEAR bits a request already has, never add ones it doesn't
-// (build/container/.env.example's BOID_UID comment documents this
-// explicitly as the "fixed per install" contract's one real exception).
-//
-// For everything else, this makes "uid is fixed per install" (docs/plans/
-// release-onboarding.md's 未決6) a real contract rather than an
-// accidental one: a SECOND uid, still in group 0, can still write files
-// the first uid created, but only because of this umask — a process that
-// skips this call and later runs as a different uid will find those files
-// group-read-only and fail exactly the way the plan doc's 論点 3 warns
-// about.
+// This does not cover files written 0600 (owner-only) in the first
+// place, such as secret.key and the internal mTLS CA key/cert — a umask
+// can only clear bits a request already has, never add ones it doesn't.
 func ApplyGroupWritableUmask() {
 	syscall.Umask(0o002)
 }

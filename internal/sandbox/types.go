@@ -10,11 +10,9 @@ const (
 )
 
 // HarnessType identifies which HarnessAdapter the runner should hand the
-// process off to via adapter.Run(). Phase 3-d (PR1) made this field
-// invariant non-empty for every dispatched job — hook / session / exec
-// all resolve to shell / claude / codex / opencode. The empty string is no
-// longer a valid value and the runner-inner-child rejects it; the legacy
-// runExecArgv fallback was retired in the same change.
+// process off to via adapter.Run(). Non-empty for every dispatched job —
+// hook / session / exec all resolve to shell / claude / codex / opencode.
+// The empty string is not a valid value; runner-inner-child rejects it.
 type HarnessType string
 
 const (
@@ -26,14 +24,12 @@ const (
 	HarnessShell HarnessType = "shell"
 	// HarnessClaude routes through internal/adapters/claude.Adapter.Run().
 	HarnessClaude HarnessType = "claude"
-	// HarnessCodex routes through internal/adapters/codex.Adapter.Run().
-	// Added in Phase 3-c as a prototype to validate the HarnessAdapter
-	// abstraction beyond claude. Minimum implementation: 1-turn launch with
-	// signal forwarding; session resume / payload patch are deliberately
-	// left as no-ops (see docs/plans/agent-aware-boid.md Phase 3-c).
+	// HarnessCodex routes through internal/adapters/codex.Adapter.Run(). A
+	// minimum implementation: 1-turn launch with signal forwarding; session
+	// resume / payload patch are deliberately left as no-ops.
 	HarnessCodex HarnessType = "codex"
-	// HarnessOpenCode routes through internal/adapters/opencode.Adapter.Run().
-	// Phase 3-c prototype, same scope as HarnessCodex.
+	// HarnessOpenCode routes through internal/adapters/opencode.Adapter.Run(),
+	// same scope as HarnessCodex.
 	HarnessOpenCode HarnessType = "opencode"
 )
 
@@ -56,10 +52,9 @@ type Mount struct {
 	// Source is what gets mounted, and its SPELLING selects between two
 	// kinds. An absolute path is a host path; anything else is taken to be a
 	// docker NAMED VOLUME name — that is the whole of
-	// internal/sandbox/realization.classifySource's rule, and PR6 of
-	// docs/plans/workspace-home-volume-persistence.md (論点 e option (i))
-	// deliberately reuses it rather than adding a MountType, so the workspace
-	// HOME mount is an ordinary MountBind whose Source is
+	// internal/sandbox/realization.classifySource's rule, deliberately
+	// reused rather than adding a MountType, so the workspace HOME mount is
+	// an ordinary MountBind whose Source is
 	// dockerres.WorkspaceHomeVolumeName(...). Empty for tmpfs.
 	//
 	// The consequence worth stating: a relative path that reaches this field
@@ -79,21 +74,16 @@ type Mount struct {
 	NeedsDirs  []string // subdirs to create under Target before ro remount
 
 	// HostBacked overrides realization.classifySource's default treatment
-	// of a `/workspace`/`/workspace/<name>` Target as container-local
-	// (决定 4/10, docs/plans/phase6-container-backend.md) — when true, Source
-	// is classified as a real host-path bind (MountSourceHostPath) even
-	// though Target falls under the sandbox-internal clone parent dir.
-	// Used by dispatcher.cloneMounts (docs/plans/volume-only-daemon.md
-	// §論点b, PR-2b "per-job clone at dispatch time"): when the daemon has
-	// already pre-populated Source via dispatcher.PrepareJobCheckout
-	// (`git clone file://<bare-repo>` into a per-job staging dir under
-	// a host-visible runtimes root), the container backend must bind that
-	// real directory in — not skip it as "the in-container clone target,
-	// created fresh". Ignored by the userns backend (internal/sandbox/
-	// realization is container-backend-only; userns never calls
-	// classifySource at all — see that package's own doc comment) and by
-	// every pre-PR-2b caller (default false, byte-for-byte unchanged
-	// classification).
+	// of a `/workspace`/`/workspace/<name>` Target as container-local — when
+	// true, Source is classified as a real host-path bind
+	// (MountSourceHostPath) even though Target falls under the
+	// sandbox-internal clone parent dir. Used by dispatcher.cloneMounts:
+	// when the daemon has already pre-populated Source via
+	// dispatcher.PrepareJobCheckout (`git clone file://<bare-repo>` into a
+	// per-job staging dir under a host-visible runtimes root), the
+	// container backend must bind that real directory in — not skip it as
+	// "the in-container clone target, created fresh". Default false
+	// (byte-for-byte unchanged classification) for every other caller.
 	HostBacked bool
 }
 

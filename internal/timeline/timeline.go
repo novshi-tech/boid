@@ -90,60 +90,39 @@ func IsProgressAction(a *orchestrator.Action) bool {
 }
 
 // ActionTypeAPIGatewayRequest is the orchestrator.Action.Type recorded for
-// one API gateway request (docs/plans/api-gateway.md §論点3: "確定: method +
-// service + path + status を timeline に。body は記録しない"). Exported so
-// internal/server's apigateway.RequestRecorder adapter
-// (apigateway_notify.go) can tag every Action it writes with this exact
-// value — a single source of truth shared by the writer (internal/server)
-// and the readers here (IsAPIGatewayRequestAction/BuildActionLabel), rather
-// than two packages each hard-coding the same magic string and risking
-// drift.
+// one API gateway request. Exported so internal/server's
+// apigateway.RequestRecorder adapter can tag every Action it writes with
+// this exact value — a single source of truth shared by the writer and the
+// readers here, rather than two packages each hard-coding the same magic
+// string.
 //
-// NOTE (2026-08-07, user feedback): these rows are intentionally
-// audit-only. A task that fans out into a paginated Jira search, a
-// status-polling loop, or any multi-request gateway operation used to spam
-// the task-detail timeline with one meaningless "api: GET ... → 200" row
-// per request — signal-free noise for a human reading the timeline, even
-// though the underlying row has real value as an access-audit record.
-// Build (below) deliberately excludes ActionTypeAPIGatewayRequest actions
-// from the rendered Event list for this reason. The row still lands in the
-// actions table via internal/server's recorder and remains queryable via
-// TaskRepository.ListActionsByTask for anyone building an audit view —
-// only the timeline *display* dropped it.
+// These rows are intentionally audit-only: a multi-request gateway
+// operation (a paginated search, a status-polling loop) would otherwise
+// spam the task-detail timeline with one row per request, so Build
+// excludes them from the rendered Event list. The row still lands in the
+// actions table and remains queryable via TaskRepository.ListActionsByTask
+// — only the timeline *display* drops it.
 const ActionTypeAPIGatewayRequest = "api_gateway_request"
 
 // IsAPIGatewayRequestAction reports whether an action records one API
 // gateway request. Consulted only by Build's unconditional exclusion check
-// above (see the NOTE on ActionTypeAPIGatewayRequest) — there is currently
-// no other reader. BuildActionLabel deliberately has no branch for this
-// action type: Build never calls it for a gateway row, so a label-building
-// branch there would be unreachable dead code. If a future audit-log view
-// wants a rendered label for these rows, add the branch back then rather
-// than speculatively now.
+// (see ActionTypeAPIGatewayRequest's own doc comment).
 func IsAPIGatewayRequestAction(a *orchestrator.Action) bool {
 	return a.Type == ActionTypeAPIGatewayRequest
 }
 
 // IsAnsweredAction reports whether an action records a human's accept/
-// reject answer to a Web UI suggestion (J-6,
-// docs/plans/ingestion-identity.md PR-3). Consulted by Build to
-// deliberately ALLOW this one non-transitioning action type through, unlike
-// the general non-transitioning/non-progress exclusion just below (which
-// still applies to attrs_set / child_added / child_specced / noted — a
-// pre-existing gap, not a new one, that this PR does not touch: see Opus
-// review finding #6, 2026-08-19).
+// reject answer to a Web UI suggestion. Consulted by Build to deliberately
+// ALLOW this one non-transitioning action type through, unlike the general
+// non-transitioning/non-progress exclusion just below (which still applies
+// to attrs_set / child_added / child_specced / noted).
 //
-// The reason `answered` gets the exception where those others don't:
-// `answered` is the FIRST non-transitioning action a human directly
-// triggers by clicking a Web UI button (the task-detail page's Accept/
-// Reject pair). Without this, clicking Reject makes the suggestion card
-// disappear (applyAnsweredSideEffect strips detail.attrs.suggestion) with
-// literally no human-visible trace anywhere in the UI — the very "誰がいつ
-// 却下したか" question the design doc's script-facing action_list read口
-// answers programmatically had no answer for a person reading the task
-// detail page. attrs_set/child_added/child_specced/noted are daemon-
-// internal or khi-script-originated, not something a human clicks, so they
-// don't share this specific gap.
+// `answered` is the one non-transitioning action a human directly triggers
+// by clicking a Web UI button (the task-detail page's Accept/Reject pair).
+// Without this, clicking Reject makes the suggestion card disappear with no
+// human-visible trace anywhere in the UI. The others are daemon-internal or
+// script-originated, not something a human clicks, so they don't share
+// this gap.
 func IsAnsweredAction(a *orchestrator.Action) bool {
 	return a.Type == "answered"
 }
@@ -300,20 +279,18 @@ func Build(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobI
 
 	var items []rawItem
 	for _, a := range actions {
-		// API gateway request actions are deliberately NOT included here —
-		// see the NOTE on ActionTypeAPIGatewayRequest above. They stay in
-		// the actions table (audit trail) but never become timeline Events.
-		// Checked unconditionally and first — not merely left out of the
-		// allow-list below — so a gateway Action can never leak through via
-		// IsStateTransition/IsProgressAction regardless of what its
-		// FromStatus/ToStatus happen to hold.
+		// API gateway request actions stay in the actions table (audit
+		// trail) but never become timeline Events — see
+		// ActionTypeAPIGatewayRequest's own doc comment. Checked
+		// unconditionally and first so a gateway Action can never leak
+		// through via IsStateTransition/IsProgressAction.
 		if IsAPIGatewayRequestAction(a) {
 			continue
 		}
-		// answered (J-6) is a deliberate, narrow exception to the
+		// answered is a deliberate, narrow exception to the
 		// non-transitioning exclusion below — see IsAnsweredAction's own
-		// doc comment for why (Opus review finding #6, 2026-08-19).
-		// attrs_set/child_added/child_specced/noted stay excluded.
+		// doc comment for why. attrs_set/child_added/child_specced/noted
+		// stay excluded.
 		if !IsStateTransition(a) && !IsProgressAction(a) && !IsAnsweredAction(a) {
 			continue
 		}

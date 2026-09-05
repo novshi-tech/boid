@@ -1,11 +1,10 @@
 package dispatcher
 
 // container_backend_userns.go resolves the userns mode job containers are
-// created with. See container_backend_userns_test.go's own header comment
-// for the full failure this exists to close (2026-07-26 volume-only
-// dogfood: rootless podman maps a job container's uid 1000 to a host
-// subuid, so every daemon-created bind mount — most consequentially the
-// 0700 per-workspace HOME — became unreadable to the job itself).
+// created with, to avoid rootless podman mapping a job container's uid 1000
+// to a host subuid that leaves daemon-created bind mounts (e.g. the 0700
+// per-workspace HOME) unreadable to the job. See
+// container_backend_userns_test.go for the full failure this closes.
 
 import (
 	"context"
@@ -112,24 +111,16 @@ func (b *containerBackend) resolveUsernsMode(ctx context.Context) container.User
 	return b.usernsMode
 }
 
-// resolveEngineInfo probes the engine's /info, caching only a SUCCESSFUL
+// resolveEngineInfo probes the engine's /info, caching only a successful
 // result — shared by resolveUsernsMode (rootless detection) and
-// resolveHostArch (arch mismatch fail-fast) below, both of which need the
-// engine's own self-reported identity but have no reason to each pay for
-// their own round trip to the same endpoint once one has already succeeded
-// (TestContainerBackend_Launch_EngineProbeOncePerBackend pins the combined
-// "exactly one Info call per backend once a probe has succeeded, however
-// many independent features consume it" contract this sharing exists to
-// keep true).
+// resolveHostArch (arch mismatch fail-fast) below, so both reuse one round
+// trip once it succeeds (TestContainerBackend_Launch_EngineProbeOncePerBackend
+// pins this).
 //
-// [Blocker, PR4 codex review round 2]: a failed probe is logged and
-// deliberately NOT cached (infoOK stays false) — see the containerBackend
-// struct's own infoMu/infoOK/info doc comment for why caching a failure
-// exactly like a success would silently and permanently disable
-// resolveHostArch's arch mismatch fail-fast after one transient /info
-// hiccup, which docs/plans/release-onboarding.md 決定5 requires as a
-// "must", not a best-effort check. Every call after a failure retries the
-// probe fresh until one succeeds.
+// A failed probe is logged and deliberately not cached: caching a failure
+// like a success would silently and permanently disable resolveHostArch's
+// arch mismatch fail-fast after one transient /info hiccup. Every call
+// after a failure retries fresh until one succeeds.
 func (b *containerBackend) resolveEngineInfo(ctx context.Context) client.SystemInfoResult {
 	b.infoMu.Lock()
 	defer b.infoMu.Unlock()
@@ -147,17 +138,12 @@ func (b *containerBackend) resolveEngineInfo(ctx context.Context) client.SystemI
 }
 
 // normalizeArch maps an engine's own uname(1)-style /info architecture
-// string (docker/podman both report "x86_64"/"aarch64" there, per `uname
-// -m` on Linux) onto the Go/OCI-style vocabulary an image manifest's own
-// Architecture field uses ("amd64"/"arm64", the same names runtime.GOARCH
-// itself would report) — resolveImage's arch mismatch check
-// (docs/plans/release-onboarding.md 決定5's arm64 論点) compares one
-// against the other, so without this translation every native amd64 host
-// would falsely mismatch its own images ("x86_64" != "amd64").
-// Unrecognized input passes through lowercased unchanged — resolveImage
-// only acts on a POSITIVE, known mismatch (see its own doc comment), so an
-// unmapped string just means neither side matches and the check quietly
-// no-ops, never a false positive.
+// string ("x86_64"/"aarch64") onto the Go/OCI vocabulary an image
+// manifest's Architecture field uses ("amd64"/"arm64") — resolveImage's
+// arch mismatch check compares one against the other, so without this a
+// native amd64 host would falsely mismatch its own images. Unrecognized
+// input passes through lowercased unchanged: resolveImage only acts on a
+// positive, known mismatch, so an unmapped string just no-ops.
 func normalizeArch(arch string) string {
 	switch strings.ToLower(strings.TrimSpace(arch)) {
 	case "x86_64", "amd64":
@@ -173,40 +159,28 @@ func normalizeArch(arch string) string {
 	}
 }
 
-// NormalizeArch is normalizeArch, exported for cmd/check.go (PR7,
-// docs/plans/release-onboarding.md): `boid check` runs its own host-arch
-// vs. image-arch preflight independently of resolveImage's launch-time
-// fail-fast (both are required per 決定5 — this one is diagnostic, run
-// before a job ever launches; resolveImage's is the actual gate), but
-// needs the exact same docker/podman uname(1)-style-to-OCI-vocabulary
-// translation resolveImage's check applies, or the two would disagree
-// about what counts as a mismatch. Kept as a thin wrapper (rather than
-// renaming the unexported original) so every existing call site inside
-// this package keeps using the plain, private name.
+// NormalizeArch is normalizeArch, exported for cmd/check.go: `boid check`
+// runs its own diagnostic host-arch vs. image-arch preflight and needs the
+// exact same translation resolveImage's launch-time check applies, or the
+// two would disagree about what counts as a mismatch. Kept as a thin
+// wrapper so call sites inside this package keep using the private name.
 func NormalizeArch(arch string) string {
 	return normalizeArch(arch)
 }
 
-// resolveHostArch returns the ENGINE's own reported host architecture,
+// resolveHostArch returns the engine's own reported host architecture,
 // normalized to the Go/OCI vocabulary (normalizeArch), reusing
-// resolveEngineInfo's shared, once-per-backend cached probe (same instance
-// resolveUsernsMode consumes — see resolveEngineInfo's own doc comment for
-// why the probe itself is shared rather than each feature paying for its
-// own round trip). This is deliberately NOT runtime.GOARCH: see
-// resolveImage's own comment on why the running Go binary's build
-// architecture is meaningless as a "real machine" signal once that binary
-// might itself be running inside an emulated container. dockerd/podman
-// always run natively on the real host, so their own /info response is the
-// one honest source.
+// resolveEngineInfo's shared cached probe. Deliberately not runtime.GOARCH:
+// the running Go binary's build architecture is meaningless as a "real
+// machine" signal once that binary might itself be running inside an
+// emulated container, while dockerd/podman always run natively on the real
+// host.
 //
 // Returns "" when the engine reported no architecture, including a failed
-// probe — resolveEngineInfo deliberately does NOT cache a failure (see its
-// own doc comment), so this is retried on the next call rather than
-// permanently disabled. resolveImage's own mismatch check only fires when
-// both sides are non-empty, so a "" here degrades that one call to "arch
-// check skipped" rather than blocking launch on a transient /info failure —
-// the same graceful-degradation posture resolveUsernsMode already takes
-// for its own probe failures, just not cached forever the way that one is.
+// probe (retried on the next call, not cached — see resolveEngineInfo).
+// resolveImage's mismatch check only fires when both sides are non-empty,
+// so "" degrades that call to "arch check skipped" rather than blocking
+// launch on a transient failure.
 func (b *containerBackend) resolveHostArch(ctx context.Context) string {
 	info := b.resolveEngineInfo(ctx)
 	if info.Info.Architecture == "" {

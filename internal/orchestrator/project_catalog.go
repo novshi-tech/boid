@@ -29,10 +29,9 @@ func CreateProject(dbtx db.DBTX, project *Project) error {
 	return nil
 }
 
-// SetProjectUpstreamURL updates a project's captured upstream_url (see
-// docs/plans/git-gateway-cutover.md PR2: project → upstream URL mapping).
-// Used by `project add` / `project reload` capture and the daemon-startup
-// backfill for projects registered before this column existed.
+// SetProjectUpstreamURL updates a project's captured upstream_url. Used by
+// `project add` / `project reload` capture and the daemon-startup backfill
+// for projects registered before this column existed.
 func SetProjectUpstreamURL(dbtx db.DBTX, id, upstreamURL string) error {
 	now := time.Now().UTC()
 	res, err := dbtx.Exec(
@@ -118,12 +117,9 @@ func SetProjectWorkspace(dbtx db.DBTX, projectID, workspaceID string) error {
 }
 
 // WorkspaceExists reports whether slug has a corresponding row in the
-// workspaces table (MAJOR 5, codex review: SetProjectWorkspace previously
-// assigned any syntactically valid slug without checking it actually
-// existed, leaving a dangling project_workspaces reference — dispatch then
-// runs in a permanently degraded window, and since
-// workspace_db_consolidation's state=committed makes MigrateWorkspaceYAMLToDB
-// a permanent no-op, no later startup ever re-validates and self-heals it).
+// workspaces table — used to guard against assigning a project to a slug
+// that has no backing workspace row, which would leave a dangling
+// project_workspaces reference nothing later self-heals.
 func WorkspaceExists(dbtx db.DBTX, slug string) (bool, error) {
 	var exists int
 	err := dbtx.QueryRow(`SELECT 1 FROM workspaces WHERE slug = ? LIMIT 1`, slug).Scan(&exists)
@@ -138,16 +134,11 @@ func WorkspaceExists(dbtx db.DBTX, slug string) (bool, error) {
 
 // AssignWorkspaceIfExists atomically checks that workspaceID has a
 // corresponding workspaces row and, if so, assigns projectID to it — all in
-// a single transaction (docs/plans/workspace-db-consolidation.md MAJOR 3,
-// codex review). This replaces the previous WorkspaceExists+
-// SetProjectWorkspace two-step, which ran as two separate statements: a
-// DELETE landing between them could remove the workspaces row after the
-// existence check passed but before the assign committed, leaving a
-// dangling project_workspaces reference the same MAJOR-5 fix this
-// supersedes was meant to prevent. dbtx must be a *sql.DB (a fresh
-// transaction is opened internally) — passing an existing *sql.Tx would
-// attempt a nested BEGIN, which SQLite does not support the way this
-// function needs.
+// a single transaction, so a DELETE landing between a separate existence
+// check and the assign cannot leave a dangling project_workspaces
+// reference. conn must be a *sql.DB (a fresh transaction is opened
+// internally) — passing an existing *sql.Tx would attempt a nested BEGIN,
+// which SQLite does not support the way this function needs.
 //
 // workspaceID == "" clears the assignment (bypassing the existence check —
 // there is no slug to check), and DefaultWorkspaceSlug is exempt from the
@@ -215,19 +206,13 @@ func AssignDefaultWorkspaceToUnlinked(dbtx db.DBTX, workspaceID string) (int, er
 
 // ListProjectWorkspaceReferences returns the distinct workspace_id values
 // referenced by any project_workspaces row, with the count of projects
-// referencing each — the pre-PR4 query ListWorkspaces used to run. Unlike
-// ListWorkspaces (workspaces-table-based as of Step B, docs/plans/
-// workspace-db-consolidation.md), this reflects project_workspaces
-// membership directly and surfaces a reference to a slug that has no
-// corresponding workspaces row at all. That distinction matters exactly
-// once: workspace_migration.go's preflight runs *before* the
-// workspace_db_consolidation migration has written anything to the
-// workspaces table, and needs to detect a project referencing a slug with
-// no legacy yaml file backing it (a broken reference) — which the
-// workspaces-table-based ListWorkspaces would silently miss, since a
-// nonexistent workspaces row simply never appears in a LEFT JOIN FROM
-// workspaces. No other caller should need this function once the migration
-// is long past (dispatch and the API both go through ListWorkspaces).
+// referencing each. Unlike ListWorkspaces (workspaces-table-based), this
+// reflects project_workspaces membership directly and surfaces a reference
+// to a slug that has no corresponding workspaces row at all — needed by
+// workspace_migration.go's preflight, which runs before the workspaces
+// table has anything written to it and must detect a project referencing a
+// slug with no legacy yaml file backing it. No other caller should need
+// this function (dispatch and the API both go through ListWorkspaces).
 func ListProjectWorkspaceReferences(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
 	rows, err := dbtx.Query(
 		`SELECT workspace_id, COUNT(*)
@@ -252,12 +237,9 @@ func ListProjectWorkspaceReferences(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
 }
 
 // ListWorkspaces returns every workspace known to the workspaces table, each
-// annotated with its assigned project count and a Revision token
-// (docs/plans/workspace-db-consolidation.md Step B). The query is
-// workspaces-table-based with project_workspaces LEFT JOINed in, so a
-// workspace with zero assigned projects still appears (ProjectCount=0) —
-// unlike the pre-PR4 query, which GROUP-BY'd project_workspaces directly and
-// could only ever surface a slug that at least one project referenced.
+// annotated with its assigned project count and a Revision token. The query
+// is workspaces-table-based with project_workspaces LEFT JOINed in, so a
+// workspace with zero assigned projects still appears (ProjectCount=0).
 func ListWorkspaces(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
 	rows, err := dbtx.Query(
 		`SELECT w.slug, w.updated_at, COUNT(pw.project_id)
@@ -286,10 +268,9 @@ func ListWorkspaces(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
 
 // GetWorkspaceSummary returns a single workspace's summary (project count +
 // revision), or an error wrapping os.ErrNotExist when slug has no
-// corresponding workspaces row. Used by the workspace API handlers
-// (docs/plans/workspace-db-consolidation.md PR4) to build the
-// create/show/update response and to read the current revision for the PUT
-// If-Match check.
+// corresponding workspaces row. Used by the workspace API handlers to build
+// the create/show/update response and to read the current revision for the
+// PUT If-Match check.
 func GetWorkspaceSummary(dbtx db.DBTX, slug string) (*WorkspaceSummary, error) {
 	row := dbtx.QueryRow(
 		`SELECT w.slug, w.updated_at, COUNT(pw.project_id)
@@ -375,15 +356,10 @@ func scanProjects(rows *sql.Rows) ([]*Project, error) {
 }
 
 // RequireUpstreamURL returns an error when project has no upstream_url
-// captured. This is the "既存 project の...欠落 project は...dispatch 時エラー"
-// building block described in docs/plans/git-gateway-cutover.md's
-// "本計画で確定する設計 § 1" — it is intentionally NOT wired into any dispatch
-// path yet. Wiring it in now would reject every current e2e project fixture
-// (none has a real git remote until PR7a's fixture-upstream-server harness
-// lands) ahead of the plan's own PR ordering (PR2 → ... → PR7a → PR6). It is
-// exposed and tested here so PR6 (cutover, where dispatch starts needing
-// upstream_url to build the gateway clone URL) has a ready-made, already
-// covered building block to call.
+// captured. Intentionally NOT wired into any dispatch path yet — exposed
+// and tested here as a ready-made building block for the future cutover
+// where dispatch starts needing upstream_url to build the gateway clone
+// URL.
 func RequireUpstreamURL(project *Project) error {
 	if project == nil {
 		return fmt.Errorf("require upstream_url: project is nil")

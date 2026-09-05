@@ -17,21 +17,14 @@ const (
 	socketProbeTimeout = 200 * time.Millisecond
 )
 
-// EnsureRunningAt ensures the boid server reachable at socketPath is running.
-// This is the Phase 3 profile-aware entry point (docs/plans/cli-remote-connection.md
-// PR1): root's PersistentPreRunE, once it resolves the invocation's
-// connection profile, passes the profile's socket path here so autostart
-// probes the SAME socket the CLI is about to talk to — not
-// DefaultSocketPath() unconditionally.
+// EnsureRunningAt ensures the boid server reachable at socketPath is running,
+// probing that exact socket rather than DefaultSocketPath() unconditionally.
 //
-// Autostart machinery (spawnServer) only knows how to spin up a daemon on
-// the default socket path (it re-execs `boid start`, which reads its own
-// config for the socket path — there is no runtime override), so:
-//   - socketPath == DefaultSocketPath(): probe → autostart on miss (unchanged)
-//   - socketPath != DefaultSocketPath(): probe only; on miss, a clear error
-//     directing the operator to launch that daemon out-of-band, rather than
-//     silently spinning up a fresh default-socket daemon that would not be
-//     the one the CLI is about to connect to.
+// Autostart (spawnServer) only knows how to spin up a daemon on the default
+// socket path, so a non-default socketPath is probe-only: on miss it
+// returns a clear error directing the operator to launch that daemon
+// out-of-band, rather than silently spinning up a default-socket daemon
+// that would not be the one the CLI is about to connect to.
 //
 // If BOID_NO_AUTOSTART=1, auto-start is skipped and an error is returned when
 // the server is not reachable.

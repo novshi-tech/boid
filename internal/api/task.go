@@ -17,9 +17,8 @@ import (
 )
 
 // deprecatedTaskRowFields enumerates the JSON keys that used to override
-// task-row settings at create/update time. Phase 2-3 of the task_behavior
-// simplification removes them: behavior type (supervisor/executor) and
-// project-level defaults now fully determine these values.
+// task-row settings at create/update time. Behavior type (supervisor/
+// executor) and project-level defaults now fully determine these values.
 //
 // Requests that still carry them are accepted (the keys are silently dropped
 // by json.Unmarshal because the struct no longer has fields for them) and
@@ -234,16 +233,10 @@ func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Every field of UpdateTaskRequest (internal/apiwire/task.go) must be
-	// listed here. RemoteID and ProjectID were added to the struct (and to
-	// UpdateTask's SQL column list, PR #974) without ever being added to
-	// this guard, so a {"remote_id": "..."}-only PATCH body — exactly what
-	// khi-task-collector's daemon_sync.py self-heal loop sends — was
-	// rejected with 400 before ever reaching the service layer PR #974
-	// fixed. PR #974's own regression tests (update_task_columns_test.go /
-	// task_update_persist_test.go) called TaskAppService.UpdateTask
-	// directly and so never exercised this handler-level guard at all —
-	// see task_patch_persist_test.go for the HTTP-layer tests that catch
-	// this class of bug going forward.
+	// listed here, or a PATCH body carrying only that field (e.g.
+	// {"remote_id": "..."}, sent by some clients' self-heal loops) is
+	// rejected with 400 before ever reaching the service layer. See
+	// task_patch_persist_test.go for the HTTP-layer tests guarding this.
 	if req.Title == "" && req.Description == "" && req.ProjectID == "" && req.RemoteID == nil &&
 		len(req.Payload) == 0 && len(req.Instructions) == 0 && req.ParentID == nil && req.AutoStart == nil {
 		writeError(w, http.StatusBadRequest, "at least one of title, description, project_id, remote_id, payload, instructions, parent_id, or auto_start is required")

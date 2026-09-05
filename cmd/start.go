@@ -39,22 +39,16 @@ const (
 	// (穴 8 (a), docs/plans/release-onboarding.md). A fresh boid_state
 	// volume has no web.http_addr in config.yaml, so a bare `boid start`
 	// fell back to defaultStartHTTPAddr's 127.0.0.1 — binding the
-	// CONTAINER's own loopback, which compose.yml's port publish
-	// (`"${BOID_WEB_PORT:-8080}:8080"`) cannot make reachable from the
-	// host: port publish only forwards to a bound INTERFACE inside the
-	// container, and 127.0.0.1 there is not one. The result was a fresh
-	// install's `http://localhost:8080` hanging with nothing listening on
-	// the host-visible side at all. Binding all interfaces inside the
-	// container is safe here the same way it already is for the CLIAddr
-	// listener (BOID_CLI_TOKEN-gated) and the data/control API
+	// CONTAINER's own loopback, which compose.yml's port publish cannot
+	// make reachable from the host, leaving a fresh install's
+	// `http://localhost:8080` hanging with nothing listening on the
+	// host-visible side. Binding all interfaces inside the container is
+	// safe here the same way it already is for the CLIAddr listener
+	// (BOID_CLI_TOKEN-gated) and the data/control API
 	// (auth.NewTCPAPIAuthMiddleware): the container's own network
 	// namespace is not directly host-reachable except through compose's
-	// explicit port publish and the job-isolated boid_internal network,
-	// so "all interfaces inside the container" is not "all interfaces on
-	// the host". Selected only when runningUnderComposeContainer() is
-	// true — see that function's own doc comment for the detection
-	// story (Blocker, codex round-6 review: BOID_LOG_STDOUT alone is not
-	// a safe container marker on its own).
+	// explicit port publish and the job-isolated boid_internal network.
+	// Selected only when runningUnderComposeContainer() is true.
 	defaultContainerStartHTTPAddr = "0.0.0.0:8080"
 )
 
@@ -72,30 +66,17 @@ var containerSentinelPaths = []string{"/.dockerenv", "/run/.containerenv"}
 // used ONLY to pick buildStartConfig's HTTP bind fallback (穴 8 (a),
 // docs/plans/release-onboarding.md), never for anything security-gating.
 //
-// Requires BOTH signals, not just one (Blocker, codex round-6 review of
-// an earlier revision that used BOID_LOG_STDOUT alone):
+// Requires BOTH signals, not just one:
 //   - daemon.ShouldLogToStdout() (BOID_LOG_STDOUT=1): compose sets this,
-//     but so could a bare-host systemd unit wanting the same "a
-//     supervisor already owns my stdout/session lifecycle" behavior
-//     (that flag's own doc comment) for reasons having nothing to do
-//     with containers — on its own it is not a safe "flip the default
-//     bind address to 0.0.0.0" trigger, since a host operator setting it
-//     would unexpectedly expose a previously loopback-only listener to
-//     every host interface.
+//     but so could a bare-host systemd unit for reasons having nothing to
+//     do with containers, so on its own it is not a safe "flip the
+//     default bind address to 0.0.0.0" trigger.
 //   - a container-runtime sentinel file (containerSentinelPaths): unlike
-//     an env var, a bare-host process cannot set this — it is created by
-//     the container runtime itself inside the container's OWN root
-//     filesystem. (A prior codex review, internal/dispatcher/
-//     daemon_state_volume.go's "Why this replaced the 'am I in a
-//     container?' test" section, found a sentinel-file check alone
-//     unreliable across runtimes for a DIFFERENT, security-relevant
-//     decision — containerd/CRI and Kubernetes ship no such sentinel, so
-//     a FALSE NEGATIVE there silently disabled a security protection.
-//     The risk shape here is the opposite and much smaller: a false
-//     negative just leaves this fallback at today's existing
-//     loopback-only default, exactly the pre-PR6 status quo the
-//     documented `boid config set web.http_addr` override already
-//     handles — not a new failure mode.)
+//     an env var, a bare-host process cannot set this. (A sentinel-file
+//     check alone is unreliable across runtimes — containerd/CRI and
+//     Kubernetes ship no such sentinel — but the risk shape here is a
+//     false negative that just leaves this fallback at the existing
+//     loopback-only default, not a new failure mode.)
 //
 // Requiring both collapses the false-positive risk to needing an
 // operator who is BOTH running under a real container runtime AND has
@@ -148,28 +129,21 @@ func init() {
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
 	startCmd.Flags().StringVar(&startCLIAddr, "cli-addr", "", "host:port for the dedicated CLI TCP listener (docs/plans/volume-only-daemon.md §論点c; only bound when BOID_CLI_TOKEN is also set; default: client.DefaultCLIAddr(), \"127.0.0.1:8442\")")
 	// --auto-migrate (bare-metal double-fork respawn-after-migrate) is
-	// removed as of docs/plans/release-onboarding.md 決定2/PR5 (codex
-	// round-2 review Major 1): its only implementation, cmd/start_
-	// automigrate.go's handleMigrationFailure, was driven exclusively by
-	// the bare-metal parent/child fd3-status-pipe protocol
-	// (runDaemonParent, removed in this same PR) — a mechanism with no
-	// compose equivalent (a detached `compose up -d` container has no fd3
-	// pipe back to this CLI process to read a structured startup failure
-	// from at all), so there was no way to keep the flag wired to
-	// anything. Silently accepting and ignoring it would have been worse
-	// than removing it outright: an operator who typed --auto-migrate
-	// expecting the old auto-respawn behavior deserves a clear "no such
-	// flag" from cobra, not silent no-op behavior.
+	// removed (docs/plans/release-onboarding.md 決定2): its only
+	// implementation depended on the bare-metal parent/child fd3-status-
+	// pipe protocol, which has no compose equivalent. Removing it outright
+	// (rather than silently accepting and ignoring it) means an operator
+	// who types --auto-migrate gets a clear "no such flag" from cobra.
 	startCmd.Flags().BoolVar(&startForeground, "foreground", false,
 		"Run the daemon directly in this process, skipping the double-fork self-respawn — for a process supervisor (systemd Type=simple, a container entrypoint, ...) that already owns respawn/liveness. Equivalent to (and takes precedence over) setting BOID_DAEMON_CHILD=1, which remains supported for existing supervisor configs (build/container/compose.yml) that set the env var instead of passing this flag")
 	rootCmd.AddCommand(startCmd)
 }
 
 // defaultAllowedDomains delegates to config.DefaultAllowedDomains — the
-// literal itself moved there (BLOCKER 2 sibling fix, codex review round 1)
-// so internal/server's config-hot-reload path can recompute the same floor
-// without importing cmd. Kept here as a thin wrapper so buildStartConfig's
-// call site below (and cmd/start_test.go) need no further change.
+// literal itself lives there so internal/server's config-hot-reload path
+// can recompute the same floor without importing cmd. Kept here as a thin
+// wrapper so buildStartConfig's call site below (and cmd/start_test.go)
+// need no further change.
 func defaultAllowedDomains() []string {
 	return config.DefaultAllowedDomains()
 }
@@ -205,9 +179,8 @@ func defaultKeyFilePath() string {
 
 // defaultTLSDir returns the directory holding (or to generate) the
 // per-daemon internal CA used to secure the broker/git-gateway TCP(mTLS)
-// listeners (docs/plans/phase6-container-backend.md §PR4/§決定5) — same
-// XDG data-dir convention as the other default*Path helpers above, and the
-// same "web_secret"-style file-in-data-dir layout the plan doc calls for
+// listeners (docs/plans/phase6-container-backend.md §決定5) — same XDG
+// data-dir convention as the other default*Path helpers above
 // (~/.local/share/boid/tls/ca.crt + ca.key).
 func defaultTLSDir() string {
 	dataDir := os.Getenv("XDG_DATA_HOME")
@@ -219,10 +192,9 @@ func defaultTLSDir() string {
 }
 
 // defaultInstallIDDir returns the directory holding (or to generate) this
-// installation's plain-UUID install_id file (internal/install.LoadOrCreate
-// — docs/plans/phase6-container-backend.md §PR6/§決定6). Same XDG data-dir
-// convention as the other default*Path/Dir helpers above, and the same
-// "web_secret"-style file-directly-in-data-dir layout §決定6 calls for
+// installation's plain-UUID install_id file (internal/install.LoadOrCreate,
+// docs/plans/phase6-container-backend.md §決定6). Same XDG data-dir
+// convention as the other default*Path/Dir helpers above
 // (~/.local/share/boid/install_id, alongside boid.db and web_secret — NOT
 // nested under its own subdirectory the way tls/ is, since it is a single
 // file, not a CA's cert+key pair).
@@ -241,10 +213,9 @@ type startConfigOptions struct {
 	KitsDir     string
 	KeyFilePath string
 	// CLIAddr overrides the dedicated CLI TCP listener's bind address
-	// (docs/plans/volume-only-daemon.md §論点c, PR-3 Option 4 host-mode
-	// redesign) — empty falls back to client.DefaultCLIAddr() below,
-	// mirroring every other opts.* field's "" -> default* helper pattern
-	// in this function.
+	// (docs/plans/volume-only-daemon.md §論点c) — empty falls back to
+	// client.DefaultCLIAddr() below, mirroring every other opts.* field's
+	// "" -> default* helper pattern in this function.
 	CLIAddr string
 }
 
@@ -273,9 +244,9 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	if cfg.CLIAddr == "" {
 		cfg.CLIAddr = client.DefaultCLIAddr()
 	}
-	// BOID_CLI_TOKEN (PR-3 Option 4 host-mode redesign): the shared secret
-	// `boid`'s own host-mode orchestration (cmd/host.go) generates/reads
-	// from ~/.config/boid/cli-token and passes to the daemon container via
+	// BOID_CLI_TOKEN: the shared secret `boid`'s own host-mode
+	// orchestration (cmd/host.go) generates/reads from
+	// ~/.config/boid/cli-token and passes to the daemon container via
 	// build/container/compose.yml's `environment:` block. Empty for a bare
 	// `boid start` invoked directly on the host (not through host mode) —
 	// Server.Start skips binding the CLIAddr listener whenever CLIToken is
@@ -293,8 +264,7 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	if cfg.HTTPAddr == "" {
 		// 穴 8 (a): default to 0.0.0.0 only under compose's OWN container,
 		// never on a bare host — see runningUnderComposeContainer's own
-		// doc comment for why a single env var was not enough (Blocker,
-		// codex round-6 review).
+		// doc comment for why a single env var was not enough.
 		if runningUnderComposeContainer() {
 			cfg.HTTPAddr = defaultContainerStartHTTPAddr
 		} else {
@@ -310,36 +280,27 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	return cfg, nil
 }
 
-// refuseRootUID rejects uid 0 (codex review of PR2, Blocker): the
-// arbitrary-uid redesign (docs/plans/release-onboarding.md 決定1) makes
-// gid 0 + `g=u` permissions do the work non-root uids used to need a
-// fixed, baked passwd entry for — but nothing before this check stopped
-// compose's `user: "${BOID_UID:-1000}:0"` from resolving to "0:0" if an
-// operator sets BOID_UID=0, or scripts/deploy-container.sh's
-// `: "${BOID_UID:=$(id -u)}"` from picking up uid 0 when the deploy
-// script itself is run as root. internal/dispatcher.NewContainerBackend's
-// own uid-0 guard (§決定4) only ever protected the JOB containers this
-// daemon creates — a root DAEMON would still pass os.Getuid()==0 through
-// internal/server/wire.go's sandboxBackendForConfig, tripping that
-// guard's "reject and fall back to 1000:0" path and silently mismatching
-// the workspace HOME ownership §決定4's own wire.go comment describes (a
-// HOME the root daemon created is 0700-owned by uid 0, unreadable to a
-// 1000:0 job container). Refusing outright, here, is cheaper and clearer
-// than letting that mismatch surface later as a confusing per-job
-// permission error.
+// refuseRootUID rejects uid 0: the arbitrary-uid redesign (docs/plans/
+// release-onboarding.md 決定1) makes gid 0 + `g=u` permissions do the work
+// non-root uids used to need a fixed, baked passwd entry for, but nothing
+// before this check stopped compose's `user: "${BOID_UID:-1000}:0"` from
+// resolving to "0:0" if an operator sets BOID_UID=0. A root daemon would
+// silently mismatch the workspace HOME ownership 決定4 describes (a HOME
+// the root daemon created is 0700-owned by uid 0, unreadable to a 1000:0
+// job container); refusing outright here is cheaper and clearer than
+// letting that mismatch surface later as a confusing per-job permission
+// error.
 //
-// Takes the uid as a plain int (rather than calling os.Getuid() itself)
-// so a test can exercise both branches without needing to actually run
-// this process as root, and because which uid is "the one that matters"
-// differs by call site (codex round-9 review of PR5, Major): on the
-// --foreground/daemon-child path THIS process is (or becomes) the
-// daemon, so callers must pass os.Getuid() — BOID_UID has no bearing on
-// what uid this process runs as there, since compose.yml's `user:`
-// substitution is never consulted on that branch at all. On the
-// non-foreground "just run compose up" path, callers must pass
-// effectiveBoidUID() instead, since BOID_UID (when set) is what actually
-// ends up substituted into compose.yml's `user: "${BOID_UID}:0"`. See
-// runStart's own call sites for exactly where each applies.
+// Takes the uid as a plain int (rather than calling os.Getuid() itself) so
+// a test can exercise both branches without needing to actually run this
+// process as root, and because which uid is "the one that matters" differs
+// by call site: on the --foreground/daemon-child path THIS process is (or
+// becomes) the daemon, so callers must pass os.Getuid() — BOID_UID has no
+// bearing on what uid this process runs as there. On the non-foreground
+// "just run compose up" path, callers must pass effectiveBoidUID() instead,
+// since BOID_UID (when set) is what actually ends up substituted into
+// compose.yml's `user: "${BOID_UID}:0"`. See runStart's own call sites for
+// exactly where each applies.
 func refuseRootUID(uid int) error {
 	if uid != 0 {
 		return nil
@@ -349,37 +310,28 @@ func refuseRootUID(uid int) error {
 
 // effectiveBoidUID returns the uid that will actually end up running the
 // compose daemon CONTAINER on the non-foreground "just run compose up"
-// path: BOID_UID, when set (docs/plans/release-onboarding.md — scripts/
-// deploy-container.sh's own `: "${BOID_UID:=$(id -u)}"` default —
-// compose's `user: "${BOID_UID:-1000}:0"` substitutes it at compose-parse
-// time on the HOST, not as a container environment variable, so an
-// operator exporting BOID_UID=0 changes what uid the CONTAINER runs as
-// without changing THIS PROCESS's own os.Getuid() at all), or
-// os.Getuid() otherwise.
+// path: BOID_UID, when set (compose's `user: "${BOID_UID:-1000}:0"`
+// substitutes it at compose-parse time on the HOST, so an operator
+// exporting BOID_UID=0 changes what uid the CONTAINER runs as without
+// changing THIS PROCESS's own os.Getuid() at all), or os.Getuid() otherwise.
 //
-// codex round-7 review of PR5, Major: refuseRootUID(os.Getuid()) alone
-// only ever inspected the CLI process's own uid — a non-root operator
-// running `BOID_UID=0 boid start` sailed straight through it, since the
-// check had nothing to do with the value BOID_UID ultimately resolves
-// to. scripts/deploy-container.sh gained an equivalent guard at the
-// actual enforcement point in an earlier round of this same review; this
-// closes the matching gap on the Go CLI side so the refusal fires as
-// early as possible too, before ever invoking that script.
+// refuseRootUID(os.Getuid()) alone only ever inspects the CLI process's own
+// uid, so a non-root operator running `BOID_UID=0 boid start` would sail
+// straight through it — this function is how the check reaches the value
+// BOID_UID actually resolves to.
 //
-// NOT safe to reuse for the --foreground/daemon-child path (codex
-// round-9 review of PR5, Major, reverting an earlier round's claim to
-// the contrary): that path's caller must pass refuseRootUID(os.Getuid())
-// directly instead, because there THIS process itself is (or becomes)
-// the daemon and compose.yml is never consulted at all — checking
-// effectiveBoidUID() there let a root operator bypass the refusal
-// entirely via `BOID_UID=1000 boid start --foreground`, since BOID_UID
-// has no bearing on what uid this process actually runs as on that
-// branch. See refuseRootUID's own doc comment and runStart's call sites.
+// NOT safe to reuse for the --foreground/daemon-child path: that path's
+// caller must pass refuseRootUID(os.Getuid()) directly instead, because
+// there THIS process itself is (or becomes) the daemon and compose.yml is
+// never consulted at all — checking effectiveBoidUID() there would let a
+// root operator bypass the refusal via `BOID_UID=1000 boid start
+// --foreground`. See refuseRootUID's own doc comment and runStart's call
+// sites.
 //
-// An unparseable BOID_UID is not this function's problem to diagnose —
-// it returns os.Getuid() unchanged in that case, and compose/docker will
-// surface their own clear error against the malformed value when they
-// try to use it.
+// An unparseable BOID_UID is not this function's problem to diagnose — it
+// returns os.Getuid() unchanged in that case, and compose/docker will
+// surface their own clear error against the malformed value when they try
+// to use it.
 func effectiveBoidUID() int {
 	if v := os.Getenv("BOID_UID"); v != "" {
 		if uid, err := strconv.Atoi(v); err == nil {
@@ -389,49 +341,39 @@ func effectiveBoidUID() int {
 	return os.Getuid()
 }
 
-// runStart implements `boid start`. docs/plans/release-onboarding.md
-// 決定2/PR5 redefines the ordinary invocation (an operator typing
-// `boid start` on their own host) to mean "bring the compose daemon stack
-// up" — compose is the only daemon shape boid supports now, so there is
-// no bare-metal daemon left for a plain `boid start` to spawn directly.
+// runStart implements `boid start`. docs/plans/release-onboarding.md 決定2
+// redefines the ordinary invocation (an operator typing `boid start` on
+// their own host) to mean "bring the compose daemon stack up" — compose is
+// the only daemon shape boid supports now, so there is no bare-metal daemon
+// left for a plain `boid start` to spawn directly.
 //
 // The foreground/daemon-child carve-out (shouldRunForeground) is the one
-// path this redefinition must NOT touch (docs/plans/
-// release-onboarding.md「決定 2 の事前確認」, PR5's stated must-have):
-// build/container/compose.yml's OWN daemon service entrypoint is
-// `["/usr/local/bin/boid"]` + `command: ["start"]` with
-// BOID_DAEMON_CHILD=1 set — that invocation, running INSIDE the
-// container, must become the real daemon process (runDaemonChild)
-// exactly as before. If it instead fell into the compose-up branch
-// below, the compose daemon's own `boid start` would recurse into
-// trying to `compose up` itself from inside its own already-running
-// container.
+// path this redefinition must NOT touch: build/container/compose.yml's OWN
+// daemon service entrypoint is `["/usr/local/bin/boid"]` +
+// `command: ["start"]` with BOID_DAEMON_CHILD=1 set — that invocation,
+// running INSIDE the container, must become the real daemon process
+// (runDaemonChild) exactly as before. If it instead fell into the
+// compose-up branch below, the compose daemon's own `boid start` would
+// recurse into trying to `compose up` itself from inside its own
+// already-running container.
 func runStart(cmd *cobra.Command, args []string) error {
-	// codex round-9 review of PR5, Major: on the --foreground/daemon-child
-	// path this process itself IS (or becomes) the daemon — no compose
-	// substitution happens, so the uid that actually matters is THIS
-	// process's own os.Getuid(), not effectiveBoidUID(). Checking
-	// effectiveBoidUID() here let a root operator bypass the refusal with
-	// `BOID_UID=1000 boid start --foreground`: BOID_UID has no bearing on
-	// what uid this process runs as outside of compose's own `user:`
-	// substitution (compose.yml is never consulted on this branch at
-	// all), so the check would pass while the daemon kept running as root.
+	// On the --foreground/daemon-child path this process itself IS (or
+	// becomes) the daemon — no compose substitution happens, so the uid
+	// that actually matters is THIS process's own os.Getuid(), not
+	// effectiveBoidUID(), which would let a root operator bypass the
+	// refusal via `BOID_UID=1000 boid start --foreground`.
 	if shouldRunForeground(startForeground) {
 		if err := refuseRootUID(os.Getuid()); err != nil {
 			return err
 		}
 		// Arbitrary-uid self-registration + group-writable umask
-		// (docs/plans/release-onboarding.md 決定1, PR2): under the
-		// compose daemon service this process's uid may have no
-		// /etc/passwd entry at all (the image no longer bakes one —
-		// build/container/Dockerfile), and runtime-generated files
-		// (secret.key, boid.db, ...) need the group-write bit so a
-		// later run under a DIFFERENT uid (still group 0) stays working
-		// (§決定1 実装形2, 未決6's "uid is fixed per install" contract).
-		// Both calls are best-effort/non-fatal and equally harmless for
-		// a --foreground supervisor on bare metal, where the running
-		// uid almost always already has a real passwd entry (a no-op)
-		// — see their own doc comments.
+		// (docs/plans/release-onboarding.md 決定1): under the compose
+		// daemon service this process's uid may have no /etc/passwd
+		// entry at all, and runtime-generated files (secret.key, boid.db,
+		// ...) need the group-write bit so a later run under a DIFFERENT
+		// uid (still group 0) stays working. Both calls are
+		// best-effort/non-fatal and equally harmless for a --foreground
+		// supervisor on bare metal — see their own doc comments.
 		selfuser.EnsureRuntimeUserRegistered()
 		selfuser.ApplyGroupWritableUmask()
 
@@ -448,31 +390,22 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return runDaemonChild(cfg)
 	}
 
-	// codex round-3 review of PR5, Major 2: --db-path/--socket-path/
-	// --kits-dir/--key-file-path/--cli-addr only ever configure the
-	// ACTUAL daemon process (buildStartConfig, read above only on the
-	// --foreground/daemon-child branch) — the compose stack's own
-	// daemon config comes from build/container/compose.yml's own env
-	// wiring instead, which this non-foreground "just run compose up"
-	// path has no way to forward these flags into at all. Silently
-	// accepting and ignoring them would be actively misleading: a script
-	// that used to pass e.g. --db-path against a bare-metal `boid start`
-	// would now appear to succeed while operating on a compose stack
-	// that never saw that flag, silently touching the WRONG database.
-	// Fail loudly instead.
+	// --db-path/--socket-path/--kits-dir/--key-file-path/--cli-addr only
+	// ever configure the ACTUAL daemon process (buildStartConfig, read
+	// above only on the --foreground/daemon-child branch) — the compose
+	// stack's own daemon config comes from build/container/compose.yml's
+	// own env wiring instead, which this non-foreground "just run compose
+	// up" path has no way to forward these flags into. Silently accepting
+	// and ignoring them would be actively misleading, so fail loudly.
 	if err := refuseDaemonConfigFlagsWithoutForeground(cmd); err != nil {
 		return err
 	}
 
-	// codex round-7 review of PR5, Major (re-scoped by round-9): on this
-	// non-foreground "just run compose up" path, scripts/
-	// deploy-container.sh's `: "${BOID_UID:=$(id -u)}"` defaults BOID_UID
-	// to whatever uid ran `boid start` when it is not set explicitly, but
-	// an operator MAY set BOID_UID explicitly to something other than
-	// their own uid — effectiveBoidUID() (not os.Getuid()) is the value
-	// that actually ends up substituted into compose.yml's
-	// `user: "${BOID_UID}:0"`, so it is the one this check must inspect
-	// on this branch to rule out §決定1/§決定4's root-daemon outcome.
+	// On this non-foreground "just run compose up" path, an operator MAY
+	// set BOID_UID explicitly to something other than their own uid —
+	// effectiveBoidUID() (not os.Getuid()) is the value that actually ends
+	// up substituted into compose.yml's `user: "${BOID_UID}:0"`, so it is
+	// the one this check must inspect to rule out a root-daemon outcome.
 	if err := refuseRootUID(effectiveBoidUID()); err != nil {
 		return err
 	}
@@ -482,8 +415,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 // refuseDaemonConfigFlagsWithoutForeground reports an error naming every
 // explicitly-set daemon-process-config flag when startForeground is
-// false — see runStart's own call site for the full rationale (codex
-// round-3 review of PR5, Major 2).
+// false — see runStart's own call site for the full rationale.
 func refuseDaemonConfigFlagsWithoutForeground(cmd *cobra.Command) error {
 	var set []string
 	for _, name := range []string{"db-path", "socket-path", "kits-dir", "key-file-path", "cli-addr"} {
@@ -501,13 +433,12 @@ func refuseDaemonConfigFlagsWithoutForeground(cmd *cobra.Command) error {
 
 // shouldRunForeground reports whether runStart should skip the
 // parent/child double-fork and run the daemon directly in the current
-// process (Major 6, PR6 codex review): the pre-fix code only ever checked
-// daemon.IsChild() (BOID_DAEMON_CHILD=1), which build/container/compose.yml
-// sets but a bare userns process supervisor (systemd Type=simple, runit,
-// ...) generally has no reason to know about or set — so a userns startup
-// under a supervisor still double-forked, the supervisor's tracked process
-// exited once the parent confirmed the detached child's socket was up, and
-// the supervisor treated that exit as a crash and restart-looped.
+// process: checking only daemon.IsChild() (BOID_DAEMON_CHILD=1) misses a
+// bare process supervisor (systemd Type=simple, runit, ...) that has no
+// reason to know about that env var, so a startup under such a supervisor
+// would still double-fork, the supervisor's tracked process would exit
+// once the parent confirmed the detached child's socket was up, and the
+// supervisor would treat that exit as a crash and restart-loop.
 //
 // --foreground (the foregroundFlag arg, wired from startForeground) is the
 // primary, discoverable seam for this: any supervisor config, not just
@@ -520,7 +451,7 @@ func shouldRunForeground(foregroundFlag bool) bool {
 }
 
 // runComposeUp is `boid start`'s non-foreground path (docs/plans/
-// release-onboarding.md 決定2/PR5): bring the compose daemon stack up.
+// release-onboarding.md 決定2): bring the compose daemon stack up.
 // Shares cmd/host.go's on-demand daemon-lifecycle machinery
 // (loadOrCreateCLIToken, findComposeRoot/deployFromCheckout/
 // deployFromEmbeddedAssets, withHostModeLock) rather than reimplementing
@@ -571,19 +502,15 @@ func runComposeUp(ctx context.Context, addr string, out io.Writer) error {
 }
 
 // printNextStepsGuidance prints the onboarding "what to do next" hint after
-// a successful `boid start` (docs/plans/release-onboarding.md 目標オンボー
-// ディングフロー, "山は6番"): workspace toolchain install (npm/claude
-// CLI/codex CLI, ...) happens automatically via the workspace's init.sh on
-// its first dispatch, but the harness's OWN login (claude/codex) requires
-// an interactive session with a human at the keyboard — nothing else in
-// the CLI's own output prompts a first-time user to go run one, which the
-// plan doc identifies as the single point new users get stuck at most
-// often. Printed unconditionally on every successful `boid start`, not
-// just a detected-fresh install: reliably distinguishing "first ever
-// start" from "the Nth restart of an already-onboarded install" here would
-// need its own round of daemon queries this command has no other reason to
-// make, and a returning user seeing five extra lines they already know is
-// a much smaller cost than a fresh user seeing none.
+// a successful `boid start` (docs/plans/release-onboarding.md): workspace
+// toolchain install happens automatically via the workspace's init.sh, but
+// the harness's OWN login (claude/codex) requires an interactive session
+// with a human at the keyboard, which nothing else in the CLI's output
+// prompts a first-time user to go run. Printed unconditionally on every
+// successful `boid start`, not just a detected-fresh install: distinguishing
+// "first ever start" from "the Nth restart" would need its own round of
+// daemon queries, and a returning user seeing five extra lines they already
+// know is a much smaller cost than a fresh user seeing none.
 func printNextStepsGuidance(out io.Writer) {
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. boid web pair                                      # pair this browser with the Web UI (required -- the loopback no-pairing exception does not apply inside the compose daemon's own container)")
@@ -593,31 +520,18 @@ func printNextStepsGuidance(out io.Writer) {
 }
 
 // The bare-metal double-fork daemon spawn (parent/child fd3-status-pipe
-// protocol, migration-retry-on-respawn loop) that used to live here —
-// runDaemonParent/spawnAndWaitForStartup/formatNonMigrationFailure — is
-// removed as of docs/plans/release-onboarding.md 決定2/PR5: compose is the
-// only daemon shape now, and runStart's non-foreground branch calls
-// runComposeUp instead. cmd/start_automigrate.go (handleMigrationFailure
-// and its helpers) is removed in the SAME PR (codex round-2 review Major
-// 1) rather than left behind as unreachable dead code with a broken
-// guidance string: its entire mechanism depended on reading a structured
-// startup-failure status back from a bare-metal-forked child over fd3 — a
-// pipe a detached `compose up -d` container has no equivalent of at all,
-// so there was no way to keep it wired to anything once runDaemonParent
-// (its sole caller) was gone. There is no fully automated or fully
-// general by-hand recovery path yet for a schema issue a compose daemon
-// reports at startup (internal/orchestrator/spec_loader.go's
-// migrationGuidance and cmd/project_migrate.go's guardApply, both
-// updated across several review rounds of this PR, explain the current,
-// deliberately non-prescriptive guidance and its known limitations — see
-// docs/ja/guide/migration.md). If a future PR wants a `boid start
-// --bare-metal` escape hatch back, git history has the removed
-// implementation (this same file, pre-PR5).
+// protocol, migration-retry-on-respawn loop) that used to live here is
+// removed (docs/plans/release-onboarding.md 決定2): compose is the only
+// daemon shape now, and runStart's non-foreground branch calls
+// runComposeUp instead. There is no fully automated or fully general
+// by-hand recovery path yet for a schema issue a compose daemon reports at
+// startup — see internal/orchestrator/spec_loader.go's migrationGuidance,
+// cmd/project_migrate.go's guardApply, and docs/ja/guide/migration.md.
 
 // runDaemonChild is executed by the daemon child process (BOID_DAEMON_CHILD=1).
 // It redirects stdin/stdout/stderr to the log file and detaches from the
-// session via Setsid (unless daemon.ShouldLogToStdout() opts both out —
-// PR9, container-mode caller), then runs the server until a termination
+// session via Setsid (unless daemon.ShouldLogToStdout() opts both out for
+// a container-mode caller), then runs the server until a termination
 // signal arrives.
 //
 // On any startup failure the child writes a structured StartupStatus to
@@ -626,18 +540,15 @@ func printNextStepsGuidance(out io.Writer) {
 // successful startup the child closes fd 3 instead, signalling EOF to the
 // parent. After srv.Start() returns, fd 3 is no longer touched.
 func runDaemonChild(cfg server.Config) error {
-	// BOID_LOG_STDOUT (PR9, daemon.ShouldLogToStdout's own doc comment):
+	// BOID_LOG_STDOUT (see daemon.ShouldLogToStdout's own doc comment):
 	// skip both the log-file redirect and Setsid entirely when a
-	// supervisor already owns stdout capture and process/session
-	// lifecycle (build/container/compose.yml's daemon service) — every
-	// other caller (bare `boid start`, no supervisor already doing this)
+	// supervisor already owns stdout capture and process/session lifecycle
+	// (build/container/compose.yml's daemon service) — every other caller
 	// keeps today's redirect-to-rotating-file + Setsid behavior unchanged.
-	// Setsid specifically is not just skippable but actively WRONG to
-	// call here: it fails with EPERM when the caller is already a process
-	// group leader — true of a container's entrypoint process (tini's
-	// direct child) — which is docs/plans/phase6-cutover-followups.md's
-	// actual root cause for the e2e-container job's original startup
-	// crash (see logStdoutEnvKey's doc comment for the full story).
+	// Setsid specifically is not just skippable but actively WRONG to call
+	// here: it fails with EPERM when the caller is already a process group
+	// leader, true of a container's entrypoint process (tini's direct
+	// child).
 	if !daemon.ShouldLogToStdout() {
 		logPath := daemon.LogFilePath()
 		if err := daemon.RedirectToLogRotating(logPath); err != nil {
@@ -653,35 +564,23 @@ func runDaemonChild(cfg server.Config) error {
 
 	// log.level (docs/ja/reference/config-yaml.md "log" section): applied
 	// unconditionally, regardless of ShouldLogToStdout()'s branch above —
-	// the level gates what slog emits either way, whether the destination
-	// is the rotating log file or a container runtime's own stdout capture.
-	// Deliberately the first slog-affecting call WITHIN this function
-	// (before the CLIToken warning below, which itself calls slog.Warn), so
-	// everything runDaemonChild itself logs from here on observes the
-	// configured level. Not quite "the first thing this whole process ever
-	// logs", though: buildStartConfig's own config.Load() call (runStart,
-	// just above this function on the call stack, same process) can already
-	// have emitted a couple of slog.Warn lines of its own (deprecated
-	// sandbox.backend/gateway.hosts config, internal/config/config.go) —
-	// see ApplyLogLevel's own doc comment for why that gap is cosmetic, not
-	// a correctness concern.
+	// the level gates what slog emits either way. Deliberately the first
+	// slog-affecting call within this function (before the CLIToken
+	// warning below), so everything runDaemonChild logs from here on
+	// observes the configured level — see ApplyLogLevel's own doc comment
+	// for the (cosmetic) gap this leaves for config.Load()'s own earlier
+	// warnings.
 	daemon.ApplyLogLevel(cfg.LogLevel)
 
-	// BOID_CLI_TOKEN misconfiguration warning (PR-3 Option 4 host-mode
-	// redesign, docs/plans/volume-only-daemon.md §論点c): daemon.
-	// ShouldLogToStdout() is the exact same "are we running as the
-	// compose/container daemon" signal BOID_LOG_STDOUT's own block above
-	// already uses — reused here rather than inventing a second env var.
-	// A bare `boid start` on the host (ShouldLogToStdout()==false) never
-	// warns: cfg.CLIToken is expected to be empty there (host mode's own
-	// dedicated CLI listener has no reason to exist outside the container
-	// deployment its BOID_CLI_TOKEN passthrough targets), and
-	// Server.Start already no-ops the listener bind in that case — see
-	// Config.CLIAddr's own doc comment. Under the container supervisor,
-	// though, an unset token silently leaves host-mode CLI dispatch
-	// unreachable (no listener bound at all) with no other symptom until
-	// someone notices `boid` commands hang waiting on a connection that
-	// never completes — surfaced loudly here instead.
+	// BOID_CLI_TOKEN misconfiguration warning (docs/plans/
+	// volume-only-daemon.md §論点c): daemon.ShouldLogToStdout() is the same
+	// "are we running as the compose/container daemon" signal the
+	// BOID_LOG_STDOUT block above uses. A bare `boid start` on the host
+	// never warns: cfg.CLIToken is expected to be empty there, and
+	// Server.Start already no-ops the listener bind in that case. Under
+	// the container supervisor, though, an unset token silently leaves
+	// host-mode CLI dispatch unreachable with no other symptom until
+	// someone notices `boid` commands hang — surfaced loudly here instead.
 	if cfg.CLIToken == "" && daemon.ShouldLogToStdout() {
 		slog.Warn("BOID_CLI_TOKEN is unset; the dedicated CLI TCP listener will not be bound — host-mode `boid` CLI dispatch (cmd/host.go) will not be able to reach this daemon (docs/plans/volume-only-daemon.md §論点c)")
 	}

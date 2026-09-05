@@ -21,35 +21,32 @@ type TaskWorkflowService struct {
 	Hub         *TaskEventHub
 	// TaskTriage provides non-transactional (pre-tx-open) read access to the
 	// task_triage sidecar for TaskWorkflowService.Dispatch's pre-check /
-	// children read (docs/plans/cross-project-issue-triage.md Phase 1 PR-2).
-	// TxStore already embeds CardStore for the in-transaction writes
-	// Dispatch and applyParkSideEffect need — this field is only for the read
-	// that has to happen BEFORE opening a transaction (see Dispatch's own doc
-	// comment for why child-task creation can't run nested inside one). Nil
-	// is tolerated (treated as "no children"); wire.go always sets this.
+	// children read. TxStore already embeds CardStore for the in-transaction
+	// writes Dispatch and applyParkSideEffect need — this field is only for
+	// the read that has to happen BEFORE opening a transaction (see
+	// Dispatch's own doc comment for why child-task creation can't run
+	// nested inside one). Nil is tolerated (treated as "no children");
+	// wire.go always sets this.
 	TaskTriage CardStore
-	// Actions provides the workspace-scoped BoidOpActionList read (docs/plans/
-	// ingestion-identity.md PR-3, B-3) — same "narrower interface over the
-	// same underlying taskRepo value" pattern as TaskTriage above. Nil is
-	// tolerated (ListActions returns an "unavailable" error), matching every
-	// other optional dependency's convention in this file.
+	// Actions provides the workspace-scoped BoidOpActionList read — same
+	// "narrower interface over the same underlying taskRepo value" pattern
+	// as TaskTriage above. Nil is tolerated (ListActions returns an
+	// "unavailable" error), matching every other optional dependency's
+	// convention in this file.
 	Actions ActionListStore
 	// TaskCreator creates the real boid tasks Dispatch task-ifies specced
 	// children into. Nil is tolerated as long as there are no specced
 	// children to dispatch — see Dispatch's own doc comment.
 	TaskCreator TaskCreator
-	// Adapter is the harness adapter used to query post-run usage. Phase 3-b
-	// dropped the StopAgent role: graceful stop is delivered as a SIGUSR1
-	// directly via Lifecycle.SignalJobRuntime, which claude.Adapter.Run()'s
+	// Adapter is the harness adapter used to query post-run usage. Graceful
+	// stop is delivered separately, as a SIGUSR1 directly via
+	// Lifecycle.SignalJobRuntime, which claude.Adapter.Run()'s
 	// signal.Notify handler intercepts. Adapter remains optional; when nil,
 	// usage / future per-harness queries become no-ops.
 	Adapter adapters.HarnessAdapter
-	// Notifier fires queue の決定論的評価 節 rule 4 (notify) whenever a
-	// suggestion attaches to a card — see notifySuggestionArrived in
-	// queue_notify.go (PR-2, docs/plans/suggestion-as-state-transition-impl.md
-	// §4.2, replacing v1's urgency=now-gated notifyQueueEntryIfUrgent /
-	// notifyUrgencyRaised entirely). Nil is tolerated (no-op), same as
-	// TaskAppService.Notify's contract.
+	// Notifier fires a notify rule whenever a suggestion attaches to a card
+	// — see notifySuggestionArrived in queue_notify.go. Nil is tolerated
+	// (no-op), same as TaskAppService.Notify's contract.
 	Notifier Notifier
 	// TaskWaits is the shared registry recording which task each in-flight
 	// `boid task wait` is parked on (see TaskWaitRegistry). SweepTriggers reads
@@ -68,29 +65,27 @@ type TaskWorkflowService struct {
 	// pendingTimeouts carries completions recorded off the sweep goroutine
 	// until the next sweep can report them (see stashTimeoutCompletion).
 	pendingTimeouts []TriggerCompletionResult
-	// Triggers backs docs/plans/ingestion-identity.md PR-4 (B-5)'s
-	// trigger_runs single-flight/execution-record read+write
+	// Triggers backs trigger_runs' single-flight/execution-record read+write
 	// (SweepTriggers/RunTriggerNow, trigger_loop.go). Nil is tolerated —
 	// SweepTriggers/RunTriggerNow no-op (matching Notifier/TaskCreator's own
 	// convention above) rather than panicking, since a daemon built without
 	// this dependency wired should simply run no triggers, not crash.
 	Triggers TriggerRunStore
 	// Exec dispatches the exec job (api.ExecDispatcher.StartExec) a due
-	// trigger's `run` command executes as (PR-4's "実行" section — daemon
-	// starts an exec job through the SAME Runner.Dispatch() path `boid exec`
-	// uses). Nil is tolerated the same way Triggers above is: wire.go can
-	// only assign this once sessionDispatcherAdapter exists (mountRoutes,
-	// after buildRuntime constructs this TaskWorkflowService), so a
+	// trigger's `run` command executes as — the daemon starts an exec job
+	// through the same Runner.Dispatch() path `boid exec` uses. Nil is
+	// tolerated the same way Triggers above is: wire.go can only assign
+	// this once sessionDispatcherAdapter exists (mountRoutes, after
+	// buildRuntime constructs this TaskWorkflowService), so a
 	// construction-order gap must not be fatal — see wire.go's own comment
 	// at the assignment site.
 	Exec ExecDispatcher
 	// Signals backs the `on: signals` trigger predicate's HasPendingSignals
-	// read (docs/plans/signal-ingest-detailed-design.md §4.2, PR-6,
-	// SweepTriggers/signalsPendingForTrigger, trigger_loop.go). Nil is
-	// tolerated the same way Triggers/Exec above are: an on:signals trigger
-	// simply never becomes due (fail-closed, not a panic) when no
-	// SignalStore is wired — a plain schedule (on=""/on:schedule) trigger is
-	// entirely unaffected either way.
+	// read (SweepTriggers/signalsPendingForTrigger, trigger_loop.go). Nil
+	// is tolerated the same way Triggers/Exec above are: an on:signals
+	// trigger simply never becomes due (fail-closed, not a panic) when no
+	// SignalStore is wired — a plain schedule (on=""/on:schedule) trigger
+	// is entirely unaffected either way.
 	Signals SignalStore
 
 	dispatchCtx    context.Context
@@ -136,11 +131,10 @@ func enrichJob(runtimesDir string, job *Job) {
 	job.WorkspacePath = filepath.Join(runtimesDir, job.RuntimeID)
 }
 
-// taskBehaviorOrEmpty reads task.Exec.Behavior, or "" for a card
-// (card-model-cleanup PR-2: Behavior is execution-only, design doc §3.2).
-// enrichJobDisplayName already treats an empty behavior as "nothing to
-// enrich" (a card has no hook jobs to enrich display names for in the first
-// place), so this is a safe, no-special-casing-needed default.
+// taskBehaviorOrEmpty reads task.Exec.Behavior, or "" for a card (Behavior
+// is execution-only). enrichJobDisplayName already treats an empty
+// behavior as "nothing to enrich" (a card has no hook jobs to enrich
+// display names for in the first place), so this is a safe default.
 func taskBehaviorOrEmpty(task *orchestrator.Task) string {
 	if task == nil || task.Exec == nil {
 		return ""

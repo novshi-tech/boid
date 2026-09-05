@@ -2,16 +2,10 @@
 // jobs that do not embed an agent harness. It is the fall-through adapter
 // the runner-inner-child uses when JobSpec.HarnessType resolves to "shell"
 // — non-agent hook scripts (e2e fixture kits, custom user hooks without an
-// `agent:` declaration) and `boid exec`-style argv launches. The historical
-// `boid agent shell` session variant that also routed through this adapter
-// was retired: sessions now only accept the agent harnesses (claude / codex /
-// opencode), and the shell-inside-a-project-sandbox use case is served by
-// `boid exec -p <project> -- bash` (same adapter, same Runner.Dispatch()).
-//
-// Phase 3-d (session 概念 + shell adapter 1 等市民化) introduced this
-// adapter so every job — agent or not — flows through the same Run() pipeline
-// in the runner-inner-child. The legacy `runExecArgv` branch was retired in
-// the same change; HarnessType is invariant non-empty from PR1 onward.
+// `agent:` declaration) and `boid exec`-style argv launches. Sessions only
+// accept the agent harnesses (claude / codex / opencode); the
+// shell-inside-a-project-sandbox use case is served by `boid exec -p
+// <project> -- bash` (same adapter, same Runner.Dispatch()).
 //
 // shell adapter is intentionally minimal:
 //   - no session resolution (session-id resume is gone repo-wide)
@@ -20,11 +14,9 @@
 //     applied immediately through the broker RPC; the stdout-capture
 //     fallback, spec.StdoutCaptureFile, still exists for scripts that print
 //     `{"payload_patch": ...}` to stdout instead)
-//   - no token accounting (Usage() returns zero — shell jobs are not
-//     billable in Phase 4)
-//   - no Bindings() (Phase 3-c claude / codex / opencode each declared their
-//     own CLI bindings; shell relies on the base mount set the dispatcher
-//     applies for every sandbox).
+//   - no token accounting (Usage() returns zero — shell jobs are not billable)
+//   - no Bindings() — shell relies on the base mount set the dispatcher
+//     applies for every sandbox.
 //
 // Signal handling is shared with the agent adapters via sigutil.ForwardAndWait:
 // SIGUSR1 → child SIGTERM (out-of-band daemon stop), SIGWINCH passthrough

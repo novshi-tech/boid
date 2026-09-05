@@ -6,7 +6,7 @@ import (
 )
 
 // ProjectMigrationIssue describes one project whose project.yaml uses the
-// pre-Phase-3-e schema (top-level kits / host_commands / additional_bindings /
+// legacy schema (top-level kits / host_commands / additional_bindings /
 // secret_namespace / capabilities, or task_behaviors.<name>.kits) and must be
 // migrated to the new workspace+kit layout via `boid project migrate`.
 type ProjectMigrationIssue struct {
@@ -21,15 +21,15 @@ type ProjectMigrationIssue struct {
 	// remains useful for error text / logs, but only actionable as a
 	// `boid project migrate <dir>` argument when IsBareRepo is false.
 	Dir string
-	// IsBareRepo (codex round-9 review of PR5, Blocker 1) reports whether
-	// Dir is the daemon-managed bare repository path for a git-URL-
-	// registered project (internal/orchestrator/project_bare_repo.go's
-	// ReadProjectMetaFromBareRepo) rather than a real, user-accessible
-	// filesystem directory (ReadProjectMeta). `boid project migrate`
-	// (cmd/project_migrate.go) reads <dir>/.boid/project.yaml off a real
-	// filesystem directory — it cannot be run against a bare-repo path at
-	// all, so FormatMigrationIssue/migrationGuidance must not tell the
-	// user to do so when this is true.
+	// IsBareRepo reports whether Dir is the daemon-managed bare repository
+	// path for a git-URL-registered project (internal/orchestrator/
+	// project_bare_repo.go's ReadProjectMetaFromBareRepo) rather than a
+	// real, user-accessible filesystem directory (ReadProjectMeta). `boid
+	// project migrate` (cmd/project_migrate.go) reads
+	// <dir>/.boid/project.yaml off a real filesystem directory — it cannot
+	// be run against a bare-repo path at all, so
+	// FormatMigrationIssue/migrationGuidance must not tell the user to do
+	// so when this is true.
 	IsBareRepo bool
 	// Messages are the per-field violation messages in the same order as
 	// the old single-string error produced by rejectRemovedProjectFields.

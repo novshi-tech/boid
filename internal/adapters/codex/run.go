@@ -21,15 +21,9 @@ var lookPath = exec.LookPath
 
 // missingCLIError builds the fail-fast error Run returns when harnessCLI is
 // not on the sandbox PATH. See internal/adapters/claude/run.go's
-// missingCLIError for the full rationale (Phase 4 PR3 retired the adapter's
-// own CLI bind-mount — codex/bindings.go — in favor of the workspace HOME
-// volume, so a lookup miss now points at the workspace's init.sh instead of
-// a generic "command not found"; PR9 of
-// docs/plans/workspace-home-volume-persistence.md then replaced the host path
-// it used to print with the CLI commands that actually reach the daemon's
-// copy). slug comes from rc.Env["BOID_WORKSPACE_SLUG"] and falls back to
-// "default"; cause is wrapped with %w so errors.Is(err, exec.ErrNotFound)
-// still holds.
+// missingCLIError for the full rationale. slug comes from
+// rc.Env["BOID_WORKSPACE_SLUG"] and falls back to "default"; cause is
+// wrapped with %w so errors.Is(err, exec.ErrNotFound) still holds.
 //
 // Kept literal-identical to the other two adapters' copies on purpose: this is
 // one message with three call sites, and a divergence here would show up as an
@@ -58,11 +52,8 @@ func missingCLIError(slug string, cause error) error {
 // taskBootstrapPrompt is sent as the first user turn when codex is launched
 // for a task hook (rc.TaskID != ""). It tells the agent to read the canonical
 // task skill manual, then pull the task context via the `boid task ...`
-// broker RPCs (Phase 5b PR3, docs/plans/phase5-shim-and-task-context.md —
-// this replaced the earlier "read ~/.boid/context/*.yaml" instruction; the
-// Phase 5b PR6 cutover subsequently retired that file distribution
-// entirely, so the RPC path is now the sole source), then run the task and
-// emit boid task notify --done/--fail before exiting.
+// broker RPCs, then run the task and emit boid task notify --done/--fail
+// before exiting.
 //
 // The claude pattern of passing "/boid-task" as a positional slash command
 // does not apply to codex, so this points the agent at the skill FILE via its
@@ -70,22 +61,16 @@ func missingCLIError(slug string, cause error) error {
 // path all three harnesses have, which is why the instruction can be worded
 // identically for each.
 //
-// Note that ~/.claude/skills is not a path codex DISCOVERS skills at. Its own
-// scan covers $HOME/.agents/skills, the repo-relative .agents/skills and
-// /etc/codex/skills, and nothing under .claude. That does not matter for this
-// prompt — a read-file instruction needs the file to exist, not to have been
-// scanned — and both paths exist: internal/dispatcher's skillLinks symlinks
-// every skill into every skillDiscoveryRoots entry, .agents/skills included,
-// so codex reaches this manual by discovery as well as by being told.
+// ~/.claude/skills is not a path codex DISCOVERS skills at (its own scan
+// covers $HOME/.agents/skills, the repo-relative .agents/skills, and
+// /etc/codex/skills) — that does not matter for this prompt, since a
+// read-file instruction only needs the file to exist. internal/dispatcher's
+// skillLinks symlinks every skill into every skillDiscoveryRoots entry
+// (.agents/skills included), so codex also reaches this manual by
+// discovery.
 //
-// (Through 2026 this comment claimed codex had no skill loader at all, which
-// stopped being true in December 2025. The instruction below was written for
-// that world and is kept because it still works and is harness-independent,
-// not because the premise held.)
-//
-// Bindings() below declares nothing; it stopped being the delivery mechanism
-// in Phase 4 PR3, and the per-skill bind mounts that replaced it are gone too
-// — the skills are baked into the runner image now.
+// Bindings() below declares nothing — the skills are baked into the runner
+// image and mounted by the dispatcher, not by this adapter.
 //
 // codex also has no --append-system-prompt equivalent, so the lifecycle
 // reminder ("call boid task notify before exiting") is collapsed into the
@@ -149,14 +134,9 @@ func selectPrompt(isSession bool, userAnswer string) string {
 //     dispatcher so codex inherits the user's terminal and the user drives
 //     the session interactively. No prompt is appended — the TUI handles
 //     input itself. This is the `boid agent <harness>` entry point.
-//   - interactive == false (task hook path, legacy non-interactive entry):
-//     `codex exec [-m M] <prompt>` is the documented one-prompt entry point.
-//     This path is left functional for hooks that still target codex, but
-//     the multi-harness-production plan calls out that `boid task`
-//     integration via the hook path is out of scope; the prompt-driven flow
-//     continues to work as a thin smoke-test surface. Session-id resume was
-//     removed alongside the claude --resume path: every dispatch is a fresh
-//     codex run.
+//   - interactive == false (task hook path): `codex exec [-m M] <prompt>` is
+//     the documented one-prompt entry point. Every dispatch is a fresh codex
+//     run — there is no session-id resume.
 //
 // Flags:
 //
@@ -203,12 +183,9 @@ func buildArgs(interactive bool, model, prompt string) []string {
 // for the workdir.
 //
 // Session persistence and payload-patch application are deliberately NOT
-// wired here — see docs/plans/multi-harness-production.md for the explicit
-// non-goals (interactive sessions are run-and-done, no resume yet).
+// wired here — interactive sessions are run-and-done, no resume yet.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
-	// 0. Fail fast when codex is not on PATH. See missingCLIError's doc
-	// comment for why this replaces the old adapter-bindings-based
-	// guarantee that codex was always present.
+	// Fail fast when codex is not on PATH. See missingCLIError.
 	if _, err := lookPath(harnessCLI); err != nil {
 		return adapters.Result{}, missingCLIError(rc.Env["BOID_WORKSPACE_SLUG"], err)
 	}

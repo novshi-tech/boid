@@ -12,9 +12,7 @@ import (
 // This file backs `boid config apply -f`/`boid config edit`'s whole-document
 // validation, and the same validation the daemon re-runs server-side on
 // every POST /api/config (defense in depth — the CLI already runs this
-// client-side first, per docs/plans/workspace-db-consolidation.md's
-// existing `workspace edit`/`DecodeWorkspaceMetaStrict` precedent this
-// package's tree-walk below mirrors).
+// client-side first).
 //
 // ValidateYAML performs three passes:
 //  1. unknown-key rejection against Schema (schema.go) — a document-shaped
@@ -64,10 +62,9 @@ func ValidateYAML(data []byte) (*Config, error) {
 }
 
 // validateEgressProxyPortRange rejects a band the proxy manager could never
-// allocate from (docs/plans/egress-proxy-stable-port.md). A misconfigured
-// band would otherwise surface only as a runtime warning and a silent
-// degradation back to ephemeral ports — i.e. as the exact bug the feature
-// exists to prevent, with no sign that config.yaml caused it.
+// allocate from. A misconfigured band would otherwise surface only as a
+// runtime warning and a silent degradation back to ephemeral ports, with no
+// sign that config.yaml caused it.
 //
 // Both ends zero is the default ("use internal/sandbox's own band") and is
 // explicitly allowed; setting only one end is not, since the other end
@@ -212,8 +209,7 @@ func yamlTypeName(v any) string {
 // suffix form. internal/sandbox is not imported here (it has no exported
 // syntax validator of its own — only the runtime matcher — and pulling it
 // in would cross internal/config into sandbox's dependency footprint for a
-// pure string-format check) — see the PR body for why this is a
-// reimplementation rather than a reuse.
+// pure string-format check).
 func validateAllowedDomains(domains []string) error {
 	for _, d := range domains {
 		if err := ValidateDomainEntry(d); err != nil {
@@ -252,8 +248,7 @@ func ValidateDomainEntry(entry string) error {
 	}
 	// RFC 1035 §3.1: a full hostname (excluding this package's own leading
 	// "." suffix-match marker, which is not part of the DNS name itself)
-	// must not exceed 253 characters (MINOR 3, codex review round 1: the
-	// pre-fix validator had no length ceiling at all).
+	// must not exceed 253 characters.
 	if len(host) > 253 {
 		return fmt.Errorf("%q: host exceeds the 253-character DNS name limit", entry)
 	}
@@ -262,8 +257,7 @@ func ValidateDomainEntry(entry string) error {
 		if label == "" {
 			return fmt.Errorf("%q: empty label (stray \"..\" or trailing \".\")", entry)
 		}
-		// RFC 1035 §2.3.4: a single DNS label is capped at 63 characters
-		// (MINOR 3).
+		// RFC 1035 §2.3.4: a single DNS label is capped at 63 characters.
 		if len(label) > 63 {
 			return fmt.Errorf("%q: label %q exceeds the 63-character DNS label limit", entry, label)
 		}
@@ -272,9 +266,7 @@ func ValidateDomainEntry(entry string) error {
 		}
 		for _, r := range label {
 			// RFC 1035 §2.3.1 restricts a DNS label to letters, digits,
-			// and "-" ("LDH" labels) — no underscore. The pre-fix
-			// validator allowed "_" too, accepting strings that are not
-			// valid DNS hostnames at all (MINOR 3, codex review round 1).
+			// and "-" ("LDH" labels) — no underscore.
 			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
 				return fmt.Errorf("%q: label %q contains an invalid character %q (only letters, digits, and \"-\" are allowed)", entry, label, string(r))
 			}

@@ -10,22 +10,21 @@ import (
 )
 
 // WriteToken serializes tok as JSON and atomically writes it to
-// ~/.config/boid/tokens/<profileName>.json (decision 2, docs/plans/
-// cli-remote-connection.md: "0600、親 dir 0700"), creating the tokens/
-// directory (0700) first if it does not exist yet. The write goes through
-// config.WriteFileAtomic (temp file in the same directory, fsynced, renamed
-// into place) so a reader — including this same process's own LoadToken, or
-// a concurrent `boid` invocation — never observes a partially written file.
+// ~/.config/boid/tokens/<profileName>.json (0600, parent dir 0700),
+// creating the tokens/ directory first if it does not exist yet. The write
+// goes through config.WriteFileAtomic (temp file in the same directory,
+// fsynced, renamed into place) so a reader — including this same process's
+// own LoadToken, or a concurrent `boid` invocation — never observes a
+// partially written file.
 //
-// The 0600/0700 contract is a POSIX one and does NOT hold on Windows, where
-// the portable client build now also writes tokens
-// (docs/plans/windows-client-build.md). Go's os package maps mode bits on
-// Windows to nothing more than the read-only attribute — it sets no ACL —
-// so a daemon Bearer token written here is readable by other local
-// accounts on that machine. Restricting it properly needs an explicit
-// Windows ACL (a DACL granting only the current SID), which this package
-// does not do yet. Treat a Windows CLI's token as protected by the user
-// profile directory's own permissions, not by this call.
+// The 0600/0700 contract is a POSIX one and does NOT hold on Windows: Go's
+// os package maps mode bits on Windows to nothing more than the read-only
+// attribute — it sets no ACL — so a daemon Bearer token written here is
+// readable by other local accounts on that machine. Restricting it
+// properly needs an explicit Windows ACL (a DACL granting only the
+// current SID), which this package does not do yet. Treat a Windows CLI's
+// token as protected by the user profile directory's own permissions, not
+// by this call.
 func WriteToken(profileName string, tok *Token) error {
 	path, err := TokenPath(profileName)
 	if err != nil {

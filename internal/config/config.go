@@ -21,63 +21,53 @@ type Config struct {
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	TaskAsk TaskAskConfig `yaml:"task_ask"`
 	Gateway GatewayConfig `yaml:"gateway"`
-	// Services declares the API gateway's service registry (docs/plans/
-	// api-gateway.md §2) — a top-level key, deliberately NOT nested under
-	// Gateway (which is git-gateway-specific: per-forge Basic-auth
-	// credential config). See ServiceConfig's own doc comment.
+	// Services declares the API gateway's service registry — a top-level
+	// key, deliberately NOT nested under Gateway (which is git-gateway-
+	// specific: per-forge Basic-auth credential config). See
+	// ServiceConfig's own doc comment.
 	Services map[string]ServiceConfig `yaml:"services,omitempty"`
 	// ServicesFloor is the daemon-wide set of service names enabled for
-	// EVERY workspace, mirroring sandbox.allowed_domains' own floor role
-	// (docs/plans/api-gateway.md §3: "allowed_domains の floor + workspace
-	// 加算方式を鏡写しにする"). A workspace's own
-	// WorkspaceMeta.Services list adds to this floor — see
+	// EVERY workspace, mirroring sandbox.allowed_domains' own floor role. A
+	// workspace's own WorkspaceMeta.Services list adds to this floor — see
 	// orchestrator.ResolveEnabledServices. An entry naming a service not
-	// declared under Services is not a load error (see UnmarshalYAML's
-	// handling below) — it just never resolves to anything at dispatch
-	// time, the same lenient-string-list posture allowed_domains' floor has
-	// always had.
+	// declared under Services is not a load error — it just never resolves
+	// to anything at dispatch time, the same lenient-string-list posture
+	// allowed_domains' floor has always had.
 	ServicesFloor []string `yaml:"services_floor,omitempty"`
-	// OAuthProviders declares the API gateway's OAuth2 provider registry
-	// (docs/plans/api-gateway.md §6/§論点4, PR2: "config.yaml の
-	// oauth_providers: ブロック。client_secret のみ SecretStore 参照"), keyed
-	// by provider name — the same name a services.<name>.auth.provider
-	// entry references. A provider reference naming an entry not declared
-	// here is not a config-load error — see
-	// TestLoadFromPath_Services_OAuth2ProviderReferenceNotCrossValidated's
-	// doc comment (oauth_providers_test.go) for why: it fails at request
-	// time instead, with a clear error, the same "unresolvable reference
-	// surfaces at request time, not load time" contract every other
-	// secret-store-shaped reference in this file already has.
+	// OAuthProviders declares the API gateway's OAuth2 provider registry,
+	// keyed by provider name — the same name a
+	// services.<name>.auth.provider entry references. A provider reference
+	// naming an entry not declared here is not a config-load error — see
+	// TestLoadFromPath_Services_OAuth2ProviderReferenceNotCrossValidated
+	// (oauth_providers_test.go): it fails at request time instead, with a
+	// clear error, the same contract every other secret-store-shaped
+	// reference in this file already has.
 	OAuthProviders map[string]OAuthProviderConfig `yaml:"oauth_providers,omitempty"`
 	// Integrations configures where the daemon looks for installed
-	// Integration Packs (docs/plans/signal-ingest-detailed-design.md §6.1,
-	// docs/plans/signal-driven-review.md §6). A top-level key, deliberately
-	// separate from Services: the Pack registry is loaded/validated by
-	// internal/integrationpack (not this package — see IntegrationsConfig's
-	// own doc comment for why), while services.*.uses just references it.
+	// Integration Packs. A top-level key, deliberately separate from
+	// Services: the Pack registry is loaded/validated by
+	// internal/integrationpack (not this package), while services.*.uses
+	// just references it.
 	Integrations IntegrationsConfig `yaml:"integrations,omitempty"`
 }
 
 // IntegrationsConfig configures the Integration Pack loader
-// (internal/integrationpack.LoadPacks, docs/plans/signal-ingest-detailed-design.md
-// §6.1). Deliberately just a directory path — the actual pack enumeration/
-// parsing/validation is internal/integrationpack's job, not this package's:
-// Config.UnmarshalYAML only ever does SYNTACTIC validation (docs/plans/
-// signal-ingest-detailed-design.md §6.2: "config.Load() は構文検証のみ
-// (manifest の IO を config parse に持ち込まない)") — resolving this path
-// against the filesystem happens once, eagerly, at daemon startup, not on
-// every config.yaml parse (a CLI invocation like `boid config get` must not
-// need filesystem/Pack-registry access just to read a scalar).
+// (internal/integrationpack.LoadPacks). Deliberately just a directory path
+// — the actual pack enumeration/parsing/validation is
+// internal/integrationpack's job, not this package's: Config.UnmarshalYAML
+// only ever does syntactic validation — resolving this path against the
+// filesystem happens once, eagerly, at daemon startup, not on every
+// config.yaml parse (a CLI invocation like `boid config get` must not need
+// filesystem/Pack-registry access just to read a scalar).
 type IntegrationsConfig struct {
 	// Dir is the filesystem root internal/integrationpack.LoadPacks
 	// enumerates: <dir>/<pack>/<version>/integration.yaml. Defaults to
 	// "/opt/boid/integrations" — the compose volume mount point a
 	// container-backend deployment bind-mounts an Integration Pack repo
-	// checkout onto (docs/plans/signal-driven-review.md §6.4's "配布の v0");
-	// a bare binary deployment overrides this to wherever its own Pack
-	// checkout lives. A directory that does not exist (the common case for
-	// a deployment with no Packs installed yet) is not an error — see
-	// LoadPacks' own doc comment.
+	// checkout onto; a bare binary deployment overrides this to wherever
+	// its own Pack checkout lives. A directory that does not exist (the
+	// common case for a deployment with no Packs installed yet) is not an
+	// error — see LoadPacks' own doc comment.
 	Dir string `yaml:"dir,omitempty"`
 }
 
@@ -85,33 +75,23 @@ type IntegrationsConfig struct {
 //
 // Level controls slog's built-in bridge-to-log-package minimum level
 // (slog.SetLogLoggerLevel — applied once at daemon startup by
-// internal/daemon.ApplyLogLevel, called from cmd/start.go's runDaemonChild)
-// WITHOUT installing a custom slog.Handler and WITHOUT changing boid.log's
-// line format at all. Nothing in the daemon calls slog.SetDefault or
-// installs a Handler (grep the whole tree — internal/dispatcher/
-// container_backend_workspace_init.go's own doc comment notes this exact
-// fact), so every slog.Info/Debug/Warn/Error call already goes through
-// slog's package-private defaultHandler, which formats via the standard
-// "log" package (today's "2009/11/10 23:00:00 INFO msg key=value" lines) and
-// checks slog.SetLogLoggerLevel's threshold before emitting anything.
-// Calling that one function is therefore sufficient to gate slog.Debug
-// output on/off — it changes nothing about HOW a line is formatted, only
-// WHETHER a given level's line is emitted at all. A real TextHandler/
-// JSONHandler would instead produce "time=... level=... msg=..." lines,
-// breaking every existing boid.log-grepping runbook (daemon liveness
-// checks, etc.) — which is exactly why this package never installs one.
+// internal/daemon.ApplyLogLevel) without installing a custom slog.Handler
+// or changing boid.log's line format at all: nothing in the daemon calls
+// slog.SetDefault or installs a Handler, so every slog call already goes
+// through slog's package-private defaultHandler, which formats via the
+// standard "log" package and checks slog.SetLogLoggerLevel's threshold
+// before emitting anything. A real TextHandler/JSONHandler would instead
+// change the line format, breaking every boid.log-grepping runbook — which
+// is why this package never installs one.
 //
-// Empty (the zero value, and every config.yaml written before this field
-// existed) means "leave slog's own built-in default (info) alone" — the
-// exact pre-this-field behavior, byte-for-byte.
+// Empty (the zero value) means "leave slog's own built-in default (info)
+// alone".
 type LogConfig struct {
 	// Level is one of LogLevelNames ("debug"/"info"/"warn"/"error").
 	// Config.UnmarshalYAML rejects any other non-empty value as a hard
-	// config-load error (ParseLogLevel), the same treatment
-	// gateway.forges.*.forge's unrecognized-forge case and gc.interval's
-	// invalid-duration case already get elsewhere in this file — a typo'd
-	// level should fail `boid start`/`boid config apply` loudly, not
-	// silently fall back to some default.
+	// config-load error (ParseLogLevel) — a typo'd level should fail `boid
+	// start`/`boid config apply` loudly, not silently fall back to some
+	// default.
 	Level string `yaml:"level,omitempty"`
 }
 
@@ -127,23 +107,19 @@ type TaskAskConfig struct {
 
 // SandboxConfig holds sandbox-related settings.
 //
-// Backend (formerly a SandboxBackendKind field selecting "userns" vs
-// "container") was removed in PR-4 (docs/plans/volume-only-daemon.md
-// §論点e): container is now the only sandbox backend, so there is nothing
-// left to select. An old config.yaml that still sets sandbox.backend keeps
-// loading without error — see UnmarshalYAML's handling below — the key is
-// just parsed-and-ignored, with a warning logged.
+// container is the only sandbox backend; an old config.yaml that still
+// sets sandbox.backend keeps loading without error — see UnmarshalYAML's
+// handling below — the key is just parsed-and-ignored, with a warning
+// logged.
 type SandboxConfig struct {
 	AllowedDomains []string `yaml:"allowed_domains"`
 	// EgressProxyPortLow/High bound the port band the egress proxy
-	// allocates each workspace's stable listener port from, inclusive
-	// (docs/plans/egress-proxy-stable-port.md).
+	// allocates each workspace's stable listener port from, inclusive.
 	//
-	// Both zero (the default, and every config.yaml written before these
-	// keys existed) means "use internal/sandbox's own default band", which
-	// sits below the kernel's ephemeral port range on purpose — see
-	// sandbox.DefaultProxyPortRangeLow's doc comment. Override only when
-	// that assumption does not hold locally, e.g. an operator who has
+	// Both zero (the default) means "use internal/sandbox's own default
+	// band", which sits below the kernel's ephemeral port range on purpose
+	// — see sandbox.DefaultProxyPortRangeLow's doc comment. Override only
+	// when that assumption does not hold locally, e.g. an operator who has
 	// lowered net.ipv4.ip_local_port_range so the default band overlaps it.
 	EgressProxyPortLow  int `yaml:"egress_proxy_port_low,omitempty"`
 	EgressProxyPortHigh int `yaml:"egress_proxy_port_high,omitempty"`
@@ -178,13 +154,11 @@ type ForgeConfig struct {
 	SecretKey string `yaml:"secret_key,omitempty"`
 }
 
-// GatewayConfig configures the git gateway's per-forge credential injection
-// (post-cutover §2: config surface を forges map に圧縮 + github/bitbucket
-// を内蔵デフォルト化). Forges maps a forge id to its credential config;
-// Config.UnmarshalYAML also accepts the deprecated pre-forges-map
-// `gateway.hosts` list (docs/plans/git-gateway-cutover.md PR4's original
-// schema) and folds it into this map, so GatewayConfig itself only ever
-// needs to carry the one shape.
+// GatewayConfig configures the git gateway's per-forge credential injection.
+// Forges maps a forge id to its credential config; Config.UnmarshalYAML
+// also accepts the deprecated pre-forges-map `gateway.hosts` list and folds
+// it into this map, so GatewayConfig itself only ever needs to carry the
+// one shape.
 type GatewayConfig struct {
 	// Forges maps a forge id (e.g. "github", "bitbucket", or a custom id
 	// like "github-enterprise") to its credential config. Built-in ids
@@ -297,15 +271,11 @@ type WebConfig struct {
 
 // DefaultAllowedDomains returns boid's built-in sandbox.allowed_domains
 // floor — the domains every daemon allows regardless of what config.yaml
-// says (common AI-agent/package-registry endpoints). Exported (moved here
-// from cmd/start.go, which now delegates to it) so internal/server's
-// config-hot-reload path (config_edit.go's applyDynamicConfigLocked) can
-// recompute "floor ∪ user list" on every sandbox.allowed_domains change
-// without internal/server needing to import cmd (which would cycle) or
-// duplicate this literal (BLOCKER 2 sibling fix, codex review round 1: the
-// pre-fix hot-reload replaced the whole effective list with the sparse
-// YAML-only entries, silently dropping every built-in domain the very next
-// time an operator touched sandbox.allowed_domains at all).
+// says (common AI-agent/package-registry endpoints). Exported so
+// internal/server's config-hot-reload path (config_edit.go's
+// applyDynamicConfigLocked) can recompute "floor ∪ user list" on every
+// sandbox.allowed_domains change without internal/server needing to import
+// cmd (which would cycle) or duplicate this literal.
 //
 // A fresh copy is returned on every call — callers may freely mutate/append
 // to the result.
@@ -369,11 +339,10 @@ func DefaultConfig() *Config {
 // DefaultPath resolves the default XDG config.yaml path
 // (~/.config/boid/config.yaml) without reading it. Exported so callers that
 // need the *path* itself — not just its parsed content — have one place to
-// ask (internal/server's daemon-side config-editing wiring, docs/plans/
-// volume-only-daemon.md §論点 f: `boid config get/set/unset/apply/edit`
-// reads-modifies-writes this exact file) instead of re-deriving
-// os.UserConfigDir()+"boid/config.yaml" independently and risking drift
-// from what Load() itself actually reads.
+// ask (internal/server's daemon-side config-editing wiring: `boid config
+// get/set/unset/apply/edit` reads-modifies-writes this exact file) instead
+// of re-deriving os.UserConfigDir()+"boid/config.yaml" independently and
+// risking drift from what Load() itself actually reads.
 func DefaultPath() (string, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
@@ -392,23 +361,15 @@ func Load() (*Config, error) {
 	return loadFromPath(path)
 }
 
-// LoadFromPath is loadFromPath's exported counterpart (PR834 PR-2b round-3
-// codex review Major 2, docs/plans/volume-only-daemon.md §論点f): a pure
-// filesystem read + yaml.v3 decode with no daemon/HTTP dependency at all —
-// unlike `boid config get` (cmd/config.go), which always talks to a live
-// daemon's HTTP API and therefore has no bootstrap-before-first-boot path.
-// Exported so any standalone tooling can resolve a config.yaml's EFFECTIVE
-// values — including the strict validation UnmarshalYAML performs — against
-// an arbitrary path, not just the CLI process's own XDG default. Same
+// LoadFromPath is loadFromPath's exported counterpart: a pure filesystem
+// read + yaml.v3 decode with no daemon/HTTP dependency at all — unlike
+// `boid config get` (cmd/config.go), which always talks to a live daemon's
+// HTTP API and therefore has no bootstrap-before-first-boot path. Exported
+// so any standalone tooling can resolve a config.yaml's effective values —
+// including the strict validation UnmarshalYAML performs — against an
+// arbitrary path, not just the CLI process's own XDG default. Same
 // not-found semantics as Load()/loadFromPath: a missing file returns
 // DefaultConfig(), not an error.
-//
-// Formerly also the primitive behind `boid config effective-backend`
-// (scripts/deploy-container.sh's pre-PR-4 config-seed validation step) —
-// that subcommand was removed in PR-4 (docs/plans/volume-only-daemon.md
-// §論点e) once "container" became the only sandbox backend, so there was no
-// longer an effective backend selection worth validating. LoadFromPath
-// itself stays exported as a general-purpose primitive.
 func LoadFromPath(path string) (*Config, error) {
 	return loadFromPath(path)
 }
@@ -428,17 +389,11 @@ func loadFromPath(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
-	// The egress proxy port band is checked HERE, not only in ValidateYAML,
-	// because ValidateYAML runs on the `boid config set/edit/apply` paths
-	// while this is the path `boid start` itself takes. A hand-edited or
-	// deploy-seeded config.yaml would otherwise reach the runtime
-	// unvalidated, where a half-set or malformed band degrades silently
-	// back to ephemeral ports — the exact "no sign that config.yaml caused
-	// it" failure the band exists to prevent
-	// (docs/plans/egress-proxy-stable-port.md). Deliberately scoped to this
-	// one key rather than turning loadFromPath into a general validator:
-	// widening that would change the failure behaviour of every existing
-	// config surface at once, which is a separate decision.
+	// Checked here, not only in ValidateYAML, because ValidateYAML runs on
+	// the `boid config set/edit/apply` paths while this is the path `boid
+	// start` itself takes. A hand-edited or deploy-seeded config.yaml would
+	// otherwise reach the runtime unvalidated, where a half-set or
+	// malformed band degrades silently back to ephemeral ports.
 	if err := validateEgressProxyPortRange(cfg.Sandbox.EgressProxyPortLow, cfg.Sandbox.EgressProxyPortHigh); err != nil {
 		return nil, err
 	}
@@ -478,11 +433,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		} `yaml:"task_ask"`
 		Gateway struct {
 			Forges map[string]ForgeConfig `yaml:"forges"`
-			// Hosts is the deprecated pre-forges-map schema
-			// (docs/plans/git-gateway-cutover.md PR4). Still parsed for
-			// one release as a compatibility shim — see the Gateway
-			// handling below, which logs a deprecation warning and folds
-			// it into Forges.
+			// Hosts is the deprecated pre-forges-map schema, still parsed
+			// as a compatibility shim — see the Gateway handling below,
+			// which logs a deprecation warning and folds it into Forges.
 			//
 			// Deprecated: use Forges.
 			Hosts []gitgateway.HostForgeConfig `yaml:"hosts"`
@@ -536,17 +489,11 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	c.Sandbox.EgressProxyPortLow = raw.Sandbox.EgressProxyPortLow
 	c.Sandbox.EgressProxyPortHigh = raw.Sandbox.EgressProxyPortHigh
 
-	// sandbox.backend: removed in PR-4 (docs/plans/volume-only-daemon.md
-	// §論点e) — container is the only sandbox backend now, so the key
-	// carries no meaning any more. Accepted-but-ignored (any value,
-	// including a typo/garbage one) rather than a hard load error: an
-	// operator's existing config.yaml from before this cutover must keep
-	// loading unattended (smooth migration, PR-1b's own KindOpaque
-	// precedent for a retired field — see gateway.hosts's fold-in above
-	// for the analogous case). A warning is still logged so the key's
-	// no-op-ness is discoverable, matching schema.go's KindOpaque
-	// rejection message `boid config set/unset sandbox.backend` itself
-	// gives for the CLI-editing path.
+	// sandbox.backend carries no meaning any more — container is the only
+	// sandbox backend. Accepted-but-ignored (any value, including a
+	// typo/garbage one) rather than a hard load error, so an operator's
+	// existing config.yaml keeps loading unattended; a warning is still
+	// logged so the key's no-op-ness is discoverable.
 	if raw.Sandbox.Backend != "" {
 		slog.Warn("sandbox.backend is no longer used; container is the only sandbox backend now (docs/plans/volume-only-daemon.md §論点e) — this key is ignored",
 			"value", raw.Sandbox.Backend)
@@ -584,7 +531,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	// configured via forges must MERGE into the built-in slot, not be
 	// dropped — otherwise the legacy entry's non-default secret_key gets
 	// silently lost to the built-in "github-pat" / "bitbucket-token"
-	// default (the regression this fix targets).
+	// default.
 	resolvedHosts := make(map[string]string, len(forges))
 	for id, fc := range forges {
 		h, err := resolveForgeConfig(id, fc)
@@ -617,10 +564,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 					// Legacy entry targets a built-in host that the user
 					// hasn't explicitly configured via gateway.forges.
 					// Merge it into the built-in slot so the legacy
-					// secret_key wins over the built-in default. This is
-					// the "byte-for-byte legacy compat" path — nose's
-					// actual config.yaml (hosts-only, GH_TOKEN /
-					// BB_TOKEN keys) must keep working for one release.
+					// secret_key wins over the built-in default.
 					slog.Warn("gateway.hosts entry merged into built-in forge slot (legacy secret_key preserved over built-in default)",
 						"host", h.Host, "forge_id", existingID)
 					forges[existingID] = ForgeConfig{Host: h.Host, Forge: h.Forge, SecretKey: h.SecretKey}
@@ -638,10 +582,10 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	}
 	c.Gateway = GatewayConfig{Forges: forges}
 
-	// services: (docs/plans/api-gateway.md §2). Every entry is validated
-	// eagerly here — the same "fail config.yaml load, not just skip the
-	// service" posture gateway.forges entries get — since
-	// APIGatewayServices' own "already validated" invariant depends on it.
+	// services: every entry is validated eagerly here — the same "fail
+	// config.yaml load, not just skip the service" posture gateway.forges
+	// entries get — since APIGatewayServices' own "already validated"
+	// invariant depends on it.
 	if len(raw.Services) > 0 {
 		for name, sc := range raw.Services {
 			if err := validateServiceConfig(name, sc); err != nil {
@@ -652,22 +596,16 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	}
 
 	// uses: 解決は internal/server/wire.go の daemon 起動時
-	// (integrationpack.LoadPacks → integrationpack.ResolveServices) で行う
-	// — PR-5 でそちらへ配線済み (かつては「まだ配線されていない」という
-	// warning がここにあったが、その前提は PR-5 で解消済みなので削除した)。
+	// (integrationpack.LoadPacks → integrationpack.ResolveServices) で行う。
 	// このパッケージは Pack registry を持たないため、ここでは uses: の
 	// SYNTAX 検証 (validateServiceConfig) までしか行えない。
 
-	// services_floor: (docs/plans/api-gateway.md §3). Deliberately NOT
-	// validated against c.Services the way gateway.forges entries are
-	// validated against known forge kinds — mirrors sandbox.
-	// allowed_domains' floor, which has never validated its entries against
-	// anything either. An entry naming an undeclared service is warned
-	// about (a likely typo) but does not fail config load: the floor is
-	// still a plain string list at this layer, and dispatch-time resolution
-	// (orchestrator.ResolveEnabledServices) simply produces a service name
-	// CredentialProvider.KnowsService will 502 on, same as any other
-	// unconfigured-service request.
+	// services_floor: deliberately NOT validated against c.Services the way
+	// gateway.forges entries are validated against known forge kinds —
+	// mirrors sandbox.allowed_domains' floor, which has never validated its
+	// entries against anything either. An entry naming an undeclared
+	// service is warned about (a likely typo) but does not fail config
+	// load.
 	c.ServicesFloor = raw.ServicesFloor
 	for _, name := range raw.ServicesFloor {
 		if _, ok := c.Services[name]; !ok {
@@ -676,10 +614,10 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		}
 	}
 
-	// oauth_providers: (docs/plans/api-gateway.md §6/§論点4, PR2). Same
-	// eager, fail-config-load posture as services: above — every entry is
-	// validated here since APIGatewayOAuthProviders' own "already
-	// validated" invariant depends on it.
+	// oauth_providers: same eager, fail-config-load posture as services:
+	// above — every entry is validated here since
+	// APIGatewayOAuthProviders' own "already validated" invariant depends
+	// on it.
 	if len(raw.OAuthProviders) > 0 {
 		for name, pc := range raw.OAuthProviders {
 			if err := validateOAuthProviderConfig(name, pc); err != nil {
@@ -689,21 +627,16 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		c.OAuthProviders = raw.OAuthProviders
 	}
 
-	// integrations.dir (docs/plans/signal-ingest-detailed-design.md §6.1):
-	// starts from the default ("/opt/boid/integrations") like every other
-	// leaf with a non-empty built-in default (e.g. gateway.forges above) —
-	// an omitted or empty integrations.dir must not silently overwrite the
-	// default with a zero value.
+	// integrations.dir starts from the default ("/opt/boid/integrations")
+	// like every other leaf with a non-empty built-in default (e.g.
+	// gateway.forges above) — an omitted or empty integrations.dir must not
+	// silently overwrite the default with a zero value.
 	c.Integrations = defaults.Integrations
 	if raw.Integrations.Dir != "" {
-		// F8, review finding (recommended): a relative integrations.dir
-		// would resolve against the daemon PROCESS's cwd once PR-5
-		// bind-mounts a Pack directory from it — an unpredictable,
-		// deployment-dependent location (whatever directory `boid start`
-		// happened to be invoked from, or the container's WORKDIR).
+		// A relative integrations.dir would resolve against the daemon
+		// process's cwd — an unpredictable, deployment-dependent location.
 		// Required to be absolute at config-load time instead of a
-		// request-time surprise, the same "fail loud with the offending
-		// value" posture every other path-shaped leaf here has.
+		// request-time surprise.
 		if !filepath.IsAbs(raw.Integrations.Dir) {
 			return fmt.Errorf("integrations.dir: must be an absolute path (got %q)", raw.Integrations.Dir)
 		}

@@ -9,15 +9,13 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// ConfigService is the daemon-side dependency behind /api/config
-// (MAJOR 1, codex review round 1, docs/plans/workspace-db-consolidation.md
-// Phase 2.5 PR7's read-only KitsDir surface, extended by docs/plans/
-// volume-only-daemon.md §論点 f's `boid config get/set/unset/apply/edit`
-// CLI with a full read+validate+persist+hot-reload surface, and further
-// extended by BLOCKER 1's codex review round 1 fix: a server-side mutate
-// endpoint plus ETag/If-Match concurrency on the full-document endpoints).
-// Implemented directly by *server.Server — no adapter type is needed,
-// mirroring HostCommandsService's own convention in this package.
+// ConfigService is the daemon-side dependency behind /api/config: a
+// read-only KitsDir surface plus a full read+validate+persist+hot-reload
+// surface for `boid config get/set/unset/apply/edit`, including a
+// server-side mutate endpoint and ETag/If-Match concurrency on the
+// full-document endpoints. Implemented directly by *server.Server — no
+// adapter type is needed, mirroring HostCommandsService's own convention in
+// this package.
 type ConfigService interface {
 	// KitsDir returns the daemon's effective base directory for installed
 	// kits (server.Config.KitsDir, resolved once at startup — see
@@ -28,13 +26,12 @@ type ConfigService interface {
 	// config get` (no key) prints verbatim, and what every `boid config
 	// get/apply/edit` invocation fetches first as its "before" snapshot.
 	// revision is the same value GET /api/config's ETag response header
-	// carries; round-tripping it into a later POST's If-Match is BLOCKER
-	// 1's optimistic-concurrency guard (codex review round 1).
+	// carries; round-tripping it into a later POST's If-Match is the
+	// optimistic-concurrency guard.
 	ConfigYAML() (data []byte, revision string, err error)
 	// ApplyConfigYAML validates a full replacement config.yaml document
 	// (internal/config.ValidateYAML), and on success atomically persists
-	// it and hot-applies whichever changed keys the daemon can apply live
-	// (docs/plans/volume-only-daemon.md §論点 f's reload-semantics table),
+	// it and hot-applies whichever changed keys the daemon can apply live,
 	// returning operator-facing warning lines for anything that could not
 	// be hot-applied (gateway.forges.* — restart required; sandbox.backend
 	// — retirement notice). A validation failure leaves the daemon's live
@@ -48,14 +45,13 @@ type ConfigService interface {
 	// validates nor persists data.
 	ApplyConfigYAML(data []byte, ifMatch string, force bool) (ConfigApplyResult, error)
 	// MutateConfig performs one or more dotted-path set/unset operations as
-	// a single atomic, server-side read-modify-write (BLOCKER 1, codex
-	// review round 1) — `boid config set/unset` route here instead of a
-	// client-side GET → mutate → POST round trip, which left a window for
-	// two concurrent calls to silently lose one's change. Multiple
-	// operations (ConfigMutateRequest.Ops, BLOCKER, codex review round 1 on
-	// PR #831) are applied to the same document before it is validated
-	// once, so a structural, multi-leaf change (e.g. a brand-new
-	// gateway.forges.<id> entry) can be created in one call. See
+	// a single atomic, server-side read-modify-write — `boid config
+	// set/unset` route here instead of a client-side GET → mutate → POST
+	// round trip, which left a window for two concurrent calls to silently
+	// lose one's change. Multiple operations (ConfigMutateRequest.Ops) are
+	// applied to the same document before it is validated once, so a
+	// structural, multi-leaf change (e.g. a brand-new gateway.forges.<id>
+	// entry) can be created in one call. See
 	// internal/server/config_edit.go's MutateConfig doc comment for the
 	// full rationale.
 	MutateConfig(req ConfigMutateRequest) (ConfigMutateResult, error)
@@ -87,21 +83,21 @@ type configKitsDirResponse struct {
 }
 
 // KitsDir handles GET /api/config/kits-dir: the daemon's effective KitsDir,
-// so a CLI client-side helper (cmd/workspace.go's ensureWorkspaceExistsForAssign,
-// MAJOR 1) can resolve a legacy workspace.yaml's `kits:` references against
-// the *running daemon's* kits directory instead of independently re-deriving
-// a default that silently disagrees with it whenever the daemon was started
-// with a custom --kits-dir.
+// so a CLI client-side helper (cmd/workspace.go's
+// ensureWorkspaceExistsForAssign) can resolve a legacy workspace.yaml's
+// `kits:` references against the *running daemon's* kits directory instead
+// of independently re-deriving a default that silently disagrees with it
+// whenever the daemon was started with a custom --kits-dir.
 func (h *ConfigHandler) KitsDir(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, configKitsDirResponse{KitsDir: h.Service.KitsDir()})
 }
 
 // Get handles GET /api/config: the daemon's current effective config.yaml,
 // verbatim, as application/yaml, with an ETag response header mirroring the
-// revision (BLOCKER 1, codex review round 1) so a caller can round-trip it
-// straight into a subsequent POST's If-Match. `boid config
-// get`/`apply`/`edit` all fetch this first as their working copy (`set`/
-// `unset` route through POST /api/config/mutate instead — see Mutate).
+// revision so a caller can round-trip it straight into a subsequent POST's
+// If-Match. `boid config get`/`apply`/`edit` all fetch this first as their
+// working copy (`set`/`unset` route through POST /api/config/mutate instead
+// — see Mutate).
 func (h *ConfigHandler) Get(w http.ResponseWriter, r *http.Request) {
 	data, revision, err := h.Service.ConfigYAML()
 	if err != nil {
@@ -141,8 +137,7 @@ func (h *ConfigHandler) Apply(w http.ResponseWriter, r *http.Request) {
 
 // Mutate handles POST /api/config/mutate: `boid config set/unset`'s single
 // dotted-path operation, performed server-side as one atomic
-// read-modify-write (BLOCKER 1, codex review round 1). See
-// ConfigService.MutateConfig's doc comment.
+// read-modify-write. See ConfigService.MutateConfig's doc comment.
 func (h *ConfigHandler) Mutate(w http.ResponseWriter, r *http.Request) {
 	body := http.MaxBytesReader(w, r.Body, configBodyMaxBytes)
 	var req ConfigMutateRequest
@@ -159,8 +154,8 @@ func (h *ConfigHandler) Mutate(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeConfigServiceError renders an error from ApplyConfigYAML/
-// MutateConfig: a *StatusError carries its own status code (BLOCKER 1's
-// 428/412 If-Match contract), while anything else — a config.ValidateYAML
+// MutateConfig: a *StatusError carries its own status code (the 428/412
+// If-Match contract), while anything else — a config.ValidateYAML
 // failure, an unknown dotted-path key, a coercion error — is a 400 Bad
 // Request, the convention this endpoint has always used for "the document/
 // operation itself is invalid" (as opposed to writeServiceError's generic

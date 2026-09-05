@@ -10,17 +10,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// This file implements the K8s-like workspace export/apply document shape
-// (docs/plans/volume-only-daemon.md §論点 g「workspace/project export/import
-// shape」): a single self-describing YAML document (or several, "---"-
-// separated) that carries a workspace's WorkspaceMeta fields plus the
-// project names/URLs assigned to it. `boid workspace export`/`apply` (cmd/
-// workspace_export.go, cmd/workspace_apply.go) are the only callers; the
-// plan doc declares `workspace export --all` the sole endorsed backup path
-// going forward (§論点g「決断: backup 契約」) — this is a fresh, additive
-// shape, not a replacement for the pre-existing revision/ETag-based
-// WorkspaceMeta wire format that Create/Update/CreateStrict above still use
-// for the single-resource POST/PUT bodies apply constructs under the hood.
+// This file implements the K8s-like workspace export/apply document shape: a
+// single self-describing YAML document (or several, "---"-separated) that
+// carries a workspace's WorkspaceMeta fields plus the project names/URLs
+// assigned to it. `boid workspace export`/`apply` are the only callers; this
+// is additive to, not a replacement for, the existing revision/ETag-based
+// WorkspaceMeta wire format that single-resource POST/PUT bodies still use.
 
 const (
 	// WorkspaceEnvelopeAPIVersion is the only apiVersion value this binary
@@ -47,91 +42,48 @@ type WorkspaceEnvelopeMetadata struct {
 }
 
 // WorkspaceEnvelopeSpec mirrors WorkspaceMeta field-for-field (see that
-// type's doc comment for what each field means at runtime) plus Projects,
-// which has no WorkspaceMeta equivalent — project-workspace assignment is
-// separate bookkeeping (project_workspaces / Project.WorkspaceID), not part
-// of the workspace's own meta row.
+// type's doc comment) plus Projects, which has no WorkspaceMeta equivalent —
+// project-workspace assignment is separate bookkeeping, not part of the
+// workspace's own meta row.
 //
-// additional_bindings is deliberately NOT a field here: it was retired in
-// docs/plans/home-workspace-volume.md Phase 4 PR4 and the plan doc for this
-// package (§論点g) explicitly excludes it from the export schema. A source
-// document that still carries a spec.additional_bindings key is tolerated
-// by decodeWorkspaceEnvelopeSpec (see below) — parsed and discarded, with
-// WorkspaceEnvelopeApply.AdditionalBindingsDropped set so the caller can
-// warn — rather than rejected as an unknown field.
-// None of spec's fields carry `omitempty` (PR-1d codex round-1 Blocker 1,
-// extended to every remaining field by round-2's follow-up finding): missing
-// vs. explicitly-empty is a load-bearing distinction for every one of these
-// seven (WorkspaceEnvelopeApply's FieldsPresent-driven merge, and — for
-// projects — ApplyWorkspaceEnvelope's attach/detach reconciliation), and
-// `omitempty` on export would silently collapse "the workspace's field
-// really is empty/zero" into "the field was absent from the document",
-// which on a subsequent apply is indistinguishable from "leave the current
-// value untouched" — an export → apply round trip could then never actually
-// clear a field back to empty (round-2's concrete failure: exporting a
-// workspace with no extra_repos and Docker disabled, then applying that
-// backup over a workspace with a stale extra_repos entry and
-// capabilities.docker enabled, left both untouched because the omitempty
-// tags dropped the keys from the export entirely). yaml.v3 marshals a
-// nil/empty slice, map, or zero-value struct/string as `[]`/`{}`/`""` either
-// way (verified: no `omitempty` needed to avoid a `null` literal here), so
-// dropping the tag is a pure presence-fidelity fix with no representation
-// change for the non-empty case.
+// additional_bindings is deliberately NOT a field here (retired field);
+// decodeWorkspaceEnvelopeSpec tolerates it in a source document, parsing and
+// discarding it with AdditionalBindingsDropped set for the caller to warn on.
+//
+// None of spec's fields carry `omitempty`: missing vs. explicitly-empty is a
+// load-bearing distinction (WorkspaceEnvelopeApply's FieldsPresent-driven
+// merge) — omitempty would make "field is empty" indistinguishable from
+// "field absent, leave untouched", breaking export→apply round trips that
+// are meant to clear a field.
 type WorkspaceEnvelopeSpec struct {
 	HostCommands   []string          `yaml:"host_commands"`
 	Env            map[string]string `yaml:"env"`
 	AllowedDomains []string          `yaml:"allowed_domains"`
 	ExtraRepos     []string          `yaml:"extra_repos"`
-	// Services is the workspace-scoped API gateway service allowlist
-	// (docs/plans/api-gateway.md §3; WorkspaceMeta.Services). Same
-	// no-omitempty / missing-vs-empty rationale as every other field here.
+	// Services is the workspace-scoped API gateway service allowlist.
 	Services       []string                   `yaml:"services"`
 	ContainerImage string                     `yaml:"container_image"`
 	Capabilities   Capabilities               `yaml:"capabilities"`
 	Projects       []WorkspaceEnvelopeProject `yaml:"projects"`
 	// TaskBehaviors / BaseBranch / ForkPoint / DefaultTaskBehavior are the
-	// workspace's default project definition (docs/plans/
-	// workspace-default-project.md §PR分割案 PR3; see WorkspaceMeta's
-	// identically-named fields for the semantics). Same no-omitempty
-	// rationale as every other field here — a document that omits
-	// task_behaviors must leave the workspace's current value untouched, not
-	// silently clear it.
+	// workspace's default project definition — see WorkspaceMeta's
+	// identically-named fields for the semantics.
 	TaskBehaviors       map[string]TaskBehavior `yaml:"task_behaviors"`
 	BaseBranch          string                  `yaml:"base_branch"`
 	ForkPoint           string                  `yaml:"fork_point"`
 	DefaultTaskBehavior string                  `yaml:"default_task_behavior"`
-	// InitScript is the workspace's init.sh, verbatim (PR9 of
-	// docs/plans/workspace-home-volume-persistence.md, 論点 d).
-	//
-	// Like Projects it has NO WorkspaceMeta counterpart, and for a sharper
-	// reason: init.sh is a FILE the daemon owns (dispatcher's
-	// workspaceInitScriptPath), deliberately not a workspaces-table column —
-	// see that function's doc comment for the standing decision (environment-
-	// dependent shell content, outside the workspace's otherwise
-	// environment-independent DB-backed config). It is carried here anyway
-	// because an export that omits it is not a backup: restoring a workspace
-	// without its init.sh gives you a home volume with no toolchain in it and
-	// a harness that cannot start.
-	//
-	// MergeInto therefore does not touch it — the hydration happens in
-	// internal/api, which holds the store (ProjectAppService.ApplyWorkspace).
-	//
-	// Missing vs. explicitly-empty is load-bearing exactly as it is for the
-	// fields above: no key means "leave this workspace's init.sh alone", and
-	// `init_script: ""` means "this workspace has no init.sh", which on apply
-	// deletes the target's. An empty script and no script are the same state
-	// by construction — the dispatch wrapper writes the bytes to a file and
-	// runs bash on it, so zero bytes is a no-op run — and collapsing them
-	// keeps a workspace from acquiring a completion-marker hash that describes
-	// nothing.
+	// InitScript is the workspace's init.sh, verbatim. Unlike other fields it
+	// has no WorkspaceMeta counterpart — init.sh is a file the daemon owns,
+	// not a workspaces-table column — so MergeInto does not touch it;
+	// ProjectAppService.ApplyWorkspace reads FieldsPresent["init_script"]
+	// directly to decide whether to write/clear the file. An empty script
+	// and no script collapse to the same state: both are a no-op run.
 	InitScript string `yaml:"init_script"`
 }
 
-// WorkspaceEnvelopeProject is one spec.projects[] entry. URL is informational
-// only until PR-2 lands `boid project add <url>` (docs/plans/
-// volume-only-daemon.md §論点g): apply does not register a project from URL,
-// it only attaches an already-registered project (matched by name) to the
-// workspace.
+// WorkspaceEnvelopeProject is one spec.projects[] entry. URL is currently
+// informational only: apply does not register a project from URL, it only
+// attaches an already-registered project (matched by name) to the workspace.
 type WorkspaceEnvelopeProject struct {
 	Name string `yaml:"name"`
 	URL  string `yaml:"url,omitempty"`
@@ -139,11 +91,8 @@ type WorkspaceEnvelopeProject struct {
 
 // workspaceEnvelopeSpecFields is the allow-list of spec.* keys a document
 // may carry. additional_bindings is listed so it is tolerated (parsed into
-// AdditionalBindingsDropped, then discarded) rather than rejected outright,
-// matching workspace_meta_strict.go's existing tolerate-and-warn precedent
-// for the very same retired field on the lower-level WorkspaceMeta wire path.
-// Anything else is rejected with "unknown field" — the same typo-guard
-// rationale as workspace_meta_strict.go's DecodeWorkspaceMetaStrict.
+// AdditionalBindingsDropped, then discarded) rather than rejected outright.
+// Anything else is rejected with "unknown field" (typo guard).
 var workspaceEnvelopeSpecFields = map[string]bool{
 	"host_commands":         true,
 	"env":                   true,
@@ -164,47 +113,33 @@ var workspaceEnvelopeSpecFields = map[string]bool{
 // WorkspaceEnvelopeApply is the result of decoding one Workspace document
 // for `boid workspace apply`: the parsed envelope plus enough bookkeeping
 // for the K8s-style "missing field = don't touch, present-but-empty = clear"
-// merge semantics (docs/plans/volume-only-daemon.md, PR-1d unilateral
-// decision) that a plain *WorkspaceEnvelope alone cannot represent — a zero-
-// value Go slice/map cannot be told apart from "the key was absent" once
-// decoded into a plain struct.
+// merge semantics that a plain *WorkspaceEnvelope alone cannot represent — a
+// zero-value Go slice/map cannot be told apart from "the key was absent"
+// once decoded into a plain struct.
 type WorkspaceEnvelopeApply struct {
 	Envelope *WorkspaceEnvelope
 	// FieldsPresent records which spec.* keys were present in the source
-	// document (by their yaml key name: "host_commands", "env",
-	// "allowed_domains", "extra_repos", "services", "container_image",
-	// "capabilities", "projects", "init_script", "task_behaviors",
-	// "base_branch", "fork_point", "default_task_behavior"). A key absent from this map was not present
+	// document, by yaml key name. A key absent from this map was not present
 	// in the document at all and MergeInto leaves the corresponding
-	// WorkspaceMeta field untouched; a key present (even if its decoded value
-	// is the zero value / an explicit empty list or map) means the document
-	// explicitly wants that field replaced with the decoded value.
+	// WorkspaceMeta field untouched; a key present (even with a zero-value
+	// decode) means the document wants that field replaced.
 	//
-	// "init_script" is in this map but not in MergeInto's switch: it has no
-	// WorkspaceMeta field to merge into (see WorkspaceEnvelopeSpec.InitScript).
-	// Its consumer is ProjectAppService.ApplyWorkspace, which reads the same
-	// flag to decide between "leave the file alone" and "write/clear it".
+	// "init_script" is in this map but not in MergeInto's switch — its
+	// consumer is ProjectAppService.ApplyWorkspace, which reads the same
+	// flag directly to decide whether to write/clear the file.
 	FieldsPresent map[string]bool
 	// AdditionalBindingsDropped is true when the source document had a
-	// spec.additional_bindings key (any shape, including an explicit empty
-	// list or null) — retired per docs/plans/volume-only-daemon.md §論点g;
-	// the value is always discarded. Callers should log/print a warning
-	// rather than fail the apply.
+	// spec.additional_bindings key (any shape) — the value is always
+	// discarded; callers should log/print a warning rather than fail the apply.
 	AdditionalBindingsDropped bool
 }
 
 // NewWorkspaceEnvelopeFromMeta builds a WorkspaceEnvelope for `boid workspace
 // export` from a workspace's current WorkspaceMeta, its resolved project
-// entries (name + url, url may be empty pre-PR-2 — see
-// WorkspaceEnvelopeProject's doc comment) and its init.sh. meta may be nil (an
-// empty/never-configured workspace), in which case the spec carries only
-// projects (if any) and the script.
-//
-// initScript is a plain string rather than a (content, exists) pair because
-// the two states an init.sh can be in are "some bytes" and "none", and the
-// empty string is how the envelope spells the second one — see
-// WorkspaceEnvelopeSpec.InitScript. A caller with nothing to export passes "",
-// which is emitted as `init_script: ""` and read back as an explicit clear.
+// entries, and its init.sh. meta may be nil (an empty/never-configured
+// workspace), in which case the spec carries only projects (if any) and the
+// script. initScript "" is emitted as `init_script: ""`, read back as an
+// explicit clear — see WorkspaceEnvelopeSpec.InitScript.
 func NewWorkspaceEnvelopeFromMeta(name string, meta *WorkspaceMeta, projects []WorkspaceEnvelopeProject, initScript string) *WorkspaceEnvelope {
 	spec := WorkspaceEnvelopeSpec{Projects: projects, InitScript: initScript}
 	if meta != nil {
@@ -233,13 +168,10 @@ func NewWorkspaceEnvelopeFromMeta(name string, meta *WorkspaceMeta, projects []W
 // field, honoring FieldsPresent's "missing = don't touch" contract, and
 // returns the resulting *WorkspaceMeta. current is never mutated.
 //
-// spec.init_script is deliberately absent from the field list below: it is a
-// file on the daemon, not a workspaces-table column, so there is nothing on
-// *WorkspaceMeta to merge it into (WorkspaceEnvelopeSpec.InitScript). Its
-// FieldsPresent flag is honored by ProjectAppService.ApplyWorkspace, outside
-// this function and outside the DB transaction — a file write and a
-// transaction cannot be made atomic, and pretending otherwise by routing it
-// through here would only hide that.
+// spec.init_script is deliberately absent from the field list below: it has
+// no *WorkspaceMeta column to merge into. ProjectAppService.ApplyWorkspace
+// honors its FieldsPresent flag separately, outside this function's DB
+// transaction (a file write cannot be made atomic with it anyway).
 func (a *WorkspaceEnvelopeApply) MergeInto(current *WorkspaceMeta) *WorkspaceMeta {
 	merged := &WorkspaceMeta{}
 	if current != nil {
@@ -283,11 +215,9 @@ func (a *WorkspaceEnvelopeApply) MergeInto(current *WorkspaceMeta) *WorkspaceMet
 }
 
 // DecodeWorkspaceEnvelopeDocuments decodes data as one or more "---"-
-// separated Workspace envelope documents (docs/plans/volume-only-daemon.md
-// §論点g: "複数 workspace は YAML の --- 区切りで 1 file にまとめられる").
-// An empty/whitespace-only body is an error (unlike DecodeWorkspaceMetaStrict
-// — an apply file with nothing in it is almost certainly a mistake, not a
-// legitimate "no-op apply"). Every document must independently satisfy:
+// separated Workspace envelope documents. An empty/whitespace-only body is
+// an error — an apply file with nothing in it is almost certainly a
+// mistake, not a legitimate no-op apply. Every document must independently satisfy:
 //   - apiVersion == WorkspaceEnvelopeAPIVersion
 //   - kind == WorkspaceEnvelopeKind
 //   - metadata.name is non-empty and a valid workspace slug
@@ -299,15 +229,9 @@ func DecodeWorkspaceEnvelopeDocuments(data []byte) ([]*WorkspaceEnvelopeApply, e
 	}
 
 	dec := yaml.NewDecoder(bytes.NewReader(data))
-	// MAJOR 2 (codex round-1): reject an unknown TOP-LEVEL field (a typo'd
-	// "projectz:", or a mis-indented "projects:" that landed one level up
-	// from spec:) instead of silently dropping it. This only governs
-	// rawWorkspaceEnvelope's own struct fields (apiVersion/kind/metadata/
-	// spec) — spec's own allow-list (workspaceEnvelopeSpecFields, including
-	// the additional_bindings tolerance) is enforced separately below by
-	// decodeWorkspaceEnvelopeSpec, which decodes spec into a raw
-	// map[string]yaml.Node and is unaffected by this decoder-level setting
-	// (KnownFields only applies to struct-tagged decode targets).
+	// Reject an unknown top-level field (rawWorkspaceEnvelope's own struct
+	// fields only) instead of silently dropping it; spec's own allow-list is
+	// enforced separately by decodeWorkspaceEnvelopeSpec below.
 	dec.KnownFields(true)
 	var docs []*WorkspaceEnvelopeApply
 	for i := 0; ; i++ {
@@ -328,38 +252,21 @@ func DecodeWorkspaceEnvelopeDocuments(data []byte) ([]*WorkspaceEnvelopeApply, e
 
 // bareMetaKnownFieldNames is every yaml key bareMetaSentToTheWrongDoor
 // treats as evidence of a bare workspace-meta document: the yaml tag of
-// every WorkspaceMeta field (workspace_meta.go) — env, capabilities,
-// allowed_domains, extra_repos, host_commands, container_image — plus two
-// keys WorkspaceMeta itself has no field for but that a real bare-meta
-// document can still legitimately carry: "slug" (the wire-only wrapper key
-// workspaceCreateStrict, and the retired GET /api/workspaces/{slug}/export,
-// splice onto the front of a WorkspaceMeta body) and "additional_bindings"
-// (a retired-but-tolerated field, see workspace_meta_strict.go's package doc
-// comment).
+// every WorkspaceMeta field, plus "slug" and "additional_bindings" which
+// WorkspaceMeta itself has no field for but a real bare-meta document can
+// still legitimately carry.
 //
-// This is a package-level var, not inlined into bareMetaSentToTheWrongDoor,
-// specifically so TestBareMetaKnownFieldNames_CoversEveryWorkspaceMetaField
-// (workspace_envelope_test.go) can reflect over WorkspaceMeta's real yaml
-// tags and assert every one of them is a key here — a future field added to
-// WorkspaceMeta that is NOT added here would otherwise silently narrow this
-// guard's detection (a document using only the new field would fall through
-// to the raw, unexported-type-name decode error this function exists to
-// avoid) with nothing to catch the omission.
-// KNOWN GAP (codex review on PR3, Minor 1, docs/plans/
-// workspace-default-project.md §PR分割案 PR3): task_behaviors / base_branch /
-// fork_point / default_task_behavior are WorkspaceMeta fields, so they MUST
-// be listed here (the drift test forces it) — but per this PR's deliberate
-// scope boundary, workspaceMetaStrict (workspace_meta_strict.go, what `boid
-// workspace create/edit --from-file` actually decode) does NOT accept these
-// 4 keys yet. A bare document using ONLY one of them still gets routed by
-// bareMetaSentToTheWrongDoor below to create/edit — which will then reject
-// it with "unknown field", a second, less helpful rejection instead of a
-// pointer to `boid workspace apply` (the only entry point that currently
-// accepts these fields). Accepted for now since PR3 doesn't make these
-// fields functionally usable yet either (GetWithWorkspace hydration isn't
-// wired until PR4) — revisit if/when workspaceMetaStrict grows support for
-// them, or split this guidance by field if the gap proves disruptive
-// earlier.
+// This is a package-level var, not inlined, so
+// TestBareMetaKnownFieldNames_CoversEveryWorkspaceMetaField can reflect over
+// WorkspaceMeta's real yaml tags and assert every one is a key here — a
+// future WorkspaceMeta field not added here would silently narrow this
+// guard's detection.
+//
+// Known gap: task_behaviors/base_branch/fork_point/default_task_behavior
+// are listed here (the drift test forces it) but workspaceMetaStrict does
+// not accept them yet — a bare document using only one of them still falls
+// through to create/edit's own "unknown field" rejection instead of a
+// pointer to `boid workspace apply`.
 var bareMetaKnownFieldNames = map[string]bool{
 	"slug":                  true,
 	"env":                   true,
@@ -377,44 +284,21 @@ var bareMetaKnownFieldNames = map[string]bool{
 }
 
 // bareMetaSentToTheWrongDoor is the reciprocal of workspace_meta_strict.go's
-// envelopeSentToTheWrongDoor: it detects a BARE workspace-meta document (no
+// envelopeSentToTheWrongDoor: it detects a bare workspace-meta document (no
 // apiVersion/kind, host_commands:/env:/... at the top level — what `boid
-// workspace create --from-file`/`edit --from-file` take, and what a
-// hand-authored workspace yaml or `boid project migrate`'s shadow file
-// usually is) landing at `apply`'s decoder instead of one of those.
+// workspace create --from-file`/`edit --from-file` take) landing at
+// `apply`'s decoder instead, and turns the resulting raw KnownFields
+// unmarshal error (an unexported Go type name) into a message pointing at
+// the command that actually accepts this shape.
 //
-// Without this, the KnownFields unmarshal above fails with e.g. "document 1:
-// yaml: unmarshal errors:\n  line 1: field host_commands not found in type
-// orchestrator.rawWorkspaceEnvelope" — an unexported Go type name that
-// describes the document by what it is not and never mentions the
-// one-word-different commands that actually accept this shape. Found
-// 2026-07-28 alongside `boid workspace import`'s retirement: that command
-// used to be the one place a bare meta document reliably worked end to end
-// (however brokenly — see cmd/workspace.go's runWorkspaceImportDeprecated),
-// so pointing its deprecation message at `apply -f` would otherwise dead-end
-// on this exact error for the common case (a bare meta file, not an
-// envelope) — the same gap envelopeSentToTheWrongDoor closed for the
-// opposite direction (docs/plans/workspace-home-volume-persistence.md 論点
-// d, 2026-07-28 dogfood).
-//
-// Detection is deliberately loose, matching envelopeSentToTheWrongDoor's own
-// posture: apiVersion and kind both absent, AND at least one field name
-// WorkspaceMeta actually has is present at the top level. A document with
-// neither an envelope's identifying keys nor any recognizable meta field
-// (e.g. a typo of everything) falls through to the original decode error,
-// which is exactly as informative for that case as it always was.
+// Detection is deliberately loose: apiVersion and kind both absent, AND at
+// least one field name WorkspaceMeta actually has is present at the top
+// level. A document matching neither falls through to the original decode error.
 func bareMetaSentToTheWrongDoor(data []byte) error {
-	// Decoded as a generic map, not a fixed struct: bareMetaKnownFieldNames
-	// above is the single source of truth for which keys count as "looks
-	// like a meta document", so adding a field there (prompted by the drift
-	// test) is enough — no second struct to keep in sync by hand.
-	//
-	// yaml.Unmarshal only ever reads the FIRST "---" document, which is
-	// fine here — a multi-document apply file where a LATER document is the
-	// malformed one falls through to the original error below rather than
-	// misreporting based on document 1's shape, the same conservative
-	// trade-off envelopeSentToTheWrongDoor's own single-document probe
-	// makes.
+	// Decoded as a generic map: bareMetaKnownFieldNames is the single source
+	// of truth for which keys count as "looks like a meta document". Only
+	// the first "---" document is read; a multi-document file whose later
+	// document is the malformed one falls through to the original error.
 	var doc map[string]yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil
@@ -443,21 +327,15 @@ func bareMetaSentToTheWrongDoor(data []byte) error {
 }
 
 // SplitWorkspaceEnvelopeDocuments splits data (one or more "---"-separated
-// yaml documents) into the raw bytes of each individual document, WITHOUT
+// yaml documents) into the raw bytes of each individual document, without
 // going through WorkspaceEnvelope's Go struct representation. `boid
-// workspace apply` uses this (rather than re-marshaling the
-// *WorkspaceEnvelopeApply values DecodeWorkspaceEnvelopeDocuments returns)
-// to forward each document's original field-presence exactly as written to
-// POST /api/workspaces/apply, one request per document: since
-// WorkspaceEnvelopeSpec's fields no longer carry `omitempty` (Blocker 1),
-// every zero-value Go field — including one that was never present in the
-// source at all — marshals identically to an explicit empty value, so
-// re-marshaling the decoded struct would erase exactly the missing-vs-empty
-// distinction the fix exists to preserve. Round-tripping through yaml.Node
-// instead doesn't have that problem: a mapping key that was absent from the
-// source has no corresponding child node at all, so re-marshaling the node
-// reproduces the source's exact key set, not a struct's zero-value view of
-// it.
+// workspace apply` uses this to forward each document's original
+// field-presence exactly as written, one request per document: re-marshaling
+// the decoded struct would lose the missing-vs-empty distinction, since a
+// zero-value Go field marshals the same whether or not the source had that
+// key at all. Round-tripping through yaml.Node avoids that: an absent key
+// has no corresponding child node, so re-marshaling reproduces the source's
+// exact key set.
 func SplitWorkspaceEnvelopeDocuments(data []byte) ([][]byte, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil, errors.New("empty document: expected at least one apiVersion/kind/metadata/spec Workspace document")
@@ -473,9 +351,8 @@ func SplitWorkspaceEnvelopeDocuments(data []byte) ([][]byte, error) {
 			return nil, fmt.Errorf("document %d: %w", i+1, err)
 		}
 		// Before re-emitting: make every scalar's style one this document's
-		// own reader can take back (PR9 codex round 2, Major 3). The decode
-		// above preserved each scalar's source style, and yaml.v3 cannot
-		// re-emit some of those correctly — see forceRoundTrippableScalars.
+		// own reader can take back — yaml.v3 cannot re-emit some preserved
+		// source styles correctly. See forceRoundTrippableScalars.
 		forceRoundTrippableScalars(&node)
 		raw, err := yaml.Marshal(&node)
 		if err != nil {
@@ -610,12 +487,9 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 	}
 	if n, ok := raw["capabilities"]; ok {
 		fieldsPresent["capabilities"] = true
-		// PR-1d codex round-2 Major: plain yaml.Node.Decode has no
-		// KnownFields option, so a typo'd nested key (e.g. "dcoker: {}")
-		// would otherwise decode silently into a zero-value Capabilities
-		// instead of being rejected the way DecodeWorkspaceMetaStrict's
-		// top-level KnownFields(true) already rejects an unknown *outer*
-		// field — see decodeStrictNode's own doc comment.
+		// plain yaml.Node.Decode has no KnownFields option, so use
+		// decodeStrictNode to reject a typo'd nested key instead of
+		// silently decoding into a zero-value Capabilities.
 		if err := decodeStrictNode(n, &spec.Capabilities); err != nil {
 			return spec, nil, false, fmt.Errorf("spec.capabilities: %w", err)
 		}
@@ -624,9 +498,8 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 		fieldsPresent["projects"] = true
 		// Same KnownFields gap as capabilities above: without this, a
 		// typo'd "nam: intended" entry silently decodes with Name == "",
-		// which ResolveProjectRef then matches via its substring-match
-		// fallback (Contains(x, "") is always true) against whichever
-		// project happens to be registered — round-2's concrete failure.
+		// which ResolveProjectRef's substring-match fallback then matches
+		// against whichever project happens to be registered.
 		if err := decodeStrictNode(n, &spec.Projects); err != nil {
 			return spec, nil, false, fmt.Errorf("spec.projects: %w", err)
 		}
@@ -644,11 +517,8 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 		if err := decodeStrictNode(n, &spec.TaskBehaviors); err != nil {
 			return spec, nil, false, fmt.Errorf("spec.task_behaviors: %w", err)
 		}
-		// Same validation + normalization pipeline project.yaml's own
-		// task_behaviors go through (docs/plans/workspace-default-project.md
-		// 決定4, 論点j) — reject a malformed hook shape at decode time rather
-		// than letting it reach the DB (and, eventually, a dispatch planner)
-		// unvalidated.
+		// Same validation pipeline project.yaml's own task_behaviors go
+		// through: reject a malformed hook shape at decode time.
 		normalized, err := validateWorkspaceDefaultTaskBehaviors("spec.task_behaviors", spec.TaskBehaviors)
 		if err != nil {
 			return spec, nil, false, err
@@ -677,17 +547,12 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 	return spec, fieldsPresent, additionalBindingsDropped, nil
 }
 
-// decodeStrictNode decodes n into out with KnownFields(true) enforcement
-// (PR-1d codex round-2 Major: "strict decoding doesn't extend to
-// spec.projects[]/spec.capabilities"). n arrives here as a yaml.Node parsed
-// out of decodeWorkspaceEnvelopeSpec's own raw map[string]yaml.Node — not
-// through a top-level yaml.NewDecoder — so the KnownFields(true) call on
-// DecodeWorkspaceEnvelopeDocuments's outer *yaml.Decoder (which only
-// governs rawWorkspaceEnvelope's own fields) never reaches it, and
-// yaml.Node.Decode itself has no strictness option. Re-marshaling n back to
-// bytes and re-parsing through a fresh strict *yaml.Decoder is the
-// documented way (gopkg.in/yaml.v3) to apply KnownFields to an
-// already-parsed Node's subtree.
+// decodeStrictNode decodes n into out with KnownFields(true) enforcement.
+// n is a yaml.Node parsed out of a raw map[string]yaml.Node, so it never
+// goes through the outer *yaml.Decoder's KnownFields setting, and
+// yaml.Node.Decode itself has no strictness option — re-marshaling n and
+// re-parsing through a fresh strict decoder is the documented way
+// (gopkg.in/yaml.v3) to apply KnownFields to an already-parsed subtree.
 func decodeStrictNode(n yaml.Node, out any) error {
 	raw, err := yaml.Marshal(&n)
 	if err != nil {

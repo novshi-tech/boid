@@ -13,12 +13,8 @@ import (
 
 // lookupBehavior returns the TaskBehavior that matches task.Exec.Behavior.
 // Returns false if the project has no matching behavior, or if task is not
-// an execution task at all (a card has no behavior — see design doc §3.2);
-// callers should treat both as "no hooks" rather than an error. Coordinator/
-// Evaluator/DispatchPlanner are exclusively the dispatch/hook-firing path, so
-// task.Exec is expected to be non-nil in practice (only an execution task
-// ever reaches "executing" and fires hooks) — this nil check is defense in
-// depth, not evidence that a card is expected here.
+// an execution task at all (a card has no behavior); callers should treat
+// both as "no hooks" rather than an error.
 func lookupBehavior(meta *ProjectMeta, task *Task) (TaskBehavior, bool) {
 	if meta == nil || task == nil || task.Exec == nil {
 		return TaskBehavior{}, false
@@ -62,15 +58,10 @@ func (d *Coordinator) DispatchAndAdvance(
 	sm *StateMachine,
 ) (*DispatchResult, error) {
 	// Defense in depth (mirrors AdvanceFull's own task.Exec == nil guard):
-	// this function has multiple call sites (workflow_action.go's
-	// runDispatchLoop, plus any future caller) and nothing at the type level
-	// forces every one of them to have already checked task.Exec != nil
-	// before calling in. A card task (Exec == nil by construction) reaching
-	// here previously nil-panicked on task.Exec.Payload below, in an
-	// unrecovered goroutine — found in card-model-cleanup PR-2 review. The
-	// real fix is gating the call site (see workflow_action.go), but this
-	// guard turns any future missed gate into an error return instead of a
-	// process crash.
+	// a card task (Exec == nil by construction) reaching here would
+	// otherwise nil-panic on task.Exec.Payload below. The real fix is
+	// gating the call site (see workflow_action.go); this turns any future
+	// missed gate into an error return instead of a process crash.
 	if task.Exec == nil {
 		return nil, fmt.Errorf("DispatchAndAdvance: task %s has no Exec (type=%s); only an execution task can be dispatched", task.ID, task.Type)
 	}
@@ -173,10 +164,8 @@ func (d *Coordinator) evaluateAndAdvance(
 	var newStatus TaskStatus
 	var actionPayload json.RawMessage
 	// CloneTaskShallow (not a bare `*task` copy): advanceTask.Exec must be
-	// its OWN ExecAttrs, not the same pointer task.Exec still holds, or the
-	// Payload write below would alias back into the caller's task (model.go's
-	// CloneTaskShallow doc comment explains why this matters after the
-	// tagged-struct split).
+	// its own ExecAttrs, not the same pointer task.Exec still holds, or the
+	// Payload write below would alias back into the caller's task.
 	advanceTask := *CloneTaskShallow(task)
 	advanceTask.Exec.Payload = payloadForSM
 	if outcome := sm.AdvanceFull(&advanceTask); outcome != nil {
@@ -375,15 +364,11 @@ func parseHandlerResult(id string, role Role, c JobCompletion) HandlerResult {
 	if !ok {
 		return hr
 	}
-	// yaml.v3 は非 string キー (bool/int/null/float) を含む内側 map を
-	// map[interface{}]interface{} で返すため、そのままでは json.Marshal が落ちる。
-	// 過去事例: agent が `on: verifying` と書いた YAML が PyYAML の round-trip で
-	// `true: verifying` に化け、Layer 2 がないと payload_patch がまるごと silent drop した。
-	// yamlutil.NormalizeKeys is the SHARED implementation (Phase 5b PR7 codex
-	// review Major 2, wiring-seams.md #17): internal/sandbox's `boid task
-	// update --payload-patch` CLI applies the identical normalization so the
-	// same YAML content behaves identically regardless of which path (file
-	// vs RPC) carries it.
+	// yaml.v3 returns an inner map with non-string keys (bool/int/null/float)
+	// as map[interface{}]interface{}, which json.Marshal cannot handle
+	// as-is. yamlutil.NormalizeKeys is the shared implementation — internal/
+	// sandbox's `boid task update --payload-patch` CLI applies the same
+	// normalization so the same YAML behaves identically on either path.
 	patchVal = yamlutil.NormalizeKeys(patchVal)
 	patchJSON, err := json.Marshal(patchVal)
 	if err != nil {
@@ -410,11 +395,9 @@ type ReplayResult struct {
 	Result HandlerResult
 	// FinalPayload / PayloadDelta carry the same distinction
 	// DispatchResult's own fields do — see DispatchResult's doc comment.
-	// FinalPayload is a (potentially stale-by-the-time-the-hook-completes)
-	// full snapshot; PayloadDelta is only what this single replayed hook
-	// actually wrote, safe to apply onto a freshly re-read task row without
-	// reverting any out-of-band write the hook itself made mid-flight
-	// (Phase 5b PR7 codex review Blocker 1, wiring-seams.md #17).
+	// FinalPayload is a (potentially stale-by-completion-time) full
+	// snapshot; PayloadDelta is only what this single replayed hook
+	// actually wrote, safe to apply onto a freshly re-read task row.
 	FinalPayload json.RawMessage
 	PayloadDelta json.RawMessage
 	NewStatus    TaskStatus
@@ -466,9 +449,7 @@ func (d *Coordinator) ReplayHook(
 
 	payload := task.Exec.Payload
 	// See DispatchResult.PayloadDelta's doc comment: this must be applied
-	// onto a freshly re-read task row, never FinalPayload's stale-by-
-	// completion-time snapshot (Phase 5b PR7 codex review Blocker 1,
-	// wiring-seams.md #17).
+	// onto a freshly re-read task row, never FinalPayload's stale snapshot.
 	delta := json.RawMessage("{}")
 	var result HandlerResult
 	var firedEvents []FiredEvent

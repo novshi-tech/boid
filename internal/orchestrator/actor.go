@@ -2,9 +2,9 @@ package orchestrator
 
 import "context"
 
-// Actor 値の3系統。docs/plans/cross-project-issue-triage.md 論点11「代行Goタスク」の
-// 前提条件: nose (人間操作) が押した action と代行タスクが押した action を actions ログ上で
-// 区別できないと、事故ったときに「人間の判断ミスか代行タスクの誤判定か」が復元不能になる。
+// Actor 値の3系統。人間が押した action と代行タスクが押した action を actions
+// ログ上で区別できないと、事故ったときに「人間の判断ミスか代行タスクの誤判定か」
+// が復元不能になる。
 const (
 	// ActorHuman は Web UI / CLI からの人間操作 (nose 本人)。
 	ActorHuman = "human"

@@ -8,11 +8,11 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// registerAPIGatewayToken registers this job's API gateway token (docs/plans/
-// api-gateway.md PR1) — the effective (floor ∪ workspace) enabled-service
-// set, this job's SecretNamespace, TaskID, and readonly flag — and returns
-// the gateway's shared sandbox-facing base URL alongside the token, tracking
-// the token so UnregisterJob can revoke it when the job completes.
+// registerAPIGatewayToken registers this job's API gateway token — the
+// effective (floor ∪ workspace) enabled-service set, this job's
+// SecretNamespace, TaskID, and readonly flag — and returns the gateway's
+// shared sandbox-facing base URL alongside the token, tracking the token so
+// UnregisterJob can revoke it when the job completes.
 //
 // Both return values are empty when the API gateway isn't wired
 // (r.APIGateway == nil) or r.GatewayURL hasn't been populated yet. Unlike
@@ -24,16 +24,11 @@ func (r *Runner) registerAPIGatewayToken(jobID string, spec *orchestrator.JobSpe
 		return "", ""
 	}
 	services := r.resolveEnabledAPIServices(workspaceID)
-	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5): a signal-
-	// derived trigger's connector job restricts its own token to the ONE
-	// service instance it declared, via spec.APIGatewayServices. This
-	// INTERSECTS with the normally-resolved (floor ∪ workspace) set rather
-	// than trusting spec.APIGatewayServices outright — defense in depth: the
-	// declared service is only WARNED about at project.yaml load time if it
-	// falls outside the workspace's enabled set (never blocked, see
-	// orchestrator.GetWithWorkspace), so a stale declaration must not be
-	// able to grant gateway reach the workspace no longer actually enables.
-	// nil (every job but a connector trigger) leaves services untouched.
+	// A signal-derived connector job restricts its token to the one service
+	// it declared (spec.APIGatewayServices), but we INTERSECT rather than
+	// trust it outright: the declaration is only warned about (never
+	// blocked) at project.yaml load time, so a stale declaration must not
+	// grant reach the workspace no longer actually enables.
 	if spec.APIGatewayServices != nil {
 		services = intersectServiceNames(services, spec.APIGatewayServices)
 	}
@@ -54,11 +49,10 @@ func (r *Runner) registerAPIGatewayToken(jobID string, spec *orchestrator.JobSpe
 }
 
 // resolveEnabledAPIServices returns the effective (floor ∪ workspace)
-// enabled-service set for workspaceID, mirroring Runner.resolveWorkspaceProxy's
-// own "independently load this workspace's WorkspaceMeta, floor-only on any
-// load failure" cascade for AllowedDomains (docs/plans/api-gateway.md §3).
-// An empty workspaceID (`boid exec` / a project with no workspace) always
-// gets just the floor — there is no workspace.yaml to load.
+// enabled-service set for workspaceID, falling back to the floor alone on
+// any load failure (mirrors Runner.resolveWorkspaceProxy's AllowedDomains
+// cascade). An empty workspaceID (`boid exec` / a project with no
+// workspace) always gets just the floor — there is no workspace.yaml to load.
 func (r *Runner) resolveEnabledAPIServices(workspaceID string) []string {
 	if workspaceID == "" || r.Workspaces == nil {
 		return r.APIGatewayServicesFloor
@@ -75,10 +69,7 @@ func (r *Runner) resolveEnabledAPIServices(workspaceID string) []string {
 }
 
 // intersectServiceNames returns the entries of want that also appear in
-// resolved, preserving want's order (docs/plans/
-// signal-ingest-detailed-design.md §5.2's override-intersect — see
-// registerAPIGatewayToken's own doc comment for why this intersects rather
-// than trusting want outright). An empty result (want names nothing
+// resolved, preserving want's order. An empty result (want names nothing
 // resolved actually enables) is a legitimate, safe outcome: the connector
 // job's gateway token simply authorizes no service, and every gateway call
 // it attempts gets an ordinary 403 — not a panic, not a silent full-access

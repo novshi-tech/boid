@@ -20,18 +20,17 @@ import (
 )
 
 // This file implements api.ConfigService's ConfigYAML/ApplyConfigYAML on
-// *Server — the daemon-side half of `boid config get/set/unset/apply/edit`
-// (docs/plans/volume-only-daemon.md §論点 f). buildRuntime (wire.go)
-// populates liveConfig/configPath/notifySvc once at startup; everything
-// here is reached only through the GET/POST /api/config routes
-// mountRoutes wires to api.ConfigHandler.
+// *Server — the daemon-side half of `boid config get/set/unset/apply/edit`.
+// buildRuntime (wire.go) populates liveConfig/configPath/notifySvc once at
+// startup; everything here is reached only through the GET/POST
+// /api/config routes mountRoutes wires to api.ConfigHandler.
 
 // ConfigYAML returns the daemon's config.yaml document exactly as it sits
 // on disk, alongside its current revision — see api.ConfigService.ConfigYAML's
 // doc comment. The revision is the same ETag value GET /api/config's
 // response header carries; round-tripping it into a later POST's If-Match
-// (`boid config edit`/`apply -f` without --force) is BLOCKER 1's
-// optimistic-concurrency guard (codex review round 1).
+// (`boid config edit`/`apply -f` without --force) is the optimistic-
+// concurrency guard.
 //
 // Deliberately NOT a fully-expanded (defaults-merged) view of s.liveConfig:
 // several Config sub-structs (WebConfig, NotifyConfig, SandboxConfig, ...)
@@ -41,12 +40,11 @@ import (
 // found" into meaninglessness (a zero-value key would always exist to
 // "unset"). Returning the raw file instead keeps get/set/unset/apply/edit
 // a faithful, sparse round trip of exactly what the operator has
-// explicitly written — the same contract config.yaml has always had
-// (docs/ja/reference/config-yaml.md: "ファイルが存在しない場合はデフォルト値で
-// 動作します"; per-key defaults are documented in prose there, not by
-// requiring the file to spell every one out). A missing file (fresh
-// install, nothing explicitly configured yet) returns an empty document,
-// not an error.
+// explicitly written — the same contract config.yaml has always had (see
+// docs/ja/reference/config-yaml.md: per-key defaults are documented in
+// prose, not by requiring the file to spell every one out). A missing
+// file (fresh install, nothing explicitly configured yet) returns an
+// empty document, not an error.
 func (s *Server) ConfigYAML() (data []byte, revision string, err error) {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
@@ -77,33 +75,19 @@ func (s *Server) readConfigLocked() ([]byte, error) {
 }
 
 // computeRevision derives a content-addressed ETag/If-Match revision from a
-// config.yaml document's raw bytes — BLOCKER (codex review round 2): the
-// pre-fix revision was an in-memory, process-lifetime counter
-// (Server.configRevision, now removed) that always reset to 1 on daemon
-// restart, regardless of what was actually on disk. That let a stale
-// If-Match alias a genuinely different (newer) document across a restart:
-// editor A's GET captured revision "1"; writer B's apply persisted a change
-// and bumped the counter to "2"; the daemon restarted and reset the counter
-// back to "1"; a fresh GET after the restart reported B's now-current
-// document as revision "1" again; A's later POST with If-Match: "1" matched
-// and silently discarded B's change. A revision derived purely from the
-// document's own bytes cannot alias this way — it depends only on what is
-// on disk, so it is:
-//   - stable across process restarts for byte-identical content (no
-//     restart-reset counter to disagree with the file),
-//   - different whenever content actually differs (any single-byte change
+// config.yaml document's raw bytes. Unlike an in-memory, process-lifetime
+// counter (which would reset on every daemon restart and could then alias
+// a genuinely different, newer document across a restart), a revision
+// derived purely from the document's own bytes:
+//   - stays stable across process restarts for byte-identical content,
+//   - differs whenever content actually differs (any single-byte change
 //     flips the hash with overwhelming probability), and
-//   - never colliding by accident between two DIFFERENT documents (and a
-//     "collision" between two byte-identical documents is not a bug — there
-//     is nothing to lose by treating identical content as the same
-//     revision).
+//   - never collides by accident between two DIFFERENT documents.
 //
-// sha256, truncated to its first 16 bytes (32 hex chars, 128 bits) — MINOR
-// (codex review round 3): an earlier version truncated to 8 bytes (64
-// bits), whose ~2^-32 accidental-collision risk at 2^32 distinct documents
-// is small in practice but not zero, and a collision here recreates
-// exactly the stale-ETag overwrite failure this revision scheme exists to
-// prevent (see the doc comment above). 128 bits' collision resistance is
+// sha256, truncated to its first 16 bytes (32 hex chars, 128 bits): a
+// shorter truncation risks a small but nonzero accidental-collision chance,
+// which would recreate exactly the stale-ETag overwrite failure this
+// revision scheme exists to prevent. 128 bits' collision resistance is
 // effectively unreachable for a handful-of-KB config.yaml edited by a
 // handful of humans, at a trivial (16 extra hex chars) header cost — no
 // reason to settle for less.
@@ -131,18 +115,16 @@ func (s *Server) currentRevisionLocked() (string, error) {
 //
 // ifMatch/force implement the same ETag/If-Match convention `boid workspace
 // edit` already established (internal/api/project_service.go's
-// UpdateWorkspace, cmd/workspace.go's runWorkspaceEdit) — BLOCKER 1, codex
-// review round 1: unless force is true, ifMatch must be non-empty (else 428
-// Precondition Required) and must match the current revision (else 412
-// Precondition Failed). This is what makes `boid config edit`/`apply -f`
-// (without --force) reject a write against config.yaml that changed since
-// the caller's GET, instead of silently discarding whatever the other
-// writer just applied.
+// UpdateWorkspace, cmd/workspace.go's runWorkspaceEdit): unless force is
+// true, ifMatch must be non-empty (else 428 Precondition Required) and must
+// match the current revision (else 412 Precondition Failed). This is what
+// makes `boid config edit`/`apply -f` (without --force) reject a write
+// against config.yaml that changed since the caller's GET, instead of
+// silently discarding whatever the other writer just applied.
 //
 // The whole check-validate-diff-write-swap sequence runs under configMu, so
-// concurrent POST /api/config calls are strictly serialized (docs/plans/
-// volume-only-daemon.md §論点 f's concurrency decision) — the second call's
-// revision check, validation, and diff always see the first call's
+// concurrent POST /api/config calls are strictly serialized — the second
+// call's revision check, validation, and diff always see the first call's
 // already-applied liveConfig and on-disk bytes (currentRevisionLocked
 // re-reads them fresh under this same lock), never a half-applied
 // intermediate state, and the on-disk config.yaml is always written by
@@ -205,29 +187,28 @@ func (s *Server) applyConfigYAMLLocked(data []byte) (api.ConfigApplyResult, erro
 }
 
 // MutateConfig performs one or more dotted-path set/unset operations as one
-// configMu-held read-modify-write — BLOCKER 1, codex review round 1: `boid
-// config set/unset` (cmd/config.go) route here instead of the old
-// client-side GET → mutate → POST round trip, whose two separate daemon
-// calls left a window for a second concurrent `set`'s POST to silently
-// discard a first `set`'s already-applied change (configMu only serialized
-// the POSTs, not the whole client-side transaction around them). Holding
-// configMu across the read, every op's dotted-path Set/Unset, and the write
-// closes that window entirely: two concurrent MutateConfig calls on
-// different keys are strictly serialized, and BOTH changes land — see
+// configMu-held read-modify-write: `boid config set/unset` (cmd/config.go)
+// routes here instead of a client-side GET → mutate → POST round trip,
+// whose two separate daemon calls would leave a window for a second
+// concurrent `set`'s POST to silently discard a first `set`'s
+// already-applied change. Holding configMu across the read, every op's
+// dotted-path Set/Unset, and the write closes that window entirely: two
+// concurrent MutateConfig calls on different keys are strictly serialized,
+// and BOTH changes land — see
 // TestMutateConfig_ConcurrentSetsOfDifferentKeys_BothSucceed.
 //
-// Batch mode (BLOCKER, codex review round 1 on PR #831): when req.Ops is
-// non-empty, every element is applied to the SAME in-memory tree in order,
-// and the resulting document is validated exactly ONCE, after the last op —
-// not once per op. This is what makes it possible to create a brand-new
-// gateway.forges.<id> entry at all: a single-op call always validates the
-// full document before returning, so setting "<id>.host" alone leaves the
-// document with an empty "<id>.forge", which config.ValidateYAML rejects
-// ("unrecognized forge \"\"") — no sequence of independently-validated
-// single-op calls can ever get all three of host/forge/secret_key in place
-// together. When req.Ops is empty, req itself is treated as the sole
-// operation — the exact pre-existing single-op behavior, unchanged.
-// See TestMutateConfig_Batch_NewForgeAllFieldsAtOnce_Succeeds and
+// Batch mode: when req.Ops is non-empty, every element is applied to the
+// SAME in-memory tree in order, and the resulting document is validated
+// exactly ONCE, after the last op — not once per op. This is what makes it
+// possible to create a brand-new gateway.forges.<id> entry at all: a
+// single-op call always validates the full document before returning, so
+// setting "<id>.host" alone leaves the document with an empty "<id>.forge",
+// which config.ValidateYAML rejects ("unrecognized forge \"\"") — no
+// sequence of independently-validated single-op calls can ever get all
+// three of host/forge/secret_key in place together. When req.Ops is empty,
+// req itself is treated as the sole operation — the exact pre-existing
+// single-op behavior, unchanged. See
+// TestMutateConfig_Batch_NewForgeAllFieldsAtOnce_Succeeds and
 // TestMutateConfig_Batch_PartialFailureLeavesDocumentUnchanged.
 //
 // No If-Match/force parameter, unlike ApplyConfigYAML: there is no
@@ -315,65 +296,48 @@ func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []strin
 		oldCfgSafe = &config.Config{}
 	}
 
-	// sandbox.allowed_domains / notify.command / web.public_url used to be
-	// hot-applied here (ReloadDynamic): sandbox.allowed_domains swapped
-	// s.cfg.AllowedDomains, which dispatcher.Runner.AllowedDomains re-read
-	// on every dispatch via a func() []string getter (BLOCKER 2, codex
-	// review round 1); notify.command/web.public_url called
-	// notify.Service.Update. PR #830 round-4 simplification (nose
-	// directive) reclassified all three as ReloadRestartRequired — see
-	// ReloadDynamic's own doc comment (internal/config/schema.go) for why:
-	// that hot-reload machinery took 4 codex review rounds and introduced a
-	// Server.Stop/dispatch deadlock (round 4 blocker 2, since
-	// Runner.Dispatch called (*Server).AllowedDomains, which locked s.mu —
-	// the same lock Server.Stop holds while waiting on in-flight dispatches
-	// to finish). All three now fall through to the generic
-	// ReloadRestartRequired loop below (restartFieldExtractors has entries
-	// for all three) — this function no longer touches s.cfg or s.notifySvc
-	// at all, and (*Server).AllowedDomains/s.notifySvc.Update's config-edit
-	// call sites are gone entirely.
+	// sandbox.allowed_domains / notify.command / web.public_url are all
+	// ReloadRestartRequired — see ReloadDynamic's own doc comment
+	// (internal/config/schema.go) for why a live-swap approach was
+	// abandoned (it required a func() []string getter on every dispatch
+	// and risked a Server.Stop/dispatch deadlock). All three now fall
+	// through to the generic ReloadRestartRequired loop below
+	// (restartFieldExtractors has entries for all three) — this function
+	// no longer touches s.cfg or s.notifySvc at all.
 
 	var warnings []string
 
 	// gateway.forges.* — restart-required (mid-flight gateway TLS cert
-	// re-issuance is complicated; safer to require a restart — docs/plans/
-	// volume-only-daemon.md §論点 f). One warning line per changed LEAF
-	// (host/forge/secret_key), not per forge id — MINOR 2 (codex review
-	// round 1): the plan doc's own example
-	// ("gateway.forges.github.secret_key requires...") names the leaf that
-	// actually changed, which a forge-id-only warning could not distinguish
-	// from an unrelated field on the same entry changing instead.
+	// re-issuance is complicated; safer to require a restart). One
+	// warning line per changed LEAF (host/forge/secret_key), not per
+	// forge id — a forge-id-only warning could not distinguish the leaf
+	// that actually changed from an unrelated field on the same entry
+	// changing instead.
 	for _, leaf := range changedForgeLeaves(oldForges, newCfg.Gateway.Forges) {
 		warnings = append(warnings, restartWarning("gateway.forges."+leaf))
 	}
 
-	// services.* (docs/plans/api-gateway.md §2/PR1) — same restart-required,
-	// per-leaf-diff treatment as gateway.forges.* just above (a mid-flight
-	// service registry change would need the API gateway's own
-	// CredentialProvider rebuilt, which — like the git gateway's TLS cert
-	// re-issuance — is safer left to a restart than attempted live).
+	// services.* — same restart-required, per-leaf-diff treatment as
+	// gateway.forges.* just above (a mid-flight service registry change
+	// would need the API gateway's own CredentialProvider rebuilt, which —
+	// like the git gateway's TLS cert re-issuance — is safer left to a
+	// restart than attempted live).
 	for _, leaf := range changedServiceLeaves(oldCfgSafe.Services, newCfg.Services) {
 		warnings = append(warnings, restartWarning("services."+leaf))
 	}
 
-	// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2) — same
-	// restart-required, per-leaf-diff treatment as services.*/gateway.forges.*
-	// above (a mid-flight OAuth2 provider change would need the API
-	// gateway's OAuth2TokenSource rebuilt, same "safer left to a restart"
-	// reasoning).
+	// oauth_providers.* — same restart-required, per-leaf-diff treatment
+	// as services.*/gateway.forges.* above (a mid-flight OAuth2 provider
+	// change would need the API gateway's OAuth2TokenSource rebuilt, same
+	// "safer left to a restart" reasoning).
 	for _, leaf := range changedOAuthProviderLeaves(oldCfgSafe.OAuthProviders, newCfg.OAuthProviders) {
 		warnings = append(warnings, restartWarning("oauth_providers."+leaf))
 	}
 
 	// Every other ReloadRestartRequired schema leaf (gc.*, web.http_addr,
-	// task_ask.disconnect_grace, ...) — MAJOR 2, codex review round 1: the
-	// pre-fix version of this function hand-listed only gateway.forges.*
-	// and sandbox.backend, silently producing no warning at all for every
-	// other restart-required key (e.g. `boid config set gc.enabled false`
-	// printed a bare "config applied" while the already-running GC loop
-	// kept its old interval/enabled state until the next restart). Iterating
-	// config.Schema directly means a future schema addition only needs an
-	// entry in restartFieldExtractors, not a new arm here.
+	// task_ask.disconnect_grace, ...): iterating config.Schema directly
+	// means a future schema addition only needs an entry in
+	// restartFieldExtractors, not a new arm here.
 	//
 	// gateway.forges.*.{host,forge,secret_key} and gateway.hosts are the two
 	// documented exceptions (restartFieldExtractorExemptions below) — the
@@ -382,18 +346,11 @@ func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []strin
 	//
 	// Coverage is verified exhaustively at daemon startup
 	// (verifyRestartExtractorCoverage, called from wire.go's buildRuntime
-	// before mountRoutes ever registers a route) — codex review round 3:
-	// this loop used to panic on an uncovered leaf itself, but that panic
-	// fired AFTER applyConfigYAMLLocked had already written the new
-	// document to disk and swapped s.liveConfig, so an incomplete-coverage
-	// bug would durably persist a config mutation and only then fail the
-	// request that caused it. The branch below is therefore unreachable in
-	// practice — coverage that is complete at startup stays complete
-	// (config.Schema/restartFieldExtractors/restartFieldExtractorExemptions
-	// are all static package vars, not mutated at runtime outside tests) —
-	// and stays a warn-only defense-in-depth rather than a panic, so it
-	// degrades to "no restart warning for this one leaf" instead of a
-	// request-time 500 if it is ever somehow reached anyway.
+	// before mountRoutes ever registers a route), so the branch below is
+	// unreachable in practice — an uncovered leaf would already have
+	// failed startup. It stays a warn-only defense-in-depth rather than a
+	// panic here, degrading to "no restart warning for this one leaf"
+	// instead of a request-time 500 if it is ever somehow reached anyway.
 	for _, spec := range config.Schema {
 		if spec.Reload != config.ReloadRestartRequired {
 			continue
@@ -415,12 +372,11 @@ func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []strin
 	return warnings
 }
 
-// restartWarning renders the standard, plan-doc-exact
-// (docs/plans/volume-only-daemon.md §論点 f) restart-required warning line
-// for a single changed leaf path (e.g. "gc.enabled",
+// restartWarning renders the standard restart-required warning line for a
+// single changed leaf path (e.g. "gc.enabled",
 // "gateway.forges.github.secret_key") — the one piece of text every
-// restart-required warning site shares, factored out so MAJOR 2's generic
-// loop and the per-forge-leaf loop above stay byte-for-byte consistent.
+// restart-required warning site shares, factored out so the generic loop
+// and the per-forge-leaf loop above stay byte-for-byte consistent.
 func restartWarning(path string) string {
 	return fmt.Sprintf(
 		"[warning] %s requires daemon restart to take effect.\n"+
@@ -431,11 +387,9 @@ func restartWarning(path string) string {
 // schema leaf (schema.go) this package's generic restart-warning loop
 // (applyDynamicConfigLocked) can compare directly on a *config.Config, to a
 // string rendering of that leaf's value — equality of the rendering is
-// "unchanged", inequality is "changed, warn" (MAJOR 2, codex review round
-// 1: "the warning generation logic should iterate over the schema's
-// restart-required list" instead of hand-listing which keys it happens to
-// check). Adding a new restart-required scalar to Schema needs only a new
-// entry here, not a new arm in applyDynamicConfigLocked.
+// "unchanged", inequality is "changed, warn". Adding a new restart-required
+// scalar to Schema needs only a new entry here, not a new arm in
+// applyDynamicConfigLocked.
 //
 // gateway.forges.* and gateway.hosts are deliberately absent — see
 // restartFieldExtractorExemptions below for why, and for the exhaustive-
@@ -445,9 +399,9 @@ func restartWarning(path string) string {
 // on "\x00" (a byte that can never appear in a hostname or a shell argv
 // element, so two distinct slices can never render to the same string) —
 // the same "collapse to a comparable string" trick the scalar entries below
-// use via strconv/.String(), just for a slice instead of a scalar. All
-// three were ReloadDynamic before the PR #830 round-4 simplification (nose
-// directive) — see ReloadDynamic's own doc comment (schema.go).
+// use via strconv/.String(), just for a slice instead of a scalar. See
+// ReloadDynamic's own doc comment (schema.go) for why these are
+// ReloadRestartRequired rather than hot-swapped.
 var restartFieldExtractors = map[string]func(*config.Config) string{
 	"gc.enabled":                func(c *config.Config) string { return strconv.FormatBool(c.GC.Enabled) },
 	"gc.interval":               func(c *config.Config) string { return c.GC.Interval.String() },
@@ -465,29 +419,28 @@ var restartFieldExtractors = map[string]func(*config.Config) string{
 		return strconv.Itoa(c.Sandbox.EgressProxyPortHigh)
 	},
 	"services_floor": func(c *config.Config) string { return strings.Join(c.ServicesFloor, "\x00") },
-	// integrations.dir (docs/plans/signal-ingest-detailed-design.md §6.1,
-	// PR-4): a scalar leaf with no per-entry finer-grained diff (unlike
-	// services.*/gateway.forges.*/oauth_providers.*, this isn't a wildcard
-	// map — there is exactly one integrations.dir), so it gets an ordinary
-	// direct extractor like gc.*/web.* above.
+	// integrations.dir: a scalar leaf with no per-entry finer-grained diff
+	// (unlike services.*/gateway.forges.*/oauth_providers.*, this isn't a
+	// wildcard map — there is exactly one integrations.dir), so it gets an
+	// ordinary direct extractor like gc.*/web.* above.
 	"integrations.dir": func(c *config.Config) string { return c.Integrations.Dir },
 }
 
 // restartFieldExtractorExemptions documents every ReloadRestartRequired
 // Schema leaf that deliberately has NO restartFieldExtractors entry, and
 // why — the generic loop in applyDynamicConfigLocked panics on any
-// ReloadRestartRequired leaf found in neither map (regression concern,
-// codex review round 2), so a leaf's absence from restartFieldExtractors
-// must always be a documented, intentional choice recorded here, never a
-// silent gap. TestRestartFieldExtractors_ExhaustiveCoverage
+// ReloadRestartRequired leaf found in neither map, so a leaf's absence
+// from restartFieldExtractors must always be a documented, intentional
+// choice recorded here, never a silent gap.
+// TestRestartFieldExtractors_ExhaustiveCoverage
 // (config_edit_internal_test.go) pins that every current Schema leaf
 // satisfies this at `go test` time, not just at runtime.
 var restartFieldExtractorExemptions = map[string]string{
 	// changedForgeLeaves's per-id, per-field diff (called separately, just
-	// above the generic loop) already gives finer-grained warnings (MINOR 2,
-	// codex review round 1) than comparing a single wildcard schema entry
-	// ever could — it names which of host/forge/secret_key changed, not
-	// just "something under gateway.forges.<id> changed".
+	// above the generic loop) already gives finer-grained warnings than
+	// comparing a single wildcard schema entry ever could — it names
+	// which of host/forge/secret_key changed, not just "something under
+	// gateway.forges.<id> changed".
 	"gateway.forges.*.host":       "covered by changedForgeLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"gateway.forges.*.forge":      "covered by changedForgeLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"gateway.forges.*.secret_key": "covered by changedForgeLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
@@ -496,10 +449,10 @@ var restartFieldExtractorExemptions = map[string]string{
 	// its own for an extractor to read — any of its changes already surface
 	// through the Forges diff above instead.
 	"gateway.hosts": "Config retains no Hosts field after UnmarshalYAML folds it into Forges; changes surface through the Forges diff instead",
-	// sandbox.backend was removed in PR-4 (docs/plans/volume-only-daemon.md
-	// §論点e) — Config.Sandbox retains no Backend field at all any more
-	// (UnmarshalYAML parses-and-discards the raw value, logging a warning —
-	// see its own doc comment), so there is nothing for an extractor to
+	// sandbox.backend was removed — Config.Sandbox retains no Backend field
+	// at all any more (UnmarshalYAML parses-and-discards the raw value,
+	// logging a warning — see its own doc comment), so there is nothing
+	// for an extractor to
 	// read or compare. The key is KindOpaque now (schema.go), so `boid
 	// config set/unset sandbox.backend` is already rejected outright at the
 	// dotted-path layer; this exemption only covers the generic
@@ -507,20 +460,18 @@ var restartFieldExtractorExemptions = map[string]string{
 	// entry to satisfy verifyRestartExtractorCoverage with.
 	"sandbox.backend": "removed in PR-4; Config retains no Backend field to extract — the key is parsed-and-ignored with a load-time warning instead (see config.Config.UnmarshalYAML)",
 
-	// services.* (docs/plans/api-gateway.md §2/PR1) — same reasoning as the
-	// gateway.forges.* trio above: changedServiceLeaves' per-id, per-field
-	// diff (called separately, just above the generic loop) already gives
-	// finer-grained warnings than comparing a single wildcard schema entry
-	// ever could.
+	// services.* — same reasoning as the gateway.forges.* trio above:
+	// changedServiceLeaves' per-id, per-field diff (called separately,
+	// just above the generic loop) already gives finer-grained warnings
+	// than comparing a single wildcard schema entry ever could.
 	"services.*.base_url":       "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.allow_insecure": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	// services.*.base_url_secret_key / services.*.auth.username_secret_key
-	// (docs/plans/api-gateway-credential-accounts.md D12) — same reasoning
-	// as base_url/auth.username just above.
+	// — same reasoning as base_url/auth.username just above.
 	"services.*.base_url_secret_key":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.username_secret_key": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	// services.*.allow_readonly_write/require_account (PR #1040 opus
-	// review, item 1) — same reasoning as allow_insecure just above.
+	// services.*.allow_readonly_write/require_account — same reasoning as
+	// allow_insecure just above.
 	"services.*.allow_readonly_write": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.require_account":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.kind":            "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
@@ -529,39 +480,36 @@ var restartFieldExtractorExemptions = map[string]string{
 	"services.*.auth.header":          "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.query":           "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.provider":        "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	// services.*.uses/endpoint/credentials.* (docs/plans/signal-driven-review.md
-	// §7.2, docs/plans/signal-ingest-detailed-design.md §6.1, PR-4) — same
-	// reasoning as the base_url/auth septet above: changedServiceLeaves'
-	// per-id, per-field diff already covers all three.
+	// services.*.uses/endpoint/credentials.* — same reasoning as the
+	// base_url/auth septet above: changedServiceLeaves' per-id, per-field
+	// diff already covers all three.
 	"services.*.uses":          "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.endpoint":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.credentials.*": "covered by changedServiceLeaves' per-id, whole-map diff (finer-grained than a wildcard comparison)",
-	// services.*.username (feat/credential-slot-instance-username) — same
-	// reasoning as the uses:/endpoint/credentials.* trio above.
+	// services.*.username — same reasoning as the uses:/endpoint/
+	// credentials.* trio above.
 	"services.*.username": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	// services.*.endpoint_secret_key / services.*.username_secret_key
-	// (docs/plans/api-gateway-credential-accounts.md D13) — same reasoning
-	// as endpoint/username just above.
+	// services.*.endpoint_secret_key / services.*.username_secret_key —
+	// same reasoning as endpoint/username just above.
 	"services.*.endpoint_secret_key": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.username_secret_key": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 
-	// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2) — same
-	// reasoning as the services.* septet above: changedOAuthProviderLeaves'
-	// per-id, per-field diff (called separately, just above the generic
-	// loop) already gives finer-grained warnings than comparing a single
-	// wildcard schema entry ever could.
+	// oauth_providers.* — same reasoning as the services.* septet above:
+	// changedOAuthProviderLeaves' per-id, per-field diff (called
+	// separately, just above the generic loop) already gives
+	// finer-grained warnings than comparing a single wildcard schema
+	// entry ever could.
 	"oauth_providers.*.token_endpoint":    "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"oauth_providers.*.client_id":         "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"oauth_providers.*.client_secret_key": "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"oauth_providers.*.scopes":            "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	// docs/plans/api-gateway.md §7, PR3 (login flow) additions — same
-	// reasoning as the quartet above.
+	// Login flow additions — same reasoning as the quartet above.
 	"oauth_providers.*.flow":                          "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"oauth_providers.*.authorization_endpoint":        "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"oauth_providers.*.device_authorization_endpoint": "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"oauth_providers.*.authorize_params.*":            "covered by changedOAuthProviderLeaves' per-id, whole-map diff (finer-grained than a wildcard comparison)",
-	// docs/plans/api-gateway.md §6-補, PR4 (client_credentials grant)
-	// addition — same reasoning as the rest of this block.
+	// client_credentials grant addition — same reasoning as the rest of
+	// this block.
 	"oauth_providers.*.grant": "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 }
 
@@ -569,7 +517,7 @@ var restartFieldExtractorExemptions = map[string]string{
 // config.ReloadRestartRequired is registered in neither restartFieldExtractors
 // nor restartFieldExtractorExemptions — the same exhaustiveness
 // TestRestartFieldExtractors_ExhaustiveCoverage pins at `go test` time,
-// re-verified here at daemon startup (BLOCKER, codex review round 3).
+// re-verified here at daemon startup.
 //
 // Called once from wire.go's buildRuntime, before srv.liveConfig/
 // srv.configPath are set and therefore before GET/POST /api/config
@@ -594,10 +542,10 @@ func verifyRestartExtractorCoverage() {
 
 // changedForgeLeaves returns the sorted set of dotted "<id>.<leaf>" strings
 // (e.g. "github.secret_key") for every gateway.forges leaf that actually
-// differs between oldForges and newForges (MINOR 2, codex review round 1:
-// name the exact leaf that changed, not just the forge id). A forge id
-// added or removed wholesale reports just "<id>" (no single leaf is more
-// "the" changed one than another when the whole entry appeared/vanished).
+// differs between oldForges and newForges — naming the exact leaf that
+// changed, not just the forge id. A forge id added or removed wholesale
+// reports just "<id>" (no single leaf is more "the" changed one than
+// another when the whole entry appeared/vanished).
 func changedForgeLeaves(oldForges, newForges map[string]config.ForgeConfig) []string {
 	ids := make(map[string]struct{}, len(oldForges)+len(newForges))
 	for id := range oldForges {
@@ -633,9 +581,9 @@ func changedForgeLeaves(oldForges, newForges map[string]config.ForgeConfig) []st
 	return changed
 }
 
-// changedServiceLeaves is changedForgeLeaves' counterpart for
-// services.* (docs/plans/api-gateway.md §2/PR1): returns the sorted set of
-// dotted "<name>.<leaf>" strings for every services.<name> leaf that
+// changedServiceLeaves is changedForgeLeaves' counterpart for services.*:
+// returns the sorted set of dotted "<name>.<leaf>" strings for every
+// services.<name> leaf that
 // actually differs between oldServices and newServices. A service name
 // added or removed wholesale reports just "<name>" (no single leaf is more
 // "the" changed one than another when the whole entry appeared/vanished) —
@@ -661,8 +609,7 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			if o.BaseURL != n.BaseURL {
 				changed = append(changed, name+".base_url")
 			}
-			// base_url_secret_key (docs/plans/api-gateway-credential-
-			// accounts.md D12) — same per-leaf diff treatment as base_url
+			// base_url_secret_key — same per-leaf diff treatment as base_url
 			// itself just above.
 			if o.BaseURLSecretKey != n.BaseURLSecretKey {
 				changed = append(changed, name+".base_url_secret_key")
@@ -670,12 +617,12 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			if o.AllowInsecure != n.AllowInsecure {
 				changed = append(changed, name+".allow_insecure")
 			}
-			// allow_readonly_write / require_account (PR #1040 opus
-			// review, item 1): same per-leaf diff treatment as every
-			// other services.* field in this function — see the
-			// restartFieldExtractorExemptions entries for these two paths
-			// (below) for why they are exempt from the generic loop
-			// instead of getting their own restartFieldExtractors entry.
+			// allow_readonly_write / require_account: same per-leaf diff
+			// treatment as every other services.* field in this function
+			// — see the restartFieldExtractorExemptions entries for
+			// these two paths (below) for why they are exempt from the
+			// generic loop instead of getting their own
+			// restartFieldExtractors entry.
 			if o.AllowReadOnlyWrite != n.AllowReadOnlyWrite {
 				changed = append(changed, name+".allow_readonly_write")
 			}
@@ -691,8 +638,7 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			if o.Auth.Username != n.Auth.Username {
 				changed = append(changed, name+".auth.username")
 			}
-			// auth.username_secret_key (docs/plans/api-gateway-credential-
-			// accounts.md D12) — same per-leaf diff treatment as
+			// auth.username_secret_key — same per-leaf diff treatment as
 			// auth.username itself just above.
 			if o.Auth.UsernameSecretKey != n.Auth.UsernameSecretKey {
 				changed = append(changed, name+".auth.username_secret_key")
@@ -706,20 +652,18 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			if o.Auth.Provider != n.Auth.Provider {
 				changed = append(changed, name+".auth.provider")
 			}
-			// docs/plans/signal-driven-review.md §7.2, docs/plans/
-			// signal-ingest-detailed-design.md §6.1 (PR-4) additions — same
-			// "safer left to a restart" reasoning as every other leaf here
-			// (a mid-flight uses:/endpoint/credentials change would need
-			// the desugared apigateway.ServiceConfig this instance
-			// resolves to rebuilt against the Pack registry).
+			// uses/endpoint/credentials additions — same "safer left to a
+			// restart" reasoning as every other leaf here (a mid-flight
+			// uses:/endpoint/credentials change would need the desugared
+			// apigateway.ServiceConfig this instance resolves to rebuilt
+			// against the Pack registry).
 			if o.Uses != n.Uses {
 				changed = append(changed, name+".uses")
 			}
 			if o.Endpoint != n.Endpoint {
 				changed = append(changed, name+".endpoint")
 			}
-			// endpoint_secret_key (docs/plans/api-gateway-credential-
-			// accounts.md D13) — same per-leaf diff treatment as endpoint
+			// endpoint_secret_key — same per-leaf diff treatment as endpoint
 			// itself just above.
 			if o.EndpointSecretKey != n.EndpointSecretKey {
 				changed = append(changed, name+".endpoint_secret_key")
@@ -727,16 +671,16 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			if !maps.Equal(o.Credentials, n.Credentials) {
 				changed = append(changed, name+".credentials")
 			}
-			// services.*.username (feat/credential-slot-instance-username) —
-			// same "safer left to a restart" reasoning as uses:/endpoint/
-			// credentials.* just above (a mid-flight change would need the
-			// desugared apigateway.ServiceConfig this instance resolves to
-			// rebuilt against the Pack registry).
+			// services.*.username — same "safer left to a restart" reasoning
+			// as uses:/endpoint/credentials.* just above (a mid-flight
+			// change would need the desugared apigateway.ServiceConfig
+			// this instance resolves to rebuilt against the Pack
+			// registry).
 			if o.Username != n.Username {
 				changed = append(changed, name+".username")
 			}
-			// username_secret_key (D13) — same per-leaf diff treatment as
-			// username itself just above.
+			// username_secret_key — same per-leaf diff treatment as username
+			// itself just above.
 			if o.UsernameSecretKey != n.UsernameSecretKey {
 				changed = append(changed, name+".username_secret_key")
 			}
@@ -747,8 +691,8 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 }
 
 // changedOAuthProviderLeaves is changedServiceLeaves' counterpart for
-// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2): returns the
-// sorted set of dotted "<name>.<leaf>" strings for every oauth_providers.
+// oauth_providers.*: returns the sorted set of dotted "<name>.<leaf>"
+// strings for every oauth_providers.
 // <name> leaf that actually differs between oldProviders and newProviders. A
 // provider name added or removed wholesale reports just "<name>" — same
 // convention as changedServiceLeaves/changedForgeLeaves.
@@ -782,10 +726,10 @@ func changedOAuthProviderLeaves(oldProviders, newProviders map[string]config.OAu
 			if !slices.Equal(o.Scopes, n.Scopes) {
 				changed = append(changed, name+".scopes")
 			}
-			// docs/plans/api-gateway.md §7, PR3 (login flow) additions —
-			// same "safer left to a restart" reasoning as every other leaf
-			// here (a mid-flight Flow/endpoint change would need
-			// LoginManager's provider registry rebuilt).
+			// Login flow additions — same "safer left to a restart"
+			// reasoning as every other leaf here (a mid-flight
+			// Flow/endpoint change would need LoginManager's provider
+			// registry rebuilt).
 			if o.Flow != n.Flow {
 				changed = append(changed, name+".flow")
 			}
@@ -798,10 +742,10 @@ func changedOAuthProviderLeaves(oldProviders, newProviders map[string]config.OAu
 			if !maps.Equal(o.AuthorizeParams, n.AuthorizeParams) {
 				changed = append(changed, name+".authorize_params")
 			}
-			// docs/plans/api-gateway.md §6-補, PR4 addition — same "safer
-			// left to a restart" reasoning as every other leaf here (a
-			// mid-flight Grant change would need OAuth2TokenSource's
-			// provider registry rebuilt).
+			// client_credentials grant addition — same "safer left to a
+			// restart" reasoning as every other leaf here (a mid-flight
+			// Grant change would need OAuth2TokenSource's provider
+			// registry rebuilt).
 			if o.Grant != n.Grant {
 				changed = append(changed, name+".grant")
 			}

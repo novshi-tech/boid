@@ -1,17 +1,9 @@
 package api
 
-// docs/plans/ingestion-identity.md PR-4 (B-5): トリガ実行機構。本 doc の
-// 中核。daemon が持つ 3 つの持ち分 (J-4) — スケジュール / single-flight /
-// 実行結果の記録 — をこのファイルと trigger_run.go (store 層) で実装する。
-//
-// TriggerLoop (このファイル下半分) は QueueSweepLoop (queue_sweep.go) と
-// 同型: Run(ctx) が ticker を回し、runOnce が 1 巡ぶんを見る。
-// TaskWorkflowService.SweepTriggers (このファイル上半分) が 1 巡の実処理 —
-// SweepWake/SweepTriage が TaskWorkflowService のメソッドなのと同じ配置。
-//
-// daemon は run の中身を一切知らない (J-2) — SweepTriggers が読むのは
-// Trigger{Name, Every, Run} の 3 フィールドだけで、Run は
-// api.ExecDispatcher.StartExec に文字列のまま渡すだけである。
+// Trigger execution: scheduling, single-flight, and result recording for
+// project.yaml `triggers[]`. TriggerLoop (below) mirrors QueueSweepLoop
+// (queue_sweep.go): Run(ctx) ticks and runOnce delegates to SweepTriggers,
+// TaskWorkflowService's per-tick work.
 
 import (
 	"context"
@@ -27,8 +19,7 @@ import (
 )
 
 // TriggerKey identifies one trigger within one project — the single-flight
-// and elapsed-time scoping unit (12 節 B-5 既定案「single-flight の粒度は
-// トリガ単位」).
+// and elapsed-time scoping unit.
 type TriggerKey struct {
 	ProjectID   string
 	TriggerName string
@@ -47,61 +38,36 @@ type TriggerCompletionResult struct {
 	ExitCode int
 }
 
-// TriggerSkip records one trigger that WAS due this tick but single-flight
-// blocked it — Since/Every are the blocking run's StartedAt and the
-// trigger's own configured interval, both needed by
-// TriggerLoop.trackSkipStreak to judge whether the in-flight duration is
-// actually anomalous relative to `every` (Opus review Blocker 2 (ii): a
-// raw sweep-tick count conflates "waited 3 ticks" with "waited 3 minutes",
-// which are wildly different things when `every` is 10m and the sweep
-// interval is 1m).
+// TriggerSkip records one trigger that was due this tick but single-flight
+// blocked it.
 type TriggerSkip struct {
 	TriggerKey
-	// Since is the blocking run's StartedAt — how long it has been in
-	// flight as of this tick.
+	// Since is the blocking run's StartedAt.
 	Since time.Time
-	// Every is trigger.Every, parsed. Zero if the blocking run's own
-	// trigger definition's `every` could not be parsed (should not happen —
-	// ValidateTriggers rejects that at project.yaml load time — but
-	// trackSkipStreak treats a zero Every defensively, see its own doc
-	// comment).
+	// Every is trigger.Every, parsed; zero only if the blocking run's own
+	// trigger definition failed to parse (should not happen —
+	// ValidateTriggers rejects that at load time).
 	Every time.Duration
-	// Timeout is the trigger's declared bound on one round, zero when it
-	// declared none. trackSkipStreak prefers it over its own
-	// TriggerStuckOverrunMultiplier × Every guess: once an author has SAID how
-	// long a round may run, a shorter guess derived from the polling interval
-	// is not a second opinion, it is noise — and the overrun it would report is
-	// already handled, by ending the round rather than notifying about it.
+	// Timeout is the trigger's declared round bound, zero if undeclared.
+	// trackSkipStreak prefers it over guessing from Every.
 	Timeout time.Duration
 }
 
-// TriggerSweepResult is SweepTriggers' return shape. TriggerLoop.runOnce
-// uses it for stuck/failure-streak bookkeeping (see TriggerLoop's own doc
-// comment); tests use it to pin behavior without reaching into the DB.
+// TriggerSweepResult is SweepTriggers' return shape, used by TriggerLoop for
+// stuck/failure-streak bookkeeping and by tests to pin behavior.
 type TriggerSweepResult struct {
-	// Fired lists triggers this sweep actually dispatched (`every` had
-	// elapsed and no in-flight run blocked it).
+	// Fired lists triggers this sweep actually dispatched.
 	Fired []TriggerFireResult
-	// Skipped lists triggers that were DUE (`every` had elapsed) but
-	// single-flight blocked them this tick (Opus review Blocker 2 (i)): a
-	// trigger that simply hasn't reached its next `every` yet is NOT a
-	// skip, even while a prior run of it is still in flight — counting that
-	// as a skip is what caused every-10m/execution-takes-5m triggers to
-	// rack up "3 consecutive skips" (and notify) on a completely healthy
-	// schedule, once the sweep interval (1m) is much shorter than `every`.
+	// Skipped lists triggers that were due but single-flight blocked them
+	// this tick — not a trigger that simply hasn't reached its next `every`.
 	Skipped []TriggerSkip
-	// Completed lists trigger_runs rows this sweep's reconciliation pass
-	// newly marked finished (their job reached a terminal status).
+	// Completed lists trigger_runs rows this sweep newly marked finished.
 	Completed []TriggerCompletionResult
 }
 
-// hydrateMetaForTriggers resolves projectID's ProjectMeta the same
-// two-step way ResolveOrCapture does (task_resolve_or_capture.go): prefer
-// the workspace-hydrated view (GetWithWorkspace) so a workspace-default
-// project definition's fields are visible, falling back to the bare
-// in-memory cache (Get) when hydration fails or Meta only implements the
-// narrower shape. Returns nil when neither succeeds — callers treat that as
-// "no triggers for this project" rather than erroring the whole sweep.
+// hydrateMetaForTriggers resolves projectID's ProjectMeta, preferring the
+// workspace-hydrated view and falling back to the bare in-memory cache.
+// Returns nil when neither succeeds ("no triggers for this project").
 func (s *TaskWorkflowService) hydrateMetaForTriggers(ctx context.Context, projectID string) *orchestrator.ProjectMeta {
 	if s.Meta == nil {
 		return nil
@@ -116,16 +82,9 @@ func (s *TaskWorkflowService) hydrateMetaForTriggers(ctx context.Context, projec
 }
 
 // jobTerminalState reports whether jobID has reached a terminal status
-// (JobStatusCompleted/JobStatusFailed) and, if so, its exit code.
-//
-// Any error from s.Jobs.GetJob (including "no such job") is propagated
-// as-is, NOT translated into a synthetic terminal state — internal/dispatcher's
-// GetJob has no distinguishable not-found sentinel (its own scanJob wraps
-// sql.ErrNoRows into a plain fmt.Errorf), so this deliberately does not try
-// to guess "genuinely vanished" apart from "transient read error" itself;
-// reconcileInFlight is what decides, via selfHealStaleTriggerRun, how long
-// to keep retrying before giving up on a jobID it can never resolve (N-1,
-// Opus review) — see that function's own doc comment.
+// (JobStatusCompleted/JobStatusFailed) and, if so, its exit code. Any error
+// from s.Jobs.GetJob is propagated as-is — reconcileInFlight decides how
+// long to keep retrying via selfHealStaleTriggerRun.
 func (s *TaskWorkflowService) jobTerminalState(jobID string) (exitCode int, terminal bool, err error) {
 	if s.Jobs == nil {
 		return 0, false, fmt.Errorf("job store not configured")
@@ -141,88 +100,44 @@ func (s *TaskWorkflowService) jobTerminalState(jobID string) (exitCode int, term
 }
 
 // TriggerRunSelfHealGrace bounds how long a trigger_runs row may sit
-// in-flight without ever resolving to a real job's terminal state — either
-// because run.JobID is still empty (SetTriggerRunJobID hasn't landed yet,
-// see fireTrigger) or because s.Jobs.GetJob(run.JobID) keeps erroring
-// (typically: the job row itself is gone, e.g. swept by the 30-day taskless-
-// job GC, since trigger_runs.job_id is not a real FK) — before
-// reconcileInFlight gives up waiting and force-closes it (N-1, Opus
-// review). Without this, a vanished job row wedges single-flight for that
-// (project, trigger) forever: there is no other self-recovery path (a
-// daemon restart's dispatcher.MarkStaleJobsFailed only touches rows that
-// still EXIST in jobs, and `boid trigger run` only ever returns Skipped).
-//
-// Expressed as elapsed wall-clock time, not a tick counter, deliberately:
-// reconcileInFlight runs from BOTH the periodic TriggerLoop AND
-// RunTriggerNow's own HTTP-handler goroutine, so a shared in-memory counter
-// would need its own mutex to stay -race clean (unlike
-// TriggerLoop.skipStreak/failStreak, which only the single periodic-sweep
-// goroutine ever touches). 3 minutes matches TriggerStuckSkipThreshold-era
-// "3 consecutive sweep ticks" convention at TriggerLoop's own 1-minute
-// Interval (wire.go), while working out to a duration regardless of what
-// Interval or RunTriggerNow call pattern actually applies.
+// in-flight without resolving to a real job's terminal state before
+// reconcileInFlight force-closes it — otherwise a vanished job row (e.g.
+// swept by GC) would wedge single-flight for that (project, trigger)
+// forever. Expressed as wall-clock time rather than a tick count because
+// reconcileInFlight also runs from RunTriggerNow's own goroutine.
 const TriggerRunSelfHealGrace = 3 * time.Minute
 
 // TriggerRunSelfHealExitCode is the sentinel CompleteTriggerRun records for
-// a self-healed row (N-1) — flows into TriggerCompletionResult like any
-// other non-zero exit code, so it also counts toward trackFailStreak's
-// consecutive-failure notification (a self-heal IS a failure worth
-// surfacing). Outside a real command's 0-255 exit code range so it reads
+// a self-healed row — counts toward trackFailStreak like any other non-zero
+// exit code. Outside the real 0-255 exit code range so it reads
 // unambiguously in logs/notifications.
 const TriggerRunSelfHealExitCode = -1
 
 // TriggerDispatchFailureExitCode is the sentinel SweepTriggers reports in
-// TriggerSweepResult.Completed for a StartExec (dispatch) failure — distinct
-// from TriggerRunSelfHealExitCode so the two failure classes stay
-// distinguishable in logs/notifications (self-heal = a job WAS dispatched
-// but its outcome was never observed; this = the job was never dispatched
-// at all). docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5 review
-// finding, B2): before this existed, a dispatch failure (pack not
-// installed, connector config schema violation, ambiguous pack version —
-// new failure classes a connector trigger's StartExec can hit that an
-// ordinary schedule trigger's `sh -c` almost never does) was ONLY
-// slog.Warn'd (fireTrigger's fail-open retry path) and never reached
-// TriggerLoop.trackFailStreak, which reads exclusively from Completed — an
-// operator would see nothing but silent, indefinite per-tick retries in the
-// daemon's own log.
-//
-// Deliberately does NOT change fireTrigger's own DeleteTriggerRun-on-failure
-// behavior (SweepTriggers' own comment at the call site explains why: an
-// `every`-gapped CompleteTriggerRun would delay the "fail-open, retry next
-// tick" behavior every trigger has always had, all the way out to a full
-// `every` — this sentinel is reported to trackFailStreak ALONGSIDE the
-// existing delete, purely for notification bookkeeping, not as a
-// trigger_runs row of its own).
+// TriggerSweepResult.Completed for a StartExec (dispatch) failure —
+// distinct from TriggerRunSelfHealExitCode so the two failure classes stay
+// distinguishable (self-heal = a job was dispatched but its outcome was
+// never observed; this = the job was never dispatched at all).
 const TriggerDispatchFailureExitCode = -2
 
-// TriggerTimeoutExitCode is the sentinel SweepTriggers records for a run ended
-// by its trigger's own `timeout` — distinct from the other two so the three
-// failure classes stay apart in logs and notifications (self-heal = a job was
-// dispatched but its outcome was never observed; dispatch failure = the job was
-// never dispatched; this = the round ran and took too long).
-//
-// It flows into TriggerCompletionResult like any other non-zero exit, which is
-// the whole point: with a declared bound, "this is taking too long" stops being
-// something trackSkipStreak has to GUESS at from `every` and becomes an
-// ordinary failure trackFailStreak already knows how to count.
+// TriggerTimeoutExitCode is the sentinel SweepTriggers records for a run
+// ended by its trigger's own `timeout` — distinct from the other two
+// (self-heal = dispatched but unobserved; dispatch failure = never
+// dispatched; this = ran too long).
 const TriggerTimeoutExitCode = -3
 
 // selfHealStaleTriggerRun force-closes run if it has been in flight, unable
 // to resolve to a real job's terminal state, for at least
-// TriggerRunSelfHealGrace (N-1, Opus review). Returns true when it closed
-// the row (the caller must treat it as no-longer-in-flight and, if given a
-// non-nil completed slice, record it there); false when the grace period
-// has not elapsed yet (the caller leaves it in stillInFlight and retries
-// next call, same as before this existed).
+// TriggerRunSelfHealGrace. Returns true when it closed the row (the caller
+// must treat it as no-longer-in-flight); false when the grace period has
+// not elapsed yet.
 func (s *TaskWorkflowService) selfHealStaleTriggerRun(now time.Time, run *orchestrator.TriggerRun, completed *[]TriggerCompletionResult) bool {
 	if now.Sub(run.StartedAt) < TriggerRunSelfHealGrace {
 		return false
 	}
 	if err := s.Triggers.CompleteTriggerRun(run.ID, now, TriggerRunSelfHealExitCode); err != nil {
 		if errors.Is(err, orchestrator.ErrTriggerRunAlreadyFinished) {
-			// Closed by the timeout path first. The row is no longer in
-			// flight, so report it as healed (the caller must stop treating it
-			// as blocking) but record no completion — the winner already did.
+			// Closed by the timeout path first — report healed, no completion.
 			slog.Debug("trigger reconcile: the stale run was already closed by the timeout path", "run_id", run.ID)
 			return true
 		}
@@ -241,17 +156,10 @@ func (s *TaskWorkflowService) selfHealStaleTriggerRun(now time.Time, run *orches
 }
 
 // reconcileInFlight re-checks every trigger_runs row with finished_at IS
-// NULL against its job's current status, completing (CompleteTriggerRun)
-// any whose job has reached a terminal status, and returns the set that is
-// STILL genuinely in flight after reconciliation — the single-flight
-// membership test both SweepTriggers' per-trigger loop and RunTriggerNow
-// use. completed, when non-nil, receives one entry per row newly completed
-// this call (SweepTriggers' failure-streak bookkeeping; RunTriggerNow
-// passes nil since a manual run has no streak to track).
-//
-// A single ListInFlightTriggerRuns() query up front, not one query per
-// trigger definition — same "workspace-scoped batch read" posture PR-3's
-// ListActionsSince established for action_list.
+// NULL against its job's current status, completing any whose job has
+// reached a terminal status, and returns the set still genuinely in flight
+// — the single-flight membership test both SweepTriggers and RunTriggerNow
+// use. completed, when non-nil, receives one entry per row newly completed.
 func (s *TaskWorkflowService) reconcileInFlight(now time.Time, completed *[]TriggerCompletionResult) (map[TriggerKey]*orchestrator.TriggerRun, error) {
 	runs, err := s.Triggers.ListInFlightTriggerRuns()
 	if err != nil {
@@ -261,14 +169,10 @@ func (s *TaskWorkflowService) reconcileInFlight(now time.Time, completed *[]Trig
 	for _, run := range runs {
 		key := TriggerKey{ProjectID: run.ProjectID, TriggerName: run.TriggerName}
 
-		// Opus review Blocker 1: fireTrigger inserts a row BEFORE dispatch,
-		// so a row with JobID=="" is either mid-dispatch (a concurrent
-		// fireTrigger call hasn't reached SetTriggerRunJobID yet — normal,
-		// can take real wall-clock seconds for a container to start) or
-		// that update itself failed (fireTrigger's own residual-gap note).
-		// Both look identical from here; selfHealStaleTriggerRun's grace
-		// period is what tells "still dispatching" from "stuck forever"
-		// apart, exactly as it does for a GetJob error below.
+		// A row with JobID=="" is either mid-dispatch (SetTriggerRunJobID
+		// hasn't landed yet) or that update itself failed — both look
+		// identical from here, and selfHealStaleTriggerRun's grace period is
+		// what tells them apart from "stuck forever".
 		if run.JobID == "" {
 			if s.selfHealStaleTriggerRun(now, run, completed) {
 				continue
@@ -292,12 +196,8 @@ func (s *TaskWorkflowService) reconcileInFlight(now time.Time, completed *[]Trig
 		}
 		if cerr := s.Triggers.CompleteTriggerRun(run.ID, now, exitCode); cerr != nil {
 			if errors.Is(cerr, orchestrator.ErrTriggerRunAlreadyFinished) {
-				// The timeout goroutine (finishTimeOutTriggerRun) closed it
-				// first. The row IS closed, so treating this as a failure and
-				// putting it back in stillInFlight would report the trigger as
-				// busy for a tick it is not, and hand a Skip to
-				// trackSkipStreak for a round that already ended. The winner
-				// reported the completion; this side stays quiet.
+				// The timeout goroutine closed it first; stay quiet so this
+				// completion isn't reported twice.
 				slog.Debug("trigger reconcile: the run was already closed by the timeout path",
 					"run_id", run.ID, "job_id", run.JobID)
 				continue
@@ -314,30 +214,10 @@ func (s *TaskWorkflowService) reconcileInFlight(now time.Time, completed *[]Trig
 }
 
 // beginTimeOutTriggerRun ends a round that outlived its trigger's `timeout`,
-// off the sweep goroutine.
-//
-// Asynchronous because Lifecycle.StopJobRuntime below wraps Adopt+Stop in a
-// 30 s deadline (dispatcher.sessionControlCallTimeout) and runs synchronously.
-// TriggerLoop.runOnce is a SINGLE goroutine on a 1-minute ticker covering every
-// project, so doing that inline would let one wedged container engine stop
-// every trigger in the daemon from being evaluated at all. This file already
-// made the same correction once, for notify (notifyTimeout, N-3), and
-// workflow_job.go's own `go s.Lifecycle.StopJobRuntime(...)` is the established
-// shape.
-//
-// The abort is NOT a second reason, contrary to an earlier draft of this
-// comment: ApplyAction reaches CleanupTaskWindow only through finalizeTerminal,
-// which runs inside the `go func()` runDispatchLoop that applyAction launches
-// and never waits on — so ApplyAction("abort") returns without blocking on the
-// engine.
-//
-// The run is deliberately NOT closed before the work finishes. Leaving it in
-// flight keeps single-flight held, so no new round can start against a task
-// that is still being ended — and if the abort fails, the row simply stays in
-// flight and the next tick tries again. The completion is stashed in
-// pendingTimeouts and drained into the NEXT sweep's result, which is what
-// trackFailStreak reads; one sweep interval of latency on a notification is
-// nothing next to reporting a failure whose cleanup never happened.
+// off the sweep goroutine — Lifecycle.StopJobRuntime runs synchronously
+// under its own deadline, and TriggerLoop.runOnce is a single goroutine
+// covering every project, so doing this inline would let one wedged engine
+// stall every trigger from being evaluated at all.
 func (s *TaskWorkflowService) beginTimeOutTriggerRun(
 	ctx context.Context,
 	key TriggerKey,
@@ -358,19 +238,11 @@ func (s *TaskWorkflowService) beginTimeOutTriggerRun(
 // finishTimeOutTriggerRun is beginTimeOutTriggerRun's body, off the sweep
 // goroutine.
 //
-// Order is load-bearing. The TASK is ended first, because it is the work: the
-// job is a launcher that happens to still be alive because it is parked in
-// `boid task wait`. Stopping only the job would leave the task running, release
-// single-flight, and let the next tick start a SECOND concurrent round of the
-// same work — strictly worse than the overrun it was meant to cure. Stopping
-// the job afterwards is belt-and-braces: aborting the task makes the wait
-// return on its own, but a job wedged for some other reason would not notice.
-// TestSweepTriggers_PastTimeout_AbortsBeforeStoppingTheJob pins the order.
-//
-// A round with no registered wait (an ordinary trigger whose `run:` does the
-// work inline, or one whose registry entry was lost to a daemon restart) simply
-// has no task to end — the job is stopped and the run is closed, which is all
-// the daemon could ever have done for it.
+// Order is load-bearing: the task is ended first because it is the work —
+// stopping only the job would leave the task running, release
+// single-flight, and let the next tick start a second concurrent round.
+// Stopping the job afterwards is belt-and-braces for a task that would not
+// otherwise notice the abort.
 func (s *TaskWorkflowService) finishTimeOutTriggerRun(
 	ctx context.Context,
 	key TriggerKey,
@@ -385,11 +257,6 @@ func (s *TaskWorkflowService) finishTimeOutTriggerRun(
 		"run_id", runID, "job_id", jobID, "timeout", timeout, "ran_for", overrun.Round(time.Second))
 
 	if s.TaskWaits == nil {
-		// Both halves of the link are wired in one place (wire.go builds ONE
-		// registry and hands it to this service and to TaskAppService). A nil
-		// here means only one end got it, which would otherwise degrade in
-		// complete silence: every timed-out round would stop its job and leave
-		// the task running, exactly the failure the registry exists to prevent.
 		slog.Warn("trigger sweep: no task-wait registry wired; a timed-out round can only stop its job, not the task it started",
 			"project_id", key.ProjectID, "trigger", key.TriggerName)
 	}
@@ -399,21 +266,15 @@ func (s *TaskWorkflowService) finishTimeOutTriggerRun(
 			Payload: timeoutAbortPayload(fmt.Sprintf(
 				"trigger %s/%s: この巡は timeout (%s) を超えたので打ち切りました (実行時間 %s)",
 				key.ProjectID, key.TriggerName, timeout, overrun.Round(time.Second))),
-			// actionPayloadOnly: the reason belongs on the abort action, not
-			// merged into the task's own payload — see the option's doc.
 		}, applyActionOptions{actionPayloadOnly: true}); err != nil {
 			if isPermanentAbortRefusal(err) {
-				// The task cannot be aborted and never will be — the card
-				// machine has no `abort` rule, so a registry entry pointing at
-				// a card 400s here every time. Retrying would wedge the trigger
+				// The task cannot be aborted and never will be (e.g. a card
+				// has no `abort` rule) — retrying would wedge the trigger
 				// forever, so fall through: stop the job and close the run.
 				slog.Warn("trigger sweep: the task the timed-out round was waiting on refuses abort; ending the round without it",
 					"project_id", key.ProjectID, "trigger", key.TriggerName, "task_id", taskID, "error", err)
 			} else {
-				// Transient (a busy DB, a blip in the dispatch path). Leave the
-				// run in flight — single-flight stays held, so no second round
-				// can start against work that is still running — and let the
-				// next tick try again.
+				// Transient — leave the run in flight and let the next tick retry.
 				slog.Warn("trigger sweep: could not abort the task the timed-out round was waiting on; retrying next tick",
 					"project_id", key.ProjectID, "trigger", key.TriggerName, "task_id", taskID, "error", err)
 				return
@@ -429,19 +290,13 @@ func (s *TaskWorkflowService) finishTimeOutTriggerRun(
 
 	if err := s.Triggers.CompleteTriggerRun(runID, now, TriggerTimeoutExitCode); err != nil {
 		if errors.Is(err, orchestrator.ErrTriggerRunAlreadyFinished) {
-			// reconcileInFlight got there first — the abort made the parked
-			// `boid task wait` return, the job exited, and a tick observed that
-			// while this goroutine was still inside StopJobRuntime. It already
-			// reported the completion with the job's real exit code, so
-			// stashing a second one here would count one round twice against
-			// the fail streak.
+			// reconcileInFlight got there first and already reported the
+			// completion with the job's real exit code.
 			slog.Info("trigger sweep: the timed-out run was already closed by the reconcile pass",
 				"project_id", key.ProjectID, "trigger", key.TriggerName, "run_id", runID)
 			return
 		}
-		// Leave it in flight: the next tick sees the same overrun and tries
-		// again. Reporting a completion we failed to persist would let a
-		// second round start against a row that is still claimed.
+		// Leave it in flight: the next tick sees the same overrun and retries.
 		slog.Warn("trigger sweep: could not close the timed-out run; retrying next tick",
 			"project_id", key.ProjectID, "trigger", key.TriggerName, "run_id", runID, "error", err)
 		return
@@ -450,12 +305,10 @@ func (s *TaskWorkflowService) finishTimeOutTriggerRun(
 }
 
 // isPermanentAbortRefusal reports whether an ApplyAction error means the task
-// will never accept an abort, as opposed to a transient failure worth retrying.
-// A 4xx is the service layer saying the request itself is wrong (an unknown
-// action for this task's machine, a task that no longer exists); anything else
-// — including a bare error from the transaction — is treated as transient,
-// because the cost of wrongly retrying is one more tick while the cost of
-// wrongly giving up is a task left running with single-flight released.
+// will never accept an abort, as opposed to a transient failure worth
+// retrying: a 4xx means the request itself is wrong; anything else is
+// treated as transient, since wrongly retrying costs a tick while wrongly
+// giving up leaves a task running with single-flight released.
 func isPermanentAbortRefusal(err error) bool {
 	var se *StatusError
 	if errors.As(err, &se) {
@@ -465,8 +318,7 @@ func isPermanentAbortRefusal(err error) bool {
 }
 
 // claimTimeout marks runID as being ended, returning false when a goroutine
-// already holds it. Without this, every tick while a slow abort is in progress
-// would spawn another one for the same run.
+// already holds it.
 func (s *TaskWorkflowService) claimTimeout(runID string) bool {
 	s.timeoutMu.Lock()
 	defer s.timeoutMu.Unlock()
@@ -480,9 +332,8 @@ func (s *TaskWorkflowService) claimTimeout(runID string) bool {
 	return true
 }
 
-// timeoutHeld reports whether a timeout goroutine currently holds runID. Only
-// tests use it — production never needs to ask, since claimTimeout answers the
-// same question atomically at the one place that acts on it.
+// timeoutHeld reports whether a timeout goroutine currently holds runID.
+// Only tests use it.
 func (s *TaskWorkflowService) timeoutHeld(runID string) (struct{}, bool) {
 	s.timeoutMu.Lock()
 	defer s.timeoutMu.Unlock()
@@ -496,17 +347,16 @@ func (s *TaskWorkflowService) releaseTimeout(runID string) {
 	delete(s.timingOut, runID)
 }
 
-// stashTimeoutCompletion parks a completion recorded off the sweep goroutine so
-// the next sweep can report it. Appending to the in-flight result directly would
-// be a data race — SweepTriggers has already returned by the time this runs.
+// stashTimeoutCompletion parks a completion recorded off the sweep goroutine
+// so the next sweep can report it.
 func (s *TaskWorkflowService) stashTimeoutCompletion(c TriggerCompletionResult) {
 	s.timeoutMu.Lock()
 	defer s.timeoutMu.Unlock()
 	s.pendingTimeouts = append(s.pendingTimeouts, c)
 }
 
-// drainTimeoutCompletions hands the sweep every completion recorded off-thread
-// since the last tick.
+// drainTimeoutCompletions hands the sweep every completion recorded
+// off-thread since the last tick.
 func (s *TaskWorkflowService) drainTimeoutCompletions() []TriggerCompletionResult {
 	s.timeoutMu.Lock()
 	defer s.timeoutMu.Unlock()
@@ -516,12 +366,9 @@ func (s *TaskWorkflowService) drainTimeoutCompletions() []TriggerCompletionResul
 }
 
 // timeoutAbortPayload renders the abort action payload a timed-out round
-// records. The shape matches abortOnDispatchError's (code + message) so
-// `boid task show --field lifecycle.abort.code` reads the same way for every
-// daemon-initiated abort — and, like that path, it lands ONLY on the action:
-// the caller passes applyActionOptions{actionPayloadOnly: true}, without which
-// ApplyAction's generic merge would write these two keys into the task's own
-// payload and silently replace an existing `message` there.
+// records, matching abortOnDispatchError's {code, message} shape. Passed
+// with applyActionOptions{actionPayloadOnly: true} so it lands only on the
+// action, not merged into the task's own payload.
 func timeoutAbortPayload(message string) json.RawMessage {
 	payload, err := json.Marshal(map[string]string{"code": "trigger_timeout", "message": message})
 	if err != nil {
@@ -533,12 +380,7 @@ func timeoutAbortPayload(message string) json.RawMessage {
 }
 
 // triggerIsDue reports whether every has elapsed since key's last recorded
-// start — true unconditionally when the trigger has never run
-// (LatestTriggerRun returns ErrTriggerRunNotFound). every is the caller's
-// already-parsed trig.Every (ValidateTriggers guarantees it parses at
-// project.yaml load time) — parsed once by the caller (SweepTriggers) rather
-// than re-parsed here, since Opus review Blocker 2 (ii) also needs that same
-// parsed value to size a TriggerSkip's overrun threshold.
+// start — true unconditionally when the trigger has never run.
 func (s *TaskWorkflowService) triggerIsDue(now time.Time, key TriggerKey, every time.Duration) (bool, error) {
 	latest, err := s.Triggers.LatestTriggerRun(key.ProjectID, key.TriggerName)
 	if errors.Is(err, orchestrator.ErrTriggerRunNotFound) {
@@ -551,34 +393,17 @@ func (s *TaskWorkflowService) triggerIsDue(now time.Time, key TriggerKey, every 
 }
 
 // signalsPendingForTrigger evaluates the extra `on: signals` half of the due
-// predicate (docs/plans/signal-ingest-detailed-design.md §4.2):
+// predicate:
 //
 //	due := now - latestRun.StartedAt >= every        # triggerIsDue, unchanged
 //	if trig.On == "signals":
 //	    due = due && HasPendingSignals(workspaceOf(project))
 //
-// meta is the SAME hydrated *orchestrator.ProjectMeta the caller
-// (SweepTriggers) already read off hydrateMetaForTriggers for this project —
-// meta.SecretNamespace carries the resolved workspace id whenever the
-// project has a linked workspace (ProjectStore.GetWithWorkspace always
-// injects it, including in its degraded os.ErrNotExist window; see that
-// method's own doc comment), so this issues NO new DB query to re-resolve
-// the workspace, matching §4.2's explicit requirement.
-//
-// A project with no linked workspace (empty SecretNamespace) is always not
-// due — logged at Debug, not Warn/error: this is an ordinary, expected
-// project.yaml shape (an on:signals trigger declared on a workspace-unlinked
-// project), not a failure (§4.2: "常に not due (debug log のみ、エラーにしない)").
-// The same applies when no SignalStore is wired at all (s.Signals nil) —
-// this deliberately does NOT fold into SweepTriggers' top-level nil guard,
-// since that would also block every plain schedule trigger sharing this
-// daemon; only on:signals triggers depend on Signals.
-//
-// A HasPendingSignals error also resolves to not-due (logged at Warn) rather
-// than aborting the whole trigger's evaluation — matching triggerIsDue's own
-// caller (SweepTriggers already treats a per-trigger evaluation error as
-// "skip this trigger this tick, retry next tick", the same fail-open posture
-// dispatch failures get.
+// meta is the same hydrated *orchestrator.ProjectMeta the caller already
+// read off hydrateMetaForTriggers, so this issues no extra query to
+// re-resolve the workspace. A project with no linked workspace, no
+// SignalStore wired, or a HasPendingSignals error all resolve to "not due"
+// rather than erroring the trigger's evaluation.
 func (s *TaskWorkflowService) signalsPendingForTrigger(meta *orchestrator.ProjectMeta, key TriggerKey) bool {
 	if meta.SecretNamespace == "" {
 		slog.Debug("trigger sweep: on:signals trigger's project has no linked workspace; never due", "project_id", key.ProjectID, "trigger", key.TriggerName)
@@ -598,49 +423,32 @@ func (s *TaskWorkflowService) signalsPendingForTrigger(meta *orchestrator.Projec
 
 // triggerRunArgv wraps run the way every trigger-fired exec job's Argv is
 // built: `sh -c` plus an `exec 0</dev/null;` prefix that closes the shell's
-// own stdin before running the command (N-4, Opus review). Needed because
-// container_backend.go's Launch always sets OpenStdin/AttachStdin true
-// (ContainerCreate's cfg), and the ONLY caller that ever half-closes that
-// attach connection's write side is ws_attach.go's interactive-session
-// CloseInput path — a daemon-originated exec job like this one has no
-// attach client at all, so without this the container's stdin pipe stays
-// open forever. Confirmed empirically against a real podman engine with the
-// same OpenStdin:true/AttachStdin:true/nobody-writes-or-closes-it shape
-// (this PR's report, N-4 節): a plain `cat` inside such a container hangs
-// indefinitely (SIGTERM alone does not even stop it); prefixing the command
-// with `exec 0</dev/null;` makes it exit immediately and cleanly. `exec` with
-// no command argument applies the redirect to the CURRENT shell (dash, the
-// sandbox's /bin/sh) rather than spawning a subprocess, so every descendant
-// of `sh -c` — including whatever run itself execs — inherits /dev/null as
-// fd 0.
+// own stdin first. Needed because the container backend always attaches
+// stdin, and a daemon-originated job like this one has no attach client to
+// ever close it — without the prefix the container's stdin pipe (and the
+// command reading it) never sees EOF.
 func triggerRunArgv(run string) []string {
 	return []string{"sh", "-c", "exec 0</dev/null; " + run}
 }
 
-// fireTrigger dispatches trig's `run` command as a readonly exec job (PR-4
-// 節「実行」: Argv ["sh","-c",...trig.Run], Readonly: true 固定) and records
-// the resulting trigger_runs row. Shared by SweepTriggers' per-trigger loop
-// and RunTriggerNow — the single place that both callers hand off to
-// daemon's mechanical part (claim + dispatch + record) after their own
+// fireTrigger dispatches trig's `run` command as a readonly exec job and
+// records the resulting trigger_runs row. Shared by SweepTriggers' per-
+// trigger loop and RunTriggerNow — the single place both callers hand off
+// to daemon's mechanical part (claim + dispatch + record) after their own
 // single-flight/elapsed gating differs.
 //
-// Opus review Blocker 1: the trigger_runs row is created FIRST, claiming
-// single-flight via idx_trigger_runs_inflight_unique (migration 0043)
-// succeeding, BEFORE StartExec is ever called — the reverse of this PR's
-// original order (dispatch, then record). That original order left a
-// window — StartExec can take real wall-clock seconds (spinning up a
-// container) — during which two concurrent callers (two sweep ticks, two
-// `boid trigger run` calls, or two daemon processes sharing one DB file)
-// could both see "nothing in flight" and both dispatch. Insert-then-dispatch
-// closes it: whichever caller's INSERT lands first wins; the loser gets
+// The trigger_runs row is created FIRST, claiming single-flight via a
+// unique index, BEFORE StartExec is ever called — this closes the race
+// window StartExec's real wall-clock latency would otherwise leave open for
+// two concurrent callers to both see "nothing in flight" and both dispatch.
+// Whichever INSERT lands first wins; the loser gets
 // orchestrator.ErrTriggerRunInFlight back from CreateTriggerRun and never
-// calls StartExec at all.
+// calls StartExec.
 //
-// A CreateTriggerRun success has no job_id yet (StartExec hasn't run) —
-// SetTriggerRunJobID fills it in once dispatch succeeds. If StartExec itself
-// fails, the claimed row is deleted (not closed — see DeleteTriggerRun's own
-// doc comment for why closing it would break the pre-existing "fail-open,
-// retry the very same instant" contract).
+// A CreateTriggerRun success has no job_id yet; SetTriggerRunJobID fills it
+// in once dispatch succeeds. If StartExec itself fails, the claimed row is
+// deleted (not closed — see DeleteTriggerRun's own doc comment) so the
+// existing fail-open "retry next tick" behavior isn't delayed a full `every`.
 func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, projectID string, trig orchestrator.Trigger) (jobID string, err error) {
 	if s.Exec == nil {
 		return "", fmt.Errorf("exec dispatcher not configured")
@@ -651,27 +459,17 @@ func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, pr
 	}
 
 	req := StartExecRequest{
-		ProjectID: projectID,
-		Argv:      triggerRunArgv(trig.Run),
-		// PR-4 節「実行」: Readonly true 固定。boid op の allowlist は role
-		// にも readonly にも依存しない (internal/orchestrator/policy.go の
-		// boidPolicy) ので、readonly のまま task_create / action_send が打てる
-		// — この PR の前提そのもの。ExecuteBoidBuiltin を直接呼ぶ形での確認は
-		// TestBoidBuiltinExecutor_TaskCreate_SucceedsFromWhatATriggerJobsSandboxWouldSend
-		// (internal/server/trigger_readonly_task_create_test.go、その doc
-		// comment に「本番の broker/executor 経路そのものではない」範囲が
-		// 明記されている、N-5 Opus review)。
+		ProjectID:   projectID,
+		Argv:        triggerRunArgv(trig.Run),
 		Readonly:    true,
 		DisplayName: "trigger:" + trig.Name,
 	}
-	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5): a
-	// hydrate-derived connector trigger's raw connector declaration is
-	// copied through VERBATIM — no Pack-registry resolution happens here
-	// (internal/api must not import internal/integrationpack; see
-	// TriggerConnector's own doc comment). sessionDispatcherAdapter.StartExec
-	// (internal/server/wire.go) is where this gets resolved into the
-	// connector job's actual env/bind/policy/service-allowlist. nil for
-	// every ordinary trigger — dispatch is completely unchanged for them.
+	// A hydrate-derived connector trigger's raw connector declaration is
+	// copied through verbatim — no Pack-registry resolution happens here
+	// (internal/api must not import internal/integrationpack).
+	// sessionDispatcherAdapter.StartExec (internal/server/wire.go) resolves
+	// it into the connector job's actual env/bind/policy/service-allowlist.
+	// nil for every ordinary trigger.
 	if trig.Connector != nil {
 		req.Connector = &ConnectorRef{
 			Pack:          trig.Connector.Pack,
@@ -684,20 +482,15 @@ func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, pr
 	if err != nil {
 		if derr := s.Triggers.DeleteTriggerRun(run.ID); derr != nil {
 			// Both the dispatch AND its own cleanup failed — the claimed
-			// row is stuck in flight (StartedAt == now) until
-			// TriggerRunSelfHealGrace force-closes it (N-1). Logged, not
-			// swallowed: this is the residual gap DeleteTriggerRun's own
-			// doc comment refers to.
+			// row is stuck in flight until TriggerRunSelfHealGrace force-closes it.
 			slog.Warn("trigger fire: dispatch failed AND cleanup of the claimed row also failed; single-flight for this (project,trigger) will wedge until self-heal", "run_id", run.ID, "project_id", projectID, "trigger", trig.Name, "dispatch_error", err, "cleanup_error", derr)
 		}
 		return "", fmt.Errorf("start exec: %w", err)
 	}
 
 	if serr := s.Triggers.SetTriggerRunJobID(run.ID, result.JobID); serr != nil {
-		// The container IS running but this row never got its job_id —
-		// reconcileInFlight's self-heal (TriggerRunSelfHealGrace) will
-		// eventually force-close this row purely from its empty job_id;
-		// see reconcileInFlight's own doc comment. Logged, not swallowed.
+		// The container IS running but this row never got its job_id;
+		// reconcileInFlight's self-heal will eventually force-close it.
 		slog.Warn("trigger fire: job dispatched but recording its job_id failed; self-heal will close this row after the grace period", "run_id", run.ID, "job_id", result.JobID, "error", serr)
 	}
 	return result.JobID, nil
@@ -705,35 +498,15 @@ func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, pr
 
 // SweepTriggers is TriggerLoop's per-tick work: reconcile in-flight runs,
 // then evaluate every project's triggers[] and fire whichever are due and
-// not single-flight-blocked. Mirrors SweepWake/SweepTriage's shape (both
-// TaskWorkflowService methods called from QueueSweepLoop) — daemon-actor
-// context, tolerant of partial failures (one project/trigger's error is
-// logged and does not abort the sweep for every other one).
+// not single-flight-blocked. Tolerant of partial failures — one project's
+// or trigger's error is logged and does not abort the sweep for any other.
 //
-// Nil Triggers/Projects/Meta/Jobs (any REQUIRED dependency unwired) makes
-// this a no-op, matching TaskWorkflowService's other optional-field
-// conventions (Notifier, TaskCreator) — a daemon built without trigger
-// support wired in simply runs no triggers rather than panicking.
-//
-// Jobs joins this guard for a different reason than Triggers/Projects/Meta
-// (N-10, Opus review): a nil s.Jobs does not fail loudly the way a nil
-// Projects/Meta would — jobTerminalState just returns an error every call,
-// which reconcileInFlight treats as "leave in flight, retry next tick"
-// (indistinguishable from a transient GetJob hiccup). That is harmless for
-// a tick with nothing in flight yet, but the FIRST successful fire creates a
-// row reconcileInFlight can then never resolve — the exact permanent-wedge
-// shape N-1's self-heal exists to recover from, except self-heal cannot
-// help here either (TriggerRunSelfHealGrace only fires on a jobErr/empty-
-// job-id it CAN observe; a nil s.Jobs makes every subsequent tick's
-// jobTerminalState call fail identically, so it does eventually self-heal,
-// just noisily and after silently wedging every trigger for
-// TriggerRunSelfHealGrace first). s.Exec is deliberately NOT added here:
-// its absence is already handled gracefully per-trigger by the existing
-// fail-open dispatch-failure path below (fireTrigger returns a plain error
-// when s.Exec is nil, same as any other StartExec failure) — folding it
-// into this top-level guard would ALSO skip reconcileInFlight, which is
-// still useful (closing out already-in-flight rows) even when nothing new
-// can be dispatched.
+// Nil Triggers/Projects/Meta/Jobs makes this a no-op: a daemon built
+// without trigger support wired in simply runs no triggers. s.Exec is
+// deliberately not part of this guard — its absence is already handled
+// per-trigger by the fail-open dispatch-failure path below, and folding it
+// in here would also skip reconcileInFlight, which stays useful (closing
+// out already-in-flight rows) even when nothing new can be dispatched.
 func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) (TriggerSweepResult, error) {
 	var result TriggerSweepResult
 	if s.Triggers == nil || s.Projects == nil || s.Meta == nil || s.Jobs == nil {
@@ -751,16 +524,11 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 		return result, fmt.Errorf("sweep triggers: list projects: %w", err)
 	}
 
-	// Completions recorded off-thread by a previous tick's timeout handling
-	// (beginTimeOutTriggerRun) — reported here so trackFailStreak counts them
-	// like any other non-zero completion.
-	//
-	// Drained AFTER the two early returns above, not before: draining empties
-	// pendingTimeouts, so a drain followed by `return result, err` destroys
-	// those completions outright — runOnce discards the result on error and
-	// never reaches trackFailStreak. The tick where that matters is exactly
-	// the likely one: a database busy enough to fail ListInFlightTriggerRuns
-	// is a database busy enough for a round to have timed out.
+	// Completions recorded off-thread by a previous tick's timeout handling,
+	// reported here so trackFailStreak counts them like any other
+	// completion. Drained after the two early returns above: draining
+	// empties pendingTimeouts, and an early return would discard them along
+	// with the rest of result.
 	result.Completed = append(result.Completed, s.drainTimeoutCompletions()...)
 	for _, p := range projects {
 		meta := s.hydrateMetaForTriggers(ctx, p.ID)
@@ -775,57 +543,28 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 				continue
 			}
 
-			// Opus review Blocker 2 (i): due is checked BEFORE busy. A
-			// trigger that simply hasn't reached its next `every` yet is
-			// never a "skip", even while a PRIOR run of it is still in
-			// flight — that combination (not due AND busy) is completely
-			// normal whenever a trigger's own command runs longer than one
-			// sweep tick but still finishes well within `every`.
+			// A trigger that simply hasn't reached its next `every` yet is
+			// never a "skip", even while a prior run of it is still in
+			// flight — so busy is checked against everyDue (below), not the
+			// final on:signals-adjusted due, to avoid a busy/every-elapsed
+			// trigger silently vanishing from both Skipped and Fired just
+			// because its own in-flight run drained the signal queue it
+			// depends on.
 			//
-			// everyDue (NOT the final on:signals-adjusted due below) is
-			// what decides whether a busy trigger counts as a "skip"
-			// (Opus review F1, 2026-08-26): trackSkipStreak's own doc
-			// comment requires a stuck key to appear in EITHER Skipped or
-			// Fired on every tick until it resolves. If the on:signals
-			// predicate were allowed to make an in-flight, every-elapsed
-			// trigger's due false (e.g. the very job that's now wedged
-			// acked every pending Signal right before hanging, so the
-			// inbox is empty by the time this tick runs), that trigger
-			// would silently vanish from both Skipped and Fired — wedged
-			// forever with no stuck notification ever firing, unlike an
-			// identically-configured `on: schedule` trigger. Evaluating
-			// busy against everyDue, BEFORE the signals predicate is even
-			// consulted, closes that gap: a busy, every-elapsed trigger is
-			// always recorded as Skipped regardless of what
-			// signalsPendingForTrigger would say (and, as a side benefit,
-			// the extra HasPendingSignals read for on:signals triggers is
-			// skipped entirely in the busy case, since it can't fire this
-			// tick either way).
-			// The declared bound is checked BEFORE the due gate below, and
-			// deliberately so: `timeout` and `every` answer different
-			// questions (how long a round may run vs. how often to look), so
-			// an overrun must be caught the moment it is seen, not only once
-			// `every` has also elapsed. Checking it after the gate would make
-			// enforcement fire at max(every, timeout) and quietly require
-			// timeout >= every for the field to mean what it says.
-			//
-			// Enforced here rather than inside reconcileInFlight because this
-			// is the only place that has BOTH the in-flight run and the
-			// trigger definition it came from — reconcileInFlight walks
-			// trigger_runs rows, which carry no `timeout`.
+			// The declared `timeout` bound is checked before the due gate,
+			// deliberately: `timeout` and `every` answer different
+			// questions (how long a round may run vs. how often to look),
+			// so an overrun must be caught the moment it is seen. This is
+			// the only place with both the in-flight run and the trigger
+			// definition it came from — reconcileInFlight walks trigger_runs
+			// rows alone, which carry no `timeout`.
 			if run, busy := inFlight[key]; busy {
 				if timeout := trig.TriggerTimeout(); timeout > 0 && now.Sub(run.StartedAt) >= timeout {
 					s.beginTimeOutTriggerRun(ctx, key, run, timeout)
-					// Recorded as a Skip as well, NOT `continue`d past. The
-					// ending is asynchronous and can fail (a locked database, a
-					// task whose project meta will not load), and while it does
-					// the row stays in flight — so without this the key appears
-					// in neither Skipped nor Fired, which is exactly the "wedged
-					// with no notification ever firing" gap this function's own
-					// comment above closes for on:signals. trackSkipStreak sizes
-					// its threshold from the declared timeout, so this notifies
-					// only once the bound is actually crossed, and stops as soon
-					// as the ending succeeds and the row closes.
+					// Recorded as a Skip too, not `continue`d past: the
+					// ending is asynchronous and can fail, and while it does
+					// the row stays in flight, so without this the key would
+					// appear in neither Skipped nor Fired.
 					result.Skipped = append(result.Skipped, TriggerSkip{
 						TriggerKey: key, Since: run.StartedAt, Every: every, Timeout: timeout,
 					})
@@ -848,11 +587,9 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 				continue
 			}
 
-			// docs/plans/signal-ingest-detailed-design.md §4.2: on:signals
-			// ANDs an extra "has a pending Signal" condition onto the
-			// already-true everyDue above — evaluated only once we know
-			// the trigger is NOT busy (see the F1 comment above for why
-			// busy is checked against everyDue alone, not this).
+			// on:signals ANDs an extra "has a pending Signal" condition onto
+			// the already-true everyDue above, evaluated only once we know
+			// the trigger is not busy.
 			due := everyDue
 			if trig.On == orchestrator.TriggerOnSignals {
 				due = s.signalsPendingForTrigger(meta, key)
@@ -864,30 +601,19 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 			jobID, ferr := s.fireTrigger(ctx, now, p.ID, trig)
 			if ferr != nil {
 				if errors.Is(ferr, orchestrator.ErrTriggerRunInFlight) {
-					// The in-memory inFlight snapshot (built from
-					// reconcileInFlight's read, above) missed a
-					// concurrently-created row — the DB's own unique
-					// constraint (idx_trigger_runs_inflight_unique) caught
-					// what the read-then-check race didn't (Opus review
-					// Blocker 1). Same outcome as an ordinary busy skip;
-					// Since=now is an approximation (the real row's
-					// StartedAt isn't available here) that self-corrects
-					// next tick once reconcileInFlight's own read picks up
-					// this row with its real StartedAt.
+					// The in-memory inFlight snapshot missed a concurrently-
+					// created row that the DB's unique constraint caught.
+					// Same outcome as an ordinary busy skip; Since=now
+					// self-corrects next tick once reconcileInFlight's own
+					// read picks up this row with its real StartedAt.
 					result.Skipped = append(result.Skipped, TriggerSkip{TriggerKey: key, Since: now, Every: every, Timeout: trig.TriggerTimeout()})
 					continue
 				}
-				// フェイルオープン (12 節 B-5 既定案): dispatch/record failed,
-				// so no trigger_runs row exists for this attempt — the NEXT
-				// tick's triggerIsDue sees the same stale last-run timestamp
-				// (or ErrTriggerRunNotFound if this trigger has never
-				// succeeded) and retries automatically. No separate
-				// retry/backoff bookkeeping needed.
+				// Fail-open: no trigger_runs row exists for this attempt, so
+				// the next tick's triggerIsDue retries automatically.
 				slog.Warn("trigger sweep: dispatch failed (fail-open, will retry next tick)", "project_id", p.ID, "trigger", trig.Name, "error", ferr)
-				// B2 (PR-5 review finding): report the failure to
-				// trackFailStreak too, alongside (not instead of) the
-				// fail-open retry above — see TriggerDispatchFailureExitCode's
-				// own doc comment for why this doesn't touch trigger_runs.
+				// Reported to trackFailStreak too, alongside the fail-open
+				// retry above — see TriggerDispatchFailureExitCode's doc.
 				result.Completed = append(result.Completed, TriggerCompletionResult{TriggerKey: key, ExitCode: TriggerDispatchFailureExitCode})
 				continue
 			}
@@ -899,9 +625,7 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 
 // lookupTrigger resolves projectID's hydrated meta and finds the Trigger
 // named triggerName within it, for RunTriggerNow. Returns a *StatusError
-// (404) for an unknown project or an unknown trigger name — both are
-// caller mistakes (a bad project ref or a typo'd trigger name), not
-// internal failures.
+// (404) for an unknown project or trigger name.
 func (s *TaskWorkflowService) lookupTrigger(ctx context.Context, projectID, triggerName string) (*orchestrator.Trigger, error) {
 	meta := s.hydrateMetaForTriggers(ctx, projectID)
 	if meta == nil {
@@ -919,19 +643,16 @@ func (s *TaskWorkflowService) lookupTrigger(ctx context.Context, projectID, trig
 // shape.
 type TriggerRunNowResult struct {
 	// Skipped is true when single-flight blocked this manual run (a prior
-	// run for the same (project, trigger) is still in flight). Manual runs
-	// deliberately do NOT bypass single-flight — only the `every` elapsed
-	// check is bypassed (仕分け B「手動 1 巡の口」既定案: デバッグに要る, not
-	// "force a second concurrent run").
+	// run for the same (project, trigger) is still in flight). A manual run
+	// bypasses only the `every` elapsed check, never single-flight.
 	Skipped bool   `json:"skipped"`
 	Reason  string `json:"reason,omitempty"`
 	JobID   string `json:"job_id,omitempty"`
 }
 
-// RunTriggerNow fires projectID's triggerName trigger immediately,
-// ignoring the `every` elapsed check but NOT single-flight — the manual
-// debugging entry point 12 節 B-5 既定案「手動 1 巡の口」calls for
-// (`boid trigger run <name>`, cmd/trigger.go).
+// RunTriggerNow fires projectID's triggerName trigger immediately, ignoring
+// the `every` elapsed check but not single-flight — the manual debugging
+// entry point behind `boid trigger run <name>`.
 func (s *TaskWorkflowService) RunTriggerNow(ctx context.Context, projectID, triggerName string) (*TriggerRunNowResult, error) {
 	if s.Triggers == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "trigger run: TriggerRunStore not configured"}
@@ -944,7 +665,7 @@ func (s *TaskWorkflowService) RunTriggerNow(ctx context.Context, projectID, trig
 		return nil, err
 	}
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
-	now := time.Now().UTC() // N-9, Opus review: see CreateTriggerRun's own doc comment
+	now := time.Now().UTC()
 
 	key := TriggerKey{ProjectID: projectID, TriggerName: triggerName}
 	inFlight, err := s.reconcileInFlight(now, nil)
@@ -958,10 +679,8 @@ func (s *TaskWorkflowService) RunTriggerNow(ctx context.Context, projectID, trig
 	jobID, err := s.fireTrigger(ctx, now, projectID, *trig)
 	if err != nil {
 		if errors.Is(err, orchestrator.ErrTriggerRunInFlight) {
-			// Same DB-level race the in-memory inFlight busy-check above
-			// can miss (Opus review Blocker 1) — e.g. a sweep tick's own
-			// fireTrigger call won the race between this method's
-			// reconcileInFlight read and its own CreateTriggerRun.
+			// Same DB-level race the in-memory inFlight busy-check above can
+			// miss — e.g. a sweep tick's own fireTrigger call won the race.
 			return &TriggerRunNowResult{Skipped: true, Reason: "single-flight: a run for this trigger is already in flight"}, nil
 		}
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("trigger run: %s", err.Error())}
@@ -971,47 +690,22 @@ func (s *TaskWorkflowService) RunTriggerNow(ctx context.Context, projectID, trig
 
 // ---- TriggerLoop: the periodic scheduler (QueueSweepLoop-shaped) ----
 
-// TriggerStuckOverrunMultiplier implements 12 節 B-5 既定案「詰まり検出は N
-// 連続見送りで通知」, revised by Opus review Blocker 2 (ii): a run is
-// "stuck" once it has been continuously in flight for longer than
-// TriggerStuckOverrunMultiplier × its OWN `every` — not after N raw sweep
-// ticks. A tick-counted threshold implicitly assumes the sweep interval is
-// close to `every`; TriggerLoop's actual Interval (1m, wire.go) is 10× the
-// example `every: 10m` the reviewer's report used, so 3 raw ticks would fire
-// after 3 minutes even for a trigger whose command normally, harmlessly,
-// takes 5 of every 10 minutes. Expressing the threshold as a multiple of
-// `every` instead scales with each trigger's own schedule automatically —
-// see TriggerLoop.trackSkipStreak.
+// TriggerStuckOverrunMultiplier: a run is "stuck" once it has been
+// continuously in flight for longer than TriggerStuckOverrunMultiplier ×
+// its own `every`, scaling the threshold to each trigger's own schedule
+// rather than counting raw sweep ticks (see TriggerLoop.trackSkipStreak).
 //
-// TriggerStuckFailStreakThreshold is unchanged: it counts consecutive
-// COMPLETED runs with a non-zero exit code, one data point per actual
-// execution regardless of sweep interval — there is no analogous
-// tick-vs-every mismatch for it to correct.
-//
-// The multiplier moved 3 → 1.5 on 2026-08-24 (nose). At 3 the threshold for
-// khi's sweep (`every: 10m`) was 30 minutes, and both stalls that actually
-// happened that day — 25 and 26 minutes, an agent that ended its turn without
-// calling a tool, then one that forked a subagent and ended its turn waiting
-// for a reply — were resolved by a human noticing before the notification
-// would have fired. A detector that never fires because people are faster
-// than it is not a detector. Healthy runs of that sweep finished in 1–8
-// minutes, so 1.5× (15m) still clears them comfortably.
-//
-// It is deliberately still a multiple of `every` rather than a wall-clock
-// constant: the reason for the relative form (each trigger's own schedule
-// setting its own sense of "too long") did not change, only the constant did.
+// TriggerStuckFailStreakThreshold counts consecutive completed runs with a
+// non-zero exit code, one data point per actual execution.
 const (
 	TriggerStuckOverrunMultiplier   = 1.5
 	TriggerStuckFailStreakThreshold = 3
 )
 
 // stuckThreshold is how long a run may stay continuously in flight before
-// trackSkipStreak calls it stuck.
-//
-// The float64 round-trip is load-bearing: TriggerStuckOverrunMultiplier is
-// fractional, and `every * time.Duration(1.5)` would convert the multiplier
-// to an integer Duration of 1ns first, making the threshold 1ns and firing
-// on every tick.
+// trackSkipStreak calls it stuck. The float64 round-trip is load-bearing:
+// TriggerStuckOverrunMultiplier is fractional, and `every *
+// time.Duration(1.5)` would truncate the multiplier to 1ns first.
 func stuckThreshold(every time.Duration) time.Duration {
 	return time.Duration(float64(every) * TriggerStuckOverrunMultiplier)
 }
@@ -1023,32 +717,27 @@ type TriggerLoopStore interface {
 }
 
 // TriggerLoop periodically calls SweepTriggers, mirroring QueueSweepLoop's
-// shape (queue_sweep.go) exactly: same InitialDelay-then-Interval idiom,
-// Run(ctx) blocks until ctx is done, a sweep error is logged and never
-// stops the loop.
+// shape: InitialDelay then Interval, Run(ctx) blocks until ctx is done, a
+// sweep error is logged and never stops the loop.
 //
 // skipStreak/failStreak (stuck/failure-streak notification bookkeeping) are
-// deliberately kept IN-MEMORY on the loop, not persisted to trigger_runs —
-// mirroring QueueSweepLoop.lastBreachFingerprint's own precedent (also
-// process-local, edge-triggered dedup state). A daemon restart resets the
-// streak count to zero; the worst case is one missed or duplicated
-// notification around a restart, never an incorrect fire/skip decision —
-// trigger_runs itself (the single-flight source of truth) is unaffected.
+// kept in-memory, not persisted — a daemon restart resets the streak count
+// to zero, at worst costing one missed or duplicated notification around a
+// restart; trigger_runs itself (the single-flight source of truth) is
+// unaffected.
 type TriggerLoop struct {
 	Store        TriggerLoopStore
 	Interval     time.Duration
 	InitialDelay time.Duration
-	// Notifier is optional (nil disables stuck/failure notifications,
-	// matching TaskWorkflowService.Notifier's own convention).
+	// Notifier is optional (nil disables stuck/failure notifications).
 	Notifier Notifier
 
-	// skipStreak/failStreak are read/written ONLY from runOnce, which Run
-	// calls sequentially from a single goroutine — no locking needed, same
-	// reasoning as QueueSweepLoop.lastBreachFingerprint.
+	// skipStreak/failStreak are read/written only from runOnce, which Run
+	// calls sequentially from a single goroutine — no locking needed.
 	//
 	// skipStreak's value is the highest TriggerStuckOverrunMultiplier
-	// multiple already notified for that key's CURRENT stuck episode (Opus
-	// review Blocker 2 (ii)) — not a raw tick count. See trackSkipStreak.
+	// multiple already notified for that key's current stuck episode, not a
+	// raw tick count — see trackSkipStreak.
 	skipStreak map[TriggerKey]int
 	failStreak map[TriggerKey]int
 }
@@ -1081,7 +770,7 @@ func (l *TriggerLoop) runOnce(ctx context.Context) {
 	if l.Store == nil {
 		return
 	}
-	now := time.Now().UTC() // N-9, Opus review: see CreateTriggerRun's own doc comment
+	now := time.Now().UTC()
 	result, err := l.Store.SweepTriggers(ctx, now)
 	if err != nil {
 		slog.Warn("trigger sweep failed", "error", err)
@@ -1099,20 +788,16 @@ func (l *TriggerLoop) runOnce(ctx context.Context) {
 }
 
 // trackSkipStreak notifies once a skipped trigger's blocking run has been
-// continuously in flight for longer than TriggerStuckOverrunMultiplier ×
-// its own `every` (Opus review Blocker 2 (ii) — see
-// TriggerStuckOverrunMultiplier's own doc comment for why this replaced a
-// raw sweep-tick count), and again each time the overrun crosses another
-// whole multiple of that threshold, so a trigger stuck for a very long time
-// still gets periodic reminders rather than exactly one notification ever.
+// continuously in flight for longer than stuckThreshold, and again each
+// time the overrun crosses another whole multiple of that threshold, so a
+// long-stuck trigger gets periodic reminders rather than exactly one
+// notification ever.
 //
-// Any previously-tracked key NOT skipped this tick is reset (deleted) —
-// correct because, unlike "not due yet", a key that WAS stuck stays due
-// (and therefore either Skipped or Fired) on every subsequent tick until it
-// resolves; a key silently going quiet only happens when it actually fired,
-// or its trigger definition was removed from project.yaml — both cases
-// where resetting is the right behavior, and both start a fresh episode
-// (multiple 0) if it gets stuck again later.
+// Any previously-tracked key not skipped this tick is reset: a key that was
+// stuck stays due (and therefore either Skipped or Fired) on every
+// subsequent tick until it resolves, so it going quiet means it either
+// fired or its trigger definition was removed — both cases where a fresh
+// episode (multiple 0) is correct if it gets stuck again later.
 func (l *TriggerLoop) trackSkipStreak(ctx context.Context, now time.Time, skipped []TriggerSkip) {
 	if l.skipStreak == nil {
 		l.skipStreak = make(map[TriggerKey]int)
@@ -1121,18 +806,13 @@ func (l *TriggerLoop) trackSkipStreak(ctx context.Context, now time.Time, skippe
 	for _, skip := range skipped {
 		skippedThisTick[skip.TriggerKey] = true
 		if skip.Every <= 0 {
-			// Defensive only — ValidateTriggers rejects every<=0 at
-			// project.yaml load time, so this should be unreachable in
-			// practice. Skip rather than divide by/compare against a
-			// meaningless zero threshold.
+			// Defensive only — ValidateTriggers rejects every<=0 at load time.
 			continue
 		}
-		// A declared `timeout` replaces the guess outright. Below it, a long
-		// round is not stuck — it is doing what its author said it may do —
-		// and past it the round is ENDED rather than reported, so this
-		// notification would only ever fire on healthy work. Without this,
-		// `every: 2m, timeout: 30m` notifies twice per healthy 8-minute round,
-		// forever, while the operator has explicitly allowed 30 minutes.
+		// A declared `timeout` replaces the guess outright: below it a long
+		// round is doing what its author allowed, and past it the round is
+		// ended rather than reported, so this notification only ever fires
+		// on healthy work once one is declared.
 		threshold := skip.Timeout
 		if threshold <= 0 {
 			threshold = stuckThreshold(skip.Every)
@@ -1146,13 +826,9 @@ func (l *TriggerLoop) trackSkipStreak(ctx context.Context, now time.Time, skippe
 			continue // already notified for this multiple (or a later one)
 		}
 		l.skipStreak[skip.TriggerKey] = multiple
-		// multiple counts crossings of THRESHOLD, not of `every` — naming the
-		// threshold here (and `every` beside it) keeps the two apart now that
-		// they differ by a fraction rather than a whole number.
 		if skip.Timeout > 0 {
-			// A declared bound was crossed, which means the daemon is ending
-			// the round — saying only "詰まっています" would read as "nothing is
-			// happening, go look", when the opposite is true.
+			// A declared bound was crossed and the daemon is ending the
+			// round — say so rather than reading as "nothing is happening".
 			l.notify(ctx, skip.TriggerKey, fmt.Sprintf(
 				"trigger %s/%s: 1 巡が %s 走って timeout (%s) を超えました。daemon が打ち切ります (超過 %d 回目)",
 				skip.ProjectID, skip.TriggerName, overrun.Round(time.Second), skip.Timeout, multiple))
@@ -1161,12 +837,6 @@ func (l *TriggerLoop) trackSkipStreak(ctx context.Context, now time.Time, skippe
 				"trigger %s/%s: single-flight で %s 詰まっています (`every` %s、詰まり閾値 %s の %d 倍以上)",
 				skip.ProjectID, skip.TriggerName, overrun.Round(time.Second), skip.Every, threshold, multiple))
 		}
-		// With a declared `timeout` this fires exactly when the bound is
-		// crossed and keeps firing while the ending has not succeeded — which
-		// is the point: an ending that cannot complete leaves the row in
-		// flight, and this is the only path that says so. It stops on the tick
-		// after the row closes. For a trigger with no declared bound it remains
-		// the guess it always was.
 	}
 	for key := range l.skipStreak {
 		if !skippedThisTick[key] {
@@ -1177,10 +847,10 @@ func (l *TriggerLoop) trackSkipStreak(ctx context.Context, now time.Time, skippe
 
 // trackFailStreak increments the consecutive-failure counter for every
 // completion whose ExitCode != 0 this tick, notifying every
-// TriggerStuckFailStreakThreshold-th time, and resets (deletes) it on the
-// first ExitCode == 0 completion. Unlike skip streak, a key simply not
-// completing this tick (nothing to reconcile) leaves its existing count
-// untouched — absence here means "no new data point", not "resolved".
+// TriggerStuckFailStreakThreshold-th time, and resets it on the first
+// ExitCode == 0 completion. A key simply not completing this tick leaves
+// its existing count untouched — absence means "no new data point", not
+// "resolved".
 func (l *TriggerLoop) trackFailStreak(ctx context.Context, completed []TriggerCompletionResult) {
 	if l.failStreak == nil {
 		l.failStreak = make(map[TriggerKey]int)
@@ -1200,14 +870,9 @@ func (l *TriggerLoop) trackFailStreak(ctx context.Context, completed []TriggerCo
 }
 
 // notify sends one stuck/failure-streak notification, bounded by
-// notifyTimeout (N-3, Opus review) — notify.Service.Notify runs the
-// configured notify command via exec.CommandContext SYNCHRONOUSLY, so an
-// unbounded ctx (this is the TriggerLoop's own long-lived server ctx) would
-// let a hanging notify command wedge runOnce, and therefore every future
-// sweep tick, until daemon shutdown. queue_notify.go's
-// notifySuggestionArrived and triage_done.go's own notify call already wrap
-// their Notify calls the same way; this makes trigger_loop.go's the third,
-// not an exception.
+// notifyTimeout since notify.Service.Notify runs the configured command
+// synchronously and an unbounded ctx would let a hanging command wedge
+// every future sweep tick until daemon shutdown.
 func (l *TriggerLoop) notify(ctx context.Context, key TriggerKey, message string) {
 	if l.Notifier == nil {
 		return

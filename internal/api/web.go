@@ -65,17 +65,13 @@ type WebHandler struct {
 	// submissions.
 	AttachmentsRoot string
 
-	// ConfigService backs GET /settings (web_settings.go,
-	// docs/plans/volume-only-daemon.md §論点 f) — nil in any test/wiring
-	// that never registers the /settings route.
+	// ConfigService backs GET /settings — nil in any test/wiring that never
+	// registers the /settings route.
 	ConfigService SettingsConfigService
 
-	// TaskTriage backs the list row's suggestion/summary enrichment
-	// (docs/plans/cross-project-issue-triage.md Phase 1 PR-3, restated by
-	// docs/plans/webui-detail-list-redesign.md PR-4 now that the list is one
-	// flat view instead of four tabs) — nil-safe: when unset, every row
-	// renders with no suggestion edge/summary badge instead of failing the
-	// whole list.
+	// TaskTriage backs the list row's suggestion/summary enrichment.
+	// Nil-safe: when unset, every row renders with no suggestion edge/
+	// summary badge instead of failing the whole list.
 	TaskTriage CardStore
 }
 
@@ -184,12 +180,6 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		req.Instructions = instsJSON
 	}
 
-	// Phase 2-3: task-row overrides for base_branch / branch_prefix / worktree /
-	// readonly were removed. Values are derived from the behavior type and
-	// project-level defaults; the Web form no longer exposes these inputs.
-
-	// Attachments are validated before task creation so a bad upload
-	// (oversized, bad extension) doesn't leave a half-created task.
 	uploads := taskFormAttachments(r)
 	if len(uploads) > 0 {
 		if h.AttachmentsRoot == "" {
@@ -257,33 +247,13 @@ func taskFormAttachments(r *http.Request) []*multipart.FileHeader {
 }
 
 // triageByTaskID batch-fetches task_triage rows for the list row's
-// enrichment (templates.BuildListRows: suggestion + summary per row —
-// docs/plans/webui-detail-list-redesign.md PR-4 restates this for the one
-// flat list that replaced the pre-PR-4 queue_next/Parked tabs'
-// BuildQueueItems/BuildTreeItemsWithSuggestions, both deleted). h.TaskTriage
-// == nil degrades to no enrichment (empty map), not an error — the list
-// still renders correctly, just without the extra badges.
-//
-// A single ListTaskTriageByTaskIDs call (BD-8 残件1), not a per-task
-// GetTaskTriage loop: #task-list self-polls every 5s (tasks.templ's
-// hx-trigger), and the list has no upper bound on how many rows carry a
-// triage sidecar, so the old N+1 loop's query count grew linearly with both
-// poll frequency and however many cards were live — exactly the shape that
-// gets worse once BD-7's ingest starts landing more of them.
-//
-// Same per-row tolerance as the old loop, just moved into
-// ListTaskTriageByTaskIDs itself (Opus review finding, 2026-08-18: a
-// single-row Scan failure there is still a per-row error that must not
-// sink the rest of the batch — see that function's doc comment,
-// internal/orchestrator/card.go). A non-nil err here means
-// something went wrong for at least one row/chunk; out may still be
-// partially or fully populated, and using it (rather than discarding to an
-// empty map) is what actually preserves "don't let one bad row sink the
-// list" at this call site — silently downgrading to zero enrichment on any
-// error would be the exact "見えていなければ存在しない" failure 決定9
-// exists to prevent, just moved from GetTaskTriage's call site to this
-// one. The error is logged (not swallowed) so an operator has something to
-// grep when a view's badges are missing without an obvious cause.
+// suggestion/summary enrichment in one query rather than a per-task loop.
+// h.TaskTriage == nil degrades to no enrichment (empty map), not an error.
+// A non-nil err from ListTaskTriageByTaskIDs means at least one row/chunk
+// failed but out may still be partially populated; using it rather than
+// discarding to an empty map preserves "don't let one bad row sink the
+// list" for the rows that did succeed. The error is logged, not swallowed,
+// so missing badges are diagnosable.
 func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orchestrator.CardAttrs {
 	if h.TaskTriage == nil {
 		return map[string]*orchestrator.CardAttrs{}
@@ -303,11 +273,8 @@ func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orch
 	return out
 }
 
-// taskListPageSize is the list's page size (docs/plans/
-// webui-detail-list-redesign.md §3.5, §5 論点4): LIMIT/OFFSET is enough at
-// the current data scale, and "how often does someone actually look at page
-// 2" is assumed low, so a simple fixed page size (no user-configurable
-// page-size control) is the whole pagination UI.
+// taskListPageSize is the list's fixed page size — no user-configurable
+// page-size control.
 const taskListPageSize = 50
 
 // parseTaskListPage reads the "page" query param as a 1-indexed page
@@ -396,13 +363,10 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	page := parseTaskListPage(q.Get("page"))
-	// docs/plans/webui-detail-list-redesign.md PR-4 (§3.5): the list is one
-	// flat, TOP-LEVEL-ONLY view now — no more Open/Closed/Queue/Parked tabs,
-	// no tree. ParentID="" restricts to root tasks (a card's/root exec
-	// task's own children are read from the detail page instead — §3.3/§3.4
-	// item 2, shipped by PR-2). The default status is "" (every status,
-	// newest-updated first); ActiveOnly is the opt-in "アクティブのみ"
-	// narrowing that replaces the old default-to-"open" tab.
+	// The list is one flat, top-level-only view: ParentID="" restricts to
+	// root tasks (a card's/root exec task's own children are read from the
+	// detail page instead). Default status is "" (every status,
+	// newest-updated first); ActiveOnly is the opt-in "アクティブのみ" narrowing.
 	rootParentID := ""
 	filter := orchestrator.TaskFilter{
 		Status:      q.Get("status"),
@@ -421,7 +385,6 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 
 	projects, _ := h.Service.ListProjects()
 	projects = filterProjectsByWorkspace(projects, filter.WorkspaceID)
-	// Clear project filter when the selected project is not in the workspace.
 	if !projectInList(projects, filter.ProjectID) {
 		filter.ProjectID = ""
 	}
@@ -525,9 +488,6 @@ func projectInList(projects []*orchestrator.Project, projectID string) bool {
 }
 
 // projectNameMap builds an id→display-name lookup from a project list.
-// Moved here from the pre-PR-4 tree.go (deleted by docs/plans/
-// webui-detail-list-redesign.md PR-4 alongside the BuildTreeItems family it
-// backed) — TaskList is its only caller now.
 func projectNameMap(projects []*orchestrator.Project) map[string]string {
 	m := make(map[string]string, len(projects))
 	for _, p := range projects {
@@ -554,14 +514,9 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	errorMsg := r.URL.Query().Get("error")
 	timelineGroups := detailTimelineGroups(detail)
 
-	// 罠1 (docs/plans/webui-detail-list-redesign.md §7 PR-1): a card detail
-	// page has no tabs (TaskDetailCardBody), so there is nothing for an
-	// HX-Request tab-swap to target — a card always falls through to the
-	// full-page render below, regardless of the HX-Request header. Only an
-	// execution task's Timeline↔Description/Payload/Instructions tab click
-	// still takes the #tabs fragment shortcut. This is the "card は全面
-	// レンダに一本化する" choice the design doc's own 罠1 note asked PR-1 to
-	// make explicit.
+	// A card detail page has no tabs, so there is nothing for an HX-Request
+	// tab-swap to target — a card always falls through to the full-page
+	// render below. Only an execution task's tab click takes this shortcut.
 	if r.Header.Get("HX-Request") == "true" && detail.Task.Type != orchestrator.TaskTypeCard {
 		templates.TaskDetailExecTabsSection(detail.Task, timelineGroups, detail.AvailableActions, tab).Render(r.Context(), w)
 		return
@@ -583,24 +538,19 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 
 // maxChildTreeDepth caps app-side recursion in execChildTree/listDescendants
 // as a defensive guard against a pathological parent_id cycle — Task.
-// ParentID can be rewritten via UpdateTask (store.go's UPDATE statement
-// carries parent_id), so an unbounded walk is not provably impossible, just
-// never expected in practice (docs/plans/webui-detail-list-redesign.md §7
-// PR-2 calls the expected scale small). Far above any real supervisor tree
-// depth.
+// ParentID can be rewritten via UpdateTask, so an unbounded walk is not
+// provably impossible, just never expected in practice. Far above any real
+// supervisor tree depth.
 const maxChildTreeDepth = 50
 
-// execChildTree returns task's full descendant subtree, depth-first
-// (docs/plans/webui-detail-list-redesign.md §3.4 item 2 / §7 PR-2): a root
+// execChildTree returns task's full descendant subtree, depth-first: a root
 // (parent_id == "") execution task detail page's own child tree. Returns
 // nil for anything that is not a root task — including a card, whose
-// children get the C-2 integrated ledger view instead
-// (cardChildrenFromTriage) — or a root task with no children.
+// children get the integrated ledger view instead (cardChildrenFromTriage)
+// — or a root task with no children.
 //
-// Traversal is app-side (repeated ListTasks-by-parent_id calls), NOT a SQL
-// recursive CTE: the design doc explicitly asks PR-2 not to grow a new one
-// now that the list page's own CTEs (open_descendants/open_ancestors,
-// store.go) are slated for removal in PR-4.
+// Traversal is app-side (repeated ListTasks-by-parent_id calls), not a SQL
+// recursive CTE.
 func (h *WebHandler) execChildTree(task *orchestrator.Task) []templates.ChildTreeNode {
 	if task == nil || task.ParentID != "" {
 		return nil
@@ -627,25 +577,17 @@ func (h *WebHandler) listDescendants(parentID string, depth int) []templates.Chi
 	return nodes
 }
 
-// cardChildrenFromTriage builds a card detail page's integrated child rows
-// (docs/plans/webui-detail-list-redesign.md §3.3 item 2 / §7 PR-2): the spec
-// ledger (task_triage.detail.children, already resolved to display form by
+// cardChildrenFromTriage builds a card detail page's integrated child rows:
+// the spec ledger (task_triage.detail.children, resolved to display form by
 // resolveChildProjects) merged with the live status of each dispatched
-// child's real task row. The live lookup is ONE parent_id query
-// (store.go:911 の ListChildren 相当, via WebService.ListTasks) covering
+// child's real task row. The live lookup is one parent_id query covering
 // every child at once, not one query per ledger entry.
 //
-// 論点8 (edge cases, §5): a ledger entry only ever gets a LiveStatus when its
-// own Status is "dispatched" AND its TaskRef resolves inside that one
-// query's result — never for open/specced/closed, and never when TaskRef is
-// empty or points at a task the query didn't return (deleted/GC'd/still
-// propagating). Either miss just leaves LiveStatus empty, and
-// ChildRow.DisplayStatus then falls back to the ledger status — no error,
-// matching "突き合わせ不能なら台帳のみ". When a lookup DOES succeed, the live
-// status always wins over the bare "dispatched" ledger value — "矛盾したら生
-// status優先表示" — there is nothing else to reconcile, since the ledger only
-// ever carries that one coarse status for the whole executing→awaiting→
-// done/aborted lifecycle.
+// A ledger entry only gets a LiveStatus when its own Status is "dispatched"
+// AND its TaskRef resolves inside that query's result; otherwise
+// ChildRow.DisplayStatus falls back to the ledger status with no error.
+// When a lookup does succeed, the live status always wins over the bare
+// "dispatched" ledger value.
 func (h *WebHandler) cardChildrenFromTriage(cardID string, triage *orchestrator.CardAttrs) []templates.ChildRow {
 	ledger := h.resolveChildProjects(childrenOf(triage))
 	if len(ledger) == 0 {
@@ -681,14 +623,9 @@ func (h *WebHandler) cardChildrenForDisplay(cardID string) []templates.ChildRow 
 	return h.cardChildrenFromTriage(cardID, h.loadTriage(cardID))
 }
 
-// childRowRank implements §3.3 item 2's "要注意順" sort (awaiting → executing
-// → open/specced → closed) over ChildRow.DisplayStatus(). Every status
-// DisplayStatus can return that isn't explicitly awaiting/executing/terminal
-// (open, specced, a "dispatched" ledger entry whose live lookup missed, or
-// the momentary "pending" a freshly-dispatched-but-not-yet-started child
-// could show) shares the same middle tier — none of them are "worth
-// interrupting the reader for" the way awaiting/executing are, and none are
-// finished the way done/aborted/closed are.
+// childRowRank sorts by urgency (awaiting → executing → open/specced/other →
+// closed) over ChildRow.DisplayStatus(). Every non-terminal status other
+// than awaiting/executing shares the same middle tier.
 func childRowRank(row templates.ChildRow) int {
 	switch row.DisplayStatus() {
 	case string(orchestrator.TaskStatusAwaiting):
@@ -704,30 +641,17 @@ func childRowRank(row templates.ChildRow) int {
 
 // triageChildrenFor returns the task_triage.detail.children for id, or nil
 // when there is no sidecar row / no CardStore wired / the detail blob
-// doesn't parse. Best-effort like PostStartShapingSession's triage lookup —
-// a task detail page must still render for a task with no triage children
-// (i.e. almost every task; children only exist on triage cards past the
-// note-spec step, cross-project-issue-triage plan doc's データモデル節).
-//
-// This closes the gap nose flagged after the Shape launcher's first real
-// dispatch: Go was pressed on a card with no way to see, from the Web UI,
-// whether any child had actually been specced (2026-08-14).
+// doesn't parse. Best-effort — a task detail page must still render for a
+// task with no triage children (almost every task).
 func (h *WebHandler) triageChildrenFor(id string) []orchestrator.TaskTriageChild {
 	return childrenOf(h.loadTriage(id))
 }
 
 // triageChildrenForDisplay is triageChildrenFor plus the one substitution the
-// Web UI needs: a child's spec.Project is stored as a boid project **id**
-// (orchestrator.TaskTriageChildSpec's doc comment makes that the contract —
-// "Project is assumed to already be a resolved boid project ID"), which tells
-// a reader nothing about where pressing Go would run the child. Resolve it to
-// the project name.
-//
-// The substitution is deliberately confined to a display-only copy. Dispatch
-// decides where a child runs from Spec.Project, so writing a NAME back into
-// the parsed spec would hand a later caller a value the storage contract says
-// is an id — the failure mode there is a plain "project not found" at
-// task-creation time, far from this code.
+// Web UI needs: a child's spec.Project is stored as a boid project id, which
+// tells a reader nothing about where pressing Go would run the child, so
+// this resolves it to the project name in a display-only copy — dispatch
+// still reads the real id from the stored spec, never this copy.
 func (h *WebHandler) triageChildrenForDisplay(id string) []orchestrator.TaskTriageChild {
 	return h.resolveChildProjects(h.triageChildrenFor(id))
 }
@@ -791,9 +715,7 @@ func suggestionOf(triage *orchestrator.CardAttrs) orchestrator.Suggestion {
 // loadTriage is the best-effort task_triage sidecar lookup shared by
 // triageChildrenFor and PostStartShapingSession's working-status gate: a
 // missing sidecar row (nil TaskTriage store, no row, lookup error) is not
-// fatal and simply returns nil — most tasks, including most working ones,
-// never had a task_triage row at all (see triageChildrenFor's own doc
-// comment).
+// fatal and simply returns nil.
 func (h *WebHandler) loadTriage(id string) *orchestrator.CardAttrs {
 	if h.TaskTriage == nil {
 		return nil
@@ -827,12 +749,6 @@ func (h *WebHandler) lookupProjectName(projectID string) string {
 // The `kind` query parameter selects which section to render:
 //   - "timeline": action history section (shared by both entity layouts)
 //   - "status":   the meta strip — card or execution variant, by task.Type
-//
-// "jobs" used to be a third kind (TaskDetailJobsSection); removed
-// (docs/plans/webui-detail-list-redesign.md §7 PR-1 死骸掃除) along with
-// TaskDetailJobsSection itself — nothing on the task detail page ever
-// rendered it (the `jobs` parameter flowed TaskDetail → TabsSection →
-// TabPanel and was never read there either).
 func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	detail, err := h.Service.GetTaskDetail(id)
@@ -876,11 +792,10 @@ func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {
 }
 
 // PostAnswerSuggestion handles the task detail page's Accept/Reject buttons
-// on a task_triage suggestion card (docs/plans/ingestion-identity.md PR-3,
-// J-6). answer is required ("accept"/"reject" — validated downstream by
-// answeredPayload); verb/basis are optional and forwarded verbatim (they
-// come from hidden form fields populated from the suggestion currently
-// shown — see TaskDetailSuggestionSection).
+// on a task_triage suggestion card. answer is required ("accept"/"reject" —
+// validated downstream by answeredPayload); verb/basis are optional and
+// forwarded verbatim from hidden form fields populated from the suggestion
+// currently shown.
 func (h *WebHandler) PostAnswerSuggestion(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if err := r.ParseForm(); err != nil {
@@ -941,12 +856,11 @@ func (h *WebHandler) PostEdit(w http.ResponseWriter, r *http.Request) {
 	model := strings.TrimSpace(r.FormValue("model"))
 	agent := strings.TrimSpace(r.FormValue("agent"))
 
-	// Instructions is execution-only (design doc §3.2); safe to read
-	// unconditionally here because GetEdit only ever renders this form for a
-	// task in "pending" status (line ~698 above), which is itself
-	// execution-only under migration 0045's CHECK constraint — a card can
-	// never reach this handler. execInsts stays nil (not a panic) for the
-	// defensive case where that invariant is somehow violated.
+	// Instructions is execution-only; safe to read unconditionally here
+	// because GetTaskEdit only ever renders this form for a task in
+	// "pending" status, which is itself execution-only — a card can never
+	// reach this handler. execInsts stays nil (not a panic) if that
+	// invariant is somehow violated.
 	var execInsts orchestrator.Instructions
 	if detail.Task.Exec != nil {
 		execInsts = detail.Task.Exec.Instructions
@@ -1019,8 +933,7 @@ func (h *WebHandler) ReopenForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if detail.Task.Status != orchestrator.TaskStatusDone && detail.Task.Status != orchestrator.TaskStatusAborted && detail.Task.Status != orchestrator.TaskStatusDropped {
-		// card machine v2 (docs/plans/suggestion-as-state-transition.md §3.2)
-		// adds dropped→parked as a second reopen edge, alongside the
+		// dropped→parked is a second reopen edge for cards, alongside the
 		// execution machine's own done/aborted→executing.
 		redirectTaskErr(w, r, id, errors.New("reopen is only available for done, aborted, or dropped tasks"))
 		return
@@ -1082,10 +995,9 @@ func (h *WebHandler) QuestionPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Payload/awaiting is execution-only (design doc §3.2) — this page only
-	// exists for tasks that went through an "ask" action, which only ever
-	// happens on an execution task (a card has no agent session to ask
-	// from), so detail.Task.Exec is expected non-nil here.
+	// Payload/awaiting is execution-only — this page only exists for tasks
+	// that went through an "ask" action, which only ever happens on an
+	// execution task, so detail.Task.Exec is expected non-nil here.
 	var taskPayload json.RawMessage
 	if detail.Task.Exec != nil {
 		taskPayload = detail.Task.Exec.Payload
@@ -1220,9 +1132,7 @@ func (h *WebHandler) JobTerminal(w http.ResponseWriter, r *http.Request) {
 }
 
 // PostStartSession launches a HarnessAdapter-backed session for the project
-// from the Web UI's [New Session] dialog. Phase 3-d (PR1) introduced this
-// alongside PostProjectExecuteCommand so users can start a claude / codex /
-// opencode session without going through the legacy commands path.
+// from the Web UI's [New Session] dialog.
 func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 	if h.SessionDispatcher == nil {
 		http.Error(w, "session dispatcher not wired", http.StatusNotImplemented)
@@ -1253,36 +1163,21 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 	redirectOrHXRedirect(w, r, jobURL)
 }
 
-// PostStartShapingSession launches the "整形" (shaping) session for a
-// triage card (docs/plans/cross-project-issue-triage.md UC-3, updated for
-// card machine v2 — docs/plans/suggestion-as-state-transition-impl.md §3.5).
-// Unlike PostStartSession (a blank session the operator configures by
+// PostStartShapingSession launches the "整形" (shaping) session for a triage
+// card. Unlike PostStartSession (a blank session the operator configures by
 // hand), this is a one-click launcher: the triage task's own project
-// supplies the workspace context (a triage task always lives in the
-// workspace's meta project — 決定5's "対象 project の確定は整形セッションの
-// 仕事", not the caller's), and the card's id/title/description/kind/
+// supplies the workspace context, and the card's id/title/description/kind/
 // urgency are folded into the bootstrap instruction so the agent has the
 // card in hand at turn one instead of the operator re-typing it.
 //
 // Reachable from a parked card OR a working card that has a task_triage
-// sidecar row. v1 gated this on triaged (PR #987 review, BLOCKER 1: card
-// machine v2 has no "triaged" status at all — captured/triaged folded into
-// parked — so a triaged-only gate made Shape permanently unreachable from
-// every card's own main resting state). working is included alongside
-// parked (2026-08-14 follow-up, unchanged by v2) because a working triage
-// task's children (task_triage.detail.children) keep needing
-// shaping-session work after Go: an existing open child may need its spec
-// defined (filing a Jira issue, deciding what work it covers), or a
-// brand-new child may need to be added altogether — the set of children is
-// not fixed at dispatch time. Gated on the triage row existing (not just
-// status=working) because the overwhelming majority of working tasks are
-// ordinary dev/impl tasks with no task_triage sidecar at all
-// (triageChildrenFor's doc comment); the button is meaningless — there's no
-// children list to add to or shape — without that sidecar. It is
-// deliberately NOT gated on hasOpenChild (2026-08-14 second follow-up):
-// requiring an open child already present would block the "add a brand-new
-// child" use case, which needs a Shape session precisely because no child
-// exists yet.
+// sidecar row. working is included because a working triage task's
+// children (task_triage.detail.children) keep needing shaping-session work
+// after Go: an existing open child may need its spec defined, or a
+// brand-new child may need to be added — the set of children is not fixed
+// at dispatch time. Gated on the triage row existing (not just
+// status=working) because most working tasks have no task_triage sidecar
+// at all — without one there is no children list to add to or shape.
 func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if h.SessionDispatcher == nil {
@@ -1321,27 +1216,18 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 }
 
 // shapingSessionKey is the session_behaviors dictionary key the Shape
-// button resolves (project.yaml session_behaviors.shape). It is unrelated
-// to task_behaviors' reserved-name mechanism (a prior design that was
-// rejected — see buildShapingInstruction's doc comment below):
-// session_behaviors is a wholly separate, free-naming dictionary scoped to
-// sessions, and "shape" here is simply the use-case key this one caller
-// happens to look up.
+// button resolves (project.yaml session_behaviors.shape) — a free-naming
+// dictionary scoped to sessions, unrelated to task_behaviors.
 const shapingSessionKey = "shape"
 
 // shapingSessionDefaults resolves the harness_type/model the Shape button
 // should launch with, from the triage task's own (meta) project's
-// project.yaml session_behaviors.shape entry. It falls back to ("claude",
-// "") — the pre-session_behaviors hardcoded default, with model left
-// unset — when: the project cannot be loaded, the project has no
-// session_behaviors.shape entry, or the entry's harness_type is empty or
-// fails validateHarnessType. The fallback is deliberately all-or-nothing
-// (never harnessType=claude with the project's own model still attached):
-// an invalid harness_type means the whole entry is untrustworthy, and
-// silently forwarding just the model would launch claude with a model
-// value nobody chose for it. A project.yaml typo should not block the
-// operator from launching a shaping session at all; it should just fall
-// back to the known-good default rather than surface a 400.
+// project.yaml session_behaviors.shape entry. Falls back to ("claude", "")
+// when the project can't be loaded, has no such entry, or the entry's
+// harness_type is empty/invalid. The fallback is all-or-nothing (never
+// harnessType=claude with the project's own model still attached): an
+// invalid harness_type makes the whole entry untrustworthy, and forwarding
+// just the model would launch claude with a model nobody chose for it.
 func shapingSessionDefaults(svc WebService, projectID string) (harnessType, model string) {
 	const fallbackHarness = "claude"
 	project, err := svc.GetProjectByID(projectID)
@@ -1361,43 +1247,16 @@ func shapingSessionDefaults(svc WebService, projectID string) (harnessType, mode
 }
 
 // buildShapingInstruction folds a triage card's id/title/description/kind/
-// urgency into the shaping session's bootstrap prompt (UC-3 手順3: 「payload
-// に card (id・title・content_ref) を同梱」). detail's opaque JSON (content_ref
-// 等 workspace 固有のキー) is passed through verbatim rather than parsed here
-// — the daemon does not interpret task_triage.detail's keys (card_read.go's
-// CardView doc comment), and neither does this instruction builder.
+// urgency into the shaping session's bootstrap prompt. detail's opaque JSON
+// is passed through verbatim rather than parsed here — the daemon does not
+// interpret task_triage.detail's keys, and neither does this builder.
 //
-// Deliberately silent on HOW to write the card back (2026-08-14 incident):
-// an earlier revision of this text prescribed "本文ファイルに追記した上で" —
-// a procedural instruction that happened to collide with a workspace's own
-// convention (khi's note.md frontmatter is a derived projection; writing it
-// directly gets silently overwritten by the next sweep, and the correct
-// input layer is a claim + daemon_sync reconcile owned by that workspace's
-// own note-spec skill). The daemon has no business prescribing a workspace's
-// write path — that's exactly the "channel-specific knowledge stays on the
-// workspace side" boundary (card_read.go's CardView doc comment)
-// applied to procedure, not just data. This function now states boid's own
-// contract (record child_specced/child_added — NEVER a card-level state
-// transition; card machine v2 removed "ready" from the vocabulary entirely,
-// docs/plans/suggestion-as-state-transition-impl.md §3.5, and even before
-// that removal the design intent was that only a human's accept or khi's
-// own suggest ever advances a card, not a shaping session — PR #987 review,
-// BLOCKER 2) and defers everything about "how" to the target project's own
-// CLAUDE.md / skills, discovered the same way any
-// other session in that project's sandbox would discover them — no
-// project.yaml schema field, no reserved behavior name (see 2026-08-14
-// session's design discussion for the rejected alternatives: a reserved
-// task_behaviors key re-litigates the supervisor/executor alias removal —
-// spec_types.go's TaskBehavior doc comment — and task_behaviors doesn't even
-// reach sessions, only task creation via ResolveBehavior).
-//
-// 2026-08-14 follow-up: shapingSessionDefaults (above) later introduced
-// project.yaml session_behaviors.shape to let a project pick the Shape
-// button's default harness_type/model. This does not revisit the decision
-// above — session_behaviors is a wholly separate dictionary from
-// task_behaviors, and what it carries is data (which harness/model to
-// launch with), never procedure. The "no procedure in the instruction"
-// principle this comment documents is unchanged.
+// Deliberately silent on HOW to write the card back: prescribing a
+// procedure here can collide with a workspace's own write conventions. This
+// function states only boid's own contract (record child_specced/
+// child_added, never a card-level state transition — that is a human's
+// accept or a suggest engine's job, never a shaping session's) and defers
+// everything about "how" to the target project's own CLAUDE.md / skills.
 func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.CardAttrs) string {
 	var b strings.Builder
 	if task.Status == orchestrator.TaskStatusWorking {
@@ -1595,9 +1454,8 @@ type LoginHandler struct {
 // redeemErrorKey maps a Pairing.Redeem failure onto a short, stable key that
 // travels in the ?error= query param and is turned back into prose by
 // loginErrorMessage. The three redeem sentinels have genuinely different
-// remedies (wait for a new code / re-issue / retype), and collapsing them into
-// one message is what made the 2026-08-06 login failure undiagnosable from the
-// screen alone.
+// remedies (wait for a new code / re-issue / retype), so they are kept
+// distinguishable rather than collapsed into one message.
 func redeemErrorKey(err error) string {
 	switch {
 	case errors.Is(err, auth.ErrCodeExpired):
@@ -1672,15 +1530,11 @@ func (h *LoginHandler) PostLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetAuth renders the confirmation page for a magic link / QR scan. It is
-// deliberately side-effect free — it does NOT redeem the token.
-//
-// The previous version redeemed on GET, which made the single-use code
-// unusable in practice on a phone: browser preloading, QR-scanner link
-// previews, in-app-browser prefetching and even a plain reload all issue a GET
-// of their own, burning the code before (or instead of) the human's real
-// navigation. The human then landed on /login?error=invalid_code holding a
-// code that had just been spent by a robot. Consuming a one-time credential is
-// a state change, so it belongs behind the POST that PostAuth serves.
+// deliberately side-effect free — it does NOT redeem the token, since GET
+// requests get issued by browser preloading, QR-scanner previews, and
+// in-app-browser prefetching, any of which would burn a single-use code
+// before the human's real navigation. Consuming a one-time credential is a
+// state change, so it belongs behind the POST that PostAuth serves.
 func (h *LoginHandler) GetAuth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Nothing is validated yet — an expired or bogus token still renders the

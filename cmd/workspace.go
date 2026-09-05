@@ -56,10 +56,10 @@ var workspaceCreateCmd = &cobra.Command{
 var (
 	// workspaceEditFromFile is the required --from-file flag value for
 	// `workspace edit`: the yaml document that replaces the workspace's
-	// meta wholesale (decision 14 — no individual field flags).
+	// meta wholesale (no individual field flags).
 	workspaceEditFromFile string
-	// workspaceEditForce skips the automatic If-Match revision check
-	// (decision 17), for a deliberate last-write-wins edit.
+	// workspaceEditForce skips the automatic If-Match revision check, for a
+	// deliberate last-write-wins edit.
 	workspaceEditForce bool
 )
 
@@ -98,8 +98,8 @@ var workspaceRemoveCmd = &cobra.Command{
 var workspaceExportOutput string
 
 // workspaceExportAll is the --all flag value for `workspace export`: export
-// every workspace (docs/plans/volume-only-daemon.md §論点g) instead of the
-// single <slug> named as a positional argument.
+// every workspace instead of the single <slug> named as a positional
+// argument.
 var workspaceExportAll bool
 
 var workspaceExportCmd = &cobra.Command{
@@ -125,11 +125,11 @@ state are treated as volatile; see the plan doc's "backup 契約" decision).`,
 // workspaceImportMode/workspaceImportForce/workspaceImportSlug are
 // `workspace import`'s pre-deprecation flags (--mode/--force/--slug). The
 // command's RunE (runWorkspaceImportDeprecated) no longer reads them — the
-// meta-format import it used to drive was retired 2026-07-28 (see that
-// function's doc comment). They stay registered only so an existing `boid
-// workspace import <file> --mode ... --slug ...` invocation still PARSES
-// successfully and reaches the deprecation guidance below, instead of cobra
-// rejecting an unrecognized flag before RunE gets a chance to say where the
+// meta-format import it used to drive was retired (see that function's doc
+// comment). They stay registered only so an existing `boid workspace import
+// <file> --mode ... --slug ...` invocation still PARSES successfully and
+// reaches the deprecation guidance below, instead of cobra rejecting an
+// unrecognized flag before RunE gets a chance to say where the
 // functionality moved.
 var (
 	workspaceImportMode  string
@@ -137,28 +137,22 @@ var (
 	workspaceImportSlug  string
 )
 
-// workspaceImportCmd is retired (2026-07-28): the meta-format round trip it
-// and GET /api/workspaces/{slug}/export used to share never actually
-// worked end to end (see runWorkspaceImportDeprecated's doc comment for the
-// three concrete failures). Kept as a Hidden command, per the "壊れた入り口
-// はエラーで正しい入り口へ誘導する" pattern (docs/plans/
-// workspace-home-volume-persistence.md 論点 d's envelopeSentToTheWrongDoor
-// precedent) rather than removed outright, so a caller relying on old
-// muscle memory or a stale script is told where the functionality moved
-// instead of hitting cobra's generic "unknown command".
+// workspaceImportCmd is retired: the meta-format round trip it and
+// GET /api/workspaces/{slug}/export used to share never actually worked end
+// to end (see runWorkspaceImportDeprecated's doc comment for the concrete
+// failures). Kept as a Hidden command rather than removed outright, so a
+// caller relying on old muscle memory or a stale script is told where the
+// functionality moved instead of hitting cobra's generic "unknown command".
+//
 // workspaceImportCmd's Annotations are set separately from the shared
-// scopeRemote loop in init() below (codex review, this PR): unlike every
-// other workspace subcommand, it no longer talks to a daemon at all — its
-// RunE (runWorkspaceImportDeprecated) always fails before making any HTTP
-// call. Left in the scopeRemote loop, PersistentPreRunE (cmd/root.go) would
-// still autostart a daemon (or reject a non-unix profile as if this were a
-// live remote operation) BEFORE RunE ever gets a chance to print the
-// deprecation guidance — measured live: `boid workspace import x` against an
-// unreachable socket fails with an unrelated "daemon startup failed: ..."
-// error and never shows the guidance at all, while against a reachable one
-// it has the side effect of spinning up a daemon just to run a command that
-// does nothing. scopeLocal + annotationSkipAutostart=skip, mirroring the
-// other deprecated stub in this tree (`boid init`, cmd/init.go), makes this
+// scopeRemote loop in init() below: unlike every other workspace
+// subcommand, it no longer talks to a daemon at all — its RunE
+// (runWorkspaceImportDeprecated) always fails before making any HTTP call.
+// Left in the scopeRemote loop, PersistentPreRunE (cmd/root.go) would still
+// autostart a daemon (or reject a non-unix profile as if this were a live
+// remote operation) BEFORE RunE ever gets a chance to print the deprecation
+// guidance. scopeLocal + annotationSkipAutostart=skip, mirroring the other
+// deprecated stub in this tree (`boid init`, cmd/init.go), makes this
 // exactly as inert as any other command that never reaches the network.
 var workspaceImportCmd = &cobra.Command{
 	Use:    "import <file>",
@@ -175,9 +169,8 @@ var workspaceImportCmd = &cobra.Command{
 
 func init() {
 	// Every workspace subcommand talks to the daemon's HTTP API — all
-	// scopeRemote (docs/plans/workspace-db-consolidation.md decision 18) —
-	// EXCEPT workspaceImportCmd, annotated separately below (see its own
-	// doc comment for why).
+	// scopeRemote — EXCEPT workspaceImportCmd, annotated separately below
+	// (see its own doc comment for why).
 	for _, c := range []*cobra.Command{
 		workspaceListCmd, workspaceShowCmd, workspaceCreateCmd, workspaceEditCmd,
 		workspaceAssignCmd, workspaceClearCmd, workspaceRemoveCmd,
@@ -215,12 +208,10 @@ func init() {
 	rootCmd.AddCommand(workspaceCmd)
 }
 
-// runWorkspaceList lists every workspace via GET /api/workspaces
-// (docs/plans/workspace-db-consolidation.md PR4 Step H): the workspaces
-// table is now the single source of truth, so unlike the pre-PR4 "yaml dir
-// scan + DB scan union" this needs no local filesystem read at all — an
-// empty workspace (no assigned projects) is already included in the API
-// response (Step B's ListWorkspaces rewrite).
+// runWorkspaceList lists every workspace via GET /api/workspaces: the
+// workspaces table is the single source of truth, so this needs no local
+// filesystem read at all — an empty workspace (no assigned projects) is
+// already included in the API response.
 func runWorkspaceList(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
 
@@ -252,23 +243,19 @@ type workspaceShowView struct {
 	Slug     string                      `json:"slug"`
 	Meta     *orchestrator.WorkspaceMeta `json:"meta,omitempty"`
 	Revision string                      `json:"revision,omitempty"`
-	// Home reports the workspace HOME VOLUME's size as the engine sees it
-	// (docs/plans/home-workspace-volume.md Phase 4 PR5, engine-backed since
-	// 論点 a-2 / PR7 of docs/plans/workspace-home-volume-persistence.md),
+	// Home reports the workspace HOME VOLUME's size as the engine sees it,
 	// mirrored straight from the GET /api/workspaces/{slug} response.
 	Home     *apiwire.WorkspaceHomeSize `json:"home,omitempty"`
 	Projects []*orchestrator.Project    `json:"projects"`
 }
 
 // runWorkspaceShow shows a workspace's definition (GET /api/workspaces/{slug})
-// alongside its assigned projects (GET /api/projects?workspace_id=<slug>,
-// unaffected by PR4 — kept so the project listing can still show each
-// project's WorkDir, which the workspace endpoint's AssignedProjects
-// (project ids only) does not carry). Step H removes the direct
-// orchestrator.WorkspaceStore.Load call this command used before cutover —
-// a workspace that only exists as a local workspace.yaml (never assigned or
-// `boid workspace create`d) now 404s here, matching the DB-is-authority
-// contract PR3/PR4 established.
+// alongside its assigned projects (GET /api/projects?workspace_id=<slug> —
+// kept so the project listing can still show each project's WorkDir, which
+// the workspace endpoint's AssignedProjects (project ids only) does not
+// carry). A workspace that only exists as a local workspace.yaml (never
+// assigned or `boid workspace create`d) 404s here, matching the
+// DB-is-authority contract.
 func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 	slug := args[0]
 	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
@@ -341,11 +328,10 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 	})
 }
 
-// runWorkspaceCreate creates a new workspace via POST /api/workspaces
-// (docs/plans/workspace-db-consolidation.md PR4 Step H). --from-file is
-// optional: omitted, it creates a blank workspace; given, its yaml content
-// is merged with the target slug into the single combined body the create
-// endpoint expects (Step C: "slug は body 内").
+// runWorkspaceCreate creates a new workspace via POST /api/workspaces.
+// --from-file is optional: omitted, it creates a blank workspace; given,
+// its yaml content is merged with the target slug into the single combined
+// body the create endpoint expects.
 func runWorkspaceCreate(cmd *cobra.Command, args []string) error {
 	slug := args[0]
 	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
@@ -360,13 +346,10 @@ func runWorkspaceCreate(cmd *cobra.Command, args []string) error {
 		}
 		metaYAML = data
 
-		// MINOR 1 (codex review round 3, docs/plans/workspace-db-consolidation.md):
-		// validate --from-file with the same strict (multi-document-rejecting)
+		// Validate --from-file with the same strict (multi-document-rejecting)
 		// decoder the server uses, before buildWorkspaceCreateBody's loose
 		// map[string]any merge below gets a chance to silently drop a second
-		// "---"-delimited document (see orchestrator.DecodeWorkspaceMetaStrict's
-		// doc comment for why a plain yaml.Unmarshal never surfaces that as an
-		// error). This is a client-side fail-fast check only — the server
+		// "---"-delimited document. Client-side fail-fast only — the server
 		// performs the same validation again on the constructed body.
 		if _, err := orchestrator.DecodeWorkspaceMetaStrict(metaYAML); err != nil {
 			return fmt.Errorf("validate --from-file: %w", err)
@@ -397,15 +380,13 @@ func runWorkspaceCreate(cmd *cobra.Command, args []string) error {
 // workspace) or the raw content of a --from-file document, whose top level
 // must itself be a mapping (the same shape `boid workspace edit` accepts).
 //
-// The strict decoder is invoked on metaYAML first (codex 4th pass, minor):
-// the server's DecodeWorkspaceCreateStrict runs against the fully-marshalled
-// body below, but yaml.Unmarshal only reads the *first* document — so a
-// caller passing a two-document file would silently drop the second one
-// before the server ever sees it, defeating minor 2's multi-document
-// reject from PR4's earlier pass. Validating metaYAML up-front (which
-// itself uses a strict decoder that rejects trailing documents and unknown
-// nested fields) closes that hole and gives configure/create both the
-// same fail-fast behaviour edit already had via server-side validation.
+// The strict decoder is invoked on metaYAML first: the server's
+// DecodeWorkspaceCreateStrict runs against the fully-marshalled body below,
+// but yaml.Unmarshal only reads the *first* document — so a caller passing
+// a two-document file would silently drop the second one before the
+// server ever sees it. Validating metaYAML up-front (using a strict
+// decoder that rejects trailing documents and unknown nested fields)
+// closes that hole.
 func buildWorkspaceCreateBody(slug string, metaYAML []byte) ([]byte, error) {
 	if len(bytes.TrimSpace(metaYAML)) > 0 {
 		if _, err := orchestrator.DecodeWorkspaceMetaStrict(metaYAML); err != nil {
@@ -423,13 +404,12 @@ func buildWorkspaceCreateBody(slug string, metaYAML []byte) ([]byte, error) {
 }
 
 // runWorkspaceEdit replaces a workspace's definition wholesale via
-// PUT /api/workspaces/{slug} (docs/plans/workspace-db-consolidation.md PR4
-// Step H, decision 14: --from-file only, no individual field flags).
+// PUT /api/workspaces/{slug} (--from-file only, no individual field flags).
 // Unless --force is set, the current revision is fetched first (a plain
 // GET) and sent back as If-Match — the CLI attaches the ETag automatically
 // so the common case ("edit what I just saw") never needs the caller to
 // juggle revisions by hand; --force skips this for a deliberate
-// last-write-wins edit (decision 17).
+// last-write-wins edit.
 func runWorkspaceEdit(cmd *cobra.Command, args []string) error {
 	slug := args[0]
 	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
@@ -443,8 +423,7 @@ func runWorkspaceEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("read --from-file: %w", err)
 	}
 
-	// MINOR 1 (codex review round 3, docs/plans/workspace-db-consolidation.md):
-	// fail fast on a multi-document --from-file before making any daemon
+	// Fail fast on a multi-document --from-file before making any daemon
 	// call. The server (PUT /api/workspaces/{slug}) already runs this exact
 	// same check on the raw body this function forwards verbatim, so this is
 	// a client-side convenience — it saves a round trip (including the
@@ -502,15 +481,13 @@ func formatWorkspaceAPIError(statusCode int, body []byte) string {
 }
 
 // runWorkspaceAssign assigns a project to a workspace
-// (PUT /api/projects/{id}/workspace). PR4 reinstates the daemon-side
-// existence check this endpoint used to skip (Step J, MAJOR 5), so unlike
-// the pre-PR4 "get-or-create" semantics, assigning to an unknown slug now
-// 404s — unless a local workspace.yaml for that slug already exists (e.g.
-// written by hand, by an e2e scenario, or historically by the now-retired
-// `boid workspace configure` command — see docs/plans/
-// workspace-db-consolidation.md PR6), in which case
-// ensureWorkspaceExistsForAssign auto-creates the DB row from it first so
-// the existing "drop a yaml, then assign" flow keeps working end to end.
+// (PUT /api/projects/{id}/workspace). The daemon enforces an existence
+// check on this endpoint, so assigning to an unknown slug 404s — unless a
+// local workspace.yaml for that slug already exists (e.g. written by hand,
+// by an e2e scenario, or by the now-retired `boid workspace configure`
+// command), in which case ensureWorkspaceExistsForAssign auto-creates the
+// DB row from it first so the existing "drop a yaml, then assign" flow
+// keeps working end to end.
 func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
 	// CLI entry-point validation per plan (3-layer defense). Early error gives
 	// a better UX than a 400 from the daemon.
@@ -542,23 +519,17 @@ func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
 }
 
 // resolveDaemonKitsDir returns the daemon's effective KitsDir via
-// GET /api/config/kits-dir (MAJOR 1, codex review round 1, docs/plans/
-// workspace-db-consolidation.md Phase 2.5 PR7).
+// GET /api/config/kits-dir.
 //
-// MAJOR 2 (codex review round 2): every failure mode — a 404 (the daemon
-// does not expose this endpoint at all, e.g. a pre-PR7 binary, or a PR7+
-// daemon this CLI simply failed to reach it on), a 5xx, a transport
-// failure, a response body that does not decode as the expected shape, or a
-// body that decodes cleanly but reports an empty kits_dir — now returns a
-// hard error instead of silently falling back to this CLI process's own
-// defaultKitsDir() computation. The original fallback conflated "the daemon
-// told me it has none" with "I could not find out what the daemon has" —
-// every case above is really the latter, and silently substituting this
-// CLI's own default in any of them risks resolving (and then permanently
-// persisting, via MaterializeWorkspaceKitsForPersist) a workspace's kit
-// references against the wrong directory whenever a same-named kit happens
-// to exist under both locations — the exact class of bug MAJOR 1 above
-// introduced this endpoint to prevent in the first place. A daemon started
+// Every failure mode — a 404 (the daemon does not expose this endpoint at
+// all), a 5xx, a transport failure, a response body that does not decode
+// as the expected shape, or a body that decodes cleanly but reports an
+// empty kits_dir — returns a hard error instead of silently falling back
+// to this CLI process's own defaultKitsDir() computation: silently
+// substituting this CLI's own default risks resolving (and then
+// permanently persisting, via MaterializeWorkspaceKitsForPersist) a
+// workspace's kit references against the wrong directory whenever a
+// same-named kit happens to exist under both locations. A daemon started
 // with `boid start --kits-dir <custom>` still resolves correctly (the
 // common, successful 200 case); only when this CLI genuinely cannot learn
 // the real answer does it now refuse to guess.
@@ -588,58 +559,40 @@ func resolveDaemonKitsDir(c *client.Client) (string, error) {
 // localWorkspaceYAMLReadFile reads a local workspace yaml file's raw bytes.
 // Indirected through a package-level variable rather than calling
 // os.ReadFile directly solely so tests can pin
-// ensureWorkspaceExistsForAssign's TOCTOU-avoidance invariant (MAJOR 3, codex
-// review round 2, docs/plans/workspace-db-consolidation.md Phase 2.5 PR7) —
-// that it reads workspaceDir/slug.yaml exactly once — by counting calls.
-// Mirrors workspace_migration.go's readWorkspaceYAMLSnapshot /
-// workspaceYAMLReadFile var (its MAJOR 5 fix, same repository, server side)
-// for the identical reason.
+// ensureWorkspaceExistsForAssign's TOCTOU-avoidance invariant — that it
+// reads workspaceDir/slug.yaml exactly once — by counting calls. Mirrors
+// workspace_migration.go's readWorkspaceYAMLSnapshot / workspaceYAMLReadFile
+// var (server side) for the identical reason.
 var localWorkspaceYAMLReadFile = os.ReadFile
 
 // ensureWorkspaceExistsForAssign implements `boid workspace assign`'s
-// auto-create pre-check (docs/plans/workspace-db-consolidation.md PR4 Step
-// H): if slug already has a workspaces row, this is a no-op. Otherwise, if
-// a legacy local workspace.yaml exists for slug (dropped by hand, by an e2e
-// scenario, or historically by the now-retired `boid workspace configure`
-// command — which only ever wrote the local yaml, never a DB row — see PR6),
-// its content is POSTed to the daemon so the
-// assignment's reinstated existence check (Step J) can succeed. If neither
-// exists, this is a silent no-op: the subsequent assign call surfaces
-// whatever the real outcome is (a plain 404 for a genuinely unknown slug),
-// exactly like the pre-PR4 behavior for that case.
+// auto-create pre-check: if slug already has a workspaces row, this is a
+// no-op. Otherwise, if a legacy local workspace.yaml exists for slug
+// (dropped by hand, by an e2e scenario, or by the now-retired `boid
+// workspace configure` command — which only ever wrote the local yaml,
+// never a DB row), its content is POSTed to the daemon so the assignment's
+// existence check can succeed. If neither exists, this is a silent no-op:
+// the subsequent assign call surfaces whatever the real outcome is (a
+// plain 404 for a genuinely unknown slug).
 //
-// MINOR 3-b (codex review): a local workspace.yaml read failure other than
-// "file does not exist" (a parse error, or a permission error) is no longer
-// silently swallowed and papered over as "no local yaml either" — that used
-// to make a real config or filesystem problem indistinguishable from the
-// legitimate "nothing to auto-create from" case, surfacing only as a
-// confusing 404 from the *subsequent* assign call instead of the actual
-// cause. Only os.ErrNotExist now falls through to that silent path; anything
-// else is returned so the CLI reports the real error.
+// A local workspace.yaml read failure other than "file does not exist" (a
+// parse error, or a permission error) is NOT silently swallowed as "no
+// local yaml either" — that would make a real config or filesystem problem
+// indistinguishable from the legitimate "nothing to auto-create from"
+// case, surfacing only as a confusing 404 from the *subsequent* assign
+// call instead of the actual cause. Only os.ErrNotExist falls through to
+// that silent path; anything else is returned so the CLI reports the real
+// error.
 //
-// MAJOR 3 (codex review round 2): workspaceDir/slug.yaml is now read exactly
-// ONCE, mirroring readWorkspaceYAMLSnapshot's (workspace_migration.go) MAJOR
-// 5 fix on the server side. Before this fix, this function called
-// orchestrator.NewWorkspaceStore("").Load(slug) — its own independent
-// os.ReadFile + loose yaml.Unmarshal — and then, further down, a SECOND,
-// completely independent os.ReadFile of the very same path to extract a
-// legacy `kits:` list and strictly validate the remainder. That second
-// read's failure was silently swallowed by an `if raw, readErr := ...;
-// readErr == nil { ... }` guard: on any failure there (or even a failure to
-// resolve the workspace directory at all) meta stayed the first, loose-
-// parsed, kits-oblivious read, and this function fell straight through to
-// marshaling and POSTing THAT — silently skipping kit resolution instead of
-// surfacing the second read's error, exactly the "hard-error masking" bug
-// class MINOR 3-b above already fixed once for the *first* read. Worse, an
-// atomic rename landing between the two reads could hand this function a
-// "meta from the old file version + kits from the new file version" hybrid
-// that never existed on disk at any single instant — the same TOCTOU class
-// PR7's own server-side migration code flagged and fixed once before (MAJOR
-// 5, readWorkspaceYAMLSnapshot). Reading the raw bytes once and deriving
-// both kitRefs (extractLegacyWorkspaceKitRefs) and meta
-// (DecodeWorkspaceMetaStrict, which conveniently already both validates AND
-// decodes — no separate loose parse is needed at all) from that single
-// snapshot makes both failure modes impossible.
+// workspaceDir/slug.yaml is read exactly ONCE: reading it twice (once to
+// load loosely, once more to extract a legacy `kits:` list and strictly
+// validate the remainder) risks an atomic rename landing between the two
+// reads and handing this function a "meta from the old file version + kits
+// from the new file version" hybrid that never existed on disk at any
+// single instant. Reading the raw bytes once and deriving both kitRefs
+// (extractLegacyWorkspaceKitRefs) and meta (DecodeWorkspaceMetaStrict,
+// which conveniently already both validates AND decodes) from that single
+// snapshot makes that impossible.
 func ensureWorkspaceExistsForAssign(c *client.Client, slug string, out io.Writer) error {
 	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &apiwire.WorkspaceDetail{}); err == nil {
 		return nil // already has a DB row.
@@ -658,7 +611,6 @@ func ensureWorkspaceExistsForAssign(c *client.Client, slug string, out io.Writer
 		return fmt.Errorf("read local workspace.yaml %q for auto-create: %w", slug, err)
 	}
 
-	// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12):
 	// WorkspaceMeta no longer has a Kits field, and the server's strict
 	// decoder no longer accepts a `kits:` key at all — extractLegacyWorkspaceKitRefs
 	// pulls the kits: list (if any) out of THIS SAME raw snapshot, and
@@ -670,36 +622,22 @@ func ensureWorkspaceExistsForAssign(c *client.Client, slug string, out io.Writer
 		return fmt.Errorf("parse local workspace.yaml %q for auto-create: %w", slug, err)
 	}
 
-	// MINOR 1 (codex review round 3, docs/plans/workspace-db-consolidation.md):
 	// DecodeWorkspaceMetaStrict both validates (typo'd/unknown fields,
 	// multi-document bodies) AND decodes rest into the WorkspaceMeta used
-	// below — replacing the old separate "loose parse via store.Load, then
-	// re-validate the same content strictly just for its error" two-step.
+	// below.
 	meta, err := orchestrator.DecodeWorkspaceMetaStrict(rest)
 	if err != nil {
 		return fmt.Errorf("validate local workspace.yaml %q for auto-create: %w", slug, err)
 	}
 
-	// MAJOR 2 (codex review round 1, docs/plans/workspace-db-consolidation.md):
-	// an unresolvable kit ref now aborts the auto-create instead of
-	// being swallowed as a "note:" and silently creating the
-	// workspace without the kit's host_commands/env/bindings. The
-	// prior best-effort convention (matching
-	// postWorkspaceCreateBestEffort's own tolerance for the *create
-	// call itself* racing/failing) was too permissive here: unlike a
-	// concurrent-create 409 — where a workspace already exists with
-	// presumably-correct content — a kit resolution failure means
-	// the workspace this function is about to POST would silently
-	// omit content the on-disk `kits:` reference explicitly asked
-	// for, and the DB row created from it can never be
-	// re-materialized afterward (MaterializeWorkspaceKitsForPersist
-	// is a client-side, create-time-only expansion; nothing re-runs
-	// it once the row exists). This is also the fix for a real
-	// regression from PR6: PR6's daemon-side CreateWorkspace 400'd
-	// on an unresolved kit reference, so `boid workspace assign`
-	// itself exited non-zero; PR7's client-side materialize step had
-	// silently downgraded that into a warning, letting `assign`
-	// report success for a workspace it just built incompletely.
+	// An unresolvable kit ref aborts the auto-create instead of being
+	// swallowed as a "note:" and silently creating the workspace without
+	// the kit's host_commands/env/bindings: the workspace this function is
+	// about to POST would silently omit content the on-disk `kits:`
+	// reference explicitly asked for, and the DB row created from it can
+	// never be re-materialized afterward (MaterializeWorkspaceKitsForPersist
+	// is a client-side, create-time-only expansion; nothing re-runs it once
+	// the row exists).
 	if len(kitRefs) > 0 {
 		kitsDir, err := resolveDaemonKitsDir(c)
 		if err != nil {
@@ -721,8 +659,7 @@ func ensureWorkspaceExistsForAssign(c *client.Client, slug string, out io.Writer
 // extractLegacyWorkspaceKitRefs pulls a legacy top-level `kits:` list out of
 // raw local workspace yaml, returning the kit ref names alongside a copy of
 // raw with the kits: key removed. WorkspaceMeta (and its strict wire
-// counterpart, workspaceMetaStrict) no longer has a Kits field at all (Phase
-// 2.5 PR7, docs/plans/workspace-db-consolidation.md decision 12) —
+// counterpart, workspaceMetaStrict) no longer has a Kits field at all —
 // orchestrator.DecodeWorkspaceMetaStrict now rejects a `kits:` key outright
 // ("unknown field kits") — so ensureWorkspaceExistsForAssign, the one
 // remaining caller that still needs to honor it (`boid workspace assign`'s
@@ -733,19 +670,11 @@ func ensureWorkspaceExistsForAssign(c *client.Client, slug string, out io.Writer
 // An absent kits key returns (nil, raw, nil) unchanged — the fast path, and
 // the common case for anything authored post-cutover.
 //
-// MAJOR 3 (codex review round 1, docs/plans/workspace-db-consolidation.md):
-// a second "---"-delimited document in raw is rejected up front, before any
-// unmarshal-to-map-then-remarshal happens below. The previous implementation
-// called a plain yaml.Unmarshal(raw, &doc) straight into a map[string]any —
-// which, like every single-document yaml.Unmarshal call, silently reads only
-// the first document and discards the rest — and then, whenever a `kits:`
-// key was present, remarshaled that already-truncated map as `rest`. Because
-// `rest` was a *fresh* marshal of the truncated first-document map (not raw
-// itself), the caller's later orchestrator.DecodeWorkspaceMetaStrict(rest)
-// call could no longer see the dropped second document at all, defeating
-// PR4/PR5's multi-document reject exactly in the one case (`kits:` present)
-// this function exists to handle. Deciding trailing-document-ness from raw
-// directly, before doc/rest ever exist, closes that hole.
+// A second "---"-delimited document in raw is rejected up front, before any
+// unmarshal-to-map-then-remarshal happens below: deciding trailing-document-
+// ness from raw directly (rather than from a fresh marshal of an
+// already-truncated map) is what lets the caller's later
+// DecodeWorkspaceMetaStrict(rest) call still see a dropped second document.
 func extractLegacyWorkspaceKitRefs(raw []byte) (kitRefs []string, rest []byte, err error) {
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	var doc map[string]any
@@ -763,12 +692,9 @@ func extractLegacyWorkspaceKitRefs(raw []byte) (kitRefs []string, rest []byte, e
 		return nil, raw, nil
 	}
 	// `kits:` (bare, value omitted) and `kits: null` both parse to nil under
-	// yaml.v3 map decoding — previously accepted by the loose per-workspace
-	// yaml path pre-PR7 as "no kit refs, but the key is present"; treat them
-	// the same as the key being absent here (codex PR7 review, round 3:
-	// hardening extractLegacyWorkspaceKitRefs must not regress against the
-	// null/empty case that existing shadow yaml files or hand-typed configs
-	// still legitimately carry). Splitting the assertion also strips the
+	// yaml.v3 map decoding; treat them the same as the key being absent
+	// here, since existing shadow yaml files or hand-typed configs still
+	// legitimately carry this shape. Splitting the assertion also strips the
 	// now-redundant `kits: null` line from the outgoing body via delete(doc).
 	if kitsVal == nil {
 		delete(doc, "kits")
@@ -807,13 +733,8 @@ func extractLegacyWorkspaceKitRefs(raw []byte) (kitRefs []string, rest []byte, e
 // actually needs slug to exist, and will surface a sharp error if it still
 // does not. Shared by ensureWorkspaceExistsForAssign (`boid workspace
 // assign`) and ensureWorkspaceExistsGetOrCreate (`boid project add
-// --workspace`, MAJOR 4 codex review — `project init --workspace` no
-// longer calls this at all as of docs/plans/release-onboarding.md 穴 7/PR6;
-// its --workspace flag only feeds the `boid project add` command it prints
-// as guidance, so the actual get-or-create happens later, inside that real
-// `project add` invocation) — the two differ only in what metaYAML (if
-// any) they create from and how they describe the source in the printed
-// note.
+// --workspace`) — the two differ only in what metaYAML (if any) they
+// create from and how they describe the source in the printed note.
 func postWorkspaceCreateBestEffort(c *client.Client, slug string, metaYAML []byte, out io.Writer, sourceDescription string) {
 	body, err := buildWorkspaceCreateBody(slug, metaYAML)
 	if err != nil {
@@ -828,22 +749,15 @@ func postWorkspaceCreateBestEffort(c *client.Client, slug string, metaYAML []byt
 }
 
 // ensureWorkspaceExistsGetOrCreate implements `boid project add --workspace`'s
-// get-or-create contract (MAJOR 4, codex review,
-// docs/plans/workspace-db-consolidation.md): an empty workspace is created
-// unconditionally when slug has no DB row yet — unlike `boid workspace
-// assign`'s auto-create (ensureWorkspaceExistsForAssign), which only fires
-// for a slug with a pre-existing legacy workspace.yaml and otherwise
-// silently no-ops so a genuinely unknown slug still 404s on assign.
-// `project add`'s own long-standing docstring already promised this
-// get-or-create behavior ("DB row is created even for unknown slug"), but
-// it had never actually been implemented until this function landed.
+// get-or-create contract: an empty workspace is created unconditionally
+// when slug has no DB row yet — unlike `boid workspace assign`'s
+// auto-create (ensureWorkspaceExistsForAssign), which only fires for a
+// slug with a pre-existing legacy workspace.yaml and otherwise silently
+// no-ops so a genuinely unknown slug still 404s on assign.
 //
-// `project init --workspace` used to share this same get-or-create call
-// path (via the now-removed assignProjectWorkspace) but no longer does:
-// docs/plans/release-onboarding.md 穴 7 (PR6) removed project init's daemon
-// registration entirely — its --workspace flag now only feeds the
-// `boid project add <url> --workspace=<name>` command it prints as
-// guidance, so the actual get-or-create happens later, inside a real
+// `project init --workspace` does not call this: its --workspace flag only
+// feeds the `boid project add <url> --workspace=<name>` command it prints
+// as guidance, so the actual get-or-create happens later, inside a real
 // `project add` invocation, through this same function.
 func ensureWorkspaceExistsGetOrCreate(c *client.Client, slug string, out io.Writer) error {
 	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &apiwire.WorkspaceDetail{}); err == nil {
@@ -877,8 +791,7 @@ func runWorkspaceClear(cmd *cobra.Command, args []string) error {
 }
 
 // workspaceRemoveForce is the --force (alias --yes) flag value for
-// `workspace remove`: skips the home-directory deletion confirmation prompt
-// (docs/plans/home-workspace-volume.md Phase 4 PR5).
+// `workspace remove`: skips the home-directory deletion confirmation prompt.
 var workspaceRemoveForce bool
 
 // workspaceRemoveConfirmPrompt reads the y/N answer to `workspace remove`'s
@@ -897,31 +810,26 @@ func defaultWorkspaceRemoveConfirmPrompt(in io.Reader) (bool, error) {
 	return ans == "y" || ans == "yes", nil
 }
 
-// runWorkspaceRemove deletes a workspace via DELETE /api/workspaces/{slug}
-// (docs/plans/workspace-db-consolidation.md PR4 Step H). Unlike the pre-PR4
-// CLI, this no longer blocks on (or even checks for) assigned projects
-// first: WorkspaceRepository.Remove's transaction (decision 8, wired in
-// Step F) already re-assigns any assigned project to the default workspace
-// as part of the same delete, so there is nothing left to clear by hand
-// first.
+// runWorkspaceRemove deletes a workspace via DELETE /api/workspaces/{slug}.
+// This does not block on (or even check for) assigned projects first:
+// WorkspaceRepository.Remove's transaction already re-assigns any assigned
+// project to the default workspace as part of the same delete, so there is
+// nothing left to clear by hand first.
 //
-// docs/plans/home-workspace-volume.md Phase 4 PR5 adds a confirmation step
-// on top of that: unless --force is given, the workspace's current HOME
-// VOLUME size is fetched first (GET /api/workspaces/{slug}, the same
-// `workspace show` endpoint — no separate dry-run endpoint needed) and a y/N
-// confirmation is required before the DELETE call is made at all.
+// Unless --force is given, the workspace's current HOME VOLUME size is
+// fetched first (GET /api/workspaces/{slug}, the same `workspace show`
+// endpoint — no separate dry-run endpoint needed) and a y/N confirmation is
+// required before the DELETE call is made at all.
 //
-// The prompt is unconditional — it no longer skips just because GET reported
-// Exists=false (codex PR #791 review, Blocker: a home that does not exist
-// *yet* at GET time can still exist by the time DELETE runs, if a concurrent
-// dispatch job creates it in between; skipping the prompt in that window
-// meant DELETE could silently destroy data that GET never got a chance to
-// show the operator). This is a minimal defense, not a full fix — see
-// docs/plans/home-workspace-volume.md's 落とし穴・注意 section for the
-// still-open daemon-side lifecycle-lock gap this does not close. The home
-// size line stays purely informational: "home 未作成" when nothing has been
-// dispatched into the workspace yet, rather than gating whether the prompt
-// itself appears.
+// The prompt is unconditional — it does not skip just because GET reported
+// Exists=false: a home that does not exist *yet* at GET time can still
+// exist by the time DELETE runs, if a concurrent dispatch job creates it in
+// between, and skipping the prompt in that window would let DELETE
+// silently destroy data GET never got a chance to show the operator. This
+// is a minimal defense, not a full fix (there remains an open daemon-side
+// lifecycle-lock gap this does not close). The home size line stays purely
+// informational: "home 未作成" when nothing has been dispatched into the
+// workspace yet, rather than gating whether the prompt itself appears.
 func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 	slug := args[0]
 	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
@@ -970,20 +878,18 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 }
 
 // formatWorkspaceRemoveResult renders `workspace remove`'s post-deletion
-// summary line(s) from the DELETE response (docs/plans/
-// home-workspace-volume.md Phase 4 PR5). Extended per codex PR #791 review
-// Should-fix #2: sizing and deletion are two independent failure modes on
-// WorkspaceRemoveResponse (HomeSizeError vs. HomeDeleteError — see that
-// struct's doc comment), so this covers each combination rather than
-// conflating a sizing hiccup into a single "home_delete_error" message.
+// summary line(s) from the DELETE response. Sizing and deletion are two
+// independent failure modes on WorkspaceRemoveResponse (HomeSizeError vs.
+// HomeDeleteError — see that struct's doc comment), so this covers each
+// combination rather than conflating a sizing hiccup into a single
+// "home_delete_error" message.
 //
-// The identifier in each line is the HOME VOLUME's name (論点 a-2 D4, PR7 of
-// docs/plans/workspace-home-volume-persistence.md), which is exactly what an
-// operator passes to `docker volume rm` when the delete failed — the most
-// likely reason being a job still running in that workspace, which the engine
-// answers with a 409 that no force flag overrides.
+// The identifier in each line is the HOME VOLUME's name, which is exactly
+// what an operator passes to `docker volume rm` when the delete failed —
+// the most likely reason being a job still running in that workspace,
+// which the engine answers with a 409 that no force flag overrides.
 //
-// # Why "not deleted, and no error" is not silence (PR7 round-2 review, Blocker 1)
+// # Why "not deleted, and no error" is not silence
 //
 // HomeDeleted=false with both error fields empty has two meanings, and only
 // one of them is benign:
@@ -995,14 +901,13 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 //     WorkspaceHomeVolume.Volume unconditionally, existing volume or not, so a
 //     daemon that ran the home path at all always names the volume it looked
 //     for.
-//   - Nothing was established at all. Either the daemon predates PR7 and
-//     answered with the old `home_path` key — which decodes into no field this
-//     CLI reads, leaving HomeVolume "" — or it had no engine handle and skipped
-//     the home block outright. Both are reachable: Phase 3 made the CLI able to
-//     drive a remote daemon, and this repo has no API version handshake, so
-//     skew is a live possibility rather than a theoretical one. In both, the
-//     DB row is already gone while a volume holding the workspace's harness
-//     credentials may well still be on the engine.
+//   - Nothing was established at all. Either the daemon answered with an
+//     older `home_path` key — which decodes into no field this CLI reads,
+//     leaving HomeVolume "" — or it had no engine handle and skipped the home
+//     block outright. Both are reachable: the CLI can drive a remote daemon,
+//     and this repo has no API version handshake, so skew is a live
+//     possibility. In both, the DB row is already gone while a volume holding
+//     the workspace's harness credentials may well still be on the engine.
 //
 // Collapsing the second into "" was the defect: `workspace remove` printed
 // "workspace ... removed." and stopped, which reads as a complete removal. The
@@ -1013,17 +918,17 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 // understates it.
 //
 // slug is taken so the actionable follow-up can be exact even when no volume
-// name came back: dockerres.LabelWorkspaceHome carries the slug VERBATIM
-// (論点 a-2 D7 — the name is sanitized and not invertible, the label is not),
-// so a label filter on it finds the workspace's home volume without the CLI
-// needing to know the daemon's install id.
+// name came back: dockerres.LabelWorkspaceHome carries the slug VERBATIM (the
+// name is sanitized and not invertible, the label is not), so a label filter
+// on it finds the workspace's home volume without the CLI needing to know
+// the daemon's install id.
 func formatWorkspaceRemoveResult(slug string, resp apiwire.WorkspaceRemoveResponse) string {
 	return formatWorkspaceRemoveHomeResult(slug, resp) + formatWorkspaceRemoveInitScriptResult(resp)
 }
 
 // formatWorkspaceRemoveInitScriptResult renders the init.sh half of the
-// summary (PR9 codex round 2, Major 1) — a warning when the deletion failed,
-// and nothing at all otherwise.
+// summary — a warning when the deletion failed, and nothing at all
+// otherwise.
 //
 // Silent on success for the same reason the home volume's "there was nothing
 // to delete" case is silent: it is the expected outcome of the command that
@@ -1053,16 +958,16 @@ func formatWorkspaceRemoveInitScriptResult(resp apiwire.WorkspaceRemoveResponse)
 func formatWorkspaceRemoveHomeResult(slug string, resp apiwire.WorkspaceRemoveResponse) string {
 	where := formatWorkspaceHomeVolumeRef(resp.HomeVolume)
 	switch {
-	// FIRST, ahead of every success case [codex review round 2, Blocker]. An
-	// empty HomeVolume means the responding daemon never looked at a volume
-	// at all, so nothing it reports about the deletion can be a statement
-	// about one — including HomeDeleted=true. A pre-PR7 daemon that finds a
-	// leftover pre-PR6 host home directory (workspace_home.go records that
-	// those survive) deletes THAT and answers home_deleted=true with a
-	// home_path this CLI does not decode; ordering this case after the
-	// success arm turned that into "home volume deleted", which is the exact
-	// claim the volume rewiring cannot support. The workspace row is gone
-	// either way, so the only safe report is that the volume is unconfirmed.
+	// FIRST, ahead of every success case. An empty HomeVolume means the
+	// responding daemon never looked at a volume at all, so nothing it
+	// reports about the deletion can be a statement about one — including
+	// HomeDeleted=true. An older daemon that finds a leftover host home
+	// directory (workspace_home.go records that those survive) deletes THAT
+	// and answers home_deleted=true with a home_path this CLI does not
+	// decode; ordering this case after the success arm would turn that into
+	// "home volume deleted", which is a claim the volume rewiring cannot
+	// support. The workspace row is gone either way, so the only safe
+	// report is that the volume is unconfirmed.
 	case resp.HomeVolume == "":
 		return fmt.Sprintf("warning: could not confirm the home volume was deleted: the daemon reported no home volume name"+
 			" (a daemon older than the volume rewiring, or one with no engine handle)\n"+
@@ -1095,8 +1000,8 @@ func formatWorkspaceRemoveHomeResult(slug string, resp apiwire.WorkspaceRemoveRe
 // daemon reported no name.
 //
 // The empty case is CLI/daemon version skew, not an internal error: this repo
-// has no API versioning, so a daemon predating PR7 sends the old `home_path`
-// / `path` key and the volume field decodes to "". Rendering a bare "()"
+// has no API versioning, so an older daemon sends the old `home_path` /
+// `path` key and the volume field decodes to "". Rendering a bare "()"
 // there would look like a bug in the size lookup; omitting the parenthetical
 // degrades to "the size, unattributed", which is what `boid gc`'s listing
 // already does for an old daemon (see printWorkspaceHomes in cmd/gc.go).
@@ -1111,16 +1016,13 @@ func formatWorkspaceHomeVolumeRef(volume string) string {
 	return fmt.Sprintf(" (volume %s)", volume)
 }
 
-// runWorkspaceExport lives in cmd/workspace_export.go (docs/plans/
-// volume-only-daemon.md §論点g): unlike the pre-existing revision/ETag-based
-// GET /api/workspaces/{slug}/export this used to call directly, export now
-// composes the K8s-like envelope client-side from GET /api/workspaces/{slug}
-// + GET /api/projects?workspace_id={slug}, and supports --all.
+// runWorkspaceExport lives in cmd/workspace_export.go: it composes the
+// K8s-like envelope client-side from GET /api/workspaces/{slug} +
+// GET /api/projects?workspace_id={slug}, and supports --all.
 
 // runWorkspaceImportDeprecated replaces the old meta-format `workspace
-// import` (docs/plans/workspace-db-consolidation.md PR5 Step E), retired
-// 2026-07-28 because its round trip with GET /api/workspaces/{slug}/export
-// (also retired — see WorkspaceHandler.Routes) never actually worked
+// import`, retired because its round trip with
+// GET /api/workspaces/{slug}/export (also retired) never actually worked
 // end to end, on either side:
 //
 //   - an EMPTY workspace exported as "slug: default\n{}\n" — the marshal of
@@ -1128,18 +1030,15 @@ func formatWorkspaceHomeVolumeRef(volume string) string {
 //     with the spliced "slug:" line — which is not one valid yaml mapping,
 //     so no decoder downstream of it, including this command's own, could
 //     read it back;
-//   - even a NON-empty export's top-level "slug:" key — spliced on by
-//     ProjectAppService.ExportWorkspace precisely so the round trip needed
-//     no translation step — was rejected by THIS command's own client-side
-//     orchestrator.DecodeWorkspaceMetaStrict call, a bare-meta decoder that
-//     has never accepted a "slug" field.
+//   - even a NON-empty export's top-level "slug:" key — spliced on so the
+//     round trip needed no translation step — was rejected by THIS
+//     command's own client-side orchestrator.DecodeWorkspaceMetaStrict
+//     call, a bare-meta decoder that has never accepted a "slug" field.
 //
-// Both failures were found in the 2026-07-28 dogfood of a live daemon.
 // Patching one half would not have fixed the other, so both were retired in
 // favor of the boid.dev/v1 envelope format `boid workspace export`/`apply`
-// already use successfully (docs/plans/volume-only-daemon.md §論点g) — the
-// one round trip in this family that is actually exercised end to end (see
-// cmd/workspace_apply_test.go).
+// already use successfully — the one round trip in this family that is
+// actually exercised end to end (see cmd/workspace_apply_test.go).
 //
 // This always fails, pointing at the two paths that cover what `workspace
 // import` did depending on the file's shape: `apply -f` for a boid.dev/v1
@@ -1151,19 +1050,12 @@ func formatWorkspaceHomeVolumeRef(volume string) string {
 // single command that creates-or-overwrites without the caller needing to
 // know beforehand whether the slug exists (Workspaces.Save is a true
 // upsert). cmd/project_migrate.go's own manual-fallback guidance
-// (shadowFileApplyHintBothCases) has THREE call sites, and two of them are
-// reached specifically because the daemon could not be asked whether the
-// slug exists at all — those two now have to name BOTH `create` and `edit`
-// and let the operator pick (or try one, then the other on failure), where
-// `--mode replace` used to make that a non-question. (The third call site,
-// createMigratedWorkspaceInDaemon, is the one case that already knew the
-// slug was brand-new before this retirement — it always recommended
-// `create` alone, never relied on the blind-upsert behavior, and is
-// unaffected.) This gap is accepted as a minor, guidance-text-only
-// regression — every one of those three sites is printed only when the
-// daemon is being reached OFFLINE by a human reading terminal output, not a
-// codepath anything else depends on — not a reason to keep either retired
-// endpoint alive.
+// (shadowFileApplyHintBothCases) has call sites reached specifically because
+// the daemon could not be asked whether the slug exists at all — those now
+// have to name BOTH `create` and `edit` and let the operator pick. This gap
+// is accepted as a minor, guidance-text-only regression — every such site
+// is printed only when the daemon is being reached OFFLINE by a human
+// reading terminal output, not a codepath anything else depends on.
 func runWorkspaceImportDeprecated(cmd *cobra.Command, args []string) error {
 	msg := `boid workspace import は廃止されました (meta 形式の export/import が
 双方向とも壊れていたため、envelope 形式に一本化)。 ファイルの形式に応じて
@@ -1190,16 +1082,13 @@ func formatStringSlice(ss []string) string {
 }
 
 // formatWorkspaceHomeSize renders a *apiwire.WorkspaceHomeSize as a single
-// human-readable line for `boid workspace show` (docs/plans/
-// home-workspace-volume.md Phase 4 PR5's three display cases): a normal
-// size + the home's docker volume name, "0 B (未作成: ...)" for a workspace
-// never dispatched into, or "?" when the daemon could not determine the size
-// — matching the "never fail the whole command over a size lookup" contract
-// the plan doc sets for this feature.
+// human-readable line for `boid workspace show`: a normal size + the home's
+// docker volume name, "0 B (未作成: ...)" for a workspace never dispatched
+// into, or "?" when the daemon could not determine the size — never
+// failing the whole command over a size lookup.
 //
-// The identifier switched from a host directory path to the volume name in
-// PR7 (論点 a-2, D4); formatWorkspaceHomeVolumeRef explains what an empty one
-// means and why it is rendered as an omission rather than as "()".
+// formatWorkspaceHomeVolumeRef explains what an empty volume name means and
+// why it is rendered as an omission rather than as "()".
 func formatWorkspaceHomeSize(h *apiwire.WorkspaceHomeSize) string {
 	switch {
 	case h.SizeError != "":

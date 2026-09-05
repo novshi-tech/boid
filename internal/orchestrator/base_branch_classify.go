@@ -8,7 +8,7 @@ import (
 
 // BaseBranchState describes the relationship between the project's working
 // directory HEAD and a task's resolved base_branch. The three cases drive
-// Phase 2-2 supervisor execution location routing:
+// supervisor execution location routing:
 //
 //   - Case1HeadMatches:        project dir is already on baseBranch
 //     → supervisor runs in project dir directly (worktree=false).
@@ -65,8 +65,8 @@ var ErrDetachedHead = fmt.Errorf("project is in detached HEAD state")
 // a task whose resolved base_branch is baseBranch should be scheduled. See
 // BaseBranchState for the three case definitions.
 //
-// baseBranch must already be expanded (no ${...} templates) and non-empty.
-// P1: empty baseBranch is rejected — the service layer must resolve
+// baseBranch must already be expanded (no ${...} templates) and non-empty:
+// empty baseBranch is rejected — the service layer must resolve
 // ${current_branch} before calling ClassifyBaseBranch.
 //
 // The classify call is read-only: no branches are created, no fetches are

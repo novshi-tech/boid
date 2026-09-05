@@ -11,19 +11,6 @@ var initCmd = &cobra.Command{
 	Short: "(廃止) このコマンドは 2 つに分解されました",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Phase 2.5 PR6 (kit 機構退役) で `boid kit init` / `boid
-		// workspace configure` が撤去されたため、 かつての 3 段オンボ
-		// ーディング (kit init → project init → workspace configure) は
-		// もう成立しない。 現行の 2 段は project 登録 + workspace
-		// setup (yaml 直接 or CLI 経由の create/edit/import)。 workspace
-		// は default が自動生成されるので、 default で足りるなら 1 段目
-		// だけで足りる。
-		// docs/plans/release-onboarding.md 穴 7/PR6 (codex round-21
-		// review): `boid project add <dir>` was removed entirely (git-URL
-		// registration only, PR-4) and no longer exists to guide users
-		// toward — this deprecated command's own migration message must
-		// point at the CURRENT flow instead: scaffold locally, push, then
-		// register the pushed git URL.
 		msg := `boid init は廃止されました。 次の手順で初期化してください:
 
   1) boid project init [dir]                    (新規プロジェクト雛形を生成し、次の手順を案内)

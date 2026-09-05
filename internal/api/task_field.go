@@ -46,17 +46,16 @@ func ResolveTaskField(task *orchestrator.Task, actions orchestrator.LifecycleSto
 		return "", fmt.Errorf("unmarshal task: %w", err)
 	}
 
-	// card-model-cleanup PR-2 moved every execution-only field (behavior/
-	// traits/readonly/branch_prefix/base_branch/payload/instructions/
-	// auto_start) off Task's own top level into task.Exec (design doc §3.2),
-	// so the marshaled JSON above nests them under "exec.*" instead of
+	// Every execution-only field (behavior/traits/readonly/branch_prefix/
+	// base_branch/payload/instructions/auto_start) lives on Task.Exec, so
+	// the marshaled JSON above nests them under "exec.*" instead of
 	// top-level keys. Hoist them back into synthetic top-level entries so
 	// BOTH call patterns `--field behavior` (a bare top-level field name
 	// existing scripts/callers may already use) and the payload
 	// auto-prefix / explicit "payload." resolution (this function's own
-	// documented reason for existing) keep resolving exactly as they did
-	// before the split. A card (task.Exec == nil) simply gets none of these
-	// synthetic keys — same as it would if it explicitly had no such field.
+	// documented reason for existing) keep resolving as expected. A card
+	// (task.Exec == nil) simply gets none of these synthetic keys — same as
+	// it would if it explicitly had no such field.
 	if task.Exec != nil {
 		if execRaw, err := json.Marshal(task.Exec); err == nil {
 			var execTop map[string]any
@@ -102,9 +101,8 @@ func ResolveTaskField(task *orchestrator.Task, actions orchestrator.LifecycleSto
 // ResolveTaskField (missing path → "", scalar → unquoted/stringified,
 // object/array → compact JSON, traversing into a scalar → error). Unlike
 // ResolveTaskField it does no task-specific implicit `payload.` prefixing or
-// `lifecycle` injection — every other Phase 5b PR1 task-context RPC (`boid
-// task current` / `instructions` / `env` / `payload`,
-// docs/plans/phase5-shim-and-task-context.md) shares this generic core so
+// `lifecycle` injection — every other task-context RPC (`boid task current`
+// / `instructions` / `env` / `payload`) shares this generic core so
 // `--field` behaves identically everywhere task_get already established the
 // contract.
 func ResolveJSONField(raw json.RawMessage, path string) (string, error) {

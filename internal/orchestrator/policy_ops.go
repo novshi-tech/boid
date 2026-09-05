@@ -24,22 +24,20 @@ const (
 	OpBoidTaskDelete = "task_delete"
 	OpBoidTaskWait   = "task_wait"
 
-	// Phase 5b PR1 task-context RPCs (docs/plans/phase5-shim-and-task-context.md).
+	// Task-context RPCs.
 	OpBoidTaskCurrent      = "task_current"
 	OpBoidTaskInstructions = "task_instructions"
 	OpBoidTaskEnv          = "task_env"
 	OpBoidTaskPayload      = "task_payload"
 
-	// Phase 5b PR2 attachments RPCs (docs/plans/phase5-shim-and-task-context.md).
+	// Attachments RPCs.
 	OpBoidTaskAttachmentsList = "task_attachments_list"
 	OpBoidTaskAttachmentsGet  = "task_attachments_get"
 
-	// Phase 5b PR7 job_done payload_patch direct-pass RPC
-	// (docs/plans/phase5-shim-and-task-context.md).
+	// job_done payload_patch direct-pass RPC.
 	OpBoidTaskUpdatePayloadPatch = "task_update_payload_patch"
 
-	// OpBoidProjectBehaviors backs `boid project behaviors` from inside the
-	// sandbox (docs/plans/workspace-default-project.md follow-up).
+	// OpBoidProjectBehaviors backs `boid project behaviors` from inside the sandbox.
 	OpBoidProjectBehaviors = "project_behaviors"
 	// OpBoidProjectList backs `boid project list` from inside the sandbox —
 	// discovery companion to OpBoidProjectBehaviors, scoped to the caller's
@@ -47,54 +45,48 @@ const (
 	OpBoidProjectList = "project_list"
 
 	// OpBoidCardGet / OpBoidCardList back `boid card get` / `boid card list`
-	// from inside the sandbox (docs/plans/cross-project-issue-triage.md Phase
-	// 1 PR-5a 決定14, renamed from task_triage_get/list by
-	// docs/plans/card-model-cleanup.md PR-3 §4): the read half of "daemon が
-	// state の唯一の正".
+	// from inside the sandbox: the read half of "daemon is the sole source
+	// of state truth".
 	OpBoidCardGet  = "card_get"
 	OpBoidCardList = "card_list"
 
 	// OpBoidTaskIdentityLink / OpBoidTaskIdentityUnlink / OpBoidTaskIdentityResolve
-	// back `boid task identity link/unlink/resolve` from inside the sandbox
-	// (docs/plans/ingestion-identity.md PR-1, B-1): the identity index's
-	// only external surface. No HTTP route exists for these (the sandbox
-	// shim is the sole caller today).
+	// back `boid task identity link/unlink/resolve` from inside the
+	// sandbox: the identity index's only external surface. No HTTP route
+	// exists for these (the sandbox shim is the sole caller today).
 	OpBoidTaskIdentityLink    = "task_identity_link"
 	OpBoidTaskIdentityUnlink  = "task_identity_unlink"
 	OpBoidTaskIdentityResolve = "task_identity_resolve"
 
 	// OpBoidTaskResolveOrCapture backs `boid task resolve-or-capture` from
-	// inside the sandbox (docs/plans/ingestion-identity.md PR-2, B-2): the
-	// destination-resolution op — resolve Identity to an existing task, or
-	// atomically create a new `captured` triage task and link it when
-	// unresolved. Same "no HTTP route" scoping as the PR-1 identity ops
-	// above (sandbox shim is the sole caller).
+	// inside the sandbox: the destination-resolution op — resolve Identity
+	// to an existing task, or atomically create a new `captured` triage
+	// task and link it when unresolved. Same "no HTTP route" scoping as the
+	// identity ops above.
 	OpBoidTaskResolveOrCapture = "task_resolve_or_capture"
 
-	// OpBoidActionList backs `boid action list` from inside the sandbox
-	// (docs/plans/ingestion-identity.md PR-3, B-3): the workspace-scoped
-	// since-cursor read over actions — the missing read half of
-	// OpBoidActionSend.
+	// OpBoidActionList backs `boid action list` from inside the sandbox:
+	// the workspace-scoped since-cursor read over actions — the missing
+	// read half of OpBoidActionSend.
 	OpBoidActionList = "action_list"
 
 	// OpBoidSignalList / OpBoidSignalAck back `boid signal list` / `boid
-	// signal ack` from inside the sandbox (docs/plans/
-	// signal-ingest-detailed-design.md §3.2, PR-3) — part of the general
-	// boidPolicy (see boidPolicy's own doc comment in policy.go).
+	// signal ack` from inside the sandbox — part of the general boidPolicy
+	// (see boidPolicy's own doc comment in policy.go).
 	OpBoidSignalList = "signal_list"
 	OpBoidSignalAck  = "signal_ack"
 	// OpBoidSignalClaim backs `boid signal claim <id>...` — the explicit
 	// "these are the rows I handed to a judgment" half of the read/claim
-	// split (2026-08-29). Granted by the same general boidPolicy as
-	// signal_list/signal_ack: a job that may read its workspace's inbox and
-	// ack a row may also say which rows it took.
+	// split. Granted by the same general boidPolicy as signal_list/
+	// signal_ack: a job that may read its workspace's inbox and ack a row
+	// may also say which rows it took.
 	OpBoidSignalClaim = "signal_claim"
 
 	// OpBoidSignalIngest / OpBoidSignalCursorGet mirror
 	// sandbox.BoidOpSignalIngest / BoidOpSignalCursorGet — declared here for
-	// mirror-table / drift-check completeness only. DELIBERATELY NOT added
-	// to boidPolicy's AllowedOps (policy.go): design doc §3.2 grants these
-	// only via PR-5's connector-scoped reduced policy.
+	// mirror-table / drift-check completeness only. Deliberately NOT added
+	// to boidPolicy's AllowedOps (policy.go): these are granted only via a
+	// connector-scoped reduced policy.
 	OpBoidSignalIngest    = "signal_ingest"
 	OpBoidSignalCursorGet = "signal_cursor_get"
 

@@ -48,13 +48,12 @@ func GitOriginURL(dir string) (string, error) {
 //
 // Non-github hosts are kept as-is. Returns an error if the URL cannot be
 // parsed into a host/owner/repo shape.
-// RepoSlugFromOriginURL is the exported form of repoSlugFromOriginURL
-// (docs/plans/workspace-default-project.md 決定3): the same normalization
-// gitgateway.NewRepoKey applies to a request path's host/owner/repo
-// components, used here as the hash input for a project.yaml-less project's
-// derived id — see internal/api's deriveProjectIDFromURL. Exported
-// specifically for that cross-package use; every existing in-package caller
-// still calls the unexported form directly.
+// RepoSlugFromOriginURL is the exported form of repoSlugFromOriginURL: the
+// same normalization gitgateway.NewRepoKey applies to a request path's
+// host/owner/repo components, used here as the hash input for a
+// project.yaml-less project's derived id — see internal/api's
+// deriveProjectIDFromURL. Exported specifically for that cross-package use;
+// every existing in-package caller still calls the unexported form directly.
 func RepoSlugFromOriginURL(url string) (string, error) {
 	return repoSlugFromOriginURL(url)
 }
@@ -71,13 +70,9 @@ func repoSlugFromOriginURL(url string) (string, error) {
 		hostAndPath = strings.TrimPrefix(url, "https://")
 	case strings.HasPrefix(url, "http://"):
 		hostAndPath = strings.TrimPrefix(url, "http://")
-	// git:// (Minor 1, PR-2a codex round-1 review: "URL handling is not
-	// scheme-complete despite the <git-url> interface" — git:// passes the
-	// CLI's looksLikeGitURL heuristic, since it has a "://" scheme, but was
-	// rejected here with "unrecognized origin url form"). git:// carries no
-	// userinfo at all (it is the plain, unauthenticated anonymous-fetch
-	// protocol), so there is nothing to strip — the whole remainder is
-	// host/path, same shape as https:// / http://.
+	// git:// carries no userinfo at all (it is the plain, unauthenticated
+	// anonymous-fetch protocol), so there is nothing to strip — the whole
+	// remainder is host/path, same shape as https:// / http://.
 	case strings.HasPrefix(url, "git://"):
 		hostAndPath = strings.TrimPrefix(url, "git://")
 	case strings.HasPrefix(url, "ssh://"):
@@ -86,12 +81,9 @@ func repoSlugFromOriginURL(url string) (string, error) {
 			rest = rest[at+1:]
 		}
 		// rest is now "host[:port]/owner/repo(.git)?". Split host from path
-		// at the first '/', then drop an explicit port from the host
-		// (Minor 1: the pre-fix code kept ":port" as part of hostAndPath,
-		// so NormalizeOriginURL's https:// rewrite carried the SSH port
-		// straight over — "ssh://git@host:2222/org/repo.git" became
-		// "https://host:2222/org/repo.git", an https port that has nothing
-		// to do with the ssh port the original URL specified).
+		// at the first '/', then drop an explicit port from the host — an
+		// ssh port has nothing to do with the https port NormalizeOriginURL's
+		// rewrite would otherwise carry over verbatim.
 		host, path, ok := strings.Cut(rest, "/")
 		if !ok {
 			return "", fmt.Errorf("unrecognized origin url form: %q", url)
@@ -118,15 +110,12 @@ func repoSlugFromOriginURL(url string) (string, error) {
 }
 
 // stripSSHPort removes an explicit ":<port>" suffix from an ssh:// URL's
-// host component, IPv6-safe (Minor 2, PR-2a codex round-2 review). The
-// pre-fix code split at the FIRST colon unconditionally
-// (strings.Cut(host, ":")), which mangled a bracketed IPv6 literal host —
-// "[2001:db8::1]:2222" became "[2001", silently discarding everything
-// after the first colon inside the address itself, instead of just
-// dropping the port. net.SplitHostPort correctly recognizes the bracketed
-// form; its result is re-bracketed here since the caller reassembles this
-// into a "host/path" slug that NormalizeOriginURL later prefixes with
-// "https://" — an IPv6 literal is only valid there in bracketed form.
+// host component, IPv6-safe: net.SplitHostPort correctly recognizes a
+// bracketed IPv6 literal (a naive split at the first colon would mangle
+// "[2001:db8::1]:2222"). Its result is re-bracketed here since the caller
+// reassembles this into a "host/path" slug that NormalizeOriginURL later
+// prefixes with "https://" — an IPv6 literal is only valid there in
+// bracketed form.
 func stripSSHPort(host string) string {
 	h, _, err := net.SplitHostPort(host)
 	if err != nil {
@@ -220,31 +209,22 @@ func warnUnknownBoidVars(name string, env map[string]string) {
 }
 
 // ResolveHostCommands turns the orchestrator-side host command map (keyed by
-// the user-declared name) into two views over the same resolved command data
-// (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクトリ化"
-// PR1):
+// the user-declared name) into two views over the same resolved command data:
 //
 //   - byPath is keyed by the absolute host path each host command was
-//     resolved to (also written back into each entry's Path). It used to
-//     drive the shim's per-host-path bind mount and PATH parent entries;
-//     as of the 5a-3 cutover (PR3) that scheme is retired — shims are now
-//     symlinks under a fixed sandbox-internal directory
-//     (dispatcher.sandboxShimBinDir), so no dispatcher / broker / shim code
-//     paths key off the absolute host path any more. It is returned here as
-//     an inert byproduct of the pass (the map is already built for the
-//     dedup filter) and can be dropped once no downstream consumer needs
-//     the "no two host commands collide on the same host binary" invariant
-//     it happens to encode. No production caller still reads it.
+//     resolved to (also written back into each entry's Path). It is
+//     returned as an inert byproduct of the dedup pass — no production
+//     caller reads it any more (shims are symlinks under a fixed
+//     sandbox-internal directory, dispatcher.sandboxShimBinDir, so nothing
+//     keys off the absolute host path).
 //   - byName is keyed by the short (user-declared) command name — the
 //     canonical view. Consumed by the broker's policy table
 //     (CommandBroker.RegisterCommands, BOID_HOST_COMMAND_RULES via
 //     buildHostCommandRulesEnv) and by the sandbox layout
-//     (hostCommandSymlinks, buildPATH). As of 5a-3 this is also the only
-//     shape the shim sends as ExecRequest.Command
-//     (sandbox.CommandFromArgv0 → the shim's bind-mount basename, which
-//     equals the declared short name by construction under
-//     sandboxShimBinDir); the broker's pre-5a-3 Path-scan fallback for the
-//     retired absolute-path shape was dropped in the same change.
+//     (hostCommandSymlinks, buildPATH); it is also the shape the shim sends
+//     as ExecRequest.Command (sandbox.CommandFromArgv0 → the shim's
+//     bind-mount basename, which equals the declared short name by
+//     construction under sandboxShimBinDir).
 //
 // Every entry appears in both maps under its own key with identical field
 // values (byName[def.Name] == byPath[absPath]).

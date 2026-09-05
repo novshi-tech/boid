@@ -10,28 +10,15 @@ import (
 	"github.com/novshi-tech/boid/internal/client"
 )
 
-// This file is the non-Linux counterpart of host.go's entry points.
-//
-// Host mode brings up and talks to a LOCAL containerized daemon: it runs
-// scripts/deploy-container.sh, waits on a docker/podman compose stack, and
-// connects to 127.0.0.1:8442. None of that can exist on a platform boid's
-// daemon does not run on (CLAUDE.md: Linux only), so on every other GOOS
-// the CLI is unconditionally a REMOTE client — PersistentPreRunE falls
-// through to the ordinary profiles.Resolve path, which is what
-// `boid login <url>` populates.
+// This file is the non-Linux counterpart of host.go's entry points: boid's
+// daemon is Linux-only, so on every other GOOS host mode is disabled and
+// the CLI is unconditionally a remote client.
 
-// hostModeEnabled always reports false off Linux, so cmd/root.go's
-// PersistentPreRunE takes the profiles.Resolve branch for every command.
-//
-// This is the whole mechanism by which a Windows/macOS boid becomes a
-// remote-only CLI: no new branch in root.go, just the local-daemon
-// shortcut reporting that it has nothing to offer.
+// hostModeEnabled always reports false off Linux.
 func hostModeEnabled() bool { return false }
 
-// resolveHostModeClient is unreachable: root.go only calls it when
-// hostModeEnabled() reports true, and the stub above never does. It exists
-// to satisfy the compiler, and returns an explanatory error rather than
-// panicking in case that guard is ever restructured.
+// resolveHostModeClient is unreachable off Linux; it exists to satisfy the
+// compiler and returns an explanatory error if ever called.
 func resolveHostModeClient(context.Context) (*client.Client, error) {
 	return nil, errHostModeUnsupported()
 }

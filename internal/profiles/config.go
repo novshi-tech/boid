@@ -1,8 +1,7 @@
 // Package profiles resolves which boid daemon a CLI invocation should talk
 // to: the local UNIX socket (today's sole, and still default, behavior) or
 // a remote daemon over HTTPS + Bearer auth, per a named "profile" in
-// ~/.config/boid/config.yaml (docs/plans/cli-remote-connection.md, Phase 3
-// PR1 "profile 基盤").
+// ~/.config/boid/config.yaml.
 package profiles
 
 import (
@@ -17,7 +16,7 @@ import (
 // Profile is a single named connection target from config.yaml's
 // `profiles:` map. Deliberately does not carry a token field: the token
 // lives in ~/.config/boid/tokens/<profile>.json (token.go), never in
-// config.yaml — see decision 2 (docs/plans/cli-remote-connection.md).
+// config.yaml.
 type Profile struct {
 	URL string `yaml:"url"`
 }
@@ -30,8 +29,7 @@ type Profile struct {
 type Config struct {
 	// DefaultProfile is used when neither --profile nor BOID_PROFILE is
 	// set. Empty means "no default" — Resolve then falls back to the
-	// pre-Phase-3 unix-socket default (docs/plans/cli-remote-connection.md's
-	// "現行互換" contract).
+	// unix-socket default.
 	DefaultProfile string `yaml:"default_profile"`
 	// Profiles maps a profile name (validated by ValidateSlug wherever a
 	// name is actually selected — this type itself does not enforce it, so
@@ -108,8 +106,8 @@ func ConfigPath() (string, error) {
 }
 
 // LoadConfig reads and parses path. A missing file is not an error — it
-// returns an empty Config, matching the documented "config.yaml が存在しない"
-// branch of Resolve's 現行互換 fallback (docs/plans/cli-remote-connection.md).
+// returns an empty Config, matching Resolve's unix-socket fallback for a
+// config.yaml that does not exist.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -11,15 +11,14 @@ import (
 )
 
 // DeviceTokenPrefix marks every Bearer device token minted by
-// POST /api/auth/device (docs/plans/cli-remote-connection.md Phase 3 PR0
-// 決定事項 8). It carries no security weight on its own — the token's
-// entropy is the random bytes that follow — it exists purely so a token is
-// recognizable at a glance (logs, `boid login` prompts) and distinguishable
-// from a session cookie value or a pairing code.
+// POST /api/auth/device. It carries no security weight on its own — the
+// token's entropy is the random bytes that follow — it exists purely so a
+// token is recognizable at a glance (logs, `boid login` prompts) and
+// distinguishable from a session cookie value or a pairing code.
 const DeviceTokenPrefix = "boid_pat_"
 
 // deviceTokenRandBytes is the amount of crypto/rand entropy encoded into
-// every device token, matching the plan doc's "32 byte crypto/rand" decision.
+// every device token.
 const deviceTokenRandBytes = 32
 
 // GenerateDeviceToken returns a new raw Bearer device token:
@@ -46,11 +45,10 @@ func HashToken(token string) []byte {
 
 // bearerScheme is the RFC 6750 Bearer auth scheme name. HTTP auth schemes
 // are case-insensitive (RFC 7235 §2.1), so we compare with strings.EqualFold
-// rather than a fixed-case prefix — the previous "Bearer " prefix check
-// silently mis-classified `bearer <tok>` / `BEARER <tok>` etc. as "no
-// Authorization scheme", which then let the request fall through to cookie
-// auth with a different device identity. See docs/plans/cli-remote-connection.md
-// PR0 codex review.
+// rather than a fixed-case prefix — a fixed-case prefix check would silently
+// mis-classify `bearer <tok>` / `BEARER <tok>` etc. as "no Authorization
+// scheme", which would then let the request fall through to cookie auth
+// with a different device identity.
 const bearerScheme = "Bearer"
 const authorizationHeader = "Authorization"
 
@@ -65,8 +63,8 @@ const authorizationHeader = "Authorization"
 //     different scheme (Basic, Digest, …).
 //
 // The three-way return exists so callers (NewTCPAPIAuthMiddleware,
-// WSAttachHandler.authenticateDevice) can implement the plan doc's PR0
-// rule "an Authorization: Bearer header, when present, is a hard commitment
+// WSAttachHandler.authenticateDevice) can implement the rule "an
+// Authorization: Bearer header, when present, is a hard commitment
 // to the Bearer path" — a present-but-malformed Bearer header must fail
 // authentication outright, NOT silently fall back to cookie auth (which
 // could resolve to a different device identity than the caller intended).
@@ -116,9 +114,7 @@ func ExtractBearerToken(r *http.Request) (token string, present bool, ok bool) {
 // BearerVerifier validates a raw Bearer device token against web_devices —
 // the Authorization-header counterpart to SessionSigner's cookie
 // verification. Both converge on the same device identity model (a
-// web_devices row, revocable via Store.RevokeDevice); see
-// docs/plans/cli-remote-connection.md 決定事項: 「既存 web_devices テーブル
-// を拡張 (別テーブル案は却下)」.
+// web_devices row, revocable via Store.RevokeDevice).
 type BearerVerifier struct {
 	store *Store
 }

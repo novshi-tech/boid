@@ -13,12 +13,9 @@ import (
 // import path prefix. Its appearance anywhere inside a Pack directory
 // (source code, a README, whatever) is a red flag that someone is trying
 // to reference boid internals a connector has no legitimate reason to know
-// about — Q16-18's "拡張禁止": connector code cannot reach boid's state
-// machine or DB. That is structurally enforced by the sandbox (a
-// connector's job has no code path back into the daemon at all — the
-// sandbox provides no such handle, matching docs/plans/signal-ingest-
-// detailed-design.md §5.2's reduced connector-job policy), not by this
-// check; this is only a light early-warning grep.
+// about — connector code cannot reach boid's state machine or DB. That is
+// structurally enforced by the sandbox, not by this check; this is only a
+// light early-warning grep.
 const forbiddenInternalImportSubstring = "novshi-tech/boid/internal"
 
 // maxScannedFileSize caps how much of a file this check reads — a light
@@ -26,13 +23,12 @@ const forbiddenInternalImportSubstring = "novshi-tech/boid/internal"
 // happens to ship.
 const maxScannedFileSize = 4 << 20 // 4 MiB
 
-// findExtensionViolations is the pure detection half of the "拡張禁止
-// (Q16-18 相当)" row: a coarse grep guard against a Pack shipping Go source
+// findExtensionViolations is the pure detection half of the no-extension-
+// escape check: a coarse grep guard against a Pack shipping Go source
 // (which has no business inside a Pack directory meant to be bind-mounted
-// read-only into a job sandbox — docs/plans/signal-ingest-detailed-
-// design.md §7.1's mount contract) or a literal reference to boid's own
-// internal/ import path. Deliberately light ("過剰検査は避ける") — real
-// enforcement here is structural, this is only a sanity trip-wire.
+// read-only into a job sandbox) or a literal reference to boid's own
+// internal/ import path. Deliberately light — real enforcement here is
+// structural, this is only a sanity trip-wire.
 //
 // Separated from checkNoExtensionEscape's *testing.T reporting for the
 // same reason as findSkillDocViolations (see its own doc comment).

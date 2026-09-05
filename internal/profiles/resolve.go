@@ -15,7 +15,7 @@ import (
 const ProfileFlagName = "profile"
 
 // BOIDProfileEnv is the environment variable checked between --profile and
-// default_profile (decision 1, docs/plans/cli-remote-connection.md).
+// default_profile.
 const BOIDProfileEnv = "BOID_PROFILE"
 
 // Source values explain, for diagnostics, which precedence tier a
@@ -38,7 +38,7 @@ type ResolvedProfile struct {
 	// directly.
 	URL string
 	// Token is the Bearer device token for an https-scheme profile, or ""
-	// for a unix-scheme one (unix never needs a token — decision 4).
+	// for a unix-scheme one (unix never needs a token).
 	Token string
 	// Source records which precedence tier decided Name (SourceFlag /
 	// SourceEnv / SourceDefaultProfile / SourceUnixFallback).
@@ -48,10 +48,10 @@ type ResolvedProfile struct {
 // IsUnix reports whether the resolved profile targets a UNIX socket (as
 // opposed to an https-scheme remote daemon). Handy for callers that need
 // this discrimination BEFORE a Token has been loaded — e.g. root's
-// PersistentPreRunE checking scope=local rejection (decision 6) against
-// a ResolveWithoutToken result, where a token-load failure on an
-// unrelated https profile would otherwise pre-empt the intended
-// "ローカル専用コマンドだよ" error.
+// PersistentPreRunE checking a scope=local rejection against a
+// ResolveWithoutToken result, where a token-load failure on an unrelated
+// https profile would otherwise pre-empt the intended "local-only command"
+// error.
 func (rp *ResolvedProfile) IsUnix() bool {
 	if rp == nil {
 		return false
@@ -64,11 +64,10 @@ func (rp *ResolvedProfile) IsUnix() bool {
 }
 
 // Resolve determines which daemon this CLI invocation should talk to,
-// applying the precedence chain from decision 1 (docs/plans/
-// cli-remote-connection.md): --profile flag > BOID_PROFILE env >
-// default_profile > 現行互換 (unix://DefaultSocketPath()). For https-scheme
-// profiles it also loads and validates the Bearer device token
-// (decision 9 origin-bind check).
+// applying the precedence chain: --profile flag > BOID_PROFILE env >
+// default_profile > unix://DefaultSocketPath() fallback. For https-scheme
+// profiles it also loads and validates the Bearer device token (an
+// origin-bind check).
 //
 // cmd may be nil (unit tests exercising the env/default/fallback tiers
 // without a real cobra invocation); a nil cmd is simply treated as
@@ -76,17 +75,17 @@ func (rp *ResolvedProfile) IsUnix() bool {
 //
 // Callers that need the profile identity BEFORE running the token-load
 // step — root's PersistentPreRunE, in particular, so a scope=local
-// rejection (decision 6) fires *before* an unrelated
-// missing/corrupt-token error preempts it — should call
-// ResolveWithoutToken instead and only reach for the token when they've
-// decided the invocation is actually going to proceed.
+// rejection fires *before* an unrelated missing/corrupt-token error
+// preempts it — should call ResolveWithoutToken instead and only reach for
+// the token when they've decided the invocation is actually going to
+// proceed.
 func Resolve(cmd *cobra.Command) (*ResolvedProfile, error) {
 	resolved, err := ResolveWithoutToken(cmd)
 	if err != nil {
 		return nil, err
 	}
 	if resolved.IsUnix() {
-		// decision 4: a unix-scheme profile never needs a token.
+		// A unix-scheme profile never needs a token.
 		return resolved, nil
 	}
 	tok, err := LoadToken(resolved.Name)
@@ -96,12 +95,11 @@ func Resolve(cmd *cobra.Command) (*ResolvedProfile, error) {
 		}
 		return nil, err
 	}
-	// decision 9: the token is strongly bound to the canonical origin it was
-	// issued against. A mismatch — config.yaml's profile URL was edited, or
-	// the daemon's canonical URL changed since login — is a hard error, not
-	// a warning: silently sending a token for origin A to whatever origin B
-	// config.yaml now names would be exactly the kind of cross-origin token
-	// reuse decision 9 exists to rule out.
+	// The token is strongly bound to the canonical origin it was issued
+	// against. A mismatch — config.yaml's profile URL was edited, or the
+	// daemon's canonical URL changed since login — is a hard error, not a
+	// warning: silently sending a token for origin A to whatever origin B
+	// config.yaml now names would be a cross-origin token reuse.
 	if tok.URL != resolved.URL {
 		return nil, fmt.Errorf("profile %q URL mismatch: config=%s, token=%s (re-login required)", resolved.Name, resolved.URL, tok.URL)
 	}
@@ -115,12 +113,11 @@ func Resolve(cmd *cobra.Command) (*ResolvedProfile, error) {
 // returned ResolvedProfile has Token == "" even for an https-scheme
 // profile that would normally need one.
 //
-// This exists so root.PersistentPreRunE can enforce decision 6
-// (scope=local + non-unix profile → hard error) *before* a
-// scope-independent failure — a missing/corrupt token file on the
-// resolved https profile — has a chance to preempt it with a "run 'boid
-// login' first" error that would mislead the caller into thinking token
-// state is the actual problem.
+// This exists so root.PersistentPreRunE can enforce a scope=local +
+// non-unix profile hard error *before* a scope-independent failure — a
+// missing/corrupt token file on the resolved https profile — has a chance
+// to preempt it with a "run 'boid login' first" error that would mislead
+// the caller into thinking token state is the actual problem.
 func ResolveWithoutToken(cmd *cobra.Command) (*ResolvedProfile, error) {
 	cfgPath, err := ConfigPath()
 	if err != nil {
@@ -162,7 +159,7 @@ func ResolveWithoutToken(cmd *cobra.Command) (*ResolvedProfile, error) {
 	// Reject unsupported schemes now — running the scope=local check on
 	// an ftp:// / http:// profile would still return the wrong diagnostic
 	// (a scope-based rejection for a shape that fundamentally cannot be
-	// a boid daemon URL at all — decision 4).
+	// a boid daemon URL at all).
 	switch u.Scheme {
 	case "unix", "https":
 		// supported
@@ -174,11 +171,11 @@ func ResolveWithoutToken(cmd *cobra.Command) (*ResolvedProfile, error) {
 }
 
 // selectProfileName applies the --profile / BOID_PROFILE / default_profile
-// tiers (decision 1's first three precedence levels — the fourth, 現行互換,
-// is Resolve's own empty-name fallback). Returns ("", "") when none of the
-// three apply. When --profile was passed but with an empty value, returns
-// ("", SourceFlag) so Resolve can distinguish it from the fallback case
-// and hard-error instead of silently downgrading to the unix default.
+// tiers — the first three precedence levels (the fourth is Resolve's own
+// empty-name fallback). Returns ("", "") when none of the three apply.
+// When --profile was passed but with an empty value, returns ("",
+// SourceFlag) so Resolve can distinguish it from the fallback case and
+// hard-error instead of silently downgrading to the unix default.
 func selectProfileName(cmd *cobra.Command, cfg *Config) (name, source string) {
 	if cmd != nil {
 		if f := cmd.Flags().Lookup(ProfileFlagName); f != nil && f.Changed {

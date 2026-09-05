@@ -127,22 +127,12 @@ func FilterInstructions(instructions Instructions, agent string) []RoutedInstruc
 // FilterInstructions(instructions, active.Agent).
 //
 // NOT a substitute for a specific job's routed instruction
-// (selectInstruction in planner.go / JobSpec.Instruction), and NOT the data
-// source for the Phase 5b `boid task instructions` broker RPC
-// (docs/plans/phase5-shim-and-task-context.md) — see
-// dispatcher.JobContextSnapshot's doc comment and wiring-seams.md #13 for
-// the full story. The two agree only when exactly one agent-kind hook is
-// live for the task's current phase. Evaluator.Evaluate can fire two
-// agent-kind hooks for different agents from the same task in a single
-// round — any agent appearing anywhere in the instruction history matches
-// (extractInstructionAgents), not just the active/last entry — while
-// selectInstruction/FilterInstructions only route the *last* entry, so the
-// other hook's JobSpec.Instruction is nil. This function has no way to tell
-// those two hooks' jobs apart: it always answers with whichever agent
-// happens to be the history's last entry, regardless of which job asked.
-// Safe as a task-row-level "what is this task's routing state right now"
-// projection (no caller in this codebase uses it that way yet), unsafe as
-// an answer to "what should THIS job be doing".
+// (selectInstruction in planner.go / JobSpec.Instruction): if two agent-kind
+// hooks for different agents fire from the same task in one round, this
+// function always answers with whichever agent is the history's last
+// entry, regardless of which job asked — see wiring-seams.md #13 for the
+// full story. Safe as a task-row-level "what is this task's routing state
+// right now" projection, unsafe as an answer to "what should THIS job be doing".
 func CurrentInstructions(task *Task) []RoutedInstruction {
 	if task == nil || task.Status != TaskStatusExecuting || task.Exec == nil || len(task.Exec.Instructions) == 0 {
 		return nil

@@ -38,23 +38,18 @@ type JobSpec struct {
 	// HookTraitsProduces captures the firing hook's own `traits.produces`
 	// list (event.Hook.Traits.Produces) AT DISPATCH TIME — the exact value
 	// HandlerResult.allowedTraits (coordinator.go) would use to gate this
-	// same hook's file-based payload_patch merge. Phase 5b PR7's
-	// `boid task update --payload-patch` RPC (docs/plans/
-	// phase5-shim-and-task-context.md) threads this through
-	// dispatcher.JobContextSnapshot so it can gate its own merge against
-	// the SAME dispatch-time value, never a live re-lookup against the
-	// (possibly since-edited/reloaded) project meta — codex review caught a
-	// TOCTOU staleness bug in an early cut that re-resolved the hook by ID
-	// against current meta at merge time (wiring-seams.md #17's Major 1).
-	// nil means "this job's firing hook produces unrestricted" — true for
-	// both a virtual/synthesized agent-kind hook (orchestrator.
-	// synthesizeAgentHook, whose Traits are always the zero value — the
-	// common case for a behavior with no explicit `hooks:` block) and an
-	// explicitly declared hook with no traits.produces list of its own;
-	// both are indistinguishable from "unrestricted" on the file-based path
-	// too (MergePayloadPatch(patch, nil) never filters), so this preserves
-	// that behavior exactly rather than inventing a new distinction. Empty
-	// for non-hook jobs (boid exec).
+	// same hook's file-based payload_patch merge. `boid task update
+	// --payload-patch` threads this through dispatcher.JobContextSnapshot
+	// so it can gate its own merge against the SAME dispatch-time value,
+	// never a live re-lookup against the (possibly since-edited/reloaded)
+	// project meta, which would be a TOCTOU staleness bug. nil means "this
+	// job's firing hook produces unrestricted" — true for both a
+	// virtual/synthesized agent-kind hook (orchestrator.synthesizeAgentHook,
+	// whose Traits are always the zero value) and an explicitly declared
+	// hook with no traits.produces list of its own; both are
+	// indistinguishable from "unrestricted" on the file-based path too
+	// (MergePayloadPatch(patch, nil) never filters). Empty for non-hook
+	// jobs (boid exec).
 	HookTraitsProduces []TraitType
 
 	// Kind is a DB-label / TUI-display category. Sandbox construction details
@@ -96,23 +91,22 @@ type JobSpec struct {
 
 	// APIGatewayServices, when non-nil, OVERRIDES the dispatcher-resolved
 	// (floor ∪ workspace) API gateway service allowlist for this job's
-	// token (docs/plans/signal-ingest-detailed-design.md §5.2): a signal-
-	// derived trigger's connector exec job is restricted to exactly the ONE
-	// service instance its signals.sources[] declaration named, never the
-	// workspace's full enabled set. Runner.registerAPIGatewayToken
-	// (internal/dispatcher/apigateway_wire.go) intersects this with the
-	// normally-resolved set rather than trusting it outright — defense in
-	// depth against a stale declaration naming a service the workspace no
-	// longer enables (project.yaml load only WARNS about that mismatch,
-	// never blocks — see ProjectStore.GetWithWorkspace). nil (every job but
-	// a connector trigger) leaves the existing resolveEnabledAPIServices
-	// behavior completely unchanged.
+	// token: a signal-derived trigger's connector exec job is restricted to
+	// exactly the ONE service instance its signals.sources[] declaration
+	// named, never the workspace's full enabled set. Runner.
+	// registerAPIGatewayToken (internal/dispatcher/apigateway_wire.go)
+	// intersects this with the normally-resolved set rather than trusting
+	// it outright — defense in depth against a stale declaration naming a
+	// service the workspace no longer enables (project.yaml load only
+	// WARNS about that mismatch, never blocks — see
+	// ProjectStore.GetWithWorkspace). nil (every job but a connector
+	// trigger) leaves the existing resolveEnabledAPIServices behavior
+	// completely unchanged.
 	APIGatewayServices []string
 
 	// SignalService / SignalConnector set sandbox.TokenContext.Service/
-	// Connector for this job's broker token registration (docs/plans/
-	// signal-ingest-detailed-design.md §3.2/§5.2): the ONLY fields that
-	// authorize BoidOpSignalIngest/BoidOpSignalCursorGet's broker-side
+	// Connector for this job's broker token registration: the ONLY fields
+	// that authorize BoidOpSignalIngest/BoidOpSignalCursorGet's broker-side
 	// scoping (internal/sandbox/broker.go) to a specific (service,
 	// connector) pair. Set only by BuildSessionJobSpec from
 	// SessionJobInput.SignalService/SignalConnector, which in turn only a
@@ -172,9 +166,8 @@ type Visibility struct {
 	// ProjectMeta at JobSpec-build time (PlanHook / BuildSessionJobSpec).
 	// dispatcher uses it — falling back to filepath.Base(ProjectDir) when
 	// empty — to name the sandbox-internal clone directory under the
-	// /workspace parent dir (workspace 親化リファクタリング, nose
-	// 2026-07-13 decision): every project previously shared the exact same
-	// sandbox cwd ("/workspace"), which collided Claude Code's
+	// /workspace parent dir: every project previously shared the exact
+	// same sandbox cwd ("/workspace"), which collided Claude Code's
 	// `~/.claude/projects/-workspace/` session-log slug across every boid
 	// project. Empty is a legitimate value (a project with no `name:` in
 	// project.yaml, or a dispatch path — e.g. gate/hook jobs with no
@@ -194,9 +187,8 @@ type Visibility struct {
 	// project.yaml. Dispatcher uses this to start a per-sandbox docker proxy.
 	DockerEnabled bool
 
-	// Clone declares the sandbox-internal-clone branch state for real dispatch
-	// (docs/plans/git-gateway-cutover.md PR5 「5. branch 宣言の JobSpec 化」・
-	// PR6 cutover). nil leaves dispatch unaffected (test-only JobSpecs that
+	// Clone declares the sandbox-internal-clone branch state for real
+	// dispatch. nil leaves dispatch unaffected (test-only JobSpecs that
 	// don't exercise clone-mode). When non-nil, dispatcher does not resolve
 	// the branch itself against a host repo — it carries this declaration
 	// through to the sandbox so the runner resolves it (rev-parse /
@@ -207,13 +199,12 @@ type Visibility struct {
 // CloneDeclaration declares the working-branch state a sandbox-internal
 // clone should end up in, without resolving it — resolution (rev-parse /
 // merge-base / checkout -B) is deferred to the runner, which performs it
-// against the freshly cloned repo (docs/plans/git-gateway-cutover.md: 「dispatcher
-// は JobSpec に宣言のみ載せる...runner が clone 完了後に解決」).
+// against the freshly cloned repo: dispatcher only places a declaration in
+// JobSpec, and the runner resolves it once the clone completes.
 //
-// docs/plans/branch-policy-simplification.md Phase 1 retired the per-task
-// "boid/<id8>" branch and its fork-point: every task, root or child, checks
-// out BaseBranch directly (CheckoutOnly is always true now). See
-// BuildCloneDeclaration's doc comment for the rationale.
+// Every task, root or child, checks out BaseBranch directly (CheckoutOnly is
+// always true now) — see BuildCloneDeclaration's doc comment for the
+// rationale.
 type CloneDeclaration struct {
 	// Branch is the branch the runner ends up on inside the clone. Always
 	// equal to BaseBranch — every task occupies its own BaseBranch directly.
@@ -240,14 +231,10 @@ type CloneDeclaration struct {
 }
 
 // TaskSnapshot is the business metadata `boid task current` returns over the
-// broker RPC (Phase 5b PR1, docs/plans/phase5-shim-and-task-context.md).
-// Through the Phase 5b PR6 cutover it also materialized at the now-deleted
-// $HOME/.boid/context/task.yaml; JSON tags stayed lowercase to match that
-// file's key casing (marshalTaskYAML, also deleted) and the snake_case
-// convention every other boid RPC response uses.
+// broker RPC. JSON tags stay lowercase, matching the snake_case convention
+// every other boid RPC response uses.
 //
-// Readonly (Phase 5b PR4, docs/plans/phase5-shim-and-task-context.md「PR 分割案
-// > 5b」4) is the mode-determination source the boid-task skill reads via
+// Readonly is the mode-determination source the boid-task skill reads via
 // `boid task current --field readonly`.
 type TaskSnapshot struct {
 	ID          string `json:"id"`

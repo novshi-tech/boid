@@ -25,17 +25,16 @@ type Proxy struct {
 
 	// BindHost, when non-empty, overrides Start's default loopback-only
 	// bind ("127.0.0.1") — see ProxyManager.BindHost's own doc comment for
-	// the container-backend rationale ([Blocker 2, PR7 codex review]). Must
-	// be set before Start is called; changing it afterward has no effect on
-	// an already-bound listener.
+	// the container-backend rationale. Must be set before Start is called;
+	// changing it afterward has no effect on an already-bound listener.
 	BindHost string
 
 	// DesiredPort, when non-zero, is the port Start binds to instead of
 	// letting the kernel pick an ephemeral one (`:0`). Start returns the
 	// bind error unchanged when the port is unavailable — deciding whether
 	// that is fatal or worth retrying on another port belongs to the
-	// caller, not here (ProxyManager treats it as retryable; see
-	// docs/plans/egress-proxy-stable-port.md). Must be set before Start.
+	// caller, not here (ProxyManager treats it as retryable). Must be set
+	// before Start.
 	DesiredPort int
 
 	listener net.Listener
@@ -102,14 +101,9 @@ func (p *Proxy) Start(ctx context.Context) (int, error) {
 // if Stop's Close lands before that goroutine gets scheduled, Serve's own
 // trackListener call sees the already-shutting-down server, returns
 // ErrServerClosed immediately, and never closes the listener it was handed.
-// The socket then stays bound for the life of the process.
-//
-// Harmless while ports were ephemeral — nothing ever asked for that number
-// again. Not harmless now that a port is meant to be reused across restarts:
-// found by TestProxyManager_ReusesPersistedPort failing on CI (a loaded
-// machine loses that race far more often than a developer's), where the
-// leaked listener kept the port and the "restarted" manager had to
-// reallocate — i.e. exactly the port drift this feature exists to prevent.
+// The socket then stays bound for the life of the process — harmless while
+// ports were ephemeral, but not now that a port is meant to be reused across
+// restarts (see TestProxyManager_ReusesPersistedPort).
 func (p *Proxy) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -223,24 +217,21 @@ func (p *Proxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 // isRefusedDotlessTarget returns true when host is a single-label DNS name
 // (no ".", not an IPv6 literal) and is not one of the boid infrastructure
-// names a job legitimately reaches through boid's own env plumbing —
-// docs/plans/phase6-cutover-followups.md §⓪-b.
+// names a job legitimately reaches through boid's own env plumbing.
 //
 // Why: the egress proxy sits inside the daemon container, which is
-// self-connected to every currently-active workspace network at once
-// (§決定5's job-workspace network isolation is implemented by joining the
-// daemon to each per-workspace network so the gateway/broker/egress-proxy
-// services HOSTED on the daemon are reachable from a confined job — see
-// containerBackend.ensureWorkspaceNetwork). That means the proxy's own
-// DNS view (docker embedded DNS, aggregated across every network it is
-// currently connected to) can resolve a name like "sib-b" — declared on
-// workspace B's network by a concurrently dispatched job — from a
-// workspace A job's CONNECT request, and would happily open the tunnel
-// once the allowlist permits it (allowed_domains: ["sib-b"] would let a
-// workspace A job reach a workspace B sibling). Application-layer
-// allowlist enforcement thus does not, on its own, satisfy the network-
-// layer isolation contract §決定5 declares — it only closes the specific
-// hole when every workspace's allowed_domains list is disjoint by
+// self-connected to every currently-active workspace network at once (so
+// the gateway/broker/egress-proxy services HOSTED on the daemon are
+// reachable from a confined job — see containerBackend.ensureWorkspaceNetwork).
+// That means the proxy's own DNS view (docker embedded DNS, aggregated
+// across every network it is currently connected to) can resolve a name
+// like "sib-b" — declared on workspace B's network by a concurrently
+// dispatched job — from a workspace A job's CONNECT request, and would
+// happily open the tunnel once the allowlist permits it (allowed_domains:
+// ["sib-b"] would let a workspace A job reach a workspace B sibling).
+// Application-layer allowlist enforcement thus does not, on its own,
+// satisfy the network-layer isolation contract — it only closes the
+// specific hole when every workspace's allowed_domains list is disjoint by
 // construction, which the config type does not require or enforce.
 //
 // The fix is a boid convention: the egress proxy refuses to relay any

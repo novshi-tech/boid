@@ -78,12 +78,10 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	}
 	jobs := rawJobs
 
-	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): task
-	// detail is a generic per-task view (any task, card or ordinary), so the
-	// governing machine is resolved dynamically. card-model-cleanup PR-2
-	// retired machineForDisplay: machineFor is now a pure function of
-	// task.Type (no DB lookup, so nothing left to fail transiently — see
-	// machineFor's own doc comment).
+	// task detail is a generic per-task view (any task, card or ordinary), so
+	// the governing machine is resolved dynamically. machineFor is a pure
+	// function of task.Type (no DB lookup, so nothing left to fail
+	// transiently).
 	sm := machineFor(task)
 
 	return &TaskDetailView{
@@ -105,18 +103,14 @@ func (s *WebAppService) ListProjects() ([]*orchestrator.Project, error) {
 	return projects, nil
 }
 
-// hydrateProjectMeta populates project.Meta with workspace.yaml merged in
-// (docs/plans/workspace-default-project.md §PR分割案 PR2, §現状の実測4's
-// "Web UI project 一覧"/"Web UI project 単体" rows — fable review M1: this
-// feeds the task-creation form's behavior dropdown, task_form.templ:32,50,
-// not just display). Falls back to bare Get on any hydration failure —
-// same idiom as ProjectAppService.hydrateProjectWithWorkspace
-// (project_service.go) and TaskAppService.CreateTask (task_create.go)
-// already use — reproducing the pre-PR2 "meta not found → leave Meta
-// unset, no error" tolerance for a true cache miss, while degrading to the
-// un-hydrated meta (rather than blanking Meta outright) for the two new
-// failure modes GetWithWorkspace can produce that bare Get never could (a
-// corrupt workspace.yaml, a host_commands conflict).
+// hydrateProjectMeta populates project.Meta with workspace.yaml merged in —
+// this feeds the task-creation form's behavior dropdown, not just display.
+// Falls back to bare Get on any hydration failure (same idiom as
+// ProjectAppService.hydrateProjectWithWorkspace and TaskAppService.CreateTask),
+// reproducing "meta not found → leave Meta unset, no error" for a true cache
+// miss, while degrading to the un-hydrated meta (rather than blanking Meta
+// outright) for the failure modes GetWithWorkspace can produce that bare Get
+// never could (a corrupt workspace.yaml, a host_commands conflict).
 func (s *WebAppService) hydrateProjectMeta(project *orchestrator.Project) {
 	if hydrated, err := s.Meta.GetWithWorkspace(context.Background(), project.ID); err == nil && hydrated != nil {
 		project.Meta = *hydrated
@@ -262,20 +256,19 @@ func (s *WebAppService) AnswerTask(ctx context.Context, taskID, questionID, answ
 }
 
 // AnswerSuggestionRequest is the Web UI's accept/reject form payload for a
-// task_triage suggestion (docs/plans/ingestion-identity.md PR-3, J-6). Answer
-// is required; Verb/Basis are optional (recorded, never validated by the
-// daemon — see answeredPayload's own doc comment).
+// task_triage suggestion. Answer is required; Verb/Basis are optional
+// (recorded, never validated by the daemon — see answeredPayload's own doc
+// comment).
 type AnswerSuggestionRequest struct {
 	Answer string `json:"answer"`
 	Verb   string `json:"verb,omitempty"`
 	Basis  string `json:"basis,omitempty"`
 }
 
-// AnswerSuggestion sends an "answered" action for taskID, recording nose's
-// accept/reject of the currently-shown suggestion (J-6's "既に開いている穴"
-// — see WebService.AnswerSuggestion's own doc comment for why this is a
-// dedicated method rather than routing through the generic ApplyAction,
-// mirroring ReopenTask's own instruction-payload pattern just above).
+// AnswerSuggestion sends an "answered" action for taskID, recording the
+// user's accept/reject of the currently-shown suggestion — a dedicated
+// method rather than routing through the generic ApplyAction, mirroring
+// ReopenTask's own instruction-payload pattern just above.
 func (s *WebAppService) AnswerSuggestion(taskID string, req AnswerSuggestionRequest) error {
 	if s.Workflow == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}

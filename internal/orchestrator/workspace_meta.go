@@ -12,18 +12,11 @@ import "strings"
 // project.yaml.
 //
 // A Kits field used to live here (an ordered list of kit slugs, resolved and
-// merged in at hydration time). The kit mechanism itself was retired in
-// docs/plans/workspace-db-consolidation.md Phase 2.5 PR6, and this field was
-// removed outright in PR7 (decision 12: no fallback for the old field kept).
-// The `workspaces` DB table never had a column for it (WorkspaceRepository.
-// Load/Save never read/wrote it), so removing the struct field is a pure
-// cleanup with no persisted-data migration implied. Two client-side call
-// sites still resolve a legacy `kits:` reference list against
-// MaterializeWorkspaceKitsForPersist, but source it from outside this type
-// now (cmd/workspace.go's ensureWorkspaceExistsForAssign extracts it from the
-// raw shadow yaml; cmd/project_migrate.go folds its own auto-generated
-// legacy kit's fields in directly, without any kit list at all) — see those
-// call sites for why.
+// merged in at hydration time); the kit mechanism itself was retired and the
+// field removed. Two client-side call sites still resolve a legacy `kits:`
+// reference list against MaterializeWorkspaceKitsForPersist, but source it
+// from outside this type now — see cmd/workspace.go's
+// ensureWorkspaceExistsForAssign and cmd/project_migrate.go.
 type WorkspaceMeta struct {
 	// Env holds environment variable overrides applied to every sandbox
 	// launched under this workspace. Values here take precedence over
@@ -47,87 +40,52 @@ type WorkspaceMeta struct {
 
 	// ExtraRepos is the workspace-scoped, read-only allowlist of additional
 	// git repositories outside this workspace's own projects that jobs may
-	// fetch (never push) via the git gateway — e.g. a private go module
-	// dependency (docs/plans/git-gateway-cutover.md 「workspace peer」節:
-	// 「workspace 設定に read-only の追加許可 repo」). Entries are upstream
-	// URLs in any form dispatcher.NormalizeOriginURL accepts (HTTPS or SSH);
+	// fetch (never push) via the git gateway. Entries are upstream URLs in
+	// any form dispatcher.NormalizeOriginURL accepts (HTTPS or SSH);
 	// dispatcher resolves each into a gitgateway.RepoKey at dispatch time and
 	// grants it PermFetch alongside this workspace's own projects and peers.
-	// Same additive, floor-cannot-shrink relationship to the (currently
-	// nonexistent) global floor as AllowedDomains — there is no write grant
-	// here, fetch-only by construction.
 	ExtraRepos []string `yaml:"extra_repos,omitempty" json:"extra_repos,omitempty"`
 
 	// Services is the workspace-scoped list of API gateway logical service
-	// names ENABLED for this workspace, on top of config.yaml's
-	// services_floor (docs/plans/api-gateway.md §3: "workspace 単位の
-	// service 有効化 — allowed_domains の floor + workspace 加算方式を鏡写し
-	// にする"). Same additive, floor-cannot-shrink relationship to the
-	// daemon-wide floor as AllowedDomains has to sandbox.allowed_domains —
-	// a workspace can only ADD services on top of the floor, never remove a
-	// floor entry. An entry naming a service config.yaml's `services:` map
-	// does not actually declare is not rejected here (WorkspaceMeta has no
-	// visibility into the daemon's service registry) — it simply never
-	// resolves to anything reachable at dispatch time; see
-	// ResolveEnabledServices and internal/apigateway.CredentialProvider.
-	// KnowsService, which is the layer that actually enforces "is this
-	// service configured at all".
+	// names enabled for this workspace, on top of config.yaml's
+	// services_floor — additive only, a workspace can never remove a floor
+	// entry. An entry naming a service config.yaml's `services:` map does
+	// not declare is not rejected here; it simply never resolves to
+	// anything reachable at dispatch time — see ResolveEnabledServices.
 	Services []string `yaml:"services,omitempty" json:"services,omitempty"`
 
 	// HostCommands is the reference-name list into the aggregated
 	// host_commands config assembled at daemon startup (see
 	// host_commands_config.go's LoadHostCommandsFromKits /
-	// WriteHostCommandsConfig and docs/plans/workspace-db-consolidation.md
-	// 「host_commands 実定義の集約先」). Unlike Kits, this field carries only
-	// names — no path/allow/env/reject definitions travel with the
-	// workspace itself; those live in the daemon-wide
-	// ~/.config/boid/host_commands.yaml and are resolved by name at
-	// GetWithWorkspace hydration time (ProjectStore.hostCommands).
-	// Populated by MigrateWorkspaceYAMLToDB from each workspace's former
-	// Kits list, unioned with any host_commands the workspace already had.
+	// WriteHostCommandsConfig). This field carries only names — no
+	// path/allow/env/reject definitions travel with the workspace itself;
+	// those live in the daemon-wide ~/.config/boid/host_commands.yaml and
+	// are resolved by name at GetWithWorkspace hydration time.
 	HostCommands []string `yaml:"host_commands,omitempty" json:"host_commands,omitempty"`
 
-	// ContainerImage is a nullable field reserved for the Phase 6 container
-	// backend (decision 7, docs/plans/workspace-db-consolidation.md).
-	// Dispatch ignores it entirely until then — the field only exists so
-	// the schema migration for it does not need to be revisited later.
+	// ContainerImage is a nullable field reserved for the container backend.
+	// Dispatch ignores it entirely until then.
 	ContainerImage string `yaml:"container_image,omitempty" json:"container_image,omitempty"`
 
-	// AdditionalBindings (workspace-scoped kit-mechanism vestige, decision 4)
-	// was retired outright in docs/plans/home-workspace-volume.md Phase 4
-	// PR4: the $HOME workspace volume contract (Phase 4 PR1/PR2) replaces
-	// the need for a workspace to declare extra host bind mounts — workspace
-	// tooling now lives inside the workspace home dir itself, set up by the
-	// workspace's init script. There is deliberately no field here any more
-	// (unlike WorkspaceMeta.Kits, removed in Phase 2.5 PR7 the same way): an
-	// existing `additional_bindings:` key in a hand-authored workspace yaml,
-	// a POST/PUT body, or the `workspaces.additional_bindings` DB column
-	// still parses without error (the key is simply unknown to this struct,
-	// silently ignored by yaml.Unmarshal — see workspace_meta_strict.go's
-	// tolerate-and-warn handling for the strict-decode wire path, and
-	// workspace_repository.go's decodeWorkspaceMetaColumns for the DB read
-	// path), but its value is discarded rather than materialized into a
-	// sandbox mount. The `workspaces` table keeps the column for now (next
-	// major schema cleanup removes it outright) but every write from this
-	// binary now persists it as an empty JSON array.
+	// AdditionalBindings was retired outright: the $HOME workspace volume
+	// contract replaces the need for a workspace to declare extra host bind
+	// mounts. There is deliberately no field here any more; an existing
+	// `additional_bindings:` key still parses without error (unknown to this
+	// struct, silently ignored) but its value is discarded rather than
+	// materialized into a sandbox mount.
 
 	// TaskBehaviors / BaseBranch / ForkPoint / DefaultTaskBehavior are the
-	// workspace's "default project" definition (docs/plans/
-	// workspace-default-project.md — a project.yaml-less or partial
-	// project.yaml inherits these). Mirrors the identically-named ProjectMeta
-	// fields (spec_types.go) field-for-field, both in shape and in the
+	// workspace's "default project" definition — a project.yaml-less or
+	// partial project.yaml inherits these. Mirrors the identically-named
+	// ProjectMeta fields field-for-field, both in shape and in the
 	// validation/normalization pipeline they go through
-	// (normalizeWorkspaceDefaultTaskBehaviors, spec_loader.go, 論点j) — but
-	// unlike host_commands/env/capabilities above, these four are NOT yet
-	// consumed by anything: this is PR3 of that doc's PR split (schema +
-	// plumbing only). A future PR wires them into GetWithWorkspace's
-	// hydration merge (決定1: project.yaml wins per-field over these
-	// workspace defaults; 決定4: task_behaviors merges by canonical behavior
-	// name, same-name project.yaml entry wins outright).
+	// (normalizeWorkspaceDefaultTaskBehaviors, spec_loader.go). See
+	// docs/plans/workspace-default-project.md for the hydration-merge rules
+	// (project.yaml wins per-field over these workspace defaults).
 	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors,omitempty" json:"task_behaviors,omitempty"`
 	// BaseBranch is the workspace default's base_branch. Empty means
-	// "unspecified" (決定5: there is deliberately no way to explicitly
-	// un-set an inherited value — see that decision's doc comment).
+	// "unspecified" — there is deliberately no way to explicitly un-set an
+	// inherited value.
 	BaseBranch string `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
 	// ForkPoint is the workspace default's fork_point. Same empty-means-
 	// unspecified rule as BaseBranch.
@@ -162,24 +120,14 @@ type WorkspaceMeta struct {
 // storage and would be subject to TOCTOU (the daemon's own environment can
 // change between materialization and dispatch). ProjectStore.GetWithWorkspace
 // calls this once per hydration, right after WorkspaceStore.Load, so every
-// dispatch sees the current expansion of a ${VAR} placeholder rather than
-// whatever happened to be baked in at migration/save time.
+// dispatch sees the current expansion of a ${VAR} placeholder.
 //
-// This mirrors ExpandHostCommandsForDispatch (host_commands_config.go),
-// which performs the identical clone-then-expand step for
-// workspace.HostCommands' resolved definitions. Before this function
-// existed, workspace/kit-materialized Env never got the equivalent
-// treatment: a placeholder such as ${E2E_WORKSPACE_DIR} or ${XDG_DATA_HOME}
-// was carried into the DB unexpanded and never expanded again, a silent
-// regression versus the pre-cutover yaml-mode path. (AdditionalBindings used
-// to get the identical clone-then-expand treatment here too, until Phase 4
-// PR4, docs/plans/home-workspace-volume.md, retired the field outright.)
+// Mirrors ExpandHostCommandsForDispatch (host_commands_config.go), which
+// performs the identical clone-then-expand step for
+// workspace.HostCommands' resolved definitions.
 //
 // meta is never mutated: the returned value's Env map is an independent copy
-// before interpolateEnvMap runs in place on it. This matters even though
-// WorkspaceStore.Load (both the yaml and DB-repository backends) currently
-// always allocates a fresh *WorkspaceMeta per call — the no-mutation
-// contract should not rely on that happening to be true.
+// before interpolateEnvMap runs in place on it.
 func expandWorkspaceRuntimeForDispatch(meta *WorkspaceMeta) *WorkspaceMeta {
 	if meta == nil {
 		return nil

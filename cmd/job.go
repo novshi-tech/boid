@@ -157,21 +157,14 @@ func runJobWatch(cmd *cobra.Command, args []string) error {
 // runJobLog prints a job's transcript, or — when there is none — the
 // daemon's own explanation of why.
 //
-// The 404 body is relayed verbatim rather than replaced with a fixed
-// string. GET /jobs/{id}/log answers 404 for three genuinely different
-// situations (no such job / the job has no runtime / the transcript is gone
-// — see internal/api/job.go's writeJobLogUnavailable), and this command used
-// to print "log not available (runtime cleaned up)" for all of them,
-// discarding the body. Two of the three were therefore reported as an event
-// that never happened, which cost a 2026-07-28 dogfood session real time
-// while diagnosing a hung job. A daemon predating that change sends no body
-// at all, in which case this prints nothing extra rather than inventing a
-// reason it cannot know.
+// The 404 body is relayed verbatim rather than replaced with a fixed string,
+// since GET /jobs/{id}/log answers 404 for several genuinely different
+// situations (see internal/api/job.go's writeJobLogUnavailable). A daemon
+// predating that body prints nothing extra rather than inventing a reason
+// it cannot know.
 //
-// Exit status is deliberately unchanged: every 404 still succeeds. Scripts
-// that treat "no log yet" as a non-error (polling a job that has not started
-// writing) keep working, and the operator-facing difference now lives where
-// it is actually read — in the message.
+// Exit status is deliberately unchanged: every 404 still succeeds, so
+// scripts that treat "no log yet" as a non-error keep working.
 func runJobLog(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
 	statusCode, body, err := c.GetRaw("/api/jobs/" + args[0] + "/log")
@@ -200,7 +193,6 @@ func runJobDone(cmd *cobra.Command, args []string) error {
 		"exit_code": exitCode,
 	}
 
-	// Read output file if specified
 	outputFile, _ := cmd.Flags().GetString("output-file")
 	if outputFile != "" {
 		data, err := os.ReadFile(outputFile)

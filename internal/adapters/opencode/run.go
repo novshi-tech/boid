@@ -21,15 +21,9 @@ var lookPath = exec.LookPath
 
 // missingCLIError builds the fail-fast error Run returns when harnessCLI is
 // not on the sandbox PATH. See internal/adapters/claude/run.go's
-// missingCLIError for the full rationale (Phase 4 PR3 retired the adapter's
-// own CLI bind-mount — opencode/bindings.go — in favor of the workspace HOME
-// volume, so a lookup miss now points at the workspace's init.sh instead of
-// a generic "command not found"; PR9 of
-// docs/plans/workspace-home-volume-persistence.md then replaced the host path
-// it used to print with the CLI commands that actually reach the daemon's
-// copy). slug comes from rc.Env["BOID_WORKSPACE_SLUG"] and falls back to
-// "default"; cause is wrapped with %w so errors.Is(err, exec.ErrNotFound)
-// still holds.
+// missingCLIError for the full rationale. slug comes from
+// rc.Env["BOID_WORKSPACE_SLUG"] and falls back to "default"; cause is
+// wrapped with %w so errors.Is(err, exec.ErrNotFound) still holds.
 //
 // Kept literal-identical to the other two adapters' copies on purpose: this is
 // one message with three call sites, and a divergence here would show up as an
@@ -115,12 +109,9 @@ func selectPrompt(isSession bool, userAnswer string) string {
 //     root; we pass rc.Workspace so the TUI's file picker opens on the
 //     correct directory inside the sandbox. The PTY is already allocated
 //     by the dispatcher so opencode inherits the user's terminal.
-//   - interactive == false (task hook path, legacy non-interactive entry):
-//     `opencode run [-m M] <prompt>` is the documented one-prompt entry
-//     point. Same scope-out story as codex: this path is kept functional but
-//     task hook integration is out of scope for the multi-harness-production
-//     plan. Session-id resume was removed alongside the claude --resume
-//     path: every dispatch is a fresh opencode run.
+//   - interactive == false (task hook path): `opencode run [-m M] <prompt>`
+//     is the documented one-prompt entry point. Every dispatch is a fresh
+//     opencode run — there is no session-id resume.
 func buildArgs(interactive bool, workspace, model, prompt string) []string {
 	if interactive {
 		args := []string{"opencode"}
@@ -161,12 +152,9 @@ func buildArgs(interactive bool, workspace, model, prompt string) []string {
 // for the workdir.
 //
 // Session persistence and payload-patch application are deliberately NOT
-// wired here — see docs/plans/multi-harness-production.md for the explicit
-// non-goals (interactive sessions are run-and-done, no resume yet).
+// wired here — interactive sessions are run-and-done, no resume yet.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
-	// 0. Fail fast when opencode is not on PATH. See missingCLIError's doc
-	// comment for why this replaces the old adapter-bindings-based
-	// guarantee that opencode was always present.
+	// Fail fast when opencode is not on PATH. See missingCLIError.
 	if _, err := lookPath(harnessCLI); err != nil {
 		return adapters.Result{}, missingCLIError(rc.Env["BOID_WORKSPACE_SLUG"], err)
 	}

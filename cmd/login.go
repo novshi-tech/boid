@@ -31,17 +31,11 @@ const (
 const deviceNameFlagName = "device-name"
 
 // deviceAuthRequest / deviceAuthResponse mirror the wire JSON of POST
-// /api/auth/device (internal/api/device_auth.go's unexported
-// deviceAuthRequest/deviceAuthResponse, Phase 3 PR0). They are duplicated
-// here rather than imported because the server's types are deliberately
-// unexported — internal/api/device_auth.go is a server-internal handler,
-// not a shared client/server contract package (contrast with
-// internal/api/auth.PairRequest/PairResponse, which cmd/web.go DOES import
-// because that pairing-code-issuance endpoint was designed to be shared).
-// The wire shape is small and stable (fixed by PR0's ADR-like doc comments
-// in device_auth.go), so keeping a second small struct in sync here is
-// preferable to exporting server-internal types purely for this one CLI
-// caller.
+// /api/auth/device (internal/api/device_auth.go's unexported types).
+// Duplicated here rather than imported: that handler's types are
+// deliberately unexported (not a shared client/server contract package,
+// contrast with internal/api/auth.PairRequest/PairResponse, which cmd/web.go
+// DOES import), and the wire shape is small and stable.
 type deviceAuthRequest struct {
 	Code       string `json:"code"`
 	DeviceName string `json:"device_name,omitempty"`
@@ -62,10 +56,10 @@ var loginCmd = &cobra.Command{
 		"--profile/BOID_PROFILE/default_profile.",
 	Args: cobra.ExactArgs(1),
 	// scopeNeutral + autostart=skip: login/logout require no profile
-	// precondition at all (docs/plans/cli-remote-connection.md "コマンド分類"
-	// table) — they are how a profile comes to exist in the first place.
-	// root's PersistentPreRunE (isNeutralScope) swallows any profile
-	// resolution failure for these two commands instead of hard-erroring.
+	// precondition at all — they are how a profile comes to exist in the
+	// first place. root's PersistentPreRunE (isNeutralScope) swallows any
+	// profile resolution failure for these two commands instead of
+	// hard-erroring.
 	Annotations: map[string]string{
 		scopeAnnotationKey:      scopeNeutral,
 		annotationSkipAutostart: "skip",
@@ -89,12 +83,10 @@ func init() {
 	rootCmd.AddCommand(loginCmd, logoutCmd)
 }
 
-// runLogin implements `boid login <url>` (docs/plans/cli-remote-connection.md
-// "login / logout フロー"):
+// runLogin implements `boid login <url>` (docs/plans/cli-remote-connection.md):
 //
-//  1. validate the URL is https:// (decision 4: plain http/unix are not a
-//     supported login target — local daemons use a unix:// profile and
-//     need no token at all)
+//  1. validate the URL is https:// — plain http/unix are not a supported
+//     login target; local daemons use a unix:// profile and need no token
 //  2. derive the profile name from the URL's host when --profile is not
 //     given explicitly (deriveProfileNameFromURL), then slug-validate it
 //  3. warn (not silently overwrite) if that profile name already exists in
@@ -102,11 +94,10 @@ func init() {
 //  4. prompt for the pairing code on stderr, read it from stdin
 //  5. POST /api/auth/device with an unauthenticated client (no token exists
 //     yet — that is the whole point of this request)
-//  6. persist the response as the token file (canonical_url — NOT the
-//     literal URL the caller typed — decision 9: "token は canonical
-//     origin に強く bind") and the config.yaml profile entry (also
-//     canonical_url, so profiles.Resolve's origin-bind check at request
-//     time is comparing the same value against itself)
+//  6. persist the response as the token file and the config.yaml profile
+//     entry, both keyed on canonical_url (NOT the literal URL the caller
+//     typed) so profiles.Resolve's origin-bind check at request time is
+//     comparing the same value against itself
 //  7. set default_profile to this profile if none was set yet
 func runLogin(cmd *cobra.Command, args []string) error {
 	rawURL := strings.TrimSpace(args[0])
@@ -123,10 +114,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	// second flag under the same name on loginCmd: cobra merges a parent's
 	// PersistentFlags into every descendant's FlagSet at parse time, so by
 	// the time RunE runs, cmd.Flags().GetString here reads exactly what the
-	// user typed on the command line either way — a locally shadowing
-	// flag definition would not change that value, only its --help text
-	// (see login.go's package doc / the PR's final report for the
-	// alternative considered and why it was not worth the duplication).
+	// user typed on the command line either way.
 	profileName, err := cmd.Flags().GetString(profiles.ProfileFlagName)
 	if err != nil {
 		return fmt.Errorf("login: %w", err)
@@ -207,13 +195,10 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("login: daemon response missing canonical_url")
 	}
 	// Defense-in-depth: the server-side WriteConfig path already runs
-	// canonical_url through apiwire.NormalizePublicURL at daemon startup, but
-	// we validate on this side too because a compromised or misconfigured
-	// daemon that returns a non-HTTPS or path-carrying canonical_url would
-	// otherwise persist that garbage into the caller's config.yaml (and
-	// then all future Bearer requests would go somewhere unexpected).
-	// Rejecting up front keeps the token file and config.yaml in the
-	// well-formed-origin invariant this whole flow depends on.
+	// canonical_url through apiwire.NormalizePublicURL at daemon startup,
+	// but a compromised or misconfigured daemon that returns a non-HTTPS
+	// or path-carrying canonical_url would otherwise persist that garbage
+	// into the caller's config.yaml, so this side validates it too.
 	canonicalURL, err := apiwire.NormalizePublicURL(resp.CanonicalURL)
 	if err != nil {
 		return fmt.Errorf("login: daemon returned invalid canonical_url %q: %w", resp.CanonicalURL, err)
@@ -264,8 +249,7 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runLogout implements `boid logout <profile>` (docs/plans/
-// cli-remote-connection.md "login / logout フロー"). Every step is
+// runLogout implements `boid logout <profile>`. Every step is
 // individually best-effort/idempotent so a second `boid logout` on an
 // already-cleaned-up profile — or one that was only ever half set up —
 // never fails:
@@ -318,11 +302,10 @@ func runLogout(cmd *cobra.Command, args []string) error {
 	// Both DeleteToken and the config.yaml mutation happen under the
 	// shared config lock, so a same-profile concurrent login cannot end
 	// up with only one of the two rolled back — token and config advance
-	// together (codex PR2 review round 2). The MutateConfig block runs
-	// unconditionally now: even when the earlier LoadConfig showed no
-	// entry, another writer may have added one by the time we grab the
-	// lock (rare, but possible), and we want THAT entry cleaned up too
-	// — the mutator's own recheck handles the no-op case.
+	// together. The MutateConfig block runs unconditionally: even when the
+	// earlier LoadConfig showed no entry, another writer may have added one
+	// by the time we grab the lock, and we want THAT entry cleaned up too —
+	// the mutator's own recheck handles the no-op case.
 	err = profiles.MutateConfig(cfgPath, func(cur *profiles.Config) (*profiles.Config, error) {
 		if err := profiles.DeleteToken(profileName); err != nil {
 			return nil, err
@@ -352,11 +335,9 @@ func runLogout(cmd *cobra.Command, args []string) error {
 // because Resolve's "profile URL == token URL" hard-error is bypassed for
 // scope=neutral commands (root.go's PersistentPreRunE), and blindly sending
 // the Bearer token to the profile URL when the two diverge would leak it
-// cross-origin: an attacker who managed to edit config.yaml to point the
-// profile at their own host would then receive the token the next time
-// this user typed `boid logout` (docs/plans/cli-remote-connection.md
-// 決定事項 9 "token は canonical origin に強く bind" — same rule applies
-// to logout as to every other request). tok.URL is that canonical origin.
+// cross-origin: an attacker who edited config.yaml to point the profile at
+// their own host would then receive the token the next time this user
+// typed `boid logout`. tok.URL is the canonical origin the token is bound to.
 //
 // Any failure (building the client, making the request) is reported as a
 // warning on stderr and otherwise ignored — runLogout's caller proceeds
@@ -374,13 +355,12 @@ func revokeDeviceOnDaemon(cmd *cobra.Command, tok *profiles.Token) {
 	}
 }
 
-// deriveProfileNameFromURL implements decision 3 / login step 1
-// (docs/plans/cli-remote-connection.md): "--profile 未指定なら URL host か
-// ら候補生成 (例: work.example.com → work)" — the first dot-separated label
-// of the host, lowercased so it satisfies ValidateSlug's lowercase-only
-// pattern regardless of how the URL was typed. A host with no dot at all
-// (bare hostname like "localhost", or an IPv4 literal's first octet) is
-// used whole.
+// deriveProfileNameFromURL derives a profile name from the URL's host when
+// --profile is not given explicitly: the first dot-separated label of the
+// host (e.g. work.example.com → work), lowercased so it satisfies
+// ValidateSlug's lowercase-only pattern regardless of how the URL was
+// typed. A host with no dot at all (bare hostname like "localhost", or an
+// IPv4 literal's first octet) is used whole.
 func deriveProfileNameFromURL(u *url.URL) (string, error) {
 	host := u.Hostname()
 	if host == "" {

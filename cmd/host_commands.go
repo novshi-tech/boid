@@ -9,11 +9,10 @@ import (
 )
 
 // host_commands.go implements `boid host-commands list` / `boid
-// host-commands reload` (docs/plans/workspace-db-consolidation.md PR4 Step
-// I, decision 15): the CLI counterpart of GET /api/host_commands and
-// POST /api/host_commands/reload. There is no create/edit subcommand — per
-// the plan doc, the aggregated ~/.config/boid/host_commands.yaml is edited
-// by hand, and `reload` is only how the daemon is told to re-read it.
+// host-commands reload`, the CLI counterpart of GET /api/host_commands and
+// POST /api/host_commands/reload. There is no create/edit subcommand: the
+// aggregated ~/.config/boid/host_commands.yaml is edited by hand, and
+// `reload` is only how the daemon is told to re-read it.
 
 var hostCommandsCmd = &cobra.Command{
 	Use:   "host-commands",
@@ -42,9 +41,8 @@ func init() {
 func runHostCommandsList(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
 
-	// MINOR 1 (codex review, docs/plans/workspace-db-consolidation.md):
-	// GET /api/host_commands now returns a sorted name list (the plan doc's
-	// "参照名一覧を返す契約"), not the full name -> spec definition map.
+	// GET /api/host_commands returns a sorted name list, not the full
+	// name -> spec definition map.
 	var names []string
 	if err := c.Do("GET", "/api/host_commands", nil, &names); err != nil {
 		return fmt.Errorf("list host_commands: %w", err)

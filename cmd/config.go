@@ -16,55 +16,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// config.go implements `boid config get/set/unset/apply/edit`
-// (docs/plans/volume-only-daemon.md §論点 f, the CLI half — the Web UI's
-// /settings page is a separate PR). Every subcommand reaches the daemon's
-// config.yaml exclusively through the daemon's HTTP API
-// (internal/api/config.go) rather than editing a local file directly: once
-// the daemon runs in its own container with a named-volume config.yaml
-// (the whole point of this plan doc), this host cannot see that file at
-// all — see the plan doc's §背景と pivot 経緯 for why. This is a
-// deliberate architectural split from the older, still-present `boid web
-// set-addr`/`set-url` (cmd/web.go), which edit ~/.config/boid/config.yaml
-// on THIS host directly and only ever worked because the CLI and daemon
-// happened to run on the same host with the same $XDG_CONFIG_HOME.
+// config.go implements `boid config get/set/unset/apply/edit`. Every
+// subcommand reaches the daemon's config.yaml exclusively through the
+// daemon's HTTP API (internal/api/config.go), never by editing a local
+// file — once the daemon runs in its own container with a named-volume
+// config.yaml, this host cannot see that file at all. This is a deliberate
+// split from `boid web set-addr`/`set-url` (cmd/web.go), which edit
+// ~/.config/boid/config.yaml on this host directly.
 //
-// Two distinct daemon-side surfaces back this (BLOCKER 1, codex review
-// round 1 — the pre-fix client-side GET → mutate → POST round trip for
-// set/unset left a window where a second concurrent `set`'s POST could
-// silently discard a first `set`'s already-applied change, since configMu
-// only serialized the two POSTs, not the whole client-side transaction
-// around them):
+// Two distinct daemon-side surfaces back this:
+//   - `set`/`unset` POST a single {op, key, value} to POST
+//     /api/config/mutate; the daemon performs the whole read-modify-write
+//     atomically under one lock, so concurrent calls on different keys
+//     can never interleave and lose one.
+//   - `apply -f`/`edit` operate on the whole document (GET current, apply
+//     a local/edited replacement) via POST /api/config, gated by an
+//     ETag/If-Match revision check unless --force is passed.
 //
-//   - `set`/`unset` POST a single {op, key, value} operation to
-//     POST /api/config/mutate. The daemon performs the entire
-//     read-modify-write atomically under one lock — no client-visible
-//     intermediate state, so two concurrent calls on different keys can
-//     never interleave and lose one.
-//   - `apply -f`/`edit` still operate on the whole document (GET the
-//     current one, apply a local/edited replacement) — POST /api/config,
-//     gated by an ETag/If-Match revision check unless --force is passed
-//     (the same convention `boid workspace edit` already established, see
-//     runConfigApply/runConfigEdit's own doc comments). This protects a
-//     multi-line hand-edit from silently clobbering a change that landed
-//     mid-edit, which a plain "last write wins" POST could not.
-//
-// Scope note: this command edits config.yaml itself — including
-// gateway.forges.<forge>.secret_key, which is just a REFERENCE NAME into the
-// secret store. It does NOT edit the actual secret VALUE that name resolves
-// to at dispatch time (the token/PAT itself); that lives in the secret store
-// (`boid secret set <key> <value>`), separately from config.yaml.
-//
-// Limitation (MINOR 5, codex review round 1): a forge id containing a "."
-// (e.g. a custom `gateway.forges."github.corp"` entry) cannot be addressed
-// through the dotted-path get/set/unset commands below — the dotted-path
-// parser (internal/config/dotted.go) has no escaping syntax and always
-// splits on ".", so "gateway.forges.github.corp.host" is indistinguishable
-// from forge id "github", sub-key "corp", (extra segment) "host". Full-
-// document `boid config apply -f`/`edit` have no such ambiguity (the forge
-// id is a literal YAML map key) and are the supported way to manage a
-// dotted forge id. This is a deliberate, documented limitation, not a bug —
-// the dotted-path parser itself is intentionally left unchanged.
+// See configCmd.Long for the scope note (secret_key is a reference, not
+// the secret value) and the dotted-path limitation on forge ids containing ".".
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Inspect and edit the daemon's config.yaml",
@@ -126,23 +96,12 @@ var configEditCmd = &cobra.Command{
 func init() {
 	// Every config subcommand talks to the daemon's HTTP API — all
 	// scopeRemote, same classification as `boid workspace *`.
-	//
-	// `boid config effective-backend <file>` (scopeLocal, no-daemon-required
-	// sandbox.backend inspection) was removed in PR-4 (docs/plans/
-	// volume-only-daemon.md §論点e): container is now the only sandbox
-	// backend, so there is no longer an "effective backend" worth
-	// inspecting — scripts/deploy-container.sh's config-seed validation
-	// step that was this subcommand's sole caller was removed in the same
-	// PR.
 	for _, c := range []*cobra.Command{configGetCmd, configSetCmd, configUnsetCmd, configApplyCmd, configEditCmd} {
 		c.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
 	}
 	configApplyCmd.Flags().StringVarP(&configApplyFile, "file", "f", "", "yaml file to apply (required)")
-	// --force (BLOCKER 1, codex review round 1): mirrors `boid workspace
-	// edit --force`'s exact semantics (cmd/workspace.go) — skip the
-	// ETag/If-Match revision check entirely and apply unconditionally
-	// (last-write-wins), instead of the default fetch-revision-first
-	// protection runConfigApply otherwise performs.
+	// --force mirrors `boid workspace edit --force`'s semantics: skip the
+	// ETag/If-Match revision check and apply unconditionally (last-write-wins).
 	configApplyCmd.Flags().BoolVar(&configApplyForce, "force", false,
 		"apply without checking the current revision (last-write-wins; skips the concurrency guard)")
 
@@ -151,9 +110,8 @@ func init() {
 }
 
 // fetchConfigYAML performs GET /api/config, returning the daemon's current
-// effective config.yaml document verbatim alongside its revision (BLOCKER
-// 1, codex review round 1) — the value a subsequent apply/edit round-trips
-// into If-Match.
+// effective config.yaml document verbatim alongside its revision — the
+// value a subsequent apply/edit round-trips into If-Match.
 func fetchConfigYAML(c *client.Client) (data []byte, revision string, err error) {
 	status, body, rev, err := c.GetRawWithAcceptAndRevision("/api/config", "application/yaml")
 	if err != nil {
@@ -166,21 +124,16 @@ func fetchConfigYAML(c *client.Client) (data []byte, revision string, err error)
 }
 
 // isConfigConflictStatus reports whether statusCode is one of the two
-// ETag/If-Match failure codes ApplyConfigYAML can return (BLOCKER 1, codex
-// review round 1) — 428 Precondition Required (If-Match missing) or 412
-// Precondition Failed (If-Match stale) — the same pair PUT
-// /api/workspaces/{slug} already established.
+// ETag/If-Match failure codes ApplyConfigYAML can return — 428 Precondition
+// Required (If-Match missing) or 412 Precondition Failed (If-Match stale).
 func isConfigConflictStatus(statusCode int) bool {
 	return statusCode == http.StatusPreconditionRequired || statusCode == http.StatusPreconditionFailed
 }
 
 // reportConfigApplyResult decodes a POST /api/config 200 response body and
-// prints the result: a confirmation line, followed by every
-// daemon-provided warning verbatim (docs/plans/volume-only-daemon.md
-// §論点 f's exact restart-required / sandbox.backend-retirement wording —
-// the daemon is the sole source of truth for which changed keys triggered
-// which warning, see internal/server/config_edit.go's
-// applyDynamicConfigLocked).
+// prints the result: a confirmation line, followed by every daemon-provided
+// warning verbatim (the daemon is the sole source of truth for which
+// changed keys triggered which warning).
 func reportConfigApplyResult(cmd *cobra.Command, body []byte) error {
 	var result apiwire.ConfigApplyResult
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -222,11 +175,10 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 }
 
 // runConfigSet implements `boid config set`: a single POST
-// /api/config/mutate call (BLOCKER 1, codex review round 1) — the daemon
-// performs the read-modify-write atomically, so this function no longer
-// GETs the current document at all (contrast runConfigApply/runConfigEdit,
-// which genuinely need the whole document and therefore keep the
-// GET-then-POST shape, now protected by If-Match).
+// /api/config/mutate call — the daemon performs the read-modify-write
+// atomically, so this function never GETs the current document at all
+// (contrast runConfigApply/runConfigEdit, which need the whole document
+// and keep the GET-then-POST shape, protected by If-Match).
 func runConfigSet(cmd *cobra.Command, args []string) error {
 	path := args[0]
 	values := args[1:]
@@ -272,48 +224,19 @@ func runConfigUnset(cmd *cobra.Command, args []string) error {
 }
 
 // runConfigApply implements `boid config apply -f`: fetches the daemon's
-// current revision FIRST — before anything else, including reading the
-// local file — then reads and validates the file, then POSTs it gated by
-// that revision as If-Match unless --force is passed.
+// current revision FIRST — before reading or validating the local file —
+// then POSTs the file gated by that revision as If-Match unless --force is
+// passed.
 //
-// MAJOR (codex review round 3 — the round-2 fix was INCOMPLETE): the
-// round-2 comment above this function claimed the order had become
-// [GET, validate, POST] ("moving the GET ahead of validate"), but the code
-// itself never actually moved the GET ahead of the READ — it only moved it
-// ahead of *validate*, leaving the true order as
-// [os.ReadFile, GET, validate, POST]. That still left the exact lost-update
-// window round 2 was supposed to close: a concurrent `config set`/`apply`
-// landing after os.ReadFile captured `data` but before the GET below would
-// bump the daemon's revision; the GET would observe that NEWER revision;
-// the POST — built from `data`, which predates the concurrent write —
-// would carry that newer revision as If-Match, match it, and be accepted,
-// silently discarding the concurrent write. Reading the file BEFORE the GET
-// is precisely what let a stale `data` pair with a fresh `ifMatch` and sail
-// through the daemon's own If-Match check undetected.
-//
-// The fix: the GET now runs FIRST, before os.ReadFile touches the local
-// file at all. `data` read after that GET can only be as stale as the tiny
-// [GET, ReadFile] gap — and even a write landing in exactly that
-// microscopic window is still caught: it is the daemon's own If-Match check
-// (internal/server/config_edit.go's ApplyConfigYAML), not the ordering
-// alone, that turns "the revision moved between my GET and my POST" into a
-// rejected 412 (postConfigApply's isConfigConflictStatus), never a silent
-// overwrite. What ordering alone buys is closing the much larger window a
-// human hand-editing configApplyFile before ever invoking this command
-// would otherwise leave open (read → [edit takes minutes] → GET → POST),
-// which is precisely the scenario `apply -f`/`edit` exist to protect
-// against. See
+// The GET-before-ReadFile ordering is load-bearing: reading the file first
+// would let a stale `data` pair with a fresh `ifMatch` and sail through the
+// daemon's own If-Match check undetected, silently discarding a concurrent
+// write. See
 // TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss
-// for the regression test that exercises this exact ordering through the
-// real cobra command, not just postConfigApply in isolation.
+// for the regression test protecting this ordering.
 //
-// A malformed/invalid file is still rejected client-side before any POST is
-// attempted (mirrors `boid workspace edit`'s MINOR 1 precedent,
-// cmd/workspace.go's runWorkspaceEdit) — see
-// TestRunConfigApply_InvalidFile_ValidationErrorReported. Validation runs
-// after both the GET and the read (there is nothing to validate before the
-// file exists in memory), but it can never turn a stale write INTO an
-// accepted one — it only ever rejects, never approves, a POST.
+// A malformed/invalid file is rejected client-side before any POST is
+// attempted — see TestRunConfigApply_InvalidFile_ValidationErrorReported.
 func runConfigApply(cmd *cobra.Command, args []string) error {
 	if configApplyFile == "" {
 		return fmt.Errorf("-f/--file is required")
@@ -331,12 +254,9 @@ func runConfigApply(cmd *cobra.Command, args []string) error {
 	}
 
 	// configApplyTestSyncAfterGET is nil (a no-op) in production. It exists
-	// solely so TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss
-	// can deterministically land a concurrent `config set` in the exact
-	// [GET, ReadFile] window this ordering fix narrows the race to — a
-	// real, unforced goroutine race would land in that window at random
-	// and could not reliably re-catch a regression back to the round-2
-	// ordering bug (codex review round 3).
+	// solely so the regression test can deterministically land a concurrent
+	// `config set` in the exact [GET, ReadFile] window this ordering
+	// narrows the race to, rather than relying on an unforced goroutine race.
 	if configApplyTestSyncAfterGET != nil {
 		configApplyTestSyncAfterGET()
 	}
@@ -360,15 +280,10 @@ func runConfigApply(cmd *cobra.Command, args []string) error {
 var configApplyTestSyncAfterGET func()
 
 // postConfigApply POSTs data to /api/config with the given If-Match/force
-// and reports the result — the actual HTTP call + status-code branching
-// runConfigApply's --force/fresh-revision decision above hands off to.
-// Factored out (BLOCKER 1, codex review round 1) so the conflict-rejection
-// contract can be tested directly with a deliberately stale ifMatch,
-// without needing to win a race against runConfigApply's own internal
-// fetch-then-POST window. fileForMessage is configApplyFile's value at the
-// call site, threaded through explicitly (rather than read from the
-// package var) so this function has no hidden dependency on CLI global
-// state.
+// and reports the result. Factored out so the conflict-rejection contract
+// can be tested directly with a deliberately stale ifMatch. fileForMessage
+// is threaded through explicitly rather than read from the package var so
+// this function has no hidden dependency on CLI global state.
 func postConfigApply(cmd *cobra.Command, c *client.Client, data []byte, ifMatch string, force bool, fileForMessage string) error {
 	path := "/api/config"
 	if force {
@@ -391,17 +306,12 @@ func postConfigApply(cmd *cobra.Command, c *client.Client, data []byte, ifMatch 
 // runConfigEdit implements `boid config edit`: fetch the current config
 // (capturing its revision), open it in $EDITOR (falling back to "vi") on a
 // temp copy, and — only if the file actually changed — validate then apply
-// with If-Match set to the revision captured at the start (BLOCKER 1,
-// codex review round 1: the CLI attaches the ETag automatically, the same
-// convention `boid workspace edit` already established, so the common case
-// — "edit what I just saw" — never needs the caller to juggle revisions by
-// hand). If the config changed on the daemon between this GET and the
-// POST, the conflict is reported and the temp file is kept so the operator
-// can re-run `boid config edit` and merge their changes — per docs/plans/
-// volume-only-daemon.md §論点 f's unilateral decision on edit-failure
-// behavior more broadly: a validation OR conflict failure (locally OR at
-// the daemon) keeps the temp file and reports its path, rather than
-// silently discarding the edit.
+// with If-Match set to the revision captured at the start. If the config
+// changed on the daemon between this GET and the POST, the conflict is
+// reported and the temp file is kept so the operator can re-run `boid
+// config edit` and merge their changes: any validation OR conflict failure
+// keeps the temp file and reports its path, rather than silently discarding
+// the edit.
 func runConfigEdit(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
 	data, rev, err := fetchConfigYAML(c)

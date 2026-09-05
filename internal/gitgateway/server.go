@@ -17,17 +17,7 @@ import (
 // ReverseProxy wrapper that does path-based authorization (Registry) and
 // forge credential injection (CredentialProvider) around the standard
 // library's streaming transport. It never buffers request bodies —
-// packfile POSTs are streamed straight through to the upstream forge
-// (docs/plans/git-gateway-cutover.md PR3: 「ボディは無バッファ転送必須」).
-//
-// Server has been wired into the running daemon since PR4
-// (docs/plans/git-gateway-cutover.md): internal/server/wire.go constructs
-// one (Registry + CredentialProvider + notifier) and Server.Start/Stop own
-// its listener lifecycle alongside the daemon's other subservers. PR5 is the
-// first PR whose traffic actually reaches it in practice (the runner's
-// sandbox-internal clone sequence, gated behind the still-inert
-// sandbox.CloneSpec opt-in) — until a caller sets that, this handler serves
-// zero real requests.
+// packfile POSTs stream straight through to the upstream forge.
 type Server struct {
 	registry    *Registry
 	credentials *CredentialProvider
@@ -36,10 +26,8 @@ type Server struct {
 
 	// tlsHTTPServer is the *http.Server bound by ListenTLS, kept so
 	// CloseTLS can gracefully shut it down — including closing keep-alive
-	// connections that are idle but otherwise outlive a bare
-	// net.Listener.Close() (codex review [Minor 4] on
-	// docs/plans/phase6-container-backend.md §PR4). nil until ListenTLS
-	// is called.
+	// connections that a bare net.Listener.Close() would leave open. nil
+	// until ListenTLS is called.
 	tlsHTTPServer *http.Server
 }
 
@@ -68,18 +56,9 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 	}
 
 	s.proxy = &httputil.ReverseProxy{
-		// The outbound transport is shared with internal/apigateway via
-		// gwtransport.New: ExpectContinueTimeout (which makes the outbound
-		// transport actually wait for the upstream's 100-continue before
-		// streaming the body, rather than silently ignoring the client's
-		// "Expect: 100-continue" header — docs/plans/git-gateway-cutover.md
-		// PR3: "Expect: 100-continue と chunked encoding の透過的な扱い")
-		// plus the connection-liveness settings (idle-conn expiry, HTTP/2
-		// keep-alive ping) whose absence wedged the API gateway against a
-		// silently-vanished upstream in production — see that package's own
-		// doc comment. Every body-streaming-relevant field is still left at
-		// http.Transport's zero value (== streaming semantics, no body
-		// buffering).
+		// Outbound transport shared with internal/apigateway; see
+		// gwtransport's doc comment for why (streaming semantics +
+		// connection-liveness settings).
 		Transport: gwtransport.New(),
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			info, _ := pr.In.Context().Value(routeInfoKey{}).(routeInfo)
@@ -89,28 +68,13 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Host = info.host
 			if s.credentials != nil {
-				// Two Inject-failure shapes reach this callback:
-				//
-				//   - Unknown host (not in config.Gateway.HostConfigs()):
-				//     ServeHTTP's pre-check is gated on KnowsHost, so an
-				//     unknown host bypasses fail-fast and lands here with
-				//     Inject returning "no forge configured for host". This
-				//     is the pre-PR-B fail-open + notify path preserved
-				//     verbatim — test upstreams (httptest.Server dynamic
-				//     ports) and stray unregistered-forge requests both
-				//     take this shape.
-				//
-				//   - Known host + secret race: any Inject failure for a
-				//     known host is a race between pre-check and Rewrite
-				//     (currently no code path unregisters a secret
-				//     mid-request, so effectively unreachable). Same
-				//     fail-open behavior applies; notifier double-fire is
-				//     not a concern because the pre-check already fired
-				//     the primary signal in the non-race case.
-				//
-				// Either way: log for observability, notify (unchanged from
-				// pre-PR-B), and forward unauthenticated. Upstream 401 will
-				// still trip ModifyResponse's NotifyUpstreamAuthFailure.
+				// Inject can fail two ways: an unknown host (ServeHTTP's
+				// fail-fast pre-check only covers known hosts) or a
+				// known-host secret race (nothing unregisters a secret
+				// mid-request today, so effectively unreachable). Either
+				// way: log, notify, forward unauthenticated — an upstream
+				// 401 will still trip ModifyResponse's
+				// NotifyUpstreamAuthFailure.
 				if err := s.credentials.Inject(pr.Out, info.host, info.namespace); err != nil {
 					slog.Warn("gitgateway: credential injection failed; forwarding without auth", "host", info.host, "err", err)
 					s.notifier.NotifyCredentialError(info.host, info.repo, err)
@@ -168,72 +132,38 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// This second Lookup recovers Entry.Namespace, which Authorize's
-	// bool-returning signature doesn't expose — namespace scopes the
-	// credential resolution below (post-cutover 改善 §1 workspace-scoped
-	// PAT namespace). entry is guaranteed present under normal token
-	// lifetime: Unregister runs only at job completion (via
-	// Runner.UnregisterJob), never from a peer request, so there is no
-	// caller racing this handler for the same token. The theoretical ABA
-	// race (Authorize sees the entry, an Unregister slips in, this Lookup
-	// misses) can only fire if that lifetime rule is ever broken; if it
-	// does, `namespace` degrades to "" here, which SecretStore.Get's
-	// normalizeNamespace turns into "default" — the request still proxies
-	// safely with default-namespace credentials rather than crashing or
-	// leaking a token from a different namespace.
+	// Entry.Namespace isn't exposed by Authorize's bool-returning signature,
+	// so look it up again here. entry is guaranteed present since
+	// Unregister only runs at job completion, never racing this handler;
+	// if that ever changes, namespace degrades to "" here, which
+	// SecretStore.Get's normalizeNamespace turns into "default" rather than
+	// crashing or leaking a token from a different namespace.
 	entry, _ := s.registry.Lookup(rt.token)
 	namespace := entry.Namespace
 
-	// Systemic "no secret resolver at all" case (docs/plans/git-gateway-cutover.md
-	// PR5 review): reject before ever contacting the upstream or invoking
-	// the notifier, distinct from the ordinary per-key-miss path handled by
-	// the Resolve pre-check just below. s.credentials == nil is a deliberate
-	// no-auth-injection test/upstream mode (see NewServer's doc comment) and
-	// is intentionally NOT covered by either this check or the Resolve
-	// pre-check.
+	// Systemic "no secret resolver at all" case: reject before ever
+	// contacting the upstream, distinct from the ordinary per-key-miss path
+	// handled by the Resolve pre-check just below. s.credentials == nil is
+	// a deliberate no-auth-injection test/upstream mode (see NewServer's
+	// doc comment) and is intentionally NOT covered by either check.
 	if s.credentials != nil && !s.credentials.Configured() {
 		http.Error(w, "service unavailable: git gateway has no secret resolver configured", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Per-key credential-resolution failure (docs/plans/gitgateway-credential-fail-fast.md
-	// PR-B): call Resolve before ever proxying so that a missing / broken
-	// secret returns 502 instead of forwarding the request unauthenticated
-	// and inheriting the upstream's 401 + WWW-Authenticate: Basic — which
-	// the sandbox-inner git would answer with an interactive credential
-	// prompt, hanging the whole TUI (`Username for 'http://10.0.2.2:...':`
-	// with no way out but Ctrl-C).
+	// Resolve credentials before ever proxying, so a missing/broken secret
+	// returns 502 instead of forwarding unauthenticated and inheriting the
+	// upstream's 401 + WWW-Authenticate: Basic — which the sandbox-inner
+	// git answers with an interactive credential prompt, hanging the TUI.
+	// 502 is deliberate: git treats it as fatal (no prompt).
 	//
-	// 502 (Bad Gateway) is the intentional shape: git treats it as fatal
-	// (no prompt), and it semantically matches "gateway itself could not
-	// reach the upstream on your behalf" — which is exactly what a
-	// misconfigured secret means from the client's point of view.
+	// Gated on KnowsHost so an unrecognized host (test upstreams; stray
+	// unregistered-forge requests) still forwards unauthenticated with just
+	// a notify, rather than always failing closed here.
 	//
-	// The pre-check is gated on KnowsHost: pre-PR-B, an unknown host also
-	// took the fail-open + notify path (Rewrite's Inject would return
-	// "no forge configured for host" and forward unauthenticated). Test
-	// upstreams (httptest.Server dynamic ports) never appear in
-	// config.Gateway.HostConfigs() and rely on that pre-existing shape —
-	// gating on KnowsHost preserves it while still fail-fast'ing the
-	// intended case (known host + resolver miss, the actual hang trigger
-	// captured in [[gitgateway-credential-fail-hangs-sandbox]]).
-	//
-	// This reverses the pre-cutover fail-open + NotifyCredentialError
-	// behavior (`docs/plans/git-gateway-cutover.md` PR3/PR4: 「gateway 自体は
-	// 落とさない」) ONLY for the known-host-with-secret-miss case. That
-	// principle held while the gateway was still inert (PR3/PR4) and the
-	// only visible consequence of forwarding-without-auth was a 401 in the
-	// log; once PR5+ made real sandbox clients depend on this path, that
-	// same forwarding started producing the TUI hang above — a much worse
-	// failure mode than the honest 502 we now return.
-	//
-	// The notifier fires exactly once (here), so callers such as
-	// internal/server/gitgateway_notify.go still see the same
-	// per-request signal they did before; only the proxy path has changed.
-	// Rewrite's Inject call below is left in place — it will succeed on
-	// the second resolve for any request that made it past this pre-check,
-	// so the cost of the extra lookup is one SecretStore.Get per request
-	// when credentials are healthy (cheap: an in-process DB read).
+	// The notifier fires once, here; Rewrite's Inject call below is left in
+	// place and expected to succeed on the second resolve, so the cost when
+	// credentials are healthy is one extra SecretStore.Get per request.
 	if s.credentials != nil && s.credentials.KnowsHost(rt.host) {
 		if _, _, err := s.credentials.Resolve(rt.host, namespace); err != nil {
 			slog.Warn("gitgateway: credential resolution failed; refusing to forward (fail-fast)",
@@ -257,22 +187,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // ListenTLS binds a TCP+mTLS listener at addr and serves s on it in a
 // background goroutine, returning immediately once the listener is bound.
-// This is the git gateway's TCP(mTLS) counterpart to the plaintext
-// loopback listener internal/server.Server already binds for the userns
-// backend (docs/plans/phase6-container-backend.md §PR4/§決定5) — purely
-// additive, so that existing loopback+10.0.2.2 path is unaffected by
-// calling this. tlsConfig is expected to require and verify a client
-// certificate (see internal/mtls.CA.ServerTLSConfig).
+// tlsConfig is expected to require and verify a client certificate (see
+// internal/mtls.CA.ServerTLSConfig).
 //
-// The caller owns the returned listener's lifecycle: closing it (directly,
-// or by calling CloseTLS) stops the background http.Serve goroutine (which
-// returns http.ErrServerClosed, swallowed here exactly like
-// internal/server.Server already does for its other listeners). Closing
-// the bare net.Listener alone only stops new connections from being
-// accepted — it does not tear down already-accepted keep-alive
-// connections, since those are owned by the *http.Server driving Serve,
-// not the listener. Callers that need existing connections closed too
-// (e.g. on daemon shutdown) should call CloseTLS instead of ln.Close().
+// The caller owns the returned listener's lifecycle. Closing the bare
+// net.Listener alone stops new connections but leaves already-accepted
+// keep-alive connections open (they're owned by the *http.Server driving
+// Serve, not the listener); call CloseTLS instead to also close those
+// (e.g. on daemon shutdown).
 func (s *Server) ListenTLS(addr string, tlsConfig *tls.Config) (net.Listener, error) {
 	ln, err := tls.Listen("tcp", addr, tlsConfig)
 	if err != nil {

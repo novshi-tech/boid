@@ -3,32 +3,18 @@
 package cmd
 
 // cmd/check.go implements `boid check`, a host-side preflight for the
-// container backend (docs/plans/release-onboarding.md 穴5: "`boid check`
-// が userns 時代の化石"). Before this PR it probed unprivileged user
-// namespaces (`unshare --user --mount --map-root-user`) and required the
-// `passt` binary — both are userns-backend artifacts from before Phase 6 /
-// PR-4 (docs/plans/volume-only-daemon.md §論点e) removed that backend
-// entirely (CLAUDE.md's「サンドボックス実行バックエンド」節). Neither check
-// said anything about whether `boid start` (host mode, cmd/host.go) can
-// actually stand up the compose daemon stack today.
-//
-// This rewrite instead reports on exactly what scripts/deploy-container.sh
-// already checks by shell before it will attempt `compose up` — engine
-// presence/reachability, the compose plugin, the docker-out-of-docker bind
-// SOURCE socket (not just "some docker/podman is reachable" — the exact
-// path compose.yml mounts into the daemon container, since that is what
-// actually determines whether `boid start` and the job containers it later
-// creates can talk to the engine), podman.socket's active state, and the
-// uid that will actually run the daemon container — lifted to Go (mirroring,
-// not copying, that script's own logic; see the reuse of
-// usableEngine/dockerComposeUsable/detectComposeEngine below, all already
-// defined in cmd/host.go for the exact same purpose, and
-// effectiveBoidUID/refuseRootUID from cmd/start.go), plus a new check
-// neither the old Go code nor the shell script had: host-arch vs.
-// image-arch mismatch (docs/plans/release-onboarding.md 決定5 / §論点
-// arm64 — required regardless of whether an arm64 image is ever published,
-// since a host with binfmt/qemu registered would otherwise silently run a
-// foreign-arch image under emulation instead of refusing it outright).
+// container backend (docs/plans/release-onboarding.md 穴5). It reports on
+// exactly what scripts/deploy-container.sh already checks by shell before
+// it will attempt `compose up` — engine presence/reachability, the compose
+// plugin, the docker-out-of-docker bind SOURCE socket (the exact path
+// compose.yml mounts into the daemon container, not just "some
+// docker/podman is reachable"), podman.socket's active state, and the uid
+// that will actually run the daemon container — mirroring that script's
+// own logic (see usableEngine/dockerComposeUsable/detectComposeEngine in
+// cmd/host.go, and effectiveBoidUID/refuseRootUID in cmd/start.go), plus a
+// host-arch vs. image-arch mismatch check (docs/plans/release-onboarding.md
+// 決定5): required so a host with binfmt/qemu registered does not silently
+// run a foreign-arch image under emulation instead of refusing it outright.
 import (
 	"context"
 	"encoding/json"
@@ -61,21 +47,11 @@ var checkCmd = &cobra.Command{
 func init() {
 	checkCmd.Annotations = map[string]string{
 		annotationSkipAutostart: "skip",
-		// scopeLocal (codex review round 2, docs/plans/cli-remote-connection.md
-		// classification table groups check with start/stop under "daemon
-		// 生殺与奪"): check was scopeNeutral until this fix, on the reasoning
-		// that it works standalone and only opportunistically queries the
-		// daemon. That reasoning covers whether a daemon is *required*, but
-		// under Phase 3's remote-profile model "local" is about a different
-		// axis — whether the command's result is only meaningful on the same
-		// host the daemon (and therefore the sandbox) actually runs on.
-		// check's engine/compose/socket/arch probes inspect the docker/podman
-		// engine and filesystem this CLI process itself can reach; against a
-		// future https:// (remote daemon) profile those would report on the
-		// wrong host entirely, since sandboxes execute wherever the daemon
-		// is, not wherever the CLI happens to run. See cmd/scope_annotations_test.go's
-		// expectedScopeAnnotations table for the full cross-check against
-		// the plan doc.
+		// scopeLocal: check's engine/compose/socket/arch probes inspect the
+		// docker/podman engine and filesystem this CLI process itself can
+		// reach; against a remote (https://) profile those would report on
+		// the wrong host entirely, since sandboxes execute wherever the
+		// daemon is, not wherever the CLI happens to run.
 		scopeAnnotationKey: scopeLocal,
 	}
 	rootCmd.AddCommand(checkCmd)
@@ -99,13 +75,6 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	podmanOK := usableEngine(ctx, "podman")
 	reportAvailability(out, "docker engine reachable (`docker version`)", dockerOK)
 	if dockerOK {
-		// [codex round 3 review, Minor]: softened to the same
-		// available/unavailable wording as engine reachability itself
-		// (reportAvailability, not reportCheck's OK/MISSING) — docker and
-		// podman are ALTERNATIVES, so a healthy docker-only host with no
-		// podman-compose installed would otherwise print a "MISSING" line
-		// for a tool it will never need, immediately before "All checks
-		// passed."
 		reportAvailability(out, "docker compose plugin (`docker compose version`)", dockerComposeUsable(ctx))
 	}
 	reportAvailability(out, "podman engine reachable (`podman version`)", podmanOK)
@@ -132,18 +101,12 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	uid := effectiveBoidUID()
 	fmt.Fprintf(out, "  effective BOID_UID for `boid start`: %d\n", uid)
 	if err := validateRawBoidUIDEnv(); err != nil {
-		// [codex round 2 review, Major]: effectiveBoidUID() deliberately
-		// leaves a malformed BOID_UID's validation to whatever eventually
-		// consumes it (its own doc comment) — for the CLI-side
-		// refuseRootUID(effectiveBoidUID()) path that's fine, since
-		// strconv.Atoi failing just falls back to os.Getuid(). But
-		// scripts/deploy-container.sh is the ACTUAL enforcement point for
-		// `boid start`, and it validates the RAW string against a
-		// stricter "non-negative decimal integer" regex before ever
-		// calling strconv — a value like "abc"/"-1"/"01" fails there but
-		// sails through effectiveBoidUID()'s silent-fallback here. Check
-		// the raw env var the same way deploy-container.sh does so this
-		// preflight actually predicts what `boid start` will do.
+		// effectiveBoidUID() leaves a malformed BOID_UID's validation to
+		// whatever consumes it (strconv.Atoi failing just falls back to
+		// os.Getuid()), but scripts/deploy-container.sh — the actual
+		// enforcement point for `boid start` — validates the RAW string
+		// against a stricter regex first, so this checks the raw env var
+		// the same way to actually predict what `boid start` will do.
 		fmt.Fprintf(out, "  ERROR: %v\n", err)
 		allOK = false
 	} else if err := refuseRootUID(uid); err != nil {
@@ -158,30 +121,15 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	case engine == "":
 		fmt.Fprintln(out, "  (skipped: no usable engine)")
 	case os.Getenv("BOID_COMPOSE_ROOT") != "":
-		// [codex round 4 review, Major]: BOID_COMPOSE_ROOT is exactly the
-		// signal cmd/host.go's own findComposeRoot() uses to pick the
-		// checkout/`--build` deploy path (deployFromCheckout,
-		// cmd/host.go:619's --build) — that path's deploy-container.sh
-		// invocation OVERRIDES BOID_IMAGE to "boid-runner:latest" and
-		// BUILDS it locally from source rather than pulling anything. A
-		// plain `docker build`/`podman build` with no --platform flag (and
-		// no DOCKER_DEFAULT_PLATFORM override — checked below, [codex
-		// round 5 review, Major]) always builds for the host's own
-		// architecture, so this scenario normally cannot produce the
-		// mismatch 決定5 exists to catch. What round 4 caught is the OTHER
-		// half: running `boid check` in that same checkout BEFORE the
-		// local image has ever been built would otherwise report "not
-		// present locally, and no registry/remote manifest resolved
-		// anything" as a failure — a false negative, since `boid start`
-		// builds it fine right there. Skip the probe outright instead —
-		// EXCEPT when DOCKER_DEFAULT_PLATFORM is explicitly set to
+		// BOID_COMPOSE_ROOT is the signal cmd/host.go's findComposeRoot()
+		// uses to pick the checkout/`--build` deploy path, which overrides
+		// BOID_IMAGE and builds the image locally rather than pulling —
+		// running the registry/local-image arch probe there would produce
+		// a false negative before that build has happened, so it is
+		// skipped, EXCEPT when DOCKER_DEFAULT_PLATFORM is explicitly set to
 		// something other than this host's own architecture, which is the
-		// one way `docker build`/`podman build` with no --platform flag
-		// CAN still produce a foreign-arch image (deploy-container.sh's
-		// own build invocation passes no --platform of its own — verified
-		// by docs/plans/release-onboarding.md's own arm64 grep sweep
-		// finding zero platform-related hits anywhere in the build
-		// pipeline — so DOCKER_DEFAULT_PLATFORM is the only lever left).
+		// one way a plain `docker build`/`podman build` (no --platform
+		// flag) can still produce a foreign-arch image.
 		if msg, isErr := checkoutBuildPlatformWarning(ctx, engine); msg != "" {
 			if isErr {
 				fmt.Fprintf(out, "  ERROR: %s\n", msg)
@@ -197,15 +145,11 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		hostArch, imageArch, mismatch, note := probeArchMismatch(ctx, engine, image)
 		switch {
 		case note != "":
-			// [codex round 2 review, Blocker 1]: an inconclusive probe is
-			// NOT a pass. docs/plans/release-onboarding.md 決定5 requires
-			// this fail-fast to be a "must", and resolveImage's own
-			// launch-time check (internal/dispatcher/container_backend.go)
-			// only guards JOB containers, not the compose daemon container
-			// itself -- this is the only gate the daemon image ever gets,
-			// so "could not verify" has to fail loudly rather than let
-			// `boid check` exit 0 on a host/image combination that was
-			// never actually confirmed compatible.
+			// An inconclusive probe is NOT a pass: resolveImage's own
+			// launch-time check only guards JOB containers, not the
+			// compose daemon container itself, so this is the only gate
+			// the daemon image ever gets and must fail loudly rather than
+			// let `boid check` exit 0 on an unconfirmed combination.
 			fmt.Fprintf(out, "  ERROR: %s\n", note)
 			allOK = false
 		case mismatch:
@@ -265,12 +209,11 @@ func reportCheck(out io.Writer, label string, ok bool) {
 }
 
 // reportAvailability prints a single engine's own reachability without the
-// OK/MISSING framing reportCheck uses — deliberately softer wording
-// ([codex review round 1, Minor 1]): docker and podman are ALTERNATIVES
-// (`boid start` needs exactly one usable engine+compose combination, not
-// both), so a perfectly healthy docker-only host would otherwise print
-// "MISSING: podman engine reachable" immediately before "All checks
-// passed.", reading like an unresolved problem when it is not one.
+// OK/MISSING framing reportCheck uses — deliberately softer wording, since
+// docker and podman are ALTERNATIVES (`boid start` needs exactly one usable
+// engine+compose combination, not both), so a perfectly healthy docker-only
+// host would otherwise print "MISSING: podman engine reachable" immediately
+// before "All checks passed.", reading like an unresolved problem.
 func reportAvailability(out io.Writer, label string, ok bool) {
 	if ok {
 		fmt.Fprintf(out, "  available: %s\n", label)
@@ -280,46 +223,22 @@ func reportAvailability(out io.Writer, label string, ok bool) {
 }
 
 // resolveCheckImage picks the image the arch probe validates:
-// version.DefaultContainerImage(), unconditionally.
-//
-// [codex round 3 review, Major] originally had this honor an ambient
-// BOID_IMAGE env var, reasoning that build/container/compose.yml's own
-// image line (`${BOID_IMAGE:-...}`) always prefers it. That is true for
-// compose.yml in isolation, but [codex round 6 review, Blocker] caught
-// that it does NOT describe what `boid start` (the thing this diagnostic
-// exists to predict) actually does: cmd/host.go's own two deploy paths
-// each compute BOID_IMAGE themselves and pass it to
-// scripts/deploy-container.sh EXPLICITLY, regardless of whatever the
-// invoking shell already had set —
-//   - deployFromCheckout (BOID_COMPOSE_ROOT set, `--build`):
-//     deploy-container.sh's own `--build` branch overrides BOID_IMAGE to
-//     "boid-runner:latest" outright (this function's own BOID_COMPOSE_ROOT
-//     skip in runCheck already accounts for that path separately).
-//   - deployFromEmbeddedAssets (the checkout-less "go install" path this
-//     function actually targets): cmd/host.go sets
-//     `image := version.DefaultContainerImage()` and passes
-//     "BOID_IMAGE="+image as runDeployScript's extraEnv — never reading
-//     any pre-existing BOID_IMAGE from this process's own environment at
-//     all.
-//
-// So on neither path does an operator's ambient `BOID_IMAGE=...boid check`
-// have any effect on what `boid start` actually runs — honoring it here
-// would validate an image `boid start` was never going to use, exactly
-// the false-confidence gap round 6 flagged. (An operator invoking
-// `docker compose -f build/container/compose.yml up` directly, bypassing
-// `boid start`/cmd/host.go entirely, is a different, unwrapped scenario
-// this diagnostic does not attempt to predict — see this PR's own
-// follow-up notes.)
+// version.DefaultContainerImage(), unconditionally, ignoring any ambient
+// BOID_IMAGE env var. Both of cmd/host.go's deploy paths compute BOID_IMAGE
+// themselves and pass it to scripts/deploy-container.sh explicitly,
+// regardless of whatever the invoking shell already had set, so an
+// operator's ambient BOID_IMAGE has no effect on what `boid start` actually
+// runs — honoring it here would validate an image `boid start` was never
+// going to use.
 func resolveCheckImage() string {
 	return version.DefaultContainerImage()
 }
 
-// checkoutBuildPlatformWarning is the BOID_COMPOSE_ROOT branch's own
-// [codex round 5 review, Major] guard: DOCKER_DEFAULT_PLATFORM is the one
-// way a plain `docker build`/`podman build` with no --platform flag (which
-// is exactly what scripts/deploy-container.sh's `--build` path invokes —
-// see the call site's own doc comment) can still target a foreign
-// architecture. Returns ("", false) when it is safe to skip the arch probe
+// checkoutBuildPlatformWarning is the BOID_COMPOSE_ROOT branch's guard:
+// DOCKER_DEFAULT_PLATFORM is the one way a plain `docker build`/`podman
+// build` with no --platform flag (which is exactly what
+// scripts/deploy-container.sh's `--build` path invokes) can still target a
+// foreign architecture. Returns ("", false) when it is safe to skip the arch probe
 // entirely (unset, or explicitly set to this host's own architecture);
 // (msg, true) when it is NOT set to something matching this host (an
 // actual foreign-arch build risk — the caller treats this as a failure);
@@ -330,13 +249,9 @@ func checkoutBuildPlatformWarning(ctx context.Context, engine string) (msg strin
 	if platform == "" {
 		return "", false
 	}
-	// [codex round 6 review, Major]: split on EVERY "/", not just the
-	// first — the platform string form is "os/arch[/variant]" (e.g.
-	// "linux/amd64/v3" is a legitimate value, not malformed), and only
-	// the SECOND field is the arch component. A naive strings.Cut on the
-	// first "/" alone would take "amd64/v3" as the "arch" for that input,
-	// which then fails to normalize/match against a genuinely-matching
-	// host and falsely rejects a perfectly safe host-native build.
+	// Split on EVERY "/", not just the first: the platform string form is
+	// "os/arch[/variant]" (e.g. "linux/amd64/v3" is legitimate, not
+	// malformed), and only the SECOND field is the arch component.
 	parts := strings.Split(platform, "/")
 	if len(parts) < 2 || parts[1] == "" {
 		return fmt.Sprintf("DOCKER_DEFAULT_PLATFORM=%q is set but not in the expected os/arch[/variant] form — cannot verify the checkout `--build` path's target architecture", platform), true
@@ -368,18 +283,15 @@ func checkoutBuildPlatformWarning(ctx context.Context, engine string) (msg strin
 // BOID_DOCKER_SOCK_SRC resolution — the SINGLE source of truth this file
 // uses for both the socket-existence check and the arch probe's connection
 // target, deliberately NOT the CLI's own DOCKER_HOST/DOCKER_CONTEXT/
-// CONTAINER_HOST resolution ([codex review round 1, Blocker 2]: those
-// answer "what does the `docker`/`podman` CLI on THIS process's PATH talk
-// to", which is a different, weaker question than "what socket will
-// compose.yml actually bind-mount into the daemon container as
-// /var/run/docker.sock" — build/container/compose.yml's own volumes entry,
-// `${BOID_DOCKER_SOCK_SRC:-/var/run/docker.sock}`, is engine-agnostic and
-// completely ignores DOCKER_HOST/DOCKER_CONTEXT; it is BOID_DOCKER_SOCK_SRC
-// or nothing). deploy-container.sh only ever SETS BOID_DOCKER_SOCK_SRC
-// itself on the podman branch (defaulting to the rootless XDG runtime
-// path); on the docker branch it never touches the var at all, leaving
-// compose.yml's own bare-docker default in effect — mirrored here as the
-// engine=="docker" fallback.
+// CONTAINER_HOST resolution: those answer what the `docker`/`podman` CLI on
+// THIS process's PATH talks to, a different question from what socket
+// compose.yml actually bind-mounts into the daemon container (its volumes
+// entry is engine-agnostic and ignores DOCKER_HOST/DOCKER_CONTEXT
+// entirely). deploy-container.sh only ever SETS BOID_DOCKER_SOCK_SRC itself
+// on the podman branch (defaulting to the rootless XDG runtime path); on
+// the docker branch it never touches the var, leaving compose.yml's own
+// bare-docker default in effect — mirrored here as the engine=="docker"
+// fallback.
 func resolveComposeBindSource(engine string) string {
 	if v := os.Getenv("BOID_DOCKER_SOCK_SRC"); v != "" {
 		return v
@@ -404,15 +316,11 @@ func checkEngineSocket(ctx context.Context, out io.Writer, engine string) bool {
 		fmt.Fprintf(out, "  MISSING: %s (this is the exact path `boid start` bind-mounts into the daemon container as /var/run/docker.sock — %v)\n", bindSource, statErr)
 		ok = false
 	case info.Mode()&os.ModeSocket == 0:
-		// [codex round 2 review, Blocker 2]: not a soft warning — a
-		// bindSource that exists but is not actually a unix socket (a
-		// stray plain file, a stale path left behind by something else)
-		// bind-mounts into the daemon container exactly the same as a
-		// real one; `docker version`'s earlier success says nothing about
-		// THIS path, since the CLI may have resolved a completely
-		// different socket via DOCKER_HOST/DOCKER_CONTEXT. `boid start`
-		// would come up "successfully" and then fail every single
-		// docker-API call the daemon makes from inside its container.
+		// Not a soft warning: a bindSource that exists but is not actually
+		// a unix socket bind-mounts into the daemon container exactly the
+		// same as a real one, and `boid start` would come up "successfully"
+		// and then fail every docker-API call the daemon makes from inside
+		// its container.
 		fmt.Fprintf(out, "  MISSING: %s exists but is not a unix socket (mode %s)\n", bindSource, info.Mode())
 		ok = false
 	default:
@@ -501,36 +409,25 @@ func probeArchMismatch(ctx context.Context, engine, image string) (hostArch, ima
 // probeArchMismatchWithAPI reports the engine's host architecture and the
 // target image's architecture, and whether they mismatch.
 //
-// [codex round 3 review, Blocker 2]: a LOCAL image is checked FIRST, ahead
-// of any registry/remote-manifest query. Compose's default pull_policy
-// ("missing") never re-pulls a tag that already resolves to a locally
-// cached image, however stale — so if a wrong-arch image already sits
-// under this exact tag (e.g. copied in from another host's volume, or a
-// leftover from a previous arch), THAT is what `boid start` will actually
-// run, regardless of what the registry currently publishes. Only when
-// nothing is cached locally does querying the manifest WITHOUT pulling
-// (the common brand-new-install case) become the right question, since a
-// pull is exactly what compose is about to do.
+// A LOCAL image is checked FIRST, ahead of any registry/remote-manifest
+// query: compose's default pull_policy ("missing") never re-pulls a tag
+// that already resolves to a locally cached image, however stale, so if a
+// wrong-arch image already sits under this exact tag, THAT is what `boid
+// start` will actually run regardless of what the registry publishes. Only
+// when nothing is cached locally does querying the manifest without
+// pulling become the right question.
 //
-// [codex round 4 review, Blocker 1]: the remote-manifest step is
-// engine-specific, not just a single DistributionInspect call. Docker's
-// `/distribution/{name}/json` (api.DistributionInspect) has no Podman
-// equivalent — Podman's API server does not implement that endpoint at
-// all, so on Podman this would ALWAYS fail for an image that has never
-// been pulled, making `boid check` refuse a fresh Podman install outright
-// even though `boid start` itself can pull the very same public image
-// fine. Podman's own `podman manifest inspect <ref>` CLI subcommand DOES
-// support inspecting a remote reference's manifest without pulling it, so
-// that is used instead — see podmanManifestArches.
+// The remote-manifest step is engine-specific: docker's DistributionInspect
+// has no Podman equivalent (Podman's API server does not implement that
+// endpoint), so podman uses `podman manifest inspect <ref>` instead — see
+// podmanManifestArches.
 //
 // note carries a human-readable reason no verdict could be reached (engine
-// unreachable, neither a remote nor a local copy resolved anything) —
-// [codex round 2/3 review]: this is treated as a FAILURE by the caller
-// (runCheck), not a silent pass — 決定5 requires the fail-fast to be a
-// "must", and resolveImage's own launch-time check
-// (internal/dispatcher/container_backend.go) only ever guards JOB
-// containers, never the compose daemon image itself, so an inconclusive
-// verdict here is the only gate the daemon image gets at all.
+// unreachable, neither a remote nor a local copy resolved anything). The
+// caller (runCheck) treats this as a FAILURE, not a silent pass:
+// resolveImage's own launch-time check only ever guards JOB containers,
+// never the compose daemon image itself, so an inconclusive verdict here is
+// the only gate the daemon image gets at all.
 func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, engine, image string) (hostArch, imageArch string, mismatch bool, note string) {
 	checkCtx, cancel := context.WithTimeout(ctx, checkEngineTimeout)
 	defer cancel()
@@ -544,27 +441,16 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, engine, ima
 		return "", "", false, "engine reported no host architecture"
 	}
 
-	// [codex round 5 review, Major]: `:latest` (or no tag at all, which
-	// docker treats identically) is compose-file's OWN documented
-	// exception to pull_policy "missing" — the docker compose PLUGIN
-	// ALWAYS re-pulls a `:latest`-tagged image even when a local copy
-	// already exists. Checking the local cache first for that tag would
-	// validate a potentially stale image compose is about to discard and
-	// replace anyway — remote-first is correct there, with the local
-	// cache only as a last-resort fallback.
-	//
-	// [codex round 7 review, Blocker 1]: that exception is DOCKER
-	// COMPOSE-specific, not shared by podman-compose — podman-compose
-	// implements a plain "pull only if missing locally" policy with no
-	// `:latest`-always-repulls carve-out (podman itself documents its
-	// own PullPolicy=missing identically: "pull the image if it is not
-	// present locally", no tag-name special case). Applying the docker
-	// exception to podman too would make `boid check` validate the
-	// REGISTRY's arch for a `:latest` tag while `boid start` on podman
-	// actually runs whatever is cached locally under that same tag — the
-	// exact silent-emulation gap 決定5 exists to catch. So podman is
-	// ALWAYS local-first, regardless of tag; only docker gets the
-	// `:latest` remote-first treatment.
+	// `:latest` (or no tag at all) is compose-file's own documented
+	// exception to pull_policy "missing": the docker compose PLUGIN always
+	// re-pulls a `:latest`-tagged image even when a local copy exists, so
+	// remote-first is correct there. podman-compose has no such exception
+	// (a plain "pull only if missing locally" policy, no tag special
+	// case), so applying docker's exception to podman too would validate
+	// the REGISTRY's arch while `boid start` on podman actually runs
+	// whatever is cached locally. So podman is ALWAYS local-first,
+	// regardless of tag; only docker gets the `:latest` remote-first
+	// treatment.
 	tryLocalFirst := engine == "podman" || !isLatestTag(image)
 
 	if tryLocalFirst {
@@ -607,19 +493,10 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, engine, ima
 		}
 	}
 
-	// [codex round 6 review, Blocker]: podman's remote-manifest path
-	// depends on skopeo (podmanManifestArches's own doc comment) — an
-	// undeclared, easy-to-miss dependency compared to `podman
-	// manifest inspect` alone (which resolves nothing for boid's own
-	// single-platform published image). Naming the actual remediation
-	// here, specifically for podman, keeps this failure a "human can act
-	// on it" message rather than a generic dead end (doc's own "エラー
-	// メッセージは人間に分かる言葉で報告する" requirement) — without
-	// making skopeo a new HARD requirement gating engine detection itself
-	// (detectComposeEngine/cmd/host.go intentionally still only require
-	// podman+podman-compose; this diagnostic degrading to "can't verify"
-	// without skopeo is the deliberately weaker posture, consistent with
-	// every other inconclusive-probe case in this file).
+	// podman's remote-manifest path depends on skopeo (podmanManifestArches's
+	// own doc comment), which is not a hard requirement gating engine
+	// detection itself, so naming the actual remediation here keeps this
+	// failure actionable rather than a dead end.
 	if engine == "podman" {
 		return hostArch, "", false, fmt.Sprintf("could not determine image %q's architecture (not present locally; its remote manifest could not be queried — install skopeo for pre-pull architecture verification on podman, e.g. `apt install skopeo` / `dnf install skopeo`, or run `podman pull %[1]s` once so the local copy can be inspected instead) — it will still be validated at pull/launch time", image)
 	}
@@ -680,49 +557,24 @@ func remoteImageArches(ctx context.Context, api archProbeAPI, engine, image stri
 
 // podmanManifestArches resolves a REMOTE image reference's architecture(s)
 // without pulling it — the podman-side counterpart of the docker branch's
-// api.DistributionInspect (docs comment on probeArchMismatchWithAPI's
-// [codex round 4 review, Blocker 1]: podman's API server does not
-// implement docker's distribution-inspect REST endpoint at all).
+// api.DistributionInspect, which podman's API server does not implement.
 //
-// [codex round 5 review, Blocker]: a first attempt using ONLY `podman
-// manifest inspect <ref>` was not sufficient for the common case boid
-// actually publishes (決定5: a single-platform, non-manifest-list amd64
-// image, per .github/workflows/blackbox-e2e.yml's own plain `docker
-// build`+push). For a single-platform OCI/Docker image manifest there is
-// no top-level
-// "architecture" field at all — that lives in the referenced CONFIG blob,
-// a separate fetch `podman manifest inspect` does not make; only a
-// manifest LIST/index (multiple platforms) has per-entry
-// "manifests[].platform.architecture", which the original implementation
-// correctly parsed but which never applies to boid's own published image.
-// `skopeo inspect docker://<ref>` resolves the config blob itself and
-// reports a direct top-level "Architecture" field — tried first since
-// skopeo ships alongside podman on essentially every distro packaging of
-// it (same containers/image library). `podman manifest inspect` remains a
-// second attempt for the (currently hypothetical, but decision-5-intended
-// future) manifest-list case. If NEITHER resolves anything, the caller
-// (probeArchMismatchWithAPI) reports this as inconclusive — a genuine "no
-// way to verify without pulling" case now that both known techniques have
-// been tried, not a shortcut.
+// `podman manifest inspect <ref>` alone is not sufficient for a
+// single-platform, non-manifest-list image (boid's own published shape):
+// such a manifest has no top-level "architecture" field at all — that
+// lives in the referenced CONFIG blob, which a manifest LIST/index
+// (multiple platforms) exposes per-entry but a single-platform manifest
+// does not. So registryManifestArches (a dependency-free Go client talking
+// the OCI/Docker Distribution v2 registry API directly over HTTPS) is tried
+// first, `skopeo inspect docker://<ref>` (which resolves the config blob
+// directly) second, and `podman manifest inspect` last, for the
+// manifest-list case. If none resolves anything, the caller
+// (probeArchMismatchWithAPI) reports this as inconclusive.
 //
-// [codex round 7 review, Blocker 2]: skopeo (tried second, below) is NOT
-// declared anywhere as a prerequisite — detectComposeEngine/cmd/host.go
-// intentionally require only podman+podman-compose, matching the plan
-// doc's own stated goal (穴5) of NOT re-introducing a hidden new
-// dependency the way the old `passt` requirement was. Without skopeo,
-// EVERY fresh podman install that has never pulled the image would hit
-// the "cannot verify" inconclusive-failure path, which round 6 flagged as
-// a hard blocker but round 6's own fix only made the resulting message
-// actionable — it did not remove the dependency. registryManifestArches
-// (tried FIRST, below) closes that gap for real: a small, dependency-free
-// Go client that talks the OCI/Docker Distribution v2 registry API
-// directly over HTTPS (anonymous bearer-token flow — works out of the box
-// against boid's own public GHCR publish target, 決定4) with no
-// docker/podman/skopeo binary involved at all. skopeo and `podman
-// manifest inspect` remain as later-resort fallbacks for registries this
-// minimal client cannot reach (a private registry needing real
-// credentials, a registry with a non-standard auth flow) — see each
-// helper's own doc comment.
+// registryManifestArches exists specifically so a fresh podman install
+// with skopeo not installed (an undeclared dependency — engine detection
+// intentionally requires only podman+podman-compose) is not forced into
+// that inconclusive path for every image it has never pulled.
 var podmanManifestArches = func(ctx context.Context, image string) ([]string, error) {
 	if archs, err := registryManifestArches(image); err == nil {
 		return archs, nil
@@ -757,18 +609,16 @@ const (
 // its OCI/Docker Distribution v2 registry API — no docker/podman/skopeo
 // CLI or engine socket involved at all, so it works identically for
 // either engine and needs nothing beyond outbound HTTPS (see
-// podmanManifestArches's own doc comment for why this exists: closing the
-// undeclared-skopeo-dependency gap [codex round 7 review, Blocker 2]).
-// Deliberately its own context.Background()-rooted timeout (see
-// registryHTTPTimeout) rather than accepting a caller ctx, so a
-// short-lived local-operation deadline elsewhere in this file can never
-// truncate it.
+// podmanManifestArches's own doc comment for why this exists). Deliberately
+// its own context.Background()-rooted timeout (see registryHTTPTimeout)
+// rather than accepting a caller ctx, so a short-lived local-operation
+// deadline elsewhere in this file can never truncate it.
 //
-// Handles both shapes a manifest response can take: a manifest
-// list/OCI index (architecture available directly per platform entry), or
-// a single-platform image manifest (boid's own actual published shape,
-// per 決定5 — architecture lives in the referenced CONFIG blob, a
-// separate fetch this function makes automatically).
+// Handles both shapes a manifest response can take: a manifest list/OCI
+// index (architecture available directly per platform entry), or a
+// single-platform image manifest (boid's own actual published shape,
+// where architecture lives in the referenced CONFIG blob, a separate fetch
+// this function makes automatically).
 func registryManifestArches(image string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), registryHTTPTimeout)
 	defer cancel()
@@ -870,11 +720,10 @@ func parseImageRef(image string) (registryHost, repo, tag string) {
 // means no auth is required at all (empty token); a 401 with a
 // `WWW-Authenticate: Bearer realm=...,service=...` challenge means a token
 // must be fetched from that realm with a pull-only scope for repo — the
-// exact flow a public GHCR image (決定4: GHCR is public specifically so
-// anonymous pulls need no docker login) satisfies with no credentials at
-// all. Any other failure degrades to an empty token, tried anyway — some
-// registries answer a plain unauthenticated GET on /v2/<repo>/manifests/
-// even without one.
+// exact flow a public registry (e.g. GHCR) satisfies with no credentials
+// at all. Any other failure degrades to an empty token, tried anyway —
+// some registries answer a plain unauthenticated GET on
+// /v2/<repo>/manifests/ even without one.
 func registryAnonymousToken(ctx context.Context, registryHost, repo string) (string, error) {
 	pingReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+registryHost+"/v2/", nil)
 	if err != nil {

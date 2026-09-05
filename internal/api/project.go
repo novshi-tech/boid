@@ -14,10 +14,9 @@ type ProjectHandler struct {
 	Service           ProjectService
 	SessionDispatcher SessionDispatcher // optional; nil disables the start-session endpoint
 	ExecDispatcher    ExecDispatcher    // optional; nil disables the exec endpoint
-	// TriggerRunner backs POST /api/projects/{id}/triggers/{name}/run —
-	// docs/plans/ingestion-identity.md PR-4 (B-5) 12 節「手動 1 巡の口」
-	// (`boid trigger run`, cmd/trigger.go). Optional; nil disables the
-	// endpoint, same convention as SessionDispatcher/ExecDispatcher above.
+	// TriggerRunner backs POST /api/projects/{id}/triggers/{name}/run
+	// (`boid trigger run`). Optional; nil disables the endpoint, same
+	// convention as SessionDispatcher/ExecDispatcher above.
 	TriggerRunner TriggerRunner
 }
 
@@ -79,9 +78,9 @@ type CreateProjectRequest struct {
 }
 
 // CreateProjectFromGitURLRequest is POST /api/projects/git's body
-// (docs/plans/volume-only-daemon.md §論点a — `boid project add <git-url>
-// --workspace=<name> [--name=<project-name>]`). Workspace is required; Name
-// empty derives the project name from URL's last path component.
+// (`boid project add <git-url> --workspace=<name> [--name=<project-name>]`).
+// Workspace is required; Name empty derives the project name from URL's
+// last path component.
 type CreateProjectFromGitURLRequest struct {
 	URL       string `json:"url"`
 	Workspace string `json:"workspace"`
@@ -111,9 +110,8 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, project)
 }
 
-// CreateFromGitURL handles POST /api/projects/git (docs/plans/
-// volume-only-daemon.md §論点a — `boid project add <git-url>
-// --workspace=<name>`, the new git-URL registration model).
+// CreateFromGitURL handles POST /api/projects/git (`boid project add
+// <git-url> --workspace=<name>`).
 func (h *ProjectHandler) CreateFromGitURL(w http.ResponseWriter, r *http.Request) {
 	var req CreateProjectFromGitURLRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -137,8 +135,7 @@ func (h *ProjectHandler) CreateFromGitURL(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, project)
 }
 
-// Fetch handles POST /api/projects/{id}/fetch (docs/plans/
-// volume-only-daemon.md §論点b fetch 経路 — `boid project fetch <id>`).
+// Fetch handles POST /api/projects/{id}/fetch (`boid project fetch <id>`).
 func (h *ProjectHandler) Fetch(w http.ResponseWriter, r *http.Request) {
 	ref := chi.URLParam(r, "id")
 	project := h.resolveRef(w, ref)
@@ -181,8 +178,7 @@ func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, hydrated)
 }
 
-// Explain handles GET /api/projects/{id}/explain (docs/plans/
-// workspace-default-project.md 論点e, PR6 — `boid project show --explain`).
+// Explain handles GET /api/projects/{id}/explain (`boid project show --explain`).
 func (h *ProjectHandler) Explain(w http.ResponseWriter, r *http.Request) {
 	ref := chi.URLParam(r, "id")
 	project := h.resolveRef(w, ref)
@@ -296,8 +292,7 @@ func (h *ProjectHandler) StartExec(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, result)
 }
 
-// RunTrigger handles POST /api/projects/{id}/triggers/{name}/run —
-// docs/plans/ingestion-identity.md PR-4 (B-5) 12 節「手動 1 巡の口」. The
+// RunTrigger handles POST /api/projects/{id}/triggers/{name}/run. The
 // project is resolved from the URL ref the same way every other project
 // route does; {name} is the trigger's project.yaml `name:`.
 //

@@ -19,48 +19,23 @@ import (
 // "boid config get" — the shape every real boid CLI command takes.
 //
 // Calibrated against the actual reference-skill corpus in boid-api-skills
-// (13 service skills, grepped while designing this check — see
-// TestBoidCommandPattern, which pins the exact cases below verbatim):
-// every real command reference found there matches, and nothing else in
-// that corpus does. In particular, case-sensitivity and the required
-// whitespace right after "boid" are load-bearing, not incidental:
+// (see TestBoidCommandPattern, which pins the exact cases below verbatim):
+// case-sensitivity and the required whitespace right after "boid" are
+// load-bearing, not incidental — boid's own env-var contract is ALL-CAPS
+// so it never matches, and Japanese prose glues "boid" straight onto a
+// particle or a hyphenated literal with no space, so neither matches
+// either. The separate builtin-skill-name check in findBoidReferences
+// below is scoped even more narrowly (an exact, whole-word match against
+// the real builtin skill list) so a hyphenated literal like "boid-gateway"
+// is never mistaken for one.
 //
-//   - boid's own env-var contract (BOID_API_BASE, BOID_SIGNAL_SERVICE, …)
-//     is ALL-CAPS, so it never matches a lowercase pattern regardless of
-//     anything else — describing "authentication goes through the
-//     $BOID_API_BASE env var" is explicitly allowed knowledge (§7.1: it's
-//     part of what boid PROVIDES to a Pack), not a command, and this is
-//     the mechanism that keeps the two from colliding
-//   - Japanese prose in this corpus glues "boid" straight onto a particle
-//     or another word with no space ("boidの…", "boid経由で…",
-//     "boidサンドボックス…") — none of that matches either, since a space
-//     is required
-//   - a hyphen right after "boid" (as in the "boid-gateway" hostname
-//     placeholder or the "boid-job" User-Agent literal, both real strings
-//     in that corpus) is not whitespace either, so this pattern alone
-//     leaves them alone — the separate builtin-skill-name check in
-//     findBoidReferences below is scoped even more narrowly (an exact,
-//     whole-word match against the real builtin skill list) for exactly
-//     this reason, rather than a blanket "boid-[a-z-]+" pattern that would
-//     flag them
-//
-// Known residual false-positive class, deliberately accepted rather than
-// designed around: plain English prose that puts a verb right after "boid"
-// with a space — "boid is/provides/does/has ..." — reads exactly like a
-// subcommand and WILL match (e.g. "boid is a personal AI orchestrator").
-// The real corpus this pattern was calibrated against is entirely
-// Japanese, where "boid" is always either glued straight onto the next
-// word/particle (no match, see above) or followed by an actual command
-// (a real match) — this English-prose shape essentially never occurs in
-// it. A tighter pattern could avoid this by matching only a curated list
-// of real subcommand names, but that list would have to be hand-maintained
-// against cmd/'s cobra tree, and this package cannot import cmd/ to derive
-// it dynamically (cmd/ pulls in internal/db, which does not build inside a
-// boid sandbox — see packconformance's own package
-// doc comment on why a custom Pack author needs `go test` here to work
-// from inside one). A Pack author who trips this on ordinary English prose
-// should just avoid putting a bare verb directly after "boid " (say
-// "boid's gateway" instead of "boid provides a gateway").
+// Known residual false positive, accepted rather than designed around:
+// plain English prose that puts a verb right after "boid" with a space
+// ("boid is a personal AI orchestrator") reads exactly like a subcommand
+// and WILL match; the real corpus this was calibrated against is entirely
+// Japanese, where this shape essentially never occurs. A Pack author who
+// trips this should just avoid putting a bare verb directly after "boid "
+// (say "boid's gateway" instead of "boid provides a gateway").
 var boidCommandPattern = regexp.MustCompile(`\bboid[ \t]+[a-z][a-z0-9_-]*`)
 
 // boidReference is one match findBoidReferences found in a skill document.
@@ -73,7 +48,7 @@ type boidReference struct {
 	match string
 }
 
-// findBoidReferences is the pure detection half of the Q21 "skill" check —
+// findBoidReferences is the pure detection half of the "skill" check —
 // separated from checkSkillsNoBoidCommands' t.Errorf reporting so it can be
 // unit-tested directly (see skill_check_test.go) without synthesizing a
 // *testing.T harness around it. builtinSkillNames is normally
@@ -128,33 +103,27 @@ type skillDocViolation struct {
 	ref  boidReference
 }
 
-// findSkillDocViolations is the pure detection half of the Q21 "skill"
-// check (docs/plans/signal-ingest-detailed-design.md §7.2's "skill" row,
-// docs/plans/signal-driven-review.md §14): a Pack's skill content must
-// describe only the external service (source-side knowledge), never
-// boid's own commands — boid usage is the core's job (built-in skills,
-// docs/plans/signal-driven-review.md §8.2), not a Pack's.
+// findSkillDocViolations is the pure detection half of the "skill" check: a
+// Pack's skill content must describe only the external service (source-side
+// knowledge), never boid's own commands — boid usage is the core's job
+// (built-in skills), not a Pack's.
 //
 // Scans every file in scope per isSkillDoc, at any depth under EACH of the
 // manifest's declared skills[].path (integrationpack.Skill.Path) — NOT a
-// hardcoded "skills/" directory. This is a fix, not merely a refactor:
-// ParseManifest only validates Path's STRING shape (non-empty, relative,
-// no ".." escape via filepath.IsLocal — manifest.go), so a manifest is
-// free to declare skills[].path: "docs/whatever" and this check used to
-// silently scan the (nonexistent, unrelated) "skills/" directory, find
-// zero files, and report a clean PASS — the exact "0 scanned looks
-// identical to 0 violations" trap the returned scannedFiles count exists
-// to close. checkSkillsNoBoidCommands logs that count via t.Logf on every
-// run so it can never be silently zero without a human noticing.
+// hardcoded "skills/" directory, since ParseManifest only validates Path's
+// string shape and a manifest could otherwise point this check at an
+// unrelated directory, silently scanning zero files and reporting a clean
+// PASS. checkSkillsNoBoidCommands logs the returned scannedFiles count via
+// t.Logf on every run so it can never be silently zero without a human
+// noticing.
 //
 // Separated from checkSkillsNoBoidCommands' *testing.T reporting so this
 // package's own tests can assert directly on what was found (see
 // conformance_test.go) — a *testing.T subtest failure always propagates to
-// every ancestor test (testing.common.Fail calls c.parent.Fail()
-// unconditionally), so there is no way to run a check that is SUPPOSED to
-// fail against a negative fixture through the real t.Run/t.Errorf path
-// without also failing this package's own test suite. Pure functions sidestep
-// that entirely.
+// every ancestor test, so there is no way to run a check that is SUPPOSED
+// to fail against a negative fixture through the real t.Run/t.Errorf path
+// without also failing this package's own test suite. Pure functions
+// sidestep that entirely.
 func findSkillDocViolations(dir string, m *integrationpack.Manifest) (violations []skillDocViolation, scannedFiles int, err error) {
 	builtinSkillNames := skills.EmbeddedSkillNames()
 	var errs []error

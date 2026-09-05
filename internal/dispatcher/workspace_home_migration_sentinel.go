@@ -16,8 +16,9 @@ import (
 )
 
 // workspace_home_migration_sentinel.go makes a workspace home migration
-// recoverable when the daemon process stops existing partway through it
-// (codex review of PR8 round 2, Major 2).
+// recoverable when the daemon process stops existing partway through it. See
+// docs/plans/workspace-home-volume-persistence.md 論点f for the full design
+// rationale; this header covers the operational contract only.
 //
 // # The invariant, in one line
 //
@@ -25,18 +26,16 @@ import (
 // not init.sh, not a job. Two places enforce it, and only the second one is a
 // guarantee: the startup sweep (SweepInterruptedWorkspaceHomeMigrations) resolves
 // records eagerly, and the dispatch path
-// (Runner.recoverInterruptedWorkspaceHomeMigration, round 3 Blocker 1) refuses to
-// proceed past a record it could not resolve. Round 3's finding was that with only
-// the first, a boot where the engine happened to be unreachable let the record
-// survive AND let the dispatch through — a single ordinary boot, no second crash
-// required.
+// (Runner.recoverInterruptedWorkspaceHomeMigration) refuses to proceed past a
+// record it could not resolve — a boot where the engine happened to be briefly
+// unreachable must not let a stale record through to a dispatch that skips it.
 //
-// "Resolve" is not "destroy": what resolving a record COSTS depends on the phase
-// it carries, and round 4 is where that distinction was added. A record whose
-// phase says the home was never destroyed is resolved by deleting the record and
-// nothing else. See "The record has a PHASE" below.
+// "Resolve" is not "destroy": what resolving a record costs depends on the phase
+// it carries. A record whose phase says the home was never destroyed is
+// resolved by deleting the record and nothing else. See "The record has a
+// PHASE" below.
 //
-// # What the round-1 cleanup does not cover
+// # What ImportWorkspaceHome's own cleanup does not cover
 //
 // discardPartialWorkspaceHome runs when Runner.ImportWorkspaceHome RETURNS an
 // error. SIGKILL, an OOM kill, `docker compose down -t 0`, a power cut — none of
@@ -46,16 +45,13 @@ import (
 // the VOLUME is, holding whatever crossed before the process died, with its
 // completion marker already deleted.
 //
-// That state is worse than either neighbour, for the reason
-// discardPartialWorkspaceHome spells out at length: init.sh DOES run against it,
-// and an init.sh that probes for what it installs (`command -v claude`,
+// That state is worse than either neighbour: init.sh DOES run against it, and
+// an init.sh that probes for what it installs (`command -v claude`,
 // `[ -x "$HOME/.local/bin/claude" ]` — the contractually idempotent shape,
 // docs/plans/home-workspace-volume.md 「script 作者が守ること」) answers "already
 // installed" to a half-extracted home. It exits 0, resolveWorkspaceHome writes a
 // completion marker for it, and the breakage is frozen: nothing re-runs, and it
-// surfaces much later as the adapter's "CLI not found in workspace $HOME". It
-// also contradicts what docs/{ja,en}/guide/workspace-home.md promises an
-// operator about a failed migration.
+// surfaces much later as the adapter's "CLI not found in workspace $HOME".
 //
 // # Why a file rather than a label on the volume
 //
@@ -66,8 +62,7 @@ import (
 // that exists returns that volume untouched — which is not an oversight but the
 // property Runner.ensureWorkspaceHomeVolume's fast path is built on, and the
 // same reason an unlabelled volume is a hard error there rather than something a
-// re-init can repair. (Encoding the state in the volume's NAME instead would
-// mean the migration wrote into a volume no dispatch mounts.)
+// re-init can repair.
 //
 // So the record goes where the daemon's other bookkeeping about workspace homes
 // already lives: <dataHome>/homes-meta/, beside the completion marker and the
@@ -76,13 +71,12 @@ import (
 // from).
 //
 // # The record has a PHASE, because "a record exists" is not "a home was
-// destroyed" (codex review of PR8 round 4, Blocker 1)
+// destroyed"
 //
-// Rounds 2 and 3 gave the record one meaning — "a migration was started" — and
-// let recovery read it as "this home is wreckage". Those are not the same
-// statement, and the gap between them is not hypothetical: a record survives
-// whenever its own unlink fails, and the two ways that happens both leave a home
-// that is perfectly fine.
+// A record that only ever meant "a migration was started" would let recovery
+// read it as "this home is wreckage" — and those are not the same statement. A
+// record survives whenever its own unlink fails, and the two ways that happens
+// both leave a home that is perfectly fine:
 //
 //   - Route A. The extraction COMPLETES, and the unlink at the end fails
 //     (unwritable homes-meta, a read-only remount, EIO). The API answers 200. The
@@ -104,7 +98,7 @@ import (
 //	home-destroyed        VolumeRemove has SUCCEEDED       discard the volume, the
 //	                                                       marker and the record
 //	home-absent           the volume is confirmed GONE     delete the record, and
-//	                      (round 5)                        nothing else
+//	                                                       nothing else
 //	home-rebuilt          the extraction has finished      delete the record, and
 //	                                                       nothing else
 //	(absent / unknown)    a build that predates the field  discard — see below
@@ -119,13 +113,12 @@ import (
 // "home-rebuilt" and then removes the record the same way — see "the unlink is
 // not a durability primitive" below.
 //
-// The property round 2 established is preserved, stated against the interval it
-// was always really about: THE PHASE THAT AUTHORIZES A DISCARD IS ON DISK
-// STRICTLY BEFORE, AND STRICTLY AFTER, THE INTERVAL IN WHICH A VOLUME EXISTS
-// UNDER THE HOME'S NAME HOLDING CONTENTS NOBODY VOUCHED FOR. That interval opens
-// when the replacement volume is created (step 3) and closes when the extraction
-// returns; "home-destroyed" is committed before step 3 and replaced only after
-// step 4. Every kill lands somewhere covered:
+// The phase that authorizes a discard is on disk strictly before, and strictly
+// after, the interval in which a volume exists under the home's name holding
+// contents nobody vouched for. That interval opens when the replacement volume
+// is created (step 3) and closes when the extraction returns; "home-destroyed"
+// is committed before step 3 and replaced only after step 4. Every kill lands
+// somewhere covered:
 //
 //   - Killed before the record exists: nothing destroyed, nothing to recover.
 //   - Killed while the phase is "recorded": either the removal has not run or it
@@ -138,9 +131,7 @@ import (
 //     partial. Recovery removes it; the next dispatch builds from empty. This is
 //     the case the whole file exists for.
 //   - Killed while the phase is "home-absent": the volume is gone and something
-//     already confirmed it, so recovery removes the record and nothing else. The
-//     phase exists for the failure paths rather than for a kill, but a kill in
-//     the instant between committing it and unlinking the record lands here too.
+//     already confirmed it, so recovery removes the record and nothing else.
 //   - Killed while the phase is "home-rebuilt": a complete, correct home, and
 //     recovery keeps it. Route A above is this case with the unlink failing
 //     rather than a kill.
@@ -149,11 +140,10 @@ import (
 // and the "home-rebuilt" rename committing — a single small write against an
 // operation that runs for minutes — and its cost is still only one re-run.
 //
-// # The unlink is not a durability primitive (codex review of PR8 round 5,
-// Blocker)
+// # The unlink is not a durability primitive
 //
-// Round 4 applied the argument above to the SUCCESS path and left the failure
-// paths deleting a record that still said "home-destroyed". That is unsafe for a
+// Applying the argument above to the success path and leaving the failure
+// paths delete a record that still said "home-destroyed" would be unsafe for a
 // reason that has nothing to do with crashing mid-migration:
 // removeWorkspaceHomeMigrationRecord unlinks FIRST and fsyncs the directory
 // afterwards, so its failure mode is the awkward one — the record is gone as far
@@ -183,10 +173,10 @@ import (
 //
 // A record with no phase, or one this build does not recognize, was written by
 // some other build — and every build that could have written one meant "a
-// migration was started", which through round 3 authorized a discard. Reading it
-// as "destroyed" is therefore both backward-compatible and the fail-safe
-// direction, for the reason below. Nothing this build writes lands in that
-// bucket: all three phases are set explicitly.
+// migration was started", which authorized a discard. Reading it as "destroyed"
+// is therefore both backward-compatible and the fail-safe direction, for the
+// reason below. Nothing this build writes lands in that bucket: all three
+// phases are set explicitly.
 //
 // # Why over-reach is the safe direction when the phase IS uncertain
 //
@@ -207,8 +197,6 @@ import (
 //
 // So an uncertain record resolves to "delete and re-initialize", the same
 // fail-safe direction workspaceHomeInitialized takes for an uncertain marker.
-// What round 4 changes is that a record whose phase is KNOWN is no longer
-// uncertain, and is not treated as though it were.
 
 // workspaceHomeMigrationRecord is the on-disk "a migration of this workspace's
 // HOME volume was started and has not been finished or cleaned up" sentinel, at
@@ -235,7 +223,7 @@ type workspaceHomeMigrationRecord struct {
 	Volume string `json:"volume"`
 
 	// Phase says whether this record authorizes recovery to DESTROY the volume
-	// it names (codex review of PR8 round 4, Blocker 1). See this file's header
+	// it names. See this file's header
 	// for the table, the ordering and the fallback for an unknown value; see
 	// workspaceHomeMigrationRecord.discardsHome for the predicate itself.
 	//
@@ -299,7 +287,7 @@ const (
 	//
 	// Written on the two failure paths that end with the volume gone, and written
 	// BEFORE the record's own unlink, for the reason this file's header gives
-	// under "the unlink is not a durability primitive" (codex round 5, Blocker).
+	// under "the unlink is not a durability primitive".
 	//
 	// # Why not reuse one of the other two
 	//
@@ -343,7 +331,7 @@ const (
 // home volume it names.
 //
 // The default arm is the contract, not a leftover: an absent phase (a record
-// written by a build from before round 4) and an unrecognized one (a record
+// written by an older build) and an unrecognized one (a record
 // written by a build from after this one) both mean "boid cannot tell", and an
 // uncertain record resolves the same fail-safe way an uncertain completion
 // marker does — see this file's header for why over-reach is the safe direction
@@ -371,8 +359,7 @@ func workspaceHomeMigrationRecordPath(metaDir, slug string) string {
 }
 
 // writeWorkspaceHomeMigrationRecord writes the sentinel durably, and FAILS
-// rather than reporting success when it cannot (codex review of PR8 round 3,
-// Major).
+// rather than reporting success when it cannot.
 //
 // It reuses the marker's temp-file + rename + parent-dir fsync writer rather
 // than an os.WriteFile, and the fsync is the entire point: this record's job is
@@ -388,7 +375,7 @@ func workspaceHomeMigrationRecordPath(metaDir, slug string) string {
 // shared writer swallowed the fsync error, so a daemon on failing storage would
 // report a durable sentinel it did not have and then destroy the home behind it.
 //
-// # Every PHASE transition goes through here too (round 4, Blocker 1)
+// # Every PHASE transition goes through here too
 //
 // The record is rewritten twice more after it is created — once when the volume
 // removal has succeeded and once when the extraction has finished — and both go
@@ -404,8 +391,7 @@ func writeWorkspaceHomeMigrationRecord(path string, rec workspaceHomeMigrationRe
 }
 
 // markWorkspaceHomeMigrationRecordHomeAbsent commits the "there is no volume
-// under this name any more" phase durably (codex review of PR8 round 5,
-// Blocker).
+// under this name any more" phase durably.
 //
 // Every path that ends with the home volume gone calls this BEFORE it unlinks
 // the record — Runner.ImportWorkspaceHome's two failure paths through
@@ -440,7 +426,7 @@ func markWorkspaceHomeMigrationRecordHomeAbsent(recordPath, slug, volumeName str
 // boot destroys a home that is actually fine, which is worth telling the
 // operator about even though it is not worth failing a completed migration for.
 //
-// # Why the unlink is fsync'd too (round 3, Major)
+// # Why the unlink is fsync'd too
 //
 // This deletion is the statement "the migration finished; do not touch this
 // home". It is the SAME invariant the write side carries, pointing the other way,
@@ -474,7 +460,7 @@ func removeWorkspaceHomeMigrationRecord(path string) error {
 }
 
 // workspaceHomeMigrationSweepTimeout bounds the ENGINE work the startup sweep
-// does for ONE record (codex review of PR8 round 4, Major).
+// does for ONE record.
 //
 // # Why a bound at all
 //
@@ -510,7 +496,7 @@ func removeWorkspaceHomeMigrationRecord(path string) error {
 //
 // A timed-out VolumeRemove is a FAILED VolumeRemove, so the record stays in the
 // phase it arrived in: the sweep's only phase write is the "home-absent" that
-// follows a SUCCESSFUL removal (round 5), and a call that timed out never
+// follows a SUCCESSFUL removal, and a call that timed out never
 // reaches it. A record that still says "home-destroyed" is still wreckage on the
 // next boot and on the next dispatch, both of which retry; a record in any
 // non-destructive phase never reaches the engine at all, so a hung engine cannot
@@ -533,8 +519,7 @@ var workspaceHomeMigrationSweepTimeout = newAtomicDuration(30 * time.Second)
 // It is not the guarantee, though — a sweep whose volume removal fails logs and
 // lets startup continue, so the invariant "no init and no job runs against a home
 // with a record" is enforced where it can actually be enforced: on the dispatch
-// path (Runner.recoverInterruptedWorkspaceHomeMigration, codex round 3 Blocker
-// 1). The two share their discard so a workspace repaired by a boot and one
+// path (Runner.recoverInterruptedWorkspaceHomeMigration). The two share their discard so a workspace repaired by a boot and one
 // repaired by a dispatch end up in the same state.
 //
 // # What it does per record
@@ -600,7 +585,7 @@ func (r *Runner) SweepInterruptedWorkspaceHomeMigrations(ctx context.Context) (s
 	}
 
 	// The importer is resolved LAZILY, per record, and only once a record has
-	// been read and found to authorize a discard (round 4, Blocker 1). Demanding
+	// been read and found to authorize a discard. Demanding
 	// it up front was right while every record meant "this home is wreckage"; now
 	// that most leftover records mean the opposite, a backend with no migration
 	// capability must not be stopped from clearing them — the clearing is an
@@ -661,7 +646,7 @@ func (r *Runner) sweepOneInterruptedWorkspaceHomeMigration(ctx context.Context, 
 	}
 	defer release()
 
-	// The bound (round 4, Major). Applied HERE rather than at the caller because
+	// The bound is applied HERE rather than at the caller because
 	// the guarantee belongs to the operation: buildRuntime hands this function
 	// context.Background() and has nothing better to hand it, and a startup path
 	// that can hang forever inside a reconciliation step is a property of the
@@ -680,7 +665,7 @@ func (r *Runner) sweepOneInterruptedWorkspaceHomeMigration(ctx context.Context, 
 
 // discardInterruptedWorkspaceHomeMigrationLocked is the actual discard, shared
 // by the two callers that can reach a leftover record: the startup sweep and —
-// since codex round 3's Blocker 1 — the dispatch path itself
+// the dispatch path itself
 // (Runner.recoverInterruptedWorkspaceHomeMigration).
 //
 // It reports what it DID, which is separate from whether it succeeded: the
@@ -688,7 +673,7 @@ func (r *Runner) sweepOneInterruptedWorkspaceHomeMigration(ctx context.Context, 
 // reading the log after an incident needs "your home was discarded" and "a stale
 // record was cleared" to be distinguishable.
 //
-// # The phase decides, not the file's existence (round 4, Blocker 1)
+// # The phase decides, not the file's existence
 //
 // A record whose phase does not authorize a discard is CLEARED: the record is
 // removed and the home volume, the completion marker and the engine are all left
@@ -699,7 +684,7 @@ func (r *Runner) sweepOneInterruptedWorkspaceHomeMigration(ctx context.Context, 
 // a record saying the home was destroyed.
 //
 // On the branch that DOES discard, the record is moved into "home-absent" once
-// the volume is gone and before it is unlinked (round 5, Blocker) — this
+// the volume is gone and before it is unlinked — this
 // function's own unlink is one of the three the file header's "the unlink is not
 // a durability primitive" section covers, and the sweep is the caller that makes
 // it reachable, because it logs a failure and lets startup continue.
@@ -746,7 +731,7 @@ func (r *Runner) discardInterruptedWorkspaceHomeMigrationLocked(ctx context.Cont
 		rec = workspaceHomeMigrationRecord{}
 	}
 
-	// The branch round 4 adds, and the one most leftover records take. Nothing
+	// The most common branch: nothing
 	// was destroyed (phase "recorded") or everything was rebuilt (phase
 	// "home-rebuilt"), so the ONLY thing standing between this workspace and a
 	// normal dispatch is the file itself.
@@ -800,8 +785,7 @@ func (r *Runner) discardInterruptedWorkspaceHomeMigrationLocked(ctx context.Cont
 			"workspace_slug", slug, "marker", markerPath, "error", merr)
 	}
 
-	// The window closes HERE rather than by means of the unlink below (codex round
-	// 5, Blocker). The wreckage this record described is gone, so the record must
+	// The window closes HERE rather than by means of the unlink below. The wreckage this record described is gone, so the record must
 	// stop authorizing a discard before it is deleted — otherwise a deletion that
 	// is rolled back by a power cut brings back a record that destroys whatever
 	// the next dispatch built in its place.
@@ -836,8 +820,7 @@ func (r *Runner) discardInterruptedWorkspaceHomeMigrationLocked(ctx context.Cont
 
 // workspaceHomeMigrationRecovery says what recovery did with a leftover record.
 //
-// Three outcomes rather than the "found" boolean round 3 had, because round 4
-// splits the one that used to be implicit: a record can now be resolved WITHOUT
+// Three outcomes, because a record can now be resolved WITHOUT
 // anything being destroyed, and the difference between that and a discarded home
 // is the difference between a log line an operator can ignore and one they
 // cannot.
@@ -861,7 +844,7 @@ const (
 )
 
 // recoverInterruptedWorkspaceHomeMigration is the DISPATCH-path half of the
-// sentinel mechanism (codex review of PR8 round 3, Blocker 1).
+// sentinel mechanism.
 //
 // # Why the startup sweep is not enough on its own
 //
@@ -936,7 +919,7 @@ func (r *Runner) recoverInterruptedWorkspaceHomeMigration(ctx context.Context, m
 	// discard cannot leave the workspace's init lock held for the life of the
 	// daemon.
 	//
-	// The importer is resolved lazily inside the discard (round 4, Blocker 1):
+	// The importer is resolved lazily inside the discard:
 	// most leftover records describe a migration that destroyed nothing, and
 	// failing a dispatch over a missing migration capability that the record does
 	// not need would turn a stale file into an outage of the workspace.

@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// Token is the on-disk shape of ~/.config/boid/tokens/<profile>.json
-// (decision 2, docs/plans/cli-remote-connection.md). Writing this file is
-// PR2's job (`boid login`); this package only reads and validates it.
+// Token is the on-disk shape of ~/.config/boid/tokens/<profile>.json.
+// Writing this file happens via WriteToken (`boid login`); this package
+// only reads and validates it.
 type Token struct {
 	DeviceID string    `json:"device_id"`
 	Token    string    `json:"token"`
@@ -19,23 +19,22 @@ type Token struct {
 	// URL is the canonical origin the token was issued against (the
 	// canonical_url field of POST /api/auth/device's response — see
 	// internal/api/device_auth.go's deviceAuthResponse). Resolve compares
-	// this byte-for-byte against the profile's own configured URL and hard-
-	// errors on any mismatch (decision 9: "token は canonical origin に強く
-	// bind") — never silently proceeds with a token that was issued for a
-	// different origin than the one config.yaml now points the profile at.
+	// this byte-for-byte against the profile's own configured URL and
+	// hard-errors on any mismatch — never silently proceeds with a token
+	// that was issued for a different origin than the one config.yaml now
+	// points the profile at.
 	URL string `json:"url"`
 }
 
-// tokenFilePerm is the required permission for a token file (decision 2:
-// "0600、親 dir 0700"). LoadToken only ever warns on a looser permission
-// today (PR2, which will actually WRITE the file, is what enforces 0600 at
+// tokenFilePerm is the required permission for a token file. LoadToken
+// only ever warns on a looser permission (WriteToken enforces 0600 at
 // creation time) — see LoadToken's doc comment for why a warning rather
 // than a hard error is the right call for the read path.
 const tokenFilePerm = 0o600
 
-// TokensDir returns ~/.config/boid/tokens (decision 2), alongside
-// ConfigPath's ~/.config/boid/config.yaml under the same XDG-resolved boid
-// config directory.
+// TokensDir returns ~/.config/boid/tokens, alongside ConfigPath's
+// ~/.config/boid/config.yaml under the same XDG-resolved boid config
+// directory.
 func TokensDir() (string, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
@@ -63,11 +62,11 @@ func TokenPath(profileName string) (string, error) {
 // from the spec, so this function does not editorialize about *why* the
 // file is missing.
 //
-// A permission looser than 0600 is logged as a warning, not a hard error
-// (decision 2: "起動時に権限緩ければ警告") — the token itself is still
-// usable and refusing to read it outright would turn a merely-suspicious
-// filesystem state into an outage; a human fixing `chmod 600` is a
-// perfectly adequate remediation once warned. The check is per-GOOS
+// A permission looser than 0600 is logged as a warning, not a hard error —
+// the token itself is still usable and refusing to read it outright would
+// turn a merely-suspicious filesystem state into an outage; a human fixing
+// `chmod 600` is a perfectly adequate remediation once warned. The check
+// is per-GOOS
 // (warnIfTokenPermsLoose): Windows has no POSIX mode bits to inspect, and
 // the Windows file explains what is done instead.
 func LoadToken(profileName string) (*Token, error) {

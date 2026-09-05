@@ -17,8 +17,8 @@ import (
 // cleaned up automatically when their container is removed.
 //
 // Individual stop/rm failures are logged and skipped rather than aborting,
-// so a single stuck container does not prevent the rest from being cleaned up.
-// C5 (cleanupSandboxAfterWait and the GC loop) calls this function.
+// so a single stuck container does not prevent the rest from being cleaned
+// up. cleanupSandboxAfterWait and the GC loop call this function.
 //
 // Persistent workspace HOME volumes are never deleted here regardless of
 // what the ledger says — see the volume loop's own comment.
@@ -70,14 +70,12 @@ func Reap(ctx context.Context, upstreamSocket string, l *Ledger) error {
 
 	// Volumes last (may be in use by containers until they are removed).
 	for _, id := range volumes {
-		// Last-resort guard for docs/plans/workspace-home-volume-persistence.md
-		// 論点 a 経路 4: this loop deletes purely by name, with no label
+		// Last-resort guard: this loop deletes purely by name, with no label
 		// check, so a workspace HOME volume that reached the ledger would be
-		// destroyed here at job exit — taking the workspace's harness
+		// destroyed here at job exit, taking the workspace's harness
 		// credentials with it. CheckRequest denies the create that would put
-		// it there, so getting here means either a pre-PR1 ledger file or a
-		// hole in that policy. Warn rather than skip silently: this branch
-		// firing is a bug report, not routine.
+		// it there, so getting here means a hole in that policy. Warn rather
+		// than skip silently: this branch firing is a bug report, not routine.
 		if dockerres.IsWorkspaceHomeVolumeName(id) {
 			slog.Warn("docker reap: refusing to remove a workspace HOME volume recorded in a job ledger; the create should have been denied by policy",
 				"id", id)

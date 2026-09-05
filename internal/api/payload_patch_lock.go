@@ -21,14 +21,12 @@ var payloadPatchLocks [payloadPatchLockShards]sync.Mutex
 // the lost-update race a bare RMW sequence has under concurrent callers —
 // e.g. two hooks of the same readonly task's parallel dispatch round, each
 // patching a different sub-key, where the second full-row UPDATE would
-// otherwise silently discard the first's write (Phase 5b PR7 codex review
-// Blocker 2, wiring-seams.md #17).
+// otherwise silently discard the first's write.
 //
 // Deliberately much narrower in scope and duration than the retired
-// per-task branch lock (memory: khi-supervisor-branch-lock-headline-block),
-// which held for a task's entire executing lifetime and caused
-// head-of-line blocking across unrelated tasks queued behind it: this
-// lock's critical section is only the handful of DB calls inside a single
+// per-task branch lock, which held for a task's entire executing lifetime
+// and caused head-of-line blocking across unrelated tasks queued behind it:
+// this lock's critical section is only the handful of DB calls inside a single
 // UpdateTaskPayloadPatch call (milliseconds), so even an unlucky shard
 // collision between two unrelated tasks is a brief queueing delay, never a
 // multi-hour stall.

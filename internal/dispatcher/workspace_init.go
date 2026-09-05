@@ -14,49 +14,43 @@ import (
 	"github.com/novshi-tech/boid/internal/selfuser"
 )
 
-// This file owns the BACKEND-INDEPENDENT half of PR5 of
-// docs/plans/workspace-home-volume-persistence.md (論点 b-2 / 論点 c): turning
-// a workspace's own init.sh, plus boid's builtin prep steps, into a single
-// shell program plus the environment it runs under.
+// This file owns the backend-independent half of workspace home init:
+// turning a workspace's own init.sh, plus boid's builtin prep steps, into a
+// single shell program plus the environment it runs under. The daemon
+// process no longer execs the script itself — the workspace home is a
+// docker named volume the daemon cannot write to or chdir into, so
+// execution moves into a container that mounts it. That container is
+// started by the daemon from an image the daemon chose, running a script
+// the daemon assembled, so the trusted boundary is unchanged; only the
+// process boundary moved. See docs/plans/workspace-home-volume-persistence.md
+// and docs/{ja,en}/guide/workspace-home.md for the fuller contract.
 //
-// Until PR5 the daemon process exec'd `/bin/bash <tmpfile>` itself, with HOME
-// pointed at the workspace home directory. PR6 turns that directory into a
-// docker named volume the daemon cannot write to, and cannot chdir into, so
-// the execution has to move into a container that mounts it. The container is
-// started by the daemon from an image the daemon chose, running a script the
-// daemon assembled — 論点 c's A vs A' distinction: the trusted boundary is
-// unchanged, only the process boundary moved. What DID change is stated in the
-// contract docs (docs/plans/home-workspace-volume.md 「契約」,
-// docs/{ja,en}/guide/workspace-home.md).
+// # One container, not two
 //
-// # One container, not two (§D1)
+// The prep work — the bind-target skeleton — is not a second container run.
+// It is a builtin prelude ahead of the user's script, so a workspace with
+// an init.sh still costs exactly one container start. Prep is
+// unconditional: a workspace with no init.sh at all still gets a run,
+// because its ~/.claude has to exist before any job container starts or
+// the engine creates it as uid 0.
 //
-// The prep work — the bind-target skeleton (論点 b-2 §1) — is not a second
-// container run. It is a builtin prelude ahead of the user's script, so a
-// workspace with an init.sh still costs exactly one container start. Prep is
-// UNCONDITIONAL: a workspace with no init.sh at all still gets a run, because
-// its ~/.claude has to exist before any job container starts or the ENGINE
-// creates it as uid 0 (論点 b-2's measurement). Making the run conditional
-// would leave Phase 4's pass-through class
-// (docs/plans/home-workspace-volume.md:98) with nothing to prepare it.
+// There is no builtin postlude: an earlier design stamped a home identity
+// token into a file inside the home, but the identity now lives on the
+// home volume's own label, read back by one idempotent VolumeCreate
+// (workspaceHomeMarker.HomeID). A write nothing can read is not a check.
 //
-// PR5 also had a builtin POSTLUDE here, stamping a home identity token into a
-// file inside the home. PR6 removed it along with the file: the identity moved
-// onto the home volume's own label, where one idempotent VolumeCreate both
-// ensures the volume and reads it back (workspaceHomeMarker.HomeID). A write
-// nothing can read is not a check.
+// # What "the hash describes the bytes that ran" means here
 //
-// # What "hash した bytes をそのまま実行する" means here (§D2)
-//
-// PR #787 made the completion marker's sha256 describe the bytes that actually
-// ran, by writing the hashed bytes to a private file and exec'ing that instead
-// of re-opening init.sh by name. That property is preserved, but it is worth
-// being precise about its subject: the hash is of the USER SCRIPT, not of the
-// wrapper this file builds. The wrapper carries the user script through a
-// quoted heredoc into a container-local file and runs `bash` on that file, so
-// what the marker vouches for is still exactly what a shell interpreted —
-// buildWorkspaceInitRequest refuses to emit anything it cannot carry byte for
-// byte (see its trailing-newline handling, and the two errors it returns).
+// The completion marker's sha256 describes the bytes that actually ran, by
+// writing the hashed bytes to a private file and exec'ing that instead of
+// re-opening init.sh by name. That property matters here too, but it is
+// worth being precise about its subject: the hash is of the USER SCRIPT,
+// not of the wrapper this file builds. The wrapper carries the user script
+// through a quoted heredoc into a container-local file and runs `bash` on
+// that file, so what the marker vouches for is still exactly what a shell
+// interpreted — buildWorkspaceInitRequest refuses to emit anything it
+// cannot carry byte for byte (see its trailing-newline handling, and the
+// two errors it returns).
 
 const (
 	// workspaceInitHeredocPrefix leads the quoted-heredoc delimiter that
@@ -73,14 +67,13 @@ const (
 	// exclusivity (a user script may legitimately return any of these) —
 	// workspaceInitStageOf resolves that ambiguity from the marker line the
 	// wrapper prints, and only falls back to these when there is no output
-	// at all to read. See §D3.
+	// at all to read.
 	//
-	// 93 is deliberately not reused: it belonged to the postlude PR5 added to
-	// stamp an identity file inside the home, which PR6 removed along with the
-	// file (the identity moved onto the volume's own label — see
-	// workspaceHomeMarker.HomeID). A marker line or an exit code from a
-	// straggling PR5-era container should not be re-interpreted as some new
-	// stage's.
+	// 93 is deliberately not reused: it belonged to a since-removed postlude
+	// that stamped an identity file inside the home (the identity now lives
+	// on the volume's own label — see workspaceHomeMarker.HomeID). A marker
+	// line or an exit code from a straggling old-era container should not
+	// be re-interpreted as some new stage's.
 	workspaceInitPreludeExitCode     = 91
 	workspaceInitScriptSetupExitCode = 92
 
@@ -109,7 +102,7 @@ const (
 	// table and names a stage that never ran.
 	workspaceInitOutputLimit = 1 << 20
 	// workspaceInitOutputTail is how much of it goes into the error,
-	// matching the pre-PR5 host-exec route's own tail size exactly.
+	// matching the old host-exec route's own tail size exactly.
 	workspaceInitOutputTail = 4096
 
 	// workspaceInitTruncationPrefix leads the notice workspaceInitOutput
@@ -128,25 +121,21 @@ const (
 // shell program to feed the container's stdin.
 //
 // Exported, together with WorkspaceInitExecutor, for one reason: the executor
-// is discovered by type assertion on Runner.Backend (see §D10 on
-// workspaceInitExecutorFor), and a test in another package that wires its own
-// backend.SandboxBackend into internal/server's Config.Backend has to be able
-// to satisfy that interface. An unexported request type would make the
-// interface unimplementable outside this package, which would turn "this fake
-// backend cannot prepare workspace homes" from a compile error into a runtime
-// one.
+// is discovered by type assertion on Runner.Backend (see workspaceInitExecutorFor),
+// and a test in another package that wires its own backend.SandboxBackend into
+// internal/server's Config.Backend has to be able to satisfy that interface. An
+// unexported request type would make the interface unimplementable outside this
+// package, which would turn "this fake backend cannot prepare workspace homes"
+// from a compile error into a runtime one.
 type WorkspaceInitRequest struct {
 	// Slug is the normalized workspace slug, used for the container name,
 	// its label, BOID_WORKSPACE_SLUG and every diagnostic.
 	Slug string
 
-	// HomeSource is what the executor mounts: as of PR6 the NAME of this
-	// workspace's docker named volume (dockerres.WorkspaceHomeVolumeName), not
-	// a path. Through PR5 it was an absolute host path — the homes/<slug>
-	// directory, host-visible only because it derived from RuntimesDir =
-	// BOID_RUNTIME_DIR, i.e. tmpfs, which is the persistence regression PR6
-	// closed. workspaceInitHomeMount rejects an absolute value outright rather
-	// than binding it, so the two eras cannot be confused silently.
+	// HomeSource is what the executor mounts: the NAME of this workspace's
+	// docker named volume (dockerres.WorkspaceHomeVolumeName), not a path.
+	// workspaceInitHomeMount rejects an absolute value outright rather than
+	// binding it, so a host path can never be confused for a volume name.
 	HomeSource string
 
 	// HomeTarget is where HomeSource is mounted INSIDE the container, and
@@ -155,8 +144,8 @@ type WorkspaceInitRequest struct {
 	// BuildSandboxSpec uses), which is the point: a toolchain init.sh installs
 	// records absolute paths in wrapper scripts, .pth files, shebangs and
 	// symlinks, so the path it installs under has to be the path the harness
-	// later runs under. Before PR5 those two differed and every absolute
-	// symlink an init.sh created dangled inside the sandbox.
+	// later runs under, or every absolute symlink an init.sh created would
+	// dangle inside the sandbox.
 	HomeTarget string
 
 	// Env is the complete environment for the run — see buildWorkspaceInitEnv
@@ -178,9 +167,9 @@ type WorkspaceInitRequest struct {
 	SkeletonDirs []string
 
 	// HomeID is the identity the workspace home volume carries on its
-	// dockerres.LabelWorkspaceHomeID label (論点 b). resolveWorkspaceHome
-	// records the same value in the completion marker's home_id and compares
-	// the two on every later dispatch.
+	// dockerres.LabelWorkspaceHomeID label. resolveWorkspaceHome records
+	// the same value in the completion marker's home_id and compares the
+	// two on every later dispatch.
 	//
 	// The executor needs it because it has to guarantee the volume exists
 	// before creating a container that mounts it, and a volume that vanished
@@ -285,15 +274,15 @@ type WorkspaceHomeVolumeRequest struct {
 // sandbox backend: bring a workspace's HOME volume into existence, report its
 // identity, and run one WorkspaceInitRequest to completion.
 //
-// Both methods live on one interface because after PR6 they are inseparable: a
+// Both methods live on one interface because they are inseparable: a
 // backend that cannot create a named volume cannot host a workspace home at
 // all, and a backend that cannot start a container cannot prepare one. Two
 // interfaces would let a backend satisfy half the contract and fail the other
 // half at run time, which is precisely what the assertion in
 // workspaceInitExecutorFor exists to turn into a startup-time answer.
 //
-// §D10 — why this is a separate, assertion-discovered interface rather than a
-// method on backend.SandboxBackend:
+// # Why a separate, assertion-discovered interface rather than a method on
+// backend.SandboxBackend
 //
 //   - backend.SandboxBackend is the JOB lifecycle contract (Launch → session →
 //     Wait/Stop/Signal → ReapOrphans). A workspace-home init has no job row, no
@@ -325,9 +314,10 @@ type WorkspaceInitExecutor interface {
 // loud when it has none.
 //
 // Failing loud rather than degrading is the whole point. Every alternative is
-// worse: running the script on the daemon instead is the thing PR5 removes (and
-// stops working outright at PR6), and skipping it silently hands the agent a
-// $HOME with no toolchain, whose symptom is the adapter's "CLI not found" —
+// worse: running the script on the daemon instead no longer works at all
+// (the workspace home is a docker volume the daemon cannot write to), and
+// skipping it silently hands the agent a $HOME with no toolchain, whose
+// symptom is the adapter's "CLI not found" —
 // an error that points at an unconfigured init.sh rather than at an init that
 // never ran. Production has exactly one backend and it implements this; a
 // caller that sees this error has wired a DI/test backend and needs to say
@@ -426,9 +416,9 @@ func buildWorkspaceInitRequest(p workspaceInitParams) (WorkspaceInitRequest, err
 // buildWorkspaceInitScript writes the wrapper text.
 //
 // The whole program is deliberately POSIX-plain and free of `set -e`: every
-// stage checks its own status explicitly, because §D3 requires the caller to
-// be able to tell WHICH stage failed, and `set -e` would collapse all of them
-// into one anonymous non-zero exit.
+// stage checks its own status explicitly, so the caller can tell WHICH
+// stage failed, which `set -e` would collapse into one anonymous non-zero
+// exit.
 func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string) (string, error) {
 	var b strings.Builder
 
@@ -436,15 +426,14 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 	b.WriteString("# (docs/plans/workspace-home-volume-persistence.md 論点 b-2 / 論点 c, PR5).\n")
 	b.WriteString("# Fed to `bash -s` on the init container's stdin; never written to a file by the daemon.\n")
 
-	// Arbitrary-uid self-registration (docs/plans/release-onboarding.md
-	// 決定1, PR2): this container's ENTRYPOINT is overridden to
-	// `/bin/bash -s` (internal/dispatcher/container_backend_workspace_init.go),
-	// so it never runs boid's own Go entrypoints and therefore never
-	// reaches internal/selfuser.EnsureRuntimeUserRegistered — the "届かな
-	// い第 3 の consumer" the plan doc calls out. Goes ahead of everything
-	// else, including __boid_stage below, since the toolchain installers
-	// this wrapper runs (go/volta/claude/codex/opencode) commonly do an
-	// id/ssh/git passwd lookup themselves.
+	// Arbitrary-uid self-registration: this container's ENTRYPOINT is
+	// overridden to `/bin/bash -s`
+	// (internal/dispatcher/container_backend_workspace_init.go), so it
+	// never runs boid's own Go entrypoints and therefore never reaches
+	// internal/selfuser.EnsureRuntimeUserRegistered. Goes ahead of
+	// everything else, including __boid_stage below, since the toolchain
+	// installers this wrapper runs (go/volta/claude/codex/opencode)
+	// commonly do an id/ssh/git passwd lookup themselves.
 	b.WriteString("\n# --- prelude: arbitrary-uid /etc/passwd self-registration ---\n")
 	b.WriteString(selfuser.PasswdSelfRegisterShellSnippet)
 
@@ -460,9 +449,8 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 	// ---- prelude ----------------------------------------------------------
 	//
 	// cd into the home first so every path below is relative to it: the home
-	// path can be anything (a host path today, a volume mount point after
-	// PR6), and not spelling it out repeatedly keeps the quoting surface at
-	// exactly one value.
+	// path can be anything (a volume mount point today), and not spelling
+	// it out repeatedly keeps the quoting surface at exactly one value.
 	b.WriteString("\n# --- prelude: enter the workspace home ---\n")
 	b.WriteString("__boid_home=$BOID_WORKSPACE_HOME\n")
 	b.WriteString("cd -- \"$__boid_home\"\n")
@@ -470,7 +458,7 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 
 	if len(p.SkeletonDirs) > 0 {
 		// Before anything traverses these paths: refuse if any of them is a
-		// SYMLINK (Opus security review of this PR, finding 2).
+		// SYMLINK.
 		//
 		// The workspace home is mounted read-write into every job of the
 		// workspace and persists across them, so a job can replace `.claude`
@@ -482,11 +470,7 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 		// The escape is bounded (the init container mounts ONLY the home: no
 		// docker socket, no daemon state volume, so the reachable victims are
 		// ephemeral image paths of the shape <attacker-chosen>/skills/<name>)
-		// which is why this is a check rather than a redesign. What made it
-		// worth adding NOW is that image-baked skills changed its reach: a
-		// workspace with no Integration Packs used to emit ZERO `rm -rf`, and
-		// now emits one per embedded skill per root, with `.agents` a brand-new
-		// traversable prefix.
+		// which is why this is a check rather than a redesign.
 		//
 		// Refusing rather than repairing: `rm`-ing the link would be boid
 		// deleting something in a home an operator may have arranged
@@ -508,10 +492,10 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 
 		// umask 022 rather than the container's default, so the skeleton comes
 		// out 0755 — byte for byte what the daemon-side
-		// skills.MkdirAllNoSymlink produced (unix.Mkdirat(..., 0o755)) for the
-		// same directories before PR5. It is restored immediately: the user
-		// script must observe the environment's own umask, not one boid picked
-		// for its own mkdir.
+		// skills.MkdirAllNoSymlink produced (unix.Mkdirat(..., 0o755)) for
+		// the same directories. It is restored immediately: the user script
+		// must observe the environment's own umask, not one boid picked for
+		// its own mkdir.
 		b.WriteString("\n# --- prelude: bind-target skeleton (論点 b-2) ---\n")
 		b.WriteString("__boid_umask=$(umask)\n")
 		b.WriteString("umask 022\n")
@@ -536,33 +520,25 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 		//
 		// `rm -rf` before `ln -sfn` rather than relying on -f alone because
 		// the thing being replaced may be a real directory, not a stale
-		// symlink. Two ways that happens, and the second is why this stays
-		// even now that boid never creates such a directory itself: a skill
-		// hand-copied into .claude/skills/<name> from a since-superseded
-		// checkout (the state found in production before Pack symlinks
-		// existed), and — for one migration only — the bind TARGET
-		// directories the pre-image-baking builds created for embedded
-		// skills, which survive in every workspace home this release
-		// upgrades. `ln -sfn` alone would nest the symlink INSIDE such a
-		// directory, leaving the skill at <root>/<name>/<name> where nothing
-		// discovers it.
+		// symlink — e.g. a skill hand-copied into .claude/skills/<name>
+		// from a since-superseded checkout, or a leftover bind-mount
+		// TARGET directory from before skills were symlinked. `ln -sfn`
+		// alone would nest the symlink INSIDE such a directory, leaving the
+		// skill at <root>/<name>/<name> where nothing discovers it.
 		//
-		// Each Target is checked for existence FIRST, and a miss fails the whole
-		// run (codex/Opus review of this PR, finding 1). `ln -s` succeeds against
-		// a target that does not exist, so without this a runner image lacking
-		// /opt/boid/skills produces a home full of dangling links, an init that
-		// exits 0, and a completion marker written over it — after which nothing
-		// re-runs: the script hash, the generation, the home identity, the
-		// skeleton and this very link set all still match, so the home stays
-		// broken even after the image is fixed, until an operator deletes the
-		// marker by hand. That is the silent-and-permanent failure the old
-		// bind-mount route could not have: it sourced the CONTENT from the same
-		// binary that computed the NAMES, so the two could not disagree.
-		//
-		// The realistic trigger is not a corrupt image but ordinary skew: the
-		// name list comes from the DAEMON binary's embed.FS while Target names a
-		// path in the IMAGE, and a bare `boid start` from a fresh build against a
-		// stale local boid-runner:latest has exactly that shape.
+		// Each Target is checked for existence FIRST, and a miss fails the
+		// whole run. `ln -s` succeeds against a target that does not exist,
+		// so without this a runner image lacking /opt/boid/skills produces
+		// a home full of dangling links, an init that exits 0, and a
+		// completion marker written over it — after which nothing re-runs
+		// (the script hash, generation, home identity and skeleton all
+		// still match), so the home stays broken even after the image is
+		// fixed, until an operator deletes the marker by hand. The
+		// realistic trigger is not a corrupt image but ordinary skew: the
+		// name list comes from the DAEMON binary's embed.FS while Target
+		// names a path in the IMAGE, and a bare `boid start` from a fresh
+		// build against a stale local boid-runner:latest has exactly that
+		// shape.
 		//
 		// Failing the run rather than skipping the link, for both kinds of skill:
 		// a skipped link would reproduce the same silent-permanent outcome
@@ -608,26 +584,26 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 			b.WriteString("truncate -s -1 -- \"$__boid_script\"\n")
 			b.WriteString(workspaceInitStageCheck(workspaceInitStageScriptSetup, workspaceInitScriptSetupExitCode))
 		}
-		// </dev/null restores the pre-PR5 stdin (exec.Cmd with a nil Stdin) and
-		// closes the trap that comes with feeding this wrapper to `bash -s`:
-		// the wrapper IS bash's stdin, so a script that read stdin would eat
-		// the rest of it — silently dropping the postlude below.
+		// </dev/null gives the user script an empty stdin and closes the
+		// trap that comes with feeding this wrapper to `bash -s`: the
+		// wrapper IS bash's stdin, so a script that read stdin would eat the
+		// rest of it — silently dropping everything the wrapper still has
+		// to run.
 		b.WriteString("bash \"$__boid_script\" </dev/null\n")
 		b.WriteString("__boid_status=$?\n")
 		b.WriteString("rm -f -- \"$__boid_script\"\n")
 		// The user script's own exit code is propagated verbatim rather than
-		// mapped onto a boid code (§D3): an operator has to be able to tell
+		// mapped onto a boid code: an operator has to be able to tell
 		// "my installer returned 4" from "boid's own prep broke".
 		b.WriteString("if [ \"$__boid_status\" -ne 0 ]; then __boid_stage " + workspaceInitStageUserScript + " \"$__boid_status\"; exit \"$__boid_status\"; fi\n")
 	}
 
-	// No postlude. PR5 ended here by writing an identity token into a file
-	// inside the home, which PR6 removed together with the file: the identity
-	// now lives on the VOLUME's own label, where the daemon can read it with a
-	// single VolumeCreate instead of needing a container (論点 b, and
-	// workspaceHomeMarker.HomeID for what that trade does and does not cover).
-	// Stamping it from in here as well would produce a second copy that
-	// nothing ever compares — a value that looks like a check and is not one.
+	// No postlude: the home identity lives on the VOLUME's own label, where
+	// the daemon can read it with a single VolumeCreate instead of needing
+	// a container (see workspaceHomeMarker.HomeID for what that trade does
+	// and does not cover). Stamping it from in here as well would produce a
+	// second copy that nothing ever compares — a value that looks like a
+	// check and is not one.
 	b.WriteString("\nexit 0\n")
 
 	return b.String(), nil
@@ -690,12 +666,9 @@ func newWorkspaceInitHeredocDelimiter() (string, error) {
 }
 
 // buildWorkspaceInitEnv builds the environment an init run sees: the three
-// contractual variables, and nothing else (§D9).
-//
-// Before PR5 this also forwarded PATH / USER / LOGNAME / LANG / LC_ALL / TERM
-// from the DAEMON PROCESS. That was coherent while init.sh ran on the host —
-// the script really was going to shell out to host installers — and is
-// incoherent now that it runs in a container:
+// contractual variables, and nothing else. It does NOT forward PATH / USER /
+// LOGNAME / LANG / LC_ALL / TERM from the daemon process, which would be
+// incoherent for a script running inside a container rather than on the host:
 //
 //   - PATH named host directories the image does not have. It is dropped
 //     rather than replaced with a boid-owned constant precisely so the ENGINE
@@ -703,13 +676,11 @@ func newWorkspaceInitHeredocDelimiter() (string, error) {
 //     debian's): a constant here would be a second copy of that value, free to
 //     drift from the image it is supposed to describe.
 //   - USER / LOGNAME named the account the daemon process runs under, which
-//     has nothing to do with the uid the container runs as. As of PR2
-//     (docs/plans/release-onboarding.md 決定1, arbitrary-uid) the image no
-//     longer bakes a passwd entry for that uid at build time — this
-//     wrapper's own prelude (buildWorkspaceInitScript's
-//     PasswdSelfRegisterShellSnippet) self-registers one at runtime instead,
-//     so anything that actually needs the identity can still ask the system
-//     for it.
+//     has nothing to do with the uid the container runs as. The image bakes
+//     no passwd entry for that uid at build time — this wrapper's own
+//     prelude (buildWorkspaceInitScript's PasswdSelfRegisterShellSnippet)
+//     self-registers one at runtime instead, so anything that actually needs
+//     the identity can still ask the system for it.
 //   - LANG / LC_ALL named a locale the image need not have generated; a
 //     missing one makes glibc and perl emit warnings on every command.
 //   - TERM described a terminal that is not there — the init container is
@@ -744,9 +715,9 @@ func buildWorkspaceInitEnv(slug, containerHome string) map[string]string {
 // buildWorkspaceInitScript, which opens its own line for exactly this reason).
 //
 // This does not make user output and wrapper output distinguishable, and no
-// rule applied to this string could: stdout and stderr are deliberately merged
-// (§決定8's 「TTY/非 TTY とも単一結合」), the user script may print any bytes it
-// likes including a perfectly-formed marker at the start of a line, and the
+// rule applied to this string could: stdout and stderr are deliberately
+// merged, the user script may print any bytes it likes including a
+// perfectly-formed marker at the start of a line, and the
 // wrapper has no channel the script cannot also write to. Anchoring only
 // removes the cases where a marker was never even claimed to be one — a string
 // quoted inside a log line, a fragment left by the retention bound discarding
@@ -915,9 +886,9 @@ func (o *workspaceInitOutput) Tail(n int) string {
 
 // workspaceInitFailure renders the operator-facing error for a non-zero init
 // run: which workspace, which stage, which code, and the tail of what was
-// printed. The tail matters more than it did before PR5 — neither the
-// container nor its output survives the call, so this string is the only
-// record of what happened.
+// printed. The tail matters a great deal — neither the container nor its
+// output survives the call, so this string is the only record of what
+// happened.
 //
 // It takes the capture rather than a finished string so that the two bounds
 // (the in-flight retention limit and this error's own tail) are applied by one

@@ -8,13 +8,11 @@ import (
 )
 
 // EgressPortStore is the DB-backed implementation of sandbox.PortStore
-// against the `workspace_egress_port` table
-// (internal/db/migrate/migrations/0039_add_workspace_egress_port.sql).
+// against the `workspace_egress_port` table.
 //
 // It lives here rather than in internal/sandbox because that package must
 // not import internal/db — the same reason dispatcher.ProxyAllocator is an
-// interface satisfied from outside. See
-// docs/plans/egress-proxy-stable-port.md.
+// interface satisfied from outside.
 //
 // The key is a proxy key, NOT necessarily a workspace slug: the
 // no-workspace listener uses the reserved key

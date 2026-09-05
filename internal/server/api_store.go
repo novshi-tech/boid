@@ -97,10 +97,8 @@ func (s apiTxStore) ParkedFrom(taskID string) (orchestrator.TaskStatus, error) {
 }
 
 // LinkIdentity / UnlinkIdentity / UnlinkAllForTask / ResolveIdentity /
-// ListIdentitiesByTask back docs/plans/ingestion-identity.md PR-1 (B-1)'s
-// identity index (api.TaskIdentityStore). s.tasks already implements this
-// (orchestrator.TaskRepository, internal/orchestrator/repository.go) — same
-// object as every other apiTxStore delegation above.
+// ListIdentitiesByTask back api.TaskIdentityStore; s.tasks already
+// implements them, same as every other apiTxStore delegation above.
 func (s apiTxStore) LinkIdentity(projectID, identity, taskID string) error {
 	return s.tasks.LinkIdentity(projectID, identity, taskID)
 }
@@ -148,11 +146,9 @@ func (s apiTxStore) UpdateJob(job *api.Job) error {
 type apiTransactor struct {
 	db *sql.DB
 	// metaResolver is threaded into every per-call actions repository this
-	// WithinTx builds (docs/plans/boid-internal-signal-inbox.md §6.2) — a
-	// fresh *orchestrator.TaskRepository is constructed on EVERY WithinTx
-	// call (wrapping that call's own open *sql.Tx), so the resolver set on
-	// the long-lived singleton (wire.go's taskRepo) is not automatically
-	// visible to these; each one needs its own SetMetaProjectResolver call.
+	// WithinTx builds: a fresh *orchestrator.TaskRepository is constructed
+	// on each call, so the resolver set on the long-lived singleton
+	// (wire.go's taskRepo) is not automatically visible to these.
 	metaResolver orchestrator.MetaProjectResolver
 }
 
@@ -200,11 +196,8 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		ProjectDir:        project.WorkDir,
 	}
 	defs := orchestrator.HostCommands(commands).ToCommandDefs()
-	// The byPath return value used to feed api.BrokerRegisterResponse.
-	// ResolvedHostCommands so `boid exec` could reuse it for shim bind-mount
-	// targets. 5a-3 retired that consumer (see api/broker.go's field doc),
-	// so we discard it here rather than plumbing dead data through the
-	// response.
+	// byPath is unused; see api/broker.go's ResolvedHostCommands field doc
+	// for why it's discarded here rather than plumbed through.
 	_, resolvedByName, err := dispatcher.ResolveHostCommands(
 		sortedBuiltinKeys(builtinPolicies),
 		defs,
@@ -219,12 +212,7 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 	var resolve dispatcher.SecretResolver
 	if r.secretStore != nil {
 		// Hydrate the project meta so we route secret lookups to the
-		// workspace-derived SecretNamespace. Before this hydration was added
-		// the namespace was hard-coded to "default", which broke `boid exec`
-		// for any project whose secrets live in a workspace namespace (the
-		// dispatcher path in internal/dispatcher/runner.go already routed
-		// correctly via spec.SecretNamespace; only the broker register path
-		// was missing it).
+		// workspace-derived SecretNamespace.
 		ns := ""
 		if r.metaStore != nil {
 			meta, mErr := r.metaStore.GetWithWorkspace(context.Background(), projectID)
@@ -242,15 +230,14 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 			return r.secretStore.Get(ns, key)
 		}
 	}
-	// Registered under short-name keys, matching the dispatcher path (see
-	// internal/dispatcher/runner.go) — the broker's policy table is short-name
-	// keyed as of docs/plans/phase5-shim-and-task-context.md 5a PR1.
+	// Registered under short-name keys, matching the dispatcher path
+	// (internal/dispatcher/runner.go).
 	token := r.broker.RegisterCommands(resolvedByName, builtinPolicies, ctx, resolve)
 	return &api.BrokerRegisterResponse{
 		Token:  token,
 		Socket: r.broker.SocketPath(),
 		// ResolvedHostCommands is omitted — see the field's doc comment in
-		// api/broker.go for why it is dead weight post 5a-3.
+		// api/broker.go for why.
 	}, nil
 }
 
@@ -395,26 +382,11 @@ func (s *globalJobStore) ListJobsWithContext(filter api.JobListFilter) ([]api.Jo
 }
 
 // transcriptLogReader implements api.JobLogReader by reading transcript
-// files from disk. rootDir is the primary root (transcriptsDirFor's
-// persistent boid_state-backed dir as of 2026-08-06 — see
-// ContainerBackendOptions.TranscriptDir's doc comment). fallbackRootDir,
-// when non-empty, is tried when rootDir has no entry for a runtimeID — this
-// covers jobs whose transcript was written under the OLD tmpfs
-// runtimesRoot by a daemon build that predates the TranscriptDir migration
-// (in-place upgrade without an intervening restart that would have wiped
-// tmpfs anyway): without this, `boid job log` would regress from "works"
-// to "not found" for those jobs the moment this binary starts, even though
-// the file is still sitting right there. Empty fallbackRootDir (every
-// pre-this-field caller) disables the fallback entirely — unchanged
-// single-root behavior.
-//
-// [codex review round 2, PR #904]: the fallback is only attempted when the
-// primary lookup fails with os.IsNotExist — never for any other error (a
-// permission problem, disk I/O failure, or misconfiguration on the
-// persistent root). A non-not-exist primary error is a real problem the
-// caller needs to see; silently falling through to whatever the OLD tmpfs
-// root happens to hold for the same runtimeID would mask that error behind
-// what looks like a successful (but stale, or simply unrelated) read.
+// files from disk. rootDir is the primary root; fallbackRootDir, when
+// non-empty, is tried only when rootDir has no entry AND the lookup failed
+// with os.IsNotExist — this covers transcripts written under an older root
+// by a pre-migration daemon build without masking a real read error (a
+// permission problem, disk I/O failure) behind a stale fallback hit.
 type transcriptLogReader struct {
 	rootDir         string
 	fallbackRootDir string

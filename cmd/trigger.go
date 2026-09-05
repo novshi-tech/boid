@@ -1,12 +1,11 @@
 package cmd
 
-// docs/plans/ingestion-identity.md PR-4 (B-5) 12 節「手動 1 巡の口」:
 // `boid trigger run` はデバッグ用の手動 1 巡の口。daemon 内の
-// TaskWorkflowService.RunTriggerNow (internal/api/trigger_loop.go) を
-// POST /api/projects/{id}/triggers/{name}/run 経由で叩く、ホスト側 CLI。
+// TaskWorkflowService.RunTriggerNow を POST
+// /api/projects/{id}/triggers/{name}/run 経由で叩く。
 //
 // every の経過チェックは無視するが single-flight は無視しない — 実行中の
-// run がある場合は Skipped: true が返る (強制二重起動の口ではない)。
+// run がある場合は Skipped: true が返る。
 
 import (
 	"fmt"

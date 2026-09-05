@@ -21,14 +21,13 @@ type connectorViolation struct {
 	reason    string
 }
 
-// findConnectorExecutableViolations is the pure detection half of docs/
-// plans/signal-ingest-detailed-design.md §7.2's "connector: 終了" row's
-// structural half: every declared connectors[].executable must exist on
-// disk, be a regular file, and have at least one executable bit set.
-// integrationpack.ParseManifest has already checked the STRING shape of
-// Executable (non-empty, relative, no ".." escape — manifest.go's
-// filepath.IsLocal check); this is the filesystem-level follow-up that
-// only makes sense once there is an actual Pack directory to look inside.
+// findConnectorExecutableViolations is the pure detection half of the
+// connector-executable check: every declared connectors[].executable must
+// exist on disk, be a regular file, and have at least one executable bit
+// set. integrationpack.ParseManifest has already checked the STRING shape
+// of Executable (non-empty, relative, no ".." escape); this is the
+// filesystem-level follow-up that only makes sense once there is an actual
+// Pack directory to look inside.
 //
 // Separated from checkConnectorsExecutable's *testing.T reporting for the
 // same reason as findSkillDocViolations (see its own doc comment): a
@@ -65,12 +64,11 @@ func checkConnectorsExecutable(t *testing.T, dir string, m *integrationpack.Mani
 }
 
 // connectorLaunchEnv builds the environment evaluateConnectorLaunch runs a
-// connector under — the subset of docs/plans/signal-ingest-detailed-
-// design.md §5.2/§7.1's contract env a connector can observe before making
-// its first external call, plus PATH (needed for the kernel to resolve a
-// "#!/usr/bin/env python3"-style shebang interpreter — the real sandbox's
-// own PATH is not this package's concern, so this borrows the test
-// process's).
+// connector under — the subset of the connector contract env a connector
+// can observe before making its first external call, plus PATH (needed for
+// the kernel to resolve a "#!/usr/bin/env python3"-style shebang
+// interpreter — the real sandbox's own PATH is not this package's concern,
+// so this borrows the test process's).
 //
 // BOID_API_BASE is deliberately set to an address that fails a connection
 // attempt IMMEDIATELY and never leaves the host (127.0.0.1, a port nothing
@@ -79,8 +77,7 @@ func checkConnectorsExecutable(t *testing.T, dir string, m *integrationpack.Mani
 //     HTTP call entirely) in a way that would tell us nothing about
 //     whether it can actually run
 //   - a real hostname risks a slow DNS lookup, or worse, an actual
-//     external request — explicitly out of bounds for this check ("外部
-//     ネットワークアクセスは行わないこと")
+//     external request — explicitly out of bounds for this check
 //
 // A well-behaved connector reacts to this exactly like a real, temporarily
 // unreachable API: it fails fast with a non-zero exit. evaluateConnectorLaunch
@@ -110,15 +107,14 @@ type connectorLaunchOutcome struct {
 	failReason string
 }
 
-// evaluateConnectorLaunch is the best-effort half of §7.2's "connector:
-// 終了" row: actually running the connector and confirming it can launch in
-// this environment at all — "少なくとも起動自体ができること（即座に crash
-// しないこと）を確認する" — without requiring it to succeed against a real
+// evaluateConnectorLaunch is the best-effort half of the connector check:
+// actually running the connector and confirming it can launch in this
+// environment at all, without requiring it to succeed against a real
 // service (impossible without real network access, which this check
 // deliberately never attempts) and without requiring any particular exit
-// code (§5.3: "終了: 成功0/失敗非ゼロ" — a connector correctly detecting an
-// unreachable API base and exiting non-zero is doing exactly the right
-// thing, not failing this check).
+// code — a connector correctly detecting an unreachable API base and
+// exiting non-zero is doing exactly the right thing, not failing this
+// check.
 //
 // What DOES fail this check (outcome.failed):
 //   - exec.Start() itself failing (ENOENT, permission denied, exec format
@@ -131,9 +127,9 @@ type connectorLaunchOutcome struct {
 //     legitimate reason to hang; see connectorLaunchEnv's doc comment for
 //     why BOID_API_BASE is built to fail fast rather than slow
 //
-// stdin is closed (matching §5.2's "connector job... stdin は閉じられる" —
-// a connector talks to `boid signal ingest` as a SEPARATE subprocess this
-// check does not spawn, and never reads its own stdin).
+// stdin is closed — a connector talks to `boid signal ingest` as a
+// SEPARATE subprocess this check does not spawn, and never reads its own
+// stdin.
 //
 // If the executable is missing entirely, this returns outcome.skipped
 // rather than failed — checkConnectorsExecutable/
