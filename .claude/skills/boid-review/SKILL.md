@@ -31,6 +31,11 @@ actually proves**. The compiler catches typos but never "is the author's claim t
 Lint sees shape but not "an as-yet-untested seam was rewritten under a wrong
 'equivalent-to' claim".
 
+Comment volume/placement (doc-comment length, inline-comment necessity, design-history
+comments leaking into code) is **not** this skill's concern either — that is
+`comment-review`'s job, a sibling skill. Run it alongside this one when the diff adds or
+touches comments, but don't fold its findings into this skill's GO/NO-GO.
+
 This has actually happened. The 2026-06-29 binding regression (`d464581`, "add codex /
 opencode adapter") slipped a change through `sandbox_builder.go` that **exclusively
 replaced** the kit binding with the harness binding, justified as "equivalent to claude".

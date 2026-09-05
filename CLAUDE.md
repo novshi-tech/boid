@@ -97,3 +97,4 @@ hook の定義経路は `hooks[].command`（inline shell command、`sh -c` 経�
 - コミットプレフィックス: `feat:`, `fix:`, `refactor:`, `test:`
 - 外部ライブラリは最小限。標準ライブラリで実現できるものは追加しない
 - Linux のみ対応
+- コメントは関数/メソッドの目的を1〜2行で簡潔に、インラインコメントは処理が複雑な場合のみ、設計の経緯(PR番号・Phase番号・plan doc参照)はコードコメントに書かない(plan doc/PR descriptionに書く)。この規約は生成時の自制だけでは徹底されない(モデルの癖)ため、レビュー時は `comment-review` スキルで機械的にチェックする
