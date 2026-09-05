@@ -157,6 +157,8 @@ LABEL boid.runner_protocol="v1"
 #   - 2.96.0 vanished on 2026-07-31
 #   - 2.97.0 vanished on 2026-08-21, hours after upstream published 2.98.0
 #     (2026-08-20 22:15 UTC) — every branch including main stopped building
+#   - 2.98.0 vanished by 2026-09-05, after upstream published 2.100.0
+#     (2026-09-03) — same failure mode, this PR's bump
 #
 # This bump is deliberate stopgap, not the fix. nose の判断 (2026-08-21):
 # **gh はこのイメージから退役させ、GitHub API は API gateway (`services:` に
@@ -170,7 +172,7 @@ LABEL boid.runner_protocol="v1"
 # (https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_$(dpkg --print-architecture).tar.gz)
 # へ切り替える方が安い —— Releases は古いバージョンを永続保持するので pin が
 # 腐らず、pin 本来の目的 (再現性) は apt より強く満たされる。
-ARG GH_VERSION=2.98.0
+ARG GH_VERSION=2.100.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git curl gpg jq \
