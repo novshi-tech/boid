@@ -7,23 +7,29 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// ---- card 機械 v2 (docs/plans/suggestion-as-state-transition.md §3.2) ----
+// ---- card 機械 v2 (docs/plans/card-next-step-and-timeline.md §3.1) ----
 //
 // Four statuses: parked/working/done/dropped. Manual transitions:
 //
-//	go      : parked  → working
-//	working : parked  → working
-//	drop    : parked  → dropped
-//	done    : parked  → done
-//	park    : working → parked
-//	done    : working → done
-//	reopen  : done    → parked
-//	reopen  : dropped → parked
+//	go       : parked  → working
+//	go       : working → working
+//	start    : parked  → working
+//	drop     : parked  → dropped
+//	complete : parked  → done
+//	park     : working → parked
+//	complete : working → done
+//	reopen   : done    → parked
+//	reopen   : dropped → parked
 //
 // This is the network's complete edge list — TestCardMachineV2_AllEdges below
 // walks the full status × action cross product and asserts EXACTLY these
-// eight edges succeed, everything else (including every old v1 verb —
+// nine edges succeed, everything else (including every old v1 verb —
 // triage/ready/wake_*/dispatch/triage_done/reopen_triaged) is rejected.
+// working/done are the RETIRED spellings of start/complete (see
+// docs/plans/card-next-step-and-timeline.md §8) — the machine itself only
+// ever sees the current names; api.applyAction normalizes an incoming
+// legacy spelling before it ever reaches sm.Apply, so this rule table has
+// no reason to carry both.
 
 // v2CardStatuses is every status the v2 card machine actually reaches
 // (excludes the legacy captured/triaged/ready statuses, which v2 has zero
@@ -38,22 +44,25 @@ var v2CardStatuses = []orchestrator.TaskStatus{
 // v2CardTransitionActions is the closed set of the six human-only
 // card-lifecycle verbs (穴11's push-down defense keys off this exact set —
 // see orchestrator.IsCardTransitionAction).
-var v2CardTransitionActions = []string{"go", "working", "park", "drop", "done", "reopen"}
+var v2CardTransitionActions = []string{"go", "start", "park", "drop", "complete", "reopen"}
 
 func TestCardMachineV2_AllEdges(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
 	want := map[orchestrator.TaskStatus]map[string]orchestrator.TaskStatus{
 		orchestrator.TaskStatusParked: {
-			"go":      orchestrator.TaskStatusWorking,
-			"working": orchestrator.TaskStatusWorking,
-			"drop":    orchestrator.TaskStatusDropped,
+			"go":    orchestrator.TaskStatusWorking,
+			"start": orchestrator.TaskStatusWorking,
+			"drop":  orchestrator.TaskStatusDropped,
 			// 8 本目の辺 (2026-08-25): 「外で片付いていた」「重複と判明した」card を
 			// 1 手で閉じる。詳細は machine_card.go の NewCardMachine doc comment。
-			"done": orchestrator.TaskStatusDone,
+			"complete": orchestrator.TaskStatusDone,
 		},
 		orchestrator.TaskStatusWorking: {
 			"park": orchestrator.TaskStatusParked,
-			"done": orchestrator.TaskStatusDone,
+			// 9 本目の辺 (card-next-step-and-timeline.md §3.1): working 中に
+			// 用意できた次の specced 子も Go で走らせられるようにする自己遷移。
+			"go":       orchestrator.TaskStatusWorking,
+			"complete": orchestrator.TaskStatusDone,
 		},
 		orchestrator.TaskStatusDone: {
 			"reopen": orchestrator.TaskStatusParked,
@@ -92,8 +101,15 @@ func TestCardMachineV2_AvailableActions(t *testing.T) {
 		status orchestrator.TaskStatus
 		want   map[string]bool
 	}{
-		{orchestrator.TaskStatusParked, map[string]bool{"go": true, "working": true, "drop": true, "done": true}},
-		{orchestrator.TaskStatusWorking, map[string]bool{"park": true, "done": true}},
+		{orchestrator.TaskStatusParked, map[string]bool{"go": true, "start": true, "drop": true, "complete": true}},
+		// "go" is deliberately absent here even though it applies to working
+		// too (cardTransitionEdges below): AvailableActions excludes
+		// self-loops (working → working) by design (see its own doc
+		// comment) since a generic "action button" list has no
+		// "and then the status changes" story to show. The Web UI's Go
+		// button while working is driven by CanApplyTransitionAction
+		// instead — see TestCardMachineV2_CanApplyTransitionAction_PinsExactlyEightEdges.
+		{orchestrator.TaskStatusWorking, map[string]bool{"park": true, "complete": true}},
 		{orchestrator.TaskStatusDone, map[string]bool{"reopen": true}},
 		{orchestrator.TaskStatusDropped, map[string]bool{"reopen": true}},
 	}
@@ -294,6 +310,10 @@ func TestCardMachineV2_IsManualAction(t *testing.T) {
 		// v1 verbs, fully deleted:
 		"triage", "ready", "wake_triaged", "wake_ready", "wake_working", "dispatch",
 		"triage_done", "reopen_triaged",
+		// retired card-verb spellings (card-next-step-and-timeline.md §8):
+		// the machine itself never sees these — api.applyAction normalizes
+		// them to start/complete before Apply/IsManualAction is ever consulted.
+		"working", "done",
 	}
 	for _, a := range manual {
 		if !sm.IsManualAction(a) {
@@ -391,17 +411,17 @@ func TestCardMachineV2_CanApplyManualAction_Answered(t *testing.T) {
 // rule-table-derived test right below it, which reads no hardcoded list at
 // all).
 var cardTransitionEdges = map[string]map[orchestrator.TaskStatus]bool{
-	"go":      {orchestrator.TaskStatusParked: true},
-	"working": {orchestrator.TaskStatusParked: true},
-	"drop":    {orchestrator.TaskStatusParked: true},
-	"park":    {orchestrator.TaskStatusWorking: true},
-	"done":    {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
-	"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
+	"go":       {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
+	"start":    {orchestrator.TaskStatusParked: true},
+	"drop":     {orchestrator.TaskStatusParked: true},
+	"park":     {orchestrator.TaskStatusWorking: true},
+	"complete": {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
+	"reopen":   {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
 }
 
 // TestCardMachineV2_CanApplyTransitionAction_PinsExactlyEightEdges is the
 // exhaustive 6-verb × 4-status (24 combination) cross-product pin: exactly
-// the eight edges in cardTransitionEdges answer true, every other
+// the nine edges in cardTransitionEdges answer true, every other
 // combination answers false.
 func TestCardMachineV2_CanApplyTransitionAction_PinsExactlyEightEdges(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
@@ -523,7 +543,10 @@ func TestIsCardTransitionAction(t *testing.T) {
 	nonTransition := []string{
 		"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered",
 		"wake_due", "job_failed", "progress", "done_request", "fail_request",
-		"child_dispatched", "child_closed", "start", "abort", "ask", "answer", "garbage",
+		"child_dispatched", "child_closed", "abort", "ask", "answer", "garbage",
+		// retired card-verb spellings — see the nonManual list's own comment
+		// in TestCardMachineV2_IsManualAction above.
+		"working", "done",
 	}
 	for _, a := range nonTransition {
 		if orchestrator.IsCardTransitionAction(a) {
@@ -576,5 +599,28 @@ func TestStateMachine_AvailableActionsHint_EmptyStatusFallback(t *testing.T) {
 	}
 	if !strings.Contains(hint, "no further transitions") {
 		t.Errorf("hint %q should say plainly that nothing is available, not a bare empty list", hint)
+	}
+}
+
+// TestNormalizeCardVerb pins the retired-spelling → current-spelling map
+// (card-next-step-and-timeline.md §8): every other value, including an
+// already-current name and an unrelated string, passes through unchanged.
+func TestNormalizeCardVerb(t *testing.T) {
+	cases := map[string]string{
+		"working":  "start",
+		"done":     "complete",
+		"start":    "start",
+		"complete": "complete",
+		"go":       "go",
+		"park":     "park",
+		"drop":     "drop",
+		"reopen":   "reopen",
+		"garbage":  "garbage",
+		"":         "",
+	}
+	for in, want := range cases {
+		if got := orchestrator.NormalizeCardVerb(in); got != want {
+			t.Errorf("NormalizeCardVerb(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

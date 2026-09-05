@@ -36,6 +36,14 @@ type recordingTxStore struct {
 	// timestamp, since this fake has no wall-clock semantics of its own.
 	touchedTaskUpdatedAtIDs []string
 	touchTaskUpdatedAtErr   error // when set, TouchTaskUpdatedAt returns this instead of succeeding
+	// getTaskTriageCallCount and getTaskTriageOnCall simulate a concurrent
+	// writer committing BETWEEN this call's own pre-Tx read and its in-Tx
+	// re-read: getTaskTriageOnCall[N] (1-indexed) overrides what the Nth
+	// GetTaskTriage call for ANY taskID returns, falling back to the normal
+	// map lookup for calls with no override registered. Used by
+	// TestTaskWorkflowService_AcceptGo_WorkingSelfLoop_ConcurrentDispatch_SecondCallerLosesRace.
+	getTaskTriageCallCount int
+	getTaskTriageOnCall    map[int]*orchestrator.CardAttrs
 }
 
 func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error { return nil }
@@ -117,6 +125,11 @@ func (s *recordingTxStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error {
 func (s *recordingTxStore) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
 	if s.getTaskTriageErr != nil {
 		return nil, s.getTaskTriageErr
+	}
+	s.getTaskTriageCallCount++
+	if override, ok := s.getTaskTriageOnCall[s.getTaskTriageCallCount]; ok {
+		cp := *override
+		return &cp, nil
 	}
 	tt, ok := s.triage[taskID]
 	if !ok {
@@ -343,7 +356,23 @@ func humanCtx() context.Context {
 	return orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
 }
 
-func TestTaskWorkflowServiceApplyAction_Working_ParkedToWorking(t *testing.T) {
+func TestTaskWorkflowServiceApplyAction_Start_ParkedToWorking(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
+	result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "start"})
+	if err != nil {
+		t.Fatalf("ApplyAction(start): %v", err)
+	}
+	if result.Task.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("status = %q, want working", result.Task.Status)
+	}
+}
+
+// TestTaskWorkflowServiceApplyAction_Working_NormalizesToStart pins the
+// card-next-step-and-timeline.md §8 receive-side compatibility shim: a
+// caller still sending the retired "working" spelling (an old write CLI
+// during the compat window) reaches exactly the same transition as "start".
+func TestTaskWorkflowServiceApplyAction_Working_NormalizesToStart(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
 	result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "working"})
@@ -395,25 +424,31 @@ func TestTaskWorkflowServiceApplyAction_StampsActorFromContext(t *testing.T) {
 
 // TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion is the
 // escape-hatch pin design doc §3.2 explicitly requires: "人の直接操作は常に
-// 全遷移で可能であることを担保する" — every one of card machine v2's eight
-// edges must be reachable directly by a human (Web UI / CLI, ActorHuman),
-// with NO suggestion involved anywhere in the fixture. suggestion is one
-// entry point into these transitions, never the only one.
+// 全遷移で可能であることを担保する" — every one of card machine v2's edges
+// must be reachable directly by a human (Web UI / CLI, ActorHuman), with NO
+// suggestion involved anywhere in the fixture. suggestion is one entry point
+// into these transitions, never the only one.
+//
+// "go" (both edges — parked→working and the working→working self-loop) is
+// deliberately NOT in this table: unlike the other five verbs, go bypasses
+// ApplyAction's generic sm.Apply path entirely (acceptGo, workflow_card.go)
+// and additionally requires a specced child to exist or it 409s (§3.2's
+// "子なし Go は拒否" — see accept_go_test.go's own dedicated suite, which
+// this table's generic empty-triage fixture cannot satisfy).
 func TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion(t *testing.T) {
 	cases := []struct {
 		from   orchestrator.TaskStatus
 		action string
 		want   orchestrator.TaskStatus
 	}{
-		{orchestrator.TaskStatusParked, "go", orchestrator.TaskStatusWorking},
-		{orchestrator.TaskStatusParked, "working", orchestrator.TaskStatusWorking},
+		{orchestrator.TaskStatusParked, "start", orchestrator.TaskStatusWorking},
 		{orchestrator.TaskStatusParked, "drop", orchestrator.TaskStatusDropped},
 		// 8 本目の辺: 「外で片付いていた」「重複と判明した」card を 1 手で閉じる。
-		// これが無いと khi は working→done の 2 手を提案するしかなく、その回り道が
+		// これが無いと khi は start→complete の 2 手を提案するしかなく、その回り道が
 		// identity を解放する drop の誤用を誘っていた (machine_card.go の doc comment)。
-		{orchestrator.TaskStatusParked, "done", orchestrator.TaskStatusDone},
+		{orchestrator.TaskStatusParked, "complete", orchestrator.TaskStatusDone},
 		{orchestrator.TaskStatusWorking, "park", orchestrator.TaskStatusParked},
-		{orchestrator.TaskStatusWorking, "done", orchestrator.TaskStatusDone},
+		{orchestrator.TaskStatusWorking, "complete", orchestrator.TaskStatusDone},
 		{orchestrator.TaskStatusDone, "reopen", orchestrator.TaskStatusParked},
 		{orchestrator.TaskStatusDropped, "reopen", orchestrator.TaskStatusParked},
 	}
@@ -466,7 +501,10 @@ func TestApplyAction_CardTransitions_RejectedForNonHumanActor(t *testing.T) {
 		{"daemon", orchestrator.WithActor(context.Background(), orchestrator.ActorDaemon)},
 		{"unset", context.Background()},
 	}
-	for _, verb := range []string{"go", "working", "park", "drop", "done", "reopen"} {
+	// Both the current spelling and the retired one (working/done — §8's
+	// short compat window) must be rejected: normalization happens BEFORE
+	// this 403 check, so a legacy spelling gets no free pass through it.
+	for _, verb := range []string{"go", "start", "working", "park", "drop", "complete", "done", "reopen"} {
 		for _, a := range actorCases {
 			t.Run(verb+"_"+a.name, func(t *testing.T) {
 				// A status the verb is at least NAME-valid from (the guard

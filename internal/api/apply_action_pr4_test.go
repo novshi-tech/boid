@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -317,6 +318,95 @@ func TestApplyAction_ChildAddedThenChildSpecced(t *testing.T) {
 	}
 }
 
+// TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByOpenChild pins
+// card-next-step-and-timeline.md §3.2's single-work-slot invariant on the
+// child_added write port: a card that already has an open/specced child
+// must reject a NEW child_added for a different id — resending the SAME id
+// stays the pre-existing idempotent no-op (TestApplyAction_ChildAddedThenChildSpecced
+// already covers add-then-specc; this test is the negative "someone else"
+// case).
+func TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByOpenChild(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+	txStore := &recordingTxStore{task: task}
+	svc := newTriageWorkflowService(task, txStore)
+
+	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "child_added",
+		Payload: []byte(`{"id":"c1","title":"first"}`),
+	}); err != nil {
+		t.Fatalf("ApplyAction(child_added, c1): %v", err)
+	}
+
+	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "child_added",
+		Payload: []byte(`{"id":"c2","title":"second"}`),
+	})
+	if err == nil {
+		t.Fatal("expected rejection adding a second child while c1 is still open")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+
+	children, derr := orchestrator.DetailChildren(txStore.triage["t1"].Detail)
+	if derr != nil {
+		t.Fatalf("DetailChildren: %v", derr)
+	}
+	if len(children) != 1 || children[0].ID != "c1" {
+		t.Fatalf("children = %+v, want only c1 (c2 must not have been added)", children)
+	}
+}
+
+// TestApplyAction_ChildAdded_ResendingSameID_StaysIdempotent pins that a
+// resend of the SAME child id while it is still occupying the slot is the
+// pre-existing idempotent no-op, not a new rejection — the invariant gates
+// a genuinely NEW occupant, not a retry of the current one.
+func TestApplyAction_ChildAdded_ResendingSameID_StaysIdempotent(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+	txStore := &recordingTxStore{task: task}
+	svc := newTriageWorkflowService(task, txStore)
+
+	for i := 0; i < 2; i++ {
+		if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+			Type:    "child_added",
+			Payload: []byte(`{"id":"c1","title":"first"}`),
+		}); err != nil {
+			t.Fatalf("ApplyAction(child_added, c1) attempt %d: %v", i, err)
+		}
+	}
+	children, err := orchestrator.DetailChildren(txStore.triage["t1"].Detail)
+	if err != nil {
+		t.Fatalf("DetailChildren: %v", err)
+	}
+	if len(children) != 1 {
+		t.Fatalf("children = %+v, want exactly one (resend must not duplicate)", children)
+	}
+}
+
+// TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByLiveTaskRow pins the
+// OTHER half of the invariant: a live (non-terminal) execution task row
+// under the card — created through a direct-CreateTask bypass with no
+// corresponding task_triage.detail.children entry at all — must ALSO block
+// a fresh child_added, not just a JSON-tracked open/specced child.
+func TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByLiveTaskRow(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}, OpenChildCount: 1}
+	txStore := &recordingTxStore{task: task}
+	svc := newTriageWorkflowService(task, txStore)
+
+	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "child_added",
+		Payload: []byte(`{"id":"c1","title":"first"}`),
+	})
+	if err == nil {
+		t.Fatal("expected rejection adding a child while a live task row already occupies the slot")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+}
+
 func TestApplyAction_ChildSpecced_UnknownChildRejected(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
@@ -527,7 +617,11 @@ func TestApplyAction_ChildDispatchedAndChildClosed_RejectedWhenPushed(t *testing
 // externally-reachable op).
 func TestFinalizeTerminal_ChildClosed_SelfRecordsOnParent(t *testing.T) {
 	parent := &orchestrator.Task{ID: "parent-1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
-	child := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p2", ParentID: "parent-1", Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
+	child := &orchestrator.Task{
+		ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p2", Title: "fix the review comment",
+		ParentID: "parent-1", Status: orchestrator.TaskStatusDone,
+		Exec: &orchestrator.ExecAttrs{Behavior: "executor", Payload: []byte(`{"artifact":{"report":{"summary":"fixed the bug"}}}`)},
+	}
 
 	detail, err := orchestrator.AddDetailChild(nil, orchestrator.TaskTriageChild{
 		ID: "c1", Status: orchestrator.TaskTriageChildStatusDispatched, TaskRef: "child-1",
@@ -562,6 +656,36 @@ func TestFinalizeTerminal_ChildClosed_SelfRecordsOnParent(t *testing.T) {
 			found = true
 			if a.Actor != orchestrator.ActorDaemon {
 				t.Errorf("child_closed actor = %q, want %q (this is the daemon's own self-record, not a human/task-triggered write)", a.Actor, orchestrator.ActorDaemon)
+			}
+			// card-next-step-and-timeline.md §5.2/§6: child rows are GC'd
+			// after 30 days regardless of the parent card's liveness, so the
+			// child's own result summary must be carried here, on the
+			// PARENT's action log, not left to a task row that will not
+			// outlive it.
+			var payload struct {
+				ChildID      string `json:"child_id"`
+				ChildStatus  string `json:"child_status"`
+				ChildTitle   string `json:"child_title"`
+				ChildProject string `json:"child_project"`
+				Summary      string `json:"summary"`
+			}
+			if err := json.Unmarshal(a.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal child_closed payload: %v", err)
+			}
+			if payload.ChildID != "child-1" {
+				t.Errorf("child_id = %q, want child-1", payload.ChildID)
+			}
+			if payload.ChildStatus != "done" {
+				t.Errorf("child_status = %q, want done", payload.ChildStatus)
+			}
+			if payload.ChildTitle != "fix the review comment" {
+				t.Errorf("child_title = %q, want the child's own title", payload.ChildTitle)
+			}
+			if payload.ChildProject != "p2" {
+				t.Errorf("child_project = %q, want the child's execution destination project", payload.ChildProject)
+			}
+			if payload.Summary != "fixed the bug" {
+				t.Errorf("summary = %q, want the child's own artifact.report.summary", payload.Summary)
 			}
 		}
 	}

@@ -115,6 +115,13 @@ func parseChildAddedPayload(payload json.RawMessage) (*childAddedPayload, error)
 // applyParkSideEffect's established pattern: p is already validated, the
 // read-modify-write on task_triage runs inside the caller's transaction via
 // GetTaskTriage (avoiding the race documented on Wake's doc comment).
+//
+// Enforces the card's single-work-slot invariant for this write port: a
+// genuinely NEW child id is rejected (409) while the slot is already
+// occupied (cardSlotOccupied — an open/specced JSON child, or a live
+// execution task row). A resend of an ALREADY-present id is left to
+// AddDetailChild's own idempotent no-op, matching every other
+// idempotent-by-id action in this file — it is not a new occupant.
 func applyChildAddedSideEffect(tx TxStore, taskID string, p *childAddedPayload) error {
 	tt, err := tx.GetTaskTriage(taskID)
 	if err != nil {
@@ -122,6 +129,29 @@ func applyChildAddedSideEffect(tx TxStore, taskID string, p *childAddedPayload) 
 			return fmt.Errorf("child_added: get task_triage: %w", err)
 		}
 		tt = &orchestrator.CardAttrs{TaskID: taskID}
+	}
+	existing, cerr := orchestrator.DetailChildren(tt.Detail)
+	if cerr != nil {
+		return fmt.Errorf("child_added: parse existing children: %w", cerr)
+	}
+	isResend := false
+	for _, c := range existing {
+		if c.ID == p.ID {
+			isResend = true
+			break
+		}
+	}
+	if !isResend {
+		occupied, oerr := cardSlotOccupied(tx, taskID)
+		if oerr != nil {
+			return fmt.Errorf("child_added: check work slot: %w", oerr)
+		}
+		if occupied {
+			return &StatusError{
+				Code:    http.StatusConflict,
+				Message: fmt.Sprintf("child_added: card %q already has an unresolved or in-progress child occupying its single work slot", taskID),
+			}
+		}
 	}
 	newDetail, aerr := orchestrator.AddDetailChild(tt.Detail, orchestrator.TaskTriageChild{
 		ID:    p.ID,
@@ -135,6 +165,35 @@ func applyChildAddedSideEffect(tx TxStore, taskID string, p *childAddedPayload) 
 		return fmt.Errorf("child_added: upsert task_triage: %w", err)
 	}
 	return nil
+}
+
+// cardSlotOccupied reports whether taskID's single work slot is currently
+// occupied: either a live (pending/executing/awaiting) execution task row
+// under it — task.OpenChildCount, which counts every non-terminal direct
+// child regardless of whether task_triage.detail even mentions it (the
+// direct-CreateTask bypass this invariant must also catch) — or an
+// open/specced entry in task_triage.detail.children not yet task-ified.
+// Must be read inside the same transaction as the write it gates.
+func cardSlotOccupied(tx TxStore, cardID string) (bool, error) {
+	card, err := tx.GetTask(cardID)
+	if err != nil {
+		return false, err
+	}
+	if card.OpenChildCount > 0 {
+		return true, nil
+	}
+	tt, err := tx.GetTaskTriage(cardID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	occupantID, oerr := orchestrator.DetailOpenSlotChildID(tt.Detail)
+	if oerr != nil {
+		return false, oerr
+	}
+	return occupantID != "", nil
 }
 
 // childDroppedPayload is the shape of the "child_dropped" action's payload:
@@ -275,9 +334,13 @@ func applyChildSpeccedSideEffect(tx TxStore, taskID string, p *childSpeccedPaylo
 // unknown suggestion.verb) would fail silently with no error surfaced
 // anywhere.
 var promotedAttrVocabulary = map[string][]string{
-	"urgency":    {"now", "today", "week", "someday"},
-	"kind":       {"signal", "issue", "theme"},
-	"suggestion": {"go", "working", "park", "drop", "done", "reopen"},
+	"urgency": {"now", "today", "week", "someday"},
+	"kind":    {"signal", "issue", "theme"},
+	// start/complete are the current spelling of the retired working/done
+	// verbs — validateSuggestionAttr normalizes an incoming legacy spelling
+	// to these BEFORE this list is ever consulted, so this closed set only
+	// ever needs the current names.
+	"suggestion": {"go", "start", "park", "drop", "complete", "reopen"},
 }
 
 // attrsSetPatch is the parsed attrs_set payload, split into the opaque keys
@@ -353,22 +416,25 @@ func parseAttrsSetPayload(payload json.RawMessage) (*attrsSetPatch, error) {
 			}
 			patch.Kind, patch.HasKind = value, true
 		case "suggestion":
-			// verb ∈ {go, working, park, drop, done, reopen} is validated
+			// verb ∈ {go, start, park, drop, complete, reopen} is validated
 			// HERE, at attrs_set time, not left opaque like every other attrs
-			// key. The verb is ALSO promoted to task_triage.suggestion_verb —
-			// unlike urgency/kind, the full object still folds into
+			// key (a retired spelling — working/done — is normalized first;
+			// see validateSuggestionAttr's own doc comment). The verb is
+			// ALSO promoted to task_triage.suggestion_verb — unlike
+			// urgency/kind, the full object still folds into
 			// detail.attrs.suggestion via patch.Attrs too (reason/params have
 			// no column of their own, and the display side keeps reading the
 			// blob), so this key is deliberately written to BOTH places, not
 			// promoted-instead-of-folded the way urgency/kind are. See
 			// validateSuggestionAttr's own doc comment for why validating
-			// (and, now, extracting) verb specifically does not cross the
-			// workspace-vocabulary boundary this package otherwise protects.
-			verb, verr := validateSuggestionAttr(v)
+			// (and, now, extracting/normalizing) verb specifically does not
+			// cross the workspace-vocabulary boundary this package otherwise
+			// protects.
+			normalized, verb, verr := validateSuggestionAttr(v)
 			if verr != nil {
 				return nil, verr
 			}
-			patch.Attrs[k] = v
+			patch.Attrs[k] = normalized
 			patch.Verb, patch.HasVerb = verb, true
 		default:
 			patch.Attrs[k] = v
@@ -637,6 +703,31 @@ func recordAndStripSuggestionIfPresent(ctx context.Context, tx TxStore, taskID s
 	return nil
 }
 
+// childResultSummary extracts a closing child's own self-reported
+// `payload.artifact.report.summary` (the boid-task skill's canonical report)
+// for recordChildClosedOnParent's payload — the one place a live-task-row
+// reader (the child's own detail page) and a GC-survivable reader (the
+// parent's action log, once the child row itself is gone) can agree on.
+// Returns "" for a card (no Exec.Payload at all), a nil/empty payload, or
+// any shape that doesn't carry the expected string — never an error, since
+// a missing summary must not sink the child_closed record itself.
+func childResultSummary(task *orchestrator.Task) string {
+	if task.Exec == nil || len(task.Exec.Payload) == 0 {
+		return ""
+	}
+	var p struct {
+		Artifact struct {
+			Report struct {
+				Summary string `json:"summary"`
+			} `json:"report"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(task.Exec.Payload, &p); err != nil {
+		return ""
+	}
+	return p.Artifact.Report.Summary
+}
+
 // recordChildClosedOnParent is the daemon's own self-record of the
 // child_closed vocabulary entry: when a task that is itself a dispatched
 // triage child (i.e. some triage parent's task_triage.detail.children[i]
@@ -686,7 +777,13 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 		if gErr != nil {
 			return fmt.Errorf("child_closed: get parent task: %w", gErr)
 		}
-		payload, _ := json.Marshal(map[string]string{"child_id": task.ID, "child_status": string(task.Status)})
+		payload, _ := json.Marshal(map[string]string{
+			"child_id":      task.ID,
+			"child_status":  string(task.Status),
+			"child_title":   task.Title,
+			"child_project": task.ProjectID,
+			"summary":       childResultSummary(task),
+		})
 		action := &orchestrator.Action{
 			TaskID:     task.ParentID,
 			Type:       "child_closed",
@@ -796,7 +893,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 	if err != nil {
 		return nil, statusErrorForGetTaskErr(err)
 	}
-	if task.Status != orchestrator.TaskStatusParked {
+	if task.Status != orchestrator.TaskStatusParked && task.Status != orchestrator.TaskStatusWorking {
 		// Append the same rule-table-derived "what CAN be applied from
 		// here" hint applyAnswered's generic verb-apply-failure path uses
 		// (orchestrator.StateMachine.AvailableActionsHint — single source
@@ -807,7 +904,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		// message.
 		return nil, &StatusError{
 			Code:    http.StatusConflict,
-			Message: fmt.Sprintf("accept(go): cannot dispatch task in status %q (must be parked); %s", task.Status, orchestrator.NewCardMachine().AvailableActionsHint(task.Status)),
+			Message: fmt.Sprintf("accept(go): cannot dispatch task in status %q (must be parked or working); %s", task.Status, orchestrator.NewCardMachine().AvailableActionsHint(task.Status)),
 		}
 	}
 
@@ -844,6 +941,23 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			s.recordDispatchError(ctx, taskID, task.Status, cerr)
 			return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
 		}
+	}
+
+	// A card with zero specced children (whether it has no children at all,
+	// or every child is still open/already dispatched/closed) has nothing
+	// for Go to run — this is a rejection, not a silent no-op transition, so
+	// a click that looks like "run the prepared work" never quietly
+	// degrades into "just declare working" instead (use Start for that).
+	hasSpeccedChild := false
+	for i := range children {
+		if children[i].Status == orchestrator.TaskTriageChildStatusSpecced {
+			hasSpeccedChild = true
+			break
+		}
+	}
+	if !hasSpeccedChild {
+		cerr := fmt.Errorf("accept(go): no specced child to run — use Start for manual work")
+		return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
 	}
 
 	childrenChanged := false
@@ -925,13 +1039,56 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		if ferr != nil {
 			return statusErrorForGetTaskErr(ferr)
 		}
-		if fresh.Status != orchestrator.TaskStatusParked {
+		// Re-verify against the status THIS call originally observed (parked
+		// or working — both are valid go entry points), not a hardcoded
+		// "parked": the working->working self-loop's own fresh read is
+		// expected to still say "working", which must not itself look like
+		// someone else's concurrent transition.
+		if fresh.Status != task.Status {
 			concurrentTransitionWon = true
 			return &StatusError{
 				Code: http.StatusConflict,
 				Message: fmt.Sprintf(
-					"accept(go): task status changed to %q before the parked->working transition could commit",
+					"accept(go): task status changed to %q before the transition could commit",
 					fresh.Status),
+			}
+		}
+
+		// The working→working self-loop's own concurrency guard: unlike
+		// parked→working (where a concurrent winner's transition changes
+		// fresh.Status and the check above catches it), working→working
+		// commits with fresh.Status staying "working" for every racer, so
+		// two concurrent Go calls both re-reading the SAME specced child
+		// would otherwise both dispatch it. Re-read task_triage fresh here
+		// and confirm every child this call is about to mark dispatched is
+		// STILL specced — if a concurrent winner already flipped it to
+		// dispatched, this call lost the race.
+		var freshTT *orchestrator.CardAttrs
+		if len(newlyDispatched) > 0 || childrenChanged {
+			var ttErr error
+			freshTT, ttErr = tx.GetTaskTriage(taskID)
+			if ttErr != nil {
+				return fmt.Errorf("accept(go): get task_triage for race check: %w", ttErr)
+			}
+		}
+		if len(newlyDispatched) > 0 {
+			freshChildren, fcErr := orchestrator.DetailChildren(freshTT.Detail)
+			if fcErr != nil {
+				return fmt.Errorf("accept(go): parse fresh children for race check: %w", fcErr)
+			}
+			freshByID := make(map[string]orchestrator.TaskTriageChild, len(freshChildren))
+			for _, fc := range freshChildren {
+				freshByID[fc.ID] = fc
+			}
+			for _, c := range newlyDispatched {
+				fc, ok := freshByID[c.ID]
+				if !ok || fc.Status != orchestrator.TaskTriageChildStatusSpecced {
+					concurrentTransitionWon = true
+					return &StatusError{
+						Code:    http.StatusConflict,
+						Message: fmt.Sprintf("accept(go): child %q was already dispatched by a concurrent request", c.ID),
+					}
+				}
 			}
 		}
 
@@ -963,16 +1120,12 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			}
 		}
 		if childrenChanged {
-			tt, gErr := tx.GetTaskTriage(taskID)
-			if gErr != nil {
-				return fmt.Errorf("accept(go): get task_triage for children update: %w", gErr)
-			}
-			newDetail, sErr := orchestrator.SetDetailChildren(tt.Detail, children)
+			newDetail, sErr := orchestrator.SetDetailChildren(freshTT.Detail, children)
 			if sErr != nil {
 				return sErr
 			}
-			tt.Detail = newDetail
-			if err := tx.UpsertTaskTriage(tt); err != nil {
+			freshTT.Detail = newDetail
+			if err := tx.UpsertTaskTriage(freshTT); err != nil {
 				return err
 			}
 		}

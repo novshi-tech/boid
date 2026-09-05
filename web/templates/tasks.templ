@@ -454,16 +454,16 @@ templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, proj
 //
 // PR-3 (suggestion 状態遷移化 follow-up) adds a SECOND, narrower gate inside
 // the block CanApplyManualAction("answered", status) admits: card machine v2
-// pins exactly one status per VERB (e.g. "done" only fires from "working",
+// pins exactly one status per VERB (e.g. "complete" only fires from "working",
 // machine_card.go's own doc comment), but CanApplyManualAction("answered",
 // status) alone says yes for ALL FOUR card statuses regardless of the
 // suggestion's own verb — it only asks "can the answered ACTION apply here",
 // never "would THIS VERB actually transition from here". Before this PR, a
 // suggestion whose verb didn't match the card's current status (e.g. a
-// stale "done" suggestion sitting on a card a direct park click already
-// moved back to parked) still rendered a live-looking Accept button that
-// 409'd on click with `no transition for action "done" from status
-// "parked"`. components.SuggestionInapplicable (orchestrator.StateMachine.
+// stale "complete" suggestion sitting on a card a direct park click
+// already moved back to parked) still rendered a live-looking Accept
+// button that 409'd on click with `no transition for action "complete"
+// from status "parked"`. components.SuggestionInapplicable (orchestrator.StateMachine.
 // CanApplyTransitionAction) is the single source of truth for "would this
 // SPECIFIC verb actually apply from this SPECIFIC status" — when it says no,
 // Accept is replaced by a plain-language explanation
@@ -711,9 +711,13 @@ templ TaskDetailExecChildTreeSection(nodes []ChildTreeNode) {
 //   - parked    → go (card machine v2, docs/plans/
 //     suggestion-as-state-transition.md §3.2: parked's forward edge —
 //     dispatches any specced children, then working)
-//   - working   → done (card machine v2: the natural forward edge once work
-//     is underway; park is the lighter "not yet, set aside" move and stays
-//     in the kebab menu instead of competing for the primary slot)
+//   - working   → complete (card machine v2: the natural forward edge once
+//     work is underway; park is the lighter "not yet, set aside" move and
+//     stays in the kebab menu instead of competing for the primary slot.
+//     Go is ALSO applicable from working — a working→working self-loop —
+//     but stays in the kebab menu instead of displacing Complete as
+//     primary, since AvailableActions deliberately excludes self-loops;
+//     see the kebab menu's own "go" item, TaskCardActionBar)
 //
 // dropped is deliberately absent from this switch — TaskActionBar's own
 // hasTriage branch (mirroring done above) renders a Reopen link for it
@@ -745,8 +749,8 @@ func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (ac
 		}
 	case orchestrator.TaskStatusWorking:
 		for _, a := range availableActions {
-			if a == "done" {
-				return "done", "Done"
+			if a == "complete" {
+				return "complete", "Complete"
 			}
 		}
 	}
@@ -754,11 +758,11 @@ func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (ac
 }
 
 // actionPrimaryClass picks the visual variant for the primary bottom-bar
-// button: blue for forward (start/go/done), red for destructive (abort),
-// neutral for re-execute (rerun).
+// button: blue for forward (start/go/complete), red for destructive
+// (abort), neutral for re-execute (rerun).
 func actionPrimaryClass(action string) string {
 	switch action {
-	case "start", "go", "done":
+	case "start", "go", "complete":
 		return "btn btn-primary"
 	case "abort":
 		return "btn btn-danger"
@@ -872,16 +876,31 @@ templ TaskCardActionBar(task *orchestrator.Task, availableActions []string) {
 					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/duplicate") }>
 						<button type="submit" class="action-menu-item">duplicate</button>
 					</form>
-					// working (parked → working, card machine v2: declares
+					// start (parked → working, card machine v2: declares
 					// manual work without dispatching any specced children —
 					// the lighter alternative to Go, which is the bottom
 					// bar's primary action instead. Only ever available from
 					// parked, so no extra status gate is needed beyond
 					// hasAction.
-					if hasAction(availableActions, "working") {
+					if hasAction(availableActions, "start") {
 						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
-							<input type="hidden" name="type" value="working"/>
-							<button type="submit" class="action-menu-item">working</button>
+							<input type="hidden" name="type" value="start"/>
+							<button type="submit" class="action-menu-item">start</button>
+						</form>
+					}
+					// go, offered here ONLY while working (a working→working
+					// self-loop): a freshly specced child can be run again
+					// without leaving working. AvailableActions deliberately
+					// excludes self-loops (see its own doc comment), so this
+					// item cannot use hasAction the way every other item
+					// here does — it is gated on status alone, and a click
+					// with no specced child to run gets the server's own
+					// clear 409 (acceptGo, workflow_card.go), same as every
+					// other action this menu can 409 on.
+					if task.Status == orchestrator.TaskStatusWorking {
+						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
+							<input type="hidden" name="type" value="go"/>
+							<button type="submit" class="action-menu-item">go</button>
 						</form>
 					}
 					// park (working → parked, card machine v2, queue から
@@ -892,23 +911,23 @@ templ TaskCardActionBar(task *orchestrator.Task, availableActions []string) {
 							<button type="submit" class="action-menu-item">park</button>
 						</form>
 					}
-					// done (parked → done、card 機械 v2 の 8 本目の辺、
-					// 2026-08-25)。ここで働いた人が居ないまま閉じる card
-					// ——「外で片付いていた」「重複と判明した」—— のための
-					// 1 手。理由は machine_card.go の NewCardMachine doc
-					// comment を参照。
+					// complete (parked → done、card 機械 v2 の 8 本目の辺、
+					// 2026-08-25。done から改名)。ここで働いた人が
+					// 居ないまま閉じる card ——「外で片付いていた」「重複と
+					// 判明した」—— のための 1 手。理由は machine_card.go の
+					// NewCardMachine doc comment を参照。
 					//
 					// **status の門が要る。** このメニューは verb を 1 つずつ
 					// 列挙していて availableActions を回さないので、working の
-					// card では done が既に bottom bar の primary ボタン
+					// card では complete が既に bottom bar の primary ボタン
 					// (detailPrimaryAction) として出ている。門が無いと同じ
 					// 遷移のボタンが 1 画面に 2 つ並ぶ。parked の primary は
 					// Go のまま —— card を閉じるのが既定の一手になってはいけない
 					// —— なので parked 側はこのメニューが唯一の入口になる。
-					if hasAction(availableActions, "done") && task.Status == orchestrator.TaskStatusParked {
+					if hasAction(availableActions, "complete") && task.Status == orchestrator.TaskStatusParked {
 						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Close this card as done? Use this when the work was finished elsewhere, or this card turned out to be a duplicate. It keeps the card&#39;s identities, so the source can still reopen it later.')">
-							<input type="hidden" name="type" value="done"/>
-							<button type="submit" class="action-menu-item">done</button>
+							<input type="hidden" name="type" value="complete"/>
+							<button type="submit" class="action-menu-item">complete</button>
 						</form>
 					}
 					// drop (parked → dropped, 必ず nose の判断

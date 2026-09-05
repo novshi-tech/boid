@@ -15,15 +15,19 @@ import (
 // ---- validateSuggestionAttr (PR #987 review, MEDIUM 9 — this function had
 // no dedicated test at all before). PR-2 (docs/plans/
 // suggestion-as-state-transition-impl.md §4.1) changed its signature from
-// `error` to `(string, error)`: the returned verb is what parseAttrsSetPayload
-// promotes into task_triage.suggestion_verb, so the one caller that already
-// validates the FULL suggestion object (verb + params.wake_at) is also the
-// single source of the promoted scalar — no second parse/validate pass. ----
+// `error` to `(string, error)`; card-next-step-and-timeline.md's start/
+// complete rename (§3.1/§8) changed it again to
+// `(json.RawMessage, string, error)` — the returned verb is what
+// parseAttrsSetPayload promotes into task_triage.suggestion_verb, and the
+// returned bytes are the (possibly normalized) suggestion object to persist,
+// so the one caller that already validates the FULL suggestion object
+// (verb + params.wake_at) is also the single source of both the promoted
+// scalar and the write-side normalization. ----
 
 func TestValidateSuggestionAttr_KnownVerbsAccepted(t *testing.T) {
-	for _, verb := range []string{"go", "working", "park", "drop", "done", "reopen"} {
+	for _, verb := range []string{"go", "start", "park", "drop", "complete", "reopen"} {
 		payload, _ := json.Marshal(map[string]string{"verb": verb})
-		got, err := validateSuggestionAttr(payload)
+		_, got, err := validateSuggestionAttr(payload)
 		if err != nil {
 			t.Errorf("verb=%q: unexpected error: %v", verb, err)
 		}
@@ -33,10 +37,40 @@ func TestValidateSuggestionAttr_KnownVerbsAccepted(t *testing.T) {
 	}
 }
 
+// TestValidateSuggestionAttr_LegacyVerbsNormalized pins
+// card-next-step-and-timeline.md §8's receive-side compatibility: a
+// suggestion still spelled the retired way is accepted, its verb reported as
+// the CURRENT name, and the persisted bytes rewritten to carry the current
+// name too (never the stale spelling) — while reason/params survive
+// byte-for-byte.
+func TestValidateSuggestionAttr_LegacyVerbsNormalized(t *testing.T) {
+	cases := map[string]string{"working": "start", "done": "complete"}
+	for legacy, current := range cases {
+		payload := []byte(fmt.Sprintf(`{"verb":%q,"reason":"because"}`, legacy))
+		normalized, got, err := validateSuggestionAttr(payload)
+		if err != nil {
+			t.Fatalf("verb=%q: unexpected error: %v", legacy, err)
+		}
+		if got != current {
+			t.Errorf("verb=%q: returned verb = %q, want %q", legacy, got, current)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(normalized, &m); err != nil {
+			t.Fatalf("verb=%q: unmarshal normalized bytes: %v", legacy, err)
+		}
+		if m["verb"] != current {
+			t.Errorf("verb=%q: normalized bytes carry verb=%v, want %q", legacy, m["verb"], current)
+		}
+		if m["reason"] != "because" {
+			t.Errorf("verb=%q: reason not preserved: %+v", legacy, m)
+		}
+	}
+}
+
 func TestValidateSuggestionAttr_UnknownVerbRejected(t *testing.T) {
 	for _, verb := range []string{"manual", "shape", "wake", "canonical", "totally-made-up"} {
 		payload, _ := json.Marshal(map[string]string{"verb": verb})
-		_, err := validateSuggestionAttr(payload)
+		_, _, err := validateSuggestionAttr(payload)
 		if err == nil {
 			t.Fatalf("verb=%q: expected rejection, got success", verb)
 		}
@@ -48,7 +82,7 @@ func TestValidateSuggestionAttr_UnknownVerbRejected(t *testing.T) {
 }
 
 func TestValidateSuggestionAttr_MissingVerbRejected(t *testing.T) {
-	_, err := validateSuggestionAttr([]byte(`{"reason":"no verb here"}`))
+	_, _, err := validateSuggestionAttr([]byte(`{"reason":"no verb here"}`))
 	if err == nil {
 		t.Fatal("expected rejection for a suggestion with no verb, got success")
 	}
@@ -65,7 +99,7 @@ func TestValidateSuggestionAttr_MissingVerbRejected(t *testing.T) {
 // must report the cleared ("") verb so the caller can clear the promoted
 // column too.
 func TestValidateSuggestionAttr_NullClearsWithoutValidation(t *testing.T) {
-	verb, err := validateSuggestionAttr([]byte(`null`))
+	_, verb, err := validateSuggestionAttr([]byte(`null`))
 	if err != nil {
 		t.Errorf("null: unexpected error: %v", err)
 	}
@@ -75,7 +109,7 @@ func TestValidateSuggestionAttr_NullClearsWithoutValidation(t *testing.T) {
 }
 
 func TestValidateSuggestionAttr_MalformedJSONRejected(t *testing.T) {
-	if _, err := validateSuggestionAttr([]byte(`not json`)); err == nil {
+	if _, _, err := validateSuggestionAttr([]byte(`not json`)); err == nil {
 		t.Fatal("expected rejection for malformed JSON, got success")
 	}
 }
@@ -85,12 +119,12 @@ func TestValidateSuggestionAttr_MalformedJSONRejected(t *testing.T) {
 // requires for a direct park action (workflow_card.go).
 func TestValidateSuggestionAttr_ParkWakeAt(t *testing.T) {
 	valid := []byte(`{"verb":"park","params":{"wake_at":"2026-09-01T00:00:00Z"}}`)
-	if _, err := validateSuggestionAttr(valid); err != nil {
+	if _, _, err := validateSuggestionAttr(valid); err != nil {
 		t.Errorf("valid wake_at: unexpected error: %v", err)
 	}
 
 	invalid := []byte(`{"verb":"park","params":{"wake_at":"not-a-date"}}`)
-	_, err := validateSuggestionAttr(invalid)
+	_, _, err := validateSuggestionAttr(invalid)
 	if err == nil {
 		t.Fatal("expected rejection for an invalid wake_at, got success")
 	}
@@ -105,7 +139,7 @@ func TestValidateSuggestionAttr_ParkWakeAt(t *testing.T) {
 // are independently optional (suggestionParams' own doc comment).
 func TestValidateSuggestionAttr_ParkWakeTaskIDWithoutWakeAt(t *testing.T) {
 	payload := []byte(`{"verb":"park","params":{"wake_task_id":"blocking-task"}}`)
-	if _, err := validateSuggestionAttr(payload); err != nil {
+	if _, _, err := validateSuggestionAttr(payload); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -142,6 +176,10 @@ func TestApplyParkSideEffectFromSuggestion_WritesWakeCondition(t *testing.T) {
 // already had coverage — apply_action_pr3_noted_answered_test.go,
 // accept_go_test.go — these three did not). ----
 
+// TestApplyAction_Answered_AcceptWorking pins card-next-step-and-timeline.md
+// §8's read-side compat: a suggestion stored with the retired "working"
+// spelling (written before this PR's data migration/write-side
+// normalization) is still accepted, normalized to "start" first.
 func TestApplyAction_Answered_AcceptWorking(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
@@ -204,6 +242,8 @@ func TestApplyAction_Answered_AcceptPark_WritesWakeCondition(t *testing.T) {
 	}
 }
 
+// TestApplyAction_Answered_AcceptDone is AcceptWorking's twin for the
+// retired "done" spelling (→ "complete").
 func TestApplyAction_Answered_AcceptDone(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
@@ -232,31 +272,31 @@ func TestApplyAction_Answered_AcceptDone(t *testing.T) {
 // ---- PR-3 (suggestion 状態遷移化 follow-up): 適用不能な suggestion の防御 ----
 //
 // The bug: card machine v2 admits only a narrow status set per verb
-// (go/working/drop only from parked; park only from working; done from
-// parked or working; reopen only from done/dropped — NewCardMachine's own
-// doc comment). Before this PR,
+// (go from parked/working; start/drop only from parked; park only from
+// working; complete from parked or working; reopen only from done/dropped —
+// NewCardMachine's own doc comment). Before this PR,
 // accept(verb) on a mismatched status either 409'd with sm.Apply's raw
 // `no transition for action %q from status %q` (every verb except go) or,
 // for go specifically, acceptGo's own pre-existing "(must be parked)"
 // check — neither said what WOULD have worked. This test exercises every
-// one of the 6 verbs × 4 card statuses = 24 combinations: exactly 8 succeed
-// (cardTransitionAcceptEdges), the other 16 must 409 with a message naming
+// one of the 6 verbs × 4 card statuses = 24 combinations: exactly 9 succeed
+// (cardTransitionAcceptEdges), the other 15 must 409 with a message naming
 // the verb, the status, and (for the 5 non-go verbs, whose failure comes
 // from the SAME generic sm.Apply path applyAnswered's own code shares) what
 // CAN be applied instead — mirroring
 // orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlyEightEdges
 // at the machine-rule level.
 var cardTransitionAcceptEdges = map[string]map[orchestrator.TaskStatus]bool{
-	"go":      {orchestrator.TaskStatusParked: true},
-	"working": {orchestrator.TaskStatusParked: true},
-	"drop":    {orchestrator.TaskStatusParked: true},
-	"park":    {orchestrator.TaskStatusWorking: true},
-	"done":    {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
-	"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
+	"go":       {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
+	"start":    {orchestrator.TaskStatusParked: true},
+	"drop":     {orchestrator.TaskStatusParked: true},
+	"park":     {orchestrator.TaskStatusWorking: true},
+	"complete": {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
+	"reopen":   {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
 }
 
 func TestApplyAction_Answered_Accept_AllVerbStatusCombinations(t *testing.T) {
-	verbs := []string{"go", "working", "park", "drop", "done", "reopen"}
+	verbs := []string{"go", "start", "park", "drop", "complete", "reopen"}
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusParked,
 		orchestrator.TaskStatusWorking,
@@ -269,12 +309,20 @@ func TestApplyAction_Answered_Accept_AllVerbStatusCombinations(t *testing.T) {
 			verb, status := verb, status
 			t.Run(fmt.Sprintf("%s_from_%s", verb, status), func(t *testing.T) {
 				task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: status, Card: &orchestrator.CardAttrs{}}
-				detail := []byte(fmt.Sprintf(`{"attrs":{"suggestion":{"verb":%q}}}`, verb))
+				// go additionally requires a specced child to run (§3.2's
+				// "子なし Go は拒否") — harmless for every other verb, and
+				// for go's own inapplicable-status cases too (acceptGo's
+				// status gate runs before it ever looks at children).
+				childrenJSON := ""
+				if verb == "go" {
+					childrenJSON = `,"children":[{"id":"ch_00","status":"specced","spec":{"project":"p2","behavior":"impl"}}]`
+				}
+				detail := []byte(fmt.Sprintf(`{"attrs":{"suggestion":{"verb":%q}}%s}`, verb, childrenJSON))
 				txStore := &recordingTxStore{
 					task:   task,
 					triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 				}
-				svc := newAcceptGoWorkflowService(task, txStore, nil)
+				svc := newAcceptGoWorkflowService(task, txStore, &fakeTaskCreator{})
 
 				payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": verb})
 				result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})

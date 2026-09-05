@@ -93,6 +93,17 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 	// task.Type and cannot fail.
 	sm := machineFor(task)
 
+	// A caller still sending a card verb's retired spelling ("working"/
+	// "done" — a workspace script or khi during a short compat window) is
+	// normalized to its current name ("start"/"complete") BEFORE anything
+	// below ever inspects req.Type — IsManualAction, the push-down defense,
+	// and sm.Apply only ever need to
+	// know the current spelling. Scoped to the card machine only: the
+	// execution machine's own "start"/"done" verbs are untouched.
+	if sm.Name == orchestrator.CardMachineName {
+		req.Type = orchestrator.NormalizeCardVerb(req.Type)
+	}
+
 	// Only Manual:true rules on the resolved machine are reachable through
 	// this public entry point. Manual:false rules — job_failed (applied
 	// directly by CompleteJob), progress/done_request/fail_request
@@ -370,6 +381,25 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		req.Type == "child_dropped" || req.Type == "noted"
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
+		// Reopening a terminal execution task whose parent is a card must
+		// not exceed the card's own single-work-slot invariant — this child
+		// is currently terminal (so it does not itself count toward the
+		// slot yet), but a DIFFERENT sibling might already occupy it.
+		if req.Type == "reopen" && newTask.Type == orchestrator.TaskTypeExecution && newTask.ParentID != "" {
+			parent, perr := tx.GetTask(newTask.ParentID)
+			if perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
+				occupied, oerr := cardSlotOccupied(tx, parent.ID)
+				if oerr != nil {
+					return fmt.Errorf("reopen: check card work slot: %w", oerr)
+				}
+				if occupied {
+					return &StatusError{
+						Code:    http.StatusConflict,
+						Message: fmt.Sprintf("reopen: card %q's single work slot is already occupied by another child", parent.ID),
+					}
+				}
+			}
+		}
 		if skipTaskUpdate {
 			// Re-validate against a FRESH in-Tx read rather than the pre-Tx
 			// snapshot `task`/`newTask` were built from: without this, a

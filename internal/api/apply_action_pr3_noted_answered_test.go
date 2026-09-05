@@ -265,11 +265,17 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 			"t1": {
 				TaskID:         "t1",
 				SuggestionVerb: "go",
-				Detail:         json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","basis":"issue #42"},"kept_key":"kept_value"}}`),
+				Detail: json.RawMessage(`{
+					"attrs": {"suggestion": {"verb":"go","basis":"issue #42"}, "kept_key":"kept_value"},
+					"children": [{"id": "ch_00", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]
+				}`),
 			},
 		},
 	}
 	svc := newTriageWorkflowService(task, txStore)
+	// go now requires a specced child to run (§3.2's "子なし Go は拒否") —
+	// harmless for the "reject" case, which never reaches acceptGo at all.
+	svc.TaskCreator = &fakeTaskCreator{}
 
 	payload, _ := json.Marshal(map[string]string{"answer": answer, "verb": "go", "basis": "issue #42"})
 	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
@@ -279,10 +285,10 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	}
 
 	// reject never transitions (unchanged from v1); accept applies the
-	// suggestion's own verb ("go": parked->working, no specced children in
-	// this fixture so acceptGo needs no TaskCreator) BEFORE stripping it
-	// (design doc §3.1) — a real behavior change from v1, where accept was a
-	// no-op besides the strip.
+	// suggestion's own verb ("go": parked->working, dispatching the
+	// fixture's one specced child) BEFORE stripping it (design doc §3.1) —
+	// a real behavior change from v1, where accept was a no-op besides the
+	// strip.
 	wantStatus := orchestrator.TaskStatusParked
 	if answer == answeredAnswerAccept {
 		wantStatus = orchestrator.TaskStatusWorking
@@ -307,11 +313,15 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	if tt.SuggestionVerb != "" {
 		t.Errorf("answer=%s: suggestion_verb column = %q, want cleared", answer, tt.SuggestionVerb)
 	}
-	var m map[string]map[string]json.RawMessage
+	var m map[string]json.RawMessage
 	if err := json.Unmarshal(tt.Detail, &m); err != nil {
 		t.Fatalf("parse detail: %v", err)
 	}
-	if _, present := m["attrs"]["kept_key"]; !present {
+	var attrs map[string]json.RawMessage
+	if err := json.Unmarshal(m["attrs"], &attrs); err != nil {
+		t.Fatalf("parse detail.attrs: %v", err)
+	}
+	if _, present := attrs["kept_key"]; !present {
 		t.Errorf("answer=%s: unrelated attrs key was dropped too, want only suggestion removed: %s", answer, tt.Detail)
 	}
 	if answer == answeredAnswerReject && txStore.updatedTask != nil {

@@ -10,64 +10,51 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// card machine v2 (docs/plans/suggestion-as-state-transition.md §3.2):
-// working's primary bottom-bar action is "done" (the forward edge once work
-// is underway) — parked's is "go" (see TestApplyAction_CardTransitions_
-// HumanCanApplyEveryEdge_NoSuggestion, internal/api, for the machine-level
-// pin of the same edges these render buttons for).
+// card machine v2: working's primary bottom-bar action is "complete" (the
+// forward edge once work is underway) — parked's is "go" (see
+// TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion,
+// internal/api, for the machine-level pin of the same edges these render
+// buttons for).
 func TestDetailPrimaryAction_Working(t *testing.T) {
-	// card-model-cleanup PR-2: "working" is now a Card-only status (design
-	// doc §3.3), so this fixture must be a Card even though
-	// detailPrimaryAction itself only reads task.Status.
 	task := &orchestrator.Task{Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 
-	action, label := detailPrimaryAction(task, []string{"park", "done"})
-	if action != "done" || label != "Done" {
-		t.Fatalf("detailPrimaryAction(working) = (%q, %q), want (\"done\", \"Done\")", action, label)
+	action, label := detailPrimaryAction(task, []string{"park", "complete"})
+	if action != "complete" || label != "Complete" {
+		t.Fatalf("detailPrimaryAction(working) = (%q, %q), want (\"complete\", \"Complete\")", action, label)
 	}
 }
 
-func TestDetailPrimaryAction_WorkingWithoutDone(t *testing.T) {
+func TestDetailPrimaryAction_WorkingWithoutComplete(t *testing.T) {
 	task := &orchestrator.Task{Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 
 	action, label := detailPrimaryAction(task, []string{"park"})
 	if action != "" || label != "" {
-		t.Fatalf("detailPrimaryAction(working, no done) = (%q, %q), want (\"\", \"\")", action, label)
+		t.Fatalf("detailPrimaryAction(working, no complete) = (%q, %q), want (\"\", \"\")", action, label)
 	}
 }
 
-// TestTaskCardActionBar_ParkedHasWorkingMenuItem: "working" (parked→working,
+// TestTaskCardActionBar_ParkedHasStartMenuItem: "start" (parked→working,
 // card machine v2's lighter alternative to Go) only ever appears in
 // availableActions for a PARKED task — see machine_card.go's rule table —
-// so, unlike v1's "triage" item (which was gated on task.Status==Working),
-// this menu item's gate is hasAction alone.
-//
-// webui-detail-list-redesign PR-1: this used to go through the shared
-// TaskActionBar(task, availableActions, activeTab, hasTriage) with
-// hasTriage forced to false (an artificial setup for a card fixture — real
-// production traffic never called it that way, since hasTriage is only
-// ever true for a card). The entity split gave the card-only branches their
-// own function, TaskCardActionBar, with no activeTab/hasTriage parameters —
-// it always renders (card detail has no tabs, §7 罠1) and IS the card path.
-func TestTaskCardActionBar_ParkedHasWorkingMenuItem(t *testing.T) {
-	// card-model-cleanup PR-2: "parked" is a Card-only status.
+// so this menu item's gate is hasAction alone.
+func TestTaskCardActionBar_ParkedHasStartMenuItem(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskCardActionBar(task, []string{"go", "working", "drop"}).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "start", "drop"}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 
-	if !strings.Contains(html, `value="working"`) {
-		t.Error("parked status action bar should contain a working action menu item")
+	if !strings.Contains(html, `value="start"`) {
+		t.Error("parked status action bar should contain a start action menu item")
 	}
-	if !strings.Contains(html, `>working<`) {
-		t.Error("parked status action bar should have a visible \"working\" label")
+	if !strings.Contains(html, `>start<`) {
+		t.Error("parked status action bar should have a visible \"start\" label")
 	}
 }
 
-func TestTaskCardActionBar_ParkedWithoutWorkingAction(t *testing.T) {
+func TestTaskCardActionBar_ParkedWithoutStartAction(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
@@ -76,67 +63,98 @@ func TestTaskCardActionBar_ParkedWithoutWorkingAction(t *testing.T) {
 	}
 	html := buf.String()
 
-	if strings.Contains(html, `value="working"`) {
-		t.Error("working menu item should not render when working is not in availableActions")
+	if strings.Contains(html, `value="start"`) {
+		t.Error("start menu item should not render when start is not in availableActions")
 	}
 }
 
-// TestTaskCardActionBar_ParkedHasDoneMenuItem pins the human half of card
-// machine v2's eighth edge (done: parked→done, 2026-08-25). The machine rule
-// alone is not enough to satisfy the design doc's escape hatch ("人の直接操作は
-// 常に全遷移で可能であることを担保する", §3.2): this kebab menu enumerates its
-// items verb by verb rather than looping over availableActions, so a rule
-// with no matching item here is reachable from the CLI only. parked's
-// PRIMARY button stays Go — closing a card is never the default move — so
-// done lives in the menu.
-func TestTaskCardActionBar_ParkedHasDoneMenuItem(t *testing.T) {
+// TestTaskCardActionBar_ParkedHasCompleteMenuItem pins the human half of
+// card machine v2's eighth edge (complete: parked→done). The machine rule
+// alone is not enough to satisfy the design's escape hatch ("a human's
+// direct action must always be able to reach every edge"): this kebab menu
+// enumerates its items verb by verb rather than looping over
+// availableActions, so a rule with no matching item here is reachable from
+// the CLI only. parked's PRIMARY button stays Go — closing a card is never
+// the default move — so complete lives in the menu.
+func TestTaskCardActionBar_ParkedHasCompleteMenuItem(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskCardActionBar(task, []string{"go", "working", "drop", "done"}).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "start", "drop", "complete"}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 
-	if !strings.Contains(html, `value="done"`) {
-		t.Error("parked status action bar should contain a done action menu item")
+	if !strings.Contains(html, `value="complete"`) {
+		t.Error("parked status action bar should contain a complete action menu item")
 	}
-	if !strings.Contains(html, `>done<`) {
-		t.Error("parked status action bar should have a visible \"done\" label")
+	if !strings.Contains(html, `>complete<`) {
+		t.Error("parked status action bar should have a visible \"complete\" label")
 	}
-	// The primary slot is unchanged: Go, not Done.
+	// The primary slot is unchanged: Go, not Complete.
 	if !strings.Contains(html, `>Go<`) {
 		t.Errorf("parked's primary button must still be Go; got: %s", html)
 	}
 }
 
-func TestTaskCardActionBar_ParkedWithoutDoneAction(t *testing.T) {
+func TestTaskCardActionBar_ParkedWithoutCompleteAction(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
 	if err := TaskCardActionBar(task, []string{"go", "drop"}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if strings.Contains(buf.String(), `value="done"`) {
-		t.Error("done menu item should not render when done is not in availableActions")
+	if strings.Contains(buf.String(), `value="complete"`) {
+		t.Error("complete menu item should not render when complete is not in availableActions")
 	}
 }
 
-// TestTaskCardActionBar_WorkingDoesNotDuplicateDone is the negative twin of
-// TestTaskCardActionBar_ParkedHasDoneMenuItem: on a WORKING card, done is
-// already the primary bottom-bar button (detailPrimaryAction), so the menu
-// item must stay out of the way — exactly one done form in the whole bar,
-// not two.
-func TestTaskCardActionBar_WorkingDoesNotDuplicateDone(t *testing.T) {
-	// card-model-cleanup PR-2: "working" is a Card-only status.
+// TestTaskCardActionBar_WorkingDoesNotDuplicateComplete is the negative twin
+// of TestTaskCardActionBar_ParkedHasCompleteMenuItem: on a WORKING card,
+// complete is already the primary bottom-bar button (detailPrimaryAction),
+// so the menu item must stay out of the way — exactly one complete form in
+// the whole bar, not two.
+func TestTaskCardActionBar_WorkingDoesNotDuplicateComplete(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskCardActionBar(task, []string{"park", "done"}).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"park", "complete"}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if got := strings.Count(buf.String(), `value="done"`); got != 1 {
-		t.Errorf("working card renders %d done forms, want exactly 1 (the primary button)", got)
+	if got := strings.Count(buf.String(), `value="complete"`); got != 1 {
+		t.Errorf("working card renders %d complete forms, want exactly 1 (the primary button)", got)
+	}
+}
+
+// TestTaskCardActionBar_WorkingHasGoMenuItem pins the working→working
+// self-loop's own UI affordance: unlike every other kebab item in this bar,
+// "go" here is gated on status alone (AvailableActions excludes self-loops,
+// so hasAction(availableActions, "go") would never be true for working).
+func TestTaskCardActionBar_WorkingHasGoMenuItem(t *testing.T) {
+	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+
+	var buf bytes.Buffer
+	if err := TaskCardActionBar(task, []string{"park", "complete"}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, `value="go"`) {
+		t.Error("working status action bar should contain a go action menu item")
+	}
+}
+
+// TestTaskCardActionBar_ParkedDoesNotDuplicateGo confirms the working-only
+// go menu item does not also render on parked, where Go is already the
+// primary bottom-bar button.
+func TestTaskCardActionBar_ParkedDoesNotDuplicateGo(t *testing.T) {
+	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+
+	var buf bytes.Buffer
+	if err := TaskCardActionBar(task, []string{"go", "start", "drop"}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got := strings.Count(buf.String(), `value="go"`); got != 1 {
+		t.Errorf("parked card renders %d go forms, want exactly 1 (the primary button)", got)
 	}
 }
 
@@ -376,22 +394,23 @@ func TestTaskDetailSuggestionSection_GoVerb_AcceptButtonMatchesPrimaryGoWeight(t
 }
 
 // verbApplicableStatus names ONE valid FromStatus per verb (machine_card.go's
-// rule table — go/working/drop only from parked, park only from working,
-// done from parked OR working, reopen from done or dropped). PR-3 added
+// rule table — go/start/drop only from parked, park only from working,
+// complete from parked OR working, reopen from done or dropped). PR-3 added
 // components.SuggestionInapplicable, which hides the Accept button entirely
 // when a suggestion's verb doesn't match the task's CURRENT status — so
 // every render test below that wants to see a LIVE Accept button (as opposed
 // to the dedicated inapplicable-message tests, further down) must pass a
 // status the verb actually applies from, not an arbitrary card status.
-// Verbs with more than one valid FromStatus (done, reopen) just pick one
-// here; cardVerbApplicableStatuses (further down) is the exhaustive twin.
+// Verbs with more than one valid FromStatus (go, complete, reopen) just
+// pick one here; cardVerbApplicableStatuses (further down) is the
+// exhaustive twin.
 var verbApplicableStatus = map[string]orchestrator.TaskStatus{
-	"go":      orchestrator.TaskStatusParked,
-	"working": orchestrator.TaskStatusParked,
-	"drop":    orchestrator.TaskStatusParked,
-	"park":    orchestrator.TaskStatusWorking,
-	"done":    orchestrator.TaskStatusWorking,
-	"reopen":  orchestrator.TaskStatusDone,
+	"go":       orchestrator.TaskStatusParked,
+	"start":    orchestrator.TaskStatusParked,
+	"drop":     orchestrator.TaskStatusParked,
+	"park":     orchestrator.TaskStatusWorking,
+	"complete": orchestrator.TaskStatusWorking,
+	"reopen":   orchestrator.TaskStatusDone,
 }
 
 // TestTaskDetailSuggestionSection_NonGoVerb_AcceptButtonStaysCompact is the
@@ -399,10 +418,10 @@ var verbApplicableStatus = map[string]orchestrator.TaskStatus{
 // compact styling — only "go" carries the "this dispatches real work"
 // weight and "drop" carries the danger weight (its own dedicated test,
 // TestTaskDetailSuggestionSection_DropVerb_AcceptButtonIsDangerAndConfirms,
-// PR #988 review MEDIUM 1) — working/park/done/reopen suggestions never
+// PR #988 review MEDIUM 1) — start/park/complete/reopen suggestions never
 // task-ify or release identities on accept.
 func TestTaskDetailSuggestionSection_NonGoVerb_AcceptButtonStaysCompact(t *testing.T) {
-	for _, verb := range []string{"working", "park", "done", "reopen"} {
+	for _, verb := range []string{"start", "park", "complete", "reopen"} {
 		suggestion := orchestrator.Suggestion{Verb: verb}
 		var buf bytes.Buffer
 		if err := TaskDetailSuggestionSection("task-1", verbApplicableStatus[verb], suggestion).Render(context.Background(), &buf); err != nil {
@@ -478,13 +497,13 @@ func TestTaskDetailSuggestionSection_ParkVerb_AcceptButtonConfirms(t *testing.T)
 }
 
 // TestTaskDetailSuggestionSection_NonConfirmingVerbs_NoConfirmDialog is the
-// negative twin of the two tests above: go/working/done/reopen's direct
+// negative twin of the two tests above: go/start/complete/reopen's direct
 // kebab/action-bar counterparts have no confirm() dialog either (only
 // abort/rerun/drop/park/delete do, none of which apply here), so their
 // accept forms must not gain one just because they arrived via a
 // suggestion.
 func TestTaskDetailSuggestionSection_NonConfirmingVerbs_NoConfirmDialog(t *testing.T) {
-	for _, verb := range []string{"go", "working", "done", "reopen"} {
+	for _, verb := range []string{"go", "start", "complete", "reopen"} {
 		suggestion := orchestrator.Suggestion{Verb: verb}
 		var buf bytes.Buffer
 		if err := TaskDetailSuggestionSection("task-1", verbApplicableStatus[verb], suggestion).Render(context.Background(), &buf); err != nil {
@@ -654,15 +673,15 @@ func TestTaskDetailSuggestionSection_UnknownVerb_StillRendersTextWithNeutralClas
 //
 // cardVerbApplicableStatuses is every status a verb's own card-machine rule
 // (machine_card.go) actually fires from — the exhaustive twin of
-// verbApplicableStatus above (which only names ONE status per verb; "done"
-// has two, parked AND working, and "reopen" has two, done AND dropped).
+// verbApplicableStatus above (which only names ONE status per verb; "go"
+// and "complete" each have two, and "reopen" has two, done AND dropped).
 var cardVerbApplicableStatuses = map[string]map[orchestrator.TaskStatus]bool{
-	"go":      {orchestrator.TaskStatusParked: true},
-	"working": {orchestrator.TaskStatusParked: true},
-	"drop":    {orchestrator.TaskStatusParked: true},
-	"park":    {orchestrator.TaskStatusWorking: true},
-	"done":    {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
-	"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
+	"go":       {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
+	"start":    {orchestrator.TaskStatusParked: true},
+	"drop":     {orchestrator.TaskStatusParked: true},
+	"park":     {orchestrator.TaskStatusWorking: true},
+	"complete": {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
+	"reopen":   {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
 }
 
 // TestTaskDetailSuggestionSection_InapplicableVerb_HidesAcceptShowsMessageAndReject
@@ -699,7 +718,7 @@ func TestTaskDetailSuggestionSection_InapplicableVerb_HidesAcceptShowsMessageAnd
 	// Review LOW 4: a bare "cannot be applied" is not enough — the message
 	// must also say what CAN be applied instead, same as the API's 409
 	// (both now pull from orchestrator.StateMachine.AvailableActionsHint).
-	for _, want := range []string{"go", "working", "drop", "done"} {
+	for _, want := range []string{"go", "start", "drop", "complete"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("inapplicable message should name every action available from parked (%q missing); got: %s", want, html)
 		}
@@ -721,7 +740,7 @@ func TestTaskDetailSuggestionSection_InapplicableVerb_HidesAcceptShowsMessageAnd
 // never for the other 16 — and Reject renders for ALL 24, since an
 // inapplicable suggestion must still be dismissible.
 func TestTaskDetailSuggestionSection_AllVerbStatusCombinations_AcceptOnlyWhenApplicable(t *testing.T) {
-	verbs := []string{"go", "working", "park", "drop", "done", "reopen"}
+	verbs := []string{"go", "start", "park", "drop", "complete", "reopen"}
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusParked,
 		orchestrator.TaskStatusWorking,

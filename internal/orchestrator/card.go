@@ -281,6 +281,58 @@ func DetailChildren(detail json.RawMessage) ([]TaskTriageChild, error) {
 	return wrapper.Children, nil
 }
 
+// DetailOpenSlotChildID returns the id of the first child in detail's
+// "children" list whose status is open or specced — a child not yet
+// task-ified — or "" if none exists. This is the JSON-only half of a
+// card's single-work-slot check; a dispatched child is tracked by its own
+// live task row instead (see workflow_card.go's cardSlotOccupied and
+// task_create.go's cardChildSlotConflict, the two callers that combine this
+// with a real-row check), not by this blob, so it is deliberately excluded
+// here.
+//
+// A card that already violates the invariant (legacy data predating this
+// check) is not an error here: this returns whichever occupant it finds
+// first, in list order. Enumerating every offending card for cleanup is a
+// separate diagnostic (cmd's card multi-child report), not this function's
+// job.
+func DetailOpenSlotChildID(detail json.RawMessage) (string, error) {
+	children, err := DetailChildren(detail)
+	if err != nil {
+		return "", err
+	}
+	for _, c := range children {
+		if c.Status == TaskTriageChildStatusOpen || c.Status == TaskTriageChildStatusSpecced {
+			return c.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// CountUnresolvedChildren returns the total number of children currently
+// contending for a card's single work slot: every JSON child not yet
+// task-ified (open/specced) plus openChildCount — the live (pending/
+// executing/awaiting) execution task rows under the card (a dispatched
+// JSON child's own row, or one created via a direct-CreateTask bypass with
+// no JSON entry at all; see task.OpenChildCount).
+//
+// Unlike DetailOpenSlotChildID (which the write-time gates use to ask only
+// "is there ANY occupant"), this answers "how many", so a card that
+// accumulated more than one before this invariant existed can be found and
+// listed (the `boid task diagnose-cards` CLI).
+func CountUnresolvedChildren(detail json.RawMessage, openChildCount int) (int, error) {
+	children, err := DetailChildren(detail)
+	if err != nil {
+		return 0, err
+	}
+	n := openChildCount
+	for _, c := range children {
+		if c.Status == TaskTriageChildStatusOpen || c.Status == TaskTriageChildStatusSpecced {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // Suggestion is task_triage.detail.suggestion — the triage agent's single
 // recommendation, derived from primary sources. Verb uses the same
 // vocabulary as nose's own response words: go/shape/manual/park/drop/wake.
