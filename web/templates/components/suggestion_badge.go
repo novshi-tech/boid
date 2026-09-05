@@ -20,13 +20,18 @@ import (
 // unknown verb is therefore a UI-only rendering concern, handled by
 // VerbBadgeClass below rather than by validating/rejecting the value
 // anywhere upstream.
+// start/complete are the current spelling of the retired working/done
+// verbs. A stored suggestion still carrying the retired spelling reads as
+// unknown here (badge-verb-unknown) rather than being normalized — unlike
+// the write side (orchestrator.NormalizeCardVerb), this map is a pure
+// rendering lookup with no access to the daemon's own normalization helper.
 var knownSuggestionVerbs = map[string]bool{
-	"go":      true,
-	"working": true,
-	"park":    true,
-	"drop":    true,
-	"done":    true,
-	"reopen":  true,
+	"go":       true,
+	"start":    true,
+	"park":     true,
+	"drop":     true,
+	"complete": true,
+	"reopen":   true,
 }
 
 // VerbBadgeClass maps a suggestion.verb to its badge CSS class (style.css).
@@ -56,7 +61,7 @@ func VerbBadgeClass(verb string) string {
 // a card transition from status right now — orchestrator.StateMachine.
 // CanApplyTransitionAction (PR-3, suggestion 状態遷移化 follow-up), which
 // reads card machine v2's own rule table (each of the six verbs admits
-// exactly ONE FromStatus — e.g. "done" only fires from "working",
+// exactly ONE FromStatus — e.g. "complete" only fires from "working",
 // machine_card.go's own doc comment). NewCardMachine (not machineFor's
 // dynamic task-based selection) is correct here for the same reason
 // TaskDetailSuggestionSection already establishes: a Suggestion only ever

@@ -14,7 +14,7 @@ import (
 // expected list from knownSuggestionVerbs itself — a test that reads the
 // same map it's checking can't catch a typo inside that map.
 func TestVerbBadgeClass_KnownVerbs(t *testing.T) {
-	for _, verb := range []string{"go", "working", "park", "drop", "done", "reopen"} {
+	for _, verb := range []string{"go", "start", "park", "drop", "complete", "reopen"} {
 		got := VerbBadgeClass(verb)
 		want := "badge-verb-" + verb
 		if got != want {
@@ -38,18 +38,33 @@ func TestVerbBadgeClass_UnknownVerbFallsBackToNeutral(t *testing.T) {
 	}
 }
 
+// TestVerbBadgeClass_RetiredSpellingsFallBackToNeutral pins
+// knownSuggestionVerbs' own doc comment: this map does not normalize a
+// retired verb spelling (unlike the write-side orchestrator.NormalizeCardVerb)
+// — a suggestion still carrying "working"/"done" would render as unknown
+// here, not as start/complete. In production the §8 data migration keeps a
+// real stored suggestion from ever reaching this state; this test only
+// pins the (deliberate) rendering behavior if one somehow did.
+func TestVerbBadgeClass_RetiredSpellingsFallBackToNeutral(t *testing.T) {
+	for _, verb := range []string{"working", "done"} {
+		if got := VerbBadgeClass(verb); got != "badge-verb-unknown" {
+			t.Errorf("VerbBadgeClass(%q) = %q, want %q", verb, got, "badge-verb-unknown")
+		}
+	}
+}
+
 // TestSuggestionInapplicable_AllVerbStatusCombinations mirrors
 // orchestrator.TestCardMachineV2_CanApplyTransitionAction_PinsExactlyEightEdges
-// at the components-package level: exactly 8 of the 24 (verb, status)
+// at the components-package level: exactly 9 of the 24 (verb, status)
 // combinations are applicable.
 func TestSuggestionInapplicable_AllVerbStatusCombinations(t *testing.T) {
 	applicable := map[string]map[orchestrator.TaskStatus]bool{
-		"go":      {orchestrator.TaskStatusParked: true},
-		"working": {orchestrator.TaskStatusParked: true},
-		"drop":    {orchestrator.TaskStatusParked: true},
-		"park":    {orchestrator.TaskStatusWorking: true},
-		"done":    {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
-		"reopen":  {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
+		"go":       {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
+		"start":    {orchestrator.TaskStatusParked: true},
+		"drop":     {orchestrator.TaskStatusParked: true},
+		"park":     {orchestrator.TaskStatusWorking: true},
+		"complete": {orchestrator.TaskStatusParked: true, orchestrator.TaskStatusWorking: true},
+		"reopen":   {orchestrator.TaskStatusDone: true, orchestrator.TaskStatusDropped: true},
 	}
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusParked,

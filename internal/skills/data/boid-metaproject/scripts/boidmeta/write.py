@@ -17,8 +17,8 @@ report モード (dry-run) で入力をそのまま残せるのも同じ形の�
 4 状態、機械遷移は capture だけ) なのに合わせ、判断側は「状態遷移そのもの」
 を直接打つのをやめ、**全部 suggestion (verb + reason + 任意の params) として提案し、
 人の accept が実際の遷移を適用する** 形に揃えた。`wake`/`canonical` は廃止、
-`manual` は「人が手を動かす」の定義そのものである `working` に改名、
-`go`/`done`/`reopen` を新設した。
+`manual` は「人が手を動かす」の定義そのものである `start` (旧 `working`) に改名、
+`go`/`complete` (旧 `done`) /`reopen` を新設した。
 
 | verb | 渡すもの |
 |---|---|
@@ -30,9 +30,9 @@ report モード (dry-run) で入力をそのまま残せるのも同じ形の�
 | `observed` | task_id, source_closed |
 | `urgency` | task_id, urgency |
 | `park` | task_id, reason, wake_at か wake_task_id — **suggestion として提案する** |
-| `working` | task_id, reason — 人が手を動かす、を suggest (旧 `manual`) |
+| `start` | task_id, reason — 人が手を動かす、を suggest (旧 `working`/`manual`) |
 | `go` | task_id, reason — specced 子の dispatch + working、を suggest (実行承認) |
-| `done` | task_id, reason — 完了、を suggest |
+| `complete` | task_id, reason — 完了、を suggest (旧 `done`) |
 | `reopen` | task_id, reason — 再オープン、を suggest |
 | `drop` | task_id, reason — 取り下げ、を suggest |
 | `skip` | signals, reason |
@@ -66,10 +66,10 @@ instruction に載っている。
   起き、captured のまま queue に出ない。2026-08-23 の本番投入で起票 8 件のうち 5 件が
   そうなった —— **打ち忘れうる形にした時点で機構側の欠陥**であって、スキルの書き方で
   埋めるものではない
-- **`park`/`working`/`go`/`done`/`reopen`/`drop` は全部 `attrs_set{suggestion:{verb,
+- **`park`/`start`/`go`/`complete`/`reopen`/`drop` は全部 `attrs_set{suggestion:{verb,
   reason, params?}}` を書くだけ。** 実際の遷移は boid 側で人が accept したときに初めて
   適用される (`internal/api/suggestion_accept.go` の `applyAnswered`)。verb は
-  boid 自身の状態遷移語彙 (go/working/park/drop/done/reopen の 6 つ) に固定されており、
+  boid 自身の状態遷移語彙 (go/start/park/drop/complete/reopen の 6 つ) に固定されており、
   それ以外を送ると daemon が 400 で拒否する (`validateSuggestionAttr`)。**1 枚の card に
   suggestion は 1 つだけ**で、書き直すと前の提案を上書きする (最新が勝つ、設計 §3.4) ——
   判断を更新したことの表現としてそれが正しい
@@ -77,7 +77,7 @@ instruction に載っている。
   boid 側は `resolveAttrsSetDoneTransition` (I-5b、done 専用の service 層ガード) と
   `cardActiveAndDroppedStatuses` (dropped は attrs_set の通常の FromStatus) の 2 つの
   経路でこれを支えている —— 終わった/取り下げた件に続きが来たとき、reopen を提案できる
-  必要があるため。他の verb (working/go/park/done/drop) はこの 2 status には書けない
+  必要があるため。他の verb (start/go/park/complete/drop) はこの 2 status には書けない
   (`_TERMINAL_ALLOWED_VERBS`)
 
 ## エラーメッセージは LLM へのフィードバック
@@ -187,12 +187,12 @@ _VERB_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     # 描画するので、reason 無しの park は verb バッジと confirm ダイアログだけになり、
     # 他の suggestion verb と足並みが揃っていなかった。他の 5 verb と揃えて必須にする)。
     "park": (("task_id", "reason"), ("wake_at", "wake_task_id")),
-    # working (旧 manual) / go / done / reopen / drop —— 全部 boid 自身の状態遷移語彙
-    # (`orchestrator.IsCardTransitionAction`) を提案するだけの同じ形。reason は全部必須
-    # (「なぜその遷移を勧めるか」が accept 画面の主表示になる、boid PR #988)。
-    "working": (("task_id", "reason"), ()),
+    # start (旧 manual/working) / go / complete (旧 done) / reopen / drop —— 全部 boid
+    # 自身の状態遷移語彙 (`orchestrator.IsCardTransitionAction`) を提案するだけの同じ形。
+    # reason は全部必須 (「なぜその遷移を勧めるか」が accept 画面の主表示になる、boid PR #988)。
+    "start": (("task_id", "reason"), ()),
     "go": (("task_id", "reason"), ()),
-    "done": (("task_id", "reason"), ()),
+    "complete": (("task_id", "reason"), ()),
     "reopen": (("task_id", "reason"), ()),
     "drop": (("task_id", "reason"), ()),
     "skip": (("signals", "reason"), ()),
@@ -239,7 +239,7 @@ _NO_WRITE_STATUSES = frozenset({"aborted"})
 #:   含む (`cardActiveAndDroppedStatuses`、I-5b のような service 層ガードは不要) ので、
 #:   done より単純に通る
 #:
-#: これ以外の verb (working/go/park/done/drop/summary/link/urgency/spec/drop-child/
+#: これ以外の verb (start/go/park/complete/drop/summary/link/urgency/spec/drop-child/
 #: capture) はこの 2 status には書けない —— 終わった/取り下げた件を書き換える意味が無い。
 _TERMINAL_ALLOWED_VERBS: Mapping[str, frozenset[str]] = MappingProxyType(
     {
@@ -249,8 +249,8 @@ _TERMINAL_ALLOWED_VERBS: Mapping[str, frozenset[str]] = MappingProxyType(
 )
 
 #: card 機械 v2 の遷移 verb ごとの適用可能 FromStatus
-#: (`internal/orchestrator/machine_card.go`: go/working/drop は parked のみ、
-#: park は working のみ、done は parked/working、reopen は done/dropped のみ)。
+#: (`internal/orchestrator/machine_card.go`: go/start/drop は parked のみ、
+#: park は working のみ、complete は parked/working、reopen は done/dropped のみ)。
 #:
 #: **`done` が parked からも打てるのは 2026-08-25 に足した 8 本目の辺** ——
 #: 「外で片付いていた」「重複と判明した」card、つまり**ここでは誰も working して
@@ -282,11 +282,14 @@ _TERMINAL_ALLOWED_VERBS: Mapping[str, frozenset[str]] = MappingProxyType(
 #: (boid 側にも Accept ボタンを描画しない防御を別途入れる予定 — 二重防御)。
 _TRANSITION_VERB_STATUSES: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        "go": frozenset({"parked"}),
-        "working": frozenset({"parked"}),
+        # go は parked/working の両方から提案できる (boid card-next-step-and-timeline.md
+        # §3.1: working 中に用意できた次の specced 子も Go で走らせられる自己遷移が
+        # boid 側の machine_card.go に追加された)。
+        "go": frozenset({"parked", "working"}),
+        "start": frozenset({"parked"}),
         "drop": frozenset({"parked"}),
         "park": frozenset({"working"}),
-        "done": frozenset({"parked", "working"}),
+        "complete": frozenset({"parked", "working"}),
         "reopen": frozenset({"done", "dropped"}),
     }
 )
@@ -296,7 +299,7 @@ _TRANSITION_VERB_STATUSES: Mapping[str, frozenset[str]] = MappingProxyType(
 #: 単一の情報源 (`_TRANSITION_VERB_STATUSES`) から導出する —— 手で別に書くと、
 #: verb を足したときに片方だけ更新し忘れて drift する (boid 側が `cardTransitionActions`
 #: をルール表からの導出に変えた理由と同じ、boid PR #987 review round2 MEDIUM 5)。
-_TRANSITION_VERB_ORDER = ("go", "working", "park", "done", "reopen", "drop")
+_TRANSITION_VERB_ORDER = ("go", "start", "park", "complete", "reopen", "drop")
 
 
 def _transition_verbs_from(status: str) -> tuple[str, ...]:
@@ -522,7 +525,7 @@ class Executor:
         条件にしてある (status に関係なく拒む)。
 
         **遷移 verb は現在の status とも突き合わせる** (2026-08-25、PR-K レビュー
-        HIGH 1)。go/working/drop は parked から、park は working から、done は
+        HIGH 1)。go/start/drop は parked から、park は working から、complete は
         parked/working から、reopen は done/dropped からしか適用できない
         (`internal/orchestrator/machine_card.go`)。
         boid の `validateSuggestionAttr` は verb 文字列しか見ず status とは突き合わせ
@@ -809,14 +812,14 @@ class Executor:
         params = {k: str(c[k]) for k in ("wake_at", "wake_task_id") if c.get(k)}
         return self._write_suggestion(c, "park", params=params)
 
-    def _do_working(self, c: Mapping[str, object]) -> Result:
-        return self._write_suggestion(c, "working")
+    def _do_start(self, c: Mapping[str, object]) -> Result:
+        return self._write_suggestion(c, "start")
 
     def _do_go(self, c: Mapping[str, object]) -> Result:
         return self._write_suggestion(c, "go")
 
-    def _do_done(self, c: Mapping[str, object]) -> Result:
-        return self._write_suggestion(c, "done")
+    def _do_complete(self, c: Mapping[str, object]) -> Result:
+        return self._write_suggestion(c, "complete")
 
     def _do_reopen(self, c: Mapping[str, object]) -> Result:
         return self._write_suggestion(c, "reopen")
@@ -829,7 +832,7 @@ class Executor:
     ) -> Result:
         """`attrs.suggestion = {verb, reason, params?}` を書く (設計 §3.1/§3.3)。
 
-        verb は boid 自身の状態遷移語彙 (go/working/park/drop/done/reopen) — daemon の
+        verb は boid 自身の状態遷移語彙 (go/start/park/drop/complete/reopen) — daemon の
         `validateSuggestionAttr` がこの 6 つだけを受け付け、それ以外は 400 で拒否する。
         **1 枚の card に suggestion は 1 つだけで、書き直すと前の提案を上書きする**
         (最新が勝つ) —— 書き手はメタプロジェクト単独なので、上書きは「判断を

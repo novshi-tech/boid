@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -157,6 +158,42 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 	return task, nil
 }
 
+// cardChildSlotConflict reports whether creating an execution task with the
+// given ref under parent (already confirmed to be type=card) would violate
+// the card's single-work-slot invariant: at most one open/specced/dispatched
+// child at a time.
+//
+// parent.OpenChildCount (a live, non-terminal task row under it — the
+// column GetTask already populates, independent of task_triage.detail)
+// covers the "already dispatched, or created via a bypass with no JSON
+// entry at all" half. The JSON-only half — an open/specced child not yet
+// task-ified — is orchestrator.DetailOpenSlotChildID. Fulfilling that exact
+// child's own reservation (ref == its id, the convention acceptGo's own
+// CreateTask call always uses, workflow_card.go) is not a NEW occupant and
+// is let through — this is what makes Go's own child-ification not trip
+// the very guard it must also respect.
+//
+// This is a plain read-then-decide check, not wrapped in a transaction —
+// the same race-tolerant posture task_create.go's own ref-based
+// get-or-create already documents ("service-level dedup guard; the store
+// has an identical check for the concurrent-create race"): a genuine
+// concurrent double-create is rare for this single-operator-per-card
+// feature, and a caller that loses the race gets a clear 409 to retry.
+func cardChildSlotConflict(parent *orchestrator.Task, ref string) (conflict bool, occupant string) {
+	if parent.OpenChildCount > 0 {
+		return true, parent.ID
+	}
+	var detail json.RawMessage
+	if parent.Card != nil {
+		detail = parent.Card.Detail
+	}
+	occupantID, err := orchestrator.DetailOpenSlotChildID(detail)
+	if err != nil || occupantID == "" || occupantID == ref {
+		return false, ""
+	}
+	return true, occupantID
+}
+
 func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
 	var meta *orchestrator.ProjectMeta
 	if s.Meta != nil {
@@ -288,6 +325,31 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 			// because the task may already be executing or terminal.
 			return existing, nil
 		}
+	}
+
+	// The card's single-work-slot invariant applies to this write port too:
+	// any DIRECT task creation under a card (CLI, HTTP API, acceptGo's own
+	// CreateTask call) must not exceed one open/specced/dispatched child.
+	// See cardChildSlotConflict's own doc comment for why
+	// fulfilling the currently-specced child's own reservation (Ref matching
+	// its id — acceptGo's convention) is not treated as a new occupant.
+	if req.ParentID != "" {
+		parent, perr := s.Tasks.GetTask(req.ParentID)
+		if perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
+			if conflict, occupant := cardChildSlotConflict(parent, req.Ref); conflict {
+				return nil, &StatusError{
+					Code: http.StatusConflict,
+					Message: fmt.Sprintf(
+						"create task: card %q's single work slot is already occupied by child %q",
+						req.ParentID, occupant),
+				}
+			}
+		}
+		// A parent lookup failure here is deliberately non-fatal: this is a
+		// defense-in-depth check, not the parent existence check itself (a
+		// genuinely missing/unreadable parent surfaces its own error further
+		// down the ordinary create path, same posture as the remote_id
+		// inheritance lookups above).
 	}
 
 	task := &orchestrator.Task{

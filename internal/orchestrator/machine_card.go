@@ -3,7 +3,7 @@ package orchestrator
 // NewCardMachine returns the state machine governing cards — the
 // suggestion-as-state-transition redesign's "judgment ledger" object. See
 // docs/plans/suggestion-as-state-transition.md §3.2 and
-// docs/plans/suggestion-as-state-transition-impl.md §3 for the full design.
+// docs/plans/card-next-step-and-timeline.md §3.1 for the full design.
 //
 // Four statuses, closed: parked/working/done/dropped. A card NEVER reaches
 // pending/executing/awaiting/aborted/captured/triaged/ready through this
@@ -12,23 +12,36 @@ package orchestrator
 // see model.go's own doc comment). Manual (human-only — see the push-down
 // defense below) transitions:
 //
-//	go      : parked  → working   (accept(go): specced children get dispatched, then this fires)
-//	working : parked  → working   (accept(working): manual work declared, no dispatch)
-//	drop    : parked  → dropped
-//	done    : parked  → done      (closed without ever being worked here — a card resolved
-//	                               out-of-band, or a duplicate; closing is not starting work)
-//	park    : working → parked    (sets a wake condition — see workflow_card.go's park side effect)
-//	done    : working → done
-//	reopen  : done    → parked
-//	reopen  : dropped → parked
+//	go       : parked  → working   (accept(go): specced children get dispatched, then this fires)
+//	go       : working → working   (self-loop: a freshly specced child can be run again while
+//	                                 already working)
+//	start    : parked  → working   (accept(start): manual work declared, no dispatch)
+//	drop     : parked  → dropped
+//	complete : parked  → done      (closed without ever being worked here — a card resolved
+//	                                 out-of-band, or a duplicate; closing is not starting work)
+//	park     : working → parked    (sets a wake condition — see workflow_card.go's park side effect)
+//	complete : working → done
+//	reopen   : done    → parked
+//	reopen   : dropped → parked
 //
 // This is the network's ENTIRE edge list, implementing the design doc's
-// §3.2 table literally. The only rule the MACHINE itself fires is capture
+// table literally. The only rule the MACHINE itself fires is capture
 // (creating a task directly into "parked" — task_create.go /
 // task_resolve_or_capture.go); every edge above requires a human's accept,
 // whether typed directly (Web UI / CLI hitting ApplyAction) or via the
 // accept(verb) flow answering a khi suggestion
 // (internal/api/suggestion_accept.go).
+//
+// start/complete are the current spelling of the verbs formerly named
+// "working"/"done" — distinct names from the UNRELATED execution machine's
+// own "start"/"done" (see machine_execution.go), which this machine does
+// not touch. This rule table only ever sees the current spelling:
+// api.applyAction normalizes an incoming "working"/"done" against a card
+// task via NormalizeCardVerb before Apply or IsManualAction is consulted,
+// and attrs_set's suggestion.verb goes through the same normalization at
+// validateSuggestionAttr. Past action rows already recorded under the old
+// spelling are never rewritten — only the read side (badge/timeline label
+// lookups) still needs to know both names.
 //
 // job_failed is deliberately NOT registered here (unlike the execution
 // machine — see machine_execution.go): a card never runs a job of its own,
@@ -39,15 +52,15 @@ package orchestrator
 //
 // ---- push-down defense ----
 //
-// All eight Manual transition rules above are reachable through the public
+// All nine Manual transition rules above are reachable through the public
 // ApplyAction endpoint (HTTP API / Web UI / brokered `boid action send` /
 // CLI all funnel through it). api.ApplyAction additionally checks `sm.Name
 // == CardMachineName && IsCardTransitionAction(req.Type) && actor !=
 // ActorHuman` and rejects with 403 before ever calling sm.Apply — this
-// keeps a gateway-brokered `boid action send --type done` (or go/park/drop/
-// reopen) from pushing a card's state directly, asserting a transition the
-// daemon never itself decided. IsCardTransitionAction (below) is the exact
-// six-verb closed set this restricts; attrs_set/child_added/child_specced/
+// keeps a gateway-brokered `boid action send --type complete` (or
+// go/park/drop/reopen) from pushing a card's state directly, asserting a
+// transition the daemon never itself decided. IsCardTransitionAction (below)
+// is the exact six-verb closed set this restricts; attrs_set/child_added/child_specced/
 // child_dropped/noted/answered/wake_due stay reachable from any actor.
 // ActorHuman is stamped ONLY by Web UI/CLI-driven code paths; a
 // gateway-brokered `boid action send` always carries
@@ -63,11 +76,12 @@ package orchestrator
 func NewCardMachine() *StateMachine {
 	rules := []Rule{
 		{Action: "go", FromStatus: "parked", ToStatus: "working", Manual: true},
-		{Action: "working", FromStatus: "parked", ToStatus: "working", Manual: true},
+		{Action: "go", FromStatus: "working", ToStatus: "working", Manual: true},
+		{Action: "start", FromStatus: "parked", ToStatus: "working", Manual: true},
 		{Action: "drop", FromStatus: "parked", ToStatus: "dropped", Manual: true},
-		{Action: "done", FromStatus: "parked", ToStatus: "done", Manual: true},
+		{Action: "complete", FromStatus: "parked", ToStatus: "done", Manual: true},
 		{Action: "park", FromStatus: "working", ToStatus: "parked", Manual: true},
-		{Action: "done", FromStatus: "working", ToStatus: "done", Manual: true},
+		{Action: "complete", FromStatus: "working", ToStatus: "done", Manual: true},
 		{Action: "reopen", FromStatus: "done", ToStatus: "parked", Manual: true},
 		{Action: "reopen", FromStatus: "dropped", ToStatus: "parked", Manual: true},
 
@@ -193,4 +207,26 @@ func deriveCardTransitionActions() map[string]bool {
 // friends) and wake_due are excluded: khi may still send those directly.
 func IsCardTransitionAction(actionType string) bool {
 	return cardTransitionActions[actionType]
+}
+
+// legacyCardVerbAliases maps a retired card-lifecycle verb spelling to its
+// current name. Short compat-window plumbing only: once every writer
+// (workspace scripts, khi) has moved to the new spelling, this map — and
+// NormalizeCardVerb's only caller sites — can be deleted.
+var legacyCardVerbAliases = map[string]string{
+	"working": "start",
+	"done":    "complete",
+}
+
+// NormalizeCardVerb maps a retired card-verb spelling to its current name;
+// any other value, including an already-current name or a non-card-verb
+// string, passes through unchanged. Callers apply this to a card-machine
+// action type (or a suggestion's verb) BEFORE it reaches Apply/
+// IsManualAction/IsCardTransitionAction, so the rule table and the closed
+// transition set only ever need to know the current spelling.
+func NormalizeCardVerb(verb string) string {
+	if current, ok := legacyCardVerbAliases[verb]; ok {
+		return current
+	}
+	return verb
 }

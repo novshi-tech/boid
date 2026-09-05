@@ -572,12 +572,12 @@ class SuggestionVerbsTest(unittest.TestCase):
     def view(self, status: str) -> dict:
         return {"task_id": "t1", "status": status, "description": ""}
 
-    def test_working_is_manuals_replacement(self):
-        """working は parked からのみ提案できる。"""
+    def test_start_is_manuals_replacement(self):
+        """start は parked からのみ提案できる。"""
         cli = FakeCLI(view=self.view("parked"))
-        run("working", cli, task_id="t1", reason="人手が要る")
+        run("start", cli, task_id="t1", reason="人手が要る")
         payload = [c[3] for c in cli.actions("attrs_set") if "suggestion" in (c[3] or {})][0]
-        self.assertEqual(payload["suggestion"], {"verb": "working", "reason": "人手が要る"})
+        self.assertEqual(payload["suggestion"], {"verb": "start", "reason": "人手が要る"})
 
     def test_go_suggests_the_go_verb(self):
         """go も parked からのみ提案できる。"""
@@ -586,12 +586,12 @@ class SuggestionVerbsTest(unittest.TestCase):
         payload = [c[3] for c in cli.actions("attrs_set") if "suggestion" in (c[3] or {})][0]
         self.assertEqual(payload["suggestion"], {"verb": "go", "reason": "子の spec が揃った"})
 
-    def test_done_suggests_the_done_verb(self):
-        """done は working からのみ提案できる。"""
+    def test_complete_suggests_the_complete_verb(self):
+        """complete は working からのみ提案できる。"""
         cli = FakeCLI(view=self.view("working"))
-        run("done", cli, task_id="t1", reason="全子 closed、source も閉じた")
+        run("complete", cli, task_id="t1", reason="全子 closed、source も閉じた")
         payload = [c[3] for c in cli.actions("attrs_set") if "suggestion" in (c[3] or {})][0]
-        self.assertEqual(payload["suggestion"], {"verb": "done", "reason": "全子 closed、source も閉じた"})
+        self.assertEqual(payload["suggestion"], {"verb": "complete", "reason": "全子 closed、source も閉じた"})
 
     def test_reopen_suggests_the_reopen_verb_from_done(self):
         """reopen は done/dropped からのみ提案できる。"""
@@ -614,23 +614,27 @@ class TransitionVerbStatusGuardTest(unittest.TestCase):
     そのもの) —— write.py の `_TRANSITION_VERB_STATUSES` を import して比較すると、
     実装がその表ごと間違っていた場合にテストが実装と一緒に間違う (トートロジー)。
 
-        go / working / drop : parked からのみ
+        start / drop        : parked からのみ
+        go                  : parked / working から (working 中の Go 自己遷移)
         park                : working からのみ
-        done                : parked / working から (2026-08-25、8 本目の辺)
+        complete            : parked / working から (2026-08-25、8 本目の辺)
         reopen              : done / dropped からのみ
 
     適用可能な組は **書き込まれ、拒否されない**こと。適用不能な組は
     **書き込み前に (accept 時の 409 を待たず) 拒否され、`send_action` が 1 本も
     呼ばれない**ことの両方を見る。"""
 
-    #: verb -> その verb を唯一適用できる status (done / reopen は複数あるので別扱い)。
+    #: verb -> その verb を唯一適用できる status (go / complete / reopen は複数あるので別扱い)。
     SINGLE_STATUS_VERBS = {
-        "go": "parked",
-        "working": "parked",
+        "start": "parked",
         "drop": "parked",
         "park": "working",
     }
-    #: done は parked と working の両方から打てる。parked から打てるのは「ここでは
+    #: go は parked と working の両方から打てる。working からも打てるのは、用意できた
+    #: 次の specced 子を working 中に走らせる自己遷移が追加されたため (boid
+    #: `internal/orchestrator/machine_card.go` の 9 本目の辺)。
+    GO_VALID_STATUSES = ("parked", "working")
+    #: complete は parked と working の両方から打てる。parked から打てるのは「ここでは
     #: 誰も working していない card」——外で片付いていた / 重複と判明した——を 1 手で
     #: 畳むため (boid `internal/orchestrator/machine_card.go` の 8 本目の辺)。
     DONE_VALID_STATUSES = ("parked", "working")
@@ -664,18 +668,30 @@ class TransitionVerbStatusGuardTest(unittest.TestCase):
                     )
                     self.assertIn("skip", message, f"{verb} from {status}: message doesn't point to skip")
 
-    def test_done_is_gated_to_parked_or_working(self):
-        """done は parked / working の両方から。**dropped と done からは拒む** ——
-        「やらないと決めた card」を終わったことにはできないし、既に done の card に
-        done は打てない (boid の rule 表に無い辺なので accept で 409 になる)。"""
+    def test_go_is_gated_to_parked_or_working(self):
+        """go は parked / working の両方から。**dropped と done からは拒む** ——
+        終端 card に次の一手を提案しても走らせようがない。"""
         for status in self.ALL_CARD_STATUSES:
-            accepted, message, cli = self._attempt("done", status)
-            if status in self.DONE_VALID_STATUSES:
-                self.assertTrue(accepted, f"done from {status} should be accepted: {message}")
-                self.assertTrue(cli.actions("attrs_set"), f"done from {status} did not write")
+            accepted, message, cli = self._attempt("go", status)
+            if status in self.GO_VALID_STATUSES:
+                self.assertTrue(accepted, f"go from {status} should be accepted: {message}")
+                self.assertTrue(cli.actions("attrs_set"), f"go from {status} did not write")
             else:
-                self.assertFalse(accepted, f"done from {status} should have been refused")
-                self.assertFalse(cli.wrote("send_action"), f"done from {status} wrote despite refusal")
+                self.assertFalse(accepted, f"go from {status} should have been refused")
+                self.assertFalse(cli.wrote("send_action"), f"go from {status} wrote despite refusal")
+
+    def test_complete_is_gated_to_parked_or_working(self):
+        """complete は parked / working の両方から。**dropped と done からは拒む** ——
+        「やらないと決めた card」を終わったことにはできないし、既に done の card に
+        complete は打てない (boid の rule 表に無い辺なので accept で 409 になる)。"""
+        for status in self.ALL_CARD_STATUSES:
+            accepted, message, cli = self._attempt("complete", status)
+            if status in self.DONE_VALID_STATUSES:
+                self.assertTrue(accepted, f"complete from {status} should be accepted: {message}")
+                self.assertTrue(cli.actions("attrs_set"), f"complete from {status} did not write")
+            else:
+                self.assertFalse(accepted, f"complete from {status} should have been refused")
+                self.assertFalse(cli.wrote("send_action"), f"complete from {status} wrote despite refusal")
 
     def test_reopen_is_gated_to_done_or_dropped(self):
         for status in self.ALL_CARD_STATUSES:
@@ -691,13 +707,13 @@ class TransitionVerbStatusGuardTest(unittest.TestCase):
         """エラーメッセージは LLM へのフィードバック (module docstring) —— 拒否された
         とき、その status から何を提案できるかを名指しすること。
 
-        題材は `reopen` from `parked`。2026-08-25 までは `done` from `parked` を
+        題材は `reopen` from `parked`。2026-08-25 までは `complete` from `parked` を
         使っていたが、8 本目の辺でその組が**適用可能**になったので差し替えた。"""
         _accepted, message, _cli = self._attempt("reopen", "parked")
         self.assertIn("go", message)
-        self.assertIn("working", message)
+        self.assertIn("start", message)
         self.assertIn("drop", message)
-        self.assertIn("done", message)
+        self.assertIn("complete", message)
 
     def test_an_unknown_status_passes_through_instead_of_being_refused(self):
         """**PR-K レビュー finding D**: `_refuse_terminal` の docstring は「status を
@@ -892,7 +908,7 @@ class ExternallyResolvedParkedCardScenarioTest(unittest.TestCase):
     件の畳み方。
 
     **2026-08-25 に経路が変わった。** 元は PR-K レビュー finding A の回帰テストで、
-    `working` → 次の巡で `done` の 2 手を固定していた (boid の card 機械に
+    `start` → 次の巡で `complete` の 2 手を固定していた (boid の card 機械に
     `parked → done` の辺が無かったため)。その回り道自体が「1 手で済ませたい」判断を
     identity 解放を伴う `drop` へ誘っており、実際に card ad8c6808 が drop されて
     次の巡で cba7c559 として再 capture された。boid 側に 8 本目の辺
@@ -905,30 +921,30 @@ class ExternallyResolvedParkedCardScenarioTest(unittest.TestCase):
     def view(self, status: str) -> dict:
         return {"task_id": "t1", "status": status, "description": ""}
 
-    def test_done_is_suggested_in_one_step_from_parked(self):
-        """1 手で `done` を提案できる (`internal/orchestrator/machine_card.go` の
-        8 本目の辺)。中間の `working` を挟まないので、誰も手を動かしていない card に
+    def test_complete_is_suggested_in_one_step_from_parked(self):
+        """1 手で `complete` を提案できる (`internal/orchestrator/machine_card.go` の
+        8 本目の辺)。中間の `start` を挟まないので、誰も手を動かしていない card に
         ついて「手を動かしている」と台帳に書かずに済む。"""
         cli = FakeCLI(view=self.view("parked"))
-        run("done", cli, task_id="t1", reason="source が外で閉じた")
+        run("complete", cli, task_id="t1", reason="source が外で閉じた")
         payload = [c[3] for c in cli.actions("attrs_set") if "suggestion" in (c[3] or {})][0]
-        self.assertEqual(payload["suggestion"]["verb"], "done")
+        self.assertEqual(payload["suggestion"]["verb"], "complete")
 
-    def test_working_is_still_available_when_work_actually_starts_here(self):
-        """`working` が消えたわけではない —— **ここで実際に手を動かす**と決めたときの
+    def test_start_is_still_available_when_work_actually_starts_here(self):
+        """`start` が消えたわけではない —— **ここで実際に手を動かす**と決めたときの
         1 手目としては今までどおり正しい。8 本目の辺が置き換えたのは「畳むためだけに
-        working を経由する」用法の方。"""
+        start を経由する」用法の方。"""
         cli = FakeCLI(view=self.view("parked"))
-        run("working", cli, task_id="t1", reason="自分で対応するので working へ")
+        run("start", cli, task_id="t1", reason="自分で対応するので working へ")
         payload = [c[3] for c in cli.actions("attrs_set") if "suggestion" in (c[3] or {})][0]
-        self.assertEqual(payload["suggestion"]["verb"], "working")
+        self.assertEqual(payload["suggestion"]["verb"], "start")
 
-    def test_done_is_still_reachable_from_working(self):
+    def test_complete_is_still_reachable_from_working(self):
         """working の card を閉じる従来の経路は無傷 (辺を足しただけで消していない)。"""
         cli = FakeCLI(view=self.view("working"))
-        run("done", cli, task_id="t1", reason="source が外で閉じた、全子 closed")
+        run("complete", cli, task_id="t1", reason="source が外で閉じた、全子 closed")
         payload = [c[3] for c in cli.actions("attrs_set") if "suggestion" in (c[3] or {})][0]
-        self.assertEqual(payload["suggestion"]["verb"], "done")
+        self.assertEqual(payload["suggestion"]["verb"], "complete")
 
     def test_drop_is_still_the_wrong_move_and_stays_available_only_for_real_drops(self):
         """`drop` は「やらないと決めた」ときのための verb のまま —— parked から機械的に

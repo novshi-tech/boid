@@ -82,20 +82,64 @@ func newAcceptGoWorkflowService(task *orchestrator.Task, txStore *recordingTxSto
 	}
 }
 
-func TestTaskWorkflowService_AcceptGo_NoChildren_ParkedToWorking(t *testing.T) {
+// TestTaskWorkflowService_AcceptGo_NoChildren_Rejected pins
+// card-next-step-and-timeline.md §3.2's "子なし Go は拒否し、手作業には
+// Start を使う": a card with no specced child at all can no longer accept
+// "go" as bare manual work (that story now belongs to "start" — see
+// TestTaskWorkflowServiceApplyAction_Start_ParkedToWorking,
+// apply_action_phase1_test.go). The card must stay parked and no child
+// task may be created.
+func TestTaskWorkflowService_AcceptGo_NoChildren_Rejected(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
-	svc := newAcceptGoWorkflowService(task, txStore, nil)
+	creator := &fakeTaskCreator{}
+	svc := newAcceptGoWorkflowService(task, txStore, creator)
+
+	_, err := svc.acceptGo(context.Background(), task.ID, false)
+	if err == nil {
+		t.Fatal("expected acceptGo to reject a card with no specced child")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected a 409 StatusError, got %v", err)
+	}
+	if !strings.Contains(se.Message, "Start") {
+		t.Errorf("message should point to Start for manual work; got %q", se.Message)
+	}
+	if len(creator.calls) != 0 {
+		t.Fatal("must not create any child task for a childless go")
+	}
+	if txStore.updatedTask != nil {
+		t.Fatal("card must stay parked when go is rejected for having no specced child")
+	}
+}
+
+// TestTaskWorkflowService_AcceptGo_WorkingWithSpeccedChild_DispatchesAndStaysWorking
+// pins card-next-step-and-timeline.md §3.1's ninth edge: a card already
+// working can Go again to dispatch a freshly specced child, without ever
+// leaving "working".
+func TestTaskWorkflowService_AcceptGo_WorkingWithSpeccedChild_DispatchesAndStaysWorking(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+	detail := []byte(`{"children": [{"id": "ch_00", "title": "next", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	txStore := &recordingTxStore{
+		task:   task,
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
+	}
+	creator := &fakeTaskCreator{}
+	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
 	result, err := svc.acceptGo(context.Background(), task.ID, false)
 	if err != nil {
 		t.Fatalf("acceptGo: %v", err)
 	}
 	if result.Task.Status != orchestrator.TaskStatusWorking {
-		t.Fatalf("status = %q, want working", result.Task.Status)
+		t.Fatalf("status = %q, want working (self-loop)", result.Task.Status)
 	}
-	if result.Action.Type != "go" || result.Action.FromStatus != orchestrator.TaskStatusParked || result.Action.ToStatus != orchestrator.TaskStatusWorking {
-		t.Fatalf("action = %+v, want go parked->working", result.Action)
+	if result.Action.Type != "go" || result.Action.FromStatus != orchestrator.TaskStatusWorking || result.Action.ToStatus != orchestrator.TaskStatusWorking {
+		t.Fatalf("action = %+v, want go working->working", result.Action)
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("CreateTask calls = %d, want 1", len(creator.calls))
 	}
 }
 
@@ -211,42 +255,45 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChild_PassesDescriptionSeparatelyFr
 	}
 }
 
-// TestTaskWorkflowService_AcceptGo_RejectsNonParkedTask_ErrorMessageHint pins
-// review MEDIUM 1 (fix/unapplicable-suggestion-guard PR): before this test
-// existed, only `err != nil` was asserted here — a mutation that reverted the
-// error message back to the PR's pre-fix bare "(must be parked)" text (no
-// orchestrator.StateMachine.AvailableActionsHint suffix) still passed
-// `go test ./internal/api/...` in full. This is the ONLY call site that
-// exercises acceptGo's own
-// non-parked branch (the exhaustive verb×status combination test,
-// suggestion_accept_test.go, deliberately skips asserting "go"'s hint content
-// since it goes through this separate branch rather than applyAnswered's
-// generic sm.Apply path — see that test's own comment). Exercises BOTH
-// callers that share this one message: a direct "go" click (viaAccept=false,
-// this test) and accept(go) (viaAccept=true, the companion test below).
-func TestTaskWorkflowService_AcceptGo_RejectsNonParkedTask_ErrorMessageHint(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+// TestTaskWorkflowService_AcceptGo_RejectsInapplicableStatus_ErrorMessageHint
+// pins review MEDIUM 1 (fix/unapplicable-suggestion-guard PR): before this
+// test existed, only `err != nil` was asserted here — a mutation that
+// reverted the error message back to the PR's pre-fix bare "(must be
+// parked)" text (no orchestrator.StateMachine.AvailableActionsHint suffix)
+// still passed `go test ./internal/api/...` in full. This is the ONLY call
+// site that exercises acceptGo's own status-gate branch (the exhaustive
+// verb×status combination test, suggestion_accept_test.go, deliberately
+// skips asserting "go"'s hint content since it goes through this separate
+// branch rather than applyAnswered's generic sm.Apply path — see that
+// test's own comment). Exercises BOTH callers that share this one message:
+// a direct "go" click (viaAccept=false, this test) and accept(go)
+// (viaAccept=true, the companion test below).
+//
+// Uses "dropped" (not "working") as the inapplicable status: since
+// card-next-step-and-timeline.md §3.1 made working a SECOND valid entry
+// status for go (the working→working self-loop), only done/dropped remain
+// as this branch's actual counter-examples.
+func TestTaskWorkflowService_AcceptGo_RejectsInapplicableStatus_ErrorMessageHint(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusDropped, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}
 	svc := newAcceptGoWorkflowService(task, txStore, nil)
 
 	_, err := svc.acceptGo(context.Background(), task.ID, false)
 	if err == nil {
-		t.Fatal("expected error accepting go on a non-parked task")
+		t.Fatal("expected error accepting go on a dropped task")
 	}
 	se, ok := err.(*StatusError)
 	if !ok || se.Code != http.StatusConflict {
 		t.Fatalf("expected a 409 StatusError, got %v", err)
 	}
-	if !strings.Contains(se.Message, "go") || !strings.Contains(se.Message, "working") {
+	if !strings.Contains(se.Message, "go") || !strings.Contains(se.Message, "dropped") {
 		t.Errorf("message should name the verb and the current status; got %q", se.Message)
 	}
-	// working's own available actions (park/done — machine_card.go) must be
+	// dropped's own available action (reopen — machine_card.go) must be
 	// named, mirroring applyAnswered's generic-path hint (same
 	// orchestrator.StateMachine.AvailableActionsHint source, review LOW 4).
-	for _, want := range []string{"park", "done"} {
-		if !strings.Contains(se.Message, want) {
-			t.Errorf("message should name available action %q; got %q", want, se.Message)
-		}
+	if !strings.Contains(se.Message, "reopen") {
+		t.Errorf("message should name available action %q; got %q", "reopen", se.Message)
 	}
 }
 
@@ -468,7 +515,8 @@ func TestTaskWorkflowService_AcceptGo_RetryAfterPartialFailure_DoesNotDuplicateE
 // — both a direct human click and accept(go) reach the identical code path.
 func TestApplyAction_Go_DelegatesToAcceptGo(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
-	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1"}}}
+	detail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	txStore := &recordingTxStore{task: task, triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}}}
 	creator := &fakeTaskCreator{}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
@@ -501,10 +549,17 @@ func TestApplyAction_Answered_AcceptGo_DoesNotRecordSuggestionDiscarded(t *testi
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
-			"t1": {TaskID: "t1", SuggestionVerb: "go", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go","reason":"children are specced"}}}`)},
+			"t1": {
+				TaskID:         "t1",
+				SuggestionVerb: "go",
+				Detail: json.RawMessage(`{
+					"attrs": {"suggestion": {"verb":"go","reason":"children are specced"}},
+					"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]
+				}`),
+			},
 		},
 	}
-	svc := newAcceptGoWorkflowService(task, txStore, nil)
+	svc := newAcceptGoWorkflowService(task, txStore, &fakeTaskCreator{})
 
 	payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": "go"})
 	result, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})

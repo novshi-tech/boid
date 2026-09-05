@@ -39,20 +39,20 @@ class VerbTest(unittest.TestCase):
         """§5.3 の verb 表がそのまま契約。抜けがあれば subagent に出口が無くなる。
 
         suggestion 状態遷移化 (`docs/plans/suggestion-as-state-transition.md` §3.7) で
-        語彙が変わった: `wake`/`canonical` 廃止、`manual` → `working` に改名、
-        `go`/`done`/`reopen` を新設。"""
+        語彙が変わった: `wake`/`canonical` 廃止、`manual` → `working` (現 `start`) に改名、
+        `go`/`complete` (旧 `done`) /`reopen` を新設。"""
         self.assertEqual(
             set(VERBS),
             {
                 "capture", "link", "summary", "spec", "drop-child",
-                "observed", "urgency", "park", "working", "go", "done", "reopen",
+                "observed", "urgency", "park", "start", "go", "complete", "reopen",
                 "drop", "skip", "done-signal",
             },
         )
 
     def test_the_command_carries_its_verb(self):
         """実行部はこれで分岐する。落とすと「どの書き込みか」が失われる。"""
-        self.assertEqual(ok("working", task_id="t1", reason="r")["verb"], "working")
+        self.assertEqual(ok("start", task_id="t1", reason="r")["verb"], "start")
 
 
 class RequiredFieldTest(unittest.TestCase):
@@ -141,9 +141,9 @@ class SignalsTest(unittest.TestCase):
             ("summary", {"task_id": "t1", "body": "b"}),
             ("observed", {"task_id": "t1", "source_closed": True}),
             ("urgency", {"task_id": "t1", "urgency": "week"}),
-            ("working", {"task_id": "t1", "reason": "r"}),
+            ("start", {"task_id": "t1", "reason": "r"}),
             ("go", {"task_id": "t1", "reason": "r"}),
-            ("done", {"task_id": "t1", "reason": "r"}),
+            ("complete", {"task_id": "t1", "reason": "r"}),
             ("reopen", {"task_id": "t1", "reason": "r"}),
             ("skip", {"reason": "r"}),
         ):
@@ -387,7 +387,7 @@ class ObservedTest(unittest.TestCase):
 
 
 class SuggestionVerbTest(unittest.TestCase):
-    """`working` / `go` / `done` / `reopen` / `drop` は全部同じ形 (task_id, reason) の
+    """`start` / `go` / `complete` / `reopen` / `drop` は全部同じ形 (task_id, reason) の
     suggestion verb (設計 `docs/plans/suggestion-as-state-transition.md` §3.7)。
 
     `park` も reason は必須 (2026-08-25〜、LOW 8) だが、wake_at/wake_task_id という
@@ -395,19 +395,19 @@ class SuggestionVerbTest(unittest.TestCase):
     """
 
     def test_each_requires_a_task_id_and_a_reason(self):
-        for verb in ("working", "go", "done", "reopen", "drop"):
+        for verb in ("start", "go", "complete", "reopen", "drop"):
             with self.assertRaises(CommandError, msg=verb) as caught:
                 ok(verb, task_id="t1")
             self.assertIn("reason", str(caught.exception), verb)
 
     def test_each_carries_its_own_verb(self):
-        for verb in ("working", "go", "done", "reopen", "drop"):
+        for verb in ("start", "go", "complete", "reopen", "drop"):
             self.assertEqual(ok(verb, task_id="t1", reason="r")["verb"], verb)
 
 
 class NormalisationTest(unittest.TestCase):
     def test_strings_are_stripped(self):
-        command = ok("working", task_id="  t1  ", reason="  人手が要る  ")
+        command = ok("start", task_id="  t1  ", reason="  人手が要る  ")
         self.assertEqual(command["task_id"], "t1")
         self.assertEqual(command["reason"], "人手が要る")
 

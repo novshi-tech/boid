@@ -162,15 +162,18 @@ func TestExecutionMachine_HasNoCardVocabulary(t *testing.T) {
 // TestCardMachine_HasNoExecutionVocabulary is the symmetric negation for the
 // card machine (abort is checked separately below since it also needs an
 // AvailableActions-level pin per the PR's own "abort は card 機械に入れない"
-// requirement). "done"/"reopen" are deliberately EXCLUDED from this list as
-// of card machine v2: both are now legitimate card verbs too (working→done,
-// done/dropped→parked) — they share a NAME with an execution-only rule
-// without sharing its FromStatus/ToStatus, exactly like "reopen" always did
-// (see TestCardMachine_Reopen_ExecutionFromStatusNotHandled below for the
-// FromStatus-level pin covering both).
+// requirement). "done"/"reopen"/"start" are deliberately EXCLUDED from this
+// list as of card-next-step-and-timeline.md §3.1: all three are legitimate
+// card verbs too (start: parked→working; reopen: done/dropped→parked;
+// "done" itself is retired card-side, normalized to "complete" before it
+// ever reaches this machine — see NormalizeCardVerb) — they share a NAME
+// with an execution-only rule without sharing its FromStatus/ToStatus,
+// exactly like "reopen" always did (see
+// TestCardMachine_Reopen_ExecutionFromStatusNotHandled below for the
+// FromStatus-level pin covering all three).
 func TestCardMachine_HasNoExecutionVocabulary(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
-	executionOnly := []string{"start", "fail", "ask", "answer"}
+	executionOnly := []string{"fail", "ask", "answer"}
 	for _, name := range executionOnly {
 		if sm.IsManualAction(name) {
 			t.Errorf("NewCardMachine: IsManualAction(%q) = true, want false (execution-only action leaked into the card machine)", name)
@@ -234,6 +237,13 @@ func TestCardMachine_Reopen_ExecutionFromStatusNotHandled(t *testing.T) {
 	task := &orchestrator.Task{Status: orchestrator.TaskStatusAborted}
 	if _, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"}); err == nil {
 		t.Error("NewCardMachine: reopen from aborted unexpectedly succeeded")
+	}
+	// "start" shares its name with the execution machine's own pending→executing
+	// rule (machine_execution.go) but not that rule's FromStatus — the card
+	// machine's own "start" only ever fires from parked (machine_card_test.go's
+	// TestCardMachineV2_AllEdges), never from an execution task's "pending".
+	if _, err := sm.Apply(&orchestrator.Task{Status: orchestrator.TaskStatusPending}, &orchestrator.Action{Type: "start"}); err == nil {
+		t.Error("NewCardMachine: start from pending (execution's own FromStatus) unexpectedly succeeded")
 	}
 }
 

@@ -175,6 +175,23 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		task.Exec.Payload = merged
 	}
 	if req.ParentID != nil {
+		// A card's single-work-slot invariant must also hold for this write
+		// port: reparenting an EXISTING task under a card is otherwise a
+		// bypass of both the child_added and direct-create gates (neither
+		// runs at update time). Only type=card new parents are checked —
+		// the invariant does not apply to an execution parent.
+		if *req.ParentID != "" && *req.ParentID != task.ParentID {
+			if newParent, perr := s.Tasks.GetTask(*req.ParentID); perr == nil && newParent != nil && newParent.Type == orchestrator.TaskTypeCard {
+				if conflict, occupant := cardChildSlotConflict(newParent, task.Ref); conflict {
+					return nil, &StatusError{
+						Code: http.StatusConflict,
+						Message: fmt.Sprintf(
+							"update task: card %q's single work slot is already occupied by child %q",
+							*req.ParentID, occupant),
+					}
+				}
+			}
+		}
 		task.ParentID = *req.ParentID
 	}
 	var instructionsBefore orchestrator.Instructions
