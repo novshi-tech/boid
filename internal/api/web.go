@@ -1261,8 +1261,10 @@ func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.CardA
 	var b strings.Builder
 	if task.Status == orchestrator.TaskStatusWorking {
 		b.WriteString("整形セッション: この working カードの子タスク一覧 (task_triage.detail.children) を編集してください。" +
-			"以下の情報を参考に、既存の open な子タスクがあればそれぞれ対象 project・実行内容・完了条件を詰め、" +
-			"対応が必要な作業を新たに見つけた場合は子タスクとして追加してください（必要なら Jira 起票を含む）。" +
+			"次の一手の仕様は常に最大一つです — 既存の open な子タスクがあればそれを詰めてください。" +
+			"新規追加は「次の一手」の枠が空いている場合のみ可能です（枠が埋まっている間の追加は拒否されます）。" +
+			"枠が埋まっていて対応が必要な作業を新たに見つけた場合は、このセッションでは追加せず、" +
+			"description やこのセッションの回答で運用者に伝えてください（必要なら Jira 起票を含む）。" +
 			"子タスクが1件もない状態から追加を始めても構いません。\n\n")
 	} else {
 		b.WriteString("整形セッション: 以下の parked カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")
@@ -1288,9 +1290,11 @@ func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.CardA
 		b.Write(triage.Detail)
 	}
 	if task.Status == orchestrator.TaskStatusWorking {
-		b.WriteString("\n\n対話で子タスクの対象 project・実行内容・完了条件を固めたら、既存の子タスクは specced に更新し、" +
-			"新たに追加した子タスクも同じ形で children に加えてください" +
-			"（`child_specced` を打つだけです — このカード自身の状態遷移は行いません。working のまま子タスクの追加・整形だけを行います）。" +
+		b.WriteString("\n\n対話で子タスクの対象 project・実行内容・完了条件を固めたら、既存の子タスクは specced に更新してください" +
+			"（`child_specced` を打つだけです — このカード自身の状態遷移は行いません。working のまま子タスクの整形だけを行います）。" +
+			"新規追加 (`child_added`) は次の一手の枠 (open/specced/実行中の子が合わせて最大一つ) が空いている場合のみ可能で、" +
+			"埋まっている間の追加は拒否されます。枠が埋まっていて対応が必要な作業を新たに見つけた場合は、" +
+			"このセッションでは追加せず運用者に伝えてください。" +
 			"card を進める・閉じる・戻す判断は行わないこと — それは人の accept、または khi の suggest 経由でのみ行われます" +
 			"（card machine v2, docs/plans/suggestion-as-state-transition.md §3.2）。" +
 			"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
@@ -1298,9 +1302,10 @@ func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.CardA
 			"それに従ってください。" +
 			"整形の結果「やらない」と分かった子タスクについては、このセッションでは何もせず運用者に破棄の判断を委ねてください。")
 	} else {
-		b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、既存の子タスクは specced に更新し、" +
-			"新たに追加した子タスクも同じ形で children に加えてください" +
+		b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、既存の子タスクは specced に更新してください" +
 			"（`child_specced` を打つだけです — このカード自身の状態遷移は行いません。card には `ready` 状態も `ready` action も存在しません）。" +
+			"新規追加 (`child_added`) は次の一手の枠 (open/specced/実行中の子が合わせて最大一つ) が空いている場合のみ可能で、" +
+			"埋まっている間の追加は拒否されます。" +
 			"card を進める・閉じる判断は行わないこと — それは人の accept、または khi の suggest 経由でのみ行われます" +
 			"（card machine v2, docs/plans/suggestion-as-state-transition.md §3.2）。" +
 			"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +

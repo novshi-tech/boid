@@ -192,6 +192,133 @@ func TestCreateTask_AllowsWhenCardHasNoOpenSlot(t *testing.T) {
 	}
 }
 
+// TestCreateTask_IdempotencyKeyRetry_ReturnsExistingChild_EvenWhenSlotOccupied
+// pins that IdempotencyKey's get-or-create runs at the SERVICE layer, before
+// the card slot check — same as Ref's already does — so a retry with no ref
+// (idempotency_key only) against a slot its OWN earlier child already
+// occupies returns the existing task instead of a false 409 "slot occupied".
+func TestCreateTask_IdempotencyKeyRetry_ReturnsExistingChild_EvenWhenSlotOccupied(t *testing.T) {
+	existingChild := &orchestrator.Task{
+		ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", ParentID: "card-1",
+		Status: orchestrator.TaskStatusExecuting, IdempotencyKey: "req-1",
+	}
+	parent := cardParentWithDetail("card-1", nil, 1) // existingChild itself is the live occupant
+	store := &stubTaskStore{
+		tasks:            map[string]*orchestrator.Task{"card-1": parent, "child-1": existingChild},
+		refTasks:         map[string]*orchestrator.Task{},
+		idempotencyTasks: map[string]*orchestrator.Task{"proj-1:card-1:req-1": existingChild},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+	}
+
+	got, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:      "proj-1",
+		Title:          "retry",
+		Behavior:       "dev",
+		ParentID:       "card-1",
+		IdempotencyKey: "req-1",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want success (idempotency get-or-create must win over the slot check)", err)
+	}
+	if got == nil || got.ID != "child-1" {
+		t.Fatalf("got = %+v, want the existing child-1 returned, not rejected or re-created", got)
+	}
+	if store.createdTask != nil {
+		t.Fatal("must not have inserted a new task row")
+	}
+}
+
+// TestCreateTask_IdempotencyKeyTypeMismatch_Rejected is a follow-up
+// regression to the retry test above: the service-layer IdempotencyKey
+// get-or-create it introduces short-circuits BEFORE the store layer's own
+// rejectIdempotencyKeyTypeMismatch guard ever runs (orchestrator/store.go),
+// so a hit against a task of the WRONG type must be caught here too — an
+// execution-task create that hits a card's idempotency_key (or vice versa)
+// must error, not silently hand back the wrong-shaped task with 200.
+func TestCreateTask_IdempotencyKeyTypeMismatch_Rejected(t *testing.T) {
+	existingCard := &orchestrator.Task{ID: "card-1", Type: orchestrator.TaskTypeCard, ProjectID: "proj-1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	store := &stubTaskStore{
+		tasks:            map[string]*orchestrator.Task{"card-1": existingCard},
+		refTasks:         map[string]*orchestrator.Task{},
+		idempotencyTasks: map[string]*orchestrator.Task{"proj-1::K": existingCard},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:      "proj-1",
+		Title:          "an execution task",
+		Behavior:       "dev",
+		IdempotencyKey: "K",
+	})
+	if err == nil {
+		t.Fatal("expected rejection: idempotency_key already used by a different task type (card)")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 StatusError, got %v", err)
+	}
+	if store.createdTask != nil {
+		t.Fatal("must not have inserted a task row")
+	}
+}
+
+// TestCreateTask_RejectsWhenMultipleOccupants_RegardlessOfListOrder pins
+// that cardChildSlotConflict scans every occupant rather than stopping at
+// the first open/specced entry: a create fulfilling one of two occupants'
+// own reservation must be rejected regardless of which occupant a naive
+// scan would see first — only exactly ONE occupant total, matching the
+// reservation being fulfilled, lets a create through.
+func TestCreateTask_RejectsWhenMultipleOccupants_RegardlessOfListOrder(t *testing.T) {
+	specDetail := `{"id":"ch_01","status":"specced","spec":{"project":"proj-1","behavior":"dev"}}`
+	openDetail := `{"id":"ch_00","status":"open"}`
+	cases := []struct {
+		name   string
+		detail string
+	}{
+		{"open listed before specced", "[" + openDetail + "," + specDetail + "]"},
+		{"specced listed before open", "[" + specDetail + "," + openDetail + "]"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			parent := cardParentWithDetail("card-1", []byte(`{"children":`+c.detail+`}`), 0)
+			store := &stubTaskStore{
+				tasks:    map[string]*orchestrator.Task{"card-1": parent},
+				refTasks: map[string]*orchestrator.Task{},
+			}
+			svc := &TaskAppService{
+				Tasks: store,
+				Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+			}
+
+			// Attempt to fulfill ch_01's own reservation — must still be
+			// rejected because ch_00 (open) is a second, unresolved occupant.
+			_, err := svc.CreateTask(CreateTaskRequest{
+				ProjectID: "proj-1",
+				Title:     "do it",
+				Behavior:  "dev",
+				ParentID:  "card-1",
+				Ref:       "ch_01",
+			})
+			if err == nil {
+				t.Fatal("expected rejection: a second unresolved occupant (open sibling) must block Go regardless of list order")
+			}
+			se, ok := err.(*StatusError)
+			if !ok || se.Code != http.StatusConflict {
+				t.Fatalf("expected 409 StatusError, got %v", err)
+			}
+			if store.createdTask != nil {
+				t.Fatal("must not have inserted a task row")
+			}
+		})
+	}
+}
+
 // ---- UpdateTask's own reparenting write port ----
 //
 // `boid task update <id> --parent-id <card-id>` reparents an EXISTING task —

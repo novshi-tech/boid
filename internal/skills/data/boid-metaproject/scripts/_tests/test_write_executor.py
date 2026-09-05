@@ -607,6 +607,37 @@ class SuggestionVerbsTest(unittest.TestCase):
         self.assertEqual(payload["suggestion"], {"verb": "reopen", "reason": "drop 後に続きが来た"})
 
 
+class LegacyVerbAliasTest(unittest.TestCase):
+    """短い互換窓: 改名前の verb 名 `working`/`done` は引き続き受け付けるが、
+    boid 側に書く suggestion.verb は常に改名後の新名 (`start`/`complete`)。
+    """
+
+    def view(self, status: str) -> dict:
+        return {"task_id": "t1", "status": status, "description": ""}
+
+    def test_working_writes_a_start_suggestion(self):
+        cli = FakeCLI(view=self.view("parked"))
+        run("working", cli, task_id="t1", reason="人手が要る")
+        payload = [c[3] for c in cli.actions("attrs_set") if "suggestion" in (c[3] or {})][0]
+        self.assertEqual(payload["suggestion"], {"verb": "start", "reason": "人手が要る"})
+
+    def test_done_writes_a_complete_suggestion(self):
+        cli = FakeCLI(view=self.view("working"))
+        run("done", cli, task_id="t1", reason="全子 closed")
+        payload = [c[3] for c in cli.actions("attrs_set") if "suggestion" in (c[3] or {})][0]
+        self.assertEqual(payload["suggestion"], {"verb": "complete", "reason": "全子 closed"})
+
+    def test_working_is_gated_to_parked_same_as_start(self):
+        cli = FakeCLI(view=self.view("working"))
+        with self.assertRaises(CommandError):
+            run("working", cli, task_id="t1", reason="人手が要る")
+
+    def test_done_is_gated_to_parked_or_working_same_as_complete(self):
+        cli = FakeCLI(view=self.view("done"))
+        with self.assertRaises(CommandError):
+            run("done", cli, task_id="t1", reason="全子 closed")
+
+
 class TransitionVerbStatusGuardTest(unittest.TestCase):
     """PR-K レビュー HIGH 1 の受け入れ条件: status × verb の適用可否を網羅的に固定する。
 

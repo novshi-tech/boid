@@ -145,11 +145,14 @@ func TestTaskWorkflowService_AcceptGo_WorkingWithSpeccedChild_DispatchesAndStays
 
 func TestTaskWorkflowService_AcceptGo_SpeccedChildren_CreatesTasksAndMarksDispatched(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	// Only ONE unresolved child (the specced one) — a "closed" sibling does
+	// not occupy the single work slot and must be left untouched. An open OR
+	// a second specced sibling here is a distinct, legacy-only scenario
+	// covered by TestTaskWorkflowService_AcceptGo_MultipleUnresolvedChildren_Rejected.
 	detail := []byte(`{
 		"summary": "keep me",
 		"children": [
 			{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl", "instruction": "go do it"}},
-			{"id": "ch_01", "title": "vague", "status": "open"},
 			{"id": "ch_02", "title": "already done", "status": "closed"}
 		]
 	}`)
@@ -190,17 +193,14 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChildren_CreatesTasksAndMarksDispat
 	if err != nil {
 		t.Fatalf("DetailChildren: %v", err)
 	}
-	if len(children) != 3 {
-		t.Fatalf("len(children) = %d, want 3", len(children))
+	if len(children) != 2 {
+		t.Fatalf("len(children) = %d, want 2", len(children))
 	}
 	if children[0].Status != orchestrator.TaskTriageChildStatusDispatched || children[0].TaskRef != "child-1" {
 		t.Fatalf("children[0] = %+v, want dispatched with task_ref=child-1", children[0])
 	}
-	if children[1].Status != orchestrator.TaskTriageChildStatusOpen || children[1].TaskRef != "" {
-		t.Fatalf("children[1] (open) must be untouched, got %+v", children[1])
-	}
-	if children[2].Status != orchestrator.TaskTriageChildStatusClosed {
-		t.Fatalf("children[2] (closed) must be untouched, got %+v", children[2])
+	if children[1].Status != orchestrator.TaskTriageChildStatusClosed {
+		t.Fatalf("children[1] (closed) must be untouched, got %+v", children[1])
 	}
 	// summary must survive the children round-trip (SetDetailChildren preserves other keys).
 	var m map[string]any
@@ -209,6 +209,116 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChildren_CreatesTasksAndMarksDispat
 	}
 	if m["summary"] != "keep me" {
 		t.Fatalf("summary = %v, want preserved", m["summary"])
+	}
+}
+
+// TestTaskWorkflowService_AcceptGo_MultipleUnresolvedChildren_Rejected pins
+// that a legacy card with more than one unresolved (open/specced) child
+// cannot get acceptGo to dispatch one of them and half-fix itself: the
+// first CreateTask call would succeed and auto-start for real, then a
+// second would hit createExecutionTask's own card-slot conflict and get
+// collapsed into a bare 500, leaving the card parked, the first child's
+// task_triage status update unpersisted, and that child stuck
+// un-reconcilable through this same path. acceptGo rejects up front —
+// before creating anything — pointing at the existing `boid task
+// diagnose-cards` / child_dropped resolution instead of half-dispatching.
+func TestTaskWorkflowService_AcceptGo_MultipleUnresolvedChildren_Rejected(t *testing.T) {
+	cases := []struct {
+		name   string
+		detail string
+	}{
+		{
+			name: "two specced children",
+			detail: `{"children": [
+				{"id": "ch_00", "title": "first", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}},
+				{"id": "ch_01", "title": "second", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}
+			]}`,
+		},
+		{
+			name: "specced child with an open sibling",
+			detail: `{"children": [
+				{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}},
+				{"id": "ch_01", "title": "vague", "status": "open"}
+			]}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+			txStore := &recordingTxStore{
+				task:   task,
+				triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: json.RawMessage(c.detail)}},
+			}
+			creator := &fakeTaskCreator{}
+			svc := newAcceptGoWorkflowService(task, txStore, creator)
+
+			_, err := svc.acceptGo(context.Background(), task.ID, false)
+			if err == nil {
+				t.Fatal("expected acceptGo to reject a card with more than one unresolved child")
+			}
+			se, ok := err.(*StatusError)
+			if !ok || se.Code != http.StatusConflict {
+				t.Fatalf("expected a 409 StatusError, got %v", err)
+			}
+			if !strings.Contains(se.Message, "diagnose-cards") {
+				t.Errorf("message should point to `boid task diagnose-cards`; got %q", se.Message)
+			}
+			if len(creator.calls) != 0 {
+				t.Fatal("must not create ANY child task when more than one child is unresolved — no partial dispatch")
+			}
+			if txStore.updatedTask != nil {
+				t.Fatal("card must stay parked when go is rejected for having multiple unresolved children")
+			}
+
+			// A retry must fail identically — no CreateTask call is ever
+			// attempted, so this is naturally idempotent (unlike the old
+			// half-dispatch-then-500 behavior, which left the first attempt's
+			// created child un-reconciled).
+			_, err = svc.acceptGo(context.Background(), task.ID, false)
+			if err == nil {
+				t.Fatal("expected the retry to fail identically")
+			}
+			if len(creator.calls) != 0 {
+				t.Fatal("retry must still not create any child task")
+			}
+		})
+	}
+}
+
+// TestTaskWorkflowService_AcceptGo_ReconciledLiveRowNotDoubleCounted is the
+// regression test for a bug the multiple-unresolved-children reject above
+// can introduce if the live task row backing a specced child is counted
+// separately from that child's own still-"specced" JSON entry: a PRIOR
+// acceptGo attempt can create (and even auto-start) a specced child's task
+// row without ever reaching the Tx that flips its JSON status to
+// "dispatched" (the auto-start-failure and Tx-failure branches both return
+// before that Tx runs). A retry must recognize the live row and the JSON
+// entry as the SAME occupant — not reject as "multiple unresolved children".
+func TestTaskWorkflowService_AcceptGo_ReconciledLiveRowNotDoubleCounted(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	child1 := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p2", ParentID: "t1", Ref: "ch_00", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
+	detail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	txStore := &recordingTxStore{
+		task:   task,
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
+	}
+	creator := &fakeTaskCreator{byRef: map[string]*orchestrator.Task{"ch_00:t1": child1}}
+	svc := &TaskWorkflowService{
+		Tasks:       &stubTaskStore{task: task, tasks: map[string]*orchestrator.Task{"t1": task, "child-1": child1}},
+		Tx:          recordingTransactor{store: txStore},
+		TaskTriage:  txStore,
+		TaskCreator: creator,
+	}
+
+	result, err := svc.acceptGo(context.Background(), task.ID, false)
+	if err != nil {
+		t.Fatalf("acceptGo: %v, want success (retry adopting the same child, not a false multi-occupant reject)", err)
+	}
+	if result.Task.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("status = %q, want working", result.Task.Status)
+	}
+	if len(creator.calls) != 1 || creator.calls[0].Ref != "ch_00" {
+		t.Fatalf("expected CreateTask called once for ch_00 (adopting the existing row), calls=%+v", creator.calls)
 	}
 }
 
@@ -459,51 +569,37 @@ func TestTaskWorkflowService_AcceptGo_ChildFinishesBeforeCommit_ReconciledAsClos
 	}
 }
 
-// TestTaskWorkflowService_AcceptGo_RetryAfterPartialFailure_DoesNotDuplicateEarlierChild
-// is the regression test for codex review round 2's Major (v1): with two
-// specced children, if the first is created (and started) successfully but
-// the second's create/auto-start fails, acceptGo returns an error and the
-// card stays parked — task_triage.detail.children is never persisted with
-// the first child's "dispatched"/task_ref. Without a stable Ref per child, a
-// retried acceptGo would replay the loop from the top and CREATE-AND-START A
-// DUPLICATE of the already-succeeded first child. Ref: children[i].ID makes
-// the create idempotent.
-func TestTaskWorkflowService_AcceptGo_RetryAfterPartialFailure_DoesNotDuplicateEarlierChild(t *testing.T) {
+// A retried acceptGo against a SINGLE specced child (the only shape Go ever
+// creates a task for) must not duplicate the already-succeeded create —
+// this is Ref: children[i].ID's own get-or-create replay-safety, exercised
+// end-to-end here. A card with two specced children never reaches
+// CreateTask at all (see
+// TestTaskWorkflowService_AcceptGo_MultipleUnresolvedChildren_Rejected) —
+// acceptGo rejects up front instead of half-dispatching.
+func TestTaskWorkflowService_AcceptGo_RetryAfterAutoStartFailure_DoesNotDuplicateChild(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{"children": [
-		{"id": "ch_00", "title": "first", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}},
-		{"id": "ch_01", "title": "second", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}
+		{"id": "ch_00", "title": "first", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}
 	]}`)
 	txStore := &recordingTxStore{
 		task:   task,
 		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
 	}
 	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
-		if req.Ref == "ch_01" {
-			// Second child's auto-start silently fails, every attempt.
-			return &orchestrator.Task{ID: "child-2", Type: orchestrator.TaskTypeExecution, ProjectID: req.ProjectID, ParentID: req.ParentID, Status: orchestrator.TaskStatusPending}, nil
-		}
-		return &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: req.ProjectID, ParentID: req.ParentID, Status: orchestrator.TaskStatusExecuting}, nil
+		// Auto-start silently fails, every attempt (still pending).
+		return &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: req.ProjectID, ParentID: req.ParentID, Status: orchestrator.TaskStatusPending}, nil
 	}}
 	svc := newAcceptGoWorkflowService(task, txStore, creator)
 
-	// First attempt: fails on the second child.
 	if _, err := svc.acceptGo(context.Background(), task.ID, false); err == nil {
-		t.Fatal("expected the first acceptGo attempt to fail on the second child")
+		t.Fatal("expected the first acceptGo attempt to fail (auto-start never succeeds)")
 	}
-	// Second attempt (simulating a retry): must not create a second "child-1".
 	if _, err := svc.acceptGo(context.Background(), task.ID, false); err == nil {
-		t.Fatal("expected the retry to fail again on the second child")
+		t.Fatal("expected the retry to fail again")
 	}
 
-	firstChildCreateCalls := 0
-	for _, c := range creator.calls {
-		if c.Ref == "ch_00" {
-			firstChildCreateCalls++
-		}
-	}
-	if firstChildCreateCalls != 2 {
-		t.Fatalf("CreateTask must be CALLED for ch_00 on both attempts (2 — the fake's own dedup, mirroring TaskAppService.CreateTask, is what prevents a SECOND ROW), got %d", firstChildCreateCalls)
+	if len(creator.calls) != 2 {
+		t.Fatalf("CreateTask must be CALLED on both attempts (2 — the fake's own dedup, mirroring TaskAppService.CreateTask, is what prevents a SECOND ROW), got %d", len(creator.calls))
 	}
 	if got := creator.byRef["ch_00:t1"].ID; got != "child-1" {
 		t.Fatalf("ch_00's dedup entry = %q, want the single task created on the first attempt (child-1)", got)
@@ -660,6 +756,35 @@ func TestApplyAction_Go_DispatchFailure_ReturnsSyncErrorAndRecordsDispatchError(
 		t.Fatal("card must stay parked when accept(go) fails")
 	}
 	assertDispatchErrorRecorded(t, txStore, task.ID)
+}
+
+// TestTaskWorkflowService_AcceptGo_CreateTaskConflict_PropagatesStatusCode
+// pins that acceptGo does not wrap EVERY CreateTask failure into a bare
+// http.StatusInternalServerError: when the underlying error is already a
+// *StatusError carrying a meaningful code (e.g. a 409 from
+// createExecutionTask's own card-slot conflict check), that code must
+// survive — a caller can otherwise not tell a genuine 500 apart from a 409
+// it could resolve itself.
+func TestTaskWorkflowService_AcceptGo_CreateTaskConflict_PropagatesStatusCode(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	detail := []byte(`{"children": [{"id": "ch_00", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	txStore := &recordingTxStore{
+		task:   task,
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
+	}
+	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
+		return nil, &StatusError{Code: http.StatusConflict, Message: "create task: card's single work slot is already occupied"}
+	}}
+	svc := newAcceptGoWorkflowService(task, txStore, creator)
+
+	_, err := svc.acceptGo(context.Background(), task.ID, false)
+	if err == nil {
+		t.Fatal("expected an error when CreateTask itself conflicts")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected the underlying 409 StatusError code to survive, got %v", err)
+	}
 }
 
 // TestTaskWorkflowService_AcceptGo_TransitionFailure_RecordsOrphanedChildIDs_DoesNotAbort
@@ -862,6 +987,9 @@ func (s syncedTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, 
 }
 func (s syncedTaskStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
 	return s.tx.FindTaskByRef(ref, parentID, projectID)
+}
+func (s syncedTaskStore) FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey string) (*orchestrator.Task, error) {
+	return s.tx.FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey)
 }
 func (s syncedTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return s.tx.ListChildren(parentID)

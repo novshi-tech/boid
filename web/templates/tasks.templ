@@ -863,9 +863,11 @@ templ TaskCardActionBar(task *orchestrator.Task, availableActions []string) {
 				// triaged into parked, so parked is now the "still needs
 				// shaping" resting state Shape targets — working keeps its
 				// own offer (2026-08-14 follow-up) since a dispatched card's
-				// children list keeps needing shaping work after Go: an
-				// existing open child may need its spec defined, or a
-				// brand-new child may need to be added.
+				// existing open child may still need its spec defined.
+				// Adding a brand-new child while working is gated by the
+				// single-work-slot invariant — child_added 409s while the
+				// slot is occupied; buildShapingInstruction (web.go) carries
+				// that constraint into the session's own instructions.
 				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/shape") } class="action-bar-primary-form">
 					<button type="submit" class="btn btn-secondary">Shape</button>
 				</form>

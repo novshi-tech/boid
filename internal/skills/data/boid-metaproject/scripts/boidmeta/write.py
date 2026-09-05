@@ -199,6 +199,14 @@ _VERB_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "done-signal": (("task_id", "signals"), ()),
 }
 
+#: 旧語彙の短い互換窓。フィールド要件は改名後の verb (`start`/`complete`) と同一だが、
+#: `VERBS` (使えるのは... の一覧・使用法バナー) には出さない — 新規に選ばれてほしい
+#: 語彙ではないため。
+_LEGACY_VERB_ALIASES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "working": (("task_id", "reason"), ()),
+    "done": (("task_id", "reason"), ()),
+}
+
 VERBS = tuple(_VERB_FIELDS)
 
 #: **どの verb でも必須。** §5.3 は「どの verb でも、書き込みが成功したら処理記録を
@@ -291,6 +299,9 @@ _TRANSITION_VERB_STATUSES: Mapping[str, frozenset[str]] = MappingProxyType(
         "park": frozenset({"working"}),
         "complete": frozenset({"parked", "working"}),
         "reopen": frozenset({"done", "dropped"}),
+        # 旧語彙の短い互換窓 — フィールド要件同様、適用可能 status も改名後と同一。
+        "working": frozenset({"parked"}),
+        "done": frozenset({"parked", "working"}),
     }
 )
 
@@ -318,9 +329,10 @@ def validate(verb: str, payload: Mapping[str, object]) -> dict[str, object]:
 
     純粋関数。boid への書き込みも記録も、ここから先の実行部の仕事。
     """
-    if verb not in _VERB_FIELDS:
+    verb_fields = _VERB_FIELDS.get(verb) or _LEGACY_VERB_ALIASES.get(verb)
+    if verb_fields is None:
         raise CommandError(f"知らない verb: {verb!r} (使えるのは {', '.join(VERBS)})")
-    verb_required, verb_optional = _VERB_FIELDS[verb]
+    verb_required, verb_optional = verb_fields
     required = set(verb_required) | set(_COMMON_REQUIRED)
     allowed = required | set(verb_optional)
 
@@ -815,11 +827,19 @@ class Executor:
     def _do_start(self, c: Mapping[str, object]) -> Result:
         return self._write_suggestion(c, "start")
 
+    # 旧語彙の短い互換窓: `working` は改名前の verb 名。書き込む suggestion.verb は
+    # 常に新名 (`start`) にする —— boid 側は旧名を受けても正規化するが、書き手が
+    # わざわざ旧名を書き続ける理由が無い。
+    _do_working = _do_start
+
     def _do_go(self, c: Mapping[str, object]) -> Result:
         return self._write_suggestion(c, "go")
 
     def _do_complete(self, c: Mapping[str, object]) -> Result:
         return self._write_suggestion(c, "complete")
+
+    # `done` も同じ短い互換窓 — 書き込む suggestion.verb は新名 (`complete`)。
+    _do_done = _do_complete
 
     def _do_reopen(self, c: Mapping[str, object]) -> Result:
         return self._write_suggestion(c, "reopen")

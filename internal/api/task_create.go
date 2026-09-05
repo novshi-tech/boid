@@ -93,6 +93,23 @@ func resolveInitialStatus(req CreateTaskRequest) (orchestrator.TaskStatus, error
 	return status, nil
 }
 
+// idempotencyKeyTypeMismatchErr mirrors orchestrator.CreateTask's own
+// rejectIdempotencyKeyTypeMismatch guard: the service-layer get-or-create
+// short-circuits before ever reaching that store-layer check, so it needs
+// its own copy to keep an idempotency-key hit from silently handing back a
+// wrong-typed task.
+func idempotencyKeyTypeMismatchErr(wantType orchestrator.TaskType, existing *orchestrator.Task, key, projectID, parentID string) error {
+	if existing.Type == wantType {
+		return nil
+	}
+	return &StatusError{
+		Code: http.StatusBadRequest,
+		Message: fmt.Sprintf(
+			"idempotency_key %q (project_id=%s, parent_id=%s) already used by a %s task (id=%s); this create requested a %s task",
+			key, projectID, parentID, existing.Type, existing.ID, wantType),
+	}
+}
+
 func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
 	initialStatus, err := resolveInitialStatus(req)
 	if err != nil {
@@ -138,6 +155,18 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 			return existing, nil
 		}
 	}
+	if req.Ref == "" && req.IdempotencyKey != "" {
+		existing, err := s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, req.IdempotencyKey)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if existing != nil {
+			if merr := idempotencyKeyTypeMismatchErr(orchestrator.TaskTypeCard, existing, req.IdempotencyKey, req.ProjectID, req.ParentID); merr != nil {
+				return nil, merr
+			}
+			return existing, nil
+		}
+	}
 
 	// A card-type child has no legitimate "fulfilling a specced reservation"
 	// story (acceptGo only ever dispatches execution tasks) — pass empty
@@ -179,38 +208,22 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 // an execution task with the given ref/projectID/behavior under parent
 // (already confirmed to be type=card) would violate the card's
 // single-work-slot invariant: at most one open/specced/dispatched child at
-// a time.
+// a time. parent.OpenChildCount covers a live task row (dispatched, or
+// created via a bypass with no JSON entry); an open/specced JSON child not
+// yet task-ified is the other half.
 //
-// parent.OpenChildCount (a live, non-terminal task row under it — the
-// column GetTask already populates, independent of task_triage.detail)
-// covers the "already dispatched, or created via a bypass with no JSON
-// entry at all" half — reported with a generic occupant description since
-// there is no cheap way to name the specific live child from a plain Task
-// struct alone. The JSON-only half — an open/specced child not yet
-// task-ified — is orchestrator.DetailOpenSlotChildID.
+// Fulfilling that child's own reservation (ref == its id, project/behavior
+// matching what child_specced recorded on its Spec — matching by ref alone
+// is spoofable) is not a NEW occupant and is let through, but ONLY when it
+// is the SOLE occupant: a second unresolved sibling still blocks, since
+// fulfilling one reservation does not free up room for another. The
+// project/behavior match raises the bar, not a hard close — card_read.go
+// exposes both to anyone who can already read the card.
 //
-// Fulfilling that exact child's own reservation (ref == its id, the
-// convention acceptGo's own CreateTask call always uses, workflow_card.go)
-// is not a NEW occupant and is let through — this is what makes Go's own
-// child-ification not trip the very guard it must also respect. Matching by
-// ref ALONE is not enough: ref is fully caller-controlled and the occupant
-// id is readable from the card's own detail, so a caller could otherwise
-// plant an unrelated task (wrong project/behavior) under a matching ref,
-// which a later legitimate acceptGo call would then adopt via
-// FindTaskByRef's own get-or-create instead of ever creating the actually-
-// specced work. Requiring projectID/behavior to match what child_specced
-// itself recorded on that child's Spec closes this.
-//
-// This is a plain read-then-decide check, not wrapped in a transaction —
-// the same race-tolerant posture task_create.go's own ref-based
-// get-or-create already documents ("service-level dedup guard; the store
-// has an identical check for the concurrent-create race"): a genuine
-// concurrent double-create is rare for this single-operator-per-card
-// feature, and a caller that loses the race gets a clear 409 to retry.
-// cardChildSlotConflict's occupant return value is always a ready-to-use
-// noun phrase (never a bare id) so every call site can embed it directly in
-// a 409 message without needing to know which of the two occupancy sources
-// fired.
+// A plain read-then-decide check, not wrapped in a transaction — same
+// race-tolerant posture as the ref-based get-or-create above (a losing
+// concurrent caller gets a clear 409 to retry). occupant is always a
+// ready-to-use noun phrase for embedding directly in a 409 message.
 func cardChildSlotConflict(parent *orchestrator.Task, ref, projectID, behavior string) (conflict bool, occupant string) {
 	if parent.OpenChildCount > 0 {
 		return true, "a live child task"
@@ -223,16 +236,22 @@ func cardChildSlotConflict(parent *orchestrator.Task, ref, projectID, behavior s
 	if err != nil {
 		return false, ""
 	}
+	var occupants []orchestrator.TaskTriageChild
 	for _, c := range children {
-		if c.Status != orchestrator.TaskTriageChildStatusOpen && c.Status != orchestrator.TaskTriageChildStatusSpecced {
-			continue
+		if c.Status == orchestrator.TaskTriageChildStatusOpen || c.Status == orchestrator.TaskTriageChildStatusSpecced {
+			occupants = append(occupants, c)
 		}
+	}
+	if len(occupants) == 0 {
+		return false, ""
+	}
+	if len(occupants) == 1 {
+		c := occupants[0]
 		if c.ID == ref && c.Spec != nil && c.Spec.Project == projectID && c.Spec.Behavior == behavior {
 			return false, ""
 		}
-		return true, fmt.Sprintf("child %q", c.ID)
 	}
-	return false, ""
+	return true, fmt.Sprintf("child %q", occupants[0].ID)
 }
 
 func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
@@ -368,6 +387,28 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 		}
 	}
 
+	// Same get-or-create as Ref above, but for IdempotencyKey: must run
+	// BEFORE the card slot check below, or a retried idempotent create for a
+	// child that already occupies the slot it created gets rejected as if it
+	// were a NEW occupant instead of returning the existing task. Like Ref
+	// above, this returns existing directly without firing auto_start — a
+	// still-pending existing task is never rescued via this path (the
+	// pending-rescue check below, on a freshly-inserted task, is unaffected;
+	// only Ref's and IdempotencyKey's OWN get-or-create hits skip it, same
+	// posture as Ref has always had for its own hits).
+	if req.Ref == "" && req.IdempotencyKey != "" {
+		existing, err := s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, req.IdempotencyKey)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if existing != nil {
+			if merr := idempotencyKeyTypeMismatchErr(orchestrator.TaskTypeExecution, existing, req.IdempotencyKey, req.ProjectID, req.ParentID); merr != nil {
+				return nil, merr
+			}
+			return existing, nil
+		}
+	}
+
 	// The card's single-work-slot invariant applies to this write port too:
 	// any DIRECT task creation under a card (CLI, HTTP API, acceptGo's own
 	// CreateTask call) must not exceed one open/specced/dispatched child.
@@ -418,13 +459,13 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
-	// Guard: only fire auto_start for a freshly pending task. When get-or-create
-	// at the store level returns an existing task (e.g. concurrent create race,
-	// or an IdempotencyKey hit landing on a still-pending task from a resumed
-	// caller), the task may already be executing or terminal — this check
-	// covers both Ref's and IdempotencyKey's get-or-create paths, since an
+	// Guard: only fire auto_start for a freshly pending task. Reachable when
+	// the store's OWN get-or-create (a concurrent create race that landed
+	// between the service-layer Ref/IdempotencyKey checks above and this
+	// call) returns an existing task rather than inserting a new row — an
 	// existing task that is executing/awaiting/done/aborted never re-fires
-	// start either way.
+	// start either way. A caller's own Ref/IdempotencyKey hit is handled
+	// above and never reaches here at all.
 
 	// CreateTask has no ctx parameter, so this always stamps ActorHuman even
 	// though this call also backs `boid task create` from inside a sandbox

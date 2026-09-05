@@ -259,6 +259,9 @@ func (s *barrierTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Task
 func (s *barrierTaskStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
+func (s *barrierTaskStore) FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey string) (*orchestrator.Task, error) {
+	return nil, nil
+}
 func (s *barrierTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }

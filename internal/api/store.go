@@ -283,6 +283,9 @@ type TaskStore interface {
 	// orchestrator.FindTaskByRef's doc comment for why
 	// projectID scoping is required, not optional.
 	FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error)
+	// FindTaskByIdempotencyKey looks up an existing task by idempotency_key,
+	// scoped to (projectID, parentID) — the Ref get-or-create's counterpart.
+	FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey string) (*orchestrator.Task, error)
 	// ListChildren returns direct children (one level only) of the given parent
 	// task, ordered by created_at ASC. Returns an empty slice (not nil) when the
 	// task has no children. Used by finalizeTerminal to sweep boid/<id8> branches

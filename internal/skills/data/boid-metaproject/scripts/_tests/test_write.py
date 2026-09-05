@@ -40,7 +40,9 @@ class VerbTest(unittest.TestCase):
 
         suggestion 状態遷移化 (`docs/plans/suggestion-as-state-transition.md` §3.7) で
         語彙が変わった: `wake`/`canonical` 廃止、`manual` → `working` (現 `start`) に改名、
-        `go`/`complete` (旧 `done`) /`reopen` を新設。"""
+        `go`/`complete` (旧 `done`) /`reopen` を新設。`working`/`done` は短い互換窓として
+        `start`/`complete` の別名で受け付けるが (LegacyVerbAliasTest 参照)、
+        新規に選んでほしい語彙ではないので VERBS には出さない。"""
         self.assertEqual(
             set(VERBS),
             {
@@ -53,6 +55,13 @@ class VerbTest(unittest.TestCase):
     def test_the_command_carries_its_verb(self):
         """実行部はこれで分岐する。落とすと「どの書き込みか」が失われる。"""
         self.assertEqual(ok("start", task_id="t1", reason="r")["verb"], "start")
+
+    def test_legacy_aliases_still_validate_but_are_not_advertised(self):
+        """`working`/`done` は VERBS (使えるのは...の一覧) には出ないが、validate 自体は通す。"""
+        self.assertNotIn("working", VERBS)
+        self.assertNotIn("done", VERBS)
+        self.assertEqual(ok("working", task_id="t1", reason="r")["verb"], "working")
+        self.assertEqual(ok("done", task_id="t1", reason="r")["verb"], "done")
 
 
 class RequiredFieldTest(unittest.TestCase):

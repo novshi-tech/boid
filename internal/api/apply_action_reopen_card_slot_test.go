@@ -93,6 +93,38 @@ func TestApplyAction_Reopen_AllowedWhenCardSlotIsFree(t *testing.T) {
 	}
 }
 
+// TestApplyAction_Reopen_CardTypeChild_AlsoGated pins that the reopen gate
+// applies to a card-type child too, not just execution: OpenChildCount (and
+// cardChildSlotConflict, task_create.go) count a card-type child (a nested
+// card) as an occupant exactly the same way an execution-type child is
+// counted, so restricting this gate to TaskTypeExecution alone would let a
+// nested card's reopen bypass the single-work-slot invariant entirely.
+func TestApplyAction_Reopen_CardTypeChild_AlsoGated(t *testing.T) {
+	child := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", ParentID: "card-1", Status: orchestrator.TaskStatusDropped, Card: &orchestrator.CardAttrs{}}
+	parent := &orchestrator.Task{ID: "card-1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}, OpenChildCount: 1}
+	txStore := &recordingTxStore{
+		task:  child,
+		tasks: map[string]*orchestrator.Task{"card-1": parent, "child-1": child},
+	}
+	svc := &TaskWorkflowService{
+		Tasks: &stubTaskStore{task: child},
+		Tx:    recordingTransactor{store: txStore},
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{}},
+	}
+
+	_, err := svc.ApplyAction(humanCtx(), child.ID, ApplyActionRequest{Type: "reopen"})
+	if err == nil {
+		t.Fatal("expected rejection reopening a card-type child while the parent card's slot is occupied")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	if txStore.updatedTask != nil {
+		t.Fatal("child must not have been transitioned")
+	}
+}
+
 // TestApplyAction_Reopen_RootTask_NotGated pins the scope limit: a
 // parent-less (root) execution task's reopen is never card-slot-gated at
 // all (there is no parent to look up).

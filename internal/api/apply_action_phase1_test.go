@@ -91,6 +91,9 @@ func (s *recordingTxStore) FindTaskByRemote(remoteID string) (*orchestrator.Task
 func (s *recordingTxStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
+func (s *recordingTxStore) FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey string) (*orchestrator.Task, error) {
+	return nil, nil
+}
 func (s *recordingTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }

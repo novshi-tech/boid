@@ -948,27 +948,69 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 	// for Go to run — this is a rejection, not a silent no-op transition, so
 	// a click that looks like "run the prepared work" never quietly
 	// degrades into "just declare working" instead (use Start for that).
-	hasSpeccedChild := false
+	//
+	// Go acts on exactly ONE specced child. A card with more than one
+	// unresolved (open/specced, plus any live task row not already matched
+	// to one of those by ref) child predates the single-work-slot invariant
+	// — dispatching one of several would silently pick a winner instead of
+	// surfacing the violation. Reject up front, rather than half-dispatching.
+	//
+	// A live row is matched to a JSON entry by ref, not just added on top of
+	// it: a prior acceptGo attempt can have already created this exact
+	// specced child's task row without reaching the Tx that flips its JSON
+	// status to "dispatched" (the auto-start-failure and Tx-failure paths
+	// below both return before that Tx runs). Without the match, that row
+	// would double-count the same child and permanently block the retry
+	// Ref: children[i].ID exists to make safe.
+	speccedIdx := -1
+	jsonOccupants := make(map[string]bool, len(children))
 	for i := range children {
-		if children[i].Status == orchestrator.TaskTriageChildStatusSpecced {
-			hasSpeccedChild = true
-			break
+		switch children[i].Status {
+		case orchestrator.TaskTriageChildStatusOpen, orchestrator.TaskTriageChildStatusSpecced:
+			jsonOccupants[children[i].ID] = true
+			if children[i].Status == orchestrator.TaskTriageChildStatusSpecced {
+				speccedIdx = i
+			}
 		}
 	}
-	if !hasSpeccedChild {
+	unresolvedCount := len(jsonOccupants)
+	if s.Tasks != nil {
+		liveChildren, lcErr := s.Tasks.ListChildren(taskID)
+		if lcErr != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: "accept(go): list children: " + lcErr.Error()}
+		}
+		for _, lc := range liveChildren {
+			if orchestrator.IsTerminalStatus(lc.Status) {
+				continue
+			}
+			if lc.Ref != "" && jsonOccupants[lc.Ref] {
+				continue
+			}
+			unresolvedCount++
+		}
+	}
+	if speccedIdx == -1 {
 		cerr := fmt.Errorf("accept(go): no specced child to run — use Start for manual work")
+		return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
+	}
+	if unresolvedCount > 1 {
+		cerr := fmt.Errorf(
+			"accept(go): card %q has %d unresolved children occupying its single work slot — "+
+				"run `boid task diagnose-cards` and resolve extras with "+
+				"`boid action send --type child_dropped` before Go can proceed",
+			taskID, unresolvedCount)
 		return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
 	}
 
 	childrenChanged := false
 	// newlyDispatched tracks which children THIS call task-ified, both for
-	// the child_dispatched audit rows below and for step 4's best-effort
-	// abort if the transition Tx itself then fails.
+	// the child_dispatched audit row below and for step 4's best-effort
+	// abort if the transition Tx itself then fails. speccedIdx is guaranteed
+	// unique by the unresolvedCount check above, so at most one entry is
+	// ever appended.
 	var newlyDispatched []orchestrator.TaskTriageChild
-	for i := range children {
-		if children[i].Status != orchestrator.TaskTriageChildStatusSpecced {
-			continue
-		}
+	{
+		i := speccedIdx
 		if children[i].Spec == nil {
 			cerr := fmt.Errorf("accept(go): child %q is specced but has no spec", children[i].ID)
 			s.recordDispatchError(ctx, taskID, task.Status, cerr)
@@ -1005,7 +1047,16 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		if cErr != nil {
 			cerr := fmt.Errorf("accept(go): create child task %q: %w", children[i].ID, cErr)
 			s.recordDispatchError(ctx, taskID, task.Status, cerr)
-			return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
+			// Propagate the underlying StatusError's code (e.g. a 409 from
+			// CreateTask's own card-slot check) instead of always collapsing
+			// to 500 — a caller retrying on a stale 500 can't tell a genuine
+			// server error apart from a conflict it could resolve itself.
+			code := http.StatusInternalServerError
+			var se *StatusError
+			if errors.As(cErr, &se) {
+				code = se.Code
+			}
+			return nil, &StatusError{Code: code, Message: cerr.Error()}
 		}
 		if childTask.Status == orchestrator.TaskStatusPending {
 			cerr := fmt.Errorf("accept(go): child task %q (%s) was created but failed to auto-start (still pending)", children[i].ID, childTask.ID)

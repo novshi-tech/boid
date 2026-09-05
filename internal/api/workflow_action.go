@@ -381,11 +381,12 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		req.Type == "child_dropped" || req.Type == "noted"
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
-		// Reopening a terminal execution task whose parent is a card must
-		// not exceed the card's own single-work-slot invariant — this child
-		// is currently terminal (so it does not itself count toward the
-		// slot yet), but a DIFFERENT sibling might already occupy it.
-		if req.Type == "reopen" && newTask.Type == orchestrator.TaskTypeExecution && newTask.ParentID != "" {
+		// Reopening a terminal task whose parent is a card must not exceed
+		// the card's own single-work-slot invariant — a DIFFERENT sibling
+		// might already occupy it. Applies regardless of newTask's own
+		// type: a card-type child (a nested card) occupies the slot the
+		// same way an execution-type child does.
+		if req.Type == "reopen" && newTask.ParentID != "" {
 			parent, perr := tx.GetTask(newTask.ParentID)
 			if perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
 				occupied, oerr := cardSlotOccupied(tx, parent.ID)

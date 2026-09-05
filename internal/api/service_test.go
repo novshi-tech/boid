@@ -1740,15 +1740,16 @@ func TestCreateTask_EmptyBaseBranch_DetachedHead_Returns400(t *testing.T) {
 // ---- end Phase 2-2 ----
 
 type stubTaskStore struct {
-	task        *orchestrator.Task
-	tasks       map[string]*orchestrator.Task // id → task (for multi-task lookups)
-	err         error
-	updateCalls int
-	deleted     bool
-	remoteTasks map[string]*orchestrator.Task // remoteID → task
-	refTasks    map[string]*orchestrator.Task // "ref:parentID" → task
-	createdTask *orchestrator.Task            // captures the last created task
-	getCalls    int                           // counts GetTask invocations (spy for "was Dispatch even attempted")
+	task             *orchestrator.Task
+	tasks            map[string]*orchestrator.Task // id → task (for multi-task lookups)
+	err              error
+	updateCalls      int
+	deleted          bool
+	remoteTasks      map[string]*orchestrator.Task // remoteID → task
+	refTasks         map[string]*orchestrator.Task // "ref:parentID" → task
+	idempotencyTasks map[string]*orchestrator.Task // "projectID:parentID:key" → task
+	createdTask      *orchestrator.Task            // captures the last created task
+	getCalls         int                           // counts GetTask invocations (spy for "was Dispatch even attempted")
 }
 
 func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error {
@@ -1800,8 +1801,23 @@ func (s *stubTaskStore) FindTaskByRef(ref, parentID, projectID string) (*orchest
 	}
 	return nil, nil
 }
-func (s *stubTaskStore) ListChildren(_ string) ([]*orchestrator.Task, error) {
+func (s *stubTaskStore) FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey string) (*orchestrator.Task, error) {
+	if s.idempotencyTasks != nil {
+		return s.idempotencyTasks[projectID+":"+parentID+":"+idempotencyKey], nil
+	}
 	return nil, nil
+}
+func (s *stubTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
+	if s.tasks == nil {
+		return nil, nil
+	}
+	var children []*orchestrator.Task
+	for _, t := range s.tasks {
+		if t.ParentID == parentID {
+			children = append(children, t)
+		}
+	}
+	return children, nil
 }
 
 type stubTx struct {
@@ -1826,6 +1842,9 @@ func (s *stubTx) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *stubTx) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
+	return nil, nil
+}
+func (s *stubTx) FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey string) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *stubTx) ListChildren(parentID string) ([]*orchestrator.Task, error) {
