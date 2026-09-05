@@ -34,37 +34,29 @@ import (
 )
 
 // containerBackend implements backend.SandboxBackend by translating a
-// sandbox.Spec (via internal/sandbox/realization's PR3 translation) into a
+// sandbox.Spec (via internal/sandbox/realization) into a
 // docker create/start/attach/wait/kill sequence against a sibling container
-// (docker-out-of-docker — docs/plans/phase6-container-backend.md §PR5).
+// (docker-out-of-docker — see docs/plans/phase6-container-backend.md).
 //
-// This is the first docker SDK import in boid: github.com/moby/moby/client
-// (the Docker Engine API's own standalone Go module — moby/moby split its
+// This is the first docker SDK import in boid: github.com/moby/moby/client,
+// the Docker Engine API's own standalone Go module (moby/moby split its
 // client out of the monolithic github.com/docker/docker tree into
-// github.com/moby/moby/client + github.com/moby/moby/api some time before
-// this PR; the plan doc's "github.com/docker/docker/client" reference
-// predates that split. The new module resolves the same Docker Engine API
-// with a much smaller dependency footprint than the old
-// github.com/docker/docker/client — see go.mod's diff for the exact set —
-// so it satisfies this PR's "docker SDK dependency の minimum セット" mandate
-// better than the path named in the plan, not worse).
-//
-// As of PR5 nothing wires containerBackend into real dispatch — see
-// NewContainerBackend's doc comment. config sandbox.backend gating is PR7's
-// job (docs/plans/phase6-container-backend.md §PR7 cutover).
+// github.com/moby/moby/client + github.com/moby/moby/api), which resolves
+// the same Docker Engine API with a much smaller dependency footprint than
+// the old github.com/docker/docker/client.
 type containerBackend struct {
 	api          dockerAPI
 	defaultImage string
 	pullPolicy   ImagePullPolicy
 	uid, gid     int
 	installID    string
-	// dockerTLSCA / dockerProxyAddr implement §決定5's per-job dockerproxy
-	// client cert delivery — see ContainerBackendOptions.DockerTLSCA's doc
+	// dockerTLSCA / dockerProxyAddr implement per-job dockerproxy client
+	// cert delivery — see ContainerBackendOptions.DockerTLSCA's doc
 	// comment. dockerTLSCA nil (every pre-this-feature caller) disables the
 	// whole feature: Launch neither issues a cert nor adds any DOCKER_* env.
 	dockerTLSCA     *mtls.CA
 	dockerProxyAddr string
-	// brokerTLSCA / brokerTLSAddr implement §⓪'s per-job broker client
+	// brokerTLSCA / brokerTLSAddr implement per-job broker client
 	// cert delivery — see ContainerBackendOptions.BrokerTLSCA's doc
 	// comment. brokerTLSCA nil (every pre-this-feature caller) disables
 	// the whole feature: Launch neither issues a cert nor adds any
@@ -86,15 +78,13 @@ type containerBackend struct {
 	transcriptDir string
 	// diagnosticsCollector, when non-nil, is invoked once a container has
 	// exited — after Wait's fan-out has resolved and the attach stream has
-	// fully drained (Major 3) — but strictly before the container is
-	// removed. See ContainerBackendOptions.DiagnosticsCollector's doc
-	// comment.
+	// fully drained — but strictly before the container is removed. See
+	// ContainerBackendOptions.DiagnosticsCollector's doc comment.
 	diagnosticsCollector func(ctx context.Context, containerID string, exit backend.RuntimeExit)
 
-	// selfContainerID implements §決定5's daemon-self-connect (PR9): see
-	// ContainerBackendOptions.SelfContainerID's doc comment. Empty (every
-	// pre-PR9 caller) disables ensureWorkspaceNetwork's NetworkConnect step
-	// entirely.
+	// selfContainerID implements the daemon-self-connect: see
+	// ContainerBackendOptions.SelfContainerID's doc comment. Empty disables
+	// ensureWorkspaceNetwork's NetworkConnect step entirely.
 	selfContainerID string
 
 	// usernsOnce/usernsMode cache the engine-identity probe backing
@@ -116,20 +106,17 @@ type containerBackend struct {
 	// exactly one round trip, not one each, ONCE a probe has actually
 	// succeeded.
 	//
-	// [Blocker, PR4 codex review round 2]: a plain sync.Once (this field's
-	// pre-fix shape) would cache a FAILED probe just as permanently as a
+	// A plain sync.Once would cache a FAILED probe just as permanently as a
 	// successful one — silently disabling resolveHostArch's arch mismatch
 	// fail-fast for the rest of this backend's lifetime after one
-	// transient /info hiccup, directly contradicting docs/plans/
-	// release-onboarding.md 決定5's "must" fail-fast requirement. infoOK
-	// only flips true on success, so a failed probe is retried on every
-	// subsequent resolveImage/resolveUsernsMode call instead of being
-	// cached as a permanent "unknown" — resolveUsernsMode's own posture
-	// (a failure there is fine to degrade forever, per its own doc
-	// comment) is unaffected: it still only ever calls resolveEngineInfo
-	// once via usernsOnce above, so a later successful retry (triggered by
-	// a DIFFERENT job's resolveHostArch call) never revisits an
-	// already-decided usernsMode.
+	// transient /info hiccup. infoOK only flips true on success, so a
+	// failed probe is retried on every subsequent resolveImage/
+	// resolveUsernsMode call instead of being cached as a permanent
+	// "unknown" — resolveUsernsMode's own posture (a failure there is fine
+	// to degrade forever, per its own doc comment) is unaffected: it still
+	// only ever calls resolveEngineInfo once via usernsOnce above, so a
+	// later successful retry (triggered by a DIFFERENT job's
+	// resolveHostArch call) never revisits an already-decided usernsMode.
 	infoMu sync.Mutex
 	infoOK bool
 	info   client.SystemInfoResult
@@ -139,15 +126,14 @@ type containerBackend struct {
 	// adopting tracks in-flight Adopt cache-miss resolutions, keyed by
 	// runtimeID, so concurrent Adopt calls for the same runtimeID share one
 	// inspect/attach instead of each starting their own (see Adopt's doc
-	// comment, PR5 review Major 5).
+	// comment).
 	adopting map[string]*adoptAttempt
 }
 
 var _ backend.SandboxBackend = (*containerBackend)(nil)
 
 // ImagePullPolicy controls when containerBackend.Launch pulls an image
-// before creating a container from it (docs/plans/
-// phase6-container-backend.md §PR5's "default/pull policy").
+// before creating a container from it.
 type ImagePullPolicy int
 
 const (
@@ -173,10 +159,10 @@ type ContainerBackendOptions struct {
 	// PullPolicy controls image pulling (see ImagePullPolicy). Zero value
 	// is ImagePullIfNotPresent.
 	PullPolicy ImagePullPolicy
-	// UID/GID select the `--user <uid>:<gid>` job containers run as (§決定
-	// 4 — non-root; docs/plans/release-onboarding.md 決定1/PR2 — arbitrary-
-	// uid, gid 0 + `g=u` group permissions, self-registered into
-	// /etc/passwd at runtime rather than baked per-uid at image build
+	// UID/GID select the `--user <uid>:<gid>` job containers run as
+	// (non-root by policy; see docs/plans/release-onboarding.md for the
+	// arbitrary-uid, gid-0 + `g=u` group permission design, self-registered
+	// into /etc/passwd at runtime rather than baked per-uid at image build
 	// time). nil means "unset". A custom pair is only honored when BOTH
 	// are provided (non-nil) AND uid resolves to non-zero — anything else
 	// (both unset, only one set, or uid == 0) falls back to 1000:0 (the
@@ -184,60 +170,43 @@ type ContainerBackendOptions struct {
 	// why the fallback gid is 0, not 1000) rather than silently running
 	// the job as root.
 	//
-	// gid == 0 is DELIBERATELY allowed through as a real value, not
-	// rejected the way it was before PR2: compose's `user: "<uid>:0"`
-	// (build/container/compose.yml) is the whole point of the gid-0
-	// arbitrary-uid design, and internal/server/wire.go's
+	// gid == 0 is DELIBERATELY allowed through as a real value: compose's
+	// `user: "<uid>:0"` (build/container/compose.yml) is the whole point of
+	// the gid-0 arbitrary-uid design, and internal/server/wire.go's
 	// sandboxBackendForConfig passes the DAEMON's own os.Getuid()/
 	// os.Getgid() straight through here — under that compose config
 	// os.Getgid() legitimately IS 0. Only uid == 0 remains a hard reject
-	// (決定 4 still requires non-root job containers; gid 0 is a *group*,
-	// not "running as root").
+	// (job containers must be non-root; gid 0 is a *group*, not "running
+	// as root").
 	//
 	// This is nullable (*int, not int) specifically so "unset" and
 	// "explicitly 0" are distinguishable: an int-typed field couldn't
 	// tell `UID: 0` (meant as "use the default") apart from a caller who
-	// actually passed 0, which let a partial override like `UID: 0, GID:
-	// 1000` slip through as a root container (fixed — see the PR5
-	// review's Major 1). A real UID 0 override is never a use case this
-	// backend supports (決定 4 requires non-root); GID 0 is (この doc
-	// comment 自身、PR2 で「both resolve to non-zero」から更新).
+	// actually passed 0, which would let a partial override like
+	// `UID: 0, GID: 1000` slip through as a root container.
 	UID, GID *int
 	// InstallID is the value stamped on every container's boid.install_id
-	// label (§決定 6). Empty is valid — install_id generation lands in PR6
-	// (~/.local/share/boid/install_id LoadOrCreate); PR5's ReapOrphans uses
-	// a global (not install_id-scoped) label filter until then, per the
-	// plan doc's PR5 TODO note.
+	// label. Empty is valid (e.g. before install_id generation has run);
+	// ReapOrphans then uses a global, not install_id-scoped, label filter.
 	InstallID string
 	// DiagnosticsCollector, when set, is called exactly once per exited
 	// container — after containerSession.waitLoop finalizes exit state and
 	// unblocks every Wait() caller, but strictly before the container (and
-	// its volumes) are removed. This is the hook §決定 7's "診断回収 →
-	// job fallback 処理 → resource remove" ordering contract requires: the
-	// pre-fix waitLoop called close(s.done) and then immediately removed
-	// the container in the same goroutine, racing ahead of any diagnostic
-	// work a woken Wait() caller might still need to do against the live
-	// container (e.g. a `docker inspect` for OOM/exit-reason before it's
-	// gone — 決定 8's silent-exit classification, PR7's job). PR5 leaves
-	// this nil (no consumer yet — see NewContainerBackend's doc comment on
-	// production wiring); ContainerRemove is unconditionally sequenced
-	// after it returns so a future collector can never lose its window.
+	// its volumes) are removed. This ordering matters because a diagnostic
+	// step (e.g. a `docker inspect` for OOM/exit-reason) needs the
+	// container to still exist; ContainerRemove is unconditionally
+	// sequenced after this returns so a collector can never lose its
+	// window. nil (no consumer wired) disables diagnostics collection
+	// entirely.
 	DiagnosticsCollector func(ctx context.Context, containerID string, exit backend.RuntimeExit)
 
 	// DockerTLSCA, when non-nil, is the mTLS CA (internal/mtls.CA) Launch
 	// uses to issue a short-lived per-job client certificate for any spec
-	// launched with LaunchOptions.DockerEnabled — §決定5's "per-job 短命
-	// client cert (mTLS) を... env で配送" (the plan's chosen delivery style;
-	// a URL-path-embedded token was ruled out because DOCKER_HOST cannot
-	// carry a path). nil (every pre-PR6 caller) disables this entirely: no
-	// cert is issued, no DOCKER_* env is added, no bind mount is created —
-	// byte-for-byte the same Launch behavior as before this field existed.
-	// Real production wiring of a daemon-owned CA into this field, and of a
-	// compose-reachable dockerproxy TCP listener behind DockerProxyAddr, is
-	// PR6-residual/PR7 territory (see build/container/compose.yml's own
-	// "NOT yet true of this file" note) — this option exists so the
-	// materialize-cert / mount / env-delivery mechanics are real and
-	// unit-tested ahead of that wiring landing.
+	// launched with LaunchOptions.DockerEnabled. A URL-path-embedded token
+	// was ruled out because DOCKER_HOST cannot carry a path, hence env
+	// delivery. nil disables this entirely: no cert is issued, no
+	// DOCKER_* env is added, no bind mount is created — byte-for-byte the
+	// same Launch behavior as before this field existed.
 	DockerTLSCA *mtls.CA
 	// DockerProxyAddr is the compose-network `host:port` (typically a
 	// compose service DNS name) job containers' DOCKER_HOST env should
@@ -249,19 +218,16 @@ type ContainerBackendOptions struct {
 	// comment) materializeDockerClientCert writes each job's per-job TLS
 	// material (cert.pem/key.pem/ca.pem) under, as
 	// <RuntimeDir>/tls/<jobID>/, instead of a fresh os.MkdirTemp("", ...)
-	// directory (Major 11, PR6 codex review). This matters because Launch
-	// is a DooD (docker-out-of-docker) backend: the container it creates
-	// is a SIBLING via the HOST's own docker daemon, not nested inside
-	// this daemon's own container, so a mount Source it hands that
-	// daemon has to be a path the host filesystem actually has.
-	// os.MkdirTemp's default (this daemon container's own, typically
-	// unmounted, private /tmp) is not one — the sibling docker daemon
-	// would either mount the wrong host directory or fail outright. Empty
-	// (every pre-this-field caller/test) falls back to the prior
-	// os.MkdirTemp("", ...) behavior unchanged — correct for any caller
-	// NOT running under a compose deploy with BOID_RUNTIME_DIR bind
-	// mounted (e.g. every existing unit test, which shares a real host
-	// /tmp with its own test process either way).
+	// directory. This matters because Launch is a DooD
+	// (docker-out-of-docker) backend: the container it creates is a
+	// SIBLING via the HOST's own docker daemon, not nested inside this
+	// daemon's own container, so a mount Source it hands that daemon has
+	// to be a path the host filesystem actually has. os.MkdirTemp's
+	// default (this daemon container's own, typically unmounted, private
+	// /tmp) is not one — the sibling docker daemon would either mount the
+	// wrong host directory or fail outright. Empty falls back to the
+	// prior os.MkdirTemp("", ...) behavior — correct for any caller NOT
+	// running under a compose deploy with BOID_RUNTIME_DIR bind mounted.
 	RuntimeDir string
 
 	// TranscriptDir, when non-empty, is where openTranscriptSpool spools
@@ -275,57 +241,47 @@ type ContainerBackendOptions struct {
 	// DO require RuntimeDir's host-visibility). So TranscriptDir can point at
 	// a real persistent volume (e.g. the daemon's own boid_state-backed data
 	// home) instead of RuntimeDir's typical host tmpfs
-	// (BOID_RUNTIME_DIR/XDG_RUNTIME_DIR) — fixing the "every job transcript
-	// is lost on host reboot" gap hostVisibleRuntimesDirFor's own doc comment
-	// (internal/server/wire.go) flags. Empty (every pre-this-field caller)
-	// falls back to RuntimeDir, unchanged from before this field existed —
-	// see openTranscriptSpool's own fallback.
+	// (BOID_RUNTIME_DIR/XDG_RUNTIME_DIR), so a transcript survives a host
+	// reboot. Empty falls back to RuntimeDir — see openTranscriptSpool's
+	// own fallback.
 	TranscriptDir string
 
 	// SelfContainerID, when non-empty, is this daemon's OWN docker container
 	// ID (or name) — typically `os.Getenv("HOSTNAME")`, which docker sets to
 	// a container's own short ID unless overridden, inside the compose
-	// daemon service itself (see sandboxBackendForConfig's wiring). PR9
-	// (docs/plans/phase6-container-backend.md §決定5, §PR9): a job launched
-	// with a non-empty LaunchOptions.Workspace is confined to an `Internal:
-	// true` per-workspace network with no route out — the ONLY way it can
-	// still reach the git gateway (mandatory: every project-visible
-	// dispatch clones, see runner.go's Visibility.Clone comment), the
-	// egress proxy, or the broker (docs/plans/phase6-cutover-followups.md
-	// §⓪ — all three hosted in-process in this same daemon container,
-	// §決定4/5) is if the daemon container ALSO joins that network, under
-	// the same "boid-gateway"/"boid-egress"/"boid-broker" DNS aliases a job
-	// resolves on the static `boid_internal` compose network. Empty (every
-	// pre-PR9 caller, and any non-compose test/DI usage) skips the
-	// self-connect step entirely — ensureWorkspaceNetwork still creates the
-	// isolated network and attaches the job container to it, just without
-	// also connecting the daemon, matching every unit test's expectations
-	// unchanged.
+	// daemon service itself (see sandboxBackendForConfig's wiring). A job
+	// launched with a non-empty LaunchOptions.Workspace is confined to an
+	// `Internal: true` per-workspace network with no route out — the ONLY
+	// way it can still reach the git gateway (mandatory: every
+	// project-visible dispatch clones, see runner.go's Visibility.Clone
+	// comment), the egress proxy, or the broker (all three hosted
+	// in-process in this same daemon container) is if the daemon container
+	// ALSO joins that network, under the same
+	// "boid-gateway"/"boid-egress"/"boid-broker" DNS aliases a job resolves
+	// on the static `boid_internal` compose network. Empty (any non-compose
+	// test/DI usage) skips the self-connect step entirely —
+	// ensureWorkspaceNetwork still creates the isolated network and
+	// attaches the job container to it, just without also connecting the
+	// daemon.
 	SelfContainerID string
 
 	// BrokerTLSCA, when non-nil, is the mTLS CA (internal/mtls.CA) Launch
 	// uses to issue a short-lived per-job client certificate for the
-	// broker's TCP(mTLS) listener (docs/plans/phase6-cutover-followups.md
-	// §⓪ "broker TCP wire completion") — the broker-side analogue of
-	// DockerTLSCA above. Unlike DockerTLSCA (gated on
-	// LaunchOptions.DockerEnabled — only a docker-capable job needs the
-	// dockerproxy identity), Launch materializes a broker cert
-	// unconditionally whenever this is non-nil: every non-foreground job
-	// posts `boid job done` through the broker at minimum (the former
-	// EXIT-trap replacement, internal/sandbox/runner.postJobDone), and most
-	// hooks also call task-context/payload-patch RPCs, so "does this job
-	// need broker RPC" is not a meaningful per-job gate the way
-	// DockerEnabled is. nil (every pre-this-feature caller) disables the
-	// whole feature: no cert is issued, no BOID_BROKER_TLS_* env is added,
-	// no bind mount is created — byte-for-byte the same Launch behavior as
-	// before this field existed. The design decision behind keeping mTLS
-	// here (rather than downgrading to mtls.CA.ServerOnlyTLSConfig the way
-	// the git gateway TLS fix — commit 577f9a8 — did) is documented on
-	// mtls.CA.ServerOnlyTLSConfig's own doc comment and
-	// docs/plans/phase6-cutover-followups.md §⓪: the broker is an
-	// arbitrary-RPC endpoint (task update, job done, host-command exec),
-	// not a single-purpose per-job-token-authorized clone endpoint like the
-	// gateway, so per-connection client identity binding is worth keeping.
+	// broker's TCP(mTLS) listener — the broker-side analogue of DockerTLSCA
+	// above. Unlike DockerTLSCA (gated on LaunchOptions.DockerEnabled —
+	// only a docker-capable job needs the dockerproxy identity), Launch
+	// materializes a broker cert unconditionally whenever this is non-nil:
+	// every non-foreground job posts `boid job done` through the broker at
+	// minimum (internal/sandbox/runner.postJobDone), and most hooks also
+	// call task-context/payload-patch RPCs, so "does this job need broker
+	// RPC" is not a meaningful per-job gate the way DockerEnabled is. nil
+	// disables the whole feature: no cert is issued, no BOID_BROKER_TLS_*
+	// env is added, no bind mount is created. mTLS (rather than
+	// mtls.CA.ServerOnlyTLSConfig) is kept here — see that method's own doc
+	// comment — because the broker is an arbitrary-RPC endpoint (task
+	// update, job done, host-command exec), not a single-purpose
+	// per-job-token-authorized clone endpoint like the gateway, so
+	// per-connection client identity binding is worth keeping.
 	BrokerTLSCA *mtls.CA
 	// BrokerTLSAddr is a pointer to the compose-network `host:port`
 	// (composeBrokerServiceName + the broker's actual bound TLS port, e.g.
@@ -356,9 +312,8 @@ type ContainerBackendOptions struct {
 
 const (
 	defaultContainerUID = 1000
-	// defaultContainerGID is 0, not 1000 (codex review of PR2, Major 2):
-	// the arbitrary-uid image (build/container/Dockerfile, docs/plans/
-	// release-onboarding.md 決定1) only makes /run/boid/bin, /workspace,
+	// defaultContainerGID is 0, not 1000: the arbitrary-uid image
+	// (build/container/Dockerfile) only makes /run/boid/bin, /workspace,
 	// and /home/boid group-0-writable (`chgrp -R 0` + `chmod -R g=u`) —
 	// it does NOT chown them to uid 1000 specifically anymore. A fallback
 	// of 1000:1000 would put a job container in NO group with write access
@@ -368,10 +323,7 @@ const (
 	// actually works against this image regardless of which uid 1000
 	// happens to belong to.
 	defaultContainerGID = 0
-	// defaultPidsLimit is the fork-bomb-safety default the scope note
-	// allows as an "implementation-time optional" item (docs/plans/
-	// phase6-container-backend.md スコープ節 — full cgroup vocabulary is
-	// Phase 7, but a PidsLimit default is explicitly permitted now).
+	// defaultPidsLimit is the fork-bomb-safety default.
 	defaultPidsLimit int64 = 512
 
 	// attachDrainGracePeriod bounds how long containerSession.waitLoop
@@ -379,19 +331,17 @@ const (
 	// daemon closes the stream once the container's own stdout/stderr
 	// pipes are fully flushed) before force-closing the connection itself.
 	// A container's output can still be arriving on the attach stream for
-	// a short window after ContainerWait resolves — closing immediately,
-	// as PR5 originally did, could truncate a final burst of output
-	// emitted right at exit (PR5 review Major 3).
+	// a short window after ContainerWait resolves — closing immediately
+	// could truncate a final burst of output emitted right at exit.
 	attachDrainGracePeriod = 500 * time.Millisecond
 
 	// containerSpecPath / containerStatePath are the fixed sandbox-internal
 	// paths the sandbox JSON spec / runner-state.json diagnostic file are
-	// bind-mounted at — the container-backend analogue of the userns
-	// backend's `--spec`/`--state` CLI flags pointing at host paths
-	// runner-outer reads directly (userns has no such mount because it
-	// shares the host mount namespace before pivot_root; a sibling
-	// container needs an explicit bind). `boid runner-container`
-	// (cmd/runner_container.go, PR2) is invoked with `--spec
+	// bind-mounted at — a sibling container needs an explicit bind for these
+	// (unlike the userns backend, which shares the host mount namespace
+	// before pivot_root and can pass `--spec`/`--state` CLI flags pointing
+	// at host paths directly). `boid runner-container`
+	// (cmd/runner_container.go) is invoked with `--spec
 	// containerSpecPath --state containerStatePath` as its Cmd (the image's
 	// ENTRYPOINT is already `["/usr/local/bin/boid","runner-container"]` —
 	// see build/container/Dockerfile — so Cmd carries only the trailing
@@ -401,7 +351,7 @@ const (
 	containerStatePath = "/run/boid/state.json"
 
 	// containerDockerTLSDir is the fixed container-internal path a per-job
-	// dockerproxy client cert (§決定5) is bind-mounted at, and the value the
+	// dockerproxy client cert is bind-mounted at, and the value the
 	// job's DOCKER_CERT_PATH env is set to. docker CLI's own
 	// DOCKER_CERT_PATH convention expects exactly cert.pem/key.pem/ca.pem
 	// under this directory (dockerCertFileName / dockerKeyFileName /
@@ -413,21 +363,21 @@ const (
 	dockerCAFileName   = "ca.pem"
 
 	// perJobDockerCertValidity bounds how long a per-job dockerproxy client
-	// cert (materializeDockerClientCert) stays valid (Blocker 4, PR6 codex
-	// review) — deliberately far short of mtls.CA's default 30-day leaf
-	// validity: this cert is bind-mounted read-only into a job container
-	// whose own lifetime is normally minutes, and a copy the job's own
-	// process makes onto a sibling before exiting must not remain usable
-	// long after the job's materialization directory (dockerTLSDir, always
-	// removed on exit — see containerSession's own doc comment) is gone.
-	// Full job-identity binding (cert CN/SAN → job_id, verified by
-	// dockerproxy itself) is PR7 scope per the plan doc; this short leaf
-	// validity is PR6's "revocation by expiry" mitigation in the meantime.
+	// cert (materializeDockerClientCert) stays valid — deliberately far
+	// short of mtls.CA's default 30-day leaf validity: this cert is
+	// bind-mounted read-only into a job container whose own lifetime is
+	// normally minutes, and a copy the job's own process makes onto a
+	// sibling before exiting must not remain usable long after the job's
+	// materialization directory (dockerTLSDir, always removed on exit —
+	// see containerSession's own doc comment) is gone. This short leaf
+	// validity is a "revocation by expiry" mitigation in place of full
+	// job-identity binding (cert CN/SAN → job_id, verified by dockerproxy
+	// itself).
 	perJobDockerCertValidity = time.Hour
 
 	// containerBrokerTLSDir is the fixed container-internal path a per-job
-	// broker client cert (docs/plans/phase6-cutover-followups.md §⓪) is
-	// bind-mounted at — the broker-side analogue of containerDockerTLSDir.
+	// broker client cert is bind-mounted at — the broker-side analogue of
+	// containerDockerTLSDir.
 	// Deliberately under /run/boid/bin (not /run/boid itself), same
 	// rationale as containerGitGatewayCAPath's own doc comment
 	// (sandbox_builder.go): only /run/boid/bin is chowned to the job uid
@@ -464,19 +414,15 @@ const (
 	// the exception, not something we want to fail on".
 	perJobBrokerCertValidity = 24 * time.Hour
 
-	// Resource labels (§決定 6/9): boid.job_id + boid.workspace are always
-	// set; boid.install_id is set whenever ContainerBackendOptions.InstallID
-	// is non-empty (PR6 territory — see its doc comment). ReapOrphans (§決定
-	// 6) filters on the mere presence of boid.job_id ("global filter") since
-	// install_id-scoped filtering needs PR6's install_id generation.
+	// Resource labels: boid.job_id + boid.workspace are always set;
+	// boid.install_id is set whenever ContainerBackendOptions.InstallID is
+	// non-empty. ReapOrphans filters on the mere presence of boid.job_id
+	// ("global filter") when install_id-scoped filtering is unavailable.
 	//
 	// The literals themselves live in internal/dockerres, the import-free
 	// leaf package internal/reap and internal/sandbox/dockerproxy can reach
-	// too (docs/plans/workspace-home-volume-persistence.md PR1 §D2). The
-	// aliases below are kept so this package's many existing call sites need
-	// no rewrite; the previous arrangement — each package hand-typing its
-	// own copy of "boid.install_id" with a doc comment warning about drift —
-	// is gone, and with it the drift.
+	// too. The aliases below are kept so this package's many existing call
+	// sites need no rewrite.
 	labelJobID     = dockerres.LabelJobID
 	labelWorkspace = dockerres.LabelWorkspace
 	labelInstallID = dockerres.LabelInstallID
@@ -489,39 +435,29 @@ const (
 	LabelInstallID = labelInstallID
 
 	// boidRunnerProtocolLabel / boidRunnerProtocolVersion gate workspace
-	// image overrides (§決定 11): an override image must carry this label
-	// with this exact value before containerBackend.Launch will use it.
+	// image overrides: an override image must carry this label with this
+	// exact value before containerBackend.Launch will use it.
 	// build/container/Dockerfile bakes it (pinned by
 	// TestBoidRunnerProtocolLabel_IsBakedIntoTheImage against the Dockerfile
 	// and by the image-build CI job against a built image).
 	//
-	// This is a COMPATIBILITY DECLARATION, not a provenance proof, and the
-	// distinction is worth stating because this comment used to claim the
-	// stronger thing ("proving it derives from the shared boid base image").
-	// A label is three lines of Dockerfile that anyone can write, so it
-	// establishes nothing about an image's origin; what it catches is an
-	// override aimed at an image that was never meant to be a boid runner,
-	// turning a confusing mid-job failure into a clear launch-time one. Real
+	// This is a COMPATIBILITY DECLARATION, not a provenance proof. A label
+	// is three lines of Dockerfile that anyone can write, so it establishes
+	// nothing about an image's origin; what it catches is an override aimed
+	// at an image that was never meant to be a boid runner, turning a
+	// confusing mid-job failure into a clear launch-time one. Real
 	// provenance would be a separate mechanism (signatures, a registry
 	// allowlist), not a stricter reading of this check.
-	//
-	// Until 2026-07-28 nothing baked the label at all, so EVERY override was
-	// rejected — including boid's own boid-runner:latest named explicitly —
-	// while `container_image` remained a public field on the DB row, the
-	// envelope and the spec. The comment here justified that with "safe
-	// because containerBackend is not wired into production dispatch as of
-	// PR5", a premise the container cutover retired without the conclusion
-	// being revisited.
 	boidRunnerProtocolLabel   = "boid.runner_protocol"
 	boidRunnerProtocolVersion = "v1"
 
 	// composeGatewayServiceName duplicates internal/server's own unexported
-	// composeGatewayServiceName constant (PR9, §決定5's daemon-self-connect —
-	// see ContainerBackendOptions.SelfContainerID's doc comment). Not
-	// imported: internal/server already imports internal/dispatcher, so the
-	// reverse would cycle — the same reasoning composeEgressServiceName's
-	// own doc comment (above/below in this package) already documents for
-	// the identical situation. Must stay in sync with internal/server/
+	// composeGatewayServiceName constant — see
+	// ContainerBackendOptions.SelfContainerID's doc comment. Not imported:
+	// internal/server already imports internal/dispatcher, so the reverse
+	// would cycle — the same reasoning composeEgressServiceName's own doc
+	// comment (above/below in this package) already documents for the
+	// identical situation. Must stay in sync with internal/server/
 	// server.go's composeGatewayServiceName and build/container/compose.yml's
 	// own "boid-gateway" alias.
 	composeGatewayServiceName = "boid-gateway"
@@ -544,14 +480,9 @@ const (
 // why the parameter is this narrower interface rather than that concrete
 // type — or a fake for tests).
 //
-// As of PR7 (docs/plans/phase6-container-backend.md §PR7 cutover),
 // internal/server/wire.go's sandboxBackendForConfig calls this in
-// production when config.yaml sets `sandbox.backend: container`, and
-// assigns the result to Runner.Backend — the same DI seam
-// (internal/dispatcher/runner.go, landed PR1) tests have exercised this
-// backend through since PR5. Every pre-PR7 caller (and every test that
-// doesn't opt in via that config key) is unaffected: Runner.Backend stays
-// nil and Runner.sandboxBackend() keeps constructing the usernsBackend.
+// production and assigns the result to Runner.Backend (the same DI seam,
+// internal/dispatcher/runner.go, tests exercise this backend through).
 func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.SandboxBackend {
 	b := &containerBackend{
 		api:                  api,
@@ -569,27 +500,25 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 		sessions:             make(map[string]*containerSession),
 	}
 	if b.defaultImage == "" {
-		// docs/plans/release-onboarding.md 穴4: the fallback image ref is
-		// no longer a bare, registry-less "boid-runner:latest" (which a
-		// pull would send to docker.io, not GHCR, and fail) — it now
-		// tracks this binary's own version identity, so a released daemon
-		// pulls its own matching job-container image by default.
+		// The fallback image ref is not a bare, registry-less
+		// "boid-runner:latest" (which a pull would send to docker.io, not
+		// GHCR, and fail) — it tracks this binary's own version identity,
+		// so a released daemon pulls its own matching job-container image
+		// by default.
 		b.defaultImage = version.DefaultContainerImage()
 	}
 	b.uid, b.gid = defaultContainerUID, defaultContainerGID
 	switch {
-	// uid == 0 remains a hard reject (決定 4: job containers must be
-	// non-root); gid == 0 is a real, honored value as of PR2 (docs/plans/
-	// release-onboarding.md 決定1) — see ContainerBackendOptions.UID's doc
-	// comment for why the gid-0 case is not "running as root".
+	// uid == 0 remains a hard reject (job containers must be non-root);
+	// gid == 0 is a real, honored value — see ContainerBackendOptions.UID's
+	// doc comment for why the gid-0 case is not "running as root".
 	case opts.UID != nil && opts.GID != nil && *opts.UID != 0:
 		b.uid, b.gid = *opts.UID, *opts.GID
 	case opts.UID != nil || opts.GID != nil:
 		// A partial override (only one of the two set) or a uid that
 		// resolves to root (uid == 0, regardless of gid) is rejected in
 		// favor of the non-root default — see
-		// ContainerBackendOptions.UID's doc comment and the PR5 review's
-		// Major 1.
+		// ContainerBackendOptions.UID's doc comment.
 		slog.Warn("container backend: rejecting partial or root uid override; using default (§決定 4 requires non-root)",
 			"uid", formatIntPtr(opts.UID), "gid", formatIntPtr(opts.GID),
 			"default_uid", defaultContainerUID, "default_gid", defaultContainerGID)
@@ -599,11 +528,11 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 
 // IsContainerBackend reports whether be is a containerBackend constructed
 // by NewContainerBackend. Exists solely as an external-package
-// introspection helper for docs/plans/phase6-container-backend.md §PR7's
-// config-driven backend-selection wiring (internal/server/wire.go's
-// sandboxBackendForConfig) — that package cannot type-assert against the
-// unexported *containerBackend type directly, and this is cheaper for a
-// test to depend on than reflect-based %T string matching.
+// introspection helper for config-driven backend-selection wiring
+// (internal/server/wire.go's sandboxBackendForConfig) — that package cannot
+// type-assert against the unexported *containerBackend type directly, and
+// this is cheaper for a test to depend on than reflect-based %T string
+// matching.
 func IsContainerBackend(be backend.SandboxBackend) bool {
 	_, ok := be.(*containerBackend)
 	return ok
@@ -613,12 +542,11 @@ func IsContainerBackend(be backend.SandboxBackend) bool {
 // containerBackend constructed with a non-nil
 // ContainerBackendOptions.DiagnosticsCollector. Exists solely as an
 // external-package introspection helper — the same rationale as
-// IsContainerBackend's own doc comment — for [Major 7, PR7 codex review]'s
-// production wiring test (internal/server/wire_backend_test.go): that
-// package can observe that sandboxBackendForConfig actually wired
-// NewDefaultDiagnosticsCollector in without being able to name (or
-// type-assert into) the unexported *containerBackend/diagnosticsCollector
-// fields directly.
+// IsContainerBackend's own doc comment — so a production wiring test
+// (internal/server/wire_backend_test.go) can observe that
+// sandboxBackendForConfig actually wired NewDefaultDiagnosticsCollector in
+// without being able to name (or type-assert into) the unexported
+// *containerBackend/diagnosticsCollector fields directly.
 func ContainerBackendHasDiagnosticsCollector(be backend.SandboxBackend) bool {
 	cb, ok := be.(*containerBackend)
 	if !ok {
@@ -632,12 +560,11 @@ func ContainerBackendHasDiagnosticsCollector(be backend.SandboxBackend) bool {
 // unset/partial/root-resolving-pair rejection has already run — see
 // ContainerBackendOptions.UID's doc comment), and false if be is not a
 // *containerBackend. Same external-package introspection rationale as
-// ContainerBackendHasDiagnosticsCollector — for
-// internal/server/wire_backend_test.go's own pin that
-// sandboxBackendForConfig wires the daemon's actual os.Getuid()/os.Getgid()
-// through (PR9, §決定4 — see sandboxBackendForConfig's own doc comment for
-// why a mismatch here silently broke every job's access to its own
-// workspace home directory).
+// ContainerBackendHasDiagnosticsCollector — used by
+// internal/server/wire_backend_test.go to pin that sandboxBackendForConfig
+// wires the daemon's actual os.Getuid()/os.Getgid() through (a mismatch
+// here would silently break every job's access to its own workspace home
+// directory).
 func ContainerBackendUIDGID(be backend.SandboxBackend) (uid, gid int, ok bool) {
 	cb, isContainer := be.(*containerBackend)
 	if !isContainer {
@@ -653,12 +580,11 @@ func ContainerBackendUIDGID(be backend.SandboxBackend) (uid, gid int, ok bool) {
 // already run), and false if be is not a *containerBackend. Same
 // external-package introspection rationale as IsContainerBackend's own doc
 // comment — used by internal/server/wire_backend_test.go to pin that
-// sandboxBackendForConfig threads BOID_IMAGE through (docs/plans/
-// release-onboarding.md 穴4/PR4 codex review: the daemon and the job
-// containers it launches must agree on the same image ref, or a daemon
+// sandboxBackendForConfig threads BOID_IMAGE through: the daemon and the
+// job containers it launches must agree on the same image ref, or a daemon
 // that pulled its own GHCR image successfully can still fail every job
 // dispatch trying to pull an unrelated, unqualified "boid-runner:latest"
-// from docker.io).
+// from docker.io.
 func ContainerBackendDefaultImage(be backend.SandboxBackend) (string, bool) {
 	cb, isContainer := be.(*containerBackend)
 	if !isContainer {
@@ -673,11 +599,10 @@ func ContainerBackendDefaultImage(be backend.SandboxBackend) (string, bool) {
 // ContainerBackendOptions.BrokerTLSAddr pointer fresh, "" if the pointer
 // itself is nil or points at an empty string). Same external-package
 // introspection rationale as ContainerBackendUIDGID/
-// ContainerBackendHasDiagnosticsCollector — for
-// internal/server/wire_backend_test.go's own pin that sandboxBackendForConfig
+// ContainerBackendHasDiagnosticsCollector — used by
+// internal/server/wire_backend_test.go to pin that sandboxBackendForConfig
 // actually wires the daemon's CA + late-binding address pointer into the
-// containerBackend it constructs (docs/plans/phase6-cutover-followups.md
-// §⓪).
+// containerBackend it constructs.
 func ContainerBackendBrokerTLS(be backend.SandboxBackend) (addr string, hasCA bool, ok bool) {
 	cb, isContainer := be.(*containerBackend)
 	if !isContainer {
@@ -694,17 +619,14 @@ func ContainerBackendBrokerTLS(be backend.SandboxBackend) (addr string, hasCA bo
 // non-nil docker clients". Same external-package introspection rationale as
 // ContainerBackendUIDGID/ContainerBackendBrokerTLS.
 //
-// It exists because the wiring test for [round 2 Major 2, codex review
-// 2026-07-26] could not state its own claim from internal/server [round 3
-// Minor 2]: buildRuntime must hand the container backend and the
-// daemon-state-volume self-inspection (DetectDaemonStateVolumes) THE SAME
-// client.New(client.FromEnv) result, and asserting only that each got some
-// non-nil *client.Client passes just as happily on a regression that builds
-// two — which is exactly the shape round 2 removed, and exactly the shape (a
-// second synchronous DOCKER_CERT_PATH read on the startup path) whose cost is
-// invisible until a wedged filesystem hangs `boid start`. A nil api never
-// matches, so the helper cannot report a shared handle where neither side has
-// one.
+// It exists so a wiring test in internal/server can assert that buildRuntime
+// hands the container backend and the daemon-state-volume self-inspection
+// (DetectDaemonStateVolumes) THE SAME client.New(client.FromEnv) result —
+// asserting only that each got some non-nil *client.Client would pass just
+// as happily on a regression that builds two, costing a second synchronous
+// DOCKER_CERT_PATH read on the startup path whose cost is invisible until a
+// wedged filesystem hangs `boid start`. A nil api never matches, so the
+// helper cannot report a shared handle where neither side has one.
 func ContainerBackendUsesDockerAPI(be backend.SandboxBackend, api any) bool {
 	cb, isContainer := be.(*containerBackend)
 	if !isContainer || api == nil || cb.api == nil {
@@ -748,13 +670,12 @@ type dockerAPI interface {
 	ContainerResize(ctx context.Context, containerID string, options client.ContainerResizeOptions) (client.ContainerResizeResult, error)
 	ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
-	// ContainerLogs [Major 7, PR7 codex review]: consumed by
-	// NewDefaultDiagnosticsCollector (container_backend_diagnostics.go) to
-	// capture a container's own docker-side log buffer as part of
-	// silent-exit diagnosis (§決定8's third primitive) — the attach-stream
-	// transcript spool can still be truncated/empty for an OOM-killed or
-	// setup-failure container, but dockerd's own log buffer independently
-	// retains output up to the moment of a SIGKILL.
+	// ContainerLogs is consumed by NewDefaultDiagnosticsCollector
+	// (container_backend_diagnostics.go) to capture a container's own
+	// docker-side log buffer as part of silent-exit diagnosis — the
+	// attach-stream transcript spool can still be truncated/empty for an
+	// OOM-killed or setup-failure container, but dockerd's own log buffer
+	// independently retains output up to the moment of a SIGKILL.
 	ContainerLogs(ctx context.Context, containerID string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error)
 
 	ImageInspect(ctx context.Context, image string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error)
@@ -762,9 +683,9 @@ type dockerAPI interface {
 
 	NetworkList(ctx context.Context, options client.NetworkListOptions) (client.NetworkListResult, error)
 	NetworkRemove(ctx context.Context, networkID string, options client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
-	// NetworkCreate / NetworkConnect (PR9, §決定5): ensureWorkspaceNetwork's
-	// idempotent per-workspace `Internal: true` network + daemon-self-connect
-	// (see ContainerBackendOptions.SelfContainerID's doc comment).
+	// NetworkCreate / NetworkConnect: ensureWorkspaceNetwork's idempotent
+	// per-workspace `Internal: true` network + daemon-self-connect (see
+	// ContainerBackendOptions.SelfContainerID's doc comment).
 	NetworkCreate(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error)
 	NetworkConnect(ctx context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error)
 	// NetworkInspect backs WorkspaceNetworkCIDRs: the per-workspace network's
@@ -789,14 +710,12 @@ type dockerAPI interface {
 // name a Workspace-scoped Launch (and the runner's own matching
 // SetWorkspaceNetwork call for that job's dockerproxy — see runner.go's
 // startDockerProxy caller) both compute independently for the SAME
-// (installID, workspace) pair (PR9, §決定5's "internal network は workspace
-// 単位で分離する").
+// (installID, workspace) pair.
 //
-// A thin delegate to internal/dockerres.WorkspaceNetworkName, which now owns
-// the naming convention so internal/sandbox/dockerproxy's reserved-namespace
-// policy and internal/reap's skip rules key off the exact same prefix
-// (docs/plans/workspace-home-volume-persistence.md PR1 §D2). Kept as a
-// package-local name because both this file and runner.go call it.
+// A thin delegate to internal/dockerres.WorkspaceNetworkName, which owns the
+// naming convention so internal/sandbox/dockerproxy's reserved-namespace
+// policy and internal/reap's skip rules key off the exact same prefix. Kept
+// as a package-local name because both this file and runner.go call it.
 //
 // The sanitizeDockerNamePart helper that used to live next to it moved to
 // dockerres.SanitizeNamePart wholesale rather than staying behind as a
@@ -854,12 +773,12 @@ func isAlreadyConnectedNetworkError(err error) bool {
 // Fails closed on a genuine NetworkCreate error (anything other than an
 // "already exists" conflict — every concurrent/repeat Launch for the same
 // workspace hits this path, since there is no first-call/cache
-// distinction): §決定5 frames workspace network isolation as a security
-// invariant, so Launch must never silently fall back to launching the job
-// container unisolated on docker's default network just because ensuring
-// its own network failed. A NetworkConnect (self-attach) failure, by
-// contrast, only degrades to a logged warning — see its own inline comment
-// for why that half is not fail-closed.
+// distinction): workspace network isolation is a security invariant, so
+// Launch must never silently fall back to launching the job container
+// unisolated on docker's default network just because ensuring its own
+// network failed. A NetworkConnect (self-attach) failure, by contrast, only
+// degrades to a logged warning — see its own inline comment for why that
+// half is not fail-closed.
 func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace string) (string, error) {
 	netName := containerWorkspaceNetworkName(b.installID, workspace)
 
@@ -893,27 +812,20 @@ func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace
 		_, cerr := b.api.NetworkConnect(ctx, netName, client.NetworkConnectOptions{
 			Container: b.selfContainerID,
 			EndpointConfig: &network.EndpointSettings{
-				// composeBrokerServiceName (docs/plans/
-				// phase6-cutover-followups.md §⓪ "broker TCP wire
-				// completion"): added alongside gateway/egress here for
-				// the exact same reason those two are — a job container
-				// confined to this `Internal: true` workspace network has
-				// NO route to the daemon at all unless the daemon ALSO
-				// joins this specific network connection under the same
-				// alias its BOID_BROKER_TLS_ADDR env (containerBackend.
-				// Launch's withBrokerTLSEnv) tells it to dial by name.
-				// Missing here (as it was before this fix — this endpoint
-				// alias set predates the broker TCP wire followup, PR9's
-				// own gateway/egress-only self-connect) meant "boid-broker"
-				// resolved fine on the static boid_internal network the
-				// daemon is always a member of, but NOT on any
-				// PER-WORKSPACE network a real job container actually runs
-				// on — found via the real-docker e2e-container CI job:
-				// "dial tcp: lookup boid-broker on 127.0.0.11:53: server
-				// misbehaving" (docker's embedded per-network DNS resolver
-				// has no record for a name that was never aliased on
-				// THIS network connection, regardless of the daemon
-				// having that alias elsewhere).
+				// composeBrokerServiceName is added alongside gateway/egress
+				// here for the exact same reason those two are — a job
+				// container confined to this `Internal: true` workspace
+				// network has NO route to the daemon at all unless the
+				// daemon ALSO joins this specific network connection under
+				// the same alias its BOID_BROKER_TLS_ADDR env
+				// (containerBackend.Launch's withBrokerTLSEnv) tells it to
+				// dial by name. Without it, "boid-broker" resolves fine on
+				// the static boid_internal network the daemon is always a
+				// member of, but NOT on any PER-WORKSPACE network a real
+				// job container actually runs on: docker's embedded
+				// per-network DNS resolver has no record for a name that
+				// was never aliased on THIS network connection, regardless
+				// of the daemon having that alias elsewhere.
 				Aliases: []string{composeGatewayServiceName, composeEgressServiceName, composeBrokerServiceName},
 			},
 		})
@@ -930,10 +842,10 @@ func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace
 // network, in CIDR form ("10.89.9.0/24", "fd00:b01d::/64"), for
 // applyProxyEnv's no_proxy list — see Runner.Dispatch's
 // workspaceNetworkCIDRResolver call site and
-// TestDispatch_ContainerBackend_NoProxyIncludesWorkspaceNetworkCIDRs for the
-// contract these serve (§決定5's "job → sibling の到達は container IP +
-// container port の直アクセス", which every proxy-env-respecting client inside
-// the sandbox loses unless its own workspace subnet bypasses HTTP_PROXY).
+// TestDispatch_ContainerBackend_NoProxyIncludesWorkspaceNetworkCIDRs. A job
+// reaching a sibling by container IP + port directly loses that route
+// unless its own workspace subnet bypasses HTTP_PROXY, which is what these
+// CIDRs are for.
 //
 // It goes through ensureWorkspaceNetwork rather than inspecting directly
 // because the subnets are engine-assigned at create time: on the first
@@ -971,14 +883,14 @@ func (b *containerBackend) WorkspaceNetworkCIDRs(ctx context.Context, workspace 
 // Launch translates spec into a `docker create` + `docker start` call and
 // returns a live containerSession attached to it.
 //
-// Ordering matters for two independent reasons pinned by the plan doc:
+// Ordering matters for two independent reasons:
 //   - attach happens BEFORE start (not after), so no output between the
 //     entry process's first byte and a post-start attach race is lost.
-//   - HostConfig.Init is always set (§決定 3): docker-init (tini) becomes
-//     PID 1, owning zombie reap; SIGUSR1→agent forwarding is already
-//     handled by the harness adapters' own sigutil.ForwardAndWait once a
-//     signal reaches the entrypoint process, so nothing new is embedded
-//     here for that.
+//   - HostConfig.Init is always set: docker-init (tini) becomes PID 1,
+//     owning zombie reap; SIGUSR1→agent forwarding is already handled by
+//     the harness adapters' own sigutil.ForwardAndWait once a signal
+//     reaches the entrypoint process, so nothing new is embedded here for
+//     that.
 func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts backend.LaunchOptions) (backend.SandboxSession, error) {
 	// dockerTLSDir / brokerTLSDir / specPath / statePath are all set below
 	// but declared here so cleanupFiles's closure sees whichever value
@@ -995,12 +907,12 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	cleanupFiles := func() {
 		if specPath != "" {
 			if b.runtimeDir != "" {
-				// Blocker 1 (PR7 codex review): specPath/statePath live under
-				// <runtimeDir>/spec/<jobID>/ when RuntimeDir is configured (see
-				// writeContainerSpec's doc comment) — remove the whole per-job
-				// directory rather than the two files individually, so no empty
-				// directory accumulates under runtimeDir/spec across the
-				// lifetime of a long-running daemon.
+				// specPath/statePath live under <runtimeDir>/spec/<jobID>/
+				// when RuntimeDir is configured (see writeContainerSpec's
+				// doc comment) — remove the whole per-job directory rather
+				// than the two files individually, so no empty directory
+				// accumulates under runtimeDir/spec across the lifetime of
+				// a long-running daemon.
 				_ = os.RemoveAll(filepath.Dir(specPath))
 			} else {
 				_ = os.Remove(specPath)
@@ -1015,39 +927,24 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		}
 	}
 
-	// Per-job dockerproxy / broker client cert delivery (§決定5 /
-	// docs/plans/phase6-cutover-followups.md §⓪): materialized and merged
-	// into spec.Env HERE — before writeContainerSpec below serializes
-	// spec.json, and before realization.Realize copies spec.Env into
-	// Realization.Env — rather than as a later `docker create`-only
-	// Config.Env addition (an earlier version of this function did
-	// exactly that, via the local `env` variable derived from
-	// realized.Env). That ordering bug went unnoticed until the broker
-	// TCP wire followup's own e2e-container CI run exercised it for the
-	// first time against a real container: internal/adapters/shell.
-	// Adapter.Run — the harness EVERY plain `command:` hook uses — builds
-	// the hook's entire child-process environment from RunContext.Env ==
-	// spec.Env, read back out of spec.json INSIDE the container by `boid
-	// runner-container` (internal/sandbox/runner/runner_container_linux.go's
-	// RunContainer -> readSpec), NOT from the container's own
-	// os.Environ() docker create's Config.Env populates — see
-	// envSlice's own doc comment (internal/adapters/shell/run.go): "no
-	// inheritance from os.Environ()" is a deliberate userns-backend
-	// contract (spec.Env is the sandboxed, already-sanitized source of
-	// truth there) that turns out to be load-bearing for the container
-	// backend too, just for a different reason (no os.Environ() to leak
-	// from in the first place — the gap is the OPPOSITE one: a var this
-	// backend added only to Config.Env, after spec.json was already
-	// written, silently never reached the child at all). The claude/
-	// codex/opencode agent adapters DO also inherit os.Environ() (see
-	// internal/adapters/claude/run.go's own parentEnv overlay), which is
-	// why this went unnoticed for agent-harness jobs — only shell-adapter
-	// hooks ever observed the gap, and dockerproxy's own TLS-cert
-	// mechanism (the DockerTLSCA branch below) has never actually been
-	// wired into production dispatch by any caller yet (see
-	// ContainerBackendOptions.DockerTLSCA's own doc comment), so nothing
-	// had ever exercised ITS identical gap in a real deployment either
-	// until this fix.
+	// Per-job dockerproxy / broker client cert delivery: materialized and
+	// merged into spec.Env HERE — before writeContainerSpec below
+	// serializes spec.json, and before realization.Realize copies spec.Env
+	// into Realization.Env — rather than as a later `docker create`-only
+	// Config.Env addition. This ordering matters because
+	// internal/adapters/shell.Adapter.Run — the harness EVERY plain
+	// `command:` hook uses — builds the hook's entire child-process
+	// environment from RunContext.Env == spec.Env, read back out of
+	// spec.json INSIDE the container by `boid runner-container`
+	// (internal/sandbox/runner/runner_container_linux.go's RunContainer ->
+	// readSpec), NOT from the container's own os.Environ() docker create's
+	// Config.Env populates — see envSlice's own doc comment
+	// (internal/adapters/shell/run.go): a var added only to Config.Env,
+	// after spec.json was already written, would silently never reach the
+	// child at all. The claude/codex/opencode agent adapters DO also
+	// inherit os.Environ() (see internal/adapters/claude/run.go's own
+	// parentEnv overlay), so only shell-adapter hooks are exposed to this
+	// gap.
 	if opts.DockerEnabled && b.dockerTLSCA != nil {
 		dir, derr := b.materializeDockerClientCert(opts.JobID)
 		if derr != nil {
@@ -1057,14 +954,12 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		dockerTLSDir = dir
 		spec.Env = withDockerTLSEnv(spec.Env, b.dockerProxyAddr)
 	}
-	// Per-job broker client cert delivery (docs/plans/
-	// phase6-cutover-followups.md §⓪): unconditional whenever this backend
-	// was configured with a CA to issue from
-	// (ContainerBackendOptions.BrokerTLSCA — nil for every caller before
-	// this feature). Unlike the dockerproxy block above, there is no
-	// per-job opts flag gating this: see BrokerTLSCA's own doc comment for
-	// why "does this job need broker RPC" is not a meaningful per-job gate
-	// the way DockerEnabled is.
+	// Per-job broker client cert delivery: unconditional whenever this
+	// backend was configured with a CA to issue from
+	// (ContainerBackendOptions.BrokerTLSCA). Unlike the dockerproxy block
+	// above, there is no per-job opts flag gating this: see BrokerTLSCA's
+	// own doc comment for why "does this job need broker RPC" is not a
+	// meaningful per-job gate the way DockerEnabled is.
 	if b.brokerTLSCA != nil {
 		dir, berr := b.materializeBrokerClientCert(opts.JobID)
 		if berr != nil {
@@ -1101,7 +996,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	// labelWorkspace is always set from opts.Workspace, even when empty
 	// ("workspace unknown" — an explicit, visible value rather than the
 	// label being silently omitted; see LaunchOptions.Workspace's doc
-	// comment, PR5 review Minor finding).
+	// comment).
 	labels := map[string]string{
 		labelJobID:     opts.JobID,
 		labelWorkspace: opts.Workspace,
@@ -1110,14 +1005,12 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		labels[labelInstallID] = b.installID
 	}
 
-	// Workspace network isolation (PR9, §決定5): a non-empty opts.Workspace
-	// ensures (idempotently) the per-workspace `Internal: true` docker
-	// network exists and computes networkingConfig so the job container
-	// created below attaches to it instead of docker's default bridge — see
+	// Workspace network isolation: a non-empty opts.Workspace ensures
+	// (idempotently) the per-workspace `Internal: true` docker network
+	// exists and computes networkingConfig so the job container created
+	// below attaches to it instead of docker's default bridge — see
 	// ensureWorkspaceNetwork's own doc comment for the fail-closed
-	// rationale. opts.Workspace == "" (every pre-PR9 caller) leaves
-	// networkingConfig nil, byte-for-byte the same ContainerCreate call as
-	// before this feature.
+	// rationale. opts.Workspace == "" leaves networkingConfig nil.
 	var networkingConfig *network.NetworkingConfig
 	var workspaceNetworkMode container.NetworkMode
 	if opts.Workspace != "" {
@@ -1133,10 +1026,10 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		// mirrors exactly what `docker run --network <name>` itself sends —
 		// belt-and-suspenders against the container instead landing on
 		// docker's implicit default bridge IN ADDITION to netName, which
-		// would silently defeat §決定5's isolation invariant (the job
-		// container would then be reachable from — and able to reach —
-		// every other unisolated container on that default bridge, network
-		// isolation notwithstanding).
+		// would silently defeat the isolation invariant (the job container
+		// would then be reachable from — and able to reach — every other
+		// unisolated container on that default bridge, network isolation
+		// notwithstanding).
 		workspaceNetworkMode = container.NetworkMode(netName)
 	}
 
@@ -1179,36 +1072,31 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 	hostCfg.Resources.PidsLimit = &pidsLimit
 
-	// dockerCreateWorkingDir (PR9 e2e-container fix): realized.Workdir is
-	// spec.WorkDir carried through unchanged — for a clone-visibility job
-	// this is the per-project clone TARGET subdirectory itself
+	// dockerCreateWorkingDir: realized.Workdir is spec.WorkDir carried
+	// through unchanged — for a clone-visibility job this is the
+	// per-project clone TARGET subdirectory itself
 	// (sandbox_builder.go's resolveWorkDir/sandboxCloneDir, e.g.
 	// "/workspace/myproject"), which is a MountSourceContainerLocal target
-	// (realization.go's classifySource): §決定 4 deliberately leaves it
-	// unmounted so the clone step creates it fresh inside the container.
-	// Only the PARENT ("/workspace", sandboxCloneTargetDir) is baked into
-	// the image and chowned to the job uid at build time
-	// (build/container/Dockerfile) — the per-project leaf does not exist
-	// yet when this ContainerCreate call is made.
+	// (realization.go's classifySource) deliberately left unmounted so the
+	// clone step creates it fresh inside the container. Only the PARENT
+	// ("/workspace", sandboxCloneTargetDir) is baked into the image and
+	// chowned to the job uid at build time (build/container/Dockerfile) —
+	// the per-project leaf does not exist yet when this ContainerCreate
+	// call is made.
 	//
 	// Passing that not-yet-existing leaf straight through as docker's own
-	// `--workdir` hits the exact "missing WORKDIR is created as root,
-	// bypassing --user" gotcha this repo's own Dockerfile already
-	// documents for its build-time WORKDIR instruction (see that file's
-	// comment directly above its `RUN mkdir -p /workspace && chown ...`
-	// line) — except here at container-CREATE time: dockerd/runc
+	// `--workdir` hits the "missing WORKDIR is created as root, bypassing
+	// --user" gotcha (see build/container/Dockerfile's own comment above
+	// its `RUN mkdir -p /workspace && chown ...` line): dockerd/runc
 	// auto-mkdir's the missing directory as root before the entrypoint
 	// process (running as b.uid:b.gid) ever execs, leaving it owned by
 	// root with no write access for the job uid. `boid runner-container`'s
 	// own clone step (clone.go's performCloneSteps) then fails creating
 	// `.git` inside that already-existing, wrongly-owned directory with
-	// "permission denied" — reproducibly, on every clone-visibility job,
-	// on any host whose docker actually implements this auto-create
-	// behavior (confirmed via the e2e-container CI job on ubuntu-24.04's
-	// real docker engine; podman instead refuses to start the container at
-	// all with "workdir ... does not exist", a different failure mode that
-	// masked this on the podman-only dev host — see CLAUDE.md's own note
-	// on host docker availability).
+	// "permission denied" — on every clone-visibility job, on any host
+	// whose docker actually implements this auto-create behavior (podman
+	// instead refuses to start the container at all with "workdir ... does
+	// not exist", a different failure mode).
 	//
 	// Rewriting to the always-present, always-correctly-owned parent here
 	// is safe: nothing in the container backend's own runtime depends on
@@ -1263,15 +1151,15 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 
 	sess := newContainerSession(b, createRes.ID, realized.TTY, specPath, dockerTLSDir, brokerTLSDir)
-	// Disk transcript spool (§決定8, PR7): only for freshly-Launch'd
-	// sessions — see openTranscriptSpool's doc comment for why Adopt
-	// (doAdopt, below) deliberately does not also open one.
+	// Disk transcript spool: only for freshly-Launch'd sessions — see
+	// openTranscriptSpool's doc comment for why Adopt (doAdopt, below)
+	// deliberately does not also open one.
 	//
-	// [Major 8, PR7 codex review]: a genuine open/create failure (as
-	// opposed to "b.runtimeDir unset, spooling not configured" — see
-	// openTranscriptSpool's own doc comment) fails Launch hard, torn down
-	// exactly like a ContainerCreate/attach/start failure below, rather than
-	// silently starting a job whose output cannot survive its own container
+	// A genuine open/create failure (as opposed to "b.runtimeDir unset,
+	// spooling not configured" — see openTranscriptSpool's own doc
+	// comment) fails Launch hard, torn down exactly like a
+	// ContainerCreate/attach/start failure below, rather than silently
+	// starting a job whose output cannot survive its own container
 	// removal.
 	spoolFile, spoolPath, spoolErr := b.openTranscriptSpool(createRes.ID)
 	if spoolErr != nil {
@@ -1281,12 +1169,11 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 	sess.transcriptFile, sess.transcriptPath = spoolFile, spoolPath
 	if err := sess.attach(ctx, false); err != nil {
-		// [Major 10, PR7 codex review]: close the spool file on this error
-		// path too — without it, every Launch that reaches here (attach
-		// failing after the spool was already opened) leaked one fd. The
-		// normal exit path's own close (waitLoop) never runs because
-		// waitLoop is only started by sess.start(), below, which this
-		// return never reaches.
+		// Close the spool file on this error path too — without it, every
+		// Launch that reaches here (attach failing after the spool was
+		// already opened) leaked one fd. The normal exit path's own close
+		// (waitLoop) never runs because waitLoop is only started by
+		// sess.start(), below, which this return never reaches.
 		if sess.transcriptFile != nil {
 			_ = sess.transcriptFile.Close()
 		}
@@ -1297,8 +1184,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 
 	if _, err := b.api.ContainerStart(ctx, createRes.ID, client.ContainerStartOptions{}); err != nil {
 		sess.closeConn()
-		// [Major 10, PR7 codex review]: same fd-leak fix as the attach error
-		// path above.
+		// Same fd-leak fix as the attach error path above.
 		if sess.transcriptFile != nil {
 			_ = sess.transcriptFile.Close()
 		}
@@ -1316,15 +1202,12 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 // finish wiring up (spool open, attach, or start failed).
 //
 // The removal deliberately runs outside the caller's cancellation — a Launch
-// cancelled mid-flight is exactly when the teardown matters most — and, since
-// the codex round-2 review of PR8 (Major 3), under a bound as well. Each of
-// these three sites used to pass a bare context.Background(), which supplies the
-// first property and not the second: against an engine socket that accepts a
-// request and never answers, Launch would never return the error it already had,
-// and (since PR8) never release the workspace's in-flight home registration
-// either, so every later `boid workspace import-home` for that workspace would
-// be refused with a message about a job that is not running. See
-// containerCleanupContext.
+// cancelled mid-flight is exactly when the teardown matters most — and under
+// a bound as well: against an engine socket that accepts a request and never
+// answers, Launch would otherwise never return the error it already had, and
+// never release the workspace's in-flight home registration either, so every
+// later `boid workspace import-home` for that workspace would be refused
+// with a message about a job that is not running. See containerCleanupContext.
 //
 // Force is set for the same reason it always was here: the container may be
 // created, created-and-attached, or created-attached-and-started depending on
@@ -1344,8 +1227,7 @@ func (b *containerBackend) removeHalfBuiltContainer(ctx context.Context, id stri
 // long-lived attach/fan-out state (see usernsSession's doc comment) —
 // containerBackend must cache sessions itself: repeated Adopt calls for the
 // same runtimeID (WS attach and the Web UI SSE follow endpoint can both
-// Adopt the same runtimeID concurrently, docs/plans/
-// phase6-container-backend.md 現状棚卸し) must share one docker-attach
+// Adopt the same runtimeID concurrently) must share one docker-attach
 // connection and one fan-out, not open a second independent attach each —
 // the cache below (populated by both Launch and this method) is what makes
 // that true.
@@ -1354,9 +1236,8 @@ func (b *containerBackend) removeHalfBuiltContainer(ctx context.Context, id stri
 // right after a daemon restart, which is Adopt's entire reason for existing)
 // falls back to `docker inspect`: if the container exists and is running, a
 // fresh session is attached (with Logs:true, replaying already-produced
-// output as the fan-out's initial buffer — the closest containerBackend
-// gets to a separate `docker logs` call, decision 8's third primitive) and
-// its own single-owner Wait loop is started, exactly as Launch does.
+// output as the fan-out's initial buffer) and its own single-owner Wait
+// loop is started, exactly as Launch does.
 //
 // Concurrent cache misses for the SAME runtimeID (WS attach and the Web UI
 // SSE follow endpoint racing right after a daemon restart, before either
@@ -1366,8 +1247,8 @@ func (b *containerBackend) removeHalfBuiltContainer(ctx context.Context, id stri
 // concurrent caller for that same runtimeID finds the reservation, releases
 // the lock, and blocks on the attempt's done channel instead of starting
 // its own independent inspect/attach — otherwise two attach calls would
-// each start their own ContainerWait owner, breaking §決定 7's
-// single-owner contract (PR5 review Major 5).
+// each start their own ContainerWait owner, breaking the single-owner
+// contract every containerSession relies on.
 func (b *containerBackend) Adopt(ctx context.Context, runtimeID string) (backend.SandboxSession, bool) {
 	if runtimeID == "" {
 		return nil, false
@@ -1376,9 +1257,9 @@ func (b *containerBackend) Adopt(ctx context.Context, runtimeID string) (backend
 	b.mu.Lock()
 	if sess, ok := b.sessions[runtimeID]; ok {
 		b.mu.Unlock()
-		// Best-effort re-attach on every cache hit (Opus review of PR #857):
-		// see reattachIfLost's own doc comment for the full rationale. This
-		// is a near-no-op for the overwhelming majority of cache hits (a
+		// Best-effort re-attach on every cache hit: see reattachIfLost's own
+		// doc comment for the full rationale. This is a near-no-op for the
+		// overwhelming majority of cache hits (a
 		// session that has been attached and streaming the whole time) —
 		// reattachIfLost's own first check (running && !attached) returns
 		// immediately without touching the engine. It only does real I/O
@@ -1392,15 +1273,13 @@ func (b *containerBackend) Adopt(ctx context.Context, runtimeID string) (backend
 	}
 	if attempt, inFlight := b.adopting[runtimeID]; inFlight {
 		b.mu.Unlock()
-		// select on ctx too (Opus review of PR #857, Major 1): a caller that
-		// passed a bounded ctx specifically so it would not hang forever
-		// (StopJobRuntime, SignalJobRuntime, the runtime_subscriber_export.go
-		// ingress points) would otherwise wait on <-attempt.done alone, which
-		// only resolves when the FIRST caller's own doAdopt returns — itself
-		// unbounded whenever that first caller passed context.Background()
-		// (every one of those call sites did, pre-fix). Against a wedged
-		// engine the owning attempt's ContainerInspect never returns, so
-		// every later joiner — bounded ctx or not — hung right alongside it.
+		// select on ctx too: a caller that passed a bounded ctx specifically
+		// so it would not hang forever (StopJobRuntime, SignalJobRuntime,
+		// the runtime_subscriber_export.go ingress points) would otherwise
+		// wait on <-attempt.done alone, which only resolves when the FIRST
+		// caller's own doAdopt returns. Against a wedged engine the owning
+		// attempt's ContainerInspect never returns, so every later joiner —
+		// bounded ctx or not — would hang right alongside it.
 		select {
 		case <-attempt.done:
 		case <-ctx.Done():
@@ -1457,17 +1336,11 @@ type adoptAttempt struct {
 // engine answers ContainerInspect but has since gone slow or unreachable
 // again before the attach round trip) is deliberately NOT fatal: the
 // resulting session is still returned (Adopt caches it and reports ok=true)
-// so signal/stop/wait keep working. It used to also be PERMANENT — the only
-// way a session in this state ever got a working stream was a full daemon
-// restart, because nothing ever attempted a second attach — which is
-// exactly the bug Opus's review of PR #857 found: Subscribe() answered
-// ok=true (checking only running, not whether anything was actually
-// attached) with a channel that would then never receive a single byte, no
-// matter how quickly the engine recovered. That permanence is gone now:
+// so signal/stop/wait keep working, even though nothing is attached yet.
 // Adopt's cache-hit path calls sess.reattachIfLost on every later Adopt for
 // this runtimeID, so once the engine is reachable again the very next
 // cache-hit re-establishes the stream — see reattachIfLost's and
-// Subscribe's own doc comments for the two halves of the fix.
+// Subscribe's own doc comments for the two halves of that recovery.
 func (b *containerBackend) doAdopt(ctx context.Context, runtimeID string) *containerSession {
 	insp, err := b.api.ContainerInspect(ctx, runtimeID, client.ContainerInspectOptions{})
 	if err != nil || insp.Container.State == nil || !insp.Container.State.Running {
@@ -1484,23 +1357,21 @@ func (b *containerBackend) doAdopt(ctx context.Context, runtimeID string) *conta
 	return sess
 }
 
-// ReapOrphans reconciles job containers a daemon restart lost track of.
-// §決定 6: label enumeration → destroy, using the mere presence of
-// boid.job_id as the docker-side LIST filter ("global filter" — a container
-// with no boid.job_id label was never created by this backend at all, no
-// matter which installation).
+// ReapOrphans reconciles job containers a daemon restart lost track of, by
+// label enumeration → destroy, using the mere presence of boid.job_id as
+// the docker-side LIST filter ("global filter" — a container with no
+// boid.job_id label was never created by this backend at all, no matter
+// which installation).
 //
-// [Blocker 5, PR7 codex review]: within that list, every candidate is now
-// ALSO checked against boid.install_id in application code (not folded into
-// the docker filter query itself — see the note on that choice below)
-// whenever b.installID is non-empty (PR6's install_id generation has landed
-// by PR7 — see ContainerBackendOptions.InstallID's doc comment). WITHOUT
-// this, two boid installations sharing one docker engine (distinct install
-// IDs — e.g. two users, or a dev + prod compose stack on the same host)
-// would each force-remove the OTHER's live, in-flight job containers on
-// restart: the pre-fix filter matched on the mere presence of boid.job_id,
-// which every container either installation ever creates carries
-// regardless of whose daemon made it.
+// Within that list, every candidate is also checked against boid.install_id
+// in application code (not folded into the docker filter query itself —
+// see the note on that choice below) whenever b.installID is non-empty.
+// Without this, two boid installations sharing one docker engine (distinct
+// install IDs — e.g. two users, or a dev + prod compose stack on the same
+// host) would each force-remove the OTHER's live, in-flight job containers
+// on restart: a filter matching on the mere presence of boid.job_id matches
+// every container either installation ever creates, regardless of whose
+// daemon made it.
 //
 // The install_id check runs in Go rather than as a second `label` filter
 // value on the same docker ContainerListOptions.Filters query deliberately:
@@ -1515,25 +1386,19 @@ func (b *containerBackend) doAdopt(ctx context.Context, runtimeID string) *conta
 // Filtering candidates by label in Go after a broader docker-side list is
 // unambiguous and directly unit-testable with the fake dockerAPI.
 //
-// b.installID empty (a fresh daemon before PR6's install_id LoadOrCreate has
-// ever run, or test/DI wiring that never sets
-// ContainerBackendOptions.InstallID) skips the install_id check entirely —
-// every boid.job_id-labeled container is a fair reap target, exactly as
-// before this fix; this is the same degrade NewContainerBackend's own
+// b.installID empty (a fresh daemon before install_id LoadOrCreate has ever
+// run, or test/DI wiring that never sets ContainerBackendOptions.InstallID)
+// skips the install_id check entirely — every boid.job_id-labeled container
+// is a fair reap target; this is the same degrade NewContainerBackend's own
 // InstallID doc comment already documents for the empty-installID case
 // elsewhere (resource labeling degrades the same way).
 //
 // Volumes and networks are reaped by the same install-scoped logic, with one
 // exception. The workspace network sweep is unconditional — a per-workspace
 // network is recreated on demand by ensureWorkspaceNetwork, so destroying it
-// costs nothing. The volume sweep is NOT: reapOrphanVolumes now preserves
-// persistent workspace HOME volumes (docs/plans/workspace-home-volume-persistence.md
-// 論点 a 経路 2). The older note here — that the volume/network loops were
-// "forward-compat scaffolding, not exercised by real traffic" because
-// workspace HOME stayed a host bind through Phase 6 (§決定 4) — no longer
-// holds: workspace networks have been real traffic since PR9, and PR6 of the
-// workspace-HOME plan makes the volume loop real too, which is exactly why
-// its exclusion rule has to be in place first.
+// costs nothing. The volume sweep is NOT: reapOrphanVolumes preserves
+// persistent workspace HOME volumes (see
+// docs/plans/workspace-home-volume-persistence.md 論点a).
 func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 	filters := client.Filters{}.Add("label", labelJobID)
 
@@ -1565,32 +1430,31 @@ func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport,
 	b.reapOrphanVolumes(ctx, filters)
 	b.reapOrphanNetworks(ctx, filters)
 	// A separate enumeration, on a separate label, contributing nothing to
-	// `report` — see reapOrphanWorkspaceInitContainers' own doc comment
-	// (docs/plans/workspace-home-volume-persistence.md 論点 c §D5). It cannot
-	// share `filters` above: the whole reason a workspace init container does
-	// not carry boid.job_id is that the sweep above would force-remove it
-	// mid-toolchain-install and fold a non-existent job id into the accounting
-	// that gates other tasks' auto-reopen.
+	// `report` — see reapOrphanWorkspaceInitContainers' own doc comment. It
+	// cannot share `filters` above: the whole reason a workspace init
+	// container does not carry boid.job_id is that the sweep above would
+	// force-remove it mid-toolchain-install and fold a non-existent job id
+	// into the accounting that gates other tasks' auto-reopen.
 	b.reapOrphanWorkspaceInitContainers(ctx)
 
-	// [Major 6, PR7 codex review]: dockerproxy's sibling child resources
-	// (created by the *client* inside a job's sandbox — docker CLI,
-	// TestContainers, ... — never by this backend directly, when the job
-	// declared capabilities.docker) carry NO boid label at all, so the
-	// label-based sweep above can never find them: they are only
-	// discoverable via the per-job docker-resources.jsonl ledger under
-	// runtimeDir (§決定8). internal/reap.Run — the same daemon-independent
-	// logic `boid reap` uses (§決定6's "label ∪ ledger union") — is run here
-	// as an additional best-effort pass so startup reap catches these too,
-	// not just the primary job containers the loop above already handled
-	// (those are already gone by the time this call lists again via its own
-	// label query, so this is not double-destroying anything — merely one
-	// extra API round trip). b.api's method set is a strict superset of
-	// reap.Run's own narrow dockerAPI interface, so no adapter is needed.
-	// Errors are logged, not folded into ReapReport: a ledger-cleanup
-	// failure here is a docker-resource leak, not a reason to block a
-	// task's auto-reopen (ReapReport's own job-level contract — see its doc
-	// comment; only the primary-container loop above feeds FailedJobIDs).
+	// dockerproxy's sibling child resources (created by the *client* inside
+	// a job's sandbox — docker CLI, TestContainers, ... — never by this
+	// backend directly, when the job declared capabilities.docker) carry NO
+	// boid label at all, so the label-based sweep above can never find
+	// them: they are only discoverable via the per-job
+	// docker-resources.jsonl ledger under runtimeDir. internal/reap.Run —
+	// the same daemon-independent logic `boid reap` uses (the "label ∪
+	// ledger union") — is run here as an additional best-effort pass so
+	// startup reap catches these too, not just the primary job containers
+	// the loop above already handled (those are already gone by the time
+	// this call lists again via its own label query, so this is not
+	// double-destroying anything — merely one extra API round trip). b.api's
+	// method set is a strict superset of reap.Run's own narrow dockerAPI
+	// interface, so no adapter is needed. Errors are logged, not folded
+	// into ReapReport: a ledger-cleanup failure here is a docker-resource
+	// leak, not a reason to block a task's auto-reopen (ReapReport's own
+	// job-level contract — see its doc comment; only the primary-container
+	// loop above feeds FailedJobIDs).
 	if b.runtimeDir != "" {
 		if _, rerr := reap.Run(ctx, b.api, b.installID, b.runtimeDir, reap.PreserveWorkspaceHomes); rerr != nil {
 			slog.Warn("container backend: reap.Run ledger-union pass failed", "error", rerr)
@@ -1602,11 +1466,10 @@ func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport,
 
 // reapOwnsLabels reports whether a docker resource's labels belong to this
 // backend's installation and are therefore safe for ReapOrphans to destroy
-// (Blocker 5, PR7 codex review — see ReapOrphans' own doc comment for why
-// this check runs in application code rather than as a docker-side filter
-// value). b.installID empty means "no install_id scoping configured yet"
-// (pre-PR6 wiring / tests) — every boid.job_id-labeled resource is owned,
-// matching the original global-filter behavior.
+// (see ReapOrphans' own doc comment for why this check runs in application
+// code rather than as a docker-side filter value). b.installID empty means
+// "no install_id scoping configured yet" — every boid.job_id-labeled
+// resource is owned, matching the global-filter behavior.
 func (b *containerBackend) reapOwnsLabels(labels map[string]string) bool {
 	if b.installID == "" {
 		return true
@@ -1634,9 +1497,8 @@ func (b *containerBackend) reapOwnsLabels(labels map[string]string) bool {
 //     non-empty value: ensureNamedVolumes sets this key to opts.Workspace,
 //     which is empty for the DI/test wiring that never supplies a workspace,
 //     and a value check would drop exactly those volumes back out of the
-//     protected set while the doc claimed otherwise (PR1 codex review,
-//     Minor). The fail-safe reading of "boid.workspace_home is set at all" is
-//     "this is a workspace HOME volume".
+//     protected set. The fail-safe reading of "boid.workspace_home is set
+//     at all" is "this is a workspace HOME volume".
 func (b *containerBackend) reapOrphanVolumes(ctx context.Context, filters client.Filters) {
 	listRes, err := b.api.VolumeList(ctx, client.VolumeListOptions{Filters: filters})
 	if err != nil {
@@ -1692,7 +1554,7 @@ func (b *containerBackend) forgetSession(id string) {
 
 // resolveImage picks the image Launch creates the container from (spec's
 // override or the backend's default) and enforces both the pull policy and
-// (for an override only) §決定 11's runner-protocol label check. A single
+// (for an override only) a runner-protocol label check. A single
 // ImageInspect call serves both the presence check most pull-policy
 // branches need and the label read the override check needs — reused
 // rather than inspecting twice.
@@ -1723,23 +1585,22 @@ func (b *containerBackend) resolveImage(ctx context.Context, override string) (s
 		// presence check above would otherwise validate stale metadata —
 		// in particular the boidRunnerProtocolLabel check below, which
 		// must see what was actually just pulled, not what was locally
-		// present before the pull (PR5 review Major 2).
+		// present before the pull.
 		insp, err = b.api.ImageInspect(ctx, image)
 		if err != nil {
 			return "", fmt.Errorf("inspect container image %q after pull: %w", image, err)
 		}
 	}
 
-	// Arch mismatch fail-fast (docs/plans/release-onboarding.md 決定5's
-	// arm64 論点, required regardless of whether an arm64 image is ever
-	// published): a host with binfmt/qemu registered silently runs a
-	// foreign-arch image under emulation instead of refusing it outright
-	// — no error, just extreme slowness and unexplained crashes that look
-	// nothing like an architecture problem.
+	// Arch mismatch fail-fast, required regardless of whether an arm64
+	// image is ever published: a host with binfmt/qemu registered silently
+	// runs a foreign-arch image under emulation instead of refusing it
+	// outright — no error, just extreme slowness and unexplained crashes
+	// that look nothing like an architecture problem.
 	//
-	// [Blocker, PR4 codex review]: this must compare against the ENGINE's
-	// own reported host architecture (b.resolveHostArch, docker/podman
-	// /info), never runtime.GOARCH — GOARCH names the architecture THIS
+	// This must compare against the ENGINE's own reported host
+	// architecture (b.resolveHostArch, docker/podman /info), never
+	// runtime.GOARCH — GOARCH names the architecture THIS
 	// GO BINARY was compiled for, which is meaningless as a "real machine"
 	// signal from inside a container that is itself already running under
 	// emulation (an amd64-compiled daemon binary, baked into an amd64
@@ -1794,10 +1655,9 @@ func (b *containerBackend) pullImage(ctx context.Context, ref string) error {
 // writeContainerSpec writes spec's JSON and an empty runner-state.json to a
 // host path Launch bind-mounts into the sibling job container.
 //
-// [Blocker 1, PR7 codex review]: when runtimeDir is empty (every pre-PR7
-// caller/test, and any deploy that hasn't wired ContainerBackendOptions.
-// RuntimeDir), this reproduces the original behavior verbatim — the exact
-// same `/tmp/boid-<ID>-runner-{spec,state}.json` naming convention
+// When runtimeDir is empty (any deploy that hasn't wired
+// ContainerBackendOptions.RuntimeDir), this uses the same
+// `/tmp/boid-<ID>-runner-{spec,state}.json` naming convention
 // dispatcher.sandboxPreparerImpl.PrepareSandbox uses for the userns backend
 // (see its own doc comment), so the existing `/tmp/boid-*` 30-day GC sweep
 // (CLAUDE.md「ディスク使用量の管理」) still covers it. But a REAL compose
@@ -1863,13 +1723,13 @@ func writeContainerSpec(spec sandbox.Spec, runtimeDir string) (specPath, statePa
 // realization.VolumeMount/TmpfsMount's doc comments require of the
 // container backend (Realize deliberately does not evaluate Guard itself —
 // see its own doc comment on why). MountSourceContainerLocal entries are
-// skipped entirely: they have no host-side counterpart to bind (§決定 4 —
-// `/workspace/<name>` lands in the container's own writable layer).
+// skipped entirely: they have no host-side counterpart to bind —
+// `/workspace/<name>` lands in the container's own writable layer.
 //
 // namedVolumes returns the distinct MountSourceNamedVolume source names
 // among the mounts that passed their Guard, so Launch can pre-create them
 // (with reap labels) before ContainerCreate implicitly references them —
-// see ensureNamedVolumes's doc comment (PR5 review Major 6).
+// see ensureNamedVolumes's doc comment.
 func containerMounts(r realization.Realization) (mounts []mount.Mount, namedVolumes []string) {
 	for _, v := range r.Volumes {
 		if v.Guard != "" && !evaluateMountGuard(v.Guard) {
@@ -1909,15 +1769,14 @@ func containerMounts(r realization.Realization) (mounts []mount.Mount, namedVolu
 }
 
 // ensureNamedVolumes explicitly creates every named volume Launch's mounts
-// reference, before ContainerCreate would otherwise auto-create it unlabeled
-// (PR5 review Major 6). Which labels it applies depends on WHICH volume it
-// is, because the two classes have opposite lifecycle requirements
-// (docs/plans/workspace-home-volume-persistence.md 論点 a 経路 3):
+// reference, before ContainerCreate would otherwise auto-create it
+// unlabeled. Which labels it applies depends on WHICH volume it is, because
+// the two classes have opposite lifecycle requirements:
 //
 //   - a JOB volume is ephemeral and must be found by the reapers, so it
 //     carries jobLabels (boid.job_id / boid.workspace / boid.install_id).
 //     reapOrphanVolumes enumerates on boid.job_id; an unlabeled volume would
-//     leak forever, which is the gap Major 6 closed.
+//     leak forever.
 //   - a WORKSPACE HOME volume is persistent and must NOT be found by them,
 //     so it carries only boid.workspace_home (+ boid.workspace_home_install_id
 //     for the install scoping boid.install_id would otherwise provide). Every
@@ -1927,20 +1786,19 @@ func containerMounts(r realization.Realization) (mounts []mount.Mount, namedVolu
 //     here means "invisible to the sweeps", the exact inverse of the job case.
 //
 // workspaceSlug is the slug recorded in the workspace-home label. It is
-// Launch's opts.WorkspaceSlug, NOT opts.Workspace, and PR6 (論点 D5) is where
-// that distinction started to matter. opts.Workspace is the raw
+// Launch's opts.WorkspaceSlug, NOT opts.Workspace: opts.Workspace is the raw
 // project.WorkspaceID — empty for every project with no explicit workspace
 // assignment — while the volume NAME is built from the slug
 // resolveWorkspaceHome normalized that value into, so "" becomes "default".
 // Labelling the volume from the raw field would leave a volume called
 // boid-ws-home-<install8>-default carrying boid.workspace_home="", which no
 // lookup by slug can find. The reapers are unaffected (both test the label's
-// PRESENCE, deliberately — 論点 a), but 論点 a-2's workspace-remove and
-// orphan-detection rewiring in PR7 is a lookup by value.
+// PRESENCE, deliberately), but workspace-remove and orphan-detection are a
+// lookup by value.
 //
 // opts.Workspace keeps its own meaning untouched (the boid.workspace job label
-// and the per-workspace network name); normalizing THAT would change which jobs
-// get an isolated network, which is a different decision and not PR6's.
+// and the per-workspace network name); normalizing THAT would change which
+// jobs get an isolated network, which is a separate decision.
 //
 // A workspace HOME volume created HERE is also given a freshly minted identity
 // (dockerres.LabelWorkspaceHomeID). Normally resolveWorkspaceHome created it
@@ -1981,23 +1839,22 @@ func containerMounts(r realization.Realization) (mounts []mount.Mount, namedVolu
 //
 // Each name is validated against docker's volume-name grammar first. The
 // container backend classifies a mount source as a named volume purely by
-// "it does not start with /" (internal/sandbox/realization.classifySource —
-// the convention 論点 e's option (i) deliberately reuses rather than adding a
-// MountType), so a relative path that lands in the mount list by accident
-// would otherwise be handed to the engine as a volume name. Failing closed
-// here surfaces it as a Launch error naming the offending source instead.
+// "it does not start with /" (internal/sandbox/realization.classifySource),
+// so a relative path that lands in the mount list by accident would
+// otherwise be handed to the engine as a volume name. Failing closed here
+// surfaces it as a Launch error naming the offending source instead.
 //
 // VolumeCreate is idempotent (Docker returns the existing volume, unchanged,
 // for an already-existing name — it does not error, and it does NOT apply
 // the request's labels to an existing volume, since the API has no
 // volume-label-update endpoint), so this is safe to call on every Launch.
-// An already-existing JOB volume that predates Major 6's fix (no boid.job_id
-// label) is left as-is rather than deleted-and-recreated, which would be
-// destructive to whatever it holds; a warning is logged instead so the reap
-// gap is at least visible. That warning does NOT apply to workspace HOME
-// volumes: for them, having no boid.job_id label is the correct and intended
-// state, so warning about it would be noise that trains operators to ignore
-// the message that matters.
+// An already-existing JOB volume with no boid.job_id label is left as-is
+// rather than deleted-and-recreated, which would be destructive to
+// whatever it holds; a warning is logged instead so the reap gap is at
+// least visible. That warning does NOT apply to workspace HOME volumes:
+// for them, having no boid.job_id label is the correct and intended state,
+// so warning about it would be noise that trains operators to ignore the
+// message that matters.
 func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []string, workspaceSlug, workspaceHomeID string, jobLabels map[string]string) error {
 	for _, name := range names {
 		if !dockerres.IsValidVolumeName(name) {
@@ -2107,7 +1964,7 @@ func containerName(jobID string) string {
 // materializeDockerClientCert issues a fresh per-job dockerproxy client
 // certificate from b.dockerTLSCA and writes the cert/key/ca PEM trio to a
 // host temp directory, in the exact file-name layout docker's own
-// DOCKER_CERT_PATH convention expects (cert.pem/key.pem/ca.pem — §決定5).
+// DOCKER_CERT_PATH convention expects (cert.pem/key.pem/ca.pem).
 // The caller bind-mounts the returned directory read-only into the
 // container at containerDockerTLSDir; containerSession.waitLoop removes it
 // once the container exits (mirroring specPath's own always-cleaned-up
@@ -2146,15 +2003,13 @@ func (b *containerBackend) materializeDockerClientCert(jobID string) (dir string
 
 // dockerTLSCertDir returns (creating it if necessary) the directory
 // materializeDockerClientCert writes jobID's cert.pem/key.pem/ca.pem trio
-// into (Major 11, PR6 codex review — see ContainerBackendOptions.
-// RuntimeDir's doc comment for the DooD host-visibility rationale):
+// into (see ContainerBackendOptions.RuntimeDir's doc comment for the DooD
+// host-visibility rationale):
 //   - b.runtimeDir set (the compose/container-backend deploy):
 //     <runtimeDir>/tls/<jobID> — a fixed, host-path-stable location
 //     under the already bind-mounted (source == target) BOID_RUNTIME_DIR
 //     a sibling docker daemon can actually mount FROM.
-//   - b.runtimeDir empty (every pre-this-field test/caller): a fresh
-//     os.MkdirTemp("", ...) directory, unchanged from this backend's
-//     original behavior.
+//   - b.runtimeDir empty: a fresh os.MkdirTemp("", ...) directory.
 func (b *containerBackend) dockerTLSCertDir(jobID string) (string, error) {
 	if b.runtimeDir == "" {
 		dir, err := os.MkdirTemp("", "boid-"+jobID+"-docker-tls-")
@@ -2173,8 +2028,8 @@ func (b *containerBackend) dockerTLSCertDir(jobID string) (string, error) {
 // materializeBrokerClientCert issues a fresh per-job broker client
 // certificate from b.brokerTLSCA and writes the cert/key/ca PEM trio to a
 // host directory, in the same cert.pem/key.pem/ca.pem layout
-// materializeDockerClientCert uses (docs/plans/phase6-cutover-followups.md
-// §⓪). The caller bind-mounts the returned directory read-only into the
+// materializeDockerClientCert uses. The caller bind-mounts the returned
+// directory read-only into the
 // container at containerBrokerTLSDir; containerSession.waitLoop removes it
 // once the container exits (mirroring dockerTLSDir's own always-cleaned-up
 // retention contract — see containerSession.brokerTLSDir's doc comment).
@@ -2239,28 +2094,27 @@ func (b *containerBackend) brokerTLSCertDir(jobID string) (string, error) {
 }
 
 // openTranscriptSpool creates (truncating any stale leftover) and opens
-// <runtimeDir>/<containerID>/transcript.log for a freshly-Launch'd session
-// (§決定8, PR7) — the same path/filename ReadTranscript/StatTranscript
-// (transcript.go) already read for the userns backend, and the same
-// directory dockerTLSCertDir's <runtimeDir>/tls/<jobID> is host-visible
-// under (see its own doc comment for the DooD host-visibility rationale;
-// b.runtimeDir is the identical field).
+// <runtimeDir>/<containerID>/transcript.log for a freshly-Launch'd session —
+// the same path/filename ReadTranscript/StatTranscript (transcript.go)
+// already read for the userns backend, and the same directory
+// dockerTLSCertDir's <runtimeDir>/tls/<jobID> is host-visible under (see its
+// own doc comment for the DooD host-visibility rationale; b.runtimeDir is
+// the identical field).
 //
-// [Major 8, PR7 codex review]: returns (nil, "", nil) — spooling
-// intentionally disabled, in-memory-only transcript, unchanged from PR5's
-// behavior — ONLY when b.runtimeDir is empty (every pre-PR7 test/caller);
-// that is a configuration choice, not a failure. A non-nil error return
-// (directory creation or file open genuinely failed — e.g. the runtimes
-// filesystem is full or unwritable) is now a real error Launch's caller
-// must fail hard on: §決定8's contract is that `boid job log` sees the FULL
-// transcript once a container backend deploy is live (this is what
-// distinguishes it from the tail-only silent-exit diagnostics), so silently
-// degrading to an in-memory-only buffer (invisible the moment the container
-// is removed) when the operator's own deploy configured a persistent spool
-// directory would violate that contract without ever telling anyone.
-// Launch treats this the same as any other Launch-phase failure: the
-// container is torn down and Dispatch reports the error, rather than
-// starting a job whose output will not survive its own container removal.
+// Returns (nil, "", nil) — spooling intentionally disabled, in-memory-only
+// transcript — ONLY when b.runtimeDir is empty; that is a configuration
+// choice, not a failure. A non-nil error return (directory creation or file
+// open genuinely failed — e.g. the runtimes filesystem is full or
+// unwritable) is a real error Launch's caller must fail hard on: `boid job
+// log` is meant to see the FULL transcript once a container backend deploy
+// is live (this is what distinguishes it from the tail-only silent-exit
+// diagnostics), so silently degrading to an in-memory-only buffer
+// (invisible the moment the container is removed) when the operator's own
+// deploy configured a persistent spool directory would violate that
+// contract without ever telling anyone. Launch treats this the same as any
+// other Launch-phase failure: the container is torn down and Dispatch
+// reports the error, rather than starting a job whose output will not
+// survive its own container removal.
 //
 // Deliberately NOT called from doAdopt (Adopt's cache-miss path): Adopt's
 // `Logs: true` attach replays the container's ENTIRE output history
@@ -2272,9 +2126,8 @@ func (b *containerBackend) brokerTLSCertDir(jobID string) (string, error) {
 // this process wrote before it went away — readable via `boid job log`
 // exactly as it was — but gets no further disk-spool writes for the rest
 // of its lifetime (the in-memory buffer + live Subscribe/fan-out still
-// works normally). Full restart-continuity for the disk spool is left as
-// a documented gap for PR9 (docs/plans/phase6-container-backend.md's own
-// "実装残余" territory) rather than risking log corruption to close it now.
+// works normally). Full restart-continuity for the disk spool is left as a
+// documented gap rather than risking log corruption to close it now.
 func (b *containerBackend) openTranscriptSpool(containerID string) (f *os.File, path string, err error) {
 	// transcriptDir, when set, is a persistent root distinct from runtimeDir
 	// (see ContainerBackendOptions.TranscriptDir's doc comment) — falls back
@@ -2330,7 +2183,7 @@ func withDockerTLSEnv(env map[string]string, proxyAddr string) map[string]string
 // withBrokerTLSEnv returns a copy of env with the five BOID_BROKER_TLS_*
 // variables internal/sandbox/brokerclient.SendJSONFromEnv reads to select
 // and authenticate a TCP+mTLS broker connection added — the broker-side
-// analogue of withDockerTLSEnv, docs/plans/phase6-cutover-followups.md §⓪.
+// analogue of withDockerTLSEnv.
 //
 // Deliberately does NOT touch BOID_BROKER_SOCKET: that key (when present at
 // all) comes from a completely separate mechanism — sandbox_builder.go's
@@ -2372,21 +2225,16 @@ func withBrokerTLSEnv(env map[string]string, addr string) map[string]string {
 
 // containerSession implements backend.SandboxSession over a single docker
 // container: one docker-attach connection feeding an in-memory transcript
-// buffer + multi-subscriber fan-out (§決定 8/9's "1 attach 所有者 + memory
-// buffer + fan-out" core — modeled directly on localRuntimeSession's
-// readLoop/appendTranscript/subscribe in runtime_local_linux.go, the
-// existing session layer §決定 8 calls out to extract and reuse rather than
-// redesign), and one ContainerWait call feeding a `done` channel every
-// Wait() caller selects on (§決定 7's "backend 内で一度だけ wait して exit
-// future を fan-out").
+// buffer + multi-subscriber fan-out (modeled directly on
+// localRuntimeSession's readLoop/appendTranscript/subscribe in
+// runtime_local_linux.go), and one ContainerWait call feeding a `done`
+// channel every Wait() caller selects on (a single owner inside the backend
+// waits once and fans the exit out to every caller).
 //
-// Full disk-spool persistence of the transcript (so `boid job log` survives
-// container remove) is explicitly deferred to PR7 (docs/plans/
-// phase6-container-backend.md §決定 8: "PR5 では transcript spool の実装は
-// skeleton まで OK") — the in-memory buffer here satisfies live
-// Subscribe/snapshot semantics for the lifetime of the containerBackend
-// process but is not written to the runtime dir the way
-// localRuntimeSession's transcriptFile is.
+// The transcript is also spooled to disk (see transcriptFile/transcriptPath
+// below) so `boid job log` survives container remove; the in-memory buffer
+// here satisfies live Subscribe/snapshot semantics for the lifetime of the
+// containerBackend process.
 type containerSession struct {
 	backend *containerBackend
 	id      string
@@ -2401,33 +2249,29 @@ type containerSession struct {
 	// nil for Adopt — see sessionLocalArtifacts's doc comment).
 	specPath string
 	// specDir, when non-empty, is the per-job directory writeContainerSpec
-	// created specPath/statePath under (<runtimeDir>/spec/<spec.ID> —
-	// Blocker 1, PR7 codex review) and is removed wholesale (os.RemoveAll)
-	// instead of specPath alone, so no empty directory accumulates under
-	// runtimeDir/spec over the daemon's lifetime. Empty when
-	// ContainerBackendOptions.RuntimeDir was unset (the pre-PR7 flat
-	// /tmp/boid-<ID>-runner-*.json layout, where only the file itself is
-	// ever removed) or for Adopt-reconstructed sessions.
+	// created specPath/statePath under (<runtimeDir>/spec/<spec.ID>) and is
+	// removed wholesale (os.RemoveAll) instead of specPath alone, so no
+	// empty directory accumulates under runtimeDir/spec over the daemon's
+	// lifetime. Empty when ContainerBackendOptions.RuntimeDir was unset (the
+	// flat /tmp/boid-<ID>-runner-*.json layout, where only the file itself
+	// is ever removed) or for Adopt-reconstructed sessions.
 	specDir string
 	// dockerTLSDir is the per-job cert directory materializeDockerClientCert
-	// wrote (§決定5), removed alongside specPath once the container exits.
-	// Empty whenever LaunchOptions.DockerEnabled was false or no
+	// wrote, removed alongside specPath once the container exits. Empty
+	// whenever LaunchOptions.DockerEnabled was false or no
 	// ContainerBackendOptions.DockerTLSCA was configured — the overwhelming
 	// majority of sessions today.
 	dockerTLSDir string
 	// brokerTLSDir is the per-job cert directory materializeBrokerClientCert
-	// wrote (docs/plans/phase6-cutover-followups.md §⓪), removed alongside
-	// specPath/dockerTLSDir once the container exits. Empty whenever no
-	// ContainerBackendOptions.BrokerTLSCA was configured — every session
-	// before this feature, and any deployment (including every unit test)
-	// that never wires one in.
+	// wrote, removed alongside specPath/dockerTLSDir once the container
+	// exits. Empty whenever no ContainerBackendOptions.BrokerTLSCA was
+	// configured — every session before this feature, and any deployment
+	// (including every unit test) that never wires one in.
 	brokerTLSDir string
 
-	// transcriptFile / transcriptPath implement §決定8's "daemon 側が
-	// attach stream を runtime storage へ逐次 spool" full-persistence
-	// contract (PR7 — modeled directly on localRuntimeSession's own
-	// transcriptFile/transcriptPath in runtime_local_linux.go, per §決定8's
-	// own "現行 session 層の抽出・流用" instruction): every chunk
+	// transcriptFile / transcriptPath spool the attach stream to runtime
+	// storage as it arrives (modeled directly on localRuntimeSession's own
+	// transcriptFile/transcriptPath in runtime_local_linux.go): every chunk
 	// appendTranscript records to the in-memory buffer is also written here,
 	// at <runtimeDir>/<containerID>/transcript.log — the exact path
 	// ReadTranscript/StatTranscript (transcript.go, backend-neutral) already
@@ -2437,13 +2281,13 @@ type containerSession struct {
 	// logs` history once a container is removed, but this file survives on
 	// the host bind-mounted runtimes dir.
 	//
-	// Both are empty when ContainerBackendOptions.RuntimeDir was empty
-	// (every pre-PR7 test/caller — see dockerTLSCertDir's identical
-	// fallback) or when spool-file creation failed (advisory: a spool
-	// failure degrades `boid job log` for this one job, it must never fail
-	// Launch), and are ALWAYS empty for Adopt-reconstructed sessions — see
-	// openTranscriptSpool's own doc comment for why re-spooling on Adopt is
-	// deliberately not attempted yet.
+	// Both are empty when ContainerBackendOptions.RuntimeDir was empty (see
+	// dockerTLSCertDir's identical fallback) or when spool-file creation
+	// failed (advisory: a spool failure degrades `boid job log` for this
+	// one job, it must never fail Launch), and are ALWAYS empty for
+	// Adopt-reconstructed sessions — see openTranscriptSpool's own doc
+	// comment for why re-spooling on Adopt is deliberately not attempted
+	// yet.
 	transcriptFile *os.File
 	transcriptPath string
 
@@ -2451,14 +2295,14 @@ type containerSession struct {
 	hijack *client.HijackedResponse
 	// stdinCloseOnce guards CloseInput's half-close against the CURRENT
 	// generation's hijack, and is itself replaced with a fresh *sync.Once
-	// every time attach() installs a new one (Opus review of PR #864,
-	// N6). A single session-lifetime sync.Once here (the pre-fix shape)
-	// would only ever half-close the FIRST generation's connection: once
-	// CloseInput fired for generation 1, its Once.Do would never run its
-	// function body again, so a caller that called CloseInput before a
-	// mid-stream drop — then relies on it again after reattachIfLost
-	// installs generation 2 — would silently get a no-op forever, with no
-	// error to signal it. A pointer field (not a plain sync.Once value)
+	// every time attach() installs a new one. A single session-lifetime
+	// sync.Once here would only ever half-close the FIRST generation's
+	// connection: once CloseInput fired for generation 1, its Once.Do would
+	// never run its function body again, so a caller that called CloseInput
+	// before a mid-stream drop — then relies on it again after
+	// reattachIfLost installs generation 2 — would silently get a no-op
+	// forever, with no error to signal it. A pointer field (not a plain
+	// sync.Once value)
 	// so CloseInput can snapshot the CURRENT generation's *sync.Once under
 	// connMu and call Do on that local copy outside the lock, exactly the
 	// same pattern this type already uses for hijack itself.
@@ -2491,17 +2335,17 @@ type containerSession struct {
 	// attached reports whether the session currently has a live attach
 	// connection with its own readLoop actively feeding appendTranscript —
 	// i.e. whether there is anything for Subscribe to hand a new caller a
-	// channel onto. This is INDEPENDENT of running (§決定 7's container-exit
+	// channel onto. This is INDEPENDENT of running (the container-exit
 	// state): doAdopt's own best-effort attach (its doc comment) can leave
 	// behind a session that is running (ContainerWait is still blocked, the
 	// container is genuinely alive) but not attached (the attach call itself
-	// failed — e.g. the engine was unreachable at adoption time), and until
-	// this field existed Subscribe() only ever checked running, so it
-	// answered ok=true with a channel that would never receive anything
-	// (Opus review of PR #857): the Web UI/WS ingress saw "connected" and
-	// went silent forever, no matter how long the caller waited or how
-	// quickly the engine recovered — only a daemon restart (which forces a
-	// fresh doAdopt) could ever fix it. See Subscribe's and
+	// failed — e.g. the engine was unreachable at adoption time). Without
+	// this field, Subscribe() checking only running would answer ok=true
+	// with a channel that would never receive anything: the Web UI/WS
+	// ingress would see "connected" and go silent forever, no matter how
+	// long the caller waited or how quickly the engine recovered — only a
+	// daemon restart (which forces a fresh doAdopt) could ever fix it. See
+	// Subscribe's and
 	// reattachIfLost's own doc comments for the two halves of the fix: (1)
 	// Subscribe now requires both running AND attached before returning
 	// ok=true, so ingress gets an honest error instead of a dead channel,
@@ -2560,13 +2404,12 @@ func newContainerSession(b *containerBackend, id string, tty bool, specPath, doc
 		subscribers:  make(map[int]chan []byte),
 		running:      true,
 		done:         make(chan struct{}),
-		// readDone is deliberately NOT initialized here (Opus review of PR
-		// #864, N7): both callers of this constructor (Launch, doAdopt)
-		// always call attach() — which unconditionally sets readDone,
-		// success or failure — before start() ever launches the waitLoop
-		// goroutine that is readDone's only reader. A placeholder channel
-		// here would be dead code (never read before being overwritten),
-		// which is exactly what the pre-fix version of this field was.
+		// readDone is deliberately NOT initialized here: both callers of
+		// this constructor (Launch, doAdopt) always call attach() — which
+		// unconditionally sets readDone, success or failure — before
+		// start() ever launches the waitLoop goroutine that is readDone's
+		// only reader. A placeholder channel here would be dead code
+		// (never read before being overwritten).
 		stdinCloseOnce: &sync.Once{},
 	}
 	if specPath != "" && b.runtimeDir != "" {
@@ -2617,13 +2460,13 @@ func (s *containerSession) attach(ctx context.Context, withLogs bool) error {
 	s.connMu.Lock()
 	staleHijack := s.hijack
 	s.hijack = &hijack
-	// A fresh *sync.Once per generation (N6): see stdinCloseOnce's own
-	// doc comment for why reusing the previous generation's Once here
-	// would permanently no-op CloseInput after the very first call.
+	// A fresh *sync.Once per generation: see stdinCloseOnce's own doc
+	// comment for why reusing the previous generation's Once here would
+	// permanently no-op CloseInput after the very first call.
 	s.stdinCloseOnce = &sync.Once{}
 	s.connMu.Unlock()
-	// A stale hijack here (Opus review of PR #864, N1) is a PREVIOUS
-	// generation's connection that reattachIfLost is replacing: its own
+	// A stale hijack here is a PREVIOUS generation's connection that
+	// reattachIfLost is replacing: its own
 	// readLoop has already exited (attach()/reattachIfLost's gate
 	// guarantees this attach call only runs when attached is currently
 	// false), so nothing is still reading from it — closing it is safe
@@ -2666,8 +2509,7 @@ func (s *containerSession) attach(ctx context.Context, withLogs bool) error {
 // own deadline even though the attempt it is waiting on was started by
 // somebody else's ctx). This is the session-scoped analogue of
 // containerBackend.adopting's backend-scoped dedup for cache-miss doAdopt
-// calls (Adopt's own doc comment, PR5 review Major 5) — same shape, smaller
-// scope.
+// calls (Adopt's own doc comment) — same shape, smaller scope.
 //
 // A failed re-attach (engine still down) is logged and otherwise swallowed:
 // Adopt itself stays ok=true regardless (the session still supports
@@ -2694,8 +2536,7 @@ func (s *containerSession) reattachIfLost(ctx context.Context) {
 	// call below, and MUST be read in the same locked section that
 	// reserved s.reattaching above, before releasing s.mu — otherwise a
 	// concurrent appendTranscript (a stray write arriving on some other
-	// path) could flip the answer between the check and the attach call
-	// (Opus review of PR #864, B1).
+	// path) could flip the answer between the check and the attach call.
 	//
 	// The gate this function reattaches under — running && !attached — is
 	// reached by TWO distinct routes, and they need OPPOSITE Logs
@@ -2762,7 +2603,7 @@ func (s *containerSession) closeConn() {
 	}
 }
 
-// start kicks off the session's single ContainerWait owner (§決定 7).
+// start kicks off the session's single ContainerWait owner.
 func (s *containerSession) start() {
 	go s.waitLoop()
 }
@@ -2774,9 +2615,9 @@ func (s *containerSession) start() {
 // s.readDone for a NEW generation can never cause this, the OLD
 // generation's reader, to operate on (or close) the wrong channel. Non-TTY
 // containers multiplex stdout/stderr with docker's 8-byte-header framing
-// (demuxDockerFrame); both streams are combined into a single transcript
-// exactly like the userns backend's combined pipe (§決定 8: "TTY/非 TTY と
-// も単一結合で stdout/stderr 分離は意図的に無い").
+// (demuxDockerFrame); both streams are combined into a single transcript,
+// exactly like the userns backend's combined pipe — stdout/stderr are
+// deliberately not kept separate, TTY or not.
 func (s *containerSession) readLoop(hijack *client.HijackedResponse, readDone chan struct{}) {
 	defer func() {
 		// attached=false BEFORE close(readDone): a concurrent waitLoop or
@@ -2846,10 +2687,10 @@ func (s *containerSession) appendTranscript(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.transcript = append(s.transcript, chunk...)
-	// Disk spool (§決定8, PR7): mirrors localRuntimeSession.appendTranscript's
-	// own `s.transcriptFile.Write(chunk)` — nil (spooling disabled or an
+	// Disk spool: mirrors localRuntimeSession.appendTranscript's own
+	// `s.transcriptFile.Write(chunk)` — nil (spooling disabled or an
 	// Adopt-reconstructed session, see openTranscriptSpool's doc comment)
-	// is the overwhelming majority of PR5-vintage callers and a no-op here.
+	// is a no-op here.
 	if s.transcriptFile != nil {
 		if _, err := s.transcriptFile.Write(chunk); err != nil {
 			slog.Warn("container backend: write transcript spool failed", "container_id", s.id, "error", err)
@@ -2873,32 +2714,26 @@ func (s *containerSession) appendTranscript(chunk []byte) {
 // no channel/cancel is handed back so callers don't wait for output that
 // will never arrive.
 //
-// ok requires BOTH running AND attached (Opus review of PR #857): running
-// alone used to be the whole check, which meant a session doAdopt attached
-// to best-effort (its doc comment) — running (the container is genuinely
-// alive) but never actually attached (the attach call itself failed) —
-// answered ok=true with a channel that would then never receive a single
-// byte. That is exactly the "connected but the terminal stays blank
-// forever" symptom the Web UI/WS ingress hit: the caller had no way to
-// distinguish "attached and just quiet" from "will never speak", so it kept
-// waiting either way. Requiring attached too means that case now honestly
-// reports ok=false.
+// ok requires BOTH running AND attached: running alone as the whole check
+// would mean a session doAdopt attached to best-effort (its doc comment) —
+// running (the container is genuinely alive) but never actually attached
+// (the attach call itself failed) — answered ok=true with a channel that
+// would then never receive a single byte. That is exactly the "connected
+// but the terminal stays blank forever" symptom the Web UI/WS ingress hit:
+// the caller had no way to distinguish "attached and just quiet" from "will
+// never speak", so it kept waiting either way. Requiring attached too means
+// that case now honestly reports ok=false.
 //
 // finished (SandboxSession.Subscribe's own doc comment has the full
-// rationale — Opus review of PR #864, B2) is what actually lets
-// a caller act on that ok=false correctly: it is simply !running, checked
+// rationale) is what actually lets a caller act on that ok=false
+// correctly: it is simply !running, checked
 // under the SAME lock as ok so the two are never observed inconsistently.
 // running==false means the container genuinely exited — ingress should
 // treat this as "job done", the pre-existing behavior. running==true (this
 // is the running-but-not-attached case above) means finished=false — ingress
 // must NOT treat this as "job done"; it should surface an error and let
 // Adopt's cache-hit path (reattachIfLost) get a chance to fix the
-// underlying cause on a LATER call, without needing a daemon restart. The
-// first version of this fix set finished implicitly by leaving ingress's
-// pre-existing "ok=false → job done" branch untouched, which was itself
-// wrong (an unconditional false positive is a worse diagnostic than the
-// dead-channel hang it replaced) — the finished return value is what closes
-// that gap.
+// underlying cause on a LATER call, without needing a daemon restart.
 func (s *containerSession) Subscribe() (backend.RuntimeSnapshot, <-chan []byte, func(), bool, bool) {
 	s.mu.Lock()
 	snapshot := backend.RuntimeSnapshot{
@@ -3006,10 +2841,10 @@ func (s *containerSession) Resize(size backend.TerminalSize) error {
 
 // Wait blocks until the session's single waitLoop (started once, by
 // Launch/Adopt's call to start()) observes container exit and closes done —
-// §決定 7's single-owner fan-out: however many goroutines call Wait
-// concurrently (Runner.watchRuntime and Runner.cleanupSandboxAfterWait both
-// do, on the very same session — see launchSandbox's doc comment), exactly
-// one ContainerWait API call is ever made.
+// a single-owner fan-out: however many goroutines call Wait concurrently
+// (Runner.watchRuntime and Runner.cleanupSandboxAfterWait both do, on the
+// very same session — see launchSandbox's doc comment), exactly one
+// ContainerWait API call is ever made.
 func (s *containerSession) Wait(ctx context.Context) (backend.RuntimeExit, error) {
 	select {
 	case <-ctx.Done():
@@ -3023,8 +2858,8 @@ func (s *containerSession) Wait(ctx context.Context) (backend.RuntimeExit, error
 }
 
 // waitLoop is the session's single ContainerWait owner. Ordering after
-// detecting exit follows §決定 7/8's "diagnostics before resource teardown"
-// contract: drain the read loop (readDone) so the transcript buffer is
+// detecting exit follows a "diagnostics before resource teardown" contract:
+// drain the read loop (readDone) so the transcript buffer is
 // final, THEN finalize exit state and close done (unblocking Wait
 // callers), THEN run the diagnostics collector (if any — see
 // ContainerBackendOptions.DiagnosticsCollector's doc comment) to
@@ -3092,12 +2927,11 @@ func (s *containerSession) waitLoop() {
 		// waitChannelError (container_backend_workspace_init.go) covers the
 		// nil case this branch would otherwise panic on; see its doc comment.
 		//
-		// Resolved BEFORE the Warn, not after: the Warn used to fire above
-		// the nil guard, so the one case the guard exists for was logged as
-		// `error=<nil>` while job.Output and diagnostics.json both got the
-		// fallback wording — the daemon log, which is where an operator looks
-		// first, was the only place that said nothing
-		// (next-session-container-backend-followups.md #3).
+		// Resolved BEFORE the Warn, not after: logging before the nil guard
+		// would mean the one case the guard exists for logs as
+		// `error=<nil>` while job.Output and diagnostics.json both get the
+		// fallback wording — the daemon log, which is where an operator
+		// looks first, would then be the only place that said nothing.
 		engineError = waitChannelError(err).Error()
 		slog.Warn("container backend: ContainerWait failed", "container_id", s.id, "error", engineError)
 	}
@@ -3112,8 +2946,8 @@ func (s *containerSession) waitLoop() {
 	// still guarantees readDone closes even if the daemon is slow.
 	//
 	// attached/readDone are snapshotted together under mu — not read as
-	// `s.readDone` directly — for two reasons (Opus review of PR #857).
-	// First, readDone is no longer a fixed, once-set field: reattachIfLost
+	// `s.readDone` directly — for two reasons. First, readDone is not a
+	// fixed, once-set field: reattachIfLost
 	// can swap it for a fresh generation at any point while the container
 	// is still running (concurrently with this very goroutine, which spends
 	// most of its life blocked in the ContainerWait select above), so a
@@ -3156,15 +2990,14 @@ func (s *containerSession) waitLoop() {
 	// writer via appendTranscript — has already returned (readDone closed
 	// above), so no further writes can race this Close in the common case.
 	// Doing this BEFORE finalizing exit state / closing s.done means a
-	// diagnostics collector that reads transcript.log from disk (§決定8's
-	// silent-exit classification) always sees the complete file, and
-	// BEFORE ContainerRemove means the file is guaranteed durable before
-	// the container itself (and any `docker logs` fallback) is gone.
+	// diagnostics collector that reads transcript.log from disk always
+	// sees the complete file, and BEFORE ContainerRemove means the file is
+	// guaranteed durable before the container itself (and any `docker
+	// logs` fallback) is gone.
 	//
-	// [N3, Opus review of PR #864]: "no further writes can race this" is
-	// no longer a PURE structural guarantee of this file's own logic the
-	// way it was before reattachIfLost existed — it now also leans on the
-	// engine's own behavior. s.running only flips false a few lines below
+	// "No further writes can race this" is not a PURE structural guarantee
+	// of this file's own logic — it also leans on the engine's own
+	// behavior. s.running only flips false a few lines below
 	// this point, strictly AFTER this drain-select and this Sync/Close —
 	// so a cache-hit Adopt racing exactly this window still sees
 	// running==true and (once the drain-select above has finished)
@@ -3185,16 +3018,16 @@ func (s *containerSession) waitLoop() {
 	// test) ever allowed an attach against an already-exited-but-not-yet-
 	// removed container, this comment's claim would stop being true.
 	//
-	// [Major 9, PR7 codex review]: Sync() runs BEFORE Close(), not just
-	// Close() alone. Close() flushes the process's own userspace buffers to
-	// the kernel but makes no durability guarantee beyond that — a power
-	// loss between Close() and the data actually reaching disk could still
-	// lose the tail of a job's transcript right as its container is
-	// removed, at precisely the moment `boid job log`'s only remaining
-	// source of truth. A Sync failure is escalated to Error (louder than
-	// the general Warn used elsewhere in this file) since it is the
-	// durability guarantee §決定8's "full 永続" contract depends on; Close
-	// still runs (and ContainerRemove still proceeds) even when Sync fails
+	// Sync() runs BEFORE Close(), not just Close() alone: Close() flushes
+	// the process's own userspace buffers to the kernel but makes no
+	// durability guarantee beyond that — a power loss between Close() and
+	// the data actually reaching disk could still lose the tail of a job's
+	// transcript right as its container is removed, at precisely the
+	// moment `boid job log`'s only remaining source of truth. A Sync
+	// failure is escalated to Error (louder than the general Warn used
+	// elsewhere in this file) since it is the durability guarantee the
+	// transcript's full-persistence contract depends on; Close still runs
+	// (and ContainerRemove still proceeds) even when Sync fails
 	// — blocking container teardown indefinitely on a persistent disk error
 	// would leak the container itself and defeat the reap contract, a worse
 	// outcome than a possibly-incomplete transcript tail.
@@ -3221,8 +3054,8 @@ func (s *containerSession) waitLoop() {
 	}
 
 	s.backend.forgetSession(s.id)
-	// Bounded, like every other teardown removal in this file (codex round 2 of
-	// PR8, Major 3 — see containerCleanupContext). This one blocks no caller (the
+	// Bounded, like every other teardown removal in this file (see
+	// containerCleanupContext). This one blocks no caller (the
 	// exit is already published and s.done already closed), so an unbounded
 	// version leaks a goroutine rather than wedging a dispatch; it is bounded
 	// anyway so that "a teardown ContainerRemove in this package always has a
@@ -3238,10 +3071,9 @@ func (s *containerSession) waitLoop() {
 	}
 	cancelRemove()
 	if s.specDir != "" {
-		// Blocker 1 (PR7 codex review): a runtimeDir-scoped spec lives in its
-		// own per-job directory (<runtimeDir>/spec/<spec.ID>/) — remove it
-		// wholesale rather than just specPath, matching Launch's cleanupFiles
-		// on the error path.
+		// A runtimeDir-scoped spec lives in its own per-job directory
+		// (<runtimeDir>/spec/<spec.ID>/) — remove it wholesale rather than
+		// just specPath, matching Launch's cleanupFiles on the error path.
 		_ = os.RemoveAll(s.specDir)
 	} else if s.specPath != "" {
 		_ = os.Remove(s.specPath)
@@ -3262,12 +3094,12 @@ func (s *containerSession) Stop(ctx context.Context) error {
 	return err
 }
 
-// Signal delivers sig to the container's PID 1 (docker-init, §決定 3) via
+// Signal delivers sig to the container's PID 1 (docker-init) via
 // `docker kill --signal=<sig>` — no SIGKILL follow-up, matching the
 // interface contract. docker-init forwards signals to its child (the boid
 // runner-container entrypoint), whose harness adapters' own
 // sigutil.ForwardAndWait reacts to SIGUSR1 exactly as the userns path's
-// SIG_IGN'd-then-adapter-handled chain does (see the plan doc's §決定 3).
+// SIG_IGN'd-then-adapter-handled chain does.
 func (s *containerSession) Signal(ctx context.Context, sig syscall.Signal) error {
 	name := unix.SignalName(sig)
 	if name == "" {

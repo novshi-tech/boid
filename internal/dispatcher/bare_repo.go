@@ -13,15 +13,13 @@ import (
 )
 
 // This file implements the daemon-side authenticated clone/fetch used by
-// `boid project add <git-url>` / `boid project fetch <id>` (docs/plans/
-// volume-only-daemon.md §論点b: "実装は既存の git gateway 経路を活用 (auth は
-// 既存の gateway.forges 経由)"). Unlike the sandbox-side clone (which goes
-// through gitgateway's HTTP reverse proxy at job-dispatch time, injecting
-// credentials via a per-job registry token — see gitgateway_wire.go), this
-// runs from the daemon process itself, so it talks to
-// gitgateway.CredentialProvider directly: no job token, no reverse proxy,
-// just "does this host have forge credentials configured, and if so what
-// are they".
+// `boid project add <git-url>` / `boid project fetch <id>`. Unlike the
+// sandbox-side clone (which goes through gitgateway's HTTP reverse proxy at
+// job-dispatch time, injecting credentials via a per-job registry token —
+// see gitgateway_wire.go), this runs from the daemon process itself, so it
+// talks to gitgateway.CredentialProvider directly: no job token, no reverse
+// proxy, just "does this host have forge credentials configured, and if so
+// what are they".
 //
 // Credentials are injected via a transient `-c http.extraHeader=...` git
 // config override, never embedded in the clone/fetch URL argument — `git
@@ -37,14 +35,13 @@ import (
 // time — useless as a daemon-managed fetch cache. `--mirror` configures
 // `remote.origin.fetch = +refs/*:refs/*` (and mirror=true), which is what
 // makes FetchBareRepo's `git fetch --all` actually update refs/heads/* in
-// place; see docs/plans/volume-only-daemon.md §論点b's fetch 経路), injecting
-// forge credentials from creds when rawURL's host is configured under
-// gateway.forges. namespace scopes secret resolution the same way job
-// dispatch does (the registering project's workspace slug —
-// SecretNamespace's existing convention). A host creds has no opinion on
-// (gitgateway.CredentialProvider.KnowsHost false, or creds itself nil)
-// clones unauthenticated — correct for public repos and for SSH URLs, which
-// this credential mechanism (HTTPS Basic auth) does not apply to at all.
+// place), injecting forge credentials from creds when rawURL's host is
+// configured under gateway.forges. namespace scopes secret resolution the
+// same way job dispatch does (the registering project's workspace slug).
+// A host creds has no opinion on (gitgateway.CredentialProvider.KnowsHost
+// false, or creds itself nil) clones unauthenticated — correct for public
+// repos and for SSH URLs, which this credential mechanism (HTTPS Basic
+// auth) does not apply to at all.
 func CloneBareRepo(ctx context.Context, rawURL, destPath string, creds *gitgateway.CredentialProvider, namespace string) error {
 	extraArgs, err := credentialGitArgs(rawURL, creds, namespace)
 	if err != nil {
@@ -60,9 +57,9 @@ func CloneBareRepo(ctx context.Context, rawURL, destPath string, creds *gitgatew
 // which, per CloneBareRepo's doc comment, is always the plain
 // (uncredentialed) URL the project was registered with. After a successful
 // fetch, also refreshes bareRepoPath's symbolic HEAD to match the remote's
-// current default branch (MAJOR 4, PR-2a codex round-1 review) — see
-// refreshBareRepoHEAD's doc comment for why this needs its own step (a
-// mirror clone's fetch refspec never touches HEAD on its own).
+// current default branch — see refreshBareRepoHEAD's doc comment for why
+// this needs its own step (a mirror clone's fetch refspec never touches
+// HEAD on its own).
 func FetchBareRepo(ctx context.Context, bareRepoPath string, creds *gitgateway.CredentialProvider, namespace string) error {
 	originURL, err := gitRemoteURL(ctx, bareRepoPath)
 	if err != nil {
@@ -80,8 +77,8 @@ func FetchBareRepo(ctx context.Context, bareRepoPath string, creds *gitgateway.C
 }
 
 // refreshBareRepoHEAD points bareRepoPath's symbolic HEAD at origin's
-// current default branch (MAJOR 4, PR-2a codex round-1 review). A `--mirror`
-// clone's fetch refspec (`+refs/*:refs/*`, see CloneBareRepo's doc comment)
+// current default branch. A `--mirror` clone's fetch refspec
+// (`+refs/*:refs/*`, see CloneBareRepo's doc comment)
 // updates every refs/heads/* ref in place but never touches HEAD itself —
 // so when a forge's default branch changes (e.g. main -> master), `boid
 // project fetch` silently keeps reading project.yaml from the OLD branch
@@ -124,12 +121,9 @@ func refreshBareRepoHEAD(ctx context.Context, bareRepoPath string, extraArgs []s
 		return nil
 	}
 	if err := runGit(exec.CommandContext(ctx, "git", "-C", bareRepoPath, "symbolic-ref", "HEAD", ref)); err != nil {
-		// Best-effort (Minor 3, PR-2a codex round-2 review): this line used
-		// to return the error directly, silently contradicting the doc
-		// comment two paragraphs up — the fetch itself already succeeded
-		// (every ref is up to date), so a failure applying the resolved
-		// symref must not fail the whole `boid project fetch` any more than
-		// the two ls-remote/parse failures above do.
+		// Best-effort, matching the doc comment above: the fetch itself
+		// already succeeded, so a failure applying the resolved symref must
+		// not fail the whole `boid project fetch`.
 		return nil
 	}
 	return nil
@@ -217,38 +211,29 @@ var credentialHeaderPattern = regexp.MustCompile(`(?i)(Authorization:\s*(?:Basic
 // embedded in a gateway clone URL's path (dispatcher.buildGatewayCloneURL's
 // "<gatewayURL>/j/<token>/<host>/<owner>/<repo>.git" form — gitgateway.
 // PathPrefix is "/j/"), the shape checkout.go's PrepareJobCheckout embeds
-// as remoteURL. This is a DIFFERENT credential shape than
-// credentialHeaderPattern above (an HTTP Basic/Bearer auth header) and than
-// SanitizeURLForLogging's userinfo/query-param forms below — the token
-// lives in the URL PATH, not an Authorization header or `user:pass@`
+// as remoteURL. This is a different credential shape than
+// credentialHeaderPattern above (an HTTP Basic/Bearer auth header) — the
+// token lives in the URL path, not an Authorization header or `user:pass@`
 // prefix — so neither existing pattern catches it; without this,
 // PrepareJobCheckout's `git remote set-url origin <remoteURL>` error path
-// would leak a live, single-job gateway token through runGit's error
-// message exactly like Blocker 1 (this file's own credentialHeaderPattern)
-// originally did for forge PATs.
+// would leak a live, single-job gateway token through runGit's error message.
 var gatewayJobTokenPathPattern = regexp.MustCompile(`(/j/)[^/]+`)
 
 // redactGitArgs returns a copy of args with any embedded credential value
 // (the Basic/Bearer Authorization header credentialGitArgs injects via
-// `-c http.extraHeader=...`) replaced with a redacted placeholder (PR-2a
-// codex round-1 Blocker 1). Without this, runGit's error path below joined
-// cmd.Args verbatim into the returned error — which CreateProjectFromGitURL
-// / FetchProject then surface straight to the CLI/API caller and, for
-// FetchProject, persist as a project's StatusMessage (readable via
-// `boid project list`/`show` from then on) — so a single typo'd private-repo
-// URL with a configured forge PAT would leak
-// `http.extraHeader=Authorization: Basic <base64-user:token>` through both
-// surfaces. Every arg is scanned (not just the known `-c` value) so this
-// stays correct even if a future caller passes the header some other way.
-// Every arg additionally passes through SanitizeURLForLogging (BLOCKER 1,
-// PR-2a codex round-2 review sibling sweep): by construction, no caller of
-// CloneBareRepo/FetchBareRepo should ever be able to reach this point with
-// a credential-bearing URL argument any more (NormalizeOriginURL's
-// validateURLForClone rejects it far earlier, before either function is
-// ever invoked) — but this is exactly the same "costs nothing, closes the
-// door defensively in case a future git version / caller ever changes
-// that" reasoning the Basic/Bearer header redaction below already applies
-// to stderr.
+// `-c http.extraHeader=...`) replaced with a redacted placeholder. Without
+// this, runGit's error path below joins cmd.Args verbatim into the returned
+// error — which CreateProjectFromGitURL / FetchProject then surface
+// straight to the CLI/API caller and, for FetchProject, persist as a
+// project's StatusMessage (readable via `boid project list`/`show` from
+// then on) — so a single typo'd private-repo URL with a configured forge
+// PAT would leak the credential through both surfaces. Every arg is scanned
+// (not just the known `-c` value) so this stays correct even if a future
+// caller passes the header some other way. Every arg additionally passes
+// through SanitizeURLForLogging as defense in depth, even though no caller
+// of CloneBareRepo/FetchBareRepo should reach this point with a
+// credential-bearing URL argument (NormalizeOriginURL's validateURLForClone
+// rejects it far earlier).
 func redactGitArgs(args []string) []string {
 	out := make([]string, len(args))
 	for i, a := range args {
@@ -261,12 +246,9 @@ func redactGitArgs(args []string) []string {
 
 // runGit executes cmd, wrapping a failure with cmd's args and captured
 // stderr for a useful daemon-log / API-error message. Both the args and the
-// captured stderr are passed through redactGitArgs first (Blocker 1 — see
-// its doc comment): stderr is not known to ever echo the injected
-// credential header back (git does not print the command line it was
-// invoked with), but redacting it too costs nothing and closes that door
-// defensively in case a future git version, `GIT_CURL_VERBOSE`, or a
-// misbehaving credential helper ever changes that.
+// captured stderr are passed through redactGitArgs first (see its doc
+// comment): stderr is not known to ever echo the injected credential header
+// back, but redacting it too costs nothing and closes that door defensively.
 func runGit(cmd *exec.Cmd) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

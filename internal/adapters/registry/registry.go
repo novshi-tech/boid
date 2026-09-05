@@ -19,13 +19,10 @@ import (
 )
 
 // For returns the HarnessAdapter that owns the given HarnessType, or nil if
-// the harness is unknown.
-//
-// Phase 3-d made the three built-in harnesses (shell / claude / opencode)
-// authoritative; the runner-inner-child rejects an empty / unknown
-// HarnessType because the planner now resolves every job to one of these.
-// The nil return path is kept for forward compatibility (a future harness
-// the caller has not yet wired) but is no longer expected on any live path.
+// the harness is unknown. The runner-inner-child rejects an empty/unknown
+// HarnessType (the planner resolves every job to one of the built-in
+// harnesses), so the nil return is kept only for forward compatibility with
+// a future harness not yet wired here.
 func For(harness sandbox.HarnessType) adapters.HarnessAdapter {
 	switch harness {
 	case sandbox.HarnessShell:

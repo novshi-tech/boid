@@ -16,9 +16,7 @@ import (
 // Server is the API gateway's HTTP handler: a thin net/http/httputil.
 // ReverseProxy wrapper that does path-based authorization (Registry) and
 // per-service credential injection (CredentialProvider) around the standard
-// library's streaming transport — the same shape as
-// internal/gitgateway.Server, generalized from git smart HTTP to arbitrary
-// HTTP APIs (docs/plans/api-gateway.md PR1).
+// library's streaming transport.
 type Server struct {
 	registry    *Registry
 	credentials *CredentialProvider
@@ -34,12 +32,11 @@ type routeInfoKey struct{}
 
 type routeInfo struct {
 	service string
-	// account is the optional credential-account qualifier (docs/plans/
-	// api-gateway-credential-accounts.md) — carried alongside service
-	// (which is ALWAYS the base name, account already stripped — D4) so
-	// Rewrite's Inject call can resolve the right account-qualified
-	// credential (D2/D3) while every authz/BaseURL lookup upstream of it
-	// keeps using service alone.
+	// account is the optional credential-account qualifier, carried
+	// alongside service (which is ALWAYS the base name, account already
+	// stripped) so Rewrite's Inject call can resolve the right
+	// account-qualified credential while every authz/BaseURL lookup
+	// upstream of it keeps using service alone.
 	account   string
 	namespace string
 	taskID    string
@@ -69,19 +66,12 @@ type injectionErrorKey struct{}
 // httputil.ReverseProxy's default behavior of proceeding to RoundTrip with
 // whatever Rewrite left the request as.
 //
-// This is a deliberate departure from internal/gitgateway.Server's own
-// Rewrite, which logs+notifies and then forwards unauthenticated on the
-// exact same race. That fail-open choice is safe for git specifically
-// because every upstream forge reliably answers an unauthenticated
-// smart-HTTP request with 401 — the sandbox's own git client just sees an
-// ordinary auth failure. It is NOT safe here: base_url points at an
-// arbitrary, operator-configured REST API whose behavior with no
+// Fail-fast (abort, 502) is the only safe default here: base_url points at
+// an arbitrary, operator-configured REST API whose behavior with no
 // Authorization header is unknowable in general — some route might not
 // require auth at all and answer with a public/anonymous-tier response the
 // caller was never meant to reach unauthenticated, or take an unintended
-// anonymous action. Fail-fast (abort, 502) is the only safe default for a
-// gateway whose entire purpose is "this request is authenticated, or it
-// does not go out."
+// anonymous action.
 type failFastTransport struct {
 	base http.RoundTripper
 }
@@ -95,14 +85,11 @@ func (t failFastTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 // recordedServiceName returns the string every RequestRecorder/notifier/
 // log call in this file uses to identify "which service" a request
-// targeted: service unchanged when account is empty (byte-identical to
-// every pre-account-support call site, D2), or "service@account" when an
-// account was specified (docs/plans/api-gateway-credential-accounts.md D8
-// — RequestRecorder's own signature is unchanged; this is the one place
-// account is folded back in before handing off to it). This is
-// deliberately NOT what gets passed to CredentialProvider.Resolve/Inject or
-// used for Entry.Services/BaseURLFor/AllowsReadOnlyWrite lookups (D4) — all
-// of those take service and account as separate arguments/fields.
+// targeted: service unchanged when account is empty, or "service@account"
+// when an account was specified. This is deliberately NOT what gets passed
+// to CredentialProvider.Resolve/Inject or used for
+// Entry.Services/BaseURLFor/AllowsReadOnlyWrite lookups — all of those take
+// service and account as separate arguments/fields.
 func recordedServiceName(service, account string) string {
 	if account == "" {
 		return service
@@ -129,19 +116,15 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 	s.proxy = &httputil.ReverseProxy{
 		// The outbound transport is shared with internal/gitgateway via
 		// gwtransport.New: ExpectContinueTimeout plus the connection-
-		// liveness settings (idle-conn expiry, HTTP/2 keep-alive ping)
-		// whose absence wedged this gateway against a silently-vanished
-		// upstream in production — see that package's own doc comment.
-		// Every body-streaming-relevant field is still left at
-		// http.Transport's zero value (== streaming semantics, no request
-		// body buffering — docs/plans/api-gateway.md §5 "無バッファ
-		// ストリーミング転送"). Wrapped in failFastTransport — see that
-		// type's own doc comment.
+		// liveness settings (idle-conn expiry, HTTP/2 keep-alive ping) —
+		// see that package's own doc comment. Every body-streaming-relevant
+		// field is left at http.Transport's zero value (streaming
+		// semantics, no request body buffering). Wrapped in
+		// failFastTransport — see that type's own doc comment.
 		Transport: failFastTransport{base: gwtransport.New()},
 		// FlushInterval < 0 flushes immediately after every write instead
 		// of batching on a timer — required for SSE (Server-Sent Events)
-		// upstreams to stream incrementally rather than arriving in bursts
-		// (docs/plans/api-gateway.md §5 "SSE 対応").
+		// upstreams to stream incrementally rather than arriving in bursts.
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			info, _ := pr.In.Context().Value(routeInfoKey{}).(routeInfo)
@@ -157,11 +140,10 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Host = info.baseURL.Host
 
-			// inbound ヘッダ剥がし (docs/plans/api-gateway.md §5): a
-			// sandbox-supplied Authorization/Cookie/Proxy-Authorization must
-			// never reach the upstream — it would either collide with the
-			// gateway's own injected credential or let the sandbox smuggle
-			// an entirely different credential through the gateway
+			// A sandbox-supplied Authorization/Cookie/Proxy-Authorization
+			// must never reach the upstream — it would either collide with
+			// the gateway's own injected credential or let the sandbox
+			// smuggle an entirely different credential through the gateway
 			// unmodified.
 			pr.Out.Header.Del("Authorization")
 			pr.Out.Header.Del("Cookie")
@@ -195,17 +177,13 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			slog.Warn("apigateway: upstream request failed", "service", recSvc, "err", err)
 			s.recorder(info.taskID, info.method, recSvc, info.path, http.StatusBadGateway)
 			// The response body sent to the SANDBOX never includes err's own
-			// text (codex review round 6 finding): a genuine transport
-			// failure (DNS lookup, connection refused, TLS handshake) from
-			// Go's net/http typically embeds the target host:port verbatim
-			// in its error string (e.g. `dial tcp: lookup
-			// myapp-internal.example.com: no such host`) — echoing that back
-			// would leak base_url's real hostname to the sandbox, directly
-			// contradicting docs/plans/api-gateway.md §1's "upstream の実
-			// URL は sandbox からは見えない (見せる必要もない)" design
-			// principle. The full error (including hostname) is still
-			// logged server-side via slog.Warn above for operator
-			// diagnosis — only the sandbox-facing response is generic.
+			// text: a genuine transport failure (DNS lookup, connection
+			// refused, TLS handshake) from Go's net/http typically embeds
+			// the target host:port verbatim in its error string, and
+			// echoing that back would leak base_url's real hostname to the
+			// sandbox. The full error is still logged server-side via
+			// slog.Warn above for operator diagnosis — only the
+			// sandbox-facing response is generic.
 			http.Error(w, "bad gateway: upstream request failed for service "+recSvc, http.StatusBadGateway)
 		},
 	}
@@ -215,15 +193,13 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 // ServeHTTP parses the request path, authorizes it against the registry,
 // and — if allowed — rewrites it to the configured service's base URL and
 // proxies it with credentials injected. Unrecognized paths get 404; a
-// well-formed path whose account qualifier fails validation gets 400 (docs/
-// plans/api-gateway-credential-accounts.md D11 — see errInvalidAccount's own
-// doc comment for why this is the one parsePath failure that is NOT a 404);
-// unknown/expired tokens get 401; well-formed-but-disallowed service
-// requests get 403; an allowed service configured with require_account:
-// true (docs/plans/api-gateway-credential-accounts.md D5) rejects an
-// account-less request with 400; a read-only token attempting a non-GET/HEAD
-// method gets 403; an unconfigured (or credential-broken) service gets
-// 502/503.
+// well-formed path whose account qualifier fails validation gets 400 (see
+// errInvalidAccount's own doc comment for why this is the one parsePath
+// failure that is NOT a 404); unknown/expired tokens get 401;
+// well-formed-but-disallowed service requests get 403; an allowed service
+// configured with require_account: true rejects an account-less request
+// with 400; a read-only token attempting a non-GET/HEAD method gets 403;
+// an unconfigured (or credential-broken) service gets 502/503.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// EscapedPath, not r.URL.Path — see parsePath's own doc comment: net/http
 	// decodes %2F into a literal "/" in .Path before a handler ever sees it,
@@ -241,42 +217,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// A SINGLE Lookup — not Authorize (which does its own internal Lookup)
 	// followed by a second, independent Lookup for the fields Authorize's
 	// bool-returning signature doesn't expose (Namespace/TaskID/ReadOnly).
-	// The two-call shape had a real (if narrow) race: Unregister — called
-	// from Runner.UnregisterJob at job completion — could land in the
-	// window between the two lookups, so the second one would silently
-	// return a zero-value Entry (ReadOnly=false, Namespace="") instead of
-	// erroring, while `allowed` had already been computed as true from the
-	// FIRST (pre-race) lookup. That combination let a since-unregistered
-	// token's request proceed using the STALE `allowed=true` verdict
-	// together with a zeroed Entry: the read-only gate below
-	// (`entry.ReadOnly && ...`) would silently evaluate to false — a
-	// request that should have been rejected as a write from a read-only
-	// token would instead reach the upstream — and credential resolution
-	// would silently fall back to the "default" secret namespace instead
-	// of the job's actual workspace-scoped one (codex review finding).
-	//
-	// Unlike internal/gitgateway.Server.ServeHTTP's own analogous two-Lookup
-	// shape (whose doc comment argues the equivalent ABA race there degrades
-	// SAFELY to default-namespace credentials — gitgateway's read/write
-	// permission is entirely decided inside the single Authorize call, with
-	// no separate boolean re-read afterward), this package added a genuinely
-	// NEW post-lookup security gate (ReadOnly) that the race could bypass
-	// outright, not merely mis-scope. A single Lookup, with allowed derived
-	// from THIS SAME entry snapshot, closes the window entirely: Entry is
-	// either the one live snapshot both decisions are made from, or the
-	// token is correctly reported invalid.
+	// A two-call shape would race with a concurrent Unregister landing
+	// between the two lookups: the second lookup could silently return a
+	// zero-value Entry (ReadOnly=false, Namespace="") while `allowed` was
+	// already computed as true from the first, pre-race lookup — letting a
+	// since-unregistered token's request through with the read-only gate
+	// bypassed and credential resolution silently falling back to the
+	// "default" namespace. A single Lookup, with allowed derived from THIS
+	// SAME entry snapshot, closes the window entirely.
 	entry, tokenValid := s.registry.Lookup(rt.token)
 	if !tokenValid {
 		http.Error(w, "unauthorized: invalid or expired job token", http.StatusUnauthorized)
 		return
 	}
 	// Authorization/BaseURL/readonly-write lookups all key on rt.service —
-	// the BASE service name, account already stripped by parsePath (docs/
-	// plans/api-gateway-credential-accounts.md D4): a workspace's enabled
-	// services list ("freee", never "freee@ubs") governs every account of
-	// that service uniformly. recSvc below is the "name@account" form (D8)
-	// used ONLY for what the recorder/notifier/log lines and sandbox-facing
-	// error text report, never for an authorization or config lookup.
+	// the BASE service name, account already stripped by parsePath: a
+	// workspace's enabled services list ("freee", never "freee@ubs")
+	// governs every account of that service uniformly. recSvc below is the
+	// "name@account" form used ONLY for what the recorder/notifier/log
+	// lines and sandbox-facing error text report, never for an
+	// authorization or config lookup.
 	recSvc := recordedServiceName(rt.service, rt.account)
 	allowed := entry.Services[rt.service]
 
@@ -286,49 +246,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ServiceConfig.RequireAccount (docs/plans/api-gateway-credential-
-	// accounts.md D5) is checked here — AFTER the authorization gate above,
-	// BEFORE every other gate below — deliberately, on both sides of that
-	// placement:
-	//
-	//   - Not before authorization: doing so would leak, to a job token that
-	//     cannot even reach this service (entry.Services[rt.service] ==
-	//     false), whether the service happens to require an account at all.
-	//     A job with no legitimate reason to know this service exists would
-	//     learn a fact about its configuration. Checking after `allowed` is
-	//     already established means this can only ever fire for a service
-	//     the caller is genuinely permitted to use — the same reasoning
-	//     that already governs which fields of entry/rt the recorder/error
-	//     text below are allowed to mention.
-	//   - Before the readonly-write gate (rather than after it): missing an
-	//     account is a property of the REQUEST'S SHAPE — it applies
-	//     identically to a GET and a POST — whereas the readonly-write gate
-	//     is specifically about which HTTP METHODS a readonly token may use.
-	//     Resolving the request-shape defect first means a readonly token's
-	//     GET without an account to a require_account service gets the same
-	//     400 a write request would (not a silent pass-through that only a
-	//     later stage would have caught), and a request that supplies both
-	//     defects (readonly token, unsafe method, AND no account) reports
-	//     the more fundamental "this request cannot possibly succeed as
-	//     written" defect rather than the narrower "this token cannot use
-	//     this method" one.
-	//
-	// Every check from here down (Configured/BaseURLFor/Resolve) is either
-	// insensitive to account presence or already documented as having no
-	// fallback for a missing account-qualified credential (D3) — this gate
-	// exists purely so the caller gets a targeted, actionable 400 instead of
-	// discovering the same problem several stages later as a 502 from the
-	// Resolve pre-check below.
+	// ServiceConfig.RequireAccount is checked here — AFTER the
+	// authorization gate above, BEFORE every other gate below —
+	// deliberately: checking before authorization would leak, to a job
+	// token that cannot even reach this service, whether the service
+	// requires an account at all; checking before the readonly-write gate
+	// means a missing-account defect (a property of the request's shape,
+	// not its method) is reported before a narrower method-based one. This
+	// gate exists purely so the caller gets a targeted, actionable 400
+	// instead of discovering the same problem several stages later as a
+	// 502 from the Resolve pre-check below.
 	if rt.account == "" && s.credentials.RequiresAccount(rt.service) {
 		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusBadRequest)
 		http.Error(w, "bad request: service "+rt.service+" requires a credential-account qualifier — request \"/"+rt.service+"@<account>/...\" instead of \"/"+rt.service+"/...\"", http.StatusBadRequest)
 		return
 	}
 
-	// ServiceConfig.AllowReadOnlyWrite (docs/plans/api-gateway.md §論点,
-	// 2026-08-14 追加決定) is a daemon-config-only, per-service opt-out of
-	// this gate — see that field's own doc comment for why it must never be
-	// settable from project.yaml/task_behaviors.
+	// ServiceConfig.AllowReadOnlyWrite is a daemon-config-only, per-service
+	// opt-out of this gate — see that field's own doc comment for why it
+	// must never be settable from project.yaml/task_behaviors.
 	if entry.ReadOnly && !isSafeMethod(r.Method) && !s.credentials.AllowsReadOnlyWrite(rt.service) {
 		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusForbidden)
 		http.Error(w, "forbidden: read-only job token may only use GET/HEAD", http.StatusForbidden)
@@ -336,42 +272,29 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Systemic "no secret resolver at all" case, distinct from an ordinary
-	// per-key miss handled by the Resolve pre-check just below — mirrors
-	// internal/gitgateway.Server.ServeHTTP's identical two-tier check.
-	// Checked BEFORE BaseURLFor (opus review, PR #1042, F5): a
-	// BaseURLSecretKey-backed service (D12) also needs c.resolver, so if it
-	// is nil entirely, THIS systemic diagnosis (503 "no secret resolver
-	// configured") is the accurate one for that service too — checking it
-	// AFTER BaseURLFor would instead surface BaseURLFor's own generic "not
-	// configured" 502, misdiagnosing a daemon-wide problem as "only this
-	// one service is broken". A literal-base_url service's behavior is
-	// unchanged either way: it never touches c.resolver inside BaseURLFor,
-	// but already needed a working resolver for its own auth credential a
-	// few lines below regardless, so moving this check earlier costs it
-	// nothing.
+	// per-key miss handled by the Resolve pre-check just below. Checked
+	// BEFORE BaseURLFor: a BaseURLSecretKey-backed service also needs
+	// c.resolver, so if it is nil entirely, this systemic diagnosis (503
+	// "no secret resolver configured") is the accurate one for that
+	// service too — checking it after BaseURLFor would instead surface
+	// BaseURLFor's own generic "not configured" 502, misdiagnosing a
+	// daemon-wide problem as "only this one service is broken".
 	if !s.credentials.Configured() {
 		s.recorder(entry.TaskID, r.Method, recSvc, rt.path, http.StatusServiceUnavailable)
 		http.Error(w, "service unavailable: api gateway has no secret resolver configured", http.StatusServiceUnavailable)
 		return
 	}
 
-	// BaseURLFor takes namespace/account now (docs/plans/api-gateway-
-	// credential-accounts.md D12) so a BaseURLSecretKey-backed service can
-	// resolve a per-account upstream target — but D4 is unaffected: this is
-	// still called AFTER the base-name authorization/RequireAccount/
-	// AllowsReadOnlyWrite gates above, none of which change. err's full
-	// text (which, for a secret-backed service, may embed the resolved
+	// BaseURLFor takes namespace/account so a BaseURLSecretKey-backed
+	// service can resolve a per-account upstream target. err's full text
+	// (which, for a secret-backed service, may embed the resolved
 	// hostname) is logged server-side only; the sandbox-facing response
-	// below stays as generic as the pre-D12 "service ... is not configured"
-	// text always was — never echoing err.Error() — matching the same
-	// hostname-non-disclosure posture ErrorHandler's own doc comment
-	// documents for a transport failure. NotifyCredentialError is called
-	// here too (opus review F4) — a secret-backed base_url that fails to
-	// resolve is the same class of "this service's secret-store-backed
-	// config is broken" problem the Resolve pre-check just below already
-	// notifies on; before this fix an operator relying on that
-	// notification channel had no signal at all for a broken
-	// base_url_secret_key specifically.
+	// below stays generic — never echoing err.Error() — matching
+	// ErrorHandler's own hostname-non-disclosure posture for a transport
+	// failure. NotifyCredentialError is called here too: a secret-backed
+	// base_url that fails to resolve is the same class of "this service's
+	// secret-store-backed config is broken" problem the Resolve pre-check
+	// just below already notifies on.
 	baseURL, err := s.credentials.BaseURLFor(entry.Namespace, rt.service, rt.account)
 	if err != nil {
 		slog.Warn("apigateway: base_url resolution failed; refusing to forward (fail-fast)",
@@ -382,18 +305,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fail-fast credential pre-check (docs/plans/gitgateway-credential-fail-fast.md
-	// pattern, generalized): resolve before ever proxying, so a missing or
-	// broken secret returns 502 instead of forwarding the request
-	// unauthenticated (or not at all, for kinds that have no unauthenticated
-	// fallback) and inheriting whatever confusing failure the upstream would
-	// otherwise produce. Rewrite's own Inject call re-resolves and, on a
-	// failure THERE (the narrow race window between this check and the
-	// actual round trip), aborts via failFastTransport rather than
-	// forwarding unauthenticated — see that type's own doc comment.
+	// Fail-fast credential pre-check: resolve before ever proxying, so a
+	// missing or broken secret returns 502 instead of forwarding the
+	// request unauthenticated and inheriting whatever confusing failure
+	// the upstream would otherwise produce. Rewrite's own Inject call
+	// re-resolves and, on a failure THERE (the narrow race window between
+	// this check and the actual round trip), aborts via failFastTransport
+	// rather than forwarding unauthenticated — see that type's own doc
+	// comment.
 	//
-	// account is passed through unmodified (D3): there is no fallback to
-	// the account-less credential when an account-qualified one is missing.
+	// account is passed through unmodified: there is no fallback to the
+	// account-less credential when an account-qualified one is missing.
 	if err := s.credentials.Resolve(entry.Namespace, rt.service, rt.account); err != nil {
 		slog.Warn("apigateway: credential resolution failed; refusing to forward (fail-fast)",
 			"service", recSvc, "namespace", entry.Namespace, "err", err)
@@ -416,8 +338,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// entirely) at request-send time.
 	//
 	// The string handed to url.Parse is prefixed with baseURL's own
-	// "<scheme>://<host>" (codex review finding), not just basePath+rt.path
-	// on their own: RFC 3986 treats a string beginning "//" as a
+	// "<scheme>://<host>", not just basePath+rt.path on their own: RFC
+	// 3986 treats a string beginning "//" as a
 	// network-path reference — everything up to the next "/" becomes the
 	// AUTHORITY, not path content. rt.path can legitimately begin with "//"
 	// (e.g. a service configured with no base_url path suffix, requested as
@@ -458,9 +380,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // isSafeMethod reports whether method is exactly "GET" or "HEAD" — the only
-// methods a read-only job token may use (docs/plans/api-gateway.md 前提と
-// なる決定事項: "task.readonly を HTTP メソッドに写像する"). Deliberately an
-// exact, case-SENSITIVE comparison, not a case-folded one: HTTP method
+// methods a read-only job token may use. Deliberately an exact,
+// case-SENSITIVE comparison, not a case-folded one: HTTP method
 // tokens are case-sensitive (RFC 7230 §3.1.1 defines the method as a
 // case-sensitive token, and net/http never normalizes r.Method), so a
 // lowercase "get" is a different, non-standard method — accepting it here

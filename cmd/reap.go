@@ -17,27 +17,19 @@ import (
 
 // reapInstallIDOverride lets an operator (or a test harness) point `boid
 // reap` at a specific install_id rather than the one this host's
-// ~/.local/share/boid/install_id resolves to — useful for the
-// deploy-level-rollback scenario docs/plans/phase6-container-backend.md
-// describes, where the reaper may need to run from a location whose
-// default data dir differs from the compose daemon's.
+// ~/.local/share/boid/install_id resolves to.
 var reapInstallIDOverride string
 
 // reapIncludeWorkspaceHomes opts into destroying the persistent
-// per-workspace HOME volumes too (docs/plans/workspace-home-volume-persistence.md
-// 論点 a). Off by default: see reapCmd's Long description for the declared
-// contract and why the default falls on the "keep the credentials" side.
+// per-workspace HOME volumes too. Off by default: see reapCmd's Long
+// description for the declared contract.
 var reapIncludeWorkspaceHomes bool
 
 var reapCmd = &cobra.Command{
 	Use:   "reap",
 	Short: "Stop and remove every docker resource this boid install created (daemon-independent)",
-	// docs/plans/phase6-container-backend.md §PR6/§決定6: `boid reap` is the
-	// "deploy-level reaper" the plan's rollback contract requires — it must
-	// work even when the compose daemon it is cleaning up after is down or
-	// unreachable, so unlike almost every other command in this tree it
-	// talks to the docker engine directly rather than through the boid
-	// daemon's own HTTP API.
+	// Talks to the docker engine directly rather than through the boid
+	// daemon's own HTTP API, so it works even when the daemon is down.
 	Long: `boid reap stops and removes every docker container, network, and volume
 belonging to this installation, found as the UNION of:
 
@@ -67,12 +59,8 @@ re-provisioned afterwards.`,
 
 func init() {
 	reapCmd.Annotations = map[string]string{
-		// Daemon-independent by design (see the Long description above) —
-		// must never try to autostart a daemon, and is not itself daemon
-		// lifecycle machinery the way start/stop/gc are, but the "never
-		// talks to a remote profile" axis is identical, so it is classified
-		// scopeLocal alongside them (cmd/root.go's scopeAnnotationKey doc
-		// comment).
+		// Daemon-independent by design (see the Long description above):
+		// must never try to autostart a daemon.
 		annotationSkipAutostart: "skip",
 		scopeAnnotationKey:      scopeLocal,
 	}

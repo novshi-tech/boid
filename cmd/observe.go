@@ -53,9 +53,8 @@ func renderTaskDetail(detail *apiwire.TaskDetailView) error {
 	}
 	fmt.Printf("Status:      %s\n", task.Status)
 	fmt.Printf("Type:        %s\n", task.Type)
-	// Behavior/Payload are execution-only; Kind/Urgency are card-only
-	// (card-model-cleanup PR-2, design doc §3.2) — print whichever side this
-	// task actually carries.
+	// Behavior/Payload are execution-only; Kind/Urgency are card-only —
+	// print whichever side this task actually carries.
 	if task.Exec != nil {
 		fmt.Printf("Behavior:    %s\n", task.Exec.Behavior)
 	}

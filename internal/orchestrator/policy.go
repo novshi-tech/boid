@@ -77,15 +77,14 @@ func policyFor(role Role, name string, pctx PolicyContext) BuiltinPolicy {
 
 // boidPolicy grants every hook/exec job the "boid" builtin's general op set.
 //
-// docs/plans/signal-ingest-detailed-design.md §3.2 (PR-3): OpBoidSignalList /
-// OpBoidSignalAck are added below (the judgment-side scan/ack surface — any
-// job may read its own workspace's signal inbox and ack a Signal once it has
-// written a judgment for it). OpBoidSignalIngest / OpBoidSignalCursorGet are
-// DELIBERATELY NOT added here — the design doc is explicit that granting
-// those two is PR-5's job (a connector-scoped, reduced policy handed only to
-// derived-trigger exec jobs), not this general policy. Do not "complete the
-// set" by adding them here; see sandbox.BoidOpSignalIngest's own doc comment
-// for the same note from the protocol side.
+// OpBoidSignalList / OpBoidSignalAck are the judgment-side scan/ack surface —
+// any job may read its own workspace's signal inbox and ack a Signal once it
+// has written a judgment for it. OpBoidSignalIngest / OpBoidSignalCursorGet
+// are DELIBERATELY NOT added here — those two belong only to a
+// connector-scoped, reduced policy handed to derived-trigger exec jobs (see
+// ConnectorBuiltinPolicies below). Do not "complete the set" by adding them
+// here; see sandbox.BoidOpSignalIngest's own doc comment for the same note
+// from the protocol side.
 func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 	return BuiltinPolicy{
 		AllowedOps: sortedOps(
@@ -155,31 +154,26 @@ func fetchPolicy(_ Role, _ PolicyContext) BuiltinPolicy {
 
 // ConnectorBuiltinPolicies returns the reduced, connector-scoped builtin
 // policy map a signal-derived trigger's exec job gets INSTEAD OF
-// DefaultBuiltinPolicies(RoleHook, []string{"boid","fetch"}, pctx)
-// (docs/plans/signal-ingest-detailed-design.md §5.2, Q27):
+// DefaultBuiltinPolicies(RoleHook, []string{"boid","fetch"}, pctx):
 //
 //   - "boid" -> connectorPolicy(pctx): ONLY OpBoidSignalIngest /
 //     OpBoidSignalCursorGet / OpBoidJobDone are allowed. Nothing else from
 //     the general boidPolicy set (task_create, card/action reads, ...) is
 //     reachable — a connector job cannot touch boid state beyond its own
 //     source's ingest/cursor. OpBoidJobDone is included alongside those two
-//     (rather than excluded like every other general op) because it is not
-//     a "touch boid state" capability the §5.2 reduction is meant to deny —
-//     handleBoidBuiltin (internal/sandbox/broker.go) restricts it to the
-//     caller's OWN job id (entry.Context.JobID) regardless of policy, so
-//     granting it cannot reach another job/project. Omitting it was a real
-//     bug (found during shadow-a's 2026-08-27 2-hour observation): every
-//     connector job's in-container runner posts `boid job done` to report
-//     its own completion (internal/sandbox/runner/runner.go's postJobDone,
-//     the same mechanism every other non-foreground job relies on) — with
-//     job_done missing from AllowedOps, the broker rejected that call, and
-//     the daemon's "runtime exited without boid job done" fallback then
-//     forced every connector run's real (successful) exit_code=0 into a
-//     recorded exit_code=1/JobStatusFailed, which trigger_loop.go's
-//     trackFailStreak counted as a real failure on every single run.
-//   - NO "fetch" entry at all (§5.2: "fetch builtin も渡さない —
-//     connector の外部到達は gateway で足りる"): a connector job's only
-//     network path is the API gateway (already reached via
+//     because it is not a "touch boid state" capability this reduction is
+//     meant to deny — handleBoidBuiltin (internal/sandbox/broker.go)
+//     restricts it to the caller's OWN job id (entry.Context.JobID)
+//     regardless of policy, so granting it cannot reach another
+//     job/project. Every connector job's in-container runner posts `boid
+//     job done` to report its own completion (the same mechanism every
+//     other non-foreground job relies on); omitting it from AllowedOps
+//     makes the broker reject that call, and the daemon's "runtime exited
+//     without boid job done" fallback then forces every connector run's
+//     real (successful) exit_code=0 into a recorded
+//     exit_code=1/JobStatusFailed.
+//   - NO "fetch" entry at all: a connector job's only network path is the
+//     API gateway (already reached via
 //     $BOID_API_BASE/$BOID_SIGNAL_SERVICE), not the general-purpose fetch
 //     builtin every other hook/exec job gets.
 //

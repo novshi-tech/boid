@@ -4,33 +4,22 @@ import "fmt"
 
 // Backend identifies which sandbox execution backend a set of
 // sandbox-facing URLs (gateway, and eventually broker/dockerproxy) must be
-// reachable from (docs/plans/phase6-container-backend.md §決定5: "gateway
-// / broker / dockerproxy はサービス名 (DNS) + TCP (mTLS) で到達する。旧版の
-// loopback bind + 10.0.2.2 投影... は丸ごと不要").
+// reachable from.
 //
-// gitgateway stays a leaf package (no internal/... imports) — Backend is
-// defined locally rather than pulled from internal/sandbox/backend so this
-// package's dependency-free property is preserved; internal/server, which
-// already imports both packages, is where a real backend selection
-// (should one ever need to vary per-daemon rather than per-deploy — see
-// the plan doc's §決定11) would be bridged in.
+// Defined locally rather than pulled from internal/sandbox/backend: this
+// package stays a leaf (no internal/... imports).
 type Backend string
 
 const (
-	// BackendUserns identifies the former userns sandbox backend: pasta
-	// provided a slirp NAT with the host loopback projected into the
-	// sandbox at 10.0.2.2. PR-4 (docs/plans/volume-only-daemon.md, the
-	// 2026-07 volume-only cutover) removed that backend entirely — the
-	// container backend (BackendContainer) is the only one selected in
-	// production. This constant, and SandboxURL's BackendUserns branch,
-	// are retained solely as a test-DI seam / documented API surface for
-	// SandboxURLOptions.Backend's zero value; no production caller sets
-	// Backend == BackendUserns anymore.
+	// BackendUserns identifies the former userns backend (pasta slirp NAT,
+	// host loopback projected at 10.0.2.2). No longer used in production —
+	// retained only as a test-DI seam / SandboxURLOptions.Backend's zero
+	// value.
 	BackendUserns Backend = "userns"
-	// BackendContainer is the container backend (Phase 6 PR5+; the sole
-	// sandbox backend in production since PR-4): daemon and job share a
-	// compose network, so the gateway is reached by its compose service
-	// name over DNS instead of a loopback projection.
+	// BackendContainer is the container backend, the sole backend used in
+	// production: daemon and job share a compose network, so the gateway
+	// is reached by its compose service name over DNS instead of a
+	// loopback projection.
 	BackendContainer Backend = "container"
 )
 
@@ -53,12 +42,9 @@ type SandboxURLOptions struct {
 }
 
 // SandboxURL builds the base URL a sandbox should use to reach a
-// daemon-side listener, given opts.Backend
-// (docs/plans/phase6-container-backend.md §PR4: "gateway の sandbox 向け
-// URL 生成を backend 別に"). BackendUserns (and the zero value) reproduces
-// today's loopback-projection URL byte-for-byte; BackendContainer produces
-// a compose-service-name URL over TLS, for PR5's container backend to
-// consume once it exists.
+// daemon-side listener, given opts.Backend. BackendUserns (and the zero
+// value) reproduces the loopback-projection URL; BackendContainer produces
+// a compose-service-name URL over TLS.
 func SandboxURL(opts SandboxURLOptions) string {
 	switch opts.Backend {
 	case BackendContainer:

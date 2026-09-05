@@ -12,54 +12,30 @@ import (
 // ProxyManager owns a set of long-lived per-workspace HTTP(S) egress proxies.
 // Each workspace gets its own listener on a distinct loopback port; the
 // allowlist of every listener can be live-swapped via Proxy.SetAllowed so
-// dispatch-time changes (workspace.yaml edits, new kit, …) take effect
-// immediately for the next sandbox without restarting the listener.
+// dispatch-time changes take effect immediately for the next sandbox
+// without restarting the listener.
 //
 // Concurrent sandboxes launched under the same workspace share one listener
 // — when their resolved allowlists differ, the most recent dispatch wins.
-// This matches the semantics of the rest of the workspace surface (env,
-// kits, …) where workspace state is read fresh at dispatch time and not
-// frozen per-sandbox.
 //
 // A ProxyManager is created via NewProxyManager and must be started with
 // Start(ctx) before GetOrCreate is called. StopAll closes every listener;
 // the manager is single-shot and must not be reused after StopAll.
-//
-// Design rationale: per-workspace port separation (rather than embedded
-// HTTPS_PROXY basic-auth) was chosen for client compatibility — many tools
-// in the wild parse the proxy URL loosely or ignore the userinfo entirely.
 type ProxyManager struct {
 	// BindHost, when non-empty, overrides the loopback-only default
-	// ("127.0.0.1") every listener GetOrCreate starts binds to ([Blocker 2,
-	// PR7 codex review] — docs/plans/phase6-container-backend.md §決定5).
-	// A container-backend deploy runs the daemon inside its own container;
-	// a sibling job container reaches the egress proxy over the shared
-	// compose network by this daemon container's own IP, which a
-	// loopback-bound listener is unreachable from — see internal/server's
-	// composeBindHost doc comment for the full rationale. Set once, before
-	// Start (internal/server's New(), based on the config-selected sandbox
-	// backend — §決定11's global-not-per-job selection), and never changed
-	// again: every listener this manager ever creates (the default
-	// workspace one included) shares the same bind host for the life of
-	// the process. Empty (every pre-PR7 caller/test) preserves the
-	// original "127.0.0.1" behavior exactly.
+	// ("127.0.0.1") every listener GetOrCreate binds to. A container-backend
+	// deploy runs the daemon inside its own container; a sibling job
+	// container reaches the egress proxy over the shared compose network by
+	// this daemon container's own IP, which a loopback-bound listener is
+	// unreachable from. Set once, before Start, and never changed again.
+	// Empty preserves the original "127.0.0.1" behavior.
 	BindHost string
 
 	// PortStore, when non-nil, makes a listener's port survive daemon
 	// restarts: the port allocated for a key is written here and reused on
-	// the next process lifetime (docs/plans/egress-proxy-stable-port.md).
-	//
-	// Why this exists: Proxy ports used to be pure `:0` ephemeral, so every
-	// daemon restart moved every workspace's egress proxy to a new port.
-	// Tools that read the proxy from the environment (curl, git, boid's own
-	// traffic) never noticed, but tools that BAKE it into a config file did
-	// — a `~/.npmrc` on the persistent workspace HOME volume carrying a
-	// long-dead port made npm/pnpm retry ECONNREFUSED on a one-minute
-	// backoff, which reads as a hang rather than an error. See the design
-	// doc's 背景 section for the incident this came from.
-	//
-	// nil (every pre-feature caller and every test that builds a bare
-	// ProxyManager) keeps the original ephemeral behaviour exactly.
+	// the next process lifetime. Otherwise a tool that bakes the proxy port
+	// into a config file (e.g. ~/.npmrc) breaks silently after a restart
+	// moves the port. nil keeps the original ephemeral (`:0`) behaviour.
 	PortStore PortStore
 
 	// PortRangeLow/PortRangeHigh bound the band new ports are allocated
@@ -95,25 +71,21 @@ type PortStore interface {
 	SavePort(key string, port int) error
 	// ReservedPorts returns every recorded reservation as port -> key.
 	//
-	// The allocator needs this because "is this port free?" and "is this
-	// port spoken for?" are different questions here: listeners are created
-	// lazily at dispatch time, so a workspace that has not run since the
-	// last restart has a reservation with nothing listening on it. Binding
-	// such a port succeeds and would silently steal it.
+	// Needed because "is this port free?" and "is this port spoken for?"
+	// are different questions here: a listener is created lazily at
+	// dispatch time, so a workspace that has not run since the last
+	// restart has a reservation with nothing listening on it, and binding
+	// such a port would silently steal it.
 	ReservedPorts() (map[int]string, error)
 }
 
 // DefaultProxyPortRangeLow/High bound the default allocation band.
 //
-// The band sits deliberately BELOW the kernel's ephemeral port range, which
-// is 32768-60999 on every machine boid runs on (`net.ipv4.ip_local_port_range`,
-// verified on both the host and inside the daemon container). Drawing a
-// FIXED port from the ephemeral range would mean that whenever some
-// unrelated outgoing connection happens to hold that number as its source
-// port at restart time, the bind fails — a failure mode the old `:0`
-// allocation could not have, because it always took whatever was free. An
-// operator who has lowered ip_local_port_range can move the band with
-// PortRangeLow/PortRangeHigh.
+// The band sits deliberately below the kernel's ephemeral port range
+// (32768-60999 on every machine boid runs on): a fixed port drawn from the
+// ephemeral range could lose a bind race against an unrelated outgoing
+// connection. An operator who has lowered ip_local_port_range can move the
+// band with PortRangeLow/PortRangeHigh.
 const (
 	DefaultProxyPortRangeLow  = 30000
 	DefaultProxyPortRangeHigh = 32767
@@ -171,13 +143,10 @@ func (m *ProxyManager) GetOrCreate(workspaceID string, allowed []string) (int, e
 // startStable binds proxy on a port that survives daemon restarts when a
 // PortStore is configured, and on a plain ephemeral port when it is not.
 //
-// The order is: persisted port first (the steady-state path, and the whole
-// reason this exists), then a walk of the band skipping ports other keys
-// have reserved, then a walk that is allowed to take a reserved-but-idle
-// port, then `:0`. Every step down that ladder is a degradation in
-// stability, never in isolation — a workspace's egress is confined by its
-// own listener's allowlist, which is unaffected by which port that listener
-// sits on. That is why exhaustion falls back instead of failing dispatch.
+// Falls back down a ladder: persisted port, then a walk skipping
+// reserved-but-idle ports, then a walk allowed to take one, then `:0`. Each
+// step degrades stability but never isolation, so exhaustion falls back
+// rather than failing dispatch.
 //
 // Callers hold m.mu.
 func (m *ProxyManager) startStable(proxy *Proxy, key string) (int, error) {
@@ -213,11 +182,9 @@ func (m *ProxyManager) startStable(proxy *Proxy, key string) (int, error) {
 
 	port, allocErr := m.walkBand(proxy, key, low, high)
 	if allocErr != nil {
-		// Nothing free in the band. Fall back to the pre-feature behaviour
-		// rather than refusing to dispatch, and persist nothing — recording
-		// an ephemeral port would hand the next restart a number with no
-		// meaning. Remembered so the next new key does not repeat the whole
-		// failed scan (the scan runs under m.mu, which every dispatch takes).
+		// Nothing free in the band; fall back rather than refusing to
+		// dispatch, and persist nothing since an ephemeral port has no
+		// meaning after a restart. Remembered so later keys skip the scan.
 		m.bandExhausted = true
 		slog.Warn("egress proxy: no free port in the configured range; falling back to an ephemeral port (it will not survive a restart)",
 			"key", key, "range_low", low, "range_high", high)
@@ -226,12 +193,8 @@ func (m *ProxyManager) startStable(proxy *Proxy, key string) (int, error) {
 	}
 
 	if persisted != 0 {
-		// Deliberately loud, and deliberately naming BOTH numbers: this is
-		// the exact moment a job-side config that baked the old port goes
-		// stale, and the symptom on the job side (a retry loop against a
-		// dead port) gives no hint of what happened. Emitted here rather
-		// than before the walk because the new number does not exist yet
-		// up there — an operator told only the old one has nothing to act on.
+		// Deliberately loud and naming both numbers: this is the moment a
+		// job-side config that baked the old port goes stale.
 		slog.Warn("egress proxy: the persisted port was unavailable, reallocated",
 			"key", key, "old_port", persisted, "new_port", port,
 			"hint", "job-side configs that baked the old port (e.g. ~/.npmrc) need updating to the new one")
@@ -244,15 +207,11 @@ func (m *ProxyManager) startStable(proxy *Proxy, key string) (int, error) {
 // walkBand finds and binds a free port in [low, high] for key, or returns an
 // error if the band has nothing to give.
 //
-// Two passes. The first skips ports another key has reserved in the store;
-// the second is allowed to take one. The split is what keeps this feature
-// from causing the very incident it exists to prevent: listeners are created
-// lazily at dispatch time, so a workspace that has not been dispatched since
-// the last restart holds a reservation with NOTHING listening on it. A
-// naive "did net.Listen succeed?" test cannot tell that apart from a free
-// port, and taking it would silently move that idle workspace's port —
-// killing any job-side config that baked it, with no log at either end
-// (its own next dispatch would just see "no record" and allocate afresh).
+// Two passes: the first skips ports another key has reserved in the store;
+// the second is allowed to take one. The split matters because a listener
+// is created lazily at dispatch time, so an idle workspace's reservation
+// has nothing actually listening on it — binding it would silently move
+// that workspace's port with no log at either end.
 //
 // Callers hold m.mu.
 func (m *ProxyManager) walkBand(proxy *Proxy, key string, low, high int) (int, error) {
@@ -296,11 +255,8 @@ func (m *ProxyManager) walkBand(proxy *Proxy, key string, low, high int) (int, e
 				continue
 			}
 			if isReserved {
-				// Only reachable on the second pass: the band had nothing
-				// unreserved left. SavePort drops the victim's row, so its
-				// next dispatch allocates a fresh port — say so, because
-				// that is another baked-config break and nothing else in
-				// the system will mention it.
+				// Only reachable on the second pass, taking a reserved port
+				// away from its previous holder.
 				slog.Warn("egress proxy: no unreserved port left in the range; taking a port reserved by another key",
 					"key", key, "port", port, "previous_key", holder,
 					"hint", "the previous key will get a new port on its next dispatch; widen sandbox.egress_proxy_port_low/high")
@@ -321,15 +277,9 @@ var errBandExhausted = errors.New("no free port in the configured range")
 
 // portRange returns the band new ports are allocated from.
 //
-// Anything the runtime cannot actually bind falls back to the default band
-// rather than being honoured: config.ValidateYAML rejects a malformed band,
-// but it only runs on the `boid config set/edit/apply` paths — a hand-edited
-// or deploy-seeded config.yaml reaches here through config.Load, which does
-// not validate. Without this clamp, `egress_proxy_port_high: 70000` (a typo)
-// would send every allocation through a full band of guaranteed-invalid
-// binds and then silently degrade to ephemeral ports, i.e. turn the feature
-// off with no diagnosis. Note the walk's span arithmetic also assumes a
-// bounded band.
+// An unusable configured range (e.g. a hand-edited config.yaml that bypassed
+// config.ValidateYAML) falls back to the default band with a warning rather
+// than sending every allocation through guaranteed-invalid binds.
 func (m *ProxyManager) portRange() (low, high int) {
 	low, high = m.PortRangeLow, m.PortRangeHigh
 	if low < 1 || high < 1 || low > 65535 || high > 65535 || high < low {

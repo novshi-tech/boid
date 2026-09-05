@@ -1,9 +1,9 @@
 package orchestrator
 
-// docs/plans/boid-internal-signal-inbox.md (PR-1): boid 自身の action 列を
-// signal inbox (signals テーブル) へ統合する側の実装。CreateAction (store.go)
-// が action の INSERT と同一 tx でここを呼ぶ。判定の詳細は doc §4.2〜§4.6、
-// 層分離の理由は §6.2 を参照 — PR description にも同じ理由を書く。
+// This file ingests boid's own action stream into the signal inbox (signals
+// table). CreateAction (store.go) calls into it within the same transaction
+// as the action INSERT. See docs/plans/boid-internal-signal-inbox.md for the
+// full design.
 
 import (
 	"context"
@@ -16,8 +16,7 @@ import (
 )
 
 // InternalSignalPack / InternalSignalConnector are the reserved "<pack>/
-// <connector>" identity boid's own action-derived signals ingest under
-// (§4.6's envelope table: source.pack="boid", source.connector="actions").
+// <connector>" identity boid's own action-derived signals ingest under.
 // InternalSignalPack is a reserved Pack name — internal/integrationpack's
 // LoadPacks refuses to ever load a real installed Pack claiming it, so an
 // external connector's rows can never collide with these under the same
@@ -29,66 +28,39 @@ const (
 
 // MetaProjectResolver answers, for a workspace, which of its projects
 // declare signals.sources[] in their (hydrated) project.yaml — its
-// metaprojects (docs/plans/boid-internal-signal-inbox.md §4.3/§6.2:
-// "メタプロジェクトとは signals.sources[] を宣言している project のこと").
-// Backed in production by *ProjectStore.MetaProjectIDs — the SAME hydrated
-// meta cache every other project.yaml-derived read already uses, injected
-// here as a narrow interface (mirroring internal/server/boid_executor.go's
-// resolveOrCaptureService/actionListService/projectLookup narrowing
-// convention) rather than depending on *ProjectStore's full surface. See
-// this package's TaskRepository.SetMetaProjectResolver for the wiring seam
-// and the design doc's §6.2 for why the lookup lives here (an
-// internal/orchestrator-owned interface, satisfied by an
-// internal/orchestrator-owned type) rather than being pushed up to
-// internal/api/internal/server the way internal/integrationpack's Pack
-// registry had to be (§6.2's own comparison): *ProjectStore already lives in
-// this package, so — unlike the Pack registry, which lives in a sibling
-// package internal/orchestrator does not and must not import — there is no
-// layering violation to route around, only an instance-wiring one (a bare
-// package-level CreateAction has no constructor-injected fields of its own),
-// which TaskRepository's existing late-binding-setter shape (SetWorkspaceStore/
-// SetHostCommands on *ProjectStore itself) already solves for the identical
-// problem.
+// metaprojects. Backed in production by *ProjectStore.MetaProjectIDs,
+// injected here as a narrow interface rather than depending on
+// *ProjectStore's full surface. See TaskRepository.SetMetaProjectResolver
+// for the wiring seam.
 type MetaProjectResolver interface {
 	// MetaProjectIDs returns the project ids within workspaceID that declare
 	// signals.sources[] — nil/empty when none do, including when the
-	// resolver has no data at all for workspaceID. §6.2 treats both the same
-	// way: no metaproject to ingest FOR, so nothing to ingest.
+	// resolver has no data at all for workspaceID; both mean "nothing to
+	// ingest".
 	MetaProjectIDs(workspaceID string) []string
 }
 
-// var _ MetaProjectResolver = (*ProjectStore)(nil) proves *ProjectStore
-// (project_store.go's MetaProjectIDs) satisfies this interface against the
-// real production type, the same "compile-time proof, not just a hopeful
-// runtime type assertion" pattern signal_store.go's own package doc comment
-// points at for api.SignalStore/*orchestrator.TaskRepository.
+// Compile-time proof that *ProjectStore satisfies this interface.
 var _ MetaProjectResolver = (*ProjectStore)(nil)
 
 type writerProjectContextKey struct{}
 
-// WithWriterProjectID marks ctx as carrying a sandbox write's origin project
-// (docs/plans/boid-internal-signal-inbox.md §4.3/§6.2) — the same
-// context-propagation idiom actor.go's WithActor/ActorFromContext already
-// established for Action.Actor, applied to the one additional fact
-// CreateAction's ingest decision needs that Actor cannot supply:
-// internal/api/task_service.go's UpdateTask stamps ActorHuman even for a
-// sandbox-originated call (its own "Actor caveat" comment says so), so actor
-// is not trustworthy evidence of the writer's project.
+// WithWriterProjectID marks ctx as carrying a sandbox write's origin
+// project — the same context-propagation idiom actor.go's
+// WithActor/ActorFromContext established for Action.Actor, applied to the
+// one additional fact CreateAction's ingest decision needs that Actor
+// cannot supply: actor is stamped ActorHuman even for sandbox-originated
+// calls, so it is not trustworthy evidence of the writer's project.
 //
-// internal/server/boid_executor.go's ExecuteBoidBuiltin is the ONLY call
-// site that should ever call this (§6.2: "運搬は1箇所で閉じられる") — every
-// sandbox-originated write funnels through it with a sandbox.TokenContext
-// carrying ProjectID, and every OTHER ctx-building path in this codebase
-// (HTTP handlers via WithActor(r.Context(), ActorHuman), daemon loops via
-// WithActor(ctx, ActorDaemon)) never touches this key. WriterProjectIDFromContext
-// therefore reports "not sandbox-originated" for every human/daemon write
-// with zero special-casing anywhere else in the call graph.
+// internal/server/boid_executor.go's ExecuteBoidBuiltin is the only call
+// site that should ever call this — every sandbox-originated write funnels
+// through it with a sandbox.TokenContext carrying ProjectID, and every
+// other ctx-building path in this codebase never touches this key.
 //
 // projectID may be "" — a sandbox write whose TokenContext.ProjectID could
 // not be resolved still calls this (with an empty string), which is exactly
 // what lets WriterProjectIDFromContext distinguish "no sandbox writer at
-// all" (ingest-eligible on this axis) from "sandbox writer, but its project
-// is unknown" (fail-close, §4.3).
+// all" from "sandbox writer, but its project is unknown" (fail-close).
 func WithWriterProjectID(ctx context.Context, projectID string) context.Context {
 	return context.WithValue(ctx, writerProjectContextKey{}, projectID)
 }
@@ -98,8 +70,7 @@ func WithWriterProjectID(ctx context.Context, projectID string) context.Context 
 // was never routed through ExecuteBoidBuiltin (a human/daemon/HTTP-originated
 // write) — CreateAction's actor-axis check treats that as "not a sandbox
 // write, self-reference cannot apply". ok==true with an empty projectID
-// means a sandbox write whose project could not be resolved — the fail-close
-// case (§4.3).
+// means a sandbox write whose project could not be resolved — the fail-close case.
 func WriterProjectIDFromContext(ctx context.Context) (projectID string, ok bool) {
 	v := ctx.Value(writerProjectContextKey{})
 	if v == nil {
@@ -109,23 +80,22 @@ func WriterProjectIDFromContext(ctx context.Context) (projectID string, ok bool)
 	return projectID, ok
 }
 
-// IngestActionSignal is CreateAction's internal-signal ingest step (design
-// doc §4). Exported — rather than a private helper only CreateAction calls —
-// so tests can exercise the ingest DECISION in isolation from the actions
-// table's own id PRIMARY KEY (a real action id can only ever be INSERTed
-// once, so a test proving re-ingest of the SAME action id is a no-op, Q10,
-// has to call this directly with a repeated Action value rather than
-// through CreateAction twice).
+// IngestActionSignal is CreateAction's internal-signal ingest step. Exported
+// — rather than a private helper only CreateAction calls — so tests can
+// exercise the ingest decision in isolation from the actions table's own id
+// PRIMARY KEY (a real action id can only ever be INSERTed once, so a test
+// proving re-ingest of the same action id is a no-op has to call this
+// directly with a repeated Action value rather than through CreateAction
+// twice).
 //
-// Best-effort by design (§6.2: "ingest 失敗で action の書き込みを巻き戻さな
-// い"). CreateAction calls this AFTER its own INSERT has already run (as one
-// statement within the caller's transaction) and only logs whatever error
-// this returns: a failed ingest means the workspace misses ONE signal for
-// this action, which is recoverable — the same card's next action carries
-// its own signal (§6.2's "取りこぼした signal は次に同じ card が動いたとき
-// の signal でカバーされる"). It must never fail the caller's transaction:
-// the action is the fact, the signal is a side effect of it, and undoing the
-// fact because the side effect failed would invert that causality (§6.2).
+// Best-effort by design. CreateAction calls this after its own INSERT has
+// already run (as one statement within the caller's transaction) and only
+// logs whatever error this returns: a failed ingest means the workspace
+// misses one signal for this action, which is recoverable — the same
+// card's next action carries its own signal. It must never fail the
+// caller's transaction: the action is the fact, the signal is a side
+// effect of it, and undoing the fact because the side effect failed would
+// invert that causality.
 func IngestActionSignal(ctx context.Context, dbtx db.DBTX, a *Action, resolver MetaProjectResolver) error {
 	if resolver == nil || a == nil || a.TaskID == "" {
 		return nil
@@ -138,9 +108,8 @@ func IngestActionSignal(ctx context.Context, dbtx db.DBTX, a *Action, resolver M
 		}
 		return fmt.Errorf("internal signal ingest: resolve target task: %w", err)
 	}
-	// §4.2 対象軸 — ingest の範囲は card 型 task 宛の action だけ。
-	// api_gateway_request のような exec task 宛の大量の行はここで構造的に
-	// 落ちる (Q9)。
+	// Ingest scope is card-type tasks only; exec-task actions (e.g.
+	// api_gateway_request) are structurally excluded here.
 	if taskType != TaskTypeCard {
 		return nil
 	}
@@ -150,30 +119,28 @@ func IngestActionSignal(ctx context.Context, dbtx db.DBTX, a *Action, resolver M
 		return fmt.Errorf("internal signal ingest: resolve target project workspace: %w", err)
 	}
 	if workspaceID == "" {
-		// project がどの workspace にも紐付いていない — ingest 先が無い。
+		// Project is not linked to any workspace — no ingest target.
 		return nil
 	}
 
 	metaProjectIDs := resolver.MetaProjectIDs(workspaceID)
 	if len(metaProjectIDs) == 0 {
-		// §6.2: signals を宣言した project が workspace に一つも無ければ
-		// ingest しない — 判定するまでもなく何も起きない (Q5)。
+		// No project in the workspace declares signals.sources[] — nothing to ingest.
 		return nil
 	}
 
-	// §4.3 actor 軸 — 書き込み元 project による自己参照の遮断、および
-	// fail-close。actor 文字列 (task:<id> 等) は判定材料にしない — Q8。
+	// Self-reference guard + fail-close on the writer-project axis. The
+	// actor string (task:<id> etc.) is never used as evidence here.
 	if writerProjectID, hasWriter := WriterProjectIDFromContext(ctx); hasWriter {
 		if writerProjectID == "" {
-			// fail-close: TokenContext は持つが書き込み元 project を解決
-			// できなかった (Q7)。
+			// fail-close: a TokenContext existed but its project could not
+			// be resolved.
 			return nil
 		}
 		for _, mp := range metaProjectIDs {
 			if mp == writerProjectID {
-				// 自己参照 — メタプロジェクト自身の job/task が書いた
-				// (Q8)。複数メタプロジェクトが居ても全部が対象になる
-				// (Q12)。
+				// Self-reference: the metaproject's own job/task wrote this
+				// action.
 				return nil
 			}
 		}

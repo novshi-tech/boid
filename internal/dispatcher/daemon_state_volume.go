@@ -18,52 +18,42 @@ import (
 //
 // # The exposure
 //
-// docs/plans/workspace-home-volume-persistence.md PR1 reserved the volume
-// namespace boid NAMES ITSELF ("boid-ws-", internal/dockerres) so a
-// `capabilities.docker` job cannot create, delete, or mount another
-// workspace's HOME volume. The single highest-value volume in the deployment
-// was not in that namespace: under build/container/compose.yml the daemon's
-// entire persistent state is one named volume mounted at /home/boid, and
-// COMPOSE names it — `name: boid` plus the `boid_state` key gives
-// "boid_boid_state". So a job needed only
+// The volume namespace boid names itself ("boid-ws-", internal/dockerres)
+// keeps a `capabilities.docker` job from touching another workspace's HOME
+// volume — but the daemon's own persistent state was not in that namespace:
+// under build/container/compose.yml it lives in one named volume
+// ("boid_boid_state") mounted at /home/boid. A job needed only
 //
 //	{"Image":"busybox","Cmd":["sh","-c","cat /state/.local/share/boid/secret.key"],
 //	 "HostConfig":{"Mounts":[{"Type":"volume","Source":"boid_boid_state","Target":"/state"}]}}
 //
-// to read secret.key, boid.db, tls/ca.key, web_secret and install_id. Note it
-// needs no WRITE access anywhere: PR1's create/delete rules were never what
-// stood in the way. The plan doc recorded this under "未解決 / 本 doc の
-// 範囲外"; this file closes it.
+// to read secret.key, boid.db, tls/ca.key, web_secret and install_id — no
+// write access needed anywhere. This file closes that. See
+// docs/plans/workspace-home-volume-persistence.md for the fuller history.
 //
 // # Why runtime detection rather than a name rule
 //
-// Owner decision, 2026-07-26. Two cheaper designs were rejected:
+// A blanket "boid_"/"boid-" volume-name deny misfires on an operator's own
+// `boid_myapp` volume and protects nothing once the stack runs under a
+// different compose project name. Denying any volume not in the job's own
+// ledger is tighter but breaks legitimate sibling use (testcontainers and
+// friends attaching a fixture volume).
 //
-//   - Deny a blanket "boid_"/"boid-" volume-name prefix. Minimal code, but it
-//     misfires on an operator's own `boid_myapp` volume, and it protects
-//     nothing the moment someone runs the stack under a different compose
-//     project name — the name is not ours to predict.
-//   - Deny mounting any volume not in the job's own ledger. The tightest rule
-//     available, and the one to reach for if the `capabilities.docker` threat
-//     model is ever revisited wholesale, but it breaks legitimate sibling use
-//     (testcontainers and friends attaching a fixture volume).
-//
-// So the daemon asks the engine what IT is running on, once, at startup. The
-// accepted cost is that this only works where the daemon can identify its own
-// container; where it cannot, the reservation is empty AND the operator is
-// warned, which is the part that took a review round to get right — see
+// So the daemon asks the engine what IT is running on, once, at startup.
+// This only works where the daemon can identify its own container; where it
+// cannot, the reservation is empty and the operator is warned — see
 // daemonStateMayLiveOnVolume for why "am I in a container?" was the wrong
-// question to gate the warning on, and DetectDaemonStateVolumes for the
+// question to gate that warning on, and DetectDaemonStateVolumes for the
 // contract by outcome.
 
 // selfInspectTimeout bounds the ENTIRE startup self-inspection, and exists
-// because the failure mode it guards is not "the engine is down" — that is an
-// immediate dial error — but "the socket accepts the connection and then never
-// answers" (a wedged engine, a half-open socket surviving an engine restart, a
-// proxy in front of it). With no deadline the inspect inherits the caller's
-// context.Background() and `boid start` blocks forever, inside a function
-// whose entire design is "warn and continue": an unbounded call turns the
-// fail-open posture into a fail-never one. [Major 2, codex review 2026-07-26]
+// because the failure mode it guards is not "the engine is down" — that is
+// an immediate dial error — but "the socket accepts the connection and then
+// never answers" (a wedged engine, a half-open socket surviving an engine
+// restart, a proxy in front of it). With no deadline the inspect inherits
+// the caller's context.Background() and `boid start` blocks forever, inside
+// a function whose entire design is "warn and continue": an unbounded call
+// turns the fail-open posture into a fail-never one.
 //
 // Sized for a slow engine on a loaded host, not for latency: nothing waits on
 // this result except the rest of startup, and being wrong in the short
@@ -78,23 +68,17 @@ import (
 //     procfs generates both from in-kernel state, with no I/O and no lock a
 //     userspace process can hold.
 //   - filepath.EvalSymlinks on dataHome (resolveDataHomeForMountComparison).
-//     This one genuinely touches the filesystem, and round 1 of this feature
-//     avoided it for exactly that reason — a hung NFS/FUSE mount under the
-//     data root would hang startup where a deadline could not reach.
-//     [round 2 Major 1] retired that reasoning: the daemon OPENS boid.db under
-//     this very path before buildRuntime ever calls this function, so a wedged
-//     data root has already stopped startup whether or not the self-inspection
-//     looks at it. Declining to resolve bought no availability and cost
-//     correctness — see resolveDataHomeForMountComparison.
+//     This one genuinely touches the filesystem, but the daemon opens
+//     boid.db under this very path before buildRuntime ever calls this
+//     function, so a wedged data root has already stopped startup whether
+//     or not the self-inspection looks at it.
 //
 // The docker client is likewise constructed OUTSIDE this deadline, by the
-// caller (internal/server's buildRuntime). That is deliberate and is the
-// reason it is now shared with the container backend rather than built here:
-// client.New(client.FromEnv) reads DOCKER_CERT_PATH's ca/cert/key
-// synchronously, so a self-inspect that built its own would be a second
-// uninterruptible read on the startup path — one this feature alone would have
-// introduced. Sharing the backend's client makes that read a precondition the
-// daemon already had.
+// caller (internal/server's buildRuntime): client.New(client.FromEnv) reads
+// DOCKER_CERT_PATH's ca/cert/key synchronously, so a self-inspect that
+// built its own would be a second uninterruptible read on the startup path.
+// Sharing the backend's client makes that read a precondition the daemon
+// already had.
 //
 // A var only so tests can shrink it; production never reassigns it.
 var selfInspectTimeout = newAtomicDuration(5 * time.Second)
@@ -157,25 +141,20 @@ type DaemonStateVolumes struct {
 
 	// DataHomeUnresolved carries why the data root could not be normalized
 	// (made absolute and symlink-free) for comparison against the engine's
-	// mount destinations. It is set whenever that step failed — including on
-	// the error returns below, where the same reason is also folded into the
-	// returned error, so a caller that reads both must not report it twice.
-	// The path it exists for is the all-succeeded one, which has nowhere
-	// else to report it.
+	// mount destinations. Set whenever that step failed — including on the
+	// error returns below, where the same reason is also folded into the
+	// returned error, so a caller reading both must not report it twice.
 	//
-	// It exists because that failure has nowhere honest to go otherwise
-	// [round 3 Minor 1, codex review]. It cannot be the returned error: a
-	// non-nil error means "containment is INACTIVE" to the caller, and it is
-	// not — the volumes were named and reserved. It cannot be silently
-	// dropped either, which is what the first implementation did: with an
-	// unresolvable data root and an otherwise healthy inspect, the run
-	// returned a nil error and the operator was never told that
-	// DataHomeCovered had been computed against a path the daemon could not
-	// resolve. So it rides alongside, and the caller warns about it
-	// separately from the INACTIVE case.
+	// It cannot be the returned error: a non-nil error means "containment is
+	// inactive" to the caller, and it is not — the volumes were named and
+	// reserved. It cannot be silently dropped either: an unresolvable data
+	// root with an otherwise healthy inspect must still tell the operator
+	// that DataHomeCovered was computed against a path the daemon could not
+	// resolve. So it rides alongside, warned about separately from the
+	// inactive case.
 	//
-	// DataHomeCovered is still computed (against the absolute-but-unresolved
-	// spelling, the closest available approximation) rather than forced
+	// DataHomeCovered is still computed against the absolute-but-unresolved
+	// spelling (the closest available approximation) rather than forced
 	// false — a false there would claim the crown jewels are outside every
 	// reserved volume, which is a different and equally unsupported claim.
 	DataHomeUnresolved error
@@ -211,7 +190,6 @@ type DaemonStateVolumes struct {
 // from a failure. It is upheld by ordering (the engine-independent
 // classification runs before anything engine-shaped can fail) and pinned by
 // TestDetectDaemonStateVolumes_everyErrorCarriesStateVolumeExpected.
-// [round 2 Major 2, codex review 2026-07-26.]
 //
 // Every path is bounded by selfInspectTimeout, with the two synchronous
 // filesystem reads that no deadline can interrupt enumerated and justified in
@@ -242,19 +220,17 @@ type DaemonStateVolumes struct {
 // match — and HostConfig.Binds / Mounts[].Type=bind are already denied
 // wholesale by dockerproxy, which covers that shape completely.
 func DetectDaemonStateVolumes(ctx context.Context, api SelfContainerInspector, dataHome string) (DaemonStateVolumes, error) {
-	// [Major 2] One deadline over the whole thing, including the engine call.
-	// WithTimeout takes the earlier of this and any deadline the caller already
-	// set, so a caller may tighten it but not remove it.
+	// One deadline over the whole thing, including the engine call.
+	// WithTimeout takes the earlier of this and any deadline the caller
+	// already set, so a caller may tighten it but not remove it.
 	ctx, cancel := context.WithTimeout(ctx, selfInspectTimeout.Get())
 	defer cancel()
 
-	// ORDER MATTERS, and it is the second half of [round 2 Major 2]. The
-	// mount-based classification below needs no engine, so it runs FIRST and
-	// fixes StateVolumeExpected before anything that can fail for an
-	// engine-shaped reason. From the `res` assignment onward every return in
-	// this function carries StateVolumeExpected=true, which is what lets the
-	// caller treat "error" and "nothing to protect" as disjoint instead of
-	// having to guess which one a zero value meant. Pinned by
+	// Order matters: the mount-based classification below needs no engine,
+	// so it runs first and fixes StateVolumeExpected before anything that
+	// can fail for an engine-shaped reason. From the `res` assignment
+	// onward every return carries StateVolumeExpected=true, letting the
+	// caller treat "error" and "nothing to protect" as disjoint. Pinned by
 	// TestDetectDaemonStateVolumes_everyErrorCarriesStateVolumeExpected.
 	resolvedHome, resolveErr := resolveDataHomeForMountComparison(dataHome)
 	mayLive, undecided := daemonStateMayLiveOnVolume(resolvedHome, resolveErr)
@@ -321,18 +297,16 @@ func DetectDaemonStateVolumes(ctx context.Context, api SelfContainerInspector, d
 //
 // # Why this replaced the "am I in a container?" test
 //
-// [Major 1, codex review 2026-07-26.] The first implementation asked whether
-// an engine sentinel file existed (/run/.containerenv, /.dockerenv) or a
-// container id could be extracted, and treated "neither" as "not in a
-// container, nothing to protect, stay silent". That is wrong for any runtime
-// that ships no sentinel and puts no id where this file looks — containerd/CRI
-// and Kubernetes are the obvious ones, gVisor and Firecracker-backed runtimes
-// the less obvious. In exactly those environments the daemon would return a
-// SUCCESSFUL empty reservation and start silently undefended, and if the node
-// exposes a docker-compatible socket to jobs (which is the only configuration
-// where any of this matters) the sibling-mount attack lands untouched. A
-// detection whose failure mode is indistinguishable from its no-op is not a
-// detection.
+// Asking whether an engine sentinel file exists (/run/.containerenv,
+// /.dockerenv) or a container id can be extracted is wrong for any runtime
+// that ships no sentinel and puts no id where that looks — containerd/CRI
+// and Kubernetes are the obvious ones, gVisor and Firecracker-backed
+// runtimes the less obvious. In exactly those environments the daemon
+// would return a successful empty reservation and start silently
+// undefended, and if the node exposes a docker-compatible socket to jobs
+// (the only configuration where any of this matters) the sibling-mount
+// attack lands untouched. A detection whose failure mode is
+// indistinguishable from its no-op is not a detection.
 //
 // So the question is asked about the ASSET instead of about the runtime: is
 // the daemon's persistent data root a mount point of its own — something laid
@@ -343,15 +317,11 @@ func DetectDaemonStateVolumes(ctx context.Context, api SelfContainerInspector, d
 //
 //   - On its own mount → something is mounted where the state lives; it may
 //     well be a named volume, so failing to name it is a FAILURE (warn).
-//     Verified against the live rootless-podman deploy on 2026-07-26: the
-//     daemon container's /proc/self/mountinfo carries
-//     "... /home/boid rw,nosuid,nodev,relatime - ext4 ..." while the data root
-//     is /home/boid/.local/share/boid, so the covering mount is /home/boid.
+//     (Verified on a live rootless-podman deploy: the daemon container's
+//     /proc/self/mountinfo carries the data root's parent, /home/boid, as
+//     its own ext4 mount.)
 //   - On the root mount → nothing is mounted over it, so no volume holds it
-//     and there is nothing to reserve (silent no-op). Verified against this
-//     developer host the same day: its mountinfo has mount points /, /boot,
-//     /boot/efi, /run, /dev, /sys and their children — no /home — so a data
-//     root of /home/nosen/.local/share/boid is covered by "/".
+//     and there is nothing to reserve (silent no-op).
 //
 // # The known false positive, and why it is the right direction
 //
@@ -362,6 +332,7 @@ func DetectDaemonStateVolumes(ctx context.Context, api SelfContainerInspector, d
 // against silence on a deployment with everything to protect. The warning text
 // (internal/server's reservedDaemonStateVolumes) is written to be actionable
 // in both readings.
+//
 // The dataHome it receives is the RESOLVED one (see
 // resolveDataHomeForMountComparison), and resolveErr is that resolution's own
 // failure, threaded in rather than swallowed: a path that could not be
@@ -370,11 +341,11 @@ func DetectDaemonStateVolumes(ctx context.Context, api SelfContainerInspector, d
 // means true.
 func daemonStateMayLiveOnVolume(dataHome string, resolveErr error) (bool, error) {
 	if resolveErr != nil {
-		// [round 2 Major 1] Deliberately NOT "carry on with the unresolved
-		// spelling and see what matches". An unresolved path matches nothing
-		// but "/", which reads as "an ordinary directory on the root
-		// filesystem" — the one answer this function is allowed to give
-		// silently. Failing to resolve must never be able to produce it.
+		// Deliberately NOT "carry on with the unresolved spelling and see
+		// what matches": an unresolved path matches nothing but "/", which
+		// reads as "an ordinary directory on the root filesystem" — the one
+		// answer this function is allowed to give silently. Failing to
+		// resolve must never be able to produce it.
 		return true, resolveErr
 	}
 	if dataHome == "" {
@@ -402,23 +373,22 @@ func daemonStateMayLiveOnVolume(dataHome string, resolveErr error) (bool, error)
 //
 // # Why both steps, and why failure is loud
 //
-// [round 2 Major 1.] The comparison is pure string work, and pathIsWithin
-// answers true for the mount point "/" unconditionally — so ANY spelling the
-// kernel would not have produced falls through to "/" and classifies as "an
-// ordinary directory on the root filesystem, nothing to protect", which is the
-// one outcome DetectDaemonStateVolumes reports silently. Two such spellings
-// reach this code in practice:
+// The comparison is pure string work, and pathIsWithin answers true for the
+// mount point "/" unconditionally — so ANY spelling the kernel would not have
+// produced falls through to "/" and classifies as "an ordinary directory on
+// the root filesystem, nothing to protect", which is the one outcome
+// DetectDaemonStateVolumes reports silently. Two such spellings reach this
+// code in practice:
 //
 //   - Relative. cmd/start.go accepts --db-path verbatim: it neither rejects a
 //     relative path nor absolutizes one. `boid start --db-path
 //     ../home/boid/.local/share/boid/boid.db` from /workspace puts boid.db on
 //     the state volume and hands this function a string starting "..".
 //   - Symlinked ancestor. /home/boid -> /mnt/state, or any operator's own
-//     tidy-up. Round 1 knew about this one and accepted it as a residual
-//     limit on the grounds that filepath.EvalSymlinks might block under a
-//     hung filesystem. The premise does not hold: the daemon opens boid.db
-//     under this path before this function runs, so a wedged data root has
-//     already stopped startup. Declining to resolve bought nothing.
+//     tidy-up. filepath.EvalSymlinks is safe to call here even though it
+//     touches the filesystem: the daemon opens boid.db under this path
+//     before this function runs, so a wedged data root has already stopped
+//     startup either way.
 //
 // A failure here is therefore reported, never swallowed: the caller turns it
 // into "may live on a volume" (warn), not into "on the root mount" (silent).
@@ -498,16 +468,12 @@ func pathIsWithin(path, mountPoint string) bool {
 // selfContainerID returns this process's own container id, preferring
 // /proc/self/mountinfo and falling back to /proc/self/cgroup.
 //
-// The ORDER is the whole point. /proc/self/cgroup is the answer most code on
-// the internet reaches for, and under cgroup v2 it is frequently useless:
-// verified against the live rootless-podman 4.9.3 dogfood deploy on
-// 2026-07-26, where `cat /proc/self/cgroup` inside the daemon container prints
-// exactly "0::/" — no id anywhere. (The same container's HOSTNAME env var was
-// also empty, so the $HOSTNAME shortcut ContainerBackendOptions.SelfContainerID
-// uses is not a viable source here either.) mountinfo, by contrast, always
-// carries it: both engines bind-mount /etc/hostname, /etc/hosts and
-// /etc/resolv.conf out of a per-container directory whose path contains the
-// full 64-hex id.
+// The order is the whole point: /proc/self/cgroup is frequently useless
+// under cgroup v2, which often reports just "0::/" with no id anywhere (and
+// an empty $HOSTNAME rules out the ContainerBackendOptions.SelfContainerID
+// shortcut too). mountinfo, by contrast, always carries it: both engines
+// bind-mount /etc/hostname, /etc/hosts and /etc/resolv.conf out of a
+// per-container directory whose path contains the full 64-hex id.
 func selfContainerID() (string, error) {
 	var errs []error
 
@@ -548,16 +514,13 @@ var runtimeInjectedMountPoints = map[string]bool{
 // containerIDFromMountInfo extracts this container's id from the contents of
 // /proc/self/mountinfo.
 //
-// The two engines put their per-container directory in different places, and
-// this is the only real difference the parser has to absorb. Verified shapes
+// The two engines put their per-container directory in different places
 // (the mountinfo ROOT field, i.e. field 4):
 //
 //	docker  /var/lib/docker/containers/<64-hex>/hostname
-//	        (moby/moby daemon/daemon_linux_test.go's own mountinfo corpus;
-//	         rootless docker moves the prefix to ~/.local/share/docker/)
+//	        (rootless docker moves the prefix to ~/.local/share/docker/)
 //	podman  /containers/overlay-containers/<64-hex>/userdata/hostname
-//	        (live rootless podman 4.9.3, 2026-07-26 — note the root is
-//	         relative to the /run/user/<uid> tmpfs it is mounted from, so it
+//	        (relative to the /run/user/<uid> tmpfs it is mounted from, so it
 //	         carries neither /var/lib nor ~/.local/share)
 //
 // Rather than encode either prefix, the rule is "the one 64-hex path segment
@@ -626,21 +589,21 @@ func soleContainerIDInPath(p string) string {
 //
 // # Why ambiguity is an error rather than a pick
 //
-// [Major 3, codex review 2026-07-26.] The first version returned the first
-// 64-hex segment it saw. Nested runtimes write the OUTER container's id first:
+// Nested runtimes write the OUTER container's id first:
 //
 //	0::/docker/<parent container id>/docker/<this container's id>
 //
-// so "first match" hands back the parent, and the daemon then inspects the
-// parent and reserves the PARENT's volumes. If the parent happens to have a
-// volume of its own — which it does, in any docker-in-docker setup where the
-// outer container also persists state — every startup check passes:
-// DataHomeCovered can even come back true, the log line says containment is
-// active, and the one volume actually holding this daemon's secret.key is left
-// mountable. That is strictly worse than reserving nothing, because the
-// warning that would have told an operator never fires. There is nothing in
-// this file that distinguishes "me" from "my parent", so the only honest
-// answer is to refuse and let the caller warn.
+// so picking the first match hands back the parent, and the daemon then
+// inspects the parent and reserves the PARENT's volumes. If the parent
+// happens to have a volume of its own — which it does, in any
+// docker-in-docker setup where the outer container also persists state —
+// every startup check passes: DataHomeCovered can even come back true, the
+// log line says containment is active, and the one volume actually holding
+// this daemon's secret.key is left mountable. That is strictly worse than
+// reserving nothing, because the warning that would have told an operator
+// never fires. There is nothing in this file that distinguishes "me" from
+// "my parent", so the only honest answer is to refuse and let the caller
+// warn.
 //
 // # What counts as ambiguous
 //

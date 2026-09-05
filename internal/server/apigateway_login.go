@@ -5,15 +5,10 @@ import (
 	"github.com/novshi-tech/boid/internal/apigateway"
 )
 
-// apiGatewayLoginAdapter adapts apigateway.CredentialProvider (the
-// service->provider lookup) and apigateway.LoginManager (the actual device/
-// loopback/manual flow machinery) to api.OAuthLoginService — the daemon-side
-// backing for `boid secret oauth login <service>` (docs/plans/api-gateway.md
-// §7, PR3). A thin translation layer only: every real decision (flow
-// selection, PKCE/state, persistence order) lives in internal/apigateway/
-// login.go; this file exists purely so internal/api's handler stays free of
-// any internal/apigateway import (mirroring apiGatewayNotifier/
-// newAPIGatewayRecorder's identical role in apigateway_notify.go).
+// apiGatewayLoginAdapter adapts apigateway.CredentialProvider and
+// apigateway.LoginManager to api.OAuthLoginService — the daemon-side backing
+// for `boid secret oauth login <service>`. A thin translation layer only;
+// the actual login logic lives in internal/apigateway/login.go.
 type apiGatewayLoginAdapter struct {
 	creds  *apigateway.CredentialProvider
 	logins *apigateway.LoginManager
@@ -30,11 +25,7 @@ func (a *apiGatewayLoginAdapter) KnowsProvider(name string) bool {
 }
 
 // StartLogin implements api.OAuthLoginService, translating
-// apigateway.LoginStart into api.OAuthLoginStart's own (identically shaped,
-// independently typed) DTO. account is forwarded to
-// apigateway.LoginManager.StartLogin verbatim — see that method's own doc
-// comment for the account-qualified login contract (docs/plans/
-// api-gateway-credential-accounts.md D9).
+// apigateway.LoginStart into api.OAuthLoginStart's DTO.
 func (a *apiGatewayLoginAdapter) StartLogin(namespace, provider, redirectURI, account string) (*api.OAuthLoginStart, error) {
 	start, err := a.logins.StartLogin(namespace, provider, redirectURI, account)
 	if err != nil {

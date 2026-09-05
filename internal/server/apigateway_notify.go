@@ -13,16 +13,8 @@ import (
 )
 
 // apiGatewayNotifier adapts internal/notify.Service to
-// apigateway.UpstreamAuthFailureNotifier — the API gateway's counterpart to
-// gatewayNotifier (gitgateway_notify.go), same two-failure-mode distinction
-// (docs/plans/api-gateway.md §5 "upstream 401 の notify"):
-//
-//   - NotifyUpstreamAuthFailure: the upstream service responded with 401 to
-//     a request sent WITH injected credentials — the configured secret
-//     itself is wrong/expired/revoked.
-//   - NotifyCredentialError: credential injection itself failed before the
-//     request ever reached the upstream — an unconfigured service, a
-//     missing resolver, or a secret-store lookup error.
+// apigateway.UpstreamAuthFailureNotifier, giving upstream 401s and
+// credential-injection failures distinct, remediation-oriented messages.
 //
 // A nil notify field makes both methods a no-op, matching notify.Service's
 // own nil-receiver convention.
@@ -54,9 +46,8 @@ func (n apiGatewayNotifier) send(msg string) {
 }
 
 // apiGatewayActionPayload is the JSON shape recorded for one API gateway
-// request — docs/plans/api-gateway.md §論点3 ("確定: method + service + path
-// + status を timeline に。body は記録しない"). Deliberately narrow: no
-// headers, no query string, no request/response body, ever.
+// request. Deliberately narrow: no headers, no query string, no request or
+// response body, ever.
 type apiGatewayActionPayload struct {
 	Method  string `json:"method"`
 	Service string `json:"service"`
@@ -65,31 +56,15 @@ type apiGatewayActionPayload struct {
 }
 
 // newAPIGatewayRecorder adapts orchestrator.TaskRepository.CreateAction to
-// apigateway.RequestRecorder, so every gateway request past a well-formed-
-// route 404 gets appended to its originating task's action log as an
-// audit-trail row — docs/plans/api-gateway.md §論点3. taskID == "" (a
-// taskless job, e.g. `boid exec`) skips recording entirely: there is no
-// task action log to attach it to. A CreateAction failure is logged and
-// otherwise swallowed — exactly like gatewayNotifier's own "never abort
-// serving other requests" posture — since a lost audit-log row is not a
-// reason to fail (or even slow down) the gateway request it describes.
+// apigateway.RequestRecorder, appending an audit-trail row to a task's
+// action log for every gateway request past a well-formed-route 404.
+// taskID == "" (a taskless job, e.g. `boid exec`) skips recording entirely.
+// A GetTask or CreateAction failure is logged and swallowed rather than
+// failing the gateway request it describes.
 //
-// NOTE (2026-08-07, user feedback): these rows are audit-only — deliberately
-// EXCLUDED from the rendered task-detail timeline by timeline.Build (see
-// ActionTypeAPIGatewayRequest's doc comment in internal/timeline/timeline.go)
-// because a task that fans out into a paginated search or a status-polling
-// loop was drowning the timeline in one meaningless "api: GET ... → 200"
-// row per request. They remain queryable via ListActionsByTask for anyone
-// building an audit view.
-//
-// FromStatus/ToStatus are still both set to the task's CURRENT status (one
-// extra GetTask read per request), mirroring api.TaskAppService.NotifyTask's
-// own progress-mode Action shape (internal/api/task_notify.go) for
-// consistency with other Action rows — even though timeline.Build no longer
-// reads it for these rows, it is still meaningful audit context (which
-// status the task was in when the request happened). A GetTask failure
-// (task deleted mid-request, a transient DB error) is logged and the row is
-// skipped entirely rather than written with an empty status.
+// These rows are audit-only and deliberately excluded from the rendered
+// task timeline — see ActionTypeAPIGatewayRequest's doc comment in
+// internal/timeline/timeline.go.
 func newAPIGatewayRecorder(tasks *orchestrator.TaskRepository) apigateway.RequestRecorder {
 	return func(taskID, method, service, path string, status int) {
 		if taskID == "" || tasks == nil {
@@ -118,12 +93,9 @@ func newAPIGatewayRecorder(tasks *orchestrator.TaskRepository) apigateway.Reques
 			Payload:    payload,
 			Actor:      orchestrator.ActorTask(taskID),
 		}
-		// context.Background(): this recorder has no ctx of its own (the
-		// apigateway.RequestRecorder callback signature carries none) and
-		// api_gateway_request always targets the CALLING task itself
-		// (Actor: ActorTask(taskID) above) — never a card (docs/plans/
-		// boid-internal-signal-inbox.md §4.2/Q9), so target-axis excludes it
-		// from ingest regardless.
+		// context.Background(): the RequestRecorder callback carries no
+		// ctx of its own, and this always targets the calling task (never
+		// a card).
 		if err := tasks.CreateAction(context.Background(), action); err != nil {
 			slog.Warn("api gateway: record timeline action failed", "task_id", taskID, "error", err)
 		}

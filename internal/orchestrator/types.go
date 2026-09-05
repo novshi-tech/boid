@@ -63,10 +63,10 @@ type DispatchResult struct {
 	// caller) must apply THIS to a freshly re-read task row, not
 	// FinalPayload: applying the full stale snapshot on top of a fresh row
 	// silently reverts any out-of-band write the hook itself made during
-	// its own run (Phase 5b PR7 codex review Blocker 1, wiring-seams.md
-	// #17) — e.g. a reopened task's `--payload-patch` report write getting
-	// clobbered back to the pre-reopen value once the hook completes and
-	// this cycle's post-hook persist runs. Empty ("{}") when no hook in
+	// its own run (see wiring-seams.md #17) — e.g. a reopened task's
+	// `--payload-patch` report write getting clobbered back to the
+	// pre-reopen value once the hook completes and this cycle's post-hook
+	// persist runs. Empty ("{}") when no hook in
 	// this cycle wrote anything, which is the common case for an agent job
 	// that reports exclusively through the direct RPC paths — applying an
 	// empty delta onto a fresh row is a correct no-op (orchestrator.

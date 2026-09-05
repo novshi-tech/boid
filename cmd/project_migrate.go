@@ -35,47 +35,31 @@ import (
 // to be running — project.yaml, the legacy kit, and the DB project/secret rows
 // are all written via direct file/DB access.
 //
-// The one exception is the workspace content itself: since Phase 2.5's
-// yaml->DB migration cut over, a running daemon only ever reads workspaces
-// from the `workspaces` table, so --apply always applies the migrated
-// content to that table too — see pushMigratedWorkspaceToDaemon. When the
-// daemon is reachable, this happens over HTTP: a brand-new slug is created
-// outright (POST /api/workspaces); a slug that already has a DB row has its
-// current content GET-fetched and merged with the migrated fields (existing
-// content is preserved, migration-sourced values win on a key collision),
-// then PUT back with If-Match (MAJOR 2, codex review — a create-only POST
-// used to just 409 and leave an already-existing workspace's real content
-// untouched). When the daemon is NOT reachable — including `boid start
-// --auto-migrate`'s call site (cmd/start.go), which by construction always
-// runs after the daemon has just failed to start, so it is never reachable
-// there — the same merge runs directly against the DB via
-// orchestrator.WorkspaceRepository instead (MAJOR 1, codex review,
-// docs/plans/workspace-db-consolidation.md): before this, --apply/auto-migrate
-// silently fell back to writing only the (daemon-unread) legacy per-slug
-// shadow yaml in this case, so a project already cut over to the DB-backed
-// `workspaces` table never actually had its migrated fields land anywhere a
-// subsequent successful daemon start would read from. The shadow yaml is
+// The one exception is the workspace content itself: since a running daemon
+// only ever reads workspaces from the `workspaces` table, --apply always
+// applies the migrated content to that table too — see
+// pushMigratedWorkspaceToDaemon. When the daemon is reachable, this happens
+// over HTTP: a brand-new slug is created outright (POST /api/workspaces); a
+// slug that already has a DB row has its current content GET-fetched and
+// merged with the migrated fields (existing content is preserved,
+// migration-sourced values win on a key collision), then PUT back with
+// If-Match. When the daemon is NOT reachable — including `boid start
+// --auto-migrate`'s call site (cmd/start.go), which always runs after the
+// daemon has just failed to start — the same merge runs directly against
+// the DB via orchestrator.WorkspaceRepository instead. The shadow yaml is
 // still written either way, for review/rollback (`boid workspace create
 // --from-file`/`edit --from-file` — `boid workspace import` is retired,
-// 2026-07-28: see cmd/workspace.go's runWorkspaceImportDeprecated). This
-// closes the gap identified in codex review MAJOR 4 (docs/plans/
-// workspace-db-consolidation.md): before that fix, --apply always looked
-// like it succeeded but never touched what a live daemon uses at all.
+// see cmd/workspace.go's runWorkspaceImportDeprecated).
 //
-// docs/plans/release-onboarding.md 決定2/PR5 (codex round-1 through
-// round-5 review): everything above describes a bare-metal daemon sharing
-// this host's filesystem/socket — that shape is the ONLY one --apply
-// (and this whole file's push/offline-DB machinery) still targets.
-// Compose is now the only SUPPORTED daemon shape, and this command has no
-// safe way to reach it: its real config/DB live inside the boid_state
-// volume (invisible from here), and even the "daemon reachable, push over
-// HTTP" branch above cannot sync host_commands definitions into a compose
-// daemon's config (ensureLegacyKitHostCommandsKnownToDaemon only ever
-// writes ~/.config/boid/host_commands.yaml on THIS host and asks the
-// daemon to reload — a request a compose daemon has no reason to act on
-// for a file it cannot see). --apply is therefore refused entirely unless
-// --legacy-bare-metal is also passed (runProjectMigrate below) — see the
-// command's own --help text for the compose-safe, by-hand alternative.
+// Everything above describes a bare-metal daemon sharing this host's
+// filesystem/socket (docs/plans/release-onboarding.md 決定2) — that shape
+// is the ONLY one --apply (and this whole file's push/offline-DB machinery)
+// still targets. Compose is now the only SUPPORTED daemon shape, and this
+// command has no safe way to reach it: its real config/DB live inside the
+// boid_state volume (invisible from here). --apply is therefore refused
+// entirely unless --legacy-bare-metal is also passed (runProjectMigrate
+// below, guardApply) — see the command's own --help text for the
+// compose-safe, by-hand alternative.
 var projectMigrateCmd = &cobra.Command{
 	Use:   "migrate <dir>",
 	Short: "Migrate a project from the old project.yaml schema to the new workspace+kit schema (no daemon required)",
@@ -127,9 +111,8 @@ func init() {
 	projectMigrateCmd.Flags().StringVar(&migrateWorkspace, "workspace", "", "Workspace slug to assign (required if no existing project_workspaces entry)")
 	projectMigrateCmd.Flags().BoolVar(&migrateApply, "apply", false, "Actually perform the migration (default: dry-run)")
 	// --legacy-bare-metal (docs/plans/release-onboarding.md「project migrate
-	// → 要注意コマンド」, codex round-1 through round-5 review of PR5):
-	// required together with --apply — see guardApply's own doc comment
-	// for the full history of why --apply is refused outright without it.
+	// → 要注意コマンド」): required together with --apply — see guardApply's
+	// own doc comment for why --apply is refused outright without it.
 	projectMigrateCmd.Flags().BoolVar(&migrateLegacyBareMetal, "legacy-bare-metal", false,
 		"Acknowledge this is a legacy, pre-compose, bare-metal-only migration with no compose daemon involved at all; required together with --apply (docs/plans/release-onboarding.md)")
 	projectMigrateCmd.Flags().StringVar(&migrateOnCollision, "on-collision", "refuse", "How to handle secret key collisions: refuse (default), skip, overwrite")
@@ -158,7 +141,7 @@ type migratePlan struct {
 	// (collectKitNames). Stored on the plan (not just a computeMigratePlan
 	// local) so pushMigratedWorkspaceToDaemon can re-run
 	// mergeLegacyFieldsIntoWorkspace against a freshly-fetched live
-	// workspace base (MAJOR 2, codex review).
+	// workspace base.
 	kitRefStrs []string
 
 	// Whether to generate a legacy kit
@@ -186,11 +169,10 @@ type secretCollision struct {
 // Per the migration transformation table in docs/plans/kit-workspace-project-reorg.md,
 // only host_commands moved into the legacy kit (env is migrated to
 // workspace.yaml, so this struct intentionally carries no Env field).
-// additional_bindings used to move here too; docs/plans/home-workspace-volume.md
-// Phase 4 PR4 retired the field it would have fed (workspace.yaml's own
-// AdditionalBindings, and WorkspaceMeta itself no longer has one — see that
-// struct's doc comment), so there is nothing left for this struct to carry
-// it into either.
+// additional_bindings used to move here too; the field it would have fed
+// (workspace.yaml's own AdditionalBindings) is retired, and WorkspaceMeta
+// itself no longer has one — see that struct's doc comment — so there is
+// nothing left for this struct to carry it into either.
 type legacyKitYAML struct {
 	Meta         legacyKitMeta             `yaml:"meta"`
 	HostCommands orchestrator.HostCommands `yaml:"host_commands,omitempty"`
@@ -268,28 +250,20 @@ func MigrateProject(opts MigrateProjectOptions) error {
 		return fmt.Errorf("migrate: project.yaml has no 'name' field; cannot proceed")
 	}
 
-	// codex round-9 review of PR5, Blocker 2: db.Open used to run
-	// unconditionally here, even for a plain dry-run (opts.Apply==false).
-	// db.Open's own PRAGMA journal_mode=WAL (internal/db/db.go) creates
-	// the sqlite file (plus -wal/-shm) as a SIDE EFFECT of merely opening
-	// a path that does not exist yet — on a fresh compose-only host with
-	// no host-local boid.db at all, a plain dry-run would silently
-	// materialize one, directly contradicting "dry-run: prints what it
-	// would do without writing anything" (this command's own --help
-	// text). It would then typically fail anyway with "no such table:
-	// projects" (a fresh DB has no schema), but the file-creation side
-	// effect already happened by that point.
-	//
-	// Fixed by opening boidDB ONLY when opts.Apply is set — guardApply
-	// (runProjectMigrate) already refuses --apply outright unless
-	// --legacy-bare-metal is also passed, so by the time this ever runs
-	// with Apply==true, the caller has explicitly opted into exactly the
-	// bare-metal, host-local-DB-dependent behavior this file's DB access
-	// implements. A plain dry-run now never touches boidDB at all: the
-	// project lookup below (existing workspace assignment) is skipped
-	// entirely and reported as such, and computeMigratePlan's own secret
-	// listing/collision check (which also takes boidDB) does the same —
-	// see its own doc comment.
+	// boidDB is opened ONLY when opts.Apply is set: db.Open's own PRAGMA
+	// journal_mode=WAL creates the sqlite file (plus -wal/-shm) as a side
+	// effect of merely opening a path that does not exist yet, so opening
+	// it unconditionally would make a plain dry-run silently materialize a
+	// boid.db on a fresh compose-only host, contradicting "dry-run: prints
+	// what it would do without writing anything". guardApply (runProjectMigrate)
+	// already refuses --apply outright unless --legacy-bare-metal is also
+	// passed, so by the time this runs with Apply==true, the caller has
+	// explicitly opted into this bare-metal, host-local-DB-dependent
+	// behavior. A plain dry-run never touches boidDB at all: the project
+	// lookup below (existing workspace assignment) is skipped entirely and
+	// reported as such, and computeMigratePlan's own secret listing/
+	// collision check (which also takes boidDB) does the same — see its
+	// own doc comment.
 	var boidDB *db.DB
 	if opts.Apply {
 		dbPath := opts.DBPath
@@ -367,13 +341,12 @@ func MigrateProject(opts MigrateProjectOptions) error {
 	// ---- Phase 4: Apply (only when --apply is set) --------------------------
 	if !opts.Apply {
 		fmt.Fprintln(out)
-		// codex round-10 review of PR5, Minor: guardApply refuses --apply
-		// outright unless --legacy-bare-metal is ALSO passed (this file's
-		// own guardApply doc comment) — telling a compose-daemon user to
-		// "Pass --apply" alone describes a command that will just be
-		// refused again. Point at --help/the migration guide instead of
-		// asserting a specific flag combination that may not apply to
-		// this project's deployment.
+		// guardApply refuses --apply outright unless --legacy-bare-metal
+		// is ALSO passed, so telling a compose-daemon user to "Pass
+		// --apply" alone describes a command that will just be refused
+		// again. Point at --help/the migration guide instead of asserting
+		// a specific flag combination that may not apply to this
+		// project's deployment.
 		fmt.Fprintln(out, "(dry-run) See `boid project migrate --help` and docs/ja/guide/migration.md for how to apply this migration.")
 		return nil
 	}
@@ -414,64 +387,19 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 // migrate → 要注意コマンド」guidance for `boid project migrate <dir>
 // --apply`.
 //
-// docs/plans/release-onboarding.md history (codex round-1 through
-// round-5 review of PR5) — TWO attempts at a "safe partial apply" design
-// (letting --apply always run its LOCAL writes, and/or its ONLINE daemon
-// push, while only gating the OFFLINE/host-DB-writing parts behind
-// --legacy-bare-metal) were each found broken on closer static review:
-//
-//   - round-3 Blocker: refusing --apply outright broke
-//     internal/orchestrator/spec_loader.go's migrationGuidance, which
-//     promised a `--from-file <file>` recovery path dry-run never
-//     produces a file for.
-//
-//   - round-4 Blocker (×3): the fix for that skipped the daemon push's
-//     ONLINE branch too broadly, missed that SetProjectWorkspace/
-//     migrateSecrets always write to boidDB regardless of reachability,
-//     and the manual `workspace edit --from-file` fallback it still
-//     pointed users at is a full REPLACE that can drop fields.
-//
-//   - round-5 Blocker: the fix for THAT (gating only the genuinely
-//     host-DB-writing steps, leaving the online HTTP push
-//     unconditional) still could not actually reach a compose daemon
-//     correctly for a project needing host_commands migration —
-//     ensureLegacyKitHostCommandsKnownToDaemon only ever writes
-//     ~/.config/boid/host_commands.yaml on THIS host and asks the
-//     daemon to reload; a compose daemon's config lives inside the
-//     boid_state volume and has no reason to notice. "Migration
-//     complete" would print while the compose daemon silently never saw
-//     the new host_commands definitions.
-//
-//   - round-6 Blocker (×3): the by-hand recipe adopted after round-5
-//     itself assumed a reachable daemon for a scenario (schema violation
-//     blocking the DAEMON'S OWN startup) where none may exist yet, used
-//     `workspace show -o yaml`'s wrapper-envelope output as if it were
-//     the bare WorkspaceMeta `workspace edit --from-file` strict-decodes,
-//     and never actually copied secret VALUES (only listed keys).
-//
-//   - round-7 Blocker (×3): even the narrowed, no-longer-command-specific
-//     guidance still asserted things that do not hold in general — a
-//     git-URL-registered project's daemon-side bare-repo cache does not
-//     auto-update just because the user's own local checkout changed
-//     (`boid project fetch` is itself unreachable while the daemon is
-//     down), host_commands DEFINITIONS have no create/edit surface on
-//     the CLI at all (list/reload only), and `compose up -d` succeeding
-//     does not mean the container didn't immediately crash on this exact
-//     error — the guidance could be buried in `docker compose logs`
-//     nobody is told to check.
-//
-// Conclusion: this command's entire push/apply machinery is
-// bare-metal-shaped and CANNOT be partially safe for a compose daemon
-// without new daemon-side API surface (e.g. a host_commands-definition
-// endpoint, a way to force-refresh a git-URL project's bare-repo cache
-// independent of daemon startup) that does not exist yet — out of scope
-// for this PR. --apply therefore refuses OUTRIGHT unless
-// --legacy-bare-metal is also passed; migrationGuidance
-// (internal/orchestrator/spec_loader.go) and this command's own --help
-// text have both stopped asserting a specific by-hand recovery recipe,
-// after seven rounds of review each finding a new hole in the previous
-// one — see docs/ja/guide/migration.md for the current, deliberately
-// non-prescriptive guidance and its documented known limitations.
+// This command's entire push/apply machinery is bare-metal-shaped and
+// cannot be partially safe for a compose daemon without new daemon-side API
+// surface that does not exist yet (a host_commands-definition endpoint, a
+// way to force-refresh a git-URL project's bare-repo cache independent of
+// daemon startup): earlier attempts at a "safe partial apply" design
+// (letting some steps run unconditionally while gating only the
+// host-DB-writing parts) each turned out to have a daemon-topology-unsafe
+// hole. --apply therefore refuses OUTRIGHT unless --legacy-bare-metal is
+// also passed; migrationGuidance (internal/orchestrator/spec_loader.go) and
+// this command's own --help text both stop short of asserting a specific
+// by-hand recovery recipe — see docs/ja/guide/migration.md for the current,
+// deliberately non-prescriptive guidance and its documented known
+// limitations.
 func guardApply(stderr io.Writer, dir string, legacyBareMetal bool) error {
 	if legacyBareMetal {
 		fmt.Fprintln(stderr, "note: --legacy-bare-metal set — this will push the migrated workspace directly to a bare-metal daemon (over HTTP if one answers client.DefaultSocketPath(), otherwise straight into a boid.db on this host), and copy project-workspace-assignment/secrets there too. Only pass this for a genuine pre-compose, bare-metal-only migration with no compose daemon involved at all.")
@@ -498,8 +426,7 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string, ou
 	// the merge base for the dry-run preview and the apply-time shadow-file
 	// artifact (plan.workspaceMeta below); it is a separate, inert snapshot
 	// from whatever the live daemon's DB row for this slug holds — see
-	// pushMigratedWorkspaceToDaemon's own live-DB merge (MAJOR 2, codex
-	// review, docs/plans/workspace-db-consolidation.md), which reuses
+	// pushMigratedWorkspaceToDaemon's own live-DB merge, which reuses
 	// mergeLegacyFieldsIntoWorkspace below against a freshly GET-fetched
 	// base instead of this one when the daemon is reachable at apply time.
 	existingWS, err := wsStore.Load(plan.workspaceSlug)
@@ -517,11 +444,10 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string, ou
 	// slug in workspace.yaml — past versions did the latter and left
 	// invalid kit dirs that later tripped boid-kit-init cleanup.
 	//
-	// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12):
-	// these external kit refs are validated and recorded on the plan (for
+	// These external kit refs are validated and recorded on the plan (for
 	// printMigratePlan's informational display) but are no longer resolved
 	// or folded into the workspace at all — the kit mechanism itself was
-	// retired in PR6, and any external kit ref here (as opposed to this
+	// retired, and any external kit ref here (as opposed to this
 	// migration's own auto-generated legacy kit just below, whose fields are
 	// fully known and folded directly) has no automatic resolution path any
 	// more. If such a kit is still needed, add its host_commands/env to
@@ -533,8 +459,7 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string, ou
 	plan.kitRefStrs = kitRefStrs
 
 	// Legacy kit (host_commands only — additional_bindings no longer moves
-	// here, docs/plans/home-workspace-volume.md Phase 4 PR4; see
-	// legacyKitYAML's doc comment). Computed before the merge below so
+	// here; see legacyKitYAML's doc comment). Computed before the merge below so
 	// mergeLegacyFieldsIntoWorkspace can fold its host_commands names
 	// directly into the workspace in the same pass (no kit-directory round
 	// trip needed for this: the data is this project's own project.yaml
@@ -572,13 +497,12 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string, ou
 	plan.newNamespace = plan.workspaceSlug
 
 	if plan.oldNamespace != "" && plan.oldNamespace != plan.newNamespace {
-		// codex round-9 review of PR5, Blocker 2: boidDB is nil for a
-		// plain dry-run (MigrateProject only opens it when opts.Apply is
-		// set — see that function's own comment). Secret listing/
-		// collision detection needs a real DB connection, so it is
-		// skipped (not attempted against a nil boidDB, which would
-		// panic) and reported as such; --apply --legacy-bare-metal is
-		// the only path that can actually see this.
+		// boidDB is nil for a plain dry-run (MigrateProject only opens it
+		// when opts.Apply is set — see that function's own comment).
+		// Secret listing/collision detection needs a real DB connection,
+		// so it is skipped (not attempted against a nil boidDB, which
+		// would panic) and reported as such; --apply --legacy-bare-metal
+		// is the only path that can actually see this.
 		if boidDB == nil {
 			fmt.Fprintf(out, "(dry-run) skipping secret collision check for namespace %q -> %q (no DB access without --apply --legacy-bare-metal)\n", plan.oldNamespace, plan.newNamespace)
 			return nil
@@ -637,8 +561,7 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string, ou
 // This is called from three places: computeMigratePlan, against the (inert)
 // shadow-yaml base, to build plan.workspaceMeta (the dry-run preview and the
 // shadow-file artifact applyMigratePlan writes to disk); and both
-// mergeMigratedWorkspaceIntoDaemon (MAJOR 2, codex review, docs/plans/
-// workspace-db-consolidation.md) and applyMigratedWorkspaceOffline, each
+// mergeMigratedWorkspaceIntoDaemon and applyMigratedWorkspaceOffline, each
 // against a freshly-fetched *live* base when the workspace slug already has
 // a DB row — so an existing workspace's real content is merged into instead
 // of being silently dropped by a create that used to just warn.
@@ -647,21 +570,13 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string, ou
 // matching key ("merge で新値が優先"), capabilities.docker is overwritten
 // when meta sets it, and host_commands names are unioned (never removed).
 // Every other WorkspaceMeta field is carried over from base untouched.
-// (additional_bindings used to merge here too, by Source with meta's own
-// entry winning on conflict, the same "new value wins" precedence the Env
-// merge still uses — retired outright in docs/plans/home-workspace-volume.md
-// Phase 4 PR4: WorkspaceMeta has no AdditionalBindings field to merge into
-// any more, see that struct's doc comment, and LegacyProjectMeta has no
-// value to merge from either, see its own HadAdditionalBindingsKey doc
-// comment.)
+// (additional_bindings used to merge here too; the field it fed was retired
+// — WorkspaceMeta has no AdditionalBindings field any more, see that
+// struct's doc comment, and LegacyProjectMeta has no value to merge from
+// either, see its own HadAdditionalBindingsKey doc comment.)
 //
-// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12):
-// this used to also fold every kit ref (external refs collected from the
-// legacy project.yaml's kits:, plus legacyKitName) into workspace.Kits,
-// materialized later via orchestrator.MaterializeWorkspaceKitsForPersist at
-// push/write time. WorkspaceMeta has no Kits field any more, and this
-// migration's own auto-generated legacy kit's host_commands are already
-// fully known here — they ARE meta.HostCommands, this project's own
+// This migration's own auto-generated legacy kit's host_commands are
+// already fully known here — they ARE meta.HostCommands, this project's own
 // project.yaml field being relocated — so they are folded directly below,
 // with no kit-directory round trip needed at all. External kit refs
 // (computeMigratePlan's kitRefStrs) are no longer resolved here at all —
@@ -805,12 +720,12 @@ func computeRemoveKeys(meta *orchestrator.LegacyProjectMeta) []string {
 		keys = append(keys, "host_commands")
 	}
 	// additional_bindings is checked via HadAdditionalBindingsKey, not a
-	// value-length gate: docs/plans/home-workspace-volume.md Phase 4 PR4
-	// retired the field itself (LegacyProjectMeta no longer parses a value
-	// for it — see that field's doc comment), but a legacy project.yaml that
-	// still declares the key must still have it stripped here, since
-	// ReadProjectMeta's removedTopLevelKeys rejects the key outright and
-	// rewriteProjectYAML strips exactly (and only) the keys in this list.
+	// value-length gate: the field itself is retired (LegacyProjectMeta no
+	// longer parses a value for it — see that field's doc comment), but a
+	// legacy project.yaml that still declares the key must still have it
+	// stripped here, since ReadProjectMeta's removedTopLevelKeys rejects
+	// the key outright and rewriteProjectYAML strips exactly (and only)
+	// the keys in this list.
 	if meta.HadAdditionalBindingsKey {
 		keys = append(keys, "additional_bindings")
 	}
@@ -847,11 +762,10 @@ func printMigratePlan(out io.Writer, plan *migratePlan, apply bool) {
 	fmt.Fprintf(out, "workspace slug: %s\n", plan.workspaceSlug)
 	fmt.Fprintln(out, string(wsData))
 
-	// External kit refs (docs/plans/workspace-db-consolidation.md Phase 2.5
-	// PR7, decision 12): these came from the legacy project.yaml's top-level
+	// External kit refs: these came from the legacy project.yaml's top-level
 	// or behavior-level `kits:` lists but are no longer resolved into the
-	// workspace automatically — the kit mechanism was retired in PR6. Shown
-	// here purely so the operator knows to add any host_commands/env/
+	// workspace automatically — the kit mechanism was retired. Shown here
+	// purely so the operator knows to add any host_commands/env/
 	// additional_bindings such a kit used to supply by hand, if still
 	// needed.
 	if len(plan.kitRefStrs) > 0 {
@@ -923,8 +837,8 @@ func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath, onCollision
 	// 1. Write legacy kit.yaml *before* touching the daemon at all (step 2
 	// below). plan.workspaceMeta.HostCommands already carries this
 	// migration's legacy-kit-derived content directly (mergeLegacyFieldsIntoWorkspace
-	// folds meta's own fields in with no kit-directory dependency, Phase 2.5
-	// PR7) — what this kit.yaml file is still needed for is
+	// folds meta's own fields in with no kit-directory dependency) — what
+	// this kit.yaml file is still needed for is
 	// ensureLegacyKitHostCommandsKnownToDaemon below, which registers its
 	// host_commands *definitions* into the daemon's aggregated
 	// ~/.config/boid/host_commands.yaml config so that
@@ -949,42 +863,32 @@ func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath, onCollision
 		}
 	}
 
-	// 2. Write workspace.yaml. Since Phase 2.5's one-shot yaml->DB migration
-	// (workspace_db_consolidation) has cut over, this yaml file is a
-	// read-only shadow the daemon never loads from again (see
-	// WorkspaceStore.Load's doc comment) — it exists here only as a
-	// reviewable artifact / a `--from-file` source for a manual `boid
-	// workspace edit|import`, not as the thing that makes the migration
-	// take effect. See pushMigratedWorkspaceToDaemon below for the actual
-	// live-daemon write (codex review MAJOR 4, docs/plans/
-	// workspace-db-consolidation.md).
+	// 2. Write workspace.yaml. This yaml file is a read-only shadow the
+	// daemon never loads from again (see WorkspaceStore.Load's doc
+	// comment) — it exists here only as a reviewable artifact / a
+	// `--from-file` source for a manual `boid workspace edit|import`, not
+	// as the thing that makes the migration take effect. See
+	// pushMigratedWorkspaceToDaemon below for the actual live-daemon write.
 	if err := wsStore.Save(plan.workspaceSlug, plan.workspaceMeta); err != nil {
 		return fmt.Errorf("save workspace.yaml: %w", err)
 	}
-	// docs/plans/release-onboarding.md 決定2/PR5 (codex round-1 through
-	// round-5 review): every attempt at partially gating this push behind
-	// --legacy-bare-metal (rather than the whole --apply command,
-	// guardApply's own job) turned out to have a daemon-topology-unsafe
-	// hole somewhere — see guardApply's own doc comment for the full
-	// three-round history. applyMigratePlan itself is therefore back to
-	// its original, unconditional (pre-PR5) shape: everything below
-	// this point — including pushMigratedWorkspaceToDaemon's online/
-	// offline branching, SetProjectWorkspace, and migrateSecrets — only
-	// ever runs at all when runProjectMigrate's guardApply has already
-	// confirmed --legacy-bare-metal was passed (or a direct Go caller,
-	// e.g. a test, opted in by calling Apply:true itself).
+	// Everything below this point — including pushMigratedWorkspaceToDaemon's
+	// online/offline branching, SetProjectWorkspace, and migrateSecrets —
+	// only ever runs at all when runProjectMigrate's guardApply has already
+	// confirmed --legacy-bare-metal was passed (or a direct Go caller, e.g.
+	// a test, opted in by calling Apply:true itself); see guardApply's own
+	// doc comment for why this push cannot be partially gated instead.
 	if shadowPath, err := workspaceShadowPath(plan.workspaceSlug); err != nil {
 		fmt.Fprintf(out, "warning: could not resolve workspace shadow path: %v\n", err)
 	} else if err := pushMigratedWorkspaceToDaemon(plan, boidDB, shadowPath, out); err != nil {
-		// MAJOR 2 (codex review, docs/plans/workspace-db-consolidation.md):
-		// a host_commands definition conflict is not a best-effort
+		// A host_commands definition conflict is not a best-effort
 		// daemon-push warning like every other outcome below — it means
 		// this migration's legacy kit would either silently redefine an
-		// existing host_commands.yaml entry, or (previously) be silently
-		// discarded behind it. Abort before project.yaml (or anything
-		// else) is touched, the same way the secret-collision check above
-		// aborts before Phase 4 ever starts, so the user can resolve the
-		// conflict by hand and re-run.
+		// existing host_commands.yaml entry, or be silently discarded
+		// behind it. Abort before project.yaml (or anything else) is
+		// touched, the same way the secret-collision check above aborts
+		// before apply starts, so the user can resolve the conflict by
+		// hand and re-run.
 		return fmt.Errorf("legacy kit host_commands: %w", err)
 	}
 
@@ -1048,36 +952,25 @@ func shadowFileApplyHintBothCases(shadowPath, slug string) string {
 }
 
 // pushMigratedWorkspaceToDaemon applies the migrated workspace content to
-// the `workspaces` DB table, closing the gap identified in codex review
-// MAJOR 4 (docs/plans/workspace-db-consolidation.md): once Phase 2.5's
-// one-shot yaml->DB migration (workspace_db_consolidation) has run, that
-// table is the daemon's sole authority and the plain wsStore.Save above
-// (yaml mode, no repository wired) only ever touches the now-inert shadow
-// file — a running daemon never re-reads it, so `boid project migrate
-// --apply` looked like it worked but silently never changed what a live
-// daemon actually uses.
+// the `workspaces` DB table: that table is the daemon's sole authority, and
+// the plain wsStore.Save above (yaml mode, no repository wired) only ever
+// touches the now-inert shadow file — a running daemon never re-reads it.
 //
 // Whether this happens over HTTP or directly against boidDB is decided by a
 // single liveness check (daemon.IsSocketAlive against
-// client.DefaultSocketPath()) up front — MAJOR 1 (codex review,
-// docs/plans/workspace-db-consolidation.md). This matters because `boid
-// start --auto-migrate` (cmd/start_automigrate.go's handleMigrationFailure
-// -> runAutoMigrate — historically invoked from the now-removed bare-metal
-// runDaemonParent respawn loop, docs/plans/release-onboarding.md 決定2/PR5)
-// calls MigrateProject in-process specifically because the daemon it just
-// tried to start FAILED to start — so for that caller the daemon is
-// *never* reachable, and before this fix
-// the HTTP-only push always took the "could not reach the boid daemon"
-// warning branch there, silently no-op'ing the one thing (the `workspaces`
-// row) --apply is supposed to guarantee gets applied.
+// client.DefaultSocketPath()) up front. This matters because `boid start
+// --auto-migrate` calls MigrateProject in-process specifically because the
+// daemon it just tried to start FAILED to start, so for that caller the
+// daemon is *never* reachable, and the HTTP-only push must not silently
+// no-op the one thing (the `workspaces` row) --apply is supposed to
+// guarantee gets applied.
 //
 // The outcome is one of:
 //   - the legacy kit's own host_commands.yaml merge hit a genuine definition
 //     conflict (ensureLegacyKitHostCommandsKnownToDaemon returned an error
 //     wrapping errHostCommandsConflict): returned as an error, aborting the
-//     whole migration before project.yaml is rewritten (MAJOR 2, codex
-//     review) — this is the one outcome that is NOT merely reported and
-//     swallowed, see below.
+//     whole migration before project.yaml is rewritten — this is the one
+//     outcome that is NOT merely reported and swallowed, see below.
 //   - the legacy kit's own host_commands could not otherwise be
 //     synced/reloaded (some other ensureLegacyKitHostCommandsKnownToDaemon
 //     failure): warned, nothing else is attempted.
@@ -1090,12 +983,12 @@ func shadowFileApplyHintBothCases(shadowPath, slug string) string {
 //   - daemon reachable, slug has no DB row yet: created via POST
 //     /api/workspaces (the same create-only request `boid workspace create`
 //     builds).
-//   - daemon reachable, slug already has a DB row: MAJOR 2 (codex review,
-//     prior pass) — its current content is GET-fetched and merged with this
-//     migration's fields (mergeMigratedWorkspaceIntoDaemon: existing content
-//     is preserved, migration-sourced values win on a key collision,
-//     matching the shadow-yaml merge's own precedence), then PUT back with
-//     If-Match; a 412 (concurrent modification) re-fetches and retries.
+//   - daemon reachable, slug already has a DB row: its current content is
+//     GET-fetched and merged with this migration's fields
+//     (mergeMigratedWorkspaceIntoDaemon: existing content is preserved,
+//     migration-sourced values win on a key collision, matching the
+//     shadow-yaml merge's own precedence), then PUT back with If-Match; a
+//     412 (concurrent modification) re-fetches and retries.
 //
 // Every outcome except the host_commands conflict is reported on out but
 // never fails the overall migration — project.yaml has already been
@@ -1153,8 +1046,7 @@ func pushMigratedWorkspaceToDaemon(plan *migratePlan, boidDB *db.DB, shadowPath 
 }
 
 // applyMigratedWorkspaceOffline is pushMigratedWorkspaceToDaemon's fallback
-// when the daemon is not reachable (MAJOR 1, codex review,
-// docs/plans/workspace-db-consolidation.md). It mirrors
+// when the daemon is not reachable. It mirrors
 // mergeMigratedWorkspaceIntoDaemon's precedence (existing content wins
 // except where the migration's own fields collide, in which case migration
 // wins) but reads/writes boidDB directly via orchestrator.WorkspaceRepository
@@ -1177,21 +1069,16 @@ func pushMigratedWorkspaceToDaemon(plan *migratePlan, boidDB *db.DB, shadowPath 
 //     possible.
 //
 // Every branch also refreshes the on-disk shadow file (updateWorkspaceShadowFile)
-// with the actual merge that was attempted against the DB — MAJOR 3, codex
-// review — so a failure here still leaves the user a shadow file that is
-// safe to apply in full via `boid workspace edit --from-file`, not just the
-// migration's own delta.
+// with the actual merge that was attempted against the DB, so a failure
+// here still leaves the user a shadow file that is safe to apply in full
+// via `boid workspace edit --from-file`, not just the migration's own delta.
 //
-// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12): this
-// used to also run a kit-materialization step (materializeWorkspaceMetaForOfflineWrite,
-// removed) on an independent copy immediately before the repo.Create/
-// UpdateIfRevisionMatches call below, mirroring what the online path did
-// server-side inside CreateWorkspace/UpdateWorkspace. Neither side does that
-// any more: WorkspaceMeta has no Kits field, and plan.workspaceMeta/merged
-// already carry this migration's legacy-kit-derived host_commands/
-// additional_bindings directly (mergeLegacyFieldsIntoWorkspace folds them in
-// from meta's own fields, no kit-directory lookup needed) — so both branches
-// below persist plan.workspaceMeta/merged as-is.
+// Neither branch runs a kit-materialization step any more: WorkspaceMeta
+// has no Kits field, and plan.workspaceMeta/merged already carry this
+// migration's legacy-kit-derived host_commands directly
+// (mergeLegacyFieldsIntoWorkspace folds them in from meta's own fields, no
+// kit-directory lookup needed) — so both branches below persist
+// plan.workspaceMeta/merged as-is.
 func applyMigratedWorkspaceOffline(plan *migratePlan, boidDB *db.DB, shadowPath string, out io.Writer) {
 	repo := orchestrator.NewWorkspaceRepository(boidDB.Conn)
 	legacyKitName := ""
@@ -1250,8 +1137,7 @@ func applyMigratedWorkspaceOffline(plan *migratePlan, boidDB *db.DB, shadowPath 
 }
 
 // updateWorkspaceShadowFile overwrites the on-disk shadow yaml for
-// plan.workspaceSlug with meta — MAJOR 3 (codex review,
-// docs/plans/workspace-db-consolidation.md). Both mergeMigratedWorkspaceIntoDaemon
+// plan.workspaceSlug with meta. Both mergeMigratedWorkspaceIntoDaemon
 // (online) and applyMigratedWorkspaceOffline (daemon unreachable) call this
 // right after computing a merge against the workspace's actual current
 // content — live-fetched via GET or read directly from the DB — so that a
@@ -1332,10 +1218,10 @@ func createMigratedWorkspaceInDaemon(c *client.Client, plan *migratePlan, shadow
 // writer.
 const pushMigratedWorkspaceRetryLimit = 3
 
-// mergeMigratedWorkspaceIntoDaemon implements MAJOR 2 (codex review,
-// docs/plans/workspace-db-consolidation.md): plan.workspaceSlug already has
-// a DB row (first is its current content), so instead of leaving it
-// untouched behind a 409-style warning, this merges the migration's fields
+// mergeMigratedWorkspaceIntoDaemon handles the case where
+// plan.workspaceSlug already has a DB row (first is its current content),
+// so instead of leaving it untouched behind a 409-style warning, this
+// merges the migration's fields
 // into first.Meta (mergeLegacyFieldsIntoWorkspace — existing content is
 // preserved, migration-sourced values win on a key collision, the same
 // precedence the shadow-yaml merge already uses) and PUTs the result back
@@ -1356,8 +1242,7 @@ func mergeMigratedWorkspaceIntoDaemon(c *client.Client, plan *migratePlan, first
 		}
 		merged := mergeLegacyFieldsIntoWorkspace(base, legacyKitName, plan.meta)
 
-		// MAJOR 3 (codex review, docs/plans/workspace-db-consolidation.md):
-		// refresh the shadow file with this attempt's full merge *before*
+		// Refresh the shadow file with this attempt's full merge *before*
 		// the PUT below, so that whatever happens next — success, a 412
 		// retry, or a terminal failure — the file on disk already reflects
 		// the fullest, most current merge this run computed, not just the
@@ -1415,8 +1300,7 @@ func mergeMigratedWorkspaceIntoDaemon(c *client.Client, plan *migratePlan, first
 }
 
 // errHostCommandsConflict marks an ensureLegacyKitHostCommandsKnownToDaemon
-// error as a hard, migration-aborting conflict (MAJOR 2, codex review,
-// docs/plans/workspace-db-consolidation.md): the legacy kit this migration
+// error as a hard, migration-aborting conflict: the legacy kit this migration
 // generated declares a host_commands name that host_commands.yaml already
 // defines *differently*. pushMigratedWorkspaceToDaemon uses errors.Is
 // against this sentinel to tell that case apart from every other error this
@@ -1429,28 +1313,24 @@ var errHostCommandsConflict = errors.New("host_commands definition conflict")
 // host_commands definitions (already written to disk by applyMigratePlan's
 // kit.yaml write, which runs before this) into the daemon's aggregated
 // ~/.config/boid/host_commands.yaml config, then — when a daemon is
-// actually reachable (online) — asks it to reload that config. This closes
-// codex review MAJOR 1 (docs/plans/workspace-db-consolidation.md):
+// actually reachable (online) — asks it to reload that config.
 // CreateWorkspace/UpdateWorkspace's validateHostCommandRefs check every
-// meta.HostCommands reference (added once the kit's Kits ref materializes)
-// against the daemon's live in-memory snapshot — and
-// Server.ReloadHostCommands only ever re-reads the on-disk
-// host_commands.yaml file itself, never re-scanning kitsDir directly (see
-// orchestrator.LoadHostCommandsFromKits vs LoadHostCommandsConfig) — so even
-// with the legacy kit.yaml already on disk, the daemon would still 400 on an
-// unknown reference unless this config file is updated and reloaded first.
-// When offline, the reload step is skipped entirely: there is no live
-// daemon to reload, and the file (freshly written, or already current) is
-// picked up automatically the next time the daemon starts
-// (internal/server/wire.go's own host_commands preflight) — which for the
-// `boid start --auto-migrate` caller is about to happen anyway.
+// meta.HostCommands reference against the daemon's live in-memory snapshot —
+// and Server.ReloadHostCommands only ever re-reads the on-disk
+// host_commands.yaml file itself, never re-scanning kitsDir directly — so
+// even with the legacy kit.yaml already on disk, the daemon would still
+// 400 on an unknown reference unless this config file is updated and
+// reloaded first. When offline, the reload step is skipped entirely: there
+// is no live daemon to reload, and the file is picked up automatically the
+// next time the daemon starts (internal/server/wire.go's own
+// host_commands preflight) — which for the `boid start --auto-migrate`
+// caller is about to happen anyway.
 //
 // A no-op (nil, no file/daemon access at all) when the migration did not
 // generate a legacy kit, or the legacy kit defines no host_commands (only
 // additional_bindings, which needs no daemon-side registration). Otherwise,
-// each of the legacy kit's host_commands names is one of (MAJOR 2, codex
-// review — see mergeLegacyKitHostCommandsIntoConfig for the merge/conflict
-// logic itself):
+// each of the legacy kit's host_commands names is one of (see
+// mergeLegacyKitHostCommandsIntoConfig for the merge/conflict logic itself):
 //   - missing from the on-disk config: added, and the file is rewritten.
 //   - already present with an identical (post-normalization) definition:
 //     left alone on disk ("dedupe") — but still counted as a name this
@@ -1507,10 +1387,9 @@ func ensureLegacyKitHostCommandsKnownToDaemon(c *client.Client, plan *migratePla
 // mirroring orchestrator's own (unexported) normalizeHostCommandSpec so two
 // specs compare equal regardless of nil-vs-empty slice/map spelling — is a
 // hard conflict: this returns an error wrapping errHostCommandsConflict
-// rather than silently keeping the existing definition (MAJOR 2, codex
-// review, docs/plans/workspace-db-consolidation.md — see
+// rather than silently keeping the existing definition — see
 // ensureLegacyKitHostCommandsKnownToDaemon's doc comment for why silently
-// keeping-or-discarding is unsafe either way).
+// keeping-or-discarding is unsafe either way.
 func mergeLegacyKitHostCommandsIntoConfig(hcPath string, want orchestrator.HostCommands) (merged map[string]orchestrator.HostCommandSpec, added []string, err error) {
 	existing, err := orchestrator.LoadHostCommandsConfig(hcPath)
 	if err != nil {

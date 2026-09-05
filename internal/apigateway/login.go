@@ -16,28 +16,25 @@ import (
 	"time"
 )
 
-// This file implements `boid secret oauth login <service>` (docs/plans/
-// api-gateway.md §7 "初回認証", PR3): the daemon-side half of the three-flow
-// initial OAuth2 grant (device / loopback / manual). The CLI-facing HTTP
-// handler lives in internal/api (this package stays free of any
-// internal/api import — doc.go's "self-contained leaf package" rationale);
-// LoginManager is what that handler drives.
+// This file implements `boid secret oauth login <service>`: the daemon-side
+// half of the three-flow initial OAuth2 grant (device / loopback / manual).
+// The CLI-facing HTTP handler lives in internal/api (this package stays
+// free of any internal/api import — see doc.go); LoginManager is what that
+// handler drives.
 //
-// §7's role split — "CLI = ブラウザ側、daemon = Web サーバ側" — means every
-// piece of state a grant needs while it is in flight (the PKCE verifier, the
-// CSRF state, the RFC 8628 device_code) lives ONLY in LoginManager's
-// in-process pendingLogin map, never on the CLI's side of the wire: the CLI
-// only ever sees an opaque session id, a user-facing code/URL to display,
-// and (for loopback) the redirect_uri IT is asking the daemon to bind the
-// grant to (docs/plans/api-gateway.md §7: "デスクトップ機には平文トークンも
-// client_secret も一度も存在しない").
+// Every piece of state a grant needs while it is in flight (the PKCE
+// verifier, the CSRF state, the RFC 8628 device_code) lives ONLY in
+// LoginManager's in-process pendingLogin map, never on the CLI's side of
+// the wire: the CLI only ever sees an opaque session id, a user-facing
+// code/URL to display, and (for loopback) the redirect_uri IT is asking the
+// daemon to bind the grant to.
 
 // oobRedirectURI is the fixed "out-of-band" redirect_uri RFC 8252 §7 (and
 // providers like freee that model themselves on it) use for flows with no
 // browser redirect to receive the code on: the provider displays the code
 // directly and the user copies it by hand. Manual/OOB flow sends this both
 // at authorize time (startManual) and, per RFC 6749 §4.1.3, must repeat the
-// identical value at token-exchange time (exchangeAndPersist) — see #936.
+// identical value at token-exchange time (exchangeAndPersist).
 const oobRedirectURI = "urn:ietf:wg:oauth:2.0:oob"
 
 // pendingLoginTTL bounds how long a loopback/manual pendingLogin survives
@@ -67,14 +64,14 @@ type pendingLogin struct {
 	id        string
 	namespace string
 	provider  string
-	// account is the optional credential-account qualifier (docs/plans/
-	// api-gateway-credential-accounts.md D9) this login is for — "" means
-	// unqualified (D2). Captured here at StartLogin time and carried
-	// through to whichever of exchangeAndPersist/pollDeviceGrant eventually
-	// completes this session, since completion happens asynchronously
-	// (device: a background goroutine; loopback/manual: a LATER
-	// CompleteLogin call from the browser-redirect/pasted-code) — long
-	// after StartLogin's own parameters would otherwise be out of scope.
+	// account is the optional credential-account qualifier this login is
+	// for — "" means unqualified. Captured here at StartLogin time and
+	// carried through to whichever of exchangeAndPersist/pollDeviceGrant
+	// eventually completes this session, since completion happens
+	// asynchronously (device: a background goroutine; loopback/manual: a
+	// LATER CompleteLogin call from the browser-redirect/pasted-code) —
+	// long after StartLogin's own parameters would otherwise be out of
+	// scope.
 	account   string
 	flow      LoginFlow
 	createdAt time.Time
@@ -124,17 +121,14 @@ type LoginStart struct {
 	Flow      LoginFlow
 
 	// Account echoes back the account StartLogin was actually called with —
-	// "" for an ordinary unqualified login, byte-identical to every caller
-	// that predates this field. This exists SOLELY so a caller across a
-	// version-skew boundary (an older daemon build that does not know about
-	// --account at all) can detect that mismatch: an old daemon's StartLogin
-	// unconditionally ignores whatever account its own outdated request DTO
-	// never had a field for, always returning "" here regardless of what the
-	// CLI asked for — see cmd/secret_oauth.go's own post-Start comparison for
+	// "" for an ordinary unqualified login. This exists SOLELY so a caller
+	// across a version-skew boundary (an older daemon build that does not
+	// know about --account at all) can detect that mismatch: an old
+	// daemon's StartLogin always returns "" here regardless of what the CLI
+	// asked for — see cmd/secret_oauth.go's own post-Start comparison for
 	// why silently proceeding on that mismatch is dangerous (a login the
 	// CLI believes is account-qualified would actually overwrite the
-	// unqualified credential, freee-refresh-token-rotation and all —
-	// docs/plans/api-gateway-credential-accounts.md review item #2).
+	// unqualified credential).
 	Account string
 
 	// loopback/manual only.
@@ -149,11 +143,11 @@ type LoginStart struct {
 }
 
 // LoginManager orchestrates the pending-login-session lifecycle for `boid
-// secret oauth login <service>` (docs/plans/api-gateway.md §7, PR3),
-// reusing tokens (the daemon's single OAuth2TokenSource) for provider
-// lookup and — critically — the exact same persistGrant persistence-order
-// guarantee every refresh already relies on, so a login-obtained grant and
-// a refresh-rotated one are indistinguishable to every downstream reader.
+// secret oauth login <service>`, reusing tokens (the daemon's single
+// OAuth2TokenSource) for provider lookup and — critically — the exact same
+// persistGrant persistence-order guarantee every refresh already relies on,
+// so a login-obtained grant and a refresh-rotated one are indistinguishable
+// to every downstream reader.
 type LoginManager struct {
 	tokens *OAuth2TokenSource
 
@@ -232,43 +226,30 @@ func (m *LoginManager) get(id string) (*pendingLogin, bool) {
 // suffices for every flow (no second "now tell me your redirect_uri" hop).
 //
 // account is the optional credential-account qualifier `boid secret oauth
-// login --account` (docs/plans/api-gateway-credential-accounts.md D9)
-// supplies — "" (the overwhelmingly common case) means this login targets
-// the unqualified credential, byte-identical to every call site that
-// predates this parameter (D2). A non-empty account is validated against
-// EXACTLY the rule parsePath's splitServiceAccount enforces on an inbound
-// gateway request's "<service>@<account>" segment (D11) — reusing
-// validateAccountName directly (same package, so no exported indirection is
-// needed here; cmd/secret_oauth.go, a different package, goes through this
-// package's exported ValidateAccountName instead) rather than
-// re-implementing the character-class check a second time. This is
-// deliberate, not incidental: a login this function accepted with an
-// account name the gateway would reject as malformed would durably persist
-// a credential under a secret-store key (credentialID.secretPrefix(),
-// oauth2.go) that no gateway request could ever be routed to — a
-// permanently unreachable "successful" login.
+// login --account` supplies — "" (the overwhelmingly common case) means
+// this login targets the unqualified credential. A non-empty account is
+// validated against EXACTLY the rule parsePath's splitServiceAccount
+// enforces on an inbound gateway request's "<service>@<account>" segment —
+// reusing validateAccountName directly (cmd/secret_oauth.go, a different
+// package, goes through this package's exported ValidateAccountName
+// instead) rather than re-implementing the character-class check a second
+// time. This is deliberate: a login this function accepted with an account
+// name the gateway would reject as malformed would durably persist a
+// credential under a secret-store key that no gateway request could ever
+// be routed to — a permanently unreachable "successful" login.
 func (m *LoginManager) StartLogin(namespace, provider, redirectURI, account string) (*LoginStart, error) {
 	// Normalized ONCE, here — see normalizeNamespace's own doc comment
 	// (oauth2.go): this is one of exactly two entry points in the whole
 	// package, the other being OAuth2TokenSource.AccessToken. Without this,
-	// a caller passing "" (e.g. a hand-rolled HTTP request against
-	// /api/oauth/login that skips the "" -> "default" defaulting
-	// internal/api/oauth_login.go's Start handler and cmd/secret_oauth.go's
-	// --namespace flag both already apply in every real call path) would
-	// persist this login's grant through m.tokens' resolver/writer under the
-	// literal namespace "" — harmless for the SECRET STORE row itself
-	// (dispatcher.SecretStore.Get/Set independently normalize "" to
-	// "default" internally), but NOT for this package's own in-process
-	// memCache: a subsequent AccessToken("", provider) or AccessToken(
-	// "default", provider) call normalizes to "default" before checking
-	// memCache, so a login-obtained memCache entry stored under the
-	// UNNORMALIZED "" key would simply never be found by it — forcing one
-	// avoidable extra refresh immediately after a successful login. The
-	// same class of bug codex review round 5 fixed for AccessToken itself
-	// (oauth2.go's own doc comment on this constant). account is
-	// deliberately NOT normalized here, same as AccessToken's own account
-	// parameter (oauth2.go) — "" already unambiguously means "no account"
-	// (credentialID.secretPrefix's own doc comment).
+	// a caller passing "" would persist this login's grant under the
+	// literal namespace "" — harmless for the secret store row itself, but
+	// NOT for this package's own in-process memCache: a subsequent
+	// AccessToken call normalizes to "default" before checking memCache,
+	// so a login-obtained entry stored under the unnormalized "" key would
+	// never be found by it, forcing one avoidable extra refresh right
+	// after a successful login. account is deliberately NOT normalized
+	// here, same as AccessToken's own account parameter — "" already
+	// unambiguously means "no account".
 	namespace = normalizeNamespace(namespace)
 
 	if account != "" {
@@ -281,18 +262,14 @@ func (m *LoginManager) StartLogin(namespace, provider, redirectURI, account stri
 	if !ok {
 		return nil, fmt.Errorf("apigateway: oauth2 provider %q is not configured (oauth_providers: in config.yaml)", provider)
 	}
-	// Defensive guard (docs/plans/api-gateway.md §6-補): internal/config.
-	// validateOAuthProviderConfig already rejects a config.yaml entry that
-	// sets grant: client_credentials together with a flow at load time, so
-	// cfg.Flow should always be "" here for a client_credentials provider —
-	// this exists only to give a hand-built OAuthProviderConfig (a test, or
-	// any future caller that skips config-load validation) a clear,
-	// grant-specific error instead of either silently falling through to
-	// the generic "no flow configured" message below (misleading — it
-	// implies setting a flow would fix it, but client_credentials has no
-	// flow concept at all to set) or, worse, StartLogin picking one of the
-	// three login-flow branches by accident if cfg.Flow happened to be
-	// non-empty despite the grant.
+	// Defensive guard: internal/config.validateOAuthProviderConfig already
+	// rejects a config.yaml entry that sets grant: client_credentials
+	// together with a flow at load time, so cfg.Flow should always be ""
+	// here for a client_credentials provider — this exists only to give a
+	// hand-built OAuthProviderConfig (a test, or any future caller that
+	// skips config-load validation) a clear, grant-specific error instead
+	// of the generic "no flow configured" message below, which would be
+	// misleading for a grant that has no flow concept at all.
 	if cfg.Grant == GrantClientCredentials {
 		return nil, fmt.Errorf("apigateway: oauth2 provider %q uses the client_credentials grant (RFC 6749 §4.4) — this is a direct client_id/client_secret token-endpoint request with no user authorization step, so there is no login flow to start; seed or rotate client_secret via `boid secret set` instead", provider)
 	}
@@ -308,10 +285,9 @@ func (m *LoginManager) StartLogin(namespace, provider, redirectURI, account stri
 	}
 }
 
-// startLoopback implements docs/plans/api-gateway.md §7's loopback flow:
-// PKCE verifier/challenge (RFC 7636) + CSRF state, both held only here
-// (never sent to the CLI) — the CLI receives just the finished authorize
-// URL to open in a browser.
+// startLoopback implements the loopback flow: PKCE verifier/challenge
+// (RFC 7636) + CSRF state, both held only here (never sent to the CLI) —
+// the CLI receives just the finished authorize URL to open in a browser.
 func (m *LoginManager) startLoopback(namespace string, cfg OAuthProviderConfig, redirectURI, account string) (*LoginStart, error) {
 	if redirectURI == "" {
 		return nil, fmt.Errorf("apigateway: oauth2 provider %q uses the loopback flow, which requires a redirect_uri (the CLI's local listener callback URL)", cfg.Name)
@@ -349,11 +325,11 @@ func (m *LoginManager) startLoopback(namespace string, cfg OAuthProviderConfig, 
 	return &LoginStart{SessionID: p.id, Flow: LoginFlowLoopback, Account: account, AuthorizeURL: authURL}, nil
 }
 
-// startManual implements docs/plans/api-gateway.md §7's manual/OOB flow: no
-// PKCE (freee — the flow's motivating provider — does not support it), no
-// state (there is no redirect to carry it back on; the provider displays
-// the code directly in the browser and the user copies it by hand), the
-// OOB redirect_uri urn:ietf:wg:oauth:2.0:oob.
+// startManual implements the manual/OOB flow: no PKCE (freee — the flow's
+// motivating provider — does not support it), no state (there is no
+// redirect to carry it back on; the provider displays the code directly in
+// the browser and the user copies it by hand), the OOB redirect_uri
+// urn:ietf:wg:oauth:2.0:oob.
 func (m *LoginManager) startManual(namespace string, cfg OAuthProviderConfig, account string) (*LoginStart, error) {
 	authURL, err := buildAuthorizeURL(cfg, oobRedirectURI, "", "")
 	if err != nil {
@@ -412,10 +388,9 @@ func buildAuthorizeURL(cfg OAuthProviderConfig, redirectURI, state, codeChalleng
 // CompleteLogin finishes a loopback or manual pendingLogin: exchanges code
 // (RFC 6749 §4.1.3 authorization_code grant) for tokens and persists the
 // grant through tokens.persistGrant — the SAME durable-write-ordering
-// contract a refresh gets. state is required (and checked) for loopback
-// (docs/plans/api-gateway.md §7: "state 検証は daemon 側の pending login
-// session と突き合わせる (CSRF 対策)"); ignored for manual, which never had
-// one to check (no redirect occurs for OOB — see startManual).
+// contract a refresh gets. state is required (and checked, against CSRF)
+// for loopback; ignored for manual, which never had one to check (no
+// redirect occurs for OOB — see startManual).
 //
 // A session is single-shot: once it leaves LoginStatusPending (success OR
 // failure), every subsequent CompleteLogin call for the same sessionID is
@@ -494,7 +469,7 @@ func (m *LoginManager) exchangeAndPersist(p *pendingLogin, cfg OAuthProviderConf
 	// (p.redirectURI, the local callback). Manual/OOB also sends one —
 	// startManual's buildAuthorizeURL call passes oobRedirectURI as
 	// redirect_uri — so it must be repeated too (freee's token endpoint
-	// rejects the exchange with invalid_client otherwise; see #936).
+	// rejects the exchange with invalid_client otherwise).
 	// code_verifier (RFC 7636 §4.5, PKCE) only applies to loopback —
 	// manual/OOB never sends a code_challenge at authorize time (see
 	// LoginFlowManual's own doc comment for why PKCE does not apply to it
@@ -513,13 +488,10 @@ func (m *LoginManager) exchangeAndPersist(p *pendingLogin, cfg OAuthProviderConf
 	}
 
 	// cred: p.account is whatever `boid secret oauth login --account`
-	// (docs/plans/api-gateway-credential-accounts.md D9) supplied to
-	// StartLogin, carried here via pendingLogin (StartLogin's own doc
-	// comment on why it must survive to this later, asynchronous call) — ""
-	// for an ordinary unqualified login, byte-identical to every call site
-	// that predates this parameter (D2). Routed through credentialID, not
-	// cfg.Name directly, so this package has exactly ONE way to build an
-	// oauth2 secret/cache key (credentialID's own doc comment).
+	// supplied to StartLogin, carried here via pendingLogin (StartLogin's
+	// own doc comment on why it must survive to this later, asynchronous
+	// call). Routed through credentialID, not cfg.Name directly, so this
+	// package has exactly ONE way to build an oauth2 secret/cache key.
 	cred := credentialID{provider: cfg.Name, account: p.account}
 
 	// priorRefreshToken: best-effort read of whatever the secret store
@@ -546,8 +518,7 @@ func (m *LoginManager) exchangeAndPersist(p *pendingLogin, cfg OAuthProviderConf
 // failure (never for an ordinary refresh — refresh() calls persistGrant
 // directly, not through this function): the entire point of `boid secret
 // oauth login` is to hand the daemon's single OAuth2TokenSource something
-// it can refresh with going forward (docs/plans/api-gateway.md §6 "daemon
-// 単一リフレッシャの原則"). A login that only obtains an access_token
+// it can refresh with going forward. A login that only obtains an access_token
 // (no refresh_token, and none already stored) would silently "succeed" —
 // the access_token works until it expires — and then fail confusingly on
 // the very first proactive refresh afterward, with no obvious link back to
@@ -563,12 +534,11 @@ func requireRefreshToken(providerName, freshRefreshToken, priorRefreshToken stri
 	return fmt.Errorf("apigateway: oauth2 provider %q: login succeeded in obtaining an access_token, but the provider returned no refresh_token and none was already on file — the daemon cannot refresh this grant later; check the provider's authorize_params (e.g. Google needs access_type=offline, and prompt=consent if you have already granted consent once before)", providerName)
 }
 
-// startDevice implements docs/plans/api-gateway.md §7's device flow (RFC
-// 8628): a device authorization request against
-// cfg.DeviceAuthorizationEndpoint, then a background goroutine that polls
-// cfg.TokenEndpoint on the provider's own declared interval until success,
-// denial, or expiry — "device flow の polling は daemon 側で行う" (§7). The
-// CLI never talks to either endpoint directly; it only displays
+// startDevice implements the device flow (RFC 8628): a device authorization
+// request against cfg.DeviceAuthorizationEndpoint, then a background
+// goroutine that polls cfg.TokenEndpoint on the provider's own declared
+// interval until success, denial, or expiry. The CLI never talks to
+// either endpoint directly; it only displays
 // user_code/verification_uri and polls THIS package's own Status (a local,
 // cheap daemon-session check, decoupled from whatever cadence the poller
 // below actually uses against the real provider).
@@ -693,8 +663,7 @@ func (m *LoginManager) pollDeviceGrant(ctx context.Context, cancel context.Cance
 		switch {
 		case err == nil:
 			// cred: see exchangeAndPersist's identical comment — p.account is
-			// whatever --account StartLogin was given for this session ("" for
-			// an ordinary unqualified login, D2).
+			// whatever --account StartLogin was given for this session.
 			cred := credentialID{provider: cfg.Name, account: p.account}
 			priorRefreshToken, _ := m.tokens.resolver(p.namespace, OAuthSecretKey(cred.secretPrefix(), oauthFieldRefreshToken))
 			if _, persistErr := m.tokens.persistGrant(p.namespace, cred, cfg, resp, priorRefreshToken, true); persistErr != nil {

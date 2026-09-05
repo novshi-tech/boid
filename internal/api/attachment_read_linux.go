@@ -12,31 +12,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// readAttachmentBytes is the Linux TOCTOU-safe attachment reader (codex
-// review on PR #798, Phase 5b PR2 attachments RPCs — Major finding). The
-// earlier implementation validated symlink containment via
-// filepath.EvalSymlinks and the size cap via os.Stat, then reopened the
-// same path with os.ReadFile: a writer with access to the attachments
-// directory could swap the directory entry to point elsewhere between the
-// check and the reopen (or grow the file past the cap between Stat and
-// ReadFile).
+// readAttachmentBytes is the Linux TOCTOU-safe attachment reader. It opens
+// the leaf name exactly once, relative to an already-open directory
+// descriptor, via openat2 with RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS:
+//   - RESOLVE_NO_SYMLINKS fails the open (ELOOP) if the leaf is, or resolves
+//     through, a symlink at all.
+//   - RESOLVE_BENEATH refuses any resolution that would escape dir.
 //
-// This opens the leaf name exactly once, relative to an already-open
-// directory descriptor, via openat2 with RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS:
-//   - RESOLVE_NO_SYMLINKS makes the open itself fail (ELOOP) if the leaf is,
-//     or resolves through, a symlink at all — no legitimate attachment is
-//     ever a symlink (SaveMultipartAttachments only ever creates plain
-//     files via O_CREATE|O_EXCL), so this is a tightened guarantee, not a
-//     functional regression.
-//   - RESOLVE_BENEATH refuses any resolution that would escape dir, closing
-//     the same class of traversal validateAttachmentLookupName already
-//     rejects earlier, at the kernel level as a second layer.
-//
-// The resulting file descriptor references a fixed inode: no subsequent
-// swap of the directory entry can change what Stat/Read below observe, and
-// io.LimitReader re-enforces the size cap against the live byte stream
-// (not the pre-read Stat size) so a file grown after the open cannot make
-// the read return more than AttachmentMaxFileBytes+1 bytes regardless.
+// The resulting fd references a fixed inode, so no later swap of the
+// directory entry can change what Stat/Read below observe, and
+// io.LimitReader enforces the size cap against the live byte stream rather
+// than a pre-read Stat size.
 func readAttachmentBytes(dir, base string) ([]byte, error) {
 	dirFile, err := os.Open(dir)
 	if err != nil {

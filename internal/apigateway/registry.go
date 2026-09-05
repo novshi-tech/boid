@@ -7,20 +7,17 @@ import "sync"
 // the secret-store namespace and originating task id used downstream
 // (credential resolution and timeline/audit recording, respectively).
 //
-// Services holds the effective (floor ∪ workspace) enabled-service set for
-// the registering job's workspace (docs/plans/api-gateway.md §3
-// "workspace 単位の service 有効化") — the caller (dispatcher) computes this
-// union before calling Register; Registry itself has no notion of a floor or
-// a workspace.
+// Services holds the effective enabled-service set for the registering
+// job's workspace — the caller (dispatcher) computes this before calling
+// Register; Registry itself has no notion of a floor or a workspace.
 //
-// ReadOnly mirrors task.readonly / command.readonly (docs/plans/api-gateway.md
-// 前提となる決定事項: "task.readonly を HTTP メソッドに写像する") — Server.ServeHTTP
+// ReadOnly mirrors task.readonly / command.readonly — Server.ServeHTTP
 // rejects any non-GET/HEAD request when this is true, regardless of which
 // service is targeted.
 //
-// TaskID is the originating task, used only for timeline/audit recording
-// (docs/plans/api-gateway.md §論点3) — empty for a taskless job (`boid exec`),
-// in which case recording is skipped rather than attributed to no task.
+// TaskID is the originating task, used only for timeline/audit recording —
+// empty for a taskless job (`boid exec`), in which case recording is
+// skipped rather than attributed to no task.
 type Entry struct {
 	Token     string
 	Namespace string

@@ -10,17 +10,9 @@ import (
 )
 
 // watchTerminalResize calls onResize every time the terminal window
-// changes size, and returns a stop func the caller defers.
-//
-// SIGWINCH is the kernel telling us the moment it happens — no polling, no
-// latency. Split out per GOOS only because Windows has no such signal (see
-// attach_resize_windows.go).
-//
-// The stop func is idempotent and actually terminates the watcher
-// goroutine. The version this replaced (inline in attachLive) only called
-// signal.Stop, which stops delivery but does not close the channel — so
-// its `for range sigCh` goroutine blocked forever, leaking one goroutine
-// per attach.
+// changes size, and returns an idempotent stop func the caller defers that
+// actually terminates the watcher goroutine (not just signal.Stop).
+// Split out per GOOS since Windows has no SIGWINCH.
 func watchTerminalResize(onResize func()) (stop func()) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGWINCH)
@@ -30,11 +22,8 @@ func watchTerminalResize(onResize func()) (stop func()) {
 		for {
 			select {
 			case <-sigCh:
-				// A signal that arrived before stop() ran is still buffered
-				// and can be chosen even now that done is closed — select
-				// picks uniformly among ready cases. Without this re-check
-				// that would fire one resize RPC after attachLive already
-				// returned and restored the terminal.
+				// Re-check done: a signal buffered before stop() ran can
+				// still be selected here even after done closed.
 				select {
 				case <-done:
 					return

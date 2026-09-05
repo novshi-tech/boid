@@ -1,30 +1,12 @@
 package orchestrator
 
-// docs/plans/signal-ingest-detailed-design.md §2 (PR-1): signal inbox
-// (migration 0046) の store 層。
-//
-// signal-driven-review.md §8.1 の inbox 不変条件 2 つをここで実装する:
-//
-//   - dedup は PRIMARY KEY そのもの: (workspace_id, service, connector, id)
-//     の再投入は `INSERT OR IGNORE` で no-op になる (採点表 Q10)
-//   - source cursor は処理済み Signal 自身を越えて前進する: IngestSignals
-//     が INSERT と cursor 前進を同一 tx で行い (crash しても取りこぼさない
-//     — 採点表 Q13)、cursor は現在値より小さい occurred_at には絶対に
-//     戻らない (単調前進)
-//
-// occurred_at / cursor の比較は必ず RFC3339 を time.Time として parse して
-// から行う — jira は `+09:00` のようなオフセット付きで occurred_at を返す
-// ため、生文字列の比較では offset が混在した瞬間に大小関係が壊れる
-// (2026-08-19T23:00:00-09:00 は実時刻で 2026-08-20T08:00:00Z だが、日付の
-// 文字列だけを見ると「19日」で「20日」より小さく見える、が実例)。保存も
-// 読み出しも UTC 正規化した RFC3339 で行う。
-//
-// 全メソッドが db.DBTX を直接取るプレーン関数である点は trigger_run.go /
-// task_identity.go と同じ形。IngestSignals / ClaimSignals は複数の文で
-// 1 つの不変条件を守る必要がある ("1 tx" — 挿入+cursor前進、select+
-// attempts++) ため、TaskRepository 側のラッパーは DeleteTask と同じ
-// 「渡された db が生の *sql.DB なら自分で InTxDB を張る」パターンを使う
-// (repository.go 参照)。
+// Store layer for the signal inbox (migration 0046). Two invariants:
+// dedup is the PRIMARY KEY itself (workspace_id, service, connector, id);
+// each source's cursor advances monotonically and never moves backward.
+// occurred_at/cursor comparisons always go through time.Time (parsed RFC3339),
+// never raw string comparison, since a tz-offset-bearing timestamp string
+// does not sort chronologically as text. See docs/plans/
+// signal-ingest-detailed-design.md and signal-driven-review.md §8.1.
 
 import (
 	"database/sql"
@@ -38,19 +20,14 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 )
 
-// MaxSignalAttempts is the v0 constant retry ceiling before a signal is
-// considered dead (design doc §2: "無限再配送の防止...v0 は定数 5"). Store
-// functions take maxAttempts as an explicit parameter rather than baking
-// this in directly, so tests can exercise the dead-letter boundary without
-// waiting through 5 real claims — but every non-test caller should pass
-// this constant.
+// MaxSignalAttempts is the retry ceiling before a signal is considered dead.
+// Store functions take maxAttempts as an explicit parameter rather than
+// baking this in directly, so tests can exercise the dead-letter boundary
+// without waiting through 5 real claims.
 const MaxSignalAttempts = 5
 
 // DefaultSignalListLimit / MaxSignalListLimit bound ListSignals/ClaimSignals
-// row counts, mirroring action_list.go's DefaultActionListLimit/
-// MaxActionListLimit (same "row-count cap, not response-size cap" posture —
-// see that file's doc comment for the full rationale, which applies
-// identically here since this is also a brand-new read surface).
+// row counts, mirroring action_list.go's Default/MaxActionListLimit.
 const (
 	DefaultSignalListLimit = 200
 	MaxSignalListLimit     = 1000
@@ -75,9 +52,8 @@ const (
 	// SignalStatePending: acked_at IS NULL AND attempts < maxAttempts.
 	SignalStatePending SignalState = "pending"
 	// SignalStateDead: acked_at IS NULL AND attempts >= maxAttempts — the
-	// row is not deleted (no "stuck mid-ingestion" terminal state,
-	// signal-driven-review.md §8.1), just excluded from ClaimSignals /
-	// HasPendingSignals until a human acks it or GC eventually reaps it.
+	// row is not deleted, just excluded from ClaimSignals/HasPendingSignals
+	// until a human acks it or GC reaps it.
 	SignalStateDead SignalState = "dead"
 	// SignalStateAcked: acked_at IS NOT NULL.
 	SignalStateAcked SignalState = "acked"
@@ -102,13 +78,9 @@ type Signal struct {
 	AckedAt *time.Time
 }
 
-// SignalIngestRow is one Signal as read from a connector's JSONL output
-// (signal-ingest-detailed-design.md §5.3 / §7.1 envelope): 1 line =
-// `{id, occurred_at, identity, url?, author?, title?}`. ID/OccurredAt/
-// Identity are required (§7.2: "JSONL の必須 field"); URL/Author/Title
-// default to "" when omitted. json tags match the envelope field names
-// exactly, since these are also what gets marshaled for the per-row
-// MaxContentBytes size check (§2).
+// SignalIngestRow is one Signal as read from a connector's JSONL output: one
+// line = `{id, occurred_at, identity, url?, author?, title?}`.
+// ID/OccurredAt/Identity are required; URL/Author/Title default to "".
 type SignalIngestRow struct {
 	ID         string `json:"id"`
 	OccurredAt string `json:"occurred_at"` // RFC3339, tz-aware
@@ -118,22 +90,16 @@ type SignalIngestRow struct {
 	Title      string `json:"title,omitempty"`
 }
 
-// SignalFilter scopes and paginates ListSignals. WorkspaceID is required —
-// mirroring ActionListFilter's ErrActionListUnscoped posture (action_list.go),
-// this is a workspace-wide read surface with no "give me everything"
-// fallback.
+// SignalFilter scopes and paginates ListSignals. WorkspaceID is required;
+// there is no "give me everything" fallback.
 type SignalFilter struct {
 	WorkspaceID string
 	Service     string
 	Connector   string
-	// State defaults to SignalStatePending when empty (matching `boid
-	// signal list`'s "未 ack の Signal" default framing, signal-driven-
-	// review.md §8.2).
+	// State defaults to SignalStatePending when empty.
 	State SignalState
 	Limit int
-	// MaxAttempts, when <= 0, defaults to MaxSignalAttempts. Exposed as a
-	// filter field (not hardcoded) for the same testability reason
-	// MaxSignalAttempts' own doc comment gives.
+	// MaxAttempts, when <= 0, defaults to MaxSignalAttempts.
 	MaxAttempts int
 }
 
@@ -145,19 +111,10 @@ func resolveMaxAttempts(maxAttempts int) int {
 }
 
 // signalTimeLayout is a FIXED-WIDTH RFC3339-with-nanoseconds layout used for
-// every stored timestamp (occurred_at/received_at/acked_at/cursor/
-// updated_at).
-//
-// [M2, Opus review 2026-08-26]: this is deliberately NOT time.RFC3339Nano.
-// RFC3339Nano trims trailing zeros from the fractional-second component,
-// producing a VARIABLE-width string whose lexicographic order does not
-// always match chronological order — e.g. "...T01:00:00.5Z" (with a
-// fractional second) sorts BEFORE "...T01:00:00Z" (no fractional second at
-// all) because '.' (0x2E) < 'Z' (0x5A), even though the first instant is
-// LATER. ListSignals/ClaimSignals both `ORDER BY occurred_at` as a plain
-// TEXT column, so lexicographic order matching chronological order is load-
-// bearing, not cosmetic — a fixed 9-digit fractional field (zero-padded,
-// never trimmed) is what makes that hold for every stored row.
+// every stored timestamp. Deliberately not time.RFC3339Nano: that trims
+// trailing fractional-second zeros, producing a variable-width string whose
+// lexicographic order (signals is ORDER BY'd as plain TEXT) does not always
+// match chronological order.
 const signalTimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
 func formatSignalTime(t time.Time) string {
@@ -173,31 +130,22 @@ func parseSignalTime(s string) (time.Time, error) {
 }
 
 // IngestSignals is a connector's single entry point into the inbox: for
-// each row it INSERT OR IGNOREs into signals (PK-based dedup, Q10) and then
-// advances (workspace, service, connector)'s cursor to
-// max(rows.OccurredAt) — but ONLY forward, never backward (a batch that is
-// entirely older than the current cursor leaves it untouched).
+// each row it INSERT OR IGNOREs into signals (PK-based dedup) and then
+// advances (workspace, service, connector)'s cursor to max(rows.OccurredAt),
+// but only forward, never backward.
 //
 // Callers MUST invoke this within a single transaction (dbtx must be a
 // db.DBTX backed by an open *sql.Tx, or the whole call must itself be the
 // only statement running against a *sql.DB) — the INSERTs and the cursor
 // UPDATE/INSERT are only atomic as a unit if dbtx guarantees it. See
 // TaskRepository.IngestSignals (repository.go) for the wrapper that
-// provides this guarantee when given a raw *sql.DB, and this file's own
-// package doc comment for why (Q13: crash between the inserts and the
-// cursor advance must not lose signals OR leave the cursor pointing past
-// unsaved rows).
+// provides this guarantee when given a raw *sql.DB.
 func IngestSignals(dbtx db.DBTX, workspaceID, service, connector string, rows []SignalIngestRow) error {
 	if workspaceID == "" {
 		return fmt.Errorf("ingest signals: workspace id must not be empty")
 	}
-	// service MAY be empty (docs/plans/boid-internal-signal-inbox.md §4.6):
-	// boid's own internal-signal source (InternalSignalPack/
-	// InternalSignalConnector, signal_ingest_bridge.go) never reaches an
-	// external service, so its envelope's source.service is deliberately
-	// "" — unlike workspaceID/connector, which every source (external or
-	// internal) always has, service has no fallback value that wouldn't
-	// misrepresent "no service instance was involved" as some real one.
+	// service MAY be empty: boid's own internal-signal source never reaches
+	// an external service, so its envelope's source.service is "".
 	if connector == "" {
 		return fmt.Errorf("ingest signals: connector must not be empty")
 	}
@@ -273,32 +221,19 @@ func IngestSignals(dbtx db.DBTX, workspaceID, service, connector string, rows []
 }
 
 // GetSignalCursor returns (workspaceID, service, connector)'s stored cursor,
-// or "" if the source has never ingested (design doc §2: "無ければ空文字
-// (= 最初から)").
+// or "" if the source has never ingested.
 //
-// Contract (design doc §5.3): the cursor is EXCLUSIVE of itself from the
-// connector's point of view — a conformant connector drops anything with
-// `occurred_at <= cursor` before ever calling `boid signal ingest`, and
-// treats `occurred_at > cursor` as new. This store does not enforce or
-// interpret that filtering itself (PK-based dedup in IngestSignals is a
-// second, independent safety net for exact-duplicate re-sends; a
-// well-behaved connector's own `<= cursor` filtering is what keeps fetch
-// volume down) — GetSignalCursor just returns the opaque stored value.
+// Contract: the cursor is exclusive of itself from the connector's point of
+// view — a conformant connector drops anything with `occurred_at <= cursor`
+// before calling `boid signal ingest`. This store just returns the opaque
+// stored value; PK-based dedup in IngestSignals is a separate, independent
+// safety net for exact-duplicate re-sends.
 //
-// [L8, Opus review 2026-08-26] KNOWN RISK inherited from this
-// exclusive-boundary design (same bug family as khi's pre-rewrite
-// ts-based bookmarks — see the boid-project memory note
-// "khi-source-bookmark-must-be-exclusive"): if two sibling events share the
-// EXACT SAME occurred_at and the cursor advances to that timestamp after
-// only one of them has been ingested (the other arriving from the source in
-// a later page/fetch), the connector's own `occurred_at <= cursor`
-// self-filter will silently drop the sibling FOREVER — it never reaches
-// IngestSignals, so PK-based dedup never even sees it to no-op it. This is
-// not something the store layer can fix (a cursor here is a single scalar,
-// not a set of "ids already seen at this timestamp"). Pack authors (§7.2)
-// working with sub-second or tie-prone sources should add a secondary
-// tiebreaker (e.g. sort by id too) in their own fetch logic rather than
-// relying on occurred_at alone to be unique.
+// Known risk: if two sibling events share the exact same occurred_at and the
+// cursor advances past that timestamp after only one is ingested, the
+// connector's own `<= cursor` self-filter can silently drop the sibling
+// forever. Pack authors working with tie-prone sources should add a
+// secondary tiebreaker (e.g. id) in their own fetch logic.
 func GetSignalCursor(dbtx db.DBTX, workspaceID, service, connector string) (string, error) {
 	var cursor string
 	err := dbtx.QueryRow(
@@ -387,22 +322,15 @@ func ListSignals(dbtx db.DBTX, filter SignalFilter) ([]*Signal, error) {
 // ClaimSignals selects up to limit pending signals (occurred_at ascending)
 // for workspaceID, increments each one's attempts, and returns the
 // post-increment rows. Dead signals (attempts >= maxAttempts) are never
-// selected — this is the "no infinite redelivery" guard (design doc §2,
-// khi's MAX_ATTEMPTS equivalent).
+// selected.
 //
-// DEPRECATED (2026-08-29): prefer ListSignals + ClaimSignalIDs. Charging on
-// the READ conflates "I looked at this" with "I handed this to a judgment",
-// and those differ for any consumer that reads wider than it judges — see
-// ClaimSignalIDs' doc comment for what that costs. Kept working so a daemon
-// carrying the split and a workspace still on the old one-step call do not
-// have to switch in the same instant (a workspace's code arrives via `boid
-// project fetch`, a separate step from deploying the daemon). Remove once no
-// workspace calls it.
+// DEPRECATED: prefer ListSignals + ClaimSignalIDs — charging on the read
+// conflates "I looked at this" with "I handed this to a judgment"; see
+// ClaimSignalIDs' doc comment. Kept until no workspace calls it.
 //
 // Like IngestSignals, this does a select then a write that must be one
-// atomic unit — see IngestSignals' own doc comment for the transaction
-// contract callers must uphold, and TaskRepository.ClaimSignals for the
-// wrapper that provides it automatically.
+// atomic unit — see TaskRepository.ClaimSignals for the wrapper that
+// provides that guarantee automatically.
 func ClaimSignals(dbtx db.DBTX, workspaceID string, limit, maxAttempts int) ([]*Signal, error) {
 	if workspaceID == "" {
 		return nil, fmt.Errorf("claim signals: workspace id must not be empty")
@@ -458,35 +386,14 @@ func ClaimSignals(dbtx db.DBTX, workspaceID string, limit, maxAttempts int) ([]*
 	return claimed, nil
 }
 
-// ClaimSignalIDs charges one attempt against exactly the ids named. It is the
-// EXPLICIT half of the read/claim split (2026-08-29): `boid signal list`
-// reads with no side effect, `boid signal claim <id>...` says which of those
-// rows were actually handed to a judgment.
+// ClaimSignalIDs charges one attempt against exactly the ids named — the
+// explicit half of the read/claim split: `boid signal list` reads with no
+// side effect, `boid signal claim <id>...` says which rows were actually
+// handed to a judgment (unlike ClaimSignals, which charges every row a
+// consumer's read merely returned, even ones it never judged).
 //
-// ClaimSignals above answers both questions in one step, and that is the
-// problem it exists to fix. `attempts` is the dead-letter counter — five
-// increments and MaxSignalAttempts retires the row — so what it counts had
-// better be "handed to a judgment". ClaimSignals can only count "returned by
-// the read", and a consumer whose read is deliberately WIDER than its
-// judgment charges every row it merely looked at: khi lists MAX_TARGETS*4
-// rows so that several signals collapsing onto one card still fill its
-// target slots, then judges at most MAX_TARGETS of them, and the remainder
-// it explicitly deferred to the next round has already been charged. Five
-// such rounds retire a signal nobody ever judged, silently.
-//
-// Deliberately NOT replaced by a time-based expiry, which is the other
-// obvious way to stop a signal nobody can process. A clock cannot tell "this
-// signal is unprocessable" from "the consumer was not running" — the whole
-// khi workspace being down for a week would retire every signal that arrived
-// meanwhile. GCSignals below already encodes that ruling: it refuses to
-// delete a pending row on age alone, no matter what olderThan says, after
-// exactly that shape turned out to be a data-loss bug (its own [H1] note).
-// attempts has the property a clock does not: no consumer, no decay.
-//
-// Same typo guard and all-or-nothing failure as AckSignals — see its doc
-// comment. An already-acked row is NOT charged (there is nothing left to
-// hand to a judgment) but is not an error either: the row exists, so the
-// caller named something real.
+// Same typo guard and all-or-nothing failure as AckSignals. An already-acked
+// row is not charged but is not an error either.
 func ClaimSignalIDs(dbtx db.DBTX, workspaceID string, ids []string) error {
 	if workspaceID == "" {
 		return fmt.Errorf("claim signals: workspace id must not be empty")
@@ -513,11 +420,9 @@ func ClaimSignalIDs(dbtx db.DBTX, workspaceID string, ids []string) error {
 // requireSignalIDsExist is the shared pre-flight both AckSignals and
 // ClaimSignalIDs run: dedupe the ids, confirm every one of them matches a
 // row in workspaceID, and hand back the placeholder list and args (workspace
-// id first, then the unique ids) for the caller's own UPDATE.
-//
-// The existence check is the typo guard (§2). It runs BEFORE the write and
-// fails the whole call, so a caller that mistyped one id never has to work
-// out which of the others partially applied.
+// id first, then the unique ids) for the caller's own UPDATE. This existence
+// check is a typo guard: it runs before the write and fails the whole call,
+// so a mistyped id never leaves the others partially applied.
 func requireSignalIDsExist(dbtx db.DBTX, op, workspaceID string, ids []string) (placeholders string, args []any, err error) {
 	unique := dedupeStringsPreserveOrder(ids)
 	placeholders = strings.TrimSuffix(strings.Repeat("?,", len(unique)), ",")
@@ -593,9 +498,8 @@ func AckSignals(dbtx db.DBTX, workspaceID string, ids []string) error {
 
 // HasPendingSignals reports whether workspaceID has at least one pending
 // (unacked, attempts < maxAttempts) signal — the `on: signals` trigger
-// predicate (design doc §4.2). Dead signals never count: a workspace with
-// only dead-lettered signals must not fire its trigger forever
-// (signal-driven-review.md §8.1).
+// predicate. Dead signals never count, so a workspace with only
+// dead-lettered signals does not fire its trigger forever.
 func HasPendingSignals(dbtx db.DBTX, workspaceID string, maxAttempts int) (bool, error) {
 	if workspaceID == "" {
 		return false, fmt.Errorf("has pending signals: workspace id must not be empty")
@@ -612,33 +516,14 @@ func HasPendingSignals(dbtx db.DBTX, workspaceID string, maxAttempts int) (bool,
 	return exists != 0, nil
 }
 
-// GCSignals deletes signals rows that are STRUCTURALLY eligible — acked
-// (judgment complete) or dead-lettered (retries exhausted, attempts >=
-// MaxSignalAttempts) — and, when olderThan > 0, additionally old enough
-// (acked_at, respectively received_at, before the cutoff). olderThan=0
-// disables the AGE filter only, matching GCTasks (status IN (...)) /
-// GCTriggerRuns (finished_at IS NOT NULL): those siblings keep a
-// non-time STATE predicate that protects live rows even when the caller
-// asks for an unbounded sweep, and GCSignals now does the same — a
-// still-pending signal (unacked, attempts < MaxSignalAttempts) is NEVER
-// eligible for deletion, regardless of olderThan.
-//
-// [H1, Opus review 2026-08-26, CONFIRMED data-loss bug]: an earlier version
-// of this function had no structural gate — at olderThan<=0 its WHERE
-// clause degenerated to `1 = 1`, deleting EVERY signal in the table,
-// including brand-new pending (attempts=0) rows that had never even been
-// claimed once. Worse, signal_cursors was left pointing PAST the deleted
-// rows (IngestSignals had already advanced it), so the connector's own
-// "occurred_at <= cursor, drop it" self-filter (§5.3) would never let those
-// rows be re-ingested — permanent, silent loss. Reachable via
-// `boid gc --older-than 0`, `POST /api/gc {"older_than":"0s"}`, or the 24h
-// auto-GC loop if `gc.older_than` were ever configured to 0. The structural
-// gate below closes this: a pending row can never match, so it survives
-// every combination of olderThan and dryRun.
-//
-// Intended to run inside the SAME transaction as GCTasks/GCTriggerRuns
-// (TaskGCStore.GC, repository.go) — a single statement, so it needs no tx
-// guarantee of its own the way IngestSignals/ClaimSignals do.
+// GCSignals deletes signals rows that are structurally eligible — acked or
+// dead-lettered (attempts >= MaxSignalAttempts) — and, when olderThan > 0,
+// additionally old enough (acked_at, respectively received_at, before the
+// cutoff). olderThan=0 disables only the age filter: a still-pending signal
+// (unacked, attempts < MaxSignalAttempts) is never eligible for deletion
+// regardless of olderThan — the structural gate protects it even on an
+// unbounded sweep (deleting a pending row would strand it forever, since
+// signal_cursors has already advanced past it).
 func GCSignals(dbtx db.DBTX, olderThan time.Duration, dryRun bool) (int64, error) {
 	cond := `(acked_at IS NOT NULL) OR (acked_at IS NULL AND attempts >= ?)`
 	args := []any{MaxSignalAttempts}

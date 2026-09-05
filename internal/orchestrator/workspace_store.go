@@ -14,19 +14,17 @@ import (
 
 // WorkspaceStore provides persistence for WorkspaceMeta values.
 //
-// Two backing modes (docs/plans/workspace-db-consolidation.md PR3 cutover):
+// Two backing modes:
 //
 //   - repo == nil: legacy yaml mode. Each workspace is read/written as a
 //     YAML file at <dir>/<slug>.yaml. This is the pre-cutover behavior, kept
 //     as-is for callers that never wire a repository — e.g. the CLI
 //     (cmd/workspace.go and friends still read/write the yaml files
-//     directly; PR4 switches them to the API) and
-//     MigrateWorkspaceYAMLToDB's own preflight, which needs to read the
-//     legacy yaml as the migration's source of truth.
+//     directly) and MigrateWorkspaceYAMLToDB's own preflight, which needs
+//     to read the legacy yaml as the migration's source of truth.
 //   - repo != nil (set via SetRepository / NewWorkspaceStoreWithRepo): DB
 //     mode. Every method delegates to repo instead of touching dir. dir is
-//     retained on the struct only as the (now-shadow) yaml location; PR3
-//     does not delete or read it once a repository is wired.
+//     retained on the struct only as the (now-shadow) yaml location.
 //
 // Every method's signature is unchanged from the yaml-only era so existing
 // callers (cmd/workspace.go, cmd/project_migrate.go, cmd/kit.go,
@@ -63,8 +61,7 @@ func NewWorkspaceStoreWithRepo(dir string, repo *WorkspaceRepository) *Workspace
 	return s
 }
 
-// SetRepository wires repo as this store's DB backing
-// (docs/plans/workspace-db-consolidation.md PR3 cutover). Once set, every
+// SetRepository wires repo as this store's DB backing. Once set, every
 // method routes through repo instead of the yaml directory.
 func (s *WorkspaceStore) SetRepository(repo *WorkspaceRepository) {
 	s.repo = repo
@@ -87,17 +84,9 @@ func DefaultWorkspaceDir() (string, error) {
 // Returns an error wrapping os.ErrNotExist when the file does not exist.
 //
 // In DB mode (repo != nil) this delegates straight to repo.Load and never
-// falls back to the yaml file at <dir>/<slug>.yaml. PR3's cutover had a
-// transitional yaml fallback here (a not-found DB row fell back to reading
-// the legacy yaml file) because the daemon had no post-cutover create path
-// yet — a workspace yaml dropped into the workspaces dir *after* daemon
-// startup (missed by MigrateWorkspaceYAMLToDB's one-time migration) would
-// otherwise silently degrade (capabilities/kits/env not injected). PR4
-// removes that fallback now that POST /api/workspaces (and
-// cmd/workspace.go's `boid workspace assign` auto-create) gives every
-// caller a real way to introduce a DB row outside the migration path — the
-// yaml files under DefaultWorkspaceDir() are now purely a rollback/export
-// shadow (decision 16), never read by DB-mode Load again.
+// falls back to the yaml file at <dir>/<slug>.yaml — the yaml files under
+// DefaultWorkspaceDir() are purely a rollback/export shadow, never read by
+// DB-mode Load.
 func (s *WorkspaceStore) Load(slug string) (*WorkspaceMeta, error) {
 	if s.repo != nil {
 		return s.repo.Load(slug)
@@ -120,17 +109,14 @@ func (s *WorkspaceStore) Load(slug string) (*WorkspaceMeta, error) {
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("workspace %q (%s): parse: %w", slug, path, err)
 	}
-	// Codex Should-fix (PR4 review, docs/plans/home-workspace-volume.md):
-	// WorkspaceMeta has no AdditionalBindings field any more (Phase 4 PR4),
-	// so the yaml.Unmarshal above silently drops an additional_bindings:
-	// key with no diagnostic at all — unlike the wire (POST/PUT) path,
-	// which already warns via workspaceMetaStrict.toWorkspaceMeta. The plan
-	// requires "parse continues + ignore + warn" for every legacy read
-	// path, so this yaml-mode load path needs the same warning. Errors from
-	// additionalBindingsKeyPresent are swallowed deliberately: data already
-	// decoded successfully into WorkspaceMeta above, so a failure here would
-	// only ever be a best-effort diagnostic miss, never a reason to fail
-	// this Load.
+	// WorkspaceMeta has no AdditionalBindings field any more, so the
+	// yaml.Unmarshal above silently drops an additional_bindings: key with
+	// no diagnostic at all — unlike the wire (POST/PUT) path, which already
+	// warns via workspaceMetaStrict.toWorkspaceMeta. This yaml-mode load
+	// path needs the same warning. Errors from additionalBindingsKeyPresent
+	// are swallowed deliberately: data already decoded successfully into
+	// WorkspaceMeta above, so a failure here would only ever be a
+	// best-effort diagnostic miss, never a reason to fail this Load.
 	if present, _ := additionalBindingsKeyPresent(data); present {
 		slog.Warn("workspace: additional_bindings is no longer supported (retired in docs/plans/home-workspace-volume.md Phase 4 PR4); ignoring",
 			"workspace", slug, "path", path)
@@ -171,10 +157,9 @@ func (s *WorkspaceStore) Save(slug string, meta *WorkspaceMeta) error {
 }
 
 // LoadWithRevision reads meta and its revision from a single atomic
-// snapshot in DB mode (docs/plans/workspace-db-consolidation.md MAJOR 1,
-// codex review) — see WorkspaceRepository.LoadWithRevision's doc comment
-// for why this matters. Yaml mode (repo == nil) has no revision concept, so
-// it falls back to plain Load with an empty revision string.
+// snapshot in DB mode — see WorkspaceRepository.LoadWithRevision's doc
+// comment for why this matters. Yaml mode (repo == nil) has no revision
+// concept, so it falls back to plain Load with an empty revision string.
 func (s *WorkspaceStore) LoadWithRevision(slug string) (*WorkspaceMeta, string, error) {
 	if s.repo != nil {
 		return s.repo.LoadWithRevision(slug)
@@ -204,8 +189,8 @@ func (s *WorkspaceStore) UpdateIfRevisionMatches(slug string, expectedRevision s
 // Create writes a brand-new workspace at slug, insert-only: a slug that
 // already exists (as a DB row in DB mode, or a yaml file in yaml mode) is
 // rejected with an error wrapping os.ErrExist rather than silently
-// overwritten (docs/plans/workspace-db-consolidation.md Step A — the API's
-// POST /api/workspaces create endpoint relies on this to return HTTP 409).
+// overwritten — the API's POST /api/workspaces create endpoint relies on
+// this to return HTTP 409.
 func (s *WorkspaceStore) Create(slug string, meta *WorkspaceMeta) error {
 	if s.repo != nil {
 		return s.repo.Create(slug, meta)

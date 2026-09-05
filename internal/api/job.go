@@ -120,21 +120,16 @@ type JobDoneRequest struct {
 // writeJobLogUnavailable answers GET /jobs/{id}/log's three distinct 404s
 // with a plain-text body that says which one happened.
 //
-// All three used to share the single string "log not available (runtime
-// cleaned up)", which is only ever true for the third of them. The other two
-// actively mislead: "the id names no job" (passing a TASK id is the common
-// slip — `boid job log <task-id>` looks perfectly plausible and the two ids
-// are both uuids) and "this job has no runtime yet" both got reported as a
-// transcript that existed and was later swept, sending the reader off to
-// look for a directory that was never created. A 2026-07-28 dogfood session
-// burned real time on this while diagnosing a hung job.
+// The three cases used to share one message ("log not available (runtime
+// cleaned up)"), which is only true for the third: the other two actively
+// mislead — "the id names no job" (passing a task id is a common slip)
+// and "this job has no runtime yet" both got reported as a transcript
+// that existed and was later swept.
 //
-// Plain text, not writeError's JSON envelope, for all three — including the
-// job-not-found case that used to be JSON — because `boid job log` prints
-// this body verbatim to the operator (cmd/job.go's runJobLog), and a raw
-// {"error":...} blob is a worse read than the sentence itself. The status
-// code stays 404 in every case, so no client's success/failure branching
-// changes.
+// Plain text, not writeError's JSON envelope, for all three: `boid job
+// log` prints this body verbatim to the operator (cmd/job.go's
+// runJobLog), and a raw {"error":...} blob is a worse read than the
+// sentence itself. The status code stays 404 in every case.
 func writeJobLogUnavailable(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)

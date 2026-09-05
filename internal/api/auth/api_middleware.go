@@ -16,8 +16,7 @@ import (
 // listener's handler.
 //
 // Over TCP, every /api/* path except the public ones (see apiAuthRequired)
-// requires either a valid Bearer device token or a valid session cookie
-// (docs/plans/cli-remote-connection.md Phase 3 PR0). An
+// requires either a valid Bearer device token or a valid session cookie. An
 // `Authorization: Bearer <token>` header, when present, is a hard commitment
 // to that path: success or failure is decided on the Bearer token alone,
 // with no fallback to the cookie check below even if a valid session cookie
@@ -25,8 +24,7 @@ import (
 // pass/fail semantics independent and makes the priority unambiguous
 // (Bearer over cookie) rather than needing to reconcile which one "wins"
 // when both are present. When no Bearer header is present at all, the logic
-// below is byte-for-byte the pre-PR0 cookie/bootstrap behavior — see 決定事項
-// 「既存 cookie 経路は 100% 温存」.
+// below is the existing cookie/bootstrap behavior, fully preserved.
 //
 // The loopback-bootstrap exemption (no cookie + genuine loopback + zero
 // registered devices) is preserved so the Web UI is usable before the first
@@ -56,8 +54,7 @@ func NewTCPAPIAuthMiddleware(signer *SessionSigner, store *Store) func(http.Hand
 				// fall through to cookie auth below — a client that meant
 				// to authenticate as Bearer device A must never be
 				// silently authenticated as cookie device B just because
-				// its Bearer header happens to be malformed. See
-				// docs/plans/cli-remote-connection.md PR0 codex review.
+				// its Bearer header happens to be malformed.
 				if bearer == nil {
 					writeAPIUnauthorized(w)
 					return
@@ -109,8 +106,7 @@ func NewTCPAPIAuthMiddleware(signer *SessionSigner, store *Store) func(http.Hand
 // must be authenticated over the TCP transport.
 //
 //   - /api/health is intentionally public (liveness probe / tunnel health).
-//   - /api/auth/device is intentionally public (docs/plans/cli-remote-connection.md
-//     Phase 3 PR0): it is the Bearer-token-issuing endpoint itself — a caller
+//   - /api/auth/device is intentionally public: it is the Bearer-token-issuing endpoint itself — a caller
 //     with no token yet redeems a one-time pairing code there to get one. It
 //     carries its own rate limiting (DeviceAuthHandler.PostDevice) since it
 //     is reachable unauthenticated. Only chi's POST route exists at this

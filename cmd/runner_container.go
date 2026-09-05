@@ -11,22 +11,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// runner-container is the container-backend entry point
-// (docs/plans/phase6-container-backend.md §PR2): a job container's
-// ENTRYPOINT execs the image-baked boid binary as
-// `boid runner-container --spec ... --state ...` directly (no shim, no
-// pasta relay). It is internal plumbing: hidden from help and never
-// autostarts the daemon (it IS part of a sandbox the daemon launched). It
-// reads the JSON sandbox spec from --spec and appends diagnostics to
-// --state, then exits with the sandbox's exit code.
-//
-// PR-4 (docs/plans/volume-only-daemon.md §論点e) removed the userns launch
-// chain this used to run alongside (`boid runner-outer`/`runner-inner`/
-// `runner-inner-child`, formerly defined in cmd/runner.go — unshare/
-// pivot_root/pasta, that file now deleted) along with the newRunnerCmd
-// helper those three shared; `boid runner-container` is now the sole `boid
-// runner-*` subcommand, so it builds its own minimal cobra.Command directly
-// rather than sharing a factory with call sites that no longer exist.
+// runner-container is the container-backend entry point: a job container's
+// ENTRYPOINT execs the image-baked boid binary as `boid runner-container
+// --spec ... --state ...` directly. It is internal plumbing: hidden from
+// help and never autostarts the daemon. It reads the JSON sandbox spec from
+// --spec, appends diagnostics to --state, then exits with the sandbox's
+// exit code. Sole `boid runner-*` subcommand (docs/plans/volume-only-daemon.md §論点e).
 func init() {
 	cmd := &cobra.Command{
 		Use:           "runner-container",
@@ -47,13 +37,9 @@ func init() {
 			if specPath == "" {
 				return fmt.Errorf("runner-container: --spec is required")
 			}
-			// Arbitrary-uid self-registration (docs/plans/
-			// release-onboarding.md 決定1, PR2): the image no longer
-			// bakes a fixed /etc/passwd entry for whatever uid `--user
-			// <uid>:<gid>` starts this container as, so a passwd/id
-			// lookup inside the job (ssh, git credential helpers) fails
-			// unless this container registers itself first. Both calls
-			// are best-effort/non-fatal — see their own doc comments.
+			// Registers this container's arbitrary --user uid/gid so
+			// passwd/id lookups (ssh, git credential helpers) succeed;
+			// both calls are best-effort/non-fatal.
 			selfuser.EnsureRuntimeUserRegistered()
 			selfuser.ApplyGroupWritableUmask()
 			code, err := runner.RunContainer(specPath, statePath)

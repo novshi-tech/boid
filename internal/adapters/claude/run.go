@@ -24,42 +24,17 @@ const harnessCLI = "claude"
 var lookPath = exec.LookPath
 
 // missingCLIError builds the fail-fast error Run returns when harnessCLI is
-// not on the sandbox PATH.
+// not on the sandbox PATH: the claude binary must come from the workspace's
+// init.sh, so a lookup miss means that init.sh is missing or hasn't
+// installed the CLI yet. slug names the workspace whose init.sh needs the
+// fix; it comes from rc.Env["BOID_WORKSPACE_SLUG"] and falls back to
+// "default" when unset. cause is wrapped with %w so
+// errors.Is(err, exec.ErrNotFound) still holds.
 //
-// Phase 4 PR3 (docs/plans/home-workspace-volume.md) retired
-// claude.Adapter.Bindings' own CLI bind-mount (see bindings.go) in favor of
-// the workspace HOME volume: the claude binary now has to come from the
-// workspace's init.sh, so a PATH lookup miss almost always means that
-// init.sh is missing or hasn't installed the CLI yet — not a generic
-// "command not found" a user has no actionable next step for. slug names
-// the workspace whose init.sh needs the fix; it comes from
-// rc.Env["BOID_WORKSPACE_SLUG"] (set by BuildSandboxSpec from
-// SandboxRuntimeInfo.WorkspaceSlug) and falls back to "default" for callers
-// that never wired it through (bare unit tests, or a caller that predates
-// the wiring). cause is the underlying lookup error, wrapped with %w so
-// errors.Is(err, exec.ErrNotFound) still holds for callers that want to
-// distinguish this from other Run failure modes.
-//
-// That slug arrives from resolveWorkspaceHome, the one place it is
-// normalized; Runner.Dispatch deliberately does NOT re-derive it from the
-// resolved workspace home's path (PR4 of
-// docs/plans/workspace-home-volume-persistence.md). This message is the
-// reason that distinction is worth making: PR6 renamed the home to a named
-// volume (boid-ws-home-<installID8>-<slug>), and a path-derived slug would
-// send the operator to a workspace that does not exist, in an error whose
-// whole value is being actionable.
-//
-// # Why this names a command and not a path (PR9, 論点 d's D4)
-//
-// Through PR8 this message said "~/.config/boid/workspaces/<slug>/init.sh".
-// That was true when the daemon was a host process and false afterwards: the
-// daemon resolves that path against ITS OWN config root, which under the
-// container deploy is inside its state volume. An operator following the old
-// message would create a file on their host that nothing ever reads, and the
-// next dispatch would fail with this identical message — the worst shape a
-// "here is how to fix it" error can take. The fix is named as a command
-// because a command is the only form of the instruction that works from
-// wherever the CLI happens to be.
+// The fix is phrased as a `boid workspace ...` command rather than a host
+// file path: under the container deploy the daemon's config root is inside
+// its own state volume, not the operator's host filesystem, so a path would
+// point at a file nothing reads.
 //
 // All three adapters (claude / codex / opencode) carry this message verbatim
 // and are changed together; see the other two for the pointer back here.
@@ -105,19 +80,9 @@ const taskSystemPrompt = "セッションを終える前に必ず `boid task not
 // and no behavior-driven instructions; the agent's only system-level cue is
 // where to find the sandbox constraints.
 //
-// Points at `boid task env` (the Phase 5b PR1 broker RPC, docs/plans/
-// phase5-shim-and-task-context.md) rather than reading
-// ~/.boid/context/environment.yaml directly — fixed proactively during
-// codex review on PR #800 (Minor 2): that file reference would have become
-// stale/misleading the moment 5b-6 retires the file distribution, since
-// nothing else in this PR would have caught it (the static
-// "no ~/.boid/context/ reference" tests added for codex/opencode's
-// taskBootstrapPrompt don't cover this claude-only, session-only prompt).
-// `boid task env`'s reduced schema (WorkspaceEnvView, internal/dispatcher/
-// workspace_env_view.go) only ever returns allowed_domains + host_commands —
-// the sandbox/filesystem/notes sections legacy environment.yaml used to
-// describe are gone from that RPC by design, so the prompt only promises
-// what the command actually returns.
+// Points at `boid task env` (WorkspaceEnvView, internal/dispatcher/
+// workspace_env_view.go — allowed_domains + host_commands only) rather than
+// any file, so the prompt only promises what the command actually returns.
 const sessionSystemPrompt = "あなたは boid のサンドボックス内で起動されました。" +
 	" サンドボックスの制約 (ネットワーク egress の許可ドメイン、 利用可能な" +
 	" host_commands とその allow/deny/reject ルール) は `boid task env`" +
@@ -125,11 +90,9 @@ const sessionSystemPrompt = "あなたは boid のサンドボックス内で起
 	" 尋ねる必要はありません。"
 
 // taskBootstrapSkill is the single unified skill that drives any task agent
-// regardless of behavior name. With task_behaviors free naming (Track A2 #574)
-// the daemon no longer guarantees canonical names, so we route every task to
-// /boid-task which determines supervisor vs executor mode from
-// `boid task current`'s `readonly` field (Phase 5b PR4; the file-based
-// environment.yaml `readonly` this used to read was retired by 5b-4/5b-5).
+// regardless of behavior name (task_behaviors are freely named, so the
+// daemon has no canonical name to route on). /boid-task determines
+// supervisor vs executor mode from `boid task current`'s `readonly` field.
 const taskBootstrapSkill = "/boid-task"
 
 // session mirrors one entry in payload.artifact.claude_code.sessions[].
@@ -149,12 +112,9 @@ type session struct {
 // The system prompt still points the agent at `boid task env` for the
 // sandbox constraints it can't observe on its own (see sessionSystemPrompt).
 //
-// Note: Every dispatch is a fresh claude process (no --resume) since the
-// reopen / Q&A session-id-resume path was removed. Persisted prior-turn
-// context is pulled by the agent via `boid task current` / `instructions` /
-// `payload` on cold start (broker RPCs, Phase 5b — the dispatch-time
-// $HOME/.boid/context/*.yaml file distribution these replaced was retired
-// by the Phase 5b PR6 cutover).
+// Every dispatch is a fresh claude process (no --resume). Persisted
+// prior-turn context is pulled by the agent via `boid task current` /
+// `instructions` / `payload` broker RPCs on cold start.
 func selectPrompt(isSession bool, userAnswer string) string {
 	if userAnswer != "" {
 		return userAnswer
@@ -192,9 +152,7 @@ func updateSessions(sessions []session, invokedType, invokedName, id string) []s
 //
 // Every invocation starts a fresh claude session: --session-id is set to a
 // boid-generated uuid so the jsonl transcript path is predictable, but
-// --resume is never used. Persisted prior-turn context is pulled by the
-// agent via the `boid task current` / `instructions` / `payload` broker
-// RPCs on cold start (Phase 5b) rather than delivered as a file.
+// --resume is never used.
 //
 // Empty systemPrompt skips --append-system-prompt entirely. Empty prompt
 // skips the trailing positional (passing "" makes claude treat it as a
@@ -219,12 +177,8 @@ func buildClaudeArgs(sessionID, model, prompt, systemPrompt string) []string {
 }
 
 // sessionsFieldPath is the dotted path into `boid task payload`'s JSON
-// output that readSessionsFromRPC queries via --field. Mirrors the historical
-// payload.json shape (artifact.claude_code.sessions[]) exactly — Phase 5b
-// PR3 (docs/plans/phase5-shim-and-task-context.md) changed the transport
-// (direct file read -> broker RPC over the sandbox PATH shim), not the
-// schema, so a persisted session entry from before this PR round-trips the
-// same way after it.
+// output that readSessionsFromRPC queries via --field:
+// artifact.claude_code.sessions[].
 const sessionsFieldPath = "artifact.claude_code.sessions"
 
 // fetchTaskPayloadSessions execs `boid task payload --field
@@ -251,20 +205,14 @@ var fetchTaskPayloadSessions = func(ctx context.Context, env map[string]string) 
 // BOID_BUILTIN_SHIM=1, all of which are already present in rc.Env (the same
 // map Run() hands to the agent child).
 //
-// cmd.Dir is pinned to "/tmp" rather than left unset. This call runs from
-// inside internal/sandbox/runner.RunInnerChild (the process that becomes
-// Run()'s caller): its own cwd is "/" the whole time — pivotInto's
-// os.Chdir("/") right after pivot_root is never followed by a chdir into the
-// project workdir before Run() executes. An unset cmd.Dir would inherit that
-// "/" cwd, and the broker's validateBoidBuiltinCwd (internal/sandbox/broker.go)
-// rejects any "boid" builtin call whose cwd falls outside the sandbox project
-// dir / workspace $HOME / "/tmp" (boidPolicy's AllowedCwdRoots,
-// internal/orchestrator/policy.go) with "boid builtin is restricted to the
-// current project or worktree" — the exact failure a live `boid agent claude`
-// hit in production (2026-07-22), silent until the withExitErrorStderr fix
-// above stopped discarding this stderr. "/tmp" is the only entry
-// AllowedCwdRoots contains unconditionally (no project/workspace dependency),
-// so it is the one value guaranteed to pass regardless of caller context.
+// cmd.Dir is pinned to "/tmp" rather than left unset: this call runs from
+// inside internal/sandbox/runner.RunInnerChild, whose own cwd stays "/" the
+// whole time, and the broker's validateBoidBuiltinCwd
+// (internal/sandbox/broker.go) rejects any "boid" builtin call whose cwd
+// falls outside the sandbox project dir / workspace $HOME / "/tmp"
+// (boidPolicy's AllowedCwdRoots, internal/orchestrator/policy.go). "/tmp" is
+// the only entry AllowedCwdRoots contains unconditionally, so it is
+// guaranteed to pass regardless of caller context.
 func buildTaskPayloadSessionsCmd(ctx context.Context, env map[string]string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "boid", "task", "payload", "--field", sessionsFieldPath)
 	cmd.Dir = "/tmp"
@@ -279,19 +227,12 @@ func buildTaskPayloadSessionsCmd(ctx context.Context, env map[string]string) *ex
 
 // readSessionsFromRPC returns sessions from `boid task payload --field
 // artifact.claude_code.sessions`. It deliberately does NOT collapse "RPC
-// failed" into "no sessions" the way the old file-based readSessionsFromPayload
-// collapsed "file missing" into nil: that file read was 100% local (no
-// broker round trip), so its only realistic failure was "never written yet"
-// — a fresh task, correctly treated as no prior sessions. The RPC has a
-// genuinely different failure surface (broker unreachable, daemon mid-
-// restart, token expiry race, malformed shim output, …) that has nothing to
-// do with whether sessions exist. Collapsing that into nil would make
-// updateSessions synthesize a single-entry list from a transient hiccup, and
-// the caller would then persist that truncated list as this task's payload
-// patch — silently discarding every previously recorded jsonl session id
-// (the exact class of loss flagged in codex review on PR #800; see
-// wiring-seams.md #16 and memory phase3b-session-jsonl-not-persisted for the
-// prior incident this rhymes with).
+// failed" into "no sessions": the RPC's failure surface (broker
+// unreachable, daemon mid-restart, token expiry race, malformed shim
+// output, …) has nothing to do with whether sessions actually exist, and
+// treating it as "no sessions" would let the caller persist a truncated
+// list, silently discarding every previously recorded jsonl session id (see
+// wiring-seams.md #16).
 //
 // Only "the field genuinely does not exist yet" (empty stdout, exit 0) is
 // nil-with-no-error. Every other failure — exec error, non-zero exit,
@@ -327,8 +268,7 @@ func withExitErrorStderr(err error) error {
 // stdout into []session. Empty input (api.ResolveJSONField returns "" when
 // the field is absent) is (nil, nil) — a legitimate "no sessions recorded
 // yet" case, not an error. Malformed JSON returns a non-nil error rather
-// than silently degrading to nil — see readSessionsFromRPC's doc comment for
-// why swallowing this would risk truncating a task's session history.
+// than silently degrading to nil (see readSessionsFromRPC's doc comment).
 func parseSessionsJSON(data []byte) ([]session, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
@@ -343,14 +283,12 @@ func parseSessionsJSON(data []byte) ([]session, error) {
 
 // sessionsPayloadPatchBody builds the raw patch body for `boid task update
 // --payload-patch @-`: {"artifact":{"claude_code":{"sessions": sessions}}}.
-// Unlike the retired file-based writePayloadPatch, this does NOT need to
-// read-modify-write any prior state to preserve sibling keys (task_notify,
-// artifact.report, …) — the broker's own merge (orchestrator.
-// MergePayloadPatch, gated by the firing hook's own Traits.Produces) already
-// shallow-merges "artifact" sub-keys against whatever is already persisted on
-// the task, so a patch that only mentions artifact.claude_code.sessions
-// leaves every other artifact.* subtree untouched. See docs/plans/
-// phase6-container-backend.md §決定 9.
+// No read-modify-write of prior state is needed to preserve sibling keys
+// (task_notify, artifact.report, …) — the broker's own merge
+// (orchestrator.MergePayloadPatch) already shallow-merges "artifact"
+// sub-keys against whatever is already persisted on the task, so a patch
+// that only mentions artifact.claude_code.sessions leaves every other
+// artifact.* subtree untouched.
 func sessionsPayloadPatchBody(sessions []session) ([]byte, error) {
 	body := map[string]any{
 		"artifact": map[string]any{
@@ -369,9 +307,7 @@ func sessionsPayloadPatchBody(sessions []session) ([]byte, error) {
 // buildTaskUpdatePayloadPatchCmd builds (without running) the *exec.Cmd for
 // `boid task update --payload-patch @-`, piping body on stdin. Mirrors
 // buildTaskPayloadSessionsCmd's env-overlay / cwd wiring exactly — see that
-// function's doc comment for why cmd.Dir is pinned to "/tmp" (the only entry
-// boidPolicy's AllowedCwdRoots always contains regardless of project/
-// workspace context).
+// function's doc comment for why cmd.Dir is pinned to "/tmp".
 func buildTaskUpdatePayloadPatchCmd(ctx context.Context, env map[string]string, body []byte) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "boid", "task", "update", "--payload-patch", "@-")
 	cmd.Dir = "/tmp"
@@ -387,19 +323,10 @@ func buildTaskUpdatePayloadPatchCmd(ctx context.Context, env map[string]string, 
 
 // sendTaskUpdatePayloadPatch runs `boid task update --payload-patch @-` with
 // body piped on stdin, applying it immediately via the broker's
-// BoidOpTaskUpdatePayloadPatch RPC (docs/plans/phase5-shim-and-task-
-// context.md decision 6/PR7). Overridable for tests, mirroring the
-// fetchTaskPayloadSessions var above so adapter unit tests never spawn a real
-// subprocess.
-//
-// Phase 6 PR8 (docs/plans/phase6-container-backend.md §決定 9) replaces the
-// former $HOME/.boid/output/payload_patch.json file write with this RPC: the
-// file lived on the workspace $HOME volume (Phase 4), which is shared across
-// concurrent jobs in the same workspace, so a well-known file path there was
-// never actually job-isolated without the `~/.boid` tmpfs overlay dispatcher
-// had to layer on top defensively. Routing through the broker instead makes
-// the RPC (JobID-scoped, applied under a per-task lock) the sole delivery
-// path — no shared file, no overlay needed.
+// BoidOpTaskUpdatePayloadPatch RPC (JobID-scoped, applied under a per-task
+// lock — no shared file involved). Overridable for tests, mirroring the
+// fetchTaskPayloadSessions var above so adapter unit tests never spawn a
+// real subprocess.
 var sendTaskUpdatePayloadPatch = func(ctx context.Context, env map[string]string, body []byte) error {
 	cmd := buildTaskUpdatePayloadPatchCmd(ctx, env, body)
 	if _, err := cmd.Output(); err != nil {
@@ -420,66 +347,41 @@ var sendTaskUpdatePayloadPatch = func(ctx context.Context, env map[string]string
 //   - exit code normalisation (StoppedByDaemon → 0)
 //   - IS_SANDBOX=1 env injection (Claude CLI 2.1.181+ uid 0 bypass)
 //
-// Session-id resume was removed: reopen and Q&A both start a fresh claude
-// process. The agent (via the /boid-task skill) recovers general
-// task/instructions/environment context via the `boid task current` /
-// `instructions` / `env` broker RPCs on cold start (Phase 5b — the
-// dispatch-time $HOME/.boid/context/*.yaml file distribution these replaced
-// was retired by the Phase 5b PR6 cutover; PR3, which predates PR6, only
-// cut over the one payload field Run() itself needs directly: the prior
+// Every dispatch starts a fresh claude process; there is no session-id
+// resume. The agent (via the /boid-task skill) recovers task/instructions/
+// environment context via the `boid task current` / `instructions` / `env`
+// broker RPCs on cold start; Run() itself only needs the prior
 // artifact.claude_code.sessions[] entries it merges the fresh session id
-// into, which come from the `boid task payload` broker RPC — see
-// readSessionsFromRPC below).
+// into (see readSessionsFromRPC below).
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
-	// 0. Fail fast when claude is not on PATH, before touching any state
-	// (session id generation, payload-patch RPC). See missingCLIError's
-	// doc comment for why this replaces the old adapter-bindings-based
-	// guarantee that claude was always present.
+	// Fail fast when claude is not on PATH, before touching any state
+	// (session id generation, payload-patch RPC). See missingCLIError.
 	if _, err := lookPath(harnessCLI); err != nil {
 		return adapters.Result{}, missingCLIError(rc.Env["BOID_WORKSPACE_SLUG"], err)
 	}
 
 	// isSession is the JobKindSession discriminator (BuildSessionJobSpec,
-	// internal/dispatcher/session_job.go, sets rc.TaskID = ""). Computed up
-	// front — step 1 below needs it to decide whether the session-tracking
-	// payload-patch RPC applies at all.
+	// internal/dispatcher/session_job.go, sets rc.TaskID = ""); it decides
+	// whether the session-tracking payload-patch RPC below applies at all.
 	isSession := rc.TaskID == ""
 
-	// 1. Generate a fresh session id. For task-bound runs (isSession=false),
-	// apply it via the payload-patch RPC BEFORE starting claude so that an
-	// abnormal termination of the claude child (SIGKILL, OOM) still leaves a
-	// record of which jsonl transcript file the agent wrote to (visible in
-	// the Web UI task detail under artifact.claude_code.sessions[]). Prior
-	// sessions come from the broker (`boid task payload --field
-	// artifact.claude_code.sessions`, Phase 5b PR3) rather than a direct read
-	// of payload.json — see readSessionsFromRPC's doc comment. A fetch/parse
-	// error aborts here, before claude ever starts and before any payload
-	// patch is applied: readSessionsFromRPC only returns an error when it
-	// cannot tell whether prior sessions exist, and proceeding anyway would
-	// risk applying a truncated session list over the task's real history
-	// (codex review on PR #800). The patch itself is applied immediately via
-	// `boid task update --payload-patch @-` (Phase 6 PR8, docs/plans/
-	// phase6-container-backend.md §決定 9) rather than written to
-	// $HOME/.boid/output/payload_patch.json for a later file-based pickup —
-	// see sendTaskUpdatePayloadPatch's doc comment. The merge this RPC drives
+	// For task-bound runs (isSession=false), apply the fresh session id via
+	// the payload-patch RPC BEFORE starting claude so that an abnormal
+	// termination of the claude child (SIGKILL, OOM) still leaves a record
+	// of which jsonl transcript file the agent wrote to (visible in the Web
+	// UI task detail under artifact.claude_code.sessions[]). A
+	// fetch/parse error from readSessionsFromRPC aborts here, before claude
+	// ever starts: proceeding anyway would risk applying a truncated
+	// session list over the task's real history. The merge this RPC drives
 	// (orchestrator.MergePayloadPatch) gives artifact.claude_code.sessions
-	// append/union semantics precisely so that two of these RPCs racing
-	// (readonly task, two claude hooks dispatched in parallel) never lose
-	// either session id even though each one independently read a
-	// (possibly stale) prior-sessions snapshot — see mergeClaudeSessions'
-	// doc comment (PR #821 codex review Blocker 1).
+	// append/union semantics so two of these racing (two claude hooks
+	// dispatched in parallel against the same task) never lose either
+	// session id — see mergeClaudeSessions' doc comment.
 	//
 	// isSession=true skips this block entirely: a taskless interactive
-	// session (`boid agent claude -p <project>` / JobKindSession) has no
-	// task row to attach a payload patch to. `boid task payload` (the read)
-	// happens to succeed even for a taskless job — it resolves off the
-	// JobContextSnapshot keyed by JobID, not TaskID — but `boid task update
-	// --payload-patch` (the write) resolves job -> TaskID -> GetTask(TaskID)
-	// server-side (api.TaskAppService.UpdateTaskPayloadPatch), and
-	// GetTask("") unconditionally errors. Before this fix that RPC failure
-	// propagated straight out of Run() before cmd.Start() was ever reached,
-	// so a taskless session never actually launched claude (PR #821 codex
-	// review Major finding).
+	// session has no task row to attach a payload patch to — `boid task
+	// update --payload-patch` resolves job -> TaskID -> GetTask(TaskID)
+	// server-side, and GetTask("") unconditionally errors.
 	sessionID := uuid.NewString()
 	if !isSession {
 		sessions, err := readSessionsFromRPC(ctx, rc.Env)
@@ -544,10 +446,9 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	}
 	// IS_SANDBOX=1 is Claude CLI's own escape hatch for uid 0 root checks
 	// (Claude CLI 2.1.181+ rejects bypassPermissions when running as uid 0
-	// unless this env var is set). boid Phase 3-a sandbox runs the agent
-	// at inner-userns uid 0 (required to retain CAP_SYS_ADMIN for mounts),
-	// so this must be injected unconditionally — see memory
-	// claude-cli-uid0-rejection.
+	// unless this env var is set). The sandbox runs the agent at
+	// inner-userns uid 0 (required to retain CAP_SYS_ADMIN for mounts), so
+	// this must be injected unconditionally.
 	env = append(env, "IS_SANDBOX=1")
 	// Belt and suspenders: even if some other path flips a persistence-skip
 	// flag (CLAUDE_CODE_SKIP_PROMPT_HISTORY etc.), this env forces the
@@ -559,25 +460,18 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		return adapters.Result{}, fmt.Errorf("start claude: %w", err)
 	}
 
-	// 5. Drive the shared signal-forwarding loop. sigutil.ForwardAndWait
+	// Drive the shared signal-forwarding loop. sigutil.ForwardAndWait
 	// translates SIGUSR1 into a child SIGTERM, forwards SIGWINCH verbatim,
 	// and normalises the daemon-initiated stop exit (143) into 0 so the
 	// awaiting task settles as paused, not failed.
-	//
-	// Phase 3-b PoC (/tmp/sig-poc) verified that Go's signal.Notify
-	// auto-overrides an inherited SIG_IGN or sigprocmask block. Python's
-	// equivalent required pthread_sigmask SIG_UNBLOCK; the Go runtime's
-	// dedicated signal thread makes that redundant.
 	exitCode, stoppedByDaemon, werr := sigutil.ForwardAndWait(cmd, "claude")
 	if werr != nil {
 		return adapters.Result{}, werr
 	}
 
 	// The session-id payload patch (skipped entirely for a taskless session,
-	// isSession=true) was already applied immediately via
-	// sendTaskUpdatePayloadPatch above (step 1) — there is no file-based
-	// result left to read back here (Phase 6 PR8 retired
-	// $HOME/.boid/output/payload_patch.json entirely).
+	// isSession=true) was already applied via sendTaskUpdatePayloadPatch
+	// above.
 	return adapters.Result{
 		ExitCode:        exitCode,
 		StoppedByDaemon: stoppedByDaemon,

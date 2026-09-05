@@ -12,54 +12,39 @@ import (
 	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
-// PR8 of docs/plans/workspace-home-volume-persistence.md (論点 f), API half:
-// POST /api/workspaces/{slug}/home/import.
+// POST /api/workspaces/{slug}/home/import migrates a legacy workspace home
+// into the daemon-managed HOME volume.
 //
-// # Why this is an endpoint at all (D1)
+// This is an endpoint rather than a CLI-driven engine call (the way `boid
+// reap` works) because the completion marker and the init flock both live
+// inside the daemon's own persistent volume — only the CLI has read access
+// to the host's legacy homes/<slug> tree, so the CLI supplies the bytes and
+// the daemon does the work.
 //
-// The obvious shape for a one-off migration is a CLI that drives the engine
-// directly, the way `boid reap` does. It is the wrong shape here, and
-// dispatcher.Runner.ImportWorkspaceHome's own doc comment carries the full
-// argument: the completion marker and the init flock both live inside the
-// daemon's own persistent volume, and clearing the marker is HALF of 論点 f's
-// acceptance condition. What the CLI has that the daemon does not is READ
-// access to the host's legacy homes/<slug> tree — so the CLI supplies the
-// bytes and the daemon does the work.
-//
-// # Streaming, not buffering
-//
-// The measured homes this exists to migrate run to 4.3GB. The request body is
-// handed to the daemon as an io.Reader and travels from this socket to the
+// The measured homes this migrates run to 4.3GB. The request body is handed
+// to the daemon as an io.Reader and travels from this socket to the
 // extraction container's stdin without being materialized (see
-// containerBackend.runWorkspaceHomeContainer's io.Copy). That is also why this
-// is the one workspace endpoint with NO http.MaxBytesReader: the other bodies
-// here are yaml documents of a few KB and are capped at 1 MiB
-// (workspaceBodyMaxBytes), and applying that cap to this route would truncate
-// every real migration into a corrupt archive.
+// containerBackend.runWorkspaceHomeContainer's io.Copy). That is also why
+// this is the one workspace endpoint with NO http.MaxBytesReader: the other
+// bodies here are yaml documents of a few KB and are capped at 1 MiB
+// (workspaceBodyMaxBytes), and applying that cap to this route would
+// truncate every real migration into a corrupt archive.
 
 // workspaceHomeImportContentType is the media type the migration body must
 // carry.
 //
-// Required, and checked BEFORE anything else happens, because of the ordering
-// the migration cannot avoid: the daemon replaces the home volume before it
-// reads a single byte of the archive (see Runner.ImportWorkspaceHome for why
-// the destruction has to come first — it is also the in-use check). A
-// well-meaning `curl -d @workspace.yaml` against this path would therefore
+// Required, and checked BEFORE anything else happens, because of the
+// ordering the migration cannot avoid: the daemon replaces the home volume
+// before it reads a single byte of the archive (see Runner.ImportWorkspaceHome
+// for why the destruction has to come first — it is also the in-use check).
+// A well-meaning `curl -d @workspace.yaml` against this path would therefore
 // destroy a workspace's credentials and then fail at tar. A media type is a
 // cheap door to close.
 //
-// # Required means required, including ABSENT (codex review of PR8, Blocker 1)
-//
-// The first implementation validated the header only when one was present, on
-// the usual reading that an unset Content-Type is "unknown" rather than
-// "wrong". That reading is right for a route whose worst case is a parse error
-// and wrong for this one: `curl --data-binary @file` sends NO Content-Type by
-// default, so the shape most likely to arrive by hand was exactly the shape
-// that skipped the check — and skipping it here does not mean "guess the type",
-// it means "delete the workspace's home and then find out". An absent
-// declaration is therefore refused on the same footing as a wrong one. The cost
-// of being strict is a client that must send one header; the cost of being
-// lenient is measured in destroyed credentials.
+// An ABSENT Content-Type is refused on the same footing as a wrong one:
+// `curl --data-binary @file` sends none by default, so guessing the type on
+// a missing header would mean "delete the workspace's home and then find
+// out" for the exact request shape most likely to arrive by hand.
 const workspaceHomeImportContentType = "application/x-tar"
 
 // workspaceHomeImportMediaTypeError returns the operator-facing reason to
@@ -67,13 +52,9 @@ const workspaceHomeImportContentType = "application/x-tar"
 // this route requires.
 //
 // Parameters are stripped (`application/x-tar; charset=binary`) and the type is
-// matched case-insensitively, per RFC 9110 §8.3: a media type's type/subtype is
-// case-insensitive and a client is free to append parameters. Hand-parsed
-// rather than run through mime.ParseMediaType because the only thing that must
-// be decided here is "is this the one string we accept" — a malformed header is
-// refused with the same message as a merely wrong one, which is what an
-// operator needs either way, and pulling in mime's error taxonomy would add a
-// branch that says nothing new.
+// matched case-insensitively, per RFC 9110 §8.3. Hand-parsed rather than run
+// through mime.ParseMediaType because the only thing that must be decided
+// here is "is this the one string we accept".
 func workspaceHomeImportMediaTypeError(header string) string {
 	if strings.TrimSpace(header) == "" {
 		return fmt.Sprintf(
@@ -98,25 +79,19 @@ func workspaceHomeImportMediaTypeError(header string) string {
 // /api/workspaces/{slug}/home/import needs. *dispatcher.Runner is the only
 // implementation.
 //
-// Declared here, on the consumer side, and typed in terms of
-// dispatcher.WorkspaceHomeImportResult — a plain struct — for the same reason
-// WorkspaceHomeStore is: this package imports internal/dispatcher and must not
-// grow moby types (論点 a-2, D2), and a test needs to be able to stub it
-// without an engine.
+// Declared here, on the consumer side, and typed in terms of the plain
+// dispatcher.WorkspaceHomeImportResult struct so this package need not grow
+// moby types, and a test can stub it without an engine.
 //
 // A nil value is the feature's OFF switch, exactly as a nil
 // WorkspaceHandler.Homes is: server/wire.go leaves it nil when there is no
 // runner to serve it, and the handler answers 501 rather than panicking.
 //
-// # Why the removal guard is on THIS interface (codex round 2, Major 1)
-//
-// BeginWorkspaceHomeRemoval has nothing to do with importing, and it is here
-// rather than on a field of its own for one reason: the exclusion only works if
-// the object that registers a removal is the SAME object that registers a
-// migration. Two fields could be wired to two different Runners — each with its
-// own in-memory registry — and the result would exclude nothing while looking
-// exactly like this. One interface, one field, one instance, and the compiler
-// enforces it.
+// BeginWorkspaceHomeRemoval lives on this same interface, not a field of its
+// own, because the mutual exclusion between removal and migration only
+// works if the object that registers a removal is the SAME object that
+// registers a migration — one interface, one field, one instance, and the
+// compiler enforces it.
 type WorkspaceHomeImporter interface {
 	ImportWorkspaceHome(ctx context.Context, slug string, tarStream io.Reader) (dispatcher.WorkspaceHomeImportResult, error)
 
@@ -133,9 +108,9 @@ type WorkspaceHomeImporter interface {
 // WorkspaceHomeImportResponse is the response body for a completed migration.
 //
 // PreviousExisted and MarkerRemoved are both on the wire rather than folded
-// into a single "ok", because they are 論点 f's two independent re-init legs
-// and the CLI says something different when only one of them fired: with the
-// marker still in place the re-init rests entirely on the new volume identity,
+// into a single "ok" because they are two independent re-init legs, and the
+// CLI says something different when only one of them fired: with the marker
+// still in place the re-init rests entirely on the new volume identity,
 // which is true but worth telling an operator about.
 type WorkspaceHomeImportResponse struct {
 	Status string `json:"status"`
@@ -151,8 +126,8 @@ type WorkspaceHomeImportResponse struct {
 	Volume string `json:"volume"`
 
 	// HomeID is the identity the NEW incarnation of that volume carries. It
-	// differs from whatever the replaced one had; that difference is what makes
-	// the completion marker stale and forces the re-init (論点 f leg 1).
+	// differs from whatever the replaced one had; that difference is what
+	// makes the completion marker stale and forces the re-init.
 	HomeID string `json:"home_id,omitempty"`
 
 	// PreviousExisted reports whether there was a home volume to replace.
@@ -160,37 +135,33 @@ type WorkspaceHomeImportResponse struct {
 	// init-on-first-dispatch contract, not an error.
 	PreviousExisted bool `json:"previous_existed"`
 
-	// MarkerRemoved / MarkerRemoveError report 論点 f leg 2, the deletion of
-	// <dataHome>/homes-meta/<slug>.init.json. A failure is not fatal (leg 1
-	// already re-armed the init) and is reported anyway.
+	// MarkerRemoved / MarkerRemoveError report the deletion of
+	// <dataHome>/homes-meta/<slug>.init.json. A failure is not fatal (the
+	// new volume identity already forces the re-init) and is reported anyway.
 	MarkerRemoved     bool   `json:"marker_removed"`
 	MarkerRemoveError string `json:"marker_remove_error,omitempty"`
 
 	// MigrationRecordRemoveError is non-empty when the migration succeeded but
 	// the daemon could not delete the in-progress record it wrote before
-	// starting (dispatcher's workspace_home_migration_sentinel.go).
-	//
-	// On the wire rather than only in the daemon log because the operator at the
-	// terminal is the one who can act on it, and the daemon log is not where
-	// somebody reading a CLI command's output looks. What it COSTS depends on the
-	// field below.
+	// starting (dispatcher's workspace_home_migration_sentinel.go). On the
+	// wire rather than only in the daemon log because the operator at the
+	// terminal is the one who can act on it.
 	MigrationRecordRemoveError string `json:"migration_record_remove_error,omitempty"`
 
 	// MigrationRecordDiscardsHome says whether that leftover record still
-	// authorizes the next daemon start to DESTROY this home (codex round 4,
-	// Blocker 1). Meaningful only alongside MigrationRecordRemoveError.
+	// authorizes the next daemon start to DESTROY this home. Meaningful only
+	// alongside MigrationRecordRemoveError.
 	//
-	// false is the ordinary case and needs no action: the record was moved into
-	// its "the home was rebuilt" phase before the deletion failed, so recovery
-	// only deletes the file. true means it was not, and the consequence lands
-	// later and looks unrelated when it does — the next daemon start discards
-	// this workspace's freshly imported home and re-initializes it. The error
-	// names the file, so deleting it before restarting saves re-doing a multi-GB
-	// import.
+	// false is the ordinary case and needs no action: the record was moved
+	// into its "the home was rebuilt" phase before the deletion failed, so
+	// recovery only deletes the file. true means it was not, and the next
+	// daemon start discards this workspace's freshly imported home and
+	// re-initializes it — the error names the file, so deleting it before
+	// restarting saves re-doing a multi-GB import.
 	//
-	// A separate field rather than something the CLI infers, because the CLI has
-	// no way to tell the two apart: both arrive as "the record could not be
-	// removed", and only the daemon knows how far it got before that.
+	// A separate field rather than something the CLI infers, since both
+	// failures arrive as "the record could not be removed" and only the
+	// daemon knows how far it got before that.
 	MigrationRecordDiscardsHome bool `json:"migration_record_discards_home,omitempty"`
 }
 
@@ -212,19 +183,17 @@ func (h *WorkspaceHandler) ImportHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The workspace has to exist. A migration into an unknown slug would mint a
-	// HOME volume for a workspace nothing can dispatch into: it would then show
-	// up in `boid gc`'s listing as an orphan, and `boid workspace remove` — the
-	// obvious cleanup — 404s on a slug with no row. Refusing here is both the
-	// earlier and the only recoverable answer.
+	// The workspace has to exist. A migration into an unknown slug would mint
+	// a HOME volume for a workspace nothing can dispatch into: it would then
+	// show up in `boid gc`'s listing as an orphan, and `boid workspace
+	// remove` — the obvious cleanup — 404s on a slug with no row.
 	//
-	// This check is not the whole story and cannot be (codex round 2, Major 1):
-	// `boid workspace remove` can delete the row between here and the daemon's
-	// first engine call, and this handler holds nothing that would stop it. The
-	// daemon therefore asks the same question again while holding its migration
-	// registration, from which point a removal IS refused — see
-	// dispatcher.Runner.ConfirmWorkspaceExists. What this check buys is refusing
-	// before a multi-GB body is read, which is worth having on its own.
+	// This check is not the whole story: `boid workspace remove` can delete
+	// the row between here and the daemon's first engine call, and this
+	// handler holds nothing that would stop it. The daemon asks the same
+	// question again while holding its migration registration, from which
+	// point a removal IS refused — see dispatcher.Runner.ConfirmWorkspaceExists.
+	// What this check buys is refusing before a multi-GB body is read.
 	if _, err := h.Service.GetWorkspace(slug); err != nil {
 		writeServiceError(w, err)
 		return
@@ -268,12 +237,11 @@ func (h *WorkspaceHandler) ImportHome(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		// The daemon's own re-check of the workspace row (Major 1) returns the
-		// service's error unchanged, wrapped — so the status it chose comes back
-		// out here. errors.As rather than writeServiceError's type assertion
-		// because it arrives wrapped, and err.Error() rather than status.Message
-		// because the wrapper is what says WHERE the check failed and that nothing
-		// was changed.
+		// The daemon's own re-check of the workspace row returns the
+		// service's error unchanged, wrapped — so the status it chose comes
+		// back out here. errors.As rather than writeServiceError's type
+		// assertion because it arrives wrapped, and err.Error() rather than
+		// status.Message because the wrapper says WHERE the check failed.
 		var status *StatusError
 		if errors.As(err, &status) {
 			writeError(w, status.Code, err.Error())

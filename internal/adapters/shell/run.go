@@ -18,8 +18,7 @@ import (
 // / opencode / shell) reaches the daemon's "stop this job" out-of-band signal
 // the same way.
 //
-// I/O resolution precedence (StdinBytes / StdoutCaptureFile / Stdin / Stdout)
-// mirrors the retired runExecArgv path the shell adapter replaced in PR1:
+// I/O resolution precedence (StdinBytes / StdoutCaptureFile / Stdin / Stdout):
 //
 //  1. StdinBytes non-empty → pipe a *bytes.Reader as child stdin (host file
 //     descriptor is not exposed to the child).
@@ -36,8 +35,7 @@ import (
 // adapter cannot follow suit: PTY-attached hook scripts in the E2E suite
 // (hook-attach-smoke) open /dev/tty directly, and Setsid detaches the child
 // from the controlling terminal — the open() then fails with ENXIO and breaks
-// the hook before it can speak. The shrunken byte-equivalent runExecArgv
-// path PR1 retired never set Setsid for the same reason.
+// the hook before it can speak.
 //
 // Trade-off without Setsid: if an interactive `boid exec -- bash` ever
 // receives a SIGUSR1-based daemon stop, the SIGUSR1 will also reach bash

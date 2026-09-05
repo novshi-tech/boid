@@ -8,11 +8,7 @@ import (
 )
 
 // PathPrefix is the fixed prefix every gateway route starts with:
-// /api/<job-token>/<service>/<path...> — docs/plans/api-gateway.md §1
-// ("ルーティングと sandbox からの見え方"). Mirrors gitgateway.PathPrefix's role
-// for the sibling git gateway, using a distinct prefix so both gateways can
-// share a single listener, dispatching on this prefix
-// (docs/plans/api-gateway.md 論点1: "同居 (path prefix /j/ と /api/ で分岐)").
+// /api/<job-token>/<service>/<path...>.
 const PathPrefix = "/api/"
 
 // route is the parsed shape of a gateway request path.
@@ -20,32 +16,20 @@ type route struct {
 	token   string
 	service string
 	// account is the optional credential-account qualifier embedded in the
-	// service path segment ("<service>@<account>" — docs/plans/
-	// api-gateway-credential-accounts.md D1/D2). Empty when the request
-	// named no account, in which case every downstream decision (authz,
-	// BaseURL, credential resolution) is byte-identical to pre-account-
-	// support behavior — service alone is ALWAYS the base name with any
-	// "@<account>" already stripped off by parsePath, never the raw
-	// "<service>@<account>" segment; account carries that qualifier
-	// separately so callers that must ignore it (authorization/BaseURL/
-	// readonly-write lookups, D4) and callers that must use it (credential
-	// resolution, D2/D3) each read the field they need without
-	// re-splitting the string themselves.
+	// service path segment ("<service>@<account>"), already split off of
+	// service by parsePath. Empty when the request named no account.
 	account string
 	// path is the request tail, EXACTLY as it appeared on the wire (still
 	// percent-encoded, always absolute, guaranteed to contain no ".." or "."
 	// segment — see parsePath/checkForTraversal). Deliberately NOT
-	// path.Clean'd or otherwise normalized: unlike gitgateway (whose paths
-	// are a fixed enum of endpoint names), this tail is an arbitrary REST
+	// path.Clean'd or otherwise normalized: this tail is an arbitrary REST
 	// path the caller controls, and cleaning it would silently change what
-	// gets forwarded — e.g. path.Clean strips a meaningful trailing slash
-	// ("/hooks/" -> "/hooks", a different route on some APIs) and, worse,
-	// operating on the DECODED path would turn a "%2F"-encoded slash inside
-	// a single path segment (e.g. an object key "a/b" some REST APIs encode
-	// as "a%2Fb") into an extra path separator, changing which upstream
-	// resource the request actually reaches. Keeping this field's bytes
-	// identical to what parsePath received (mechanically split on literal
-	// "/", never url-decoded) is what makes forwarding byte-preserving.
+	// gets forwarded — e.g. path.Clean strips a meaningful trailing slash,
+	// and operating on the DECODED path would turn a "%2F"-encoded slash
+	// inside a single path segment into an extra separator, changing which
+	// upstream resource the request actually reaches. Keeping this field's
+	// bytes identical to what parsePath received is what makes forwarding
+	// byte-preserving.
 	path string
 }
 
@@ -56,16 +40,12 @@ type route struct {
 // single path segment survive as part of that segment rather than being
 // silently treated as an extra separator (net/http's own Path field decodes
 // %2F into a literal "/" before a handler ever sees it, which would merge
-// two logically-distinct segments into three). Every segment is still
-// checked for a decoded ".."/"." traversal attempt (checkForTraversal),
-// which correctly catches both a literal ".." and an encoded "%2e%2e" form
-// either way, since url.PathUnescape is applied per-segment regardless of
-// which form parsePath was handed.
+// two logically-distinct segments into three).
 //
 // Returns an error for any path that doesn't match this exact shape
 // (unrecognized routes are treated as 404s by the caller, not 401/403 —
 // those statuses are reserved for token/authorization failures on
-// well-formed routes, mirroring gitgateway's own parsePath contract).
+// well-formed routes).
 func parsePath(reqPath string) (route, error) {
 	if !strings.HasPrefix(reqPath, PathPrefix) {
 		return route{}, fmt.Errorf("apigateway: path %q does not start with %s", reqPath, PathPrefix)
@@ -100,12 +80,8 @@ func parsePath(reqPath string) (route, error) {
 		return route{}, fmt.Errorf("apigateway: path %q has a missing or malformed service segment", reqPath)
 	}
 
-	// account splitting happens on the DECODED service segment (docs/plans/
-	// api-gateway-credential-accounts.md D1/D11) — see splitServiceAccount's
-	// own doc comment for why operating post-unescape (rather than
-	// splitting the raw segment on a literal "@" before unescaping it) is
-	// the correct choice here, unlike route.path's byte-preservation
-	// requirement.
+	// account splitting happens on the DECODED service segment — see
+	// splitServiceAccount's own doc comment for why.
 	svcName, account, err := splitServiceAccount(service)
 	if err != nil {
 		return route{}, fmt.Errorf("apigateway: path %q: %w", reqPath, err)
@@ -122,43 +98,26 @@ func parsePath(reqPath string) (route, error) {
 }
 
 // errInvalidAccount marks the one parsePath failure class that must map to
-// HTTP 400, not 404 (docs/plans/api-gateway-credential-accounts.md D11):
-// the path IS the well-formed /api/<token>/<service>/<tail> shape — the
-// service segment is present and non-empty — but the account name embedded
-// in it ("<service>@<account>") fails validation. Every OTHER parsePath
-// error means the path doesn't match that shape at all (missing segment,
-// malformed percent-encoding, traversal attempt, ...) and stays a 404,
-// matching this function's long-standing contract (see its own doc
-// comment). Server.ServeHTTP tells the two apart with errors.Is.
+// HTTP 400, not 404: the path IS the well-formed
+// /api/<token>/<service>/<tail> shape — the service segment is present and
+// non-empty — but the account name embedded in it ("<service>@<account>")
+// fails validation. Every OTHER parsePath error means the path doesn't
+// match that shape at all and stays a 404. Server.ServeHTTP tells the two
+// apart with errors.Is.
 var errInvalidAccount = errors.New("apigateway: invalid account name in service segment")
 
 // splitServiceAccount splits a service path segment into its base service
-// name and optional account qualifier, on "@" (docs/plans/
-// api-gateway-credential-accounts.md D1). It is called on the segment
-// AFTER url.PathUnescape has already run (parsePath's own call site) —
-// deliberately, for two reasons:
-//
-//   - config load (internal/config's validateServiceConfig) rejects "@" in
-//     every services.<name> and oauth_providers.<name> value, so a decoded
-//     segment containing "@" can never collide with a legitimate
-//     unqualified service name — "@" appearing post-decode is unambiguous
-//     evidence of an account qualifier, never part of a real service name.
-//   - a literal "@" and its "%40" percent-encoded form become the exact
-//     same string once both are unescaped, and there is no reason a caller
-//     would want the two to mean something different here — treating them
-//     identically is also simply what "split after unescape" gives for
-//     free, with no special-casing needed. (Contrast this with route.path,
-//     which is deliberately NEVER unescaped or re-split — see its own doc
-//     comment — because an upstream REST resource path can legitimately
-//     use "%2F" to mean something other than a literal separator; a
-//     service NAME has no such legitimate use for a raw "@" that config
-//     load doesn't already forbid.)
+// name and optional account qualifier, on "@". It is called on the segment
+// AFTER url.PathUnescape has already run, deliberately: config load already
+// rejects "@" in any real service/provider name, so a decoded "@" is
+// unambiguous evidence of an account qualifier, and a literal "@" and its
+// "%40" encoding should mean the same thing here (unlike route.path, which
+// is never re-decoded — see its own doc comment).
 //
 // Returns errInvalidAccount (wrapped, with detail) for: more than one "@"
 // in the segment, an empty base name before "@", or an account name that
 // fails validateAccountName. A segment with no "@" at all is valid and
-// returns account == "" (D2 — account-less requests are parsed identically
-// to before this feature existed).
+// returns account == "".
 func splitServiceAccount(service string) (name, account string, err error) {
 	parts := strings.Split(service, "@")
 	switch len(parts) {
@@ -178,13 +137,11 @@ func splitServiceAccount(service string) (name, account string, err error) {
 	return name, account, nil
 }
 
-// validateAccountName enforces D11's account name character set:
+// validateAccountName enforces the account name character set:
 // alphanumeric, "-", "_" only, 1-64 characters. "@"/"/"/":" are rejected by
-// construction (they are not in the allowed set) — D11 calls those out
-// specifically because they would otherwise collide with, respectively, the
+// construction, since they would otherwise collide with, respectively, the
 // account separator itself, path-segment splitting, and secret-key/cache-key
-// construction (docs/plans/api-gateway-credential-accounts.md's credentialID
-// discussion, PR-2).
+// construction.
 func validateAccountName(account string) error {
 	if account == "" {
 		return fmt.Errorf("account name must not be empty: %w", errInvalidAccount)
@@ -201,28 +158,15 @@ func validateAccountName(account string) error {
 	return nil
 }
 
-// ValidateAccountName is validateAccountName's exported form (docs/plans/
-// api-gateway-credential-accounts.md D9/D11, PR-3). `boid secret oauth
-// login --account` (cmd/secret_oauth.go) and the daemon-side
-// LoginManager.StartLogin (login.go — same package, so it calls
-// validateAccountName directly) both gate an account name on this exact
-// rule, deliberately never re-implementing it: a login that accepted an
-// account name parsePath's own splitServiceAccount would reject creates a
-// credential the gateway can never route a request to — a permanently
-// unreachable secret-store entry that looks like a successful login. This
-// export exists SOLELY so cmd (a different package tree, talking to the
-// daemon over HTTP rather than sharing this package's internals) can share
-// the identical check rather than hand-rolling its own character-class
-// test that could silently drift from this one.
+// ValidateAccountName is validateAccountName's exported form, so that
+// callers outside this package (e.g. `boid secret oauth login --account`)
+// can gate an account name on the identical rule parsePath's
+// splitServiceAccount enforces, rather than risk a login that creates a
+// credential the gateway can never route a request to.
 //
-// Like validateAccountName itself, this rejects "" (D11 requires a
-// non-empty account) — callers for whom an empty string legitimately means
-// "no account was requested at all" (both cmd/secret_oauth.go's --account
-// flag, whose zero value is "", and LoginManager.StartLogin's own account
-// parameter) must check account != "" themselves before calling this, the
-// same way splitServiceAccount only ever calls the unexported
-// validateAccountName when an "@" was actually present in the path
-// segment.
+// Like validateAccountName itself, this rejects "" — a caller for whom an
+// empty string legitimately means "no account requested" must check
+// account != "" itself before calling this.
 func ValidateAccountName(account string) error {
 	return validateAccountName(account)
 }
@@ -233,27 +177,17 @@ func ValidateAccountName(account string) error {
 // what checkForTraversal itself treats as a single raw segment — e.g. the
 // raw segment "%2e%2e%2fadmin" (no literal "/" in it, so it is one segment
 // by the outer split) decodes to "../admin", which itself contains a "/"
-// and must be split and checked again (codex review round 2 finding: a
-// naive whole-segment `decoded == ".."` equality check does not catch this,
-// since the fully-decoded string is "../admin", not "..").
+// and must be split and checked again. This is why the check re-splits
+// DECODED content and inspects every resulting sub-segment, not just the
+// outer one: some upstreams decode "%2F" themselves before routing, so a
+// segment forwarded intact (never treated as a separator on this side)
+// could still resolve to a genuine ".." traversal once the upstream's own
+// decoding runs on it.
 //
-// This is why the check below re-splits DECODED content and inspects every
-// resulting sub-segment, not just the outer (still largely raw) one: some
-// upstreams DO decode "%2F" themselves before routing (reverse proxies,
-// web frameworks, CDNs), so a request this gateway forwards with an intact
-// "%2e%2e%2fadmin" segment (never treated as a separator on THIS side,
-// which is what makes the earlier "%2F must be preserved as one segment"
-// feature correct) could still resolve to a genuine ".." traversal once
-// the UPSTREAM'S OWN decoding runs on it. Rejecting outright here is what
-// keeps the "cannot escape the service root" guarantee airtight for both
-// interpretations at once.
-//
-// tail is expected to already be absolute (leading "/"). Unlike gitgateway's
-// sibling guard, this does NOT attempt to resolve/clean the path
-// (path.Clean-style collapsing of ".."/"." — see route.path's own doc
-// comment for why that would itself change what gets forwarded); it only
-// ever accepts a tail unchanged or rejects it outright, so a legitimate
-// path is always byte-identical on the way out. A malformed
+// tail is expected to already be absolute (leading "/"). This does NOT
+// attempt to resolve/clean the path (see route.path's own doc comment for
+// why); it only ever accepts a tail unchanged or rejects it outright, so a
+// legitimate path is always byte-identical on the way out. A malformed
 // percent-encoding in any segment is rejected the same way, rather than
 // silently passed through.
 func checkForTraversal(tail string) error {

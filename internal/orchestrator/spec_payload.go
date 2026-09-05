@@ -116,20 +116,19 @@ func mergeObjectsShallow(base, patch json.RawMessage) (json.RawMessage, bool) {
 // signals the caller to fall back to whole-value overwrite rather than
 // silently dropping data it can't safely interpret.
 //
-// This exists to close PR #821 codex review Blocker 1: two claude hooks
-// dispatched in parallel within the same readonly task round each apply
-// their own session id via the `boid task update --payload-patch` RPC
-// (claude.Adapter.Run, internal/adapters/claude/run.go). Each computes its
-// own patch from an independent (possibly stale, pre-sibling-write) read of
-// prior sessions, so a naive whole-value replace of
-// `artifact.claude_code.sessions` — which is what the generic 1-level
-// mergeObjectsShallow does for every other artifact sub-key — silently
-// drops whichever session id the OTHER concurrent RPC call already
-// persisted. Two DIFFERENT hook instances always have distinct (type, name)
-// keys (name is the behaviour-instance name), so this union never actually
-// collides in practice; a same-key write is deterministically resolved by
-// letting the later-applied patch win, same as any other exclusive-trait
-// overwrite.
+// This exists because two claude hooks dispatched in parallel within the
+// same readonly task round each apply their own session id via the `boid
+// task update --payload-patch` RPC (claude.Adapter.Run,
+// internal/adapters/claude/run.go). Each computes its own patch from an
+// independent (possibly stale, pre-sibling-write) read of prior sessions, so
+// a naive whole-value replace of `artifact.claude_code.sessions` — what the
+// generic 1-level mergeObjectsShallow does for every other artifact sub-key
+// — silently drops whichever session id the OTHER concurrent RPC call
+// already persisted. Two DIFFERENT hook instances always have distinct
+// (type, name) keys (name is the behaviour-instance name), so this union
+// never actually collides in practice; a same-key write is deterministically
+// resolved by letting the later-applied patch win, same as any other
+// exclusive-trait overwrite.
 func mergeClaudeSessions(existing, patch json.RawMessage) (json.RawMessage, bool) {
 	if len(existing) == 0 || len(patch) == 0 {
 		return nil, false
@@ -312,10 +311,10 @@ func MergePayloadPatch(base, patch json.RawMessage, handlerID string, allowedTra
 			if existing, ok := baseMap[key]; ok && len(existing) > 0 {
 				// trait == "artifact" gets an extra level of care:
 				// mergeArtifactPatch recurses into claude_code.sessions for
-				// append/union semantics (PR #821 codex review Blocker 1 —
-				// concurrent claude hooks silently losing a session id under
-				// plain shallow replace). Every other exclusive trait, and
-				// every other artifact sub-key, keeps the historical 1-level
+				// append/union semantics, since concurrent claude hooks would
+				// otherwise silently lose a session id under plain shallow
+				// replace. Every other exclusive trait, and every other
+				// artifact sub-key, keeps the historical 1-level
 				// mergeObjectsShallow behavior.
 				if trait == TraitArtifact {
 					if merged, ok := mergeArtifactPatch(existing, value); ok {

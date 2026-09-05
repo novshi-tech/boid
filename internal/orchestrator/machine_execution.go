@@ -3,12 +3,10 @@ package orchestrator
 import "encoding/json"
 
 // NewExecutionMachine returns the state machine governing ordinary
-// (session-bearing) tasks — pending/executing/awaiting/done/aborted. This is
-// the "process" island the unified NewMachine (pre-PR-B) used to combine
-// with the card lifecycle below; see machine.go's package doc comment for
-// why the two were split and what stayed unchanged. Selected via
-// internal/api's machineFor for any task that does NOT carry a task_triage
-// sidecar row.
+// (session-bearing) tasks — pending/executing/awaiting/done/aborted. See
+// machine.go's package doc comment for how this relates to the card
+// lifecycle (machine_card.go). Selected via internal/api's machineFor for
+// any task that does NOT carry a task_triage sidecar row.
 //
 // Manual transitions:
 //
@@ -23,12 +21,10 @@ import "encoding/json"
 //	abort  : pending/executing/awaiting/done/aborted → aborted (execution lifecycle only)
 //
 // abort is scoped to the execution-lifecycle statuses (not a "*" wildcard,
-// and — since PR-B — not present in NewCardMachine at all): a card cannot be
-// aborted, only dropped (drop's coverage lives entirely in NewCardMachine).
-// Before the split this was a manually-drawn non-overlap between abort and
-// drop inside one shared rule table; splitting the machine object makes it
-// structural — abort simply does not exist as a rule anywhere a card's
-// status could match.
+// and not present in NewCardMachine at all): a card cannot be aborted, only
+// dropped (drop's coverage lives entirely in NewCardMachine). Splitting the
+// machine object into two makes this structural — abort simply does not
+// exist as a rule anywhere a card's status could match.
 //
 // Event-driven transitions:
 //
@@ -44,15 +40,15 @@ import "encoding/json"
 // child_dispatched / child_closed are registered here too (Manual:false,
 // FromStatus "*") even though an ordinary execution task is never itself a
 // triage card's dispatched child's PARENT — see machine_card.go's doc
-// comment for their real writers and rationale (論点9). They are duplicated
-// onto BOTH machines (alongside job_failed/progress/done_request/
-// fail_request above) purely so StateMachine.Apply/AvailableActions treat
-// the action names as "known" regardless of which machine a caller happens
-// to be holding — the actual writers call tx.CreateAction directly rather
-// than routing through sm.Apply, so which machine object is "the" one
-// registering them has no behavioral effect; keeping them on both avoids a
-// spurious "no transition for action" surprise if a future caller ever does
-// pass them through Apply against whichever machine it was holding.
+// comment for their real writers. They are duplicated onto BOTH machines
+// (alongside job_failed/progress/done_request/fail_request above) purely so
+// StateMachine.Apply/AvailableActions treat the action names as "known"
+// regardless of which machine a caller happens to be holding — the actual
+// writers call tx.CreateAction directly rather than routing through
+// sm.Apply, so which machine object is "the" one registering them has no
+// behavioral effect; keeping them on both avoids a spurious "no transition
+// for action" surprise if a future caller ever does pass them through Apply
+// against whichever machine it was holding.
 //
 // Auto transitions (condition-based, evaluated after dispatch). Order
 // matters — first match wins:
@@ -86,8 +82,6 @@ func NewExecutionMachine() *StateMachine {
 		{Action: "reopen", FromStatus: "aborted", ToStatus: "executing", Manual: true},
 		{Action: "ask", FromStatus: "executing", ToStatus: "awaiting", Manual: true},
 		{Action: "answer", FromStatus: "awaiting", ToStatus: "executing", Manual: true},
-		// abort is scoped to the execution-lifecycle statuses only (not a "*"
-		// wildcard) — see this function's own doc comment above.
 		{Action: "abort", FromStatus: "pending", ToStatus: "aborted", Manual: true},
 		{Action: "abort", FromStatus: "executing", ToStatus: "aborted", Manual: true},
 		{Action: "abort", FromStatus: "awaiting", ToStatus: "aborted", Manual: true},

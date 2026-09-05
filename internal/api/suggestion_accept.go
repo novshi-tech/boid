@@ -12,55 +12,43 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// suggestionParams is attrs.suggestion.params' shape (docs/plans/
-// suggestion-as-state-transition-impl.md §3): only meaningful for verb=="park"
-// today (park needs a wake condition), but left open-shaped (both fields
-// optional, no verb-specific struct) rather than a closed union, since a
-// future verb might need its own params without a schema migration.
+// suggestionParams is attrs.suggestion.params' shape: only meaningful for
+// verb=="park" today (park needs a wake condition), but left open-shaped
+// rather than a closed union, since a future verb might need its own
+// params without a schema migration.
 type suggestionParams struct {
 	WakeAt     string `json:"wake_at,omitempty"`
 	WakeTaskID string `json:"wake_task_id,omitempty"`
 }
 
 // suggestionAttr is attrs.suggestion's shape: {verb, reason, params?}. This
-// mirrors orchestrator.Suggestion (card.go, the READ side —
-// DetailSuggestion) but is declared separately here because Params is new in
-// this PR and orchestrator.Suggestion is a stable read-side type this PR does
-// not otherwise touch (avoiding a cross-package doc-comment/JSON-tag
-// entanglement for a field only the WRITE-side validator below needs).
+// mirrors orchestrator.Suggestion (card.go's DetailSuggestion, the read
+// side) but is declared separately since Params is only needed by this
+// write-side validator.
 type suggestionAttr struct {
 	Verb   string           `json:"verb"`
 	Reason string           `json:"reason,omitempty"`
 	Params suggestionParams `json:"params,omitempty"`
 }
 
-// validateSuggestionAttr validates attrs_set's "suggestion" key BEFORE it
-// folds into task_triage.detail.attrs (docs/plans/
-// suggestion-as-state-transition-impl.md §3: "verb ∈ {go, working, park,
-// drop, done, reopen} を daemon が検証する"). This does NOT cross the
-// workspace-vocabulary boundary J-7 protects elsewhere in this package
-// (verb/basis on the "answered" action are recorded but never
-// cross-checked): the six verbs here are boid's OWN state-machine
-// vocabulary (orchestrator.IsCardTransitionAction), not a workspace-defined
-// one — see design doc §3.1's own framing, "boid 自身の状態遷移に限る".
+// validateSuggestionAttr validates attrs_set's "suggestion" key before it
+// folds into task_triage.detail.attrs. The six verbs (go, working, park,
+// drop, done, reopen) are boid's own state-machine vocabulary
+// (orchestrator.IsCardTransitionAction) — not a workspace-defined one, so
+// this does not cross the workspace-vocabulary boundary the rest of this
+// package protects (verb/basis on the "answered" action are recorded but
+// never cross-checked).
 //
-// A JSON null value is accepted unconditionally (clearing the suggestion via
-// attrs_set — mirrors parsePromotedAttr's own null-clears-the-column
-// convention for urgency/kind, workflow_card.go). Everything else must be
-// a JSON object with a verb from the closed set; params.wake_at, if present,
-// must parse as RFC3339 (the same format applyParkSideEffect's own
-// parseParkPayload already requires for a direct park action's wake_at).
+// A JSON null value is accepted unconditionally (clearing the suggestion
+// via attrs_set — mirrors parsePromotedAttr's null-clears-the-column
+// convention for urgency/kind). Everything else must be a JSON object
+// with a verb from the closed set; params.wake_at, if present, must parse
+// as RFC3339 (the same format a direct park action's wake_at requires).
 //
-// Returns the validated verb (""  for a null/clearing payload) alongside the
-// error — PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1):
-// this is now the single parse/validate pass parseAttrsSetPayload's
-// "suggestion" case reuses to populate attrsSetPatch.Verb/HasVerb, the value
-// applyAttrsSetSideEffect promotes into task_triage.suggestion_verb. Before
-// this PR the only caller discarded the verb after validating it and
-// parseAttrsSetPayload just folded the raw value into the opaque blob — a
-// second parse of the same JSON to extract the verb for the column would
-// have been genuinely redundant (and risked drifting from this function's
-// own validation if the two ever disagreed on what counts as "known").
+// Returns the validated verb ("" for a null/clearing payload). This is
+// the single parse/validate pass parseAttrsSetPayload's "suggestion" case
+// reuses to populate attrsSetPatch.Verb/HasVerb, the value
+// applyAttrsSetSideEffect promotes into task_triage.suggestion_verb.
 func validateSuggestionAttr(raw json.RawMessage) (string, error) {
 	if string(raw) == "null" {
 		return "", nil
@@ -104,32 +92,26 @@ func noSuggestionToAcceptErr(detail string) *StatusError {
 	return &StatusError{Code: http.StatusConflict, Message: "answered: no suggestion to accept" + detail}
 }
 
-// applyAnswered is the "answered" action's full implementation (docs/plans/
-// suggestion-as-state-transition-impl.md §3.3, design doc §3.1): records the
-// answered action, and — on accept — applies the suggestion's own verb as a
-// real card transition BEFORE dropping the suggestion (§3.1: "遷移を適用して
-// から suggestion を消す" — an accept that fails must not discard the
-// suggestion it failed to act on). Reject is unchanged from v1: the
-// suggestion is dropped unconditionally, no transition applied.
+// applyAnswered is the "answered" action's full implementation: records the
+// answered action, and — on accept — applies the suggestion's own verb as
+// a real card transition BEFORE dropping the suggestion (an accept that
+// fails must not discard the suggestion it failed to act on). Reject is
+// unchanged: the suggestion is dropped unconditionally, no transition
+// applied.
 //
 // Bypasses ApplyAction's generic action pipeline entirely (workflow_action.go
-// calls straight into this for req.Type=="answered", before any of the
-// meta-hydration / payload-merge / skipTaskUpdate machinery built for the
-// OTHER card actions) — same posture as Wake/Dispatch always took for their
-// own dedicated multi-step flows. "answered" only ever applies to a card (a
-// suggestion only exists on a task_triage sidecar row), so NewCardMachine is
-// unambiguous here without a machineFor lookup, exactly like Wake/Dispatch
-// established.
+// calls straight into this for req.Type=="answered") — same posture as
+// Wake/Dispatch for their own dedicated multi-step flows. "answered" only
+// ever applies to a card, so NewCardMachine is unambiguous here without a
+// machineFor lookup.
 //
-// 穴11 push-down defense: accept (not reject) is a card TRANSITION in
-// disguise — it is what actually flips the card's status, via whichever verb
-// the suggestion names — so it gets the SAME actor==human requirement
+// accept (not reject) is a card transition in disguise — it is what
+// actually flips the card's status, via whichever verb the suggestion
+// names — so it gets the same actor==human requirement
 // orchestrator.IsCardTransitionAction's six verbs get directly in
-// workflow_action.go. Without this check here, khi could bypass that guard
-// entirely by pushing `answered{accept}` instead of the verb itself (neither
-// "answered" nor its non-transitioning ToStatus=="" rule are in
-// IsCardTransitionAction's set, so the generic guard alone would let it
-// through). reject is NOT gated: it can never cause a transition either way.
+// workflow_action.go. Without this check, khi could bypass that guard by
+// pushing `answered{accept}` instead of the verb itself. reject is NOT
+// gated: it can never cause a transition either way.
 func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, payload json.RawMessage) (*ActionApplication, error) {
 	parsed, perr := parseAnsweredPayload(payload)
 	if perr != nil {
@@ -208,12 +190,10 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 		verbAction := &orchestrator.Action{TaskID: taskID, Type: sugg.Verb, Actor: orchestrator.ActorFromContext(ctx)}
 		verbApplied, vaerr := sm.Apply(applied, verbAction)
 		if vaerr != nil {
-			// PR-3: replace sm.Apply's raw `no transition for action %q from
-			// status %q` (vaerr.Error(), still logged nowhere — this message IS
-			// the only trace) with one that also says what WOULD have worked,
-			// via orchestrator.StateMachine.AvailableActionsHint's own doc
-			// comment (single source shared with the Web UI's inapplicable-
-			// suggestion notice — review LOW 4).
+			// Replace sm.Apply's raw "no transition for action %q from status
+			// %q" with one that also says what would have worked, via
+			// orchestrator.StateMachine.AvailableActionsHint (the single
+			// source the Web UI's inapplicable-suggestion notice also uses).
 			return &StatusError{
 				Code: http.StatusConflict,
 				Message: fmt.Sprintf(
@@ -236,14 +216,14 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 				return err
 			}
 		case "drop":
-			// docs/plans/ingestion-identity.md PR-1 (B-1), I-6: same identity
-			// release a direct drop action already gets (workflow_action.go).
+			// Same identity release a direct drop action already gets
+			// (workflow_action.go).
 			if err := tx.UnlinkAllForTask(taskID); err != nil {
 				return err
 			}
 		}
-		// design doc §3.1: strip the suggestion ONLY here, now that the verb's
-		// transition has actually committed successfully within this same Tx.
+		// Strip the suggestion only here, now that the verb's transition has
+		// actually committed successfully within this same Tx.
 		if err := applyAnsweredSideEffect(tx, taskID); err != nil {
 			return err
 		}
@@ -269,20 +249,19 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 	}
 
 	if acceptGoRequested {
-		// viaAccept=true (PR #987 review round 2, MEDIUM N2): the suggestion
-		// this call fulfills was already recorded as accepted by the
-		// "answered" action just committed above — acceptGo must strip it
-		// without ALSO recording a misleading "suggestion_discarded" audit
-		// entry for the very suggestion that was just accepted, not thrown
-		// away. See acceptGo's own doc comment.
+		// viaAccept=true: the suggestion this call fulfills was already
+		// recorded as accepted by the "answered" action just committed
+		// above — acceptGo must strip it without ALSO recording a
+		// misleading "suggestion_discarded" audit entry for the suggestion
+		// that was just accepted. See acceptGo's own doc comment.
 		applied, goErr := s.acceptGo(ctx, taskID, true)
 		if goErr != nil {
-			// The "answered" action itself already committed above (決定13:
-			// the accept-attempt is a real audit fact regardless of whether
-			// the mechanical follow-through succeeded) — but the caller must
-			// still see this as a failed request: the card never actually
-			// reached working, and acceptGo's own failure path already left
-			// the suggestion in place and recorded dispatch_error.
+			// The "answered" action itself already committed above (a real
+			// audit fact regardless of whether the mechanical follow-through
+			// succeeded) — but the caller must still see this as a failed
+			// request: the card never actually reached working, and
+			// acceptGo's own failure path already left the suggestion in
+			// place and recorded dispatch_error.
 			return nil, goErr
 		}
 		newTask = applied.Task

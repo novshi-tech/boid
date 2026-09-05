@@ -5,14 +5,14 @@ import (
 	"time"
 )
 
-// TriggerSweepResolution is the effective lower bound on `every` (N-6, Opus
-// review): the daemon only ever evaluates triggerIsDue once per
-// TriggerLoop sweep tick (internal/server/wire.go wires TriggerLoop.Interval
-// to this SAME constant, so they cannot drift apart), so an `every` below
-// this value does not mean "run more often than once per sweep tick" — it
-// silently collapses to "once per sweep tick", which is not what a
-// project.yaml author who wrote e.g. `every: 1s` would expect (1 sweep tick
-// = 1 minute here, not 1 second — ~1,440 containers/day, not ~86,400).
+// TriggerSweepResolution is the effective lower bound on `every`: the
+// daemon only ever evaluates triggerIsDue once per TriggerLoop sweep tick
+// (internal/server/wire.go wires TriggerLoop.Interval to this SAME
+// constant, so they cannot drift apart), so an `every` below this value
+// does not mean "run more often than once per sweep tick" — it silently
+// collapses to "once per sweep tick", which is not what a project.yaml
+// author who wrote e.g. `every: 1s` would expect (1 sweep tick = 1 minute
+// here, not 1 second — ~1,440 containers/day, not ~86,400).
 // ValidateTriggers rejects anything below this at project.yaml load time
 // rather than let that surprise happen silently at runtime.
 const TriggerSweepResolution = time.Minute
@@ -65,11 +65,6 @@ func ValidateTriggers(triggers []Trigger) error {
 			// timeout: 10m` ("look hourly; kill any round that runs past ten
 			// minutes") is a coherent thing to ask for, and a round finishing
 			// before the next one is due is the normal case, not a mistake.
-			// An earlier draft rejected it — but only because the sweep checked
-			// the bound after its `every`-due gate, which made enforcement
-			// actually fire at max(every, timeout); the constraint was papering
-			// over that. The check now runs before the gate (SweepTriggers), so
-			// there is nothing left to paper over.
 		}
 		if every < TriggerSweepResolution {
 			return fmt.Errorf("project.yaml: triggers[%d] (%s): every (%q) is below the daemon's effective sweep resolution (%s) — it would silently run only once per sweep tick, not as often as written", i, trig.Name, trig.Every, TriggerSweepResolution)

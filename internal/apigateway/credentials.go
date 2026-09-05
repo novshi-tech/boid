@@ -9,11 +9,9 @@ import (
 )
 
 // AuthKind selects how the gateway injects credentials into a proxied
-// request. docs/plans/api-gateway.md §4 ("credential 注入: CredentialProvider
-// → TokenSource 一般化"): bearer/basic/header/query are static SecretStore
-// wrappers implemented in PR1; oauth2 (PR2) resolves its access token
-// through an OAuth2AccessTokenSource (oauth2.go) instead of the static
-// resolver — see CredentialProvider.SetOAuth2TokenSource.
+// request. bearer/basic/header/query are static SecretStore wrappers;
+// oauth2 resolves its access token through an OAuth2AccessTokenSource
+// instead of the static resolver — see CredentialProvider.SetOAuth2TokenSource.
 type AuthKind string
 
 const (
@@ -23,14 +21,13 @@ const (
 	AuthQuery  AuthKind = "query"
 	// AuthOAuth2 injects `Authorization: Bearer <access_token>`, where
 	// access_token is supplied by the CredentialProvider's
-	// OAuth2AccessTokenSource (docs/plans/api-gateway.md §6/PR2). A
-	// CredentialProvider constructed without SetOAuth2TokenSource ever
-	// being called (every call site before PR2, and any test that doesn't
-	// opt in) has no TokenSource wired, and Resolve/Inject both return a
-	// clear "no OAuth2 TokenSource configured" error for it rather than
-	// panicking or silently no-op'ing — a service misconfigured with kind:
-	// oauth2 in that state fails a request with a 502 (see
-	// Server.ServeHTTP), not a build/startup error and not a silent bypass.
+	// OAuth2AccessTokenSource. A CredentialProvider on which
+	// SetOAuth2TokenSource was never called has no TokenSource wired, and
+	// Resolve/Inject both return a clear "no OAuth2 TokenSource configured"
+	// error for it rather than panicking or silently no-op'ing — a service
+	// misconfigured with kind: oauth2 in that state fails a request with a
+	// 502 (see Server.ServeHTTP), not a build/startup error and not a
+	// silent bypass.
 	AuthOAuth2 AuthKind = "oauth2"
 )
 
@@ -52,59 +49,51 @@ type ServiceAuth struct {
 	// UsernameSecretKey, when non-empty (kind: basic only), resolves the
 	// Basic-auth username from the secret store instead of using the
 	// literal Username field — account-qualified via the same
-	// accountSecretKey composition SecretKey already uses (docs/plans/
-	// api-gateway-credential-accounts.md D12). Mutually exclusive with
-	// Username; config.validateServiceConfig enforces that at load time.
-	// Motivating case: a Jira-Cloud-shaped service where the login email
-	// differs per tenant/account, not just the token.
+	// accountSecretKey composition SecretKey already uses. Mutually
+	// exclusive with Username; config.validateServiceConfig enforces that
+	// at load time. Motivating case: a Jira-Cloud-shaped service where the
+	// login email differs per tenant/account, not just the token.
 	UsernameSecretKey string
 }
 
 // ServiceConfig declares one logical service the gateway can proxy to:
 // its upstream base URL and how to authenticate requests to it.
-// docs/plans/api-gateway.md §2 ("service registry (config.yaml)").
 type ServiceConfig struct {
 	Name    string
 	BaseURL string
 	Auth    ServiceAuth
 	// BaseURLSecretKey, when non-empty, resolves BaseURL from the secret
 	// store instead of using the literal BaseURL field — account-qualified
-	// via the same accountSecretKey composition auth.SecretKey already uses
-	// (docs/plans/api-gateway-credential-accounts.md D12). Mutually
-	// exclusive with BaseURL; config.validateServiceConfig enforces that at
-	// load time. Motivating case: Jira Cloud, where the whole upstream
-	// tenant (subdomain) differs per account, not just the credential —
-	// D4's "1 service, credential 差し替えで使い回す" axis extended to the
-	// routing target as well as the secret.
+	// via the same accountSecretKey composition auth.SecretKey already
+	// uses. Mutually exclusive with BaseURL; config.validateServiceConfig
+	// enforces that at load time. Motivating case: Jira Cloud, where the
+	// whole upstream tenant (subdomain) differs per account, not just the
+	// credential.
 	BaseURLSecretKey string
-	// AllowInsecure mirrors config.ServiceConfig.AllowInsecure — needed here
-	// (unlike before D12) because a BaseURLSecretKey-backed base_url can
-	// only be validated (https-unless-allowed, absolute URL, no query/
-	// fragment) at REQUEST time, once the secret store value is known,
-	// never at config-load time the way a literal BaseURL is. Unused when
+	// AllowInsecure mirrors config.ServiceConfig.AllowInsecure — needed
+	// here because a BaseURLSecretKey-backed base_url can only be
+	// validated (https-unless-allowed, absolute URL, no query/fragment) at
+	// REQUEST time, once the secret store value is known, never at
+	// config-load time the way a literal BaseURL is. Unused when
 	// BaseURLSecretKey is empty — the literal BaseURL path was already
 	// validated by config.validateServiceConfig before this ServiceConfig
 	// was ever built.
 	AllowInsecure bool
 	// AllowReadOnlyWrite opts this ONE service out of the ordinary
-	// read-only→GET/HEAD-only gate (Server.ServeHTTP, isSafeMethod).
-	// docs/plans/api-gateway.md §論点 (2026-08-14 追加決定): readonly job
-	// tokens still can't touch the sandbox filesystem, but some services
-	// (e.g. a Slack "post completion report" webhook) are safe to let a
-	// read-only job POST to even though the job can't write code. This is
-	// deliberately a daemon-config-only knob — never project.yaml/
-	// task_behaviors — because granting it from inside the repo would let a
-	// prompt-injected agent grant itself write access to any service it can
-	// already reach (docs/plans/api-gateway.md:59-62's "project.yaml には
-	// credential アクセス権限を置かない" decision). Defaults to false
-	// (fail-closed): a service must be explicitly opted in by whoever
-	// controls config.yaml.
+	// read-only→GET/HEAD-only gate (Server.ServeHTTP, isSafeMethod):
+	// readonly job tokens still can't touch the sandbox filesystem, but
+	// some services (e.g. a Slack "post completion report" webhook) are
+	// safe to let a read-only job POST to even though the job can't write
+	// code. This is deliberately a daemon-config-only knob — never
+	// project.yaml/task_behaviors — because granting it from inside the
+	// repo would let a prompt-injected agent grant itself write access to
+	// any service it can already reach. Defaults to false (fail-closed): a
+	// service must be explicitly opted in by whoever controls config.yaml.
 	AllowReadOnlyWrite bool
 	// RequireAccount is this ServiceConfig's post-validation mirror of
 	// config.ServiceConfig.RequireAccount (see that field's own doc comment
 	// for the full rationale) — the same relationship AllowReadOnlyWrite
-	// above already has to its own config counterpart. docs/plans/
-	// api-gateway-credential-accounts.md D5.
+	// above already has to its own config counterpart.
 	RequireAccount bool
 }
 
@@ -120,12 +109,11 @@ type SecretResolver func(namespace, key string) (string, error)
 
 // resolvedService is a ServiceConfig with its base_url pre-parsed once at
 // construction time, so per-request handling never re-parses it — UNLESS
-// baseURLSecretKey is set (D12), in which case baseURL is nil and the real
-// URL is resolved lazily, per (namespace, account), on every BaseURLFor
-// call: there is no literal value to pre-parse until the secret store is
-// consulted, mirroring how oauth2's access token is already resolved lazily
-// per request rather than cached at construction time. Exactly one of
-// baseURL/baseURLSecretKey is set for any resolvedService in the map (D12).
+// baseURLSecretKey is set, in which case baseURL is nil and the real URL
+// is resolved lazily, per (namespace, account), on every BaseURLFor call:
+// there is no literal value to pre-parse until the secret store is
+// consulted. Exactly one of baseURL/baseURLSecretKey is set for any
+// resolvedService in the map.
 type resolvedService struct {
 	auth             ServiceAuth
 	baseURL          *url.URL
@@ -140,11 +128,9 @@ type resolvedService struct {
 }
 
 // CredentialProvider knows which services the gateway can reach (name →
-// base_url + auth config) and how to resolve each one's secret. Mirrors
-// internal/gitgateway.CredentialProvider's role, generalized from a single
-// Basic-auth shape to the four static AuthKind variants plus oauth2
-// (docs/plans/api-gateway.md §4/§6, PR2) — the static kinds resolve through
-// resolver; oauth2 resolves through oauth (SetOAuth2TokenSource).
+// base_url + auth config) and how to resolve each one's secret. The static
+// AuthKind variants resolve through resolver; oauth2 resolves through
+// oauth (SetOAuth2TokenSource).
 type CredentialProvider struct {
 	services map[string]resolvedService
 	resolver SecretResolver
@@ -157,14 +143,12 @@ type CredentialProvider struct {
 // both a scheme and a host, is skipped with a warning rather than aborting
 // construction — config.yaml validation (internal/config) is expected to
 // have already rejected this at load time, so reaching this point is
-// defensive-only, matching internal/config.GatewayConfig.HostConfigs's own
-// "already validated" invariant note. This "already validated by config
-// load" invariant does NOT extend to a BaseURLSecretKey-backed service
-// (D12): that service's real base_url string does not exist yet at
-// config-load time (it lives in the secret store, account-qualified), so
-// there is nothing to parse/skip here — such a service is always admitted
-// into the map in secret-backed mode, and BaseURLFor validates the resolved
-// value at request time instead (see that method's own doc comment).
+// defensive-only. This "already validated by config load" invariant does
+// NOT extend to a BaseURLSecretKey-backed service: that service's real
+// base_url string does not exist yet at config-load time (it lives in the
+// secret store, account-qualified), so such a service is always admitted
+// into the map in secret-backed mode, and BaseURLFor validates the
+// resolved value at request time instead.
 func NewCredentialProvider(services []ServiceConfig, resolver SecretResolver) *CredentialProvider {
 	m := make(map[string]resolvedService, len(services))
 	for _, s := range services {
@@ -190,17 +174,11 @@ func NewCredentialProvider(services []ServiceConfig, resolver SecretResolver) *C
 }
 
 // SetOAuth2TokenSource wires the OAuth2 access-token supplier oauth2-kind
-// services resolve through (docs/plans/api-gateway.md §6, PR2). A
-// CredentialProvider built via NewCredentialProvider alone — every call
-// site before this PR, and any test that doesn't opt in — has oauth == nil,
-// which keeps the pre-PR2 CONTRACT (not the exact error text — that changed
-// to name SetOAuth2TokenSource explicitly): Resolve/Inject still always
-// return a non-nil error for oauth2 in that state, never silently bypass or
-// panic on a nil deref. A separate setter (rather than a new
-// NewCredentialProvider parameter) avoids touching every existing call
-// site: production wiring (internal/server/wire.go) calls this once, right
-// after construction, and every apigateway/server test that doesn't care
-// about oauth2 is unaffected.
+// services resolve through. A CredentialProvider on which this is never
+// called has oauth == nil: Resolve/Inject still always return a non-nil
+// error for oauth2 in that state, never silently bypass or panic on a nil
+// deref. A separate setter (rather than a NewCredentialProvider parameter)
+// avoids touching every existing call site.
 func (c *CredentialProvider) SetOAuth2TokenSource(oauth OAuth2AccessTokenSource) {
 	if c == nil {
 		return
@@ -228,14 +206,11 @@ func (c *CredentialProvider) KnowsService(name string) bool {
 }
 
 // OAuth2ProviderFor resolves service to the oauth_providers.<name> its
-// auth.kind: oauth2 config references — the service->provider lookup `boid
-// secret oauth login <service>` (PR3, docs/plans/api-gateway.md §7) needs
-// to hand LoginManager.StartLogin the provider name it actually operates on
-// (login.go's own methods take a provider, never a service — see
-// LoginManager's own doc comment). ok is false when service is unknown OR
-// is configured with any auth.kind OTHER than oauth2 — `boid secret oauth
-// login` has nothing useful to do for a bearer/basic/header/query service
-// (there is no OAuth2 grant to obtain).
+// auth.kind: oauth2 config references — `boid secret oauth login <service>`
+// needs this to hand LoginManager.StartLogin the provider name it actually
+// operates on (login.go's own methods take a provider, never a service).
+// ok is false when service is unknown OR is configured with any auth.kind
+// OTHER than oauth2 — there is no OAuth2 grant to obtain for those.
 func (c *CredentialProvider) OAuth2ProviderFor(service string) (provider string, ok bool) {
 	if c == nil {
 		return "", false
@@ -249,18 +224,15 @@ func (c *CredentialProvider) OAuth2ProviderFor(service string) (provider string,
 
 // BaseURLFor returns the upstream base URL for (name, account). For a
 // LITERAL base_url service this is the pre-parsed value from
-// NewCredentialProvider — a zero-cost lookup, no resolver call, byte-
-// identical to the pre-D12 behavior. For a BaseURLSecretKey-backed service
-// (D12) it resolves "<key>@<account>" (or the bare key when account is
-// empty — D2) from the secret store, scoped to namespace, and validates the
-// result with the same rules config.ValidateServiceURL enforces at
-// config-load time for a literal base_url (ValidateBaseURL — the shared
-// implementation both call): an absolute URL, no query/fragment, https
-// unless the service's AllowInsecure opted out. namespace/account are
-// therefore ignored entirely for a literal-base_url service (D4 is
-// unaffected there: no service's AUTHORIZATION axis changes because of this
-// method — see docs/plans/api-gateway-credential-accounts.md D12's own
-// scope note).
+// NewCredentialProvider — a zero-cost lookup, no resolver call. For a
+// BaseURLSecretKey-backed service it resolves "<key>@<account>" (or the
+// bare key when account is empty) from the secret store, scoped to
+// namespace, and validates the result with the same rules
+// config.ValidateServiceURL enforces at config-load time for a literal
+// base_url (ValidateBaseURL — the shared implementation both call): an
+// absolute URL, no query/fragment, https unless the service's
+// AllowInsecure opted out. namespace/account are therefore ignored
+// entirely for a literal-base_url service.
 //
 // Returns an error — never a bare ok=false — because a secret-backed
 // resolution has real failure modes (missing secret, malformed URL value)
@@ -316,33 +288,18 @@ func (c *CredentialProvider) AllowsReadOnlyWrite(name string) bool {
 }
 
 // RequiresAccount reports whether name's ServiceConfig opted into rejecting
-// account-less requests (ServiceConfig.RequireAccount's own doc comment,
-// docs/plans/api-gateway-credential-accounts.md D5). An unknown service (or
-// a nil CredentialProvider) reports false.
+// account-less requests (ServiceConfig.RequireAccount's own doc comment).
+// An unknown service (or a nil CredentialProvider) reports false.
 //
-// This is NOT the same "unknown => fail-closed-by-being-false" shape
-// AllowsReadOnlyWrite's own doc comment argues for (there, false is the
-// stricter, safer default). Here false is instead the choice that
-// PRESERVES an existing, more specific signal: Server.ServeHTTP only ever
-// reaches this call after entry.Services[name] has already confirmed the
-// WORKSPACE allows name — but that list is populated independently of this
-// CredentialProvider's own registry (a workspace's enabled-services list
-// and config.yaml's services: map can drift, or a services.<name> entry can
-// fail validateServiceConfig and be silently dropped by
-// config.APIGatewayServices), so a name that clears the authorization check
-// is not guaranteed to be a KEY in c.services at all. For such a name,
-// BaseURLFor(namespace, name, account) already returns a non-nil error
-// ("service %q is not configured") and Server.ServeHTTP reports
-// 502 "service ... is not configured" immediately afterward — the correct,
-// pre-existing diagnosis for "this service isn't really registered". If
-// RequiresAccount instead defaulted to true for an unknown name, an
-// account-less request to it would be misreported as 400 "account
-// required" — plausible-sounding but wrong advice for a service that isn't
-// configured at all — and that wrong answer would be returned BEFORE
-// ServeHTTP ever reaches the BaseURLFor check that has the right one. false
-// keeps BaseURLFor the single source of truth for "is this service real";
-// RequiresAccount only ever has an opinion once a service definitely
-// exists.
+// Unlike AllowsReadOnlyWrite, false here is not a fail-closed default but a
+// deliberate choice to defer to BaseURLFor's diagnosis: a name can clear
+// the workspace authorization check yet still be absent from c.services
+// (the workspace's enabled-services list and config.yaml's services: map
+// can drift). For such a name, BaseURLFor already returns "service %q is
+// not configured" and Server.ServeHTTP reports that 502 — reporting 400
+// "account required" instead, before that check runs, would be
+// misleading. RequiresAccount only ever has an opinion once a service
+// definitely exists.
 func (c *CredentialProvider) RequiresAccount(name string) bool {
 	if c == nil {
 		return false
@@ -353,13 +310,7 @@ func (c *CredentialProvider) RequiresAccount(name string) bool {
 
 // accountSecretKey returns the SecretStore key a static auth kind (bearer/
 // basic/header/query) resolves against for account: base unmodified when
-// account is empty — byte-identical to the pre-account-support key (docs/
-// plans/api-gateway-credential-accounts.md D2) — or "<base>@<account>" when
-// an account is specified (§"credential identity"). This is the ONE place
-// PR-1 builds that composed key; PR-2 introduces the credentialID type to
-// give oauth2's singleflight/memCache keys the same single-construction-site
-// property once a second call site (AccessToken) needs the identical
-// composition — a single call site here does not yet justify that type.
+// account is empty, or "<base>@<account>" when an account is specified.
 func accountSecretKey(base, account string) string {
 	if account == "" {
 		return base
@@ -370,37 +321,26 @@ func accountSecretKey(base, account string) string {
 // Resolve validates that credential injection for name/account would
 // succeed — without mutating any request — resolving the underlying secret
 // (for the static kinds) so a bad/missing secret-store entry surfaces here
-// rather than only once Inject is called on a live outbound request. This is
-// the "pre-check" half of the fail-fast pattern
-// docs/plans/gitgateway-credential-fail-fast.md established for the sibling
-// git gateway: Server.ServeHTTP calls Resolve before proxying so it can 502
-// without ever contacting the upstream when credentials fail to resolve.
+// rather than only once Inject is called on a live outbound request. This
+// is the "pre-check" half of a fail-fast pattern: Server.ServeHTTP calls
+// Resolve before proxying so it can 502 without ever contacting the
+// upstream when credentials fail to resolve.
 //
-// account is the optional credential-account qualifier (docs/plans/
-// api-gateway-credential-accounts.md). For the static kinds it composes the
-// secret-store key (accountSecretKey) — D3: there is no fallback to the
-// account-less key when the qualified one is missing, so a non-empty account
-// whose secret was never set fails here exactly like any other missing
-// secret. For oauth2 it is folded into a credentialID (PR-2, D6) and handed
-// to c.oauth.AccessToken, which applies the identical no-fallback contract
-// through OAuthSecretKey(cred.secretPrefix(), ...) — see AccessToken's own
-// doc comment.
+// account is the optional credential-account qualifier. For the static
+// kinds it composes the secret-store key (accountSecretKey): there is no
+// fallback to the account-less key when the qualified one is missing, so a
+// non-empty account whose secret was never set fails here exactly like any
+// other missing secret. For oauth2 it is folded into a credentialID and
+// handed to c.oauth.AccessToken, which applies the identical no-fallback
+// contract.
 //
 // namespace is deliberately the FIRST parameter, not adjacent to the other
 // two string args: with three plain strings in a row, a call site that
-// accidentally writes them in the wrong order (e.g. (service, namespace,
-// account)) still compiles, and workspace-scoped credential isolation
-// depends on namespace never being mixed up with account or name (a wrong
-// namespace resolves a DIFFERENT workspace's secret). Putting namespace
-// first also matches this package's own SecretResolver convention
-// (namespace, key). This is a stopgap for the three-bare-strings shape, and
-// it stays a stopgap even after PR-2 (docs/plans/api-gateway-credential-
-// accounts.md §3): Resolve's own signature is unchanged — name and account
-// are still two bare strings, not folded into one value. The credentialID
-// type §3 introduces lives one level down, inside the AuthOAuth2 case below
-// only: it is built from (rs.auth.Provider, account) right before being
-// handed to c.oauth.AccessToken, and never crosses back out as a parameter
-// here or in Inject.
+// accidentally writes them in the wrong order still compiles, and
+// workspace-scoped credential isolation depends on namespace never being
+// mixed up with account or name (a wrong namespace resolves a DIFFERENT
+// workspace's secret). This also matches this package's own SecretResolver
+// convention (namespace, key).
 func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 	if c == nil {
 		return fmt.Errorf("apigateway: no credential provider configured")
@@ -414,12 +354,9 @@ func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 		if c.oauth == nil {
 			return fmt.Errorf("apigateway: service %q uses auth kind %q, but no OAuth2 TokenSource is configured (docs/plans/api-gateway.md PR2 — SetOAuth2TokenSource)", name, AuthOAuth2)
 		}
-		// credentialID (docs/plans/api-gateway-credential-accounts.md §3,
-		// D6, PR-2): account "" here produces a credentialID whose
-		// secretPrefix/cacheKey are byte-identical to the pre-account-support
-		// form (D2) — see credentialID's own doc comment. This is the ONLY
-		// place in this file a credentialID is constructed for an oauth2
-		// request; c.oauth.AccessToken is the only thing that reads it.
+		// This is the ONLY place in this file a credentialID is
+		// constructed for an oauth2 request; c.oauth.AccessToken is the
+		// only thing that reads it.
 		cred := credentialID{provider: rs.auth.Provider, account: account}
 		if _, err := c.oauth.AccessToken(namespace, cred); err != nil {
 			return fmt.Errorf("apigateway: oauth2 access token for service %q (provider %q, account %q, namespace %q): %w", name, rs.auth.Provider, account, namespace, err)
@@ -429,15 +366,10 @@ func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 		if c.resolver == nil {
 			return fmt.Errorf("apigateway: no secret resolver configured for service %q", name)
 		}
-		// AuthBasic-only: a UsernameSecretKey-backed username (D12) has to
-		// resolve (and pass the RFC 7617 colon check) here too, not just in
-		// Inject — this is the fail-fast pre-check Server.ServeHTTP relies
-		// on to 502 before ever proxying, so a broken username secret must
-		// surface here exactly like a broken SecretKey secret does just
-		// below. rs.auth.Kind is checked rather than unconditionally
-		// calling resolveUsername, which would silently no-op (return
-		// rs.auth.Username, nil) for bearer/header/query anyway — the
-		// explicit guard just makes the AuthBasic-only intent visible.
+		// A UsernameSecretKey-backed username has to resolve (and pass
+		// the RFC 7617 colon check) here too, not just in Inject — this
+		// is the fail-fast pre-check Server.ServeHTTP relies on to 502
+		// before ever proxying.
 		if rs.auth.Kind == AuthBasic {
 			if _, err := c.resolveUsername(namespace, name, account, rs); err != nil {
 				return err
@@ -454,10 +386,9 @@ func (c *CredentialProvider) Resolve(namespace, name, account string) error {
 }
 
 // resolveUsername returns the Basic-auth username to inject for rs: the
-// literal rs.auth.Username when UsernameSecretKey is empty (byte-identical
-// to pre-D12 behavior, no resolver call), or the account-qualified
-// (accountSecretKey — the same composition SecretKey uses) secret-store
-// value otherwise (docs/plans/api-gateway-credential-accounts.md D12).
+// literal rs.auth.Username when UsernameSecretKey is empty (no resolver
+// call), or the account-qualified (accountSecretKey — the same composition
+// SecretKey uses) secret-store value otherwise.
 //
 // The RFC 7617 §2 "must not contain a colon" check
 // config.validateServiceConfig applies at config-load time for a literal
@@ -490,10 +421,8 @@ func (c *CredentialProvider) resolveUsername(namespace, name, account string, rs
 // error (and leaves req unmodified) on any failure: unknown service, no
 // resolver configured, a secret-store lookup error, or the reserved oauth2
 // kind. Inject re-resolves the secret rather than reusing a prior Resolve
-// call's result — see internal/gitgateway.CredentialProvider.Inject's own
-// doc comment for why this thin-wrapper-over-Resolve shape is deliberate
-// (Server.ServeHTTP's Resolve pre-check and this Inject call are two
-// independent SecretStore reads, cheap in the common case).
+// call's result — Server.ServeHTTP's Resolve pre-check and this Inject
+// call are two independent SecretStore reads, cheap in the common case.
 //
 // account behaves exactly as documented on Resolve — same accountSecretKey
 // composition for the static kinds, same credentialID composition for

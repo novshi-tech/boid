@@ -9,9 +9,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// taskContextOps maps the Phase 5b PR1 task-context subcommand names
-// (docs/plans/phase5-shim-and-task-context.md) to their BoidOp. Checked by
-// RunBoidShim before falling through to the generic parseBoidRequest path.
+// taskContextOps maps the task-context subcommand names to their BoidOp.
+// Checked by RunBoidShim before falling through to the generic
+// parseBoidRequest path.
 var taskContextOps = map[string]BoidOp{
 	"current":      BoidOpTaskCurrent,
 	"instructions": BoidOpTaskInstructions,

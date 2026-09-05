@@ -18,22 +18,15 @@ import (
 // peerIPForPublicEndpoint returns the TCP peer IP for use as a rate-limit
 // bucket key on unauthenticated endpoints reachable over the TCP listener
 // (POST /api/auth/device today). It intentionally does NOT consult
-// forwarded headers like CF-Connecting-IP / X-Forwarded-For — those are
-// caller-controlled bytes on any request that does NOT arrive via a
-// trusted reverse proxy, and honoring them here would let a directly
-// connected attacker rotate the header per request and drain no bucket
-// at all.
+// forwarded headers like CF-Connecting-IP / X-Forwarded-For: those are
+// caller-controlled on any request that doesn't arrive via a trusted
+// reverse proxy, and honoring them would let a directly connected
+// attacker rotate the header per request and drain no bucket at all.
 //
-// This is deliberately a stricter policy than internal/api/web.go's
-// remoteIP: the latter opts into fairness (per-real-client buckets when
-// behind Cloudflare, at the cost of spoofability on direct connections)
-// for the cookie-based /login and /auth flows. Bearer device pairing is
-// stricter because it is the token-issuance boundary — a spoofable rate
-// limit here would render the "public, rate-limited" contract in
-// docs/plans/cli-remote-connection.md PR0 effectively fictitious.
-// Introducing trusted-proxy CIDR config so remoteIP itself becomes
-// spoof-resistant across all public endpoints is tracked as an unresolved
-// point in the plan doc; this helper is the endpoint-scoped fix for PR0.
+// Deliberately stricter than internal/api/web.go's remoteIP (which opts
+// into fairness at the cost of spoofability, for the cookie-based /login
+// and /auth flows): Bearer device pairing is the token-issuance boundary,
+// where a spoofable rate limit would defeat the point.
 func peerIPForPublicEndpoint(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -50,7 +43,7 @@ type deviceAuthStore interface {
 }
 
 // DeviceAuthHandler serves the Bearer device-auth endpoints used by remote
-// CLI clients (docs/plans/cli-remote-connection.md Phase 3 PR0):
+// CLI clients:
 //
 //   - POST   /api/auth/device       — public, rate-limited. Redeems a
 //     pairing code (the same one `boid web pair` issues for the cookie
@@ -58,12 +51,12 @@ type deviceAuthStore interface {
 //   - DELETE /api/auth/devices/{id} — Bearer-authenticated, self-revoke
 //     only.
 //
-// It is deliberately a separate surface from WebManagementHandler (mounted
-// at /api/web/*, UNIX-socket-only, trusted local-admin surface with no
-// ownership check: /api/web/pair, /api/web/devices) — this handler is
-// reachable over TCP by a caller who starts out holding nothing but a valid
-// pairing code, so PostDevice carries its own rate limiting and DeleteDevice
-// enforces "only revoke yourself".
+// It is a separate surface from WebManagementHandler (mounted at
+// /api/web/*, UNIX-socket-only, trusted local-admin surface with no
+// ownership check) — this handler is reachable over TCP by a caller who
+// starts out holding nothing but a valid pairing code, so PostDevice
+// carries its own rate limiting and DeleteDevice enforces "only revoke
+// yourself".
 type DeviceAuthHandler struct {
 	Pairing   loginPairing
 	Store     deviceAuthStore
@@ -131,7 +124,7 @@ func (h *DeviceAuthHandler) PostDevice(w http.ResponseWriter, r *http.Request) {
 	// Resolve the daemon's externally-reachable origin BEFORE consuming
 	// the pairing code: if we cannot produce a canonical_url (no
 	// web.public_url configured AND no Host header on the request), the
-	// CLI's origin-bind check in PR2 has nothing to persist and the whole
+	// CLI's origin-bind check has nothing to persist and the whole
 	// login would be pointless. Fail loudly with the pairing code still
 	// unspent so the operator can retry after fixing the configuration.
 	canonicalURL := h.canonicalURL(r)
@@ -229,22 +222,17 @@ func (h *DeviceAuthHandler) PostDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 // canonicalURL resolves the daemon's externally-reachable origin, echoed
-// back so the CLI's `boid login` (PR2) can bind the saved token to the URL
-// it actually paired against (docs/plans/cli-remote-connection.md 決定事項
-// 9: cross-origin token reuse is a hard error at request time, not a
-// warning — this response field is what a future PR2 persists for that
-// check).
+// back so the CLI's `boid login` can bind the saved token to the URL it
+// actually paired against (cross-origin token reuse is a hard error at
+// request time).
 //
 // Precedence:
 //
 //   - `web.public_url` (already validated + normalized by NormalizePublicURL
 //     at wire.go startup — this branch trusts the stored value verbatim)
 //   - request Host header, wrapped as `https://<host>` and put through the
-//     SAME NormalizePublicURL validator so a garbage Host (`::garbage`,
-//     bare port, uppercase, missing) is rejected exactly as a misconfigured
-//     `public_url` would be. Skipping validation here would let a caller
-//     induce arbitrary canonical_url values by spoofing the Host header,
-//     defeating the CLI-side origin-bind check.
+//     same NormalizePublicURL validator, so a garbage Host cannot be used
+//     to induce arbitrary canonical_url values by spoofing the header.
 //
 // Returns "" if neither source produces a valid canonical URL. The caller
 // (PostDevice) treats "" as a hard 500 so no pairing code is consumed

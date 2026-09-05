@@ -74,9 +74,9 @@ type ProxyAllocator interface {
 // Runner.NoWorkspaceProxyPort, without either package hard-coding the
 // other's literal.
 //
-// Deliberately DISTINCT from orchestrator.DefaultWorkspaceSlug (BLOCKER,
-// codex review round 3): the real "default"-slug workspace has its own
-// workspace.yaml an operator can add AllowedDomains to, and
+// Deliberately DISTINCT from orchestrator.DefaultWorkspaceSlug: the real
+// "default"-slug workspace has its own workspace.yaml an operator can add
+// AllowedDomains to, and
 // ProxyManager.GetOrCreate mutates a listener's allowlist in place — keying
 // the no-workspace listener by the SAME string as that real workspace would
 // let a later default-workspace dispatch silently widen the no-workspace
@@ -111,21 +111,18 @@ type Runner struct {
 	// Backend is the SandboxBackend every sandbox launch/attach/resize/
 	// signal call site routes through (sandboxBackend() below). Production
 	// wiring (internal/server/wire.go's buildRuntime) always sets this to a
-	// real containerBackend — container is the only sandbox backend since
-	// PR-4 removed the userns backend (docs/plans/volume-only-daemon.md
-	// §論点e) and the config-driven userns/container branch that used to
-	// leave this nil for the userns default. Tests set it to a fake
-	// backend.SandboxBackend directly (the same DI seam this field has
-	// always been).
+	// real containerBackend — container is the only sandbox backend boid
+	// supports. Tests set it to a fake backend.SandboxBackend directly (the
+	// same DI seam this field has always been).
 	Backend backend.SandboxBackend
-	// InstallID mirrors ContainerBackendOptions.InstallID (§決定6): threaded
-	// through separately here (not read back off Backend) so
-	// startDockerProxy's per-job SetWorkspaceNetwork call (PR9, §決定5) can
-	// compute the exact same containerWorkspaceNetworkName the container
-	// backend's own Launch computed for this job's workspace, without a
-	// type assertion back into *containerBackend. Empty (every pre-PR9
-	// caller) is valid — containerWorkspaceNetworkName treats it as
-	// "noinst", matching NewContainerBackend's own unset-InstallID default.
+	// InstallID mirrors ContainerBackendOptions.InstallID: threaded through
+	// separately here (not read back off Backend) so startDockerProxy's
+	// per-job SetWorkspaceNetwork call can compute the exact same
+	// containerWorkspaceNetworkName the container backend's own Launch
+	// computed for this job's workspace, without a type assertion back into
+	// *containerBackend. Empty is valid — containerWorkspaceNetworkName
+	// treats it as "noinst", matching NewContainerBackend's own
+	// unset-InstallID default.
 	InstallID string
 	// Hydrator optionally resolves a project's workspace-hydrated
 	// ProjectMeta (project.yaml `meta.name` plus workspace merge) by project
@@ -171,8 +168,7 @@ type Runner struct {
 	// orchestrator.ResolveAllowedDomains.
 	//
 	// A plain []string, not a getter — sandbox.allowed_domains is
-	// ReloadRestartRequired (PR #830 round-4 simplification, nose
-	// directive; see ReloadDynamic's own doc comment in
+	// ReloadRestartRequired (see ReloadDynamic's own doc comment in
 	// internal/config/schema.go): `boid config set sandbox.allowed_domains
 	// ...` persists to config.yaml immediately but only reaches this field
 	// on the next daemon restart, when wire.go rebuilds the Runner from the
@@ -188,12 +184,11 @@ type Runner struct {
 	// (dataHomeFor also has a socket-path fallback and an empty case that
 	// only test wiring reaches — see its own doc comment.)
 	//
-	// Deliberately NOT derivable from RuntimesDir: since the volume-only
-	// pivot those are two genuinely different roots (RuntimesDir resolves via
-	// hostVisibleRuntimesDirFor(cfg) to BOID_RUNTIME_DIR, host-visible but
-	// tmpfs). Currently consumed only by workspaceHomeMetaDir — the workspace
-	// home init marker, the init lock, and the private temp copy of init.sh
-	// (docs/plans/workspace-home-volume-persistence.md 論点b, PR2).
+	// Deliberately NOT derivable from RuntimesDir: those are two genuinely
+	// different roots (RuntimesDir resolves via hostVisibleRuntimesDirFor(cfg)
+	// to BOID_RUNTIME_DIR, host-visible but tmpfs). Currently consumed only
+	// by workspaceHomeMetaDir — the workspace home init marker, the init
+	// lock, and the private temp copy of init.sh.
 	//
 	// Empty (minimal test wiring, or a daemon build that never wired it)
 	// falls back to $XDG_DATA_HOME/boid; see workspaceHomeMetaDir's own doc
@@ -225,13 +220,10 @@ type Runner struct {
 	ReservedVolumeNames []string
 	JobEvents           JobEventSink // optional; nil disables job lifecycle broadcasts
 
-	// GitGateway is the git gateway's job-token registry
-	// (docs/plans/git-gateway-cutover.md PR4: gateway lifecycle + dispatch
-	// wiring). nil disables gateway token registration entirely — Dispatch
-	// and UnregisterJob treat that as a no-op rather than panicking (test
-	// wiring, or a daemon build without the gateway constructed). PR4 is
-	// inert: registration happens, but nothing inside the sandbox talks to
-	// the gateway yet (that's PR5/PR6).
+	// GitGateway is the git gateway's job-token registry. nil disables
+	// gateway token registration entirely — Dispatch and UnregisterJob
+	// treat that as a no-op rather than panicking (test wiring, or a daemon
+	// build without the gateway constructed).
 	GitGateway *gitgateway.Registry
 	// GatewayURL points at the daemon's own gateway listener address string,
 	// filled in by Server.Start once the gateway's TCP listener is bound —
@@ -248,32 +240,31 @@ type Runner struct {
 	GatewayCAPEM *[]byte
 
 	// GatewayCredentials resolves forge auth for the daemon's OWN direct
-	// git operations against a bare repo (docs/plans/volume-only-daemon.md
-	// §論点b, PR-2b) — the same gitgateway.CredentialProvider bare_repo.go's
-	// CloneBareRepo/FetchBareRepo already consume (see those functions'
-	// own doc comments for why this is a direct CredentialProvider.Resolve
-	// call, not a round trip through the HTTP reverse proxy: there is no
-	// job token or sandbox involved for this specific use — Dispatch calls
-	// FetchBareRepo itself, from the daemon process, before staging a
-	// per-job checkout via PrepareJobCheckout). nil (every pre-PR-2b
-	// caller, and any test wiring that doesn't need per-job clone) skips
-	// the FetchBareRepo refresh step entirely — matches CloneBareRepo/
+	// git operations against a bare repo — the same gitgateway.CredentialProvider
+	// bare_repo.go's CloneBareRepo/FetchBareRepo already consume (see those
+	// functions' own doc comments for why this is a direct
+	// CredentialProvider.Resolve call, not a round trip through the HTTP
+	// reverse proxy: there is no job token or sandbox involved for this
+	// specific use — Dispatch calls FetchBareRepo itself, from the daemon
+	// process, before staging a per-job checkout via PrepareJobCheckout).
+	// nil (any test wiring that doesn't need per-job clone) skips the
+	// FetchBareRepo refresh step entirely — matches CloneBareRepo/
 	// FetchBareRepo's own "creds nil -> proceed unauthenticated" fail-open
 	// convention, appropriate here too since a project's bare repo may
 	// simply be public.
 	GatewayCredentials *gitgateway.CredentialProvider
 
-	// APIGateway is the API gateway's job-token registry (docs/plans/
-	// api-gateway.md PR1). nil disables API gateway token registration
-	// entirely — Dispatch and UnregisterJob treat that as a no-op rather
-	// than panicking, mirroring GitGateway's own nil-disables convention.
+	// APIGateway is the API gateway's job-token registry. nil disables API
+	// gateway token registration entirely — Dispatch and UnregisterJob
+	// treat that as a no-op rather than panicking, mirroring GitGateway's
+	// own nil-disables convention.
 	APIGateway *apigateway.Registry
 	// APIGatewayServicesFloor is the daemon-wide set of API gateway service
-	// names enabled for every workspace (config.yaml services_floor —
-	// docs/plans/api-gateway.md §3), captured once when this Runner is
-	// built, exactly like AllowedDomains is for the proxy egress allowlist.
-	// A workspace's own WorkspaceMeta.Services list adds to this floor at
-	// dispatch time via orchestrator.ResolveEnabledServices.
+	// names enabled for every workspace (config.yaml services_floor),
+	// captured once when this Runner is built, exactly like AllowedDomains
+	// is for the proxy egress allowlist. A workspace's own
+	// WorkspaceMeta.Services list adds to this floor at dispatch time via
+	// orchestrator.ResolveEnabledServices.
 	APIGatewayServicesFloor []string
 
 	// WithProjectLock, when set, runs a function while holding the daemon's
@@ -281,20 +272,16 @@ type Runner struct {
 	// service's own exported WithProjectLock method — the same lock
 	// CreateProject/CreateProjectFromGitURL/DeleteProject/FetchProject
 	// already serialize their own create/delete/fetch critical sections
-	// against each other (PR834 PR-2b round-2 codex review Major 1). The
-	// entire project-registry-guarded dispatch section below — gateway-token
-	// registration, the selfProject lookup, the gatewayCloneURL/
-	// peerAdvertise snapshot, managed-bare-repo classification, AND the
-	// FetchBareRepo + PrepareJobCheckout pair against selfProject.WorkDir —
-	// runs as one closure inside this lock (round-3 codex review Major 1:
-	// round-2 only wrapped the final fetch+clone call, leaving the lookup
-	// and URL/token snapshot that feed it unguarded — see Dispatch's own
-	// "project-registry-guarded dispatch section" comment for the mixed-
-	// checkout race that left open), so a concurrent `project rm` + re-add
-	// at the identical managed path cannot land ANYWHERE in that sequence
-	// and produce a mixed checkout (this project's gateway URL/credentials
-	// cloned against a DIFFERENT, just-re-registered project's bare-repo
-	// content).
+	// against each other. The entire project-registry-guarded dispatch
+	// section below — gateway-token registration, the selfProject lookup,
+	// the gatewayCloneURL/peerAdvertise snapshot, managed-bare-repo
+	// classification, AND the FetchBareRepo + PrepareJobCheckout pair
+	// against selfProject.WorkDir — runs as one closure inside this lock
+	// (see Dispatch's own "project-registry-guarded dispatch section"
+	// comment), so a concurrent `project rm` + re-add at the identical
+	// managed path cannot land ANYWHERE in that sequence and produce a
+	// mixed checkout (this project's gateway URL/credentials cloned
+	// against a DIFFERENT, just-re-registered project's bare-repo content).
 	//
 	// internal/dispatcher cannot import internal/api directly to call
 	// ProjectAppService.WithProjectLock itself — internal/api already
@@ -307,9 +294,9 @@ type Runner struct {
 	// just a shared instance closed over once at startup).
 	//
 	// nil (any dispatcher unit test that does not wire an
-	// api.ProjectAppService at all, and any pre-PR-2b caller) means "no
-	// serialization" — the per-job-clone step below runs unguarded exactly
-	// as it did before this field existed. Production wiring always sets it.
+	// api.ProjectAppService at all) means "no serialization" — the
+	// per-job-clone step below runs unguarded exactly as it did before this
+	// field existed. Production wiring always sets it.
 	WithProjectLock func(fn func() error) error
 
 	// ConfirmWorkspaceExists reports whether a workspace row still exists,
@@ -320,8 +307,8 @@ type Runner struct {
 	// internal/dispatcher, so the reverse direction would be an import cycle).
 	//
 	// ImportWorkspaceHome is the only caller, and it calls this while holding its
-	// in-flight registration — which is the entire point (codex round 2, Major
-	// 1). The API handler already checks the workspace before reading the body;
+	// in-flight registration — which is the entire point. The API handler
+	// already checks the workspace before reading the body;
 	// what that check cannot do is stay true, because `boid workspace remove`
 	// deletes the row and then the volume, and a removal that completes between
 	// the handler's check and the migration's first engine call leaves the
@@ -331,11 +318,11 @@ type Runner struct {
 	// under the registration is what makes the answer hold: from that point a
 	// removal of this workspace is refused (workspaceHomeInFlight.beginRemoval).
 	//
-	// nil means "no confirmation", which is what every dispatcher unit test that
-	// does not wire an api.ProjectAppService gets, and what the pre-PR8 behaviour
-	// was. Production wiring always sets it. The consequence of leaving it nil is
-	// narrow rather than open-ended: the API handler's own pre-check still runs,
-	// so what is lost is only the re-check under the registration.
+	// nil means "no confirmation", which is what every dispatcher unit test
+	// that does not wire an api.ProjectAppService gets. Production wiring
+	// always sets it. The consequence of leaving it nil is narrow rather
+	// than open-ended: the API handler's own pre-check still runs, so what
+	// is lost is only the re-check under the registration.
 	ConfirmWorkspaceExists func(slug string) error
 
 	// Packs is the set of Integration Packs the daemon loaded at startup
@@ -362,11 +349,11 @@ type Runner struct {
 	gatewayMu        sync.Mutex
 	gatewayTokens    map[string]string // jobID -> git gateway job token
 	apiGatewayMu     sync.Mutex
-	apiGatewayTokens map[string]string // jobID -> API gateway job token (docs/plans/api-gateway.md PR1)
+	apiGatewayTokens map[string]string // jobID -> API gateway job token
 	jobContextMu     sync.Mutex
-	jobContexts      map[string]JobContextSnapshot // jobID -> Phase 5b PR1 task-context RPC data
+	jobContexts      map[string]JobContextSnapshot // jobID -> task-context RPC data
 	checkoutMu       sync.Mutex
-	checkoutDirs     map[string]string // jobID -> per-job clone staging dir (docs/plans/volume-only-daemon.md §論点b, PR-2b)
+	checkoutDirs     map[string]string // jobID -> per-job clone staging dir
 	// homeInFlight excludes a workspace HOME volume's destructive replacement
 	// (ImportWorkspaceHome) against the dispatches that are about to mount it,
 	// for the interval between resolveWorkspaceHome's fast path and
@@ -406,9 +393,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 	j.ID = uuid.New().String()
 
-	// Dispatch エラー経路の token leak 対策 (docs/plans/git-gateway-cutover.md
-	// PR5 スコープ・PR4 レビュー判断メモ): the broker token (r.trackToken)
-	// and the git gateway job token (r.registerGatewayToken) are both
+	// Token leak protection on the dispatch error path: the broker token
+	// (r.trackToken) and the git gateway job token (r.registerGatewayToken) are both
 	// registered part-way through this function, well before the sandbox
 	// actually launches. Every prior version of this function relied on
 	// launchSandbox succeeding (which schedules UnregisterJob via
@@ -448,9 +434,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// workspaceID come back "" even though the resolution attempt failed;
 	// normalizeWorkspaceSlug then maps "" to the default workspace slug, so
 	// resolveWorkspaceHome below would run the *wrong* workspace's init.sh
-	// (and, once PR2 wires WorkspaceHomeDir into a mount, mount the wrong
-	// workspace's home) instead of failing the dispatch outright (codex
-	// review, PR #787).
+	// and mount the wrong workspace's home instead of failing the dispatch
+	// outright.
 	workspaceID, projectWorkDir, err := r.resolveProjectRuntime(spec.ProjectID)
 	if err != nil {
 		err = fmt.Errorf("resolve project runtime: look up project %q: %w", spec.ProjectID, err)
@@ -461,14 +446,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		return "", err
 	}
 
-	// Workspace home ensure + init (docs/plans/home-workspace-volume.md
-	// Phase 4 PR1, as rebuilt by PR6 of
-	// docs/plans/workspace-home-volume-persistence.md): guarantees this
-	// workspace's persistent HOME VOLUME exists and has had boid's builtin prep
-	// — and, if the workspace declares an init.sh, that script — run against
-	// this incarnation of it, before any sandbox is built for this dispatch.
-	// Init failure fails the dispatch outright (the contract's 「init 失敗時は
-	// dispatch を明示エラーで fail」), matching every other
+	// Workspace home ensure + init: guarantees this workspace's persistent
+	// HOME VOLUME exists and has had boid's builtin prep — and, if the
+	// workspace declares an init.sh, that script — run against this
+	// incarnation of it, before any sandbox is built for this dispatch.
+	// Init failure fails the dispatch outright, matching every other
 	// pre-BuildSandboxSpec error path in this function.
 	//
 	// All three return values are used, and the first is a docker VOLUME NAME
@@ -480,11 +462,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// identity that volume was observed to carry, threaded to
 	// LaunchOptions.WorkspaceHomeID so the backend can confirm, at the moment it
 	// mounts the volume, that it is still the same one — the check this call
-	// makes is over long before ContainerCreate runs (codex review of PR6,
-	// Major 1; see verifyWorkspaceHomeIdentity).
+	// makes is over long before ContainerCreate runs (see
+	// verifyWorkspaceHomeIdentity).
 	//
 	// The registration below has to come BEFORE that call, and be held until
-	// this function returns (codex review of PR8, Blocker 2). It excludes
+	// this function returns. It excludes
 	// `boid workspace import-home` — the one operation that deletes this
 	// workspace's home volume, re-creates it under the same name and then
 	// writes into it — for the whole interval in which this dispatch holds a
@@ -555,8 +537,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
 			Role:              j.Role,
 			ProjectDir:        projectWorkDir,
-			// docs/plans/signal-ingest-detailed-design.md §3.2/§5.2 (PR-5):
-			// the ONLY place TokenContext.Service/Connector are ever
+			// The ONLY place TokenContext.Service/Connector are ever
 			// populated — empty for every job except a signal-derived
 			// trigger's connector exec (spec.SignalService/SignalConnector,
 			// set by BuildSessionJobSpec from SessionJobInput). See that
@@ -565,12 +546,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			Service:   spec.SignalService,
 			Connector: spec.SignalConnector,
 		}
-		// SandboxRoot (docs/plans/git-gateway-cutover.md PR6 cutover): clone-mode
-		// jobs have no host ProjectDir the sandbox's own filesystem corresponds
-		// to — their cwd is always the name-scoped subdirectory of the
-		// sandbox-internal sandboxCloneTargetDir ("/workspace/<name>", see
-		// sandboxCloneDir / cloneDirNameForVisibility — workspace 親化リファ
-		// クタリング, nose 2026-07-13 decision). See broker.entryRoot.
+		// SandboxRoot: clone-mode jobs have no host ProjectDir the sandbox's
+		// own filesystem corresponds to — their cwd is always the
+		// name-scoped subdirectory of the sandbox-internal
+		// sandboxCloneTargetDir ("/workspace/<name>", see sandboxCloneDir /
+		// cloneDirNameForVisibility). See broker.entryRoot.
 		if spec.Visibility.Clone != nil {
 			tokenCtx.SandboxRoot = sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility))
 		}
@@ -584,14 +564,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 				return r.SecretStore.Get(ns, key)
 			}
 		}
-		// Registered under short-name keys (the "policy 用" view — see
-		// ResolveHostCommands): as of 5a-3 (docs/plans/phase5-shim-and-task-
-		// context.md, "5a: shim 固定ディレクトリ化" PR3 cutover) the shim's
-		// bind-mount basename == its declared short name by construction
-		// (sandboxShimBinDir + hostCommandSymlinks), so the shim's ExecRequest.
-		// Command hits this map by direct key on every call. The broker's
-		// pre-5a-3 Path-scan fallback was dropped in the same change; there
-		// is no other lookup path.
+		// Registered under short-name keys (the "policy" view — see
+		// ResolveHostCommands): the shim's bind-mount basename == its
+		// declared short name by construction (sandboxShimBinDir +
+		// hostCommandSymlinks), so the shim's ExecRequest.Command hits this
+		// map by direct key on every call. There is no other lookup path.
 		brokerToken = r.Broker.RegisterCommands(
 			resolvedHostCommandsByName,
 			PoliciesToSandbox(spec.BuiltinPolicies),
@@ -620,26 +597,25 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// when any step fails.
 	allowedDomains, proxyPort := r.resolveWorkspaceProxy(workspaceID)
 	// gatewayCAPEM: see SandboxRuntimeInfo.GatewayCAPEM's own doc comment.
-	// r.GatewayCAPEM nil (every pre-PR9-fix caller/test, or a daemon with
-	// no TLS CA configured) leaves this nil, matching gatewayURL's own
-	// "unwired" degrade. Daemon-level CA material, not per-project, so this
-	// stays outside the project-registry-guarded section below.
+	// r.GatewayCAPEM nil (test wiring, or a daemon with no TLS CA
+	// configured) leaves this nil, matching gatewayURL's own "unwired"
+	// degrade. Daemon-level CA material, not per-project, so this stays
+	// outside the project-registry-guarded section below.
 	var gatewayCAPEM []byte
 	if r.GatewayCAPEM != nil {
 		gatewayCAPEM = *r.GatewayCAPEM
 	}
 
-	// API gateway token registration (docs/plans/api-gateway.md PR1). Unlike
-	// registerGatewayToken (git), this needs no project-registry data at all
+	// API gateway token registration. Unlike registerGatewayToken (git),
+	// this needs no project-registry data at all
 	// — just the workspace's effective enabled-service set and this job's
 	// SecretNamespace/readonly flag — so it runs here, outside the
 	// project-registry-guarded section below, exactly like allowedDomains/
 	// gatewayCAPEM above.
 	apiGatewayBaseURL, apiGatewayToken := r.registerAPIGatewayToken(j.ID, spec, workspaceID)
 
-	// --- project-registry-guarded dispatch section (PR834 PR-2b round-3
-	// codex review Major 1) -------------------------------------------------
-	// Round-2's fix only wrapped the final fetch+clone call
+	// --- project-registry-guarded dispatch section -------------------------
+	// An earlier fix wrapped only the final fetch+clone call
 	// (FetchBareRepo/PrepareJobCheckout) in r.WithProjectLock. Everything
 	// that FEEDS that call still ran BEFORE the lock was acquired:
 	// gateway-token registration (registerGatewayToken -> buildGatewayRepos,
@@ -655,8 +631,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// deterministic on those two inputs alone, not on project id or
 	// content, so "remove and re-add at the same slot" is an ordinary
 	// operator flow, not just an adversarial one. selfProject.WorkDir is
-	// just a path string captured before the race; by the time round-2's
-	// lock finally ran the fetch+clone, that path could already hold a
+	// just a path string captured before the race; by the time an earlier
+	// fix's lock finally ran the fetch+clone, that path could already hold a
 	// DIFFERENT repository's content while gatewayCloneURL/gatewayToken
 	// were still built from the OLD project's upstream_url — exactly the
 	// "clone repository B using project A's gateway route/credentials"
@@ -679,26 +655,23 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		gatewayURL, gatewayToken = r.registerGatewayToken(j.ID, spec, workspaceID)
 
 		// gatewayCloneURL is only worth resolving (an extra Projects lookup)
-		// when the opt-in sandbox-clone path is actually declared. As of the
-		// PR6 cutover, planner.go / session_job.go set Visibility.Clone for
-		// every project-visible job, so this now runs on the main dispatch
-		// path.
+		// when the opt-in sandbox-clone path is actually declared. planner.go
+		// / session_job.go set Visibility.Clone for every project-visible
+		// job, so this now runs on the main dispatch path.
 		if spec.Visibility.Clone == nil {
 			return nil
 		}
 
-		// Dispatch-time upstream_url requirement (docs/plans/git-gateway-cutover.md
-		// 「本計画で確定する設計 § 1」: 「欠落 project は... dispatch 時エラー」).
-		// A project with no captured upstream_url would otherwise silently
-		// produce an empty GatewayCloneURL and fail deep inside the sandbox
-		// with an opaque "git clone ''" error; failing fast here surfaces a
-		// clear, actionable message to the dispatch caller instead.
+		// Dispatch-time upstream_url requirement: a project with no captured
+		// upstream_url would otherwise silently produce an empty
+		// GatewayCloneURL and fail deep inside the sandbox with an opaque
+		// "git clone ''" error; failing fast here surfaces a clear,
+		// actionable message to the dispatch caller instead.
 		//
 		// Every branch below must either succeed or hard-error — a silent
-		// skip (`if err == nil && proj != nil` optimism) is exactly the
-		// PR6 Opus review #4 concern: it would let a torn Projects registry
-		// (project row missing / GetProject errored) fall through to a
-		// runtime "git clone ''" failure inside the sandbox. The only
+		// skip (`if err == nil && proj != nil` optimism) would let a torn
+		// Projects registry (project row missing / GetProject errored) fall
+		// through to a runtime "git clone ''" failure inside the sandbox. The only
 		// tolerated case is r.Projects == nil, which corresponds to
 		// dispatcher unit tests that don't wire a Projects lookup at all
 		// (the tests exercise argv/cleanup/spec plumbing, not gateway
@@ -721,9 +694,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		gatewayCloneURL = r.buildGatewayCloneURL(spec, gatewayURL, gatewayToken)
 		peerAdvertise = r.buildPeerAdvertise(workspacePeers, gatewayURL, gatewayToken)
 
-		// /workspace host-backed runtime dir (docs/plans/git-gateway-cutover.md
-		// PR6 cutover; container-based-boid.md 2026-07-08 decision: clone
-		// lands on a runtime-dir bind mount by default, not tmpfs). Keyed by
+		// /workspace host-backed runtime dir: clone lands on a runtime-dir
+		// bind mount by default, not tmpfs. Keyed by
 		// j.ID (already a fresh UUID unique to this dispatch) rather than
 		// sharing the docker-proxy's separate runtimeID/desiredRuntimeID —
 		// the two concerns don't need to share a directory, and job.ID is
@@ -739,34 +711,28 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			}
 		}
 
-		// Per-job clone at dispatch time (docs/plans/volume-only-daemon.md
-		// §論点b "採用経路 (per-job clone、clone 時代整合)", PR-2b): a
-		// git-URL-registered project (orchestrator.IsBareRepoDir(selfProject.
-		// WorkDir), PR-2a) dispatched under the container backend gets its
-		// /workspace/<name> pre-populated by the DAEMON, straight from its
-		// own bare repo cache, instead of leaving the sandbox's own
-		// in-container clone sequence (buildCloneSpec/performCloneSteps) to
-		// fetch it via the git gateway's HTTP reverse proxy at container
-		// start. This is the architecture decision the plan doc's own
-		// §論点b spells out as the worktree-retraction replacement: a
-		// per-job `git clone file://<bare-repo>` into a staging dir
-		// under r.RuntimesDir (host-visible under container backend as of
-		// this same PR's wire.go fix — see hostVisibleRuntimesDirFor's own
-		// doc comment), bind-mounted into the job container directly.
+		// Per-job clone at dispatch time: a git-URL-registered project
+		// (orchestrator.IsBareRepoDir(selfProject.WorkDir)) dispatched under
+		// the container backend gets its /workspace/<name> pre-populated by
+		// the DAEMON, straight from its own bare repo cache, instead of
+		// leaving the sandbox's own in-container clone sequence
+		// (buildCloneSpec/performCloneSteps) to fetch it via the git
+		// gateway's HTTP reverse proxy at container start: a per-job
+		// `git clone file://<bare-repo>` into a staging dir under
+		// r.RuntimesDir (host-visible under container backend — see
+		// hostVisibleRuntimesDirFor's own doc comment), bind-mounted into
+		// the job container directly.
 		//
-		// Every OTHER combination (userns backend, a legacy host-dir-
-		// registered project, or cloneWorkspaceDir empty because
-		// r.RuntimesDir itself is unset) leaves cloneHostBacked false and
-		// falls through to the pre-PR-2b in-sandbox clone path unchanged —
-		// this is additive, not a replacement of that path.
+		// Every OTHER combination (a legacy host-dir-registered project, or
+		// cloneWorkspaceDir empty because r.RuntimesDir itself is unset)
+		// leaves cloneHostBacked false and falls through to the in-sandbox
+		// clone path unchanged — this is additive, not a replacement of
+		// that path.
 		if IsContainerBackend(r.Backend) && cloneWorkspaceDir != "" && selfProject != nil && orchestrator.IsBareRepoDir(selfProject.WorkDir) {
-			// Step 1 (plan doc): bring the bare repo cache up to date before
-			// staging off of it. Best-effort — a transient fetch failure
-			// degrades to dispatching against whatever the cache already
-			// has, matching §論点a's auto-prune-retirement invariant
-			// ("filesystem/remote 観測を根拠に... hard delete しない"; the
-			// same spirit applies here: a stale-but-present cache must not
-			// block dispatch outright).
+			// Bring the bare repo cache up to date before staging off of
+			// it. Best-effort — a transient fetch failure degrades to
+			// dispatching against whatever the cache already has: a
+			// stale-but-present cache must not block dispatch outright.
 			if r.GatewayCredentials != nil {
 				if ferr := FetchBareRepo(ctx, selfProject.WorkDir, r.GatewayCredentials, spec.SecretNamespace); ferr != nil {
 					slog.Warn("per-job clone: refresh bare repo failed; dispatching against the existing cache",
@@ -790,9 +756,9 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		return nil
 	}
-	// The closure above now runs as a single r.WithProjectLock critical
-	// section when wired (production — see WithProjectLock's own doc
-	// comment); nil only for dispatcher unit tests that never wire an
+	// The closure above runs as a single r.WithProjectLock critical section
+	// when wired (production — see WithProjectLock's own doc comment); nil
+	// only for dispatcher unit tests that never wire an
 	// api.ProjectAppService, matching every pre-existing nil-safety
 	// convention in this file.
 	var projectSectionErr error
@@ -809,14 +775,13 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		return "", projectSectionErr
 	}
 
-	// Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): track this
-	// job's routed instruction + reduced environment view + trait-filtered
-	// payload + workspace peer advertise so the `boid task instructions` /
-	// `boid task env` / `boid task payload` / `boid project list` broker
-	// RPCs can serve back this exact job's data — the sole source for it
-	// since the Phase 5b PR6 cutover retired the parallel dispatch-time
-	// context-file materialization (contextFiles/buildEnvironmentYAML in
-	// sandbox_builder.go) this used to also feed.
+	// Track this job's routed instruction + reduced environment view +
+	// trait-filtered payload + workspace peer advertise so the `boid task
+	// instructions` / `boid task env` / `boid task payload` / `boid project
+	// list` broker RPCs can serve back this exact job's data — the sole
+	// source for it (retiring the parallel dispatch-time context-file
+	// materialization contextFiles/buildEnvironmentYAML in
+	// sandbox_builder.go used to also feed).
 	//
 	//   - Instructions comes straight from spec.Instruction (this job's own
 	//     JobSpec field, resolved once by DispatchPlanner.PlanHook's
@@ -835,8 +800,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	//     the 5a-3 cutover.
 	//   - WorkspacePeerAdvertise is deliberately tracked HERE, after the
 	//     project-registry-guarded section above, rather than at this
-	//     function's earlier context-tracking point (pre-PR peer-advertise
-	//     feature): peerAdvertise itself is only computed inside
+	//     function's earlier context-tracking point: peerAdvertise itself
+	//     is only computed inside
 	//     dispatchProjectSection (guarded by r.WithProjectLock), so tracking
 	//     any earlier would either race an unpopulated closure variable or
 	//     require a second trackJobContext call. Tracking after
@@ -856,17 +821,15 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		WorkspacePeerAdvertise:    peerAdvertise,
 	})
 
-	// [Blocker 2, PR7 codex review]: proxyHost stays "" (applyProxyEnv's own
-	// hostGatewayIP fallback) for the userns backend — byte-for-byte
-	// unchanged. The container backend has no 10.0.2.2 projection at all,
-	// so a docker-enabled job needs the compose egress service DNS name
-	// instead; see SandboxRuntimeInfo.ProxyHost's own doc comment.
+	// The container backend has no 10.0.2.2 projection at all, so a
+	// docker-enabled job needs the compose egress service DNS name instead;
+	// see SandboxRuntimeInfo.ProxyHost's own doc comment.
 	var proxyHost string
 	if IsContainerBackend(r.Backend) {
 		proxyHost = composeEgressServiceName
 	}
 
-	// Workspace network subnets for no_proxy (§決定5's sibling connectivity):
+	// Workspace network subnets for no_proxy (sibling connectivity):
 	// resolved here, at the same call site and for the same reason proxyHost
 	// above is — BuildSandboxSpec has no way to reach the backend, and the
 	// value is backend-specific. Fail-open on error: see
@@ -937,15 +900,9 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			desiredRuntimeID = runtimeID
 			r.trackDockerState(runtimeID, ds)
 
-			// Workspace network forced injection (PR9, §決定5): only for the
-			// container backend — the userns backend has no per-workspace
-			// docker network infrastructure at all (containerBackend.Launch
-			// is the only thing that ever creates one, via
-			// ensureWorkspaceNetwork), so calling SetWorkspaceNetwork
-			// unconditionally would force every sibling a userns-backend
-			// docker-enabled job creates onto a network nothing ever
-			// created, breaking every existing docker-proxy-* e2e scenario
-			// (those run against the userns backend + a fake docker). The
+			// Workspace network forced injection: only for the container
+			// backend, which is the only thing that ever creates a
+			// per-workspace docker network (via ensureWorkspaceNetwork). The
 			// network NAME must match containerBackend.Launch's own
 			// ensureWorkspaceNetwork call for this same (installID,
 			// workspace) pair exactly — see containerWorkspaceNetworkName's
@@ -974,12 +931,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 // resolveProjectRuntime resolves projectID to its (WorkspaceID, WorkDir).
 // A non-nil error means the GetProject call itself failed (e.g. a torn
 // registry / DB read failure) and callers must treat that as fatal to the
-// dispatch rather than silently continuing with an empty workspaceID
-// (codex review, PR #787). A nil error with both return strings empty
-// covers two deliberately-conflated "no workspace" cases that callers do
-// NOT treat as fatal: r.Projects unset / projectID empty, and a
-// non-nil-error GetProject that simply found no matching project row
-// (proj == nil) — existing behavior, kept as-is here.
+// dispatch rather than silently continuing with an empty workspaceID. A
+// nil error with both return strings empty covers two deliberately-
+// conflated "no workspace" cases that callers do NOT treat as fatal:
+// r.Projects unset / projectID empty, and a non-nil-error GetProject that
+// simply found no matching project row (proj == nil).
 func (r *Runner) resolveProjectRuntime(projectID string) (string, string, error) {
 	if r.Projects == nil || projectID == "" {
 		return "", "", nil
@@ -1032,8 +988,8 @@ func (r *Runner) proxyPort() int {
 // back to r.proxyPort() when unwired — that port belongs to the real,
 // editable default-slug workspace's own listener, and falling back to it
 // here would be precisely the aliasing bug NoWorkspaceProxyKey's
-// distinctness exists to prevent (BLOCKER, codex review round 3; see
-// resolveWorkspaceProxy's own doc comment). An unwired
+// distinctness exists to prevent (see resolveWorkspaceProxy's own doc
+// comment). An unwired
 // NoWorkspaceProxyPort (test wiring that doesn't set it, or a daemon build
 // that never calls Server.Start) yields port 0 — dispatch fails loudly
 // rather than silently widening what a no-workspace job can reach.
@@ -1054,18 +1010,16 @@ func (r *Runner) noWorkspaceProxyPort() int {
 // workspace.yaml to load) and r.noWorkspaceProxyPort() — a port bound ONCE
 // at daemon startup (internal/server's Server.Start), keyed by
 // NoWorkspaceProxyKey, a reserved string DISTINCT from
-// orchestrator.DefaultWorkspaceSlug (BLOCKER, codex review round 3: keying
-// this path by DefaultWorkspaceSlug itself — the SAME key the named-
-// workspace branch below uses for the real, editable "default"-slug
-// workspace — let that workspace's own workspace.yaml AllowedDomains
-// silently widen the SAME shared listener a no-workspace job was using).
-// This never re-resolves or re-allocates per dispatch (PR #830 round-4
-// simplification, nose directive: sandbox.allowed_domains is
-// ReloadRestartRequired now, so there is nothing to refresh mid-process —
-// see ReloadDynamic's own doc comment, internal/config/schema.go), which
-// also makes this path immune to round-4 blocker 1 (a runtime allocation
-// failure falling back to the widened default listener): there is no
-// runtime allocation call here to fail.
+// orchestrator.DefaultWorkspaceSlug: keying this path by DefaultWorkspaceSlug
+// itself — the SAME key the named-workspace branch below uses for the real,
+// editable "default"-slug workspace — would let that workspace's own
+// workspace.yaml AllowedDomains silently widen the SAME shared listener a
+// no-workspace job was using. This never re-resolves or re-allocates per
+// dispatch: sandbox.allowed_domains is ReloadRestartRequired, so there is
+// nothing to refresh mid-process (see ReloadDynamic's own doc comment,
+// internal/config/schema.go) — and since there is no runtime allocation
+// call on this path, a runtime allocation failure can never fall back to
+// the widened default listener either.
 //
 // A job WITH a workspace (non-empty workspaceID) still goes through the
 // live cascade:
@@ -1078,9 +1032,9 @@ func (r *Runner) noWorkspaceProxyPort() int {
 //     for the workspace with that resolved list, and return its port.
 //
 // If ProxyAllocator is nil or GetOrCreate errors, this branch falls back to
-// r.proxyPort() — the default-workspace listener — which is the documented,
-// pre-existing (not round-2/3) fallback for a NAMED workspace only; it is
-// never reachable from the empty-workspaceID branch above.
+// r.proxyPort() — the default-workspace listener — which is the documented
+// fallback for a NAMED workspace only; it is never reachable from the
+// empty-workspaceID branch above.
 func (r *Runner) resolveWorkspaceProxy(workspaceID string) ([]string, int) {
 	if workspaceID == "" {
 		return r.AllowedDomains, r.noWorkspaceProxyPort()
@@ -1110,17 +1064,15 @@ func (r *Runner) resolveWorkspaceProxy(workspaceID string) ([]string, int) {
 	return resolved, port
 }
 
-// resolveContainerImage returns the workspace's Phase 6 container image
-// override (WorkspaceMeta.ContainerImage), or "" when unset, unwired
+// resolveContainerImage returns the workspace's container image override
+// (WorkspaceMeta.ContainerImage), or "" when unset, unwired
 // (r.Workspaces == nil / workspaceID == ""), or on a load failure — the same
 // best-effort, dispatch-must-never-block-on-this posture as
 // resolveWorkspaceProxy's own independent r.Workspaces.Load call, which this
 // mirrors rather than reuses (each concern loads its own WorkspaceMeta view,
 // consistent with the existing AllowedDomains precedent). "" here always
 // means "use the container backend's configured default image" downstream —
-// this function has no notion of what that default is, and, as of PR5, no
-// caller wires containerBackend into dispatch at all (docs/plans/
-// phase6-container-backend.md §PR5: config 非公開, cutover is PR7).
+// this function has no notion of what that default is.
 func (r *Runner) resolveContainerImage(workspaceID string) string {
 	if r.Workspaces == nil || workspaceID == "" {
 		return ""
@@ -1376,12 +1328,9 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 }
 
 // sandboxBackend returns the SandboxBackend Runner launches through —
-// r.Backend directly (PR-4, docs/plans/volume-only-daemon.md §論点e): the
-// userns fallback construction this function used to fall back to when
-// r.Backend was nil is gone along with the userns backend itself, since
-// production wiring (internal/server/wire.go) now always sets Backend to a
-// real containerBackend. A nil r.Backend here is a caller/test wiring bug,
-// not a valid "use the default backend" signal any more.
+// r.Backend directly. Production wiring (internal/server/wire.go) always
+// sets Backend to a real containerBackend; a nil r.Backend here is a
+// caller/test wiring bug, not a valid "use the default backend" signal.
 func (r *Runner) sandboxBackend() backend.SandboxBackend {
 	return r.Backend
 }
@@ -1394,20 +1343,16 @@ func (r *Runner) sandboxBackend() backend.SandboxBackend {
 // resolveWorkspaceHome's slug and identity / spec.Visibility.DockerEnabled.
 // workspace and workspaceSlug are BOTH passed, unnormalized and normalized,
 // because backend.LaunchOptions uses them for different things — see that
-// struct's WorkspaceSlug doc comment (PR6 論点 D5) for why normalizing the one
-// field would have changed network isolation as a side effect. workspaceHomeID
-// travels the same way and for a related reason: the sandbox.Spec below carries
-// the home volume's NAME (as the HOME mount's source) but nothing that says
-// WHICH INCARNATION of it this dispatch resolved, and that is precisely what the
-// backend has to confirm before mounting it (codex review of PR6, Major 1 —
-// verifyWorkspaceHomeIdentity). The rest (the *orchestrator.JobSpec, not the sandbox.Spec parameter
-// below, which carries neither) — see backend.LaunchOptions.Workspace/
-// DockerEnabled's own doc comments for why containerBackend needs both and
-// why this was previously a wiring gap (both fields were left at their
-// zero value on every real Dispatch call, silently disabling per-job
-// docker-capability delivery and workspace network isolation for the
-// container backend specifically — the userns backend never read either
-// field, so nothing exercised the gap before PR9).
+// struct's WorkspaceSlug doc comment for why normalizing the one field
+// would have changed network isolation as a side effect. workspaceHomeID
+// travels the same way and for a related reason: the sandbox.Spec below
+// carries the home volume's NAME (as the HOME mount's source) but nothing
+// that says WHICH INCARNATION of it this dispatch resolved, and that is
+// precisely what the backend has to confirm before mounting it (see
+// verifyWorkspaceHomeIdentity). The rest (the *orchestrator.JobSpec, not
+// the sandbox.Spec parameter below, which carries neither) — see
+// backend.LaunchOptions.Workspace/DockerEnabled's own doc comments for why
+// containerBackend needs both.
 func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec, cleanup orchestrator.CleanupFunc, desiredRuntimeID string, workspace, workspaceSlug, workspaceHomeID string, dockerEnabled bool) (string, error) {
 	if job == nil {
 		return "", fmt.Errorf("job is required")
@@ -1506,15 +1451,13 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 // per-sandbox docker proxy. All sandbox-local artifact cleanup (spec/state
 // files, scaffolding dirs) is owned by the session's own backend now —
 // containerSession.waitLoop removes its own specPath/dockerTLSDir material
-// by the time Wait returns below — since PR-4 removed the userns backend's
-// PreparedSandbox capability probe this function used to delegate that
-// cleanup through (docs/plans/volume-only-daemon.md §論点e).
+// by the time Wait returns below.
 //
-// [Major 6, PR7 codex review, still relevant]: reap/close must run
-// regardless of backend — this is what makes a docker-enabled job's sibling
-// resources (created by the *client* inside the sandbox — docker CLI,
-// TestContainers, ... — via the per-job dockerproxy) get reaped and the
-// per-sandbox dockerproxy server itself get closed, for every job.
+// reap/close must run regardless of backend — this is what makes a
+// docker-enabled job's sibling resources (created by the *client* inside
+// the sandbox — docker CLI, TestContainers, ... — via the per-job
+// dockerproxy) get reaped and the per-sandbox dockerproxy server itself
+// get closed, for every job.
 func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra orchestrator.CleanupFunc) {
 	defer func() {
 		if extra != nil {
@@ -1551,10 +1494,10 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 // ad-hoc contexts StopJobRuntime/SignalJobRuntime below and
 // runtime_subscriber_export.go's Subscribe/WriteInput/ResizeRuntime/
 // CloseInput synthesize before Adopt (and, for the first two, before
-// Stop/Signal). Living here rather than in container_backend.go (Opus
-// review of PR #857, Nit 7) because most of its consumers are Runner
-// methods — containerSession.Resize is the only one that isn't, and same-
-// package visibility makes the file split cost nothing.
+// Stop/Signal). Living here rather than in container_backend.go because
+// most of its consumers are Runner methods — containerSession.Resize is
+// the only one that isn't, and same-package visibility makes the file
+// split cost nothing.
 //
 // These are all expected to return near-instantly against a healthy engine
 // (a resize, a stop request, a signal, a session lookup) — nothing like
@@ -1567,8 +1510,8 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 // already had the shape to report. This includes the case where the
 // runtimeID's Adopt is already in-flight for another caller
 // (containerBackend.Adopt's doc comment): the in-flight join now selects on
-// ctx too (Opus review of PR #857, Major 1), so a bounded caller here does
-// not inherit an unrelated in-flight attempt's own unboundedness.
+// ctx too, so a bounded caller here does not inherit an unrelated
+// in-flight attempt's own unboundedness.
 //
 // Same value as reapAndCloseDockerProxy's bound just above in this file
 // (the pre-existing 30s exemplar this fix matches) and the various
@@ -1588,9 +1531,8 @@ var sessionControlCallTimeout = newAtomicDuration(30 * time.Second)
 // is loud (Warn) because it means the container may still be running with
 // no further mechanism in place to stop it.
 //
-// [Blocker 3, PR7 codex review]: routes through SandboxBackend.Adopt →
-// SandboxSession.Stop (the same seam SignalJobRuntime/ResizeRuntimeID/
-// CanAttach already use, docs/plans/phase6-container-backend.md §PR1) so a
+// Routes through SandboxBackend.Adopt → SandboxSession.Stop (the same seam
+// SignalJobRuntime/ResizeRuntimeID/CanAttach already use) so a
 // task abort/`boid task stop` reaches the actual container the job is
 // running in via Adopt(runtimeID), not a backend-specific transport this
 // function would otherwise have to know about directly.
@@ -1606,8 +1548,8 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 	defer cancel()
 	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !ok {
-		// [Moderate 4, Opus review of PR #857]: distinguish "Adopt legitimately found
-		// nothing" (the common case — the runtime already exited/was
+		// Distinguish "Adopt legitimately found nothing" (the common case
+		// — the runtime already exited/was
 		// reaped, ctx still has budget left) from "the control-call
 		// deadline fired before Adopt could resolve" (ctx.Err() != nil): the
 		// caller (finalizeTerminal → CleanupTaskWindow, synchronous, no
@@ -1639,11 +1581,10 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 // survive while run-agent.py acts on it and runner-inner-child still posts
 // `boid job done` through the broker. Best-effort: errors at debug level
 // only, with the same control-call-deadline exception as StopJobRuntime
-// above (Moderate 4).
+// above.
 //
-// Routes through SandboxBackend.Adopt → SandboxSession.Signal
-// (docs/plans/phase6-container-backend.md §PR1: this is the `boid agent
-// stop` seam the plan calls out by name).
+// Routes through SandboxBackend.Adopt → SandboxSession.Signal, the `boid
+// agent stop` seam.
 func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 	if r.Backend == nil || runtimeID == "" {
 		return
@@ -1672,21 +1613,17 @@ func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 }
 
 // ReapOrphans reconciles sandbox resources a previous daemon instance left
-// behind, via the configured SandboxBackend (docs/plans/
-// phase6-container-backend.md §PR7 / §決定 6). It is a thin delegation —
+// behind, via the configured SandboxBackend. It is a thin delegation —
 // r.sandboxBackend().ReapOrphans(ctx) — so callers (internal/server/wire.go's
-// startup sequence) never need to know backend construction details;
-// container is the only sandbox backend since PR-4, so this always does
-// real reconciliation work now.
+// startup sequence) never need to know backend construction details.
 //
 // Callers MUST run this — and act on ReapReport.FailedJobIDs, e.g. by
 // skipping auto-reopen for the corresponding tasks — strictly BEFORE
-// resuming any daemon_shutdown-aborted task, per §決定 6: a docker
-// container does not die when the daemon process restarts the way a
-// userns child process (killed by MarkStaleJobsFailed's implicit process
-// death) does, so auto-reopening before reap could dispatch a fresh agent
-// against a task whose previous job container is still alive — two agents
-// mutating the same $HOME/task RPC concurrently.
+// resuming any daemon_shutdown-aborted task: a docker container does not
+// die when the daemon process restarts, so auto-reopening before reap
+// could dispatch a fresh agent against a task whose previous job container
+// is still alive — two agents mutating the same $HOME/task RPC
+// concurrently.
 func (r *Runner) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 	return r.sandboxBackend().ReapOrphans(ctx)
 }
@@ -1694,26 +1631,23 @@ func (r *Runner) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 // CanAttach reports whether runtimeID can currently be adopted by the
 // configured SandboxBackend — i.e. whether an attach/resize/signal ingress
 // against it should be allowed. Routes through Adopt so the backend answers
-// with its own notion of session liveness (codex review Blocker 2 on PR
-// #816) rather than internal/server/job_runtime_routes.go's
-// resolveAttachableJob type-asserting onto a backend-specific capability
-// directly.
+// with its own notion of session liveness rather than
+// internal/server/job_runtime_routes.go's resolveAttachableJob
+// type-asserting onto a backend-specific capability directly.
 //
 // sessionControlCallTimeout is layered on top of the caller's own ctx as a
-// FLOOR, not a replacement (next-session-container-backend-followups.md #2,
-// Opus review of PR #857): CanAttach's only caller
-// (job_runtime_routes.go's resolveAttachableJob) passes req.Context(),
-// which stays open for as long as the HTTP client stays connected — before
-// this, that gave Adopt an effectively unbounded ctx. Adopt's in-flight-join
-// wait already selects on ctx (Major 1 in
-// session_control_call_deadline_test.go), so this did not itself hang — but
-// an unbounded CanAttach caller could still sit as the in-flight attempt's
-// "owner" against a wedged engine, and every bounded joiner for the SAME
-// runtimeID (StopJobRuntime, SignalJobRuntime, ...) would then exhaust its
-// own sessionControlCallTimeout budget waiting on that owner instead of the
-// engine ever answering — `boid task stop` failing every time, not
-// hanging, but never succeeding either. context.WithTimeout(ctx, ...) keeps
-// whichever of the caller's own deadline (if shorter) and
+// FLOOR, not a replacement: CanAttach's only caller (job_runtime_routes.go's
+// resolveAttachableJob) passes req.Context(), which stays open for as long
+// as the HTTP client stays connected — an effectively unbounded ctx for
+// Adopt otherwise. Adopt's in-flight-join wait already selects on ctx
+// (see session_control_call_deadline_test.go), so this did not itself hang
+// — but an unbounded CanAttach caller could still sit as the in-flight
+// attempt's "owner" against a wedged engine, and every bounded joiner for
+// the SAME runtimeID (StopJobRuntime, SignalJobRuntime, ...) would then
+// exhaust its own sessionControlCallTimeout budget waiting on that owner
+// instead of the engine ever answering — `boid task stop` failing every
+// time, not hanging, but never succeeding either. context.WithTimeout(ctx,
+// ...) keeps whichever of the caller's own deadline (if shorter) and
 // sessionControlCallTimeout fires first, and the caller's own
 // cancellation (the HTTP client disconnecting) still propagates through
 // unchanged, because the new ctx is derived FROM ctx rather than from
@@ -1727,20 +1661,18 @@ func (r *Runner) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 // HTTP-visible contract (status code / response shape) to fix it is left
 // alone here; see this PR's description for why.
 //
-// The boid.log side of that same ambiguity IS fixed (NB-1, Opus independent
-// review of this PR): when ok is false because ctx.Err() != nil rather than
-// a legitimate Adopt miss, this logs — the same distinction
-// StopJobRuntime/SignalJobRuntime/ResizeRuntimeID/the four
-// runtime_subscriber_export.go routes already make, so an operator grepping
-// boid.log for "why did this attach/resize get rejected" is not stuck
-// guessing between "no such runtime" and "the engine never answered".
-// Unlike those five, ctx here is derived from the CALLER's own ctx (not
-// context.Background()), so ctx.Err() at this point can be either
+// The boid.log side of that same ambiguity IS fixed: when ok is false
+// because ctx.Err() != nil rather than a legitimate Adopt miss, this logs —
+// the same distinction StopJobRuntime/SignalJobRuntime/ResizeRuntimeID/the
+// four runtime_subscriber_export.go routes already make, so an operator
+// grepping boid.log for "why did this attach/resize get rejected" is not
+// stuck guessing between "no such runtime" and "the engine never
+// answered". Unlike those five, ctx here is derived from the CALLER's own
+// ctx (not context.Background()), so ctx.Err() at this point can be either
 // DeadlineExceeded (the floor fired, or the caller's own deadline did) OR
 // Canceled (the HTTP client disconnecting mid-request —
 // job_runtime_routes.go passes req.Context()). The level differs between
-// the two (nit, Opus independent review of this PR, round 2):
-// DeadlineExceeded is Warn, the same actionable signal StopJobRuntime's own
+// the two: DeadlineExceeded is Warn, the same actionable signal StopJobRuntime's own
 // Warn is (the engine may be wedged); Canceled is only Debug — an ordinary,
 // non-actionable client disconnect, not evidence of anything wrong with the
 // engine, so it must not carry the same "something needs attention" weight
@@ -1773,19 +1705,16 @@ func (r *Runner) CanAttach(ctx context.Context, runtimeID string) bool {
 // internal/server/job_runtime_routes.go — the caller there has already
 // resolved job.RuntimeID and doesn't go through the jobID-keyed
 // RuntimeInputWriter path the WS transport uses; see ResizeRuntime for
-// that one). docs/plans/phase6-container-backend.md §PR1 lists this as one
-// of the two resize ingress routes that must route through
-// SandboxSession.Resize.
+// that one). This is one of the two resize ingress routes that must route
+// through SandboxSession.Resize.
 //
 // sessionControlCallTimeout is layered on the caller's ctx as a FLOOR, the
-// same as CanAttach just above (next-session-container-backend-followups.md
-// #1 — the identical defect, left in this function when PR #862 fixed its
-// neighbour). The caller is job_runtime_routes.go's POST
+// same as CanAttach just above. The caller is job_runtime_routes.go's POST
 // /api/jobs/{id}/resize passing req.Context(), and the daemon's http.Server
 // sets neither ReadTimeout nor WriteTimeout (internal/server/server.go), so
 // without the floor a client that simply stays connected hands this an
-// effectively unbounded ctx. Adopt's in-flight join selects on ctx (Major 1,
-// PR #857), so that never hung this call itself — the cost lands on OTHER
+// effectively unbounded ctx. Adopt's in-flight join selects on ctx, so that
+// never hung this call itself — the cost lands on OTHER
 // callers: an unbounded resize owning the in-flight Adopt attempt for a
 // runtimeID starves every bounded joiner of that same runtimeID
 // (StopJobRuntime, SignalJobRuntime) of its whole sessionControlCallTimeout
@@ -1806,8 +1735,7 @@ func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size Ter
 	defer cancel()
 	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !ok {
-		// [Moderate 4 / Minor 6 follow-up, Opus review of PR #857 (2nd
-		// round)]: without this, a deadline-timed-out Adopt and a
+		// Without this, a deadline-timed-out Adopt and a
 		// deadline-timed-out Resize produced two unrelated-looking errors
 		// for the same underlying cause (an unresponsive engine) —
 		// ErrRuntimeUnsupported here vs. the wrapped message below.
@@ -1841,9 +1769,9 @@ func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size Ter
 		return ErrRuntimeUnsupported
 	}
 	if err := session.Resize(size); err != nil {
-		// [Minor 6, Opus review of PR #857]: session.Resize's underlying
-		// ContainerResize returns a bare context.DeadlineExceeded,
-		// undecorated, once sessionControlCallTimeout fires (moby client
+		// session.Resize's underlying ContainerResize returns a bare
+		// context.DeadlineExceeded, undecorated, once
+		// sessionControlCallTimeout fires (moby client
 		// hands context errors back unwrapped) — surfacing that verbatim to
 		// the HTTP resize route's caller would read as
 		// `Get ".../resize": context deadline exceeded`, which says nothing
@@ -1858,10 +1786,9 @@ func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size Ter
 
 // CleanupTaskWindow stops all tracked runtimes associated with a task.
 //
-// [Blocker 3, PR7 codex review]: routes through StopJobRuntime (itself
-// SandboxBackend.Adopt → SandboxSession.Stop, see its doc comment) so
-// aborting a task actually stops its job container, not just an in-memory
-// bookkeeping entry.
+// Routes through StopJobRuntime (itself SandboxBackend.Adopt →
+// SandboxSession.Stop, see its doc comment) so aborting a task actually
+// stops its job container, not just an in-memory bookkeeping entry.
 func (r *Runner) CleanupTaskWindow(taskID string) {
 	runtimeIDs := r.takeTaskRuntimes(taskID)
 	for _, runtimeID := range runtimeIDs {
@@ -1929,10 +1856,10 @@ func (r *Runner) UnregisterJob(jobID string) {
 	r.cleanupCheckoutDir(jobID)
 }
 
-// trackCheckoutDir records jobID's per-job clone staging dir (docs/plans/
-// volume-only-daemon.md §論点b, PR-2b) so cleanupCheckoutDir can remove it
-// once the job completes — the same jobID-keyed tracked-resource pattern
-// r.gatewayTokens/r.jobTokens already use for their own per-job cleanup.
+// trackCheckoutDir records jobID's per-job clone staging dir so
+// cleanupCheckoutDir can remove it once the job completes — the same
+// jobID-keyed tracked-resource pattern r.gatewayTokens/r.jobTokens already
+// use for their own per-job cleanup.
 func (r *Runner) trackCheckoutDir(jobID, stagingDir string) {
 	if jobID == "" || stagingDir == "" {
 		return
@@ -1945,15 +1872,14 @@ func (r *Runner) trackCheckoutDir(jobID, stagingDir string) {
 	r.checkoutDirs[jobID] = stagingDir
 }
 
-// cleanupCheckoutDir removes jobID's per-job clone staging dir, if any
-// (docs/plans/volume-only-daemon.md §論点b step 5: "job 終了時、 staging
-// area を削除"). Called from UnregisterJob so this runs on every job-
-// completion path that already calls it (CompleteJob's normal exit,
-// watchRuntime's "exited without boid job done" path, and Dispatch's own
-// early-failure paths — see UnregisterJob's other call sites). A missing
-// entry (jobID never reached the per-job-clone step, e.g. a legacy
-// host-dir-registered project or the userns backend) is a silent no-op —
-// the common case for every dispatch this PR does not touch.
+// cleanupCheckoutDir removes jobID's per-job clone staging dir, if any.
+// Called from UnregisterJob so this runs on every job-completion path that
+// already calls it (CompleteJob's normal exit, watchRuntime's "exited
+// without boid job done" path, and Dispatch's own early-failure paths —
+// see UnregisterJob's other call sites). A missing entry (jobID never
+// reached the per-job-clone step, e.g. a legacy host-dir-registered
+// project) is a silent no-op — the common case for every dispatch that
+// never took the per-job-clone path.
 func (r *Runner) cleanupCheckoutDir(jobID string) {
 	r.checkoutMu.Lock()
 	stagingDir, ok := r.checkoutDirs[jobID]
@@ -2016,9 +1942,7 @@ func (r *Runner) takeTaskRuntimes(taskID string) []string {
 // failed and delivers a JobCompletionResult so a caller blocked in
 // WaitForJobCtx is not stuck forever.
 //
-// result.EngineError distinguishes WHY the process exited that way (Opus
-// review of PR #855, follow-up to PR #855 itself, which deliberately left
-// this gap open rather than invent a new failure shape mid-review):
+// result.EngineError distinguishes WHY the process exited that way:
 // containerSession.waitLoop sets it when the container ENGINE — not the
 // job's own command — failed to report a real exit status (ContainerWait
 // itself failing, or its response carrying an engine-side Error instead of a

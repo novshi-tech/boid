@@ -14,22 +14,9 @@ type resizeJobRuntimeRequest struct {
 	Cols int `json:"cols"`
 }
 
-// mountJobRuntimeRoutes mounts the remaining plain-HTTP job runtime routes.
-// The interactive attach stream itself moved to WebSocket
-// (api.WSAttachHandler, mounted separately in mountRoutes — docs/plans/
-// cli-remote-connection.md Phase 3 PR3 "WebSocket attach 一本化"); this file
-// used to also own a hand-rolled `POST /api/jobs/{id}/attach` hijack
-// handler that spoke a bespoke `Upgrade: boid-attach` protocol
-// (internal/client.Client.AttachJob's previous implementation was its only
-// caller). PR3 removed both ends outright — two attach transports serving
-// the exact same purpose was the maintenance burden decision 5 in the plan
-// doc calls out, and the WS route already had to exist for the Web UI.
-// /api/jobs/{id}/resize survives unchanged: it is a plain, non-hijacked
-// JSON POST unrelated to the attach transport, and stays the CLI's resize
-// path (internal/client.Client.ResizeJob, called from cmd/attach.go's
-// SIGWINCH handler) — see TestServerJobRuntimeAttachAndResize
-// (server_phase3_test.go) for its own regression coverage, independent of
-// AttachJob's transport.
+// mountJobRuntimeRoutes mounts the plain-HTTP job runtime routes; the
+// interactive attach stream lives on WebSocket instead (api.WSAttachHandler,
+// mounted separately in mountRoutes).
 func mountJobRuntimeRoutes(r chi.Router, runtime *appRuntime) {
 	if runtime == nil || runtime.jobStore == nil || runtime.runner == nil {
 		return
@@ -47,11 +34,9 @@ func mountJobRuntimeRoutes(r chi.Router, runtime *appRuntime) {
 			return
 		}
 
-		// Routes through Runner (→ SandboxBackend.Adopt → SandboxSession.Resize)
-		// — this is one of the two resize ingress routes docs/plans/
-		// phase6-container-backend.md §PR1 requires to go through the
-		// backend/session seam (the other is the WS "resize" frame,
-		// internal/api/ws_attach.go).
+		// Routes through Runner (→ SandboxBackend.Adopt → SandboxSession.Resize);
+		// the WS "resize" frame (internal/api/ws_attach.go) is the other
+		// ingress route through the same backend/session seam.
 		if err := runtime.runner.ResizeRuntimeID(req.Context(), job.RuntimeID, dispatcher.TerminalSize{
 			Rows: body.Rows,
 			Cols: body.Cols,
@@ -75,9 +60,7 @@ func resolveAttachableJob(w http.ResponseWriter, req *http.Request, runtime *app
 		return nil, false
 	}
 	// Routes through Runner (→ SandboxBackend.Adopt) so the backend answers
-	// with its own notion of session liveness. See Runner.CanAttach's doc
-	// comment (docs/plans/phase6-container-backend.md §PR1, codex review
-	// Blocker 2 on PR #816).
+	// with its own notion of session liveness.
 	if !runtime.runner.CanAttach(req.Context(), job.RuntimeID) {
 		writeJSONError(w, http.StatusConflict, "job runtime does not support attach")
 		return nil, false

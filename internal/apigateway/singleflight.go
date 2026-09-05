@@ -3,16 +3,9 @@ package apigateway
 import "sync"
 
 // singleflightGroup coalesces concurrent callers sharing the same key into a
-// single execution of fn — mirroring golang.org/x/sync/singleflight.Group's
-// core behavior (docs/plans/api-gateway.md §6 "先回りリフレッシュ...同時リク
-// エストは singleflight で 1 回にまとめる"). Hand-rolled rather than
-// depending on that package: CLAUDE.md's "外部ライブラリは最小限。標準ライブ
-// ラリで実現できるものは追加しない" rule, and the whole mechanism is a
-// mutex-guarded map of in-flight calls plus one sync.WaitGroup per key — well
-// within what this leaf package already keeps self-contained elsewhere (see
-// token.go's GenerateToken, duplicated rather than imported from
-// internal/gitgateway for the identical reason: doc.go's own
-// "self-contained" rationale).
+// single execution of fn, mirroring golang.org/x/sync/singleflight.Group's
+// core behavior. Hand-rolled to avoid the external dependency (CLAUDE.md's
+// minimal-dependencies rule).
 //
 // Generic over the result type T so this one small type serves
 // OAuth2TokenSource's string-access-token use today without hard-coding that

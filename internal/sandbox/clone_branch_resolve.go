@@ -17,28 +17,16 @@ type GitRunFunc func(args ...string) error
 // freshly cloned repository, sharing the exact algorithm between the
 // sandbox-internal runner path (internal/sandbox/runner/clone.go's
 // resolveCloneBranch) and the daemon-side per-job clone path
-// (internal/dispatcher/checkout.go's PrepareJobCheckout) — PR834 PR-2b
-// round-2 codex review flagged the two paths as divergent:
-// PrepareJobCheckout ran an unconditional `git checkout -B <branch>
-// origin/<branch>`, missing both the ClassifyBaseBranch case-3 "create a
-// missing base branch from a fork point" handling and the "origin/" prefix
-// stripping a project.yaml base_branch can carry — both of which this
-// package's own CloneSpec.BaseBranch/BaseBranchForkPoint already declare
-// for the sandbox-internal path. Rather than have PrepareJobCheckout
-// reimplement that logic a second time (and risk it drifting out of sync
-// again), both call sites now share this one implementation.
+// (internal/dispatcher/checkout.go's PrepareJobCheckout).
 //
 // branch is the ref ultimately checked out; baseBranch is the ref whose tip
 // provides the starting point — identical to branch for every current
-// production caller (orchestrator.BuildCloneDeclaration: CheckoutOnly is
-// always true, so every task occupies its own BaseBranch directly), but
-// kept as a separate parameter rather than collapsed away, mirroring
-// CloneDeclaration's own "kept as an explicit field... so the declaration
-// shape stays self-describing" convention. Both may legitimately carry an
-// "origin/" prefix (a project.yaml `base_branch: origin/main`) — this
-// function strips it consistently from both before creating/checking out
-// the local branch, so the resulting local branch is always named "main",
-// never "origin/main".
+// production caller, but kept as a separate parameter rather than collapsed
+// away, so the declaration shape stays self-describing. Both may
+// legitimately carry an "origin/" prefix (a project.yaml `base_branch:
+// origin/main`) — this function strips it consistently from both before
+// creating/checking out the local branch, so the resulting local branch is
+// always named "main", never "origin/main".
 //
 // baseBranchForkPoint, when set, is used to create baseBranch locally if it
 // resolves on neither origin nor locally yet (ClassifyBaseBranch case 3,

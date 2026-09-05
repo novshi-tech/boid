@@ -11,34 +11,25 @@ import (
 	"time"
 )
 
-// workspace_home_tar.go is the HOST-side half of PR8 of
-// docs/plans/workspace-home-volume-persistence.md (論点 f): it turns a pre-PR6
-// workspace home directory — ~/.local/share/boid/homes/<slug>, the layout
-// WorkspaceHomesDir still resolves — into the byte stream
-// `boid workspace import-home` streams to the daemon, and the daemon feeds to
-// an extraction container's stdin.
+// workspace_home_tar.go is the HOST-side half of workspace home migration:
+// it turns a pre-volume workspace home directory —
+// ~/.local/share/boid/homes/<slug>, the layout WorkspaceHomesDir still
+// resolves — into the byte stream `boid workspace import-home` streams to
+// the daemon, and the daemon feeds to an extraction container's stdin.
 //
-// # Why a tar stream rather than a bind mount (論点 f)
+// A tar stream rather than a bind mount, because under rootless podman the
+// container's uid 1000 is not the host's uid 1000: binding a directory that
+// holds a 0600 .credentials.json in would be unreadable from inside, while
+// running as container uid 0 would read it but write everything into the
+// volume owned by a uid the harness is not. A tar stream crosses that
+// boundary as DATA: this process reads the files as the host user who owns
+// them, and the extraction re-creates them as whatever uid the job
+// container runs as (see workspaceHomeImportArgv).
 //
-// The obvious implementation is to bind the legacy directory into a container
-// and `cp -a` it onto the volume. 論点 f rejects that, and the reason is the
-// incident the whole volume-only pivot came out of
-// (docs/plans/volume-only-daemon.md's 「壁 2」): under rootless podman the
-// container's uid 1000 is NOT the host's uid 1000, so a bind of a directory
-// holding a 0600 .credentials.json is unreadable from inside — and running as
-// container uid 0 instead reads it but then writes everything into the volume
-// owned by a uid the harness is not. A tar stream crosses that boundary as
-// DATA: this process reads the files as the host user who owns them, and the
-// extraction re-creates them as whatever uid the job container runs as
-// (see workspaceHomeImportArgv).
-//
-// # This code runs in the CLI, not the daemon
-//
-// It lives in internal/dispatcher because that is where WorkspaceHomesDir lives
-// and where its doc comment already promises PR8 will read from it — not
-// because the daemon calls it. The daemon under the compose deploy cannot see
-// the host's filesystem at all, which is exactly why the tar is produced on the
-// host side and streamed (see Runner.ImportWorkspaceHome's D1 note).
+// This runs in the CLI, not the daemon: the daemon under the compose deploy
+// cannot see the host's filesystem at all, so the tar is produced on the
+// host side and streamed (see Runner.ImportWorkspaceHome). It lives in this
+// package because that is where WorkspaceHomesDir lives.
 
 // WorkspaceHomeTarStats is what a walk produced (and, while it is running, how
 // far it has got). Reported both incrementally through WriteWorkspaceHomeTar's
@@ -67,10 +58,10 @@ type WorkspaceHomeTarStats struct {
 }
 
 // workspaceHomeTarProgressInterval bounds how often the progress callback
-// fires. Generous because the callback is a terminal write on a walk that can
-// touch hundreds of thousands of files: fast enough that a 4.3GB transfer never
-// looks hung (D4's 「進捗が見えること」), slow enough not to become the walk's
-// own bottleneck.
+// fires. Generous because the callback is a terminal write on a walk that
+// can touch hundreds of thousands of files: fast enough that a multi-GB
+// transfer never looks hung, slow enough not to become the walk's own
+// bottleneck.
 const workspaceHomeTarProgressInterval = 2 * time.Second
 
 // WriteWorkspaceHomeTar writes root's contents to w as an uncompressed tar
@@ -82,37 +73,33 @@ const workspaceHomeTarProgressInterval = 2 * time.Second
 //
 // # What crosses, and what deliberately does not
 //
-//   - Modes cross exactly (D3: 「`0600` などの mode は維持すること」). The
-//     extraction side is what makes that stick; see workspaceHomeImportArgv.
+//   - Modes cross exactly; the extraction side is what makes that stick,
+//     see workspaceHomeImportArgv.
 //   - Ownership does NOT cross. Every entry is written uid/gid 0 with no
 //     user/group names, because the extraction discards ownership anyway
-//     (--no-same-owner) and recording the host account into an artifact whose
-//     whole purpose is to cross a uid-mapping boundary is noise at best.
-//   - Symlinks INSIDE the tree cross as symlinks, targets verbatim — absolute
-//     ones included. Following them would duplicate payloads and flatten a
-//     toolchain's internal structure; rewriting them would be boid inventing a
-//     target the workspace never had. An absolute symlink into the host
-//     filesystem is already broken inside the sandbox and stays broken, which is
-//     the honest outcome (memory: 「workspace HOME 配下の symlink は relative
-//     必須」).
+//     (--no-same-owner) and recording the host account would be noise.
+//   - Symlinks INSIDE the tree cross as symlinks, targets verbatim —
+//     absolute ones included. Following them would duplicate payloads and
+//     flatten a toolchain's internal structure; rewriting them would be
+//     boid inventing a target the workspace never had. An absolute symlink
+//     into the host filesystem is already broken inside the sandbox and
+//     stays broken, which is the honest outcome.
 //   - The ROOT is the one exception: a root that is itself a symlink is
-//     RESOLVED and its target walked. The asymmetry is deliberate — the root is
-//     the directory the operator named on the command line, while the links
-//     inside it are the home's own structure. See ResolveWorkspaceHomeSource for
-//     the empty-archive bug that made this explicit.
+//     resolved and its target walked — the root is the directory the
+//     operator named on the command line, while the links inside it are
+//     the home's own structure. See ResolveWorkspaceHomeSource.
 //   - Hard links cross as links. A node/volta toolchain hard-links
 //     aggressively, and writing each name's content again would inflate a
 //     multi-GB transfer for nothing.
-//   - Sockets, FIFOs and device nodes are SKIPPED and named in Skipped. None of
-//     them is state a workspace home needs restored (an agent's IPC socket is
-//     re-created on demand), and a FIFO in particular would make the extraction
-//     block or fail.
-//   - Sparse files are read densely: a 100MiB sparse file crosses as 100MiB.
-//     archive/tar has no portable sparse encoding worth relying on, and the
-//     alternative — dropping the file — loses data.
+//   - Sockets, FIFOs and device nodes are SKIPPED and named in Skipped.
+//     None of them is state a workspace home needs restored, and a FIFO in
+//     particular would make the extraction block or fail.
+//   - Sparse files are read densely: a 100MiB sparse file crosses as
+//     100MiB. archive/tar has no portable sparse encoding worth relying
+//     on, and dropping the file would lose data.
 //
-// It never writes to root. That is D4's first rule (「source は絶対に削除・変更
-// しない。読むだけ」) and the reason the migration is safe to re-run.
+// It never writes to root — this is a read-only walk, which is why the
+// migration is safe to re-run.
 func WriteWorkspaceHomeTar(w io.Writer, root string, progress func(WorkspaceHomeTarStats)) (WorkspaceHomeTarStats, error) {
 	var stats WorkspaceHomeTarStats
 
@@ -326,39 +313,25 @@ func describeIrregularMode(mode os.FileMode) string {
 	}
 }
 
-// ResolveWorkspaceHomeSource validates root as a migration source and returns
-// the path a walk of it has to actually run against.
+// ResolveWorkspaceHomeSource validates root as a migration source and
+// returns the path a walk of it has to actually run against.
 //
-// # Why this exists (codex review of PR8 round 3, Blocker 2)
+// A symlinked root has to be resolved rather than merely stat'd: os.Stat
+// follows a symlink and reports "yes, a directory" for
+// `homes/team-a -> /mnt/backup/team-a`, but filepath.WalkDir lstats its
+// root and does not descend into a symlink — producing a well-formed,
+// zero-entry archive with no error, which then extracts cleanly over the
+// HOME volume the daemon already destroyed.
 //
-// Every pre-flight in this feature used os.Stat, which FOLLOWS a symlink and
-// answers "yes, a directory" for `homes/team-a -> /mnt/backup/team-a`. The walk
-// disagrees: filepath.WalkDir lstats its root, sees a symlink rather than a
-// directory, does not descend, and hands the callback exactly one path — the
-// root — which WriteWorkspaceHomeTar skips unconditionally. The result is a
-// well-formed archive with ZERO entries and no error anywhere, and since the
-// daemon destroys the workspace's HOME volume before it reads a byte of the
-// body, that archive extracts cleanly over the wreckage and the CLI prints
-// "imported".
+// Resolved rather than refused: a symlink is how an operator points at a
+// home on another disk, and following it is bounded (a read of a directory
+// the operator named, the same archive a --from of the target would
+// produce). Only the final component is resolved, and only when it is
+// itself a link — an intermediate symlink needs no special handling.
 //
-// # Resolved rather than refused
-//
-// Refusing a symlinked --from would also be safe, and it would be worse: a
-// symlink is how an operator points at a home that lives on another disk, and
-// "we followed the link you gave us" is what every other tool they use does. The
-// cost of following it is bounded — this is a READ of a directory the operator
-// named, and the archive it produces is the same one a --from of the target
-// would produce.
-//
-// Only the FINAL component is resolved, and only when it is itself a link. An
-// intermediate symlink needs no special handling (WalkDir lstats the root, which
-// is a directory, and descends normally), and resolving one would only make the
-// path in the confirmation prompt less like the one the operator typed.
-//
-// Links INSIDE the tree are untouched and still cross as links — see
-// WriteWorkspaceHomeTar's contract for why that asymmetry is deliberate: the
-// root is the thing the operator NAMED, while the links inside it are the
-// structure of the home itself.
+// Links INSIDE the tree are untouched and still cross as links (see
+// WriteWorkspaceHomeTar): the root is what the operator named, the links
+// inside it are the home's own structure.
 func ResolveWorkspaceHomeSource(root string) (string, error) {
 	info, err := os.Lstat(root)
 	if err != nil {
@@ -388,27 +361,16 @@ func ResolveWorkspaceHomeSource(root string) (string, error) {
 // WorkspaceHomeSourceHasEntries reports whether root holds anything
 // WriteWorkspaceHomeTar would put in the archive.
 //
-// # Why a separate question (codex round 3, Blocker 2, second half)
+// An empty source is refused (see Runner.ImportWorkspaceHome) because the
+// daemon removes the HOME volume before it reads a byte of the tar body, so
+// an empty archive would extract cleanly over the wreckage with no error
+// anywhere — a symlinked root is only one of several ways to produce one (a
+// typo'd --from, an unpopulated backup dir, an unmounted mount all land in
+// the same place).
 //
-// The symlinked root was ONE way to produce an archive with no entries. It is
-// not the only one: a --from with a typo in it, a backup directory that was
-// never populated, a mount that is not mounted, all land in the same place — and
-// that place is uniquely destructive, because the daemon removes the HOME volume
-// before it reads the body. So the outcome is refused on its own terms rather
-// than only its known causes, and it is refused on BOTH sides of the wire (see
-// Runner.ImportWorkspaceHome's own check, which is the one that sits on the same
-// side as the deletion).
-//
-// Refusing an empty source costs nothing an operator needs: "make this
-// workspace's home empty" is `boid workspace remove` plus a re-create, which
-// says what it means and does not run through a migration command.
-//
-// # Cost
-//
-// It stops at the first entry that would be carried (fs.SkipAll), so on a real
-// home it is one readdir. The pathological input — a directory holding only
-// sockets and FIFOs — is the only one that walks the whole tree, and it is
-// exactly the input whose answer cannot be short-circuited.
+// It stops at the first entry that would be carried (fs.SkipAll), so on a
+// real home it is one readdir; only a directory holding nothing but
+// sockets and FIFOs walks the whole tree.
 func WorkspaceHomeSourceHasEntries(root string) (bool, error) {
 	resolved, err := ResolveWorkspaceHomeSource(root)
 	if err != nil {

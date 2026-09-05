@@ -12,53 +12,37 @@ import (
 	"github.com/novshi-tech/boid/internal/dockerres"
 )
 
-// This file is the engine-side half of 論点 a-2 of
-// docs/plans/workspace-home-volume-persistence.md (PR7): reporting on, and
-// deleting, the per-workspace HOME volumes PR6 made the workspace home.
+// This file reports on, and deletes, the per-workspace HOME volumes (see
+// docs/plans/workspace-home-volume-persistence.md 論点a-2).
 //
 // Everything policy-shaped — the reserved `default` slug is never deleted, a
 // missing home is not an error, a sizing failure never blocks deletion, an
 // orphan is a home with no workspace row — stays in internal/api, which is
-// where it was and where the workspace rows are. What lives here is only the
-// mechanism: which engine calls answer those questions and what their answers
-// mean. The split is what keeps internal/api free of moby imports (the
-// package currently has none, and 論点 a-2's D2 asks that it stay that way).
+// where the workspace rows are. What lives here is only the mechanism: which
+// engine calls answer those questions and what their answers mean. The
+// split keeps internal/api free of moby imports.
 
 // workspaceHomeVolumeTimeout bounds ONE engine call — not one store
 // operation. Every method here derives a fresh deadline from its caller's
 // context immediately before each request (see engineCall).
 //
-// It exists because DiskUsage is not a cheap lookup: it is the ONLY endpoint
-// that reports a volume's size (see WorkspaceHomeVolumeStore's doc comment)
-// and the engine answers it by walking every image, container and volume it
-// has. Measured against rootless podman 4.9.3 on a host with 469 images / 157
-// volumes / 10 containers (2026-07-27): 0.47–0.72s warm. That is fine for the
-// three callers this store has — `boid workspace show`, `boid workspace
-// remove` and `boid gc`, none of them on a dispatch path — but an engine
-// wedged on a slow filesystem could otherwise hang an interactive CLI
-// indefinitely, and every failure mode here degrades gracefully (a size comes
-// back unknown, rendered "?"), so a deadline costs nothing it cannot afford.
+// It exists because DiskUsage is not a cheap lookup: it is the only endpoint
+// that reports a volume's size, and the engine answers it by walking every
+// image, container and volume it has — this can take the better part of a
+// second on a large host. That is fine for the three callers this store has
+// (`boid workspace show`, `boid workspace remove`, `boid gc`, none on a
+// dispatch path), but an engine wedged on a slow filesystem could otherwise
+// hang an interactive CLI indefinitely; every failure mode here degrades
+// gracefully (a size comes back unknown, rendered "?"), so a deadline costs
+// nothing it cannot afford.
 //
-// Generous rather than tight for the same reason: on a host with a genuinely
-// large image store the walk is the expected cost, not a hang, and reporting
-// "?" for a size the engine would have produced in 20 seconds is a worse
-// answer than waiting.
-//
-// # Per call, not per operation (PR7 round-2 codex review, Major 1)
-//
-// One deadline for the whole of Remove looks tidier and quietly breaks this
-// package's most important contract — "a sizing failure never blocks the
-// deletion". Remove sizes the volume before deleting it, so a DiskUsage that
-// runs the shared deadline out hands VolumeRemove a context that is ALREADY
-// expired: the delete then fails without a request ever leaving the process,
-// and since WorkspaceHandler.Remove removes the DB row first, the operator is
-// left with no workspace and a live volume full of harness credentials. The
-// only way sizing can be genuinely best-effort is for its budget to be its
-// own. The upper bound on a whole operation grows accordingly (Remove can now
-// spend up to 3× this) — the right trade, since the alternative bounds the
-// operation by silently sacrificing its point. Callers that need a tighter
-// overall bound impose it the normal way, on the context they pass in: these
-// deadlines only ever shorten it, never extend it.
+// Taken per call rather than once for the whole of Remove: Remove sizes the
+// volume before deleting it, so a shared deadline that DiskUsage runs out
+// would hand VolumeRemove an already-expired context — breaking this
+// package's most important contract, that a sizing failure never blocks the
+// deletion. Callers that need a tighter overall bound impose it the normal
+// way, on the context they pass in: these deadlines only ever shorten it,
+// never extend it.
 var workspaceHomeVolumeTimeout = newAtomicDuration(30 * time.Second)
 
 // WorkspaceHomeVolumeAPI is the engine surface workspace HOME reporting and
@@ -69,12 +53,12 @@ var workspaceHomeVolumeTimeout = newAtomicDuration(30 * time.Second)
 //
 // DiskUsage is on it, rather than VolumeInspect alone, because of a fact that
 // is easy to get wrong and expensive to get wrong silently: Volume.UsageData
-// is populated ONLY by GET /system/df. Measured against rootless podman 4.9.3
-// (2026-07-27), GET /volumes/<name> and GET /volumes both return the volume
-// with no UsageData field at all, exactly as the moby type's own comment says
-// ("This information is used by the `GET /system/df` endpoint, and omitted in
-// other endpoints"). A sizing implementation built on VolumeInspect would
-// compile, run, and report every workspace as 0 B.
+// is populated ONLY by GET /system/df — GET /volumes/<name> and GET /volumes
+// both return the volume with no UsageData field at all, exactly as the
+// moby type's own comment says ("This information is used by the
+// `GET /system/df` endpoint, and omitted in other endpoints"). A sizing
+// implementation built on VolumeInspect would compile, run, and report every
+// workspace as 0 B.
 type WorkspaceHomeVolumeAPI interface {
 	VolumeInspect(ctx context.Context, volumeID string, options client.VolumeInspectOptions) (client.VolumeInspectResult, error)
 	VolumeList(ctx context.Context, options client.VolumeListOptions) (client.VolumeListResult, error)
@@ -115,47 +99,16 @@ type WorkspaceHomeVolume struct {
 	SizeError string
 }
 
-// WorkspaceHomeVolumeStore answers the three questions 論点 a-2 needs about
-// workspace HOME volumes: how big is this one, what ones exist, and delete
-// this one.
+// WorkspaceHomeVolumeStore answers three questions about workspace HOME
+// volumes: how big is this one, what ones exist, and delete this one.
 //
-// # Sizing goes through GET /system/df, and why that was the choice
-//
-// Measured against rootless podman 4.9.3 (2026-07-27), read-only:
-//
-//   - GET /volumes/<name> (VolumeInspect) and GET /volumes (VolumeList),
-//     with and without a label filter, return NO UsageData at all. Sizing
-//     cannot be built on them.
-//   - GET /system/df returns UsageData{Size,RefCount} for every volume. Its
-//     Size is du --apparent-size semantics: a probe volume holding a 1MiB
-//     regular file, a 100MiB sparse file, a hardlink to the regular file, a
-//     symlink and a small file reported 105906193 bytes, byte-identical to
-//     `du -sb` on the mountpoint.
-//   - podman 4.9.3 IGNORES both the `type=volume` and the `verbose` query
-//     parameters: all three responses (no params, type=volume, verbose=1)
-//     were byte-identical at 151995 bytes, and per-volume UsageData was
-//     populated in each. Both options are still passed, because a real
-//     docker engine honours them and one of them is load-bearing there —
-//     see DiskUsageOptions below.
-//
-// The alternative 論点 a-2 asked to compare — running `du` inside a throwaway
-// container — was rejected: it needs a container start per volume (against
-// one df call for the whole listing), an image to run, and a second
-// init-container-shaped failure surface, in exchange for a number in the
-// SAME units df already reports. Its one advantage would have been not
-// walking unrelated volumes, which matters only if these calls were hot, and
-// they are not (see workspaceHomeVolumeTimeout).
-//
-// What changes for users: df's Size is real `du` semantics, so a hardlinked
-// file is counted ONCE (the previous host-path implementation,
-// humanize.ApparentSize, summed every name and counted it twice) and a
-// humanize.ApparentSize, summed every name and counted it twice). Sparse
-// files stay logical in both, and symlinks are counted the same way by both
-// (ApparentSize sums FileInfo.Size() for every non-directory entry, which
-// for a symlink is its target string's length — an earlier revision of this
-// comment claimed ApparentSize skipped them, which is not what
-// internal/humanize does). docs/{ja,en}/guide/workspace-home.md is updated
-// accordingly.
+// Sizing goes through GET /system/df rather than VolumeInspect/VolumeList,
+// because only /system/df populates UsageData{Size,RefCount} for a volume;
+// its Size uses `du --apparent-size` semantics (a hardlink to another file
+// in the same volume is counted once, not duplicated). Running `du` inside
+// a throwaway container per volume was considered and rejected: it needs a
+// container start and an image per volume, against one df call for the
+// whole listing, for a number in the same units df already reports.
 type WorkspaceHomeVolumeStore struct {
 	// API is the engine handle, the very *client.Client server/wire.go built
 	// for the container backend. nil means no engine was available, which
@@ -212,37 +165,23 @@ func (s *WorkspaceHomeVolumeStore) Get(ctx context.Context, slug string) Workspa
 
 // List enumerates every workspace HOME volume belonging to this install.
 //
-// # The slug comes off the LABEL, not the name (論点 a-2, D7)
-//
+// The slug comes off dockerres.LabelWorkspaceHome, not the volume name:
 // dockerres.WorkspaceHomeVolumeName runs the slug through SanitizeNamePart,
-// which is not invertible — "team/a" and "team-a" produce the same volume
-// name — so there is no way back from a name to the workspace it belongs to.
-// dockerres.LabelWorkspaceHome carries the slug verbatim, and PR6 made both
-// volume-creating paths (resolveWorkspaceHome's EnsureWorkspaceHomeVolume and
-// containerBackend.ensureNamedVolumes) attach it with the already-normalized
-// slug, so the label is the authority here.
+// which is not invertible ("team/a" and "team-a" produce the same volume
+// name), so the label is the only way back to the workspace a volume
+// belongs to.
 //
-// # Enumerating on presence, and scoping by name reconstruction
-//
-// The engine query filters on the mere PRESENCE of dockerres.
-// LabelWorkspaceHome. It deliberately does NOT filter on
-// dockerres.LabelWorkspaceHomeInstallID the way internal/reap.unionResources
-// does, because that label is only attached when the install HAS an id (see
-// ensureNamedVolumes) — an install-id-scoped query lists NOTHING on an
-// install without one, which is a fine fail-safe for reap (it destroys) and
-// exactly backwards for a listing (it reports). Verified against podman
-// 4.9.3 (2026-07-27): a bare `label=<key>` term matches on presence.
-//
-// Install scoping is then done by reconstructing the name —
-// dockerres.WorkspaceHomeVolumeName(s.InstallID, labelSlug) == v.Name — which
-// is both stricter and independent of the optional label: two boid installs
-// sharing one engine never list each other's homes, and the rule reads the
-// same whether or not the install-id label happens to be there. The one case
-// it degrades on is a volume this install created BEFORE it had an install id
-// (named ...-noinst-<slug>): the daemon no longer mounts that volume either,
-// so leaving it out of "this install's homes" keeps the listing consistent
-// with what dispatch actually uses. It is still visible to
-// `docker volume ls`, which the user-facing doc points at for manual cleanup.
+// The engine query filters on the mere presence of that label rather than
+// also filtering on dockerres.LabelWorkspaceHomeInstallID, because that
+// label is only attached when the install has an id — an install-id-scoped
+// query would list nothing on an install without one. Install scoping is
+// instead done by reconstructing the name
+// (dockerres.WorkspaceHomeVolumeName(s.InstallID, labelSlug) == v.Name),
+// which works whether or not the install-id label is present, so two boid
+// installs sharing one engine never list each other's homes. A volume this
+// install created before it had an install id degrades out of the listing
+// (consistent with dispatch, which no longer mounts it either) but stays
+// visible to `docker volume ls` for manual cleanup.
 //
 // A sizing failure does not fail the call: the listing is what drives orphan
 // detection, and losing it because df was busy would be a much worse trade
@@ -289,28 +228,19 @@ func (s *WorkspaceHomeVolumeStore) List(ctx context.Context) ([]WorkspaceHomeVol
 // Remove deletes slug's workspace HOME volume, reporting what was there
 // beforehand.
 //
-// deleted is true only when the volume existed AND the removal succeeded —
-// mirroring the host-path implementation, where os.RemoveAll returning nil on
-// a path that was never there did not count as a deletion.
+// deleted is true only when the volume existed AND the removal succeeded.
 //
-// # In-use volumes surface as an error (論点 a-2, D6)
+// Force is set, but only one of its two meanings is being relied on: a
+// running container holding the volume makes DELETE /volumes/<name> return
+// 409 with or without force, so force buys tolerance of a volume that
+// vanished between the inspect and the remove, and nothing at all against a
+// job that is currently running in that workspace. That 409 is returned to
+// the caller rather than swallowed: `workspace remove` reports it as a
+// part-completed remove (the row is gone, the volume is not) — silently
+// reporting success would tell an operator their credentials were destroyed
+// when they are still sitting on the engine.
 //
-// Force is set, but only one of its two meanings is being relied on. Measured
-// against rootless podman 4.9.3 (2026-07-27): with a running container
-// holding the volume, DELETE /volumes/<name> and DELETE /volumes/<name>?
-// force=1 BOTH return 409 ("volume is being used by the following
-// container(s): <id>"); against a name that does not exist, force=1 returns
-// 204 where the unforced call returns 404. So force buys tolerance of a
-// volume that vanished between the inspect and the remove — os.RemoveAll's
-// tolerance, which the host-path version had — and buys nothing at all
-// against a job that is currently running in that workspace. That 409 is
-// returned to the caller rather than swallowed: `workspace remove` reports it
-// as a part-completed remove (the row is gone, the volume is not), which is
-// the honest answer. Silently reporting success would tell an operator their
-// credentials were destroyed when they are still sitting on the engine.
-//
-// Sizing stays best-effort and never gates the delete attempt (PR #791
-// review, Should-fix #2, carried across the mechanism change): neither an
+// Sizing stays best-effort and never gates the delete attempt: neither an
 // unavailable size nor an inspect that could not establish existence skips
 // the VolumeRemove call.
 func (s *WorkspaceHomeVolumeStore) Remove(ctx context.Context, slug string) (WorkspaceHomeVolume, bool, error) {

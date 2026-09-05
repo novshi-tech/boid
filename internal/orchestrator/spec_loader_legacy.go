@@ -28,18 +28,12 @@ type LegacyProjectMeta struct {
 	// HadAdditionalBindingsKey records only whether the raw project.yaml (or
 	// project.local.yaml) still declares a top-level `additional_bindings:`
 	// key — it is NOT unmarshaled from that key itself (yaml:"-"), and no
-	// value is ever kept. Before docs/plans/home-workspace-volume.md Phase 4
-	// PR4, this type had a typed `AdditionalBindings []BindMount` field: an
-	// old project.yaml's additional_bindings migrated into an auto-generated
-	// "legacy kit" and from there into the target workspace's own (now also
-	// retired) AdditionalBindings field. Both destinations are gone, so the
-	// value itself is no longer worth carrying — but computeRemoveKeys
-	// (cmd/project_migrate.go) still needs to know whether the key was
-	// present at all, so `boid project migrate` keeps offering to strip it
-	// from project.yaml (which rejects the key outright — see
-	// removedTopLevelKeys in spec_loader.go) even though nothing downstream
-	// resolves its value any more. See ReadProjectMetaLegacy for how this is
-	// populated.
+	// value is ever kept: the field is retired and has no migration
+	// destination any more, but computeRemoveKeys (cmd/project_migrate.go)
+	// still needs to know whether the key was present, so `boid project
+	// migrate` keeps offering to strip it from project.yaml (which rejects
+	// the key outright — see removedTopLevelKeys in spec_loader.go). See
+	// ReadProjectMetaLegacy for how this is populated.
 	HadAdditionalBindingsKey bool `yaml:"-"`
 }
 
@@ -139,14 +133,10 @@ func ReadProjectMetaLegacy(dir string) (*LegacyProjectMeta, error) {
 // the migrate command to detect whether migration is needed at all.
 //
 // A stray additional_bindings key deliberately does NOT make this return
-// true on its own (Phase 4 PR4, docs/plans/home-workspace-volume.md: the
-// field is retired, there is nothing left to migrate its value to) — but
-// computeRemoveKeys (cmd/project_migrate.go) still offers to strip the key
-// from project.yaml via HadAdditionalBindingsKey independently of this
-// method, so printMigratePlan's "nothing to migrate" short-circuit (which
-// also checks len(removeKeys) == 0) still correctly falls through to show a
-// plan for a project.yaml that has nothing BUT a stray additional_bindings
-// key left.
+// true on its own — the field is retired, nothing left to migrate its value
+// to — but computeRemoveKeys (cmd/project_migrate.go) still offers to strip
+// the key from project.yaml via HadAdditionalBindingsKey independently of
+// this method.
 func (m *LegacyProjectMeta) HasLegacyFields() bool {
 	if len(m.Kits) > 0 {
 		return true

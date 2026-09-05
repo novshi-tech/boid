@@ -40,7 +40,7 @@ type JobLifecycle interface {
 	CleanupTaskWindow(taskID string)
 	StopJobRuntime(runtimeID string)
 	// SignalJobRuntime delivers a single Unix signal to the runtime's process
-	// group. Phase 3-b uses it to graceful-stop the agent (SIGUSR1) without
+	// group. Used to graceful-stop the agent (SIGUSR1) without
 	// tearing down the surrounding sandbox runtime: claude.Adapter.Run() has a
 	// signal.Notify(SIGUSR1) handler that translates the group signal into a
 	// SIGTERM toward the claude child, then normalises the resulting exit
@@ -55,9 +55,8 @@ type BrokerRegistry interface {
 type ProjectService interface {
 	CreateProject(workDir string) (*orchestrator.Project, error)
 	// CreateProjectFromGitURL registers a project from a git remote URL
-	// (docs/plans/volume-only-daemon.md §論点a, POST /api/projects/git —
-	// `boid project add <git-url> --workspace=<name>`). workspaceSlug is
-	// required (unlike CreateProject's eager default-workspace assign);
+	// (POST /api/projects/git — `boid project add <git-url> --workspace=<name>`).
+	// workspaceSlug is required (unlike CreateProject's eager default-workspace assign);
 	// nameOverride empty derives the project name from the URL's last path
 	// component. *StatusError{400} for a missing url/workspace or an
 	// unparseable URL, {404} for an unknown workspace, {409} if a project is
@@ -82,18 +81,16 @@ type ProjectService interface {
 	// Priority: id exact match > name exact match > name substring match (case-insensitive).
 	// Returns 1 project on unambiguous match, multiple on ambiguous match, StatusError{404} on no match.
 	ResolveProjectRef(ref string) ([]*orchestrator.Project, error)
-	// ExplainProject returns id's field-provenance view (docs/plans/
-	// workspace-default-project.md 論点e, PR6, GET /api/projects/{id}/explain
-	// — `boid project show --explain`): for each of the 4
+	// ExplainProject returns id's field-provenance view (GET
+	// /api/projects/{id}/explain — `boid project show --explain`): for each of the 4
 	// workspace-default-mergeable fields, whether the effective value came
 	// from project.yaml or the linked workspace's default project
 	// definition. *StatusError{404} for an unknown id.
 	ExplainProject(id string) (*orchestrator.ProjectExplain, error)
 
-	// CreateWorkspace inserts a brand-new workspace (docs/plans/
-	// workspace-db-consolidation.md PR4, POST /api/workspaces). Returns a
-	// *StatusError{409} when slug already has a row, {400} for an invalid
-	// slug.
+	// CreateWorkspace inserts a brand-new workspace (POST /api/workspaces).
+	// Returns a *StatusError{409} when slug already has a row, {400} for an
+	// invalid slug.
 	CreateWorkspace(slug string, meta *orchestrator.WorkspaceMeta) (*WorkspaceDetail, error)
 	// GetWorkspace returns slug's meta, revision, and assigned project ids
 	// (GET /api/workspaces/{slug}). *StatusError{404} when slug is unknown.
@@ -109,34 +106,30 @@ type ProjectService interface {
 	// *StatusError{400} for the reserved default slug, {404} unknown slug.
 	//
 	// The two deletions are one operation because they have to be excluded
-	// from a concurrent apply together (PR9 codex round 3, Major 3) — see
-	// ProjectAppService.RemoveWorkspace. They are still not atomic with each
+	// from a concurrent apply together — see ProjectAppService.RemoveWorkspace.
+	// They are still not atomic with each
 	// other, hence the result: an error inside it means the row is gone and
 	// the script is not.
 	RemoveWorkspace(slug string) (*WorkspaceRemoval, error)
 
 	// ApplyWorkspace upserts one boid.dev/v1 Workspace envelope document's
 	// metadata and (when apply.FieldsPresent["projects"] is true) project
-	// assignments atomically, in a single DB transaction (docs/plans/
-	// volume-only-daemon.md PR-1d codex round-1 Blocker 2, POST
+	// assignments atomically, in a single DB transaction (POST
 	// /api/workspaces/apply). dryRun exercises the same validation/DB
-	// statements but rolls back instead of committing (Major 1).
+	// statements but rolls back instead of committing.
 	ApplyWorkspace(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error)
 
 	// ExportWorkspaceEnvelopes returns one or more boid.dev/v1 Workspace
 	// yaml documents ("---"-separated when more than one), built from a
-	// single atomic DB snapshot (docs/plans/volume-only-daemon.md PR-1d
-	// codex round-1 Blocker 3, GET /api/workspaces/export?all=true or
+	// single atomic DB snapshot (GET /api/workspaces/export?all=true or
 	// ?name=<slug>). slugs nil/empty exports every workspace; otherwise
 	// exactly the given slugs. *StatusError{404} when a requested slug does
 	// not exist. Each document carries the workspace's init.sh in
-	// spec.init_script (PR9 of docs/plans/workspace-home-volume-persistence.md,
-	// 論点 d) — an export without it is not a restorable backup.
+	// spec.init_script — an export without it is not a restorable backup.
 	ExportWorkspaceEnvelopes(slugs []string) ([]byte, error)
 
 	// GetWorkspaceInitScript returns slug's init.sh (GET
-	// /api/workspaces/{slug}/init-script, PR9 of
-	// docs/plans/workspace-home-volume-persistence.md 論点 d). A workspace
+	// /api/workspaces/{slug}/init-script). A workspace
 	// with no script is NOT an error: the result carries Exists=false and
 	// Revision=WorkspaceInitScriptAbsentRevision, and the handler turns that
 	// into a 404 with the sentinel ETag. *StatusError{400} for an invalid
@@ -155,8 +148,7 @@ type ProjectService interface {
 }
 
 // WorkspaceRemoval reports what RemoveWorkspace did to the half of a workspace
-// that is not a row (PR9 codex round 2 Major 1, moved inside the row's critical
-// section by round 3 Major 3).
+// that is not a row.
 //
 // It exists because a file unlink and a database transaction cannot commit
 // together: by the time the script is touched the row is already gone, so a
@@ -178,8 +170,7 @@ type WorkspaceRemoval struct {
 
 // WorkspaceStore provides direct CRUD over a single workspace's
 // WorkspaceMeta, independent of the project-assignment bookkeeping that
-// lives on ProjectRepository below (docs/plans/workspace-db-consolidation.md
-// PR4). Implemented by *orchestrator.WorkspaceStore (via
+// lives on ProjectRepository below. Implemented by *orchestrator.WorkspaceStore (via
 // ProjectStore.WorkspaceStore()), wired in internal/server/wire.go.
 type WorkspaceStore interface {
 	Load(slug string) (*orchestrator.WorkspaceMeta, error)
@@ -189,8 +180,7 @@ type WorkspaceStore interface {
 	Create(slug string, meta *orchestrator.WorkspaceMeta) error
 	Remove(slug string) error
 	// LoadWithRevision returns meta and its revision from a single atomic
-	// snapshot (docs/plans/workspace-db-consolidation.md MAJOR 1, codex
-	// review), used by GET /api/workspaces/{slug} so meta and revision can
+	// snapshot, used by GET /api/workspaces/{slug} so meta and revision can
 	// never straddle a concurrent write. See
 	// orchestrator.WorkspaceRepository.LoadWithRevision's doc comment.
 	LoadWithRevision(slug string) (*orchestrator.WorkspaceMeta, string, error)
@@ -204,10 +194,9 @@ type WorkspaceStore interface {
 
 // HostCommandsProvider exposes the daemon's live aggregated host_commands
 // snapshot (name -> spec) for reference-name validation on workspace
-// create/update (docs/plans/workspace-db-consolidation.md MAJOR 2, codex
-// review: an unresolvable meta.HostCommands reference must be rejected with
-// 400 at write time rather than silently persisted and later warned-about +
-// skipped at dispatch). Implemented by *server.Server, which already
+// create/update: an unresolvable meta.HostCommands reference must be
+// rejected with 400 at write time rather than silently persisted and
+// later warned-about + skipped at dispatch. Implemented by *server.Server, which already
 // exposes this exact method for HostCommandsService above.
 type HostCommandsProvider interface {
 	HostCommands() map[string]orchestrator.HostCommandSpec
@@ -243,11 +232,8 @@ type WebService interface {
 	RerunTask(id string, req RerunTaskRequest) error
 	ReopenTask(id string, req ReopenTaskRequest) error
 	AnswerTask(ctx context.Context, taskID, questionID, answer string) error
-	// AnswerSuggestion backs docs/plans/ingestion-identity.md PR-3 (B-3+B-4,
-	// J-6)'s accept/reject buttons on the task_triage suggestion card — the
-	// "既に開いている穴" this PR closes (決定14 moved judgment to the Web UI,
-	// but the Web UI had no path to RECORD a reject, so re-suggestion was
-	// never suppressed). A dedicated method rather than routing through
+	// AnswerSuggestion backs the accept/reject buttons on the task_triage
+	// suggestion card. A dedicated method rather than routing through
 	// ApplyAction (like ReopenTask above): the generic
 	// WebService.ApplyAction(taskID, actionType) signature has no payload
 	// parameter, and `answered` needs one ({answer, verb, basis}).
@@ -259,8 +245,8 @@ type WebService interface {
 
 type WorkflowService interface {
 	ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error)
-	// GetCard / ListCards are the task_triage read surface (card_read.go,
-	// Phase 1 PR-5a). Part of WorkflowService because the brokered ops that
+	// GetCard / ListCards are the task_triage read surface (card_read.go).
+	// Part of WorkflowService because the brokered ops that
 	// expose them to the sandbox reach the daemon through this same interface.
 	GetCard(taskID string) (*CardView, error)
 	ListCards(filter orchestrator.TaskFilter) ([]*CardView, error)
@@ -275,8 +261,7 @@ type WorkflowService interface {
 }
 
 // TaskCreator is the slice of TaskAppService that TaskWorkflowService.Dispatch
-// needs to task-ify a triage task's specced children (docs/plans/
-// cross-project-issue-triage.md Phase 1 PR-2, 逆輸入1). Implemented by
+// needs to task-ify a triage task's specced children. Implemented by
 // TaskAppService and wired in after TaskAppService itself is constructed
 // (wire.go creates TaskWorkflowService first, TaskAppService second, so this
 // mirrors the same late-binding idiom the reverse direction already uses —
@@ -294,9 +279,9 @@ type TaskStore interface {
 	DeleteTask(id string) error
 	FindTaskByRemote(remoteID string) (*orchestrator.Task, error)
 	// FindTaskByRef looks up an existing task by ref, scoped to BOTH
-	// parentID ("" for a root task) and projectID (Phase 1 PR-4, codex review
-	// Blocker fix — see orchestrator.FindTaskByRef's doc comment for why
-	// projectID scoping is required, not optional).
+	// parentID ("" for a root task) and projectID — see
+	// orchestrator.FindTaskByRef's doc comment for why
+	// projectID scoping is required, not optional.
 	FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error)
 	// ListChildren returns direct children (one level only) of the given parent
 	// task, ordered by created_at ASC. Returns an empty slice (not nil) when the
@@ -307,8 +292,8 @@ type TaskStore interface {
 
 type ActionStore interface {
 	// CreateAction takes ctx so the internal-signal ingest step it performs
-	// (docs/plans/boid-internal-signal-inbox.md §4.5) can see the write's
-	// origin project via orchestrator.WriterProjectIDFromContext when this
+	// can see the write's origin project via
+	// orchestrator.WriterProjectIDFromContext when this
 	// call was routed through internal/server/boid_executor.go's
 	// ExecuteBoidBuiltin (the only place that ever stamps it) — never
 	// consulted for anything else CreateAction does.
@@ -317,41 +302,33 @@ type ActionStore interface {
 }
 
 // CardStore provides access to a card's CardAttrs columns (kind/urgency/
-// wake_at/wake_task_id/suggestion_verb/detail). Through card-model-cleanup
-// PR-1 these lived in a separate task_triage sidecar table, kept apart from
-// TaskStore because TaskStore's orchestrator.Task was the API DTO (marshaled
-// to JSON with no conversion layer) and a column added there auto-exposed in
-// every task API response. PR-2 (docs/plans/card-model-cleanup.md, migration
-// 0045) folds these columns into the same tasks row (filtered to
-// type='card') and gives Task a genuinely nested `card` JSON key instead —
-// this interface's shape is kept as-is so the many card-lifecycle call
-// sites (workflow_card.go et al.) do not need to change, only what backs
-// them.
+// wake_at/wake_task_id/suggestion_verb/detail). These columns live on the
+// same tasks row (filtered to type='card'), with Task exposing them as a
+// nested `card` JSON key — this interface's shape is kept stable so the
+// many card-lifecycle call sites (workflow_card.go et al.) do not need to
+// change, only what backs them.
 //
-// SeedTaskTriage — the "assert this task IS a triage task" primitive used to
-// live here — is GONE as of PR-2: a card is type='card' from the moment
-// CreateTask makes it, so there is no longer a separate act of "seeding" a
-// row after the fact (design doc §3.6).
+// A card is type='card' from the moment CreateTask makes it, so there is
+// no separate act of "seeding" a row after the fact.
 type CardStore interface {
 	UpsertTaskTriage(tt *orchestrator.CardAttrs) error
 	GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error)
 	// ListTaskTriageByTaskIDs batch-fetches sidecar rows for a set of task
-	// IDs in O(chunks) queries instead of O(N) GetTaskTriage calls (BD-8
-	// 残件1) — see orchestrator.ListTaskTriageByTaskIDs's doc comment for
+	// IDs in O(chunks) queries instead of O(N) GetTaskTriage calls — see
+	// orchestrator.ListTaskTriageByTaskIDs's doc comment for
 	// the chunking rationale and the "batch replaces per-row error
 	// tolerance" tradeoff. A taskID with no sidecar row is simply absent
 	// from the returned map, never an error.
 	ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.CardAttrs, error)
 	DeleteTaskTriage(taskID string) error
 	// ParkedFrom derives which status (triaged/ready/working) a parked task
-	// was parked from, from the actions log (not a stored column — 決定13).
+	// was parked from, from the actions log (not a stored column).
 	ParkedFrom(taskID string) (orchestrator.TaskStatus, error)
 }
 
-// TaskIdentityStore provides access to docs/plans/ingestion-identity.md
-// PR-1 (B-1)'s identity index (task_identities table): external key ->
-// task, scoped per project (I-1/I-2/I-3). Deliberately separate from
-// TaskStore for the same reason CardStore is: identity bindings are
+// TaskIdentityStore provides access to the identity index
+// (task_identities table): external key -> task, scoped per project.
+// Deliberately separate from TaskStore for the same reason CardStore is: identity bindings are
 // not part of orchestrator.Task's own JSON shape.
 type TaskIdentityStore interface {
 	// LinkIdentity binds identity to taskID within projectID's scope.
@@ -361,8 +338,8 @@ type TaskIdentityStore interface {
 	// UnlinkIdentity removes one binding, if any (idempotent — not found is
 	// not an error).
 	UnlinkIdentity(projectID, identity string) error
-	// UnlinkAllForTask releases every identity bound to taskID (I-6: called
-	// from the drop side effect — see TaskWorkflowService.ApplyAction).
+	// UnlinkAllForTask releases every identity bound to taskID (called from
+	// the drop side effect — see TaskWorkflowService.ApplyAction).
 	UnlinkAllForTask(taskID string) error
 	// ResolveIdentity looks up the task bound to (projectID, identity).
 	// Returns orchestrator.ErrTaskNotFound when no binding exists.
@@ -371,8 +348,8 @@ type TaskIdentityStore interface {
 	ListIdentitiesByTask(taskID string) ([]string, error)
 }
 
-// ActionListStore provides the workspace-scoped read backing docs/plans/
-// ingestion-identity.md PR-3 (B-3)'s BoidOpActionList. Deliberately separate
+// ActionListStore provides the workspace-scoped read backing
+// BoidOpActionList. Deliberately separate
 // from ActionStore (ListActionsByTask, per-task, embedded in TxStore) for the
 // same reason CardStore/TaskIdentityStore are their own interfaces:
 // this is a non-transactional READ used outside WithinTx — the same
@@ -385,35 +362,29 @@ type ActionListStore interface {
 	ListActionsSince(filter orchestrator.ActionListFilter) ([]*orchestrator.Action, string, error)
 }
 
-// TriggerRunStore backs docs/plans/ingestion-identity.md PR-4 (B-5)'s
-// trigger_runs ledger read/writes — narrowed from *orchestrator.
-// TaskRepository the same way ActionListStore/CardStore are (workflow.go).
-// Deliberately non-transactional (unlike TxStore's WithinTx-scoped methods):
-// each call is a standalone statement, matching this table's actual access
-// pattern in trigger_loop.go (no create+link atomicity requirement the way
-// PR-2's ResolveOrCapture has — a trigger_runs row's create and its later
-// complete are two separate ticks by construction, so there is nothing to
-// wrap in one transaction).
+// TriggerRunStore backs the trigger_runs ledger read/writes — narrowed
+// from *orchestrator.TaskRepository the same way ActionListStore/CardStore
+// are (workflow.go). Deliberately non-transactional (unlike TxStore's
+// WithinTx-scoped methods): each call is a standalone statement, matching
+// this table's actual access pattern in trigger_loop.go (a trigger_runs
+// row's create and its later complete are two separate ticks by
+// construction, so there is nothing to wrap in one transaction).
 type TriggerRunStore interface {
 	CreateTriggerRun(run *orchestrator.TriggerRun) error
 	CompleteTriggerRun(id string, finishedAt time.Time, exitCode int) error
 	ListInFlightTriggerRuns() ([]*orchestrator.TriggerRun, error)
 	LatestTriggerRun(projectID, triggerName string) (*orchestrator.TriggerRun, error)
-	// SetTriggerRunJobID / DeleteTriggerRun back the Opus review Blocker 1
-	// insert-then-dispatch split — see orchestrator.CreateTriggerRun's own
-	// doc comment for the full sequence.
+	// SetTriggerRunJobID / DeleteTriggerRun back the insert-then-dispatch
+	// split — see orchestrator.CreateTriggerRun's own doc comment for the
+	// full sequence.
 	SetTriggerRunJobID(id, jobID string) error
 	DeleteTriggerRun(id string) error
 }
 
-// SignalStore backs docs/plans/signal-ingest-detailed-design.md §2 (PR-1)'s
-// inbox store (internal/orchestrator/signal_store.go) — narrowed from
-// *orchestrator.TaskRepository the same way TriggerRunStore is. This PR
-// wires no handler onto it yet (PR-2 adds `GET /api/signals` /
-// `POST /api/signals/ack`, PR-3 adds the connector-facing ingest/cursor
-// ops, PR-6 adds the `on: signals` trigger predicate that calls
-// HasPendingSignals) — see the var _ assertion below for what proves
-// TaskRepository actually satisfies this shape today.
+// SignalStore backs the inbox store (internal/orchestrator/signal_store.go)
+// — narrowed from *orchestrator.TaskRepository the same way TriggerRunStore
+// is. See the var _ assertion below for what proves TaskRepository
+// actually satisfies this shape today.
 //
 // GCSignals is deliberately NOT part of this interface: it is called
 // directly as a package function from within TaskGCStore.GC's existing
@@ -440,18 +411,15 @@ type ProjectRepository interface {
 	SetProjectWorkspace(projectID, workspaceID string) error
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	DeleteProject(id string) error
-	// SetProjectUpstreamURL persists a project's captured upstream_url (see
-	// docs/plans/git-gateway-cutover.md PR2). Used by ReloadProjects'
-	// recapture and by the daemon-startup backfill.
+	// SetProjectUpstreamURL persists a project's captured upstream_url. Used
+	// by ReloadProjects' recapture and by the daemon-startup backfill.
 	SetProjectUpstreamURL(projectID, upstreamURL string) error
 	// WorkspaceExists reports whether workspaceID refers to an existing
 	// workspaces table row. Used by ProjectAppService.SetProjectWorkspace to
-	// reject assignment to a nonexistent slug (docs/plans/
-	// workspace-db-consolidation.md MAJOR 5 codex review fix).
+	// reject assignment to a nonexistent slug.
 	WorkspaceExists(workspaceID string) (bool, error)
 	// AssignWorkspaceIfExists atomically checks-then-assigns in a single DB
-	// transaction (docs/plans/workspace-db-consolidation.md MAJOR 3, codex
-	// review), replacing the WorkspaceExists+SetProjectWorkspace two-step
+	// transaction, replacing the WorkspaceExists+SetProjectWorkspace two-step
 	// ProjectAppService.SetProjectWorkspace used before: a DELETE landing
 	// between those two separate calls could leave a dangling
 	// project_workspaces reference. Returns an error wrapping os.ErrNotExist
@@ -460,8 +428,8 @@ type ProjectRepository interface {
 	AssignWorkspaceIfExists(projectID, workspaceID string) error
 	// GetWorkspaceSummary returns a single workspace's project count and
 	// revision, or an error wrapping os.ErrNotExist. Used by the workspace
-	// CRUD handlers (docs/plans/workspace-db-consolidation.md PR4) to build
-	// responses and to read the current revision for the PUT If-Match check.
+	// CRUD handlers to build responses and to read the current revision for
+	// the PUT If-Match check.
 	GetWorkspaceSummary(slug string) (*orchestrator.WorkspaceSummary, error)
 }
 
@@ -481,8 +449,7 @@ type GlobalJobStore interface {
 	ListJobsWithContext(filter JobListFilter) ([]JobWithContext, error)
 }
 
-// TaskUpdatedAtToucher backs docs/plans/webui-detail-list-redesign.md PR-3's
-// updated_at bump (§3.2): a single-column `UPDATE tasks SET updated_at = ?
+// TaskUpdatedAtToucher backs a single-column `UPDATE tasks SET updated_at = ?
 // WHERE id = ?` that carries NO status. Deliberately its own interface, not
 // folded into TaskStore — TaskStore.UpdateTask does a blanket rewrite of
 // every column from a caller-held Task snapshot, which is exactly the

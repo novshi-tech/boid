@@ -1,14 +1,12 @@
 // Package humanize renders byte counts as human-readable strings and sums a
 // directory tree's apparent (logical) size, for boid's workspace-home size
-// reporting (docs/plans/home-workspace-volume.md Phase 4 PR5: `boid
-// workspace show`, `boid gc`'s workspace_homes listing, and the confirmation
-// prompt on `boid workspace remove`).
+// reporting (`boid workspace show`, `boid gc`'s workspace_homes listing, and
+// the confirmation prompt on `boid workspace remove`).
 //
-// FormatBytes is what those three still use. ApparentSize is not — PR7 of
-// docs/plans/workspace-home-volume-persistence.md moved sizing onto the
-// engine, since a workspace home is a docker volume the daemon cannot walk.
-// See ApparentSize's own doc comment for its current status, and for how the
-// engine's numbers differ from the ones it produces.
+// FormatBytes is what those three still use. ApparentSize is not — sizing
+// moved onto the docker engine since a workspace home is a volume the daemon
+// cannot walk directly; see ApparentSize's own doc comment for its current
+// status.
 package humanize
 
 import (
@@ -18,12 +16,9 @@ import (
 )
 
 // SI (decimal, 1000-based) unit thresholds — chosen over IEC (1024-based
-// KiB/MiB/...) because this package exists purely for human-facing CLI
-// output, where the more familiar decimal units read naturally (see
-// docs/plans/home-workspace-volume.md PR5 brief's explicit call: "SI 単位を
-// 採用 (KB/MB/GB) — user 向け表示なので自然な数字が読みやすい"). Byte counts
-// themselves stay int64 everywhere in boid; these constants only apply at
-// display time.
+// KiB/MiB/...) since this package exists purely for human-facing CLI output,
+// where decimal units read more naturally. Byte counts themselves stay
+// int64 everywhere in boid; these constants only apply at display time.
 const (
 	unitKB = 1000
 	unitMB = unitKB * 1000
@@ -61,24 +56,11 @@ func formatUnit(n, unit int64, suffix string) string {
 	return fmt.Sprintf("%.2f %s", float64(n)/float64(unit), suffix)
 }
 
-// # Status as of PR7 of docs/plans/workspace-home-volume-persistence.md
-//
-// ApparentSize has NO production caller any more. The workspace home became a
-// docker named volume in PR6, and PR7 rewired sizing onto the engine's
-// GET /system/df, which is the only endpoint that reports a volume's size at
-// all — the daemon cannot walk a volume's contents from outside a container,
-// so there is nothing here for it to point at.
-//
-// It is kept rather than deleted because PR8's migration CLI
-// (`boid workspace import-home`) reads the LEGACY <runtimesRoot>/homes/<slug>
-// directories an upgraded installation still has, and sizing one of those is
-// exactly this function's job. If PR8 lands without using it, delete it then.
-//
-// Worth knowing when comparing old and new numbers: df's size is real `du`
-// semantics, so it differs from this function on two of the trade-offs listed
-// below — it counts a hardlinked file once per inode, not once per name, and
-// it counts a symlink's target-string length. Sparse files stay logical in
-// both.
+// ApparentSize has NO production caller any more — sizing a live workspace
+// home moved onto the docker engine's GET /system/df, since the daemon
+// cannot walk a volume's contents from outside a container. It is kept for
+// `boid workspace import-home`, which still sizes legacy pre-migration
+// <runtimesRoot>/homes/<slug> directories on disk.
 //
 // ApparentSize returns the total *apparent* (logical) size, in bytes, of
 // every regular file found by recursively walking root — directory entries
@@ -90,25 +72,15 @@ func formatUnit(n, unit int64, suffix string) string {
 //
 // This is a plain sum of FileInfo.Size() and is *not* a `du`-equivalent
 // block-based measurement: it deliberately matches `du --apparent-size`, not
-// plain `du` (codex PR #791 review, Should-fix #3). Two known, accepted
-// trade-offs follow from that choice: a sparse file's logical size is
-// counted even though it occupies far fewer disk blocks (e.g. a
-// seek-and-truncate-created multi-GB file with no actual data written), and
-// a hardlinked file is counted once per name found rather than once per
-// inode (relevant for package caches, which hardlink aggressively). A true
-// `du`-equivalent measurement would need Linux's syscall.Stat_t.Blocks (for
-// the block-based total) plus an Ino-keyed dedup set (for hardlinks) — an
-// OS-specific implementation deliberately left out of scope here; apparent
-// size is judged good enough for boid's "is this workspace home suspiciously
-// large" visibility use case, and the plain-Walk approach stays portable and
-// simple. Revisit only if apparent size proves misleading in practice.
+// plain `du`. Two known, accepted trade-offs follow: a sparse file's logical
+// size is counted even though it occupies far fewer disk blocks, and a
+// hardlinked file is counted once per name found rather than once per
+// inode. Apparent size is judged good enough for boid's "is this workspace
+// home suspiciously large" visibility use case.
 //
-// Any error encountered while walking — root itself missing, a permission
-// error partway through a subdirectory, or anything else Walk's callback
-// receives — aborts the walk immediately and is returned verbatim; callers
-// must treat a non-nil error as "size unknown" (docs/plans/
-// home-workspace-volume.md PR5: "エラー時はエラーにせず「?」表示にして
-// continue") rather than trusting the also-returned partial total.
+// Any error encountered while walking aborts the walk immediately and is
+// returned verbatim; callers must treat a non-nil error as "size unknown"
+// rather than trusting the also-returned partial total.
 func ApparentSize(root string) (int64, error) {
 	var total int64
 	err := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {

@@ -27,17 +27,10 @@ func DefaultHostCommandsPath() (string, error) {
 
 // readKitHostCommandsRaw reads only the `host_commands:` section of a
 // kit.yaml file, unexpanded — unlike ReadKitMeta, it does not run
-// interpolateHostCommands (or any other kit.yaml validation/interpolation
-// step). This is deliberate: LoadHostCommandsFromKits aggregates raw
-// definitions into an on-disk config, and expanding ${VAR} placeholders here
-// would (a) bake resolved secret values (tokens, credentials) into that file
-// and (b) let two kits with differently-named placeholders that happen to
-// resolve to the same daemon-env value silently evade collision detection.
-// Skipping the other kit.yaml validation steps (rejectRemovedBehaviorFields,
-// warnDeprecatedCommandsKey, the `scripts:` rejection, etc.) is intentional
-// too: this aggregation path produces derived data alongside the existing
-// per-kit load path (which still runs the full ReadKitMeta validation), so it
-// does not need to duplicate that validation.
+// interpolateHostCommands or any other kit.yaml validation step. Expanding
+// ${VAR} placeholders here would bake resolved secret values into the
+// aggregated on-disk config and let two kits with differently-named
+// placeholders resolving to the same value evade collision detection.
 func readKitHostCommandsRaw(kitDir string) (HostCommands, error) {
 	yamlPath := filepath.Join(kitDir, "kit.yaml")
 	data, err := os.ReadFile(yamlPath)
@@ -79,20 +72,17 @@ func normalizeHostCommandSpec(spec HostCommandSpec) HostCommandSpec {
 // LoadHostCommandsFromKits scans kitsDir for installed kits — each a
 // subdirectory containing a kit.yaml — and aggregates their host_commands
 // sections into a single map keyed by command name. Definitions are read raw
-// (readKitHostCommandsRaw): no env-var interpolation and no other kit.yaml
-// validation runs on this path (see readKitHostCommandsRaw's doc comment).
+// (readKitHostCommandsRaw): no env-var interpolation or other kit.yaml
+// validation runs on this path.
 //
 // A missing kitsDir (no kits installed yet, or KitsDir unconfigured) is not
-// an error: it returns an empty map, matching the "空扱い" decision in
-// docs/plans/workspace-db-consolidation.md (host_commands 実定義の集約先).
+// an error: it returns an empty map.
 //
 // Two kits may declare the same command name only when the definitions are
-// identical after normalizeHostCommandSpec (nil/empty slice-and-map fields
-// unified) and reflect.DeepEqual — that case is silently deduped into one
-// entry. If two kits declare the same name with different definitions, this
-// returns an error naming both kit directories and the conflicting command;
-// callers are expected to treat this as fatal (daemon startup abort per
-// decision 9 in the plan doc — "host_command 名前衝突は migration fail").
+// identical after normalizeHostCommandSpec and reflect.DeepEqual — that case
+// is silently deduped into one entry. If two kits declare the same name with
+// different definitions, this returns an error naming both kit directories
+// and the conflicting command; callers should treat this as fatal.
 func LoadHostCommandsFromKits(kitsDir string) (map[string]HostCommandSpec, error) {
 	entries, err := os.ReadDir(kitsDir)
 	if err != nil {
@@ -130,14 +120,9 @@ func LoadHostCommandsFromKits(kitsDir string) (map[string]HostCommandSpec, error
 			return nil, fmt.Errorf("host_commands: read kit %q: %w", kitDir, err)
 		}
 
-		// Iterate command names in sorted order so that when a single kit
-		// declares multiple commands that each collide with a prior kit,
-		// the *reported* collision (via the fmt.Errorf below) is
-		// deterministic across runs — Go map iteration order is
-		// randomised, which would otherwise let the same input surface
-		// different error messages between daemon starts and defeat the
-		// deterministic-error contract set up by the sort.Strings(names)
-		// above.
+		// Sorted so the *reported* collision is deterministic across runs
+		// even when a single kit collides on multiple commands (Go map
+		// iteration order is randomised).
 		cmdNames := make([]string, 0, len(hostCommands))
 		for cmdName := range hostCommands {
 			cmdNames = append(cmdNames, cmdName)
@@ -170,16 +155,12 @@ func LoadHostCommandsFromKits(kitsDir string) (map[string]HostCommandSpec, error
 // path (LoadHostCommandsConfig) and its symmetric encode path
 // (WriteHostCommandsConfig).
 //
-// Why a separate type: dec.KnownFields(true) on the top-level Decoder does
-// not propagate into HostCommands.UnmarshalYAML — that method calls
-// value.Decode(&m) on a plain map[string]HostCommandSpec internally, and per
-// gopkg.in/yaml.v3, a Node.Decode call always starts a fresh decode with
-// default settings (KnownFields=false), regardless of the Decoder that
-// produced the node. So decoding through the HostCommands type silently
-// drops nested typos (e.g. "alow: [pr]" or a reject rule's "reasonn:
-// ..."). Decoding into a plain map[string]hostCommandSpecStrict instead
-// never enters that custom UnmarshalYAML, so the whole tree — including
-// nested RejectRule entries — stays inside the same strict Decoder call.
+// A separate type is needed because dec.KnownFields(true) on the top-level
+// Decoder does not propagate into HostCommands.UnmarshalYAML — that method's
+// internal value.Decode(&m) always starts a fresh decode with
+// KnownFields=false regardless of the outer Decoder, silently dropping
+// nested typos. Decoding into a plain map[string]hostCommandSpecStrict never
+// enters that custom UnmarshalYAML, so the whole tree stays strict.
 //
 // IMPORTANT: keep this in sync with HostCommandSpec — if a field is added to
 // or removed from HostCommandSpec, mirror the change here and in
@@ -247,12 +228,10 @@ func WriteHostCommandsConfig(path string, spec map[string]HostCommandSpec) error
 
 // LoadHostCommandsConfig reads and parses the aggregated host_commands.yaml
 // config at path. A missing or empty file is not an error — it returns an
-// empty map — since the file may not have been written yet (fresh install,
-// before the first daemon-startup preflight runs). Parsing is strict at
-// every level (top-level keys and each command's fields, including nested
-// reject rules — see hostCommandSpecStrict) so a typo in the hand-edited file
-// (docs/plans/workspace-db-consolidation.md's documented edit path) surfaces
-// as a load error rather than being silently ignored.
+// empty map. Parsing is strict at every level (top-level keys and each
+// command's fields, including nested reject rules — see
+// hostCommandSpecStrict) so a typo in a hand-edited file surfaces as a load
+// error rather than being silently ignored.
 func LoadHostCommandsConfig(path string) (map[string]HostCommandSpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -282,16 +261,8 @@ func LoadHostCommandsConfig(path string) (map[string]HostCommandSpec, error) {
 }
 
 // writeHostCommandsConfigIfMissing writes spec to path via
-// WriteHostCommandsConfig only when no file exists there yet. This mirrors
-// the "only regenerate when missing" semantics internal/server/wire.go's
-// buildProjectStore already applies for its own PR2 preflight (see the
-// MAJOR 3 comment there) — MAJOR 3's 2nd-pass codex review finding was that
-// MigrateWorkspaceYAMLToDB (workspace_migration.go) did not apply the same
-// guard: it called WriteHostCommandsConfig unconditionally, so its first
-// (committed, one-time) run silently clobbered whatever was already on disk
-// — a PR2-generated aggregate or a hand edit (the plan doc's documented way
-// to add/adjust a host_command without a kit) — with its own freshly
-// aggregated spec.
+// WriteHostCommandsConfig only when no file exists there yet — never
+// clobbers an existing aggregate or hand edit with a freshly regenerated one.
 //
 // Returns wrote=true when a write actually happened (the file was missing),
 // false when an existing file was found and left untouched. A stat error
@@ -327,26 +298,19 @@ func CloneHostCommandsMap(m map[string]HostCommandSpec) map[string]HostCommandSp
 
 // ExpandHostCommandsForDispatch returns a clone of raw with each entry's
 // Path and Env values expanded via interpolateHostCommands against the
-// daemon process's own environment (MAJOR 2 codex review finding). The
-// aggregated host_commands.yaml config on disk — and the map this function
-// receives when called with the value LoadHostCommandsConfig just parsed —
-// stores raw/unexpanded definitions by design (see readKitHostCommandsRaw's
-// doc comment: expanding at aggregation time would bake resolved values,
-// possibly secret-shaped, into that file, and would let two kits using
-// differently-named placeholders that happen to resolve to the same value
-// silently evade collision detection). But a raw `path: ${HOME}/bin/gh` is
-// useless to exec.LookPath at dispatch time — something has to expand it
-// before ProjectStore ever hands a HostCommandSpec to the sandbox.
+// daemon process's own environment. The aggregated host_commands.yaml
+// config on disk stores raw/unexpanded definitions by design (see
+// readKitHostCommandsRaw), but a raw `path: ${HOME}/bin/gh` is useless to
+// exec.LookPath at dispatch time, so something has to expand it before
+// ProjectStore ever hands a HostCommandSpec to the sandbox.
 //
 // Call this once at daemon startup on the freshly loaded raw config and wire
-// the *expanded* result into ProjectStore.SetHostCommands (the dispatch-time
-// read path), while Server.HostCommands() keeps handing out the raw
-// CloneHostCommandsMap snapshot unchanged (the PR2 contract: the on-disk
-// file and the API-visible snapshot both stay raw/inspectable).
+// the expanded result into ProjectStore.SetHostCommands, while
+// Server.HostCommands() keeps handing out the raw CloneHostCommandsMap
+// snapshot unchanged.
 //
-// raw is never mutated: the returned map (and every HostCommandSpec.Env
-// value map inside it) is an independent deep copy (CloneHostCommandsMap)
-// before interpolateHostCommands runs in place on that copy.
+// raw is never mutated: the returned map is an independent deep copy
+// (CloneHostCommandsMap) before interpolateHostCommands runs on that copy.
 func ExpandHostCommandsForDispatch(raw map[string]HostCommandSpec) map[string]HostCommandSpec {
 	cloned := CloneHostCommandsMap(raw)
 	if cloned == nil {

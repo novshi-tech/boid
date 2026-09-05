@@ -54,17 +54,14 @@ func (s *TaskWorkflowService) CompleteJob(ctx context.Context, jobID string, req
 		go s.Lifecycle.StopJobRuntime(runtimeID)
 	}
 
-	// Successful job completion: no state transition here.
-	// The runDispatchLoop (hooks → gates → auto-advance) is responsible for
-	// evaluating conditions and advancing the task state once all handlers
-	// have completed. Transitioning in CompleteJob would race with the gate
-	// execution and clean up the worktree before gates can run.
+	// Successful job completion: no state transition here. runDispatchLoop
+	// is responsible for evaluating conditions and advancing the task state
+	// once all handlers have completed — transitioning here would race with
+	// that and clean up the worktree too early.
 	//
-	// Broadcast the running→completed transition so the web timeline can
-	// recolor the marker (green) immediately — without waiting for the
-	// downstream hook_fired action to land later. The failure path below
-	// gets its own broadcast alongside the job_failed action (task-status
-	// transition is a separate visual signal).
+	// Broadcast running→completed immediately so the web timeline can
+	// recolor without waiting for the downstream hook_fired action. The
+	// failure path below gets its own broadcast alongside job_failed.
 	if req.ExitCode == 0 {
 		if s.Hub != nil {
 			s.Hub.Broadcast(job.TaskID, TaskEvent{
@@ -91,10 +88,9 @@ func (s *TaskWorkflowService) CompleteJob(ctx context.Context, jobID string, req
 	}
 
 	// A Job's TaskID never refers to a card (a card never runs its own agent
-	// session — see machine.go's package doc comment; only its dispatched
-	// CHILDREN, which are ordinary tasks, ever have jobs), so
-	// NewExecutionMachine is unambiguous here without a machineFor lookup
-	// (PR-B).
+	// session; only its dispatched children, ordinary tasks, ever have
+	// jobs), so NewExecutionMachine is unambiguous here without a
+	// machineFor lookup.
 	sm := orchestrator.NewExecutionMachine()
 
 	jobFailedFrom := task.Status

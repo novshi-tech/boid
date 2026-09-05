@@ -10,16 +10,11 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// SignalHandler serves docs/plans/signal-ingest-detailed-design.md §3.1
-// (PR-2)'s host API: GET /api/signals (list) and POST /api/signals/ack.
-//
-// Store is SignalStore (internal/api/store.go, added by PR-1) — wire.go
-// mounts this handler directly against runtime.taskRepo, which already
-// implements SignalStore (see that interface's own doc comment). No new
-// service type is needed the way CardHandler needs CardReadService: the
-// store interface PR-1 shipped is already narrow enough to hand straight to
-// a handler, following the same "thin handler over a narrow store
-// interface" shape CardHandler uses.
+// SignalHandler serves the host API: GET /api/signals (list) and
+// POST /api/signals/ack. Store is SignalStore (internal/api/store.go);
+// wire.go mounts this handler directly against runtime.taskRepo, which
+// already implements it — no separate service type is needed here, unlike
+// CardHandler's CardReadService.
 type SignalHandler struct {
 	Store SignalStore
 }
@@ -32,20 +27,11 @@ func (h *SignalHandler) Routes() chi.Router {
 }
 
 // List handles GET /api/signals?workspace_id=&source=&service=&state=&limit=.
-//
-// workspace_id defaults to orchestrator.DefaultWorkspaceSlug ("default")
-// when omitted — the CLI's --workspace flag already resolves this default
-// before sending the request (cmd/signal.go), but the handler defaults it
-// too so any direct API caller (curl, a future non-CLI client) gets the
-// same behavior rather than SignalFilter's "workspace id must not be empty"
-// error.
-//
-// source maps to SignalFilter.Connector UNCHANGED — the signals table
-// stores connector as the composite "<pack>/<connector>" string
-// (signal-ingest-detailed-design.md §2), so --source slack/mentions and the
-// stored value match exactly with no split needed for filtering (only the
-// response envelope's `source` block splits it back apart, in
-// toWireSignals below).
+// workspace_id defaults to orchestrator.DefaultWorkspaceSlug when omitted,
+// so any direct API caller gets the same behavior as the CLI. source maps
+// to SignalFilter.Connector unchanged (the stored composite
+// "<pack>/<connector>" string) — only the response envelope splits it back
+// apart, in toWireSignals below.
 func (h *SignalHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -57,13 +43,10 @@ func (h *SignalHandler) List(w http.ResponseWriter, r *http.Request) {
 	state := orchestrator.SignalState(q.Get("state"))
 	switch state {
 	case "", orchestrator.SignalStatePending, orchestrator.SignalStateDead, orchestrator.SignalStateAcked, orchestrator.SignalStateAll:
-		// valid (or empty, which ListSignals itself treats as "pending" —
-		// signal_store.go's signalStateCondition).
+		// valid (empty defaults to "pending" in ListSignals)
 	default:
-		// Validated here rather than left to ListSignals' own "unknown
-		// state" error (a plain error, not a *StatusError) so an invalid
-		// --state maps to 400 like an invalid --limit does, not a 500
-		// (Opus review, PR #1011: this asymmetry was flagged as F3).
+		// Validated here so an invalid --state maps to 400 like an invalid
+		// --limit does, rather than ListSignals' own plain-error 500.
 		writeError(w, http.StatusBadRequest, "invalid state: "+string(state))
 		return
 	}
@@ -97,13 +80,9 @@ func (h *SignalHandler) List(w http.ResponseWriter, r *http.Request) {
 // ({"workspace_id": "...", "ids": [...]}); workspace_id defaults the same
 // way List's query param does.
 //
-// AckSignals (internal/orchestrator/signal_store.go) is itself idempotent —
-// re-acking an already-acked id is a no-op, not an error (signal-driven-
-// review.md §14 Q14) — so this handler adds no extra dedup/already-acked
-// check of its own; doing so would risk diverging from the store's own
-// idempotency contract. The only validation here is "ids must not be
-// empty", which is a client-input bug worth rejecting up front rather than
-// forwarding a request AckSignals would silently no-op on.
+// AckSignals is itself idempotent (re-acking an id is a no-op, not an
+// error), so this handler adds no extra dedup check of its own. The only
+// validation here is "ids must not be empty".
 func (h *SignalHandler) Ack(w http.ResponseWriter, r *http.Request) {
 	var req AckSignalsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -121,19 +100,14 @@ func (h *SignalHandler) Ack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Store.AckSignals(workspaceID, req.IDs); err != nil {
-		// AckSignals' only error path is "unknown id(s)" (typo detection,
-		// signal-ingest-detailed-design.md §2) — a client input problem, so
-		// this maps to 400 rather than writeServiceError's 500 default.
+		// AckSignals' only error path is "unknown id(s)" — a client input
+		// problem, so this maps to 400 rather than writeServiceError's 500.
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	// Dedupe: req.IDs may contain repeats (e.g. a caller passing the same id
-	// twice in one `boid signal ack a a`), and AckSignalsResponse.Acked's own
-	// doc comment promises "the (de-duplicated) ids" — echoing req.IDs
-	// verbatim here would break that promise and make the CLI misreport
-	// "acked 3 signal(s)" for a single id repeated three times (Opus review,
-	// PR #1011, F4).
+	// req.IDs may contain repeats; AckSignalsResponse.Acked promises the
+	// de-duplicated ids, so echo them back deduped rather than verbatim.
 	writeJSON(w, http.StatusOK, AckSignalsResponse{Acked: dedupeStrings(req.IDs)})
 }
 
@@ -153,10 +127,9 @@ func dedupeStrings(ss []string) []string {
 	return out
 }
 
-// toWireSignals shapes store rows into the v0 envelope
-// (signal-driven-review.md §5.2), splitting each row's stored
-// "<pack>/<connector>" composite Connector back into the envelope's
-// separate source.pack/source.connector fields.
+// toWireSignals shapes store rows into the wire envelope, splitting each
+// row's stored "<pack>/<connector>" composite Connector back into the
+// envelope's separate source.pack/source.connector fields.
 func toWireSignals(signals []*orchestrator.Signal) []Signal {
 	out := make([]Signal, 0, len(signals))
 	for _, s := range signals {

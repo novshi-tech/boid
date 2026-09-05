@@ -95,12 +95,10 @@ func (s *Store) InsertDevice(ctx context.Context, id, label string, cookieHash [
 // InsertDeviceToken creates a new device row authenticated via Bearer token
 // instead of a session cookie (cookie_hash is left NULL — schema made this
 // nullable in migration 0032). Used by POST /api/auth/device, the CLI
-// pairing-code-redeem endpoint (docs/plans/cli-remote-connection.md Phase 3
-// PR0). Mirrors InsertDevice's shape exactly except for which hash column it
-// populates; a device row created here has no cookie_hash and one created by
-// InsertDevice has no token_hash — the two auth paths never overlap on the
-// same row (decision: extend the existing table rather than add a second
-// one, so a future PR could still attach both to one row if ever needed).
+// pairing-code-redeem endpoint. Mirrors InsertDevice's shape exactly except
+// for which hash column it populates; a device row created here has no
+// cookie_hash and one created by InsertDevice has no token_hash — the two
+// auth paths never overlap on the same row.
 func (s *Store) InsertDeviceToken(ctx context.Context, id, label string, tokenHash []byte) error {
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx,

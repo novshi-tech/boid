@@ -49,66 +49,59 @@ type appRuntime struct {
 	authStore      *auth.Store
 	sessionSigner  *auth.SessionSigner
 	connRegistry   *auth.ConnectionRegistry
-	// workspaceHomes is the engine-backed view of workspace HOME volumes
-	// (docs/plans/workspace-home-volume-persistence.md 論点 a-2, PR7), built
-	// in buildRuntime from the one docker client it already has and consumed
-	// by mountRoutes' WorkspaceHandler/GCHandler. nil when there is no engine
-	// (cfg.Backend injected — the test/DI seam), which is the feature's off
-	// switch: see api.WorkspaceHomeStore's doc comment for why the engine
-	// handle replaced the old RuntimesDir gate.
+	// workspaceHomes is the engine-backed view of workspace HOME volumes,
+	// built in buildRuntime from the one docker client it already has and
+	// consumed by mountRoutes' WorkspaceHandler/GCHandler. nil when there
+	// is no engine (cfg.Backend injected — the test/DI seam), which is the
+	// feature's off switch: see api.WorkspaceHomeStore's doc comment for
+	// why the engine handle replaced the old RuntimesDir gate.
 	workspaceHomes api.WorkspaceHomeStore
-	// oauthLogin backs `boid secret oauth login <service>` (docs/plans/
-	// api-gateway.md §7, PR3) — nil exactly when the API gateway's OAuth2
-	// TokenSource itself is unwired (no secretStore configured), the same
-	// "feature's off switch is an absent dependency" convention
-	// workspaceHomes above already follows. mountRoutes only mounts the
-	// route when this is non-nil.
+	// oauthLogin backs `boid secret oauth login <service>` — nil exactly
+	// when the API gateway's OAuth2 TokenSource itself is unwired (no
+	// secretStore configured), the same "feature's off switch is an
+	// absent dependency" convention workspaceHomes above already follows.
+	// mountRoutes only mounts the route when this is non-nil.
 	oauthLogin api.OAuthLoginService
-	// packs is the daemon's loaded Integration Pack registry (docs/plans/
-	// signal-ingest-detailed-design.md §6.2/§5.2, PR-5), resolved once at
-	// buildRuntime startup (integrationpack.LoadPacks). Consumed by
-	// mountRoutes to construct sessionDispatcherAdapter, which resolves a
-	// signal-derived trigger's connector reference against it at StartExec
-	// time. nil is a legitimate value (integrations.dir does not exist —
-	// no Packs installed) — every connector-trigger StartExec then fails
-	// with a clear "pack not installed" error rather than a nil panic.
+	// packs is the daemon's loaded Integration Pack registry, resolved
+	// once at buildRuntime startup (integrationpack.LoadPacks). Consumed
+	// by mountRoutes to construct sessionDispatcherAdapter, which resolves
+	// a signal-derived trigger's connector reference against it at
+	// StartExec time. nil is a legitimate value (integrations.dir does
+	// not exist — no Packs installed) — every connector-trigger StartExec
+	// then fails with a clear "pack not installed" error rather than a
+	// nil panic.
 	packs []*integrationpack.Pack
 }
 
 func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, map[string]orchestrator.HostCommandSpec, error) {
 	// The kit mechanism (orchestrator.KitRegistry / the KitResolver-driven
-	// ws.Kits merge path) was retired in docs/plans/workspace-db-consolidation.md
-	// Phase 2.5 PR6. KitResolver itself (and ProjectStore's resolver field
-	// and NewProjectStore parameter) was removed outright in PR7 alongside
-	// WorkspaceMeta.Kits.
+	// ws.Kits merge path) was retired; WorkspaceMeta.Kits is gone too.
 	store := orchestrator.NewProjectStore()
 
-	// docs/plans/volume-only-daemon.md §論点b: the daemon-managed bare-repo
-	// storage root (<data_dir>/repos/<workspace>/<project>.git). Wired here
-	// (not just at CreateProjectFromGitURL's DataDir field below) so
-	// LoadAll's degraded-status message can recognize a project whose
-	// WorkDir falls outside this root as a pre-cutover, host-filesystem
-	// registration — see ProjectStore.SetReposRoot's own doc comment.
+	// The daemon-managed bare-repo storage root
+	// (<data_dir>/repos/<workspace>/<project>.git). Wired here (not just at
+	// CreateProjectFromGitURL's DataDir field below) so LoadAll's
+	// degraded-status message can recognize a project whose WorkDir falls
+	// outside this root as a pre-cutover, host-filesystem registration —
+	// see ProjectStore.SetReposRoot's own doc comment.
 	store.SetReposRoot(orchestrator.ReposRoot(dataHomeFor(cfg)))
 
-	// docs/plans/workspace-default-project.md 論点h 案1 (PR7 round-3 Major
-	// fix): reconcileExpectedProjectID needs to verify that a url-derived
+	// reconcileExpectedProjectID needs to verify that a url-derived
 	// expectedID was ACTUALLY derived from the project's current
 	// UpstreamURL (not merely sharing URLDerivedProjectIDPrefix with one) —
 	// see ProjectStore.SetDeriveProjectIDFunc's doc comment for why this is
 	// wired in from here rather than called directly.
 	store.SetDeriveProjectIDFunc(api.DeriveProjectIDFromURL)
 
-	// Workspace DB cutover (docs/plans/workspace-db-consolidation.md PR3):
-	// migrate any yaml-authority workspaces (DefaultWorkspaceDir()/*.yaml)
-	// and kit host_commands (cfg.KitsDir) into the `workspaces` table before
-	// anything below reads workspace data. Idempotent — a no-op once
-	// already committed — and includes its own crash-recovery check, so
-	// this is safe to call on every daemon startup. A migration failure
-	// (corrupt yaml, a kit host_command name collision, a project
-	// referencing an unresolvable workspace, or an unreconcilable crash
-	// recovery mismatch) aborts daemon startup, same as the workspace
-	// validation block below.
+	// Workspace DB cutover: migrate any yaml-authority workspaces
+	// (DefaultWorkspaceDir()/*.yaml) and kit host_commands (cfg.KitsDir)
+	// into the `workspaces` table before anything below reads workspace
+	// data. Idempotent — a no-op once already committed — and includes its
+	// own crash-recovery check, so this is safe to call on every daemon
+	// startup. A migration failure (corrupt yaml, a kit host_command name
+	// collision, a project referencing an unresolvable workspace, or an
+	// unreconcilable crash recovery mismatch) aborts daemon startup, same
+	// as the workspace validation block below.
 	if err := orchestrator.MigrateWorkspaceYAMLToDB(conn, "", cfg.KitsDir, projectRepo); err != nil {
 		return nil, nil, fmt.Errorf("daemon startup refused: %w", err)
 	}
@@ -119,7 +112,7 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 	// every Load/Save/Remove/List/EnsureDefault call below and at dispatch
 	// time now routes through the workspaces table the migration above just
 	// populated, instead of re-reading the yaml files (which remain on disk
-	// only as a rollback/export shadow — decision 16).
+	// only as a rollback/export shadow).
 	wsStore := orchestrator.NewWorkspaceStore("")
 	wsStore.SetRepository(orchestrator.NewWorkspaceRepository(conn))
 	store.SetWorkspaceStore(wsStore)
@@ -158,14 +151,13 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 				msg.WriteString(e.Error())
 				msg.WriteString("\n")
 			}
-			// PR3 cutover 後、 workspace の権威は SQLite DB
-			// (~/.local/share/boid/boid.db の workspaces テーブル)。
-			// shadow yaml (~/.config/boid/workspaces/<slug>.yaml) を
-			// 編集しても既に committed 済みの MigrateWorkspaceYAMLToDB
-			// は再取込しないため、 shadow 編集単独では修復にならない。
-			// daemon が起動拒否している (現状態) では workspace
-			// edit/import CLI も使えないので、 現行の実質的な修復手段は
-			// 以下いずれか:
+			// workspace の権威は SQLite DB (~/.local/share/boid/boid.db の
+			// workspaces テーブル)。shadow yaml
+			// (~/.config/boid/workspaces/<slug>.yaml) を編集しても既に
+			// committed 済みの MigrateWorkspaceYAMLToDB は再取込しないため、
+			// shadow 編集単独では修復にならない。daemon が起動拒否している
+			// (現状態) では workspace edit/import CLI も使えないので、
+			// 現行の実質的な修復手段は以下いずれか:
 			//   (a) SQLite CLI で workspaces テーブルの当該 slug 行を
 			//       直接修正 or 削除 (削除後は daemon 再起動時に
 			//       WorkspaceRepository.EnsureDefault が default を
@@ -175,8 +167,6 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 			//       にすると input_hash 再計算で不一致 abort、 完全削除
 			//       すれば re-migrate される) + shadow yaml を修正、
 			//       daemon 再起動で yaml から DB に再取込
-			// PR7+ で offline 修復 CLI (`boid workspace repair` 相当) を
-			// 検討する予定 (現状はまだ実装無し、 上記手動手順のみ)。
 			msg.WriteString("Workspace metadata failed to decode from the DB (workspaces table). Recovery options:\n")
 			msg.WriteString("  (a) delete the row directly via `sqlite3 ~/.local/share/boid/boid.db \"DELETE FROM workspaces WHERE slug='<slug>';\"` and restart the daemon (the default workspace is auto-recreated on boot)\n")
 			msg.WriteString("  (b) fix the shadow yaml (~/.config/boid/workspaces/<slug>.yaml) AND clear the migration marker via `sqlite3 ~/.local/share/boid/boid.db \"DELETE FROM schema_migrations WHERE version='workspace_db_consolidation';\"`, then restart the daemon so the migration re-runs from yaml\n")
@@ -184,33 +174,25 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 		}
 	}
 
-	// host_commands aggregation preflight (docs/plans/workspace-db-consolidation.md
-	// PR2). hostCommandsPath is the aggregated config's on-disk location;
-	// once written it is meant to be the authority (hand-editable — see the
-	// plan doc), so MAJOR 3 (codex review) makes what follows conditional
-	// on whether it already exists.
+	// host_commands aggregation preflight. hostCommandsPath is the
+	// aggregated config's on-disk location; once written it is meant to be
+	// the authority (hand-editable), so what follows is conditional on
+	// whether it already exists.
 	hostCommandsPath, err := orchestrator.DefaultHostCommandsPath()
 	if err != nil {
 		return nil, nil, fmt.Errorf("daemon startup refused: resolve host_commands.yaml path: %w", err)
 	}
 
-	// MAJOR 3 (codex review): only aggregate-from-kits-and-rewrite when the
-	// file does not exist yet. Before this fix, buildProjectStore
-	// unconditionally re-aggregated every installed kit.yaml and rewrote
-	// hostCommandsPath on *every* daemon startup — including every restart
-	// long after MigrateWorkspaceYAMLToDB had already committed and written
-	// it once. Since state=committed makes that migration a permanent no-op
-	// (it never rewrites the file again), this unconditional rewrite was
-	// the only thing still clobbering it: any hand edit to
-	// ~/.config/boid/host_commands.yaml (the plan doc's documented way to
-	// add/adjust a host_command without a kit) was silently reverted on the
-	// very next `boid start`. The conditional below only regenerates when
-	// the file is genuinely missing (fresh install racing ahead of the
-	// migration in some test harness path, or a user manually deleting it)
-	// — a self-healing fallback, not the steady-state path. A name
-	// collision between two kits with differing definitions still aborts
-	// daemon startup (decision 9 in the plan doc) whenever this fallback
-	// does run.
+	// Only aggregate-from-kits-and-rewrite when the file does not exist
+	// yet: any hand edit to ~/.config/boid/host_commands.yaml (the
+	// documented way to add/adjust a host_command without a kit) would
+	// otherwise be silently reverted on the very next `boid start`. The
+	// conditional below only regenerates when the file is genuinely
+	// missing (fresh install racing ahead of the migration in some test
+	// harness path, or a user manually deleting it) — a self-healing
+	// fallback, not the steady-state path. A name collision between two
+	// kits with differing definitions still aborts daemon startup
+	// whenever this fallback does run.
 	var hostCommands map[string]orchestrator.HostCommandSpec
 	if _, statErr := os.Stat(hostCommandsPath); statErr == nil {
 		hostCommands, err = orchestrator.LoadHostCommandsConfig(hostCommandsPath)
@@ -233,19 +215,18 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 		return nil, nil, fmt.Errorf("daemon startup refused: stat host_commands.yaml: %w", statErr)
 	}
 
-	// Cutover (PR3): wire the aggregated host_commands map into the project
-	// store so GetWithWorkspace can resolve workspace.HostCommands
-	// (reference names) into full HostCommandSpec definitions at dispatch
-	// time — see project_store.go's workspace host_commands merge block.
-	// Symmetric with SetWorkspaceStore above.
+	// Wire the aggregated host_commands map into the project store so
+	// GetWithWorkspace can resolve workspace.HostCommands (reference names)
+	// into full HostCommandSpec definitions at dispatch time — see
+	// project_store.go's workspace host_commands merge block. Symmetric
+	// with SetWorkspaceStore above.
 	//
-	// MAJOR 2 (codex review): hostCommands (loaded above, or returned to
-	// this function's caller below) stays raw/unexpanded — that is the PR2
-	// contract Server.HostCommands() exposes. But dispatch needs ${VAR}
-	// placeholders (e.g. a kit's `path: ${HOME}/bin/gh`) resolved against
-	// the daemon's own environment, or exec.LookPath fails on the literal
-	// string. Wire an expanded *clone* into the dispatch-time store instead
-	// of the raw map itself.
+	// hostCommands (loaded above, or returned to this function's caller
+	// below) stays raw/unexpanded — that is the contract Server.HostCommands()
+	// exposes. But dispatch needs ${VAR} placeholders (e.g. a kit's `path:
+	// ${HOME}/bin/gh`) resolved against the daemon's own environment, or
+	// exec.LookPath fails on the literal string. Wire an expanded *clone*
+	// into the dispatch-time store instead of the raw map itself.
 	store.SetHostCommands(orchestrator.ExpandHostCommandsForDispatch(hostCommands))
 
 	// Migrate any legacy unlinked projects (no project_workspaces row) into
@@ -267,20 +248,15 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 	}
 	errs := store.LoadAll(projects)
 
-	// INVARIANT (docs/plans/volume-only-daemon.md §論点a "on-startup
-	// auto-prune 撤去"): filesystem/remote observations never justify a
-	// hard delete of a project's DB row, at any point — not at startup, not
-	// at dispatch, not at `boid project fetch`, not at GC. This block used
-	// to auto-prune a project's DB row the moment its project.yaml could
-	// not be read (reasoning: "ENOENT == the dir was physically removed,
-	// safe to delete"). That exact shortcut is what turned a transient
-	// "container can't see the host filesystem" observation into a
-	// mass-deletion of 18 projects / 479 tasks / 816 jobs during the
-	// 2026-07-24 dogfood session that prompted this doc's pivot — a
-	// perfectly healthy DB row was indistinguishable, from inside that
-	// shortcut, from a genuinely stale one.
+	// INVARIANT: filesystem/remote observations never justify a hard
+	// delete of a project's DB row, at any point — not at startup, not at
+	// dispatch, not at `boid project fetch`, not at GC. A transient
+	// "container can't see the host filesystem" observation must never be
+	// treated as "the dir was physically removed, safe to delete" — a
+	// perfectly healthy DB row is indistinguishable from a genuinely stale
+	// one from inside that shortcut.
 	//
-	// store.LoadAll (project_store.go) already implements the replacement:
+	// store.LoadAll (project_store.go) implements the safe alternative:
 	// every per-project load failure — missing dir, YAML parse error,
 	// corrupt or unreachable bare repo, project.yaml missing from a bare
 	// repo's HEAD — is recorded via ProjectStore.MarkDegraded (StatusDegraded)
@@ -288,12 +264,10 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 	// point deletes anything. The one remaining fail-fast case is a schema
 	// migration requirement (*ProjectMigrationError, resolved via
 	// `boid project migrate <dir>` + `boid workspace create/edit
-	// --from-file` — docs/plans/release-onboarding.md 決定2/PR5 removed the
-	// bare-metal-only `boid start --auto-migrate` respawn path):
-	// unlike the conditions above, that
-	// signals a config SHAPE the daemon has no safe default interpretation
-	// for, not an observational/transient failure, so refusing to start is
-	// still the right call.
+	// --from-file`): unlike the conditions above, that signals a config
+	// SHAPE the daemon has no safe default interpretation for, not an
+	// observational/transient failure, so refusing to start is still the
+	// right call.
 	//
 	// The only two entry points that remove a project's DB row are now
 	// `boid project rm <id>` and `boid workspace delete <name>` — both
@@ -319,12 +293,12 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 }
 
 // backfillUpstreamURLs captures upstream_url for any project registered
-// before PR2 (docs/plans/git-gateway-cutover.md) added the column. Idempotent
-// — projects that already have a value are skipped — so it is safe to run on
-// every daemon startup. Capture failures (no git repo / no origin remote) are
-// logged as warnings, never fatal to startup: the project keeps dispatching
-// exactly as it did before this column existed until a remote is added and
-// `boid project reload` (or the next startup) captures it.
+// before the column existed. Idempotent — projects that already have a
+// value are skipped — so it is safe to run on every daemon startup.
+// Capture failures (no git repo / no origin remote) are logged as
+// warnings, never fatal to startup: the project keeps dispatching exactly
+// as it did before this column existed until a remote is added and `boid
+// project reload` (or the next startup) captures it.
 func backfillUpstreamURLs(projectRepo *orchestrator.ProjectRepository, projects []*orchestrator.Project) {
 	for _, p := range projects {
 		if p.UpstreamURL != "" {
@@ -381,16 +355,13 @@ func buildProjectLoadStartupError(errs []error) error {
 			causes = append(causes, e)
 		}
 	}
-	// codex round-9 review of PR5, Blocker 1: this used to append one
-	// more generic "Run `boid project migrate <dir>`" hint line here,
-	// with a literal "<dir>" placeholder — redundant with, AND less
-	// accurate than, what is already there: each `e.Error()` written
-	// into msg above (for an `e` that IS a *ProjectMigrationError) is
-	// FormatMigrationIssue's own per-project text, which already embeds
-	// migrationGuidance(p.Dir, p.IsBareRepo) — the real path (or, for a
-	// git-URL-registered project, the correct "this is a bare-repo path,
-	// use your own clone instead" guidance). Nothing more to add here;
-	// only the errors.As wiring (causes) is still needed.
+	// Each `e.Error()` written into msg above (for an `e` that IS a
+	// *ProjectMigrationError) is FormatMigrationIssue's own per-project
+	// text, which already embeds migrationGuidance(p.Dir, p.IsBareRepo) —
+	// the real path (or, for a git-URL-registered project, the correct
+	// "this is a bare-repo path, use your own clone instead" guidance).
+	// Nothing more to add here; only the errors.As wiring (causes) is
+	// still needed.
 	if len(migAgg.Projects) > 0 {
 		// Put migration error first so errors.As walks find it quickly.
 		causes = append([]error{migAgg}, causes...)
@@ -399,102 +370,78 @@ func buildProjectLoadStartupError(errs []error) error {
 }
 
 // sandboxBackendForConfig unconditionally constructs the containerBackend
-// Runner.Backend is wired to (docs/plans/volume-only-daemon.md §論点e,
-// PR-4): container is the only sandbox backend now — the userns backend and
-// the sandbox.backend config option that used to select between the two
-// were removed outright, so there is no branch left here, only construction.
+// Runner.Backend is wired to: container is the only sandbox backend, so
+// there is no branch here, only construction.
 //
-// dockerClient is passed IN rather than built here, and the difference is
-// load-bearing rather than stylistic [round 2 Major 2, codex review
-// 2026-07-26]. The daemon-state-volume self-inspection
-// (dispatcher.DetectDaemonStateVolumes) needs a docker client too, and when it
-// built its own there were two constructions on the startup path. Two costs
-// followed: a self-inspect that could fail on its own on a deployment whose
-// backend is perfectly healthy — reported as an error the caller then had to
-// be careful not to drop — and, less obviously, a second SYNCHRONOUS read of
-// DOCKER_CERT_PATH's ca.pem/cert.pem/key.pem, which client.New(client.FromEnv)
-// performs eagerly (moby client_options.go's WithTLSClientConfigFromEnv). That
-// read is not interruptible by any context, so a wedged filesystem behind
-// DOCKER_CERT_PATH would hang `boid start` inside a feature whose entire
-// design is "warn and continue". buildRuntime now makes exactly one client and
-// hands it to both, which puts that read back where it already was: a
-// precondition of the container backend itself, which every release since the
-// volume-only cutover has had.
+// dockerClient is passed IN rather than built here: the daemon-state-volume
+// self-inspection (dispatcher.DetectDaemonStateVolumes) needs a docker
+// client too, and building two separate clients on the startup path risks
+// a self-inspect failure on an otherwise-healthy deployment plus a second
+// SYNCHRONOUS read of DOCKER_CERT_PATH's ca.pem/cert.pem/key.pem (which
+// client.New(client.FromEnv) performs eagerly and cannot be interrupted by
+// any context — a wedged filesystem there would hang `boid start` inside a
+// feature whose entire design is "warn and continue"). buildRuntime makes
+// exactly one client and hands it to both.
 //
-// The client is real (github.com/moby/moby/client —
-// client.New(client.FromEnv) does not dial the docker daemon eagerly; it
-// only resolves DOCKER_HOST/DOCKER_* env and builds the HTTP client
-// config, so constructing it never fails just because docker is unreachable at
-// daemon-boot time — the same lazy-connect behavior cmd/reap.go's
-// runReap already relies on). It carries this
-// installation's install_id (§決定6 resource labeling) and the
-// host-visible runtimes directory (so `boid job log`'s transcript spool —
-// §PR7's transcript persistence — and the per-job dockerproxy TLS
-// materialize dir land under the same bind-mounted path a sibling docker
-// daemon can actually reach, matching ContainerBackendOptions.RuntimeDir's
-// own doc comment).
+// The client is real (github.com/moby/moby/client — client.New(client.FromEnv)
+// does not dial the docker daemon eagerly; it only resolves DOCKER_HOST/
+// DOCKER_* env and builds the HTTP client config, so constructing it never
+// fails just because docker is unreachable at daemon-boot time — the same
+// lazy-connect behavior cmd/reap.go's runReap already relies on). It
+// carries this installation's install_id (resource labeling) and the
+// host-visible runtimes directory (so `boid job log`'s transcript spool
+// and the per-job dockerproxy TLS materialize dir land under the same
+// bind-mounted path a sibling docker daemon can actually reach, matching
+// ContainerBackendOptions.RuntimeDir's own doc comment).
 //
 // installID and runtimeDir are threaded as plain values (not read from cfg
 // itself) so this stays independently unit-testable without a live
 // Server/DB — see wire_backend_test.go.
 //
-// [Major 7, PR7 codex review]: DiagnosticsCollector is now wired to
-// dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir) —
-// before this fix it was left nil in every production path (see
-// NewContainerBackend's own doc comment: "PR5 leaves this nil (no consumer
-// yet)"), so an OOM-killed or setup-failure job container was removed with
-// no diagnostic capture beyond whatever the attach-stream transcript spool
-// happened to catch (exit code 137 and an empty log were often the only
-// signal). NewDefaultDiagnosticsCollector runs only on an abnormal exit
+// DiagnosticsCollector is wired to
+// dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir), so
+// an OOM-killed or setup-failure job container gets diagnostic capture
+// beyond whatever the attach-stream transcript spool caught.
+// NewDefaultDiagnosticsCollector runs only on an abnormal exit
 // (ExitCode != 0) and degrades gracefully on its own inspect/logs failures
 // — see its own doc comment for the full contract.
-// brokerTLSCA/brokerTLSAddr thread the broker's mTLS trust material into the
-// containerBackend this function may construct (docs/plans/
-// phase6-cutover-followups.md §⓪ "broker TCP wire completion"):
-// brokerTLSCA is the daemon's already-loaded internal CA (srv.daemonCA,
-// hoisted to New() specifically so it exists before buildRuntime calls this
-// function — see Server.daemonCA's own doc comment for why that hoist was
-// needed), passed by value since the CA itself never changes for the life
-// of the process. brokerTLSAddr is a pointer (srv's own
-// &srv.brokerTLSSandboxAddr field) rather than a resolved string: the
-// broker's TLS listener binds an OS-assigned ephemeral port only known once
-// Start has run — strictly after this function returns — so the pointer is
-// handed to ContainerBackendOptions.BrokerTLSAddr and dereferenced fresh by
+//
+// brokerTLSCA/brokerTLSAddr thread the broker's mTLS trust material into
+// the containerBackend this function may construct: brokerTLSCA is the
+// daemon's already-loaded internal CA (srv.daemonCA, hoisted to New()
+// specifically so it exists before buildRuntime calls this function — see
+// Server.daemonCA's own doc comment for why that hoist was needed), passed
+// by value since the CA itself never changes for the life of the process.
+// brokerTLSAddr is a pointer (srv's own &srv.brokerTLSSandboxAddr field)
+// rather than a resolved string: the broker's TLS listener binds an
+// OS-assigned ephemeral port only known once Start has run — strictly
+// after this function returns — so the pointer is handed to
+// ContainerBackendOptions.BrokerTLSAddr and dereferenced fresh by
 // containerBackend.Launch on every call, the same late-binding-via-pointer
 // pattern WireConfig.GatewayURL already uses one layer up. Both are nil for
-// every caller that does not thread them (every test below except the ones
-// added for this feature) — ContainerBackendOptions.BrokerTLSCA nil is the
-// existing "feature disabled" contract (see its own doc comment), so this
-// is a pure additive parameter, not a behavior change for anyone who leaves
-// it nil.
+// every caller that does not thread them — ContainerBackendOptions.BrokerTLSCA
+// nil is the existing "feature disabled" contract (see its own doc
+// comment), so this is a pure additive parameter, not a behavior change
+// for anyone who leaves it nil.
 func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir, transcriptDir string, brokerTLSCA *mtls.CA, brokerTLSAddr *string) backend.SandboxBackend {
-	// UID/GID (PR9, §決定4 — "job container は `--user <daemon uid>:<gid>`
-	// で非 root 起動"): os.Getuid()/os.Getgid() are the DAEMON's own actual
-	// runtime uid/gid — under compose these are whatever `user:
-	// "${BOID_UID}:0"` set them to (build/container/compose.yml, gid
-	// hardcoded to 0 as of docs/plans/release-onboarding.md 決定1/PR2's
-	// arbitrary-uid redesign), not necessarily ContainerBackendOptions'
-	// own 1000:1000 default. Before this fix, sandboxBackendForConfig
-	// never populated UID/GID at all, so every job container silently ran
-	// as 1000:1000 regardless of the daemon's actual uid — harmless only
-	// when an operator's host uid happens to also be 1000. Real impact
-	// found via docs/plans/phase6-cutover-followups.md's e2e-container job
-	// debugging trail: the workspace home directory (host-created by the
-	// daemon process, mode 0700, owned by the daemon's real uid) became
-	// unreadable ("permission denied") to a job container running under a
-	// DIFFERENT uid whenever the two diverged (e.g. GH Actions runners
-	// default to uid 1001, not 1000). Using the daemon's own
-	// os.Getuid()/os.Getgid() here — rather than yet another config knob —
-	// keeps this correct by construction: whatever uid the daemon
-	// container actually runs as is exactly the uid its own bind-mounted
-	// files (workspace homes included) are owned by, and now exactly the
-	// uid job containers run as too.
+	// Job container runs as `--user <daemon uid>:<gid>`, non-root:
+	// os.Getuid()/os.Getgid() are the DAEMON's own actual runtime uid/gid
+	// — under compose these are whatever `user: "${BOID_UID}:0"` set them
+	// to (build/container/compose.yml, gid hardcoded to 0), not
+	// necessarily ContainerBackendOptions' own 1000:1000 default. Using
+	// the daemon's own os.Getuid()/os.Getgid() here — rather than yet
+	// another config knob — keeps this correct by construction: whatever
+	// uid the daemon container actually runs as is exactly the uid its
+	// own bind-mounted files (workspace homes included) are owned by, and
+	// now exactly the uid job containers run as too, avoiding a
+	// "permission denied" on the workspace home whenever the daemon's
+	// host uid and ContainerBackendOptions' default diverge (e.g. GH
+	// Actions runners default to uid 1001, not 1000).
 	//
 	// os.Getgid() legitimately resolves to 0 under the arbitrary-uid
 	// compose config above — dispatcher.NewContainerBackend's gid-0-aware
-	// guard (docs/plans/release-onboarding.md 決定1, PR2) accepts that
-	// straight through rather than rejecting it as a root-resolving pair
-	// the way it used to (see ContainerBackendOptions.UID's doc comment);
+	// guard accepts that straight through rather than rejecting it as a
+	// root-resolving pair (see ContainerBackendOptions.UID's doc comment);
 	// only a uid of 0 is still rejected.
 	uid, gid := os.Getuid(), os.Getgid()
 	return dispatcher.NewContainerBackend(dockerClient, dispatcher.ContainerBackendOptions{
@@ -503,27 +450,22 @@ func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir,
 		TranscriptDir: transcriptDir,
 		UID:           &uid,
 		GID:           &gid,
-		// DefaultImage (docs/plans/release-onboarding.md 穴4/PR4 codex
-		// review, Blocker): BOID_IMAGE, when set, names the EXACT image ref
+		// DefaultImage: BOID_IMAGE, when set, names the EXACT image ref
 		// this daemon process itself was launched from — build/container/
-		// compose.yml's daemon service now maps that same compose-level
-		// variable into the container's own environment (its own comment
-		// there explains why), so a compose deploy's daemon always sees it.
-		// Without this, job containers would fall back to
-		// version.DefaultContainerImage() evaluated INSIDE the daemon
-		// process — for any non-exact-release build (the common case: a
-		// GHCR ":latest" pull from main, not a tagged release) that
-		// evaluates to the bare, registry-less "boid-runner:latest", the
-		// exact 穴4 bug this PR exists to fix. A daemon that successfully
-		// pulled its own ghcr.io/.../boid-runner:latest image would then
-		// have every job dispatch try to pull an unrelated, nonexistent
-		// docker.io/library/boid-runner:latest instead — "the daemon's pull
-		// succeeds but the job runner still uses the old ref" is exactly
-		// the inconsistency 穴4's table warns about, just one hop later
-		// (daemon-vs-job instead of fallback-vs-primary). Empty (bare
-		// `boid start` outside compose, or any deploy that hasn't set it)
-		// leaves NewContainerBackend's own version.DefaultContainerImage()
-		// fallback in charge, unchanged from before this fix.
+		// compose.yml's daemon service maps that same compose-level
+		// variable into the container's own environment, so a compose
+		// deploy's daemon always sees it. Without this, job containers
+		// would fall back to version.DefaultContainerImage() evaluated
+		// INSIDE the daemon process — for any non-exact-release build (the
+		// common case: a GHCR ":latest" pull from main, not a tagged
+		// release) that evaluates to the bare, registry-less
+		// "boid-runner:latest", so a daemon that successfully pulled its
+		// own ghcr.io/.../boid-runner:latest image would then have every
+		// job dispatch try to pull an unrelated, nonexistent
+		// docker.io/library/boid-runner:latest instead. Empty (bare `boid
+		// start` outside compose, or any deploy that hasn't set it) leaves
+		// NewContainerBackend's own version.DefaultContainerImage()
+		// fallback in charge.
 		DefaultImage: os.Getenv("BOID_IMAGE"),
 		// diagnostics.json follows the same TranscriptDir-else-RuntimeDir
 		// fallback openTranscriptSpool applies internally (see
@@ -531,22 +473,18 @@ func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir,
 		// here rather than inside NewDefaultDiagnosticsCollector since that
 		// free function only takes one directory string.
 		DiagnosticsCollector: dispatcher.NewDefaultDiagnosticsCollector(dockerClient, firstNonEmpty(transcriptDir, runtimeDir)),
-		// SelfContainerID (PR9, §決定5): $HOSTNAME is docker's own default
-		// container hostname (the short container ID) unless a service
-		// overrides it — build/container/compose.yml's `daemon` service
-		// does not, so inside a real compose deploy this resolves to the
-		// daemon's own container ID, letting
-		// containerBackend.ensureWorkspaceNetwork connect this same
-		// container to each per-workspace network it creates (see
-		// ContainerBackendOptions.SelfContainerID's own doc comment for
-		// why that is required, not optional, once workspace network
-		// isolation is enabled). Outside a container (bare `boid start`
-		// with sandbox.backend: container manually forced, or any non-
-		// compose test/DI usage) $HOSTNAME is just the host's own
-		// hostname — NetworkConnect against that bogus value fails
-		// harmlessly (ensureWorkspaceNetwork's self-connect step is
-		// best-effort, logged, non-fatal), not a new failure mode this
-		// wiring introduces.
+		// SelfContainerID: $HOSTNAME is docker's own default container
+		// hostname (the short container ID) unless a service overrides it
+		// — build/container/compose.yml's `daemon` service does not, so
+		// inside a real compose deploy this resolves to the daemon's own
+		// container ID, letting containerBackend.ensureWorkspaceNetwork
+		// connect this same container to each per-workspace network it
+		// creates (see ContainerBackendOptions.SelfContainerID's own doc
+		// comment for why that is required, not optional, once workspace
+		// network isolation is enabled). Outside a container $HOSTNAME is
+		// just the host's own hostname — NetworkConnect against that
+		// bogus value fails harmlessly (ensureWorkspaceNetwork's
+		// self-connect step is best-effort, logged, non-fatal).
 		SelfContainerID: os.Getenv("HOSTNAME"),
 		BrokerTLSCA:     brokerTLSCA,
 		BrokerTLSAddr:   brokerTLSAddr,
@@ -571,36 +509,29 @@ var newWorkspaceHomeStoreFn = func(engine dispatcher.WorkspaceHomeVolumeAPI, ins
 
 // detectDaemonStateVolumesFn is the package-level indirection that lets
 // reservedDaemonStateVolumes' CALLER be tested without a container or an
-// engine — the same DI shape as internal/dispatcher's daemonUID. The detection internals
-// have their own seams one layer down (dispatcher's readSelfMountInfo /
-// readSelfCgroup). Production never reassigns it.
+// engine — the same DI shape as internal/dispatcher's daemonUID. The
+// detection internals have their own seams one layer down (dispatcher's
+// readSelfMountInfo / readSelfCgroup). Production never reassigns it.
 //
-// It is a bare alias for dispatcher.DetectDaemonStateVolumes and deliberately
-// carries no logic of its own [round 2 Major 2, codex review 2026-07-26]. It
-// used to construct a docker client here first, which put an engine-shaped
-// failure IN FRONT of the engine-independent classification: a client that
-// failed to build returned a zero DaemonStateVolumes — StateVolumeExpected
-// false, i.e. the one value that means "nothing to protect, stay silent" —
-// alongside a real error the caller then read second and discarded. A daemon
-// with an unreadable DOCKER_CERT_PATH or a malformed DOCKER_HOST started with
-// containment off and logged nothing at all, which is precisely the failure
-// mode this whole feature exists to eliminate. buildRuntime now builds the one
+// It is a bare alias for dispatcher.DetectDaemonStateVolumes and
+// deliberately carries no logic of its own: buildRuntime builds the one
 // docker client (shared with the container backend, see
-// sandboxBackendForConfig) and passes it in, so nothing between the caller and
-// the classification can fail.
+// sandboxBackendForConfig) and passes it in here, so an engine-shaped
+// failure (e.g. an unreadable DOCKER_CERT_PATH or a malformed DOCKER_HOST)
+// cannot be silently swallowed in front of the engine-independent
+// classification — a client that fails to build must not read back as a
+// spurious "nothing to protect, stay silent".
 var detectDaemonStateVolumesFn = dispatcher.DetectDaemonStateVolumes
 
 // reservedDaemonStateVolumes returns the docker volume names a sandboxed
 // docker client must not be allowed to create, delete, or mount because THIS
-// daemon's own persistent state lives in them
-// (docs/plans/workspace-home-volume-persistence.md, the "未解決" entry this
-// PR resolves: under the compose deploy that is `boid_boid_state`, holding
-// boid.db / secret.key / tls/ca.key / web_secret / install_id).
+// daemon's own persistent state lives in them (under the compose deploy
+// that is `boid_boid_state`, holding boid.db / secret.key / tls/ca.key /
+// web_secret / install_id).
 //
 // Never fatal, and the outcomes are deliberately logged differently. Silence
 // is reserved for the ONE case that is a positive finding rather than a
-// missing answer — that distinction is the whole of [Major 1] and is pinned by
-// TestReservedDaemonStateVolumes_warnContract:
+// missing answer, pinned by TestReservedDaemonStateVolumes_warnContract:
 //
 //   - No volume can be holding the daemon's state — its data root is an
 //     ordinary directory on the root filesystem, i.e. bare `boid start`:
@@ -628,14 +559,11 @@ var detectDaemonStateVolumesFn = dispatcher.DetectDaemonStateVolumes
 // as an answer.
 func reservedDaemonStateVolumes(ctx context.Context, api dispatcher.SelfContainerInspector, dataHome string) []string {
 	res, err := detectDaemonStateVolumesFn(ctx, api, dataHome)
-	// ERROR FIRST [round 2 Major 2, codex review 2026-07-26]. This used to
-	// branch on res.StateVolumeExpected before looking at err, so any failure
-	// that came back with a zero result took the "nothing to protect" exit and
-	// the error was never read. DetectDaemonStateVolumes now guarantees the
-	// complementary half — every error return it makes carries
-	// StateVolumeExpected=true — but the ordering here is what makes the two
-	// halves independent: a future detection path that forgets the invariant
-	// gets a spurious warning, not silence.
+	// ERROR FIRST: DetectDaemonStateVolumes guarantees every error return it
+	// makes carries StateVolumeExpected=true, but checking err before
+	// res.StateVolumeExpected is what makes the two halves independent — a
+	// future detection path that forgets the invariant gets a spurious
+	// warning, not silence.
 	if err != nil {
 		slog.Warn("daemon state volume containment is INACTIVE: a named volume may be holding this daemon's own "+
 			"persistent state, and no volume name could be reserved because the check did not complete. "+
@@ -662,12 +590,10 @@ func reservedDaemonStateVolumes(ctx context.Context, api dispatcher.SelfContaine
 	}
 	slog.Info("daemon state volume containment active",
 		"container_id", res.ContainerID, "volumes", res.Names, "data_home_covered", res.DataHomeCovered)
-	// Reported separately from the INACTIVE warning above [round 3 Minor 1,
-	// codex review]: containment IS active here — the volumes were named and
-	// reserved — but data_home_covered was computed against a data root the
-	// daemon could not normalize, so that one field is not trustworthy. This
-	// used to be dropped entirely, which meant a broken symlink in the data
-	// root produced a completely clean startup log.
+	// Reported separately from the INACTIVE warning above: containment IS
+	// active here — the volumes were named and reserved — but
+	// data_home_covered was computed against a data root the daemon could
+	// not normalize, so that one field is not trustworthy.
 	if res.DataHomeUnresolved != nil {
 		slog.Warn("daemon data root could not be normalized for the coverage check; "+
 			"the volumes above ARE reserved, but data_home_covered was computed against an unresolved path and may be wrong",
@@ -687,14 +613,12 @@ func reservedDaemonStateVolumes(ctx context.Context, api dispatcher.SelfContaine
 	return res.Names
 }
 
-// gatewayBindHost [Blocker 2, PR7 codex review] returns the listen address
-// the git gateway's TCP(mTLS) listener binds to: "0.0.0.0" (composeBindHost)
-// when the container backend is selected, "127.0.0.1" (the pre-PR7
-// literal, byte-for-byte unchanged) otherwise. The container backend is the
-// only one selected in production since PR-4's volume-only cutover removed
-// the userns backend; the false branch remains a test-DI seam. A pure
-// function — no Server state — so it is independently unit-testable
-// without a live listener; see wire_backend_test.go.
+// gatewayBindHost returns the listen address the git gateway's TCP(mTLS)
+// listener binds to: "0.0.0.0" (composeBindHost) when the container
+// backend is selected, "127.0.0.1" otherwise. The container backend is the
+// only one selected in production; the false branch remains a test-DI
+// seam. A pure function — no Server state — so it is independently
+// unit-testable without a live listener; see wire_backend_test.go.
 func gatewayBindHost(usingContainerBackend bool) string {
 	if usingContainerBackend {
 		return composeBindHost
@@ -702,16 +626,13 @@ func gatewayBindHost(usingContainerBackend bool) string {
 	return "127.0.0.1"
 }
 
-// gatewayURLFor [Blocker 2, PR7 codex review] computes the git gateway's
-// sandbox-facing base URL for the currently-selected backend:
+// gatewayURLFor computes the git gateway's sandbox-facing base URL for the
+// currently-selected backend:
 //
 //   - usingContainerBackend == false: gitgateway.BackendUserns's
-//     http://10.0.2.2:<plainPort> — byte-for-byte the pre-PR7 literal
-//     (docs/plans/phase6-container-backend.md §PR4: "既存 (10.0.2.2) を
-//     無条件で切り替える禁止"). PR-4 (volume-only cutover) removed the
-//     userns backend entirely, so this branch is unreachable in
-//     production — `dispatcher.IsContainerBackend(runtime.runner.Backend)`
-//     is always true now — and survives only as a test-DI seam
+//     http://10.0.2.2:<plainPort>. Unreachable in production —
+//     `dispatcher.IsContainerBackend(runtime.runner.Backend)` is always
+//     true now — and survives only as a test-DI seam
 //     (wire_backend_test.go exercises both branches directly).
 //   - usingContainerBackend == true: gitgateway.BackendContainer's
 //     https://boid-gateway:<tlsPort> — a sibling job container has no
@@ -745,45 +666,33 @@ func runtimesDirFor(cfg Config) string {
 
 // hostVisibleRuntimesDirFor returns a runtimes root a docker-out-of-docker
 // (DooD) sibling container's bind-mount SOURCE can actually resolve on the
-// HOST filesystem — the fix for the gap build/container/compose.yml's own
-// "KNOWN GAP" comment flags (docs/plans/volume-only-daemon.md): under the
-// volume-only compose deploy, runtimesDirFor(cfg) above prefers
-// filepath.Dir(cfg.DBPath) — BOID_DATA_DIR, now the `boid_state` NAMED
-// VOLUME, invisible to the daemon container's OWN filesystem view from the
-// perspective of the HOST docker engine a sibling container's bind source
-// must resolve against (§論点i's "DooD path 境界", realization.go's own
-// MountSourceHostPath doc comment).
+// HOST filesystem. Under the volume-only compose deploy, runtimesDirFor(cfg)
+// above prefers filepath.Dir(cfg.DBPath) — BOID_DATA_DIR, now the
+// `boid_state` NAMED VOLUME, invisible to the daemon container's OWN
+// filesystem view from the perspective of the HOST docker engine a sibling
+// container's bind source must resolve against.
 //
 // cfg.SocketPath, by contrast, resolves under BOID_RUNTIME_DIR — a HOST
 // BIND mount, source == target, deliberately left untouched by the
-// volume-only pivot's compose.yml (see that file's own "Persistence"
-// header comment: "BOID_RUNTIME_DIR remains a host BIND mount... this PR
-// is scoped to daemon *data* persistence... this bind mount is still
-// load-bearing"). filepath.Dir(cfg.SocketPath) is therefore exactly the
+// volume-only pivot. filepath.Dir(cfg.SocketPath) is therefore exactly the
 // host-visible root every DooD sibling-mount-source construction site
 // needs: containerBackend's per-job dockerTLSDir/brokerTLSDir/spec.json/
 // state.json/transcript-spool material (ContainerBackendOptions.RuntimeDir
 // — sandboxBackendForConfig's own call site below), Runner.RuntimesDir's
 // own downstream uses (workspace HOME — dispatcher.WorkspaceHomesDir — and
-// the PR-2b per-job clone staging area, dispatcher.PrepareJobCheckout), and
-// the matching job-log read paths (transcriptLogReader) that must agree
-// with wherever those writes actually landed.
+// the per-job clone staging area, dispatcher.PrepareJobCheckout), and the
+// matching job-log read paths (transcriptLogReader) that must agree with
+// wherever those writes actually landed.
 //
 // Falls back to runtimesDirFor(cfg) when cfg.SocketPath is itself empty (an
 // exotic config with neither a real DB path nor a socket path — matches
 // runtimesDirFor's own last-resort fallback rather than returning "").
 //
-// Trade-off (flagged, not fully resolved by this PR — see compose.yml's
-// own "KNOWN GAP" comment for the longer-term fix; codex round-1, PR834
-// Minor 2 — this comment previously named only workspace HOME, understating
-// the trade-off's actual scope): BOID_RUNTIME_DIR is host XDG_RUNTIME_DIR,
-// typically `/run/user/<uid>` — tmpfs, cleared on host reboot (not on
-// container restart). EVERY surface this function's own doc comment above
-// lists therefore does NOT survive a host reboot under container backend,
-// not just workspace HOME:
-//   - workspace HOME content (dispatcher.WorkspaceHomesDir) — the one
-//     home-workspace-volume.md Phase 4 intends to survive reboots for the
-//     userns backend.
+// Trade-off: BOID_RUNTIME_DIR is host XDG_RUNTIME_DIR, typically
+// `/run/user/<uid>` — tmpfs, cleared on host reboot (not on container
+// restart). Every surface listed above therefore does NOT survive a host
+// reboot under container backend:
+//   - workspace HOME content (dispatcher.WorkspaceHomesDir).
 //   - job transcripts (containerBackend's transcript-spool material) and
 //     runner-state.json diagnostics (spec.json/state.json) — `boid job log`
 //     and post-mortem failure diagnosis both lose their on-disk backing the
@@ -793,22 +702,20 @@ func runtimesDirFor(cfg Config) string {
 //     reboot regardless (per-job, reissued on the next dispatch), so this
 //     one is harmless, but named here for completeness since it shares the
 //     same root.
-//   - the PR-2b per-job clone staging area (dispatcher.PrepareJobCheckout)
-//     — also harmless by the same reasoning (re-cloned fresh per dispatch,
-//     never expected to survive between jobs let alone a reboot).
+//   - the per-job clone staging area (dispatcher.PrepareJobCheckout) — also
+//     harmless by the same reasoning (re-cloned fresh per dispatch, never
+//     expected to survive between jobs let alone a reboot).
 //
-// This is strictly better than today's total breakage (container CREATE
-// fails outright — the bind source does not exist on the host at all,
-// since it's the OLD, non-host-visible root), not the final answer; a
+// This is strictly better than a container CREATE failing outright (the
+// bind source not existing on the host at all), not the final answer; a
 // docker-managed named volume (with per-workspace Subpath mounts) is the
 // likely follow-up.
 //
 // Every call site of this function is conditional on the container backend
 // actually being selected (see each call site's own comment) — a userns
-// deployment (the overwhelming majority of pre-volume-only installs) never
-// calls this function at all, so its own runtimesDirFor(cfg)-based
-// persistence contract (CLAUDE.md's documented 30-day daemon GC, Phase 4's
-// reboot-durable workspace HOME) is completely unaffected.
+// deployment never calls this function at all, so its own
+// runtimesDirFor(cfg)-based persistence contract (CLAUDE.md's documented
+// 30-day daemon GC) is completely unaffected.
 func hostVisibleRuntimesDirFor(cfg Config) string {
 	if cfg.SocketPath == "" {
 		return runtimesDirFor(cfg)
@@ -874,16 +781,16 @@ func dataHomeFor(cfg Config) string {
 // container (see ContainerBackendOptions.TranscriptDir's doc comment) — so
 // they can live on a real persistent volume instead of the host tmpfs that
 // hostVisibleRuntimesDirFor resolves to, which is wiped on every host
-// reboot (that function's own doc comment). Parking them here means a
-// completed job's `boid job log` output and post-mortem diagnostics survive
-// a reboot exactly like boid.db already does.
+// reboot. Parking them here means a completed job's `boid job log` output
+// and post-mortem diagnostics survive a reboot exactly like boid.db
+// already does.
 //
 // Deliberately a NEW path, not a reuse of runtimesDirFor's existing value
 // (which happens to compute the same parent directory when DBPath is set):
 // runtimesDirFor is pinned by TestRuntimesDirFor_UnaffectedByHostVisibleVariant
-// as the historical (pre-PR-4, now-removed userns backend) LocalRuntime
-// root — reusing it here for an unrelated, container-backend-only purpose
-// would conflate two different meanings under one function/directory.
+// as the LocalRuntime root — reusing it here for an unrelated,
+// container-backend-only purpose would conflate two different meanings
+// under one function/directory.
 //
 // Empty when dataHomeFor(cfg) is empty (the same exotic-config case
 // dataHomeFor itself documents) — every call site treats "" as "disable
@@ -953,13 +860,11 @@ func cleanOrphanRuntimes(runtimesDir string, conn *sql.DB) {
 	}
 }
 
-// reapOrphansBeforeReopen calls runner.ReapOrphans (docs/plans/
-// phase6-container-backend.md §PR7 / §決定 6) and translates its
+// reapOrphansBeforeReopen calls runner.ReapOrphans and translates its
 // job-scoped ReapReport into (a) the set of TASK IDs the caller's
 // subsequent daemon_shutdown auto-reopen sweep must skip, and (b) whether
-// startup reap failed so completely that EVERY daemon_shutdown-aborted task
-// must be held back this boot (see blockAllReopen below — [Blocker 4, PR7
-// codex review]).
+// startup reap failed so completely that EVERY daemon_shutdown-aborted
+// task must be held back this boot (see blockAllReopen below).
 //
 // ReapOrphans reasons about jobs (a backend's resource label is
 // boid.job_id, not task_id — a task can have had several jobs across its
@@ -970,27 +875,19 @@ func cleanOrphanRuntimes(runtimesDir string, conn *sql.DB) {
 // taskless `boid exec`) is skipped rather than erroring: there is no task
 // to protect from a double-reopen race in that case.
 //
-// [Blocker 4, PR7 codex review]: a non-nil return error or a non-nil
-// ReapReport.GlobalError (e.g. the docker API was entirely unreachable —
-// the userns backend, which never returns either, is unaffected) sets
-// blockAllReopen=true. Before this fix, a global reap failure was only
-// logged; the skip set stayed exactly whatever FailedJobIDs already
-// contributed (§決定6's job-level granularity has no visibility into jobs a
-// total listing failure never got to enumerate at all) — meaning a global
-// error, however severe (docker itself down, or transiently unavailable
-// right at daemon boot), silently degraded to "skip nothing" and every
-// daemon_shutdown-aborted task auto-reopened anyway. §決定6's own rule is
-// "reap は auto-reopen より前に完了させ、reap 失敗 task は reopen しない" — a
-// GlobalError means reap did NOT complete for ANY job (the listing call
-// itself never returned), so the caller has no way to know which tasks are
-// actually safe: the only rule-consistent behavior is to treat every
-// pending daemon_shutdown-aborted task as unreconciled and hold all of them
-// back, not silently reopen every one of them as if reap had never run at
-// all. This does not abort daemon startup outright (a global reap failure
-// is scoped to sandbox-resource reconciliation, not e.g. the HTTP API or
+// A non-nil return error or a non-nil ReapReport.GlobalError (e.g. the
+// docker API was entirely unreachable — the userns backend, which never
+// returns either, is unaffected) sets blockAllReopen=true: a GlobalError
+// means reap did NOT complete for ANY job (the listing call itself never
+// returned), so the caller has no way to know which tasks are actually
+// safe — the only consistent behavior is to treat every pending
+// daemon_shutdown-aborted task as unreconciled and hold all of them back,
+// not silently reopen every one of them as if reap had never run at all.
+// This does not abort daemon startup outright (a global reap failure is
+// scoped to sandbox-resource reconciliation, not e.g. the HTTP API or
 // userns-backed dispatch) — it only withholds the auto-reopen sweep for
-// this boot; a subsequent successful `boid start` (once docker recovers) or
-// a manual `boid task action reopen` unblocks the affected tasks.
+// this boot; a subsequent successful `boid start` (once docker recovers)
+// or a manual `boid task action reopen` unblocks the affected tasks.
 func reapOrphansBeforeReopen(ctx context.Context, runner *dispatcher.Runner, conn *sql.DB) (skip map[string]bool, blockAllReopen bool) {
 	report, err := runner.ReapOrphans(ctx)
 	if err != nil {
@@ -1021,35 +918,31 @@ func reapOrphansBeforeReopen(ctx context.Context, runner *dispatcher.Runner, con
 }
 
 func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
-	// [Major 11, PR7 codex review, still relevant post-PR-4]: a fail-hard
-	// config.Load() at the very top of buildRuntime — before even the
-	// startup orphan-runtime cleanup immediately below — so a config.yaml
-	// that becomes unreadable at reload time (a torn write from a
-	// concurrent `boid` CLI edit, a permissions change, disk corruption —
-	// anything short of ENOENT, which config.Load's own loadFromPath
-	// already treats as "use defaults" and returns a nil error for) refuses
-	// daemon startup outright rather than silently proceeding on defaults,
-	// the same way every other daemon startup precondition in this file
-	// does (buildProjectStore's own "daemon startup refused" errors above).
-	// The value itself is discarded now: PR-4 (docs/plans/
-	// volume-only-daemon.md §論点e) removed sandbox.backend and the
-	// userns/container branch this load used to gate — container is the
-	// only sandbox backend, so there is nothing left to select — but the
-	// "config.yaml must actually be loadable at boot" invariant this check
-	// also enforced stands on its own regardless.
+	// A fail-hard config.Load() at the very top of buildRuntime — before
+	// even the startup orphan-runtime cleanup immediately below — so a
+	// config.yaml that becomes unreadable at reload time (a torn write
+	// from a concurrent `boid` CLI edit, a permissions change, disk
+	// corruption — anything short of ENOENT, which config.Load's own
+	// loadFromPath already treats as "use defaults" and returns a nil
+	// error for) refuses daemon startup outright rather than silently
+	// proceeding on defaults, the same way every other daemon startup
+	// precondition in this file does (buildProjectStore's own "daemon
+	// startup refused" errors above). The value itself is discarded now:
+	// container is the only sandbox backend, so there is no
+	// userns/container branch left to select — but the "config.yaml must
+	// actually be loadable at boot" invariant this check also enforced
+	// stands on its own regardless.
 	if _, err := config.Load(); err != nil {
 		return nil, fmt.Errorf("daemon startup refused: load boid config: %w", err)
 	}
 
-	// Host-visible runtimes root (docs/plans/volume-only-daemon.md — see
-	// hostVisibleRuntimesDirFor's own doc comment for the full rationale):
-	// runner.RuntimesDir below, sandboxBackendForConfig's runtimeDir
-	// argument further down, the startup orphan-runtime cleanup immediately
-	// below, and the matching job-log read path (transcriptLogReader) all
-	// use this SAME value, so `boid job log` / workspace HOME / the PR-2b
-	// per-job clone staging area never disagree about where their own data
-	// actually landed. Unconditional now (PR-4): every deployment uses the
-	// container backend, so this is no longer choosing between two roots.
+	// Host-visible runtimes root (see hostVisibleRuntimesDirFor's own doc
+	// comment for the full rationale): runner.RuntimesDir below,
+	// sandboxBackendForConfig's runtimeDir argument further down, the
+	// startup orphan-runtime cleanup immediately below, and the matching
+	// job-log read path (transcriptLogReader) all use this SAME value, so
+	// `boid job log` / workspace HOME / the per-job clone staging area
+	// never disagree about where their own data actually landed.
 	runtimesRoot := hostVisibleRuntimesDirFor(cfg)
 
 	// Persistent transcript/diagnostics root (transcriptsDirFor's own doc
@@ -1090,14 +983,12 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 
 	projectRepo := orchestrator.NewProjectRepository(srv.db)
 	taskRepo := orchestrator.NewTaskRepository(srv.db)
-	// docs/plans/boid-internal-signal-inbox.md §6.2: CreateAction's ingest
-	// step needs the metaproject lookup, and store (*orchestrator.ProjectStore,
-	// built above by buildProjectStore) already IS the hydrated meta cache
-	// every other project.yaml-derived read in this daemon uses — no new
-	// cache, no new import (ProjectStore already lives in
-	// internal/orchestrator alongside TaskRepository/CreateAction), just
-	// wiring the same instance into the one place that had no constructor-
-	// injected access to it yet.
+	// CreateAction's ingest step needs the metaproject lookup, and store
+	// (*orchestrator.ProjectStore, built above by buildProjectStore)
+	// already IS the hydrated meta cache every other project.yaml-derived
+	// read in this daemon uses — no new cache, no new import, just wiring
+	// the same instance into the one place that had no
+	// constructor-injected access to it yet.
 	taskRepo.SetMetaProjectResolver(store)
 	jobRepo := dispatcher.NewJobRepository(srv.db)
 	jobStore := jobStoreAdapter{repo: jobRepo}
@@ -1115,36 +1006,33 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		wsLookup = ws
 	}
 
-	// git gateway registry (docs/plans/git-gateway-cutover.md PR4): built
-	// early and shared with the runner so Dispatch/UnregisterJob can
-	// Register/Unregister job tokens. The gateway's HTTP handler (which
-	// needs boidCfg + notifySvc, built further down) shares this same
-	// Registry — see the gitgateway.NewServer(...) call below.
+	// git gateway registry: built early and shared with the runner so
+	// Dispatch/UnregisterJob can Register/Unregister job tokens. The
+	// gateway's HTTP handler (which needs boidCfg + notifySvc, built
+	// further down) shares this same Registry — see the
+	// gitgateway.NewServer(...) call below.
 	srv.gatewayRegistry = gitgateway.NewRegistry()
-	// API gateway registry (docs/plans/api-gateway.md PR1): same role and
-	// same "built early, shared with the runner" timing as gatewayRegistry
-	// above — the two gateways are otherwise fully independent, right down
-	// to their own Registry types, and only share a listener (§論点1) at
-	// the very end of this function.
+	// API gateway registry: same role and same "built early, shared with
+	// the runner" timing as gatewayRegistry above — the two gateways are
+	// otherwise fully independent, right down to their own Registry
+	// types, and only share a listener at the very end of this function.
 	srv.apiGatewayRegistry = apigateway.NewRegistry()
 
-	// THE docker client — singular, and that is the point [round 2 Major 2,
-	// codex review 2026-07-26]. Two consumers need one: the container backend
-	// (sandboxBackendForConfig, further down) and the daemon-state-volume
-	// self-inspection (reservedDaemonStateVolumes, just below). Each used to
-	// build its own; see sandboxBackendForConfig's doc comment for why the
-	// duplicate was not merely redundant but a startup-hang and a
-	// silent-failure surface of its own.
+	// THE docker client — singular, and that is the point. Two consumers
+	// need one: the container backend (sandboxBackendForConfig, further
+	// down) and the daemon-state-volume self-inspection
+	// (reservedDaemonStateVolumes, just below); building two separate
+	// clients would risk a startup-hang and a silent-failure surface of
+	// its own (see sandboxBackendForConfig's doc comment).
 	//
-	// Constructed here, before either consumer, because a failure is fatal to
-	// the same thing in both cases: without a docker client there is no
-	// sandbox backend, and PR-4 (docs/plans/volume-only-daemon.md §論点e) made
-	// the container backend the only one. Refusing startup is what the daemon
-	// already did — this only moves the refusal a few lines earlier and gives
-	// it one call site instead of two. client.New(client.FromEnv) does not
-	// dial (it resolves DOCKER_HOST/DOCKER_* and builds an HTTP client config;
-	// API version negotiation is deferred to the first request), so this does
-	// not require a reachable engine, only a coherent configuration.
+	// Constructed here, before either consumer, because a failure is
+	// fatal to the same thing in both cases: without a docker client
+	// there is no sandbox backend, and container is the only backend.
+	// Refusing startup here gives it one call site instead of two.
+	// client.New(client.FromEnv) does not dial (it resolves
+	// DOCKER_HOST/DOCKER_* and builds an HTTP client config; API version
+	// negotiation is deferred to the first request), so this does not
+	// require a reachable engine, only a coherent configuration.
 	//
 	// cfg.Backend set means a test/DI backend was injected and no engine is
 	// involved at all, so no client is built. selfInspector is declared
@@ -1165,9 +1053,8 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 
 	// backendCfg/usingContainerBackend/runtimesRoot were already resolved at
-	// the very top of this function (see that block's own doc comment for
-	// why it moved there — PR834 PR-2b round-2 codex review Major 2) —
-	// reused here rather than a second config.Load().
+	// the very top of this function — reused here rather than a second
+	// config.Load().
 	runner := dispatcher.Wire(dispatcher.WireConfig{
 		DB:                   srv.db,
 		Broker:               broker,
@@ -1180,19 +1067,17 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		ServerSocket:         cfg.SocketPath,
 		ProxyPort:            &srv.proxyPort,
 		NoWorkspaceProxyPort: &srv.noWorkspaceProxyPort,
-		// AllowedDomains: captured once here, not a getter (PR #830 round-4
-		// simplification, nose directive — sandbox.allowed_domains is
-		// ReloadRestartRequired: see Runner.AllowedDomains's own doc
-		// comment, internal/dispatcher/runner.go, and ReloadDynamic's own
-		// doc comment, internal/config/schema.go). A later
-		// `boid config set sandbox.allowed_domains ...` persists to
-		// config.yaml immediately but only reaches this Runner on the next
-		// daemon restart, when buildRuntime runs again from the
-		// freshly-loaded config.
+		// AllowedDomains: captured once here, not a getter — sandbox.allowed_domains
+		// is ReloadRestartRequired: see Runner.AllowedDomains's own doc
+		// comment (internal/dispatcher/runner.go) and ReloadDynamic's own
+		// doc comment (internal/config/schema.go). A later `boid config
+		// set sandbox.allowed_domains ...` persists to config.yaml
+		// immediately but only reaches this Runner on the next daemon
+		// restart, when buildRuntime runs again from the freshly-loaded
+		// config.
 		AllowedDomains: cfg.AllowedDomains,
 		RuntimesDir:    runtimesRoot,
-		// DataHomeDir: deliberately dataHomeFor(cfg), NOT runtimesRoot
-		// (docs/plans/workspace-home-volume-persistence.md 論点b, PR2). The
+		// DataHomeDir: deliberately dataHomeFor(cfg), NOT runtimesRoot. The
 		// two are different roots since the volume-only pivot: runtimesRoot
 		// is host-visible but lives under BOID_RUNTIME_DIR (tmpfs — see
 		// hostVisibleRuntimesDirFor's own doc comment), whereas
@@ -1201,9 +1086,9 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// boid.db / web_secret / install_id (see dataHomeFor's own doc
 		// comment for the in-memory-DB and empty cases, which only arise in
 		// test wiring). The workspace home init marker and lock are daemon
-		// bookkeeping that must outlive a host reboot and, from PR6 on, must
-		// stay reachable by ordinary file I/O once the homes themselves
-		// become named volumes — so they follow the DB, not the runtime dir.
+		// bookkeeping that must outlive a host reboot and must stay
+		// reachable by ordinary file I/O once the homes themselves become
+		// named volumes — so they follow the DB, not the runtime dir.
 		// Same value passed to projectSvc.DataDir, the attachments root and
 		// orchestrator.ReposRoot elsewhere in this file.
 		//
@@ -1230,26 +1115,26 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		APIGatewayServicesFloor: cfg.ServicesFloor,
 	})
 
-	// Sandbox backend construction (docs/plans/volume-only-daemon.md
-	// §論点e, PR-4): unconditional now — container is the only sandbox
-	// backend, so runner.Backend is always set here, never left nil.
-	// runtimesRoot was already resolved at the very top of this function.
-	// cfg.Backend, when set, overrides construction entirely — the test/DI
-	// seam Config.Backend's own doc comment describes (server.go), so a
-	// test can exercise daemon startup against a fake backend.SandboxBackend
-	// without a live docker daemon. dockerClient is the one built above and
-	// already handed to the self-inspection — the same handle, deliberately
-	// (see sandboxBackendForConfig's doc comment); it is non-nil exactly when
-	// cfg.Backend is nil, which is exactly this branch.
+	// Sandbox backend construction: unconditional — container is the only
+	// sandbox backend, so runner.Backend is always set here, never left
+	// nil. runtimesRoot was already resolved at the very top of this
+	// function. cfg.Backend, when set, overrides construction entirely —
+	// the test/DI seam Config.Backend's own doc comment describes
+	// (server.go), so a test can exercise daemon startup against a fake
+	// backend.SandboxBackend without a live docker daemon. dockerClient is
+	// the one built above and already handed to the self-inspection — the
+	// same handle, deliberately (see sandboxBackendForConfig's doc
+	// comment); it is non-nil exactly when cfg.Backend is nil, which is
+	// exactly this branch.
 	sandboxBackend := cfg.Backend
 	if sandboxBackend == nil {
 		sandboxBackend = sandboxBackendForConfig(dockerClient, srv.installID, runtimesRoot, transcriptsRoot, srv.daemonCA, &srv.brokerTLSSandboxAddr)
 	}
 	runner.Backend = sandboxBackend
-	// InstallID (PR9, §決定5): threaded onto Runner too, alongside
-	// Backend — startDockerProxy's per-job SetWorkspaceNetwork call
-	// needs it to compute the exact same containerWorkspaceNetworkName
-	// value ContainerBackendOptions.InstallID (set two lines above, via
+	// InstallID: threaded onto Runner too, alongside Backend —
+	// startDockerProxy's per-job SetWorkspaceNetwork call needs it to
+	// compute the exact same containerWorkspaceNetworkName value
+	// ContainerBackendOptions.InstallID (set two lines above, via
 	// sandboxBackendForConfig) gave the container backend itself. See
 	// Runner.InstallID's own doc comment.
 	runner.InstallID = srv.installID
@@ -1289,23 +1174,21 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Hub:         hub,
 		Adapter:     claudeAdapter,
 		// TaskTriage: taskRepo already implements CardStore (see
-		// internal/orchestrator/repository.go) — same object as Tasks above,
-		// viewed through a narrower interface for TaskWorkflowService.Dispatch's
-		// pre-tx children read (docs/plans/cross-project-issue-triage.md Phase
-		// 1 PR-2).
+		// internal/orchestrator/repository.go) — same object as Tasks
+		// above, viewed through a narrower interface for
+		// TaskWorkflowService.Dispatch's pre-tx children read.
 		TaskTriage: taskRepo,
 		// Actions: taskRepo already implements ActionListStore (see
 		// internal/orchestrator/repository.go's ListActionsSince) — same
 		// object as Tasks/TaskTriage above, viewed through a narrower
-		// interface for docs/plans/ingestion-identity.md PR-3 (B-3)'s
-		// BoidOpActionList read.
+		// interface for BoidOpActionList's read.
 		Actions: taskRepo,
 		// Triggers: taskRepo already implements TriggerRunStore (see
 		// internal/orchestrator/repository.go's CreateTriggerRun /
 		// CompleteTriggerRun / ListInFlightTriggerRuns / LatestTriggerRun) —
 		// same object as Tasks/TaskTriage/Actions above, viewed through a
-		// narrower interface for docs/plans/ingestion-identity.md PR-4
-		// (B-5)'s trigger_runs single-flight/execution-record read+write.
+		// narrower interface for trigger_runs single-flight/execution-record
+		// read+write.
 		// Exec (api.ExecDispatcher) is deliberately NOT set here — see the
 		// assignment at sessionAdapter's construction below (mountRoutes)
 		// for why it can't be until then.
@@ -1315,37 +1198,32 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// GetSignalCursor / ListSignals / ClaimSignals / AckSignals /
 		// HasPendingSignals, and internal/api/store.go's `var _ SignalStore
 		// = (*orchestrator.TaskRepository)(nil)` assertion) — same object as
-		// Tasks/TaskTriage/Actions/Triggers above, viewed through a narrower
-		// interface. docs/plans/signal-ingest-detailed-design.md §4.2 (PR-6):
-		// SweepTriggers' on:signals due predicate reads this via
-		// signalsPendingForTrigger (trigger_loop.go).
+		// Tasks/TaskTriage/Actions/Triggers above, viewed through a
+		// narrower interface. SweepTriggers' on:signals due predicate reads
+		// this via signalsPendingForTrigger (trigger_loop.go).
 		Signals: taskRepo,
 		// TaskCreator is wired below, once taskSvc (*api.TaskAppService) is
 		// constructed — see the comment there for why this can't be set here.
 	}
 	workflow.InitDispatch(context.Background())
 
-	// Startup reap (docs/plans/phase6-container-backend.md §PR7 / §決定6):
-	// reconcile orphaned sandbox resources — real work only for the
-	// container backend; the userns backend's ReapOrphans is a permanent
-	// no-op stub — BEFORE auto-reopening any daemon_shutdown-aborted task
-	// below. A docker container does not die when this daemon process
-	// restarts the way a userns child process does (MarkStaleJobsFailed
-	// above only updates the DB row; it does not kill anything), so
-	// auto-reopening before reap could dispatch a fresh agent against a
-	// task whose previous job container is still alive — two agents
-	// mutating the same $HOME/task RPC concurrently. reapOrphansBeforeReopen
-	// returns the set of task IDs to skip reopening (every task with at
-	// least one job ReapOrphans failed to reconcile). blockAllReopen
-	// (Blocker 4, PR7 codex review) is set when reap failed so globally
-	// (docker unreachable, listing itself errored) that no per-job
-	// FailedJobIDs information exists at all — every daemon_shutdown-aborted
-	// task is then treated as unreconciled, not just the ones ReapOrphans
-	// happened to enumerate.
+	// Startup reap: reconcile orphaned sandbox resources BEFORE
+	// auto-reopening any daemon_shutdown-aborted task below. A docker
+	// container does not die when this daemon process restarts the way a
+	// userns child process does (MarkStaleJobsFailed above only updates
+	// the DB row; it does not kill anything), so auto-reopening before
+	// reap could dispatch a fresh agent against a task whose previous job
+	// container is still alive — two agents mutating the same
+	// $HOME/task RPC concurrently. reapOrphansBeforeReopen returns the set
+	// of task IDs to skip reopening (every task with at least one job
+	// ReapOrphans failed to reconcile). blockAllReopen is set when reap
+	// failed so globally (docker unreachable, listing itself errored) that
+	// no per-job FailedJobIDs information exists at all — every
+	// daemon_shutdown-aborted task is then treated as unreconciled, not
+	// just the ones ReapOrphans happened to enumerate.
 	reapSkipTasks, reapBlockAllReopen := reapOrphansBeforeReopen(context.Background(), runner, srv.db)
 
-	// Startup sweep of interrupted workspace-home migrations (PR8 round-2 codex
-	// review Major 2, docs/plans/workspace-home-volume-persistence.md 論点 f).
+	// Startup sweep of interrupted workspace-home migrations.
 	//
 	// Separate from the reap above and not foldable into it: that one reaps
 	// CONTAINERS by label, and what an interrupted migration leaves behind is a
@@ -1365,8 +1243,8 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	//
 	// context.Background() is correct here and not an oversight: this call is not
 	// inside a request and has nothing better to derive from. The BOUND lives in
-	// the sweep itself (workspaceHomeMigrationSweepTimeout, codex round 4 Major),
-	// because "startup cannot park forever inside this step" is a property of the
+	// the sweep itself (workspaceHomeMigrationSweepTimeout), because
+	// "startup cannot park forever inside this step" is a property of the
 	// step rather than of who calls it — an engine socket that accepts the
 	// connection and then answers nothing would otherwise stop the daemon here,
 	// before auto-reopen and before the API listener.
@@ -1418,33 +1296,29 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Projects: projectRepo,
 		Meta:     store,
 		Hydrator: store, // workspace-aware hydration for GET /api/projects/{id}
-		// upstream_url capture (docs/plans/git-gateway-cutover.md PR2):
-		// `project add` rejects projects with no git origin remote, and
-		// `project reload` re-captures on every call.
+		// upstream_url capture: `project add` rejects projects with no git
+		// origin remote, and `project reload` re-captures on every call.
 		CaptureUpstreamURL: dispatcher.CaptureUpstreamURL,
-		// Workspace CRUD (docs/plans/workspace-db-consolidation.md PR4):
-		// store.WorkspaceStore() is the same DB-backed *orchestrator.WorkspaceStore
-		// buildProjectStore wired via SetRepository above, so create/show/
-		// update/remove operate on the exact same workspaces-table rows that
-		// GetWithWorkspace hydration reads at dispatch time.
+		// Workspace CRUD: store.WorkspaceStore() is the same DB-backed
+		// *orchestrator.WorkspaceStore buildProjectStore wired via
+		// SetRepository above, so create/show/update/remove operate on
+		// the exact same workspaces-table rows that GetWithWorkspace
+		// hydration reads at dispatch time.
 		Workspaces: store.WorkspaceStore(),
 		// HostCommands lets CreateWorkspace/UpdateWorkspace validate every
 		// meta.HostCommands reference against the daemon's live aggregated
-		// snapshot (docs/plans/workspace-db-consolidation.md MAJOR 2, codex
-		// review). srv.HostCommands already returns exactly this shape (see
-		// its own doc comment) — the same method HostCommandsHandler uses
-		// for GET /api/host_commands below.
+		// snapshot. srv.HostCommands already returns exactly this shape
+		// (see its own doc comment) — the same method HostCommandsHandler
+		// uses for GET /api/host_commands below.
 		HostCommands: srv.HostCommands,
-		// WorkspacesConn backs ApplyWorkspace/ExportWorkspaceEnvelopes
-		// (docs/plans/volume-only-daemon.md PR-1d codex round-1 Blocker 2/3):
-		// both need the daemon's raw *sql.DB handle to open their own single
-		// transaction spanning workspace-meta + project-assignment
+		// WorkspacesConn backs ApplyWorkspace/ExportWorkspaceEnvelopes:
+		// both need the daemon's raw *sql.DB handle to open their own
+		// single transaction spanning workspace-meta + project-assignment
 		// reads/writes. srv.db is the exact same connection projectRepo
 		// above was built from.
 		WorkspacesConn: srv.db,
-		// InitScripts backs GET/PUT /api/workspaces/{slug}/init-script and the
-		// spec.init_script half of export/apply (PR9 of
-		// docs/plans/workspace-home-volume-persistence.md, 論点 d).
+		// InitScripts backs GET/PUT /api/workspaces/{slug}/init-script and
+		// the spec.init_script half of export/apply.
 		//
 		// The zero value is the whole wiring: the store deliberately has no
 		// configurable root, because it must resolve the SAME path
@@ -1468,16 +1342,14 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		PublicURL: boidCfg.Web.PublicURL,
 	}
 
-	// Integration Pack registry (docs/plans/signal-ingest-detailed-design.md
-	// §6.2, PR-4/PR-5): enumerate every installed Pack under
-	// integrations.dir ONCE at daemon startup — the same "daemon 起動時
-	// (wire.go の gateway 配線点)" point §6.2 names. A missing directory is
-	// NOT an error (LoadPacks' own doc comment: no Packs installed yet is a
+	// Integration Pack registry: enumerate every installed Pack under
+	// integrations.dir ONCE at daemon startup. A missing directory is NOT
+	// an error (LoadPacks' own doc comment: no Packs installed yet is a
 	// legitimate, common deployment state); every OTHER failure (a
 	// malformed manifest, a pack/version directory mismatch, ...) fails
-	// daemon startup outright (§6.2 item 3's "起動エラー" posture — the same
-	// eager-validation contract config.yaml's own services: entries already
-	// get, see config.Load's callers). packs feeds two independent
+	// daemon startup outright — the same eager-validation contract
+	// config.yaml's own services: entries already get, see config.Load's
+	// callers. packs feeds two independent
 	// consumers below: apiGwCreds' service registry (via ResolveServices,
 	// replacing the old services-only-minus-uses view) and
 	// sessionDispatcherAdapter's connector-trigger resolution (mountRoutes).
@@ -1488,91 +1360,60 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// Third consumer of packs, alongside apiGwCreds' service registry and
 	// sessionDispatcherAdapter's connector-trigger resolution mentioned
 	// above: resolveWorkspaceHome symlinks each Pack's skills[] into every
-	// skill discovery root of every workspace home —
-	// docs/plans/signal-driven-review.md §6.4's last bullet ("job には利用す
-	// る skill だけを read-only mount する"), implemented once the shadow-b
-	// evaluation surfaced that Pack skills were otherwise reachable only by
-	// an explicit "read this path" instruction, since a harness's skill
-	// discovery scans its own directories and not /opt/boid/integrations.
-	// See skillLinks' own doc comment
-	// (internal/dispatcher/skills_overlay.go) for the deliberate departures
-	// from §6.4's text this implementation makes. Set directly
-	// on the already-built runner rather than threaded through WireConfig,
-	// since packs itself is not available until this point (it depends on
-	// boidCfg, loaded above at line ~1444, well after dispatcher.Wire ran
-	// at line ~1162).
+	// skill discovery root of every workspace home, since a harness's
+	// skill discovery scans its own directories and not
+	// /opt/boid/integrations. See skillLinks' own doc comment
+	// (internal/dispatcher/skills_overlay.go). Set directly on the
+	// already-built runner rather than threaded through WireConfig, since
+	// packs itself is not available until this point (it depends on
+	// boidCfg, loaded further down, well after dispatcher.Wire ran above).
 	//
-	// CORRECTION (Opus review round 2): an earlier version of this comment
-	// claimed the daemon_shutdown auto-reopen sweep runs "further down this
-	// function", implying this assignment usually wins a race against it.
-	// That is backwards — the sweep is at line ~1369-1397, roughly 100
-	// lines ABOVE this assignment, textually and in execution order. So on
-	// any restart that has a daemon_shutdown-aborted task to reopen, this
-	// is not a rare race at all: the reopen goroutine
+	// KNOWN RACE: the daemon_shutdown auto-reopen sweep runs earlier in
+	// this function, and its reopen goroutine
 	// (workflow.ApplyAction("reopen") spawning runner.Dispatch via
-	// internal/api/workflow_action.go, with no synchronization against this
-	// line) is the ORDINARY path exercising a nil runner.Packs, not an edge
-	// case.
+	// internal/api/workflow_action.go, with no synchronization against
+	// this line) can read runner.Packs concurrently with this assignment
+	// on any restart that has a daemon_shutdown-aborted task — the
+	// ordinary path, not an edge case. runner.Packs is a slice header
+	// (ptr+len+cap, 3 words), so an unsynchronized concurrent write is a
+	// real data race, not merely "non-catastrophic" — a torn read on some
+	// platforms/optimizations could observe a non-nil ptr with a stale
+	// (too-large) len, and skillLinks' `for _, pack := range packs` would
+	// then dereference garbage. `go test -race` does not exercise this
+	// path (no test drives an auto-reopen concurrently with buildRuntime).
 	//
-	// It is also not merely "non-catastrophic": runner.Packs is a slice
-	// header (ptr+len+cap, 3 words), and a concurrent unsynchronized write
-	// to it is a data race in the Go memory model's own sense — a torn read
-	// on some platforms/optimizations could observe a non-nil ptr with a
-	// stale (too-large) len, and skillLinks' `for _, pack := range
-	// packs` would then dereference garbage. `go test -race` does not
-	// exercise this path (no test drives an auto-reopen concurrently with
-	// buildRuntime), so it would not be caught there either.
-	//
-	// CORRECTION (Opus review round 3): an earlier version of this comment
-	// estimated the fix as moving config.Load() (~line 1444) up. That
-	// overstated it — buildRuntime already calls config.Load() once, much
-	// earlier, at line ~1040 (its return value discarded; only the
-	// fail-loud-if-unreadable check matters there post-PR-4, see that
-	// call's own comment). The smaller fix is: keep that early load as is,
-	// and move JUST integrationpack.LoadPacks(cfg.Integrations.Dir) (~line
-	// 1467) plus `runner.Packs = packs` up to right after
-	// `runner.Backend = sandboxBackend` (~line 1239) — LoadPacks needs a
-	// *config.Config, which the line-1040 call already produced and could
-	// keep instead of discarding. That is one call to relocate, not two.
-	// Collapsing the two config.Load() calls into one is a SEPARATE, larger
-	// change this comment does not propose: line ~2124 elsewhere in this
-	// file already flags that the two loads are independent reads that
-	// could in principle disagree (a config.yaml edited between them), and
-	// merging them changes that property, not just where a value is read.
-	// Left undone here regardless: buildRuntime is a long,
-	// carefully-sequenced function (see the "already resolved at the very
-	// top" cross-references throughout it), and reordering statements
-	// within it deserves its own change and its own test, not a drive-by
-	// inside an unrelated feature. Tracked alongside the same existing
-	// pattern in runner.GatewayCredentials/WithProjectLock/
-	// ConfirmWorkspaceExists below, which are assigned after the same
-	// sweep for the same underlying reason (each depends on something not
-	// constructed until later in buildRuntime) and share this exposure.
+	// The fix is to move integrationpack.LoadPacks(cfg.Integrations.Dir)
+	// plus `runner.Packs = packs` up to right after `runner.Backend =
+	// sandboxBackend` above — LoadPacks needs a *config.Config, which
+	// buildRuntime's early config.Load() call already produces and could
+	// keep instead of discarding. Left undone here: buildRuntime is a
+	// long, carefully-sequenced function, and reordering statements
+	// within it deserves its own change and its own test. Shared by the
+	// same pattern in runner.GatewayCredentials/WithProjectLock/
+	// ConfirmWorkspaceExists below, each of which is assigned after the
+	// same sweep for the same underlying reason.
 	//
 	// What DOES bound the damage if the race is lost without a torn read:
 	// workspaceHomeInitialized's SkillLinks comparison detects a nil-Packs
 	// init against a marker (or a subsequent real dispatch) recording the
-	// Packs' entries too, and re-inits once to add the missing symlinks — self-healing, at the cost of one extra init run for
+	// Packs' entries too, and re-inits once to add the missing symlinks —
+	// self-healing, at the cost of one extra init run for
 	// whichever workspace's reopen happened to race it.
 	runner.Packs = packs
 
-	// Daemon-side config-editing surface (docs/plans/volume-only-daemon.md
-	// §論点 f: `boid config get/set/unset/apply/edit`). verifyRestartExtractorCoverage
-	// (BLOCKER, codex review round 3) runs FIRST, before srv.liveConfig or
-	// srv.configPath are set — i.e. before this surface can accept a single
-	// config mutation. Pre-fix, the equivalent exhaustiveness check lived
-	// only inside applyDynamicConfigLocked's own loop, which runs AFTER
-	// applyConfigYAMLLocked has already written the new document to disk
-	// and swapped s.liveConfig (see that function's own doc comment) — so
-	// an incomplete-coverage bug (a future ReloadRestartRequired schema leaf
-	// added without a matching restartFieldExtractors/
-	// restartFieldExtractorExemptions entry) would durably persist a config
+	// Daemon-side config-editing surface (`boid config get/set/unset/apply/edit`).
+	// verifyRestartExtractorCoverage runs FIRST, before srv.liveConfig or
+	// srv.configPath are set — i.e. before this surface can accept a
+	// single config mutation. The equivalent exhaustiveness check inside
+	// applyDynamicConfigLocked's own loop runs AFTER applyConfigYAMLLocked
+	// has already written the new document to disk and swapped
+	// s.liveConfig (see that function's own doc comment) — so an
+	// incomplete-coverage bug there would durably persist a config
 	// mutation and only THEN panic and fail the HTTP request that caused
-	// it, leaving config.yaml and the daemon's in-memory belief about it
-	// out of sync going into the next restart. Panicking here instead,
-	// before mountRoutes ever registers a route, converts "incomplete
-	// coverage" into "the daemon refuses to start" — no config mutation can
-	// ever reach applyConfigYAMLLocked while coverage is incomplete.
+	// it. Panicking here instead, before mountRoutes ever registers a
+	// route, converts "incomplete coverage" into "the daemon refuses to
+	// start" — no config mutation can ever reach applyConfigYAMLLocked
+	// while coverage is incomplete.
 	verifyRestartExtractorCoverage()
 
 	// srv.notifySvc is the SAME *notify.Service instance built above (and
@@ -1590,54 +1431,51 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// already an exotic (effectively Linux-only-with-no-$HOME) situation.
 	srv.liveConfig = boidCfg
 	srv.notifySvc = notifySvc
-	// queue の決定論的評価 節 rule 4 (notify) — PR-3 wires the SAME notifySvc
-	// instance workflow already shares with TaskAppService.Notify (see the
-	// comment above) into TaskWorkflowService.Notifier, so `notify.command`
-	// hot-reload (ApplyConfigYAML -> notifySvc.Update) also covers queue
-	// entry notifications with no extra wiring.
+	// queue の決定論的評価: wires the SAME notifySvc instance workflow
+	// already shares with TaskAppService.Notify (see the comment above)
+	// into TaskWorkflowService.Notifier, so `notify.command` hot-reload
+	// (ApplyConfigYAML -> notifySvc.Update) also covers queue entry
+	// notifications with no extra wiring.
 	workflow.Notifier = notifySvc
-	// queue の決定論的評価 節 rule 1 (wake 評価) — periodic sweep, mirroring the
-	// GC loop's shape below. 1 分間隔は PR-3 の初期値 (config 化はしない —
-	// GC 同様 config.yaml に足す価値は運用実績を見てから判断)。
+	// queue の決定論的評価: wake 評価 rule — periodic sweep, mirroring the GC
+	// loop's shape below. 1 分間隔は初期値 (config 化はしない — GC 同様
+	// config.yaml に足す価値は運用実績を見てから判断)。
 	srv.queueSweepLoop = &api.QueueSweepLoop{
 		Store:        workflow,
 		Interval:     1 * time.Minute,
 		InitialDelay: 20 * time.Second,
 	}
-	// No revision counter to seed here (BLOCKER, codex review round 2):
-	// GET /api/config's ETag is now derived from config.yaml's own bytes
-	// (internal/server/config_edit.go's computeRevision), computed fresh on
-	// every read — there is no in-process baseline to initialize.
+	// No revision counter to seed here: GET /api/config's ETag is derived
+	// from config.yaml's own bytes (internal/server/config_edit.go's
+	// computeRevision), computed fresh on every read — there is no
+	// in-process baseline to initialize.
 	if p, pathErr := config.DefaultPath(); pathErr == nil {
 		srv.configPath = p
 	} else {
 		slog.Warn("failed to resolve config.yaml path; POST /api/config (`boid config set/unset/apply/edit`) will be unavailable", "error", pathErr)
 	}
 
-	// git gateway HTTP handler (docs/plans/git-gateway-cutover.md PR4). Only
-	// the listener bind (127.0.0.1:0) is deferred to Server.Start — the
-	// handler itself, and the Registry it shares with the runner above, are
-	// ready as soon as config + notifySvc are. The secret resolver closure
-	// keeps internal/gitgateway free of any internal/dispatcher (and
-	// therefore internal/db) import, per that package's own layering rule
+	// git gateway HTTP handler. Only the listener bind (127.0.0.1:0) is
+	// deferred to Server.Start — the handler itself, and the Registry it
+	// shares with the runner above, are ready as soon as config +
+	// notifySvc are. The secret resolver closure keeps internal/gitgateway
+	// free of any internal/dispatcher (and therefore internal/db) import,
+	// per that package's own layering rule
 	// (scripts/check-internal-architecture.sh).
 	//
-	// gwResolver is deliberately left nil (rather than a closure that always
-	// errors) when secretStore itself is unconfigured (KeyFilePath unset):
-	// CredentialProvider.Configured() reports false in that case, and
-	// Server.ServeHTTP rejects gateway requests outright without ever
+	// gwResolver is deliberately left nil (rather than a closure that
+	// always errors) when secretStore itself is unconfigured (KeyFilePath
+	// unset): CredentialProvider.Configured() reports false in that case,
+	// and Server.ServeHTTP rejects gateway requests outright without ever
 	// calling Inject or the notifier — see that method's doc comment
-	// (docs/plans/git-gateway-cutover.md PR5 review: 「KeyFilePath 未設定時
-	// の CredentialError 抑制」, distinct from an ordinary per-key miss on an
-	// otherwise-configured store, which still fails open + notifies as
-	// before).
+	// (distinct from an ordinary per-key miss on an otherwise-configured
+	// store, which still fails open + notifies as before).
 	//
-	// The namespace parameter (post-cutover 改善 §1 workspace-scoped PAT
-	// namespace) is passed straight through to secretStore.Get, which
-	// already normalizes "" to "default" (SecretStore.normalizeNamespace),
-	// so a job token registered with no SecretNamespace (workspace-unlinked
-	// project) keeps resolving against the pre-namespacing "default"
-	// namespace exactly as before this change.
+	// The namespace parameter (workspace-scoped PAT namespace) is passed
+	// straight through to secretStore.Get, which already normalizes "" to
+	// "default" (SecretStore.normalizeNamespace), so a job token
+	// registered with no SecretNamespace (workspace-unlinked project)
+	// keeps resolving against the pre-namespacing "default" namespace.
 	var gwResolver gitgateway.SecretResolver
 	if secretStore != nil {
 		gwResolver = func(namespace, key string) (string, error) {
@@ -1647,19 +1485,17 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	gwCreds := gitgateway.NewCredentialProvider(boidCfg.Gateway.HostConfigs(), gwResolver)
 	gwHandler := gitgateway.NewServer(srv.gatewayRegistry, gwCreds, gatewayNotifier{notify: notifySvc})
 
-	// API gateway HTTP handler (docs/plans/api-gateway.md PR1) — the same
-	// resolver-nil-means-unconfigured convention as gwResolver above (its
-	// own comment applies here verbatim, substituting "API gateway" for
-	// "git gateway"). apiGwCreds' service registry is the FULL resolved
-	// list — free-form services: entries (config.Config.APIGatewayServices,
-	// validated at config load time) PLUS every `uses:` entry desugared
-	// against packs (integrationpack.ResolveServices, docs/plans/
-	// signal-ingest-detailed-design.md §6.2 item 2/PR-5's wiring — this
-	// replaces the PR-4-era boidCfg.APIGatewayServices() call, which
-	// deliberately excluded uses: entries; see that method's own doc
-	// comment). A uses: entry that fails to desugar (pack/profile/
-	// credential-slot mismatch) fails daemon startup outright, matching
-	// LoadPacks' own posture just above.
+	// API gateway HTTP handler — the same resolver-nil-means-unconfigured
+	// convention as gwResolver above (its own comment applies here
+	// verbatim, substituting "API gateway" for "git gateway").
+	// apiGwCreds' service registry is the FULL resolved list — free-form
+	// services: entries (config.Config.APIGatewayServices, validated at
+	// config load time) PLUS every `uses:` entry desugared against packs
+	// (integrationpack.ResolveServices; see that function's own doc
+	// comment — this excludes boidCfg.APIGatewayServices() which
+	// deliberately excludes uses: entries). A uses: entry that fails to
+	// desugar (pack/profile/credential-slot mismatch) fails daemon
+	// startup outright, matching LoadPacks' own posture just above.
 	var apiGwResolver apigateway.SecretResolver
 	if secretStore != nil {
 		apiGwResolver = func(namespace, key string) (string, error) {
@@ -1672,24 +1508,22 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	apiGwCreds := apigateway.NewCredentialProvider(apiGwServices, apiGwResolver)
 
-	// OAuth2 TokenSource (docs/plans/api-gateway.md §6, PR2): wired with the
-	// same resolver as apiGwResolver above, plus a writer closure so a
-	// refresh can persist the (possibly rotated) refresh_token/access_token/
-	// expires_at back to the secret store — see
-	// apigateway.OAuth2TokenSource's own doc comment for the load-bearing
-	// persistence-order contract that writer participates in. Left unwired
-	// (apiGwCreds keeps oauth == nil) when secretStore itself is
-	// unconfigured, the same "resolver nil means unconfigured" convention
-	// apiGwResolver/gwResolver above already follow — Resolve/Inject then
-	// surface a clear "no OAuth2 TokenSource configured" error for any
-	// oauth2-kind service instead of ever reaching a nil-deref.
-	// oauthTokenSource is kept as its own named variable (rather than only
-	// living inline inside SetOAuth2TokenSource's argument, as PR2 left it)
-	// so runtime.oauthLogin below can share the EXACT SAME instance —
-	// docs/plans/api-gateway.md §7, PR3: a login-obtained grant should be
-	// immediately usable by the very next gateway request through this same
-	// process's memCache/singleflight, not just eventually consistent via
-	// the secret store once something else triggers a fresh refresh.
+	// OAuth2 TokenSource: wired with the same resolver as apiGwResolver
+	// above, plus a writer closure so a refresh can persist the (possibly
+	// rotated) refresh_token/access_token/expires_at back to the secret
+	// store — see apigateway.OAuth2TokenSource's own doc comment for the
+	// load-bearing persistence-order contract that writer participates
+	// in. Left unwired (apiGwCreds keeps oauth == nil) when secretStore
+	// itself is unconfigured, the same "resolver nil means unconfigured"
+	// convention apiGwResolver/gwResolver above already follow —
+	// Resolve/Inject then surface a clear "no OAuth2 TokenSource
+	// configured" error for any oauth2-kind service instead of ever
+	// reaching a nil-deref. oauthTokenSource is kept as its own named
+	// variable so runtime.oauthLogin below can share the EXACT SAME
+	// instance: a login-obtained grant should be immediately usable by
+	// the very next gateway request through this same process's
+	// memCache/singleflight, not just eventually consistent via the
+	// secret store once something else triggers a fresh refresh.
 	var oauthTokenSource *apigateway.OAuth2TokenSource
 	if secretStore != nil {
 		apiGwWriter := func(namespace, key, value string) error {
@@ -1701,23 +1535,22 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 
 	apiGwHandler := apigateway.NewServer(srv.apiGatewayRegistry, apiGwCreds, apiGatewayNotifier{notify: notifySvc}, newAPIGatewayRecorder(taskRepo))
 
-	// `boid secret oauth login <service>` (docs/plans/api-gateway.md §7,
-	// PR3): apiGatewayLoginAdapter (apigateway_login.go) is api.
-	// OAuthLoginHandler's OAuthLoginService, built only when oauthTokenSource
-	// itself was (secretStore configured) — mountRoutes leaves the route
-	// unmounted otherwise, the same "feature's off switch is an absent
-	// dependency, not a nil-checked handler" convention gwCreds/apiGwCreds
-	// above already follow for their own oauth2 wiring.
+	// `boid secret oauth login <service>`: apiGatewayLoginAdapter
+	// (apigateway_login.go) is api.OAuthLoginHandler's OAuthLoginService,
+	// built only when oauthTokenSource itself was (secretStore
+	// configured) — mountRoutes leaves the route unmounted otherwise, the
+	// same "feature's off switch is an absent dependency, not a
+	// nil-checked handler" convention gwCreds/apiGwCreds above already
+	// follow for their own oauth2 wiring.
 	var oauthLoginSvc api.OAuthLoginService
 	if oauthTokenSource != nil {
 		oauthLoginSvc = &apiGatewayLoginAdapter{creds: apiGwCreds, logins: apigateway.NewLoginManager(oauthTokenSource)}
 	}
 
-	// Shared listener (docs/plans/api-gateway.md 論点1: "同居 — path prefix
-	// /j/ と /api/ で分岐"): combinedGatewayHandler dispatches by path
-	// prefix to whichever gateway a request targets. gatewayHTTPServer
-	// (the plaintext loopback listener, bound in Start) is served this
-	// combined handler directly; Start's TLS block reads
+	// Shared listener: combinedGatewayHandler dispatches by path prefix
+	// (/j/ vs /api/) to whichever gateway a request targets.
+	// gatewayHTTPServer (the plaintext loopback listener, bound in Start)
+	// is served this combined handler directly; Start's TLS block reads
 	// srv.combinedGatewayHandler again to build the TCP(mTLS) listener's
 	// own *http.Server, since neither gateway's ListenTLS-style helper can
 	// serve a handler it didn't construct itself.
@@ -1725,16 +1558,16 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	srv.gatewayHTTPServer = &http.Server{Handler: combined}
 	srv.combinedGatewayHandler = combined
 
-	// docs/plans/volume-only-daemon.md §論点a/b: `boid project add <git-url>`
-	// / `boid project fetch <id>` need an authenticated bare clone/fetch —
-	// wired here (rather than inline in the projectSvc literal above)
-	// because both need gwCreds, which is only built once boidCfg is loaded
-	// a few lines up. Reuses the exact same CredentialProvider the sandbox
-	// git gateway reverse proxy authenticates job clones with — see
-	// dispatcher.CloneBareRepo/FetchBareRepo's own doc comments for why this
-	// is a direct CredentialProvider.Resolve call rather than a round trip
-	// through the HTTP reverse proxy (there is no job token / sandbox
-	// involved; this runs in the daemon process itself).
+	// `boid project add <git-url>` / `boid project fetch <id>` need an
+	// authenticated bare clone/fetch — wired here (rather than inline in
+	// the projectSvc literal above) because both need gwCreds, which is
+	// only built once boidCfg is loaded a few lines up. Reuses the exact
+	// same CredentialProvider the sandbox git gateway reverse proxy
+	// authenticates job clones with — see
+	// dispatcher.CloneBareRepo/FetchBareRepo's own doc comments for why
+	// this is a direct CredentialProvider.Resolve call rather than a
+	// round trip through the HTTP reverse proxy (there is no job token /
+	// sandbox involved; this runs in the daemon process itself).
 	projectSvc.CloneBareRepo = func(ctx context.Context, url, dest, namespace string) error {
 		return dispatcher.CloneBareRepo(ctx, url, dest, gwCreds, namespace)
 	}
@@ -1743,30 +1576,31 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	projectSvc.DataDir = dataHomeFor(cfg)
 
-	// docs/plans/volume-only-daemon.md §論点b, PR-2b: Runner.Dispatch's own
-	// per-job-clone step (runner.go) calls dispatcher.FetchBareRepo directly
-	// against a git-URL-registered project's bare repo before staging a
-	// per-job checkout off of it — reusing this exact same gwCreds the two
-	// closures immediately above already wire into ProjectAppService, for
-	// the identical reason their own doc comment gives (no job token or
-	// sandbox involved; this runs in the daemon process itself).
+	// Runner.Dispatch's own per-job-clone step (runner.go) calls
+	// dispatcher.FetchBareRepo directly against a git-URL-registered
+	// project's bare repo before staging a per-job checkout off of it —
+	// reusing this exact same gwCreds the two closures immediately above
+	// already wire into ProjectAppService, for the identical reason their
+	// own doc comment gives (no job token or sandbox involved; this runs
+	// in the daemon process itself).
 	runner.GatewayCredentials = gwCreds
-	// WithProjectLock (PR834 PR-2b round-2 codex review Major 1): shares
-	// projectSvc's own projectMu with the per-job-clone dispatch step above,
-	// so it serializes against a concurrent `project rm` + re-add at the
-	// same managed path — see ProjectAppService.WithProjectLock's own doc
-	// comment for why this is a plain function value rather than a direct
-	// import (internal/dispatcher cannot import internal/api — this package
+	// WithProjectLock shares projectSvc's own projectMu with the
+	// per-job-clone dispatch step above, so it serializes against a
+	// concurrent `project rm` + re-add at the same managed path — see
+	// ProjectAppService.WithProjectLock's own doc comment for why this is
+	// a plain function value rather than a direct import
+	// (internal/dispatcher cannot import internal/api — this package
 	// already imports internal/dispatcher for wiring).
 	runner.WithProjectLock = projectSvc.WithProjectLock
-	// ConfirmWorkspaceExists (PR8 round-2 codex review Major 1): closes over the
-	// same projectSvc so Runner.ImportWorkspaceHome can re-check the workspace
-	// ROW while holding its migration registration. Without it, a
-	// `boid workspace remove` that completes between the API handler's own
-	// pre-check and the migration's first engine call leaves the migration
-	// creating a HOME volume for a row that is gone — credentials in a volume no
-	// dispatch can mount and `workspace remove` can no longer delete. A plain
-	// function value for the same reason WithProjectLock above is one.
+	// ConfirmWorkspaceExists closes over the same projectSvc so
+	// Runner.ImportWorkspaceHome can re-check the workspace ROW while
+	// holding its migration registration. Without it, a `boid workspace
+	// remove` that completes between the API handler's own pre-check and
+	// the migration's first engine call leaves the migration creating a
+	// HOME volume for a row that is gone — credentials in a volume no
+	// dispatch can mount and `workspace remove` can no longer delete. A
+	// plain function value for the same reason WithProjectLock above is
+	// one.
 	//
 	// The service's error is passed through unchanged (an *api.StatusError, i.e.
 	// a 404 for a workspace that is gone) because the handler maps it back to a
@@ -1784,62 +1618,57 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Workflow: workflow,
 		Projects: projectRepo,
 		// Identities backs the brokered task_identity_link/_unlink/_resolve
-		// ops (docs/plans/ingestion-identity.md PR-1). Same repo again —
-		// taskRepo already implements api.TaskIdentityStore (see
-		// internal/orchestrator/repository.go).
+		// ops. Same repo again — taskRepo already implements
+		// api.TaskIdentityStore (see internal/orchestrator/repository.go).
 		Identities: taskRepo,
-		// runtimesRoot (not a fresh runtimesDirFor(cfg) — codex round-1,
-		// PR834 Minor 1): must agree with runner's own RuntimesDir and
+		// runtimesRoot (not a fresh runtimesDirFor(cfg)): must agree with
+		// runner's own RuntimesDir and
 		// transcriptLogReader.rootDir just below, both already using
 		// runtimesRoot for exactly this reason (see runtimesRoot's own
 		// comment above). Under the container backend, runtimesDirFor(cfg)
 		// resolves under the boid_state NAMED VOLUME (invisible on the
 		// host), while task-detail's own workspace_path — sourced from this
 		// RuntimesDir — needs the SAME host-visible root every other
-		// per-job artifact (transcript, runner-state.json, the PR-2b clone
-		// staging area) actually landed under, or `boid task get`/the web
-		// UI's task detail would report a workspace_path nothing on the
-		// host can resolve.
+		// per-job artifact (transcript, runner-state.json, the per-job
+		// clone staging area) actually landed under, or `boid task
+		// get`/the web UI's task detail would report a workspace_path
+		// nothing on the host can resolve.
 		RuntimesDir:        runtimesRoot,
 		Notify:             notifySvc,
 		BlockingAsk:        api.NewBlockingAskRegistry(),
 		TaskWaits:          taskWaits,
 		AskDisconnectGrace: boidCfg.TaskAsk.DisconnectGrace,
 	}
-	// Late-bind workflow.TaskCreator to taskSvc now that taskSvc exists
-	// (docs/plans/cross-project-issue-triage.md Phase 1 PR-2): workflow is
-	// constructed before taskSvc (taskSvc.Workflow needs workflow to already
-	// exist), so this is the same late-binding idiom as workflow.InitDispatch
-	// above, just for a field instead of a method call. See
-	// api.TaskCreator's own doc comment for why this can't be a literal
-	// struct-construction cycle instead.
+	// Late-bind workflow.TaskCreator to taskSvc now that taskSvc exists:
+	// workflow is constructed before taskSvc (taskSvc.Workflow needs
+	// workflow to already exist), so this is the same late-binding idiom
+	// as workflow.InitDispatch above, just for a field instead of a
+	// method call. See api.TaskCreator's own doc comment for why this
+	// can't be a literal struct-construction cycle instead.
 	workflow.TaskCreator = taskSvc
 	if srv.broker != nil {
-		// runner (*dispatcher.Runner) satisfies jobContextProvider structurally
-		// (its JobContext method backs the Phase 5b PR1 `boid task env` /
-		// `boid task payload` RPCs — docs/plans/phase5-shim-and-task-context.md).
-		// dataHomeFor(cfg) is the same value passed to
-		// api.WebHandler.AttachmentsRoot (below) — the Phase 5b PR2 attachments
-		// RPCs (`boid task attachments list|get`) must read from the identical
-		// directory the upload path writes to (wiring-seams.md #15).
-		// transcriptLogReader.rootDir uses transcriptsRoot (not runtimesRoot)
-		// — under container backend this must be the SAME persistent root
-		// containerBackend's own transcript spool actually writes to now
-		// (openTranscriptSpool, sandboxBackendForConfig's transcriptDir
-		// argument above — see transcriptsDirFor's own doc comment), or
-		// `boid job log`/`boid task env`-adjacent broker RPCs would read
-		// from the wrong directory. fallbackRootDir: runtimesRoot covers
-		// jobs whose transcript was written under the pre-migration tmpfs
-		// root by a daemon build that predates this PR (codex review round
-		// 1 — see transcriptLogReader's own doc comment).
+		// runner (*dispatcher.Runner) satisfies jobContextProvider
+		// structurally (its JobContext method backs the `boid task env` /
+		// `boid task payload` RPCs). dataHomeFor(cfg) is the same value
+		// passed to api.WebHandler.AttachmentsRoot (below) — the
+		// attachments RPCs (`boid task attachments list|get`) must read
+		// from the identical directory the upload path writes to.
+		// transcriptLogReader.rootDir uses transcriptsRoot (not
+		// runtimesRoot) — under container backend this must be the SAME
+		// persistent root containerBackend's own transcript spool
+		// actually writes to now (openTranscriptSpool,
+		// sandboxBackendForConfig's transcriptDir argument above — see
+		// transcriptsDirFor's own doc comment), or `boid job log`/`boid
+		// task env`-adjacent broker RPCs would read from the wrong
+		// directory. fallbackRootDir: runtimesRoot covers jobs whose
+		// transcript was written under the pre-migration tmpfs root by a
+		// daemon build that predates the migration (see
+		// transcriptLogReader's own doc comment).
 		// taskRepo (in scope above) already implements api.SignalStore
-		// (PR-1's var _ assertion, internal/api/store.go) — passed
-		// explicitly rather than relying on a runtime interface check
-		// against workflow (docs/plans/signal-ingest-detailed-design.md
-		// §3.2, PR-3; M1 of PR #1014's review: workflow's concrete type
-		// *api.TaskWorkflowService does not implement api.SignalStore, so
-		// the earlier runtime-check version of this wiring silently left
-		// every signal op unavailable in production).
+		// (internal/api/store.go's var _ assertion) — passed explicitly
+		// rather than relying on a runtime interface check against
+		// workflow, since workflow's concrete type
+		// *api.TaskWorkflowService does not implement api.SignalStore.
 		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc, taskRepo)
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
@@ -1963,21 +1792,18 @@ func projectResolverFor(svc *api.ProjectAppService) sandbox.ProjectResolver {
 	}
 }
 
-// sessionDispatcherAdapter implements api.SessionDispatcher (and, since the
-// git gateway cutover's exec-via-Dispatch PR, api.ExecDispatcher too) by
-// translating the request into a SessionJobInput and handing it to the
-// runner. Phase 3-d (PR1) wired the session half in alongside the legacy
-// ExecuteCommand path so the new entry can coexist with the existing
-// Commands buttons until PR2 removes them; StartExec reuses the same struct
-// because both entry points share identical project-hydration + Dispatch()
-// plumbing — see StartExec's doc comment for why exec needed this at all.
+// sessionDispatcherAdapter implements api.SessionDispatcher (and
+// api.ExecDispatcher too) by translating the request into a
+// SessionJobInput and handing it to the runner. StartExec reuses the same
+// struct because both entry points share identical project-hydration +
+// Dispatch() plumbing — see StartExec's doc comment for why exec needed
+// this at all.
 type sessionDispatcherAdapter struct {
 	service *api.ProjectAppService
 	runner  *dispatcher.Runner
-	// packs is the daemon's loaded Integration Pack registry (docs/plans/
-	// signal-ingest-detailed-design.md §5.2, PR-5), resolved once at
-	// buildRuntime startup and reused for every StartExec call whose
-	// StartExecRequest carries a Connector reference (fireTrigger's
+	// packs is the daemon's loaded Integration Pack registry, resolved
+	// once at buildRuntime startup and reused for every StartExec call
+	// whose StartExecRequest carries a Connector reference (fireTrigger's
 	// derived-trigger dispatch, internal/api/trigger_loop.go). nil-safe:
 	// resolveConnectorExec's own findInstalledPack fails loudly ("pack not
 	// installed") against a nil/empty packs rather than panicking. Every
@@ -2035,12 +1861,10 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 // StartExec implements api.ExecDispatcher: it builds an exec JobSpec
 // (dispatcher.BuildExecJobSpec — HarnessType forced to "shell", Argv the
 // caller's literal argv) and hands it to the same Runner.Dispatch() every
-// session goes through. This is the git gateway cutover fix: routing exec
-// through Dispatch means registerGatewayToken / buildGatewayCloneURL /
-// RequireUpstreamURL all run automatically, exactly as they do for a
-// session — no separate wiring for exec to fall out of sync with (the bug
-// this PR fixes: `boid exec` never picked up the PR6 gateway wiring because
-// it bypassed Dispatch() entirely).
+// session goes through. Routing exec through Dispatch means
+// registerGatewayToken / buildGatewayCloneURL / RequireUpstreamURL all run
+// automatically, exactly as they do for a session — no separate wiring
+// for exec to fall out of sync with.
 //
 // Unlike StartSession, no host_commands / broker registration happens
 // client-side here — Dispatch() handles broker registration internally, so
@@ -2068,8 +1892,7 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 		DockerEnabled:      meta.Capabilities.Docker != nil,
 	}
 
-	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5): a
-	// signal-derived trigger's connector job carries req.Connector — the
+	// A signal-derived trigger's connector job carries req.Connector — the
 	// ONLY caller that ever sets it is fireTrigger (internal/api/
 	// trigger_loop.go), firing a hydrate-derived Trigger.Connector != nil.
 	// Resolving it here (rather than at fireTrigger, which must not import
@@ -2085,11 +1908,11 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 		if rerr != nil {
 			return nil, &api.StatusError{Code: http.StatusBadRequest, Message: rerr.Error()}
 		}
-		// env (§5.2 item 1): merged on top of the project's own Env — a
-		// connector job still inherits ordinary project.yaml env, but the 4
-		// signal vars always win on a name collision (there should never be
-		// one in practice, but "the connector's own identity wins" is the
-		// safer direction if there is).
+		// env: merged on top of the project's own Env — a connector job
+		// still inherits ordinary project.yaml env, but the signal vars
+		// always win on a name collision (there should never be one in
+		// practice, but "the connector's own identity wins" is the safer
+		// direction if there is).
 		env := make(map[string]string, len(input.Env)+len(resolved.Env))
 		for k, v := range input.Env {
 			env[k] = v
@@ -2098,21 +1921,19 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 			env[k] = v
 		}
 		input.Env = env
-		// No bind mount here (§5.2 item 2, revised 2026-08-27): daemon and
-		// job container share the same base image, so BOID_CONNECTOR_EXEC
-		// (set above via resolved.Env) already points at a path that exists
-		// inside the job container's own filesystem — see
-		// resolveConnectorExec's (connector_exec.go) own doc comment for why
-		// a bind mount would in fact be WRONG under DooD.
-		// 縮小 policy (§5.2 item 3, Q27): ConnectorBuiltinPolicies instead of
-		// the general set — see SessionJobInput.ConnectorPolicy's own doc
-		// comment.
+		// No bind mount here: daemon and job container share the same base
+		// image, so BOID_CONNECTOR_EXEC (set above via resolved.Env) already
+		// points at a path that exists inside the job container's own
+		// filesystem — see resolveConnectorExec's (connector_exec.go) own
+		// doc comment for why a bind mount would in fact be WRONG under DooD.
+		// 縮小 policy: ConnectorBuiltinPolicies instead of the general set —
+		// see SessionJobInput.ConnectorPolicy's own doc comment.
 		input.ConnectorPolicy = true
-		// API gateway token service allowlist (§5.2 item 4): restrict to
-		// exactly the declared service.
+		// API gateway token service allowlist: restrict to exactly the
+		// declared service.
 		input.APIGatewayServices = resolved.APIGatewayServices
-		// TokenContext.Service/Connector (§3.2/§5.2): the broker-side
-		// authorization for signal_ingest/signal_cursor_get.
+		// TokenContext.Service/Connector: the broker-side authorization
+		// for signal_ingest/signal_cursor_get.
 		input.SignalService = req.Connector.Service
 		input.SignalConnector = req.Connector.Pack + "/" + req.Connector.ConnectorName
 	}
@@ -2134,22 +1955,20 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r := srv.router
 
-	// Host-visible runtimes root (docs/plans/volume-only-daemon.md — see
-	// hostVisibleRuntimesDirFor's own doc comment): must agree with
-	// buildRuntime's own runtimesRoot determination (runner.RuntimesDir,
-	// sandboxBackendForConfig's runtimeDir argument) or the read paths
-	// wired below (`boid gc`'s runtime-directory sweep, the job-log REST
-	// endpoint) would look in the wrong directory for a container-backend
-	// deploy. Workspace-home size/delete and GC's workspace_homes listing
-	// USED to be on that list; PR7 of
-	// docs/plans/workspace-home-volume-persistence.md took them off it —
-	// they read the engine's volume API now and never resolve a host path.
-	// dispatcher.
-	// IsContainerBackend(runtime.runner.Backend) is the cheap, already-
-	// resolved signal buildRuntime itself left behind (runtime.runner.
-	// Backend is only non-nil when sandboxBackendForConfig actually
-	// constructed a container backend) — reusing it here avoids a second,
-	// independent config.Load() that could theoretically disagree.
+	// Host-visible runtimes root (see hostVisibleRuntimesDirFor's own doc
+	// comment): must agree with buildRuntime's own runtimesRoot
+	// determination (runner.RuntimesDir, sandboxBackendForConfig's
+	// runtimeDir argument) or the read paths wired below (`boid gc`'s
+	// runtime-directory sweep, the job-log REST endpoint) would look in
+	// the wrong directory for a container-backend deploy. Workspace-home
+	// size/delete and GC's workspace_homes listing read the engine's
+	// volume API now and never resolve a host path.
+	// dispatcher.IsContainerBackend(runtime.runner.Backend) is the cheap,
+	// already-resolved signal buildRuntime itself left behind
+	// (runtime.runner.Backend is only non-nil when
+	// sandboxBackendForConfig actually constructed a container backend) —
+	// reusing it here avoids a second, independent config.Load() that
+	// could theoretically disagree.
 	usingContainerBackend := dispatcher.IsContainerBackend(runtime.runner.Backend)
 	runtimesRoot := runtimesDirFor(srv.cfg)
 	if usingContainerBackend {
@@ -2175,9 +1994,9 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		}
 	})
 
-	// GET /api/cli-token-check (round-2 codex review Blocker 2, PR-3 Option
-	// 4 host-mode redesign): an authenticated no-op host mode's readiness
-	// probe (cmd/host.go's hostModeHealthy) hits INSTEAD of the public
+	// GET /api/cli-token-check: an authenticated no-op host mode's
+	// readiness probe (cmd/host.go's hostModeHealthy) hits INSTEAD of the
+	// public
 	// /api/health above — proving the CONFIGURED BOID_CLI_TOKEN actually
 	// works against the running daemon container, not merely that some
 	// process answers on the port. /api/health alone cannot catch a token
@@ -2240,19 +2059,18 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		r.Mount("/api/secrets", secretHandler.Routes())
 	}
 
-	// `boid secret oauth login <service>` (docs/plans/api-gateway.md §7,
-	// PR3) — mounted only when runtime.oauthLogin is wired (buildRuntime's
-	// own "feature's off switch is an absent dependency" note on that
-	// field). A request against /api/oauth/* while this is unmounted 404s
-	// at the router level, same as any other absent route.
+	// `boid secret oauth login <service>` — mounted only when
+	// runtime.oauthLogin is wired (buildRuntime's own "feature's off
+	// switch is an absent dependency" note on that field). A request
+	// against /api/oauth/* while this is unmounted 404s at the router
+	// level, same as any other absent route.
 	if runtime.oauthLogin != nil {
 		oauthLoginHandler := &api.OAuthLoginHandler{Service: runtime.oauthLogin}
 		r.Mount("/api/oauth", oauthLoginHandler.Routes())
 	}
 
 	sessionAdapter := &sessionDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner, packs: runtime.packs}
-	// docs/plans/ingestion-identity.md PR-4 (B-5): the trigger sweep loop's
-	// "実行" section — daemon dispatches a due trigger's exec job through
+	// The trigger sweep loop dispatches a due trigger's exec job through
 	// the SAME api.ExecDispatcher.StartExec `boid exec` uses. This can only
 	// be wired here, not alongside workflow's other fields above
 	// (buildRuntime), because sessionAdapter does not exist until this
@@ -2262,15 +2080,14 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		Service:           runtime.projectSvc,
 		SessionDispatcher: sessionAdapter,
 		ExecDispatcher:    sessionAdapter,
-		// TriggerRunner backs 12 節「手動 1 巡の口」(`boid trigger run`,
-		// cmd/trigger.go) — runtime.workflow satisfies api.TriggerRunner via
-		// RunTriggerNow (trigger_loop.go).
+		// TriggerRunner backs `boid trigger run` (cmd/trigger.go) —
+		// runtime.workflow satisfies api.TriggerRunner via RunTriggerNow
+		// (trigger_loop.go).
 		TriggerRunner: runtime.workflow,
 	}
 	r.Mount("/api/projects", projectHandler.Routes())
 
-	// Wire up the periodic trigger sweep loop (docs/plans/
-	// ingestion-identity.md PR-4, B-5's「スケジューラ」section — same
+	// Wire up the periodic trigger sweep loop — same
 	// InitialDelay-then-Interval idiom as srv.queueSweepLoop (buildRuntime)
 	// and srv.gcLoop (below), just constructed here instead because it
 	// needs runtime.workflow.Exec, only just assigned above. InitialDelay
@@ -2279,12 +2096,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// (db.go's SetMaxOpenConns(1)).
 	srv.triggerLoop = &api.TriggerLoop{
 		Store: runtime.workflow,
-		// N-6 (Opus review): tied to orchestrator.TriggerSweepResolution,
-		// not a separate literal — ValidateTriggers rejects any `every`
-		// below that same constant at project.yaml load time specifically
-		// because it assumes this IS the sweep loop's actual Interval. If
-		// the two drifted apart, ValidateTriggers' floor would stop
-		// describing reality.
+		// Tied to orchestrator.TriggerSweepResolution, not a separate
+		// literal — ValidateTriggers rejects any `every` below that same
+		// constant at project.yaml load time specifically because it
+		// assumes this IS the sweep loop's actual Interval. If the two
+		// drifted apart, ValidateTriggers' floor would stop describing
+		// reality.
 		Interval:     orchestrator.TriggerSweepResolution,
 		InitialDelay: 30 * time.Second,
 		Notifier:     srv.notifySvc,
@@ -2298,23 +2115,21 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 
 	workspaceHandler := &api.WorkspaceHandler{
 		Service: runtime.projectSvc,
-		// Workspace HOME size reporting (Show) + deletion (Remove),
-		// docs/plans/home-workspace-volume.md Phase 4 PR5, rewired onto the
-		// engine's volume API by 論点 a-2 / PR7 of
-		// docs/plans/workspace-home-volume-persistence.md. This deliberately
-		// no longer takes runtimesRoot: the home is a named volume
+		// Workspace HOME size reporting (Show) + deletion (Remove), rewired
+		// onto the engine's volume API. This deliberately no longer takes
+		// runtimesRoot: the home is a named volume
 		// (dockerres.WorkspaceHomeVolumeName) and there is no host path left
 		// to resolve. nil here — no docker client — is the feature's off
 		// switch, see api.WorkspaceHomeStore's doc comment.
 		Homes: runtime.workspaceHomes,
-		// PR8 of the same plan doc (論点 f): the migration of a pre-PR6 host
-		// home directory into the workspace's HOME volume. The Runner is the
-		// implementation because everything the migration has to keep
-		// consistent is the Runner's — the completion marker under
-		// <dataHome>/homes-meta/, the per-workspace init flock, and the
-		// identity label it mints — see dispatcher.Runner.ImportWorkspaceHome's
-		// D1 note for why this is not a CLI that drives the engine directly the
-		// way `boid reap` does.
+		// The migration of a pre-cutover host home directory into the
+		// workspace's HOME volume. The Runner is the implementation
+		// because everything the migration has to keep consistent is the
+		// Runner's — the completion marker under <dataHome>/homes-meta/,
+		// the per-workspace init flock, and the identity label it mints —
+		// see dispatcher.Runner.ImportWorkspaceHome's own doc comment for
+		// why this is not a CLI that drives the engine directly the way
+		// `boid reap` does.
 		//
 		// Unlike Homes above, this does NOT gate on a docker client: the
 		// capability is discovered on the BACKEND by type assertion
@@ -2326,17 +2141,16 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 
-	// host_commands read/reload (docs/plans/workspace-db-consolidation.md
-	// PR4 Step G). srv itself satisfies api.HostCommandsService directly
-	// (HostCommands()/ReloadHostCommands() already match that shape).
+	// host_commands read/reload: srv itself satisfies api.HostCommandsService
+	// directly (HostCommands()/ReloadHostCommands() already match that
+	// shape).
 	hostCommandsHandler := &api.HostCommandsHandler{Service: srv}
 	r.Mount("/api/host_commands", hostCommandsHandler.Routes())
 
-	// Daemon config read surface (MAJOR 1, codex review round 1,
-	// docs/plans/workspace-db-consolidation.md Phase 2.5 PR7): srv itself
-	// satisfies api.ConfigService directly (KitsDir() already matches that
-	// shape). Currently just GET /api/config/kits-dir; add further read-only
-	// config fields here as they need a client-visible surface.
+	// Daemon config read surface: srv itself satisfies api.ConfigService
+	// directly (KitsDir() already matches that shape). Currently just GET
+	// /api/config/kits-dir; add further read-only config fields here as
+	// they need a client-visible surface.
 	configHandler := &api.ConfigHandler{Service: srv}
 	r.Mount("/api/config", configHandler.Routes())
 
@@ -2352,12 +2166,10 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	gcAppService := &api.GCAppService{Store: gcStore, DeviceStore: runtime.authStore}
 	gcHandler := &api.GCHandler{
 		Service: gcAppService,
-		// workspace_homes size listing (docs/plans/home-workspace-volume.md
-		// Phase 4 PR5, on the engine's volume API since 論点 a-2 / PR7 of
-		// docs/plans/workspace-home-volume-persistence.md) — visibility only,
-		// GC never deletes a workspace home itself (that's `workspace
-		// remove`'s job). Workspaces flags orphan homes (a HOME volume with
-		// no matching workspace row) in the listing.
+		// workspace_homes size listing, on the engine's volume API —
+		// visibility only, GC never deletes a workspace home itself
+		// (that's `workspace remove`'s job). Workspaces flags orphan homes
+		// (a HOME volume with no matching workspace row) in the listing.
 		Homes:      runtime.workspaceHomes,
 		Workspaces: runtime.projectSvc,
 	}
@@ -2378,17 +2190,15 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		}
 	}
 
-	// card read surface (docs/plans/cross-project-issue-triage.md Phase
-	// 1 PR-5a; mount renamed from /api/triage by docs/plans/
-	// card-model-cleanup.md PR-3 §4). Mounted at its own root rather than
-	// under /api/tasks — see api.CardHandler's doc comment.
+	// card read surface. Mounted at its own root rather than under
+	// /api/tasks — see api.CardHandler's doc comment.
 	r.Mount("/api/cards", (&api.CardHandler{Service: runtime.workflow}).Routes())
 
-	// signal inbox read/ack surface (docs/plans/signal-ingest-detailed-
-	// design.md §3.1, PR-2). taskRepo already implements api.SignalStore
-	// (PR-1's var _ assertion, internal/api/store.go) — same "mount the
-	// handler directly against taskRepo, no wrapper service" shape as
-	// TaskTriage/Actions/Triggers above use runtime.workflow's fields for.
+	// signal inbox read/ack surface. taskRepo already implements
+	// api.SignalStore (internal/api/store.go's var _ assertion) — same
+	// "mount the handler directly against taskRepo, no wrapper service"
+	// shape as TaskTriage/Actions/Triggers above use runtime.workflow's
+	// fields for.
 	r.Mount("/api/signals", (&api.SignalHandler{Store: runtime.taskRepo}).Routes())
 
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
@@ -2401,7 +2211,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		Global:  runtime.globalJobStore,
 		Service: runtime.workflow,
 		// fallbackRootDir: runtimesRoot — see the boid_executor wiring's
-		// identical comment above (codex review round 1).
+		// identical comment above.
 		LogReader: transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot},
 		SSEHandler: &api.JobLogSSEHandler{
 			Subscriber: runtime.runner,
@@ -2411,24 +2221,22 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Mount("/api/jobs", jobHandler.Routes())
 	mountJobRuntimeRoutes(r, runtime)
 
-	// WebSocket attach (docs/plans/cli-remote-connection.md Phase 3 PR3:
-	// "WebSocket attach 一本化"). Deliberately mounted at the top level of
-	// r — NOT inside the cookie-only WebAuthMiddleware Group below (unlike
-	// its pre-PR3 position) — for the same reason the Bearer device-auth
-	// routes above are: over TCP this path must be gated solely by the
-	// (Bearer-aware) TCPAPIAuthMiddleware wrapping the whole router
-	// (auth.NewTCPAPIAuthMiddleware, applied to srv.tcpHandler at the
-	// bottom of this function), not by the Group's cookie-only check. This
-	// is also what makes the CLI's new WS-based AttachJob work at all over
-	// the UNIX socket: the bare router (no auth middleware whatsoever, see
-	// the "UNIX socket は trusted transport" comment below) is what the CLI
-	// dials, so a route left inside the Group would 302-redirect-to-/login
-	// a bare `net.Dial("unix", ...)` WS handshake that carries no cookie.
+	// WebSocket attach. Deliberately mounted at the top level of r — NOT
+	// inside the cookie-only WebAuthMiddleware Group below — for the same
+	// reason the Bearer device-auth routes above are: over TCP this path
+	// must be gated solely by the (Bearer-aware) TCPAPIAuthMiddleware
+	// wrapping the whole router (auth.NewTCPAPIAuthMiddleware, applied to
+	// srv.tcpHandler at the bottom of this function), not by the Group's
+	// cookie-only check. This is also what makes the CLI's WS-based
+	// AttachJob work at all over the UNIX socket: the bare router (no
+	// auth middleware whatsoever, see the "UNIX socket は trusted
+	// transport" comment below) is what the CLI dials, so a route left
+	// inside the Group would 302-redirect-to-/login a bare
+	// `net.Dial("unix", ...)` WS handshake that carries no cookie.
 	//
-	// The WSAttachHandler.Bearer field (Phase 3 PR0) only ever provided the
-	// primitive; wiring the route to actually be Bearer-reachable over TCP
-	// was explicitly left to this PR — see WSAttachHandler's own doc
-	// comment, which predates this move.
+	// The WSAttachHandler.Bearer field only ever provided the primitive;
+	// this route wiring is what makes it actually be Bearer-reachable
+	// over TCP — see WSAttachHandler's own doc comment.
 	//
 	// Cookie-based Web UI attach keeps working unchanged: WSAttachHandler.
 	// authenticateDevice falls back to auth.DeviceIDFromContext when no
@@ -2464,11 +2272,9 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Mount("/api/web", webMgmt.Routes())
 
 	// Shared rate limiter for every publicly-reachable pairing-code-redeem
-	// entry point (docs/plans/cli-remote-connection.md Phase 3 PR0 決定事項:
-	// device auth's rate limiting "既存 ratelimit.go を再利用、pair redeem と
-	// 同じ枠に乗せて良い" — a bad actor guessing codes against /login, /auth,
-	// and /api/auth/device all draws down the same per-IP bucket instead of
-	// getting three independent five-attempt budgets).
+	// entry point — a bad actor guessing codes against /login, /auth, and
+	// /api/auth/device all draws down the same per-IP bucket instead of
+	// getting three independent five-attempt budgets.
 	authRateLimiter := auth.NewRateLimiter(nil)
 
 	// Login/auth routes (exempted by WebAuthMiddleware and CSRFMiddleware).
@@ -2488,9 +2294,9 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Get("/auth", loginHandler.GetAuth)
 	r.Post("/auth", loginHandler.PostAuth)
 
-	// Bearer device-auth routes (docs/plans/cli-remote-connection.md Phase 3
-	// PR0): POST /api/auth/device is public (see apiAuthRequired's exemption
-	// — rate-limited here instead), DELETE /api/auth/devices/{id} requires
+	// Bearer device-auth routes: POST /api/auth/device is public (see
+	// apiAuthRequired's exemption — rate-limited here instead), DELETE
+	// /api/auth/devices/{id} requires
 	// Bearer auth like any other /api/* route. Deliberately mounted at the
 	// same level as the other r.Mount("/api/...") calls above — NOT inside
 	// the WebAuthMiddleware Group below — so that over TCP it is gated
@@ -2528,17 +2334,14 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			SessionDispatcher: sessionAdapter,
 			Registry:          runtime.connRegistry,
 			AttachmentsRoot:   dataHomeFor(srv.cfg),
-			// GET /settings (docs/plans/volume-only-daemon.md §論点 f):
-			// srv itself satisfies api.SettingsConfigService directly
-			// (ConfigYAML() already matches that shape — the same method
-			// configHandler above uses), mirroring configHandler's own
-			// `Service: srv` wiring just above.
+			// GET /settings: srv itself satisfies api.SettingsConfigService
+			// directly (ConfigYAML() already matches that shape — the same
+			// method configHandler above uses), mirroring configHandler's
+			// own `Service: srv` wiring just above.
 			ConfigService: srv,
-			// List row suggestion/summary enrichment (cross-project-issue-triage
-			// Phase 1 PR-3; restated for the single flat list by docs/plans/
-			// webui-detail-list-redesign.md PR-4 — the pre-PR-4 queue_next/
-			// Parked tabs this originally backed are gone) — same taskRepo
-			// instance already wired as TaskWorkflowService.TaskTriage above.
+			// List row suggestion/summary enrichment for the flat task
+			// list — same taskRepo instance already wired as
+			// TaskWorkflowService.TaskTriage above.
 			TaskTriage: runtime.taskRepo,
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
@@ -2552,8 +2355,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// /api/* surface requires a session over TCP. See Server.Start.
 	srv.tcpHandler = auth.NewTCPAPIAuthMiddleware(runtime.sessionSigner, runtime.authStore)(r)
 
-	// The dedicated CLI TCP listener (Config.CLIAddr/CLIToken, PR-3 Option 4
-	// host-mode redesign, docs/plans/volume-only-daemon.md §論点c) is served
+	// The dedicated CLI TCP listener (Config.CLIAddr/CLIToken) is served
 	// the same router wrapped with a DIFFERENT auth layer: a single shared
 	// BOID_CLI_TOKEN secret, not the Web UI's session/device-pair/loopback-
 	// trust machinery — see auth.NewCLITokenAuthMiddleware's own doc

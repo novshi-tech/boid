@@ -270,10 +270,10 @@ type Hook struct {
 	Requires []string      `yaml:"requires" json:"requires"`
 	Agent    string        `yaml:"agent,omitempty" json:"agent,omitempty"`
 	Kit      string        `yaml:"-" json:"kit,omitempty"`
-	// Command is an inline shell command, run via `sh -c`
-	// (docs/plans/script-hook-removal.md). Mutually exclusive with Agent, and
-	// not allowed on agent-kind hooks. See DispatchPlanner.PlanHook for the
-	// argv selection and validateHookCommandFields for the exclusivity rules.
+	// Command is an inline shell command, run via `sh -c`. Mutually
+	// exclusive with Agent, and not allowed on agent-kind hooks. See
+	// DispatchPlanner.PlanHook for the argv selection and
+	// validateHookCommandFields for the exclusivity rules.
 	Command string `yaml:"command,omitempty" json:"command,omitempty"`
 }
 
@@ -312,18 +312,8 @@ type HookFireEvent struct {
 }
 
 // Behavior names carry no built-in meaning to the loader: every key under
-// task_behaviors is an ordinary project-chosen name, compared verbatim.
-//
-// There used to be an alias table here mapping the pre-rename names
-// "plan" / "dev" onto "supervisor" / "executor", plus the mirror-entry
-// machinery that kept both spellings reachable at runtime. It was removed
-// because it reserved two of the most natural work-content behavior names:
-// a project.yaml could not define "plan" as its own behavior at all — written
-// alongside "supervisor" it was rejected as a duplicate definition, and
-// written alone it was silently renamed to "supervisor". That directly
-// contradicts the Track A2 free-naming contract the rest of this file
-// implements. Nothing else replaced it: the daemon does not translate
-// behavior names, in either direction.
+// task_behaviors is an ordinary project-chosen name, compared verbatim. The
+// daemon does not translate behavior names, in either direction.
 //
 // The only names the daemon still reacts to by spelling are "supervisor" and
 // "executor", and only to emit deprecation warnings (see
@@ -405,99 +395,74 @@ type Capabilities struct {
 // signal_store.go) rather than a bare string.
 type TriggerOn string
 
-// TriggerOnSchedule / TriggerOnSignals are Trigger.On's two valid values
-// (docs/plans/signal-ingest-detailed-design.md §4.1, PR-6). ValidateTriggers
-// also accepts "" as an alias for TriggerOnSchedule (the pre-existing
-// default, before this field existed).
+// TriggerOnSchedule / TriggerOnSignals are Trigger.On's two valid values.
+// ValidateTriggers also accepts "" as an alias for TriggerOnSchedule (the
+// pre-existing default, before this field existed).
 const (
 	TriggerOnSchedule TriggerOn = "schedule"
 	TriggerOnSignals  TriggerOn = "signals"
 )
 
-// Trigger is one project.yaml `triggers[]` entry (docs/plans/
-// ingestion-identity.md PR-4 / B-5, J-1/J-2). It declares WHEN a command
-// runs (Every, and since PR-6 also On) and WHAT command runs (Run) —
-// nothing else. daemon reads only these fields; it never interprets Run's
-// contents (J-2, this PR's own 不変条件: daemon は run の中身を知らない).
+// Trigger is one project.yaml `triggers[]` entry. It declares WHEN a
+// command runs (Every, and also On) and WHAT command runs (Run) — nothing
+// else. The daemon reads only these fields; it never interprets Run's
+// contents.
 type Trigger struct {
 	// Name identifies this trigger within its project (single-flight and
-	// trigger_runs history are scoped by (project_id, trigger_name) — 12
-	// 節 B-5 "single-flight の粒度は trigger 単位"). Must be non-empty and
-	// unique within a project's Triggers slice — see ValidateTriggers.
+	// trigger_runs history are scoped by (project_id, trigger_name)). Must
+	// be non-empty and unique within a project's Triggers slice — see
+	// ValidateTriggers.
 	Name string `yaml:"name" json:"name"`
-	// On selects this trigger's activation predicate (docs/plans/
-	// signal-ingest-detailed-design.md §4.1, PR-6). "" and
-	// TriggerOnSchedule ("schedule") are equivalent and mean the
-	// pre-existing, unchanged behavior: due purely once Every has elapsed
-	// since the trigger's last recorded start. TriggerOnSignals ("signals")
-	// ADDITIONALLY requires the trigger's project to have a linked
-	// workspace with at least one pending (unacked) Signal — see
-	// SweepTriggers' due predicate (internal/api/trigger_loop.go) for where
-	// this is evaluated. ValidateTriggers rejects any other value at
-	// project.yaml load time. omitempty: the overwhelmingly common case
-	// (plain schedule triggers, pre-dating this field) round-trips through
-	// export/apply without gaining an `on: schedule` line nobody wrote.
+	// On selects this trigger's activation predicate. "" and
+	// TriggerOnSchedule ("schedule") are equivalent: due purely once Every
+	// has elapsed since the trigger's last recorded start. TriggerOnSignals
+	// ("signals") ADDITIONALLY requires the trigger's project to have a
+	// linked workspace with at least one pending (unacked) Signal — see
+	// SweepTriggers' due predicate (internal/api/trigger_loop.go).
+	// ValidateTriggers rejects any other value at project.yaml load time.
 	On TriggerOn `yaml:"on,omitempty" json:"on,omitempty"`
 	// Every is a Go time.ParseDuration string (e.g. "10m", "1h") — the
 	// minimum wall-clock gap between two starts of this trigger. There is
-	// deliberately no time-of-day window (12 節 B-5 既定案「トリガの時間帯窓
-	// はスクリプトが時刻で自制する」— J-4's「daemon はドメインに依存しない」).
-	// Required for BOTH On kinds — for On=="signals" this is also the
-	// trigger's debounce window (§4.2: "every 窓内に何件 Signal が来ても発火
-	// は1回").
+	// deliberately no time-of-day window — that is a script's own concern,
+	// not the daemon's. Required for BOTH On kinds — for On=="signals" this
+	// is also the trigger's debounce window.
 	Every string `yaml:"every" json:"every"`
 	// Run is a command string passed to `sh -c` inside the project's
-	// sandbox — NOT a script path daemon resolves (J-2: 撤廃済みの script
-	// hook 外部参照と同じ轍を踏まない). sandbox の /bin/sh は dash: bashism は
-	// `bash scripts/x.sh` と明示する側 (スクリプト作者) の責任で、daemon の
-	// 責任ではない。
+	// sandbox — NOT a script path the daemon resolves. sandbox's /bin/sh is
+	// dash: bashisms are the script author's responsibility, not the
+	// daemon's.
 	Run string `yaml:"run" json:"run"`
-	// Timeout is a Go time.ParseDuration string bounding how long ONE round of
-	// this trigger may take. Empty (the default, and what every trigger written
-	// before this field existed carries) means unbounded.
+	// Timeout is a Go time.ParseDuration string bounding how long ONE round
+	// of this trigger may take. Empty means unbounded.
 	//
-	// It is a different question from Every and must not be derived from it.
+	// A different question from Every, and must not be derived from it:
 	// Every says how OFTEN to look; Timeout says how LONG a round may run.
-	// Before this field existed the daemon had no answer to the second
-	// question at all, so trackSkipStreak approximated it as
-	// TriggerStuckOverrunMultiplier × Every — which has the wrong shape:
-	// shortening the polling interval tightened the "this is taking too long"
-	// judgement, even though nothing about the work changed. Workspaces
-	// answered it their own way instead, by smuggling `timeout 300` into the
-	// front of their own Run string, where the daemon that launched the job
-	// cannot see it.
 	//
-	// Enforced by the sweep loop (internal/api/trigger_loop.go): an overrunning
-	// round is ended and reported as a failure, so it reaches trackFailStreak
-	// like any other. "Taking too long" therefore stops being something the
-	// daemon has to GUESS at and becomes something it ENFORCES.
+	// Enforced by the sweep loop (internal/api/trigger_loop.go): an
+	// overrunning round is ended and reported as a failure, so it reaches
+	// trackFailStreak like any other.
 	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 
 	// Connector, when non-nil, marks this Trigger as one hydrate-DERIVED
-	// from a project.yaml `signals.sources[]` entry (docs/plans/
-	// signal-ingest-detailed-design.md §5.1, PR-5: source 1 件 = trigger 1
-	// 本) — never set by a user-authored `triggers:` entry. yaml:"-": this
-	// is a runtime-only field computed by deriveSignalTriggers
-	// (signal_trigger_derive.go) from ProjectMeta.Signals, never itself
-	// read back out of project.yaml. fireTrigger (internal/api/
-	// trigger_loop.go) reads it to attach the connector job's extra env/
-	// bind/policy/service-allowlist (§5.2) — every trigger with a nil
-	// Connector dispatches exactly as before this PR.
+	// from a project.yaml `signals.sources[]` entry — never set by a
+	// user-authored `triggers:` entry. yaml:"-": this is a runtime-only
+	// field computed by deriveSignalTriggers (signal_trigger_derive.go) from
+	// ProjectMeta.Signals, never itself read back out of project.yaml.
+	// fireTrigger (internal/api/trigger_loop.go) reads it to attach the
+	// connector job's extra env/bind/policy/service-allowlist — every
+	// trigger with a nil Connector dispatches exactly as before.
 	Connector *TriggerConnector `yaml:"-" json:"connector,omitempty"`
 }
 
 // TriggerConnector is the resolved connector identity carried by a
-// hydrate-derived Trigger (Trigger.Connector, docs/plans/
-// signal-ingest-detailed-design.md §5.1/§5.2, PR-5). It holds only the RAW
+// hydrate-derived Trigger (Trigger.Connector). It holds only the RAW
 // declaration from project.yaml `signals.sources[]` — no Pack-registry
 // lookup happens at hydrate time (internal/orchestrator has no notion of an
 // Integration Pack registry; that lives in internal/integrationpack, which
 // only internal/server's daemon-startup wiring and dispatch-time connector
-// resolution ever import — see docs/plans/signal-ingest-detailed-design.md
-// §6.2's "internal/integrationpack は新 package" and this package's own
-// layering rule, scripts/check-internal-architecture.sh). Resolving Pack/
-// version/executable path against the loaded registry happens downstream,
-// at StartExec time (internal/server/wire.go's sessionDispatcherAdapter).
+// resolution ever import). Resolving Pack/version/executable path against
+// the loaded registry happens downstream, at StartExec time
+// (internal/server/wire.go's sessionDispatcherAdapter).
 type TriggerConnector struct {
 	// Pack is the "<pack>" half of signals.sources[].connector
 	// ("<pack>/<connector>").
@@ -523,39 +488,29 @@ type ProjectMeta struct {
 	ID            string                  `yaml:"id" json:"id"`
 	Name          string                  `yaml:"name" json:"name"`
 	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
-	// Triggers is a TOP-LEVEL project.yaml field (J-1) — deliberately NOT
-	// nested under any TaskBehavior. 「いつ始まるか」は task_behaviors の
-	// 関心 (「どう実行するか」) とは異なる性質であり、混ぜると器の概念的な
-	// 強度が落ちる (6 節「なぜ task_behaviors に入れないか」)。omitempty:
-	// triggers を持たない project.yaml (大多数) は export/apply の往復で
-	// `triggers: []` のノイズを出さない。
-	//
-	// workspace envelope の spec.* allowlist (workspace_envelope.go の
-	// workspaceEnvelopeSpecFields) には**意図的に載せていない** — 理由は
-	// このフィールドと同じ PR の報告を参照 (workspace-level のデフォルト
-	// `run:` は特定 1 project の tracked tree にしか存在しないスクリプト
-	// パスを指すことになり、workspace 内の複数 project へ一般化できる
-	// task_behaviors/base_branch/fork_point とは性質が違う)。`triggers:`
-	// を書けるのは project.yaml だけであり、workspace_envelope.go の
-	// decodeStrictNode は今後も unknown field として拒否し続ける。
+	// Triggers is a TOP-LEVEL project.yaml field — deliberately NOT nested
+	// under any TaskBehavior: "when it starts" is a different concern from
+	// task_behaviors' "how it runs". Not part of the workspace envelope
+	// spec.* allowlist (workspace_envelope.go's workspaceEnvelopeSpecFields)
+	// — a workspace-level default `run:` would point at a script path that
+	// only exists in one project's tracked tree, unlike
+	// task_behaviors/base_branch/fork_point which generalize across a
+	// workspace's projects. `triggers:` can only be written in
+	// project.yaml.
 	Triggers []Trigger `yaml:"triggers,omitempty" json:"triggers,omitempty"`
-	// Signals declares this (meta)project's signal sources (docs/plans/
-	// signal-ingest-detailed-design.md §5.1, PR-5). Only meaningful on a
-	// metaproject — a project whose sandbox is where Integration Pack
+	// Signals declares this (meta)project's signal sources. Only meaningful
+	// on a metaproject — a project whose sandbox is where Integration Pack
 	// connectors run — but nothing here enforces that; any project.yaml may
-	// declare it. Same top-level, project.yaml-only placement rationale as
-	// Triggers above (workspaceEnvelopeSpecFields does not list "signals"
-	// either, for the identical reason: a bind-mounted Pack directory is a
+	// declare it. Same top-level, project.yaml-only placement as Triggers
+	// above, for the identical reason: a bind-mounted Pack directory is a
 	// property of ONE tracked-tree project, not something that generalizes
-	// across a workspace's projects).
+	// across a workspace's projects.
 	Signals SignalsConfig `yaml:"signals,omitempty" json:"signals,omitempty"`
 	// SessionBehaviors is a free-naming dictionary (same "any key name"
 	// model as TaskBehaviors) from a use-case key (e.g. "shape") to a
 	// default harness_type/model for sessions launched for that use case.
 	// Sessions do NOT resolve through TaskBehaviors/ResolveBehavior — see
-	// SessionBehavior's doc comment and buildShapingInstruction's doc
-	// comment in internal/api/web.go for the rejected-alternatives history
-	// this deliberately avoids repeating.
+	// SessionBehavior's doc comment.
 	SessionBehaviors map[string]SessionBehavior `yaml:"session_behaviors,omitempty" json:"session_behaviors,omitempty"`
 	// BaseBranch is the default git base branch for worktrees created by
 	// tasks in this project. It is resolved at task creation time (with
@@ -586,15 +541,13 @@ type ProjectMeta struct {
 	// if neither is set, CreateTask returns an error.
 	DefaultTaskBehavior string `yaml:"default_task_behavior,omitempty" json:"default_task_behavior,omitempty"`
 	// NameSource records how Name was determined for a project.yaml-less
-	// (URL-derived id, PR5) registration — "explicit" (--name given),
-	// "url" (derived from the git URL), "cached" (recovered from a
+	// (URL-derived id) registration — "explicit" (--name given), "url"
+	// (derived from the git URL), "cached" (recovered from a
 	// previously-cached Name on reload), or "basename" (recovered from the
 	// bare-repo WorkDir's directory name on reload). Runtime-only
 	// (yaml:"-"): never read from project.yaml — a project.yaml-bearing
 	// project always leaves this empty, since Name there has an
-	// unambiguous single source. Surfaced by `project show --explain`
-	// (docs/plans/workspace-default-project.md 論点e, PR6) as a carry-over
-	// from PR5's completion report.
+	// unambiguous single source. Surfaced by `project show --explain`.
 	NameSource string `yaml:"-" json:"name_source,omitempty"`
 }
 
@@ -613,9 +566,8 @@ type SignalSource struct {
 	// connector within it to run. No version: v0 requires exactly one
 	// installed version of a given Pack name (resolved at StartExec time
 	// against the loaded Pack registry, internal/server) — signals.sources
-	// itself carries no version pin (docs/plans/
-	// signal-ingest-detailed-design.md §5.1's example has none either,
-	// unlike config.yaml's `uses: <pack>/<profile>@<version>`).
+	// itself carries no version pin, unlike config.yaml's
+	// `uses: <pack>/<profile>@<version>`.
 	Connector string `yaml:"connector" json:"connector"`
 	// Service is the service instance name (config.yaml `services:` key)
 	// this connector is authorized to reach through the API gateway.
@@ -635,17 +587,17 @@ type Project struct {
 	WorkDir     string      `json:"work_dir"`
 	Meta        ProjectMeta `json:"meta"`
 	// UpstreamURL is the project's git remote origin, captured and normalized
-	// to HTTPS (SSH → HTTPS) at `project add` / `project reload` time (see
-	// docs/plans/git-gateway-cutover.md PR2). Empty until captured; daemon
-	// startup backfills it for projects registered before this field existed.
-	// Not read from project.yaml — this is DB-only, machine-local state.
+	// to HTTPS (SSH → HTTPS) at `project add` / `project reload` time. Empty
+	// until captured; daemon startup backfills it for projects registered
+	// before this field existed. Not read from project.yaml — this is
+	// DB-only, machine-local state.
 	UpstreamURL string    `json:"upstream_url,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	// Status / StatusMessage reflect the daemon's in-memory ProjectStore
-	// view of this project's health (docs/plans/volume-only-daemon.md
-	// §論点a: StatusReady / StatusDegraded). Not a DB column — populated at
-	// hydrate time (internal/api.ProjectAppService.hydrateProject) from
+	// view of this project's health (StatusReady / StatusDegraded). Not a
+	// DB column — populated at hydrate time
+	// (internal/api.ProjectAppService.hydrateProject) from
 	// ProjectStore.Status. Omitted from JSON when "ready" (the common case)
 	// to keep existing API response bodies unchanged for clients that
 	// don't care.
@@ -658,10 +610,8 @@ type WorkspaceSummary struct {
 	ProjectCount int    `json:"project_count"`
 	// Revision is an opaque ETag-like token derived from the workspaces row's
 	// updated_at column (RFC3339), used by the PUT /api/workspaces/{slug}
-	// If-Match optimistic-concurrency check (docs/plans/
-	// workspace-db-consolidation.md decision 17). Empty when the summary was
+	// If-Match optimistic-concurrency check. Empty when the summary was
 	// built from a project_workspaces reference with no corresponding
-	// workspaces row (should not happen once PR4's ListWorkspaces query is
-	// workspaces-table-based, but callers should not assume non-empty).
+	// workspaces row — callers should not assume non-empty.
 	Revision string `json:"revision,omitempty"`
 }

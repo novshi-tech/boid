@@ -1,7 +1,7 @@
 // Package sigutil hosts the small signal-forwarding loop every harness
-// adapter runs while its child process is alive. Phase 3-d (PR1) extracted
-// it so the claude / codex / opencode / shell adapters do not all carry
-// their own copy of the same select-loop boilerplate.
+// adapter runs while its child process is alive, so the claude / codex /
+// opencode / shell adapters do not all carry their own copy of the same
+// select-loop boilerplate.
 //
 // The loop owns three concerns:
 //
@@ -78,14 +78,12 @@ func ForwardAndWait(cmd *exec.Cmd, label string) (exitCode int, stoppedByDaemon 
 
 // exitCodeFromExitError extracts a shell-convention exit code from a
 // completed child's *exec.ExitError: 128+signal when the child was killed by
-// a signal (e.g. SIGKILL → 137), matching how a real shell reports it and how
-// the pre-cutover syscall.Exec path behaved. ee.ExitCode() alone returns -1
-// for a signal-terminated child; a caller that does os.Exit(ee.ExitCode())
-// truncates that -1 to 255, losing which signal actually killed the process
-// (Opus review finding #3 on PR #735). Mirrors the identical convention in
+// a signal (e.g. SIGKILL → 137), matching how a real shell reports it.
+// ee.ExitCode() alone returns -1 for a signal-terminated child; a caller
+// that does os.Exit(ee.ExitCode()) truncates that -1 to 255, losing which
+// signal actually killed the process. Mirrors the identical convention in
 // internal/dispatcher/runtime_local_linux.go's exitCode() and
-// internal/sandbox/runner/runner_linux.go's commandExitCode(), which apply it
-// on their own (different) child-process exit paths.
+// internal/sandbox/runner/runner_linux.go's commandExitCode().
 func exitCodeFromExitError(ee *exec.ExitError) int {
 	if status, ok := ee.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 		return 128 + int(status.Signal())

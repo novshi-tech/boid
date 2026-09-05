@@ -1,19 +1,9 @@
 // Package backend defines the SandboxBackend/SandboxSession seam that
 // separates "how a sandboxed agent process is launched and attached to"
-// from the dispatcher's job orchestration.
-//
-// Phase 6 (docs/plans/phase6-container-backend.md) introduced it as an inert
-// refactor: §PR1 extracted the then-only implementation, the userns backend
-// (internal/dispatcher's usernsBackend/usernsSession), behind this interface so
-// that a container backend could be added without touching the
-// attach/resize/signal call sites.
-//
-// Both halves of that history are over. The container backend landed in §PR5,
-// and PR-4 of docs/plans/volume-only-daemon.md (§論点e) then removed the userns
-// backend outright, so internal/dispatcher's containerBackend is the ONLY
-// implementation — the seam now earns its keep by keeping the ingress call
-// sites (WS attach, the SSE follow endpoint, the resize route, `boid agent
-// stop`) independent of docker rather than by hosting two backends.
+// from the dispatcher's job orchestration. internal/dispatcher's
+// containerBackend is the only implementation; the seam keeps the ingress
+// call sites (WS attach, the SSE follow endpoint, the resize route, `boid
+// agent stop`) independent of docker.
 package backend
 
 import (
@@ -36,15 +26,10 @@ type TerminalSize struct {
 
 // RuntimeSnapshot is everything a session has emitted so far, handed to a
 // caller attaching mid-session, together with what that caller needs in
-// order to decide HOW to hand it on.
-//
-// Raw alone was the whole return value until the Web UI's "the entire
-// session scrolls past on connect" report: replaying an interactive TUI's
-// full recording is both enormous (8.7 MB measured on one production job)
-// and, at a width other than the one it was recorded at, incorrect. TTY and
-// Geometry let ingress resolve Raw to the screen it painted instead — see
-// internal/vtsnapshot.Render, and WSAttachHandler for the one caller that
-// does it.
+// order to decide HOW to hand it on. TTY and Geometry let ingress resolve
+// Raw to the screen it painted instead of replaying the full recording
+// verbatim — see internal/vtsnapshot.Render, and WSAttachHandler for the
+// one caller that does it.
 //
 // A backend that cannot report a geometry leaves Geometry zero, which
 // vtsnapshot.Render reads as "use the default 80x24".
@@ -73,25 +58,15 @@ type RuntimeExit struct {
 	// stdout/stderr, when the backend supports it. Empty when unsupported.
 	TranscriptPath string
 	// EngineError carries the container ENGINE's own failure message when
-	// the engine itself could not report an exit status for this session —
-	// e.g. the ContainerWait API call failing outright, or its response
-	// carrying an engine-side Error instead of a real StatusCode (see
-	// waitResponseEngineError's doc comment in
-	// internal/dispatcher/container_backend_workspace_init.go for why
-	// StatusCode alone cannot be trusted in that case).
-	//
-	// This is NOT the exited process's own stderr or exit reason — ExitCode
-	// above is a forced substitute value (containerSession.waitLoop sets it
-	// to 1) precisely because the engine never filled one in. EngineError is
-	// the only description of what actually went wrong, and empty means "no
-	// engine fault was reported for this exit" — NOT "ExitCode is real": a
-	// Wait() returned alongside ErrRuntimeUnsupported (the pre-existing
-	// convention for a session with no notion of Wait at all — see e.g.
-	// statefulSession.Wait in dispatcher_test) is also RuntimeExit{}, and its
-	// zero ExitCode carries no meaning either. A caller (Runner.watchRuntime,
-	// in particular) must not report a hook script as having failed on its
-	// own when EngineError is set; see watchRuntime's doc comment for how it
-	// renders the distinction.
+	// the engine itself could not report an exit status for this session
+	// (see waitResponseEngineError in
+	// internal/dispatcher/container_backend_workspace_init.go). Not the
+	// exited process's own stderr: ExitCode above is a forced substitute
+	// (1) when the engine never filled one in. Empty means "no engine
+	// fault was reported" — not "ExitCode is real": a RuntimeExit{} paired
+	// with ErrRuntimeUnsupported also has a meaningless zero ExitCode. A
+	// caller must not report a hook script as having failed on its own when
+	// EngineError is set — see Runner.watchRuntime's doc comment.
 	EngineError string
 }
 
@@ -111,59 +86,38 @@ type LaunchOptions struct {
 	// Workspace is the job's workspace slug, when known. containerBackend
 	// stamps it onto every container as the boid.workspace label
 	// unconditionally (empty is a valid, explicit value — "workspace
-	// unknown" — rather than the label being omitted entirely). Callers
-	// should pass this explicitly rather than relying on a backend
-	// inferring it from spec.Env: an env-var lookup is an implicit,
-	// fragile routing path for something a label's reap/observability
-	// consumers need to be able to trust is always present (PR5 review
-	// Minor finding).
+	// unknown" — rather than the label being omitted). Callers should pass
+	// this explicitly rather than relying on a backend inferring it from
+	// spec.Env.
 	Workspace string
 
 	// WorkspaceSlug is the NORMALIZED workspace slug — what
 	// dispatcher.resolveWorkspaceHome turned Workspace into, which for a
-	// project with no explicit workspace assignment is the default slug rather
-	// than the empty string Workspace carries.
+	// project with no explicit workspace assignment is the default slug
+	// rather than the empty string Workspace carries. Kept as a second
+	// field rather than a normalization of Workspace because normalizing
+	// Workspace itself would silently move every unassigned project onto a
+	// `default` workspace network. WorkspaceSlug identifies the workspace
+	// whose persistent HOME volume this job mounts, and that volume's name
+	// is already built from the normalized slug.
 	//
-	// It is a second field rather than a normalization of the first because the
-	// two answer different questions and PR6 of
-	// docs/plans/workspace-home-volume-persistence.md (論点 D5) needed only one
-	// of them changed. Workspace decides the boid.workspace label and whether
-	// the job gets a per-workspace isolated network at all (empty means "no
-	// workspace network"), so normalizing it would silently move every
-	// unassigned project onto a `default` workspace network — a real behaviour
-	// change to network isolation, unrelated to workspace homes.
-	// WorkspaceSlug identifies the workspace whose persistent HOME volume this
-	// job mounts, and that volume's NAME is already built from the normalized
-	// slug; containerBackend stamps this value onto the volume's
-	// boid.workspace_home label so name and label agree.
-	//
-	// Empty is tolerated the same way Workspace's empty is: the label is set to
-	// it explicitly rather than omitted. Callers that resolve a workspace home
-	// always have the value — it is resolveWorkspaceHome's second return.
+	// Empty is tolerated the same way Workspace's empty is. Callers that
+	// resolve a workspace home always have the value.
 	WorkspaceSlug string
 
 	// WorkspaceHomeID is the identity dispatcher.resolveWorkspaceHome
-	// OBSERVED on this workspace's HOME volume during this dispatch — the
-	// value of its dockerres.LabelWorkspaceHomeID label, and the value the
-	// completion marker that let init be skipped was compared against.
+	// OBSERVED on this workspace's HOME volume during this dispatch. It is
+	// threaded down here so the backend can check, right before handing the
+	// volume to a container, that it is still the same volume — resolving
+	// and mounting are two engine calls apart, and the volume can be
+	// removed in between, silently getting replaced by a brand new,
+	// never-initialized one at container create.
 	//
-	// It is threaded down here so the backend can check, at the moment it is
-	// about to hand the volume to a container, that it is still the same
-	// volume. Resolving and mounting are two engine calls apart, and in
-	// between the volume can be removed — by an operator, by a reap misfire,
-	// by a half-completed workspace remove — after which the mount silently
-	// gets a BRAND NEW, empty, never-initialized home (the engine creates a
-	// missing volume implicitly at container create, unlabelled). The
-	// resolver's own check cannot see that far forward; only the caller of
-	// VolumeCreate can, by comparing what it got back against this value.
-	//
-	// Empty means "no identity was resolved for this launch", which production
-	// never produces (Runner.Dispatch resolves the home before it builds the
-	// spec that mounts it) but DI/test wiring that calls Launch directly does.
-	// The backend then falls back to its pre-PR6 behaviour of minting an
-	// identity for a volume it has to create; see
-	// containerBackend.ensureNamedVolumes for why that is not a silent
-	// weakening of the check.
+	// Empty means "no identity was resolved for this launch" (production
+	// always resolves it first; only DI/test wiring calling Launch directly
+	// leaves it empty). The backend then falls back to minting an identity
+	// for a volume it has to create — see
+	// containerBackend.ensureNamedVolumes.
 	WorkspaceHomeID string
 
 	// Interactive and TTY mirror dispatcher.RuntimeStartSpec's fields of
@@ -185,28 +139,22 @@ type LaunchOptions struct {
 	StdinForward bool
 
 	// DockerEnabled mirrors orchestrator.Visibility.DockerEnabled /
-	// dispatcher.JobSpec's field of the same name (docs/plans/
-	// phase6-container-backend.md §PR6, §決定5): true when the job declared
-	// capabilities.docker. containerBackend uses this to decide whether to
-	// issue a per-job dockerproxy client cert and deliver it via
+	// dispatcher.JobSpec's field of the same name: true when the job
+	// declared capabilities.docker. containerBackend uses this to decide
+	// whether to issue a per-job dockerproxy client cert and deliver it via
 	// DOCKER_HOST/DOCKER_CERT_PATH/DOCKER_TLS_VERIFY env (see
 	// ContainerBackendOptions.DockerTLSCA's doc comment).
 	//
 	// Runner.launchSandbox fills it from the *orchestrator.JobSpec on every
-	// dispatch. It did not always: through Phase 6 PR6 this field (and
-	// Workspace) were left at their zero value on every real Dispatch, which
-	// silently disabled per-job docker-capability delivery and workspace
-	// network isolation, and nothing noticed because the userns backend of the
-	// day read neither. PR9 closed that gap; it is named here because "the
-	// struct has the field" and "the caller fills it in" are separate facts.
+	// dispatch — "the struct has the field" and "the caller fills it in"
+	// are separate facts, worth naming since a backend must not assume it.
 	DockerEnabled bool
 }
 
 // ReapReport is the per-task result of a ReapOrphans pass: which jobs were
 // successfully reconciled and which failed, so the caller can decide
 // task-by-task whether to auto-reopen. A single GlobalError can't express
-// "skip reopen for just the jobs reap failed on" — see
-// docs/plans/phase6-container-backend.md §決定 6/8.
+// "skip reopen for just the jobs reap failed on".
 type ReapReport struct {
 	ReapedJobIDs []string
 	FailedJobIDs []string
@@ -214,9 +162,8 @@ type ReapReport struct {
 }
 
 // SandboxBackend launches and re-attaches to sandboxed agent sessions. The
-// only implementation is internal/dispatcher's containerBackend, which creates
-// one throwaway docker container per job; the userns backend this interface was
-// extracted from was removed in PR-4 of docs/plans/volume-only-daemon.md.
+// only implementation is internal/dispatcher's containerBackend, which
+// creates one throwaway docker container per job.
 type SandboxBackend interface {
 	// Launch prepares and starts a new sandbox session for spec.
 	Launch(ctx context.Context, spec sandbox.Spec, opts LaunchOptions) (SandboxSession, error)
@@ -228,14 +175,11 @@ type SandboxBackend interface {
 	// notion of that session).
 	Adopt(ctx context.Context, runtimeID string) (SandboxSession, bool)
 	// ReapOrphans reconciles sandbox resources left behind by a daemon
-	// restart: containerBackend's label-based implementation removes orphaned
-	// containers, networks and job volumes (leaving persistent workspace HOME
-	// volumes alone — docs/plans/workspace-home-volume-persistence.md 論点 a).
-	// It is called on every daemon startup, between MarkStaleJobsFailed /
-	// task-abort and the daemon_shutdown auto-reopen sweep
-	// (internal/server/wire.go's reapOrphansBeforeReopen via
-	// dispatcher.Runner.ReapOrphans) — see
-	// docs/plans/phase6-container-backend.md §決定 6.
+	// restart: containerBackend's label-based implementation removes
+	// orphaned containers, networks and job volumes (leaving persistent
+	// workspace HOME volumes alone). Called on every daemon startup, between
+	// MarkStaleJobsFailed/task-abort and the daemon_shutdown auto-reopen
+	// sweep (internal/server/wire.go's reapOrphansBeforeReopen).
 	ReapOrphans(ctx context.Context) (ReapReport, error)
 }
 
@@ -243,12 +187,7 @@ type SandboxBackend interface {
 // Every attach/resize/signal ingress in the daemon — WS attach, the Web UI
 // SSE follow endpoint, the HTTP resize route, and `boid agent stop`'s
 // signal delivery — routes through one of these methods rather than
-// reaching into a backend-specific transport directly. See
-// docs/plans/phase6-container-backend.md §決定 1 for why each method has
-// the exact shape it does (in particular why live attach is collapsed to
-// Subscribe/WriteInput/CloseInput/Resize with no Attach(ctx, req) method:
-// the pre-Phase-6 WS-attach unification already made JobRuntime.Attach
-// have no external caller).
+// reaching into a backend-specific transport directly.
 type SandboxSession interface {
 	// ID returns the backend-assigned runtime identifier (what's
 	// persisted as Job.RuntimeID).
@@ -259,28 +198,15 @@ type SandboxSession interface {
 	// between snapshot and the first live chunk. ok is false when the
 	// session has no live stream to offer right now.
 	//
-	// finished is only meaningful when ok is false, and answers a
-	// question ok alone cannot (Opus review of PR #864, B2): WHY is
-	// there no stream? true means the underlying process/container has
-	// actually exited (or the backend has no notion of this session at
-	// all) — safe for a caller to treat as "the job is done". false means
-	// the process/container is still genuinely running but this session
-	// currently has no live attach stream to offer (e.g. the container
-	// backend's doAdopt attach failed against a live container, or a
-	// prior successful attach dropped mid-stream and hasn't been
-	// re-attached yet — see containerSession.reattachIfLost's doc
-	// comment). Before this field existed, both cases collapsed to the
-	// same ok=false, and every caller (WS attach, the Web UI's SSE follow
-	// endpoint) treated ok=false as "job finished" unconditionally — a
-	// caller asking about a job that was very much still running got told
-	// it had exited successfully. That is a false positive, and a worse
-	// diagnostic than the dead-channel hang it replaced (see
-	// containerSession.attach's own doc comment): the original bug at
-	// least left an honest "something is wrong" signal (a silent
-	// terminal); this one actively lies. finished lets ok=false split
-	// back into "done, exit cleanly" (ws_attach.go/job_log_sse.go's
-	// existing behavior, unchanged) and "not done, surface an error"
-	// (their new behavior).
+	// finished is only meaningful when ok is false, and answers WHY there
+	// is no stream: true means the underlying process/container has
+	// actually exited (or the backend has no notion of this session) —
+	// safe to treat as "the job is done". false means the process is still
+	// genuinely running but this session currently has no live attach
+	// stream to offer (e.g. a prior attach dropped mid-stream and hasn't
+	// been re-attached yet — see containerSession.reattachIfLost). Callers
+	// must not treat every ok=false as "job finished" — that reports a
+	// still-running job as having exited successfully.
 	Subscribe() (snapshot RuntimeSnapshot, ch <-chan []byte, cancel func(), ok bool, finished bool)
 	// WriteInput forwards raw bytes to the session's input (PTY master or
 	// stdin pipe, depending on session type).

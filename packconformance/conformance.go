@@ -26,25 +26,21 @@ type Options struct {
 	LaunchTimeout time.Duration
 
 	// SkipLaunch disables the connector-launch smoke check entirely. The
-	// existence/executable-bit check (§7.2's "connector: 終了" row's
-	// structural half) always runs regardless of this flag — only the
-	// "actually run it and confirm it doesn't immediately crash or hang"
-	// best-effort half is optional.
+	// existence/executable-bit check always runs regardless of this flag —
+	// only the "actually run it and confirm it doesn't immediately crash or
+	// hang" best-effort half is optional.
 	//
 	// Use this when the environment running the conformance test cannot
 	// provide a connector's own runtime dependency (e.g. no python3 on a
-	// Pack author's machine, or a stripped-down CI image): docs/plans/
-	// signal-ingest-detailed-design.md §5.3 places that burden on "その
-	// project の実行 image", which is not necessarily the same image
-	// `go test` runs in.
+	// Pack author's machine, or a stripped-down CI image), which is not
+	// necessarily the same image the connector actually runs in.
 	SkipLaunch bool
 }
 
-// ConformancePack runs every machine-checkable requirement from docs/plans/
-// signal-ingest-detailed-design.md §7.2 ("Pack が満たすべきもの") against
-// the Pack VERSION directory at dir — a directory that itself contains
-// integration.yaml, i.e. one <pack-name>/<version>/ directory such as
-// integrationpack.Pack.Dir, NOT the multi-pack installation root
+// ConformancePack runs every machine-checkable Pack contract requirement
+// against the Pack VERSION directory at dir — a directory that itself
+// contains integration.yaml, i.e. one <pack-name>/<version>/ directory such
+// as integrationpack.Pack.Dir, NOT the multi-pack installation root
 // integrationpack.LoadPacks walks (<integrations.dir>/<pack>/<version>/).
 //
 // This deliberately does NOT call LoadPacks: LoadPacks treats every entry
@@ -52,20 +48,14 @@ type Options struct {
 // checkout root specifically because of that checkout's own .git/
 // directory — LoadPacks goes looking for
 // "<root>/.git/<version>/integration.yaml", finds nothing, and returns a
-// hard error (docs/plans/signal-ingest-detailed-design.md §12.1, "B1" —
-// reproduced, not yet fixed as of this package; fixing it is out of this
-// package's scope). ConformancePack sidesteps that failure mode entirely
-// by taking a single, already-known-good Pack directory rather than a root
-// to enumerate. officialpacks_test.go's own discovery (walking for
-// integration.yaml files, explicitly skipping dot-directories) is the
-// layer that would otherwise need LoadPacks-style enumeration, and avoids
-// the same bug the same way — see its own doc comment.
+// hard error. ConformancePack sidesteps that failure mode entirely by
+// taking a single, already-known-good Pack directory rather than a root to
+// enumerate. officialpacks_test.go's own discovery (walking for
+// integration.yaml files, explicitly skipping dot-directories) avoids the
+// same bug the same way — see its own doc comment.
 //
 // Every requirement runs as its own t.Run subtest so one failing check
-// does not hide the rest (docs/plans/signal-ingest-detailed-design.md
-// §7.3's "custom Pack の作者も同じテストを手元で回せる" is only useful if a
-// Pack author fixing one thing at a time can see everything else that's
-// still broken in the same run).
+// does not hide the rest.
 func ConformancePack(t *testing.T, dir string) {
 	t.Helper()
 	ConformancePackOpts(t, dir, Options{})
@@ -119,8 +109,8 @@ func ConformancePackOpts(t *testing.T, dir string, opts Options) {
 }
 
 // parseManifestFile reads and parses <dir>/integration.yaml via
-// integrationpack.ParseManifest — the "既存の PR-4 のパーサをそのまま使う"
-// requirement; this package has no manifest-parsing logic of its own.
+// integrationpack.ParseManifest; this package has no manifest-parsing logic
+// of its own.
 func parseManifestFile(dir string) (*integrationpack.Manifest, error) {
 	path := filepath.Join(dir, "integration.yaml")
 	data, err := os.ReadFile(path)

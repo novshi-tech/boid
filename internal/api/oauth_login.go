@@ -8,10 +8,10 @@ import (
 )
 
 // OAuthLoginService is the daemon-side surface `boid secret oauth login
-// <service>` (docs/plans/api-gateway.md §7, PR3) drives, implemented by
-// internal/server/wire.go's adapter over apigateway.CredentialProvider (the
-// service->provider lookup) and apigateway.LoginManager (the actual
-// device/loopback/manual flow machinery) — kept as a narrow interface
+// <service>` drives, implemented by internal/server/wire.go's adapter over
+// apigateway.CredentialProvider (the service->provider lookup) and
+// apigateway.LoginManager (the actual device/loopback/manual flow machinery)
+// — kept as a narrow interface
 // (mirroring api.SecretStore/api.WorkspaceHomeStore's existing convention)
 // so this handler's own tests can substitute a fake without a real OAuth2
 // token endpoint or secret store.
@@ -39,9 +39,8 @@ type OAuthLoginService interface {
 	// per-flow contract (redirectURI is only meaningful for the loopback
 	// flow; the CLI always supplies it regardless of which flow the
 	// service turns out to use). account is the optional credential-account
-	// qualifier (docs/plans/api-gateway-credential-accounts.md D9) — ""
-	// means unqualified, byte-identical to every call site that predates
-	// this parameter.
+	// qualifier — "" means unqualified, byte-identical to every call site
+	// that predates this parameter.
 	StartLogin(namespace, provider, redirectURI, account string) (*OAuthLoginStart, error)
 	// CompleteLogin finishes a loopback or manual session — see
 	// apigateway.LoginManager.CompleteLogin's own doc comment (state is
@@ -64,8 +63,7 @@ type OAuthLoginStart struct {
 	SessionID string
 	Flow      string
 	// Account mirrors apigateway.LoginStart.Account — see that field's own
-	// doc comment for why it exists (version-skew detection, docs/plans/
-	// api-gateway-credential-accounts.md review item #2).
+	// doc comment for why it exists (version-skew detection).
 	Account                 string
 	AuthorizeURL            string
 	UserCode                string
@@ -102,16 +100,15 @@ type oauthLoginStartRequest struct {
 	// every flow this way.
 	RedirectURI string `json:"redirect_uri,omitempty"`
 	// Account is the optional credential-account qualifier `boid secret
-	// oauth login --account` (docs/plans/api-gateway-credential-accounts.md
-	// D9) sends — omitted (the zero value "") means unqualified, so an
-	// older CLI build (or any hand-rolled request) that never sets this
-	// field behaves byte-for-byte as it did before this field existed —
-	// the JSON `omitempty` mirrors that on the wire. Format validation
-	// happens in StartLogin (apigateway.LoginManager.StartLogin, reusing
-	// the exact rule parsePath enforces on an inbound gateway request's
-	// account qualifier — D11) rather than here, so this handler stays free
-	// of any internal/apigateway import (this file's own "narrow service
-	// interface with its own DTOs" convention, doc comment above).
+	// oauth login --account` sends — omitted (the zero value "") means
+	// unqualified, so an older CLI build (or any hand-rolled request) that
+	// never sets this field behaves byte-for-byte as it did before this
+	// field existed. Format validation happens in StartLogin
+	// (apigateway.LoginManager.StartLogin, reusing the exact rule parsePath
+	// enforces on an inbound gateway request's account qualifier) rather
+	// than here, so this handler stays free of any internal/apigateway
+	// import (this file's own "narrow service interface with its own DTOs"
+	// convention, doc comment above).
 	Account string `json:"account,omitempty"`
 }
 
@@ -208,11 +205,11 @@ type oauthLoginStatusResponse struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// Status implements GET .../login/{id} — the CLI's device-flow poll (docs/
-// plans/api-gateway.md §7: the daemon polls the real provider in the
-// background; the CLI only ever polls THIS cheap, local, daemon-session
-// check). 404 when the session id is unknown — ok=false is a structural
-// fact from LoginStatus, never a parsed error string.
+// Status implements GET .../login/{id} — the CLI's device-flow poll: the
+// daemon polls the real provider in the background; the CLI only ever polls
+// THIS cheap, local, daemon-session check. 404 when the session id is
+// unknown — ok=false is a structural fact from LoginStatus, never a parsed
+// error string.
 func (h *OAuthLoginHandler) Status(w http.ResponseWriter, r *http.Request) {
 	if h.Service == nil {
 		writeError(w, http.StatusServiceUnavailable, "oauth2 login is not available (no secret store configured)")

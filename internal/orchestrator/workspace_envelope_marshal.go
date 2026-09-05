@@ -10,62 +10,23 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// This file owns ONE guarantee for the workspace export/apply document
-// (docs/plans/workspace-home-volume-persistence.md D13-b): a document `boid
-// workspace export` emits can always be read back by `boid workspace apply`,
-// and reads back as the same values.
+// This file guarantees that a document `boid workspace export` emits can
+// always be read back by `boid workspace apply` as the same values (D13-b,
+// docs/plans/workspace-home-volume-persistence.md).
 //
-// # The defect it works around
-//
-// gopkg.in/yaml.v3 emits any multi-line string as a literal block scalar, and a
-// block scalar's indentation is inferred by the READER from its first line.
-// That inference is impossible when the first line is empty or begins with a
-// TAB (a tab can never be YAML indentation), so the emitter has to state the
-// indentation explicitly — `|4`. v3.0.1 does not state it for a first line
-// beginning with a tab or a newline, and states it WRONGLY (relative to the
-// wrong node) for a first line beginning with a space once the scalar sits
-// inside a block sequence entry or an explicit mapping key. The three failures
-// are all silent at export time:
-//
-//   - first line starts with a TAB: the emitted document is not valid YAML.
-//     Applying that export dies with "found a tab character where an
-//     indentation space is expected" — an unrestorable backup;
-//   - first line starts with a SPACE, in a sequence entry or an explicit key:
-//     the emitted `|4` is not the indentation actually used, and the document
-//     fails to parse ("did not find expected '-' indicator");
-//   - first line is EMPTY: the leading empty line(s) are dropped. The document
-//     parses and the apply succeeds, with a value that is not the exported one.
-//
-// # Why this is not a property of any one field
-//
-// PR9's first pass fixed it for spec.init_script alone, by special-casing that
-// key on WorkspaceEnvelopeSpec. The defect belongs to the EMITTER, not to the
-// schema, so it holds for every string the document carries — an env value, an
-// env KEY, a host_commands / allowed_domains / extra_repos entry,
-// container_image, a project name or url — and a per-field fix silently fails
-// to cover the next field somebody adds.
-//
-// Nothing here enumerates fields. markRoundTripStrings walks the VALUE by
-// reflection and unmarkRoundTripScalars walks the resulting NODE TREE, so a new
-// spec field (of any string-bearing shape) is covered the moment it exists.
-// MarshalWorkspaceEnvelope then re-parses its own output and refuses to return
-// a document that does not compare equal — which makes the guarantee enforced
-// rather than argued, including for a case this file's rule does not predict.
-//
-// # Why a quoted style rather than a corrected block scalar
-//
-// A *yaml.Node cannot request a block indentation indicator: Style selects
-// among literal/folded/quoted and the indicator is chosen inside the emitter. A
-// double-quoted scalar has no first-line rule at all, so it is the one style
-// this package can ask for and be sure of. It is asked for ONLY for the
-// leading-blank family — every other string keeps whatever style the encoder
-// picked, so ordinary metadata and ordinary shell scripts are emitted exactly
-// as they were before this file existed.
-//
-// Invalid UTF-8 is left to the encoder deliberately: it already picks
-// `!!binary`, which is base64 and therefore has no first line to get wrong.
-// Forcing a quoted style there would take a case that works and break it — see
-// TestWorkspaceEnvelope_InitScriptRoundTripsNonUTF8.
+// gopkg.in/yaml.v3 emits any multi-line string as a literal block scalar,
+// whose indentation the reader infers from its first line — an inference
+// that silently breaks (invalid YAML, a parse error, or a dropped leading
+// blank line) when that first line is empty or starts with a tab/space. The
+// defect is the emitter's, not any one field's, so this file fixes it by
+// walking every string in the envelope by reflection (markRoundTripStrings /
+// unmarkRoundTripScalars) rather than special-casing individual fields, and
+// forcing the affected ones to double-quoted style, which has no
+// first-line rule to get wrong. Invalid UTF-8 is left alone: the encoder
+// already picks `!!binary` (base64), which has no first line either.
+// MarshalWorkspaceEnvelope then re-parses its own output and refuses to
+// return a document that does not compare equal, so the guarantee is
+// enforced rather than argued.
 
 // MarshalYAML makes every `yaml.Marshal` of an envelope round-trippable,
 // wherever it is called from, rather than leaving the property to whichever
@@ -93,15 +54,10 @@ func (e WorkspaceEnvelope) marshalNode() (*yaml.Node, error) {
 }
 
 // MarshalWorkspaceEnvelope renders one envelope as the bytes of a single yaml
-// document, and verifies that those bytes parse back into the same values.
-//
-// The verification is what turns D13-b from arithmetic into a property. Every
-// caller that WRITES an export goes through here, so a string this file's rule
-// does not anticipate — a yaml.v3 upgrade changing a style choice, a spec field
-// of some shape nobody considered — fails the export loudly, naming the key,
-// instead of producing a file that is discovered to be unrestorable at restore
-// time. It cannot produce a false alarm on a document that is in fact fine: the
-// comparison is against the emitter's own node tree, value for value.
+// document, and verifies that those bytes parse back into the same values —
+// so a case this file's rule does not anticipate fails the export loudly,
+// naming the key, instead of producing an unrestorable backup discovered
+// only at restore time.
 //
 // The size half of "applicable" lives with the caller
 // (api.checkWorkspaceEnvelopeIsApplicable): it is a property of the daemon's
@@ -136,27 +92,15 @@ func MarshalWorkspaceEnvelope(e *WorkspaceEnvelope) ([]byte, error) {
 }
 
 // roundTripMarker is the prefix markRoundTripStrings puts on a string the
-// encoder cannot reproduce, and unmarkRoundTripScalars takes back off.
-//
-// # Why a marker at all
-//
-// (*yaml.Node).Encode marshals to text and re-parses it, so handing it one of
-// these strings would hit the very defect this file exists for: it would fail
-// to parse its own output, or parse it into a different value. The strings have
-// to be made encodable BEFORE the encode and restored on the node afterwards.
-//
-// # Why a prefix rather than a table of placeholders
-//
-// A prefix is injective by construction, which a generated placeholder is only
-// as long as nothing in the document happens to equal it. Prefixing is applied
-// to any string that either needs the fix OR already starts with the marker, so
-// stripping exactly one marker on the way back is exact for both.
-//
-// U+E000 is a private-use character: it is `printable` by the YAML spec (so
-// yaml.v3 emits it literally rather than escaping it, and never reaches for
-// !!binary because of it) and it is not a space, a tab or a newline — which is
-// the whole requirement, since only the FIRST character decides the emitter's
-// block-scalar behaviour.
+// encoder cannot reproduce, and unmarkRoundTripScalars takes back off:
+// (*yaml.Node).Encode marshals to text and re-parses it, so an affected
+// string must be made encodable before the encode and restored afterward.
+// A prefix (rather than a placeholder table) is injective by construction,
+// applied to any string that needs the fix OR already starts with the
+// marker, so stripping exactly one marker on the way back is always exact.
+// U+E000 is a private-use character: printable by the YAML spec, and not a
+// space/tab/newline — the only requirement, since only the first character
+// decides the emitter's block-scalar behaviour.
 const roundTripMarker = "\uE000"
 
 // encodeRoundTrippable encodes v into a node tree whose every scalar can be
@@ -314,19 +258,14 @@ func unmarkRoundTripScalars(n *yaml.Node) {
 
 // forceRoundTrippableScalars applies the same rule to an already-decoded node
 // tree, for the one path that re-emits a document instead of building one from
-// a Go value: SplitWorkspaceEnvelopeDocuments.
-//
-// It is needed there because that function's re-marshal is a SECOND style
-// choice, made on nodes rather than on a value, so a document that parsed on
-// the way in could still come out unapplicable — `boid workspace apply` turning
-// a valid file into a 400 from its own daemon. A hand-written document is the
-// reachable case: an explicit `|2` indicator lets an operator legally write a
-// tab-indented first line, which yaml.v3 then re-emits without the indicator.
-//
-// Walking every scalar rather than looking up spec.init_script by path is the
-// same decision as everywhere else in this file: the rule is a property of the
-// emitter, not of this schema. Non-string tags (`!!binary` above all) are left
-// alone; an already double-quoted scalar has nothing to gain.
+// a Go value: SplitWorkspaceEnvelopeDocuments. That function's re-marshal is a
+// second style choice made on nodes rather than a value, so a document that
+// parsed on the way in could still come out unapplicable (e.g. a hand-written
+// document using an explicit `|2` indicator to legally write a tab-indented
+// first line, which yaml.v3 then re-emits without the indicator). Walking
+// every scalar, not just spec.init_script, for the same reason as elsewhere in
+// this file. Non-string tags are left alone; an already double-quoted scalar
+// has nothing to gain.
 func forceRoundTrippableScalars(n *yaml.Node) {
 	if n == nil {
 		return

@@ -6,57 +6,16 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// JobContextSnapshot captures the per-job data the Phase 5b PR1 task-context
-// RPCs (`boid task instructions` / `boid task env` / `boid task payload`,
-// docs/plans/phase5-shim-and-task-context.md) need but which has no
-// standalone DB representation to re-derive live from:
+// JobContextSnapshot captures the per-job data the task-context RPCs
+// (`boid task instructions` / `boid task env` / `boid task payload`) need
+// but which has no standalone DB representation to re-derive live from.
+// See wiring-seams.md #13 and #17 for the routing/gating invariants behind
+// Instructions and PayloadPatchAllowedTraits.
 //
-//   - Instructions: the job's own routed instruction (JobSpec.Instruction,
-//     see orchestrator.DispatchPlanner.PlanHook's selectInstruction). This is
-//     NOT the task's "active" instruction — orchestrator.Evaluator fires
-//     every agent-kind hook whose agent appears anywhere in the instruction
-//     history (extractInstructionAgents), not just the most recent entry, so
-//     a claude-code hook and a codex hook can both be dispatched from the
-//     same task even though only one of them matches the history's last
-//     entry. selectInstruction/FilterInstructions only route the *last*
-//     entry, so the other hook's job gets Instruction=nil — and
-//     `boid task instructions` correspondingly returns an empty list for
-//     that job (routedInstructionSlice below returns [] when inst==nil).
-//     Deriving "current instructions" from the task row instead of the job's own
-//     JobSpec.Instruction would hand a claude job the codex instruction (or
-//     vice versa) — a real regression codex review caught before merge; see
-//     wiring-seams.md #13. orchestrator.CurrentInstructions still exists for
-//     task-row-level callers that are NOT this RPC — see its own doc
-//     comment.
-//   - Env: the reduced environment view (allowed_domains + resolved host
-//     commands, both dispatch-time-only runtime facts).
-//   - Payload: the trait-filtered payload (depends on the firing hook's
-//     declared Traits.Consumes — plan-time-only data that JobSpec does not
-//     carry forward).
-//   - PayloadPatchAllowedTraits: the firing hook's own `traits.produces`
-//     list, captured at dispatch time (JobSpec.HookTraitsProduces —
-//     event.Hook.Traits.Produces, verbatim). Phase 5b PR7's
-//     `boid task update --payload-patch` RPC
-//     (docs/plans/phase5-shim-and-task-context.md) uses this to gate its
-//     merge exactly like a completing hook's own file-based payload_patch
-//     would be gated (HandlerResult.allowedTraits in coordinator.go) —
-//     never by re-resolving the hook against current (possibly
-//     since-edited) project meta, which is a TOCTOU staleness bug (codex
-//     review, wiring-seams.md #17's Major 1). nil means unrestricted (see
-//     JobSpec.HookTraitsProduces's own doc comment for when that applies).
-//   - WorkspacePeerAdvertise: the {name, clone URL, reference path, clone
-//     dir} view of this job's workspace peers, keyed by peer project ID
-//     (Runner.buildPeerAdvertise, gitgateway_wire.go — the same value fed
-//     into SandboxRuntimeInfo.WorkspacePeerAdvertise). nil when the gateway
-//     isn't wired, the job isn't in clone mode (spec.Visibility.Clone ==
-//     nil), or no peer has a resolvable upstream_url. Feeds `boid project
-//     list`'s BoidOpProjectList response (internal/server/boid_executor.go)
-//     — the CLI replacement docs/plans/phase5-shim-and-task-context.md
-//     決定事項4 left as a future item. Contains a raw git gateway token
-//     (embedded in CloneURL) scoped to THIS job's own permissions; the
-//     broker's BoidOpProjectList case MUST reject a request whose JobID
-//     doesn't match the calling token's own JobID, or a readonly job could
-//     read another job's writable-token clone URL and escalate.
+// WorkspacePeerAdvertise carries a raw git gateway token scoped to this
+// job's own permissions (embedded in CloneURL); a broker handler serving it
+// MUST reject a request whose JobID doesn't match the calling token's own
+// JobID, or a readonly job could read another job's writable-token clone URL.
 //
 // Runner.Dispatch populates one per job; UnregisterJob discards it,
 // mirroring the broker token's own lifecycle so nothing outlives the job it

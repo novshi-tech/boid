@@ -1,20 +1,15 @@
 // Package mtls provides a small per-daemon self-signed certificate
 // authority used to secure the broker / git-gateway / dockerproxy TCP
-// listeners introduced by docs/plans/phase6-container-backend.md §PR4
-// (§決定5: "gateway / broker / dockerproxy はサービス名 (DNS) + TCP (mTLS) で
-// 到達する"). It is intentionally minimal — issue short-lived leaf
-// certificates off a CA persisted on disk, nothing more (no ACME, no
-// external PKI). crypto/tls + crypto/x509 only, per project convention
-// (CLAUDE.md: 外部ライブラリは最小限。標準ライブラリで実現できるものは追加しない).
+// listeners (docs/plans/phase6-container-backend.md §決定5). It is
+// intentionally minimal — issue short-lived leaf certificates off a CA
+// persisted on disk, nothing more (no ACME, no external PKI), using only
+// crypto/tls + crypto/x509 per project convention.
 //
-// Scope note (PR4): CA generation/persistence and per-listener SERVER
-// certs are real and wired into internal/server.Server. Per-JOB CLIENT
-// certs (§決定5's "per-job 短命 client cert") are NOT materialized or
+// CA generation/persistence and per-listener SERVER certs are wired into
+// internal/server.Server. Per-JOB CLIENT certs are not materialized or
 // distributed to any real job by this package's production callers —
-// IssueClientCert exists so the mTLS handshake can be exercised
-// end-to-end in tests today. Wiring an actual per-job identity (env
-// delivery, container-local materialization, DOCKER_CERT_PATH, ...) is
-// PR6 scope per the plan doc.
+// IssueClientCert exists so the mTLS handshake can be exercised end-to-end
+// in tests.
 package mtls
 
 import (
@@ -39,15 +34,12 @@ import (
 const (
 	// CAFileName and KeyFileName are the on-disk names LoadOrCreate reads
 	// and writes under its dir argument. The production caller
-	// (internal/server.Server) points dir at
-	// ~/.local/share/boid/tls — the same data-dir convention
-	// internal/dispatcher.LoadOrCreateKey's web_secret file uses.
+	// (internal/server.Server) points dir at ~/.local/share/boid/tls.
 	CAFileName  = "ca.crt"
 	KeyFileName = "ca.key"
 
 	// caValidity is intentionally long: this is a per-daemon internal CA,
-	// not rotated by PR4, so it must outlive normal daemon uptime by a
-	// wide margin. Rotation policy is out of scope for PR4.
+	// not rotated, so it must outlive normal daemon uptime by a wide margin.
 	caValidity = 10 * 365 * 24 * time.Hour
 
 	// leafValidity bounds every per-listener server cert and test-only
@@ -67,28 +59,19 @@ type CA struct {
 
 // LoadOrCreate loads ca.crt/ca.key from dir, or generates and persists a
 // new self-signed CA there if either file is missing. dir is created
-// (0700) if needed. Mirrors internal/dispatcher.LoadOrCreateKey's
-// load-or-generate-and-persist shape for the web_secret file.
+// (0700) if needed.
 //
-// Publish uses atomicfile.PublishIfAbsent (docs/plans/volume-only-daemon.md
-// §論点 d) for each file independently, instead of a plain os.WriteFile:
-// two daemon instances racing to boot against the same fresh, empty named
-// volume must never observe a half-written ca.crt/ca.key that fails to
-// parse.
+// Publish uses atomicfile.PublishIfAbsent for each file independently
+// instead of a plain os.WriteFile, so two daemon instances racing to boot
+// against the same fresh, empty volume never observe a half-written
+// ca.crt/ca.key that fails to parse.
 //
-// Known residual risk (documented, not solved by this function):
-// PublishIfAbsent's one-winner guarantee is per FILE, not per (cert,key)
-// PAIR — a race where one caller wins the ca.crt publish while a
-// different caller wins the ca.key publish would produce a
-// cryptographically mismatched pair (each file individually well-formed
-// PEM, parseable, but the key does not correspond to the cert's public
-// key). This function does not lock across the two files to prevent that
-// interleaving: doing so would mean inventing a new synchronization
-// primitive (e.g. a lock file) beyond the write-temp+os.Link pattern this
-// package is deliberately reusing as-is. The hazard window this guards is
-// "two daemon instances racing at boot against the same volume" — not a
-// supported topology for this daemon (one compose replica per data
-// volume) — so it is accepted here rather than engineered around.
+// Known residual risk: PublishIfAbsent's one-winner guarantee is per FILE,
+// not per (cert,key) PAIR — a race where one caller wins the ca.crt publish
+// while a different caller wins the ca.key publish would produce a
+// cryptographically mismatched pair. This is not guarded against here (see
+// parseCA); the hazard window is "two daemon instances racing at boot
+// against the same volume", not a supported topology for this daemon.
 func LoadOrCreate(dir string) (*CA, error) {
 	certPath := filepath.Join(dir, CAFileName)
 	keyPath := filepath.Join(dir, KeyFileName)
@@ -137,10 +120,8 @@ func LoadOrCreate(dir string) (*CA, error) {
 	}
 	if !bytes.Equal(publishedCertPEM, newCertPEM) || !bytes.Equal(publishedKeyPEM, newKeyPEM) {
 		// A concurrent LoadOrCreate call already published one or both
-		// files first (see this function's own doc comment on the
-		// per-file, not per-pair, winner guarantee). Re-parse whatever
-		// combination is actually on disk rather than trusting our own
-		// freshly generated `ca` in memory, which may no longer match.
+		// files first; re-parse whatever combination is actually on disk
+		// rather than trusting our own freshly generated `ca` in memory.
 		return parseCA(publishedCertPEM, publishedKeyPEM)
 	}
 	return ca, nil
@@ -182,24 +163,11 @@ func generateCA() (*CA, []byte, []byte, error) {
 }
 
 // parseCA parses cert/key PEM independently loaded from disk and verifies
-// they actually form a matching pair (fix for [Blocker 3, PR829 round 1
-// codex review]).
-//
-// Scenario this guards against: ca.crt publishes successfully on one boot
-// (atomicfile.PublishIfAbsent), then ca.key's own publish fails — ENOSPC,
-// or any other partial-write error — before the process can write it.
-// LoadOrCreate's certErr/keyErr branch above treats "cert present, key
-// missing" as "generate a fresh CA", so the NEXT boot generates a new
-// key... but PublishIfAbsent for ca.crt is a no-op (the file the prior,
-// interrupted boot already wrote still wins the publish race), while the
-// freshly generated ca.key publishes clean. The result: a cert from boot
-// N sitting next to a key from boot N+1 — each individually well-formed
-// PEM that parses without error, but cryptographically unrelated. Nothing
-// in x509.ParseCertificate/ParseECPrivateKey alone catches this; the two
-// files are parsed completely independently. Without this check, every
-// TLS handshake using this CA fails at leaf verification (leaves are
-// signed by the loaded key, but any peer trusts the loaded — mismatched —
-// cert) with no error message anywhere near this file to explain why.
+// they actually form a matching pair — guarding against a cert from one boot
+// ending up next to a key from a later boot (e.g. one file's publish fails
+// with ENOSPC while the other's succeeds), each individually well-formed PEM
+// but cryptographically unrelated, which x509.ParseCertificate/
+// ParseECPrivateKey alone would not catch.
 func parseCA(certPEM, keyPEM []byte) (*CA, error) {
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil {
@@ -259,8 +227,7 @@ func (ca *CA) CertPool() *x509.CertPool {
 
 // CertPEM returns this CA's own certificate, PEM-encoded — the "ca.pem"
 // file docker's DOCKER_CERT_PATH convention expects alongside a leaf
-// cert/key pair (docs/plans/phase6-container-backend.md §PR6, §決定5's
-// per-job client cert delivery — see EncodeCertPEM for the leaf half).
+// cert/key pair (see EncodeCertPEM for the leaf half).
 func (ca *CA) CertPEM() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.cert.Raw})
 }
@@ -316,12 +283,11 @@ func (ca *CA) IssueServerCert(hosts ...string) (tls.Certificate, error) {
 }
 
 // IssueClientCert issues a leaf client-authentication certificate
-// identified by cn, valid for the default leafValidity (30 days).
-// Production callers do not use this in PR4 — it exists so tests can
-// exercise a real mTLS handshake against a ServerTLSConfig listener. PR6's
-// real per-job client cert issuance uses IssueShortLivedClientCert
-// instead (see its own doc comment for why 30 days is too long for that
-// use case).
+// identified by cn, valid for the default leafValidity (30 days). No
+// production caller uses this — it exists so tests can exercise a real
+// mTLS handshake against a ServerTLSConfig listener. A real per-job client
+// cert must use IssueShortLivedClientCert instead (see its own doc comment
+// for why 30 days is too long for that use case).
 func (ca *CA) IssueClientCert(cn string) (tls.Certificate, error) {
 	return ca.issueLeaf(cn, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, leafValidity)
 }
@@ -331,33 +297,21 @@ func (ca *CA) IssueClientCert(cn string) (tls.Certificate, error) {
 // caller-supplied validity window instead of the default 30-day
 // leafValidity.
 //
-// This is what a per-job dockerproxy client cert (§決定5, PR6's
-// containerBackend.materializeDockerClientCert) must use, not
-// IssueClientCert (Blocker 4, PR6 codex review): the pre-fix code issued
-// per-job certs with the same 30-day validity as a long-lived per-listener
-// server cert, but a per-job cert's whole trust boundary is meant to track
-// the job it was issued for — a job's own materialization directory is
-// deleted the moment the job exits (see
-// containerSession.dockerTLSDir's own retention contract), yet a copy of
-// the cert a job made onto a sibling before exiting would otherwise stay
-// valid, and usable against the dockerproxy TCP listener, for up to 30
-// days after the job — and the daemon's own record of it — are gone. A
-// short (typically 1h) validity bounds that exposure window to
-// "revocation by expiry" on a timescale close to a job's own lifetime,
-// pending PR7's full fix (binding the cert's CN/SAN to a job_id
-// dockerproxy itself verifies per request — see mtls.CA's own package doc
-// comment).
+// This is what a per-job dockerproxy client cert must use, not
+// IssueClientCert: a per-job cert's trust boundary is meant to track the
+// job it was issued for, but a copy of the cert made onto a sibling before
+// the job exits would otherwise stay valid — and usable against the
+// dockerproxy listener — long after the job and the daemon's own record of
+// it are gone. A short (typically 1h) validity bounds that exposure window.
 func (ca *CA) IssueShortLivedClientCert(cn string, validity time.Duration) (tls.Certificate, error) {
 	return ca.issueLeaf(cn, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, validity)
 }
 
 // ServerTLSConfig builds a tls.Config for a TCP listener: presents a fresh
 // server cert for hosts and requires (and verifies) a client certificate
-// signed by this CA — mutual TLS. This is the "skeleton" mTLS server auth
-// PR4 delivers: any connection without a CA-signed client cert is rejected
-// at the handshake, but the server does not yet inspect *which* identity
-// the client cert names (per-job scoping is PR6 — §決定5's "per-job
-// client cert" note).
+// signed by this CA — mutual TLS. Any connection without a CA-signed client
+// cert is rejected at the handshake; the server does not inspect *which*
+// identity the client cert names.
 func (ca *CA) ServerTLSConfig(hosts ...string) (*tls.Config, error) {
 	cert, err := ca.IssueServerCert(hosts...)
 	if err != nil {
@@ -372,29 +326,16 @@ func (ca *CA) ServerTLSConfig(hosts ...string) (*tls.Config, error) {
 }
 
 // ServerOnlyTLSConfig builds a tls.Config for a TCP listener that
-// authenticates only the SERVER side (a standard, non-mutual TLS server
-// config) — unlike ServerTLSConfig, it does not require or verify a client
+// authenticates only the SERVER side (a standard, non-mutual TLS config) —
+// unlike ServerTLSConfig, it does not require or verify a client
 // certificate.
 //
-// This is for a listener whose per-connection authorization is already
-// fully handled at the application layer by an existing per-job bearer
-// token (docs/plans/phase6-container-backend.md §決定5: 「per-job の...
-// token は既存 broker/gitgateway の per-job capability token パターンを流用」
-// — the git gateway's own Registry-issued, URL-path-embedded per-job token
-// is exactly that). A client certificate would add no per-job authorization
-// this token doesn't already provide, and — unlike dockerproxy, whose own
-// §決定5 write-up explicitly designs a per-job short-lived client cert with
-// broker-style env delivery — no PR ever actually built or wired per-job
-// client cert issuance/delivery for the git gateway; this package's own doc
-// comment already flags that gap ("Per-JOB CLIENT certs ... are NOT
-// materialized or distributed to any real job by this package's production
-// callers"). Requiring one anyway (ServerTLSConfig's unconditional
-// tls.RequireAndVerifyClientCert) makes the listener unusable by any real
-// client — PR9's real-docker e2e-container CI job hit exactly this: every
-// sandbox-internal clone attempt failed the TLS handshake with "tls: client
-// didn't provide a certificate" server-side (and a matching client-side
-// "server certificate verification failed" once the client was separately
-// given something to trust the server with).
+// This is for a listener (the git gateway) whose per-connection
+// authorization is already fully handled at the application layer by an
+// existing per-job bearer token, with no per-job client cert ever wired for
+// it — requiring one anyway (ServerTLSConfig's unconditional
+// tls.RequireAndVerifyClientCert) would make the listener unusable by any
+// real client.
 func (ca *CA) ServerOnlyTLSConfig(hosts ...string) (*tls.Config, error) {
 	cert, err := ca.IssueServerCert(hosts...)
 	if err != nil {
@@ -423,9 +364,8 @@ func (ca *CA) ClientTLSConfig(serverName string, cert tls.Certificate) *tls.Conf
 // EncodeCertPEM PEM-encodes a leaf certificate issued by IssueServerCert /
 // IssueClientCert into the (certPEM, keyPEM) pair most file-based TLS
 // consumers expect — docker's DOCKER_CERT_PATH convention (cert.pem +
-// key.pem + ca.pem, see CA.CertPEM for the third file) among them,
-// docs/plans/phase6-container-backend.md §PR6/§決定5's per-job client cert
-// delivery. tls.Certificate itself is Go-internal (raw DER bytes plus a
+// key.pem + ca.pem, see CA.CertPEM for the third file) among them.
+// tls.Certificate itself is Go-internal (raw DER bytes plus a
 // crypto.PrivateKey interface value) rather than a file format, so this is
 // the one conversion step every such consumer needs.
 func EncodeCertPEM(cert tls.Certificate) (certPEM, keyPEM []byte, err error) {

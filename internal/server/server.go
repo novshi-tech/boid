@@ -31,49 +31,45 @@ import (
 )
 
 // gatewayTLSShutdownTimeout bounds how long Stop waits for the git
-// gateway's TLS listener to drain in-flight requests before giving up
-// (codex review [Minor 4] on docs/plans/phase6-container-backend.md
-// §PR4). Matches the daemon's other best-effort shutdown waits in shape —
-// short enough that a stuck request can't hang `boid stop` indefinitely.
+// gateway's TLS listener to drain in-flight requests before giving up.
+// Matches the daemon's other best-effort shutdown waits in shape — short
+// enough that a stuck request can't hang `boid stop` indefinitely.
 const gatewayTLSShutdownTimeout = 5 * time.Second
 
 // composeBrokerServiceName and composeGatewayServiceName are the compose
 // network DNS names the broker's and git gateway's TCP(mTLS) listener
-// certs advertise as SANs, alongside the loopback names every PR4 caller
-// actually dials (codex review [Major 2] on
-// docs/plans/phase6-container-backend.md §PR4). No PR4 caller resolves
-// these names yet — the container backend that will is PR5+ — but the
-// SAN has to be on the cert from the moment the CA issues it (once per
-// daemon lifetime), not retrofitted once a real caller shows up.
-// composeGatewayServiceName intentionally matches
+// certs advertise as SANs, alongside the loopback names every caller
+// actually dials today. The SAN has to be on the cert from the moment the
+// CA issues it (once per daemon lifetime), not retrofitted once a real
+// caller resolves it. composeGatewayServiceName intentionally matches
 // gitgateway.SandboxURLOptions.ServiceName's own BackendContainer default
 // ("boid-gateway", see internal/gitgateway/sandbox_url.go) rather than
 // inventing a second name for the same service.
 //
-// The egress proxy's own compose-network DNS name ("boid-egress" — [Blocker
-// 2, PR7 codex review]) is declared as dispatcher.composeEgressServiceName,
-// not duplicated here: internal/server already imports internal/dispatcher
-// (the reverse would cycle), and dispatcher.SandboxRuntimeInfo.ProxyHost is
-// the only place that literal is actually consumed — see its own doc
-// comment. It must still match this file's composeBindHost value and
+// The egress proxy's own compose-network DNS name ("boid-egress") is
+// declared as dispatcher.composeEgressServiceName, not duplicated here:
+// internal/server already imports internal/dispatcher (the reverse would
+// cycle), and dispatcher.SandboxRuntimeInfo.ProxyHost is the only place
+// that literal is actually consumed — see its own doc comment. It must
+// still match this file's composeBindHost value and
 // build/container/compose.yml's own "boid-egress" alias.
 //
 // composeBindHost is the listen address the git gateway's TCP(mTLS)
 // listener and the default-workspace egress proxy listener bind to when
 // the container backend is selected, instead of the loopback-only
-// "127.0.0.1" every pre-PR7 (and every non-container-backend) deployment
-// uses. A sibling job container reaches this daemon over the shared
-// compose network by its own container IP, not 127.0.0.1 — a
-// loopback-bound listener is unreachable from outside this daemon's own
-// container entirely, so a job could dial the DNS-resolved address and
-// still get connection-refused. "0.0.0.0" (all interfaces) is simplest and
-// matches how every other example containerized Go service exposes a port
-// to its own docker network; the daemon container's own network
-// boundary (boid_internal being `internal: true`, §決定5) is what actually
-// scopes reachability, not the bind address itself. The plaintext
-// (non-TLS) git gateway HTTP listener is deliberately NOT included here —
-// it stays loopback-only regardless of backend (never expose plaintext off
-// -box); only the already-mTLS-protected TCP listeners move.
+// "127.0.0.1" every non-container-backend deployment uses. A sibling job
+// container reaches this daemon over the shared compose network by its
+// own container IP, not 127.0.0.1 — a loopback-bound listener is
+// unreachable from outside this daemon's own container entirely, so a job
+// could dial the DNS-resolved address and still get connection-refused.
+// "0.0.0.0" (all interfaces) is simplest and matches how every other
+// example containerized Go service exposes a port to its own docker
+// network; the daemon container's own network boundary (boid_internal
+// being `internal: true`) is what actually scopes reachability, not the
+// bind address itself. The plaintext (non-TLS) git gateway HTTP listener
+// is deliberately NOT included here — it stays loopback-only regardless of
+// backend (never expose plaintext off-box); only the already-mTLS-protected
+// TCP listeners move.
 const (
 	composeBrokerServiceName  = "boid-broker"
 	composeGatewayServiceName = "boid-gateway"
@@ -89,69 +85,56 @@ type Config struct {
 	AllowedDomains []string // proxy allowed domains
 	// EgressProxyPortLow/High bound the band the egress proxy allocates
 	// stable per-workspace ports from (config.yaml
-	// sandbox.egress_proxy_port_low/high — docs/plans/egress-proxy-stable-port.md).
-	// Zero means "use sandbox.DefaultProxyPortRange{Low,High}"; the default
-	// literal deliberately lives in internal/sandbox only. Captured once at
+	// sandbox.egress_proxy_port_low/high). Zero means "use
+	// sandbox.DefaultProxyPortRange{Low,High}"; the default literal
+	// deliberately lives in internal/sandbox only. Captured once at
 	// startup, ReloadRestartRequired, exactly like AllowedDomains — a
 	// listener cannot move to a different band without rebinding anyway.
 	EgressProxyPortLow  int
 	EgressProxyPortHigh int
 	// ServicesFloor is the daemon-wide API gateway service allowlist floor
-	// (config.yaml services_floor — docs/plans/api-gateway.md §3), captured
-	// once here exactly like AllowedDomains is for the proxy egress
-	// allowlist: cmd/start.go's buildStartConfig reads it from its own
-	// config.Load() call and passes it in, so a later `boid config set
-	// services_floor ...` only takes effect on the next daemon restart, same
-	// ReloadRestartRequired posture as sandbox.allowed_domains.
+	// (config.yaml services_floor), captured once here exactly like
+	// AllowedDomains is for the proxy egress allowlist: cmd/start.go's
+	// buildStartConfig reads it from its own config.Load() call and passes
+	// it in, so a later `boid config set services_floor ...` only takes
+	// effect on the next daemon restart, same ReloadRestartRequired
+	// posture as sandbox.allowed_domains.
 	ServicesFloor []string
 	// Backend, when non-nil, overrides buildRuntime's default construction
 	// of a real containerBackend (sandboxBackendForConfig) — a test/DI seam
-	// (the successor to the pre-PR-4 JobRuntime field, which let tests
-	// inject a fake JobRuntime for the now-removed userns backend, docs/
-	// plans/volume-only-daemon.md §論点e) so tests can exercise daemon
-	// startup / the HTTP API / attach-resize wiring against a fake
-	// backend.SandboxBackend without a live docker daemon.
+	// so tests can exercise daemon startup / the HTTP API / attach-resize
+	// wiring against a fake backend.SandboxBackend without a live docker
+	// daemon.
 	Backend backend.SandboxBackend
 	// TLSDir, when non-empty, is the directory holding (or to generate)
 	// the per-daemon internal CA (ca.crt/ca.key) used to secure the
-	// broker/git-gateway TCP(mTLS) listeners added in
-	// docs/plans/phase6-container-backend.md §PR4/§決定5. Empty (the
-	// zero value, and every pre-PR4 caller/test) skips binding those
-	// listeners entirely — only the pre-existing UNIX socket / plaintext
-	// loopback listeners are bound, i.e. today's behavior is unchanged.
-	// cmd/start.go sets a real default (~/.local/share/boid/tls) so a
-	// live daemon actually binds them; nothing dispatches through them
-	// yet (the container backend that will is PR5).
+	// broker/git-gateway TCP(mTLS) listeners. Empty (the zero value)
+	// skips binding those listeners entirely — only the pre-existing UNIX
+	// socket / plaintext loopback listeners are bound. cmd/start.go sets
+	// a real default (~/.local/share/boid/tls) so a live daemon actually
+	// binds them.
 	TLSDir string
 	// InstallIDDir, when non-empty, is the directory holding (or to
 	// generate) this installation's plain-UUID install_id file
-	// (internal/install.LoadOrCreate — docs/plans/
-	// phase6-container-backend.md §PR6/§決定6: "daemon が作る全
-	// container/network/volume に boid.install_id... label を付与"). Empty
-	// (the zero value, and every pre-PR6 test) skips this entirely — New
-	// leaves Server.installID at "" and nothing changes. cmd/start.go sets
-	// a real default (~/.local/share/boid, the same dir web_secret and
-	// boid.db live in) so a live daemon actually has one; nothing consumes
-	// it in production dispatch yet (containerBackend construction is
-	// still test/DI-only — see NewContainerBackend's doc comment — the
-	// same "config 非公開" scope PR5 shipped under).
+	// (internal/install.LoadOrCreate). Empty (the zero value) skips this
+	// entirely — New leaves Server.installID at "" and nothing changes.
+	// cmd/start.go sets a real default (~/.local/share/boid, the same dir
+	// web_secret and boid.db live in) so a live daemon actually has one.
 	InstallIDDir string
 	// CLIAddr, when non-empty, is the "host:port" the dedicated CLI TCP
-	// listener binds — PR-3 Option 4 host-mode redesign (docs/plans/
-	// volume-only-daemon.md §論点c, nose directive 2026-07-25). Only the
-	// PORT is actually load-bearing: Start() ignores the host half and
-	// binds gatewayBindHost(s.usingContainerBackend) instead — "127.0.0.1"
-	// for the userns backend (unchanged; this listener is reached
-	// exclusively by the `boid` CLI's own host-mode orchestration,
+	// listener binds. Only the PORT is actually load-bearing: Start()
+	// ignores the host half and binds gatewayBindHost(s.usingContainerBackend)
+	// instead — "127.0.0.1" for the userns backend (this listener is
+	// reached exclusively by the `boid` CLI's own host-mode orchestration,
 	// cmd/host.go, dialing the docker-published port on the SAME host,
 	// never by a remote caller or a sibling job container) or
-	// composeBindHost ("0.0.0.0") for the container backend (round-4 fix:
-	// under compose, this daemon IS the container being dialed — docker's
+	// composeBindHost ("0.0.0.0") for the container backend: under
+	// compose, this daemon IS the container being dialed — docker's
 	// bridge-mode port publish DNATs the host's own 127.0.0.1 to the
 	// container's bridge IP, never the container's loopback interface, so
 	// a loopback-only bind there is unreachable from the host at all; see
 	// gatewayBindHost's own doc comment for the identical routing already
-	// used by the git gateway/broker TLS listeners). Separate from
+	// used by the git gateway/broker TLS listeners. Separate from
 	// HTTPAddr (the Web UI's own TCP listener, default :8080) so a CLI
 	// session keeps working even if an operator firewalls off or disables
 	// the Web UI port.
@@ -165,15 +148,15 @@ type Config struct {
 	// CLIToken, when non-empty, is the shared secret
 	// (auth.NewCLITokenAuthMiddleware) the dedicated CLI TCP listener
 	// (CLIAddr) requires on every request's `Authorization: Bearer`
-	// header — PR-3 Option 4 host-mode redesign. Sourced from the
-	// BOID_CLI_TOKEN env var (cmd/start.go's buildStartConfig), which
-	// `boid`'s own host-mode orchestration (cmd/host.go) generates/reads
-	// from ~/.config/boid/cli-token and passes to the daemon container via
-	// build/container/compose.yml's `environment:` block — the same value
-	// on both ends is what authenticates a host-mode CLI dispatch with no
-	// TLS and no device-pairing ceremony. Empty (the zero value, and every
-	// non-container-mode caller/test) skips binding the CLIAddr listener
-	// entirely, same as CLIAddr=="" — see Start()'s own bind condition.
+	// header. Sourced from the BOID_CLI_TOKEN env var (cmd/start.go's
+	// buildStartConfig), which `boid`'s own host-mode orchestration
+	// (cmd/host.go) generates/reads from ~/.config/boid/cli-token and
+	// passes to the daemon container via build/container/compose.yml's
+	// `environment:` block — the same value on both ends is what
+	// authenticates a host-mode CLI dispatch with no TLS and no
+	// device-pairing ceremony. Empty (the zero value) skips binding the
+	// CLIAddr listener entirely, same as CLIAddr=="" — see Start()'s own
+	// bind condition.
 	CLIToken string
 	// LogLevel is config.yaml's log.level (internal/config.LogConfig.Level),
 	// copied here by cmd/start.go's buildStartConfig purely so it can travel
@@ -213,12 +196,11 @@ type Server struct {
 	// (trusted CLI/agent transport). Set by mountRoutes.
 	tcpHandler http.Handler
 	tcpServer  *http.Server
-	// cliLn/cliServer/cliHandler are the dedicated CLI TCP listener — PR-3
-	// Option 4 host-mode redesign (docs/plans/volume-only-daemon.md
-	// §論点c). Bound in Start only when both cfg.CLIAddr and cfg.CLIToken
-	// are set (see Config.CLIAddr's own doc comment for why token presence
-	// gates the bind, not just the address). cliHandler wraps the same
-	// bare router mountRoutes builds tcpHandler from, but with
+	// cliLn/cliServer/cliHandler are the dedicated CLI TCP listener. Bound
+	// in Start only when both cfg.CLIAddr and cfg.CLIToken are set (see
+	// Config.CLIAddr's own doc comment for why token presence gates the
+	// bind, not just the address). cliHandler wraps the same bare router
+	// mountRoutes builds tcpHandler from, but with
 	// auth.NewCLITokenAuthMiddleware(cfg.CLIToken) instead of
 	// NewTCPAPIAuthMiddleware — a single shared-secret Bearer token, no
 	// TLS, no cookie/loopback-trust fallback. nil whenever the listener
@@ -227,27 +209,20 @@ type Server struct {
 	cliServer      *http.Server
 	cliHandler     http.Handler
 	gcLoop         *orchestrator.GCLoop // nil if GC is disabled
-	queueSweepLoop *api.QueueSweepLoop  // cross-project-issue-triage Phase 1 PR-3: queue の決定論的評価 rule 1 (wake 評価)
-	triggerLoop    *api.TriggerLoop     // docs/plans/ingestion-identity.md PR-4 (B-5): トリガのスケジュール/single-flight/実行記録
+	queueSweepLoop *api.QueueSweepLoop  // queue の決定論的評価: wake 評価 rule
+	triggerLoop    *api.TriggerLoop     // トリガのスケジュール/single-flight/実行記録
 	workflow       *api.TaskWorkflowService
 
 	// hostCommands is the aggregated host_commands config assembled by
-	// buildProjectStore's preflight (docs/plans/workspace-db-consolidation.md
-	// PR2): every installed kit.yaml's host_commands, deduped by identical
-	// definition, name-collision-checked, and mirrored to
-	// orchestrator.DefaultHostCommandsPath() on disk. This is the live
-	// dispatch route as of PR3's cutover — workspace.HostCommands ([]string
-	// reference names) resolves against this map in ProjectStore.
-	// GetWithWorkspace. The former per-kit resolver path (KitResolver in
-	// buildProjectStore, kept only for the PR2/PR3 parity-verification
-	// window) was removed in PR6 (kit mechanism retirement).
+	// buildProjectStore's preflight: every installed kit.yaml's
+	// host_commands, deduped by identical definition, name-collision-
+	// checked, and mirrored to orchestrator.DefaultHostCommandsPath() on
+	// disk. workspace.HostCommands ([]string reference names) resolves
+	// against this map in ProjectStore.GetWithWorkspace.
 	hostCommands map[string]orchestrator.HostCommandSpec
 
-	// gitgateway 4-point set (docs/plans/git-gateway-cutover.md PR4): the
-	// authenticating reverse proxy sandboxes will eventually clone through
-	// (PR5) and cutover env-var-advertise (PR6). Inert in this PR — nothing
-	// dispatches through it yet, but the daemon builds, listens, and tears it
-	// down like every other subserver.
+	// gitgateway: the authenticating reverse proxy sandboxes clone through,
+	// with env-var-advertised credentials.
 	//
 	// gatewayRegistry is constructed early in New() (buildRuntime) and shared
 	// with dispatcher.Runner so Dispatch/UnregisterJob can
@@ -257,38 +232,33 @@ type Server struct {
 	gatewayRegistry   *gitgateway.Registry
 	gatewayHTTPServer *http.Server
 	gatewayLn         net.Listener
-	// apiGatewayRegistry is the API gateway's job-token registry
-	// (docs/plans/api-gateway.md PR1) — the exact same role gatewayRegistry
-	// plays for the git gateway, shared with dispatcher.Runner so Dispatch/
-	// UnregisterJob can Register/Unregister API gateway tokens too.
+	// apiGatewayRegistry is the API gateway's job-token registry — the
+	// exact same role gatewayRegistry plays for the git gateway, shared
+	// with dispatcher.Runner so Dispatch/UnregisterJob can
+	// Register/Unregister API gateway tokens too.
 	apiGatewayRegistry *apigateway.Registry
 	// combinedGatewayHandler dispatches a single shared listener's requests
-	// to either the git gateway or the API gateway by path prefix
-	// (docs/plans/api-gateway.md 論点1: "同居 — path prefix /j/ と /api/ で
-	// 分岐"). Built by wire.go once both underlying Server handlers exist;
-	// gatewayHTTPServer.Handler is set to it directly (the plaintext
-	// loopback listener needs no further wiring here), and Start reads this
-	// field again to build the TLS(mTLS) listener's own *http.Server — see
-	// gatewayTLSHTTPServer's own doc comment for why that can't reuse
-	// gitgateway.Server.ListenTLS the way a git-gateway-only daemon did
-	// pre-PR1 (that method hardcodes its OWN ServeHTTP as the Handler, not
-	// this combined one). nil until wire.go constructs it.
+	// to either the git gateway or the API gateway by path prefix (the
+	// listener is shared: path prefix /j/ vs /api/). Built by wire.go once
+	// both underlying Server handlers exist; gatewayHTTPServer.Handler is
+	// set to it directly (the plaintext loopback listener needs no further
+	// wiring here), and Start reads this field again to build the
+	// TLS(mTLS) listener's own *http.Server — see gatewayTLSHTTPServer's
+	// own doc comment for why that can't reuse gitgateway.Server.ListenTLS
+	// (that method hardcodes its OWN ServeHTTP as the Handler, not this
+	// combined one). nil until wire.go constructs it.
 	combinedGatewayHandler *combinedGatewayHandler
 	// gatewayTLSLn is the git/API gateway shared TCP(mTLS) listener, bound in
 	// Start only when cfg.TLSDir is set. nil otherwise.
 	gatewayTLSLn net.Listener
 	// gatewayTLSHTTPServer is the *http.Server serving gatewayTLSLn with
-	// combinedGatewayHandler (docs/plans/api-gateway.md PR1). Pre-PR1, this
-	// listener was served by gitgateway.Server.ListenTLS's own internally-
-	// constructed *http.Server (Handler: the gitgateway.Server itself) —
-	// that no longer works once a second gateway shares the listener, since
+	// combinedGatewayHandler. gitgateway.Server.ListenTLS's own internally
+	// constructed *http.Server (Handler: the gitgateway.Server itself) no
+	// longer works once a second gateway shares the listener, since
 	// ListenTLS has no way to accept an external Handler. Start instead
 	// calls tls.Listen directly and constructs this *http.Server itself,
 	// with combinedGatewayHandler as its Handler; Stop calls Shutdown on it
-	// (graceful — closes idle keep-alives too, matching the CloseTLS
-	// behavior this replaces; codex review [Minor 4] on docs/plans/
-	// phase6-container-backend.md §PR4, the ORIGINAL reason CloseTLS
-	// existed instead of a bare listener Close). nil until Start binds it
+	// (graceful — closes idle keep-alives too). nil until Start binds it
 	// (cfg.TLSDir unset, or Start hasn't run).
 	gatewayTLSHTTPServer *http.Server
 	// gatewayURL is the sandbox-facing base URL (http://10.0.2.2:<port>),
@@ -296,14 +266,14 @@ type Server struct {
 	// completes. Runner holds a pointer to this string (WireConfig.GatewayURL)
 	// so SandboxRuntimeInfo.GatewayURL reflects it at dispatch time — the
 	// same late-binding-via-pointer trick as proxyPort. Shared verbatim by
-	// the API gateway (docs/plans/api-gateway.md 論点1: same listener, same
-	// URL) — dispatcher.WireConfig.GatewayURL is the single pointer both
-	// gateways' env-var advertise reads.
+	// the API gateway (same listener, same URL) — dispatcher.WireConfig.
+	// GatewayURL is the single pointer both gateways' env-var advertise
+	// reads.
 	gatewayURL string
 	// gatewayCAPEM is the daemon's internal CA's own certificate
 	// (mtls.CA.CertPEM), PEM-encoded, populated by Start() alongside
-	// daemonCA whenever cfg.TLSDir is set. Empty when TLS isn't configured
-	// (every pre-PR9-fix caller/test). This is the client-side half of
+	// daemonCA whenever cfg.TLSDir is set. Empty when TLS isn't configured.
+	// This is the client-side half of
 	// the shared gateway TLS listener's trust: a container-backend sandbox
 	// needs this CA's public cert to verify the gateway's server
 	// certificate (the tlsCfg Start's TLS block builds, below) — non-secret,
@@ -315,24 +285,19 @@ type Server struct {
 	// once Start has run.
 	gatewayCAPEM []byte
 
-	// daemonCA is the per-daemon internal CA (docs/plans/
-	// phase6-container-backend.md §PR4/§決定5), loaded (or generated) once
+	// daemonCA is the per-daemon internal CA, loaded (or generated) once
 	// in New() when cfg.TLSDir is set. Empty (nil) otherwise — every call
 	// site that consumes it already treats a nil CA as "TLS not
 	// configured, skip the additive TCP(mTLS) listener" (Start's own
-	// `if daemonCA != nil` guards), so this is the exact same contract the
-	// pre-broker-TCP-wire local `var daemonCA *mtls.CA` inside Start used
-	// to have.
+	// `if daemonCA != nil` guards).
 	//
 	// Loaded here (in New(), before buildRuntime runs) rather than lazily
-	// inside Start the way every pre-this-PR version did, because
-	// buildRuntime's sandboxBackendForConfig call (internal/server/
-	// wire.go) constructs the container backend's ContainerBackendOptions
-	// — which now needs this exact CA to issue per-job broker client
-	// certs, docs/plans/phase6-cutover-followups.md §⓪ — strictly BEFORE
-	// Start ever runs. Start() below reads this field instead of loading
-	// its own second (content-identical, since mtls.LoadOrCreate is
-	// idempotent) copy.
+	// inside Start, because buildRuntime's sandboxBackendForConfig call
+	// (internal/server/wire.go) constructs the container backend's
+	// ContainerBackendOptions — which needs this exact CA to issue
+	// per-job broker client certs — strictly BEFORE Start ever runs.
+	// Start() below reads this field instead of loading its own second
+	// (content-identical, since mtls.LoadOrCreate is idempotent) copy.
 	daemonCA *mtls.CA
 
 	// brokerTLSSandboxAddr is the compose-network `host:port`
@@ -359,16 +324,15 @@ type Server struct {
 	// holds.
 	brokerTLSSandboxAddr string
 
-	// installID is this installation's plain-UUID identity (§決定6), loaded
-	// (or generated) once in New() when cfg.InstallIDDir is set. Empty
+	// installID is this installation's plain-UUID identity, loaded (or
+	// generated) once in New() when cfg.InstallIDDir is set. Empty
 	// otherwise — see InstallIDDir's doc comment.
 	installID string
 
 	// usingContainerBackend records whether buildRuntime selected the
-	// container backend for this daemon's dispatcher.Runner ([Blocker 2,
-	// PR7 codex review] — docs/plans/phase6-container-backend.md §決定11:
-	// backend selection is GLOBAL for the whole daemon, not per-job, so
-	// this is computed once in New() and never changes for the life of the
+	// container backend for this daemon's dispatcher.Runner. Backend
+	// selection is GLOBAL for the whole daemon, not per-job, so this is
+	// computed once in New() and never changes for the life of the
 	// process. Start() reads it to decide which addressing scheme
 	// (loopback 10.0.2.2 projection vs. compose service DNS + TLS) the
 	// git gateway's sandbox-facing URL and listener bind address use, and
@@ -379,11 +343,10 @@ type Server struct {
 
 	mu sync.Mutex
 
-	// configMu serializes read-modify-write config.yaml mutations
-	// (docs/plans/volume-only-daemon.md §論点 f, concurrency decision:
-	// "set and apply should be serialized... two concurrent sets must not
-	// interleave and produce a torn config"). Deliberately a separate lock
-	// from mu (hostCommands' own lock) — config-apply's validate+write+
+	// configMu serializes read-modify-write config.yaml mutations: set and
+	// apply must be serialized so two concurrent sets cannot interleave
+	// and produce a torn config. Deliberately a separate lock from mu
+	// (hostCommands' own lock) — config-apply's validate+write+
 	// hot-apply critical section can run long enough (disk I/O) that
 	// sharing mu would add unrelated contention against hostCommands
 	// reads. See internal/server/config_edit.go for every method that
@@ -405,7 +368,7 @@ type Server struct {
 	// TaskAppService.Notify and the git gateway's notifier, stored here
 	// too so ApplyConfigYAML can hot-swap its Command/PublicURL live
 	// (notify.command/web.public_url are both "dynamic" reload-class
-	// keys per docs/plans/volume-only-daemon.md §論点 f). nil in any test
+	// keys). nil in any test
 	// that builds a *Server without going through buildRuntime's notifySvc
 	// wiring — ApplyConfigYAML treats that as "no live notify service to
 	// update", not an error.
@@ -422,46 +385,27 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
-	// No embedded-skill deployment here. New() used to run
-	// skills.DeployAll(filepath.Dir(cfg.DBPath) + "/skills") at this point,
-	// producing the tree the claude / codex / opencode adapters' Bindings()
-	// bound into the sandbox's ~/.claude/skills/<name>. Phase 4 PR3
-	// (docs/plans/home-workspace-volume.md) retired all three Bindings()
-	// implementations to nil, which left this write with no reader anywhere
-	// in the repository — dead, but not obviously so, since the directory it
-	// produced kept looking like the canonical copy.
-	//
-	// PR3 of docs/plans/workspace-home-volume-persistence.md (論点 e-2, 決定
-	// D6) removed it, because that PR re-introduced bind-based delivery from
-	// a DIFFERENT root (<RuntimesDir>/skills, host-visible so a sibling
-	// container's bind source resolved) and having two materialization
-	// points, one of them dead, is the exact confusion 論点 e-2 had to
-	// untangle. There is no daemon-side materialization at all any more: the
-	// embedded set is baked into the runner image at build time
-	// (build/container/Dockerfile) and symlinked into each workspace home by
-	// the init container. Pinned by TestNew_DoesNotDeploySkillsBesideTheDB.
-	// Whatever an existing installation already has under <dataHome>/skills
-	// is left alone.
+	// No embedded-skill deployment here: the embedded set is baked into the
+	// runner image at build time (build/container/Dockerfile) and
+	// symlinked into each workspace home by the init container. Pinned by
+	// TestNew_DoesNotDeploySkillsBesideTheDB. Whatever an existing
+	// installation already has under <dataHome>/skills is left alone.
 
-	// Install identity (docs/plans/phase6-container-backend.md §PR6/§決定6):
-	// loaded (or generated once) here, alongside the other on-disk
-	// daemon-identity artifacts New() already establishes (install_id,
-	// migrations). Empty cfg.InstallIDDir (every pre-PR6 caller/test) skips
-	// this — installID stays "".
+	// Install identity: loaded (or generated once) here, alongside the
+	// other on-disk daemon-identity artifacts New() already establishes
+	// (install_id, migrations). Empty cfg.InstallIDDir skips this —
+	// installID stays "".
 	//
-	// Advisory, not blocking (Major 5, PR6 codex review): install_id is a
-	// container-backend concept — its only consumers are containerBackend's
-	// boid.install_id resource label (§決定6) and `boid reap`'s label
-	// filter, neither of which the userns backend touches at all. Failing
-	// New() outright over a LoadOrCreate error (e.g. cfg.InstallIDDir
-	// root-owned from a prior run under a different uid) would refuse to
-	// start a userns daemon over a value it never uses — so a failure here
-	// is logged and installID stays "" instead. containerBackend's own
-	// ReapOrphans doc comment already documents its pre-install_id "global
-	// (not install_id-scoped) label filter" fallback for exactly this
-	// empty-installID case, so nothing downstream needs to special-case
-	// this: it is the same path New() has always taken when
-	// cfg.InstallIDDir itself was empty.
+	// Advisory, not blocking: install_id is a container-backend concept —
+	// its only consumers are containerBackend's boid.install_id resource
+	// label and `boid reap`'s label filter, neither of which the userns
+	// backend touches at all. Failing New() outright over a LoadOrCreate
+	// error (e.g. cfg.InstallIDDir root-owned from a prior run under a
+	// different uid) would refuse to start a userns daemon over a value
+	// it never uses — so a failure here is logged and installID stays ""
+	// instead. containerBackend's own ReapOrphans doc comment already
+	// documents its pre-install_id "global (not install_id-scoped) label
+	// filter" fallback for exactly this empty-installID case.
 	var installID string
 	if cfg.InstallIDDir != "" {
 		id, err := install.LoadOrCreate(cfg.InstallIDDir)
@@ -482,11 +426,10 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
-	// host_commands provisioning check (docs/plans/phase6-container-backend.md
-	// §PR6/§決定4): resolve every configured host command against this
-	// daemon's own host now, at boot, instead of only discovering a gap the
-	// first time an affected project dispatches. Advisory only (skeleton
-	// level) — a missing command is warned about, not fatal; see
+	// host_commands provisioning check: resolve every configured host
+	// command against this daemon's own host now, at boot, instead of only
+	// discovering a gap the first time an affected project dispatches.
+	// Advisory only — a missing command is warned about, not fatal; see
 	// ValidateHostCommandsInstalled's doc comment for why.
 	for _, name := range orchestrator.ValidateHostCommandsInstalled(hostCommands, exec.LookPath) {
 		slog.Warn("host command not found on daemon host; broker exec will fail for jobs using it (provision it in build/container/Dockerfile once the compose deploy is in use)",
@@ -526,17 +469,14 @@ func New(cfg Config) (*Server, error) {
 		installID:    installID,
 	}
 
-	// Per-daemon internal CA (docs/plans/phase6-container-backend.md
-	// §PR4/§決定5): hoisted here — before buildRuntime runs — rather than
-	// lazily loaded inside Start the way every pre-broker-TCP-wire version
-	// did. See Server.daemonCA's own doc comment for why: buildRuntime's
-	// sandboxBackendForConfig call needs this CA to configure the
-	// container backend's per-job broker client cert issuance
-	// (docs/plans/phase6-cutover-followups.md §⓪), and that call happens
-	// strictly before Start ever runs. cfg.TLSDir empty (every pre-PR4
-	// caller/test) leaves srv.daemonCA/gatewayCAPEM at their zero values,
-	// so this hoist changes nothing for any deployment that doesn't
-	// configure TLS.
+	// Per-daemon internal CA: hoisted here — before buildRuntime runs —
+	// rather than lazily loaded inside Start. See Server.daemonCA's own
+	// doc comment for why: buildRuntime's sandboxBackendForConfig call
+	// needs this CA to configure the
+	// container backend's per-job broker client cert issuance, and that
+	// call happens strictly before Start ever runs. cfg.TLSDir empty
+	// leaves srv.daemonCA/gatewayCAPEM at their zero values, so this hoist
+	// changes nothing for any deployment that doesn't configure TLS.
 	if cfg.TLSDir != "" {
 		ca, err := mtls.LoadOrCreate(cfg.TLSDir)
 		if err != nil {
@@ -552,20 +492,19 @@ func New(cfg Config) (*Server, error) {
 		conn.Close()
 		return nil, err
 	}
-	// [Blocker 2, PR7 codex review]: computed once here, right after
-	// buildRuntime has resolved runner.Backend from config (§決定11's
-	// global-not-per-job selection) — see usingContainerBackend's own doc
-	// comment for what Start()/the egress proxy do with it.
+	// Computed once here, right after buildRuntime has resolved
+	// runner.Backend from config (global-not-per-job selection) — see
+	// usingContainerBackend's own doc comment for what Start()/the egress
+	// proxy do with it.
 	srv.usingContainerBackend = dispatcher.IsContainerBackend(runtime.runner.Backend)
 	if srv.usingContainerBackend && srv.proxyManager != nil {
 		srv.proxyManager.BindHost = composeBindHost
 	}
 	if srv.proxyManager != nil {
 		// Make each egress proxy listener come back on the same port after
-		// a daemon restart (docs/plans/egress-proxy-stable-port.md). Wired
-		// regardless of backend: nothing about port stability is
-		// container-specific, and a job-side config baking a proxy URL is
-		// just as stale-able either way.
+		// a daemon restart. Wired regardless of backend: nothing about port
+		// stability is container-specific, and a job-side config baking a
+		// proxy URL is just as stale-able either way.
 		srv.proxyManager.PortStore = orchestrator.NewEgressPortStore(conn)
 		srv.proxyManager.PortRangeLow = cfg.EgressProxyPortLow
 		srv.proxyManager.PortRangeHigh = cfg.EgressProxyPortHigh
@@ -590,20 +529,17 @@ func (s *Server) Store() *orchestrator.ProjectStore {
 	return s.store
 }
 
-// InstallID returns this installation's plain-UUID identity (§決定6), or
-// "" when cfg.InstallIDDir was empty (New never generated one). Nothing in
-// production dispatch consumes this yet as of PR6 (containerBackend
-// construction is still test/DI-only) — it exists so `boid reap` and a
-// future PR7 containerBackend wiring have a single, already-tested source
+// InstallID returns this installation's plain-UUID identity, or "" when
+// cfg.InstallIDDir was empty (New never generated one). Exists so `boid
+// reap` and containerBackend wiring have a single, already-tested source
 // for the value rather than each re-implementing the load.
 func (s *Server) InstallID() string {
 	return s.installID
 }
 
-// KitsDir returns this daemon's effective base directory for installed kits
-// (MAJOR 1, codex review round 1, docs/plans/workspace-db-consolidation.md
-// Phase 2.5 PR7): s.cfg is set once in New() and never mutated afterward, so
-// no locking is needed, unlike the mutable s.hostCommands snapshot below.
+// KitsDir returns this daemon's effective base directory for installed
+// kits. s.cfg is set once in New() and never mutated afterward, so no
+// locking is needed, unlike the mutable s.hostCommands snapshot below.
 // Backs GET /api/config/kits-dir (api.ConfigService) so a CLI client-side
 // helper can resolve a legacy workspace.yaml's `kits:` references against
 // the running daemon's actual kits directory, including one overridden by
@@ -632,13 +568,10 @@ func (s *Server) KitsDir() string {
 }
 
 // HostCommands returns a deep-copy snapshot of the aggregated host_commands
-// config assembled at startup from every installed kit.yaml
-// (docs/plans/workspace-db-consolidation.md PR2). It is read-only reference
-// data during PR2/PR3's parity-verification window — nothing dispatches
-// through it yet. A snapshot (rather than the live internal map) is returned
-// so a caller mutating the result can never corrupt daemon state, and so a
-// future reload API (PR4) can safely swap s.hostCommands without racing
-// against an in-flight caller.
+// config assembled at startup from every installed kit.yaml. A snapshot
+// (rather than the live internal map) is returned so a caller mutating the
+// result can never corrupt daemon state, and so ReloadHostCommands can
+// safely swap s.hostCommands without racing against an in-flight caller.
 func (s *Server) HostCommands() map[string]orchestrator.HostCommandSpec {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -647,12 +580,9 @@ func (s *Server) HostCommands() map[string]orchestrator.HostCommandSpec {
 
 // ReloadHostCommands re-reads the aggregated host_commands.yaml config from
 // disk and swaps in both the raw snapshot (what HostCommands() hands out)
-// and the dispatch-facing expanded copy wired into the ProjectStore
-// (docs/plans/workspace-db-consolidation.md PR4 Step G). This is the
-// daemon-side half of the plan doc's documented hand-edit path
-// ("host_commands 実定義の集約先": 手で ~/.config/boid/host_commands.yaml を編集
-// → boid host-commands reload で daemon に読み直させる) — there is no
-// create/edit API for individual host_command entries, only this reload.
+// and the dispatch-facing expanded copy wired into the ProjectStore. There
+// is no create/edit API for individual host_command entries — only this
+// reload of a hand-edited ~/.config/boid/host_commands.yaml.
 //
 // A parse error (a typo introduced by the hand edit) is returned as-is and
 // leaves the daemon's live config untouched — s.hostCommands and the
@@ -691,62 +621,48 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.gcLoop.Run(ctx)
 	}
 
-	// Start the queue wake-evaluation sweep loop (cross-project-issue-triage
-	// Phase 1 PR-3, queue の決定論的評価 節 rule 1).
+	// Start the queue wake-evaluation sweep loop (queue の決定論的評価:
+	// wake 評価 rule).
 	if s.queueSweepLoop != nil {
 		go s.queueSweepLoop.Run(ctx)
 	}
 
-	// Start the trigger sweep loop (docs/plans/ingestion-identity.md PR-4,
-	// B-5's「スケジューラ」section).
+	// Start the trigger sweep loop (トリガのスケジュール/single-flight/実行記録).
 	if s.triggerLoop != nil {
 		go s.triggerLoop.Run(ctx)
 	}
 
-	// Per-daemon internal CA (docs/plans/phase6-container-backend.md
-	// §PR4/§決定5): loaded (or generated) in New(), not here — see
-	// Server.daemonCA's own doc comment for why the load had to move
-	// earlier (the broker TCP wire followup's sandboxBackendForConfig
-	// needs it before Start ever runs). s.daemonCA is nil whenever
-	// cfg.TLSDir is empty (every pre-PR4 caller/test), so Start's behavior
-	// below is byte-for-byte unchanged from before this hoist — the two
-	// `if daemonCA != nil` blocks are the only places this affects
-	// anything.
+	// Per-daemon internal CA: loaded (or generated) in New(), not here —
+	// see Server.daemonCA's own doc comment for why the load had to move
+	// earlier (sandboxBackendForConfig needs it before Start ever runs).
+	// s.daemonCA is nil whenever cfg.TLSDir is empty.
 	daemonCA := s.daemonCA
 
 	// Start broker
 	if s.broker != nil {
 		if daemonCA != nil {
 			// composeBrokerServiceName is included as a SAN alongside the
-			// loopback names below (codex review [Major 2] on PR4): the
-			// container backend (PR5+) dials the broker by its compose
-			// service DNS name, not 127.0.0.1/localhost, so hostname
-			// verification would otherwise fail once that caller exists.
-			// PR4 itself only ever dials this listener via 127.0.0.1
-			// (see TestServer's own tests) — the extra SAN is inert until
-			// PR5 but must be present on the cert from day one since the
-			// CA/cert are generated once per daemon lifetime, not
-			// per-caller.
+			// loopback names below: the container backend dials the broker
+			// by its compose service DNS name, not 127.0.0.1/localhost, so
+			// hostname verification would otherwise fail. The SAN must be
+			// present on the cert from day one since the CA/cert are
+			// generated once per daemon lifetime, not per-caller.
 			tlsCfg, err := daemonCA.ServerTLSConfig("127.0.0.1", "localhost", composeBrokerServiceName)
 			if err != nil {
 				return fmt.Errorf("broker tls config: %w", err)
 			}
-			// broker TCP wire completion (docs/plans/
-			// phase6-cutover-followups.md §⓪): bind host now follows
-			// gatewayBindHost(s.usingContainerBackend), the exact same
-			// helper the git gateway's own TLS listener already uses just
-			// below — "0.0.0.0" (composeBindHost) when the container
-			// backend is selected (a sibling job container cannot reach a
-			// listener bound to THIS container's own loopback interface),
-			// "127.0.0.1" (byte-for-byte the pre-fix hardcoded literal)
-			// otherwise. Unlike the git gateway, the broker KEEPS mTLS
-			// (ServerTLSConfig above, not ServerOnlyTLSConfig) — see
-			// mtls.CA.ServerOnlyTLSConfig's own doc comment and
-			// ContainerBackendOptions.BrokerTLSCA's for the design
-			// decision (broker is an arbitrary-RPC endpoint, not a
+			// Bind host follows gatewayBindHost(s.usingContainerBackend),
+			// the exact same helper the git gateway's own TLS listener
+			// already uses just below — "0.0.0.0" (composeBindHost) when
+			// the container backend is selected (a sibling job container
+			// cannot reach a listener bound to THIS container's own
+			// loopback interface), "127.0.0.1" otherwise. Unlike the git
+			// gateway, the broker KEEPS mTLS (ServerTLSConfig above, not
+			// ServerOnlyTLSConfig) — see mtls.CA.ServerOnlyTLSConfig's own
+			// doc comment: the broker is an arbitrary-RPC endpoint, not a
 			// single-purpose per-job-token-authorized clone endpoint like
 			// the gateway, so per-connection client identity binding is
-			// worth keeping) — the per-job client cert
+			// worth keeping — the per-job client cert
 			// containerBackend.materializeBrokerClientCert issues is what
 			// makes that requirement satisfiable by a real job container.
 			s.broker.TLSAddr = gatewayBindHost(s.usingContainerBackend) + ":0"
@@ -758,18 +674,18 @@ func (s *Server) Start(ctx context.Context) error {
 		slog.Info("broker started", "socket", s.broker.SocketPath)
 		if addr := s.broker.TLSListenAddr(); addr != "" {
 			slog.Info("broker tls listener started", "addr", addr)
-			// brokerTLSSandboxAddr (broker TCP wire completion): the
-			// compose-service-DNS address a job container's
-			// BOID_BROKER_TLS_ADDR env should dial — "0.0.0.0:<port>" (the
-			// raw bind address above) is not itself dialable by a peer, so
-			// this re-composes the SAME port with composeBrokerServiceName
-			// as the host, mirroring gatewayURLFor's own tlsPort
-			// extraction just below. sandboxBackendForConfig already holds
-			// a pointer to this exact field (srv.brokerTLSSandboxAddr,
-			// wired in buildRuntime before Start ever ran) — see
-			// Server.brokerTLSSandboxAddr's own doc comment — so writing it
-			// here is sufficient to make containerBackend.Launch observe
-			// the real value on every subsequent job dispatch, with no
+			// brokerTLSSandboxAddr: the compose-service-DNS address a job
+			// container's BOID_BROKER_TLS_ADDR env should dial —
+			// "0.0.0.0:<port>" (the raw bind address above) is not itself
+			// dialable by a peer, so this re-composes the SAME port with
+			// composeBrokerServiceName as the host, mirroring
+			// gatewayURLFor's own tlsPort extraction just below.
+			// sandboxBackendForConfig already holds a pointer to this
+			// exact field (srv.brokerTLSSandboxAddr, wired in buildRuntime
+			// before Start ever ran) — see Server.brokerTLSSandboxAddr's
+			// own doc comment — so writing it here is sufficient to make
+			// containerBackend.Launch observe the real value on every
+			// subsequent job dispatch, with no
 			// further plumbing needed at this call site.
 			if _, port, splitErr := net.SplitHostPort(addr); splitErr == nil {
 				s.brokerTLSSandboxAddr = composeBrokerServiceName + ":" + port
@@ -797,13 +713,12 @@ func (s *Server) Start(ctx context.Context) error {
 		// Dedicated listener for jobs with no workspace at all (`boid exec` /
 		// ProfileInit against an unlinked project) — bound once here, under
 		// dispatcher.NoWorkspaceProxyKey, a key DISTINCT from
-		// orchestrator.DefaultWorkspaceSlug (BLOCKER, codex review round 3:
-		// see Runner.NoWorkspaceProxyPort's own doc comment for the aliasing
-		// bug this distinctness prevents). PR #830 round-4 simplification
-		// (nose directive): bound once, never refreshed per-dispatch —
-		// sandbox.allowed_domains is ReloadRestartRequired now, so a
-		// restart is exactly what's needed to pick up a changed floor here
-		// too, same as the default listener above.
+		// orchestrator.DefaultWorkspaceSlug — see Runner.NoWorkspaceProxyPort's
+		// own doc comment for the aliasing bug this distinctness prevents.
+		// Bound once, never refreshed per-dispatch — sandbox.allowed_domains
+		// is ReloadRestartRequired, so a restart is exactly what's needed to
+		// pick up a changed floor here too, same as the default listener
+		// above.
 		noWSPort, err := s.proxyManager.GetOrCreate(dispatcher.NoWorkspaceProxyKey, s.cfg.AllowedDomains)
 		if err != nil {
 			return fmt.Errorf("start no-workspace proxy: %w", err)
@@ -827,63 +742,55 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.gatewayLn = gwLn
 		port := gwLn.Addr().(*net.TCPAddr).Port
-		// [Blocker 2, PR7 codex review]: gatewayURLFor's BackendUserns
-		// branch reproduces the pre-PR7 fmt.Sprintf("http://10.0.2.2:%d",
-		// port) literally (docs/plans/phase6-container-backend.md §PR4:
-		// "既存 (10.0.2.2) を無条件で切り替える禁止") for every deployment that
-		// has not opted into sandbox.backend: container — see its own doc
-		// comment. When s.usingContainerBackend is true, this initial value
-		// is OVERWRITTEN below once the TLS listener is bound (a container
-		// -backend job never reaches this plaintext loopback listener at
-		// all — only the compose service DNS name over mTLS).
+		// gatewayURLFor's BackendUserns branch reproduces
+		// fmt.Sprintf("http://10.0.2.2:%d", port) literally for every
+		// deployment that has not opted into sandbox.backend: container —
+		// see its own doc comment. When s.usingContainerBackend is true,
+		// this initial value is OVERWRITTEN below once the TLS listener is
+		// bound (a container-backend job never reaches this plaintext
+		// loopback listener at all — only the compose service DNS name
+		// over mTLS).
 		s.gatewayURL = gatewayURLFor(false, port, 0)
 		go func() { _ = s.gatewayHTTPServer.Serve(gwLn) }() // returns ErrServerClosed on Stop
 		slog.Info("git gateway started", "addr", gwLn.Addr().String(), "sandbox_url", s.gatewayURL)
 
-		// git gateway TCP(mTLS) listener: additive alongside the
-		// plaintext loopback listener above (§PR4/§決定5).
+		// git gateway TCP(mTLS) listener: additive alongside the plaintext
+		// loopback listener above.
 		//
 		// composeGatewayServiceName is included as a SAN for the same
-		// reason as the broker's above (codex review [Major 2] on PR4):
-		// it matches SandboxURL's own BackendContainer default
-		// ("boid-gateway", see sandbox_url.go) so a container-backend
-		// caller that leaves SandboxURLOptions.ServiceName unset gets a URL
-		// whose hostname this cert already covers.
+		// reason as the broker's above: it matches SandboxURL's own
+		// BackendContainer default ("boid-gateway", see sandbox_url.go) so
+		// a container-backend caller that leaves
+		// SandboxURLOptions.ServiceName unset gets a URL whose hostname
+		// this cert already covers.
 		//
-		// [Blocker 2, PR7 codex review]: the listener bind address is now
-		// gatewayBindHost(s.usingContainerBackend) — "0.0.0.0" instead of
-		// loopback-only "127.0.0.1" when the container backend is
-		// selected, since a sibling job container on the shared compose
-		// network cannot reach a listener bound to THIS container's own
-		// loopback interface. See composeBindHost's own doc comment for
-		// why this is safe (the compose network boundary, not the bind
-		// address, is what scopes reachability). userns deployments are
-		// byte-for-byte unaffected: gatewayBindHost(false) returns
-		// "127.0.0.1", identical to the pre-fix hardcoded literal.
+		// The listener bind address is gatewayBindHost(s.usingContainerBackend)
+		// — "0.0.0.0" instead of loopback-only "127.0.0.1" when the
+		// container backend is selected, since a sibling job container on
+		// the shared compose network cannot reach a listener bound to THIS
+		// container's own loopback interface. See composeBindHost's own
+		// doc comment for why this is safe (the compose network boundary,
+		// not the bind address, is what scopes reachability).
 		if daemonCA != nil && s.combinedGatewayHandler != nil {
 			bindHost := gatewayBindHost(s.usingContainerBackend)
-			// ServerOnlyTLSConfig (PR9 e2e-container fix), not
-			// ServerTLSConfig: the git gateway's own per-job Registry
-			// token (URL-path-embedded, verified by gatewayHandler's
-			// ServeHTTP) already fully authorizes every request — a
-			// required client certificate would add no per-job
-			// authorization on top of that, and no PR ever wired
-			// per-job client cert issuance/delivery for this listener in
-			// the first place (see ServerOnlyTLSConfig's own doc
-			// comment). Requiring one anyway made the listener unusable
-			// by any real sandbox: PR9's real-docker e2e-container CI
-			// job's every sandbox-internal clone attempt failed the TLS
-			// handshake outright ("tls: client didn't provide a
-			// certificate"). The API gateway's own per-job Registry token
-			// (docs/plans/api-gateway.md PR1) is authorized the identical
-			// way, so this reasoning covers both gateways sharing this
-			// listener unchanged.
+			// ServerOnlyTLSConfig, not ServerTLSConfig: the git gateway's
+			// own per-job Registry token (URL-path-embedded, verified by
+			// gatewayHandler's ServeHTTP) already fully authorizes every
+			// request — a required client certificate would add no
+			// per-job authorization on top of that, and no client cert
+			// issuance/delivery was ever wired for this listener (see
+			// ServerOnlyTLSConfig's own doc comment). Requiring one
+			// anyway makes the listener unusable by any real sandbox
+			// (every clone attempt fails the TLS handshake with "tls:
+			// client didn't provide a certificate"). The API gateway's
+			// own per-job Registry token is authorized the identical way,
+			// so this reasoning covers both gateways sharing this
+			// listener.
 			tlsCfg, err := daemonCA.ServerOnlyTLSConfig("127.0.0.1", "localhost", composeGatewayServiceName)
 			if err != nil {
 				return fmt.Errorf("git gateway tls config: %w", err)
 			}
-			// docs/plans/api-gateway.md 論点1 ("同居"): tls.Listen +
-			// s.combinedGatewayHandler directly, rather than
+			// tls.Listen + s.combinedGatewayHandler directly, rather than
 			// gitgateway.Server.ListenTLS (which hardcodes its OWN
 			// ServeHTTP as the *http.Server's Handler — see
 			// gatewayTLSHTTPServer's own doc comment for why that no
@@ -898,18 +805,15 @@ func (s *Server) Start(ctx context.Context) error {
 			go func() { _ = tlsSrv.Serve(gwTLSLn) }() // returns ErrServerClosed on Stop
 			slog.Info("git gateway tls listener started", "addr", gwTLSLn.Addr().String())
 
-			// [Blocker 2, PR7 codex review]: once the container backend is
-			// selected AND the TLS listener is actually up, gatewayURL is
-			// replaced with the compose-service-DNS + mTLS URL — the ONLY
-			// address a sibling job container can reach this daemon at
-			// (BackendUserns' http://10.0.2.2 loopback projection does not
-			// exist between sibling docker containers, per this PR's own
-			// Blocker 2 evidence: `10.0.2.2` is a pasta/slirp userns
-			// artifact with no docker equivalent). Falls through to the
-			// plaintext BackendUserns URL set above when
-			// usingContainerBackend is false — gatewayURLFor's own default
-			// branch, unreachable in production since PR-4 removed the
-			// userns backend (see gatewayURLFor's own doc comment).
+			// Once the container backend is selected AND the TLS listener
+			// is actually up, gatewayURL is replaced with the
+			// compose-service-DNS + mTLS URL — the ONLY address a sibling
+			// job container can reach this daemon at (`10.0.2.2` is a
+			// pasta/slirp userns artifact with no docker equivalent).
+			// Falls through to the plaintext BackendUserns URL set above
+			// when usingContainerBackend is false — gatewayURLFor's own
+			// default branch, unreachable in production since the userns
+			// backend was removed (see gatewayURLFor's own doc comment).
 			if s.usingContainerBackend {
 				tlsPort := gwTLSLn.Addr().(*net.TCPAddr).Port
 				s.gatewayURL = gatewayURLFor(true, port, tlsPort)
@@ -959,9 +863,8 @@ func (s *Server) Start(ctx context.Context) error {
 	s.tcpServer = &http.Server{Handler: tcpHandler}
 	go func() { _ = s.tcpServer.Serve(tcpLn) }() // returns ErrServerClosed on Stop
 
-	// Dedicated CLI TCP listener (docs/plans/volume-only-daemon.md §論点c,
-	// PR-3 Option 4 host-mode redesign): additive alongside tcpLn/tcpServer
-	// above, on its own port — see Config.CLIAddr's own doc comment for
+	// Dedicated CLI TCP listener: additive alongside tcpLn/tcpServer above,
+	// on its own port — see Config.CLIAddr's own doc comment for
 	// why a separate listener. Gated on BOTH cfg.CLIAddr and cfg.CLIToken
 	// being set — unlike tcpLn (which always binds), this listener has no
 	// fallback auth path at all (no TLS, no cookie, no loopback trust), so
@@ -974,9 +877,9 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		// gatewayBindHost(s.usingContainerBackend) — the same
 		// container-backend-aware routing the git gateway/broker TLS
-		// listeners already use (wire.go), not a hardcoded "127.0.0.1"
-		// (round-4 fix, docs/plans/volume-only-daemon.md §論点c): under the
-		// container backend, this daemon runs inside a compose container
+		// listeners already use (wire.go), not a hardcoded "127.0.0.1":
+		// under the container backend, this daemon runs inside a compose
+		// container
 		// reached via docker's bridge-mode port publish
 		// (`127.0.0.1:8442:8442` in build/container/compose.yml) — the
 		// HOST-side 127.0.0.1 is DNAT'd to the CONTAINER'S bridge-network
@@ -1037,9 +940,7 @@ func (s *Server) Stop() error {
 		// gatewayTLSHTTPServer.Shutdown (rather than s.gatewayTLSLn.Close())
 		// also closes idle keep-alive connections already accepted on the
 		// TLS listener — a bare listener Close only stops new connections
-		// from being accepted (codex review [Minor 4] on
-		// docs/plans/phase6-container-backend.md §PR4, the original reason
-		// this graceful-shutdown path exists). gatewayTLSHTTPServer is
+		// from being accepted. gatewayTLSHTTPServer is
 		// always non-nil here whenever gatewayTLSLn is: both are set
 		// together inside the `s.combinedGatewayHandler != nil` guard in
 		// Start.
@@ -1101,9 +1002,9 @@ func (s *Server) BrokerSocket() string {
 	return ""
 }
 
-// BrokerTLSAddr returns the broker's TCP(mTLS) listener address
-// (docs/plans/phase6-container-backend.md §PR4), or "" when cfg.TLSDir was
-// unset (no TLS listener bound) or before Start has bound it.
+// BrokerTLSAddr returns the broker's TCP(mTLS) listener address, or "" when
+// cfg.TLSDir was unset (no TLS listener bound) or before Start has bound
+// it.
 func (s *Server) BrokerTLSAddr() string {
 	if s.broker != nil {
 		return s.broker.TLSListenAddr()
@@ -1111,9 +1012,9 @@ func (s *Server) BrokerTLSAddr() string {
 	return ""
 }
 
-// GatewayTLSAddr returns the git gateway's TCP(mTLS) listener address
-// (docs/plans/phase6-container-backend.md §PR4), or "" when cfg.TLSDir was
-// unset (no TLS listener bound) or before Start has bound it.
+// GatewayTLSAddr returns the git gateway's TCP(mTLS) listener address, or
+// "" when cfg.TLSDir was unset (no TLS listener bound) or before Start has
+// bound it.
 func (s *Server) GatewayTLSAddr() string {
 	if s.gatewayTLSLn != nil {
 		return s.gatewayTLSLn.Addr().String()
@@ -1129,11 +1030,9 @@ func (s *Server) TCPAddr() string {
 	return ""
 }
 
-// CLIListenAddr returns the dedicated CLI TCP listener's bound address
-// (docs/plans/volume-only-daemon.md §論点c, PR-3 Option 4 host-mode
-// redesign), or "" when it was never bound (cfg.CLIAddr=="" or
-// cfg.CLIToken=="" — see Config.CLIAddr's own doc comment) or before
-// Start has run.
+// CLIListenAddr returns the dedicated CLI TCP listener's bound address, or
+// "" when it was never bound (cfg.CLIAddr=="" or cfg.CLIToken=="" — see
+// Config.CLIAddr's own doc comment) or before Start has run.
 func (s *Server) CLIListenAddr() string {
 	if s.cliLn != nil {
 		return s.cliLn.Addr().String()
@@ -1143,10 +1042,8 @@ func (s *Server) CLIListenAddr() string {
 
 // GatewayURL returns the git gateway's sandbox-facing base URL
 // (http://10.0.2.2:<port>), or "" before Start has bound its listener.
-// docs/plans/git-gateway-cutover.md PR4 wires this into
-// SandboxRuntimeInfo.GatewayURL (via dispatcher.WireConfig.GatewayURL), but
-// nothing consumes it yet — the sandbox env var advertise and the runner
-// clone sequence are PR6/PR5.
+// Wired into SandboxRuntimeInfo.GatewayURL via
+// dispatcher.WireConfig.GatewayURL.
 func (s *Server) GatewayURL() string {
 	return s.gatewayURL
 }

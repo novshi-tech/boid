@@ -9,10 +9,10 @@ import (
 )
 
 // SessionHandler exposes the POST /api/sessions surface (and the
-// project-scoped /api/projects/{id}/sessions variant mounted by ProjectHandler).
-// Phase 3-d (PR1) introduced sessions as a first-class JobKind alongside hook
-// and exec so user-initiated agent runs (WebUI [New Session] / `boid agent`)
-// no longer have to piggyback on the project command path.
+// project-scoped /api/projects/{id}/sessions variant mounted by
+// ProjectHandler). Sessions are a first-class JobKind alongside hook and
+// exec so user-initiated agent runs (WebUI [New Session] / `boid agent`)
+// need not piggyback on the project command path.
 type SessionHandler struct {
 	Service    ProjectService
 	Dispatcher SessionDispatcher

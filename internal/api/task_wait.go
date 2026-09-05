@@ -40,12 +40,11 @@ const waitFailureLogEvery = 60
 // implementation of that much larger interface.
 //
 // *orchestrator.TaskRepository is the production implementation and the
-// compile-time assertion below pins that, rather than leaving it to a runtime
-// type check that would silently degrade to the expensive path if the real
-// wired type ever stopped satisfying it — the exact failure PR #1014's review
-// found for the signals dependency (docs/plans/signal-ingest-detailed-design.md
-// PR-3, M1), where every unit test passed against a hand-built double while
-// production never picked the interface up at all.
+// compile-time assertion below pins that, rather than leaving it to a
+// runtime type check that would silently degrade to the expensive path if
+// the real wired type ever stopped satisfying it: every unit test would
+// still pass against a hand-built double while production never picked
+// the interface up at all.
 type TaskStatusReader interface {
 	GetTaskStatus(id string) (orchestrator.TaskStatus, error)
 }

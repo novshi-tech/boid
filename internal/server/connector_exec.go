@@ -10,16 +10,13 @@ import (
 
 // connectorJobInput is resolveConnectorExec's output — everything
 // sessionDispatcherAdapter.StartExec (wire.go) needs to add to the
-// SessionJobInput it builds for a signal-derived trigger's connector job
-// (docs/plans/signal-ingest-detailed-design.md §5.2).
+// SessionJobInput it builds for a signal-derived trigger's connector job.
 type connectorJobInput struct {
-	// Env carries the 4 connector env vars (§5.2 item 1):
-	// BOID_SIGNAL_SERVICE / BOID_SIGNAL_CONNECTOR / BOID_SIGNAL_CONFIG /
-	// BOID_CONNECTOR_EXEC. Merged into SessionJobInput.Env — no new
-	// dispatcher-level field needed, reusing the existing pass-through.
+	// Env carries the connector env vars (BOID_SIGNAL_SERVICE /
+	// BOID_SIGNAL_CONNECTOR / BOID_SIGNAL_CONFIG / BOID_CONNECTOR_EXEC),
+	// merged into SessionJobInput.Env.
 	Env map[string]string
-	// APIGatewayServices is always exactly [ref.Service] — copied onto
-	// SessionJobInput.APIGatewayServices (§5.2 item 4).
+	// APIGatewayServices is always exactly [ref.Service].
 	APIGatewayServices []string
 }
 
@@ -27,26 +24,17 @@ type connectorJobInput struct {
 // declaration) against packs (the daemon's loaded Pack registry,
 // integrationpack.LoadPacks) into a connectorJobInput. Pure function — no
 // server/DB/dispatch side effects — so sessionDispatcherAdapter.StartExec
-// can fail the dispatch outright (surfacing through fireTrigger's existing
-// fail-open retry) rather than launching a misconfigured connector job.
+// can fail the dispatch outright rather than launching a misconfigured
+// connector job.
 //
 // Resolution order, each step a hard error naming the offending reference:
 //  1. exactly one installed Pack version named ref.Pack must exist —
-//     signals.sources[].connector carries no version (unlike config.yaml's
-//     `uses: <pack>/<profile>@<version>`), so v0 refuses to guess when
-//     more than one version is installed rather than silently picking one
-//     ("先頭 slot を勝手に取るような縮退をしない", the same posture
-//     integrationpack.DesugarService already applies to `uses:`).
+//     signals.sources[].connector carries no version pin, so more than one
+//     installed version is an ambiguity error rather than a silent pick.
 //  2. ref.ConnectorName must name a connectors[] entry in that Pack's
 //     manifest.
 //  3. if the connector declares a configSchema, ref.Config must validate
-//     against it (§6.2 item 4, Q19) — a v0 detail: unlike a Pack-level
-//     manifest defect (§6.2 item 3's "起動エラー"), a config validation
-//     failure here surfaces per-dispatch-attempt through the ordinary
-//     StartExec error path (fireTrigger's fail-open retry), not as a
-//     daemon-startup failure — this signals.sources[].config declaration
-//     lives in ONE project's project.yaml, not the daemon-wide Pack
-//     registry LoadPacks validates once at startup.
+//     against it.
 func resolveConnectorExec(packs []*integrationpack.Pack, ref apiwire.ConnectorRef) (connectorJobInput, error) {
 	pack, err := findInstalledPack(packs, ref.Pack)
 	if err != nil {
@@ -67,19 +55,12 @@ func resolveConnectorExec(packs []*integrationpack.Pack, ref apiwire.ConnectorRe
 		return connectorJobInput{}, fmt.Errorf("connector %q: config: marshal: %w", ref.Pack+"/"+ref.ConnectorName, err)
 	}
 
-	// No bind mount: the daemon and every job container are launched from
-	// the SAME base image (build/container/compose.yml 決定2 「daemon と
-	// job runner が同じ versioned base イメージから起動」) — pack.Dir
-	// (integrations.dir 配下の絶対パス, e.g. baked in at
-	// /opt/boid/integrations/<pack>/<version> by build/container/Dockerfile)
-	// already exists at the identical path inside the job container's own
-	// filesystem, no transport needed. A bind mount would in fact be WRONG
-	// here under the container backend's DooD (docker-out-of-docker) model:
-	// the daemon hands BindMount.Source to the HOST's docker/podman (not the
-	// daemon container's own filesystem) to resolve, so an image-baked,
-	// daemon-container-only path can never be a valid bind source — nose,
-	// 2026-08-27, after hitting exactly this ("mkdir /opt/boid: permission
-	// denied") trying to dispatch a jira-cloud connector job.
+	// No bind mount: the daemon and every job container share the same base
+	// image, so pack.Dir already exists at the identical path inside the
+	// job container's own filesystem. A bind mount would in fact be wrong
+	// here — under DooD, BindMount.Source resolves against the host, not
+	// the daemon container's filesystem, so an image-baked path can never
+	// be a valid bind source.
 	return connectorJobInput{
 		Env: map[string]string{
 			"BOID_SIGNAL_SERVICE":   ref.Service,
@@ -125,10 +106,9 @@ func findConnector(pack *integrationpack.Pack, name string) (integrationpack.Con
 	return integrationpack.Connector{}, false
 }
 
-// marshalConnectorConfig renders cfg as compact JSON for BOID_SIGNAL_CONFIG
-// — nil/empty becomes "{}" (§5.2: "config の JSON"; the connector process
-// json.loads()'s the value unconditionally, so it must never be empty-string
-// or "null").
+// marshalConnectorConfig renders cfg as compact JSON for BOID_SIGNAL_CONFIG.
+// nil/empty becomes "{}" — the connector process json.loads()'s the value
+// unconditionally, so it must never be empty-string or "null".
 func marshalConnectorConfig(cfg map[string]any) (string, error) {
 	if len(cfg) == 0 {
 		return "{}", nil

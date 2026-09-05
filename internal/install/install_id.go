@@ -1,18 +1,16 @@
 // Package install provides the daemon's install identity: a plain UUID
 // persisted once per boid installation and stamped as the boid.install_id
-// label on every container/network/volume the daemon creates
-// (docs/plans/phase6-container-backend.md §PR6, §決定6). It is not a
+// label on every container/network/volume the daemon creates. It is not a
 // secret — same non-secret, same-data-dir convention as web_secret
 // (internal/dispatcher.LoadOrCreateKey) and the internal mTLS CA
 // (internal/mtls.LoadOrCreate) — so LoadOrCreate mirrors both packages'
 // load-or-generate-and-persist shape.
 //
 // This value is deliberately NOT derived from anything host-identifying
-// (hostname, MAC address, /etc/machine-id, ...): §決定6 calls for "平文
-// UUID を LoadOrCreate" specifically because boid has no existing notion of
-// a machine id (2026-07-22 実査, plan doc §決定6) and a random UUID is
-// sufficient to scope reap (§決定6's `boid reap`) to "resources this
-// install created" without any host-fingerprinting privacy cost.
+// (hostname, MAC address, /etc/machine-id, ...): boid has no existing
+// notion of a machine id, and a random UUID is sufficient to scope `boid
+// reap` to "resources this install created" without any
+// host-fingerprinting privacy cost.
 package install
 
 import (
@@ -36,22 +34,21 @@ const FileName = "install_id"
 // re-validated on every load. Only a missing or empty file triggers
 // generation.
 //
-// Concurrent-safe (Major 7, PR6 codex review): two LoadOrCreate calls
-// racing on the same dir (e.g. two daemon instances starting at once
-// against the same data dir) cannot both "win" and each persist a
-// different UUID. The create path writes the full content to a temp file
-// first, then publishes it onto path with os.Link — which fails with
-// os.IsExist if path already exists, unlike os.Rename, which would
-// silently replace it — so "path exists" only ever means "path already
-// has complete content" (there is no observable window where a reader
-// sees an empty, half-created file — the fatal gap in an
-// O_CREATE|O_EXCL-then-separate-Write approach, where a losing goroutine
-// can read the winner's file before the winner's own Write call has run
-// and misidentify it as a crash-corrupted empty file needing repair). A
-// losing caller re-reads the winner's now-guaranteed-complete file
-// instead of silently returning its own freshly generated (and
-// never-actually-persisted) id. §決定6 requires exactly one id per
-// install, not "whichever caller's write happened to land last".
+// Concurrent-safe: two LoadOrCreate calls racing on the same dir (e.g. two
+// daemon instances starting at once against the same data dir) cannot
+// both "win" and each persist a different UUID. The create path writes
+// the full content to a temp file first, then publishes it onto path with
+// os.Link — which fails with os.IsExist if path already exists, unlike
+// os.Rename, which would silently replace it — so "path exists" only ever
+// means "path already has complete content" (there is no observable
+// window where a reader sees an empty, half-created file — the fatal gap
+// in an O_CREATE|O_EXCL-then-separate-Write approach, where a losing
+// goroutine can read the winner's file before the winner's own Write call
+// has run and misidentify it as a crash-corrupted empty file needing
+// repair). A losing caller re-reads the winner's now-guaranteed-complete
+// file instead of silently returning its own freshly generated (and
+// never-actually-persisted) id — exactly one id per install, not
+// "whichever caller's write happened to land last".
 func LoadOrCreate(dir string) (string, error) {
 	path := filepath.Join(dir, FileName)
 
@@ -89,11 +86,10 @@ func LoadOrCreate(dir string) (string, error) {
 		// concurrent LoadOrCreate call published it, its content is
 		// already complete — re-reading finds it. The only other way
 		// path can exist here is a stale, invalid artifact with no live
-		// writer racing us (a prior crash mid-write under the old
-		// pre-Major-7 code path, or a directly-seeded empty file) —
-		// os.Rename (unlike another os.Link) replaces it outright rather
-		// than failing, which is correct precisely because nothing else
-		// holds a legitimate claim on that content.
+		// writer racing us (a prior crash mid-write, or a directly-seeded
+		// empty file) — os.Rename (unlike another os.Link) replaces it
+		// outright rather than failing, which is correct precisely
+		// because nothing else holds a legitimate claim on that content.
 		if existingID, ok, rerr := readValidInstallID(path); rerr != nil {
 			return "", rerr
 		} else if ok {
@@ -119,11 +115,10 @@ func writeInstallIDTempFile(dir, content string) (string, error) {
 
 	// 0644 (not the 0600 mtls.LoadOrCreate / LoadOrCreateKey use, and not
 	// os.CreateTemp's own default 0600): install_id is explicitly
-	// non-secret (§決定6 — "平文 UUID... 非秘密"), unlike web_secret or the
-	// mTLS CA's private key. There is no confidentiality requirement to
-	// enforce with tighter permissions here — chmod before the temp file
-	// is published (Link/Rename) so path never has a moment at the wrong
-	// mode.
+	// non-secret, unlike web_secret or the mTLS CA's private key. There is
+	// no confidentiality requirement to enforce with tighter permissions
+	// here — chmod before the temp file is published (Link/Rename) so path
+	// never has a moment at the wrong mode.
 	if err := tmp.Chmod(0o644); err != nil {
 		tmp.Close()
 		return "", fmt.Errorf("install: chmod temp file: %w", err)

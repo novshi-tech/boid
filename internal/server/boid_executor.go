@@ -17,13 +17,13 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
-// jobContextProvider resolves the Phase 5b PR1 task-context RPC data
-// (docs/plans/phase5-shim-and-task-context.md) that has no standalone DB
-// representation — the reduced environment view + trait-filtered payload —
-// tracked per job by dispatcher.Runner at Dispatch() time. Kept as a narrow
-// interface (rather than depending on *dispatcher.Runner's full surface) so
-// boid_executor's dependency on dispatcher stays this one method;
-// *dispatcher.Runner satisfies it structurally.
+// jobContextProvider resolves per-job task-context RPC data that has no
+// standalone DB representation — the reduced environment view + trait-
+// filtered payload — tracked per job by dispatcher.Runner at Dispatch()
+// time. Kept as a narrow interface (rather than depending on
+// *dispatcher.Runner's full surface) so boid_executor's dependency on
+// dispatcher stays this one method; *dispatcher.Runner satisfies it
+// structurally.
 type jobContextProvider interface {
 	JobContext(jobID string) (dispatcher.JobContextSnapshot, bool)
 }
@@ -38,36 +38,20 @@ type projectLookup interface {
 }
 
 // resolveOrCaptureService is narrowed from api.WorkflowService down to the
-// single method BoidOpTaskResolveOrCapture needs
-// (docs/plans/ingestion-identity.md PR-2, B-2), mirroring
-// jobContextProvider/projectLookup's own narrowing above. Deliberately kept
-// OUT of api.WorkflowService itself (rather than adding a 6th method there)
-// so the 3 existing WorkflowService test doubles in this package and
-// internal/api/web_test.go (recordingWorkflow, askWorkflowStub,
-// stubWorkflowService) do not all need a new pass-through method just to
-// keep compiling — newBoidBuiltinExecutor below does a runtime interface
-// check against the SAME workflow value callers already pass in, so
-// production wiring (wire.go's *api.TaskWorkflowService) picks this up with
-// zero constructor/wire.go changes once TaskWorkflowService.ResolveOrCapture
-// exists, while every test double that doesn't implement it simply leaves
-// this field nil (→ "unavailable", same convention as every other optional
-// dependency here).
+// single method BoidOpTaskResolveOrCapture needs, mirroring
+// jobContextProvider/projectLookup's own narrowing above. Kept out of
+// api.WorkflowService itself; newBoidBuiltinExecutor does a runtime
+// interface check against the SAME workflow value callers already pass in,
+// so a test double that doesn't implement it just leaves this field nil
+// (→ "unavailable"), same convention as every other optional dependency
+// here.
 type resolveOrCaptureService interface {
 	ResolveOrCapture(ctx context.Context, req api.ResolveOrCaptureRequest) (*api.ResolveOrCaptureResult, error)
 }
 
 // actionListService is narrowed from api.WorkflowService down to the single
-// method BoidOpActionList needs (docs/plans/ingestion-identity.md PR-3, B-3),
-// mirroring resolveOrCaptureService's own narrowing immediately above — kept
-// OUT of api.WorkflowService itself for the identical reason (every existing
-// WorkflowService test double in this package and internal/api/web_test.go
-// would otherwise need a new pass-through method just to keep compiling).
-// newBoidBuiltinExecutor does the same runtime interface check against the
-// SAME workflow value callers already pass in, so production wiring picks
-// this up with zero constructor/wire.go changes once
-// TaskWorkflowService.ListActions exists (it already does — action_list_read.go),
-// while every test double that doesn't implement it leaves this field nil
-// (→ "unavailable"), same convention as every other optional dependency here.
+// method BoidOpActionList needs, mirroring resolveOrCaptureService's own
+// narrowing and runtime-interface-check wiring immediately above.
 type actionListService interface {
 	ListActions(filter orchestrator.ActionListFilter) (*api.ActionListResult, error)
 }
@@ -107,62 +91,34 @@ type boidBuiltinExecutor struct {
 	logReader   api.JobLogReader
 	jobContexts jobContextProvider
 	// attachmentsRoot is the data-home directory under which per-task
-	// attachments live (`<attachmentsRoot>/tasks/<task_id>/attachments`),
-	// backing the Phase 5b PR2 attachments RPCs
-	// (docs/plans/phase5-shim-and-task-context.md). It is the same value
-	// wire.go threads into api.WebHandler.AttachmentsRoot (the upload path)
-	// — see wiring-seams.md #15 — so the RPC reply can never drift from what
-	// the upload path writes. Empty disables the two ops with an
-	// "unavailable" error rather than panicking.
+	// attachments live (`<attachmentsRoot>/tasks/<task_id>/attachments`).
+	// It is the same value wire.go threads into
+	// api.WebHandler.AttachmentsRoot (the upload path), so the RPC reply
+	// can never drift from what the upload path writes. Empty disables the
+	// two ops with an "unavailable" error rather than panicking.
 	attachmentsRoot string
 	// projects backs BoidOpProjectBehaviors (`boid project behaviors` from
 	// inside the sandbox). nil disables the op with an "unavailable" error
 	// rather than panicking, same convention as every other optional
 	// dependency here.
 	projects projectLookup
-	// resolveOrCapture backs BoidOpTaskResolveOrCapture
-	// (docs/plans/ingestion-identity.md PR-2, B-2). Populated in
+	// resolveOrCapture backs BoidOpTaskResolveOrCapture. Populated in
 	// newBoidBuiltinExecutor via a runtime interface check against the SAME
-	// workflow value (see resolveOrCaptureService's own doc comment for
-	// why) — nil disables the op with an "unavailable" error, same
-	// convention as every other optional dependency here.
+	// workflow value (see resolveOrCaptureService's own doc comment) — nil
+	// disables the op with an "unavailable" error, same convention as
+	// every other optional dependency here.
 	resolveOrCapture resolveOrCaptureService
-	// actionList backs BoidOpActionList (docs/plans/ingestion-identity.md
-	// PR-3, B-3). Same runtime-interface-check wiring as resolveOrCapture
-	// above — see actionListService's own doc comment.
+	// actionList backs BoidOpActionList. Same runtime-interface-check
+	// wiring as resolveOrCapture above — see actionListService's own doc
+	// comment.
 	actionList actionListService
 	// signals backs BoidOpSignalList / BoidOpSignalAck / BoidOpSignalIngest /
-	// BoidOpSignalCursorGet (docs/plans/signal-ingest-detailed-design.md
-	// §3.2, PR-3).
-	//
-	// [M1, review of PR #1014, 2026-08-26] This field was ORIGINALLY wired
-	// with a runtime-interface-check against `workflow`
-	// (`if sig, ok := workflow.(api.SignalStore); ok`), mirroring
-	// resolveOrCapture/actionList below — but that pattern only works when
-	// SOME concrete type passed as `workflow` at production wire-up time
-	// actually implements the target interface's methods. Unlike
-	// resolveOrCaptureService/actionListService (whose methods were added
-	// directly to *api.TaskWorkflowService in the same PR that introduced
-	// the check), api.SignalStore's 6 methods have never been added to
-	// *api.TaskWorkflowService, and no other PR was ever assigned to do so
-	// — production wire.go passes a *api.TaskWorkflowService that does NOT
-	// implement api.SignalStore, so the check always resolved to nil and
-	// every signal op silently replied "unavailable" from the moment it
-	// shipped. Confirmed by a failing
-	// TestNewBoidBuiltinExecutor_WiresSignalsFromRealTaskRepository-shaped
-	// probe against the real production type before this fix.
-	//
-	// Fixed by taking `signals` as an EXPLICIT constructor parameter
-	// instead: wire.go passes `taskRepo` directly (the same
-	// *orchestrator.TaskRepository value already in scope there, which
-	// PR-1's `var _ SignalStore = (*orchestrator.TaskRepository)(nil)`
-	// assertion in internal/api/store.go proves satisfies this interface) —
-	// no runtime type assertion, no possibility of the check silently
-	// resolving to nil. Nil is still tolerated here (every other optional
-	// dependency in this struct follows the same "nil disables the op with
-	// an 'unavailable' error" convention), but nil now means "the caller
-	// deliberately passed no store" rather than "a type assertion that
-	// nobody verified against the real production type happened to fail".
+	// BoidOpSignalCursorGet. Taken as an explicit constructor parameter
+	// (wire.go passes taskRepo directly) rather than a runtime interface
+	// check against workflow, since *api.TaskWorkflowService does not
+	// implement api.SignalStore. Nil disables these ops with an
+	// "unavailable" error, same convention as every other optional
+	// dependency here.
 	signals api.SignalStore
 }
 
@@ -192,35 +148,15 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 	}
 }
 
-// validateTaskListStatus rejects status values ListTasks doesn't understand
-// before they reach the DB layer, where they were previously passed through
-// unvalidated (docs/plans/cross-project-issue-triage.md Phase 1 実測結果 項10).
-// Empty (no filter), the special keywords ("open"/"closed"/"cards_live"/
-// "triage" — the last two are the SAME predicate, docs/plans/
-// webui-detail-list-redesign.md PR-4 §3.6 renamed "triage" to "cards_live"
-// and kept "triage" as a compatibility alias for any explicit caller), and
-// any exact orchestrator.TaskStatus value are accepted.
-//
-// "queue_next" is ALSO still accepted here (unlike "queue" below) even
-// though PR-4 removed its special-cased predicate from store.go's
-// ListTasks entirely: it now falls through to store.go's generic
-// `t.status = ?` literal-equality branch, which can never match a real row
-// (queue_next is not a valid tasks.status value) and so deterministically
-// returns an empty list — the decided §5 論点3 answer (empty, not an
-// error; see store.go's own doc comment and
-// orchestrator.TestListTasks_QueueNext_ReturnsEmpty). Rejecting it here
-// would contradict that decision by turning a query that used to return
-// real rows into a hard CLI error instead of the chosen "quietly empty"
-// behavior.
-//
-// "queue" (the old broad pre-execution-status superset, PR-1 of
-// cross-project-issue-triage.md) is REMOVED as of PR-2: the Web UI never
-// used it (only queue_next/parked/open/closed reach web.go's TaskList) and
-// store.go's ListTasks no longer has a dedicated branch for it. Rejecting it
-// here surfaces the removal as a clear "unknown status" error rather than
-// silently falling through to the generic `t.status = 'queue'` literal
-// match, which can never match any real row and would otherwise look like a
-// permanently-empty list instead of an error.
+// validateTaskListStatus rejects status values ListTasks doesn't
+// understand before they reach the DB layer. Accepted: empty (no filter),
+// the special keywords "open"/"closed"/"cards_live" (plus "triage" as a
+// compatibility alias for "cards_live"), "queue_next" (falls through to a
+// literal-equality match that can never hit a real row, so it
+// deterministically returns an empty list rather than erroring), and any
+// exact orchestrator.TaskStatus value. "queue" is rejected outright — it
+// has no special handling anymore, so it must surface as an unknown-status
+// error rather than silently returning an empty list.
 func validateTaskListStatus(status string) error {
 	switch status {
 	case "", "open", "closed", "queue_next", "cards_live", "triage":
@@ -237,19 +173,13 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "missing boid request"}
 	}
 
-	// docs/plans/boid-internal-signal-inbox.md §4.3/§6.2: this is the ONE
-	// place in the whole daemon that ever calls WithWriterProjectID — every
-	// sandbox-originated write reaches CreateAction's ingest step (via
-	// whichever api.* call below it takes) carrying ctx.ProjectID as its
-	// "who wrote this" fact, so orchestrator.CreateAction can tell a
+	// This is the ONE place in the daemon that calls WithWriterProjectID:
+	// every sandbox-originated write carries ctx.ProjectID as its "who
+	// wrote this" fact, so orchestrator.CreateAction can tell a
 	// metaproject's own self-authored write (must not ingest — loop risk)
-	// from everything else, without threading sandbox.TokenContext itself
-	// through every intermediate call. Every OTHER ctx-building path in this
-	// codebase (HTTP handlers, daemon loops) never touches this key, so
-	// WriterProjectIDFromContext naturally reports "not a sandbox write" for
-	// all of them with zero special-casing there. Below, every call site
-	// that used to pass a bare context.Background() now passes goCtx (or a
-	// value built from it) so this stays attached all the way down.
+	// from everything else. Every call site below must pass goCtx (or a
+	// value built from it), not a bare context.Background(), to keep this
+	// attached.
 	goCtx = orchestrator.WithWriterProjectID(goCtx, ctx.ProjectID)
 
 	switch req.Op {
@@ -307,28 +237,14 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create: invalid create_patch: " + err.Error()}
 			}
 		}
-		// InitialStatus (docs/plans/cross-project-issue-triage.md Phase 1
-		// PR-1) was deliberately NOT allowed through the brokered path until
-		// PR-4 (論点1/4/7, Fable レビュー第9版): this is the "ingestion push
-		// opens up" change. What makes it safe now:
-		//
-		//   - resolveInitialStatus's allowlist (task_create.go) still limits
-		//     the reachable statuses to captured/triaged/pending — a
-		//     sandboxed job can never fabricate a task that's already
-		//     ready/working/done/etc.
-		//   - createReq.ProjectID is resolved to a UUID above (from the
-		//     broker's own resolution or ctx.ProjectID — never trusted
-		//     verbatim from the sandboxed caller's create_patch), and the
-		//     ctx.AllowsProject check right below still gates against the
-		//     token's own workspace scope. A sandboxed job cannot claim
-		//     "create a triaged task in a project outside my workspace" any
-		//     more than it could before this PR — AllowsProject is the same
-		//     workspace-scoping check task_get/task_update/action_send etc.
-		//     already use, so ingestion push does not trust any self-declared
-		//     workspace claim from the create_patch payload.
-		//   - dedup (論点7): CreateTask's Ref get-or-create (task_create.go),
-		//     now open to root tasks too, makes a crash-and-resend from khi
-		//     idempotent instead of planting a duplicate card.
+		// InitialStatus is restricted by resolveInitialStatus's allowlist
+		// (task_create.go) to captured/triaged/pending — a sandboxed job
+		// can never fabricate an already-ready/working/done task.
+		// createReq.ProjectID is resolved to a UUID above and gated by
+		// ctx.AllowsProject below, so a sandboxed job cannot create a task
+		// outside its own workspace. CreateTask's Ref get-or-create also
+		// makes a crash-and-resend idempotent instead of planting a
+		// duplicate card.
 		//
 		// broker が req.ProjectID を UUID に解決済みの場合は必ず優先する。
 		// CreatePatch.project_id は元の名前のまま (未上書き) のため使用しない。
@@ -364,13 +280,10 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		// broker only defaults an *empty* TaskID from the token context
 		// (BoidOpTaskGet's own case in broker.go) and otherwise passes an
-		// explicit caller-supplied one through untouched — unlike task_update
-		// / task_notify / task_answer / task_delete, which all look the
-		// target task up here before touching it, this op used to skip that
-		// check entirely, letting a caller read another workspace's task
-		// fields (title/description/status/payload/...) as long as it knew
-		// the task UUID. Look the task up and enforce the same
-		// AllowsProject gate the other task-scoped ops use.
+		// explicit caller-supplied one through untouched. Look the task up
+		// and enforce the same AllowsProject gate the other task-scoped ops
+		// use, so a caller cannot read another workspace's task fields just
+		// by knowing the UUID.
 		existing, err := e.tasks.GetTask(req.TaskID)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
@@ -420,12 +333,8 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task reopen unavailable"}
 		}
-		// Same authorization gap as BoidOpTaskGet above: this op used to call
-		// ApplyAction directly with no lookup of the target task's
-		// project_id, letting a caller reopen (and thereby dispatch) another
-		// workspace's task as long as it knew the task UUID. Look the task up
-		// and enforce the same AllowsProject gate task_update / task_notify /
-		// task_answer / task_delete already use.
+		// Look the task up and enforce the same AllowsProject gate
+		// task_update / task_notify / task_answer / task_delete already use.
 		existing, err := e.tasks.GetTask(req.TaskID)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
@@ -727,23 +636,15 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send is restricted to the current workspace"}
 			}
 		}
-		// child_specced (docs/plans/cross-project-issue-triage.md Phase 1
-		// PR-4, codex review Blocker fix): the ONLY workspace scoping check
-		// above verifies the parent card's own project — it says nothing
-		// about the "project" field the child_specced payload itself
-		// carries, which is where TaskWorkflowService.Dispatch later
-		// creates and auto-starts the real child task
-		// (orchestrator.TaskTriageChildSpec.Project). Without this check a
-		// job in workspace A could specc a child aimed at ANY project the
-		// daemon knows about, and Dispatch (triggered later by anyone,
-		// including nose clicking Go) would create and run work there with
-		// no further authorization check — a workspace-scope bypass. The
-		// payload's project must already be a resolved UUID (see
-		// TaskTriageChildSpec's own doc comment: PR-2 does not do
-		// project-ref fuzzy resolution for children), so an exact
-		// AllowsProject membership check is the correct (and only) gate
-		// here — no broker-side name resolution to lean on, unlike
-		// BoidOpTaskCreate/BoidOpProjectBehaviors.
+		// The workspace scoping check above only verifies the parent
+		// card's own project — it says nothing about the "project" field the
+		// child_specced payload itself carries, which is where
+		// TaskWorkflowService.Dispatch later creates and auto-starts the real
+		// child task (orchestrator.TaskTriageChildSpec.Project). Without this
+		// check a job in workspace A could specc a child aimed at any project
+		// the daemon knows about. The payload's project must already be a
+		// resolved UUID, so an exact AllowsProject membership check is the
+		// correct gate here.
 		if req.ActionType == "child_specced" {
 			var childPayload struct {
 				Project string `json:"project"`
@@ -768,11 +669,10 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			Stdout: fmt.Sprintf("action applied: %s\n", req.ActionType),
 		}
 	case sandbox.BoidOpCardGet:
-		// docs/plans/cross-project-issue-triage.md Phase 1 PR-5a: the read
-		// half of 決定14 (daemon が state の唯一の正). Same scoping pattern as
-		// BoidOpTaskGet — look the task up, then enforce AllowsProject before
-		// returning anything, so a caller that happens to know another
-		// workspace's task UUID still learns nothing about it.
+		// Same scoping pattern as BoidOpTaskGet — look the task up, then
+		// enforce AllowsProject before returning anything, so a caller that
+		// happens to know another workspace's task UUID still learns
+		// nothing about it.
 		if req.TaskID == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card get requires a task id"}
 		}
@@ -825,8 +725,8 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		case req.WorkspaceID != "":
 			// Defense in depth behind the broker's own equality check: the
 			// WorkspaceID filter INNER JOINs project_workspaces, so an
-			// unchecked value here genuinely crosses the compartment 決定2
-			// exists to keep (every other workspace's card titles/summaries).
+			// unchecked value here would leak titles/summaries across
+			// workspaces.
 			if ctx.WorkspaceID != "" && req.WorkspaceID != ctx.WorkspaceID {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card list is restricted to the current workspace"}
 			}
@@ -839,12 +739,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			projectIDs := ctx.AllowedProjectIDs
 			if len(projectIDs) == 0 {
 				// An empty ProjectID here would make the fallback
-				// ListCards(ProjectID: "") a DAEMON-WIDE listing of every
-				// card's title and detail blob (Opus review round 2). Job
-				// tokens always carry a ProjectID, so this is insurance rather
-				// than a live hole — but the card payload is far richer than
-				// task_list's id/status/title, so it is refused explicitly
-				// instead of relying on that invariant holding forever.
+				// ListCards(ProjectID: "") a daemon-wide listing of every
+				// card's title and detail blob. Job tokens always carry a
+				// ProjectID, so this is insurance rather than a live hole.
 				if ctx.ProjectID == "" {
 					return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card list: no project scope available for an unfiltered listing"}
 				}
@@ -867,19 +764,14 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
 	case sandbox.BoidOpTaskIdentityLink:
-		// docs/plans/ingestion-identity.md PR-1 (B-1). req.ProjectID is
-		// already broker-resolved and workspace-checked (broker.go); the
-		// TaskID it links to is a SEPARATE scope the broker cannot verify
-		// (no TaskStore there), so the GetTask + AllowsProject pattern below
-		// matches BoidOpActionSend's own — EXCEPT that this
-		// op writes the task id straight into task_identities.task_id, an
-		// FK column, so it must pass LinkIdentity the GetTask call's
-		// RESOLVED existing.ID (which absorbs GetTask's own >=8-char prefix
-		// fallback, internal/orchestrator/store.go) rather than the raw
-		// req.TaskID a caller supplied — action_send never writes
-		// their TaskID anywhere, only re-look it up downstream, so a short
-		// prefix silently keeps working for them where it would hard-fail
-		// here with a raw SQLite FOREIGN KEY constraint error.
+		// req.ProjectID is already broker-resolved and workspace-checked
+		// (broker.go); the TaskID it links to is a separate scope the
+		// broker cannot verify, so the GetTask + AllowsProject pattern
+		// below matches BoidOpActionSend's own — except this op writes the
+		// GetTask call's RESOLVED existing.ID (not the raw req.TaskID) into
+		// task_identities.task_id, an FK column, so a short id prefix that
+		// action_send tolerates would otherwise hard-fail here with a raw
+		// SQLite FOREIGN KEY constraint error.
 		if req.TaskID == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link requires a task id"}
 		}
@@ -896,14 +788,13 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(existing.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link is restricted to the current workspace"}
 		}
-		// I-3: identity is scoped to a single project. AllowsProject above
-		// only checks the task's project is somewhere in the caller's
+		// identity is scoped to a single project: AllowsProject above only
+		// checks the task's project is somewhere in the caller's
 		// workspace — it does NOT check the task's project matches the
-		// SPECIFIC req.ProjectID the identity is being linked under. Without
-		// this, a caller could bind proj-1's identity to a task that
-		// actually lives in proj-2 (same workspace, so AllowsProject alone
-		// never objects), and PR-2's resolve would then hand proj-1 an
-		// observation for a task it doesn't own.
+		// SPECIFIC req.ProjectID the identity is being linked under.
+		// Without this, a caller could bind proj-1's identity to a task
+		// that actually lives in proj-2 (same workspace, so AllowsProject
+		// alone never objects).
 		if existing.ProjectID != req.ProjectID {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link: task belongs to a different project"}
 		}
@@ -967,15 +858,12 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		return &sandbox.ExecResponse{Stdout: string(out) + "\n"}
 	case sandbox.BoidOpTaskResolveOrCapture:
-		// docs/plans/ingestion-identity.md PR-2 (B-2): resolves req.Identity
-		// (scoped to req.ProjectID, already broker-resolved+workspace-
-		// checked — see the op's own doc comment in protocol.go) to an
-		// existing task, or atomically creates a new `captured` triage task
-		// and links it when unresolved (I-4). No separate AllowsProject
-		// re-check on the result is needed here the way
-		// BoidOpTaskIdentityResolve does one — every task this call can
-		// return or create is scoped to req.ProjectID by construction (see
-		// TaskWorkflowService.ResolveOrCapture's own doc comment).
+		// Resolves req.Identity (scoped to req.ProjectID, already
+		// broker-resolved+workspace-checked) to an existing task, or
+		// atomically creates a new `captured` triage task and links it
+		// when unresolved. No separate AllowsProject re-check on the
+		// result is needed here — every task this call can return or
+		// create is scoped to req.ProjectID by construction.
 		if req.Identity == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture requires an identity"}
 		}
@@ -989,11 +877,10 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			Description: req.Description,
 		})
 		if err != nil {
-			// PR-2 節: identity 衝突時は PR-1 の ErrIdentityConflict をその
-			// まま返す — machine-readable via IdentityConflictExitCode
-			// (BoidOpTaskIdentityLink and this op share the SAME exit code,
-			// since both represent the identical underlying condition), not
-			// a generic ExitCode:1 a caller has to pattern-match stderr for.
+			// identity 衝突時は ErrIdentityConflict をそのまま返す —
+			// machine-readable via IdentityConflictExitCode (shared with
+			// BoidOpTaskIdentityLink), not a generic ExitCode:1 a caller
+			// has to pattern-match stderr for.
 			if errors.Is(err, orchestrator.ErrIdentityConflict) {
 				return &sandbox.ExecResponse{ExitCode: sandbox.IdentityConflictExitCode, Stderr: err.Error()}
 			}
@@ -1008,16 +895,13 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		return &sandbox.ExecResponse{Stdout: string(out) + "\n"}
 	case sandbox.BoidOpActionList:
-		// docs/plans/ingestion-identity.md PR-3 (B-3). req.ProjectID/
-		// req.WorkspaceID are already broker-resolved+workspace-checked
-		// (broker.go's BoidOpActionList case, mirroring BoidOpCardList
-		// exactly) — this builds the orchestrator.ActionListFilter the SAME
-		// three-branch shape decides between (project_id / workspace_id /
-		// neither -> ctx.AllowedProjectIDs), but as ONE ProjectIDs slice
-		// rather than BoidOpCardList's per-project loop: a single SQL
-		// IN(...) query keeps cursor pagination correct across the whole
-		// scope in one pass (see orchestrator.ActionListFilter's own doc
-		// comment for why a loop cannot merge cursors correctly here).
+		// req.ProjectID/req.WorkspaceID are already broker-resolved and
+		// workspace-checked (broker.go's BoidOpActionList case, mirroring
+		// BoidOpCardList). Builds a single ProjectIDs slice rather than a
+		// per-project loop, since a single SQL IN(...) query keeps cursor
+		// pagination correct across the whole scope in one pass (see
+		// orchestrator.ActionListFilter's own doc comment for why a loop
+		// cannot merge cursors correctly here).
 		if e.actionList == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action list unavailable"}
 		}
@@ -1034,9 +918,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			filter.ProjectIDs = []string{req.ProjectID}
 		case req.WorkspaceID != "":
 			// Defense in depth behind the broker's own equality check —
-			// same rationale as BoidOpCardList's WorkspaceID branch:
-			// an unchecked value here would cross the compartment 決定2
-			// exists to keep.
+			// same rationale as BoidOpCardList's WorkspaceID branch: an
+			// unchecked value here would leak titles/summaries across
+			// workspaces.
 			if ctx.WorkspaceID != "" && req.WorkspaceID != ctx.WorkspaceID {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action list is restricted to the current workspace"}
 			}
@@ -1044,12 +928,10 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		default:
 			projectIDs := ctx.AllowedProjectIDs
 			if len(projectIDs) == 0 {
-				// Mirrors BoidOpCardList's own insurance (Opus review
-				// round 2): an empty ProjectIDs AND empty WorkspaceID would
-				// make ListActionsSince refuse via ErrActionListUnscoped —
-				// which is safe — but only if ctx.ProjectID is also empty;
-				// when it's set, fall back to it exactly like every other
-				// "no explicit scope" branch in this file does.
+				// Mirrors BoidOpCardList's own insurance: an empty
+				// ProjectIDs and WorkspaceID would be safely refused via
+				// ErrActionListUnscoped, but only when ctx.ProjectID is
+				// also empty; otherwise fall back to it.
 				if ctx.ProjectID == "" {
 					return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action list: no project scope available for an unfiltered listing"}
 				}
@@ -1067,12 +949,10 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
 	case sandbox.BoidOpSignalList:
-		// docs/plans/signal-ingest-detailed-design.md §3.2 (PR-3). WorkspaceID
-		// is already broker-injected from the job token (broker.go's
-		// BoidOpSignalList case) — the "requires a workspace" check below is
-		// defense in depth for a handwritten request that bypassed the
-		// broker (e.g. a direct ExecuteBoidBuiltin caller in a future test),
-		// mirroring every other op's own re-check convention in this file.
+		// WorkspaceID is already broker-injected from the job token
+		// (broker.go's BoidOpSignalList case) — the "requires a workspace"
+		// check below is defense in depth for a handwritten request that
+		// bypassed the broker.
 		if e.signals == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal list unavailable"}
 		}
@@ -1131,18 +1011,17 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if len(req.SignalIDs) == 0 {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal ack requires at least one id"}
 		}
-		// AckSignals is idempotent per id (Q14): acking an id already acked
-		// by a prior call is a no-op success, not an error — nothing extra
-		// is needed here to preserve that, since it's a plain passthrough.
+		// AckSignals is idempotent per id: acking an id already acked by a
+		// prior call is a no-op success, not an error.
 		if err := e.signals.AckSignals(req.WorkspaceID, req.SignalIDs); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{ExitCode: 0}
 	case sandbox.BoidOpSignalIngest:
-		// Unreachable via the general policy as of PR-3 (policy.go's
-		// boidPolicy deliberately excludes this op — see its own doc
-		// comment) — implemented now so PR-5's connector-scoped reduced
-		// policy can grant it later with zero executor changes.
+		// Unreachable via the general policy — boidPolicy deliberately
+		// excludes this op (see its own doc comment); implemented so a
+		// connector-scoped reduced policy can grant it later with zero
+		// executor changes.
 		if e.signals == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal ingest unavailable"}
 		}
@@ -1161,8 +1040,8 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		return &sandbox.ExecResponse{ExitCode: 0}
 	case sandbox.BoidOpSignalCursorGet:
-		// Unreachable via the general policy as of PR-3 — see
-		// BoidOpSignalIngest's case above for the same note.
+		// Unreachable via the general policy — see BoidOpSignalIngest's
+		// case above for the same note.
 		if e.signals == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid signal cursor unavailable"}
 		}
@@ -1271,11 +1150,10 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job log is restricted to the current workspace"}
 		}
 		// Both "no log" answers name their own reason, in the same words
-		// GET /jobs/{id}/log uses (api.JobLog*Message). A bare "log not
-		// available" reads as "it was swept" for a job whose sandbox never
-		// started, which is a different problem with a different fix — see
-		// api.JobLogNoSuchJobMessage's own doc comment for the dogfood
-		// session that motivated splitting them.
+		// GET /jobs/{id}/log uses (api.JobLog*Message) — a bare "log not
+		// available" would read as "it was swept" for a job whose sandbox
+		// never started, which is a different problem with a different
+		// fix.
 		if j.RuntimeID == "" {
 			return &sandbox.ExecResponse{Stdout: api.JobLogNoRuntimeMessage(req.JobID, j.Status) + "\n"}
 		}
@@ -1311,7 +1189,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			Stdout: fmt.Sprintf("task deleted: %s\n", req.TaskID),
 		}
 
-	// --- Phase 5b PR1 task-context RPCs (docs/plans/phase5-shim-and-task-context.md) ---
+	// --- task-context RPCs ---
 	// `boid task current` / `instructions` are live re-derivations from the
 	// task row (api.TaskAppService); `env` / `payload` are backed by the
 	// per-job JobContextSnapshot dispatcher.Runner tracks at Dispatch() time
@@ -1340,9 +1218,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// see its own doc comment) must not back this RPC. Two agent-kind
 		// hooks for different agents can be dispatched from the same task in
 		// one evaluation round; only jobContexts (populated from this job's
-		// own JobSpec.Instruction at Dispatch time) tells them apart. Fixed
-		// during codex review on PR #797 before merge — see
-		// wiring-seams.md #13.
+		// own JobSpec.Instruction at Dispatch time) tells them apart.
 		if e.jobContexts == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task instructions unavailable"}
 		}
@@ -1397,13 +1273,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		return &sandbox.ExecResponse{Stdout: string(payload)}
 
-	// --- Phase 5b PR2 attachments RPCs (docs/plans/phase5-shim-and-task-context.md) ---
+	// --- attachments RPCs ---
 	// Both read straight from disk via api.ListAttachments/api.ReadAttachment
 	// (AttachmentsRootForTask, the same helper the upload path writes
 	// through) — no DB or JobContextSnapshot involved, since attachments are
-	// keyed by TaskID alone (see broker.go's guard). The Phase 5b PR6 cutover
-	// retired the parallel dispatch-time RO bind these two ops used to run
-	// alongside — this RPC pair is now the sole read path.
+	// keyed by TaskID alone (see broker.go's guard).
 
 	case sandbox.BoidOpTaskAttachmentsList:
 		if e.attachmentsRoot == "" {
@@ -1432,20 +1306,16 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// the real process stdout.
 		return &sandbox.ExecResponse{Stdout: base64.StdEncoding.EncodeToString(data)}
 
-	// --- Phase 5b PR7 job_done payload_patch direct-pass RPC
-	// (docs/plans/phase5-shim-and-task-context.md) ---
+	// --- job_done payload_patch direct-pass RPC ---
 	case sandbox.BoidOpTaskUpdatePayloadPatch:
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch unavailable"}
 		}
 		// allowedTraits comes from the JobContextSnapshot captured at
 		// dispatch time (JobSpec.HookTraitsProduces), never a live
-		// re-lookup against current project meta — codex review caught a
-		// TOCTOU staleness bug in an early cut that re-resolved the firing
-		// hook by ID at merge time, which could silently apply a
-		// post-dispatch-edit trait list (or fail open) if project.yaml
-		// changed between dispatch and this call. See wiring-seams.md #17's
-		// Major 1 finding and JobContextSnapshot's own doc comment.
+		// re-lookup against current project meta — a live lookup could
+		// silently apply a post-dispatch-edit trait list if project.yaml
+		// changed between dispatch and this call.
 		if e.jobContexts == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch unavailable"}
 		}
@@ -1467,13 +1337,10 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 }
 
 // signalsJSONResponse renders a []*orchestrator.Signal (from ListSignals or
-// ClaimSignals) as apiwire.ListSignalsResponse — the SAME v0 envelope shape
-// PR-2's `GET /api/signals` host API replies with (M3, PR #1014 review: an
-// earlier version marshaled orchestrator.Signal directly, which has no json
-// tags and so replied with raw Go field names — a DIFFERENT, undocumented
-// shape depending on whether `boid signal list` ran on the host or inside a
-// sandbox). toWireSignals never returns nil (json.MarshalIndent renders an
-// empty slice as "[]", never "null", inside the "signals" field).
+// ClaimSignals) as apiwire.ListSignalsResponse, the same envelope shape
+// `GET /api/signals` replies with. toWireSignals never returns nil
+// (json.MarshalIndent renders an empty slice as "[]", never "null", inside
+// the "signals" field).
 func signalsJSONResponse(signals []*orchestrator.Signal) *sandbox.ExecResponse {
 	encoded, err := json.MarshalIndent(apiwire.ListSignalsResponse{Signals: toWireSignals(signals)}, "", "  ")
 	if err != nil {
@@ -1482,16 +1349,11 @@ func signalsJSONResponse(signals []*orchestrator.Signal) *sandbox.ExecResponse {
 	return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
 }
 
-// toWireSignals shapes store rows into the v0 envelope (signal-driven-
-// review.md §5.2), splitting each row's stored "<pack>/<connector>"
-// composite Connector back into the envelope's separate
-// source.pack/source.connector fields. Mirrors internal/api/signal_handler.go's
-// own toWireSignals exactly (PR-2, docs/plans/signal-ingest-detailed-design.md
-// §3.1) — duplicated here rather than shared because it's an unexported
-// helper in a different package (internal/api), the same "small local
-// helper rather than reusing an unexported cross-package one" precedent
-// internal/api/signal_handler.go's own dedupeStrings doc comment describes
-// for orchestrator's dedupeStringsPreserveOrder.
+// toWireSignals shapes store rows into the wire envelope, splitting each
+// row's stored "<pack>/<connector>" composite Connector back into the
+// envelope's separate source.pack/source.connector fields. Mirrors
+// internal/api/signal_handler.go's own toWireSignals; duplicated here as a
+// small local helper rather than shared across packages.
 func toWireSignals(signals []*orchestrator.Signal) []apiwire.Signal {
 	out := make([]apiwire.Signal, 0, len(signals))
 	for _, s := range signals {
@@ -1528,29 +1390,13 @@ func splitSignalPackConnector(composite string) (pack, connector string) {
 	return pack, connector
 }
 
-// parseSignalIngestPayload parses `boid signal ingest`'s stdin body
-// (BoidRequest.IngestPayload) as JSONL — one orchestrator.SignalIngestRow
-// per non-blank line (design doc §5.3: "1 行 = {id, occurred_at, identity,
-// url?, author?, title?}") — server-side, matching where
-// BoidOpTaskUpdatePayloadPatch's PayloadPatch is parsed. A malformed line
-// fails the whole call (nothing partially applied — IngestSignals itself is
-// an all-or-nothing single tx per design doc §2, so a payload that can't
-// even be parsed must not reach it at all) with the 1-indexed line number in
-// the error for connector-side debugging.
-// parseSignalIngestPayload returns an empty (nil) slice, not an error, when
-// payload has no signal rows (blank/whitespace-only stdin, or no stdin at
-// all) — matching orchestrator.IngestSignals' own contract for an empty
-// rows slice ("if len(rows) == 0 { return nil }", signal_store.go), so the
-// two layers agree rather than the shim/executor boundary silently
-// tightening a no-op into a hard failure. [m2, review of PR #1014,
-// 2026-08-26]: an earlier version of this function returned an error here,
-// which meant a connector that polls its source and finds nothing new —
-// the ordinary, expected outcome of most polling cycles, not an error
-// condition — would get exit != 0 from `boid signal ingest` if it always
-// piped its (possibly empty) batch through rather than conditionally
-// skipping the call, incrementing failStreak for doing nothing wrong. A
-// malformed (non-empty, non-JSON) line is still a real error and still
-// fails the whole call, unchanged.
+// parseSignalIngestPayload parses `boid signal ingest`'s stdin body as
+// JSONL — one orchestrator.SignalIngestRow per non-blank line. A malformed
+// line fails the whole call with its 1-indexed line number in the error. An
+// empty (or blank) payload returns a nil slice, not an error — matching
+// orchestrator.IngestSignals' own no-op contract for an empty rows slice,
+// so a connector that polls and finds nothing new is not penalized for
+// piping through an empty batch.
 func parseSignalIngestPayload(payload []byte) ([]orchestrator.SignalIngestRow, error) {
 	var rows []orchestrator.SignalIngestRow
 	lines := strings.Split(string(payload), "\n")
@@ -1569,10 +1415,10 @@ func parseSignalIngestPayload(payload []byte) ([]orchestrator.SignalIngestRow, e
 }
 
 // marshalTaskContextResponse renders v (a task-current snapshot, routed
-// instructions list, or reduced environment view) as the full-object form
-// of a Phase 5b PR1 task-context RPC response: canonical JSON in Stdout. The
-// CLI (internal/sandbox's shim) is responsible for any client-side
-// `--format yaml` re-rendering — the broker always speaks JSON on the wire.
+// instructions list, or reduced environment view) as canonical JSON in
+// Stdout. The CLI (internal/sandbox's shim) is responsible for any
+// client-side `--format yaml` re-rendering — the broker always speaks JSON
+// on the wire.
 func marshalTaskContextResponse(v any) *sandbox.ExecResponse {
 	raw, err := json.Marshal(v)
 	if err != nil {

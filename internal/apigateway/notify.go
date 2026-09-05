@@ -1,9 +1,7 @@
 package apigateway
 
 // UpstreamAuthFailureNotifier is invoked on two distinct failure modes so an
-// operator can tell them apart — mirrors
-// internal/gitgateway.UpstreamAuthFailureNotifier's rationale exactly
-// (docs/plans/api-gateway.md §5 "upstream 401 の notify"):
+// operator can tell them apart:
 //
 //   - NotifyUpstreamAuthFailure: the upstream service responded with 401 to
 //     a request that WAS sent with injected credentials — the configured

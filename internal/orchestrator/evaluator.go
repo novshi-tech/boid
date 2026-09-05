@@ -25,9 +25,8 @@ func extractInstructionAgents(instructions Instructions) map[string]bool {
 // additionally require an instruction in task.Instructions addressed to that
 // hook's Agent.
 //
-// Phase 3-e fallback: when the behavior declares no agent-kind hook at all
-// (typical after the boid-kits claude-code/codex retirement landed in PR
-// #604), the evaluator synthesizes a virtual agent-kind hook for the active
+// Fallback: when the behavior declares no agent-kind hook at all, the
+// evaluator synthesizes a virtual agent-kind hook for the active
 // instruction's agent. The runner-inner-child hands every agent-kind job to
 // its HarnessAdapter directly, so a hook with no Argv is dispatch-ready
 // — see planner.PlanHook and adapters.HarnessAdapter.Run. The synthesis is

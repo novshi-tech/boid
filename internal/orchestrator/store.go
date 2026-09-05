@@ -32,34 +32,13 @@ func sqlStatusInList(statuses []TaskStatus) string {
 	return strings.Join(parts, ",")
 }
 
-// terminalStatusSQLList is derived once from IsTerminalStatus (model.go)
-// rather than hardcoded a second time here, so the open/closed/queue filter
-// SQL below can never drift from that helper as new statuses are added
-// (Opus指摘#9 応用: one source of truth).
-//
-// card-model-cleanup PR-2 (migration 0045) retired preExecutionStatusSQLList
-// (IsPreExecutionStatus itself no longer exists — see model.go): the
-// predicate it backed, "is this task in a not-yet-active card status", is
-// now answered directly by the tasks.type column wherever a query needs it
-// (see ListTasks's "triage" branch below), not by enumerating a status set.
+// terminalStatusSQLList is derived once from IsTerminalStatus (model.go) so
+// the status filters below can't drift from it as statuses are added.
 var (
 	terminalStatusSQLList = sqlStatusInList(filterTaskStatuses(IsTerminalStatus))
-	// notOpenSelfStatusSQLList = terminal ∪ {parked} — used by the self-clause
-	// of the "open" filter (項1, sqlOpenSelf): a fresh/resting card must not
-	// pollute the default open view on its own, distinct from the
-	// child-rescue/descendant clauses which keep it visible when it has live
-	// (executing) children.
-	//
-	// card-model-cleanup PR-2 (migration 0045) removed captured/triaged/ready
-	// from the status vocabulary entirely — they are no longer valid
-	// tasks.status values at all (the CHECK constraint rejects them), not
-	// merely excluded from this list. parked is the only non-terminal card
-	// status that belongs here: working is deliberately NOT included (see
-	// TaskStatusWorking's own doc comment in model.go) — a working card has
-	// already had a decision applied to it and belongs in Open the same way
-	// an executing task does. captured's old carve-out (docs/plans/
-	// ingestion-identity.md PR-2, B-2, 「captured の可視化」) is moot now that
-	// captured itself no longer exists.
+	// notOpenSelfStatusSQLList = terminal ∪ {parked}: the self-clause of the
+	// "open" filter. working is deliberately NOT included — a working card
+	// belongs in Open the same way an executing task does.
 	notOpenSelfStatusSQLList = sqlStatusInList(append(
 		append([]TaskStatus{}, filterTaskStatuses(IsTerminalStatus)...),
 		TaskStatusParked,
@@ -112,53 +91,26 @@ type TaskFilter struct {
 	WorkspaceID string
 	Title       string
 	ParentID    *string
-	// ActiveOnly narrows the result to non-terminal tasks (docs/plans/
-	// webui-detail-list-redesign.md §3.5's 「アクティブのみ (非終端)」トグル).
-	// This is a SEPARATE axis from Status — composes with any Status value
-	// (including "", meaning "no status predicate at all") rather than being
-	// yet another special Status keyword, because "non-terminal" must include
-	// TaskStatusParked (unlike the legacy "open" Status keyword's self-clause,
-	// which deliberately excludes parked — see notOpenSelfStatusSQLList's own
-	// doc comment). Ignored (no-op) when false.
+	// ActiveOnly narrows the result to non-terminal tasks (includes parked).
+	// Composes with Status via AND; no-op when false.
 	ActiveOnly bool
-	// Limit/Offset implement the list page's pagination (§3.5 / §5 論点4: LIMIT/
-	// OFFSET is enough at the current scale; keyset can follow if it stops
-	// being enough). Limit <= 0 means "no LIMIT clause" (unbounded, the
-	// pre-PR-4 default every non-web caller still gets). Offset > 0 with
-	// Limit <= 0 still applies (via SQLite's `LIMIT -1 OFFSET ?`) rather than
-	// being silently dropped.
+	// Limit<=0 means unbounded. Offset still applies (via SQLite's
+	// `LIMIT -1 OFFSET ?`) even when Limit<=0.
 	Limit  int
 	Offset int
 }
 
-// taskSelectCols は tasks テーブルの全カラム一覧（テーブル別名 t を使用）。
-//
-// card-model-cleanup PR-2 (migration 0045, docs/plans/card-model-cleanup.md
-// §3.4) 以降、tasks は Single Table Inheritance: card 専用列 (kind/urgency/
-// wake_at/wake_task_id/suggestion_verb/detail) と execution 専用列
-// (behavior/traits/readonly/branch_prefix/base_branch/payload/instructions/
-// auto_start) が同じテーブルに同居し、自分の type でない側の列は常に NULL
-// (CHECK 制約が保証)。scanTask がこの列順を前提に nullable スキャンするので、
-// 変更する場合は両方を同時に直すこと。
-//
-// tasks.worktree DB 列は branch-policy-simplification Phase 2 で Task 構造体
-// から外れたが、既存 DB との互換のため列自体は残す (NOT NULL DEFAULT FALSE、
-// migration 0007)。INSERT / UPDATE / SELECT からは列参照を落とし、書き込みは
-// 列 default に任せる。
+// taskSelectCols is the full tasks column list (alias t). tasks is a single
+// table for both card and execution rows (the unused type's columns are
+// NULL); scanTask depends on this exact column order — keep both in sync.
 const taskSelectCols = `t.id, t.type, t.project_id, t.remote_id, t.title, t.description, t.status,` +
 	` t.behavior, t.traits, t.readonly, t.branch_prefix, t.base_branch, t.payload, t.instructions, t.auto_start,` +
 	` t.kind, t.urgency, t.wake_at, t.wake_task_id, t.suggestion_verb, t.detail,` +
 	` t.ref, t.parent_id, t.idempotency_key, t.created_at, t.updated_at`
 
-// validateTaskTypeConsistency enforces design doc §3.5's invariant: Card is
-// non-nil iff Type == TaskTypeCard, Exec is non-nil iff Type ==
-// TaskTypeExecution. Called by CreateTask (task-creation side) and scanTask
-// (DB-scan side) — Q17 of docs/plans/card-model-cleanup.md §10 asks for the
-// check to exist on BOTH sides: the DB's own CHECK constraint (migration
-// 0045) already prevents a row from violating this, but scanTask's copy
-// catches a hand-built row from a test fixture or a future direct SQL write
-// that bypasses CreateTask/UpdateTask, and CreateTask's copy fails fast
-// before ever reaching the DB.
+// validateTaskTypeConsistency enforces that Card is non-nil iff Type ==
+// TaskTypeCard, and Exec is non-nil iff Type == TaskTypeExecution. Called by
+// both CreateTask and scanTask so a hand-built row bypassing them is caught too.
 func validateTaskTypeConsistency(t *Task) error {
 	switch t.Type {
 	case TaskTypeCard:
@@ -181,20 +133,9 @@ func validateTaskTypeConsistency(t *Task) error {
 	return nil
 }
 
-// rejectIdempotencyKeyTypeMismatch guards CreateTask's idempotency_key
-// get-or-create (PR #1012 review, Opus L3): the pre-insert lookup and the
-// post-INSERT-conflict fallback both run BEFORE validateTaskTypeConsistency
-// would otherwise catch a shape problem, and BEFORE the caller-requested
-// Task (t) is overwritten with the existing row — so without this check, a
-// TaskTypeCard create whose idempotency_key collides with an existing
-// TaskTypeExecution row (or vice versa) would silently hand back a task of
-// the WRONG type: `t.Type` ends up existing.Type, `t.Exec`/`t.Card` end up
-// whichever the existing row actually has, and a caller that (reasonably)
-// assumed its own requested type would get e.g. a nil Exec on what it
-// thinks is an execution task. This can only happen when two DIFFERENT
-// call sites reuse the same (project_id, parent_id, idempotency_key) for
-// semantically different tasks — a caller bug, but one that must surface
-// as an error, not a silently wrong-shaped success.
+// rejectIdempotencyKeyTypeMismatch guards CreateTask's idempotency-key
+// get-or-create: if an existing row sharing the key has a different Type
+// than requested, error out instead of silently returning a wrong-shaped task.
 func rejectIdempotencyKeyTypeMismatch(requested, existing *Task) error {
 	if requested.Type != "" && existing.Type != requested.Type {
 		return fmt.Errorf(
@@ -205,18 +146,9 @@ func rejectIdempotencyKeyTypeMismatch(requested, existing *Task) error {
 	return nil
 }
 
-// taskChildCountCols は子タスク数を集計するサブクエリカラム群（テーブル別名 t を前提）。
-//
-// open_child_count (最後の1本) は pre-execution な子を引き続きカウントする —
-// 逆輸入1で「open/specced な子は task_triage.detail.children の JSON に留め、
-// dispatch 時にのみ task 化する」設計になったため、pre-execution な子タスクが
-// 実在して親の done 主張を塞ぐケースはそもそも発生しない。ここを緩めると
-// verifyDoneClaim の詐称防止ガードを無意味に弱めるだけになる (Opus指摘#6)。
-// terminal (done/aborted/dropped) だけを除外する。
-// awaiting カウント (最後の1本) は docs/plans/webui-detail-list-redesign.md
-// PR-4 (§3.5) 追加分: 一覧の行ロールアップで「⚠ N」(質問持ちの子の存在) を
-// 親の行に上げるための集計。他の3本と同じく直接の子のみを数える（孫は数えない
-// — §3.3-2 の子一覧統合と同じく1階層のみが対象）。
+// taskChildCountCols aggregates direct-child counts per status (alias t):
+// total, done, aborted, open (non-terminal), and awaiting. Direct children
+// only — grandchildren are not counted.
 var taskChildCountCols = `` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id),` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status = 'done'),` +
@@ -226,17 +158,8 @@ var taskChildCountCols = `` +
 
 func CreateTask(dbtx db.DBTX, t *Task) error {
 	// Get-or-create: when ref is set, return the existing task (scoped by
-	// ParentID, "" for a root task, AND ProjectID) instead of inserting a
-	// duplicate. This makes create idempotent across supervisor resume
-	// cycles (child-create replay) AND, since Phase 1 PR-4 (docs/plans/
-	// cross-project-issue-triage.md 論点7), across a root-level ingestion
-	// push replay. ProjectID scoping was added by migration 0037 (codex
-	// review Blocker fix): idx_tasks_ref_parent (migration 0010) alone was
-	// unique on (ref, parent_id) only, so once root tasks (parent_id = "" for
-	// every workspace) became dedup-eligible, two different workspaces using
-	// the same source ref would collide and the second one would silently
-	// receive the FIRST workspace's task back — see FindTaskByRef's doc
-	// comment for the full story.
+	// ParentID and ProjectID) instead of inserting a duplicate — makes
+	// create idempotent across replays. See FindTaskByRef for scope details.
 	if t.Ref != "" {
 		existing, err := FindTaskByRef(dbtx, t.Ref, t.ParentID, t.ProjectID)
 		if err != nil {
@@ -248,17 +171,9 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		}
 	}
 
-	// Get-or-create: idempotency_key-based (docs/plans/
-	// signal-ingest-detailed-design.md §8, migration 0047). Independent of
-	// the Ref check above — a task may carry either, both, or neither.
-	// Unlike Ref, idempotency_key has no external-identity meaning (no
-	// UUID-shortcut lookup, no link/drop semantics — see the field's own doc
-	// comment on Task). Scoped by (ProjectID, ParentID) — same 3-column scope
-	// migration 0037 uses for Ref, and for the identical reason: scoping by
-	// ProjectID alone let two DIFFERENT parents in the same project silently
-	// collide on a reused key, with the second parent's create call handing
-	// back the FIRST parent's child (PR #1012 review, Opus M3 — see
-	// Task.IdempotencyKey's own doc comment for the full story).
+	// Get-or-create: idempotency_key-based, independent of the Ref check
+	// above (a task may carry either, both, or neither). Scoped by
+	// (ProjectID, ParentID) — see Task.IdempotencyKey's doc comment.
 	if t.IdempotencyKey != "" {
 		existing, err := FindTaskByIdempotencyKey(dbtx, t.ProjectID, t.ParentID, t.IdempotencyKey)
 		if err != nil {
@@ -284,10 +199,8 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	t.CreatedAt = now
 	t.UpdatedAt = now
 	if t.Status == "" {
-		// Type-specific defaults: "pending" is not a legal card status (and
-		// "parked" is not a legal execution status) under migration 0045's
-		// CHECK constraint, so the old type-agnostic default-to-pending
-		// would fail a fresh card outright.
+		// Type-specific defaults: "pending" and "parked" are each valid for
+		// only one task type under the tasks CHECK constraint.
 		switch t.Type {
 		case TaskTypeCard:
 			t.Status = TaskStatusParked
@@ -313,10 +226,8 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	}
 	cardCols := cardInsertValues(t.Card)
 
-	// idempotency_key is genuinely nullable (migration 0047's own comment):
-	// an empty Go string must bind SQL NULL, not the empty string, so the
-	// partial unique index's `WHERE idempotency_key IS NOT NULL` never sees a
-	// keyless row.
+	// An empty Go string must bind SQL NULL, not "", so the partial unique
+	// index's `WHERE idempotency_key IS NOT NULL` never sees a keyless row.
 	var idempotencyKey any
 	if t.IdempotencyKey != "" {
 		idempotencyKey = t.IdempotencyKey
@@ -345,9 +256,7 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 			}
 		}
 		// Concurrent create: same race, for idempotency_key's own partial
-		// unique index (migration 0047) instead of ref's. Independent check —
-		// see the pre-insert idempotency_key block above for why this doesn't
-		// fold into the Ref branch.
+		// unique index instead of ref's.
 		if t.IdempotencyKey != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			existing, findErr := FindTaskByIdempotencyKey(dbtx, t.ProjectID, t.ParentID, t.IdempotencyKey)
 			if findErr == nil && existing != nil {
@@ -437,20 +346,9 @@ func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 	return t, nil
 }
 
-// GetTaskStatus reads ONLY a task's status, by exact id.
-//
-// Split out from GetTask because GetTask is not a cheap read: taskSelectCols is
-// followed by taskChildCountCols, five correlated `SELECT COUNT(*) FROM tasks c
-// WHERE c.parent_id = t.id` subqueries, and tasks(parent_id) is deliberately
-// unindexed (docs: the index was judged not to pay for itself) — so each call
-// costs five scans of the tasks table. That is fine for a one-shot lookup and
-// wrong for something polled once a second per waiter, on a pool that is a
-// single connection (internal/db/db.go's SetMaxOpenConns(1)) shared by every
-// dispatch, sweep and web request.
-//
-// No prefix fallback, unlike GetTask: this is for callers that already resolved
-// an id and are re-reading it, so a partial id here means the caller skipped
-// the resolve rather than that it wants a lookup.
+// GetTaskStatus reads only a task's status, by exact id — cheaper than
+// GetTask (whose child-count subqueries scan tasks.parent_id, which is
+// unindexed), for callers that poll tightly. No prefix fallback.
 func GetTaskStatus(dbtx db.DBTX, id string) (TaskStatus, error) {
 	var status string
 	err := dbtx.QueryRow(`SELECT status FROM tasks WHERE id = ?`, id).Scan(&status)
@@ -468,86 +366,28 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	var args []any
 	var joins []string
 
-	// "open" は特殊フィルタ: 自身が open 状態 OR open な子を持つ（ヘッダー救済）。
-	//
-	// docs/plans/webui-detail-list-redesign.md PR-4 (§3.6): 再帰 CTE
-	// (open_descendants/open_ancestors、複数階層の祖先救済・子孫救済) は
-	// 一覧のツリー表示 (task_tree.templ, BuildTreeItems) 撤廃に伴い削除した —
-	// 存在理由がツリー表示の孤児防止だけだったため (§2.2 の記述)。残るのは
-	// self clause と 1 階層の子救済 (直接の子だけを見る非相関サブクエリ) の
-	// みで、CLI/API から直接 "open" を指定する既存の呼び手 (Web UI 自身は
-	// もう "open" を送らない — 既定は無フィルタ + ActiveOnly トグル) との
-	// 後方互換のために残してある。
-	//
-	// NOT IN は役割ごとに使う集合が異なる (Opus指摘#7):
-	//   - 子救済 (taskChildCountCols 型の直接の子カウント) は「terminal で
-	//     なければ open」— pre-execution な子を含めたまま。進行中の
-	//     triage task (executing な子を持つ triaged 親など) を隠さないため。
-	//   - 自身が open かの self clause だけは「terminal でも pre-execution でも
-	//     なければ open」— pre-execution な task 単体は従来の open ビューを
-	//     汚さない (項1 本来の目的)。
+	// "open": self is open (not terminal, not parked), OR has a direct child
+	// that is not terminal.
 	if filter.Status == "open" {
 		conditions = append(conditions, `(t.status NOT IN (`+notOpenSelfStatusSQLList+`) OR `+
 			`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN (`+terminalStatusSQLList+`)) > 0)`)
 	} else if filter.Status == "closed" {
 		conditions = append(conditions, "t.status IN ("+terminalStatusSQLList+")")
 	} else if filter.Status == "cards_live" || filter.Status == "triage" {
-		// Phase 1 PR-5a; card-model-cleanup PR-2 (migration 0045) restates the
-		// predicate on tasks.type instead of enumerating a status set: 「今生
-		// きている card」= every card that hasn't reached a terminal status
-		// yet (parked ∪ working). ListCards's default filter (`boid card
-		// list` with no status — the exact call khi's open_triage_task_ids,
-		// app/trigger.py, makes), so this predicate directly decides which
-		// cards khi's signal detection considers on every sweep
-		// (docs/plans/suggestion-as-state-transition-impl.md §4.1's khi 対象軸
-		// note).
-		//
-		// docs/plans/webui-detail-list-redesign.md PR-4 (§3.6): renamed from
-		// "triage" to "cards_live" — the predicate content is UNCHANGED
-		// (a status name, not a filter name, since card machine v2 has no
-		// "triaged" status at all — see the design doc's own note on why the
-		// old name confused readers). "triage" is accepted as a compatibility
-		// alias for any EXPLICIT caller (no known external one exists as of
-		// this PR — see the design doc's own audit), so a stale bookmark or
-		// script keeps working. card_read.go's internal default-fill (an
-		// unset status defaulting to this predicate, the path khi's
-		// no-status call actually takes) has been updated to use the
-		// canonical "cards_live" name directly, since that is boid's own
-		// code, not an external caller needing the alias.
-		//
-		// done is DELIBERATELY excluded (a decision made here, not just
-		// inherited): non-boid signal sources (Slack/Jira/Bitbucket) do not
-		// drop a done card from their own re-detection (khi's detect.py
-		// NO_RECORD_STATUSES is dropped/aborted only), so a source reopening
-		// a done card is already handled outside this filter. Including done
-		// here would mean every done card stays a signal candidate until
-		// 30-day GC sweeps it — unbounded work for no additional coverage.
+		// "cards_live": card tasks not yet in a terminal status (parked ∪
+		// working). done is deliberately excluded. "triage" is a
+		// compatibility alias for the same predicate.
 		conditions = append(conditions, "t.type = 'card' AND t.status IN ('parked', 'working')")
 	} else if filter.Status != "" {
-		// docs/plans/webui-detail-list-redesign.md PR-4 (§3.6, §5 論点3):
-		// "queue_next" membership (the old `suggestion_verb != ''` branch) is
-		// REMOVED — the Queue tab it backed is gone (タブ4枚撤廃), and no
-		// external caller sends it (grep confirmed by the design doc's own
-		// audit; the Web UI's own default fill was "open", never
-		// "queue_next"). It, and every other exact status string, now falls
-		// through to this single generic `t.status = ?` literal-equality
-		// branch. "queue_next" is not a real tasks.status value (the CHECK
-		// constraint would reject it), so that comparison can never match a
-		// row — an explicit `?status=queue_next` call deterministically
-		// returns an EMPTY list, not an error. This is the decided answer to
-		// 論点3's "status=queue_next を明示指定したときの応答": empty, not 400
-		// — pinned by TestListTasks_QueueNext_ReturnsEmpty.
+		// Any other exact status string. A value that isn't a real
+		// tasks.status (e.g. the retired "queue_next") just matches zero
+		// rows rather than erroring — see TestListTasks_QueueNext_ReturnsEmpty.
 		conditions = append(conditions, "t.status = ?")
 		args = append(args, filter.Status)
 	}
-	// ActiveOnly (docs/plans/webui-detail-list-redesign.md §3.5's 「アクティブ
-	// のみ (非終端)」トグル) is a second, independent axis from Status above —
-	// composes via AND with whatever Status already narrowed to (including no
-	// narrowing at all, filter.Status == ""). Deliberately just "not
-	// terminal", not notOpenSelfStatusSQLList's terminal∪parked: a parked
-	// card IS active (it hasn't reached done/aborted/dropped), unlike the
-	// legacy "open" Status keyword's self-clause, which carves parked out
-	// because the (now-removed) Parked tab owned it instead.
+	// ActiveOnly is a second, independent axis from Status — composes via AND.
+	// Deliberately just "not terminal" (parked counts as active), unlike the
+	// "open" self-clause above which excludes parked.
 	if filter.ActiveOnly {
 		conditions = append(conditions, "t.status NOT IN ("+terminalStatusSQLList+")")
 	}
@@ -578,19 +418,10 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	// docs/plans/webui-detail-list-redesign.md PR-4 (§3.5, §3.2): every view
-	// sorts by updated_at DESC now (tie-break: id ASC, deterministic) — the
-	// per-branch ORDER BY this used to carry (created_at DESC by default,
-	// updated_at DESC only for "closed", a bespoke urgency-then-created_at
-	// order for "queue_next") is gone along with "queue_next" itself. A
-	// suggestion attached to a card, or any status transition, bumps
-	// updated_at (PR-3, TouchTaskUpdatedAt/UpdateTask) — so this single ORDER
-	// BY is what makes "a card just got a suggestion" surface at the top of
-	// every view without a dedicated queue ordering.
+	// Every view sorts by updated_at DESC (tie-break id ASC), so any status
+	// transition or new suggestion (which bump updated_at) surfaces at top.
 	query += " ORDER BY t.updated_at DESC, t.id ASC"
-	// LIMIT/OFFSET (§3.5, §5 論点4): Limit<=0 means unbounded (every non-web
-	// caller today). Offset>0 with Limit<=0 still applies via SQLite's
-	// LIMIT -1 (unbounded) OFFSET ? rather than being silently dropped.
+	// Limit<=0 means unbounded; Offset still applies via SQLite's LIMIT -1.
 	if filter.Limit > 0 || filter.Offset > 0 {
 		limit := filter.Limit
 		if limit <= 0 {
@@ -624,50 +455,13 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	return tasks, nil
 }
 
-// UpdateTask persists every mutable Task column. Compare against CreateTask's
-// INSERT column list before adding a new field to Task: a column missing
-// here while present there is a silent no-op — the caller gets a nil error
-// (and, if it copies the request field onto the in-memory *Task first, a
-// response that *looks* updated) while the row underneath keeps its old
-// value. This exact class of bug shipped for remote_id/project_id/
-// auto_start (fixed together; see update_task_columns_test.go /
-// task_update_persist_test.go) — found via khi-task-collector's self-heal
-// loop patching remote_id every cycle forever without it ever sticking.
+// UpdateTask persists every mutable Task column. Keep this in sync with
+// CreateTask's INSERT column list: a column missing here is a silent no-op.
 //
-// Two INSERT columns are deliberately absent from this UPDATE, not dropped:
-//   - ref: an immutable dedup key by design (docs/plans/
-//     ingestion-identity.md 決定16 — "後から変えられない dedup キー").
-//     CreateTask is the only writer; there is no
-//     UpdateTaskRequest.Ref field at all (internal/apiwire/task.go), so
-//     there is no API-level "口" that could even attempt to change it.
-//   - behavior: set once at CreateTask time and never exposed on
-//     UpdateTaskRequest either (only CreateTaskRequest has Behavior) — no
-//     update port exists, so there is nothing to silently drop.
-//
-// remote_id and auto_start have no status guard here — callers rely on
-// being able to set them regardless of task status (khi patches remote_id
-// on working/parked tasks; a caller may flip auto_start after the task
-// already left pending). project_id, by contrast, IS gated by
-// IsPreDispatchEditableStatus one layer up in
-// api.TaskAppService.UpdateTask — this function has no status of its own to
-// check, it just persists whatever the caller decided was valid to set.
-//
-// card-model-cleanup PR-2 (migration 0045): this SET clause deliberately
-// does NOT touch kind/urgency/wake_at/wake_task_id/suggestion_verb/detail
-// (the CardAttrs columns) even though they now live on this same tasks row.
-// Those are UpsertTaskTriage's exclusive write path (workflow_card.go's
-// park/attrs_set/child_* side effects), which does its own read-modify-write
-// scoped to exactly those columns; folding them into this function's blanket
-// rewrite would introduce a lost-update race that did NOT exist before the
-// STI merge (task_triage was a genuinely separate table/row with its own
-// writer before this PR — a concurrent GetTask-then-UpdateTask on the core
-// columns could never clobber a concurrent attrs_set). The exec columns
-// (traits/readonly/branch_prefix/base_branch/payload/instructions/
-// auto_start) keep the SAME blanket-rewrite treatment they always had
-// (UpdateTask was already their sole non-locked writer pre-refactor); for a
-// card, t.Exec is nil so execInsertValues binds SQL NULL to all of them —
-// already their permanent value on a card row (CHECK-enforced), so this is
-// a no-op, not a new write path.
+// ref and behavior are immutable after creation and intentionally excluded.
+// The CardAttrs columns (kind/urgency/wake_at/wake_task_id/suggestion_verb/
+// detail) are also excluded — UpsertTaskTriage owns their read-modify-write
+// exclusively; folding them in here would race with it.
 func UpdateTask(dbtx db.DBTX, t *Task) error {
 	if err := validateTaskTypeConsistency(t); err != nil {
 		return fmt.Errorf("update task: %w", err)
@@ -687,15 +481,9 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 	return nil
 }
 
-// TouchTaskUpdatedAt bumps id's updated_at column to now — a single-column
-// statement that carries NO status, deliberately narrower than UpdateTask's
-// blanket rewrite (docs/plans/webui-detail-list-redesign.md §3.2, PR-3). It
-// exists so a non-transitioning side effect (attrs_set's suggestion
-// attachment, child_closed's parent self-record) can record "something
-// worth surfacing changed here" in the SAME transaction as its own write,
-// without reintroducing the stale-snapshot race UpdateTask(t) risks for
-// those actions — see workflow_action.go's skipTaskUpdate doc comment for
-// why those actions never call UpdateTask with a caller-held Task value.
+// TouchTaskUpdatedAt bumps id's updated_at column to now, without the
+// stale-snapshot race a full UpdateTask(t) risks for non-transitioning side
+// effects. See workflow_action.go's skipTaskUpdate doc comment.
 func TouchTaskUpdatedAt(dbtx db.DBTX, id string) error {
 	_, err := dbtx.Exec(`UPDATE tasks SET updated_at = ? WHERE id = ?`, time.Now().UTC(), id)
 	if err != nil {
@@ -704,19 +492,10 @@ func TouchTaskUpdatedAt(dbtx db.DBTX, id string) error {
 	return nil
 }
 
-// CreateAction inserts a, then — within the SAME statement's transaction —
-// ingests it into its target card's workspace inbox when eligible
-// (docs/plans/boid-internal-signal-inbox.md §4.5). resolver may be nil (no
-// metaproject lookup wired — e.g. most existing tests that don't care about
-// signals at all): IngestActionSignal treats that identically to "this
-// workspace declares no metaproject", a quiet no-op that leaves every other
-// behavior of this function untouched (Q5's "1 ビットも変わらない").
-//
-// ctx carries the write's origin project via WriterProjectIDFromContext
-// (signal_ingest_bridge.go) when this write came from inside a sandbox
-// (internal/server/boid_executor.go's ExecuteBoidBuiltin is the sole place
-// that ever sets it) — used only for the actor-axis self-reference check,
-// never for anything this function itself does with a.
+// CreateAction inserts a, then ingests it into its target card's workspace
+// inbox when eligible. resolver may be nil (no metaproject lookup wired),
+// treated as a quiet no-op. ctx may carry the write's origin project via
+// WriterProjectIDFromContext, used only for the actor-axis self-reference check.
 func CreateAction(ctx context.Context, dbtx db.DBTX, a *Action, resolver MetaProjectResolver) error {
 	if a.ID == "" {
 		a.ID = uuid.New().String()
@@ -735,9 +514,8 @@ func CreateAction(ctx context.Context, dbtx db.DBTX, a *Action, resolver MetaPro
 		return fmt.Errorf("insert action: %w", err)
 	}
 
-	// Best-effort, deliberately not returned as an error (§6.2): a failed
-	// ingest must not roll back the action that already committed above —
-	// see IngestActionSignal's own doc comment for why (Q11).
+	// Best-effort: a failed ingest must not roll back the action already
+	// committed above — see IngestActionSignal's own doc comment.
 	if ingestErr := IngestActionSignal(ctx, dbtx, a, resolver); ingestErr != nil {
 		slog.Warn("internal signal ingest failed; action was still recorded",
 			"action_id", a.ID, "task_id", a.TaskID, "type", a.Type, "error", ingestErr)
@@ -778,17 +556,10 @@ type GCResult struct {
 	Runtimes   int64
 	SandboxTmp int64 // leaked /tmp/boid-* sandbox artifacts removed
 	Devices    int64 // revoked web devices deleted
-	// TriggerRuns is the count of finished trigger_runs rows GCTriggerRuns
-	// deleted (N-2, Opus review) — trigger_runs otherwise has no retention
-	// at all and grows unbounded (khi's 2 triggers alone project to
-	// ~105,000 rows/year).
+	// TriggerRuns is the count of finished trigger_runs rows GCTriggerRuns deleted.
 	TriggerRuns int64
-	// Signals is the count of signals rows GCSignals deleted
-	// (docs/plans/signal-ingest-detailed-design.md §2/§9: "inbox の GC:
-	// acked 30 日で既存 GC tx に相乗り") — both acked rows older than the
-	// cutoff and unacked (including dead-lettered) rows whose received_at
-	// is older than the cutoff, so a permanently-dead signal doesn't linger
-	// forever just because nothing ever acks it.
+	// Signals is the count of signals rows GCSignals deleted: both acked
+	// rows and unacked (including dead-lettered) rows older than the cutoff.
 	Signals int64
 }
 
@@ -826,12 +597,9 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 	subquery := `SELECT id FROM tasks WHERE ` + taskCond
 	result := &GCResult{}
 
-	// Task-less jobs (ad-hoc `boid agent`/`boid exec` sessions with no
-	// task_id, e.g. `boid agent claude -p <project>`) have no task row to
+	// Task-less jobs (ad-hoc sessions with no task_id) have no task row to
 	// join against, so they are GC'd separately by their own terminal
-	// status (jobs.status) and age (jobs.updated_at) instead of a task's.
-	// actions doesn't need this: it has a NOT NULL task_id FK, so every row
-	// is task-bound and already covered above.
+	// status and age.
 	var tasklessCond string
 	var tasklessArgs []any
 	if olderThan > 0 {
@@ -918,19 +686,9 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 	return result, nil
 }
 
-// GCTriggerRuns deletes FINISHED trigger_runs rows older than olderThan
-// (N-2, Opus review): with no retention at all, this table grows unbounded
-// (`every: 10m` × 1 trigger = 144 rows/day = ~52,560 rows/year; khi's 2
-// triggers alone project to ~105,000 rows/year). olderThan=0 disables the
-// time filter, matching GCTasks' own convention (every finished row is
-// eligible). In-flight rows (finished_at IS NULL) are NEVER touched
-// regardless of age — they are single-flight's own source of truth, not
-// stale history (the same reason GCTasks never deletes a non-terminal
-// task).
-//
-// Called from TaskGCStore.GC in the SAME transaction as GCTasks, so
-// `boid gc` / POST /api/gc purges trigger_runs on the existing 30-day
-// schedule without a separate GC pass.
+// GCTriggerRuns deletes finished trigger_runs rows older than olderThan.
+// olderThan=0 disables the time filter. In-flight rows (finished_at IS NULL)
+// are never touched regardless of age.
 func GCTriggerRuns(dbtx db.DBTX, olderThan time.Duration, dryRun bool) (int64, error) {
 	cond := `finished_at IS NOT NULL`
 	var args []any
@@ -977,39 +735,18 @@ func FindTaskByRemote(dbtx db.DBTX, remoteID string) (*Task, error) {
 }
 
 // FindTaskByRef returns the task matching the given ref within the given
-// (parentID, projectID) scope, or nil if no matching task is found.
-// If ref is a UUID, the task is looked up by id directly (backward
-// compatibility), but the result is still validated against BOTH parentID
-// and projectID before being returned — treating a scope mismatch the same
-// as "not found" (nil, nil), not an error.
-//
-// projectID scoping was added in Phase 1 PR-4 (docs/plans/
-// cross-project-issue-triage.md 論点7, codex review Blocker fix): once
-// root tasks (parentID == "") became dedup-eligible, EVERY workspace's root
-// tasks share parent_id = "", so scoping by parent_id alone let a caller in
-// workspace B silently receive workspace A's task back just by reusing the
-// same source ref string (or, for the UUID branch, by supplying any task ID
-// it happened to know) — a cross-workspace task leak. Callers MUST pass the
-// project they are creating/looking within; there is no "unscoped" call left
-// (idx_tasks_ref_parent_project, migration 0037, enforces the same scope at
-// the DB level for the ref+parent_id uniqueness itself).
+// (parentID, projectID) scope, or nil if no matching task is found. If ref
+// is a UUID, the task is looked up by id directly (backward compatibility),
+// but the result is still validated against BOTH parentID and projectID
+// before being returned — a scope mismatch is treated as "not found", not an error.
 func FindTaskByRef(dbtx db.DBTX, ref, parentID, projectID string) (*Task, error) {
 	if ref == "" {
 		return nil, nil
 	}
-	// UUID refs are looked up by task id first, for backward compatibility
-	// (some callers pass a real task ID as Ref, expecting an id-based
-	// fetch). If that doesn't yield an in-scope match, fall through to the
-	// ordinary ref-column scoped lookup below (codex review round 2 Major
-	// fix): an external source_ref can coincidentally BE UUID-shaped (Phase
-	// 1 PR-4 ingestion, 論点7 — plausible for some ticketing systems' issue
-	// ids), in which case it was never meant as a task-ID lookup at all. The
-	// id-based branch alone made resending such a ref non-idempotent: a
-	// created task's own (fresh, auto-generated) ID is a DIFFERENT UUID than
-	// the string stored in its `ref` column, so a retry's id-lookup would
-	// always miss, hit the unique index on re-insert, and then miss AGAIN on
-	// the error-fallback retry — surfacing as a hard error instead of
-	// returning the existing task.
+	// UUID refs are looked up by task id first, for backward compatibility.
+	// If that doesn't yield an in-scope match, fall through to the ordinary
+	// ref-column scoped lookup below — an external source_ref can
+	// coincidentally be UUID-shaped without being a task-ID reference.
 	if isUUID(ref) {
 		t, err := GetTask(dbtx, ref)
 		if err != nil && !errors.Is(err, ErrTaskNotFound) {
@@ -1037,19 +774,9 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID, projectID string) (*Task, error)
 
 // FindTaskByIdempotencyKey returns the task matching the given idempotency
 // key within the given (projectID, parentID) scope, or nil if no matching
-// task is found. See migration 0047 and Task.IdempotencyKey's doc comment
-// for the field's contract (docs/plans/signal-ingest-detailed-design.md §8)
-// and for why parentID is part of the scope (PR #1012 review, Opus M3: a
-// project-only scope let two different parents silently collide on a reused
-// key).
-//
-// Unlike FindTaskByRef, there is no UUID-shaped-string special case here:
-// idempotency_key is never treated as a stand-in for a task ID, only as an
-// opaque workspace-internal stable key. The equality comparison below also
-// never needs an explicit `IS NOT NULL` guard — SQL's NULL = 'x' is neither
-// true nor false, so a keyless (NULL) row can never match a non-empty
-// idempotencyKey argument, and this function itself short-circuits before
-// querying when idempotencyKey is empty.
+// task is found. See Task.IdempotencyKey's doc comment for the field's
+// contract. Unlike FindTaskByRef, there is no UUID-shaped-string special
+// case: idempotency_key is never treated as a stand-in for a task ID.
 func FindTaskByIdempotencyKey(dbtx db.DBTX, projectID, parentID, idempotencyKey string) (*Task, error) {
 	if idempotencyKey == "" {
 		return nil, nil
@@ -1119,14 +846,10 @@ type taskScanner interface {
 	Scan(dest ...any) error
 }
 
-// scanTask reads one tasks row (STI: card-model-cleanup PR-2, migration
-// 0045) into a tagged-union Task. Every subtype-specific column is scanned
-// into a nullable sql.Null* target regardless of the row's actual type — the
-// DB's CHECK constraint guarantees the "other" type's columns are NULL, but
-// scanTask cannot rely on that alone (a hand-built fixture row in a test, or
-// a future direct SQL write, could violate it) — see
-// validateTaskTypeConsistency's own doc comment for why this function calls
-// it too, not just CreateTask.
+// scanTask reads one tasks row into a tagged-union Task. Every subtype-
+// specific column is scanned into a nullable sql.Null* target regardless of
+// the row's actual type, since scanTask cannot assume the DB's CHECK
+// constraint on the "other" type's columns holds for every row it sees.
 func scanTask(s taskScanner) (*Task, error) {
 	var t Task
 	var taskType string

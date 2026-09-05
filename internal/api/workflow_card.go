@@ -16,10 +16,9 @@ import (
 // statusErrorForGetTaskErr classifies a GetTask failure: only "the row
 // genuinely doesn't exist" (orchestrator.ErrTaskNotFound) is a 404. Anything
 // else (a DB connectivity error, a scan failure, ...) is a 500 — collapsing
-// every GetTask error into 404 (as Dispatch originally did) would report a
-// transient DB outage as "task not found", which is misleading and, worse,
-// indistinguishable from the real not-found case in logs/monitoring (codex
-// review round 1, Minor).
+// every GetTask error into 404 would report a transient DB outage as "task
+// not found", which is misleading and indistinguishable from the real
+// not-found case in logs/monitoring.
 func statusErrorForGetTaskErr(err error) *StatusError {
 	if errors.Is(err, orchestrator.ErrTaskNotFound) {
 		return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
@@ -57,17 +56,13 @@ func parseParkPayload(payload json.RawMessage) (*parkPayload, error) {
 
 // applyParkSideEffect upserts wake_at/wake_task_id into the task_triage
 // sidecar as part of the same transaction that records the park action,
-// preserving any existing kind/urgency/detail. This is the "real writer"
-// PR-1's park/wake vertical slice needed (docs/plans/cross-project-issue-triage.md
-// Phase 1 PR-1, Opus指摘#1/#12) — park's origin status itself is NOT
-// duplicated here; it's derived later from the actions log via ParkedFrom.
-// p must already be validated via parseParkPayload.
+// preserving any existing kind/urgency/detail — park's origin status
+// itself is NOT duplicated here; it's derived later from the actions log
+// via ParkedFrom. p must already be validated via parseParkPayload.
 func applyParkSideEffect(tx TxStore, taskID string, p *parkPayload) error {
 	// Only "no existing row" should start a fresh sidecar. Any other error
-	// (DB connectivity, scan failure, ...) was previously swallowed the same
-	// way, which would silently blow away an existing row's kind/urgency/
-	// detail on a transient failure instead of surfacing it (codex review
-	// round 1, Minor).
+	// (DB connectivity, scan failure, ...) must surface rather than
+	// silently blow away an existing row's kind/urgency/detail.
 	tt, err := tx.GetTaskTriage(taskID)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -95,8 +90,7 @@ func applyParkSideEffect(tx TxStore, taskID string, p *parkPayload) error {
 }
 
 // childAddedPayload is the shape of the "child_added" action's payload:
-// {"id": "<child id>", "title": "<optional>"}. Phase 1 PR-4 (docs/plans/
-// cross-project-issue-triage.md 論点4/6).
+// {"id": "<child id>", "title": "<optional>"}.
 type childAddedPayload struct {
 	ID    string `json:"id"`
 	Title string `json:"title,omitempty"`
@@ -169,7 +163,7 @@ func parseChildDroppedPayload(payload json.RawMessage) (*childDroppedPayload, er
 // applyChildDroppedSideEffect closes a child khi decided not to pursue.
 // A 409 covers both refusals orchestrator.DropDetailChild makes: an unknown
 // id (nothing to drop) and a dispatched child (its task is running — that is
-// the daemon's lifecycle to finish, 論点9). An already-closed child is an
+// the daemon's lifecycle to finish). An already-closed child is an
 // idempotent no-op so a resend after a lost ack stays harmless.
 func applyChildDroppedSideEffect(tx TxStore, taskID string, p *childDroppedPayload) error {
 	tt, err := tx.GetTaskTriage(taskID)
@@ -195,7 +189,7 @@ func applyChildDroppedSideEffect(tx TxStore, taskID string, p *childDroppedPaylo
 
 // childSpeccedPayload is the shape of the "child_specced" action's payload:
 // the child id plus its execution recipe (orchestrator.TaskTriageChildSpec's
-// fields). Phase 1 PR-4.
+// fields).
 type childSpeccedPayload struct {
 	ID          string `json:"id"`
 	Title       string `json:"title,omitempty"`
@@ -252,47 +246,34 @@ func applyChildSpeccedSideEffect(tx TxStore, taskID string, p *childSpeccedPaylo
 }
 
 // promotedAttrVocabulary lists the attrs_set keys the daemon promotes out
-// of the opaque detail blob into real task_triage columns, together with the
-// closed vocabulary each accepts (docs/plans/cross-project-issue-triage.md
-// Phase 1 PR-5a; suggestion added by PR-2, docs/plans/
-// suggestion-as-state-transition-impl.md §4.1).
+// of the opaque detail blob into real task_triage columns, together with
+// the closed vocabulary each accepts.
 //
 // Why these are not opaque like every other attrs key: each one is a real,
-// promoted-out column with readers beyond the opaque blob. Historically
-// (PR-2 through docs/plans/webui-detail-list-redesign.md PR-4) that reader
-// was a SQL queue predicate — ListTasks("queue_next") INNER JOINed
-// task_triage, filtered on tt.suggestion_verb, and ordered by tt.urgency.
-// PR-4 (§3.6) removed that predicate entirely (queue_next no longer has
-// special membership semantics — store.go's ListTasks) and dropped urgency
-// from every display surface, but urgency/kind/suggestion_verb stay
-// promoted columns regardless: suggestion_verb backs the `/api/cards` read
-// surface (CardView.SuggestionVerb, card_read.go — khi's own external
-// contract) AND the change-detection this same file's notifySuggestionArrived
-// gate and PR-3's updated_at bump both key off (oldVerb comparison, below) —
-// neither of those can read a value that only ever reached detail.attrs.
-// Before PR-5a nothing wrote the urgency column at all, which left the (then
-// still SQL-driven) queue view permanently empty; the same gap existed for
-// suggestion_verb before PR-2. kind rides along because it is the same
-// shape (a real column, daemon vocabulary, no channel knowledge).
+// promoted-out column with readers beyond the opaque blob. suggestion_verb
+// backs the `/api/cards` read surface (CardView.SuggestionVerb,
+// card_read.go — khi's own external contract) and the change-detection
+// this same file's notifySuggestionArrived gate keys off (oldVerb
+// comparison, below) — neither can read a value that only ever reached
+// detail.attrs. kind rides along because it is the same shape (a real
+// column, daemon vocabulary, no channel knowledge).
 //
-// suggestion differs from urgency/kind in one respect worth flagging here:
-// its promoted list ({go, working, park, drop, done, reopen}) is
+// suggestion's promoted list ({go, working, park, drop, done, reopen}) is
 // orchestrator.IsCardTransitionAction's own six-verb set restated for this
 // map's doc-comment/error-message purposes — the actual gate suggestion
 // values pass through is validateSuggestionAttr (suggestion_accept.go),
-// which calls IsCardTransitionAction directly (the raw suggestion value is a
-// JSON OBJECT {verb, reason, params}, not the plain scalar
+// which calls IsCardTransitionAction directly (the raw suggestion value is
+// a JSON object {verb, reason, params}, not the plain scalar
 // parsePromotedAttr's null/string handling expects, so suggestion is never
-// routed through parsePromotedAttr the way urgency/kind are — see
-// parseAttrsSetPayload's switch below). Keep this list in sync with
-// IsCardTransitionAction if the card machine's transition verbs ever change.
+// routed through parsePromotedAttr the way urgency/kind are). Keep this
+// list in sync with IsCardTransitionAction if the card machine's
+// transition verbs ever change.
 //
-// Validating the vocabulary here is NOT the policy 逆輸入3/論点6 keep out of the
-// daemon (that is "should urgency only ever increase", which stays khi's
-// evaluate-side call). This is the daemon defending its own SQL predicate: a
-// typo'd urgency (or an unknown suggestion.verb) silently drops the card out
-// of the queue forever with no error surfaced anywhere, which is exactly the
-// class of silent failure the queue's trust story cannot afford.
+// Validating the vocabulary here is not the same as policing "should
+// urgency only ever increase", which stays khi's evaluate-side call. This
+// is the daemon defending its own read surface: a typo'd urgency (or an
+// unknown suggestion.verb) would fail silently with no error surfaced
+// anywhere.
 var promotedAttrVocabulary = map[string][]string{
 	"urgency":    {"now", "today", "week", "someday"},
 	"kind":       {"signal", "issue", "theme"},
@@ -312,9 +293,8 @@ type attrsSetPatch struct {
 	HasUrgency bool
 	Kind       string
 	HasKind    bool
-	// Verb is task_triage.suggestion_verb's promoted value (PR-2, docs/plans/
-	// suggestion-as-state-transition-impl.md §4.1) — extracted from the
-	// "suggestion" key's {verb, reason, params} object by
+	// Verb is task_triage.suggestion_verb's promoted value — extracted from
+	// the "suggestion" key's {verb, reason, params} object by
 	// validateSuggestionAttr, NOT via parsePromotedAttr (that helper expects
 	// a plain scalar; suggestion's raw value is a JSON object). Only the verb
 	// is promoted — reason/params stay blob-only (see applyAttrsSetSideEffect's
@@ -373,10 +353,9 @@ func parseAttrsSetPayload(payload json.RawMessage) (*attrsSetPatch, error) {
 			}
 			patch.Kind, patch.HasKind = value, true
 		case "suggestion":
-			// docs/plans/suggestion-as-state-transition-impl.md §3/§4.1: verb
-			// ∈ {go, working, park, drop, done, reopen} is validated HERE, at
-			// attrs_set time, not left opaque like every other attrs key. The
-			// verb is ALSO promoted to task_triage.suggestion_verb (PR-2) —
+			// verb ∈ {go, working, park, drop, done, reopen} is validated
+			// HERE, at attrs_set time, not left opaque like every other attrs
+			// key. The verb is ALSO promoted to task_triage.suggestion_verb —
 			// unlike urgency/kind, the full object still folds into
 			// detail.attrs.suggestion via patch.Attrs too (reason/params have
 			// no column of their own, and the display side keeps reading the
@@ -384,7 +363,7 @@ func parseAttrsSetPayload(payload json.RawMessage) (*attrsSetPatch, error) {
 			// promoted-instead-of-folded the way urgency/kind are. See
 			// validateSuggestionAttr's own doc comment for why validating
 			// (and, now, extracting) verb specifically does not cross the
-			// workspace-vocabulary boundary J-7 otherwise protects.
+			// workspace-vocabulary boundary this package otherwise protects.
 			verb, verr := validateSuggestionAttr(v)
 			if verr != nil {
 				return nil, verr
@@ -408,8 +387,8 @@ func parseAttrsSetObject(payload json.RawMessage) (map[string]json.RawMessage, e
 	}
 	// json.Unmarshal happily accepts "null" and "{}" into a nil/empty map
 	// without erroring — enforce the documented non-empty-object contract
-	// explicitly (codex review Minor fix) rather than silently accepting a
-	// no-op attrs_set that folds nothing.
+	// explicitly rather than silently accepting a no-op attrs_set that
+	// folds nothing.
 	if len(m) == 0 {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: "attrs_set requires a non-empty JSON object payload"}
 	}
@@ -422,38 +401,27 @@ func parseAttrsSetObject(payload json.RawMessage) (map[string]json.RawMessage, e
 // pattern.
 //
 // urgency/kind are written to their column and NOT also folded into the
-// blob: two copies of the same value could drift, and the column is the one
-// external readers (the `/api/cards` surface, formerly also the queue SQL —
-// see promotedAttrVocabulary's own doc comment for the PR-4 update) expect.
+// blob: two copies of the same value could drift, and the column is the
+// one external readers (the `/api/cards` surface) expect.
 //
-// suggestion_verb (PR-2, docs/plans/suggestion-as-state-transition-impl.md
-// §4.1) is the one deliberate exception to that rule: only the VERB is
-// promoted to a column (the readers above only ever need to know "does this
-// card have a suggestion", not its full shape), while
-// the full suggestion object — including that same verb — stays in
-// detail.attrs.suggestion via patch.Attrs (parseAttrsSetPayload's switch
-// folds it there too). This is safe from drift because there is exactly ONE
-// writer for both copies (this function, in the same call, from the same
-// parsed patch) — unlike urgency/kind, which used to have exactly this
-// two-copies problem BEFORE PR-5a promoted them out of the blob entirely.
-// verb never needs the same treatment because its blob copy is never
-// written independently of the column.
+// suggestion_verb is the one deliberate exception to that rule: only the
+// verb is promoted to a column (the readers above only ever need to know
+// "does this card have a suggestion", not its full shape), while the full
+// suggestion object — including that same verb — stays in
+// detail.attrs.suggestion via patch.Attrs too. This is safe from drift
+// because there is exactly one writer for both copies (this function, in
+// the same call, from the same parsed patch).
 //
-// Returns verbChanged (PR #988 review, MEDIUM 3): whether the promoted
-// column's value actually differs from what it held before this call — this
-// function is the ONLY place that reads the OLD value before overwriting it,
-// so it is the natural (and only reliable) place to answer "should this
-// write also trigger a fresh notifySuggestionArrived". false covers both "no
-// verb in this patch at all" (HasVerb==false) and "the new verb equals the
-// one already stored" — the latter is the mechanism-level guard the review
-// asked for: khi's own _write_suggestion (write.py) sends unconditionally on
-// every judge cycle, unlike its _do_summary/_do_urgency/_do_observed
-// siblings, which all diff-guard themselves before writing (the
-// _do_observed comment there names the exact 2026-08-20 incident this same
-// class of unconditional-rewrite caused). Guarding it here, in boid, means
-// neither khi's own fix nor any FUTURE non-khi writer needs to remember to
-// diff-guard — the daemon owns the "did anything actually change" answer for
-// its own notify trigger.
+// Returns verbChanged: whether the promoted column's value actually
+// differs from what it held before this call — this function is the only
+// place that reads the old value before overwriting it, so it is the
+// natural place to answer "should this write also trigger a fresh
+// notifySuggestionArrived". false covers both "no verb in this patch at
+// all" (HasVerb==false) and "the new verb equals the one already stored":
+// a writer that sends unconditionally on every judge cycle must not
+// re-notify when nothing actually changed, so the daemon owns the "did
+// anything actually change" answer here rather than relying on every
+// writer to diff-guard itself.
 func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) (verbChanged bool, err error) {
 	tt, err := tx.GetTaskTriage(taskID)
 	if err != nil {
@@ -470,12 +438,11 @@ func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) (v
 		}
 		tt.Detail = newDetail
 	}
-	// Strip any stale blob copy of the promoted keys (Opus review, Medium): a
-	// card written before PR-5a can still carry detail.attrs.urgency, which
-	// would keep reporting the OLD value to every blob reader while the column
-	// the queue SQL reads moves on. Migration 0040 converges the table; doing
-	// it here too means the invariant holds for any row that reaches this path
-	// regardless.
+	// Strip any stale blob copy of the promoted keys: an older card can
+	// still carry detail.attrs.urgency, which would keep reporting the OLD
+	// value to every blob reader while the column moves on. Doing this here
+	// means the invariant holds for any row that reaches this path
+	// regardless of when it was written.
 	stripped, sErr := orchestrator.StripDetailAttrs(tt.Detail, "urgency", "kind")
 	if sErr != nil {
 		return false, fmt.Errorf("attrs_set: strip promoted attrs: %w", sErr)
@@ -497,19 +464,17 @@ func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) (v
 }
 
 // parseNotedPayload validates ONLY that the "noted" action's payload is
-// syntactically valid JSON (docs/plans/ingestion-identity.md PR-3, J-5).
-// This is deliberately the weakest possible check — noted's payload is
-// "workspace が決める任意の JSON" (any shape: object, array, string, number,
+// syntactically valid JSON. This is deliberately the weakest possible
+// check — noted's payload can be any shape (object, array, string, number,
 // bool, or null are all legal; unlike attrs_set there is no "must be a
 // non-empty object" requirement) and the daemon otherwise never interprets
-// a single key inside it. The one thing the daemon DOES need to guarantee
+// a single key inside it. The one thing the daemon does need to guarantee
 // is that action_list's JSON-array response stays well-formed — an
 // arbitrary non-JSON byte string stored verbatim into actions.payload would
-// corrupt every action_list call that has to marshal it back out (the
-// payload is a json.RawMessage, copied byte-for-byte into the response) —
-// so "is this valid JSON" is checked here, once, at the write side, rather
-// than trusting every future read site to defend against it individually.
-// An empty payload is accepted (CreateAction defaults it to "{}", same as
+// corrupt every action_list call that has to marshal it back out — so "is
+// this valid JSON" is checked here, once, at the write side, rather than
+// trusting every future read site to defend against it individually. An
+// empty payload is accepted (CreateAction defaults it to "{}", same as
 // every other action type).
 func parseNotedPayload(payload json.RawMessage) error {
 	if len(payload) == 0 {
@@ -521,14 +486,14 @@ func parseNotedPayload(payload json.RawMessage) error {
 	return nil
 }
 
-// answeredPayload is the "answered" action's payload shape (J-6):
+// answeredPayload is the "answered" action's payload shape:
 // {"answer": "accept"|"reject", "verb": "...", "basis": "..."}. answer is
 // the one field the daemon validates (closed two-value vocabulary) — it is
 // itself a first-class field consumers can switch on, unlike verb/basis
-// which are recorded but never interpreted (J-7: cross-checking verb/basis
-// against the suggestion they answer would mean reading the opaque
-// suggestion blob, crossing the boundary — that check belongs to the
-// workspace script or judgment task reading action_list, not the daemon).
+// which are recorded but never interpreted (cross-checking them against
+// the suggestion they answer would mean reading the opaque suggestion
+// blob — that check belongs to the workspace script or judgment task
+// reading action_list, not the daemon).
 type answeredPayload struct {
 	Answer string `json:"answer"`
 	Verb   string `json:"verb,omitempty"`
@@ -536,10 +501,7 @@ type answeredPayload struct {
 }
 
 // answeredAnswerAccept / answeredAnswerReject are answeredPayload.Answer's
-// closed vocabulary (J-6). khi's real suggestion_answered claims data
-// (実測, 2026-08-19) is 25/25 "accept" and 0 "reject" — the design doc calls
-// this out explicitly as the reason the reject path needs its own dedicated
-// test coverage in this PR, not just the already-exercised accept path.
+// closed vocabulary.
 const (
 	answeredAnswerAccept = "accept"
 	answeredAnswerReject = "reject"
@@ -565,33 +527,30 @@ func parseAnsweredPayload(payload json.RawMessage) (*answeredPayload, error) {
 	return &p, nil
 }
 
-// applyAnsweredSideEffect drops detail.attrs.suggestion (J-6's副作用) — the
-// same fold-side placement as applyAttrsSetSideEffect's own promoted-key
-// strip (決定13: event 追記が正, state は導出; a service-layer rewrite of
-// detail outside this fold would give the state two writers). Runs
-// unconditionally for BOTH accept and reject: either way, the suggestion
-// this answered has been acted on and must stop being "the current
-// suggestion" — a fresh one only arrives from a fresh note-suggest cycle,
-// which folds a new attrs_set/suggestion in from scratch.
+// applyAnsweredSideEffect drops detail.attrs.suggestion — the same
+// fold-side placement as applyAttrsSetSideEffect's own promoted-key strip
+// (a service-layer rewrite of detail outside this fold would give the
+// state two writers). Runs unconditionally for BOTH accept and reject:
+// either way, the suggestion this answered has been acted on and must
+// stop being "the current suggestion" — a fresh one only arrives from a
+// fresh note-suggest cycle, which folds a new attrs_set/suggestion in
+// from scratch.
 //
-// A GetTaskTriage miss (sql.ErrNoRows) is a no-op — UNLIKE
+// A GetTaskTriage miss (sql.ErrNoRows) is a no-op — unlike
 // applyAttrsSetSideEffect, which creates an empty row on the same miss.
 // `answered` is Manual:true (machine.go), so it can be sent to ANY
 // preExecutionStatuses task via `boid action send --type answered`, not
 // only triage tasks. Creating a phantom row here for every non-triage task
-// that happens to receive one would weaken the invariant 12 節 B-6's I-5b
-// default plan (docs/plans/ingestion-identity.md) depends on — "service 層
-// のガード = task_triage 行の有無を見る" for the future auto-reopen gate
-// (PR-5) — by making an ordinary dev task indistinguishable from a real
-// triage task. Skipping the row is safe here specifically because
-// `answered` has nothing POSITIVE to persist when no row exists: its only
-// effect is stripping a suggestion key that, with no row, cannot be
-// present either. This is deliberately asymmetric with attrs_set, whose
-// patch always carries real triage content (urgency/kind/suggestion) — for
-// attrs_set, creating the row on miss establishes real data, not a bare
-// side effect, so leaving that path alone here is correct rather than an
-// inconsistency (Opus review, 2026-08-19; see
-// TestApplyAction_Answered_NoExistingTriageRow_StillSucceeds).
+// that happens to receive one would make an ordinary dev task
+// indistinguishable from a real triage task for any future gate keyed on
+// "does this task carry a task_triage row". Skipping the row is safe here
+// specifically because `answered` has nothing positive to persist when no
+// row exists: its only effect is stripping a suggestion key that, with no
+// row, cannot be present either. This is deliberately asymmetric with
+// attrs_set, whose patch always carries real triage content
+// (urgency/kind/suggestion) — for attrs_set, creating the row on miss
+// establishes real data, not a bare side effect. See
+// TestApplyAction_Answered_NoExistingTriageRow_StillSucceeds.
 func applyAnsweredSideEffect(tx TxStore, taskID string) error {
 	tt, err := tx.GetTaskTriage(taskID)
 	if err != nil {
@@ -605,15 +564,10 @@ func applyAnsweredSideEffect(tx TxStore, taskID string) error {
 		return fmt.Errorf("answered: strip suggestion: %w", sErr)
 	}
 	tt.Detail = stripped
-	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1): clear
-	// the promoted column alongside the blob key. Every path that strips a
-	// suggestion must clear both representations, or a stale value would
-	// leak through the `/api/cards` read surface (CardView.SuggestionVerb)
-	// and confuse the change-detection PR-3's updated_at bump relies on —
-	// before docs/plans/webui-detail-list-redesign.md PR-4 this also fed a
-	// live queue SQL predicate (store.go's now-removed "queue_next" branch,
-	// suggestion_verb != ''), which is the historical reason this column
-	// exists at all.
+	// Clear the promoted column alongside the blob key. Every path that
+	// strips a suggestion must clear both representations, or a stale
+	// value would leak through the `/api/cards` read surface
+	// (CardView.SuggestionVerb) and confuse change-detection that keys off it.
 	tt.SuggestionVerb = ""
 	if err := tx.UpsertTaskTriage(tt); err != nil {
 		return fmt.Errorf("answered: upsert task_triage: %w", err)
@@ -621,27 +575,23 @@ func applyAnsweredSideEffect(tx TxStore, taskID string) error {
 	return nil
 }
 
-// recordAndStripSuggestionIfPresent implements PR #987 review's LOW 10: a
-// direct human card transition (go/working/park/drop/done/reopen — every verb
-// IsCardTransitionAction admits) that lands while task_triage still carries an
-// existing suggestion must not silently discard it. Before this fix, only
-// "go" ever stripped an existing suggestion at all (acceptGo's unconditional
-// applyAnsweredSideEffect call below), and even there with no audit trail —
-// working/park/drop/done/reopen left a now-stale suggestion sitting in
-// detail.attrs untouched. Applied symmetrically to every direct verb now:
-// whichever verb the suggestion recommended, a DIFFERENT verb committing
-// directly (bypassing accept/reject entirely, e.g. a human clicking "drop"
-// while a "park" suggestion is pending) supersedes it, and that supersession
-// gets the same audit trail accept/reject already record via the "answered"
-// action — a new "suggestion_discarded" action, carrying the discarded verb/
+// recordAndStripSuggestionIfPresent ensures a direct human card transition
+// (go/working/park/drop/done/reopen — every verb IsCardTransitionAction
+// admits) that lands while task_triage still carries an existing
+// suggestion does not silently discard it: whichever verb the suggestion
+// recommended, a DIFFERENT verb committing directly (bypassing
+// accept/reject entirely, e.g. a human clicking "drop" while a "park"
+// suggestion is pending) supersedes it, and that supersession gets the
+// same audit trail accept/reject already record via the "answered" action
+// — a new "suggestion_discarded" action, carrying the discarded verb/
 // reason and the transition that superseded it.
 //
-// A GetTaskTriage miss (sql.ErrNoRows) and an absent/malformed suggestion are
-// both silent no-ops — mirrors applyAnsweredSideEffect's own miss handling
-// immediately above (see its doc comment for why creating a phantom row here
-// would be wrong: `transition` is Manual:true on the card machine, reachable
-// against any card-carrying task, and a card with no task_triage row has
-// nothing to discard).
+// A GetTaskTriage miss (sql.ErrNoRows) and an absent/malformed suggestion
+// are both silent no-ops — mirrors applyAnsweredSideEffect's own miss
+// handling immediately above (see its doc comment for why creating a
+// phantom row here would be wrong: `transition` is Manual:true on the
+// card machine, reachable against any card-carrying task, and a card with
+// no task_triage row has nothing to discard).
 func recordAndStripSuggestionIfPresent(ctx context.Context, tx TxStore, taskID string, transition *orchestrator.Action) error {
 	tt, err := tx.GetTaskTriage(taskID)
 	if err != nil {
@@ -678,9 +628,8 @@ func recordAndStripSuggestionIfPresent(ctx context.Context, tx TxStore, taskID s
 		return fmt.Errorf("record discarded suggestion: strip suggestion: %w", sErr)
 	}
 	tt.Detail = stripped
-	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.1): clear
-	// the promoted column too — same reasoning as applyAnsweredSideEffect's
-	// own clear, immediately above in this file.
+	// Clear the promoted column too — same reasoning as
+	// applyAnsweredSideEffect's own clear, immediately above in this file.
 	tt.SuggestionVerb = ""
 	if err := tx.UpsertTaskTriage(tt); err != nil {
 		return fmt.Errorf("record discarded suggestion: upsert task_triage: %w", err)
@@ -688,7 +637,7 @@ func recordAndStripSuggestionIfPresent(ctx context.Context, tx TxStore, taskID s
 	return nil
 }
 
-// recordChildClosedOnParent is the daemon's own self-record of 論点9's
+// recordChildClosedOnParent is the daemon's own self-record of the
 // child_closed vocabulary entry: when a task that is itself a dispatched
 // triage child (i.e. some triage parent's task_triage.detail.children[i]
 // has TaskRef == task.ID) reaches done/aborted, the daemon — never khi —
@@ -751,116 +700,93 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 		// (a sandbox job completing, a dispatch error, ...) — the child_closed
 		// FACT itself is always attributed to the daemon (Actor above), never
 		// to whatever sandbox write happened to cause it, so there is no
-		// TokenContext-carried writer project to thread through here
-		// (docs/plans/boid-internal-signal-inbox.md §4.3's "daemon" row).
+		// TokenContext-carried writer project to thread through here.
 		if err := tx.CreateAction(context.Background(), action); err != nil {
 			return err
 		}
-		// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): a child
-		// reaching done/aborted is new judgment material for the PARENT
-		// card — "can I close this now" — so it bumps the parent's
+		// A child reaching done/aborted is new judgment material for the
+		// parent card — "can I close this now" — so it bumps the parent's
 		// updated_at the same way a suggestion attaching does. Gated on
-		// `changed` (already true here — the `if !changed { return nil }`
-		// above short-circuits before this point), matching this whole
-		// function's own idempotency: finalizeTerminal may call this
-		// repeatedly for the same terminal task (its own doc comment,
-		// "safe to call multiple times"), and a retry over an
-		// already-closed child must not keep re-bumping updated_at.
+		// `changed` (already true here), matching this whole function's own
+		// idempotency: finalizeTerminal may call this repeatedly for the
+		// same terminal task, and a retry over an already-closed child must
+		// not keep re-bumping updated_at.
 		return tx.TouchTaskUpdatedAt(task.ParentID)
 	}); err != nil {
 		slog.Error("child_closed self-record failed", "task_id", task.ID, "parent_id", task.ParentID, "error", err)
 		return
 	}
-	// docs/plans/suggestion-as-state-transition-impl.md §3.4: 決定15's
-	// auto-done evaluation used to run right here (autoDoneAfterChildClose,
-	// calling into api/triage_done.go's autoDone) — deleted along with
-	// SweepTriage. A child closing is still recorded (above); whether that
-	// means the CARD itself is done is now entirely khi's judgment to
-	// suggest and a human's to accept (card machine v2's `done` verb) — the
-	// daemon no longer evaluates it here or anywhere else.
+	// A child closing is still recorded (above); whether that means the
+	// card itself is done is entirely khi's judgment to suggest and a
+	// human's to accept (card machine v2's `done` verb) — the daemon does
+	// not evaluate it here or anywhere else.
 }
 
-// acceptGo is accept(go)'s implementation (docs/plans/
-// suggestion-as-state-transition-impl.md §3.3/§B): the human-accept path for
-// a "go" suggestion, and the direct replacement for v1's two-stage
+// acceptGo is accept(go)'s implementation: the human-accept path for a "go"
+// suggestion, and the direct replacement for v1's two-stage
 // ready→(machine "dispatch")→working. v2 has no "ready" status and no
-// "dispatch" verb at all — accept(go) does both halves itself, straight from
-// parked to working, so this single method IS the whole of Go now. The old
-// Wake mechanism (wake_triaged/wake_ready/wake_working, ParkedFrom-based
-// origin resolution) is gone too: v2's card machine has exactly one park
-// origin (working), so there is nothing left for a resurfacing step to
-// disambiguate — a parked card's exits (go/working/drop/done) are all ordinary
-// Manual actions now, reachable through the same ApplyAction endpoint as
-// everything else. See queue_sweep.go's SweepWake for what wake_due became
-// instead (a fact record, no transition).
+// "dispatch" verb at all — accept(go) does both halves itself, straight
+// from parked to working, so this single method IS the whole of Go now.
+// A parked card's exits (go/working/drop/done) are all ordinary Manual
+// actions, reachable through the same ApplyAction endpoint as everything
+// else. See queue_sweep.go's SweepWake for what wake_due became instead
+// (a fact record, no transition).
 //
-// Compensation order (the brief's own explicit instruction — same-Tx is
-// impossible: SetMaxOpenConns(1), internal/db/db.go, deadlocks a nested
-// TaskCreator.CreateTask call from inside an already-open transaction):
+// Compensation order (same-Tx is impossible: SetMaxOpenConns(1),
+// internal/db/db.go, deadlocks a nested TaskCreator.CreateTask call from
+// inside an already-open transaction):
 //
 //  1. Task-ify every `specced` child in task_triage.detail.children
-//     (TaskCreator.CreateTask + auto-start) — NON-transactional, exactly the
-//     same constraint v1's Dispatch had.
+//     (TaskCreator.CreateTask + auto-start) — non-transactional.
 //
-//  2. On success, ONE transaction: re-check the task is still parked, apply
-//     the "go" transition (parked→working), record child_dispatched actions,
-//     persist the children's dispatched status, and — ONLY NOW, having
-//     actually committed the transition — strip the suggestion
-//     (applyAnsweredSideEffect). This is the literal reading of design doc
-//     §3.1's "遷移を適用してから suggestion を消す": accept never discards a
-//     suggestion it failed to act on.
+//  2. On success, ONE transaction: re-check the task is still parked,
+//     apply the "go" transition (parked→working), record
+//     child_dispatched actions, persist the children's dispatched
+//     status, and — only now, having actually committed the transition —
+//     strip the suggestion (applyAnsweredSideEffect). An accept never
+//     discards a suggestion it failed to act on.
 //
 //  3. A failure task-ifying a child (step 1): the card stays parked, the
-//     suggestion is left untouched (nothing above ever touched it), a
-//     dispatch_error action is recorded, and the caller gets a synchronous
-//     error. No compensation for any EARLIER child already created in this
-//     same loop — same accepted gap v1's Dispatch documented (a retry is
-//     safe: every child's Ref makes CreateTask idempotent).
+//     suggestion is left untouched, a dispatch_error action is recorded,
+//     and the caller gets a synchronous error. No compensation for any
+//     earlier child already created in this same loop (a retry is safe:
+//     every child's Ref makes CreateTask idempotent).
 //
-//  4. A failure in the transition Tx itself, AFTER every child already
-//     task-ified successfully: the card stays parked (the failed Tx never
-//     committed), suggestion intact, a dispatch_error action is recorded
-//     (its payload folds in every already-created child's task id —
-//     "orphaned_child_task_ids" — for a human to inspect and hand-abort if
-//     warranted), and the caller gets a synchronous error.
+//  4. A failure in the transition Tx itself, after every child already
+//     task-ified successfully: the card stays parked (the failed Tx
+//     never committed), suggestion intact, a dispatch_error action is
+//     recorded (its payload folds in every already-created child's task
+//     id — "orphaned_child_task_ids" — for a human to inspect and
+//     hand-abort if warranted), and the caller gets a synchronous error.
 //
-//     PR #987 review, BLOCKER 4: an EARLIER version of this step
-//     best-effort-ABORTED every child created in step 1, on the theory that
-//     a failed transition means they must not be left running unowned. That
-//     compensation was removed — CreateTask's own (ref, parent_id)
-//     get-or-create dedup (task_create.go) means "a child THIS call
-//     created" is not actually a reliable fact: a concurrent SECOND
-//     accept(go) racing the SAME card (a Go button double-click, or an
-//     accept racing a direct "go" click) can observe the SAME
+//     This deliberately does NOT best-effort-abort those children:
+//     CreateTask's own (ref, parent_id) get-or-create dedup means "a
+//     child THIS call created" is not a reliable fact — a concurrent
+//     second accept(go) racing the same card can observe the same
 //     already-running child via that dedup, and if THIS call's own
-//     transition Tx is the one that loses the race (the other caller's
-//     already committed), aborting here kills the OTHER caller's
-//     successfully-dispatched, actually-running child with no error ever
-//     surfacing to the caller whose accept genuinely won. That failure mode
-//     — silently killing someone else's already-succeeded work — is worse
-//     than the orphan this compensation was trying to prevent, so recording
-//     the child ids for a human to act on replaces auto-aborting them. See
-//     recordDispatchError's own doc comment for the same reasoning in
-//     code-adjacent form.
+//     transition Tx is the one that loses the race, aborting here would
+//     kill the OTHER caller's successfully-dispatched, actually-running
+//     child with no error ever surfacing to the caller whose accept
+//     genuinely won. Recording the child ids for a human to act on is
+//     safer than that failure mode. See recordDispatchError's own doc
+//     comment for the same reasoning in code-adjacent form.
 //
-// This is also the concrete improvement over v1's known gap (workflow_action.go's
-// old "ready" chain): a v1 Dispatch failure only ever reached slog.Error, with
-// the "ready" action having already committed and the caller already getting
-// an HTTP 200. accept(go) failing now ALWAYS surfaces as a synchronous error
-// to the caller, with a dispatch_error action in the audit trail either way.
+// A v1 Dispatch failure only ever reached slog.Error, with the "ready"
+// action having already committed and the caller already getting an HTTP
+// 200. accept(go) failing now always surfaces as a synchronous error to
+// the caller, with a dispatch_error action in the audit trail either way.
 //
-// viaAccept distinguishes the two callers (PR #987 review round 2, MEDIUM
-// N2): workflow_action.go's direct `req.Type=="go"` early-redirect passes
-// false, applyAnswered's accept(go) deferred call (suggestion_accept.go)
-// passes true. When true, the suggestion this call is fulfilling was ALREADY
-// recorded as accepted by applyAnswered's own "answered" action (committed in
-// a separate, earlier Tx, before this function ever runs) — so stripping it
-// here must NOT also emit a "suggestion_discarded" audit action the way a
-// genuinely superseded (different-verb) suggestion would under LOW 10: doing
-// so recorded the accepted suggestion as if it had been thrown away instead,
-// on the single most common accept path in the whole feature. See
-// recordAndStripSuggestionIfPresent's own doc comment for the discard-and-
-// record behavior this deliberately bypasses when viaAccept is true.
+// viaAccept distinguishes the two callers: workflow_action.go's direct
+// `req.Type=="go"` early-redirect passes false, applyAnswered's accept(go)
+// deferred call (suggestion_accept.go) passes true. When true, the
+// suggestion this call is fulfilling was ALREADY recorded as accepted by
+// applyAnswered's own "answered" action (committed in a separate, earlier
+// Tx) — so stripping it here must NOT also emit a "suggestion_discarded"
+// audit action the way a genuinely superseded (different-verb) suggestion
+// would: doing so would record the accepted suggestion as if it had been
+// thrown away instead. See recordAndStripSuggestionIfPresent's own doc
+// comment for the discard-and-record behavior this deliberately bypasses
+// when viaAccept is true.
 func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAccept bool) (*ActionApplication, error) {
 	if s.Tx == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "accept(go): Transactor not configured"}
@@ -871,15 +797,14 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		return nil, statusErrorForGetTaskErr(err)
 	}
 	if task.Status != orchestrator.TaskStatusParked {
-		// PR-3 (suggestion 状態遷移化 follow-up): append the same
-		// rule-table-derived "what CAN be applied from here" hint
-		// applyAnswered's generic verb-apply-failure path uses
+		// Append the same rule-table-derived "what CAN be applied from
+		// here" hint applyAnswered's generic verb-apply-failure path uses
 		// (orchestrator.StateMachine.AvailableActionsHint — single source
-		// shared with the Web UI's inapplicable-suggestion notice, review
-		// LOW 4) — this early status check is go's own equivalent of that
-		// generic path (go never reaches sm.Apply directly; see this
-		// function's own doc comment), and both a direct "go" click and
-		// accept(go) share this message.
+		// shared with the Web UI's inapplicable-suggestion notice) — this
+		// early status check is go's own equivalent of that generic path
+		// (go never reaches sm.Apply directly; see this function's own doc
+		// comment), and both a direct "go" click and accept(go) share this
+		// message.
 		return nil, &StatusError{
 			Code:    http.StatusConflict,
 			Message: fmt.Sprintf("accept(go): cannot dispatch task in status %q (must be parked); %s", task.Status, orchestrator.NewCardMachine().AvailableActionsHint(task.Status)),
@@ -895,8 +820,8 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			}
 			// No task_triage row at all: treat as "no children" — a card can
 			// legitimately reach parked with no sidecar row in test/edge
-			// scenarios, and 逆輸入2's "working covers 手動対応中 too" means a
-			// childless accept(go) is still meaningful (bare manual work).
+			// scenarios, and a childless accept(go) is still meaningful
+			// (bare manual work).
 		} else {
 			children, err = orchestrator.DetailChildren(tt.Detail)
 			if err != nil {
@@ -982,12 +907,12 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 	sm := orchestrator.NewCardMachine()
 	action := &orchestrator.Action{TaskID: taskID, Type: "go", Actor: orchestrator.ActorFromContext(ctx)}
 	var newTask *orchestrator.Task
-	// concurrentTransitionWon distinguishes step 4's ONE specific failure mode
-	// (PR #987 review round 2, LOW N4) from every other Tx failure below: this
-	// exact branch means another accept(go)/direct "go" already committed the
-	// parked->working transition before THIS Tx opened. In that specific
-	// case, newlyDispatched must NOT be reported as orphaned_child_task_ids
-	// (see the txErr handling below) — CreateTask's own (ref, parent_id)
+	// concurrentTransitionWon distinguishes one specific failure mode from
+	// every other Tx failure below: this exact branch means another
+	// accept(go)/direct "go" already committed the parked->working
+	// transition before THIS Tx opened. In that specific case,
+	// newlyDispatched must NOT be reported as orphaned_child_task_ids (see
+	// the txErr handling below) — CreateTask's own (ref, parent_id)
 	// get-or-create dedup means these task ids may be the OTHER caller's
 	// legitimately-running children, not orphans THIS caller created and
 	// abandoned. Any OTHER Tx failure (a genuine write error, not "someone
@@ -1051,9 +976,8 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 				return err
 			}
 		}
-		// design doc §3.1/§3.3, refined by PR #987 review LOW 10 and round 2's
-		// MEDIUM N2: discard any existing suggestion ONLY here, now that the
-		// "go" transition has actually committed successfully within this same
+		// Discard any existing suggestion ONLY here, now that the "go"
+		// transition has actually committed successfully within this same
 		// Tx. Two distinct cases, per viaAccept (this function's own doc
 		// comment):
 		//
@@ -1081,29 +1005,27 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		return nil
 	})
 	if txErr != nil {
-		// Step 4 (PR #987 review, BLOCKER 4 — this PR no longer compensates
-		// by aborting): every child above was ALREADY successfully created
-		// and auto-started before this Tx failed, so their task ids are
-		// folded into the dispatch_error payload for a human to inspect —
-		// see recordDispatchError's own doc comment for why aborting them
-		// here was removed rather than kept (a concurrent accept(go) racing
-		// the same card can, via CreateTask's get-or-create dedup, end up
-		// "owning" a child a DIFFERENT caller's Tx actually committed
-		// successfully; best-effort-aborting it then kills real in-flight
-		// work with no error surfaced to the caller whose accept actually
-		// won the race). The card is left parked (this Tx never committed),
-		// suggestion intact — same as before.
+		// Every child above was already successfully created and
+		// auto-started before this Tx failed, so their task ids are folded
+		// into the dispatch_error payload for a human to inspect — see
+		// recordDispatchError's own doc comment for why aborting them here
+		// is not done (a concurrent accept(go) racing the same card can,
+		// via CreateTask's get-or-create dedup, end up "owning" a child a
+		// DIFFERENT caller's Tx actually committed successfully;
+		// best-effort-aborting it then kills real in-flight work with no
+		// error surfaced to the caller whose accept actually won the
+		// race). The card is left parked (this Tx never committed),
+		// suggestion intact.
 		//
-		// PR #987 review round 2, LOW N4: when concurrentTransitionWon is
-		// true specifically, newlyDispatched is deliberately NOT folded into
-		// orphaned_child_task_ids. This losing Tx cannot tell whether these
-		// task ids are genuinely THIS call's unclaimed children, or the
-		// OTHER (winning) accept's own legitimately-running children that
-		// CreateTask's get-or-create dedup happened to hand back to this
-		// call too — reporting them here would hand an operator a false
-		// lead to hand-abort real, successful work. Every OTHER Tx failure
-		// (a genuine write error, not "someone else already won the race")
-		// still reports them, since those really are this call's own.
+		// When concurrentTransitionWon is true specifically, newlyDispatched
+		// is deliberately NOT folded into orphaned_child_task_ids. This
+		// losing Tx cannot tell whether these task ids are genuinely THIS
+		// call's unclaimed children, or the OTHER (winning) accept's own
+		// legitimately-running children that CreateTask's get-or-create
+		// dedup happened to hand back to this call too — reporting them
+		// here would hand an operator a false lead to hand-abort real,
+		// successful work. Every OTHER Tx failure still reports them,
+		// since those really are this call's own.
 		var orphanedChildTaskIDs []string
 		if !concurrentTransitionWon {
 			for _, c := range newlyDispatched {

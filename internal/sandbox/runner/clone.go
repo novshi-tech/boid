@@ -36,10 +36,7 @@ func clearDirContents(dir string) error {
 }
 
 // performClone executes the sandbox-internal clone + branch-resolution
-// launch sequence declared by cs (docs/plans/git-gateway-cutover.md PR5:
-// 「runner の clone 実行機構 + branch 宣言」). It is a no-op when
-// cs.Enabled is false — the default for every sandbox.Spec until the PR6
-// cutover engages this path.
+// launch sequence declared by cs. It is a no-op when cs.Enabled is false.
 //
 // This is pure exec.Command plumbing (no syscalls), unlike the mount /
 // pivot_root machinery in runner_linux.go, so it lives in this
@@ -48,19 +45,15 @@ func clearDirContents(dir string) error {
 //
 // reopen = re-running this exact sequence is intentional and idempotent: an
 // existing TargetDir is wiped and re-cloned from scratch rather than
-// fetched-in-place, mirroring the plan's "reopen = 同シーケンス再実行" /
-// "保証は commit(+push) 済みのみ" decision
-// (docs/plans/container-based-boid.md 「決定: clone の置き場所と reopen 意味論」).
+// fetched-in-place.
 //
 // Every error this function returns has already been passed through
 // redactCloneURLToken: git's own stderr (and this function's own error
 // messages) can otherwise echo cs.URL — which embeds a live gateway job
 // token — verbatim, and that text is exactly what callers pass to
-// State.Fail / print to the runner's stderr on failure
-// (docs/plans/git-gateway-cutover.md 「落とし穴・注意」: token redact は
-// 診断出力全般が対象). Redacting once here, at the single exit point, means
-// every call site (runner-state.json, the runner-inner-child stderr line)
-// is covered without having to remember to redact individually.
+// State.Fail / print to the runner's stderr on failure. Redacting once
+// here, at the single exit point, means every call site is covered without
+// having to remember to redact individually.
 func performClone(cs sandbox.CloneSpec, st *State) error {
 	if err := performCloneSteps(cs, st); err != nil {
 		return errors.New(redactCloneURLToken(err.Error()))
@@ -88,20 +81,9 @@ func performCloneSteps(cs sandbox.CloneSpec, st *State) error {
 	//
 	// This clears the *contents* of TargetDir rather than removing TargetDir
 	// itself (os.RemoveAll(cs.TargetDir) would attempt that as its final
-	// step): TargetDir is the sandbox-internal clone mount point — a
-	// name-scoped subdirectory of sandboxCloneTargetDir ("/workspace/<name>",
-	// workspace 親化リファクタリング, nose 2026-07-13 decision) — which dispatcher's
-	// cloneMounts bind-mounts from a host-backed per-job runtime directory
-	// (dispatcher.buildSandboxSpec's RuntimesDir-backed clone workspace —
-	// docs/plans/git-gateway-cutover.md PR6 cutover, container-based-boid.md
-	// 2026-07-08 decision: "clone lands on a runtime-dir bind mount by
-	// default, not tmpfs"). Removing an active mount point's own directory
-	// entry is refused by the kernel with EBUSY ("device or resource busy")
-	// — this fired on *every* clone-enabled dispatch, reopen or not, once
-	// RuntimesDir was configured (the production/e2e default), and was
-	// masked by an unrelated e2e/run.sh bug that hid failing scenarios
-	// behind a false-positive "pass" (see docs/plans/git-gateway-cutover.md
-	// and PR #736). clone_test.go's
+	// step): TargetDir is a bind-mounted clone mount point, and removing an
+	// active mount point's own directory entry is refused by the kernel with
+	// EBUSY. clone_test.go's
 	// TestClearDirContentsPreservesDirEntryButRemovesChildren pins that
 	// TargetDir's own directory entry survives.
 	if err := clearDirContents(cs.TargetDir); err != nil {
@@ -132,21 +114,17 @@ func performCloneSteps(cs sandbox.CloneSpec, st *State) error {
 	return nil
 }
 
-// resolveCloneBranch resolves and checks out the task's working branch inside
-// a fresh sandbox-internal clone (docs/plans/git-gateway-cutover.md PR5/PR6:
-// dispatcher declares the branch, the runner resolves it after cloning).
-// Because the clone is fresh, no local branches other than the checked-out
-// default branch exist yet, so there is no "a stale local branch already
-// exists" case to reconcile; every candidate is either a remote-tracking ref
-// `git clone` already fetched, or a brand-new local branch this function
-// creates.
+// resolveCloneBranch resolves and checks out the task's working branch
+// inside a fresh sandbox-internal clone: dispatcher declares the branch,
+// the runner resolves it after cloning. Because the clone is fresh, no
+// local branches other than the checked-out default branch exist yet, so
+// there is no "a stale local branch already exists" case to reconcile;
+// every candidate is either a remote-tracking ref `git clone` already
+// fetched, or a brand-new local branch this function creates.
 //
-// The actual git-command sequence lives in sandbox.ResolveCloneBranchRef
-// (PR834 PR-2b round-2 codex review): internal/dispatcher/checkout.go's
-// PrepareJobCheckout shares this exact algorithm now instead of
-// reimplementing a divergent (and, pre-fix, buggy — it never stripped an
-// "origin/" prefix or created a missing base branch from a fork point) copy
-// of it — see that shared function's own doc comment.
+// The actual git-command sequence lives in sandbox.ResolveCloneBranchRef —
+// internal/dispatcher/checkout.go's PrepareJobCheckout shares this exact
+// algorithm rather than reimplementing a divergent copy of it.
 func resolveCloneBranch(git string, cs sandbox.CloneSpec, st *State) error {
 	if !cs.CheckoutOnly {
 		// orchestrator.BuildCloneDeclaration always sets CheckoutOnly=true now,

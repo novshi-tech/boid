@@ -1,21 +1,8 @@
 // Package atomicfile provides the write-temp + os.Link publish-if-absent
-// primitive every on-first-boot "load or generate and persist" secret file
-// in boid needs (docs/plans/volume-only-daemon.md §論点 d — secret
-// material generated into a fresh, empty named volume at daemon boot).
-//
-// internal/install.LoadOrCreate (docs/plans/phase6-container-backend.md
-// §PR6, Major 7 codex review) pioneered this exact protocol for
-// install_id, specifically to fix a real race: two daemon instances
-// starting at once against the same fresh data dir could previously each
-// independently observe "file missing", generate their own value, and
-// clobber each other's plain os.WriteFile — with a window where a reader
-// could see a half-written file in between. internal/dispatcher.
-// LoadOrCreateKey (secret.key / web_secret) and internal/mtls.LoadOrCreate
-// (the daemon's internal CA) both predate that fix and still use a plain
-// os.WriteFile for their own generate-and-persist step. This package
-// extracts the general primitive so all three (not just install_id) get
-// the same guarantee, per volume-only-daemon.md's explicit instruction to
-// reuse the existing pattern rather than invent a new one.
+// primitive used by boid's "load or generate and persist" secret files, so
+// two daemon instances racing to boot against the same fresh data dir can
+// never clobber each other's write (see docs/plans/volume-only-daemon.md
+// §論点 d).
 package atomicfile
 
 import (
@@ -30,43 +17,15 @@ import (
 // (or earlier) winner already published if it lost. path's parent
 // directory must already exist.
 //
-// Protocol (identical to internal/install.LoadOrCreate's): content is
-// written to a temp file created in the same directory as path (so the
-// follow-up publish step stays on one filesystem, a hard-link
-// requirement), chmod'd to perm, then published via os.Link — which fails
-// with os.IsExist if path already exists (unlike os.Rename, which would
-// silently replace it) — so "path exists" only ever means "someone else
-// got there first", never a half-written file. A losing caller re-reads
-// the winner's file instead of returning its own, never-actually-persisted
-// content.
+// This is publish-if-absent plus a safe read-back only; there is no repair
+// path. An empty existing file, or any read-back error, is reported to the
+// caller rather than acted on — every caller treats the files this
+// publishes as volatile/regenerable, so failing and asking the operator to
+// remove the stale artifact is an acceptable default.
 //
-// Contract (docs/plans/volume-only-daemon.md §論点 d, fix for [Major 1,
-// PR829 round 1 codex review]): this function is publish-if-absent + a
-// safe read-back ONLY. There is no repair path. Earlier revisions renamed
-// a temp file over a pre-existing EMPTY destination on the theory that an
-// empty file has no live claimant — but that repair is not itself
-// one-winner atomic (two concurrent callers can each observe the same
-// empty file and each Rename over it, "last write wins" rather than a
-// single winner), and it silently discarded any error from the read-back
-// (including EACCES / other transient I/O errors) and fell through to an
-// unconditional Rename that could clobber a file it never actually
-// verified. Both hazards are closed by removing the repair branch
-// entirely: an empty existing file, or any read-back error, is now
-// reported to the caller rather than acted on. Every current caller
-// (internal/mtls.LoadOrCreate, internal/dispatcher.LoadOrCreateKey) treats
-// the files this function publishes as volatile/regenerable (the plan
-// doc's own framing), so "fail and tell the operator to remove the stale
-// artifact manually" is an acceptable, safe default — silently guessing
-// which of two racing writers should win is not.
-//
-// Durability note (Major 2, PR829 round 1 codex review, deliberately NOT
-// fixed here — comment-only per the follow-up scope): this function makes
-// no crash-durability guarantee. Write+Close+Link can all report success
-// while content still only lives in page cache; a crash or a delayed-
-// allocation ENOSPC surfaced during writeback after this function returns
-// can still leave path zero-length or short on the next boot. Closing that
-// gap would need an fsync of the temp file before Link and an fsync of dir
-// after — intentionally out of scope for this fix.
+// No crash-durability guarantee is made: Write+Close+Link can all report
+// success while content still only lives in page cache, so a crash before
+// writeback can still leave path short on the next boot.
 func PublishIfAbsent(path string, perm os.FileMode, content []byte) ([]byte, error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".atomicfile-*.tmp")
@@ -74,10 +33,6 @@ func PublishIfAbsent(path string, perm os.FileMode, content []byte) ([]byte, err
 		return nil, fmt.Errorf("atomicfile: create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	// Always clean up the temp name: os.Link (the success path) leaves it
-	// behind as a second, now-redundant hard link to the same inode;
-	// os.Rename (the repair path below) already consumes it, so this
-	// becomes a harmless no-op ENOENT in that case.
 	defer os.Remove(tmpPath)
 
 	if err := tmp.Chmod(perm); err != nil {
@@ -96,15 +51,8 @@ func PublishIfAbsent(path string, perm os.FileMode, content []byte) ([]byte, err
 		if !os.IsExist(err) {
 			return nil, fmt.Errorf("atomicfile: publish %s: %w", path, err)
 		}
-		// path already exists. Every writer that ever reaches this point
-		// uses this same write-temp-then-Link protocol, so if a
-		// concurrent (or earlier) PublishIfAbsent call published it
-		// first, its content is already complete — read it back and
-		// return it as the winner. Any read failure (including EACCES —
-		// we cannot verify the file, so we must not act on it) or an
-		// empty read-back (no repair path — see this function's own doc
-		// comment) is reported to the caller instead of silently
-		// overwriting.
+		// A concurrent or earlier caller already published path first;
+		// read back its content and return it as the winner.
 		existing, rerr := os.ReadFile(path)
 		if rerr != nil {
 			return nil, fmt.Errorf("atomicfile: read existing %s: %w", path, rerr)
@@ -118,24 +66,12 @@ func PublishIfAbsent(path string, perm os.FileMode, content []byte) ([]byte, err
 }
 
 // WriteAtomic atomically (over)writes content to path — write-temp +
-// os.Rename, unconditional overwrite — the counterpart to PublishIfAbsent
-// for content that is a deterministic function of something else (e.g. an
-// embedded go:embed asset keyed to the running binary's version) rather
-// than a value that must only ever be generated once. Unlike
-// PublishIfAbsent's os.Link (which fails if path already exists, so a
-// second call never clobbers the first), os.Rename always replaces
-// path — the intended behavior here: every call is "the latest, correct
-// content", and a stale extracted copy from an older `boid` binary must
-// never survive a newer one's extraction.
-//
-// This closes a real hazard (round-3 codex review of #835, PR-3's
-// host-mode fallback): a bare os.WriteFile truncates path in place before
-// writing the new bytes, so a reader (a concurrent `boid` invocation, or
-// this same process's own subsequent read of the file it just wrote) can
-// observe a partially-written or truncated file mid-call. write-temp +
-// rename guarantees any reader always sees either the complete old content
-// or the complete new content, never a partial mix — path's parent
-// directory must already exist.
+// os.Rename, unconditional overwrite — for content that is always "the
+// latest, correct content" rather than a value that must only ever be
+// generated once (PublishIfAbsent's use case). Unlike a bare os.WriteFile,
+// which truncates path in place, this guarantees any reader always sees
+// either the complete old content or the complete new content, never a
+// partial mix. path's parent directory must already exist.
 func WriteAtomic(path string, perm os.FileMode, content []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".atomicfile-*.tmp")
@@ -143,9 +79,6 @@ func WriteAtomic(path string, perm os.FileMode, content []byte) error {
 		return fmt.Errorf("atomicfile: create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	// Rename (the success path) consumes tmpPath; this Remove is then a
-	// harmless no-op ENOENT. Any earlier error path leaves it behind
-	// without this, so always attempt cleanup.
 	defer os.Remove(tmpPath)
 
 	if err := tmp.Chmod(perm); err != nil {

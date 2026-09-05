@@ -272,27 +272,20 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 	})
 }
 
-// deprecatedTaskRowSpecFields enumerates the task-row override keys that
-// Phase 2-3 removed. Specs that still carry them are accepted (the keys are
-// stripped and a warning is printed) so legacy YAML on disk keeps working.
+// deprecatedTaskRowSpecFields enumerates removed task-row override keys.
+// Specs that still carry them are accepted (the keys are stripped and a
+// warning is printed) so legacy YAML on disk keeps working.
 var deprecatedTaskRowSpecFields = []string{"worktree", "branch_prefix", "base_branch"}
 
 // parseTaskCreateSpec decodes a YAML/JSON task spec into apiwire.CreateTaskRequest.
 // The intermediate YAML→JSON conversion is what lets apiwire.CreateTaskRequest's
-// json tags drive the schema (yaml tags are intentionally absent there to keep
-// a single source of truth). Unknown fields are rejected to surface typos.
-//
-// As of Phase 2-3, three task-row override keys (worktree / branch_prefix /
-// base_branch) are silently dropped (with a stderr warning) before strict
-// decoding so legacy specs do not break. readonly was re-enabled in Track A1.1
-// and is now a first-class field on CreateTaskRequest.
+// json tags drive the schema. Unknown fields are rejected to surface typos;
+// deprecatedTaskRowSpecFields are stripped first so legacy specs don't break.
 func parseTaskCreateSpec(data []byte) (apiwire.CreateTaskRequest, error) {
 	var raw any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return apiwire.CreateTaskRequest{}, fmt.Errorf("parse YAML: %w", err)
 	}
-	// Strip the deprecated task-row override keys from the top-level map.
-	// Only emit a warning when the key actually appears in the spec.
 	if m, ok := raw.(map[string]any); ok {
 		for _, key := range deprecatedTaskRowSpecFields {
 			if _, present := m[key]; present {

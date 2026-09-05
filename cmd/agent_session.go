@@ -11,10 +11,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// agent_session.go wires the Phase 3-d session-launching subcommands of
-// `boid agent`. Each subcommand (claude / codex / opencode) is a thin
-// front-end over POST /api/projects/{id}/sessions, then attaches to the
-// resulting job's PTY so the harness CLI feels like a foreground process.
+// agent_session.go wires the session-launching subcommands of `boid agent`
+// (claude / codex / opencode): each is a thin front-end over POST
+// /api/projects/{id}/sessions that attaches to the resulting job's PTY so
+// the harness CLI feels like a foreground process. Sessions always start
+// fresh (no resume). `boid agent shell` was retired in favor of `boid exec
+// -p <project> -- bash`, which runs the same shell adapter.
 //
 // Usage:
 //
@@ -23,18 +25,6 @@ import (
 //	boid agent opencode -p <project> [...]
 //
 // `boid agent stop <job-id>` (defined alongside in agent.go) is unchanged.
-//
-// Sessions always start fresh: the session-id resume path was removed
-// repo-wide so harnesses dispatch a brand-new process each time.
-//
-// The historical `boid agent shell` subcommand was retired after the git
-// gateway cutover: `boid exec -p <project> -- bash` runs the same shell
-// adapter through the same Runner.Dispatch() and gained the interactive PTY
-// path in the same cutover, so keeping two entry points for the same job
-// shape was pure duplication (the session variant even had to special-case
-// HarnessType=="shell" to synthesize an argv, since the shell adapter needs
-// one). The shell adapter itself stays — it still backs `boid exec` and
-// non-agent hook scripts — only the session-mode entry is gone.
 
 type agentSessionFlags struct {
 	projectRef  string

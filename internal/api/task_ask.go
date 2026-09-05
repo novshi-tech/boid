@@ -36,9 +36,9 @@ import (
 //     no second "ask" transition, no new notification.
 //
 // Register happens before the awaiting transition so an answer that races in
-// immediately afterwards is never dropped. Decision B1 (relaxed): a concurrent
-// ask carrying a DIFFERENT question id still fails with ErrAskPending; a re-ask
-// of the same question is a re-attach and is allowed.
+// immediately afterwards is never dropped. A concurrent ask carrying a
+// DIFFERENT question id still fails with ErrAskPending; a re-ask of the same
+// question is a re-attach and is allowed.
 func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question string) (string, error) {
 	if s.BlockingAsk == nil {
 		return "", &StatusError{Code: http.StatusInternalServerError, Message: "blocking ask is not configured"}
@@ -57,10 +57,10 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 	// Re-ask path: the task is already awaiting from a prior ask whose foreground
 	// command was killed by a harness command-timeout.
 	if task.Status == orchestrator.TaskStatusAwaiting {
-		// task.Exec != nil is guaranteed here: migration 0045's CHECK
-		// constraint restricts TaskStatusAwaiting to the execution status
-		// vocabulary only (a card can never reach it), so a task scanned
-		// back with this status always carries a non-nil Exec.
+		// task.Exec != nil is guaranteed here: a schema CHECK constraint
+		// restricts TaskStatusAwaiting to the execution status vocabulary
+		// only (a card can never reach it), so a task scanned back with
+		// this status always carries a non-nil Exec.
 		ap := orchestrator.GetAwaitingPayload(task.Exec.Payload)
 		if ap.QuestionID == "" {
 			return "", &StatusError{
@@ -92,7 +92,7 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 	// Fresh ask: executing → awaiting.
 	qid := newQuestionID()
 	if err := s.BlockingAsk.Register(taskID, qid); err != nil {
-		// ErrAskPending (B1) and any other registration failure surface as a
+		// ErrAskPending and any other registration failure surface as a
 		// conflict so the agent's `boid task ask` exits non-zero with the reason.
 		return "", &StatusError{Code: http.StatusConflict, Message: err.Error()}
 	}
@@ -173,8 +173,8 @@ func (s *TaskAppService) graceAbortCheck(taskID, qid string) {
 		return // answered (executing), aborted, or otherwise moved on
 	}
 	// task.Exec != nil is guaranteed past this point — see AskTaskBlocking's
-	// matching comment above (TaskStatusAwaiting is execution-only per
-	// migration 0045's CHECK constraint).
+	// matching comment above (TaskStatusAwaiting is execution-only per a
+	// schema CHECK constraint).
 	ap := orchestrator.GetAwaitingPayload(task.Exec.Payload)
 	if ap.QuestionID != qid {
 		return // a different ask episode is now in flight
@@ -195,8 +195,8 @@ func (s *TaskAppService) graceAbortCheck(taskID, qid string) {
 //
 // task.Exec != nil is guaranteed: the only call site (AskTaskBlocking) is
 // itself inside a `task.Status == TaskStatusAwaiting` branch, and awaiting is
-// execution-only per migration 0045's CHECK constraint (a card can never
-// carry that status).
+// execution-only per a schema CHECK constraint (a card can never carry that
+// status).
 func (s *TaskAppService) consumePendingAnswer(task *orchestrator.Task, answer, actor string) (string, error) {
 	fromStatus := task.Status
 	task.Status = orchestrator.TaskStatusExecuting
@@ -207,10 +207,7 @@ func (s *TaskAppService) consumePendingAnswer(task *orchestrator.Task, answer, a
 	// context.Background(): consumePendingAnswer has no ctx of its own (the
 	// answer being delivered here was recorded earlier, possibly in a
 	// different request) — harmless either way, since "answer" only ever
-	// targets an awaiting task, and awaiting is execution-only (migration
-	// 0045's CHECK constraint), never a card (docs/plans/
-	// boid-internal-signal-inbox.md §4.2's target axis excludes it
-	// regardless).
+	// targets an awaiting task, and awaiting is execution-only, never a card.
 	s.recordAnswerAction(context.Background(), task.ID, fromStatus, actor)
 	return answer, nil
 }
@@ -251,8 +248,8 @@ func (s *TaskAppService) recordAnswerAction(ctx context.Context, taskID string, 
 //
 // task.Exec != nil is guaranteed: the only call site (AnswerTask,
 // task_notify.go) rejects with 409 before this point unless task.Status ==
-// TaskStatusAwaiting, and awaiting is execution-only per migration 0045's
-// CHECK constraint (a card can never carry that status).
+// TaskStatusAwaiting, and awaiting is execution-only per a schema CHECK
+// constraint (a card can never carry that status).
 func (s *TaskAppService) answerBlocking(ctx context.Context, task *orchestrator.Task, answer string) error {
 	if s.BlockingAsk == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "blocking ask is not configured"}
@@ -289,13 +286,9 @@ func (s *TaskAppService) answerBlocking(ctx context.Context, task *orchestrator.
 // blocking path never calls StopAgent (the agent must stay alive).
 //
 // A child task is silenced only when its parent still has a live agent that
-// could notice the awaiting transition itself. The rule used to be the blunter
-// `task.ParentID != "" → never notify`, on the stated grounds that "their
-// supervisor's monitoring loop notices" — but that assumed every parent runs
-// such a loop. A triage card does not run an agent at all, so its children's
-// asks were unpageable: on 2026-08-24 four of them in a row went out with no
-// notification, and were answered only because a human was watching the task
-// list at the time.
+// could notice the awaiting transition itself — not merely because it has a
+// parent at all. A triage card runs no agent, so a blanket "has a parent →
+// never notify" rule would leave its children's asks unpageable.
 func (s *TaskAppService) fireUserAskNotification(ctx context.Context, task *orchestrator.Task, question, questionID string) {
 	if s.Notify == nil {
 		return

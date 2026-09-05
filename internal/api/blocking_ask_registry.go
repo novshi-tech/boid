@@ -7,9 +7,9 @@ import (
 )
 
 // ErrAskPending is returned by BlockingAskRegistry.Register when the task
-// already has an outstanding blocking ask. It implements decision B1: a second
-// concurrent `boid task ask` for the same task fails immediately rather than
-// queueing behind the first.
+// already has an outstanding blocking ask: a second concurrent `boid task
+// ask` for the same task fails immediately rather than queueing behind the
+// first.
 var ErrAskPending = errors.New("task_ask: another question is pending")
 
 // BlockingAskRegistry coordinates harness-independent blocking Q&A. When an
@@ -24,7 +24,7 @@ var ErrAskPending = errors.New("task_ask: another question is pending")
 type BlockingAskRegistry struct {
 	mu        sync.Mutex
 	channels  map[string]chan string // questionID -> answer channel (buffered, cap 1)
-	qidByTask map[string]string      // taskID -> questionID (B1 guard)
+	qidByTask map[string]string      // taskID -> questionID (single-pending-ask guard)
 }
 
 // NewBlockingAskRegistry returns an initialised registry.
@@ -49,8 +49,8 @@ func (r *BlockingAskRegistry) ensureInit() {
 // afterwards is never dropped. The check-and-insert is atomic under the registry
 // lock, so two concurrent asks for the same task can never both succeed.
 //
-// B1 (relaxed): a second pending ask for the same task fails with ErrAskPending
-// ONLY when it carries a DIFFERENT question id. Re-registering the SAME qid is a
+// A second pending ask for the same task fails with ErrAskPending ONLY when
+// it carries a DIFFERENT question id. Re-registering the SAME qid is a
 // re-attach — an agent whose `boid task ask` was killed by a harness
 // command-timeout retrying the identical question — and is allowed. The
 // re-attach installs a fresh channel; any prior waiter is already tearing down

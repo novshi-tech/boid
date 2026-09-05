@@ -24,12 +24,10 @@ type ScaffoldTemplateData struct {
 	Agent       string
 }
 
-// Wizard runs the project initialization flow. After the kit/workspace/project
-// reorg, project.yaml is portable: it holds only id / name / task_behaviors /
-// default_task_behavior. Kit selection has moved to `boid workspace configure`,
-// so the wizard no longer prompts for kits. The historical `worktree` field
-// was retired in branch-policy-simplification Phase 2 (v0.0.12) and is no
-// longer emitted.
+// Wizard runs the project initialization flow. project.yaml is portable: it
+// holds only id / name / task_behaviors / default_task_behavior. Kit
+// selection lives in `boid workspace configure`, so the wizard no longer
+// prompts for kits.
 //
 // Agent is the harness agent name baked into each behavior's
 // default_instruction.agent. Empty falls back to "claude-code" (the only
@@ -57,10 +55,9 @@ const DefaultTaskBehavior = "supervisor"
 
 // projectFileOut is the output structure for project.yaml.
 //
-// Per docs/plans/kit-workspace-project-reorg.md (削除キー化するフィールド),
 // project.yaml must NOT contain `kits`, `env`, `host_commands`,
-// `additional_bindings`, `secret_namespace`, or `capabilities`. Those have
-// moved to workspace.yaml / kit.yaml.
+// `additional_bindings`, `secret_namespace`, or `capabilities`. Those live
+// in workspace.yaml / kit.yaml instead.
 type projectFileOut struct {
 	ID                  string         `yaml:"id"`
 	Name                string         `yaml:"name"`

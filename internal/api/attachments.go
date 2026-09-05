@@ -44,21 +44,15 @@ var attachmentNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // given task. dataHome is the data root (e.g. filepath.Dir(cfg.DBPath)), the
 // same convention as runtimesDirFor.
 //
-// taskID must be a single canonical path component (codex review on PR
-// #798, Phase 5b PR2 attachments RPCs): CreateTaskRequest.ID is
-// caller-supplied and saved as the literal DB primary key without
-// validation (internal/api/task_create.go), and the broker
-// (internal/sandbox/broker.go) authorizes attachments ops by comparing that
-// *raw* TaskID string against the token's own context — never a resolved
-// filesystem path. Without this guard, a task literally IDed
-// "alias/../<victim-id>" would pass the broker's string-equality check
-// trivially (both sides carry the identical literal alias) while
-// filepath.Join here silently collapsed it down to the *victim's* real
-// attachments directory — a cross-task leak. Rejecting a non-canonical
-// taskID here (returning "", the same fail-closed sentinel already used for
-// an empty dataHome/taskID) protects every caller uniformly: the write path
-// (EnsureAttachmentsDir, SaveMultipartAttachments) and the read path
-// (ListAttachments, ReadAttachment) all resolve through this one function.
+// taskID must be a single canonical path component: the broker
+// (internal/sandbox/broker.go) authorizes attachments ops by comparing the
+// *raw* TaskID string against the token's own context, never a resolved
+// filesystem path — so a task literally IDed "alias/../<victim-id>" would
+// pass that check trivially while filepath.Join here silently collapsed it
+// to the victim's real attachments directory. Rejecting a non-canonical
+// taskID here (returning "") protects every caller uniformly: both the
+// write path (EnsureAttachmentsDir, SaveMultipartAttachments) and the read
+// path (ListAttachments, ReadAttachment) resolve through this function.
 func AttachmentsRootForTask(dataHome, taskID string) string {
 	if dataHome == "" || taskID == "" {
 		return ""
@@ -104,19 +98,12 @@ func EnsureAttachmentsDir(dataHome, taskID string) (string, error) {
 	return dir, nil
 }
 
-// --- Phase 5b PR2 attachments RPCs (docs/plans/phase5-shim-and-task-context.md) ---
 // ListAttachments / ReadAttachment back BoidOpTaskAttachmentsList/Get
 // (internal/server/boid_executor.go). Both resolve through
 // AttachmentsRootForTask — the same helper SaveMultipartAttachments writes
 // through — so the RPC read path and the write path can never drift apart.
-// Through Phase 5b PR5, sandbox_builder.go additionally bind-mounted a
-// per-task attachments RO bind whose source path was built independently (a
-// bare filepath.Join, not this helper — internal/api could not be imported
-// from internal/dispatcher without an import cycle) and validated by a
-// *separate*, deliberately duplicated isCanonicalTaskIDComponent
-// (internal/dispatcher/attachments_path.go); the Phase 5b PR6 cutover deleted
-// that bind and attachments_path.go outright, so this RPC pair is now the
-// sole in-sandbox read path — see wiring-seams.md #15 for the history.
+// See wiring-seams.md #15 for the history of the in-sandbox bind-mount
+// read path this superseded.
 
 // ListAttachments returns the basenames of the regular files directly under
 // the task's attachments directory, sorted. Subdirectories are never
@@ -125,15 +112,10 @@ func EnsureAttachmentsDir(dataHome, taskID string) (string, error) {
 // slice rather than an error, matching the RPC's "no data" convention
 // (JSON `[]`, not `null`).
 //
-// Every symlink is excluded outright, regardless of where it points —
-// codex review on PR #798 (Nit) flagged that the original version only
-// filtered *escaping* symlinks, which could advertise a name
-// ReadAttachment (which now rejects every symlink categorically, via
-// openat2 RESOLVE_NO_SYMLINKS on Linux — see the Major/TOCTOU fix) would
-// then always 404 on. Non-regular entries (FIFOs, sockets, devices — never
-// created by SaveMultipartAttachments, but not something a shared
-// filesystem rules out) are excluded for the same reason: list's admission
-// criteria must exactly match what get can actually serve.
+// Every symlink and non-regular entry (FIFO, socket, device) is excluded:
+// ReadAttachment rejects every symlink categorically (via openat2
+// RESOLVE_NO_SYMLINKS on Linux), so list's admission criteria must exactly
+// match what get can actually serve.
 func ListAttachments(dataHome, taskID string) ([]string, error) {
 	dir := AttachmentsRootForTask(dataHome, taskID)
 	if dir == "" {
@@ -168,13 +150,11 @@ func ListAttachments(dataHome, taskID string) ([]string, error) {
 // exact basename. name must be a single canonical path component: a
 // traversal or absolute-path attempt ("../../etc/passwd", "/etc/passwd") is
 // rejected by validateAttachmentLookupName before any path is constructed,
-// rather than being silently coerced into some *other* file the way
-// SanitizeAttachmentName's upload-time "pick a safe name to store under"
-// contract does. The actual open+read (readAttachmentBytes, platform-
-// specific — see attachment_read_linux.go) opens the file exactly once and
-// reuses that descriptor for both the containment/type check and the
-// capped read, closing the TOCTOU window a separate
-// check-then-reopen sequence would leave (codex review on PR #798).
+// rather than silently coerced into some *other* file. The actual open+read
+// (readAttachmentBytes, platform-specific — see attachment_read_linux.go)
+// opens the file exactly once and reuses that descriptor for both the
+// containment/type check and the capped read, closing the TOCTOU window a
+// separate check-then-reopen sequence would leave.
 func ReadAttachment(dataHome, taskID, name string) ([]byte, error) {
 	dir := AttachmentsRootForTask(dataHome, taskID)
 	if dir == "" {
@@ -189,21 +169,18 @@ func ReadAttachment(dataHome, taskID, name string) ([]byte, error) {
 
 // readAttachmentFilePortable is the OS-portable attachment reader: the
 // Linux fast path (attachment_read_linux.go) falls back to this when the
-// running kernel predates openat2 (Linux < 5.6), and any non-Linux build
-// uses it unconditionally (attachment_read_other.go) — boid currently
-// supports Linux only (CLAUDE.md), so that path exists purely so this
-// package still compiles elsewhere.
+// running kernel predates openat2, and any non-Linux build uses it
+// unconditionally (attachment_read_other.go).
 //
 // It re-validates symlink containment via filepath.EvalSymlinks and then
-// opens the resolved path ONCE, reusing that same *os.File for both the
-// Stat and the size-capped read — closing the "Stat here, ReadFile there"
-// half of the TOCTOU codex review flagged (a second path lookup can never
-// observe a directory-entry swap that happened after this function's own
-// Open call). It cannot close the containment race as completely as
+// opens the resolved path once, reusing that same *os.File for both the
+// Stat and the size-capped read, so a second path lookup can never observe
+// a directory-entry swap after this function's own Open call. It cannot
+// close the containment race as completely as
 // openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS) does — a symlink swap
 // landing strictly between EvalSymlinks and this Open is still physically
-// possible under adversarial concurrent write access to the directory —
-// which is exactly why it is the fallback, not the primary Linux path.
+// possible under adversarial concurrent writes — which is why it is the
+// fallback, not the primary Linux path.
 func readAttachmentFilePortable(dir, base string) ([]byte, error) {
 	full := filepath.Join(dir, base)
 
@@ -245,18 +222,14 @@ func readAttachmentFilePortable(dir, base string) ([]byte, error) {
 }
 
 // validateAttachmentLookupName normalizes and validates a caller-supplied
-// attachment name for a lookup (list/get RPC). This is deliberately
-// stricter than SanitizeAttachmentName's upload-time contract (which uses
-// filepath.Base to coerce an arbitrary multipart filename down to a safe
-// storage name, discarding any directory components): a lookup must
-// address exactly the name the caller asked for, or fail outright — never
-// silently resolve to some *other* file's basename. Shares
-// isCanonicalPathComponent with AttachmentsRootForTask's taskID guard, so
-// an embedded ".." substring that isn't a whole path element (e.g.
-// "report..final.png", which SanitizeAttachmentName already accepts at
-// upload time) is allowed here too — codex review on PR #798 flagged the
-// previous blanket "contains .." rejection as an unnecessary write/read
-// contract mismatch (data present in `list` but unreachable via `get`).
+// attachment name for a lookup (list/get RPC). Deliberately stricter than
+// SanitizeAttachmentName's upload-time contract: a lookup must address
+// exactly the name the caller asked for, or fail outright — never silently
+// resolve to some *other* file's basename. Shares isCanonicalPathComponent
+// with AttachmentsRootForTask's taskID guard, so an embedded ".." substring
+// that isn't a whole path element (e.g. "report..final.png") is allowed
+// here too, matching what SanitizeAttachmentName already accepts at
+// upload time.
 func validateAttachmentLookupName(name string) (string, error) {
 	if !isCanonicalPathComponent(name) {
 		return "", fmt.Errorf("invalid attachment name %q", name)

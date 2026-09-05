@@ -2,25 +2,13 @@
 // persistent boid state — $HOME, the XDG base directories, and the docker
 // engine — and lets a test assert that the isolation is actually in place.
 //
-// Why this exists as a package rather than a copy-pasted TestMain body: boid
-// resolves several persistent roots — the workspace homes root
-// (dispatcher.WorkspaceHomesDir), the workspace home init bookkeeping root
-// (dispatcher's workspaceHomeMetaDir, docs/plans/workspace-home-volume-persistence.md
-// 論点b), the daemon's own ~/.config/boid — from $XDG_DATA_HOME /
-// $XDG_CONFIG_HOME / $HOME whenever the corresponding *Runner field is left
-// empty, and a bare `dispatcher.Runner{}` is the standard minimal test
-// wiring across several packages. Any package whose tests reach
-// Runner.Dispatch (directly, or through a service that does) therefore has
-// to install the same isolation, and every additional hand-rolled copy is
-// another place for the set of variables to drift out of sync — the same
-// single-source reasoning internal/dockerres was created for in PR1 of that
-// same plan doc.
-//
-// The engine went on the same list in PR7 of that plan doc (論点 a-2), because
-// the volume-only pivot moved a persistent root the tests can destroy OFF the
-// filesystem entirely: a workspace's $HOME is a docker named volume now, so
-// isolating $XDG_DATA_HOME no longer isolates it. See dockerSocketName's own
-// comment for the measured incident.
+// This exists as a shared package rather than a copy-pasted TestMain body
+// because boid resolves several persistent roots (workspace homes, the
+// daemon's ~/.config/boid, and the docker engine holding workspace HOME
+// volumes) from the environment whenever the corresponding *Runner field is
+// left empty, and a bare `dispatcher.Runner{}` is the standard minimal test
+// wiring across several packages — one shared list keeps every consumer's
+// isolation in sync instead of drifting per-package.
 //
 // Everything here is test-only. It is imported from _test.go files and from
 // testutil (itself test-only — it takes *testing.T), so it never links into
@@ -42,9 +30,7 @@ import (
 //   - HOME: os.UserHomeDir's source, the last-resort root behind both
 //     dispatcher.workspaceDataHomeRoot and os.UserConfigDir.
 //   - XDG_DATA_HOME: ~/.local/share/boid — homes/, homes-meta/, boid.db,
-//     runtimes/ (which since PR3 of
-//     docs/plans/workspace-home-volume-persistence.md also holds the
-//     materialized embedded skills, under runtimes/skills).
+//     runtimes/ (including the materialized embedded skills).
 //   - XDG_CONFIG_HOME: ~/.config/boid — workspaces/<slug>/init.sh (which a
 //     dispatch will happily EXECUTE if a marker miss makes it eligible),
 //     host_commands.yaml, config.yaml.
@@ -72,20 +58,13 @@ var clearedKeys = []string{"DOCKER_API_VERSION", "DOCKER_CERT_PATH", "DOCKER_TLS
 // throwaway directory. Nothing ever creates it: an engine that cannot be
 // dialled is the isolation.
 //
-// This is on the list for the same reason $XDG_DATA_HOME is, and the reason
-// arrived late. Until the volume-only pivot a workspace's $HOME was a
-// directory under $XDG_DATA_HOME, so isolating that root isolated the homes
-// with it. PR6 of docs/plans/workspace-home-volume-persistence.md made the
-// home a docker named volume and PR7 wired
-// `DELETE /api/workspaces/{slug}` onto the engine's volume API, at which point
-// a testutil.NewTestServer daemon — which builds its client from
-// client.New(client.FromEnv), i.e. from DOCKER_HOST — issues
-// VolumeRemove(Force: true) against whatever engine the developer's shell
-// happens to point at. Measured while reviewing PR7 (2026-07-27): a single
-// `go test ./cmd/ -run TestRunWorkspaceRemove...` with a reachable engine
-// destroyed a real `boid-ws-home-noinst-team-c` volume. Redirecting the
-// address is the only isolation that works for every consumer, because the
-// engine handle is resolved deep inside buildRuntime rather than passed in.
+// A workspace's $HOME is a docker named volume, and
+// `DELETE /api/workspaces/{slug}` issues VolumeRemove(Force: true) against
+// whatever engine DOCKER_HOST names — an unreachable engine has previously
+// been the only thing standing between a test run and a real developer
+// volume being destroyed. Redirecting the address is the only isolation
+// that works for every consumer, since the engine handle is resolved deep
+// inside buildRuntime rather than passed in.
 const dockerSocketName = "docker-engine-must-not-be-reachable.sock"
 
 // imageSkillsEnv names the variable that stands in for the runner IMAGE's
@@ -232,12 +211,9 @@ func Unisolated() []string {
 // Call it from a test in every package whose suite can reach a code path that
 // resolves a boid data/config root, or a docker engine, from the environment.
 // Without it, losing the TestMain is silent: the suite keeps passing, it just
-// starts writing into (and, via init.sh, executing code from) the real user's
-// boid installation — and, since PR7 of
-// docs/plans/workspace-home-volume-persistence.md, deleting named volumes off
-// their real engine. That is not hypothetical — it is exactly what
-// internal/server's suite did until PR2 of that same plan doc added its
-// TestMain, and what internal/api's did until PR7's round-2 review.
+// starts writing into (and, via init.sh, executing code from) the real
+// user's boid installation — and deleting named volumes off their real
+// engine.
 func AssertIsolated(t *testing.T) {
 	t.Helper()
 	for _, key := range Unisolated() {

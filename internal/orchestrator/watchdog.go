@@ -8,19 +8,16 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 )
 
-// WorkspaceWatchdog is the queue の決定論的評価 節 rule 7 (沈黙の検知) primitive:
-// per-workspace timestamps of "最終 ingestion 成功" and "最終棚卸し実施". Both
-// are nil when never recorded — that IS a breach for any positive threshold
-// (a workspace that has never ingested anything is exactly the "沈黙" this
-// rule exists to catch).
+// WorkspaceWatchdog is the "沈黙の検知" primitive: per-workspace timestamps
+// of "最終 ingestion 成功" and "最終棚卸し実施". Both are nil when never
+// recorded — that IS a breach for any positive threshold (a workspace that
+// has never ingested anything is exactly the "沈黙" this rule exists to
+// catch).
 //
-// This is a mechanism only (PR-3 scope, docs/plans/cross-project-issue-triage.md
-// PR-3 instructions): ingestion (PR-4) does not exist yet, so nothing
-// currently calls TouchWorkspaceIngestSuccess in production. The primitive
-// (table + accessors + threshold evaluator) is built now so PR-4's ingestion
-// task has somewhere to write, and so the queue view can already render
-// guidance for last_triage_review_at (which nothing blocks starting to use
-// today, unlike ingestion).
+// Nothing currently calls TouchWorkspaceIngestSuccess in production — the
+// primitive (table + accessors + threshold evaluator) is built ahead of its
+// ingestion caller so that task has somewhere to write, and so the queue
+// view can already render guidance for last_triage_review_at.
 type WorkspaceWatchdog struct {
 	WorkspaceID         string
 	LastIngestSuccessAt *time.Time
@@ -57,14 +54,14 @@ func GetWorkspaceWatchdog(dbtx db.DBTX, workspaceID string) (*WorkspaceWatchdog,
 }
 
 // TouchWorkspaceIngestSuccess records "最終 ingestion 成功" for workspaceID,
-// preserving any existing last_triage_review_at. PR-4's ingestion task is
-// the intended (not-yet-existing) caller.
+// preserving any existing last_triage_review_at. An ingestion task is the
+// intended (not-yet-existing) caller.
 func TouchWorkspaceIngestSuccess(dbtx db.DBTX, workspaceID string, at time.Time) error {
 	return upsertWatchdogTimestamp(dbtx, workspaceID, "last_ingest_success_at", at)
 }
 
 // TouchWorkspaceTriageReview records "最終棚卸し実施" for workspaceID
-// (UC-5's periodic テーマセッション棚卸し), preserving any existing
+// (periodic テーマセッション棚卸し), preserving any existing
 // last_ingest_success_at.
 func TouchWorkspaceTriageReview(dbtx db.DBTX, workspaceID string, at time.Time) error {
 	return upsertWatchdogTimestamp(dbtx, workspaceID, "last_triage_review_at", at)
@@ -91,17 +88,18 @@ func upsertWatchdogTimestamp(dbtx db.DBTX, workspaceID, column string, at time.T
 	return nil
 }
 
-// WatchdogThresholds are the staleness thresholds rule 7 checks against.
-// Deliberately not yet wired to config.yaml (no real caller/data to
-// calibrate against until PR-4's ingestion lands) — DefaultWatchdogThresholds
-// below is a reasonable starting point, kept as a named type so a future PR
-// can thread it through config without changing WatchdogGuidance's signature.
+// WatchdogThresholds are the staleness thresholds this watchdog checks
+// against. Deliberately not yet wired to config.yaml (no real caller/data to
+// calibrate against until ingestion lands) — DefaultWatchdogThresholds
+// below is a reasonable starting point, kept as a named type so a future
+// change can thread it through config without changing WatchdogGuidance's
+// signature.
 type WatchdogThresholds struct {
 	IngestStale time.Duration
 	ReviewStale time.Duration
 }
 
-// DefaultWatchdogThresholds returns PR-3's starting-point thresholds: 48h
+// DefaultWatchdogThresholds returns a starting-point set of thresholds: 48h
 // for ingestion silence, 14 days for 棚卸し silence.
 func DefaultWatchdogThresholds() WatchdogThresholds {
 	return WatchdogThresholds{
@@ -110,19 +108,18 @@ func DefaultWatchdogThresholds() WatchdogThresholds {
 	}
 }
 
-// WatchdogGuidance evaluates queue 節 rule 7 for a single workspace: it
+// WatchdogGuidance evaluates this watchdog rule for a single workspace: it
 // returns one guidance string per breached threshold (empty when nothing is
 // breached). A nil/never-recorded timestamp is always a breach — "来ない
 // こと" is exactly the failure mode this rule exists to surface (人間は
-// 「来ないこと」に気づけないため, queue 節 rule 7).
+// 「来ないこと」に気づけないため).
 //
-// This is the "how a guidance item would surface" half of PR-3's watchdog
-// scope: it is a pure function of (now, watchdog row, thresholds) — no
-// agent judgment (決定12) — that the queue view (or, later, a periodic
-// notify sweep) can call directly. It does not itself persist or dedupe
-// guidance items; queue 節 rule 7 says a guidance item is re-emitted "解消
-// されるまで出し続ける", which a caller gets for free by simply calling this
-// on every render/sweep rather than this function tracking state itself.
+// This is a pure function of (now, watchdog row, thresholds) — no agent
+// judgment — that the queue view (or, later, a periodic notify sweep) can
+// call directly. It does not itself persist or dedupe guidance items: a
+// guidance item is meant to be re-emitted "解消されるまで出し続ける", which
+// a caller gets for free by simply calling this on every render/sweep
+// rather than this function tracking state itself.
 func WatchdogGuidance(now time.Time, workspaceID string, wd *WorkspaceWatchdog, th WatchdogThresholds) []string {
 	if wd == nil {
 		wd = &WorkspaceWatchdog{}

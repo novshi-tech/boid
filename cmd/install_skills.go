@@ -3,35 +3,18 @@
 package cmd
 
 // cmd/install_skills.go implements `boid install-skills`: materializes the
-// host-facing skill set (boid-cli-workspace / boid-cli-daemon / boid-cli-task,
-// internal/skills/hostdata/) into ~/.claude/skills/ so a Claude Code session
-// running directly on the machine that has `boid` installed — NOT inside a
-// job sandbox — knows how to operate boid's own workspaces/projects,
-// daemon/web pairing, and tasks/jobs from the outside.
+// host-facing skill set into ~/.claude/skills/ so a Claude Code session
+// running directly on the machine — NOT inside a job sandbox — knows how
+// to operate boid's own workspaces/projects, daemon/web pairing, and
+// tasks/jobs from the outside.
 //
-// Pure local filesystem operation (skills.DeployHostSkills), never talks to
-// the daemon — same axis as `boid check`/`boid fetch`, hence
-// annotationSkipAutostart=skip + scopeLocal.
+// Pure local filesystem operation, never talks to the daemon.
 //
-// # Why this is //go:build linux, and why that is a known wart
-//
-// This is the one dropped command whose absence is genuinely awkward
-// (docs/plans/windows-client-build.md). The scenario it serves — a Claude
-// Code session on the machine where you run the boid CLI, as opposed to
-// inside a job sandbox — is EXACTLY the Windows/macOS laptop the portable
-// build exists for. You can now run `boid` there but cannot install the
-// skills that teach Claude Code to drive it.
-//
-// It is Linux-only for a real reason, not an oversight:
-// internal/skills/safe_deploy.go hardens the deploy against TOCTOU with
-// openat-style primitives (unix.Open with O_DIRECTORY|O_CLOEXEC,
-// unix.Fstat), which have no portable equivalent — making this command
-// portable means writing a second, Windows-safe deploy path, not moving a
-// build tag.
-//
-// Note that TestNoAccidentallyLinuxOnlyRemoteCommands does NOT flag this:
-// the command is scope=local, and that gate only guards scope=remote. The
-// reason lives here instead, so the next person to wonder finds it.
+// Linux-only: internal/skills/safe_deploy.go hardens the deploy against
+// TOCTOU with openat-style primitives that have no portable equivalent (see
+// docs/plans/windows-client-build.md for the tradeoff this implies).
+// TestNoAccidentallyLinuxOnlyRemoteCommands does not flag this file because
+// it only guards scope=remote commands, and this one is scope=local.
 
 import (
 	"fmt"
@@ -95,31 +78,20 @@ func runInstallSkills(cmd *cobra.Command, _ []string) error {
 	})
 }
 
-// resolveInstallDir turns dir (whatever the user typed, or the computed
-// ~/.claude/skills default) into an absolute path with every EXISTING
-// ancestor component symlink-resolved, then returns.
+// resolveInstallDir turns dir into an absolute path with every EXISTING
+// ancestor component symlink-resolved, before handing it to
+// skills.DeployHostSkills.
 //
-// Two reasons this can't just hand dir straight to skills.DeployHostSkills:
+// skills.DeployHostSkills → openBaseDirSafe requires an absolute path and
+// refuses to walk through any symlinked path component — appropriate when
+// baseDir is job-writable storage, but it would also reject an ordinary
+// dotfiles layout (`~/.claude -> ~/dotfiles/claude`) here, where the target
+// is neither job-reachable nor attacker-controlled. Pre-resolving existing
+// symlinks in this trusted-local-filesystem context sidesteps that without
+// weakening openBaseDirSafe's guarantee for its original caller.
 //
-//  1. skills.DeployHostSkills → openBaseDirSafe requires an absolute path
-//     (its openat2 walk starts at "/"); a relative --dir would otherwise
-//     fail deep inside that call with an error that reads like a
-//     symlink-attack rejection rather than "pass an absolute path".
-//  2. openBaseDirSafe refuses to walk through ANY symlinked path component
-//     — a threat model that matters when baseDir is job-writable storage
-//     (DeployAll's original caller), but ~/.claude/skills here is neither
-//     job-reachable nor attacker-controlled. A perfectly ordinary dotfiles
-//     layout (`~/.claude -> ~/dotfiles/claude`, chezmoi/stow-style) would
-//     otherwise make this command permanently fail for a reason that has
-//     nothing to do with the security property openBaseDirSafe exists to
-//     enforce. Pre-resolving existing symlinks here — in a context that
-//     trusts the local filesystem — sidesteps that without weakening
-//     openBaseDirSafe's guarantee for its original (job-writable) caller.
-//
-// Components that don't exist yet (e.g. "skills" under an existing
-// "~/.claude") are left as-is and joined back on: they can't be symlinks if
-// they don't exist, and skills.DeployHostSkills creates them as real
-// directories.
+// Components that don't exist yet are left unresolved and joined back on:
+// they can't be symlinks if they don't exist.
 func resolveInstallDir(dir string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {

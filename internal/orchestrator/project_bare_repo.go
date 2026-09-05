@@ -10,52 +10,48 @@ import (
 )
 
 // URLDerivedProjectIDPrefix marks a project id derived from a git URL rather
-// than read from a committed project.yaml's `id:` field (docs/plans/
-// workspace-default-project.md 決定3/論点g — see internal/api's
+// than read from a committed project.yaml's `id:` field (see internal/api's
 // deriveProjectIDFromURL, the only producer of an id with this prefix).
 //
 // Exported so ProjectStore.LoadAll and ProjectAppService.FetchProject (the
-// reload paths) can gate their GitHeadReadFailurePathAbsent fallback on it
-// (Codex review, PR5 round 2 Major): that failure kind alone does not
-// distinguish "this project was registered without a project.yaml on
-// purpose" from "this is an ordinary project.yaml-bearing project whose
-// .boid/project.yaml was deleted upstream by mistake" — both read back
-// identically from gitShowHEAD. Silently switching the latter over to the
-// workspace default on next reload/fetch would hide the deletion and swap
-// its task_behaviors out from under it without any degraded signal.
-// Gating on this prefix limits the fallback to projects this daemon itself
-// registered via the no-project.yaml path; every other project keeps
-// degrading exactly as before.
+// reload paths) can gate their GitHeadReadFailurePathAbsent fallback on it:
+// that failure kind alone does not distinguish "this project was registered
+// without a project.yaml on purpose" from "this is an ordinary
+// project.yaml-bearing project whose .boid/project.yaml was deleted
+// upstream by mistake" — both read back identically from gitShowHEAD.
+// Silently switching the latter over to the workspace default on next
+// reload/fetch would hide the deletion and swap its task_behaviors out from
+// under it without any degraded signal. Gating on this prefix limits the
+// fallback to projects this daemon itself registered via the
+// no-project.yaml path; every other project keeps degrading exactly as
+// before.
 const URLDerivedProjectIDPrefix = "url-"
 
 // IsURLDerivedProjectID reports whether id was derived from a git URL
-// (project.yaml-less registration, PR5) rather than read from a committed
+// (project.yaml-less registration) rather than read from a committed
 // project.yaml's `id:` field.
 func IsURLDerivedProjectID(id string) bool {
 	return strings.HasPrefix(id, URLDerivedProjectIDPrefix)
 }
 
-// This file implements the git-URL project model (docs/plans/
-// volume-only-daemon.md §論点a "project モデル transition (dir → git URL)"
-// and §論点b "daemon 管理 bare repository"): reading a registered project's
-// project.yaml out of a daemon-managed bare git repository instead of a
-// host filesystem checkout. Everything here is pure local git plumbing (no
-// network, no credentials) — cloning/fetching a bare repo (which DOES need
-// forge credentials) lives in internal/dispatcher (see bare_repo.go there),
-// which already imports internal/gitgateway; this package must stay
-// dependency-free of both to avoid an import cycle (dispatcher imports
-// orchestrator for JobSpec/ProjectMeta/etc.).
+// This file implements the git-URL project model: reading a registered
+// project's project.yaml out of a daemon-managed bare git repository
+// instead of a host filesystem checkout. Everything here is pure local git
+// plumbing (no network, no credentials) — cloning/fetching a bare repo
+// (which DOES need forge credentials) lives in internal/dispatcher (see
+// bare_repo.go there), which already imports internal/gitgateway; this
+// package must stay dependency-free of both to avoid an import cycle
+// (dispatcher imports orchestrator for JobSpec/ProjectMeta/etc.).
 
 // IsBareRepoDir reports whether dir looks like a daemon-managed bare git
-// repository (docs/plans/volume-only-daemon.md §論点b layout:
-// "<data_dir>/repos/<workspace-slug>/<project-name>.git/") rather than a
-// filesystem project checkout (which has its .git as a *subdirectory*, not
-// visible at this level, and a .boid/project.yaml directly on disk).
-// ProjectStore.LoadAll uses this to decide whether a registered project's
-// WorkDir should be loaded via ReadProjectMetaFromBareRepo (this file) or
-// ReadProjectMetaWithKits (spec_loader.go, the pre-existing filesystem
-// path) — both project models coexist post-PR-2a (see that migration
-// path's own doc comment in project_store.go).
+// repository ("<data_dir>/repos/<workspace-slug>/<project-name>.git/")
+// rather than a filesystem project checkout (which has its .git as a
+// *subdirectory*, not visible at this level, and a .boid/project.yaml
+// directly on disk). ProjectStore.LoadAll uses this to decide whether a
+// registered project's WorkDir should be loaded via
+// ReadProjectMetaFromBareRepo (this file) or ReadProjectMetaWithKits
+// (spec_loader.go, the pre-existing filesystem path) — both project models
+// coexist.
 //
 // Detection: a bare repo has HEAD (a file, not a directory) and objects/ (a
 // directory) directly under dir. This is deliberately cheap (two os.Stat
@@ -74,10 +70,9 @@ func IsBareRepoDir(dir string) bool {
 }
 
 // ReadProjectMetaFromBareRepo reads and validates .boid/project.yaml from a
-// daemon-managed bare git repository's HEAD (docs/plans/volume-only-daemon.md
-// §論点a: "project.yaml は bare repo の HEAD (default branch) から `git show
-// HEAD:.boid/project.yaml` で読む"). Shares the exact same validation
-// pipeline as the filesystem-based ReadProjectMeta via parseProjectMetaBytes
+// daemon-managed bare git repository's HEAD (default branch), via `git show
+// HEAD:.boid/project.yaml`. Shares the exact same validation pipeline as the
+// filesystem-based ReadProjectMeta via parseProjectMetaBytes
 // (spec_loader.go).
 //
 // Unlike ReadProjectMeta, there is no project directory on disk to resolve
@@ -107,18 +102,12 @@ func ReadProjectMetaFromBareRepo(bareRepoPath string) (*ProjectMeta, error) {
 // gitShowHEAD runs `git show HEAD:<relPath>` inside bareRepoPath and returns
 // its stdout. Failure covers every reason the blob might not be readable —
 // the bare repo missing/corrupt, HEAD unresolvable (no commits), or relPath
-// simply absent from the tree — all of which docs/plans/volume-only-daemon.md
-// §論点a's auto-prune-retirement invariant treats identically today (mark
-// the project degraded, never hard-delete its DB row).
+// simply absent from the tree — all of which are treated identically today
+// (mark the project degraded, never hard-delete its DB row).
 //
 // The returned error is a *GitHeadReadError classifying WHICH of those
-// shapes it was (docs/plans/workspace-default-project.md 論点c) — scaffolding
-// for a future PR that will let "relPath absent" fall back to a
-// workspace-level default instead of failing outright, while every other
-// shape keeps failing exactly as it does today. No caller reads
-// GitHeadReadError.Kind yet: they all just check err != nil, and Error()
-// reproduces this function's pre-existing plain-error message byte for
-// byte, so today's behavior is unchanged.
+// shapes it was, letting a caller fall back to a workspace-level default for
+// "relPath absent" while every other shape keeps failing.
 func gitShowHEAD(bareRepoPath, relPath string) ([]byte, error) {
 	cmd := exec.Command("git", "-C", bareRepoPath, "show", "HEAD:"+relPath)
 	var stdout, stderr bytes.Buffer
@@ -143,8 +132,7 @@ func gitShowHEAD(bareRepoPath, relPath string) ([]byte, error) {
 }
 
 // GitHeadReadFailureKind classifies why gitShowHEAD failed to read relPath
-// out of a bare repo's HEAD tree (docs/plans/workspace-default-project.md
-// 論点c).
+// out of a bare repo's HEAD tree.
 type GitHeadReadFailureKind int
 
 const (
@@ -155,14 +143,14 @@ const (
 	GitHeadReadFailureOther GitHeadReadFailureKind = iota
 	// GitHeadReadFailureHeadUnresolved means `git rev-parse --verify HEAD`
 	// itself failed: either a bare repo with zero commits yet, or the
-	// directory is not a valid git repository at all. The design doc groups
-	// both under this one kind because both fail registration identically
-	// ("HEAD が解決できない ... repo 自体の異常なので従来通り失敗させる").
+	// directory is not a valid git repository at all. Both fail
+	// registration identically (a repo-level anomaly), so both share this
+	// one kind.
 	GitHeadReadFailureHeadUnresolved
 	// GitHeadReadFailurePathAbsent means HEAD resolves fine but relPath is
 	// simply not present in its tree — the "project.yaml was never
-	// committed" case a future PR will treat differently from the other
-	// two kinds (fall back to a workspace default instead of failing).
+	// committed" case, treated differently from the other two kinds (fall
+	// back to a workspace default instead of failing).
 	GitHeadReadFailurePathAbsent
 )
 
@@ -198,9 +186,7 @@ func (e *GitHeadReadError) Unwrap() error { return e.err }
 // classifyGitHeadReadFailure determines why reading relPath out of
 // bareRepoPath's HEAD tree failed, using exit codes and stdout only — never
 // stderr text, since git's stderr messages are gettext-localized and
-// therefore locale/git-version dependent (docs/plans/
-// workspace-default-project.md 論点c, fable review m5). Two git
-// subprocesses, in order:
+// therefore locale/git-version dependent. Two git subprocesses, in order:
 //
 //  1. `git rev-parse --verify HEAD` — fails exactly when HEAD does not
 //     resolve to a commit (empty repo, or the bare repo isn't a valid git
@@ -231,8 +217,7 @@ func classifyGitHeadReadFailure(bareRepoPath, relPath string) GitHeadReadFailure
 }
 
 // DefaultBranch returns a bare repo's default branch — its HEAD symbolic
-// ref, short form (docs/plans/volume-only-daemon.md §論点a: "Default branch
-// determined by bare repo's HEAD symbolic ref (`git symbolic-ref HEAD`)").
+// ref, short form (`git symbolic-ref --short HEAD`).
 func DefaultBranch(bareRepoPath string) (string, error) {
 	cmd := exec.Command("git", "-C", bareRepoPath, "symbolic-ref", "--short", "HEAD")
 	var stdout, stderr bytes.Buffer
@@ -249,25 +234,23 @@ func DefaultBranch(bareRepoPath string) (string, error) {
 }
 
 // BareRepoPath returns the daemon-managed bare repository path for a
-// project named projectName registered into workspaceSlug (docs/plans/
-// volume-only-daemon.md §論点b layout: "<data_dir>/repos/<workspace-slug>/
-// <project-name>.git/"). dataDir is the daemon's data-home
-// (~/.local/share/boid equivalent — container-side
-// /home/boid/.local/share/boid in the eventual volume-only deploy).
+// project named projectName registered into workspaceSlug
+// ("<data_dir>/repos/<workspace-slug>/<project-name>.git/"). dataDir is the
+// daemon's data-home (~/.local/share/boid equivalent).
 //
 // This is a plain filepath.Join with no validation of its own — a
 // projectName such as "../../../../tmp/owned" cleans straight through it
-// and moves the result outside dataDir/repos/workspaceSlug entirely (PR-2a
-// codex round-1 Blocker 2). Callers that accept projectName from an
-// external caller (an API request body's --name override, ultimately) MUST
-// use SafeBareRepoPath below instead, not this function directly.
+// and moves the result outside dataDir/repos/workspaceSlug entirely.
+// Callers that accept projectName from an external caller (an API request
+// body's --name override, ultimately) MUST use SafeBareRepoPath below
+// instead, not this function directly.
 func BareRepoPath(dataDir, workspaceSlug, projectName string) string {
 	return filepath.Join(dataDir, "repos", workspaceSlug, projectName+".git")
 }
 
 // ValidProjectName checks that name is safe to use as the last path segment
-// of a daemon-managed bare-repo path (BareRepoPath's projectName argument) —
-// PR-2a codex round-1 Blocker 2. Rejects:
+// of a daemon-managed bare-repo path (BareRepoPath's projectName argument).
+// Rejects:
 //   - empty, or longer than 128 chars;
 //   - any path separator ('/' or '\'), which would let projectName escape
 //     its intended single path segment entirely (e.g. "sub/dir");
@@ -313,44 +296,29 @@ func ValidProjectName(name string) error {
 	return nil
 }
 
-// SafeBareRepoPath is BareRepoPath with defense-in-depth validation applied
-// (PR-2a codex round-1 Blocker 2): projectName must satisfy ValidProjectName
-// AND the resulting join must still resolve beneath
-// <dataDir>/repos/<workspaceSlug> — the latter check protects against both
-// a bug in ValidProjectName's character-level allowlist and any future
-// change to BareRepoPath's own Join call that reintroduces a traversal
-// (belt-and-suspenders: input validation at the edge, output validation at
-// the boundary it is meant to protect). Every caller that accepts
-// projectName from outside the daemon process (currently just
+// SafeBareRepoPath is BareRepoPath with defense-in-depth validation applied:
+// projectName must satisfy ValidProjectName AND the resulting join must
+// still resolve beneath <dataDir>/repos/<workspaceSlug> — the latter check
+// protects against both a bug in ValidProjectName's character-level
+// allowlist and any future change to BareRepoPath's own Join call that
+// reintroduces a traversal. Every caller that accepts projectName from
+// outside the daemon process (currently just
 // ProjectAppService.CreateProjectFromGitURL's --name / URL-derived name)
 // must go through this, not the raw BareRepoPath.
 //
 // The containment check runs through PathIsUnderResolved against
 // ReposRoot(dataDir) — <dataDir>/repos, WITHOUT the workspaceSlug segment —
 // not the plain (lexical-only) PathIsUnder against the per-workspace
-// directory round-1 used (PR-2a codex round-2 Blocker 2). Two things follow
-// from that choice:
-//
-//   - Symlink defense: <dataDir>/repos/<workspaceSlug> ITSELF being
-//     replaced with a symlink to somewhere outside dataDir entirely (codex's
-//     concrete scenario) is only detectable by resolving through it and
-//     comparing against a boundary that sits ABOVE the symlink — comparing
-//     the resolved bareRepoPath against the resolved
-//     <dataDir>/repos/<workspaceSlug> itself is circular (path is always
-//     lexically a child of root by construction, so resolving both through
-//     the SAME symlink trivially keeps that child/parent relationship no
-//     matter where the symlink points). ReposRoot(dataDir) is workspace-slug
-//     scoping, but is the boundary an attacker would actually need to
-//     escape and matches isManagedBareRepoPath's own convention below.
-//   - No loss of protection for the original round-1 traversal-name
-//     scenario: projectName is already constrained by ValidProjectName to a
-//     single clean path segment with no separators and no ".." anywhere —
-//     BareRepoPath's Join always places it immediately after workspaceSlug,
-//     so a validated projectName can never affect which workspace's
-//     directory the result lands in regardless of which boundary this
-//     checks against; only an escape past dataDir/repos entirely is
-//     actually reachable, and every ".."-based escape used to get there
-//     starts by leaving <dataDir>/repos/<workspaceSlug> anyway.
+// directory. This defends against <dataDir>/repos/<workspaceSlug> ITSELF
+// being replaced with a symlink to somewhere outside dataDir entirely:
+// that's only detectable by resolving through it and comparing against a
+// boundary that sits ABOVE the symlink (comparing the resolved bareRepoPath
+// against the resolved <dataDir>/repos/<workspaceSlug> itself would be
+// circular). There is no loss of protection for the traversal-name case
+// either: projectName is already constrained by ValidProjectName to a
+// single clean path segment with no separators and no ".." anywhere, so a
+// validated projectName can never affect which workspace's directory the
+// result lands in regardless of which boundary this checks against.
 //
 // Safe to call even though neither root nor path exists yet at register
 // time (the case this function always runs in, BEFORE any clone) — see
@@ -371,19 +339,18 @@ func SafeBareRepoPath(dataDir, workspaceSlug, projectName string) (string, error
 	return path, nil
 }
 
-// ReposRoot returns the daemon's bare-repo storage root
-// (<dataDir>/repos) — the prefix every BareRepoPath result shares, used by
+// ReposRoot returns the daemon's bare-repo storage root (<dataDir>/repos) —
+// the prefix every BareRepoPath result shares, used by
 // ProjectStore.SetReposRoot to distinguish a legacy (pre-cutover,
 // host-filesystem) project registration from a git-URL one when neither
-// loader can read its project.yaml (see LoadAll's migration-path handling).
+// loader can read its project.yaml.
 func ReposRoot(dataDir string) string {
 	return filepath.Join(dataDir, "repos")
 }
 
 // DeriveProjectNameFromURL derives a project name from a git remote URL's
-// last path component, stripping a trailing ".git" (docs/plans/
-// volume-only-daemon.md §論点a: "project-name は URL から derive"). Handles
-// both slash-delimited forms (https://host/owner/repo(.git)?,
+// last path component, stripping a trailing ".git". Handles both
+// slash-delimited forms (https://host/owner/repo(.git)?,
 // ssh://host/owner/repo(.git)?) and the scp-like form
 // (git@host:owner/repo(.git)?) since both end in a '/'-delimited path
 // segment.

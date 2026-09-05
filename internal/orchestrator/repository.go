@@ -14,18 +14,10 @@ import (
 
 type TaskRepository struct {
 	db db.DBTX
-	// metaResolver backs CreateAction's internal-signal ingest decision
-	// (docs/plans/boid-internal-signal-inbox.md §4.3/§6.2). nil disables
-	// ingest entirely — CreateAction still writes the action row exactly as
-	// before (see IngestActionSignal's own nil-resolver short-circuit) — the
-	// same "unwired optional dependency degrades to a no-op, never a panic"
-	// convention every other optional field in this codebase follows (e.g.
-	// internal/server/boid_executor.go's boidBuiltinExecutor fields). Set via
-	// SetMetaProjectResolver post-construction, mirroring ProjectStore's own
-	// SetWorkspaceStore/SetHostCommands late-binding shape, rather than a
-	// NewTaskRepository parameter — the many existing call sites that
-	// construct a TaskRepository purely for task/action CRUD (tests
-	// included) do not need to thread a resolver they never use.
+	// metaResolver backs CreateAction's internal-signal ingest decision. nil
+	// disables ingest entirely — CreateAction still writes the action row as
+	// before. Set via SetMetaProjectResolver post-construction rather than a
+	// NewTaskRepository parameter, since most call sites never use it.
 	metaResolver MetaProjectResolver
 }
 
@@ -62,9 +54,7 @@ func (r *TaskRepository) UpdateTask(task *Task) error {
 	return UpdateTask(r.db, task)
 }
 
-// TouchTaskUpdatedAt backs docs/plans/webui-detail-list-redesign.md PR-3's
-// updated_at bump (api.TaskUpdatedAtToucher) — thin wrapper, same shape as
-// every other TaskRepository method.
+// TouchTaskUpdatedAt satisfies api.TaskUpdatedAtToucher.
 func (r *TaskRepository) TouchTaskUpdatedAt(id string) error {
 	return TouchTaskUpdatedAt(r.db, id)
 }
@@ -92,13 +82,10 @@ func (r *TaskRepository) ListChildren(parentID string) ([]*Task, error) {
 }
 
 // CreateAction persists action, then — within the SAME transaction —
-// ingests it into the target card's workspace inbox when eligible (docs/
-// plans/boid-internal-signal-inbox.md §4.5). Same dual-mode shape as
-// DeleteTask/IngestSignals/ClaimSignals above: nests inside an already-open
-// tx when r.db is one (the normal case — every production caller reaches
-// this from inside an existing WithinTx), or opens its own spanning
-// transaction when r.db is a raw *sql.DB, so the INSERT and the ingest can
-// never observe or commit independently of each other.
+// ingests it into the target card's workspace inbox when eligible. Same
+// dual-mode shape as DeleteTask above: nests inside an already-open tx when
+// r.db is one, or opens its own spanning transaction when r.db is a raw
+// *sql.DB, so the INSERT and the ingest can never commit independently.
 func (r *TaskRepository) CreateAction(ctx context.Context, action *Action) error {
 	conn, ok := r.db.(*sql.DB)
 	if !ok {
@@ -113,9 +100,7 @@ func (r *TaskRepository) ListActionsByTask(taskID string) ([]*Action, error) {
 	return ListActionsByTask(r.db, taskID)
 }
 
-// ListActionsSince backs docs/plans/ingestion-identity.md PR-3 (B-3)'s
-// workspace-scoped action_list read. Thin wrapper, mirroring every other
-// TaskRepository method's shape.
+// ListActionsSince is the workspace-scoped action_list read.
 func (r *TaskRepository) ListActionsSince(filter ActionListFilter) ([]*Action, string, error) {
 	return ListActionsSince(r.db, filter)
 }
@@ -141,9 +126,7 @@ func (r *TaskRepository) ParkedFrom(taskID string) (TaskStatus, error) {
 }
 
 // LinkIdentity / UnlinkIdentity / UnlinkAllForTask / ResolveIdentity /
-// ListIdentitiesByTask back docs/plans/ingestion-identity.md PR-1 (B-1)'s
-// identity index (task_identity.go). Thin wrappers over the package-level
-// functions, mirroring every other TaskRepository method's shape.
+// ListIdentitiesByTask are thin wrappers over task_identity.go's identity index.
 func (r *TaskRepository) LinkIdentity(projectID, identity, taskID string) error {
 	return LinkIdentity(r.db, projectID, identity, taskID)
 }
@@ -165,12 +148,7 @@ func (r *TaskRepository) ListIdentitiesByTask(taskID string) ([]string, error) {
 }
 
 // CreateTriggerRun / CompleteTriggerRun / ListInFlightTriggerRuns /
-// LatestTriggerRun back docs/plans/ingestion-identity.md PR-4 (B-5)'s
-// trigger_runs ledger (trigger_run.go). Thin wrappers over the
-// package-level functions, same shape as the identity methods above — not
-// task-scoped data, but taskRepo is the object wire.go already threads into
-// TaskWorkflowService's narrow-interface fields (Actions/TaskTriage follow
-// the same precedent).
+// LatestTriggerRun are thin wrappers over trigger_run.go's trigger_runs ledger.
 func (r *TaskRepository) CreateTriggerRun(run *TriggerRun) error {
 	return CreateTriggerRun(r.db, run)
 }
@@ -187,8 +165,8 @@ func (r *TaskRepository) LatestTriggerRun(projectID, triggerName string) (*Trigg
 	return LatestTriggerRun(r.db, projectID, triggerName)
 }
 
-// SetTriggerRunJobID / DeleteTriggerRun back the Opus review Blocker 1
-// insert-then-dispatch split (trigger_run.go's own doc comments).
+// SetTriggerRunJobID / DeleteTriggerRun back the insert-then-dispatch split
+// — see trigger_run.go's own doc comments.
 func (r *TaskRepository) SetTriggerRunJobID(id, jobID string) error {
 	return SetTriggerRunJobID(r.db, id, jobID)
 }
@@ -198,15 +176,12 @@ func (r *TaskRepository) DeleteTriggerRun(id string) error {
 }
 
 // IngestSignals / GetSignalCursor / ListSignals / ClaimSignals / AckSignals /
-// HasPendingSignals back docs/plans/signal-ingest-detailed-design.md §2
-// (PR-1)'s inbox store (signal_store.go).
+// HasPendingSignals wrap signal_store.go's inbox store.
 //
 // IngestSignals and ClaimSignals each need their SQL statements to run as
-// ONE transaction (signal_store.go's own doc comments — Q13's crash-safety
-// claim rests on this), so — unlike every other wrapper on this type —
-// they follow DeleteTask's pattern above rather than being one-line
-// delegators: when r.db is a raw *sql.DB (not already inside a WithinTx
-// call), they open their own transaction spanning the whole operation.
+// one transaction, so — unlike every other wrapper on this type — they
+// follow DeleteTask's pattern above rather than being one-line delegators:
+// when r.db is a raw *sql.DB, they open their own spanning transaction.
 func (r *TaskRepository) IngestSignals(workspaceID, service, connector string, rows []SignalIngestRow) error {
 	conn, ok := r.db.(*sql.DB)
 	if !ok {
@@ -281,12 +256,10 @@ func (r *ProjectRepository) SetProjectWorkspace(projectID, workspaceID string) e
 	return SetProjectWorkspace(r.db, projectID, workspaceID)
 }
 
-// AssignWorkspaceIfExists atomically checks-then-assigns (MAJOR 3, codex
-// review). See the package-level function's doc comment. r.db must be a
-// *sql.DB — every production wiring path constructs ProjectRepository with
-// srv.db (the daemon's single *sql.DB handle), so this type assertion only
-// fails for a hand-rolled ProjectRepository over a *sql.Tx, which no caller
-// does today.
+// AssignWorkspaceIfExists atomically checks-then-assigns. See the
+// package-level function's doc comment. r.db must be a *sql.DB — every
+// production wiring path constructs ProjectRepository with the daemon's
+// single *sql.DB handle.
 func (r *ProjectRepository) AssignWorkspaceIfExists(projectID, workspaceID string) error {
 	conn, ok := r.db.(*sql.DB)
 	if !ok {
@@ -313,8 +286,7 @@ func (r *ProjectRepository) GetWorkspaceSummary(slug string) (*WorkspaceSummary,
 	return GetWorkspaceSummary(r.db, slug)
 }
 
-// WorkspaceExists reports whether slug refers to an existing workspaces
-// table row (MAJOR 5 fix — see WorkspaceExists' doc comment).
+// WorkspaceExists reports whether slug refers to an existing workspaces table row.
 func (r *ProjectRepository) WorkspaceExists(slug string) (bool, error) {
 	return WorkspaceExists(r.db, slug)
 }
@@ -370,13 +342,9 @@ func (s *TaskGCStore) WithRuntimesDir(dir string) *TaskGCStore {
 
 // WithTranscriptsDir enables disk-level cleanup of the persistent
 // transcript/diagnostics root (`<dir>/<runtime_id>`, holding transcript.log
-// and diagnostics.json — see internal/server's transcriptsDirFor) for GC
-// target jobs, keyed by the same runtime_id as WithRuntimesDir but a
-// separate directory tree (dispatcher.ContainerBackendOptions.TranscriptDir's
-// doc comment explains why the two are no longer colocated: this one is a
-// persistent volume, not the host tmpfs runtimesDir sits on). Empty disables
-// this cleanup — the transcript/diagnostics files then simply accumulate
-// forever, which is exactly the "占有" risk this option exists to prevent.
+// and diagnostics.json), keyed by the same runtime_id as WithRuntimesDir but
+// a separate (persistent-volume) directory tree. Empty disables this
+// cleanup, so those files accumulate forever.
 func (s *TaskGCStore) WithTranscriptsDir(dir string) *TaskGCStore {
 	s.transcriptsDir = dir
 	return s
@@ -427,17 +395,14 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 			return err
 		}
 		result = r
-		// N-2 (Opus review): trigger_runs has no other retention — purge it
-		// in the SAME transaction, on the SAME 30-day schedule, rather than
-		// adding a separate GC pass.
+		// trigger_runs has no other retention — purge it in the same
+		// transaction and schedule rather than a separate GC pass.
 		n, err := GCTriggerRuns(dbtx, olderThan, dryRun)
 		if err != nil {
 			return err
 		}
 		result.TriggerRuns = n
-		// docs/plans/signal-ingest-detailed-design.md §2/§9: signal inbox GC
-		// rides the same transaction and 30-day schedule, matching
-		// GCTriggerRuns' own precedent immediately above.
+		// Signal inbox GC rides the same transaction and schedule.
 		sn, err := GCSignals(dbtx, olderThan, dryRun)
 		if err != nil {
 			return err
@@ -457,30 +422,16 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 
 // cleanRuntimes deletes runtime directories for GC target jobs: the
 // runtime_id-keyed sandbox scaffolding dir (`<RuntimesDir>/<runtime_id>`),
-// its sibling in the persistent transcript root
-// (`<TranscriptsDir>/<runtime_id>`, holding transcript.log/diagnostics.json
-// — see WithTranscriptsDir), and the job.id-keyed git-gateway clone
-// workspace dir (`<RuntimesDir>/<job.id>/workspace`, see
-// dispatcher.Runner.Dispatch's clone-mode path — the two use different
-// directory naming schemes, so both must be checked). Covers task-bound
-// jobs (GC'd via the owning task's terminal status, as before) and
-// task-less jobs — ad-hoc `boid agent claude -p`/`boid exec` sessions with
-// no task_id, which the previous INNER JOIN on tasks silently excluded
-// forever regardless of the job's own status or age. Task-less jobs are
-// instead GC'd by their own terminal status (completed/failed) and
-// updated_at.
-// Errors are logged as warnings; failures do not block subsequent DB deletion.
-// Returns the number of directories successfully deleted (runtimesDir and
-// transcriptsDir entries counted together, matching GCResult.Runtimes'
-// single counter).
+// its sibling in the persistent transcript root (`<TranscriptsDir>/
+// <runtime_id>`), and the job.id-keyed git-gateway clone workspace dir
+// (`<RuntimesDir>/<job.id>/workspace`) — the two use different directory
+// naming schemes, so both must be checked. Covers both task-bound jobs
+// (GC'd via the owning task's terminal status) and task-less ad-hoc jobs
+// (GC'd by their own terminal status and updated_at). Errors are logged as
+// warnings; failures do not block subsequent DB deletion. Returns the
+// number of directories successfully deleted.
 func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
-	// t.status IN (...) uses the same terminal set as GCTasks below (dropped
-	// included alongside done/aborted, terminalStatusSQLList — model.go's
-	// IsTerminalStatus). A dropped pre-execution task normally never has a
-	// job/runtime (drop can't fire mid-execution), but this keeps the
-	// invariant "GC'd task row ⇒ GC'd runtime dir" true for any future path
-	// that does attach a job before drop, instead of relying on that
-	// assumption never changing.
+	// Uses the same terminal set as GCTasks (terminalStatusSQLList).
 	query := `
 		SELECT j.id, j.runtime_id
 		FROM jobs j
@@ -532,9 +483,8 @@ func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
 			return
 		}
 		// Reap docker resources before removing the directory so the ledger
-		// is still readable (safety net for jobs whose cleanupSandboxAfterWait
-		// didn't complete, e.g. after a daemon restart). Only the
-		// runtime_id-keyed sandbox dir can hold docker state.
+		// is still readable. Only the runtime_id-keyed sandbox dir can hold
+		// docker state.
 		if reap && s.RuntimeReaper != nil {
 			if err := s.RuntimeReaper(dir); err != nil {
 				slog.Warn("gc docker reap failed", "dir", dir, "error", err)
@@ -553,18 +503,13 @@ func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
 			if s.runtimesDir != "" {
 				remove(filepath.Join(s.runtimesDir, j.runtimeID), true)
 			}
-			// Persistent transcript-root sibling: never holds docker state
-			// (transcript.log/diagnostics.json are files the daemon itself
-			// wrote, not per-job sandbox scaffolding), so reap=false.
+			// Persistent transcript-root sibling: never holds docker state.
 			if s.transcriptsDir != "" {
 				remove(filepath.Join(s.transcriptsDir, j.runtimeID), false)
 			}
 		}
-		// job.id-keyed dir: houses the git-gateway clone workspace. Not
-		// every job creates one (only clone-mode dispatch does), so this is
-		// a no-op when absent. Only ever under runtimesDir — the clone
-		// staging area is ephemeral scaffolding, never migrated to
-		// transcriptsDir.
+		// job.id-keyed dir: houses the git-gateway clone workspace, only
+		// created by clone-mode dispatch, so a no-op when absent.
 		if s.runtimesDir != "" {
 			remove(filepath.Join(s.runtimesDir, j.id), false)
 		}
@@ -574,14 +519,9 @@ func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
 
 // cleanTaskAttachments deletes the per-task data directory
 // (`<attachmentsRoot>/tasks/<id>`) for tasks that have been in a terminal
-// state for olderThan. The full per-task directory is removed — not just the
-// attachments/ subdir — so any sibling data we add to that tree in the
-// future is also covered. Errors are logged as warnings; failures do not
-// block subsequent DB deletion. Mirrors the cleanRuntimes pattern.
-//
-// **In-flight safety**: the SELECT explicitly filters `t.status IN ('done',
-// 'aborted')`, so attachments for executing/awaiting tasks (whose
-// directories are live-bound into a running sandbox) are never touched.
+// state for olderThan. The full per-task directory is removed, not just the
+// attachments/ subdir, so future sibling data is also covered. Errors are
+// logged as warnings; failures do not block subsequent DB deletion.
 func (s *TaskGCStore) cleanTaskAttachments(olderThan time.Duration) {
 	if s.attachmentsRoot == "" {
 		return

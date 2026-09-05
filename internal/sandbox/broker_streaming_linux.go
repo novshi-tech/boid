@@ -19,7 +19,7 @@ import (
 // handleStreamingExec routes a streaming ExecRequest.
 // The boid builtin is handled synchronously via Handle and converted to
 // stream format. Regular host commands are executed with a PTY for stdout
-// so the child process sees a TTY and uses line buffering (D-1).
+// so the child process sees a TTY and uses line buffering.
 func (b *Broker) handleStreamingExec(conn net.Conn, req *ExecRequest) {
 	// Boid builtin is fast; re-use the non-streaming path.
 	if req.Boid != nil {
@@ -36,10 +36,8 @@ func (b *Broker) handleStreamingExec(conn net.Conn, req *ExecRequest) {
 		return
 	}
 
-	// lookupCommand is a direct short-name key lookup post 5a-3
-	// (docs/plans/phase5-shim-and-task-context.md; see its doc comment in
-	// broker.go). This is the path ShimExec actually takes (Streaming=true),
-	// so the same direct-lookup contract holds here.
+	// lookupCommand is a direct short-name key lookup — see its doc comment
+	// in broker.go.
 	def, ok := lookupCommand(entry.Commands, req.Command)
 	if !ok {
 		sendStreamError(conn, fmt.Sprintf("command not allowed: %s", filepath.Base(req.Command)), 1)
@@ -49,9 +47,9 @@ func (b *Broker) handleStreamingExec(conn net.Conn, req *ExecRequest) {
 	b.execCommandStreaming(conn, req, def, entry)
 }
 
-// execCommandStreaming runs def.Path with PTY-based stdout (line buffering, D-1),
-// a separate stderr pipe, process-group isolation (D-2), and an exit chunk for
-// proper exit-code propagation (D-3).
+// execCommandStreaming runs def.Path with PTY-based stdout (line buffering),
+// a separate stderr pipe, process-group isolation, and an exit chunk for
+// proper exit-code propagation.
 func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def CommandDef, entry *tokenEntry) {
 	if msg, ok := gateHostCommand(def, req.Args); !ok {
 		sendStreamError(conn, msg, 1)
@@ -136,7 +134,7 @@ func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def Comma
 		_ = enc.Encode(&chunk)
 	}
 
-	// Read kill chunks sent by the shim (D-2: signal propagation).
+	// Read kill chunks sent by the shim.
 	go func() {
 		dec := json.NewDecoder(conn)
 		for {
@@ -197,7 +195,7 @@ func (b *Broker) execCommandStreaming(conn net.Conn, req *ExecRequest, def Comma
 
 	wg.Wait()
 
-	// Retrieve exit code (D-3: exit sync).
+	// Retrieve exit code.
 	code := 0
 	if err := cmd.Wait(); err != nil {
 		var exitErr *exec.ExitError

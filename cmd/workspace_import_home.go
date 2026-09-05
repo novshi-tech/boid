@@ -21,25 +21,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// `boid workspace import-home <slug> [--from <dir>]` — PR8 of
-// docs/plans/workspace-home-volume-persistence.md (論点 f).
+// `boid workspace import-home <slug> [--from <dir>]` moves the CONTENTS of
+// a pre-volume host-side workspace home (the harness authentication and
+// installed toolchain) into the workspace's docker named volume, once
+// (docs/plans/workspace-home-volume-persistence.md 論点 f).
 //
-// PR6 moved every workspace's $HOME into a docker named volume, which fixed
-// the persistence regression the plan doc exists for and left the CONTENTS of
-// the pre-PR6 host directories — the harness authentication and the installed
-// toolchain — where they were. This command moves them across, once.
-//
-// # What this process does and does not do (D1)
-//
-// It reads the host directory and streams a tar. It does NOT talk to the docker
-// engine, does not delete anything, and does not decide anything about markers
-// or identities. All of that is the daemon's
-// (dispatcher.Runner.ImportWorkspaceHome), because all of the state it has to
-// keep consistent — the completion marker inside the daemon's own volume, the
-// per-workspace init flock, the volume's identity label — is the daemon's.
-// `boid reap` is the counter-example that proves the rule: it drives the engine
-// from the CLI precisely because it must work when the daemon is DOWN, which is
-// the opposite of this command's requirement.
+// This process only reads the host directory and streams a tar; it does
+// not talk to the docker engine or decide anything about markers or
+// identities. All of that state — the completion marker inside the
+// daemon's own volume, the per-workspace init flock, the volume's identity
+// label — belongs to the daemon (dispatcher.Runner.ImportWorkspaceHome).
+// Contrast `boid reap`, which drives the engine directly from the CLI
+// because it must work with the daemon down.
 
 var (
 	// workspaceImportHomeFrom is --from: the legacy host directory to read.
@@ -121,12 +114,7 @@ func init() {
 	// then opens, so it only works when the two share a filesystem), this
 	// one resolves a path THIS process opens and sends the bytes, which is
 	// exactly why the payload is a tar stream. Against a remote daemon it
-	// does the right thing. (`project init` used to be the scopeLocal
-	// comparison point here too, back when it resolved [dir] against the
-	// daemon's own host for a POST /api/projects registration call —
-	// docs/plans/release-onboarding.md 穴 7/PR6 removed that call
-	// entirely, so it is scopeNeutral now, see cmd/project.go's own
-	// annotation comment.)
+	// does the right thing.
 	workspaceImportHomeCmd.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
 
 	workspaceImportHomeCmd.Flags().StringVar(&workspaceImportHomeFrom, "from", "",
@@ -143,14 +131,13 @@ func init() {
 // defaultWorkspaceHomeSource resolves --from's default: the legacy
 // homes/<slug> directory on THIS host.
 //
-// dispatcher.WorkspaceHomesDir("") is the authority rather than a literal path
-// assembled here, so the CLI and the daemon-side function that documents this
-// layout cannot drift. The empty argument is deliberate and correct for a CLI:
-// that parameter is the daemon's RuntimesDir, which this process has no way to
-// know and which — since PR6 — resolves under $XDG_RUNTIME_DIR anyway. The
-// fallback branch it takes ($XDG_DATA_HOME/boid/homes, else
-// ~/.local/share/boid/homes) is exactly where a pre-PR6 install put them, and
-// is where the 5 measured homes on the dogfood machine are.
+// dispatcher.WorkspaceHomesDir("") is the authority rather than a literal
+// path assembled here, so the CLI and the daemon-side function that
+// documents this layout cannot drift. The empty argument is deliberate and
+// correct for a CLI: that parameter is the daemon's RuntimesDir, which this
+// process has no way to know, and the fallback branch it takes
+// ($XDG_DATA_HOME/boid/homes, else ~/.local/share/boid/homes) is exactly
+// where a legacy install put them.
 func defaultWorkspaceHomeSource(slug string) (string, error) {
 	root, err := dispatcher.WorkspaceHomesDir("")
 	if err != nil {
@@ -176,37 +163,29 @@ func runWorkspaceImportHome(cmd *cobra.Command, args []string) error {
 	}
 	typed = filepath.Clean(typed)
 
-	// Refused HERE, before anything is sent. The daemon destroys the workspace's
-	// HOME volume before it reads a single byte of the archive (that removal is
-	// also its in-use check — see dispatcher.Runner.ImportWorkspaceHome), so a
-	// typo'd --from that this process merely passed along would cost the
-	// operator their home for nothing.
+	// Refused HERE, before anything is sent: the daemon destroys the
+	// workspace's HOME volume before it reads a single byte of the archive
+	// (that removal is also its in-use check), so a typo'd --from would
+	// cost the operator their home for nothing.
 	//
-	// The check goes through dispatcher.ResolveWorkspaceHomeSource rather than a
-	// local os.Stat, and that is the whole of codex round 3's Blocker 2 on this
-	// side: os.Stat FOLLOWS a symlink and reports a directory, while the walk that
-	// builds the archive does not follow one — so `--from` pointing at a symlink
-	// used to pass every check here and then produce an archive with no entries.
-	// One function decides it for both, so they cannot disagree again.
+	// Goes through dispatcher.ResolveWorkspaceHomeSource rather than a local
+	// os.Stat: os.Stat FOLLOWS a symlink and reports a directory, while the
+	// walk that builds the archive does not follow one, so a symlinked
+	// --from could pass this check and then produce an archive with no
+	// entries. One function decides it for both, so they cannot disagree.
 	resolved, err := dispatcher.ResolveWorkspaceHomeSource(typed)
 	if err != nil {
 		return fmt.Errorf("%w (pass --from if the legacy home is somewhere else, e.g. a backup directory)", err)
 	}
 	src := workspaceHomeSource{Typed: typed, Resolved: resolved}
 
-	// The second half of Blocker 2, and the one that does not depend on knowing
-	// WHY the source is empty. Whatever the cause — a symlink an older build
-	// failed to follow, a typo, a backup that was never populated, a mount that
-	// is not mounted — the outcome is identical and uniquely destructive: the
-	// daemon removes the HOME volume before it reads the body, so an archive with
-	// nothing in it replaces a workspace's credentials and toolchain with an empty
-	// home and answers 200. The daemon refuses it too (that is the guard on the
-	// same side as the deletion); this one refuses it before an operator is even
-	// asked to confirm.
-	//
-	// Checked above the --dry-run branch on purpose: --dry-run exists to predict
-	// what a real run would do, and a dry-run that cheerfully reported "0 files"
-	// for a source a real run would reject predicts the wrong thing.
+	// Whatever the cause of an empty source — an unfollowed symlink, a
+	// typo, an unpopulated backup, an unmounted mount — the outcome is
+	// identical and uniquely destructive: the daemon removes the HOME
+	// volume before it reads the body, so an empty archive replaces a
+	// workspace's credentials and toolchain with an empty home and answers
+	// 200. Checked above the --dry-run branch on purpose, so a dry-run
+	// never predicts success for a source a real run would reject.
 	hasEntries, err := dispatcher.WorkspaceHomeSourceHasEntries(src.Resolved)
 	if err != nil {
 		return fmt.Errorf("read the workspace home source %s: %w", src, err)
@@ -316,9 +295,9 @@ func streamWorkspaceHomeImport(cmd *cobra.Command, slug string, src workspaceHom
 	go func() {
 		defer close(done)
 		stats, writeErr = dispatcher.WriteWorkspaceHomeTar(pw, src.Resolved, func(p dispatcher.WorkspaceHomeTarStats) {
-			// Progress on stdout, not a log: a 4.3GB transfer with no output is
-			// indistinguishable from a hang (D4), and this is the only place
-			// that knows how far along it is.
+			// Progress on stdout, not a log: a multi-GB transfer with no
+			// output is indistinguishable from a hang, and this is the
+			// only place that knows how far along it is.
 			fmt.Fprintf(out, "  ... %d files, %s read\n", p.Files, humanize.FormatBytes(p.Bytes))
 		})
 		_ = pw.CloseWithError(writeErr)
@@ -351,33 +330,23 @@ func streamWorkspaceHomeImport(cmd *cobra.Command, slug string, src workspaceHom
 // (internal/api's workspaceHomeImportContentType, unexported there).
 const workspaceHomeImportMediaType = "application/x-tar"
 
-// workspaceHomeImportFailure decides WHICH of up to three concurrent failures
-// is the one worth reporting, and returns nil when there was none.
+// workspaceHomeImportFailure decides WHICH of up to three concurrent
+// failures is the one worth reporting, and returns nil when there was none.
 //
-// The precedence exists because of one specific interaction that gets the most
-// important message in this command wrong if it is left to fall out naturally.
-// The daemon answers a workspace with a running job at the very START of the
-// request — the volume removal is its in-use check — so a 409 arrives while the
-// CLI is still uploading. net/http surfaces that response and abandons the body,
-// this function's caller then closes the pipe to unblock its writer, and the
-// walk comes back with io.ErrClosedPipe. Reporting the walk's error first turns
+// The precedence matters because the daemon answers a workspace with a
+// running job at the very START of the request (the volume removal is its
+// in-use check), so a 409 can arrive while the CLI is still uploading; the
+// caller then closes the pipe to unblock its writer, and the walk comes
+// back with io.ErrClosedPipe, which must not shadow the server's real
+// answer:
 //
-//	refusing to migrate while a job is running in it
-//
-// into
-//
-//	read the workspace home source "...": io: read/write on closed pipe
-//
-// which sends the operator to look at their own filesystem for a problem that
-// is not there. So:
-//
-//  1. A response the SERVER produced wins. It is an answer about the migration
-//     itself, and it is the only place a 409/404/500 message exists.
-//  2. Otherwise a genuine walk failure wins over the transport error it caused:
-//     a permission-denied file makes the request fail with a body-read error
-//     that describes nothing.
-//  3. io.ErrClosedPipe is never a walk failure. It is this command closing its
-//     own read end, and it says only that the exchange ended first.
+//  1. A response the SERVER produced wins — the only place a 409/404/500
+//     message exists.
+//  2. Otherwise a genuine walk failure wins over the transport error it
+//     caused (e.g. a permission-denied file surfacing only as a
+//     body-read error).
+//  3. io.ErrClosedPipe is never a walk failure — it only means this
+//     command closed its own read end after the exchange ended.
 func workspaceHomeImportFailure(source string, status int, body []byte, reqErr, writeErr error) error {
 	if errors.Is(writeErr, io.ErrClosedPipe) {
 		writeErr = nil
@@ -412,13 +381,13 @@ func formatWorkspaceHomeTarStats(s dispatcher.WorkspaceHomeTarStats) string {
 
 // formatWorkspaceHomeImportResult renders the daemon's report.
 //
-// The init.sh line is not chatter. 論点 f's acceptance condition is that the
-// migration re-arms the workspace's init exactly once, and an operator who is
-// not told that will read the next dispatch's toolchain re-check as a bug.
+// The init.sh line is not chatter: the migration deliberately re-arms the
+// workspace's init exactly once, and an operator not told that would read
+// the next dispatch's toolchain re-check as a bug.
 //
-// The marker line only appears when leg 2 did NOT fire: both legs are meant to
-// be redundant, so "only one of them is holding this up" is the state worth
-// naming.
+// The marker line only appears when leg 2 did NOT fire: both legs are meant
+// to be redundant, so "only one of them is holding this up" is the state
+// worth naming.
 func formatWorkspaceHomeImportResult(slug string, resp api.WorkspaceHomeImportResponse) string {
 	var b strings.Builder
 	if resp.PreviousExisted {
@@ -431,18 +400,13 @@ func formatWorkspaceHomeImportResult(slug string, resp api.WorkspaceHomeImportRe
 		fmt.Fprintf(&b, "warning: the init completion marker could not be removed (%s)\n", resp.MarkerRemoveError)
 		fmt.Fprintf(&b, "  not fatal: the replacement volume has a new identity, which re-runs init.sh on its own\n")
 	}
-	// The leftover in-progress record. The daemon writes one before it destroys
-	// anything and clears it at the end, so a record it could not clear is
-	// leftover state worth naming — but WHAT it costs is the whole message, and
-	// since round 4 of the codex review it is usually nothing.
-	//
-	// The severe branch is the one whose consequence lands later and looks
-	// unrelated: a record still in the phase that says this home is wreckage
-	// makes the next `boid start` discard a multi-GB import. Saying that for the
-	// cheap case instead would be worse than saying nothing — under the compose
-	// deploy the file it tells them to delete is inside the daemon's own volume,
-	// so an operator who cannot reach it learns to ignore the line that
-	// eventually matters.
+	// The leftover in-progress record: the daemon writes one before it
+	// destroys anything and clears it at the end, so a record it could not
+	// clear is leftover state worth naming — but WHAT it costs is the whole
+	// message, and it is usually nothing. The severe branch is the one whose
+	// consequence lands later and looks unrelated: a record still in the
+	// phase that says this home is wreckage makes the next `boid start`
+	// discard a multi-GB import.
 	if resp.MigrationRecordRemoveError != "" {
 		fmt.Fprintf(&b, "warning: the daemon could not clear its in-progress migration record (%s)\n",
 			resp.MigrationRecordRemoveError)

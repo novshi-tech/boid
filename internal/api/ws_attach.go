@@ -27,14 +27,12 @@ type WSAttachHandler struct {
 	Registry   *auth.ConnectionRegistry
 
 	// Bearer verifies an `Authorization: Bearer <token>` header carried on
-	// the WS handshake request (docs/plans/cli-remote-connection.md Phase 3
-	// PR0). When present, it is checked before auth.DeviceIDFromContext —
-	// see authenticateDevice's doc comment for the precedence rule. PR3
-	// moved this handler's mount point in internal/server/wire.go out of
-	// the cookie-only WebAuthMiddleware Group so a Bearer-only caller (the
-	// CLI's WS-based AttachJob, internal/client/client.go) can actually
-	// reach this route end-to-end over TCP; the field itself has existed
-	// since PR0.
+	// the WS handshake request. When present, it is checked before
+	// auth.DeviceIDFromContext — see authenticateDevice's doc comment for
+	// the precedence rule. This handler's mount point (internal/server/
+	// wire.go) sits outside the cookie-only WebAuthMiddleware Group so a
+	// Bearer-only caller (the CLI's WS-based AttachJob) can reach this route
+	// end-to-end over TCP.
 	Bearer *auth.BearerVerifier
 
 	// KeepalivePeriod overrides how often an idle connection is pinged.
@@ -105,19 +103,13 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if !ok || ch == nil {
 		if !finished {
-			// The job is still genuinely running but has no live stream
-			// to offer right now (Opus review of PR #864, B2) — e.g. the
-			// container backend's adopt-time attach failed and hasn't
-			// been re-attached yet. Reporting exit 0 here (this
-			// branch's behavior before B2) would be a false positive:
-			// the caller would be told a still-running job finished
-			// successfully, which is a worse diagnostic than the
-			// dead-channel hang this whole fix started from — at least
-			// that hang was an honest "something is wrong" signal. An
-			// error frame lets `boid job attach` (internal/client's
-			// attachReadOutput already returns a real error for a
-			// "error"-typed frame) and any other WS caller retry instead
-			// of believing the job is over.
+			// The job is still genuinely running but has no live stream to
+			// offer right now (e.g. the container backend's adopt-time
+			// attach failed and hasn't been re-attached yet). Reporting
+			// exit 0 here would be a false positive: the caller would be
+			// told a still-running job finished successfully. An error
+			// frame lets `boid job attach` and any other WS caller retry
+			// instead of believing the job is over.
 			h.sendError(ctx, conn, "job is still running but has no live output stream right now; try again")
 			conn.Close(websocket.StatusNormalClosure, "stream unavailable")
 			return
@@ -163,10 +155,8 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// The client's own stdin hit EOF (or it never had one) —
 				// propagate that to the job's process so a pipe-oriented
 				// non-interactive command (`cat`, `wc`, ...) sees a real
-				// EOF and can exit (docs/plans/cli-remote-connection.md
-				// Phase 3 PR3; see LocalRuntime.CloseInputRuntime's doc
-				// comment). No-op for interactive PTY sessions and for
-				// non-interactive sessions with no StdinForward pipe.
+				// EOF and can exit. No-op for interactive PTY sessions and
+				// for non-interactive sessions with no StdinForward pipe.
 				if h.Writer != nil {
 					h.Writer.CloseInput(jobID) //nolint:errcheck
 				}
@@ -206,14 +196,12 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !more {
 				// The exit frame's code is placeholder-0 today: the actual
 				// exit code is surfaced via a separate REST endpoint
-				// (cmd/exec.go's fetchExecExitCode → GET /api/jobs/{id}/exit-code),
-				// not through this WS frame, and there is no path from
-				// the runtime subscriber's chunk channel to the process
-				// exit code here. Rewiring exit-code propagation to run
-				// through this frame is the Phase 3 未解決論点 the plan
-				// doc tracks; the frame type stays reserved for the day
-				// we do that. See client.go's attachReadOutput's "exit"
-				// case for the mirror on the reader side.
+				// (cmd/exec.go's fetchExecExitCode → GET
+				// /api/jobs/{id}/exit-code), not through this WS frame —
+				// there is no path from the runtime subscriber's chunk
+				// channel to the process exit code here. See client.go's
+				// attachReadOutput's "exit" case for the mirror on the
+				// reader side.
 				h.sendExit(ctx, conn, 0)
 				conn.Close(websocket.StatusNormalClosure, "process exited")
 				return
@@ -234,26 +222,22 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // authenticateDevice resolves the caller's device ID for the WS handshake
 // request r, before any websocket.Accept happens (so a rejection is a plain
 // HTTP 401, not a WS close frame). An Authorization: Bearer header, when
-// present, is verified via h.Bearer and takes priority — the same
-// precedence auth.NewTCPAPIAuthMiddleware uses (Phase 3 PR0: Bearer is a
-// hard commitment, no falling back to the context-derived ID on failure).
-// Without a Bearer header this falls back to
-// auth.DeviceIDFromContext(r.Context()) — the device ID set by whatever
-// cookie-based middleware sits in front of this handler in the router,
-// unchanged from before PR0.
+// present, is verified via h.Bearer and takes priority (a hard commitment,
+// no falling back to the context-derived ID on failure) — the same
+// precedence auth.NewTCPAPIAuthMiddleware uses. Without a Bearer header this
+// falls back to auth.DeviceIDFromContext(r.Context()) — the device ID set by
+// whatever cookie-based middleware sits in front of this handler in the
+// router.
 //
-// PR-3 Option 4 round-2 codex review Blocker 1: a request that already
-// authenticated via the dedicated CLI TCP listener
-// (auth.NewCLITokenAuthMiddleware, marked via
-// auth.WithCLITokenAuthenticated) must short-circuit here BEFORE the Bearer
-// branch below — that listener's Bearer header carries BOID_CLI_TOKEN, a
-// single shared secret never written to the auth store as a device token,
-// so handing it to h.Bearer.Verify would always fail with 401 even though
-// the request is already fully authenticated (this is exactly how `boid
-// attach`/`exec` broke over host mode: the CLI middleware accepted the
-// token, then this handler re-checked the same header and rejected it).
-// No device ID to report either way — CLI-token auth carries no
-// paired-device identity to register with h.Registry for revocation.
+// A request that already authenticated via the dedicated CLI TCP listener
+// (auth.NewCLITokenAuthMiddleware, marked via auth.WithCLITokenAuthenticated)
+// must short-circuit here BEFORE the Bearer branch below — that listener's
+// Bearer header carries BOID_CLI_TOKEN, a single shared secret never
+// written to the auth store as a device token, so handing it to
+// h.Bearer.Verify would always fail with 401 even though the request is
+// already fully authenticated. No device ID to report either way —
+// CLI-token auth carries no paired-device identity to register with
+// h.Registry for revocation.
 func (h *WSAttachHandler) authenticateDevice(r *http.Request) (deviceID string, ok bool, err error) {
 	if auth.CLITokenAuthenticated(r.Context()) {
 		return "", false, nil

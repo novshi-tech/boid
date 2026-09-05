@@ -11,26 +11,17 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// isShutdownErr reports whether the dispatch failure was caused by the
-// dispatch context being canceled (daemon shutdown). Checks both the ctx
-// directly and the error chain so wrapped child-ctx cancellations are
-// covered.
 // SideEffectConsumesPayload names the action types whose own side effect
 // already consumes the action payload, so ApplyAction must NOT additionally
 // merge that payload into the task's own — see the merge site below for what
 // the pollution looks like.
 //
 // Exported, and a package-level var rather than a literal inside ApplyAction,
-// so a test can compare it against the COPY of this set that the
-// boid-metaproject skill's python client carries
-// (internal/skills/data/boid-metaproject/scripts/boidmeta/boid_store.py's
-// PAYLOAD_CONSUMING). That copy has to exist — the client refuses to send a
-// payload with a type that would be merged, and it cannot ask the daemon at
-// call time — and a copy nobody checks is exactly how `child_dropped` came to
-// be missing from it for weeks after boid #982 added it here, silently
-// breaking one whole verb in production. Both halves live in one repo now;
-// TestSideEffectConsumesPayload_MatchesMetaprojectClient is what makes that
-// worth anything.
+// so a test can compare it against the copy of this set the boid-metaproject
+// skill's python client carries (boid_store.py's PAYLOAD_CONSUMING) — that
+// client refuses to send a payload with a type that would be merged and
+// cannot ask the daemon at call time, so the two sides must be kept in sync;
+// TestSideEffectConsumesPayload_MatchesMetaprojectClient is what enforces it.
 var SideEffectConsumesPayload = map[string]bool{
 	"park":          true,
 	"attrs_set":     true,
@@ -40,6 +31,10 @@ var SideEffectConsumesPayload = map[string]bool{
 	"noted":         true,
 }
 
+// isShutdownErr reports whether the dispatch failure was caused by the
+// dispatch context being canceled (daemon shutdown). Checks both the ctx
+// directly and the error chain so wrapped child-ctx cancellations are
+// covered.
 func isShutdownErr(ctx context.Context, err error) bool {
 	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
 		return true
@@ -59,12 +54,10 @@ type applyActionOptions struct {
 	// wrong for the daemon describing why it intervened: a `{code, message}`
 	// abort reason merged into a task whose payload already has a `message`
 	// silently replaces it — the same pollution SideEffectConsumesPayload
-	// exists to prevent, on a path the daemon takes routinely and without
-	// anyone asking. abortOnDispatchError avoids it by writing the action
+	// exists to prevent. abortOnDispatchError avoids it by writing the action
 	// directly and never touching the task payload; this flag is how a caller
-	// that still wants the state machine's legality check (a card has no
-	// `abort` rule, and the trigger-timeout path must be able to tell that
-	// apart from a transient failure) gets the same guarantee.
+	// that still wants the state machine's legality check gets the same
+	// guarantee.
 	actionPayloadOnly bool
 }
 
@@ -73,71 +66,42 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 }
 
 func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, req ApplyActionRequest, opts applyActionOptions) (*ActionApplication, error) {
-	// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: action payload
-	// size cap. This is action_send's single implementation — HTTP API, Web
-	// UI, brokered action_send (boid_executor.go's BoidOpActionSend), and
-	// `boid action send` all funnel through ApplyAction, so checking here
-	// once covers all of them (one of the 4 mandatory entry points; see
-	// orchestrator.ValidateContentSize's own doc comment). Deliberately
-	// ahead of the task load below (unlike the IsManualAction check, PR-B
-	// moved that one, not this one) — it needs neither the task nor a
-	// machine, so there is no reason to make an oversized-payload caller pay
-	// for a DB round trip first.
+	// action_send's single implementation — HTTP API, Web UI, brokered
+	// action_send, and `boid action send` all funnel through ApplyAction, so
+	// checking the payload size cap here once covers all of them. Deliberately
+	// ahead of the task load below: it needs neither the task nor a machine,
+	// so there is no reason to make an oversized-payload caller pay for a DB
+	// round trip first.
 	if err := orchestrator.ValidateContentSize("action payload", req.Payload); err != nil {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
 
 	task, err := s.Tasks.GetTask(taskID)
 	if err != nil {
-		// statusErrorForGetTaskErr, not a blanket 404: mapping EVERY read
+		// statusErrorForGetTaskErr, not a blanket 404: mapping every read
 		// failure to "no such task" makes a busy/locked database
 		// indistinguishable from a deleted row, and callers do branch on that
 		// — SweepTriggers' timeout handling reads a 4xx as "this task will
 		// never accept an abort" and ends the round without it, leaving the
 		// task running with single-flight released, which is the failure that
-		// whole path exists to prevent. (The helper is the same one this
-		// function's own Tx block below already uses.)
+		// whole path exists to prevent.
 		return nil, statusErrorForGetTaskErr(err)
 	}
 
-	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): the
-	// machine itself is now selected PER TASK (NewCardMachine vs
-	// NewExecutionMachine, machineFor) rather than being one fixed unified
-	// object, so it can only be resolved once the task is loaded — moving
-	// this below the GetTask call above (it used to run before it). This is
-	// a deliberate, documented behavior change: a request naming BOTH a
-	// nonexistent task ID AND an action name that is not Manual on either
-	// machine used to 400 ("action not available through this endpoint")
-	// before ever touching the task store; it now 404s ("task not found")
-	// instead, since the task load happens first and the IsManualAction
-	// check below can no longer run without it. See this PR's own
-	// description for the full list of call sites this reordering touches.
-	//
-	// card-model-cleanup PR-2: machineFor is now a pure function of
-	// task.Type, so it cannot fail.
+	// The machine is selected per task (card vs execution) so it can only be
+	// resolved once the task is loaded; machineFor is a pure function of
+	// task.Type and cannot fail.
 	sm := machineFor(task)
 
-	// Only Manual:true rules (on the machine just resolved above) are
-	// reachable through this public entry point (HTTP API / brokered
-	// action_send / `boid action send` CLI all funnel through ApplyAction).
-	// Manual:false rules — job_failed (event-driven, applied directly by
-	// CompleteJob), progress/done_request/fail_request (non-transitioning
-	// records NotifyTask writes directly), child_dispatched/child_closed
-	// (self-recorded bookkeeping), and wake_due (recorded internally by
-	// SweepWake — card machine v2, docs/plans/suggestion-as-state-transition-impl.md
-	// §3.3; a pure non-transitioning fact, not a resolved transition the way
-	// v1's wake_triaged/wake_ready were) — must never be settable by an
-	// external caller.
-	//
-	// This used to be a hand-maintained blocklist naming v1's wake_triaged/
-	// wake_ready specifically; codex review round 2 found it had missed
-	// job_failed, which (now that pre-execution statuses exist) opened
-	// triaged →(job_failed)→aborted →(reopen)→executing as a way to bypass
-	// the ready-gate (決定9/逆輸入2) entirely without ever calling "ready" or
-	// Go (v1-era statuses; the same reasoning holds under v2's parked/
-	// working/done/dropped). Checking the machine's own Manual flag instead
-	// of a separate list means a future non-manual rule can't be forgotten
-	// the same way.
+	// Only Manual:true rules on the resolved machine are reachable through
+	// this public entry point. Manual:false rules — job_failed (applied
+	// directly by CompleteJob), progress/done_request/fail_request
+	// (non-transitioning records NotifyTask writes directly),
+	// child_dispatched/child_closed (self-recorded bookkeeping), and
+	// wake_due (recorded internally by SweepWake) — must never be settable
+	// by an external caller. Checking the machine's own Manual flag instead
+	// of a hand-maintained blocklist means a future non-manual rule can't be
+	// forgotten the same way a past one was.
 	if !sm.IsManualAction(req.Type) {
 		return nil, &StatusError{
 			Code:    http.StatusBadRequest,
@@ -145,28 +109,13 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		}
 	}
 
-	// docs/plans/suggestion-as-state-transition-impl.md §3: v1's 決定17 routing
-	// (resolveReopenVariant, rewriting "reopen" to "reopen_triaged" on a
-	// done/aborted triage task) is GONE. machineFor above already selected
-	// the correct machine object (NewCardMachine for a card, NewExecutionMachine
-	// otherwise), and each machine now owns its OWN "reopen" rule with its own
-	// FromStatus/ToStatus (card: done/dropped→parked; execution: done/aborted→
-	// executing) — there is no longer a name collision needing a rewrite to
-	// disambiguate. See this PR's description for why the rename-based routing
-	// became unnecessary once the machine split itself decides which rule
-	// table "reopen" is looked up against.
-
-	// 穴11 push-down defense (docs/plans/suggestion-as-state-transition.md
-	// §3.2/§3.8): a card-lifecycle TRANSITION action (go/working/park/drop/
-	// done/reopen — orchestrator.IsCardTransitionAction) may only be applied
-	// by a human. accept(verb)'s own internal re-entry into ApplyAction
+	// A card-lifecycle transition action (go/working/park/drop/done/reopen —
+	// orchestrator.IsCardTransitionAction) may only be applied by a human.
+	// accept(verb)'s own internal re-entry into ApplyAction
 	// (WebAppService.AnswerSuggestion) reuses the SAME request ctx the
 	// human's accept click established, so it is never blocked by this check.
 	// Non-transitioning card actions (attrs_set/child_added/child_specced/
-	// child_dropped/noted/answered) are untouched — khi may still send those
-	// directly, exactly as before. escape hatch (design doc §3.2's explicit
-	// requirement) is pinned by
-	// TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion.
+	// child_dropped/noted/answered) are untouched.
 	if sm.Name == orchestrator.CardMachineName && orchestrator.IsCardTransitionAction(req.Type) && orchestrator.ActorFromContext(ctx) != orchestrator.ActorHuman {
 		return nil, &StatusError{
 			Code:    http.StatusForbidden,
@@ -178,68 +127,61 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 	// other five card-lifecycle verbs (working/park/drop/done/reopen), which
 	// are plain transitions the generic Tx flow below already handles fine,
 	// go must task-ify any specced children BEFORE its parked→working
-	// transition can commit (acceptGo's own doc comment,
-	// workflow_card.go — that ordering cannot fit inside the one Tx this
-	// function opens further down: SetMaxOpenConns(1) deadlocks a nested
-	// TaskCreator.CreateTask call). This applies identically whether "go"
-	// arrived as a direct human click (this line) or via accept(go)
-	// (applyAnswered below, which calls acceptGo too) — both are the SAME
-	// verb with the SAME meaning, design doc §3.2's table makes no
-	// distinction between them. The `false` here is acceptGo's own viaAccept
-	// param (PR #987 review round 2, MEDIUM N2) — a direct click, unlike
+	// transition can commit (acceptGo's own doc comment, workflow_card.go —
+	// that ordering cannot fit inside the one Tx this function opens further
+	// down: SetMaxOpenConns(1) deadlocks a nested TaskCreator.CreateTask
+	// call). This applies identically whether "go" arrived as a direct human
+	// click (this line) or via accept(go) (applyAnswered below, which calls
+	// acceptGo too) — both are the same verb with the same meaning. The
+	// `false` here is acceptGo's own viaAccept param — a direct click, unlike
 	// accept(go), still needs to strip AND audit-record an unrelated stale
-	// suggestion it happens to supersede (LOW 10).
+	// suggestion it happens to supersede.
 	if req.Type == "go" {
 		return s.acceptGo(ctx, taskID, false)
 	}
 	// "answered" also bypasses this pipeline entirely — its own accept path
 	// needs the identical non-Tx-then-Tx shape whenever the accepted verb is
-	// "go", plus the read-then-apply-then-strip sequencing design doc §3.1
-	// requires for every other verb. See applyAnswered's own doc comment
-	// (suggestion_accept.go) for the full accept/reject implementation,
-	// including the SEPARATE actor==human check on accept specifically (this
-	// guard above does not cover it: "answered" itself is non-transitioning
-	// and not in IsCardTransitionAction's set, since reject must stay
-	// reachable from any actor).
+	// "go", plus the read-then-apply-then-strip sequencing every other verb
+	// requires. See applyAnswered's own doc comment (suggestion_accept.go)
+	// for the full accept/reject implementation, including the separate
+	// actor==human check on accept specifically (this guard above does not
+	// cover it: "answered" itself is non-transitioning and not in
+	// IsCardTransitionAction's set, since reject must stay reachable from any
+	// actor).
 	if req.Type == "answered" {
 		return s.applyAnswered(ctx, taskID, req.Payload)
 	}
 
 	// Hydrate with workspace.yaml so kit-supplied hooks / env / capabilities
-	// — and, since docs/plans/workspace-default-project.md PR4, the
-	// workspace's default project definition (task_behaviors / base_branch /
-	// fork_point / default_task_behavior) — are visible to the dispatch
-	// loop.
+	// — and the workspace's default project definition (task_behaviors /
+	// base_branch / fork_point / default_task_behavior) — are visible to the
+	// dispatch loop.
 	//
-	// On hydration failure the two registration shapes diverge (論点e, PR6):
+	// On hydration failure the two registration shapes diverge:
 	//
 	//   - a project.yaml-less project (task.ProjectID carries
-	//     orchestrator.URLDerivedProjectIDPrefix, PR5) has NO task_behaviors
-	//     of its own — every one of them comes from the workspace default
+	//     orchestrator.URLDerivedProjectIDPrefix) has NO task_behaviors of
+	//     its own — every one of them comes from the workspace default
 	//     merge this hydrate step performs. Falling back to the bare cached
 	//     meta here would silently proceed with a meta that has ZERO
 	//     behaviors defined, producing a dispatch failure with no visible
-	//     connection to "workspace hydration failed". That is confusing
-	//     enough (and the degraded state is real enough — this project
-	//     genuinely cannot dispatch anything right now) that it is treated
-	//     as a hard error instead of a silent degrade.
+	//     connection to "workspace hydration failed", so it is treated as a
+	//     hard error instead of a silent degrade.
 	//   - an ordinary project.yaml-bearing project only loses the
 	//     workspace-supplied extras (kit env / host_commands / the
 	//     workspace-default merge, if any) — its own task_behaviors are
 	//     unaffected, so the existing silent-fallback-to-bare-Get behavior
-	//     is kept, upgraded with a logged warning (there was previously no
-	//     log line here at all) so there is at least a paper trail when
-	//     debugging a dispatch that looks like it's missing kit-level
+	//     is kept, with a logged warning so there is at least a paper trail
+	//     when debugging a dispatch that looks like it's missing kit-level
 	//     config.
+	//
 	// isNoYAMLProjectWithNoBehaviors additionally catches the "hydration
-	// technically succeeded but degraded" window (Codex review round 1
-	// Major): GetWithWorkspace returns (meta, nil error) — success — when the
-	// project has no linked workspace, the workspace store is not
-	// configured, or workspace.yaml is simply absent (os.ErrNotExist) — see
-	// GetWithWorkspace's own doc comment. None of those merge the workspace
-	// default in, so a no-YAML project's meta comes back with the same ZERO
-	// task_behaviors its bare cached meta always has (synthesizeNoYAMLProjectMeta
-	// only ever populates ID/Name). A (meta, nil) check alone would have let
+	// technically succeeded but degraded" window: GetWithWorkspace returns
+	// (meta, nil error) — success — when the project has no linked
+	// workspace, the workspace store is not configured, or workspace.yaml is
+	// simply absent. None of those merge the workspace default in, so a
+	// no-YAML project's meta comes back with the same ZERO task_behaviors
+	// its bare cached meta always has. A (meta, nil) check alone would let
 	// that degraded-but-"successful" case silently through to the exact
 	// zero-behavior dispatch this whole guard exists to prevent.
 	isNoYAMLProjectWithNoBehaviors := func(m *orchestrator.ProjectMeta) bool {
@@ -280,11 +222,10 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		Payload: req.Payload,
 		Actor:   orchestrator.ActorFromContext(ctx),
 	}
-	// docs/plans/ingestion-identity.md PR-5 (B-6), I-5b: sm.Apply alone has no
-	// rule admitting attrs_set against a done task — this pre-Tx call routes
-	// through resolveAttrsSetDoneTransition's service-layer guard first (see
-	// its own doc comment, attrs_set_done.go), which falls straight through
-	// to sm.Apply for every action/status combination this PR does not touch.
+	// sm.Apply alone has no rule admitting attrs_set against a done task —
+	// this pre-Tx call routes through resolveAttrsSetDoneTransition's
+	// service-layer guard first (see its own doc comment, attrs_set_done.go),
+	// which falls straight through to sm.Apply for every other combination.
 	var getTriage func(string) (*orchestrator.CardAttrs, error)
 	if s.TaskTriage != nil {
 		getTriage = s.TaskTriage.GetTaskTriage
@@ -299,18 +240,12 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 	// reopen carries an optional `{"instruction": {...}}` payload that appends a
 	// new entry to the task's instruction history. The instruction is recorded
 	// only on the action (audit trail) and not merged into task.payload.
-	//
-	// reopen_triaged is GONE (v1's 決定17 name-rewrite routing — see this
-	// function's own note above where the push-down guard now lives): both
-	// machines' "reopen" rules keep their own name, so keying on plain
-	// "reopen" alone is sufficient in v2.
 	var reopenPayloadConsumed bool
-	// Instructions is execution-only (design doc §3.2) — a card's "reopen"
-	// (done/dropped → parked, machine_card.go) has no instruction history to
-	// append to at all, so this whole block is scoped to newTask.Exec != nil.
-	// A card reopen carrying an instruction-override payload simply has
-	// nothing to consume it (reopenPayloadConsumed stays false), which is
-	// the correct outcome: there was never a feature here for cards to lose.
+	// Instructions is execution-only — a card's "reopen" (done/dropped →
+	// parked) has no instruction history to append to at all, so this whole
+	// block is scoped to newTask.Exec != nil. A card reopen carrying an
+	// instruction-override payload simply has nothing to consume it
+	// (reopenPayloadConsumed stays false).
 	if req.Type == "reopen" && len(req.Payload) > 0 && newTask.Exec != nil {
 		var p struct {
 			Instruction *orchestrator.Instruction `json:"instruction,omitempty"`
@@ -330,37 +265,19 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		}
 	}
 
-	// park / attrs_set / child_added / child_specced all feed their payload
-	// exclusively into a task_triage.detail side-effect (below) and the
-	// actions table's own audit-trail row — never into task.Payload. This is
-	// the same "consumed" treatment reopen already gets, extended per Phase 1
-	// PR-4 (docs/plans/cross-project-issue-triage.md 論点6-2): a large
-	// attrs_set payload polluting task.Payload (which the CLI/Web UI surface
-	// wholesale) would be a real regression, and park had the exact same bug
-	// pre-PR-4 (its wake_at/wake_task_id payload was ALSO being merged into
-	// task.Payload alongside the task_triage upsert — confirmed while
-	// implementing this PR, per 論点6-2's "ついでに確認する" instruction) even
-	// though nothing downstream reads it from there.
-	//
-	// noted (docs/plans/ingestion-identity.md PR-3) joins this set for the
-	// SAME reason even though it has no task_triage side effect that
-	// "consumes" the payload the way attrs_set's fold does: noted's payload
-	// is an opaque workspace-defined blob with no relationship to
-	// task.Payload at all. Merging it into task.Payload would be exactly the
-	// pollution bug this map already exists to prevent for the other four.
-	// ("answered" used to be in this map too — it now bypasses this entire
-	// function via applyAnswered, workflow_action.go's own early redirect
-	// above, so it never reaches this point at all.)
+	// park / attrs_set / child_added / child_specced / noted all feed their
+	// payload exclusively into a task_triage.detail side-effect (below) and
+	// the actions table's own audit-trail row — never into task.Payload
+	// (which the CLI/Web UI surface wholesale). noted has no task_triage
+	// side effect that "consumes" the payload the way attrs_set's fold does
+	// — its payload is an opaque workspace-defined blob with no relationship
+	// to task.Payload at all — but merging it in would be the same
+	// pollution this map exists to prevent for the other four. ("answered"
+	// used to be in this map too — it now bypasses this entire function via
+	// applyAnswered, the early redirect above.)
 
-	// Payload is execution-only (design doc §3.2) — a card has no field to
-	// merge action.Payload into at all, so this generic merge is scoped to
-	// newTask.Exec != nil. Before the ExecAttrs split, EVERY task (including
-	// a card) had a real (if usually meaningless) Payload column, so a plain
-	// card-lifecycle action (working/drop/done/reopen-without-instruction)
-	// silently merged its action payload into it; the ExecAttrs split makes
-	// that incidental write structurally impossible instead of merely
-	// pointless — see design doc §7's "card の行に嘘の behavior 一式" row for
-	// the same reasoning applied to this sibling field.
+	// Payload is execution-only — a card has no field to merge action.Payload
+	// into at all, so this generic merge is scoped to newTask.Exec != nil.
 	if !opts.actionPayloadOnly && !reopenPayloadConsumed && !SideEffectConsumesPayload[req.Type] && newTask.Exec != nil {
 		merged, err := orchestrator.MergePayload(newTask.Exec.Payload, action.Payload)
 		if err != nil {
@@ -369,24 +286,22 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		newTask.Exec.Payload = merged
 	}
 
-	// park / attrs_set / child_added / child_specced each validate their
-	// payload BEFORE the transaction opens, so a malformed payload surfaces
-	// as 400 rather than being swallowed into WithinTx's generic 500 wrapping
-	// (park's established pattern, extended per 論点6-4 to the three new
-	// triage-vocabulary actions — docs/plans/cross-project-issue-triage.md
-	// PR-4 設計メモ 論点4/6).
+	// park / attrs_set / child_added / child_specced / child_dropped each
+	// validate their payload before the transaction opens, so a malformed
+	// payload surfaces as 400 rather than being swallowed into WithinTx's
+	// generic 500 wrapping.
 	var parkPayloadParsed *parkPayload
 	var attrsSetParsed *attrsSetPatch
 	var childAddedParsed *childAddedPayload
 	var childSpeccedParsed *childSpeccedPayload
 	var childDroppedParsed *childDroppedPayload
-	// suggestionVerbChanged (PR #988 review, MEDIUM 3) is set inside the Tx
-	// below by applyAttrsSetSideEffect's own return value — declared here,
-	// at function scope, so it survives past the switch's `return` inside
-	// the Tx closure for the post-commit notifySuggestionArrived gate
-	// further down (notifySuggestionArrived's own doc comment,
-	// queue_notify.go, explains why "did the verb actually change" — not
-	// merely "was a verb present" — is the correct notify trigger).
+	// suggestionVerbChanged is set inside the Tx below by
+	// applyAttrsSetSideEffect's own return value — declared here, at
+	// function scope, so it survives past the switch's `return` inside the
+	// Tx closure for the post-commit notifySuggestionArrived gate further
+	// down (notifySuggestionArrived's own doc comment, queue_notify.go,
+	// explains why "did the verb actually change" — not merely "was a verb
+	// present" — is the correct notify trigger).
 	var suggestionVerbChanged bool
 	switch req.Type {
 	case "park":
@@ -420,77 +335,62 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 			return nil, perr
 		}
 	case "noted":
-		// docs/plans/ingestion-identity.md PR-3 (J-5): the daemon never
-		// interprets noted's payload — parseNotedPayload only confirms it is
-		// syntactically valid JSON (see its own doc comment).
+		// The daemon never interprets noted's payload — parseNotedPayload
+		// only confirms it is syntactically valid JSON.
 		if perr := parseNotedPayload(req.Payload); perr != nil {
 			return nil, perr
 		}
 	}
 
-	// attrs_set/child_added/child_specced are non-transitioning (ToStatus==""
-	// in the matched rule, machine.go) AND their payload is fully consumed by
-	// the side-effect above (never merged into task.Payload either) — so the
-	// task row's STATUS genuinely has nothing new to persist. Skipping
-	// tx.UpdateTask(newTask) for exactly these three closes a race codex
-	// review flagged (Major): a caller read `task` before opening this Tx, so
-	// `newTask` is built from that stale snapshot; if a REAL transition (e.g.
-	// working→parked) committed concurrently in between, an unconditional
-	// UpdateTask(newTask) here would silently stomp the fresh status back to
-	// the stale one the non-transitioning action happened to read, even
-	// though its own side-effect (the sidecar RMW) correctly
+	// attrs_set/child_added/child_specced/child_dropped/noted are
+	// non-transitioning (ToStatus=="" in the matched rule) AND their payload
+	// is fully consumed by the side-effect above (never merged into
+	// task.Payload either) — so the task row's STATUS genuinely has nothing
+	// new to persist. Skipping tx.UpdateTask(newTask) for exactly these
+	// closes a race: a caller read `task` before opening this Tx, so
+	// `newTask` is built from that stale snapshot; if a REAL transition
+	// (e.g. working→parked) committed concurrently in between, an
+	// unconditional UpdateTask(newTask) here would silently stomp the fresh
+	// status back to the stale one the non-transitioning action happened to
+	// read, even though its own side-effect (the sidecar RMW) correctly
 	// read-modified-wrote inside this same Tx. park is NOT in this set — it
 	// genuinely transitions status, so it still needs the write.
 	//
-	// noted (docs/plans/ingestion-identity.md PR-3) joins this set for the
-	// identical reason: non-transitioning, payload fully consumed (never
-	// merged into task.Payload) — an unconditional UpdateTask(newTask) here
-	// would risk the same stale-status-stomp race. ("answered" no longer
-	// reaches this function at all — see the SideEffectConsumesPayload
-	// comment above.)
-	//
-	// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): "nothing new to
-	// persist" stopped being true the moment updated_at became a signal worth
-	// persisting on its own — a suggestion attaching to an attrs_set-only
-	// action (below, gated on suggestionVerbChanged) IS new information the
-	// row should carry, even though its STATUS is not. skipTaskUpdate still
-	// means exactly what it always meant — "do not call UpdateTask(newTask),
-	// a full blanket rewrite from a stale-snapshot-derived struct" — it does
-	// NOT mean "this Tx writes nothing at all": the status-free single-column
+	// "nothing new to persist" stopped being globally true once updated_at
+	// became a signal worth persisting on its own — a suggestion attaching
+	// to an attrs_set-only action (below, gated on suggestionVerbChanged) IS
+	// new information the row should carry, even though its STATUS is not.
+	// skipTaskUpdate still means "do not call UpdateTask(newTask), a full
+	// blanket rewrite from a stale-snapshot-derived struct" — it does not
+	// mean "this Tx writes nothing at all": the status-free single-column
 	// tx.TouchTaskUpdatedAt statement these actions may additionally issue
 	// carries no status, so it cannot stomp a concurrent transition the way
-	// UpdateTask(newTask) would, and coexists with this guard rather than
-	// undermining it.
+	// UpdateTask(newTask) would.
 	skipTaskUpdate := req.Type == "attrs_set" || req.Type == "child_added" || req.Type == "child_specced" ||
 		req.Type == "child_dropped" || req.Type == "noted"
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		if skipTaskUpdate {
-			// Re-validate against a FRESH in-Tx read rather than the
-			// pre-Tx snapshot `task`/`newTask` were built from (codex
-			// review round 2 Major fix): without this, a concurrent REAL
-			// transition (e.g. working→parked, or drop) committed between
-			// the pre-Tx read and this Tx opening would leave the
-			// side-effect (task_triage.detail fold) correctly applied
-			// against fresh state, while the action's own FromStatus/
-			// ToStatus audit fields, the Hub broadcast, and the
+			// Re-validate against a FRESH in-Tx read rather than the pre-Tx
+			// snapshot `task`/`newTask` were built from: without this, a
+			// concurrent REAL transition (e.g. working→parked, or drop)
+			// committed between the pre-Tx read and this Tx opening would
+			// leave the side-effect (task_triage.detail fold) correctly
+			// applied against fresh state, while the action's own
+			// FromStatus/ToStatus audit fields, the Hub broadcast, and the
 			// ActionApplication returned to the caller would all still
 			// report the STALE pre-race status — and worse, an action that
 			// is no longer legal from the task's actual current status
-			// (e.g. attrs_set after a concurrent drop moved it to
-			// "dropped", which is not in attrs_set's FromStatus
-			// enumeration) would still be recorded as if it succeeded
-			// cleanly. Mirrors Wake's own "resolve everything from inside
-			// the same transaction" pattern (workflow_card.go).
+			// would still be recorded as if it succeeded cleanly. Mirrors
+			// Wake's own "resolve everything from inside the same
+			// transaction" pattern (workflow_card.go).
 			fresh, ferr := tx.GetTask(taskID)
 			if ferr != nil {
 				return statusErrorForGetTaskErr(ferr)
 			}
-			// docs/plans/ingestion-identity.md PR-5 (B-6), I-5b: re-validate
-			// through the SAME done-status guard, now against the fresh in-Tx
-			// read and tx.GetTaskTriage — mirrors the pre-Tx call above one-for-
-			// one (same helper, same signature; tx.GetTaskTriage's method value
-			// satisfies getTriage's func type directly).
+			// Re-validate through the SAME done-status guard, now against
+			// the fresh in-Tx read and tx.GetTaskTriage — mirrors the pre-Tx
+			// call above one-for-one.
 			freshApplied, statusErr := resolveAttrsSetDoneTransition(sm, fresh, action, tx.GetTaskTriage)
 			if statusErr != nil {
 				return statusErr
@@ -506,15 +406,13 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		if err := tx.CreateAction(ctx, action); err != nil {
 			return err
 		}
-		// PR #987 review, LOW 10: a direct human card transition landing here
-		// (working/park/drop/done/reopen — "go" bypasses this whole function
-		// via acceptGo above, and carries the identical call itself; see
-		// recordAndStripSuggestionIfPresent's own doc comment) must not
-		// silently discard a still-pending suggestion of a DIFFERENT verb.
-		// Guarded by sm.Name, not IsCardTransitionAction alone, for the same
-		// reason the push-down defense check above is: "done"/"reopen" are
-		// also execution-machine verb names (machine_execution.go), and
-		// IsCardTransitionAction's backing set is keyed on name only.
+		// A direct human card transition landing here (working/park/drop/
+		// done/reopen — "go" bypasses this whole function via acceptGo
+		// above) must not silently discard a still-pending suggestion of a
+		// DIFFERENT verb. Guarded by sm.Name, not IsCardTransitionAction
+		// alone, since "done"/"reopen" are also execution-machine verb
+		// names and IsCardTransitionAction's backing set is keyed on name
+		// only.
 		if sm.Name == orchestrator.CardMachineName && orchestrator.IsCardTransitionAction(req.Type) {
 			if err := recordAndStripSuggestionIfPresent(ctx, tx, newTask.ID, action); err != nil {
 				return err
@@ -529,21 +427,16 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 			if saErr != nil {
 				return saErr
 			}
-			// docs/plans/webui-detail-list-redesign.md §3.2 (PR-3): bump
-			// updated_at, in the SAME Tx, exactly when a suggestion actually
-			// ATTACHES — suggestionVerbChanged (the verb differs from what
-			// task_triage held before this write) AND the new verb is
-			// non-empty (a null-clear/withdrawal, patch.Verb=="", must not
-			// bump — same polarity notifySuggestionArrived below applies via
-			// this same suggestionVerbChanged gate, queue_notify.go). This is
-			// deliberately narrower than "the suggestion key was present at
-			// all": khi's own _write_suggestion (write.py) resends the
-			// IDENTICAL verb unconditionally on every judge cycle, unlike its
-			// diff-guarded _do_observed/_do_summary siblings — without the
-			// "changed" half of this gate every one of those resends would
-			// reorder a future updated_at-sorted list on pure machine
-			// bookkeeping, exactly the churn §3.2 excludes observed/summary/
-			// urgency for.
+			// Bump updated_at, in the SAME Tx, exactly when a suggestion
+			// actually ATTACHES — suggestionVerbChanged (the verb differs
+			// from what task_triage held before this write) AND the new
+			// verb is non-empty (a null-clear/withdrawal must not bump —
+			// notifySuggestionArrived below applies the same polarity via
+			// this same gate, queue_notify.go). This is deliberately
+			// narrower than "the suggestion key was present at all": a
+			// judge cycle that resends the IDENTICAL verb unconditionally
+			// must not reorder a future updated_at-sorted list on pure
+			// machine bookkeeping.
 			if suggestionVerbChanged && attrsSetParsed.Verb != "" {
 				if err := tx.TouchTaskUpdatedAt(newTask.ID); err != nil {
 					return err
@@ -557,14 +450,13 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		case "child_dropped":
 			return applyChildDroppedSideEffect(tx, newTask.ID, childDroppedParsed)
 		case "drop":
-			// docs/plans/ingestion-identity.md PR-1 (B-1), I-6: drop releases
-			// every identity bound to this task, atomically with the drop
-			// transition itself — so a caller that observes the drop commit
-			// can immediately re-link the freed keys to a fresh task. done
-			// (I-5) deliberately has NO case here: done holds identities.
-			// machine.go stays a pure transition table (zero side effects);
-			// this lives in the service layer alongside park/attrs_set/
-			// child_added/child_specced's own side effects.
+			// drop releases every identity bound to this task, atomically
+			// with the drop transition itself — so a caller that observes
+			// the drop commit can immediately re-link the freed keys to a
+			// fresh task. done deliberately has NO case here: done holds
+			// identities. machine.go stays a pure transition table (zero
+			// side effects); this lives in the service layer alongside
+			// park/attrs_set/child_added/child_specced's own side effects.
 			return tx.UnlinkAllForTask(newTask.ID)
 		}
 		return nil
@@ -586,60 +478,33 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		})
 	}
 
-	// docs/plans/ingestion-identity.md PR-5 (B-6), I-5c: log every attrs_set
-	// that just landed on a done triage task via I-5b's guard above —
-	// regardless of whether it flips source_closed (SweepReopen decides that
-	// separately, on its own tick). See logAttrsSetOnDoneTriage's own doc
-	// comment (attrs_set_done.go) for why "log" was chosen over a queue
-	// surface. action.FromStatus/newTask.Status are BOTH "done" here
-	// precisely when resolveAttrsSetDoneTransition's guard (not the ordinary
+	// Log every attrs_set that just landed on a done triage task via
+	// resolveAttrsSetDoneTransition's guard above — regardless of whether it
+	// flips source_closed (SweepReopen decides that separately, on its own
+	// tick). See logAttrsSetOnDoneTriage's own doc comment (attrs_set_done.go)
+	// for why "log" was chosen over a queue surface. action.FromStatus/
+	// newTask.Status are BOTH "done" here precisely when
+	// resolveAttrsSetDoneTransition's guard (not the ordinary
 	// preExecutionStatuses path) is what let this land.
 	//
-	// action.FromStatus, NOT the pre-Tx local `fromStatus` (2026-08-19 fix,
-	// Opus review N-5): for attrs_set (skipTaskUpdate==true), the in-Tx
-	// re-validation above overwrites action.FromStatus with the FRESH
-	// in-Tx read (`action.FromStatus = fresh.Status`) — which can legitimately
+	// action.FromStatus, NOT the pre-Tx local `fromStatus`: for attrs_set
+	// (skipTaskUpdate==true), the in-Tx re-validation above overwrites
+	// action.FromStatus with the FRESH in-Tx read, which can legitimately
 	// differ from the pre-Tx snapshot's `fromStatus` when a concurrent
 	// triage_done commits in the gap between the pre-Tx read and this Tx
-	// opening (pre-Tx: triaged/working; in-Tx: done). Keying this check on
-	// the STALE pre-Tx `fromStatus` would silently skip the log exactly when
-	// I-5b's guard is what actually let the write through — the opposite of
-	// "every attrs_set that lands via the guard gets logged".
+	// opening. Keying this check on the stale pre-Tx `fromStatus` would
+	// silently skip the log exactly when the guard is what actually let the
+	// write through.
 	if req.Type == "attrs_set" && action.FromStatus == orchestrator.TaskStatusDone && newTask.Status == orchestrator.TaskStatusDone {
 		logAttrsSetOnDoneTriage(s.TaskTriage, newTask.ID)
 	}
 
-	// Phase 1 PR-2 (docs/plans/cross-project-issue-triage.md, 逆輸入2): "Go 操作
-	// = ready 遷移 + 機械 dispatch の 2 段で実装する". The "ready" action above IS
-	// Go (nose's judgment, Manual:true); immediately chaining into Dispatch
-	// here is the mechanical second stage, requiring no further judgment
-	// (決定12) — same idiom as CreateTask's auto_start chaining directly into
-	// ApplyAction("start"). A Dispatch failure (e.g. a malformed child spec,
-	// or a project that no longer exists) is logged, not surfaced as this
-	// call's error: the "ready" transition itself already committed
-	// successfully, and per the state machine's own doc comment "working
-	// deliberately has NO exit rule yet" a task stuck in ready is the
-	// intended, visible failure mode (機構の不調のサイン) rather than a lost
-	// Go. (v1's "ready" Manual action + machine-internal "dispatch" chain
-	// that used to live here is gone — v2 has neither a "ready" status nor a
-	// "dispatch" verb; accept(go) / a direct "go" action bypasses this whole
-	// function via acceptGo, see the early redirect above.)
-
-	// PR-2 (docs/plans/suggestion-as-state-transition-impl.md §4.2): rule 4
-	// (queue の決定論的評価 節, notify) is now "a suggestion attached" — see
-	// notifySuggestionArrived's own doc comment (queue_notify.go) for why
-	// this replaces BOTH of v1's entry points (notifyQueueEntryIfUrgent's
-	// status-transition detector and notifyUrgencyRaised's
-	// already-a-member companion) outright rather than keeping either
-	// around. attrs_set's own patch is the only write path for a
-	// suggestion, so this is the only call site needed.
-	//
-	// Gated on suggestionVerbChanged (PR #988 review, MEDIUM 3): without
-	// this, a resend of the SAME verb (khi's _write_suggestion, write.py,
-	// sends unconditionally on every judge cycle, unlike its own
-	// _do_summary/_do_urgency/_do_observed siblings, which all diff-guard)
-	// would re-notify on every single new signal even though nothing nose
-	// needs to decide has actually changed.
+	// A suggestion attaching (attrs_set with a changed, non-empty verb) is
+	// the sole notify trigger for the queue's decision surface — see
+	// notifySuggestionArrived's own doc comment (queue_notify.go).
+	// suggestionVerbChanged gates out a resend of the SAME verb (which a
+	// judge cycle sends unconditionally) so nothing re-notifies when
+	// nothing has actually changed.
 	if req.Type == "attrs_set" && suggestionVerbChanged {
 		s.notifySuggestionArrived(ctx, newTask, attrsSetParsed)
 	}
@@ -651,11 +516,9 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 	// by construction (a CardAttrs-only row). Coordinator.DispatchAndAdvance
 	// unconditionally reads task.Exec.Payload, and this launch runs in an
 	// unrecovered goroutine after the HTTP response has already been sent —
-	// an unguarded launch here previously nil-panicked the whole daemon
-	// process on the very first non-go/answered card action (found in
-	// card-model-cleanup PR-2 review; DispatchAndAdvance itself also gained
-	// a defense-in-depth guard, see its doc comment). Mirrors the
-	// hook-preview block just below, which already carried this guard.
+	// an unguarded launch here would nil-panic the whole daemon process on
+	// the first non-go/answered card action. Mirrors the hook-preview block
+	// just below, which already carries this guard.
 	if s.Coordinator != nil && newTask.Exec != nil {
 		dispatchCtx := s.dispatchCtx
 		if dispatchCtx == nil {
@@ -669,11 +532,10 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 	}
 
 	var matchedHooks []string
-	// Behavior is execution-only (design doc §3.2); Evaluator.Evaluate also
-	// only ever matches anything while status == executing (its own gate),
-	// so this whole preview is naturally a no-op for a card even without the
-	// nil check — the check just avoids the LookupBehavior call on a nil
-	// Exec outright.
+	// Behavior is execution-only; Evaluator.Evaluate also only ever matches
+	// anything while status == executing (its own gate), so this whole
+	// preview is naturally a no-op for a card even without the nil check —
+	// the check just avoids the LookupBehavior call on a nil Exec outright.
 	if s.Coordinator != nil && newTask.Exec != nil {
 		if coord, ok := s.Coordinator.(*orchestrator.Coordinator); ok && coord.Evaluator != nil {
 			if behavior, found := orchestrator.LookupBehavior(meta, newTask.Exec.Behavior); found {
@@ -693,17 +555,10 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 
 // runDispatchLoop drives the coordinator through consecutive hook fires until
 // the task reaches a terminal or awaiting status, or the task stalls (no
-// transition this cycle). Branch-level serialization (the former
-// BranchLockManager) was retired in docs/plans/git-gateway-cutover.md PR6:
-// each job now clones the project fresh inside the sandbox instead of
-// sharing a host git worktree, so the physical constraint that motivated
-// serializing same-branch tasks (only one worktree can check out a given
-// branch at a time) no longer exists. Concurrent same-branch pushes are
-// instead resolved the ordinary git way — the second push hits a
-// non-fast-forward reject and that session pulls (fetch + merge/rebase)
-// before retrying — which also resolves the branch-lock head-of-line
-// blocking a long-lived supervisor could previously cause (see
-// khi-supervisor-branch-lock-headline-block in memory).
+// transition this cycle). Each job clones the project fresh inside the
+// sandbox rather than sharing a host git worktree, so concurrent same-branch
+// pushes are resolved the ordinary git way (a non-fast-forward reject, then
+// pull-and-retry) rather than by serializing same-branch tasks.
 func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchestrator.Task, meta *orchestrator.ProjectMeta, sm *orchestrator.StateMachine) {
 	const maxCycles = 10
 	current := task
@@ -738,13 +593,10 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		// applying it wholesale on top of a freshly re-read row would revert
 		// any out-of-band write the hook itself made mid-flight (e.g. via
 		// `boid task update --payload-patch`) back to its pre-dispatch
-		// value — the exact silent-revert-after-CLI-success bug codex review
-		// caught (Phase 5b PR7, wiring-seams.md #17's Blocker 1). An empty
-		// delta ("{}", the common case for an agent job reporting
-		// exclusively through the direct RPC paths) is a safe no-op:
-		// MergePayload's own empty-update short-circuit returns the fresh
-		// row's payload unchanged, so there is nothing left that could ever
-		// overwrite a concurrent write.
+		// value. An empty delta ("{}", the common case for an agent job
+		// reporting exclusively through the direct RPC paths) is a safe
+		// no-op: MergePayload's own empty-update short-circuit returns the
+		// fresh row's payload unchanged.
 		result.PayloadDelta = orchestrator.StripAwaitingTrait(result.PayloadDelta)
 
 		// Always refresh the task row so we can detect concurrent terminal
@@ -757,8 +609,8 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 				return err
 			}
 			// runDispatchLoop only ever drives an execution task (it is the
-			// hook-firing loop; a card never dispatches a hook — design doc
-			// §3), so latest.Exec is expected non-nil here.
+			// hook-firing loop; a card never dispatches a hook), so
+			// latest.Exec is expected non-nil here.
 			if latest.Exec == nil {
 				return fmt.Errorf("dispatch loop: task %q is not an execution task (no Exec attrs)", latest.ID)
 			}
@@ -845,23 +697,17 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 	slog.Warn("dispatch loop max cycles reached", "task_id", current.ID, "max", maxCycles)
 }
 
-// orphanedChildTaskIDs is optional: PR #987 review's BLOCKER 4 fix. acceptGo
-// (workflow_card.go) used to compensate a failed parked→working commit by
-// best-effort ABORTING every child it had already created and auto-started
-// in this call — but CreateTask's own (ref, parent_id) get-or-create dedup
-// (task_create.go) means "a child THIS call created" is not actually
-// guaranteed: a concurrent second accept(go) racing the same card (a Go
-// button double-click, or an accept racing a direct "go" click) can observe
-// the SAME already-running child via that dedup and then, if ITS OWN
-// transition Tx is the one that loses the race, abort a child the OTHER
-// caller's Tx already committed successfully — killing in-flight work with
-// no error surfaced to the caller whose accept actually succeeded. Losing a
-// child to a genuinely-failed transition is a real (if rare) gap already
-// accepted for step 3 (task_ification failures); accidentally killing a
-// DIFFERENT accept's already-succeeded work is a categorically worse
-// failure mode this fix trades away in favor of leaving the children
-// running and recording their ids here for a human to inspect and
-// hand-abort if the transition really did fail for everyone.
+// recordDispatchError persists a dispatch_error action for taskID's audit
+// trail. orphanedChildTaskIDs is optional: acceptGo (workflow_card.go) does
+// not compensate a failed parked→working commit by aborting children it
+// created, since CreateTask's own (ref, parent_id) get-or-create dedup means
+// "a child THIS call created" is not actually guaranteed — a concurrent
+// second accept(go) racing the same card can observe the SAME already-running
+// child, and if ITS OWN transition Tx loses the race, aborting that child
+// would kill work a DIFFERENT caller's Tx already committed successfully.
+// Leaving the children running and recording their ids here for a human to
+// inspect trades a rare "lost a child to a genuinely-failed transition" gap
+// for avoiding a categorically worse one.
 func (s *TaskWorkflowService) recordDispatchError(ctx context.Context, taskID string, taskStatus orchestrator.TaskStatus, err error, orphanedChildTaskIDs ...string) {
 	if s.Tx == nil || taskID == "" || err == nil {
 		return
@@ -989,14 +835,10 @@ func (s *TaskWorkflowService) persistFiredEvents(ctx context.Context, taskID str
 
 // finalizeTerminal runs the per-task cleanup required once a task has reached
 // a terminal status. No-op for non-terminal tasks. Safe to call multiple
-// times: CleanupTaskWindow atomically drains runtimes.
-//
-// Worktree disk cleanup and boid/<id8> branch sweeping (the former
-// cleanupWorktree / sweepChildBranches, backed by dispatcher.WorktreeManager)
-// were retired in docs/plans/git-gateway-cutover.md PR8: every project-visible
-// job clones fresh inside the sandbox (PR6 cutover), so no host worktree or
-// host-local boid/<id8> branch is ever created for a task's dispatch — there
-// is nothing left on the host repo for a terminal task to clean up.
+// times: CleanupTaskWindow atomically drains runtimes. Every project-visible
+// job clones fresh inside the sandbox, so no host worktree or host-local
+// branch is ever created for a task's dispatch — there is nothing left on
+// the host repo for a terminal task to clean up.
 func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orchestrator.Task) {
 	if task.Status != orchestrator.TaskStatusDone && task.Status != orchestrator.TaskStatusAborted {
 		return
@@ -1004,8 +846,7 @@ func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orches
 	if s.Lifecycle != nil {
 		s.Lifecycle.CleanupTaskWindow(task.ID)
 	}
-	// Phase 1 PR-4 (docs/plans/cross-project-issue-triage.md 論点9): a
-	// terminal task that is a dispatched triage child self-records
+	// A terminal task that is a dispatched triage child self-records
 	// child_closed on its parent here — see recordChildClosedOnParent's own
 	// doc comment (workflow_card.go) for why finalizeTerminal is the right
 	// funnel.

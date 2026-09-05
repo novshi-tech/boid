@@ -10,10 +10,9 @@ import (
 // BehaviorResolution holds the resolved behavior fields after processing either
 // a named behavior or an inline behavior_spec.
 //
-// The Worktree flag was removed in the branch-policy-simplification Phase 2
-// (docs/plans/branch-policy-simplification.md). Post-cutover every project-visible
-// job runs in a fresh sandbox clone, so per-task worktree isolation is no longer
-// a concept the resolver needs to carry.
+// The Worktree flag was removed: every project-visible job now runs in a
+// fresh sandbox clone, so per-task worktree isolation is no longer a concept
+// the resolver needs to carry.
 type BehaviorResolution struct {
 	BehaviorName string
 	Traits       []string
@@ -63,11 +62,10 @@ func LookupBehavior(meta *ProjectMeta, name string) (TaskBehavior, bool) {
 // DefaultBehaviorResolvable reports whether ResolveBehavior would succeed for
 // a task creation request that specifies neither behavior nor behavior_spec,
 // given meta — mirroring the exact resolution order ResolveBehavior's own
-// default-resolution branch below uses (docs/plans/
-// workspace-default-project.md 論点d, fable 2巡目 m2): meta.DefaultTaskBehavior
-// must be both set AND actually resolve via LookupBehavior, else a
-// behavior literally named "supervisor" must exist in meta.TaskBehaviors,
-// else it is not resolvable.
+// default-resolution branch below uses: meta.DefaultTaskBehavior must be
+// both set AND actually resolve via LookupBehavior, else a behavior
+// literally named "supervisor" must exist in meta.TaskBehaviors, else it is
+// not resolvable.
 //
 // Used at project-registration time (CreateProjectFromGitURL's
 // project.yaml-less path) to decide whether the workspace default alone is

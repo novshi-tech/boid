@@ -19,12 +19,8 @@
 // Resolving the stream through a virtual terminal sized to the recording and
 // dumping the resulting grid fixes both: the payload is one screen (plus
 // bounded scrollback), and the dump is absolute, so the client's own xterm
-// reflows it to whatever width the client actually has.
-//
-// This is a reinstatement, not a new idea: the same rendering lived in the
-// userns backend's runtime_local_linux.go until a47f02bf removed that backend
-// wholesale, leaving the container backend replaying raw bytes and go.mod
-// carrying an unused x/vt dependency. See docs/plans/web-terminal-vt-emulator.md.
+// reflows it to whatever width the client actually has. See
+// docs/plans/web-terminal-vt-emulator.md.
 package vtsnapshot
 
 import (
@@ -137,14 +133,9 @@ func Render(raw []byte, cols, rows int) []byte {
 	// function rendered, and the client counts rows from the top of what it
 	// painted (scrollback lines then screen), so the two only line up at
 	// matching row counts. cols/rows is the geometry of the LAST client that
-	// resized this session (or the 80x24 fallback above), not necessarily the
-	// one now attaching — the general cross-width/cross-height mismatch this
-	// package cannot fully resolve, called out as an open axis in
-	// docs/plans/web-terminal-vt-emulator.md. A wrong client geometry means a
-	// wrong cursor row/col, same as it already meant reflowed-wrong screen
-	// content before this change; landing on the right screen (already true)
-	// is strictly better than the unconditional end-of-dump this replaces
-	// even when the geometry guess is off.
+	// resized this session, not necessarily the one now attaching — a wrong
+	// client geometry means a wrong cursor row/col, an open axis noted in
+	// docs/plans/web-terminal-vt-emulator.md.
 	dump += fmt.Sprintf("\x1b[%d;%dH", cursor.Y+1, cursor.X+1)
 
 	return []byte(dump)

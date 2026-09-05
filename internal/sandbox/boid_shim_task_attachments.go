@@ -7,15 +7,14 @@ import (
 	"strings"
 )
 
-// runTaskAttachmentsShim dispatches the two Phase 5b PR2 attachments
-// subcommands (docs/plans/phase5-shim-and-task-context.md):
+// runTaskAttachmentsShim dispatches the two attachments subcommands:
 // `boid task attachments list` and `boid task attachments get <name>`.
-// Unlike the four Phase 5b PR1 task-context subcommands (which share a
-// single request/response shape via taskContextOps/runTaskContextShim),
-// `get` takes a positional attachment name and an optional `--output`
-// flag, and its reply carries base64-encoded bytes rather than JSON/YAML —
-// different enough on both ends to warrant its own small dispatcher rather
-// than folding into taskContextOps.
+// Unlike the task-context subcommands (which share a single request/response
+// shape via taskContextOps/runTaskContextShim), `get` takes a positional
+// attachment name and an optional `--output` flag, and its reply carries
+// base64-encoded bytes rather than JSON/YAML — different enough on both
+// ends to warrant its own small dispatcher rather than folding into
+// taskContextOps.
 //
 // subArgs is everything after "task attachments" (RunBoidShim's args[2:]).
 func runTaskAttachmentsShim(subArgs []string) (*ExecResponse, error) {
@@ -139,11 +138,10 @@ func runTaskAttachmentsGet(args []string) (*ExecResponse, error) {
 // parseAttachmentsGetArgs parses `boid task attachments get [--output
 // <path>] [--] <name>`. A literal "--" (the standard POSIX end-of-flags
 // marker, same convention as git/grep) forces every argument after it to
-// be treated as positional, never a flag — codex review on PR #798 (Minor
-// 1) flagged that without this, an attachment legitimately named with a
-// leading dash (e.g. "-shot.png", which SanitizeAttachmentName's upload-time
-// validator has no objection to) was permanently unreachable via this CLI,
-// even though it was present and listed by `boid task attachments list`.
+// be treated as positional, never a flag — without this, an attachment
+// legitimately named with a leading dash (e.g. "-shot.png", which
+// SanitizeAttachmentName's upload-time validator has no objection to) would
+// be permanently unreachable via this CLI.
 func parseAttachmentsGetArgs(args []string) (name, outputPath string, err error) {
 	positionalOnly := false
 	for i := 0; i < len(args); i++ {

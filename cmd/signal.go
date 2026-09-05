@@ -1,14 +1,9 @@
 package cmd
 
-// docs/plans/signal-ingest-detailed-design.md §3.1 (PR-2): host-side CLI for
-// the signal inbox — `boid signal list` (GET /api/signals) and `boid signal
-// ack` (POST /api/signals/ack). Response/request shapes live in
-// internal/apiwire (internal/apiwire/signal.go), not internal/api: this
-// package talks to the daemon over HTTP only (client-type-import-ok-
-// behavior-ng — see internal/apiwire/doc.go for why the split exists at
-// all: importing internal/api here would drag internal/dispatcher,
-// internal/db, internal/sandbox etc. behind it and break the
-// GOOS=windows/darwin CLI build).
+// Host-side CLI for the signal inbox — `boid signal list` (GET
+// /api/signals) and `boid signal ack` (POST /api/signals/ack). Request/
+// response shapes live in internal/apiwire, not internal/api, since this
+// package talks to the daemon over HTTP only (see internal/apiwire/doc.go).
 
 import (
 	"fmt"
@@ -44,9 +39,8 @@ var signalAckCmd = &cobra.Command{
 }
 
 // registerSignalListFlags / registerSignalAckFlags are split out of init()
-// so tests can re-register flags after cmd.ResetFlags() (package-level
-// cobra.Command singletons otherwise leak flag state between test cases —
-// see cmd/signal_test.go's newSignalCmdForTest).
+// so tests can re-register flags after cmd.ResetFlags() (see
+// cmd/signal_test.go's newSignalCmdForTest).
 func registerSignalListFlags(cmd *cobra.Command) {
 	cmd.Flags().String("workspace", "", `Workspace slug (default: "default")`)
 	cmd.Flags().String("source", "", "Filter by source, <pack>/<connector> (e.g. slack/mentions)")
@@ -67,15 +61,7 @@ func init() {
 }
 
 // resolveSignalWorkspaceFlag defaults to orchestrator.DefaultWorkspaceSlug
-// ("default") when --workspace is omitted (signal-ingest-detailed-design.md
-// §3.1). Uses the orchestrator constant directly rather than a local
-// literal — cmd/ already imports internal/orchestrator in over 30 files
-// (task.go, project.go, ...) for exactly this "shared type/constant, no
-// behavior" reason (client-type-import-ok-behavior-ng), and it does not
-// affect the GOOS=windows/darwin portable-client build (Opus review, PR
-// #1011, F6: an earlier version of this file kept a duplicate local literal
-// instead, on the mistaken assumption that importing orchestrator here was
-// unsafe for that build).
+// ("default") when --workspace is omitted.
 func resolveSignalWorkspaceFlag(cmd *cobra.Command) string {
 	ws, _ := cmd.Flags().GetString("workspace")
 	if ws == "" {

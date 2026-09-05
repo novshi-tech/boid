@@ -6,34 +6,14 @@ import (
 	"net/url"
 )
 
-// ValidateBaseURL validates rawURL for the safety properties every service's
-// outbound upstream address must have (docs/plans/api-gateway.md §1/§2):
-//   - an absolute URL with an explicit scheme and host
-//   - no query string or fragment (Server always forwards the INBOUND
-//     request's own RawQuery verbatim and never merges in anything from
-//     this URL, and an HTTP fragment is never sent to a server at all —
-//     RFC 3986 §3.5)
-//   - https, unless allowInsecure is true (a plain-http scheme means an
-//     injected credential crosses the network to the upstream in
-//     cleartext — allowInsecure moves that acknowledgment into the config
-//     document itself rather than a log line that may never be read)
-//   - only http/https schemes even with allowInsecure set (this package's
-//     outbound Transport only ever speaks http/https regardless of this
-//     flag — "ftp"/"ws"/anything else would validate cleanly yet fail
-//     every request at 502 once dispatched)
+// ValidateBaseURL validates that rawURL is safe to use as a service's
+// outbound upstream address: an absolute URL with scheme and host, no query
+// string or fragment, https unless allowInsecure is set, and only
+// http/https schemes even then.
 //
-// This is the single implementation both call sites share:
-// config.ValidateServiceURL (config-load time, for a literal base_url/
-// endpoint — see that function's own doc comment, now a thin wrapper around
-// this one) and CredentialProvider.BaseURLFor (request time, for a
-// BaseURLSecretKey-backed base_url, docs/plans/api-gateway-credential-
-// accounts.md D12 — a secret-store value cannot be checked until it is
-// resolved, so this exact check runs once per resolution instead of once at
-// `boid start`). Moved here (rather than staying config-only) because
-// internal/apigateway cannot import internal/config (the dependency runs
-// the other way — internal/config already imports internal/apigateway for
-// AuthKind etc.), and duplicating slightly-different logic in two packages
-// is worse than one implementation with two callers.
+// Shared by config.ValidateServiceURL (config-load time) and
+// CredentialProvider.BaseURLFor (request time, for a secret-backed
+// base_url); keep both call sites in sync if this changes.
 func ValidateBaseURL(serviceName, fieldName, rawURL string, allowInsecure bool) error {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {

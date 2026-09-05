@@ -15,15 +15,7 @@ import (
 const projectLocalFilename = "project.local.yaml"
 
 // removedTopLevelKeyGuidance maps a top-level project.yaml key rejected by
-// the loop below to a field-specific migration message. Both keys predate
-// the current schema and were removed for different reasons, so a single
-// shared message (as this used to say — "move it into
-// task_behaviors.<name>.kits ... or define inside a local kit") is wrong for
-// either of them: "hooks" never had anything to do with kits (kits do not
-// supply hooks — see kit.Meta's "Kits do not provide hooks or task_behaviors"
-// doc comment; the authoritative location is task_behaviors.<name>.hooks,
-// which project.yaml itself already supports), and "gates" named the Gate
-// mechanism, which was retired outright with no replacement to move to.
+// the loop below to a field-specific migration message.
 var removedTopLevelKeyGuidance = map[string]string{
 	"hooks": "move each hook into task_behaviors.<name>.hooks instead (project.yaml is the authoritative source for hooks; kits do not supply them)",
 	"gates": "the Gate mechanism has been retired entirely (dispatch is hook-only now); there is no replacement field, just remove it",
@@ -46,20 +38,10 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 
 // parseProjectMetaBytes runs the project.yaml validation/unmarshal pipeline
 // shared between the filesystem-based loader (ReadProjectMeta, above) and
-// the daemon-managed bare-repo loader (ReadProjectMetaFromBareRepo,
-// project_bare_repo.go — docs/plans/volume-only-daemon.md §論点a: "project.yaml
-// は bare repo の HEAD (default branch) から `git show HEAD:.boid/project.yaml`
-// で読む"). dirLabel is used for error text and ProjectMigrationIssue.Dir
-// (rejectRemovedProjectFields) either way, but isBareRepo (codex round-9
-// review of PR5, Blocker 1) tells rejectRemovedProjectFields/
-// migrationGuidance which of the two callers this is: a real filesystem
-// directory the caller can `boid project migrate` directly (isBareRepo
-// false), or the DAEMON's own internal bare-repository path for a git-URL-
-// registered project (isBareRepo true) — nothing the CLI can run
-// `boid project migrate` against directly at all (it reads
-// <dir>/.boid/project.yaml off a real filesystem, cmd/project_migrate.go),
-// so the guidance for that case must say so instead of asserting a command
-// against a path the user cannot use.
+// the daemon-managed bare-repo loader (ReadProjectMetaFromBareRepo).
+// dirLabel is used for error text; isBareRepo tells rejectRemovedProjectFields
+// /migrationGuidance whether dirLabel is a real directory the caller can run
+// `boid project migrate` against, or the daemon's own internal bare-repo path.
 func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*ProjectMeta, error) {
 	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -92,16 +74,9 @@ func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*Proj
 	interpolateHostCommands(meta.HostCommands)
 	interpolateEnvMap(meta.Env)
 
-	// Validate hook kind/agent/command invariants at load time. This is
-	// defense-in-depth alongside the runtime check in
-	// DispatchPlanner.validateHookCommandFields (see validateHookKind's doc
-	// comment): load-time rejects malformed YAML shapes, runtime catches
-	// programmatic construction / kit-merge drift. Prior to
-	// docs/plans/script-hook-removal.md PR3 this loop also resolved each
-	// hook's backing .boid/hooks/<id>.(sh|py) script into a runtime-only
-	// field on Hook; that field and its resolution were removed once every
-	// hook had migrated to the inline `command:` field or agent-kind
-	// dispatch.
+	// Validate hook kind/agent/command invariants at load time (defense-in-
+	// depth alongside the runtime check in
+	// DispatchPlanner.validateHookCommandFields; see validateHookKind).
 	for name, behavior := range meta.TaskBehaviors {
 		for i := range behavior.Hooks {
 			if err := validateHookKind(&behavior.Hooks[i]); err != nil {
@@ -110,16 +85,10 @@ func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*Proj
 		}
 	}
 
-	// docs/plans/signal-ingest-detailed-design.md §5.1 (PR-5): expand
-	// signals.sources[] into derived Trigger entries and append them to
-	// meta.Triggers BEFORE ValidateTriggers runs below — a derived trigger
-	// name colliding with a user-authored `triggers:` entry (or two sources
-	// deriving the same name — deriveSignalTriggers' own duplicate check)
-	// must fail `boid project add`/`fetch` exactly the same way a
-	// hand-authored duplicate trigger name already does. This is the
-	// "hydrate 時に... 導出 trigger に展開して既存の trigger 列へ足す" step;
-	// the resulting Trigger.Connector metadata is inert data until fireTrigger
-	// (internal/api/trigger_loop.go) reads it at dispatch time.
+	// Expand signals.sources[] into derived Trigger entries and append them
+	// to meta.Triggers BEFORE ValidateTriggers runs below, so a name
+	// collision against a user-authored trigger fails load the same way a
+	// hand-authored duplicate does.
 	if len(meta.Signals.Sources) > 0 {
 		derived, err := deriveSignalTriggers(meta.Signals.Sources)
 		if err != nil {
@@ -128,64 +97,20 @@ func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*Proj
 		meta.Triggers = append(meta.Triggers, derived...)
 	}
 
-	// docs/plans/ingestion-identity.md PR-4 (B-5): same load-time posture as
-	// the hook validation loop above — a malformed `triggers[]` entry (empty
-	// name/run, unparseable/non-positive every, duplicate name) must fail
-	// `boid project add`/`boid project fetch` loudly rather than silently
-	// never firing at runtime. An OLDER daemon binary (pre-PR-4) parses
-	// project.yaml non-strictly (yaml.Unmarshal above has no KnownFields) and
-	// has no Triggers field to decode into at all, so it ignores `triggers:`
-	// with no warning — accepted (see spec_types.go's Trigger doc comment).
-	//
-	// This ALSO validates every derived trigger appended just above — a
-	// duplicate name (derived-vs-user or derived-vs-derived beyond
-	// deriveSignalTriggers' own check) and the `every` floor
-	// (TriggerSweepResolution) apply identically to a derived trigger; there
-	// is no separate validation pass for signals.sources (existing-mechanism
-	// reuse).
+	// A malformed triggers[] entry must fail load loudly. This also
+	// validates every derived trigger appended just above — there is no
+	// separate validation pass for signals.sources.
 	if err := ValidateTriggers(meta.Triggers); err != nil {
 		return nil, err
 	}
 
-	// docs/plans/workspace-default-project.md 論点h 案1 (PR7): `id:` is
-	// optional. project.yaml declaring one is validated no further here
-	// (the PK-uniqueness / id-drift checks live at the registration/reload
-	// call sites, orchestrator.ProjectStore.LoadBareRepoExpectingID /
-	// LoadExpectingID and internal/api's CreateProjectFromGitURL); omitting
-	// it entirely falls through to the caller's URL-derived id (the exact
-	// same derivation a wholly missing project.yaml already gets — see
-	// internal/api/project_no_yaml.go's deriveProjectIDFromURL). This used
-	// to be a hard requirement ("project.yaml: id is required"); removing
-	// it is safe for the overwhelming majority of existing project.yaml
-	// files, which declare `id:` explicitly and are completely unaffected.
-	//
-	// A NON-empty id is still validated against the URLDerivedProjectIDPrefix
-	// reservation below (Codex review round 2 Major, PR6, 論点e) — PR7 only
-	// widens the empty-id case to "optional, not an error"; it does not
-	// relax PR6's rule that a hand-authored id may never collide with the
-	// prefix reserved for URL-derived ids. This is additional, load-time
-	// defense-in-depth alongside PR7's own provenance verification
-	// (ProjectStore.reconcileExpectedProjectID / isVerifiedURLDerivedID,
-	// which confirm a registered url-derived id actually came from the
-	// project's UpstreamURL rather than trusting the prefix alone) —
-	// belt-and-suspenders against the same hand-authored-`url-`-id class of
-	// bug, enforced at two different points in the system.
+	// `id:` is optional; omitting it falls through to the caller's
+	// URL-derived id. A non-empty id must not collide with the prefix
+	// reserved for URL-derived ids.
 	if meta.ID != "" && IsURLDerivedProjectID(meta.ID) {
 		return nil, fmt.Errorf("project.yaml: id must not start with %q (reserved for project.yaml-less registrations, docs/plans/workspace-default-project.md 決定3)", URLDerivedProjectIDPrefix)
 	}
 	if strings.TrimSpace(meta.Name) == "" {
-		// PR-1d codex round-5 Minor: a bare `meta.Name == ""` check let a
-		// whitespace-only name (e.g. `name: "  "`) through project.yaml
-		// validation, while workspace apply's resolveWorkspaceApplyProjectNames
-		// (internal/api/project_service.go) already refuses a
-		// whitespace-only spec.projects[].name via
-		// strings.TrimSpace(ep.Name) == "" — a project registered with such a
-		// name could be exported successfully (ExportWorkspaceEnvelopes only
-		// checked the same bare == "" before this fix) but its own export
-		// could never be applied back: apply would fold the whitespace name
-		// into "missing" and silently detach the project. Rejecting it here,
-		// at the source, closes the round-trip gap at its root instead of
-		// only patching each downstream consumer separately.
 		return nil, fmt.Errorf("project.yaml: name is required")
 	}
 
@@ -251,34 +176,14 @@ var removedTopLevelKeys = []string{
 }
 
 // migrationGuidance returns the multi-line guidance block for removed-key
-// errors. docs/plans/release-onboarding.md 決定2/PR5 — this went through
-// SEVEN rounds of codex review (round-2 through round-7). Every attempt
-// at a step-by-step recovery recipe (automated via --apply, or a manual
-// command sequence promising to reach the same end state) turned out
-// wrong on closer inspection somewhere — a daemon-topology hole, a
-// format mismatch between two commands, a step that silently loses data,
-// or (round-7) cases this project's own registration model (git-URL
-// bare-repo caching, host_commands definitions with no create/edit API
-// at all) has no fully general answer for yet at all. See
-// cmd/project_migrate.go's guardApply for the detailed history of what
-// was tried and why each attempt was rejected.
-//
-// This function has stopped trying to promise a recipe it cannot
-// guarantee. It states the fact (which fields are invalid) and points
-// at the docs/command that own the actual up-to-date answer, rather than
-// asserting specific steps here that static review keeps finding holes
-// in only after the fact.
+// errors. It states the fact (which fields are invalid) and points at the
+// docs/command that own the up-to-date recovery steps, rather than
+// asserting a step-by-step recipe here (see cmd/project_migrate.go's
+// guardApply for why).
 func migrationGuidance(dir string, isBareRepo bool) string {
 	if isBareRepo {
-		// codex round-9 review of PR5, Blocker 1: dir here is the
-		// DAEMON's own internal bare-repository path for a git-URL-
-		// registered project (project_bare_repo.go's
-		// ReadProjectMetaFromBareRepo) — not a path the user has
-		// filesystem access to, and not something `boid project migrate`
-		// (which reads <dir>/.boid/project.yaml off a real, user-owned
-		// filesystem directory) can be run against at all. Telling the
-		// user to run it against dir would be flatly wrong, not just
-		// "less convenient" — point at their OWN clone instead.
+		// dir is the daemon's own internal bare-repo path, not one the user
+		// has filesystem access to — point at their own clone instead.
 		return "Migration:\n" +
 			"  project.yaml uses fields removed in the new schema (listed above).\n" +
 			"  This project is registered via a git URL; the daemon reads project.yaml\n" +
@@ -287,14 +192,7 @@ func migrationGuidance(dir string, isBareRepo bool) string {
 			"  clone of this project's repository instead, then push the fix — see\n" +
 			"  docs/ja/guide/migration.md."
 	}
-	// codex round-9 review of PR5, Minor: "shows exactly what would move"
-	// overstated it after cmd/project_migrate.go's dry-run stopped
-	// touching the daemon's DB at all (round-8 fix) — dry-run now reads
-	// only project.yaml and explicitly SKIPS the workspace-assignment and
-	// secret-collision checks that used to make that claim true, printing
-	// its own "(dry-run) skipping ..." notes when it does. Weakened to
-	// describe what dry-run actually shows: a plan derived from
-	// project.yaml alone.
+	// dry-run reads only project.yaml; it does not check the daemon's DB.
 	return "Migration:\n" +
 		"  project.yaml uses fields removed in the new schema (listed above).\n" +
 		"  `boid project migrate " + dir + "` (dry-run) shows the migration plan derived\n" +
@@ -407,24 +305,11 @@ func rejectRemovedBehaviorFields(scope string, raw map[string]any) error {
 	return nil
 }
 
-// validateWorkspaceDefaultTaskBehaviors runs the load-time validation
-// project.yaml's task_behaviors goes through (parseProjectMetaBytes above:
-// validateHookKind per hook) against a workspace's default project definition
-// task_behaviors (docs/plans/workspace-default-project.md 決定4, 論点j).
-// scope identifies the caller for error messages (e.g. "workspace default"
-// or "workspace %q").
-//
-// The map is returned unchanged: behavior names are compared verbatim
-// everywhere, so there is nothing to normalize. This function used to also
-// run alias canonicalization, and its two call sites (envelope decode AND DB
-// save) are the reason the alias machinery had to be kept out of persisted
-// and exported storage — a mirror entry written to the workspaces
-// .task_behaviors column made the workspace's own export un-re-appliable,
-// because decode then saw both spellings and rejected the pair as ambiguous.
-// With the alias table gone that hazard no longer exists in any form, but the
-// invariant it forced is worth keeping on purpose: what this function returns
-// is exactly what the user wrote, and exactly what gets persisted and
-// re-exported.
+// validateWorkspaceDefaultTaskBehaviors runs the same load-time hook
+// validation project.yaml's task_behaviors goes through, against a
+// workspace's default project definition task_behaviors. scope identifies
+// the caller for error messages. The map is returned unchanged: behavior
+// names are compared verbatim, nothing is normalized.
 func validateWorkspaceDefaultTaskBehaviors(scope string, behaviors map[string]TaskBehavior) (map[string]TaskBehavior, error) {
 	if len(behaviors) == 0 {
 		return behaviors, nil
@@ -440,21 +325,11 @@ func validateWorkspaceDefaultTaskBehaviors(scope string, behaviors map[string]Ta
 }
 
 // validateHookKind enforces the Hook.Kind / Hook.Agent / Hook.Command
-// invariants at load time:
-//   - Kind must be "" or "agent"
-//   - Agent can only be specified on kind: agent hooks; on non-agent hooks
-//     it has no effect and likely indicates that `kind: agent` was forgotten
-//   - Command must NOT be specified on kind: agent hooks; agent hooks are
-//     dispatched to a HarnessAdapter, which builds its own argv, so an
-//     inline command has nowhere to run (script-hook-removal PR1,
-//     docs/plans/script-hook-removal.md). This mirrors the runtime check in
-//     DispatchPlanner.validateHookCommandFields; keeping both is intentional
-//     defense-in-depth (load-time rejects YAML shapes, runtime catches
-//     programmatic construction / kit-merge drift).
-//
-// Agent hooks without an Agent are allowed here (the kit-agent inheritance
-// in MergeKitMetaIntoBehavior may still fill it in); the final "agent requires
-// agent" check happens after kit merge.
+// invariants at load time: Kind must be "" or "agent"; Agent only applies to
+// kind:agent hooks; Command must not be set on kind:agent hooks (they
+// dispatch to a HarnessAdapter, which builds its own argv). Agent hooks
+// without an Agent are still allowed here — kit-merge inheritance may fill
+// it in later.
 func validateHookKind(h *Hook) error {
 	if !h.Kind.IsValid() {
 		return fmt.Errorf("hook %q: invalid kind %q (allowed: \"\" or \"agent\")", h.ID, h.Kind)
@@ -468,19 +343,10 @@ func validateHookKind(h *Hook) error {
 	return nil
 }
 
-// ReadProjectMetaWithKits reads project.yaml and merges project-level overlays
-// into each behavior.
-// Returns a ProjectMeta whose TaskBehaviors have their resolved Hooks/etc.
-// populated and ready for dispatch.
-//
-// Note: kits are no longer supported in project.yaml (removed in the new
-// schema); the kit mechanism itself was retired in Phase 2.5 PR6
-// (docs/plans/workspace-db-consolidation.md). This function used to accept a
-// KitResolver parameter for call-site compatibility even though it was never
-// used; PR7 removed that type and parameter outright (decision 12). The
-// "WithKits" name is now a historical artifact — it's kept as-is since it's
-// a widely-used, purely-internal function name, not worth a rename-only
-// churn across every call site. project.local.yaml is deprecated; use
+// ReadProjectMetaWithKits reads project.yaml and merges project-level
+// overlays into each behavior, returning a ProjectMeta ready for dispatch.
+// The "WithKits" name is a historical artifact — kits are no longer
+// supported in project.yaml. project.local.yaml is deprecated; use
 // workspace.yaml instead.
 func ReadProjectMetaWithKits(dir string) (*ProjectMeta, error) {
 	meta, err := ReadProjectMeta(dir)
@@ -612,12 +478,7 @@ func interpolateHostCommands(cmds HostCommands) {
 
 // interpolateHostCommandEnvMap expands ${VAR} from the host environment like
 // interpolateEnvMap, but preserves ${boid:...} context variables literally —
-// they are resolved per dispatch at token-registration time by
-// dispatcher.ResolveHostCommands (e.g. ${boid:repo_slug} from the project's
-// origin remote), not from the daemon's environment. Without this carve-out,
-// os.Expand would swallow them at load time (no env var named "boid:..."
-// exists) and the placeholder would silently expand to "". Same pattern as
-// interpolateBindMountField's ${WORKTREE} / ${PROJECT_WORKDIR} preservation.
+// dispatcher.ResolveHostCommands resolves those per dispatch, not at load time.
 func interpolateHostCommandEnvMap(m map[string]string) {
 	for k, v := range m {
 		m[k] = os.Expand(v, func(name string) string {

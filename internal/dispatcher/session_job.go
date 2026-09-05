@@ -9,9 +9,8 @@ import (
 )
 
 // SessionJobInput carries the resolved data needed to build a Session
-// (HarnessAdapter-backed, task-less) JobSpec. Phase 3-d (PR1) introduced
-// it as the input shape for both the daemon API (POST /sessions) and the
-// `boid agent` CLI.
+// (HarnessAdapter-backed, task-less) JobSpec, for both the daemon API
+// (POST /sessions) and the `boid agent` CLI.
 //
 // session jobs inherit project-level traits only (env / host_commands /
 // additional_bindings / secret_namespace). behavior-level traits are
@@ -71,13 +70,10 @@ type SessionJobInput struct {
 	DisplayName string
 
 	// ConnectorPolicy, when true, selects orchestrator.ConnectorBuiltinPolicies
-	// instead of the general DefaultBuiltinPolicies(RoleHook, []string{"boid",
-	// "fetch"}, ...) set (docs/plans/signal-ingest-detailed-design.md §5.2,
-	// Q27) — ONLY signal_ingest/signal_cursor_get are allowed, and no fetch
-	// builtin at all. Set only by sessionDispatcherAdapter.StartExec
-	// (internal/server/wire.go) when the firing StartExecRequest carries a
-	// connector reference; every other caller leaves this false (the zero
-	// value) and keeps the existing policy unchanged.
+	// instead of the general DefaultBuiltinPolicies set — only
+	// signal_ingest/signal_cursor_get are allowed, no fetch builtin at all.
+	// Set only by sessionDispatcherAdapter.StartExec (internal/server/wire.go)
+	// for a connector-triggered exec; every other caller leaves this false.
 	ConnectorPolicy bool
 
 	// APIGatewayServices, when non-nil, overrides the dispatcher-resolved
@@ -94,23 +90,18 @@ type SessionJobInput struct {
 }
 
 // BuildSessionJobSpec converts a resolved SessionJobInput into a JobSpec
-// (JobKindSession, adapter-bound HarnessType). The result is fed straight to
+// (JobKindSession, adapter-bound HarnessType), fed straight to
 // dispatcher.Runner which builds the sandbox and hands the agent process to
 // adapter.Run().
 //
 // Returns an error when the sandbox-internal clone declaration cannot be
-// built for a non-empty ProjectWorkDir — see buildSessionCloneDeclaration's
-// doc comment. The caller (WebUI POST /sessions, `boid exec` CLI) must
-// surface that as a user-visible error rather than silently degrading, since
-// the cutover contract (docs/plans/git-gateway-cutover.md PR6) requires a
-// clone-based dispatch for every project-visible job.
+// built for a non-empty ProjectWorkDir (see buildSessionCloneDeclaration) —
+// callers must surface that as a user-visible error, not degrade silently.
 func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 	pctx := orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir}
-	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5, Q27): a
-	// connector job gets the reduced, signal-ops-only policy instead of the
-	// general hook/exec set — see ConnectorPolicy's own doc comment.
-	// ConnectorBuiltinPolicies deliberately returns no "fetch" entry at all
-	// (§5.2: "fetch builtin も渡さない").
+	// A connector job gets the reduced, signal-ops-only policy — see
+	// ConnectorPolicy's own doc comment. ConnectorBuiltinPolicies deliberately
+	// returns no "fetch" entry at all.
 	var builtinPolicies map[string]orchestrator.BuiltinPolicy
 	if input.ConnectorPolicy {
 		builtinPolicies = orchestrator.ConnectorBuiltinPolicies(pctx)
@@ -121,21 +112,13 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 			pctx,
 		)
 	}
-	// docs/plans/signal-ingest-detailed-design.md §5.2 (PR-5, Q27 fix — code
-	// review finding a86515ae): a connector job must get ZERO host_commands
-	// entries, regardless of what the caller passed in
-	// SessionJobInput.HostCommands. internal/sandbox/broker.go's Handle
-	// dispatches any non-boid/non-fetch command via entry.Commands — a
-	// COMPLETELY SEPARATE authorization path from entry.BuiltinPolicies, so
-	// ConnectorBuiltinPolicies alone (above) does NOT close this door: the
-	// metaproject's project.yaml may declare host_commands (e.g. a `gh`
-	// entry backed by a real host credential) for its own ordinary hook/exec
-	// jobs, and without this, a connector job would silently inherit them
-	// too — the "only signal_ingest/signal_cursor_get" claim would be false.
-	// Forcing hostCommands empty HERE (the single point ConnectorPolicy is
-	// already decided) closes it for every current and future caller, not
-	// just the one that happens to remember to clear it — mirroring how
-	// ConnectorBuiltinPolicies itself already omits "fetch".
+	// A connector job must get ZERO host_commands entries regardless of what
+	// the caller passed: host_commands is a completely separate
+	// authorization path from BuiltinPolicies (internal/sandbox/broker.go's
+	// Handle dispatches non-boid/non-fetch commands via entry.Commands), so
+	// ConnectorBuiltinPolicies alone does not close this door — a project's
+	// declared host_commands (e.g. a `gh` entry) would otherwise leak into a
+	// connector job too.
 	var hostCommands map[string]orchestrator.CommandDef
 	if !input.ConnectorPolicy {
 		hostCommands = orchestrator.HostCommands(input.HostCommands).ToCommandDefs()
@@ -154,11 +137,10 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 		displayName = input.HarnessType + " session"
 	}
 
-	// Clone (docs/plans/git-gateway-cutover.md PR6 cutover): sessions and
-	// exec have no Task, so there is no explicit base_branch to declare —
-	// clone the project's current default branch with no branch created
-	// (CheckoutOnly). A resolution failure is a hard error, not a silent
-	// fallback: see buildSessionCloneDeclaration.
+	// Sessions and exec have no Task, so there is no explicit base_branch to
+	// declare — clone the project's current default branch with no branch
+	// created (CheckoutOnly). A resolution failure is a hard error, not a
+	// silent fallback: see buildSessionCloneDeclaration.
 	cloneDecl, err := buildSessionCloneDeclaration(input.ProjectWorkDir)
 	if err != nil {
 		return nil, err
@@ -213,17 +195,10 @@ var resolveSessionBaseBranchFn = resolveSessionBaseBranch
 // visible" state, in which BuildSandboxSpec's own "no project visible"
 // branch takes over cleanly. When projectWorkDir is set but HEAD cannot be
 // resolved (detached HEAD, corrupted repo, git absent), this returns an
-// error rather than silently degrading to nil.
-//
-// Rationale: pre-cutover, a nil Clone from this function silently fell
-// through to the projectVisibilityMounts branch (a live host RW bind of
-// ProjectDir plus the git shim overlay) — that path is now retired
-// (docs/plans/git-gateway-cutover.md PR6 cutover) and re-entering it would
-// bypass RequireUpstreamURL, gateway auth, and the whole clone-mode
-// contract. Detached HEAD is a real state that happens on real repos
-// outside hand-built test fixtures (mid-rebase, bisect, or someone
-// checked out a tag or a raw SHA), so degrading here would be a cutover
-// bypass in exactly the situations it's most important to catch.
+// error rather than silently degrading to nil: detached HEAD is a real
+// state on real repos (mid-rebase, bisect, a checked-out tag or raw SHA),
+// so falling back silently here would bypass the clone-mode contract in
+// exactly the situations it matters most to catch.
 func buildSessionCloneDeclaration(projectWorkDir string) (*orchestrator.CloneDeclaration, error) {
 	if projectWorkDir == "" {
 		return nil, nil

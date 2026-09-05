@@ -40,10 +40,10 @@ type TaskAppService struct {
 	// blocked on it. Zero falls back to defaultWaitPollInterval — same
 	// convention as AskDisconnectGrace above.
 	WaitPollInterval time.Duration
-	// Identities backs docs/plans/ingestion-identity.md PR-1 (B-1)'s identity
-	// index — the non-transactional path the brokered task_identity_link /
-	// _unlink / _resolve ops (boid_executor.go) call through. The drop side
-	// effect (I-6) instead goes through TxStore.UnlinkAllForTask inside
+	// Identities backs the identity index — the non-transactional path the
+	// brokered task_identity_link / _unlink / _resolve ops (boid_executor.go)
+	// call through. The drop side effect instead goes through
+	// TxStore.UnlinkAllForTask inside
 	// TaskWorkflowService.ApplyAction's own transaction; this field is only
 	// for the standalone ops, which have no transaction of their own to join.
 	// Nil disables the three ops with an "unavailable" error, same convention
@@ -124,9 +124,7 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		task.ProjectID = req.ProjectID
 	}
 	if req.Description != "" {
-		// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: same
-		// description size cap as CreateTask — see
-		// orchestrator.ValidateContentSize's own doc comment.
+		// Same description size cap as CreateTask.
 		if err := orchestrator.ValidateContentSize("description", []byte(req.Description)); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
@@ -136,8 +134,8 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		task.RemoteID = *req.RemoteID
 	}
 	if len(req.Payload) > 0 {
-		// Payload is execution-only (design doc §3.2) — a card has no field
-		// to merge this into at all (ExecAttrs doesn't exist on it).
+		// Payload is execution-only — a card has no field to merge this
+		// into at all (ExecAttrs doesn't exist on it).
 		if task.Exec == nil {
 			return nil, &StatusError{Code: http.StatusConflict, Message: "cannot edit payload: task is a card (payload is execution-only)"}
 		}
@@ -179,15 +177,12 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	if req.ParentID != nil {
 		task.ParentID = *req.ParentID
 	}
-	// Phase 2-3: task-row level base_branch / branch_prefix / worktree updates
-	// have been removed. These values are determined at create time from the
-	// behavior type and project-level defaults, and are no longer mutable.
 	var instructionsBefore orchestrator.Instructions
 	if len(req.Instructions) > 0 {
 		// IsInstructionsEditable(task.Type, task.Status) is false for ANY
-		// card status (Instructions is execution-only, design doc §3.2) —
-		// same 409 a card already gets from every other status this used to
-		// reject, no separate task.Exec nil-check needed before the
+		// card status (Instructions is execution-only) — same 409 a card
+		// already gets from every other status this used to reject, no
+		// separate task.Exec nil-check needed before the
 		// task.Exec.Instructions write below.
 		if !orchestrator.IsInstructionsEditable(task.Type, task.Status) {
 			return nil, &StatusError{
@@ -217,10 +212,9 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	if instructionsBefore != nil {
 		s.auditInstructionsChange(task.ID, instructionsBefore, task.Exec.Instructions)
 	}
-	// Actor caveat (論点11): UpdateTask has no ctx, so this always stamps
-	// ActorHuman even though it's also reachable from a sandbox
-	// (OpBoidTaskUpdate). See CreateTask's matching comment (task_create.go)
-	// — threading ctx through is a follow-up.
+	// UpdateTask has no ctx, so this always stamps ActorHuman even though
+	// it's also reachable from a sandbox (OpBoidTaskUpdate). See CreateTask's
+	// matching comment (task_create.go).
 	if req.AutoStart != nil && *req.AutoStart && task.Status == orchestrator.TaskStatusPending && s.Workflow != nil {
 		result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {
@@ -236,41 +230,29 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 // SAME merge semantics the file-based payload_patch.json → job_done →
 // Coordinator pipeline has always applied (orchestrator.MergePayloadPatch,
 // gated by the trait allowlist the firing hook itself declares via
-// Traits.Produces) — see orchestrator/coordinator.go's
-// HandlerResult.allowedTraits and wiring-seams.md #13/#17. This is
-// deliberately NOT UpdateTask's simpler top-level shallow merge (used by
-// --payload-file): UpdateTask has no notion of a "firing hook", so it can't
-// reproduce this gate.
+// Traits.Produces). This is deliberately NOT UpdateTask's simpler top-level
+// shallow merge (used by --payload-file): UpdateTask has no notion of a
+// "firing hook", so it can't reproduce this gate.
 //
 // jobID (not taskID) is the identity this method resolves from, because the
 // allowedTraits gate is keyed off the CALLING job's own HandlerID — the
 // specific hook that was dispatched to produce this job, which may differ
-// from other jobs the same task has had or will have (mirrors why
-// BoidOpTaskInstructions/Env/Payload are JobID-scoped, not TaskID-scoped).
+// from other jobs the same task has had or will have.
 //
-// allowedTraits is supplied by the CALLER — it must be the value captured
-// AT DISPATCH TIME (dispatcher.JobContextSnapshot.PayloadPatchAllowedTraits,
-// itself sourced from orchestrator.JobSpec.HookTraitsProduces), never
-// re-derived here from a live project-meta lookup. An earlier version of
-// this method did its own live lookup (GetTask's ProjectID -> current meta
-// -> current behavior -> hook by HandlerID) and codex review caught the
-// TOCTOU staleness bug that creates: if project.yaml is edited/reloaded
-// between dispatch and this call, a live lookup can either apply the WRONG
-// (post-edit) trait list or silently fall back to unrestricted when the
-// hook can no longer be found by name — neither matches what was actually
-// authorized when the job was dispatched. Accepting the dispatch-time value
-// as a parameter makes that class of staleness structurally impossible
-// instead of requiring a "fail closed on lookup failure" special case (see
-// wiring-seams.md #17's Major 1 finding). nil means unrestricted — see
-// JobSpec.HookTraitsProduces's own doc comment for exactly when that's the
-// correct (not just the fallback) value.
+// allowedTraits is supplied by the CALLER as the value captured AT DISPATCH
+// TIME (dispatcher.JobContextSnapshot.PayloadPatchAllowedTraits), never
+// re-derived here from a live project-meta lookup: a live lookup done inside
+// this call would apply the WRONG (post-edit) trait list, or fall back to
+// unrestricted, if project.yaml changed between dispatch and this call.
+// Accepting the dispatch-time value as a parameter makes that staleness
+// structurally impossible. nil means unrestricted — see
+// JobSpec.HookTraitsProduces's own doc comment for when that applies.
 //
 // The GetTask -> MergePayloadPatch -> UpdateTask sequence below is
 // serialized per task id (payloadPatchLockFor) so two concurrent calls for
 // the same task — e.g. two hooks in the same readonly task's parallel
 // dispatch round, each patching a different trait — cannot race a
-// read-modify-write and silently lose one of their writes (Phase 5b PR7
-// codex review Blocker 2, wiring-seams.md #17).
+// read-modify-write and silently lose one of their writes.
 func (s *TaskAppService) UpdateTaskPayloadPatch(jobID string, patch json.RawMessage, allowedTraits []orchestrator.TraitType) (*orchestrator.Task, error) {
 	if s.Jobs == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "job store unavailable"}
@@ -289,9 +271,8 @@ func (s *TaskAppService) UpdateTaskPayloadPatch(jobID string, patch json.RawMess
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 	// A job's task is always an execution task (a card never dispatches a
-	// job — design doc §3, cards run no agent sessions), so task.Exec is
-	// expected non-nil here; this is defense in depth, not evidence a card
-	// job is possible.
+	// job), so task.Exec is expected non-nil here; this is defense in depth,
+	// not evidence a card job is possible.
 	if task.Exec == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "task is not an execution task (no Exec attrs); cannot apply a payload patch"}
 	}
@@ -338,15 +319,12 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 		RemoteID:    source.RemoteID,
 		AutoStart:   autoStart,
 	}
-	// Behavior/Traits/Instructions are execution-only (design doc §3.2) — a
-	// card source has none to copy. CreateTask always builds the duplicate
-	// as a fresh execution task (no InitialStatus is set below, so it
-	// defaults to "pending"), so leaving these empty for a card source just
-	// means the duplicate resolves the project's DEFAULT behavior instead of
-	// "inheriting" one the source never had — the card-model-cleanup PR-2
-	// design doc §7 calls this exact class of borrowed-but-meaningless
-	// exec-field value ("嘘の値") out as something the ExecAttrs split is
-	// SUPPOSED to make impossible, not a regression to work around.
+	// Behavior/Traits/Instructions are execution-only — a card source has
+	// none to copy. CreateTask always builds the duplicate as a fresh
+	// execution task (no InitialStatus is set below, so it defaults to
+	// "pending"), so leaving these empty for a card source just means the
+	// duplicate resolves the project's DEFAULT behavior instead of
+	// "inheriting" one the source never had.
 	if source.Exec != nil {
 		req.Behavior = source.Exec.Behavior
 		req.Traits = source.Exec.Traits
@@ -382,14 +360,11 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 	// Rerun is an execution-task-only operation (it resets status to
-	// "pending" and edits Instructions, both execution-only concepts —
-	// design doc §3.2). A card can share the "done" status value with an
-	// execution task (§3.3: the shared string is not ambiguous once type is
-	// checked directly, unlike the old status-only machineFor guess this
-	// refactor retires), so this type check is required, not merely
-	// defensive: without it a done CARD's rerun would try to reset it to
-	// "pending", a status migration 0045's CHECK constraint rejects for a
-	// card row outright.
+	// "pending" and edits Instructions, both execution-only concepts). A
+	// card can share the "done" status value with an execution task, so
+	// this type check is required, not merely defensive: without it a done
+	// CARD's rerun would try to reset it to "pending", a status a card row's
+	// CHECK constraint rejects outright.
 	if task.Type != orchestrator.TaskTypeExecution {
 		return nil, &StatusError{
 			Code:    http.StatusConflict,
@@ -464,11 +439,8 @@ func (s *TaskAppService) auditInstructionsChange(taskID string, before, after or
 		Payload: payload,
 		Actor:   orchestrator.ActorHuman,
 	}
-	// context.Background(): this call site has no ctx of its own (existing
-	// pre-PR-1 gap — see UpdateTask's own "Actor caveat" comment above for
-	// the same limitation on Actor) and Instructions is execution-only
-	// (never a card), so the target axis excludes this write from ingest
-	// regardless (docs/plans/boid-internal-signal-inbox.md §4.2).
+	// context.Background(): this call site has no ctx of its own (see
+	// UpdateTask's own comment above for the same limitation on Actor).
 	if err := s.Actions.CreateAction(context.Background(), action); err != nil {
 		slog.Error("audit instructions change: create action", "task_id", taskID, "error", err)
 	}
@@ -494,12 +466,10 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		enrichJobDisplayName(j, taskBehaviorOrEmpty(task), s.Meta)
 	}
 
-	// PR-B (docs/plans/suggestion-as-state-transition-impl.md §2): task
-	// detail is a generic per-task view (any task, card or ordinary), so the
-	// governing machine is resolved dynamically. card-model-cleanup PR-2
-	// retired machineForDisplay: machineFor is now a pure function of
-	// task.Type (no DB lookup, so nothing left to fail transiently — see
-	// machineFor's own doc comment).
+	// task detail is a generic per-task view (any task, card or ordinary), so
+	// the governing machine is resolved dynamically. machineFor is a pure
+	// function of task.Type (no DB lookup, so nothing left to fail
+	// transiently).
 	sm := machineFor(task)
 
 	return &TaskDetailView{

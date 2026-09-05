@@ -8,33 +8,22 @@ import (
 	"github.com/novshi-tech/boid/web/templates"
 )
 
-// This file implements GET /settings (docs/plans/volume-only-daemon.md §論点
-// f, the Web UI half — PR-1c of PR-1's 4 sub-PRs). It renders exactly one
-// server-side snapshot (GET /api/config, via SettingsConfigService); every
-// Save action on the rendered page (web/templates/settings.templ) is a
-// plain client-side fetch() straight to the already-existing PR-1b
-// endpoints (POST /api/config, POST /api/config/mutate) — this file never
-// applies a config change itself, and introduces no new RPC surface.
+// This file implements GET /settings. It renders one server-side snapshot
+// (GET /api/config, via SettingsConfigService); every Save action on the
+// rendered page is a plain client-side fetch() to the existing
+// POST /api/config / /api/config/mutate endpoints — this file never applies
+// a config change itself.
 //
-// Auth: this handler is reached exclusively through WebHandler.Routes(),
-// mounted at "/" inside mountRoutes' session-auth Group
-// (auth.NewWebAuthMiddleware) — the same loopback-trust-or-paired-session
-// gate every other Web UI page uses. No new auth mechanism is introduced.
+// Auth: reached only through WebHandler.Routes(), under the same
+// loopback-trust-or-paired-session gate every other Web UI page uses.
 
 // SettingsConfigService is the read surface WebHandler.Settings needs to
 // prefill /settings' initial render. Deliberately narrower than the full
-// api.ConfigService (Apply/Mutate are reached directly by the page's own
-// client-side JS, never through this Go handler) — WebHandler only depends
-// on the one method it actually calls. *server.Server already satisfies
-// this (it implements the full ConfigService for internal/api/config.go's
-// ConfigHandler), so wiring this up at the call site is a one-line addition
-// alongside the existing `configHandler := &api.ConfigHandler{Service: srv}`.
+// api.ConfigService — Apply/Mutate are reached directly by the page's own
+// client-side JS, never through this Go handler.
 type SettingsConfigService interface {
-	// ConfigYAML returns the daemon's current effective config.yaml
-	// document, alongside its current revision — see
-	// api.ConfigService.ConfigYAML's doc comment (internal/api/config.go)
-	// for the full contract; this is the exact same method, just narrowed
-	// to the one WebHandler needs.
+	// ConfigYAML returns the daemon's current effective config.yaml document
+	// and its revision; same contract as api.ConfigService.ConfigYAML.
 	ConfigYAML() (data []byte, revision string, err error)
 }
 
@@ -62,14 +51,10 @@ func (h *WebHandler) Settings(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildSettingsView parses a raw config.yaml document into the
-// templates.SettingsView the /settings page renders. Uses the same generic
-// Tree + dotted-path GetPath internal/config's own `boid config
-// get`/set/unset CLI path uses (internal/config/dotted.go) — not the typed
-// *config.Config — so a key genuinely absent from the document (as opposed
-// to present with its zero value) renders as an empty form field rather
-// than a defaulted one, matching internal/server/config_edit.go's
-// ConfigYAML doc comment on why the daemon returns the sparse raw file
-// rather than a defaults-merged view.
+// templates.SettingsView the /settings page renders. Uses the generic
+// Tree + dotted-path GetPath (not the typed *config.Config) so a key
+// genuinely absent from the document renders as an empty form field
+// rather than a defaulted one.
 func buildSettingsView(data []byte, revision string) (templates.SettingsView, error) {
 	tree, err := config.ParseTree(data)
 	if err != nil {

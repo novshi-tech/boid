@@ -12,7 +12,7 @@ import (
 // The go-native runner writes -runner-spec.json (the JSON sandbox spec) and
 // -runner-state.json (the diagnostic dump). The legacy bash suffixes
 // (-inner.sh / -outer.sh / -setup.sh) are retained here only to sweep up any
-// files leaked before the Phase 3-a cutover; the runner no longer produces them.
+// files the runner leaked before it stopped producing them.
 var scriptSuffixes = []string{
 	"-runner-spec.json",
 	"-runner-state.json",
@@ -36,9 +36,7 @@ var scriptSuffixes = []string{
 // cannot traverse onto host source data. A still-running sandbox keeps its
 // pivot_root'd tmpfs alive via inode references; removing the host-side ROOT
 // directory entry merely makes it unreachable from outside, which has no
-// effect on the running sandbox (verified 2026-06-18, see
-// [[stale-bind-mount-deletion-incident]] in memory). The earlier chroot-holder
-// / system-mountinfo guards from the chroot-based runner are not needed here.
+// effect on the running sandbox.
 func cleanSandboxTmp(tmpDir string, olderThan time.Duration) int {
 	if tmpDir == "" {
 		return 0

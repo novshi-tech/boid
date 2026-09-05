@@ -23,17 +23,11 @@ func Apply(conn *sql.DB) error {
 		return err
 	}
 
-	// Schema ceiling check (docs/plans/phase6-container-backend.md §PR6,
-	// §決定4): refuse to start against a database a NEWER binary has
-	// already migrated past this binary's own newest known migration.
-	// Before this check, an older binary opening a newer DB silently
-	// ignored any recorded version it didn't recognize and proceeded to
-	// run against a schema shape it was never tested against — exactly
-	// the failure mode §決定4 calls out ("旧バイナリは自分の知らない記録
-	// 済み version を黙って無視して新しい DB を開く"). Checked BEFORE the
-	// apply loop below so an old binary refuses immediately rather than
-	// only after (harmlessly) re-confirming every migration it does know
-	// about is already applied.
+	// Refuse to start against a database a NEWER binary has already
+	// migrated past this binary's own newest known migration, rather than
+	// silently ignoring the gap and running against an untested schema
+	// shape. Checked before the apply loop so an old binary refuses
+	// immediately.
 	if err := checkSchemaCeiling(migrations, applied); err != nil {
 		return err
 	}
@@ -50,12 +44,9 @@ func Apply(conn *sql.DB) error {
 }
 
 // allMigrations returns the full, ordered migration slice Apply() applies.
-// Extracted to its own function (card-model-cleanup PR-2) so tests can apply
-// a PREFIX of the chain (see applyThrough in migrate_0045_card_sti_test.go)
-// to set up pre-migration-0045-shaped fixture data — something Apply()
-// itself, which always runs the WHOLE chain, cannot do. Apply() itself is
-// unchanged in behavior; this is a pure refactor (the slice literal moved,
-// nothing in it changed).
+// Separated out so tests can apply a PREFIX of the chain (see applyThrough
+// in migrate_0045_card_sti_test.go) to set up pre-migration fixture data —
+// something Apply() itself, which always runs the whole chain, cannot do.
 func allMigrations() []migration {
 	return []migration{
 		{
@@ -271,10 +262,6 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/git-gateway-cutover.md PR8: host git worktree
-			// allocation is retired (PR6 cutover moved every project-visible
-			// job to a sandbox-internal clone), so the worktrees table has
-			// had no writer since PR6 landed.
 			version: "0029_drop_worktrees_table",
 			path:    "migrations/0029_drop_worktrees_table.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -283,10 +270,6 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/workspace-db-consolidation.md PR1: schema
-			// 先置きのみ。workspaces テーブルを作成するが、read/write
-			// の権威は引き続き ~/.config/boid/workspaces/*.yaml のまま
-			// (DB は空、挙動不変)。cutover は PR3 で行う。
 			version: "0030_add_workspaces_table",
 			path:    "migrations/0030_add_workspaces_table.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -294,10 +277,6 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/workspace-db-consolidation.md PR3 前段: schema_migrations
-			// に state / input_hash を追加し、workspace_db_consolidation
-			// migration (internal/orchestrator/workspace_migration.go) の
-			// staging → committed 二段階 state と crash recovery を可能にする。
 			version: "0031_add_schema_migrations_state",
 			path:    "migrations/0031_add_schema_migrations_state.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -305,10 +284,6 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/cli-remote-connection.md Phase 3 PR0: Bearer device
-			// token 発行 (POST /api/auth/device) のため web_devices を拡張
-			// (cookie_hash nullable 化 + token_hash/token_created_at 列追加、
-			// テーブル再作成 — 0021_jobs_nullable_task_id.sql に倣う)。
 			version: "0032_add_web_devices_token",
 			path:    "migrations/0032_add_web_devices_token.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -320,9 +295,6 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/workspace-default-project.md §PR分割案 PR3:
-			// workspace 単位のデフォルト project 定義 4 フィールドを
-			// workspaces テーブルに追加。
 			version: "0033_add_workspace_default_project_fields",
 			path:    "migrations/0033_add_workspace_default_project_fields.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -330,8 +302,6 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/api-gateway.md §3: workspace 単位の API gateway
-			// service 有効化フィールドを workspaces テーブルに追加。
 			version: "0034_add_workspaces_services",
 			path:    "migrations/0034_add_workspaces_services.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -339,8 +309,6 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/cross-project-issue-triage.md Phase 1 PR-1: task_triage
-			// sidecar テーブル追加 (project_workspaces と同型の 1:1 sidecar)。
 			version: "0035_add_task_triage",
 			path:    "migrations/0035_add_task_triage.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -348,9 +316,6 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/cross-project-issue-triage.md Phase 1 PR-3: watchdog
-			// primitive (queue の決定論的評価 節 rule 7) — 「最終 ingestion
-			// 成功」「最終棚卸し実施」を workspace ごとに1行だけ持つ。
 			version: "0036_add_workspace_watchdog",
 			path:    "migrations/0036_add_workspace_watchdog.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -358,23 +323,14 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/cross-project-issue-triage.md Phase 1 PR-4 (codex
-			// review Blocker fix): scope the Ref get-or-create dedup
-			// uniqueness by project_id too, closing a cross-workspace root
-			// task collision now that root tasks (parent_id='') are
-			// dedup-eligible.
 			version: "0037_scope_task_ref_dedup_by_project",
 			path:    "migrations/0037_scope_task_ref_dedup_by_project.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
 				// Skip ONLY when the new index exists AND the legacy one is
-				// gone (codex review round 2 Minor fix): skipping just
-				// because the new index exists would leave a stale
-				// idx_tasks_ref_parent(ref,parent_id) sitting alongside it in
-				// a schema-drift/bootstrap scenario, and that OLDER, STRICTER
-				// uniqueness constraint would keep rejecting the very
-				// cross-project inserts this migration exists to allow — the
-				// new index existing is not sufficient proof the old one's
-				// effect is gone.
+				// gone: skipping just because the new index exists would
+				// leave a stale, stricter uniqueness constraint alongside it
+				// in a schema-drift/bootstrap scenario, rejecting the very
+				// cross-project inserts this migration exists to allow.
 				newIndexAbsent, err := indexNotExists(tx, "idx_tasks_ref_parent_project")
 				if err != nil {
 					return false, err
@@ -387,9 +343,6 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/cross-project-issue-triage.md 論点11「代行Goタスク」の
-			// 前提条件: nose (人間操作) と代行タスク/workspace push が押した action を
-			// actions ログ上で区別できるようにする actor 列。
 			version: "0038_add_actions_actor",
 			path:    "migrations/0038_add_actions_actor.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -397,8 +350,6 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/egress-proxy-stable-port.md: egress プロキシの
-			// ポートを daemon 再起動をまたいで不変にするための永続化先。
 			version: "0039_add_workspace_egress_port",
 			path:    "migrations/0039_add_workspace_egress_port.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -406,24 +357,15 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/cross-project-issue-triage.md Phase 1 PR-5a: seed
-			// task_triage rows for pre-PR-5a triage tasks so "has a sidecar
-			// row" is a reliable "is a triage task" discriminator (ListTriage
-			// and PR-5b's reopen routing both rest on it).
-			//
 			// No skip func: the statement is itself idempotent (its NOT EXISTS
-			// clause makes a re-run a no-op), and there is no schema object
-			// whose presence could stand in for "the backfill already ran" —
-			// a data migration has no such marker. The normal
-			// schema_migrations version guard already prevents a second run
-			// on an up-to-date DB; the idempotent statement covers the
-			// bootstrap/drift case where it does run again.
+			// clause makes a re-run a no-op), and a data migration like this
+			// has no schema object whose presence could stand in for "already
+			// ran". The normal schema_migrations version guard already
+			// prevents a second run on an up-to-date DB.
 			version: "0040_backfill_task_triage_rows",
 			path:    "migrations/0040_backfill_task_triage_rows.sql",
 		},
 		{
-			// docs/plans/ingestion-identity.md PR-1 (B-1): task_identities —
-			// the identity index (external key -> task, I-1/I-2/I-3).
 			version: "0041_add_task_identities",
 			path:    "migrations/0041_add_task_identities.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -431,67 +373,42 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/ingestion-identity.md PR-3 (B-3): index backing the
-			// action_list since-cursor scan (orchestrator.ListActionsSince).
-			// No skip function: unlike 0041 above, this index never existed
-			// under any prior code path, so there is no pre-migration-system
-			// state to guard against (same as 0035_add_task_triage.sql's own
-			// index, which also has no skip).
+			// No skip function: this index never existed under any prior
+			// code path, so there is no pre-migration-system state to guard
+			// against.
 			version: "0042_add_actions_created_at_id_index",
 			path:    "migrations/0042_add_actions_created_at_id_index.sql",
 		},
 		{
-			// docs/plans/ingestion-identity.md PR-4 (B-5): トリガの
-			// single-flight/実行記録の台帳 (trigger_runs). No skip function,
-			// same reasoning as 0042 above — a brand-new table with no
-			// pre-migration-system state to guard against.
+			// No skip function: a brand-new table with no pre-migration-
+			// system state to guard against.
 			version: "0043_add_trigger_runs",
 			path:    "migrations/0043_add_trigger_runs.sql",
 		},
 		{
-			// docs/plans/suggestion-as-state-transition-impl.md §4.1 (PR-2):
-			// suggestion_verb promoted to a real task_triage column (the queue
-			// predicate reads it — same "queue述語になる値は列にする" reasoning
-			// as urgency/kind, migration 0040). No skip function: an ADD
-			// COLUMN + backfill UPDATE, same shape as 0040 itself.
+			// No skip function: an ADD COLUMN + backfill UPDATE, same shape
+			// as 0040.
 			version: "0044_add_task_triage_suggestion_verb",
 			path:    "migrations/0044_add_task_triage_suggestion_verb.sql",
 		},
 		{
-			// docs/plans/card-model-cleanup.md PR-2: STI migration. Rebuilds
-			// tasks as a Single Table Inheritance table (a `type` discriminator
-			// column plus card-only/execution-only column groups, each NULL on
-			// the "other" type's rows, enforced by CHECK constraints), migrates
-			// task_triage's columns onto the corresponding card rows, 洗い替え
-			// legacy captured/triaged/ready statuses to parked, and drops
-			// task_triage. Single transaction (table rebuild) — see the SQL
-			// file's own header comment for the full step-by-step.
-			//
-			// No skip function: table-rebuild migrations in this file
-			// (0021/0032, the precedent this one follows) don't use one either
-			// — schema_migrations' own version guard is what prevents a second
-			// run on an up-to-date DB, and there is no single "does this look
-			// already-migrated" column/table check that would be safe to probe
-			// mid-rebuild the way a plain ADD COLUMN's columnExists is.
+			// Rebuilds tasks as a Single Table Inheritance table (a `type`
+			// discriminator column plus card-only/execution-only column
+			// groups, each NULL on the "other" type's rows, enforced by CHECK
+			// constraints); see the SQL file's own header comment for the
+			// full step-by-step. No skip function, same as other table-
+			// rebuild migrations (0021/0032) — there is no single "already
+			// migrated" check safe to probe mid-rebuild.
 			version:            "0045_card_sti_migration",
 			path:               "migrations/0045_card_sti_migration.sql",
 			disableForeignKeys: true,
 		},
 		{
-			// docs/plans/signal-ingest-detailed-design.md §2 (PR-1): signal
-			// inbox の 2 テーブル (signals / signal_cursors). Unlike
-			// 0042/0043 (brand-new tables, no skip needed), this DOES probe
-			// before re-applying — the defensive-idempotency posture 0041's
-			// task_identities skip uses (a partial-apply-then-rerun, e.g. a
-			// daemon crash between the file's two CREATE TABLE statements,
-			// must not choke re-running against an already-migrated DB).
-			// [L4, Opus review 2026-08-26] an earlier version of this
-			// comment said "No skip function" while a skip WAS present
-			// below, and the skip only probed `signals`, leaving
-			// `signal_cursors` unchecked — both fixed here: the comment now
-			// matches the code, and BOTH tables are probed (only signals is
-			// consulted first since the two are created together by the
-			// same file; signal_cursors is the confirming second check).
+			// Unlike 0042/0043 (brand-new tables, no skip needed), this DOES
+			// probe before re-applying, guarding against a partial-apply-
+			// then-rerun (e.g. a daemon crash between the file's two CREATE
+			// TABLE statements). Both tables are probed since either could
+			// be the one left dangling by a partial apply.
 			version: "0046_add_signal_inbox",
 			path:    "migrations/0046_add_signal_inbox.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -503,9 +420,8 @@ func allMigrations() []migration {
 			},
 		},
 		{
-			// docs/plans/signal-ingest-detailed-design.md §8 (独立 PR):
-			// `boid task create --idempotency-key` の永続化列 + 部分 unique
-			// index。ファイル自体の doc comment に不変条件の詳細がある。
+			// Persists `boid task create --idempotency-key` + a partial
+			// unique index; see the SQL file's own doc comment for invariants.
 			version: "0047_add_tasks_idempotency_key",
 			path:    "migrations/0047_add_tasks_idempotency_key.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
@@ -521,17 +437,10 @@ type migration struct {
 	skip    func(*sql.Tx) (bool, error)
 	// disableForeignKeys, when true, toggles `PRAGMA foreign_keys` OFF then
 	// back ON around this migration's transaction (see applyMigration).
-	// Needed by 0045_card_sti_migration: it DROPs and rebuilds the `tasks`
-	// table, which `actions`/`task_identities`/(pre-drop) `task_triage`
-	// reference via a plain (NO ACTION) foreign key — modernc.org/sqlite
-	// enforces FK constraints even on DROP TABLE of a referenced parent
-	// when a live child row points at it (confirmed empirically; this is
-	// NOT documented C-sqlite3 behavior callers can assume away), so the
-	// DROP fails outright unless FK enforcement is off for the duration.
-	// `PRAGMA foreign_keys` is a no-op once a transaction is already open
-	// (SQLite's own documented restriction), so this can't be the migration
-	// SQL file's own first statement — it must run OUTSIDE
-	// applyMigration's conn.Begin()/Commit() boundary.
+	// Needed when a migration DROPs a table still referenced by a live FK
+	// (modernc.org/sqlite enforces FK constraints even on DROP TABLE of a
+	// referenced parent). Must run outside the transaction boundary since
+	// `PRAGMA foreign_keys` is a no-op once a transaction is already open.
 	disableForeignKeys bool
 }
 
@@ -561,13 +470,10 @@ func parseMigrationVersion(version string) (n int, ok bool) {
 	return v, true
 }
 
-// checkSchemaCeiling implements the §決定4 startup-refusal check: if
-// applied (schema_migrations, as already recorded on disk before this
-// Apply() call touches anything) contains any numbered migration version
-// newer than the newest version this binary's own migrations slice knows
-// about, the database was migrated by a newer binary — refuse to start
-// rather than silently ignoring the gap (see Apply's call site comment for
-// why this runs before the apply loop).
+// checkSchemaCeiling refuses to start if applied (schema_migrations, as
+// already recorded on disk) contains any numbered migration version newer
+// than the newest version this binary's own migrations slice knows about
+// — i.e. the database was migrated by a newer binary.
 func checkSchemaCeiling(migrations []migration, applied map[string]struct{}) error {
 	var maxKnown int
 	for _, m := range migrations {
@@ -690,10 +596,8 @@ func recordMigration(tx *sql.Tx, version string) error {
 
 // recordMigrationState upserts version's row in schema_migrations with the
 // given state and input_hash: INSERT if the version has no row yet, or
-// UPDATE state/input_hash/applied_at in place if it does. This is the
-// primitive workspace_db_consolidation's staging → committed transition
-// (docs/plans/workspace-db-consolidation.md マイグレーション節) is built on —
-// calling it twice for the same version never creates a duplicate row.
+// UPDATE state/input_hash/applied_at in place if it does — calling it
+// twice for the same version never creates a duplicate row.
 //
 // Bootstrapping note: this function is also used (via recordMigration) by
 // every migration from 0001 through 0030, and on a completely fresh

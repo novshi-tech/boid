@@ -1,14 +1,9 @@
 package api
 
-// docs/plans/ingestion-identity.md PR-1 (B-1): thin TaskAppService wrappers
-// over TaskIdentityStore, backing the brokered task_identity_link / _unlink
-// / _resolve ops (internal/server/boid_executor.go). Deliberately NOT
-// wrapped in StatusError like most TaskAppService methods (e.g. GetTask) —
-// the boid_executor callers need errors.Is(err, orchestrator.ErrTaskNotFound)
-// / orchestrator.ErrIdentityConflict to survive unwrapped so
-// BoidOpTaskIdentityResolve can represent "not found" as a distinct exit
-// code rather than a generic error (see the op's own doc comment in
-// internal/sandbox/protocol.go).
+// TaskAppService task-identity wrappers over TaskIdentityStore, backing the
+// brokered task_identity_link/_unlink/_resolve ops. Errors are intentionally
+// left unwrapped (no StatusError) so callers can errors.Is against
+// orchestrator.ErrTaskNotFound / ErrIdentityConflict.
 
 import (
 	"errors"
@@ -16,9 +11,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// errIdentityStoreUnavailable mirrors every other optional-dependency guard
-// in this package (e.g. "boid task notify unavailable"-shaped messages),
-// just scoped to the three identity ops.
+// errIdentityStoreUnavailable guards the three identity ops when no identity store is configured.
 var errIdentityStoreUnavailable = errors.New("identity store unavailable")
 
 // LinkIdentity binds identity to taskID within projectID's scope. See

@@ -10,8 +10,7 @@ import (
 )
 
 // findPack returns the *Pack among packs whose Name/Version match pack/
-// version exactly, or (nil, false) — the "pack 不在" check docs/plans/
-// signal-ingest-detailed-design.md §6.2 item 3 requires.
+// version exactly, or (nil, false).
 func findPack(packs []*Pack, pack, version string) (*Pack, bool) {
 	for _, p := range packs {
 		if p.Name == pack && p.Version == version {
@@ -23,52 +22,41 @@ func findPack(packs []*Pack, pack, version string) (*Pack, bool) {
 
 // DesugarService resolves one services.<name> config entry — sc.Uses must
 // be non-empty — against packs, producing the apigateway.ServiceConfig the
-// gateway registry sees for it: the "脱糖" (desugaring)
-// docs/plans/signal-ingest-detailed-design.md §6.2 item 2 describes.
-// instanceName becomes the returned ServiceConfig's Name (and appears in
-// every error message this function returns).
+// gateway registry sees for it (the "脱糖", desugaring, of a uses:
+// reference). instanceName becomes the returned ServiceConfig's Name (and
+// appears in every error message this function returns).
 //
-// Resolution order, each step a hard error naming instanceName (docs/plans/
-// signal-ingest-detailed-design.md §6.2 item 3 — "起動エラー"):
+// Resolution order, each step a hard error naming instanceName:
 //  1. sc.Uses parses as "<pack>/<profile>@<version>" (config.
 //     ParseUsesReference — already checked once at config-load time by
 //     config.validateServiceConfig; re-checked here since this function may
 //     be called with a hand-built config.ServiceConfig that skipped that
 //     validation, e.g. in a test).
-//  2. pack/version must match an entry in packs ("pack 不在").
+//  2. pack/version must match an entry in packs.
 //  3. profile must be declared in that pack's manifest.
-//  4. sc.Endpoint and sc.EndpointSecretKey must not both be set (docs/plans/
-//     api-gateway-credential-accounts.md D13 — mutually exclusive, the same
-//     "already checked once at config-load time, re-checked here" posture
-//     item 1 above has). The profile's endpoint requirement must then match
-//     what sc provides: if Endpoint.Configurable, at least one of
-//     sc.Endpoint/sc.EndpointSecretKey must be non-empty; otherwise v0 has
-//     no Pack-declared default endpoint to fall back to (see
-//     ServiceProfile.Endpoint's own doc comment), so ANY use of such a
-//     profile is rejected in v0 — "endpoint 要求違反" covers both
-//     directions.
+//  4. sc.Endpoint and sc.EndpointSecretKey must not both be set (mutually
+//     exclusive, the same "already checked once at config-load time,
+//     re-checked here" posture item 1 above has). The profile's endpoint
+//     requirement must then match what sc provides: if Endpoint.Configurable,
+//     at least one of sc.Endpoint/sc.EndpointSecretKey must be non-empty;
+//     otherwise v0 has no Pack-declared default endpoint to fall back to
+//     (see ServiceProfile.Endpoint's own doc comment), so ANY use of such a
+//     profile is rejected in v0.
 //  5. the profile must declare exactly one credential slot, sc.Credentials
-//     must bind it ("slot 未 bind"), and must not carry any OTHER key
-//     ("未知 slot").
-//  6. (feat/credential-slot-instance-username, extended by D13) sc.Username
-//     and sc.UsernameSecretKey must not both be set. If that slot's
-//     injection is basic and it declares usernameFrom: instance, exactly one
-//     of sc.Username (non-empty and colon-free, RFC 7617 §2, checked here)
-//     or sc.UsernameSecretKey (colon-checked later instead, at request time,
-//     once the secret store resolves it) must be set; if the slot does NOT
-//     declare usernameFrom: instance (a Pack-fixed username, or any
-//     non-basic injection), neither may be set — there is no slot for an
-//     instance-supplied value to fill.
+//     must bind it, and must not carry any other key.
+//  6. sc.Username and sc.UsernameSecretKey must not both be set. If that
+//     slot's injection is basic and it declares usernameFrom: instance,
+//     exactly one of sc.Username (non-empty and colon-free, RFC 7617 §2,
+//     checked here) or sc.UsernameSecretKey (colon-checked later instead,
+//     at request time, once the secret store resolves it) must be set; if
+//     the slot does NOT declare usernameFrom: instance (a Pack-fixed
+//     username, or any non-basic injection), neither may be set — there is
+//     no slot for an instance-supplied value to fill.
 //
 // The returned apigateway.ServiceConfig's AllowReadOnlyWrite is copied
-// straight from sc.AllowReadOnlyWrite (F2, review finding, MEDIUM: an
-// earlier version of this function silently dropped it, and its own doc
-// comment here incorrectly claimed ServiceConfig had no such field for a
-// uses: entry — config.ServiceConfig.AllowReadOnlyWrite lives on the exact
-// same struct a uses: entry uses; the earlier bug was that this function
-// never read it, not that it does not exist). A Pack-profile-backed
-// instance opts into the read-only→GET/HEAD-only gate exactly the same way
-// a free-form base_url/auth entry does via config.APIGatewayServices().
+// straight from sc.AllowReadOnlyWrite: a Pack-profile-backed instance opts
+// into the read-only→GET/HEAD-only gate exactly the same way a free-form
+// base_url/auth entry does via config.APIGatewayServices().
 func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack) (apigateway.ServiceConfig, error) {
 	packName, profileName, version, err := config.ParseUsesReference(sc.Uses)
 	if err != nil {
@@ -84,12 +72,10 @@ func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack)
 		return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: uses %q references profile %q, which pack %q@%q does not declare", instanceName, sc.Uses, profileName, packName, version)
 	}
 
-	// endpoint / endpoint_secret_key (docs/plans/api-gateway-credential-
-	// accounts.md D13): config.validateServiceConfig already rejects
-	// setting both at config-load time — re-checked here defensively, the
-	// same "may be called with a hand-built config.ServiceConfig that
-	// skipped that validation" posture every other check in this function
-	// already has (see this function's own doc comment, item 1).
+	// endpoint / endpoint_secret_key: config.validateServiceConfig already
+	// rejects setting both at config-load time — re-checked here
+	// defensively, the same posture every other check in this function has
+	// (see this function's own doc comment, item 1).
 	if sc.Endpoint != "" && sc.EndpointSecretKey != "" {
 		return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: \"endpoint\" and \"endpoint_secret_key\" are mutually exclusive", instanceName)
 	}
@@ -121,27 +107,25 @@ func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack)
 		return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: credentials: profile %q's slot %q is not bound (set credentials.%s to a SecretStore key)", instanceName, profileName, slot.Name, slot.Name)
 	}
 
-	// username / username_secret_key (docs/plans/api-gateway-credential-
-	// accounts.md D13): config.validateServiceConfig already rejects
-	// setting both at config-load time — re-checked here defensively, same
-	// posture as the endpoint/endpoint_secret_key check above.
+	// username / username_secret_key: config.validateServiceConfig already
+	// rejects setting both at config-load time — re-checked here
+	// defensively, same posture as the endpoint/endpoint_secret_key check
+	// above.
 	if sc.Username != "" && sc.UsernameSecretKey != "" {
 		return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: \"username\" and \"username_secret_key\" are mutually exclusive", instanceName)
 	}
-	// username: (feat/credential-slot-instance-username, extended by D13) —
-	// the slot's own Username (a Pack-fixed constant, e.g. Bitbucket's
+	// The slot's own Username (a Pack-fixed constant, e.g. Bitbucket's
 	// "x-bitbucket-api-token-auth") is the default; usernameFrom: instance
 	// overrides that with EITHER of the two values config.yaml's uses:
-	// entry can supply instead (literal Username, or — D13 —
-	// UsernameSecretKey, resolved from the secret store per namespace/
-	// account at request time the same way a free-form entry's
-	// auth.username_secret_key already is). Either way exactly one Pack-
-	// declared source is authoritative per slot (parseCredentialSlot
-	// already enforces that a basic slot declares exactly one of Username/
-	// UsernameFrom) — what THIS function enforces is that the instance's
-	// username config agrees with which source the slot actually declared:
-	// present (as literal OR secret-key) when required, absent when there
-	// is no slot for it to fill.
+	// entry can supply instead (literal Username, or UsernameSecretKey,
+	// resolved from the secret store per namespace/account at request
+	// time). Either way exactly one Pack-declared source is authoritative
+	// per slot (parseCredentialSlot already enforces that a basic slot
+	// declares exactly one of Username/UsernameFrom) — what THIS function
+	// enforces is that the instance's username config agrees with which
+	// source the slot actually declared: present (as literal OR
+	// secret-key) when required, absent when there is no slot for it to
+	// fill.
 	username := slot.Username
 	usernameSecretKey := ""
 	if slot.Injection == InjectionBasic && slot.UsernameFrom == UsernameFromInstance {
@@ -153,9 +137,7 @@ func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack)
 			// resolveUsername) — a secret-store value doesn't exist yet at
 			// desugar time, so `username` stays "" here and the RFC 7617
 			// colon check below is skipped for it (resolveUsername
-			// re-applies that exact check once the secret store resolves
-			// it, the same deferral config.validateServiceConfig's own
-			// auth.username_secret_key already documents).
+			// re-applies that exact check once the secret store resolves it).
 			usernameSecretKey = sc.UsernameSecretKey
 			username = ""
 		default:
@@ -168,60 +150,49 @@ func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack)
 	// colon in the username changes what the upstream parses as each half —
 	// the same check config.validateServiceConfig already applies to a
 	// free-form auth.username entry. Checked once, here, against the FINAL
-	// resolved LITERAL username regardless of its source (F2, codex/Opus
-	// review finding on PR #1017: checking only inside the usernameFrom:
-	// instance branch above left a Pack-declared FIXED username
-	// (slot.Username) completely unchecked — neither this package nor
-	// config.validateServiceConfig ever validates that value, since it only
-	// ever sees a free-form auth.username, never a uses:-resolved
-	// Pack-fixed one). Skipped when usernameSecretKey is set — there is no
-	// literal value yet to inspect; see the comment above.
+	// resolved LITERAL username regardless of its source: neither this
+	// package nor config.validateServiceConfig otherwise validates a
+	// Pack-fixed slot.Username, since that value never flows through a
+	// free-form auth.username field. Skipped when usernameSecretKey is
+	// set — there is no literal value yet to inspect; see the comment
+	// above.
 	if usernameSecretKey == "" && slot.Injection == InjectionBasic && strings.Contains(username, ":") {
 		return apigateway.ServiceConfig{}, fmt.Errorf("integrationpack: service %q: username %q must not contain \":\" (RFC 7617 §2 — the Basic credential is built as \"username:secret\", so a colon in the username changes what the upstream parses as each half)", instanceName, username)
 	}
 
 	return apigateway.ServiceConfig{
 		Name: instanceName,
-		// BaseURL / BaseURLSecretKey (docs/plans/api-gateway-credential-
-		// accounts.md D13): mirrors config.APIGatewayServices()'s own
-		// BaseURL/BaseURLSecretKey branch for the free-form path exactly —
-		// a uses: entry's upstream identity comes from sc.Endpoint (literal)
-		// or sc.EndpointSecretKey (secret-backed, D13), never both (checked
-		// above). Exactly one of BaseURL/BaseURLSecretKey is non-empty here.
+		// Mirrors config.APIGatewayServices()'s own BaseURL/BaseURLSecretKey
+		// branch for the free-form path: a uses: entry's upstream identity
+		// comes from sc.Endpoint (literal) or sc.EndpointSecretKey
+		// (secret-backed), never both (checked above). Exactly one of
+		// BaseURL/BaseURLSecretKey is non-empty here.
 		BaseURL:          sc.Endpoint,
 		BaseURLSecretKey: sc.EndpointSecretKey,
-		// AllowInsecure (docs/plans/api-gateway-credential-accounts.md
-		// D12/D13): needed by apigateway.CredentialProvider.BaseURLFor's
-		// secret-backed resolution path (D13) whenever this instance sets
-		// EndpointSecretKey instead of the literal Endpoint above — the
-		// resolved URL's scheme still has to satisfy the same https-unless-
-		// allow_insecure rule ValidateBaseURL enforces for a literal one,
-		// just at request time instead of config-load time. (Before D13,
-		// this field was propagated but never actually consulted for a
-		// uses:-derived service, since BaseURL was always literal — that is
-		// no longer true.) Propagated straight from sc.AllowInsecure
-		// (already used above to validate a literal sc.Endpoint via
-		// ValidateServiceURL, when one is present), so the two ServiceConfig
-		// structs stay in sync on every shared field —
-		// TestServiceConfigFieldPropagation_Exhaustive
+		// Needed by apigateway.CredentialProvider.BaseURLFor's secret-backed
+		// resolution path whenever this instance sets EndpointSecretKey
+		// instead of the literal Endpoint above — the resolved URL's scheme
+		// still has to satisfy the same https-unless-allow_insecure rule
+		// ValidateBaseURL enforces for a literal one, just at request time
+		// instead of config-load time. Propagated straight from
+		// sc.AllowInsecure so the two ServiceConfig structs stay in sync on
+		// every shared field — TestServiceConfigFieldPropagation_Exhaustive
 		// (field_propagation_exhaustive_test.go) enforces this.
 		AllowInsecure: sc.AllowInsecure,
 		Auth: apigateway.ServiceAuth{
 			Kind:      apigateway.AuthKind(slot.Injection),
 			SecretKey: secretKey,
 			Username:  username,
-			// UsernameSecretKey (D13): mirrors Username's own dual-source
-			// treatment just above — exactly one of Username/
-			// UsernameSecretKey is non-empty when the slot requires an
-			// instance-supplied username at all; both are "" for a
-			// Pack-fixed username or a non-basic injection.
+			// Mirrors Username's own dual-source treatment just above:
+			// exactly one of Username/UsernameSecretKey is non-empty when
+			// the slot requires an instance-supplied username at all; both
+			// are "" for a Pack-fixed username or a non-basic injection.
 			UsernameSecretKey: usernameSecretKey,
 			Header:            slot.Header,
 			Query:             slot.Query,
 		},
 		AllowReadOnlyWrite: sc.AllowReadOnlyWrite,
-		// RequireAccount (docs/plans/api-gateway-credential-accounts.md D5):
-		// copied straight from sc.RequireAccount, the same "propagate the
+		// Copied straight from sc.RequireAccount, the same "propagate the
 		// flat bool through unchanged" treatment AllowReadOnlyWrite above
 		// gets — a uses: entry opts into requiring an account qualifier
 		// exactly the same way a free-form base_url/auth entry does via
@@ -235,18 +206,14 @@ func DesugarService(instanceName string, sc config.ServiceConfig, packs []*Pack)
 // cfg.APIGatewayServices() unchanged, and uses: entries (config.
 // Config.UsesServices()) are desugared against packs via DesugarService.
 // This is the single function internal/server/wire.go's gateway wiring
-// point should call in place of cfg.APIGatewayServices() alone, once wired
-// (PR-5 or a follow-up — see this package's doc.go for why that wiring is
-// out of PR-4's own scope) — the interface PR-5 builds derived triggers and
-// connector job wiring against.
+// point should call in place of cfg.APIGatewayServices() alone, once wired.
 //
 // Unlike APIGatewayServices() (which silently skips an entry that fails its
 // own, unrelated validation — see that method's "already validated by
 // Config.UnmarshalYAML" invariant), a uses: entry that fails to desugar
 // FAILS ResolveServices as a whole: an unresolvable Pack reference is an
 // installation/config error the daemon should refuse to start with, not a
-// service quietly missing from the registry (docs/plans/
-// signal-ingest-detailed-design.md §6.2 item 3 — "起動エラー").
+// service quietly missing from the registry.
 func ResolveServices(cfg *config.Config, packs []*Pack) ([]apigateway.ServiceConfig, error) {
 	out := cfg.APIGatewayServices()
 

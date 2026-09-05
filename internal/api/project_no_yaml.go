@@ -13,50 +13,41 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// noYAMLProjectIDPrefix marks an id derived from a git URL rather than read
-// from a committed project.yaml's `id:` field (docs/plans/
-// workspace-default-project.md 決定3/論点g). Distinguishes it at a glance
-// from a UUID (36 chars) or a short hand-authored project.yaml id, without
-// colliding with either — no existing id scheme in this codebase starts with
-// "url-".
+// noYAMLProjectIDPrefix marks an id derived from a git URL rather than
+// read from a committed project.yaml's `id:` field. Distinguishes it at a
+// glance from a UUID (36 chars) or a short hand-authored project.yaml id,
+// without colliding with either — no existing id scheme in this codebase
+// starts with "url-".
 //
 // This is an alias for orchestrator.URLDerivedProjectIDPrefix, not an
-// independent value — LoadAll/FetchProject's reload fallback gates on that
-// exact prefix (Codex review, PR5 round 2 Major) to tell a no-project.yaml
-// registration apart from an ordinary project whose project.yaml was
-// deleted upstream by mistake, so this package must never drift from it.
+// independent value — LoadAll/FetchProject's reload fallback gates on
+// that exact prefix to tell a no-project.yaml registration apart from an
+// ordinary project whose project.yaml was deleted upstream by mistake, so
+// this package must never drift from it.
 const noYAMLProjectIDPrefix = orchestrator.URLDerivedProjectIDPrefix
 
 // deriveProjectIDFromURL derives a stable project id for a project.yaml-less
-// registration (docs/plans/workspace-default-project.md 決定3) from
-// normalizedURL — which MUST already be the https:// or file:// form
-// dispatcher.NormalizeOriginURL produces (CreateProjectFromGitURL always
-// normalizes before this is ever called).
+// registration from normalizedURL — which must already be the https:// or
+// file:// form dispatcher.NormalizeOriginURL produces (CreateProjectFromGitURL
+// always normalizes before this is ever called).
 //
-// The hash input is dispatcher.RepoSlugFromOriginURL's output (the same
-// host/owner/repo normalization gitgateway.NewRepoKey applies), NOT
+// The hash input is dispatcher.RepoSlugFromOriginURL's output, NOT
 // normalizedURL itself: NormalizeOriginURL passes an https:// URL through
-// unchanged, `.git` suffix and all, so hashing the raw normalized URL would
-// let "https://host/o/r" and "https://host/o/r.git" register as two
-// different projects — weaker dedup than today's project.yaml `id:` PK
-// collision (决定3, fable review M1). RepoSlugFromOriginURL strips the
-// suffix and produces one canonical slug for both forms.
+// unchanged, `.git` suffix and all, so hashing the raw normalized URL
+// would let "https://host/o/r" and "https://host/o/r.git" register as two
+// different projects. RepoSlugFromOriginURL strips the suffix and
+// produces one canonical slug for both forms.
 //
 // file:// URLs cannot be slugified (repoSlugFromOriginURL has no file://
-// case — it falls into the scp-like default branch and fails to find an
-// "@") — this is a pre-existing limitation of the same normalization
-// gitgateway grants already accept (see docs/plans/
-// workspace-default-project.md 論点c 2巡目レビュー確認事項), not a new gap
-// this PR introduces. Callers must surface this error as a clear rejection,
-// not attempt any further fallback.
+// case) — a pre-existing limitation of the same normalization gitgateway
+// grants already accept. Callers must surface this error as a clear
+// rejection, not attempt any further fallback.
 //
-// The returned id is "url-" + the first 16 hex characters (64 bits) of the
-// slug's sha256 — long enough hex-64 is unwieldy for CLI use; 64 bits of a
-// stable hash is more than sufficient collision resistance for a single
-// user's project count (論点g). The prefix both signals "this project has no
-// project.yaml id" and cannot collide with a UUID (36 chars, contains '-' at
-// fixed positions but never starts with "url-") or a short hand-authored
-// project.yaml id (existing convention has never used this prefix).
+// The returned id is "url-" + the first 16 hex characters (64 bits) of
+// the slug's sha256 — long enough for collision resistance at a single
+// user's project count, short enough for CLI use. The prefix both
+// signals "this project has no project.yaml id" and cannot collide with a
+// UUID (36 chars) or a short hand-authored project.yaml id.
 func deriveProjectIDFromURL(normalizedURL string) (string, error) {
 	slug, err := dispatcher.RepoSlugFromOriginURL(normalizedURL)
 	if err != nil {
@@ -69,11 +60,10 @@ func deriveProjectIDFromURL(normalizedURL string) (string, error) {
 // DeriveProjectIDFromURL is the exported form of deriveProjectIDFromURL,
 // wired into orchestrator.ProjectStore.SetDeriveProjectIDFunc (see
 // internal/server/wire.go's buildProjectStore) so
-// ProjectStore.reconcileExpectedProjectID (docs/plans/
-// workspace-default-project.md 論点h 案1, PR7 round-3 Major fix) can verify
-// that a url-derived expectedID was ACTUALLY derived from the project's
-// current UpstreamURL, rather than merely sharing URLDerivedProjectIDPrefix
-// with one. orchestrator cannot call deriveProjectIDFromURL directly:
+// ProjectStore.reconcileExpectedProjectID can verify that a url-derived
+// expectedID was actually derived from the project's current UpstreamURL,
+// rather than merely sharing URLDerivedProjectIDPrefix with one.
+// orchestrator cannot call deriveProjectIDFromURL directly:
 // internal/dispatcher (which it depends on for URL normalization/slugging)
 // already imports orchestrator, and this package imports both — importing
 // this package from orchestrator would cycle. Hence the injection.
@@ -82,8 +72,7 @@ func DeriveProjectIDFromURL(normalizedURL string) (string, error) {
 }
 
 // synthesizeNoYAMLProjectMeta builds the ProjectMeta for a project.yaml-less
-// registration (docs/plans/workspace-default-project.md PR5, 論点b/c/d).
-// Called by CreateProjectFromGitURL exactly when gitShowHEAD's failure
+// registration. Called by CreateProjectFromGitURL exactly when gitShowHEAD's failure
 // classifies as GitHeadReadFailurePathAbsent (the ".boid/project.yaml was
 // never committed" case — every other failure kind keeps failing
 // registration outright, unchanged).
@@ -104,8 +93,8 @@ func (s *ProjectAppService) synthesizeNoYAMLProjectMeta(gitURL, name, workspaceS
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
 
-	// 論点d: the workspace must have a USABLE default project definition —
-	// not merely "a default definition object exists". s.Workspaces unwired,
+	// The workspace must have a usable default project definition — not
+	// merely "a default definition object exists". s.Workspaces unwired,
 	// or the workspace having no row at all, is treated identically to "no
 	// usable default": there is nothing to fall back to.
 	if s.Workspaces == nil {
@@ -119,8 +108,8 @@ func (s *ProjectAppService) synthesizeNoYAMLProjectMeta(gitURL, name, workspaceS
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("load workspace %q: %v", workspaceSlug, err)}
 	}
 
-	// 論点b m2: name-collision check across ALL registered projects — the
-	// same set apply's ambiguity check (resolveProjectByNameExact over
+	// Name-collision check across all registered projects — the same set
+	// apply's ambiguity check (resolveProjectByNameExact over
 	// snapshotRegisteredProjects) reads. A repo-basename-derived name
 	// collides easily across workspaces; an auto-derived name that collides
 	// is refused outright (ask for --name), an explicitly-given --name that
@@ -145,11 +134,11 @@ func (s *ProjectAppService) synthesizeNoYAMLProjectMeta(gitURL, name, workspaceS
 			"name", name, "colliding_project_ids", matchIDs)
 	}
 
-	// 論点d (2巡目レビュー m2): the check is NOT "does ws have task_behaviors"
-	// — it is "would ResolveBehavior's own default-resolution branch actually
-	// succeed" for a behavior-unspecified task creation against the merged
-	// result GetWithWorkspace will dynamically produce for this project once
-	// registered. Mirrors behavior_resolve.go:104-117 exactly via
+	// The check is NOT "does ws have task_behaviors" — it is "would
+	// ResolveBehavior's own default-resolution branch actually succeed" for
+	// a behavior-unspecified task creation against the merged result
+	// GetWithWorkspace will dynamically produce for this project once
+	// registered. Mirrors behavior_resolve.go's ResolveBehavior exactly via
 	// orchestrator.DefaultBehaviorResolvable.
 	candidate := &orchestrator.ProjectMeta{
 		ID:                  id,
@@ -168,14 +157,14 @@ func (s *ProjectAppService) synthesizeNoYAMLProjectMeta(gitURL, name, workspaceS
 
 	// The cached meta itself stays minimal (ID + Name only) — TaskBehaviors /
 	// BaseBranch / ForkPoint / DefaultTaskBehavior are deliberately left
-	// empty so GetWithWorkspace's existing dynamic merge (決定2) fills them
-	// in from whatever the workspace's CURRENT default project definition is
-	// at hydrate time, not a snapshot taken here at registration time.
+	// empty so GetWithWorkspace's existing dynamic merge fills them in from
+	// whatever the workspace's current default project definition is at
+	// hydrate time, not a snapshot taken here at registration time.
 	//
 	// NameSource records how `name` was obtained, for `project show
-	// --explain` (docs/plans/workspace-default-project.md 論点e, PR6):
-	// "explicit" when the caller passed --name, "url" when it was derived
-	// from the git URL (DeriveProjectNameFromURL, the caller's default).
+	// --explain`: "explicit" when the caller passed --name, "url" when it
+	// was derived from the git URL (DeriveProjectNameFromURL, the caller's
+	// default).
 	nameSource := "url"
 	if nameWasExplicit {
 		nameSource = "explicit"

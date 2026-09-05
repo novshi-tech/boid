@@ -18,14 +18,9 @@ var skillsFS embed.FS
 // Files are only written when their content differs from the embedded version.
 //
 // baseDir is entirely the caller's choice and this package makes no claim
-// about where it lives — which is why the errors below quote the path and say
-// nothing else about it. They used to read "workspace HOME %q ...", from the
-// era when this package had exactly one caller and that caller passed a
-// workspace HOME; PR3 of docs/plans/workspace-home-volume-persistence.md moved
-// the destination to <RuntimesDir>/skills and left the message behind,
-// pointing a reader of a failed job's Output at a directory unrelated to the
-// failure. A general-purpose package naming its caller's layout is the bug,
-// not merely the stale value.
+// about where it lives — a general-purpose package naming its caller's
+// layout would go stale the moment that layout changes, so the errors below
+// quote the path and say nothing else about it.
 //
 // There is no longer a daemon-side production caller at all: the sandbox skill
 // set reaches a job by being baked into the runner image at build time
@@ -36,15 +31,13 @@ var skillsFS embed.FS
 //
 // Every write below goes through the symlink-safe, fd-relative helpers in
 // safe_deploy.go rather than string-path-based os.MkdirAll/os.CreateTemp/
-// os.Rename. That hardening was originally required because baseDir *was*
-// workspace HOME's `.claude/skills`, rw bind mounted into every sandbox
-// dispatched against the workspace (PR #789 review, 2026-07-17). It is
-// retained rather than unwound now that the default caller's baseDir is out of
-// reach of any job: the same helpers also serve MkdirAllNoSymlink, whose
-// caller DOES write into the job-owned workspace HOME, and nothing about them
-// costs anything on a directory jobs cannot reach. A future caller is
-// therefore free to point baseDir at attacker-writable storage again without
-// re-deriving the threat model.
+// os.Rename — see safe_deploy.go's package comment for the threat model this
+// guards against. It is retained even though the current default caller's
+// baseDir is out of reach of any job: the same helpers also serve
+// MkdirAllNoSymlink, whose caller DOES write into the job-owned workspace
+// HOME, and nothing about them costs anything on a directory jobs cannot
+// reach. A future caller is therefore free to point baseDir at
+// attacker-writable storage again without re-deriving the threat model.
 func DeployAll(baseDir string) error {
 	return deployAllFrom(skillsFS, "data", baseDir)
 }
@@ -86,13 +79,6 @@ func deployAllFrom(sourceFS fs.FS, root, baseDir string) error {
 // the mkdir of those targets inside the workspace HOME and the per-skill
 // read-only mounts homeMounts declares (internal/dispatcher/
 // skills_overlay.go and sandbox_builder.go).
-//
-// The caller was the claude/codex/opencode adapters' Bindings() until Phase
-// 4 PR3 (docs/plans/home-workspace-volume.md) retired those to nil and
-// switched to a copy-sync; this function then sat with no callers at all
-// until PR3 of docs/plans/workspace-home-volume-persistence.md moved skill
-// delivery back to bind mounts, declared by the dispatcher rather than by an
-// adapter.
 func EmbeddedSkillNames() []string {
 	entries, err := fs.ReadDir(skillsFS, "data")
 	if err != nil {

@@ -2,24 +2,16 @@ package config
 
 import "strings"
 
-// This file defines the CLI-editable schema for config.yaml
-// (docs/plans/volume-only-daemon.md §論点 f: "boid config get/set/unset/apply/edit").
-// It is the single source of truth `internal/config`'s dotted-path
-// operations (dotted.go) and validation (validate.go) both consult — every
-// leaf a `boid config set/unset` can target, its value shape, and whether a
+// This file defines the CLI-editable schema for config.yaml. It is the
+// single source of truth `internal/config`'s dotted-path operations
+// (dotted.go) and validation (validate.go) both consult — every leaf a
+// `boid config set/unset` can target, its value shape, and whether a
 // daemon can hot-apply a change to it without a restart.
 //
 // default_harness is deliberately NOT part of this schema: the config key
-// (and config.DefaultHarness()/SetDefaultHarness()) was removed outright in
-// Phase 2.5 PR7 (docs/ja/reference/config-yaml.md's "default_harness (撤去済み)"
-// section) — it does not exist on the Config struct any more. The plan
-// doc's §論点 f example (written the same day as this PR, before that
-// history was cross-checked against the current schema) still lists it in
-// the CLI example and the dynamic-reload table; this omission is a
-// deliberate, flagged deviation (see the PR body) rather than an oversight
-// — `boid config set default_harness ...` / `get default_harness` fall
-// through to the ordinary "unknown key" rejection path, exactly like any
-// other typo.
+// no longer exists on the Config struct. `boid config set default_harness
+// ...` / `get default_harness` fall through to the ordinary "unknown key"
+// rejection path, exactly like any other typo.
 
 // FieldKind describes the shape of value a schema leaf accepts.
 type FieldKind int
@@ -44,36 +36,24 @@ const (
 	// elsewhere (Config.UnmarshalYAML's own decode pass, ValidateYAML's
 	// pass 2). Its shape (list, map, whatever) is validated by that pass 2
 	// decode, not duplicated here. coerceValues (dotted.go) rejects any
-	// `boid config set` attempt against a KindOpaque leaf with a
-	// dedicated message rather than falling through to the generic
-	// "unsupported field kind" text (MAJOR 1, codex review round 1 — see
-	// gateway.hosts and sandbox.backend below, the two KindOpaque entries
-	// today) — see FieldSpec.Note for how that message's field-specific
-	// tail is authored per leaf.
+	// `boid config set` attempt against a KindOpaque leaf with a dedicated
+	// message rather than falling through to the generic "unsupported
+	// field kind" text — see FieldSpec.Note for how that message's
+	// field-specific tail is authored per leaf.
 	KindOpaque
 )
 
-// ReloadClass classifies whether the daemon can apply a changed leaf live
-// (docs/plans/volume-only-daemon.md §論点 f "reload semantics" table).
+// ReloadClass classifies whether the daemon can apply a changed leaf live.
 type ReloadClass int
 
 const (
 	// ReloadDynamic keys are hot-reloaded silently (an info log line, no
 	// operator-facing warning) as soon as the daemon accepts the write.
 	//
-	// No Schema leaf uses this class today — the PR #830 round-4
-	// simplification pass (nose directive) folded sandbox.allowed_domains,
-	// notify.command, and web.public_url (the only three that ever did) into
-	// ReloadRestartRequired. The codex review trajectory that shipped the
-	// hot-reload machinery for those three (Runner.AllowedDomains as a
-	// func() []string getter, Server.AllowedDomains(), a per-dispatch
-	// ProxyAllocator.GetOrCreate refresh for the no-workspace proxy
-	// listener) took 4 rounds and 2→1→1→2 blockers to land, including a
-	// Server.Stop/dispatch deadlock (round 4 blocker 2) — a complexity/value
-	// ratio nose judged not worth it for a config surface this young. The
-	// constant and this ReloadClass distinction are kept (not deleted) so a
-	// future genuinely-safe-to-hot-reload leaf has an obvious place to go
-	// without re-litigating the enum.
+	// No Schema leaf uses this class today. The constant and this
+	// ReloadClass distinction are kept (not deleted) so a future
+	// genuinely-safe-to-hot-reload leaf has an obvious place to go without
+	// re-litigating the enum.
 	ReloadDynamic ReloadClass = iota
 	// ReloadRestartRequired keys are persisted but only take effect on the
 	// next daemon restart — the daemon prints a loud warning naming the
@@ -121,18 +101,16 @@ var Schema = []FieldSpec{
 	{Path: "notify.command", Kind: KindStringArray, Reload: ReloadRestartRequired},
 
 	{Path: "sandbox.allowed_domains", Kind: KindStringArray, Reload: ReloadRestartRequired},
-	// docs/plans/egress-proxy-stable-port.md. ReloadRestartRequired
-	// because a listener cannot change bands without rebinding, and
-	// rebinding is exactly the port change this feature exists to avoid.
+	// ReloadRestartRequired because a listener cannot change bands without
+	// rebinding, and rebinding is exactly the port change this feature
+	// exists to avoid.
 	{Path: "sandbox.egress_proxy_port_low", Kind: KindInt, Reload: ReloadRestartRequired},
 	{Path: "sandbox.egress_proxy_port_high", Kind: KindInt, Reload: ReloadRestartRequired},
-	// sandbox.backend: removed in PR-4 (docs/plans/volume-only-daemon.md
-	// §論点e) — container is the only sandbox backend now, so the key has
-	// nothing left to select. KindOpaque (not deleted from Schema outright)
-	// per PR-1b's own gateway.hosts precedent: an old config.yaml that
-	// still sets it must keep loading (Config.UnmarshalYAML logs a warning
-	// and drops the value — see its own doc comment) rather than hard-fail
-	// an operator's existing deployment on daemon restart.
+	// sandbox.backend has nothing left to select — container is the only
+	// sandbox backend. KindOpaque (not deleted from Schema outright) so an
+	// old config.yaml that still sets it keeps loading (Config.UnmarshalYAML
+	// logs a warning and drops the value) rather than hard-failing an
+	// operator's existing deployment on daemon restart.
 	{Path: "sandbox.backend", Kind: KindOpaque, Reload: ReloadRestartRequired,
 		Note: "removed in the volume-only cutover (docs/plans/volume-only-daemon.md §論点e) — container is the only sandbox backend now"},
 
@@ -142,67 +120,40 @@ var Schema = []FieldSpec{
 	{Path: "gateway.forges.*.forge", Kind: KindEnum, Reload: ReloadRestartRequired, EnumValues: []string{"github", "bitbucket"}},
 	{Path: "gateway.forges.*.secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 
-	// gateway.hosts: the deprecated pre-forges-map legacy schema
-	// (docs/plans/git-gateway-cutover.md PR4's original shape).
+	// gateway.hosts: the deprecated pre-forges-map legacy schema.
 	// Config.UnmarshalYAML (config.go) still parses and folds it into
-	// gateway.forges for one release — see its own doc comment — but this
-	// package's Schema had no entry for it at all, so ValidateKnownKeys
-	// rejected any still-daemon-accepted legacy config.yaml with "unknown
-	// config key: gateway.hosts" before pass 2 (the actual fold) ever ran
-	// (MAJOR 1, codex review round 1). KindOpaque: a bare list of forge
-	// objects has no scalar/array Set arity, and this is a migration
+	// gateway.forges — see its own doc comment. KindOpaque: a bare list of
+	// forge objects has no scalar/array Set arity, and this is a migration
 	// bridge to read/apply/edit through, not a new surface to author
 	// config through — `boid config set gateway.forges.<id>.*` is the
-	// supported way to add a forge. Classified ReloadRestartRequired
-	// like every other gateway.* leaf, though in practice any change here
-	// is picked up by the gateway.forges diff (applyDynamicConfigLocked,
-	// internal/server/config_edit.go) since UnmarshalYAML always folds
-	// Hosts into Forges before the daemon ever compares old vs new.
+	// supported way to add a forge.
 	{Path: "gateway.hosts", Kind: KindOpaque, Reload: ReloadRestartRequired,
 		Note: "migrate to gateway.forges.<id>.* instead (see docs/ja/reference/config-yaml.md)"},
 
-	// services.* (docs/plans/api-gateway.md §2/PR1): the API gateway's
-	// service registry, one wildcard entry per service name — same
-	// wildcard-map shape as gateway.forges.* just above. auth.kind is a
-	// KindEnum whose EnumValues mirrors apigateway.AuthKind's initial set
-	// (bearer/basic/header/query/oauth2 — oauth2 reserved, PR2); the other
-	// auth.* leaves are plain strings since which ones are actually
+	// services.*: the API gateway's service registry, one wildcard entry
+	// per service name — same wildcard-map shape as gateway.forges.* just
+	// above. auth.kind is a KindEnum whose EnumValues mirrors
+	// apigateway.AuthKind's set (bearer/basic/header/query/oauth2); the
+	// other auth.* leaves are plain strings since which ones are actually
 	// required depends on kind (validateServiceConfig in apigateway.go
 	// enforces that at document-decode time, not here — Schema only
-	// governs which KEYS exist, not their kind-conditional requiredness).
+	// governs which keys exist, not their kind-conditional requiredness).
 	{Path: "services.*.base_url", Kind: KindString, Reload: ReloadRestartRequired},
-	// services.*.base_url_secret_key / services.*.auth.username_secret_key
-	// (docs/plans/api-gateway-credential-accounts.md D12): registered here
-	// from day one — see the allow_readonly_write/require_account comment
-	// two entries below for what happens to a services.* leaf that skips
-	// this step (TestServiceConfigSchema_Exhaustive would also catch it).
 	{Path: "services.*.base_url_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
-	// services.*.allow_insecure (codex review round 4 finding): required —
-	// not merely a suggestion — for base_url to use a non-https scheme. See
-	// validateServiceConfig's own doc comment in apigateway.go.
+	// services.*.allow_insecure is required — not merely a suggestion —
+	// for base_url to use a non-https scheme. See validateServiceConfig's
+	// own doc comment in apigateway.go.
 	{Path: "services.*.allow_insecure", Kind: KindBool, Reload: ReloadRestartRequired},
-	// services.*.allow_readonly_write / services.*.require_account (PR
-	// #1040 opus review, item 1): both fields have existed on
-	// config.ServiceConfig (apigateway.go) since before this PR —
-	// allow_readonly_write was never registered here at all (git log -S
-	// confirms it), and require_account (docs/plans/
-	// api-gateway-credential-accounts.md D5) copied that gap by following
-	// the adjacent field's pattern rather than schema.go's own
-	// registration. Without a Schema entry, ValidateKnownKeys rejects ANY
-	// config.yaml document that sets either key as an "unknown config
-	// key" — which breaks every `boid config apply -f`/`edit`/`set`/
-	// `unset` path (MutateConfig re-validates the WHOLE document, so even
-	// an unrelated `boid config set` fails once either field is present
-	// anywhere in the document). Both are ReloadRestartRequired, the same
-	// class every other services.* leaf in this block has: the API
-	// gateway's CredentialProvider (apigateway.NewCredentialProvider) is
-	// built exactly once, in wire.go's buildRuntime at daemon startup, and
-	// applyDynamicConfigLocked never rebuilds it — see changedServiceLeaves'
-	// own doc comment (internal/server/config_edit.go) for the identical
-	// reasoning already applied to base_url/auth.*/uses/endpoint/
-	// credentials.*/username. See TestServiceConfigSchema_Exhaustive
-	// (service_schema_exhaustive_test.go) for the reflection-based guard
-	// against a third field repeating this same gap.
+	// Both ReloadRestartRequired, the same class every other services.*
+	// leaf in this block has: the API gateway's CredentialProvider
+	// (apigateway.NewCredentialProvider) is built exactly once, in
+	// wire.go's buildRuntime at daemon startup, and
+	// applyDynamicConfigLocked never rebuilds it — see
+	// changedServiceLeaves' own doc comment
+	// (internal/server/config_edit.go). See
+	// TestServiceConfigSchema_Exhaustive (service_schema_exhaustive_test.go)
+	// for the reflection-based guard against a new ServiceConfig field
+	// missing its Schema entry.
 	{Path: "services.*.allow_readonly_write", Kind: KindBool, Reload: ReloadRestartRequired},
 	{Path: "services.*.require_account", Kind: KindBool, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.kind", Kind: KindEnum, Reload: ReloadRestartRequired,
@@ -213,86 +164,66 @@ var Schema = []FieldSpec{
 	{Path: "services.*.auth.header", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.query", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.provider", Kind: KindString, Reload: ReloadRestartRequired},
-	// services.*.uses/endpoint/credentials.*/username (docs/plans/
-	// signal-driven-review.md §7.2, docs/plans/signal-ingest-detailed-design.md
-	// §6.1, PR-4; username added by feat/credential-slot-instance-username):
-	// the Integration Pack service-profile-backed instance shape, mutually
-	// exclusive with base_url/auth above (validateServiceConfig in
-	// apigateway.go enforces that at document-decode time, same "Schema
-	// only governs which KEYS exist" split every other kind-conditional
-	// leaf here has). credentials.* is a second wildcard segment for the
-	// profile's declared credential slot names — same shape as
+	// services.*.uses/endpoint/credentials.*/username: the Integration Pack
+	// service-profile-backed instance shape, mutually exclusive with
+	// base_url/auth above (validateServiceConfig in apigateway.go enforces
+	// that at document-decode time, same "Schema only governs which keys
+	// exist" split every other kind-conditional leaf here has).
+	// credentials.* is a second wildcard segment for the profile's
+	// declared credential slot names — same shape as
 	// oauth_providers.*.authorize_params.* below. username is a plaintext,
-	// non-secret instance value (e.g. a Jira Cloud tenant's Atlassian
-	// account email) — deliberately separate from credentials.*, which only
-	// ever binds SecretStore key references.
+	// non-secret instance value (e.g. a tenant's account email) —
+	// deliberately separate from credentials.*, which only ever binds
+	// SecretStore key references.
 	{Path: "services.*.uses", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.endpoint", Kind: KindString, Reload: ReloadRestartRequired},
-	// services.*.endpoint_secret_key / services.*.username_secret_key
-	// (docs/plans/api-gateway-credential-accounts.md D13): registered here
-	// from day one, unlike the D12 leaves two entries above whose own
-	// comment records what happens to a services.* leaf that skips this
-	// step (TestServiceConfigSchema_Exhaustive would also catch it — these
-	// two new fields on config.ServiceConfig are reflectively walked by
-	// that test automatically, so omitting either entry here fails `go
-	// test` immediately rather than only surfacing at `boid config`
-	// runtime).
 	{Path: "services.*.endpoint_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.credentials.*", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.username", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "services.*.username_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 
-	// services_floor (docs/plans/api-gateway.md §3): the daemon-wide
-	// enabled-service floor, mirroring sandbox.allowed_domains' own
-	// KindStringArray/ReloadRestartRequired shape exactly.
+	// services_floor: the daemon-wide enabled-service floor, mirroring
+	// sandbox.allowed_domains' own KindStringArray/ReloadRestartRequired
+	// shape exactly.
 	{Path: "services_floor", Kind: KindStringArray, Reload: ReloadRestartRequired},
 
-	// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2): the API
-	// gateway's OAuth2 provider registry, one wildcard entry per provider
-	// name — same wildcard-map shape as services.* above. A
-	// services.*.auth.provider entry references a provider name declared
-	// here; see config.OAuthProviderConfig's own doc comment for why that
-	// reference is NOT cross-validated at config-load time.
+	// oauth_providers.*: the API gateway's OAuth2 provider registry, one
+	// wildcard entry per provider name — same wildcard-map shape as
+	// services.* above. A services.*.auth.provider entry references a
+	// provider name declared here; see config.OAuthProviderConfig's own
+	// doc comment for why that reference is NOT cross-validated at
+	// config-load time.
 	{Path: "oauth_providers.*.token_endpoint", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "oauth_providers.*.client_id", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "oauth_providers.*.client_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "oauth_providers.*.scopes", Kind: KindStringArray, Reload: ReloadRestartRequired},
-	// oauth_providers.*.grant (docs/plans/api-gateway.md §6-補, PR4): which
-	// RFC 6749 grant apigateway.OAuth2TokenSource.refresh performs for this
-	// provider. A KindEnum whose EnumValues mirrors apigateway.
-	// ValidOAuthGrants exactly (authorization_code/client_credentials) —
-	// same drift-prevention pattern as oauth_providers.*.flow just below.
+	// oauth_providers.*.grant: which RFC 6749 grant apigateway.
+	// OAuth2TokenSource.refresh performs for this provider. A KindEnum
+	// whose EnumValues mirrors apigateway.ValidOAuthGrants exactly.
 	// Deliberately a separate leaf from flow, not folded into it — grant
 	// and flow are orthogonal axes (apigateway.OAuthProviderConfig.Grant's
 	// own doc comment).
 	{Path: "oauth_providers.*.grant", Kind: KindEnum, Reload: ReloadRestartRequired,
 		EnumValues: []string{"authorization_code", "client_credentials"}},
-	// oauth_providers.*.flow/authorization_endpoint/device_authorization_endpoint
-	// (docs/plans/api-gateway.md §7, PR3): the login-flow selector and its
-	// two flow-conditional endpoints. flow is a KindEnum whose EnumValues
-	// mirrors apigateway.ValidLoginFlows exactly (device/loopback/manual).
+	// oauth_providers.*.flow/authorization_endpoint/device_authorization_endpoint:
+	// the login-flow selector and its two flow-conditional endpoints. flow
+	// is a KindEnum whose EnumValues mirrors apigateway.ValidLoginFlows
+	// exactly.
 	{Path: "oauth_providers.*.flow", Kind: KindEnum, Reload: ReloadRestartRequired,
 		EnumValues: []string{"device", "loopback", "manual"}},
 	{Path: "oauth_providers.*.authorization_endpoint", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "oauth_providers.*.device_authorization_endpoint", Kind: KindString, Reload: ReloadRestartRequired},
-	// oauth_providers.*.authorize_params.* — a SECOND wildcard segment for
-	// the arbitrary provider-specific key names AuthorizeParams holds
-	// (docs/plans/api-gateway.md §7's Google access_type/prompt example).
+	// oauth_providers.*.authorize_params.* — a second wildcard segment for
+	// the arbitrary provider-specific key names AuthorizeParams holds.
 	// pathMatches (below) already treats each "*" segment independently by
-	// position, so this needs no special-casing beyond the entry itself:
-	// `boid config set oauth_providers.google.authorize_params.access_type
-	// offline` resolves through the ordinary Schema/dotted.go machinery
-	// exactly like gateway.forges.*.host does for its own single wildcard.
-	// Also required so ValidateKnownKeys' unknown-key trie walk (validate.go)
-	// does not reject a `boid config apply -f`/`edit` document that sets
-	// authorize_params at all — without a matching trie child, EVERY key
-	// under it would 404 as "unknown config key" the same way gateway.hosts
-	// would have without its own (KindOpaque) entry.
+	// position, so this needs no special-casing beyond the entry itself.
+	// Also required so ValidateKnownKeys' unknown-key trie walk
+	// (validate.go) does not reject a `boid config apply -f`/`edit`
+	// document that sets authorize_params at all.
 	{Path: "oauth_providers.*.authorize_params.*", Kind: KindString, Reload: ReloadRestartRequired},
 
-	// integrations.dir (docs/plans/signal-ingest-detailed-design.md §6.1,
-	// PR-4): where internal/integrationpack.LoadPacks looks for installed
-	// Integration Packs. A single scalar leaf, same shape as
+	// integrations.dir: where internal/integrationpack.LoadPacks looks for
+	// installed Integration Packs. A single scalar leaf, same shape as
 	// web.public_url/web.http_addr above.
 	{Path: "integrations.dir", Kind: KindString, Reload: ReloadRestartRequired},
 }
@@ -345,10 +276,8 @@ func ResolveField(path string) (*FieldSpec, bool) {
 
 // IsForgeEntryPath reports whether path names a whole gateway.forges.<id>
 // entry (exactly "gateway.forges.<id>", no further segment) — the one
-// dotted path `boid config unset` treats specially, per docs/plans/
-// volume-only-daemon.md §論点 f's unilateral decision: "Removing a map
-// entry (e.g. gateway.forges.github) removes the whole entry." id is
-// returned when ok is true.
+// dotted path `boid config unset` treats specially: removing a map entry
+// removes the whole entry. id is returned when ok is true.
 func IsForgeEntryPath(path string) (id string, ok bool) {
 	segs := segments(path)
 	if len(segs) != 3 || segs[0] != "gateway" || segs[1] != "forges" {
@@ -364,15 +293,7 @@ func IsForgeEntryPath(path string) (id string, ok bool) {
 // entry (exactly "services.<name>", no further segment) — the API
 // gateway's counterpart to IsForgeEntryPath above, given the identical
 // "removing a map entry removes the whole entry" treatment `boid config
-// unset` gives gateway.forges.<id> (docs/plans/volume-only-daemon.md
-// §論点 f). Without this, "boid config unset services.myapp" fell through
-// to the ordinary ResolveField path — which correctly reports it as not a
-// Set/Get leaf (schema_test.go's own `{"services.myapp", false}` case,
-// annotated "same as gateway.forges.github") — but Unset had no matching
-// special case to actually act on that "same as" comment, so the whole-
-// entry removal gateway.forges.<id> gets was silently absent for
-// services.<name> despite the parity the test comment implied. name is
-// returned when ok is true.
+// unset` gives gateway.forges.<id>. name is returned when ok is true.
 func IsServiceEntryPath(path string) (name string, ok bool) {
 	segs := segments(path)
 	if len(segs) != 2 || segs[0] != "services" {
@@ -387,10 +308,9 @@ func IsServiceEntryPath(path string) (name string, ok bool) {
 // IsOAuthProviderEntryPath reports whether path names a whole
 // oauth_providers.<name> entry (exactly "oauth_providers.<name>", no
 // further segment) — IsServiceEntryPath's counterpart for the OAuth2
-// provider registry (docs/plans/api-gateway.md §6/§論点4, PR2), given the
-// same "removing a map entry removes the whole entry" treatment `boid
-// config unset` gives gateway.forges.<id> and services.<name>. name is
-// returned when ok is true.
+// provider registry, given the same "removing a map entry removes the
+// whole entry" treatment `boid config unset` gives gateway.forges.<id> and
+// services.<name>. name is returned when ok is true.
 func IsOAuthProviderEntryPath(path string) (name string, ok bool) {
 	segs := segments(path)
 	if len(segs) != 2 || segs[0] != "oauth_providers" {

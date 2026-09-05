@@ -16,44 +16,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// PR9 of docs/plans/workspace-home-volume-persistence.md (論点 d), CLI half:
 // `boid workspace get-init-script / set-init-script / edit-init-script /
-// unset-init-script`.
+// unset-init-script` (docs/plans/workspace-home-volume-persistence.md
+// 論点 d) manage a workspace's init.sh — which installs the harness CLI and
+// toolchain into the workspace HOME volume — through the daemon's API,
+// since the daemon reads it from its own config directory, which under a
+// containerized daemon is unreachable from this host. These follow `boid
+// config`'s conventions (GET with an ETag, write gated by If-Match,
+// --force to opt out, $EDITOR round trip that keeps the temp file on
+// failure), since it is the same problem: a file the daemon owns, edited
+// from elsewhere.
 //
-// # Why these commands exist
+// unset exists as its own verb (rather than folding into set) because "no
+// init.sh" is a real, distinct state that set alone reaches only via an
+// unobvious route (uploading an empty file).
 //
-// A workspace's init.sh is what installs the harness CLI and the toolchain
-// into the workspace HOME volume. The daemon reads it from ITS OWN
-// $XDG_CONFIG_HOME, which under the container deploy is inside the daemon's
-// state volume — no editor on this host can reach it, and the dogfood run
-// behind this plan doc had to `podman cp` the scripts in by hand. These
-// commands are the supported replacement, and they follow `boid config`'s
-// conventions exactly (GET with an ETag, write gated by If-Match, --force to
-// opt out, $EDITOR round trip that keeps the temp file on failure) because
-// this is the same problem: a file the daemon owns, edited from elsewhere.
-//
-// # Which four, and why not fewer or more
-//
-//   - get / set are the minimum: read it, replace it from a file. Everything
-//     else can be built out of those two by a script.
-//   - edit exists because the plan doc names 日常編集 as this surface's job,
-//     and the get-edit-set loop done by hand loses the If-Match guard (the
-//     revision an operator would have to carry between two invocations by
-//     themselves). `boid config edit` already solved this exact problem with a
-//     failure discipline worth copying wholesale — a failed apply keeps the
-//     temp file and reports its path — so edit is a small amount of code that
-//     removes the one workflow step most likely to be done wrong.
-//   - unset exists because "no init.sh" is a real, distinct state (the
-//     pass-through class of docs/plans/home-workspace-volume.md) and `set`
-//     alone reaches it only by a route nobody would guess: uploading an empty
-//     file, which the daemon collapses into the absent state rather than
-//     storing (internal/api's workspaceInitScriptContentIsAbsent). A verb that
-//     says what it does is worth having, and the envelope's `init_script: ""`
-//     already spells the same clear, so leaving the CLI without one would be a
-//     gap between two surfaces that are meant to mean the same thing.
-//
-// There is no `set-init-script --from-stdin`-only variant: -f accepts "-" for
-// stdin, which is the same convention with one fewer flag.
+// There is no `set-init-script --from-stdin`-only variant: -f accepts "-"
+// for stdin, which is the same convention with one fewer flag.
 
 var (
 	// workspaceInitScriptFile is set-init-script's required -f/--file: the
@@ -189,13 +168,11 @@ type fetchedWorkspaceInitScript struct {
 	// usable: guarding the CREATION of a workspace's first script is exactly
 	// what the absent sentinel is for.
 	//
-	// Kept in the QUOTED form the header carried, not unwrapped. That is
-	// GetRawWithAcceptAndRevision's documented contract (round 1 of its own
-	// review unwrapped it here and had to be reverted: an entity-tag is
-	// DQUOTE-delimited per RFC 7232 §2.3, and a strict intermediary in front
-	// of a remote daemon can reject a bare token), and nothing on this side
-	// compares it — it only ever travels back out as If-Match, which the
-	// daemon's unquoteETag unwraps.
+	// Kept in the QUOTED form the header carried, not unwrapped — an
+	// entity-tag is DQUOTE-delimited per RFC 7232 §2.3, and a strict
+	// intermediary in front of a remote daemon can reject a bare token.
+	// Nothing on this side compares it; it only travels back out as
+	// If-Match, which the daemon's unquoteETag unwraps.
 	Revision string
 	// Message is the daemon's own 404 text, which names the daemon-side path.
 	Message string
@@ -207,10 +184,10 @@ type fetchedWorkspaceInitScript struct {
 //
 // # Telling "no script" from "no such endpoint"
 //
-// Both arrive as 404. A daemon predating this PR has no route at all, so chi
-// answers with its own not-found and no ETag; this daemon always sets the
-// header, even on the 404. An empty revision on a 404 is therefore the
-// discriminator, and it gets its own message pointing at the upgrade —
+// Both arrive as 404. A daemon predating this endpoint has no route at all,
+// so chi answers with its own not-found and no ETag; this daemon always
+// sets the header, even on the 404. An empty revision on a 404 is therefore
+// the discriminator, and it gets its own message pointing at the upgrade —
 // the same explicit "the daemon is too old" handling resolveDaemonKitsDir
 // already does for its endpoint, rather than the silent guess that would
 // otherwise send an operator hunting for a workspace that is right there.
@@ -407,9 +384,9 @@ func initScriptError(err error, keptPath string) error {
 //
 // The daemon-side path is printed on every outcome, labelled as the daemon's.
 // An operator whose daemon is a container has no way to check the file
-// themselves and every reason to want to know where it went — and an unlabelled
-// path invites exactly the mistake this PR is fixing in the adapters' "not
-// found" message, where a daemon-side path read as a host one.
+// themselves and every reason to want to know where it went — and an
+// unlabelled path invites the mistake of reading a daemon-side path as a
+// host one.
 func formatWorkspaceInitScriptResult(slug string, result apiwire.WorkspaceInitScriptResult) string {
 	var b strings.Builder
 	switch result.Action {

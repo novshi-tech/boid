@@ -2,17 +2,15 @@ package integrationpack
 
 import "fmt"
 
-// ConfigSchema is a connector's declared configSchema — the v0 minimal
-// JSON-Schema subset docs/plans/signal-ingest-detailed-design.md §6.2 item
-// 4 specifies: "type/object/properties/required、値型は string/number/
-// boolean のみ". Hand-rolled rather than pulling in a real JSON Schema
-// library — CLAUDE.md's "外部ライブラリは最小限" rule, and the subset this
-// package needs is narrow enough that a full implementation (refs, oneOf/
-// anyOf, format, ...) would be pure unused surface. Constructed by
-// parseConfigSchema (manifest.go), which already validates the schema
-// document ITSELF (root type, property types, required references) — this
-// type's own Validate method checks a candidate VALUE against an
-// already-valid schema.
+// ConfigSchema is a connector's declared configSchema — a v0 minimal
+// JSON-Schema subset ("type/object/properties/required", leaf value types
+// string/number/boolean only). Hand-rolled rather than pulling in a real
+// JSON Schema library: the subset this package needs is narrow enough that
+// a full implementation (refs, oneOf/anyOf, format, ...) would be pure
+// unused surface. Constructed by parseConfigSchema (manifest.go), which
+// already validates the schema document ITSELF (root type, property types,
+// required references) — this type's own Validate method checks a
+// candidate VALUE against an already-valid schema.
 type ConfigSchema struct {
 	// Type is always "object" for a schema parseConfigSchema produced (v0
 	// supports no other root type) — kept as a field (rather than assumed)
@@ -31,8 +29,7 @@ type ConfigSchema struct {
 
 // PropertySchema is one ConfigSchema.Properties entry's leaf type.
 type PropertySchema struct {
-	// Type is one of "string", "number", "boolean" (v0's supported leaf
-	// types — signal-ingest-detailed-design.md §6.2 item 4).
+	// Type is one of "string", "number", "boolean" (v0's supported leaf types).
 	Type string
 }
 

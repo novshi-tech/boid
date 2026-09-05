@@ -94,21 +94,17 @@ func (l *Ledger) Contains(resourceType, id string) (bool, error) {
 }
 
 // RewriteLedger atomically replaces the ledger file at path with exactly
-// entries — internal/reap's own drain step (Major 8, PR6 codex review)
-// uses this to remove entries it has already confirmed destroyed, so a
-// subsequent `boid reap` run does not re-attempt (and re-report as an
-// error) an id that is already gone. Writes to a temp file in the same
-// directory, fsyncs it, then os.Rename onto path: any reader
-// (NewLedger(path).ReadAll, most importantly) always observes either the
-// pre-rewrite or post-rewrite content in full, never a partial write.
+// entries — internal/reap's own drain step uses this to remove entries it
+// has already confirmed destroyed, so a subsequent `boid reap` run does not
+// re-attempt (and re-report as an error) an id that is already gone. Writes
+// to a temp file in the same directory, fsyncs it, then os.Rename onto
+// path: any reader always observes either the pre-rewrite or post-rewrite
+// content in full, never a partial write.
 //
 // A package-level function, not a *Ledger method, deliberately: reap's
-// caller constructs a fresh, unshared Ledger per read (it has no
-// long-lived instance the way a per-sandbox dockerproxy.Server does — see
-// internal/reap's own package doc comment on why it must stay
-// daemon-independent), so there is no in-memory cache to keep in sync.
-// entries may be empty (path ends up holding zero lines — still a valid,
-// empty ledger, same as ReadAll's "missing file" case).
+// caller constructs a fresh, unshared Ledger per read, so there is no
+// in-memory cache to keep in sync. entries may be empty (path ends up
+// holding zero lines — still a valid, empty ledger).
 func RewriteLedger(path string, entries []ResourceEntry) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".ledger-*.tmp")
 	if err != nil {

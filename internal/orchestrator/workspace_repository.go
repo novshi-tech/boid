@@ -15,11 +15,10 @@ import (
 )
 
 // WorkspaceRepository provides DB-backed CRUD for WorkspaceMeta against the
-// `workspaces` table (internal/db/migrate/migrations/0030_add_workspaces_table.sql).
-// It is the authority WorkspaceStore delegates to once
-// MigrateWorkspaceYAMLToDB has cut over (docs/plans/workspace-db-consolidation.md
-// PR3): the yaml files under DefaultWorkspaceDir() become a read-only shadow
-// kept for rollback/export, and this repository becomes the read/write path.
+// `workspaces` table. It is the authority WorkspaceStore delegates to once
+// MigrateWorkspaceYAMLToDB has cut over: the yaml files under
+// DefaultWorkspaceDir() become a read-only shadow kept for rollback/export,
+// and this repository becomes the read/write path.
 type WorkspaceRepository struct {
 	conn *sql.DB
 }
@@ -41,8 +40,7 @@ func (r *WorkspaceRepository) Load(slug string) (*WorkspaceMeta, error) {
 // WorkspaceRepository.Load, reused by ApplyWorkspaceEnvelope
 // (workspace_apply.go) so a single all-or-nothing apply transaction can
 // read a workspace's current row through the exact same decode logic
-// against a *sql.Tx instead of r.conn (see saveWorkspaceRow's doc comment
-// for why this split exists for the write side too).
+// against a *sql.Tx instead of r.conn.
 func loadWorkspaceMeta(dbtx db.DBTX, slug string) (*WorkspaceMeta, error) {
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return nil, err
@@ -82,23 +80,20 @@ func loadWorkspaceMeta(dbtx db.DBTX, slug string) (*WorkspaceMeta, error) {
 }
 
 // LoadWithRevision reads meta and its revision (updated_at, formatted the
-// same way GetWorkspaceSummary/ListWorkspaces do) from a single row —
-// docs/plans/workspace-db-consolidation.md MAJOR 1 (codex review): GET
-// /api/workspaces/{slug} previously read meta (this method's SELECT) and
-// revision (a separate GetWorkspaceSummary query) as two round trips, which
-// could straddle a concurrent PUT and return a meta/revision pair that never
-// coexisted in the DB. Returns an error wrapping os.ErrNotExist when no row
-// exists for slug, matching Load's contract.
+// same way GetWorkspaceSummary/ListWorkspaces do) from a single row, so GET
+// /api/workspaces/{slug} cannot straddle a concurrent PUT and return a
+// meta/revision pair that never coexisted in the DB. Returns an error
+// wrapping os.ErrNotExist when no row exists for slug, matching Load's
+// contract.
 func (r *WorkspaceRepository) LoadWithRevision(slug string) (*WorkspaceMeta, string, error) {
 	return loadWorkspaceMetaWithRevision(r.conn, slug)
 }
 
 // loadWorkspaceMetaWithRevision is the db.DBTX-scoped counterpart of
-// WorkspaceRepository.LoadWithRevision — see loadWorkspaceMeta's doc
-// comment for why this split exists (PR-1d codex round-1 Blocker 2:
-// ApplyWorkspaceEnvelope needs to read a workspace's current meta+revision
-// from inside its own apply transaction, not a fresh r.conn query that
-// could straddle the transaction's own write).
+// WorkspaceRepository.LoadWithRevision: ApplyWorkspaceEnvelope needs to read
+// a workspace's current meta+revision from inside its own apply
+// transaction, not a fresh r.conn query that could straddle the
+// transaction's own write.
 func loadWorkspaceMetaWithRevision(dbtx db.DBTX, slug string) (*WorkspaceMeta, string, error) {
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return nil, "", err
@@ -147,13 +142,12 @@ func loadWorkspaceMetaWithRevision(dbtx db.DBTX, slug string) (*WorkspaceMeta, s
 // UpdateIfRevisionMatches performs a compare-and-swap update: meta at slug
 // is written only if the row's current revision (updated_at) equals
 // expectedRevision, atomically with the check, via a single UPDATE
-// statement (docs/plans/workspace-db-consolidation.md MAJOR 1, codex
-// review). This closes the PUT race the previous "read revision, then Save
-// unconditionally" two-step had: two concurrent PUTs against the same
-// starting ETag could otherwise both pass their (separate-query) If-Match
-// check and both Save, silently losing one writer's update; likewise a
-// DELETE landing between a GET and a subsequent PUT could no longer be
-// resurrected by an upsert-based Save.
+// statement. This closes the PUT race a "read revision, then Save
+// unconditionally" two-step would have: two concurrent PUTs against the
+// same starting ETag could otherwise both pass their (separate-query)
+// If-Match check and both Save, silently losing one writer's update;
+// likewise a DELETE landing between a GET and a subsequent PUT could no
+// longer be resurrected by an upsert-based Save.
 //
 // matched=false covers three cases the caller cannot tell apart from this
 // return value alone: slug has no row at all, slug exists but its current
@@ -227,14 +221,13 @@ func formatRevision(t time.Time) string {
 //
 // bindingsJSON (the `workspaces.additional_bindings` column) is decoded and
 // discarded rather than mapped onto the result: WorkspaceMeta.AdditionalBindings
-// was retired outright in docs/plans/home-workspace-volume.md Phase 4 PR4
-// (see that struct's own doc comment). The column itself is not dropped by
-// this PR's migration — a future major schema cleanup removes it — so a row
+// was retired outright (see that struct's own doc comment). The column
+// itself is kept for now (a future schema cleanup removes it), so a row
 // written before this binary can still carry a non-empty JSON array here;
-// decoding it (rather than ignoring the column) still validates it is
-// well-formed JSON and lets this function warn when it is non-trivial, so an
-// operator inspecting logs after an upgrade understands why a previously
-// working workspace-scoped bind mount stopped applying.
+// decoding it still validates it is well-formed JSON and lets this function
+// warn when it is non-trivial, so an operator inspecting logs after an
+// upgrade understands why a previously working workspace-scoped bind mount
+// stopped applying.
 func decodeWorkspaceMetaColumns(slug string, containerImage sql.NullString, hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON, taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior string) (*WorkspaceMeta, error) {
 	meta := &WorkspaceMeta{}
 	if containerImage.Valid {
@@ -266,12 +259,11 @@ func decodeWorkspaceMetaColumns(slug string, containerImage sql.NullString, host
 		slog.Warn("workspace: additional_bindings is no longer supported (retired in docs/plans/home-workspace-volume.md Phase 4 PR4); the stored value is ignored",
 			"slug", slug, "count", len(discardedBindings))
 	}
-	// task_behaviors is stored as YAML, not JSON, unlike every column above
-	// (docs/plans/workspace-default-project.md §PR分割案 PR3): TaskBehavior.
-	// Hooks is `json:"-"` (spec_types.go — deliberately excluded from the
-	// JSON API response shape), so encoding/json would silently drop hook
-	// definitions on every round trip. yaml.v3 has a proper
-	// `yaml:"hooks,omitempty"` tag on that same field.
+	// task_behaviors is stored as YAML, not JSON, unlike every column above:
+	// TaskBehavior.Hooks is `json:"-"` (spec_types.go — deliberately
+	// excluded from the JSON API response shape), so encoding/json would
+	// silently drop hook definitions on every round trip. yaml.v3 has a
+	// proper `yaml:"hooks,omitempty"` tag on that same field.
 	if strings.TrimSpace(taskBehaviorsYAML) != "" {
 		var behaviors map[string]TaskBehavior
 		if err := yaml.Unmarshal([]byte(taskBehaviorsYAML), &behaviors); err != nil {
@@ -294,9 +286,9 @@ func (r *WorkspaceRepository) Save(slug string, meta *WorkspaceMeta) error {
 
 // Create inserts a brand-new workspace row at slug. Unlike Save, this is
 // insert-only: a slug that already has a row is rejected with an error
-// wrapping os.ErrExist (docs/plans/workspace-db-consolidation.md Step A —
-// the API layer maps this to HTTP 409 for POST /api/workspaces) rather than
-// silently overwriting it. The plain INSERT (no ON CONFLICT clause) makes
+// wrapping os.ErrExist (the API layer maps this to HTTP 409 for POST
+// /api/workspaces) rather than silently overwriting it. The plain INSERT
+// (no ON CONFLICT clause) makes
 // SQLite itself the source of truth for the conflict, so a concurrent
 // creator racing this call is still caught by the UNIQUE constraint on
 // workspaces.slug rather than a separate (racy) existence check.
@@ -338,7 +330,7 @@ func (r *WorkspaceRepository) Create(slug string, meta *WorkspaceMeta) error {
 // (via r.conn, autocommit) and MigrateWorkspaceYAMLToDB's cutover
 // transaction (via a *sql.Tx — both satisfy db.DBTX, so the same statement
 // runs against either without duplicating the SQL/marshal logic in two
-// places that could drift out of sync).
+// places).
 func saveWorkspaceRow(dbtx db.DBTX, slug string, meta *WorkspaceMeta) error {
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return err
@@ -390,11 +382,9 @@ func saveWorkspaceRow(dbtx db.DBTX, slug string, meta *WorkspaceMeta) error {
 // Explicitly computing this in Go (rather than relying on SQLite's
 // datetime('now'), which only has whole-second resolution) matters because
 // updated_at is the source of WorkspaceSummary.Revision (the PUT
-// /api/workspaces/{slug} If-Match ETag, decision 17): two writes to the same
-// workspace within the same wall-clock second would otherwise produce an
-// identical revision string, letting a stale If-Match check pass when it
-// should not (a lost-update window, not just a cosmetic "revision didn't
-// visibly change" annoyance).
+// /api/workspaces/{slug} If-Match ETag): two writes to the same workspace
+// within the same wall-clock second would otherwise produce an identical
+// revision string, letting a stale If-Match check pass when it should not.
 func nowForRevision() time.Time {
 	return time.Now().UTC()
 }
@@ -408,20 +398,16 @@ func nowForRevision() time.Time {
 //
 // bindingsJSON (the `workspaces.additional_bindings` column) is always
 // written as the empty-array literal: WorkspaceMeta has no AdditionalBindings
-// field any more (Phase 4 PR4, docs/plans/home-workspace-volume.md — see that
-// struct's doc comment) to source a value from, so every Save/Create/Update
-// from this binary zeroes out whatever a previous binary may have stored
-// there. The column itself is kept for now (a future major schema cleanup
-// removes it outright); see decodeWorkspaceMetaColumns for the read side.
+// field any more (see that struct's doc comment) to source a value from, so
+// every Save/Create/Update from this binary zeroes out whatever a previous
+// binary may have stored there. The column itself is kept for now; see
+// decodeWorkspaceMetaColumns for the read side.
 //
 // taskBehaviorsYAML runs meta.TaskBehaviors through
-// validateWorkspaceDefaultTaskBehaviors before encoding (docs/plans/
-// workspace-default-project.md 決定4, 論点j's "DB save" entry point — the
-// other of the two mandated entry points, alongside envelope decode in
-// decodeWorkspaceEnvelopeSpec) — this is what makes a WorkspaceMeta written
-// by ANY path (not just the envelope apply path) end up with validated,
-// canonical-only task_behaviors (alias names renamed to their canonical
-// form, no back-compat mirror entries added — see
+// validateWorkspaceDefaultTaskBehaviors before encoding — this is what makes
+// a WorkspaceMeta written by ANY path end up with validated, canonical-only
+// task_behaviors (alias names renamed to their canonical form, no
+// back-compat mirror entries added — see
 // validateWorkspaceDefaultTaskBehaviors's own doc comment for why a mirror
 // must never reach persisted storage), since this function is the single
 // choke point every write (Create/Save/UpdateIfRevisionMatches) funnels
@@ -479,11 +465,10 @@ func marshalWorkspaceMetaColumns(slug string, meta *WorkspaceMeta) (hostCommands
 }
 
 // Remove deletes the workspace row for slug. The reserved DefaultWorkspaceSlug
-// cannot be removed (docs/plans/workspace-db-consolidation.md 「default
-// workspace の実装詳細」). Any project currently assigned to slug is
-// re-pointed at DefaultWorkspaceSlug in the same transaction as the delete,
-// so a project never ends up referencing a workspace that no longer exists.
-// Returns an error wrapping os.ErrNotExist when no row exists for slug.
+// cannot be removed. Any project currently assigned to slug is re-pointed at
+// DefaultWorkspaceSlug in the same transaction as the delete, so a project
+// never ends up referencing a workspace that no longer exists. Returns an
+// error wrapping os.ErrNotExist when no row exists for slug.
 func (r *WorkspaceRepository) Remove(slug string) error {
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return err
@@ -505,13 +490,12 @@ func (r *WorkspaceRepository) Remove(slug string) error {
 		return fmt.Errorf("workspace %q: reassign projects to default: %w", slug, err)
 	}
 
-	// Release the workspace's egress proxy port reservation
-	// (docs/plans/egress-proxy-stable-port.md). workspace_egress_port
-	// deliberately has no FK to workspaces(slug) — its key space includes
-	// the reserved non-slug "__no_workspace__" — so ON DELETE CASCADE is
-	// not available and the row has to be dropped explicitly. Left behind,
-	// it would permanently hold a slot in a band the allocator now honours
-	// as reserved.
+	// Release the workspace's egress proxy port reservation.
+	// workspace_egress_port deliberately has no FK to workspaces(slug) — its
+	// key space includes the reserved non-slug "__no_workspace__" — so ON
+	// DELETE CASCADE is not available and the row has to be dropped
+	// explicitly. Left behind, it would permanently hold a slot in a band
+	// the allocator now honours as reserved.
 	if _, err := tx.Exec(`DELETE FROM workspace_egress_port WHERE proxy_key = ?`, slug); err != nil {
 		return fmt.Errorf("workspace %q: release egress proxy port: %w", slug, err)
 	}
@@ -565,8 +549,7 @@ func (r *WorkspaceRepository) EnsureDefault() error {
 
 // ensureDefaultWorkspaceRow is the db.DBTX-scoped counterpart of
 // WorkspaceRepository.EnsureDefault, reused by MigrateWorkspaceYAMLToDB
-// inside its cutover transaction (see saveWorkspaceRow's doc comment for why
-// this split exists).
+// inside its cutover transaction.
 func ensureDefaultWorkspaceRow(dbtx db.DBTX) error {
 	if _, err := dbtx.Exec(
 		`INSERT OR IGNORE INTO workspaces (slug) VALUES (?)`, DefaultWorkspaceSlug,

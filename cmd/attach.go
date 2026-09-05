@@ -32,18 +32,13 @@ func runAttach(cmd *cobra.Command, args []string) error {
 }
 
 // attachToJob is the shared attach core called by `boid attach` and by
-// the session-starting subcommands (`boid agent claude`, ...) once they
-// have a job id back from POST /api/sessions. It mirrors the original
-// runAttach behaviour: a non-running job replays its saved output through
-// a pager, a running job opens a live PTY attach with WINCH forwarding.
+// the session-starting subcommands once they have a job id back from
+// POST /api/sessions: a non-running job replays its saved output through a
+// pager, a running job opens a live PTY attach with WINCH forwarding.
 //
-// ctx carries the profile-resolved client (root's PersistentPreRunE) down
-// from whichever cobra command originally called in — this and attachLive
-// take ctx rather than *cobra.Command because their own callers
-// (runAgentSession, runExec) already had to detach from a *cobra.Command at
-// their own call boundary (a bare job id is all that survives), so
-// threading the narrower context.Context through is both sufficient and
-// keeps this file's helpers usable outside a cobra RunE if ever needed.
+// Takes ctx (carrying the profile-resolved client) rather than
+// *cobra.Command since callers like runAgentSession/runExec only have a
+// bare job id left by their own call boundary.
 func attachToJob(ctx context.Context, jobID string) error {
 	c := client.FromContext(ctx)
 
@@ -66,17 +61,12 @@ func attachToJob(ctx context.Context, jobID string) error {
 
 // attachLive opens a live attach to jobID (PTY or plain-pipe transport,
 // whichever the job was dispatched with) and blocks until the remote side
-// closes the stream (job exited — LocalRuntime.Attach replays the transcript
-// snapshot even if the job already finished by the time this runs, so there
-// is no race to worry about here) or the local user detaches (Ctrl-]).
+// closes the stream (job exited) or the local user detaches (Ctrl-]).
 //
-// Callers must already know the job is attachable (RuntimeID set). attachToJob
-// checks job.Status / job.RuntimeID first, since a `boid attach <job-id>`
-// invocation might target an already-finished or bogus id. `boid exec`
-// (cmd/exec.go) skips that check: it always attaches to a job it just
-// created via POST .../exec, whose RuntimeID is guaranteed set by the time
-// the daemon responds (Runner.Dispatch's launchSandbox persists RuntimeID
-// before returning).
+// Callers must already know the job is attachable (RuntimeID set) — either
+// by checking job.Status/RuntimeID first (attachToJob), or because they
+// just created the job themselves and its RuntimeID is guaranteed set by
+// the time the daemon responds (`boid exec`).
 func attachLive(ctx context.Context, jobID string) error {
 	c := client.FromContext(ctx)
 
@@ -119,22 +109,15 @@ func attachLive(ctx context.Context, jobID string) error {
 // writeTerminalEpilogue undoes the terminal modes a job's harness turned on
 // through the attach stream but may never get to turn off.
 //
-// A TUI harness (Claude Code, and anything else bubbletea-shaped) enables
-// mouse reporting and bracketed paste on startup by writing DECSET
-// sequences to its PTY; those bytes travel down the attach stream and take
-// effect on the *local* terminal. The matching DECRST sequences are written
-// on the harness's way out — which never happens when the wire dies first.
-// The reported symptom is a Windows machine suspending mid-session: on
-// resume the attach is gone, and the terminal is still forwarding drags to
-// an application that is no longer there, so the user cannot even select
-// the error text explaining the drop.
+// A TUI harness enables mouse reporting and bracketed paste via DECSET
+// sequences that travel down the attach stream and take effect on the
+// *local* terminal; the matching DECRST never arrives if the wire dies
+// first, leaving the terminal forwarding mouse events to nothing.
 //
-// term.Restore (makeRawInput) does not cover this: it restores the console's
-// line-discipline state, not modes the remote end set by escape sequence.
-//
-// Re-sending a reset the harness already sent is a no-op, so this runs
-// unconditionally on every attach exit rather than trying to detect an
-// unclean one.
+// term.Restore (makeRawInput) does not cover this: it restores line
+// discipline, not modes the remote end set by escape sequence. Re-sending
+// an already-sent reset is a no-op, so this runs unconditionally on every
+// attach exit.
 func writeTerminalEpilogueTo(f *os.File) {
 	if f == nil || !term.IsTerminal(int(f.Fd())) {
 		return
@@ -145,11 +128,10 @@ func writeTerminalEpilogueTo(f *os.File) {
 // writeTerminalEpilogue writes the reset sequences themselves.
 //
 // Deliberately absent: DECRST 1049 (leave alternate screen). Switching back
-// to the primary buffer would take the drop notice AttachJob just printed
-// ("connection lost and could not be restored: ...", client.go) off screen
-// along with the rest of the session — the very text the user is trying to
-// read and copy. Mouse reporting is what breaks selection; the alternate
-// screen does not.
+// to the primary buffer would take AttachJob's own drop notice off screen
+// along with the rest of the session — the very text the user needs to
+// read and copy. Mouse reporting is what breaks selection, not the
+// alternate screen.
 func writeTerminalEpilogue(w io.Writer) {
 	_, _ = io.WriteString(w, strings.Join([]string{
 		"\x1b[?1000l", // X10/normal mouse tracking off

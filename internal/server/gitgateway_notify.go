@@ -10,15 +10,8 @@ import (
 )
 
 // gatewayNotifier adapts internal/notify.Service to
-// gitgateway.UpstreamAuthFailureNotifier, giving each of the two failure
-// modes its own remediation-oriented message (docs/plans/git-gateway-cutover.md
-// PR4, flagged in PR3's review: 「config error (認証注入失敗) と token 失効を
-// differentiate できると良い」):
-//
-//   - an upstream 401 means the configured token itself is wrong ("rotate
-//     it")
-//   - a credential-injection failure means the gateway config/secret store
-//     reference is wrong ("fix config.yaml / boid secret set")
+// gitgateway.UpstreamAuthFailureNotifier, giving upstream auth failures and
+// credential-injection failures distinct, remediation-oriented messages.
 //
 // A nil notify field makes both methods a no-op, matching notify.Service's
 // own nil-receiver convention.

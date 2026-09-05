@@ -1,17 +1,12 @@
 // Package runner is the container-backend sandbox runner entry point (`boid
-// runner-container`, runner_container_linux.go's RunContainer). PR-4
-// (docs/plans/volume-only-daemon.md, the 2026-07 volume-only cutover) removed
-// the former userns backend entirely — runner-outer/pasta/runner-inner/
-// runner-inner-child, the clone(CLONE_NEWUSER|CLONE_NEWNS)/pivot_root path in
-// the now-deleted runner_linux.go, and the mount-guard evaluator that path
-// used — leaving the container backend as the sole sandbox backend. See
+// runner-container`, runner_container_linux.go's RunContainer). See
 // docs/{ja,en}/architecture/sandbox-internals.md for the current launch
 // chain.
 //
-// This file holds the portable helpers RunContainer and its predecessor
-// shared (spec decoding, signal mapping, the post-namespace-setup file/
-// symlink/PATH/job-done steps) so they can be unit-tested independent of any
-// syscall or container-runtime path.
+// This file holds the portable helpers RunContainer uses (spec decoding,
+// signal mapping, the post-namespace-setup file/symlink/PATH/job-done steps)
+// so they can be unit-tested independent of any syscall or
+// container-runtime path.
 package runner
 
 import (
@@ -42,14 +37,12 @@ func readSpec(path string) (sandbox.Spec, error) {
 	return spec, nil
 }
 
-// stopSignal returns the OS signal the runner sets to SIG_IGN. Phase 3-b
-// reduced the per-harness StopSignalName to a hard-coded SIGUSR1: claude is
-// the only supported harness, and Phase 3-c will revisit this if codex /
-// opencode pick a different stop signal. SIG_IGN survives execve so the
-// disposition is inherited across it; the harness adapter (claude.
-// Adapter.Run) re-installs signal.Notify on the same signal to translate the
-// group signal (relayed by the container's PID 1, docker-init/tini) into a
-// SIGTERM toward the agent process.
+// stopSignal returns the OS signal the runner sets to SIG_IGN: hard-coded
+// SIGUSR1 for every harness. SIG_IGN survives execve so the disposition is
+// inherited across it; the harness adapter (claude.Adapter.Run) re-installs
+// signal.Notify on the same signal to translate the group signal (relayed
+// by the container's PID 1, docker-init/tini) into a SIGTERM toward the
+// agent process.
 func stopSignal() syscall.Signal {
 	return syscall.SIGUSR1
 }
@@ -64,14 +57,9 @@ func ignoreStopSignal(_ sandbox.Spec) {
 //
 // The functions below run after a sandbox's root filesystem already *is*
 // the sandbox root — they carry no mount/pivot_root syscalls of their own.
-// Originally extracted (docs/plans/phase6-container-backend.md §PR2 / §決定
-// 2, "共有ロジックは runner_linux.go から runner/runner.go に抽出") so this
-// same file/symlink/PATH/agent-dispatch/job-done logic could be called from
-// both the now-deleted userns runner (RunInnerChild, runner_linux.go) and
-// the container entrypoint (RunContainer, runner_container_linux.go). PR-4
-// removed the userns side entirely, so RunContainer is now the sole caller
-// — kept as free functions here (rather than inlined into RunContainer)
-// because it keeps them unit-testable off the container-runtime path.
+// RunContainer is the sole caller; kept as free functions here (rather than
+// inlined into RunContainer) because it keeps them unit-testable off the
+// container-runtime path.
 
 // applySpecFiles writes every spec.FileWrite verbatim at its absolute
 // sandbox-internal path, recording an OK/Fail runner-state phase per file
@@ -89,14 +77,12 @@ func applySpecFiles(stage string, files []sandbox.FileWrite, st *State) error {
 	return nil
 }
 
-// applySpecSymlinks materializes every spec.Symlink — the Phase 5 5a-3 shim
-// materialization path (docs/plans/phase5-shim-and-task-context.md, "5a:
-// shim 固定ディレクトリ化" PR3): dispatcher emits `<sandboxShimBinDir>/<name>
-// -> boid` for every host command. The container entrypoint (re-)creates its
-// own per-container shim symlinks on every start: decision 2 (docs/plans/
-// phase6-container-backend.md) forbids baking the per-project `<name>`
-// shims into the shared image (unknown at image-build time), so they are
-// always derived fresh from spec.Symlinks.
+// applySpecSymlinks materializes every spec.Symlink: dispatcher emits
+// `<sandboxShimBinDir>/<name> -> boid` for every host command. The
+// container entrypoint (re-)creates its own per-container shim symlinks on
+// every start rather than baking the per-project `<name>` shims into the
+// shared image (unknown at image-build time), so they are always derived
+// fresh from spec.Symlinks.
 //
 // MkdirAll(parent) is load-bearing here — the image-baked /run/boid/bin
 // already exists, but may still be missing a deeper parent directory for a
@@ -128,11 +114,10 @@ func applyPathEnv(spec sandbox.Spec) {
 }
 
 // runAgent dispatches every sandbox job (hook / session / exec) through the
-// HarnessAdapter pipeline. Phase 3-d retired the legacy runExecArgv branch:
-// spec.HarnessType is invariant non-empty here, so the adapter registry
-// always returns a concrete implementation. The shell adapter handles
-// non-agent hooks and `boid exec`; the claude / codex / opencode adapters
-// handle their respective agent jobs.
+// HarnessAdapter pipeline. spec.HarnessType is invariant non-empty here, so
+// the adapter registry always returns a concrete implementation. The shell
+// adapter handles non-agent hooks and `boid exec`; the claude / codex /
+// opencode adapters handle their respective agent jobs.
 func runAgent(spec sandbox.Spec) int {
 	if spec.HarnessType == "" {
 		fmt.Fprintln(os.Stderr, "[boid] runner-container: spec.HarnessType is empty; planner / dispatcher must resolve a harness before dispatch")
@@ -180,17 +165,14 @@ func runAgent(spec sandbox.Spec) int {
 // phase entry is filed under.
 func postJobDone(stage string, spec sandbox.Spec, exitCode int, st *State) {
 	token := spec.Env["BOID_BROKER_TOKEN"]
-	// broker TCP wire completion (docs/plans/phase6-cutover-followups.md
-	// §⓪): JobDone now picks UNIX vs TLS from spec.Env itself (mirroring
+	// JobDone picks UNIX vs TLS from spec.Env itself, mirroring
 	// SendJSONFromEnv's own os.Getenv-driven selection for the shim — see
 	// brokerclient.JobDone's own doc comment for why spec.Env, not
-	// os.Environ(), is the right source here), so this no longer
-	// pre-extracts BOID_BROKER_SOCKET specifically. Neither
-	// BOID_BROKER_SOCKET nor BOID_BROKER_TLS_ADDR being set (should not
-	// happen for a non-foreground job — see internal/dispatcher/runner.go's
-	// own broker-registration gate) is still a no-op return here, not a
-	// hard failure: the daemon's own "exited without boid job done" net
-	// catches that case regardless.
+	// os.Environ(), is the right source here. Neither BOID_BROKER_SOCKET
+	// nor BOID_BROKER_TLS_ADDR being set (should not happen for a
+	// non-foreground job) is still a no-op return here, not a hard failure:
+	// the daemon's own "exited without boid job done" net catches that
+	// case regardless.
 	if spec.Env["BOID_BROKER_SOCKET"] == "" && spec.Env["BOID_BROKER_TLS_ADDR"] == "" {
 		return
 	}
@@ -207,21 +189,12 @@ func postJobDone(stage string, spec sandbox.Spec, exitCode int, st *State) {
 // resolveJobOutput returns the stdout capture file's content (if any) as the
 // job-done output, else empty.
 //
-// Phase 6 PR8 (docs/plans/phase6-container-backend.md §決定 9) retired the
-// former payload-patch-file branch (spec.PayloadPatchPath,
-// $HOME/.boid/output/payload_patch.json): that file lived on the workspace
-// $HOME volume (Phase 4), which is shared across concurrent jobs in the same
-// workspace, so it was never actually job-isolated without the `~/.boid`
-// tmpfs overlay dispatcher had to layer on top defensively (see
-// sandbox_builder.go's former homeMounts doc comment). Agents / hook scripts
-// now apply their payload patch immediately via the broker's `boid task
-// update --payload-patch` RPC instead — see internal/adapters/claude/run.go's
-// sendTaskUpdatePayloadPatch for the agent-side migration.
-//
-// The stdout-capture fallback stays: a shell hook can still report its
+// Agents / hook scripts apply their payload patch immediately via the
+// broker's `boid task update --payload-patch` RPC — see
+// internal/adapters/claude/run.go's sendTaskUpdatePayloadPatch. The
+// stdout-capture fallback stays: a shell hook can still report its
 // payload_patch by printing `{"payload_patch": ...}` to stdout instead of
-// (or as well as) calling the RPC — that path never depended on the shared
-// $HOME/.boid file and is untouched by this retirement.
+// (or as well as) calling the RPC.
 func resolveJobOutput(spec sandbox.Spec) []byte {
 	if spec.StdoutCaptureFile != "" {
 		if data, err := os.ReadFile(spec.StdoutCaptureFile); err == nil {

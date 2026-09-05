@@ -13,8 +13,6 @@ import (
 // verbatim into runner-state.json. Every other key is recorded by name with a
 // "<redacted>" value so tokens / API keys / secrets never hit the diagnostic
 // file. LC_* is handled by prefix, not by this exact-match set.
-//
-// Final list per docs/plans/agent-aware-boid.md §5 (runner-state-dump-design).
 var envAllowlist = map[string]struct{}{
 	"HOME":               {},
 	"PATH":               {},
@@ -26,18 +24,11 @@ var envAllowlist = map[string]struct{}{
 	"BOID_RUNTIME_ID":    {},
 	"BOID_BROKER_SOCKET": {},
 	"CLAUDE_CONFIG_DIR":  {},
-	// BOID_BROKER_TLS_* (docs/plans/phase6-cutover-followups.md §⓪): the
-	// container-backend counterpart to BOID_BROKER_SOCKET above. ADDR/
-	// SERVER_NAME are plain compose-network addressing info, and
-	// CERT_PATH/KEY_PATH/CA_PATH are filesystem PATHS, not the key
-	// material itself (which lives in the files those paths point at, on
-	// the read-only bind-mounted broker-tls dir — see
-	// internal/dispatcher/container_backend.go's materializeBrokerClientCert)
-	// — none of the five is a secret value in its own right, so allowlisting
-	// them keeps runner-state.json's diagnostic dump useful for debugging a
-	// container-backend job's broker connectivity without redacting
-	// non-sensitive addressing info to "<redacted>" the way an actual
-	// token (BOID_BROKER_TOKEN, deliberately NOT allowlisted) must be.
+	// BOID_BROKER_TLS_*: the container-backend counterpart to
+	// BOID_BROKER_SOCKET above. ADDR/SERVER_NAME are plain addressing info,
+	// and CERT_PATH/KEY_PATH/CA_PATH are filesystem paths, not the key
+	// material itself — none of the five is a secret value in its own
+	// right, unlike BOID_BROKER_TOKEN, deliberately NOT allowlisted.
 	"BOID_BROKER_TLS_ADDR":        {},
 	"BOID_BROKER_TLS_CERT_PATH":   {},
 	"BOID_BROKER_TLS_KEY_PATH":    {},
@@ -73,9 +64,8 @@ func envKeyAllowed(key string) bool {
 type specDump struct {
 	ID string `json:"id"`
 	// HarnessType identifies the HarnessAdapter RunContainer will hand the
-	// agent off to. Added in Phase 3-c so post-hoc diagnostics can
-	// tell apart claude / codex / opencode runs and the legacy exec-Argv
-	// path (HarnessType="") without having to grep the kit binding set.
+	// agent off to, so post-hoc diagnostics can tell apart claude / codex /
+	// opencode runs and the legacy exec-Argv path (HarnessType="").
 	HarnessType string            `json:"harness_type,omitempty"`
 	Argv        []string          `json:"argv"`
 	WorkDir     string            `json:"workdir"`
@@ -99,9 +89,7 @@ type mountDump struct {
 }
 
 // cloneDump is the redacted, JSON-friendly view of a sandbox.CloneSpec.
-// Only present (non-nil) in specDump when the sequence is actually enabled
-// (docs/plans/git-gateway-cutover.md PR5: 「失敗時の診断: runner-state.json
-// に clone / 解決の結果を残す」).
+// Only present (non-nil) in specDump when the sequence is actually enabled.
 type cloneDump struct {
 	URL                 string `json:"url,omitempty"` // job token redacted, see redactCloneURLToken
 	ReferenceDir        string `json:"reference_dir,omitempty"`
@@ -115,15 +103,11 @@ type cloneDump struct {
 
 // redactCloneURLToken replaces the job-token path segment of a gitgateway
 // clone URL ("http://host:port/j/<token>/<host>/<owner>/<repo>.git") with
-// "<redacted>" so runner-state.json never leaks a live gateway job token
-// (docs/plans/git-gateway-cutover.md 「落とし穴・注意」: 「clone の URL に
-// job token が入る...診断出力 (runner-state.json) への token 混入は redact
-// 対象に含める」). The token is expected to remain in the sandbox's own
-// .git/config — that copy is required for the agent's own subsequent
-// fetch/push to keep authenticating through the gateway for the life of the
-// job, and is scoped/expired the same way (job-scoped token,
-// unregistered on job completion); only the daemon-retained diagnostic dump
-// is redacted here.
+// "<redacted>" so runner-state.json never leaks a live gateway job token.
+// The token is expected to remain in the sandbox's own .git/config — that
+// copy is required for the agent's own subsequent fetch/push to keep
+// authenticating through the gateway; only the daemon-retained diagnostic
+// dump is redacted here.
 //
 // A URL that doesn't match the expected "/j/<token>/" shape is returned
 // unchanged rather than guessed-at, so a malformed/non-gateway URL is never
@@ -142,17 +126,8 @@ func redactCloneURLToken(url string) string {
 	return url[:i+len(marker)] + "<redacted>" + rest[slash:]
 }
 
-// buildSpecDump composes the redacted spec view.
-//
-// PR-4 (docs/plans/volume-only-daemon.md §論点e) removed the userns
-// backend, so this no longer routes spec.Mounts through sandbox.BuildPlan
-// (the userns-specific base-mount + nftables synthesis: /bin,/usr,/etc
-// rbinds, DNS stub, nft egress-drop rules — none of which apply to the
-// container backend, whose image already has the base OS baked in and
-// whose egress control is the compose network + egress proxy, decision 5).
-// The dump now reflects spec.Mounts verbatim — the caller-supplied mounts
-// RunContainer actually materializes — rather than reconstructing a
-// synthetic plan a real launch no longer builds.
+// buildSpecDump composes the redacted spec view, reflecting spec.Mounts
+// verbatim — the caller-supplied mounts RunContainer actually materializes.
 func buildSpecDump(spec sandbox.Spec) specDump {
 	mounts := make([]mountDump, 0, len(spec.Mounts))
 	for _, m := range spec.Mounts {
@@ -187,7 +162,7 @@ func buildSpecDump(spec sandbox.Spec) specDump {
 		ProxyPort:   spec.ProxyPort,
 		TTY:         spec.TTY,
 		Foreground:  spec.Foreground,
-		StopSignal:  "USR1", // Phase 3-b hardcoded; see runner.stopSignal()
+		StopSignal:  "USR1", // hardcoded; see runner.stopSignal()
 		Mounts:      mounts,
 		Env:         redactEnv(spec.Env),
 		Clone:       cloneDumpPtr,

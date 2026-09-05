@@ -1,13 +1,10 @@
 // Package reap implements the destroy logic behind the daemon-independent
-// `boid reap` subcommand (cmd/reap.go — docs/plans/phase6-container-backend.md
-// §PR6, §決定6). Its entire reason to exist is the plan doc's "deploy-level
-// rollback reaper" contract: rollback from the compose (container backend)
-// deploy to the host-daemon (userns backend) "旧デプロイ" must be able to
-// stop/destroy every sibling job container the compose daemon created even
-// when that daemon itself is down or unreachable — so Run talks to the
-// docker engine directly, never through boid's own daemon API.
+// `boid reap` subcommand (cmd/reap.go): it talks to the docker engine
+// directly, never through boid's own daemon API, so it can stop/destroy
+// every sibling job container an install created even when the daemon
+// itself is down or unreachable.
 //
-// §決定6 requires the UNION of two independent sources, neither sufficient
+// Run destroys the UNION of two independent sources, neither sufficient
 // alone:
 //   - live docker resources carrying the boid.install_id=<id> label — the
 //     primary job containers (and any volumes/networks) the daemon creates
@@ -16,20 +13,16 @@
 //     internal/sandbox/dockerproxy.Ledger) dockerproxy's sibling resources
 //     are recorded into. Those carry NO boid label at all — the *client*
 //     inside the sandbox (docker CLI, TestContainers, ...) creates them, not
-//     boid — so the label query alone would never find them (§決定6: "従来
-//     どおり per-job ledger... 管理").
+//     boid — so the label query alone would never find them.
 //
 // # Workspace HOME volumes are preserved by default
 //
 // Run takes a WorkspaceHomePolicy because "destroy everything this install
 // created" and "do not destroy the workspace's credentials" are genuinely
-// in tension (docs/plans/workspace-home-volume-persistence.md 論点 a asks
-// for this to be declared as a contract rather than left implicit). The
-// declared contract: `boid reap` preserves persistent workspace HOME volumes
-// by default, and `boid reap --include-workspace-homes` destroys them.
-// containerBackend.ReapOrphans's startup pass ALWAYS preserves them — a
-// daemon restart must never cost a workspace its harness authentication,
-// which is the exact regression this policy exists to prevent.
+// in tension. The contract: `boid reap` preserves persistent workspace HOME
+// volumes by default, and `boid reap --include-workspace-homes` destroys
+// them. containerBackend.ReapOrphans's startup pass ALWAYS preserves them —
+// a daemon restart must never cost a workspace its harness authentication.
 package reap
 
 import (
@@ -46,21 +39,16 @@ import (
 )
 
 // LabelInstallID is the docker resource label reap's live query filters on.
-// An alias of internal/dockerres.LabelInstallID, which internal/dispatcher's
-// own label emission reads too — the previous hand-copied literal (and the
-// doc comment warning about drift between the two copies) is gone now that
-// there is a leaf package both sides can import. internal/dockerres is
-// import-free by construction precisely so this package stays importable
-// from cmd (a daemon-independent CLI path — see cmd/reap.go) without pulling
-// in internal/dispatcher's much larger dependency graph (DB, orchestrator,
-// sqlite, ...), which would defeat "works even when the daemon — and
-// everything it needs to build — is unable to start".
+// An alias of internal/dockerres.LabelInstallID, which stays import-free so
+// this package remains importable from cmd (a daemon-independent CLI path)
+// without pulling in internal/dispatcher's much larger dependency graph (DB,
+// orchestrator, sqlite, ...).
 const LabelInstallID = dockerres.LabelInstallID
 
 // WorkspaceHomePolicy tells Run what to do with the persistent workspace
-// HOME volumes it enumerates (docs/plans/workspace-home-volume-persistence.md
-// 論点 a). Its zero value is the fail-safe one: a caller that forgets to
-// think about this preserves the data rather than destroying it.
+// HOME volumes it enumerates. Its zero value is the fail-safe one: a caller
+// that forgets to think about this preserves the data rather than
+// destroying it.
 type WorkspaceHomePolicy int
 
 const (
@@ -133,28 +121,23 @@ func (r Report) Empty() bool {
 // (containers must be disconnected first), then volumes last (may still be
 // referenced by a container mid-removal). Individual failures are recorded
 // in Report.Errors and do not abort the rest — a single stuck container
-// must not block reaping everything else (the deploy-level-rollback
-// contract this exists for has no room for "reap partially worked, try
-// again never").
+// must not block reaping everything else.
 //
 // A resource docker already reports as gone (404/NotFound, checked via
-// errdefs.IsNotFound — Major 8, PR6 codex review) is treated as
-// successfully destroyed, not an error: the pre-fix code reported it as a
-// failure on every single reap run after the first, forever, once a
-// resource this run's own union found (typically via the ledger — see
-// unionResources) had already been removed some other way. Every
-// successfully destroyed id whose ledger entry can be traced (via
-// unionResources' returned ledgerSource map) is drained from that ledger
-// file afterward, so a subsequent reap run does not even attempt it again.
+// errdefs.IsNotFound) is treated as successfully destroyed, not an error,
+// since it may have already been removed some other way (typically a
+// ledger-sourced entry — see unionResources). Every successfully destroyed
+// id whose ledger entry can be traced (via unionResources' returned
+// ledgerSource map) is drained from that ledger file afterward, so a
+// subsequent reap run does not attempt it again.
 //
 // runtimesDir may be empty (ledger union skipped; the label query still
 // runs) — see ledgerEntries.
 //
 // homes decides what happens to the persistent workspace HOME volumes among
-// the enumerated set (docs/plans/workspace-home-volume-persistence.md 論点 a
-// 経路 1). The check is by NAME, not by label, because the ledger half of
-// the union contributes bare ids with no labels attached at all — a
-// label-based rule could not see them. Preserved volumes land in
+// the enumerated set. The check is by NAME, not by label, because the
+// ledger half of the union contributes bare ids with no labels attached at
+// all — a label-based rule could not see them. Preserved volumes land in
 // Report.SkippedVolumes.
 func Run(ctx context.Context, api dockerAPI, installID, runtimesDir string, homes WorkspaceHomePolicy) (Report, error) {
 	containers, networks, volumes, ledgerSource, err := unionResources(ctx, api, installID, runtimesDir)
@@ -185,15 +168,11 @@ func Run(ctx context.Context, api dockerAPI, installID, runtimesDir string, home
 		if homes.preserves(id) {
 			// Deliberately NOT recorded in destroyed: this volume still
 			// exists, so claiming it destroyed would make drainLedgers drop
-			// a ledger entry for a live resource. The cost is that a
-			// boid-ws-home-* entry that DID reach a ledger stays there and
-			// is re-reported on every subsequent run. That is bounded, not
-			// permanent growth: dockerproxy's policy now denies a sandboxed
+			// a ledger entry for a live resource. A boid-ws-home-* entry
+			// that reached a ledger stays there and is re-reported on every
+			// subsequent run — bounded, since dockerproxy denies a sandboxed
 			// docker client creating a volume in the reserved namespace at
-			// all (docs/plans/workspace-home-volume-persistence.md 論点 a
-			// 経路 4), so no NEW such entry can be recorded; whatever a
-			// pre-PR1 job already wrote is harmless — it is skipped, not
-			// acted on — and disappears with its job's runtime dir at GC.
+			// all, so no new such entry can be recorded.
 			report.SkippedVolumes = append(report.SkippedVolumes, id)
 			continue
 		}
@@ -287,34 +266,20 @@ func stopAndRemoveContainer(ctx context.Context, api dockerAPI, id string) error
 // # Volumes are enumerated TWICE, once per label namespace
 //
 // The boid.install_id query cannot see a workspace HOME volume, by design:
-// that label IS this query's filter, so ensureNamedVolumes deliberately
-// withholds it and records the install scope under
-// boid.workspace_home_install_id instead
-// (docs/plans/workspace-home-volume-persistence.md 論点 a — the label table
-// in 論点 a's 決定 section, and internal/dockerres.LabelWorkspaceHomeInstallID's
-// own doc comment). A single-query unionResources therefore left BOTH halves
-// of the declared `boid reap` contract broken (PR1 codex review Blocker 1):
-// under PreserveWorkspaceHomes the skip branch was unreachable, so a
-// preserved volume never appeared in Report.SkippedVolumes even though the
-// contract promises every skip is printed; and under IncludeWorkspaceHomes
-// VolumeRemove was never called, making `--include-workspace-homes` a
-// complete no-op.
+// that label IS this query's filter, so such volumes record their install
+// scope under boid.workspace_home_install_id instead (see
+// internal/dockerres.LabelWorkspaceHomeInstallID). So the second query runs
+// UNCONDITIONALLY, not just under IncludeWorkspaceHomes: enumeration is
+// what feeds the skip report, and a policy that suppresses destruction must
+// still be able to say what it suppressed. Run's homes.preserves check
+// decides the fate of each name after enumeration, exactly as it already
+// does for the ledger-sourced ids.
 //
-// So the second query runs UNCONDITIONALLY, not just under
-// IncludeWorkspaceHomes: enumeration is what feeds the skip report, and a
-// policy that suppresses destruction must still be able to say what it
-// suppressed. Run's homes.preserves check decides the fate of each name after
-// enumeration, exactly as it already does for the ledger-sourced ids.
-//
-// Both queries treat an empty installID the same way the pre-existing one
-// did — the filter term is emitted with an empty value ("<label>=") rather
-// than dropped — so this fix does not change the empty-installID behavior in
-// either direction. The practical consequence is unchanged and symmetric: a
-// HOME volume created while the daemon had no install id carries no
-// boid.workspace_home_install_id at all (ensureNamedVolumes only sets it when
-// b.installID != ""), so an install-scoped reap will not enumerate it — the
-// same degrade the install_id-labeled resources already have, and the
-// fail-safe direction for a volume holding credentials.
+// Both queries treat an empty installID the same way — the filter term is
+// emitted with an empty value ("<label>=") rather than dropped. A HOME
+// volume created while the daemon had no install id carries no
+// boid.workspace_home_install_id at all, so an install-scoped reap will not
+// enumerate it — the fail-safe direction for a volume holding credentials.
 func unionResources(ctx context.Context, api dockerAPI, installID, runtimesDir string) (containers, networks, volumes []string, ledgerSource map[string]string, err error) {
 	filters := client.Filters{}.Add("label", LabelInstallID+"="+installID)
 	homeFilters := client.Filters{}.Add("label", dockerres.LabelWorkspaceHomeInstallID+"="+installID)

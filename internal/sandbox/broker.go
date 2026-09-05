@@ -38,23 +38,16 @@ type Broker struct {
 	lifecycleCtx context.Context
 
 	// TLSAddr, when non-empty, additionally binds a TCP+mTLS listener at
-	// this address (docs/plans/phase6-container-backend.md §PR4/§決定5:
-	// "gateway / broker / dockerproxy はサービス名 (DNS) + TCP (mTLS) で到達す
-	// る"). This is purely additive — the UNIX socket above (SocketPath)
-	// is bound exactly as before regardless of TLSAddr, so the userns
-	// backend's sandbox-side broker RPC client (which still dials
-	// SocketPath) is unaffected. TLSConfig must be non-nil whenever
-	// TLSAddr is set (see internal/mtls.CA.ServerTLSConfig for how to
-	// build one with mutual-TLS auth wired up); a caller that leaves
-	// TLSAddr empty (the zero value, matched by every existing caller and
-	// test today) gets the pre-PR4 UNIX-only behavior unchanged.
+	// this address. This is purely additive — the UNIX socket above
+	// (SocketPath) is bound exactly as before regardless of TLSAddr.
+	// TLSConfig must be non-nil whenever TLSAddr is set (see
+	// internal/mtls.CA.ServerTLSConfig for how to build one with
+	// mutual-TLS auth wired up); a caller that leaves TLSAddr empty gets
+	// the UNIX-only behavior unchanged.
 	//
 	// internal/server.Server sets these (when its Config.TLSDir is
-	// configured) so a real daemon actually binds this listener
-	// alongside the UNIX socket. No client dials it yet in PR4 — the
-	// container backend that will is PR5 — so today it is a live but
-	// unconsumed listener, exercised directly by
-	// TestBrokerTCPListener_MutualTLSHandshake.
+	// configured) so a real daemon actually binds this listener alongside
+	// the UNIX socket.
 	TLSAddr   string
 	TLSConfig *tls.Config
 
@@ -166,9 +159,7 @@ func (b *Broker) Start(ctx context.Context) error {
 
 	// TCP(mTLS) listener: additive alongside the UNIX socket above (see
 	// the TLSAddr field doc comment). Both transports share the exact
-	// same handleConn/handle dispatch chain — only the transport differs,
-	// the ExecRequest/ExecResponse protocol does not (§決定5: "UNIX
-	// socket を mTLS gRPC/HTTP に差し替えるだけで...意味論は無傷").
+	// same handleConn/handle dispatch chain — only the transport differs.
 	if b.TLSAddr != "" {
 		if b.TLSConfig == nil {
 			ln.Close()
@@ -337,11 +328,10 @@ func (b *Broker) handle(ctx context.Context, req *ExecRequest) *ExecResponse {
 		return handleFetchBuiltin(req, entry)
 	}
 
-	// git is no longer a broker builtin (docs/plans/git-gateway-cutover.md
-	// PR8): sandbox git is the real binary visible via the base rbind of
-	// /usr, so a "git"-named command reaching the broker at all would only
-	// happen via an explicit host_commands entry — same handling as any
-	// other command name.
+	// git is not a broker builtin: sandbox git is the real binary visible
+	// via the base rbind of /usr, so a "git"-named command reaching the
+	// broker at all would only happen via an explicit host_commands entry —
+	// same handling as any other command name.
 	def, ok := lookupCommand(entry.Commands, req.Command)
 	if !ok {
 		return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("command not allowed: %s", filepath.Base(req.Command))}
@@ -499,18 +489,13 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 	case BoidOpProjectList:
 		// JobID-scoped like BoidOpTaskInstructions/Env/Payload, but
 		// asymmetrically: `parseBoidProjectList` never gives a caller a way
-		// to set JobID (no CLI flag), so a legitimate request always arrives
-		// empty and gets defaulted here — unlike those ops, an empty JobID
-		// is NOT an error. A caller-supplied JobID that doesn't match the
-		// token's own is still rejected: BoidOpProjectList's response can
-		// embed a peer's git gateway clone URL, which carries the target
-		// job's own gateway token (e.g. PermFetchPush for a writable self
-		// project) — without this check, a readonly job could name a
-		// writable job's JobID and read its push-capable token back out
-		// through the response, a readonly-to-writable escalation. Same
-		// defense-in-depth rationale as BoidOpTaskInstructions/Env/Payload's
-		// own equality check (a shim never emits a cross-job id, but a
-		// handwritten request bypassing the shim could).
+		// to set JobID, so a legitimate request always arrives empty and
+		// gets defaulted here — unlike those ops, an empty JobID is NOT an
+		// error. A caller-supplied JobID that doesn't match the token's own
+		// is still rejected: BoidOpProjectList's response can embed a
+		// peer's git gateway clone URL carrying that job's own gateway
+		// token, so without this check a readonly job could read a
+		// writable job's push-capable token back out through the response.
 		if boidReq.JobID == "" {
 			boidReq.JobID = entry.Context.JobID
 		}
@@ -531,15 +516,11 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		}
 		// project 検証は boid_executor 側で行う (action_send と同じパターン)
 	case BoidOpCardList:
-		// BoidOpTaskList と**同一の**スコーピングをここで行う (codex/Opus
-		// レビュー High): task_list の scoping は executor ではなく broker 側に
-		// あり、 project ref の解決 (name → UUID) もここでしか行われない。
-		// 「executor 側で AllowedProjectIDs で見る」だけでは
-		// (a) --workspace-id が無検査で通り他 workspace の card が
-		// 丸ごと読める (ListTasks の WorkspaceID filter は project_workspaces を
-		// INNER JOIN する = 本当に workspace を跨ぐ)、
-		// (b) project 名を渡すと UUID 空間の AllowsProject と突き合わされて
-		// 常に失敗する、 の 2 つが起きる。
+		// Same scoping as BoidOpTaskList, done here rather than left to the
+		// executor: (a) an unchecked --workspace-id would let a card read
+		// cross another workspace entirely, and (b) a project name would
+		// always fail AllowsProject's UUID-space check without the resolve
+		// step below.
 		if boidReq.ProjectID != "" {
 			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
 			if err != nil {
@@ -557,11 +538,9 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			boidReq.WorkspaceID = entry.Context.WorkspaceID
 		}
 	case BoidOpTaskIdentityLink:
-		// docs/plans/ingestion-identity.md PR-1 (B-1): scoping is
-		// broker-authoritative, matching BoidOpTaskCreate exactly (default
-		// from ctx, resolve, AllowsProject) — see BoidOpTaskIdentityLink's
-		// own doc comment in protocol.go for why this is not left to the
-		// executor alone.
+		// Scoping is broker-authoritative, matching BoidOpTaskCreate exactly
+		// (default from ctx, resolve, AllowsProject) — see
+		// BoidOpTaskIdentityLink's own doc comment in protocol.go.
 		if boidReq.Identity == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity link requires an identity"}
 		}
@@ -613,13 +592,9 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve is restricted to the current workspace"}
 		}
 	case BoidOpTaskResolveOrCapture:
-		// docs/plans/ingestion-identity.md PR-2 (B-2): scoping is
-		// broker-authoritative, matching BoidOpTaskIdentityLink/Resolve
-		// exactly (default from ctx, resolve, AllowsProject BEFORE the
-		// executor ever sees the request) — see BoidOpTaskResolveOrCapture's
-		// own doc comment in protocol.go for why no separate task-ownership
-		// check is needed here the way Link needs one for its
-		// caller-supplied TaskID.
+		// Scoping is broker-authoritative, matching
+		// BoidOpTaskIdentityLink/Resolve exactly — see
+		// BoidOpTaskResolveOrCapture's own doc comment in protocol.go.
 		if boidReq.Identity == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture requires an identity"}
 		}
@@ -635,10 +610,8 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture is restricted to the current workspace"}
 		}
 	case BoidOpActionList:
-		// docs/plans/ingestion-identity.md PR-3 (B-3): scoping mirrors
-		// BoidOpCardList EXACTLY — same three branches (project_id /
-		// workspace_id / neither), same reasons (see BoidOpCardList's
-		// case above and BoidOpActionList's own doc comment in protocol.go).
+		// Scoping mirrors BoidOpCardList exactly — same three branches
+		// (project_id / workspace_id / neither), same reasons.
 		if boidReq.ProjectID != "" {
 			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
 			if err != nil {
@@ -656,13 +629,11 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			boidReq.WorkspaceID = entry.Context.WorkspaceID
 		}
 	case BoidOpSignalList:
-		// docs/plans/signal-ingest-detailed-design.md §3.2 (PR-3): workspace
-		// scoping is broker-injected from the job token, never
+		// Workspace scoping is broker-injected from the job token, never
 		// caller-supplied — unlike BoidOpCardList/BoidOpActionList's
-		// three-branch project_id/workspace_id/neither shape, there is no
-		// flag for this at all (the shim never sets WorkspaceID for this
-		// op), so the broker unconditionally overwrites whatever a
-		// hand-crafted request set here.
+		// three-branch shape, there is no flag for this at all, so the
+		// broker unconditionally overwrites whatever a hand-crafted
+		// request set here.
 		boidReq.WorkspaceID = entry.Context.WorkspaceID
 	case BoidOpSignalClaim:
 		// Same broker-injected workspace scoping as signal_list/signal_ack —
@@ -677,28 +648,16 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		}
 		boidReq.WorkspaceID = entry.Context.WorkspaceID
 	case BoidOpSignalIngest:
-		// Declared for protocol/mirror/escape-manifest completeness (§3.2) —
-		// NOT part of the general boidPolicy (policy.go), so the
-		// allowsBuiltinOp check above already rejects this for every job in
-		// PR-3. This case exists so the scoping shape is ready for PR-5's
-		// connector-scoped reduced policy to grant it.
+		// Declared for protocol/mirror/escape-manifest completeness — not
+		// part of the general boidPolicy (policy.go), so the
+		// allowsBuiltinOp check above already rejects this for every job
+		// until a connector-scoped reduced policy grants it.
 		//
-		// [M2, review of PR #1014, 2026-08-26] Service/Connector are
-		// overwritten from entry.Context — NEVER trusted from the request
-		// as the shim sent it — the SAME "broker-injected, never
-		// caller-supplied" pattern WorkspaceID already gets above. Before
-		// this fix, a request's Service/Connector were validated for
-		// non-emptiness but otherwise passed through verbatim: a
-		// well-behaved shim only ever sets them from the
-		// BOID_SIGNAL_SERVICE/BOID_SIGNAL_CONNECTOR env, but nothing
-		// enforced that server-side, so a hand-crafted ExecRequest
-		// bypassing the shim could claim an arbitrary Service/Connector.
-		// TokenContext.Service/Connector are empty for every job as of
-		// PR-3 (no caller populates them yet — that's PR-5's job when it
-		// registers a connector-scoped token), so this op stays rejected
-		// in practice regardless; the point of this fix is that the
-		// enforcement shape is now actually load-bearing rather than
-		// aspirational, so PR-5 doesn't inherit a false sense of security.
+		// Service/Connector are overwritten from entry.Context — never
+		// trusted from the request as the shim sent it — the same
+		// "broker-injected, never caller-supplied" pattern WorkspaceID
+		// already gets above, so a hand-crafted ExecRequest bypassing the
+		// shim can't claim an arbitrary Service/Connector.
 		boidReq.Service = entry.Context.Service
 		boidReq.Connector = entry.Context.Connector
 		if boidReq.Service == "" || boidReq.Connector == "" {
@@ -708,15 +667,12 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			// Defense in depth: the shim already caps this before ever
 			// sending the request (boid_shim.go's parseBoidSignalIngest),
 			// but the broker re-checks independently so a shim bypass can't
-			// push an oversized payload through to the executor — same
-			// two-point pattern as BoidOpTaskUpdatePayloadPatch's
-			// PayloadPatch.
+			// push an oversized payload through to the executor.
 			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid signal ingest payload exceeds %d bytes", PayloadPatchMaxBytes)}
 		}
 		boidReq.WorkspaceID = entry.Context.WorkspaceID
 	case BoidOpSignalCursorGet:
-		// Service/Connector overwrite: same M2 fix as BoidOpSignalIngest
-		// above.
+		// Service/Connector overwrite: same fix as BoidOpSignalIngest above.
 		boidReq.Service = entry.Context.Service
 		boidReq.Connector = entry.Context.Connector
 		if boidReq.Service == "" || boidReq.Connector == "" {
@@ -788,8 +744,7 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task import: line %d: project %q is outside the current workspace", i+1, projectID)}
 			}
 		}
-	// Phase 5b PR1 task-context ops (docs/plans/phase5-shim-and-task-context.md):
-	// unlike BoidOpTaskGet (which only defaults an empty TaskID and never
+	// Unlike BoidOpTaskGet (which only defaults an empty TaskID and never
 	// rejects a mismatched explicit one), these reject a caller-supplied id
 	// that doesn't match the token's own context. The shim never lets an
 	// agent target another job's context — id always comes from
@@ -802,10 +757,8 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 	// TaskPayload are all JobID-scoped: TaskInstructions in particular MUST
 	// key off the caller's own job, not its task — two agent-kind hooks for
 	// different agents can be dispatched from the same task in one
-	// evaluation round (see JobContextSnapshot's doc comment), so a
-	// TaskID-only guard would let a claude job read a codex job's
-	// instructions (and vice versa) as long as they shared a task. This was
-	// caught in codex review on PR #797 before merge — see wiring-seams.md #13.
+	// evaluation round, so a TaskID-only guard would let a claude job read a
+	// codex job's instructions (and vice versa) as long as they shared a task.
 	case BoidOpTaskCurrent:
 		if boidReq.TaskID == "" {
 			boidReq.TaskID = entry.Context.TaskID
@@ -826,8 +779,7 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.JobID != entry.Context.JobID {
 			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task %s is restricted to the current job", taskContextOpVerb(boidReq.Op))}
 		}
-	// Phase 5b PR2 attachments ops (docs/plans/phase5-shim-and-task-context.md):
-	// task-scoped like BoidOpTaskCurrent — attachments belong to the task
+	// Task-scoped like BoidOpTaskCurrent — attachments belong to the task
 	// (not a specific job), so any job dispatched from the task may read
 	// them. Same id-equality pattern: default an empty TaskID from the
 	// token's own context, then reject a caller-supplied one that mismatches.
@@ -844,10 +796,9 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.Op == BoidOpTaskAttachmentsGet && boidReq.AttachmentName == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task attachments get requires an attachment name"}
 		}
-	// Phase 5b PR7 (docs/plans/phase5-shim-and-task-context.md): JobID-scoped
-	// like BoidOpTaskInstructions/Env/Payload, for the same reason — the
-	// merge needs to resolve the calling job's own HandlerID (see
-	// api.TaskAppService.UpdateTaskPayloadPatch), which is meaningless
+	// JobID-scoped like BoidOpTaskInstructions/Env/Payload, for the same
+	// reason — the merge needs to resolve the calling job's own HandlerID
+	// (see api.TaskAppService.UpdateTaskPayloadPatch), which is meaningless
 	// without pinning to a specific job.
 	case BoidOpTaskUpdatePayloadPatch:
 		if boidReq.JobID == "" {
@@ -862,12 +813,10 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if len(boidReq.PayloadPatch) == 0 {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch requires a payload patch"}
 		}
-		// Defense in depth (Phase 5b PR7 codex review Major 3,
-		// wiring-seams.md #17): the shim already caps this before ever
-		// sending the request (boid_shim.go's readPayloadPatchSource), but
-		// the broker re-checks independently so a shim bypass or a future
-		// second caller (e.g. a different in-sandbox process crafting the
-		// JSON request by hand) can't skip the limit and OOM the daemon.
+		// Defense in depth: the shim already caps this before ever sending
+		// the request (boid_shim.go's readPayloadPatchSource), but the
+		// broker re-checks independently so a shim bypass or a future
+		// second caller can't skip the limit and OOM the daemon.
 		if len(boidReq.PayloadPatch) > PayloadPatchMaxBytes {
 			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task update --payload-patch exceeds %d bytes", PayloadPatchMaxBytes)}
 		}
@@ -879,8 +828,8 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 	return b.BoidExecutor.ExecuteBoidBuiltin(ctx, entry.Context, &boidReq)
 }
 
-// taskContextOpVerb renders a Phase 5b PR1 task-context BoidOp as the
-// trailing word of its `boid task <verb>` CLI form, for error messages.
+// taskContextOpVerb renders a task-context BoidOp as the trailing word of
+// its `boid task <verb>` CLI form, for error messages.
 func taskContextOpVerb(op BoidOp) string {
 	switch op {
 	case BoidOpTaskCurrent:
@@ -896,9 +845,8 @@ func taskContextOpVerb(op BoidOp) string {
 	}
 }
 
-// taskAttachmentsOpVerb renders a Phase 5b PR2 attachments BoidOp as the
-// trailing word of its `boid task attachments <verb>` CLI form, for error
-// messages.
+// taskAttachmentsOpVerb renders an attachments BoidOp as the trailing word
+// of its `boid task attachments <verb>` CLI form, for error messages.
 func taskAttachmentsOpVerb(op BoidOp) string {
 	switch op {
 	case BoidOpTaskAttachmentsList:
@@ -938,24 +886,15 @@ func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
 		return fmt.Errorf("cwd must be absolute")
 	}
 
-	// Clone-mode jobs (docs/plans/git-gateway-cutover.md PR6 cutover) declare
-	// cwd as a sandbox-internal, name-scoped subdirectory of "/workspace"
-	// (dispatcher.sandboxCloneDir — workspace 親化リファクタリング,
-	// nose 2026-07-13 decision) — entryRoot already special-cases this via
-	// entry.Context.SandboxRoot (see its own doc comment: "clone-mode jobs
-	// have no host-side ProjectDir the sandbox's own filesystem corresponds
-	// to"). The broker itself always runs on the host, outside
-	// any sandbox mount namespace, so os.Stat(cwd) below can never see that
-	// path — it would either ENOENT ("cwd does not exist" on a host with no
-	// coincidental directory of that name) or, worse, silently validate
-	// against an unrelated host directory that happens to share the name.
-	// Skip the filesystem check entirely for clone-mode entries and fall through to
-	// the same path-membership validation every other cwd already goes
-	// through (entryRoot / isWithinRoot below) — this is exactly what let
-	// every clone-mode hook's `boid job done` (postJobDone) silently fail
-	// validation and get swallowed as a non-fatal error, which the daemon's
-	// "runtime exited without boid job done" fallback then mistook for a
-	// crash rather than the hook's real (successful) exit code.
+	// Clone-mode jobs declare cwd as a sandbox-internal, name-scoped
+	// subdirectory of "/workspace" — entryRoot already special-cases this
+	// via entry.Context.SandboxRoot. The broker itself always runs on the
+	// host, outside any sandbox mount namespace, so os.Stat(cwd) below can
+	// never see that path — it would either ENOENT, or worse, silently
+	// validate against an unrelated host directory that happens to share
+	// the name. Skip the filesystem check entirely for clone-mode entries
+	// and fall through to the same path-membership validation every other
+	// cwd already goes through (entryRoot / isWithinRoot below).
 	if entry == nil || entry.Context.SandboxRoot == "" {
 		info, err := os.Stat(cwd)
 		if err != nil {
@@ -982,11 +921,9 @@ func validateBoidBuiltinCwd(cwd string, entry *tokenEntry) error {
 }
 
 // entryRoot returns the directory a "boid" builtin call's cwd argument must
-// fall under. Clone-mode jobs (docs/plans/git-gateway-cutover.md PR6 cutover)
-// have no host-side ProjectDir the sandbox's own filesystem corresponds to —
-// their cwd is always a name-scoped subdirectory of the sandbox-internal
-// "/workspace" (workspace 親化リファクタリング, nose 2026-07-13 decision) —
-// so SandboxRoot takes priority when set.
+// fall under. Clone-mode jobs have no host-side ProjectDir the sandbox's own
+// filesystem corresponds to — their cwd is always a name-scoped subdirectory
+// of the sandbox-internal "/workspace" — so SandboxRoot takes priority when set.
 func entryRoot(entry *tokenEntry) string {
 	if entry == nil {
 		return ""
@@ -1005,16 +942,10 @@ func isWithinRoot(path, root string) bool {
 }
 
 // lookupCommand resolves an ExecRequest.Command against a token's registered
-// CommandDefs by direct key. As of the 5a-3 cutover
-// (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクトリ化"
-// PR3), every shim's bind-mount basename == its declared short name by
-// construction (dispatcher.sandboxShimBinDir + hostCommandSymlinks), and the
-// shim always sends that basename as ExecRequest.Command
-// (sandbox.CommandFromArgv0). The pre-5a-3 Path-scan fallback that covered
-// the absolute-bind-mount-path shape (a rollback safety net for the
-// pre-5a-2 shim protocol) is retired here: it was structurally impossible
-// to hit once 5a-2 landed and became defense-in-depth against no live
-// caller after 5a-3.
+// CommandDefs by direct key. Every shim's bind-mount basename equals its
+// declared short name by construction (dispatcher.sandboxShimBinDir +
+// hostCommandSymlinks), and the shim always sends that basename as
+// ExecRequest.Command (sandbox.CommandFromArgv0).
 func lookupCommand(commands map[string]CommandDef, command string) (CommandDef, bool) {
 	def, ok := commands[command]
 	return def, ok

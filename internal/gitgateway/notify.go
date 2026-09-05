@@ -1,21 +1,18 @@
 package gitgateway
 
 // UpstreamAuthFailureNotifier is invoked on two distinct failure modes so an
-// operator can tell them apart (docs/plans/git-gateway-cutover.md PR4,
-// flagged in PR3's review: 「config error (認証注入失敗) と token 失効を
-// differentiate できると良い」):
+// operator can tell them apart:
 //
 //   - NotifyUpstreamAuthFailure: the upstream forge responded with 401 to a
 //     request that WAS sent with injected credentials — the token itself is
-//     wrong/expired/revoked ("rotate the token"; docs/plans/container-based-boid.md
-//     「token 戦略」: 「失効前提の運用」。両 forge とも token は失効前提).
+//     wrong/expired/revoked ("rotate the token").
 //   - NotifyCredentialError: credential injection itself failed before the
 //     request ever reached the upstream — an unconfigured host, a missing
 //     resolver, or a secret-store lookup error ("fix the gateway config").
 //
 // The gateway always logs a warning on either condition and additionally
 // calls the matching hook, but never aborts serving other requests because
-// of it (docs/plans/git-gateway-cutover.md: 「gateway 自体は落とさない」).
+// of it.
 type UpstreamAuthFailureNotifier interface {
 	NotifyUpstreamAuthFailure(host string, repo RepoKey)
 	NotifyCredentialError(host string, repo RepoKey, err error)
