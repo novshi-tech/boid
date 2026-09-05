@@ -181,12 +181,16 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		// runs at update time). Only type=card new parents are checked —
 		// the invariant does not apply to an execution parent.
 		if *req.ParentID != "" && *req.ParentID != task.ParentID {
+			var behavior string
+			if task.Exec != nil {
+				behavior = task.Exec.Behavior
+			}
 			if newParent, perr := s.Tasks.GetTask(*req.ParentID); perr == nil && newParent != nil && newParent.Type == orchestrator.TaskTypeCard {
-				if conflict, occupant := cardChildSlotConflict(newParent, task.Ref); conflict {
+				if conflict, occupant := cardChildSlotConflict(newParent, task.Ref, task.ProjectID, behavior); conflict {
 					return nil, &StatusError{
 						Code: http.StatusConflict,
 						Message: fmt.Sprintf(
-							"update task: card %q's single work slot is already occupied by child %q",
+							"update task: card %q's single work slot is already occupied by %s",
 							*req.ParentID, occupant),
 					}
 				}
@@ -392,6 +396,18 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 		return nil, &StatusError{
 			Code:    http.StatusConflict,
 			Message: fmt.Sprintf("task is not in a rerun-able state (status: %s)", task.Status),
+		}
+	}
+	if task.ParentID != "" {
+		if parent, perr := s.Tasks.GetTask(task.ParentID); perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
+			if conflict, occupant := cardChildSlotConflict(parent, task.Ref, task.ProjectID, task.Exec.Behavior); conflict {
+				return nil, &StatusError{
+					Code: http.StatusConflict,
+					Message: fmt.Sprintf(
+						"rerun task: card %q's single work slot is already occupied by %s",
+						task.ParentID, occupant),
+				}
+			}
 		}
 	}
 

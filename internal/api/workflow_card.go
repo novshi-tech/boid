@@ -1054,6 +1054,44 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			}
 		}
 
+		// The working→working self-loop's own concurrency guard: unlike
+		// parked→working (where a concurrent winner's transition changes
+		// fresh.Status and the check above catches it), working→working
+		// commits with fresh.Status staying "working" for every racer, so
+		// two concurrent Go calls both re-reading the SAME specced child
+		// would otherwise both dispatch it. Re-read task_triage fresh here
+		// and confirm every child this call is about to mark dispatched is
+		// STILL specced — if a concurrent winner already flipped it to
+		// dispatched, this call lost the race.
+		var freshTT *orchestrator.CardAttrs
+		if len(newlyDispatched) > 0 || childrenChanged {
+			var ttErr error
+			freshTT, ttErr = tx.GetTaskTriage(taskID)
+			if ttErr != nil {
+				return fmt.Errorf("accept(go): get task_triage for race check: %w", ttErr)
+			}
+		}
+		if len(newlyDispatched) > 0 {
+			freshChildren, fcErr := orchestrator.DetailChildren(freshTT.Detail)
+			if fcErr != nil {
+				return fmt.Errorf("accept(go): parse fresh children for race check: %w", fcErr)
+			}
+			freshByID := make(map[string]orchestrator.TaskTriageChild, len(freshChildren))
+			for _, fc := range freshChildren {
+				freshByID[fc.ID] = fc
+			}
+			for _, c := range newlyDispatched {
+				fc, ok := freshByID[c.ID]
+				if !ok || fc.Status != orchestrator.TaskTriageChildStatusSpecced {
+					concurrentTransitionWon = true
+					return &StatusError{
+						Code:    http.StatusConflict,
+						Message: fmt.Sprintf("accept(go): child %q was already dispatched by a concurrent request", c.ID),
+					}
+				}
+			}
+		}
+
 		applied, applyErr := sm.Apply(fresh, action)
 		if applyErr != nil {
 			return &StatusError{Code: http.StatusConflict, Message: applyErr.Error()}
@@ -1082,16 +1120,12 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			}
 		}
 		if childrenChanged {
-			tt, gErr := tx.GetTaskTriage(taskID)
-			if gErr != nil {
-				return fmt.Errorf("accept(go): get task_triage for children update: %w", gErr)
-			}
-			newDetail, sErr := orchestrator.SetDetailChildren(tt.Detail, children)
+			newDetail, sErr := orchestrator.SetDetailChildren(freshTT.Detail, children)
 			if sErr != nil {
 				return sErr
 			}
-			tt.Detail = newDetail
-			if err := tx.UpsertTaskTriage(tt); err != nil {
+			freshTT.Detail = newDetail
+			if err := tx.UpsertTaskTriage(freshTT); err != nil {
 				return err
 			}
 		}

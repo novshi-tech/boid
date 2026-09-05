@@ -139,6 +139,23 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 		}
 	}
 
+	// A card-type child has no legitimate "fulfilling a specced reservation"
+	// story (acceptGo only ever dispatches execution tasks) — pass empty
+	// ref/behavior so cardChildSlotConflict's exception can never match and
+	// any real occupant unconditionally blocks this create.
+	if req.ParentID != "" {
+		if parent, perr := s.Tasks.GetTask(req.ParentID); perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
+			if conflict, occupant := cardChildSlotConflict(parent, "", "", ""); conflict {
+				return nil, &StatusError{
+					Code: http.StatusConflict,
+					Message: fmt.Sprintf(
+						"create task: card %q's single work slot is already occupied by %s",
+						req.ParentID, occupant),
+				}
+			}
+		}
+	}
+
 	task := &orchestrator.Task{
 		ID:             req.ID,
 		Type:           orchestrator.TaskTypeCard,
@@ -158,20 +175,31 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 	return task, nil
 }
 
-// cardChildSlotConflict reports whether creating an execution task with the
-// given ref under parent (already confirmed to be type=card) would violate
-// the card's single-work-slot invariant: at most one open/specced/dispatched
-// child at a time.
+// cardChildSlotConflict reports whether creating (or reparenting/rerunning)
+// an execution task with the given ref/projectID/behavior under parent
+// (already confirmed to be type=card) would violate the card's
+// single-work-slot invariant: at most one open/specced/dispatched child at
+// a time.
 //
 // parent.OpenChildCount (a live, non-terminal task row under it — the
 // column GetTask already populates, independent of task_triage.detail)
 // covers the "already dispatched, or created via a bypass with no JSON
-// entry at all" half. The JSON-only half — an open/specced child not yet
-// task-ified — is orchestrator.DetailOpenSlotChildID. Fulfilling that exact
-// child's own reservation (ref == its id, the convention acceptGo's own
-// CreateTask call always uses, workflow_card.go) is not a NEW occupant and
-// is let through — this is what makes Go's own child-ification not trip
-// the very guard it must also respect.
+// entry at all" half — reported with a generic occupant description since
+// there is no cheap way to name the specific live child from a plain Task
+// struct alone. The JSON-only half — an open/specced child not yet
+// task-ified — is orchestrator.DetailOpenSlotChildID.
+//
+// Fulfilling that exact child's own reservation (ref == its id, the
+// convention acceptGo's own CreateTask call always uses, workflow_card.go)
+// is not a NEW occupant and is let through — this is what makes Go's own
+// child-ification not trip the very guard it must also respect. Matching by
+// ref ALONE is not enough: ref is fully caller-controlled and the occupant
+// id is readable from the card's own detail, so a caller could otherwise
+// plant an unrelated task (wrong project/behavior) under a matching ref,
+// which a later legitimate acceptGo call would then adopt via
+// FindTaskByRef's own get-or-create instead of ever creating the actually-
+// specced work. Requiring projectID/behavior to match what child_specced
+// itself recorded on that child's Spec closes this.
 //
 // This is a plain read-then-decide check, not wrapped in a transaction —
 // the same race-tolerant posture task_create.go's own ref-based
@@ -179,19 +207,32 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 // has an identical check for the concurrent-create race"): a genuine
 // concurrent double-create is rare for this single-operator-per-card
 // feature, and a caller that loses the race gets a clear 409 to retry.
-func cardChildSlotConflict(parent *orchestrator.Task, ref string) (conflict bool, occupant string) {
+// cardChildSlotConflict's occupant return value is always a ready-to-use
+// noun phrase (never a bare id) so every call site can embed it directly in
+// a 409 message without needing to know which of the two occupancy sources
+// fired.
+func cardChildSlotConflict(parent *orchestrator.Task, ref, projectID, behavior string) (conflict bool, occupant string) {
 	if parent.OpenChildCount > 0 {
-		return true, parent.ID
+		return true, "a live child task"
 	}
 	var detail json.RawMessage
 	if parent.Card != nil {
 		detail = parent.Card.Detail
 	}
-	occupantID, err := orchestrator.DetailOpenSlotChildID(detail)
-	if err != nil || occupantID == "" || occupantID == ref {
+	children, err := orchestrator.DetailChildren(detail)
+	if err != nil {
 		return false, ""
 	}
-	return true, occupantID
+	for _, c := range children {
+		if c.Status != orchestrator.TaskTriageChildStatusOpen && c.Status != orchestrator.TaskTriageChildStatusSpecced {
+			continue
+		}
+		if c.ID == ref && c.Spec != nil && c.Spec.Project == projectID && c.Spec.Behavior == behavior {
+			return false, ""
+		}
+		return true, fmt.Sprintf("child %q", c.ID)
+	}
+	return false, ""
 }
 
 func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
@@ -336,11 +377,11 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	if req.ParentID != "" {
 		parent, perr := s.Tasks.GetTask(req.ParentID)
 		if perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
-			if conflict, occupant := cardChildSlotConflict(parent, req.Ref); conflict {
+			if conflict, occupant := cardChildSlotConflict(parent, req.Ref, req.ProjectID, req.Behavior); conflict {
 				return nil, &StatusError{
 					Code: http.StatusConflict,
 					Message: fmt.Sprintf(
-						"create task: card %q's single work slot is already occupied by child %q",
+						"create task: card %q's single work slot is already occupied by %s",
 						req.ParentID, occupant),
 				}
 			}

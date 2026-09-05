@@ -113,6 +113,56 @@ func TestCreateTask_AllowsFulfillingTheSpeccedChildsOwnReservation(t *testing.T)
 	}
 }
 
+// TestCreateTask_RejectsRefMatchWithMismatchedProjectOrBehavior closes the
+// "own reservation" exception's own spoofing hole: matching the occupant's
+// id by Ref ALONE is not enough, since Ref is fully caller-controlled and
+// the occupant id is readable from the card's own detail — a caller could
+// otherwise plant an UNRELATED task (wrong project/behavior/instructions)
+// under a matching ref, which a later legitimate acceptGo call would then
+// adopt via FindTaskByRef's own get-or-create instead of creating the
+// actually-specced work. Requiring project+behavior to match what
+// child_specced itself recorded closes this without new plumbing.
+func TestCreateTask_RejectsRefMatchWithMismatchedProjectOrBehavior(t *testing.T) {
+	parent := cardParentWithDetail("card-1", []byte(`{"children":[{"id":"ch_00","status":"specced","spec":{"project":"proj-1","behavior":"dev"}}]}`), 0)
+	cases := []struct {
+		name      string
+		projectID string
+		behavior  string
+	}{
+		{"wrong project", "proj-attacker", "dev"},
+		{"wrong behavior", "proj-1", "attacker-behavior"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := &stubTaskStore{
+				tasks:    map[string]*orchestrator.Task{"card-1": parent},
+				refTasks: map[string]*orchestrator.Task{},
+			}
+			svc := &TaskAppService{
+				Tasks: store,
+				Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}, "attacker-behavior": {}}}},
+			}
+			_, err := svc.CreateTask(CreateTaskRequest{
+				ProjectID: c.projectID,
+				Title:     "planted",
+				Behavior:  c.behavior,
+				ParentID:  "card-1",
+				Ref:       "ch_00",
+			})
+			if err == nil {
+				t.Fatal("expected rejection: ref matches the occupant but project/behavior do not match its own spec")
+			}
+			se, ok := err.(*StatusError)
+			if !ok || se.Code != http.StatusConflict {
+				t.Fatalf("expected 409 StatusError, got %v", err)
+			}
+			if store.createdTask != nil {
+				t.Fatal("must not have inserted a task row")
+			}
+		})
+	}
+}
+
 // TestCreateTask_AllowsWhenCardHasNoOpenSlot is the sanity regression: a
 // card with nothing occupying its slot must let a fresh child through
 // normally.
@@ -202,6 +252,85 @@ func TestUpdateTask_ExecutionParentReparent_NotGated(t *testing.T) {
 	newParent := "supervisor-1"
 	if _, err := svc.UpdateTask("t1", UpdateTaskRequest{ParentID: &newParent}); err != nil {
 		t.Fatalf("UpdateTask() error = %v, want success (execution parents are not slot-gated)", err)
+	}
+}
+
+// ---- RerunTask's own write port ----
+//
+// `boid task rerun <id>` resets a done/aborted execution task back to
+// pending — the identical "terminal child → non-terminal under a card
+// parent" move reopen is gated for, and reachable from the Web UI's Rerun
+// button rendered right next to Reopen on every done/aborted task detail
+// page (tasks.templ).
+
+func TestRerunTask_RejectsWhenCardSlotOccupiedByAnotherLiveChild(t *testing.T) {
+	parent := cardParentWithDetail("card-1", nil, 1) // a different live sibling
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", ParentID: "card-1", Ref: "ch_00", Status: orchestrator.TaskStatusAborted, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	store := &stubTaskStore{
+		task:  task,
+		tasks: map[string]*orchestrator.Task{"t1": task, "card-1": parent},
+	}
+	svc := &TaskAppService{Tasks: store}
+
+	_, err := svc.RerunTask("t1", RerunTaskRequest{})
+	if err == nil {
+		t.Fatal("expected rejection rerunning a child while the card's slot is occupied by another live child")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	if store.updateCalls != 0 {
+		t.Errorf("UpdateTask store call count = %d, want 0", store.updateCalls)
+	}
+}
+
+func TestRerunTask_AllowsWhenCardSlotIsFree(t *testing.T) {
+	parent := cardParentWithDetail("card-1", nil, 0)
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", ParentID: "card-1", Ref: "ch_00", Status: orchestrator.TaskStatusAborted, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	store := &stubTaskStore{
+		task:  task,
+		tasks: map[string]*orchestrator.Task{"t1": task, "card-1": parent},
+	}
+	svc := &TaskAppService{Tasks: store}
+
+	if _, err := svc.RerunTask("t1", RerunTaskRequest{}); err != nil {
+		t.Fatalf("RerunTask() error = %v, want success (empty slot)", err)
+	}
+	if task.Status != orchestrator.TaskStatusPending {
+		t.Errorf("status = %q, want pending", task.Status)
+	}
+}
+
+// ---- createCardTask's own write port ----
+//
+// A card-type child has no legitimate "fulfilling a specced reservation"
+// story — acceptGo only ever dispatches execution tasks — so any occupant
+// unconditionally blocks creating a card under a card.
+
+func TestCreateTask_RejectsCardTypeChildWhenCardSlotOccupied(t *testing.T) {
+	parent := cardParentWithDetail("card-1", []byte(`{"children":[{"id":"ch_00","status":"open"}]}`), 0)
+	store := &stubTaskStore{
+		tasks:    map[string]*orchestrator.Task{"card-1": parent},
+		refTasks: map[string]*orchestrator.Task{},
+	}
+	svc := &TaskAppService{Tasks: store}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:     "proj-1",
+		Title:         "nested card",
+		ParentID:      "card-1",
+		InitialStatus: "parked",
+	})
+	if err == nil {
+		t.Fatal("expected rejection creating a card-type child while the parent card's slot is occupied")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	if store.createdTask != nil {
+		t.Fatal("must not have inserted a task row")
 	}
 }
 

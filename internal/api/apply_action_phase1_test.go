@@ -36,6 +36,14 @@ type recordingTxStore struct {
 	// timestamp, since this fake has no wall-clock semantics of its own.
 	touchedTaskUpdatedAtIDs []string
 	touchTaskUpdatedAtErr   error // when set, TouchTaskUpdatedAt returns this instead of succeeding
+	// getTaskTriageCallCount and getTaskTriageOnCall simulate a concurrent
+	// writer committing BETWEEN this call's own pre-Tx read and its in-Tx
+	// re-read: getTaskTriageOnCall[N] (1-indexed) overrides what the Nth
+	// GetTaskTriage call for ANY taskID returns, falling back to the normal
+	// map lookup for calls with no override registered. Used by
+	// TestTaskWorkflowService_AcceptGo_WorkingSelfLoop_ConcurrentDispatch_SecondCallerLosesRace.
+	getTaskTriageCallCount int
+	getTaskTriageOnCall    map[int]*orchestrator.CardAttrs
 }
 
 func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error { return nil }
@@ -117,6 +125,11 @@ func (s *recordingTxStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error {
 func (s *recordingTxStore) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
 	if s.getTaskTriageErr != nil {
 		return nil, s.getTaskTriageErr
+	}
+	s.getTaskTriageCallCount++
+	if override, ok := s.getTaskTriageOnCall[s.getTaskTriageCallCount]; ok {
+		cp := *override
+		return &cp, nil
 	}
 	tt, ok := s.triage[taskID]
 	if !ok {

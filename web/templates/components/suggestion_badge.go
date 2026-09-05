@@ -22,9 +22,12 @@ import (
 // anywhere upstream.
 // start/complete are the current spelling of the retired working/done
 // verbs. A stored suggestion still carrying the retired spelling reads as
-// unknown here (badge-verb-unknown) rather than being normalized — unlike
-// the write side (orchestrator.NormalizeCardVerb), this map is a pure
-// rendering lookup with no access to the daemon's own normalization helper.
+// unknown here (badge-verb-unknown) rather than being normalized: the data
+// migration already rewrites every real stored suggestion to the current
+// spelling, so this map is kept a plain closed-vocabulary lookup rather
+// than also normalizing display text and class independently (which could
+// otherwise disagree with each other across the different render sites
+// that pull the verb text straight from the suggestion).
 var knownSuggestionVerbs = map[string]bool{
 	"go":       true,
 	"start":    true,

@@ -510,6 +510,49 @@ func TestTaskWorkflowService_AcceptGo_RetryAfterPartialFailure_DoesNotDuplicateE
 	}
 }
 
+// TestTaskWorkflowService_AcceptGo_WorkingSelfLoop_ConcurrentDispatch_SecondCallerLosesRace
+// pins the working→working self-loop's own concurrency guard: unlike
+// parked→working (where a concurrent winner's transition changes
+// fresh.Status and the pre-existing status-changed check alone catches it),
+// two racing working→working Go calls both observe fresh.Status=="working"
+// throughout, so a naive status-only re-check would let BOTH commit a
+// "go"/"child_dispatched" pair for the SAME specced child. This simulates
+// the race directly: the in-Tx fresh task_triage read (the second
+// GetTaskTriage call) returns the child already flipped to "dispatched" —
+// as if another caller's Tx had committed in the gap between this call's
+// own pre-Tx read and its Tx opening.
+func TestTaskWorkflowService_AcceptGo_WorkingSelfLoop_ConcurrentDispatch_SecondCallerLosesRace(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+	speccedDetail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	alreadyDispatchedDetail := []byte(`{"children": [{"id": "ch_00", "title": "do it", "status": "dispatched", "task_ref": "child-winner"}]}`)
+	txStore := &recordingTxStore{
+		task:   task,
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: speccedDetail}},
+		getTaskTriageOnCall: map[int]*orchestrator.CardAttrs{
+			2: {TaskID: "t1", Detail: alreadyDispatchedDetail},
+		},
+	}
+	creator := &fakeTaskCreator{}
+	svc := newAcceptGoWorkflowService(task, txStore, creator)
+
+	_, err := svc.acceptGo(context.Background(), task.ID, false)
+	if err == nil {
+		t.Fatal("expected the second (losing) racer to be rejected")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	if txStore.updatedTask != nil {
+		t.Fatal("card status must not be updated when this call loses the race")
+	}
+	for _, a := range txStore.actions {
+		if a.Type == "go" || a.Type == "child_dispatched" {
+			t.Errorf("no go/child_dispatched action should be recorded for the losing racer, got %+v", a)
+		}
+	}
+}
+
 // TestApplyAction_Go_DelegatesToAcceptGo pins that ApplyAction("go") is a
 // thin bypass into acceptGo (this file's own doc comment, workflow_action.go)
 // — both a direct human click and accept(go) reach the identical code path.
