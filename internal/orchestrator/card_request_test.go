@@ -3,8 +3,8 @@ package orchestrator_test
 // card_requests 台帳の store 層テスト。
 
 import (
-	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,8 +75,33 @@ func TestCreateCardRequest_ActiveSlotUniqueAcrossRawInsert(t *testing.T) {
 		`INSERT INTO card_requests (id, card_id, status, created_at, updated_at) VALUES (?, ?, 'attached', ?, ?)`,
 		"req-b", cardID, now, now,
 	)
-	if err == nil {
-		t.Fatal("raw insert of a second launching/attached row for the same card: expected a UNIQUE constraint error, got nil")
+	if err == nil || !strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		t.Fatalf("raw insert of a second launching/attached row for the same card: err = %v, want a UNIQUE constraint error", err)
+	}
+}
+
+// TestCreateCardRequest_CauseIDUniqueAcrossRawInsert is the cause_id
+// counterpart of TestCreateCardRequest_ActiveSlotUniqueAcrossRawInsert:
+// idx_card_requests_cause_unique must reject a raw SQL insert too, not
+// merely CreateCardRequest's own Go-level check.
+func TestCreateCardRequest_CauseIDUniqueAcrossRawInsert(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	now := time.Now().UTC()
+
+	if _, err := d.Conn.Exec(
+		`INSERT INTO card_requests (id, card_id, cause_id, status, created_at, updated_at) VALUES (?, ?, 'signal-1', 'queued', ?, ?)`,
+		"req-a", cardID, now, now,
+	); err != nil {
+		t.Fatalf("raw insert first row: %v", err)
+	}
+
+	_, err := d.Conn.Exec(
+		`INSERT INTO card_requests (id, card_id, cause_id, status, created_at, updated_at) VALUES (?, ?, 'signal-1', 'queued', ?, ?)`,
+		"req-b", cardID, now, now,
+	)
+	if err == nil || !strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		t.Fatalf("raw insert of a second row with the same cause_id: err = %v, want a UNIQUE constraint error", err)
 	}
 }
 
@@ -193,13 +218,13 @@ func TestCardRequest_FullLifecycle_QueuedToFinished(t *testing.T) {
 	}
 }
 
-func TestClaimQueuedCardRequests_NoPending_ReturnsErrNoRows(t *testing.T) {
+func TestClaimQueuedCardRequests_NoPending_ReturnsErrNoQueuedCardRequests(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
 	_, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, orchestrator.CardRequestDefinition{})
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("ClaimQueuedCardRequests(no pending) = %v, want sql.ErrNoRows", err)
+	if !errors.Is(err, orchestrator.ErrNoQueuedCardRequests) {
+		t.Fatalf("ClaimQueuedCardRequests(no pending) = %v, want ErrNoQueuedCardRequests", err)
 	}
 }
 
@@ -232,11 +257,12 @@ func TestClaimQueuedCardRequests_SlotOccupied_Rejected(t *testing.T) {
 	}
 }
 
-// TestClaimQueuedCardRequests_BoundaryExcludesLaterArrivals pins that a
-// claim only ever covers requests queued before it: three early requests
-// are folded into one boundary, while a fourth created afterward stays
-// queued, untouched, for the next claim.
-func TestClaimQueuedCardRequests_BoundaryExcludesLaterArrivals(t *testing.T) {
+// TestClaimQueuedCardRequests_FoldsExactlyThePreClaimSnapshot pins that a
+// claim's boundary is exactly its pre-claim queued snapshot (oldest
+// promoted to primary, the rest folded into it) — and that a request
+// created after the claim returns starts fresh as queued rather than being
+// retroactively swept into that already-closed boundary.
+func TestClaimQueuedCardRequests_FoldsExactlyThePreClaimSnapshot(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
@@ -329,14 +355,71 @@ func TestFinishCardRequest_ClosesFoldedAndAbsorbsOldFailures(t *testing.T) {
 		t.Fatalf("finish: %v", err)
 	}
 
-	for _, id := range []string{primary.ID, siblingReq.ID, oldFailed.ID} {
-		got, err := orchestrator.GetCardRequest(d.Conn, id)
-		if err != nil {
-			t.Fatalf("GetCardRequest(%q): %v", id, err)
+	all, err := orchestrator.ListCardRequestsByCard(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("ListCardRequestsByCard: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("ListCardRequestsByCard returned %d rows, want 3", len(all))
+	}
+	for _, r := range all {
+		if r.Status != orchestrator.CardRequestStatusFinished {
+			t.Errorf("request %q: Status = %q, want finished", r.ID, r.Status)
 		}
-		if got.Status != orchestrator.CardRequestStatusFinished {
-			t.Errorf("request %q: Status = %q, want finished", id, got.Status)
-		}
+	}
+}
+
+// TestFinishCardRequest_DoesNotAbsorbFailuresFromALaterBoundary pins that a
+// request created (and later failed) AFTER the primary's own boundary was
+// fixed is NOT swept up as "absorbed" by that earlier success — the
+// primary never read it, so it must still surface as its own retryable
+// failure, not get silently marked finished.
+func TestFinishCardRequest_DoesNotAbsorbFailuresFromALaterBoundary(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	primaryReq := &orchestrator.CardRequest{CardID: cardID}
+	if err := orchestrator.CreateCardRequest(d.Conn, primaryReq); err != nil {
+		t.Fatalf("create primary: %v", err)
+	}
+	var primary *orchestrator.CardRequest
+	if err := db.InTxDB(d.Conn, func(tx db.DBTX) error {
+		var err error
+		primary, _, err = orchestrator.ClaimQueuedCardRequests(tx, cardID, orchestrator.CardRequestDefinition{})
+		return err
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, primary.ID, orchestrator.CardRequestTargetKindTask, "task-1"); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	// Created and failed AFTER the primary's boundary was fixed. The
+	// primary still occupies the card's slot (attached), so this new
+	// request can only be queued — exactly the "its command definition
+	// disappeared while waiting" case that fails a still-queued request.
+	time.Sleep(time.Millisecond)
+	later := &orchestrator.CardRequest{CardID: cardID}
+	if err := orchestrator.CreateCardRequest(d.Conn, later); err != nil {
+		t.Fatalf("create later: %v", err)
+	}
+	if err := orchestrator.FailCardRequest(d.Conn, later.ID, "unrelated failure"); err != nil {
+		t.Fatalf("fail later: %v", err)
+	}
+
+	if err := orchestrator.FinishCardRequest(d.Conn, primary.ID, "done"); err != nil {
+		t.Fatalf("finish primary: %v", err)
+	}
+
+	got, err := orchestrator.GetCardRequest(d.Conn, later.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest(later): %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusFailed {
+		t.Errorf("later.Status = %q, want still failed (must not be absorbed by an earlier boundary's success)", got.Status)
+	}
+	if got.Error != "unrelated failure" {
+		t.Errorf("later.Error = %q, want preserved", got.Error)
 	}
 }
 
@@ -397,6 +480,10 @@ func TestFailCardRequest_ReleasesFoldedRequestsBackToQueued(t *testing.T) {
 	}
 }
 
+// TestRetryCardRequest_RequeuesFailedRequest pins that Retry clears every
+// trace of the previous attempt — error, launch-time snapshot, AND the
+// continuation target/result — so a fresh claim never inherits a stale
+// pointer to a dead task/session from the attempt that failed.
 func TestRetryCardRequest_RequeuesFailedRequest(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
@@ -404,6 +491,9 @@ func TestRetryCardRequest_RequeuesFailedRequest(t *testing.T) {
 	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching}
 	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
 		t.Fatalf("create: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, req.ID, orchestrator.CardRequestTargetKindTask, "dead-task-1"); err != nil {
+		t.Fatalf("attach: %v", err)
 	}
 	if err := orchestrator.FailCardRequest(d.Conn, req.ID, "boom"); err != nil {
 		t.Fatalf("fail: %v", err)
@@ -422,6 +512,9 @@ func TestRetryCardRequest_RequeuesFailedRequest(t *testing.T) {
 	if got.Error != "" {
 		t.Errorf("Error = %q, want cleared", got.Error)
 	}
+	if got.TargetKind != "" || got.TargetID != "" {
+		t.Errorf("TargetKind/TargetID = %q/%q, want both cleared (stale pointer to the dead attempt's continuation)", got.TargetKind, got.TargetID)
+	}
 
 	// Retrying anything but a failed request is rejected.
 	if err := orchestrator.RetryCardRequest(d.Conn, req.ID); !errors.Is(err, orchestrator.ErrCardRequestInvalidTransition) {
@@ -439,6 +532,65 @@ func TestFinishCardRequest_RejectsNonAttached(t *testing.T) {
 	}
 	if err := orchestrator.FinishCardRequest(d.Conn, req.ID, "premature"); !errors.Is(err, orchestrator.ErrCardRequestInvalidTransition) {
 		t.Fatalf("FinishCardRequest(queued) = %v, want ErrCardRequestInvalidTransition", err)
+	}
+}
+
+func TestCreateCardRequest_RejectsEmptyCardID(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	err := orchestrator.CreateCardRequest(d.Conn, &orchestrator.CardRequest{})
+	if err == nil {
+		t.Fatal("CreateCardRequest with empty CardID: expected an error, got nil")
+	}
+}
+
+func TestCreateCardRequest_RejectsInvalidStartingStatus(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	for _, status := range []orchestrator.CardRequestStatus{
+		orchestrator.CardRequestStatusAttached,
+		orchestrator.CardRequestStatusFolded,
+		orchestrator.CardRequestStatusFinished,
+		orchestrator.CardRequestStatusFailed,
+	} {
+		err := orchestrator.CreateCardRequest(d.Conn, &orchestrator.CardRequest{CardID: cardID, Status: status})
+		if err == nil {
+			t.Errorf("CreateCardRequest(status=%q): expected an error, got nil", status)
+		}
+	}
+}
+
+func TestSetCardRequestLauncherJobID_RejectsNonLaunching(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := orchestrator.SetCardRequestLauncherJobID(d.Conn, req.ID, "job-1"); !errors.Is(err, orchestrator.ErrCardRequestInvalidTransition) {
+		t.Fatalf("SetCardRequestLauncherJobID(queued) = %v, want ErrCardRequestInvalidTransition", err)
+	}
+	if err := orchestrator.SetCardRequestLauncherJobID(d.Conn, "does-not-exist", "job-1"); !errors.Is(err, orchestrator.ErrCardRequestNotFound) {
+		t.Fatalf("SetCardRequestLauncherJobID(missing id) = %v, want ErrCardRequestNotFound", err)
+	}
+}
+
+func TestAttachCardRequest_ValidatesArguments(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, req.ID, "bogus-kind", "task-1"); err == nil {
+		t.Error("AttachCardRequest(invalid target kind): expected an error, got nil")
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, req.ID, orchestrator.CardRequestTargetKindTask, ""); err == nil {
+		t.Error("AttachCardRequest(empty target id): expected an error, got nil")
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, "does-not-exist", orchestrator.CardRequestTargetKindTask, "task-1"); !errors.Is(err, orchestrator.ErrCardRequestNotFound) {
+		t.Errorf("AttachCardRequest(missing id) = %v, want ErrCardRequestNotFound", err)
 	}
 }
 
@@ -563,7 +715,7 @@ func TestGC_CardRequestsCleanup_ViaTaskGCStore(t *testing.T) {
 	}
 }
 
-func TestCardRequest_ProjectCascadeDeletesRequests(t *testing.T) {
+func TestCardRequest_CardTaskCascadeDeletesRequests(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 

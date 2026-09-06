@@ -90,6 +90,9 @@ var (
 	// ErrCardRequestInvalidTransition: the row is not in a status the
 	// requested transition accepts from.
 	ErrCardRequestInvalidTransition = errors.New("card request: invalid status transition")
+	// ErrNoQueuedCardRequests is ClaimQueuedCardRequests' sentinel for "this
+	// card has nothing queued right now".
+	ErrNoQueuedCardRequests = errors.New("card request: no queued requests for card")
 )
 
 // CreateCardRequest inserts a new card_requests row. req.ID is generated
@@ -134,10 +137,10 @@ func CreateCardRequest(dbtx db.DBTX, req *CardRequest) error {
 		req.CreatedAt, req.UpdatedAt,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "card_requests.card_id") {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: card_requests.card_id") {
 			return ErrCardRequestSlotOccupied
 		}
-		if strings.Contains(err.Error(), "card_requests.cause_id") {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: card_requests.cause_id") {
 			return ErrCardRequestDuplicateCause
 		}
 		return fmt.Errorf("create card request: %w", err)
@@ -151,7 +154,7 @@ func CreateCardRequest(dbtx db.DBTX, req *CardRequest) error {
 // folded_into=primary.id). A request created after this snapshot is not
 // part of it and stays queued for the next claim.
 //
-// Returns (nil, nil, sql.ErrNoRows) when cardID has no queued requests.
+// Returns ErrNoQueuedCardRequests when cardID has no queued requests.
 // Returns ErrCardRequestSlotOccupied if another row for this card is
 // already launching/attached.
 //
@@ -172,7 +175,7 @@ func ClaimQueuedCardRequests(dbtx db.DBTX, cardID string, def CardRequestDefinit
 		return nil, nil, fmt.Errorf("claim queued card requests: %w", err)
 	}
 	if len(pending) == 0 {
-		return nil, nil, sql.ErrNoRows
+		return nil, nil, ErrNoQueuedCardRequests
 	}
 
 	now := time.Now().UTC()
@@ -184,7 +187,7 @@ func ClaimQueuedCardRequests(dbtx db.DBTX, cardID string, def CardRequestDefinit
 		head.ID, string(CardRequestStatusQueued),
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "card_requests.card_id") {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: card_requests.card_id") {
 			return nil, nil, ErrCardRequestSlotOccupied
 		}
 		return nil, nil, fmt.Errorf("claim queued card requests: promote %q: %w", head.ID, err)
@@ -224,7 +227,7 @@ func SetCardRequestLauncherJobID(dbtx db.DBTX, id, jobID string) error {
 	if err != nil {
 		return fmt.Errorf("set card request launcher job id: %w", err)
 	}
-	return rowsAffectedOrNotFoundOrInvalid(res, id)
+	return rowsAffectedOrNotFoundOrInvalid(dbtx, res, id)
 }
 
 // AttachCardRequest records the continuation (task or session) a launcher
@@ -247,13 +250,17 @@ func AttachCardRequest(dbtx db.DBTX, id, targetKind, targetID string) error {
 	if err != nil {
 		return fmt.Errorf("attach card request: %w", err)
 	}
-	return rowsAffectedOrNotFoundOrInvalid(res, id)
+	return rowsAffectedOrNotFoundOrInvalid(dbtx, res, id)
 }
 
 // FinishCardRequest records a request's successful outcome — attached →
 // finished — and closes out two related sets of rows in the same call:
-// every request folded into id, and every other still-failed request for
-// the same card (a later success absorbs an earlier failure).
+// every request folded into id, and every OLDER still-failed request for
+// the same card (a later success absorbs an earlier failure). "Older" is
+// bounded by id's own created_at: id is always the oldest member of its own
+// claim boundary (ClaimQueuedCardRequests promotes the oldest queued row),
+// so a failed request created after id must belong to a LATER boundary this
+// success never actually read, and is deliberately left alone.
 //
 // Only valid from attached. Must be called within a transaction for
 // atomicity (a read plus three UPDATEs).
@@ -261,9 +268,10 @@ func FinishCardRequest(dbtx db.DBTX, id, result string) error {
 	if id == "" {
 		return fmt.Errorf("finish card request: id must not be empty")
 	}
-	row := dbtx.QueryRow(`SELECT card_id, status FROM card_requests WHERE id = ?`, id)
+	row := dbtx.QueryRow(`SELECT card_id, status, created_at FROM card_requests WHERE id = ?`, id)
 	var cardID, status string
-	if err := row.Scan(&cardID, &status); err != nil {
+	var createdAt time.Time
+	if err := row.Scan(&cardID, &status, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("finish card request %q: %w", id, ErrCardRequestNotFound)
 		}
@@ -274,6 +282,7 @@ func FinishCardRequest(dbtx db.DBTX, id, result string) error {
 	}
 
 	now := time.Now().UTC()
+	absorbedResult := "absorbed by " + id
 	if _, err := dbtx.Exec(
 		`UPDATE card_requests SET status = ?, result = ?, updated_at = ? WHERE id = ?`,
 		string(CardRequestStatusFinished), result, now, id,
@@ -281,14 +290,14 @@ func FinishCardRequest(dbtx db.DBTX, id, result string) error {
 		return fmt.Errorf("finish card request: %w", err)
 	}
 	if _, err := dbtx.Exec(
-		`UPDATE card_requests SET status = ?, result = ?, updated_at = ? WHERE folded_into = ? AND status = ?`,
-		string(CardRequestStatusFinished), "absorbed by "+id, now, id, string(CardRequestStatusFolded),
+		`UPDATE card_requests SET status = ?, result = ?, error = '', updated_at = ? WHERE folded_into = ? AND status = ?`,
+		string(CardRequestStatusFinished), absorbedResult, now, id, string(CardRequestStatusFolded),
 	); err != nil {
 		return fmt.Errorf("finish card request: close folded requests: %w", err)
 	}
 	if _, err := dbtx.Exec(
-		`UPDATE card_requests SET status = ?, result = ?, updated_at = ? WHERE card_id = ? AND status = ? AND id != ?`,
-		string(CardRequestStatusFinished), "absorbed by "+id, now, cardID, string(CardRequestStatusFailed), id,
+		`UPDATE card_requests SET status = ?, result = ?, error = '', updated_at = ? WHERE card_id = ? AND status = ? AND created_at < ?`,
+		string(CardRequestStatusFinished), absorbedResult, now, cardID, string(CardRequestStatusFailed), createdAt,
 	); err != nil {
 		return fmt.Errorf("finish card request: absorb failed requests: %w", err)
 	}
@@ -314,7 +323,7 @@ func FailCardRequest(dbtx db.DBTX, id, errText string) error {
 	if err != nil {
 		return fmt.Errorf("fail card request: %w", err)
 	}
-	if err := rowsAffectedOrNotFoundOrInvalid(res, id); err != nil {
+	if err := rowsAffectedOrNotFoundOrInvalid(dbtx, res, id); err != nil {
 		return err
 	}
 	if _, err := dbtx.Exec(
@@ -327,20 +336,22 @@ func FailCardRequest(dbtx db.DBTX, id, errText string) error {
 }
 
 // RetryCardRequest re-queues a failed request explicitly. Only valid from
-// failed; clears the error and the previous launch-time snapshot.
+// failed; clears the error, the previous launch-time snapshot, and the
+// previous attempt's continuation target (a stale target/result must not
+// survive onto the fresh attempt).
 func RetryCardRequest(dbtx db.DBTX, id string) error {
 	if id == "" {
 		return fmt.Errorf("retry card request: id must not be empty")
 	}
 	res, err := dbtx.Exec(
-		`UPDATE card_requests SET status = ?, error = '', launched_command_key = '', launched_label = '', launched_run = '', launched_version = '', launcher_job_id = '', updated_at = ?
+		`UPDATE card_requests SET status = ?, error = '', launched_command_key = '', launched_label = '', launched_run = '', launched_version = '', launcher_job_id = '', target_kind = '', target_id = '', result = '', updated_at = ?
 		 WHERE id = ? AND status = ?`,
 		string(CardRequestStatusQueued), time.Now().UTC(), id, string(CardRequestStatusFailed),
 	)
 	if err != nil {
 		return fmt.Errorf("retry card request: %w", err)
 	}
-	return rowsAffectedOrNotFoundOrInvalid(res, id)
+	return rowsAffectedOrNotFoundOrInvalid(dbtx, res, id)
 }
 
 // CountActiveCardRequests returns the number of card_requests rows
@@ -382,17 +393,18 @@ func ListCardRequestsByCard(dbtx db.DBTX, cardID string) ([]*CardRequest, error)
 }
 
 // rowsAffectedOrNotFoundOrInvalid turns a zero-rows-affected UPDATE result
-// into an error distinguishing "no such row" from "row exists but was not
-// in the expected starting status" — the latter is by far the more useful
-// signal for every transition function above, since the id almost always
-// came from a caller that just read the row.
-func rowsAffectedOrNotFoundOrInvalid(res sql.Result, id string) error {
+// into ErrCardRequestNotFound (no such row) or ErrCardRequestInvalidTransition
+// (row exists, wrong starting status).
+func rowsAffectedOrNotFoundOrInvalid(dbtx db.DBTX, res sql.Result, id string) error {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
 	if n > 0 {
 		return nil
+	}
+	if _, gerr := GetCardRequest(dbtx, id); errors.Is(gerr, ErrCardRequestNotFound) {
+		return gerr
 	}
 	return fmt.Errorf("card request %q: %w", id, ErrCardRequestInvalidTransition)
 }

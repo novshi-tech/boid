@@ -28,7 +28,7 @@ func hydrateCardCommandsOrderAndEvents(meta *ProjectMeta, data []byte) error {
 		meta.CardCommandsOrder = order
 	}
 
-	if doc.CardEvents.Kind != 0 {
+	if doc.CardEvents.Kind == yaml.MappingNode {
 		var strict CardEventsConfig
 		if err := decodeStrictNode(doc.CardEvents, &strict); err != nil {
 			return fmt.Errorf("card_events: %w", err)

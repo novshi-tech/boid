@@ -341,6 +341,29 @@ card_events:
 	}
 }
 
+// TestReadProjectMeta_CardEvents_KeyPresentButEmpty_LoadsFine pins that a
+// `card_events:` key with no value under it (a null scalar node, e.g. left
+// behind after commenting out `command:`) loads successfully with an empty
+// CardEvents rather than failing — only a genuine mapping goes through the
+// strict re-decode.
+func TestReadProjectMeta_CardEvents_KeyPresentButEmpty_LoadsFine(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+card_events:
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if meta.CardEvents.Command != "" {
+		t.Errorf("CardEvents.Command = %q, want empty", meta.CardEvents.Command)
+	}
+}
+
 // TestProjectMeta_CardEvents_NotInJSON pins that CardEvents never appears
 // in ProjectMeta's JSON output, even for a project with no card_commands.
 func TestProjectMeta_CardEvents_NotInJSON(t *testing.T) {
