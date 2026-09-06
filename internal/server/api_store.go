@@ -40,6 +40,12 @@ func (s apiTxStore) GetTask(id string) (*orchestrator.Task, error) {
 	return s.tasks.GetTask(id)
 }
 
+// CountActiveCardRequests backs cardSlotOccupied's card_requests check
+// (internal/api/workflow_card.go).
+func (s apiTxStore) CountActiveCardRequests(cardID string) (int, error) {
+	return s.tasks.CountActiveCardRequests(cardID)
+}
+
 func (s apiTxStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return s.tasks.ListTasks(filter)
 }

@@ -462,7 +462,16 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 			AutoStart:    req.AutoStart,
 		},
 	}
-	if err := s.Tasks.CreateTask(task); err != nil {
+	// A card-command launcher's own task continuation (BoidOpTaskCreate's
+	// ownership-verified CardRequestID) must be persisted atomically with
+	// the request→task association — see CardRequestTaskLinker's own doc
+	// comment. Every other caller (CardRequestID always empty) is entirely
+	// unaffected: the ordinary get-or-create INSERT below is unchanged.
+	if req.CardRequestID != "" && s.CardRequestLinker != nil {
+		if err := s.CardRequestLinker.CreateTaskLinkedToCardRequest(task, req.CardRequestID); err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+	} else if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	// Guard: only fire auto_start for a freshly pending task. Reachable when

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -260,6 +261,104 @@ func (r *TaskRepository) ForceReleaseCardRequest(id, reason string) error {
 	return db.InTxDB(conn, func(tx db.DBTX) error {
 		return ForceReleaseCardRequest(tx, id, reason)
 	})
+}
+
+// CreateCardRequest backs a card command launcher's request creation — a
+// single INSERT, no transaction needed (api.CardCommandLauncherStore).
+func (r *TaskRepository) CreateCardRequest(req *CardRequest) error {
+	return CreateCardRequest(r.db, req)
+}
+
+// ClaimQueuedCardRequests backs a card command launcher's slot claim —
+// multiple statements (promote + fold) that must land together, same
+// InTxDB-over-raw-*sql.DB shape as ForceReleaseCardRequest above.
+func (r *TaskRepository) ClaimQueuedCardRequests(cardID, launcherJobID string, def CardRequestDefinition) (*CardRequest, []*CardRequest, error) {
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return ClaimQueuedCardRequests(r.db, cardID, launcherJobID, def)
+	}
+	var primary *CardRequest
+	var folded []*CardRequest
+	err := db.InTxDB(conn, func(tx db.DBTX) error {
+		var err error
+		primary, folded, err = ClaimQueuedCardRequests(tx, cardID, launcherJobID, def)
+		return err
+	})
+	return primary, folded, err
+}
+
+// FailCardRequest backs a card command launcher's slot release on dispatch
+// failure — two UPDATEs (fail + release folded siblings) that must land
+// together, same InTxDB-over-raw-*sql.DB shape as ForceReleaseCardRequest.
+func (r *TaskRepository) FailCardRequest(id, errText string) error {
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return FailCardRequest(r.db, id, errText)
+	}
+	return db.InTxDB(conn, func(tx db.DBTX) error {
+		return FailCardRequest(tx, id, errText)
+	})
+}
+
+// CountActiveCardRequests backs the shared execution-slot occupancy check —
+// a single read, no transaction needed.
+func (r *TaskRepository) CountActiveCardRequests(cardID string) (int, error) {
+	return CountActiveCardRequests(r.db, cardID)
+}
+
+// ListCardRequestsByCard backs a manual command's "return a link to the
+// current execution" response when the card's slot is already occupied — a
+// single read, no transaction needed.
+func (r *TaskRepository) ListCardRequestsByCard(cardID string) ([]*CardRequest, error) {
+	return ListCardRequestsByCard(r.db, cardID)
+}
+
+// CreateTaskLinkedToCardRequest runs CreateTask(t) and AttachCardRequest
+// (requestID, "task", t.ID) IN THE SAME TRANSACTION, so a task continuation
+// is never observable without its request association. Callers are
+// expected to have already verified launcher ownership (LauncherJobID ==
+// the calling job's id); this method re-checks requestID's status
+// atomically but not ownership. A retry that hits CreateTask's own
+// Ref/IdempotencyKey get-or-create and finds the SAME task already attached
+// is treated as success, not an error.
+func (r *TaskRepository) CreateTaskLinkedToCardRequest(t *Task, requestID string) error {
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return createTaskLinkedToCardRequest(r.db, t, requestID)
+	}
+	return db.InTxDB(conn, func(tx db.DBTX) error {
+		return createTaskLinkedToCardRequest(tx, t, requestID)
+	})
+}
+
+// createTaskLinkedToCardRequest is CreateTaskLinkedToCardRequest's body,
+// dbtx-parameterized so both the *sql.DB (wraps its own tx) and already-
+// inside-a-tx (nested call, e.g. from a caller that already holds one)
+// shapes share one implementation.
+func createTaskLinkedToCardRequest(dbtx db.DBTX, t *Task, requestID string) error {
+	if err := CreateTask(dbtx, t); err != nil {
+		return fmt.Errorf("create task linked to card request: %w", err)
+	}
+	if err := AttachCardRequest(dbtx, requestID, CardRequestTargetKindTask, t.ID); err != nil {
+		if errors.Is(err, ErrCardRequestInvalidTransition) {
+			// Idempotent retry (t.ID unchanged via Ref/IdempotencyKey
+			// get-or-create) or a request that raced to a different
+			// terminal state — re-read and decide rather than assume.
+			existing, gerr := GetCardRequest(dbtx, requestID)
+			if gerr != nil {
+				return fmt.Errorf("create task linked to card request: re-read %q after attach conflict: %w", requestID, gerr)
+			}
+			if existing.TargetKind == CardRequestTargetKindTask && existing.TargetID == t.ID {
+				// Already correctly attached to this exact task — the
+				// retry converges, not an error.
+				return nil
+			}
+			return fmt.Errorf("create task linked to card request: %q is already attached to %s %q, not task %q: %w",
+				requestID, existing.TargetKind, existing.TargetID, t.ID, ErrCardRequestInvalidTransition)
+		}
+		return fmt.Errorf("create task linked to card request: attach: %w", err)
+	}
+	return nil
 }
 
 type ProjectRepository struct {

@@ -299,6 +299,27 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(createReq.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
+		// A card-command launcher's own root create claims its
+		// card_requests row's slot (mirrors executeAgentStart's ownership
+		// check) — only when this job actually owns that request, and only
+		// for a parentless create. A launcher's own JobSpec.CardRequestID
+		// never propagates to the continuation task's LATER, ordinary child
+		// creations, so this branch is naturally unreachable for those.
+		if ctx.CardRequestID != "" && createReq.ParentID == "" && e.cardRequests != nil {
+			row, err := e.cardRequests.GetCardRequest(ctx.CardRequestID)
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create: " + err.Error()}
+			}
+			if ctx.CardID != "" && row.CardID == ctx.CardID &&
+				row.LauncherJobID != "" && row.LauncherJobID == ctx.JobID &&
+				row.Status == orchestrator.CardRequestStatusLaunching {
+				createReq.CardRequestID = ctx.CardRequestID
+				if createReq.Ref == "" {
+					// Default so a retried launcher converges via get-or-create.
+					createReq.Ref = ctx.CardRequestID
+				}
+			}
+		}
 		task, err := e.tasks.CreateTask(createReq)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}

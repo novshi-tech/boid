@@ -87,6 +87,12 @@ type TaskWorkflowService struct {
 	// is entirely unaffected either way.
 	Signals SignalStore
 
+	// CardRequests backs RunCardCommand's card_requests slot claim/release
+	// (card_command_launcher.go). Nil is tolerated the same way Triggers/
+	// Exec/Signals above are — RunCardCommand returns "not configured"
+	// rather than panicking when unwired.
+	CardRequests CardCommandLauncherStore
+
 	dispatchCtx    context.Context
 	dispatchCancel context.CancelFunc
 	dispatchWG     sync.WaitGroup

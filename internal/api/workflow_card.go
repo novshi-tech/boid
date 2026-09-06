@@ -168,18 +168,24 @@ func applyChildAddedSideEffect(tx TxStore, taskID string, p *childAddedPayload) 
 }
 
 // cardSlotOccupied reports whether taskID's single work slot is currently
-// occupied: either a live (pending/executing/awaiting) execution task row
-// under it — task.OpenChildCount, which counts every non-terminal direct
-// child regardless of whether task_triage.detail even mentions it (the
-// direct-CreateTask bypass this invariant must also catch) — or an
-// open/specced entry in task_triage.detail.children not yet task-ified.
-// Must be read inside the same transaction as the write it gates.
+// occupied: a live execution task row under it, an open/specced entry in
+// task_triage.detail.children, OR a card_requests row currently
+// launching/attached — three independent signals of the SAME shared slot,
+// ORed rather than summed. Must be read inside the same transaction as the
+// write it gates.
 func cardSlotOccupied(tx TxStore, cardID string) (bool, error) {
 	card, err := tx.GetTask(cardID)
 	if err != nil {
 		return false, err
 	}
 	if card.OpenChildCount > 0 {
+		return true, nil
+	}
+	active, err := tx.CountActiveCardRequests(cardID)
+	if err != nil {
+		return false, err
+	}
+	if active > 0 {
 		return true, nil
 	}
 	tt, err := tx.GetTaskTriage(cardID)

@@ -480,6 +480,9 @@ type TxStore interface {
 	// their own sidecar side effects inside the same transaction.
 	TaskIdentityStore
 	TaskUpdatedAtToucher
+	// CountActiveCardRequests backs cardSlotOccupied's OR-with-card_requests
+	// check (workflow_card.go) — see that function's own doc comment.
+	CountActiveCardRequests(cardID string) (int, error)
 }
 
 type Transactor interface {

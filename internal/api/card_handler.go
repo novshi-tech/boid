@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -14,6 +16,12 @@ type CardReadService interface {
 	ListCards(filter orchestrator.TaskFilter) ([]*CardView, error)
 }
 
+// CardCommandRunService is the manual card-command launch surface
+// CardHandler needs — narrowed from *TaskWorkflowService.
+type CardCommandRunService interface {
+	RunCardCommand(ctx context.Context, cardID, commandKey, instruction string) (*RunCardCommandResult, error)
+}
+
 // CardHandler serves the card read surface.
 //
 // Mounted at its own /api/cards root rather than as /api/tasks/{id}/cards +
@@ -22,13 +30,41 @@ type CardReadService interface {
 // position as the {id} wildcard.
 type CardHandler struct {
 	Service CardReadService
+	// Commands is optional; nil disables the run-command route with a 501.
+	Commands CardCommandRunService
 }
 
 func (h *CardHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.List)
 	r.Get("/{id}", h.Get)
+	r.Post("/{id}/commands/{key}", h.RunCommand)
 	return r
+}
+
+type runCardCommandBody struct {
+	Instruction string `json:"instruction,omitempty"`
+}
+
+// RunCommand handles POST /api/cards/{id}/commands/{key}: fires a
+// project.yaml-declared card_commands entry as a human command launcher. A
+// missing/malformed body is treated as an empty instruction, not a 400 —
+// an empty instruction is allowed.
+func (h *CardHandler) RunCommand(w http.ResponseWriter, r *http.Request) {
+	if h.Commands == nil {
+		writeError(w, http.StatusNotImplemented, "card commands not configured")
+		return
+	}
+	var body runCardCommandBody
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	result, err := h.Commands.RunCardCommand(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "key"), body.Instruction)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // Get returns one triage task's full projection (stored columns + the

@@ -46,7 +46,8 @@ type recordingTxStore struct {
 	getTaskTriageOnCall    map[int]*orchestrator.CardAttrs
 }
 
-func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error { return nil }
+func (s *recordingTxStore) CountActiveCardRequests(cardID string) (int, error) { return 0, nil }
+func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error           { return nil }
 func (s *recordingTxStore) GetTask(id string) (*orchestrator.Task, error) {
 	// Prefer the most recently committed update (if any) over the original
 	// snapshot, so a second WithinTx call within the same test (e.g. PR-2's

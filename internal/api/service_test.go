@@ -1825,7 +1825,8 @@ type stubTx struct {
 	createdAction *orchestrator.Action
 }
 
-func (s *stubTx) CreateTask(task *orchestrator.Task) error { return nil }
+func (s *stubTx) CountActiveCardRequests(cardID string) (int, error) { return 0, nil }
+func (s *stubTx) CreateTask(task *orchestrator.Task) error           { return nil }
 func (s *stubTx) GetTask(id string) (*orchestrator.Task, error) {
 	return nil, fmt.Errorf("not found")
 }

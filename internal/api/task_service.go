@@ -49,6 +49,18 @@ type TaskAppService struct {
 	// Nil disables the three ops with an "unavailable" error, same convention
 	// as every other optional dependency here.
 	Identities TaskIdentityStore
+	// CardRequestLinker backs a card-command launcher's atomic task
+	// creation + card_requests attach (see CreateTaskRequest.CardRequestID).
+	// Nil falls back to the ordinary s.Tasks.CreateTask path.
+	CardRequestLinker CardRequestTaskLinker
+}
+
+// CardRequestTaskLinker is the single-method surface createExecutionTask
+// needs to attach a fresh task to its originating card_requests row inside
+// the SAME transaction as the task's own INSERT. Satisfied by
+// *orchestrator.TaskRepository.
+type CardRequestTaskLinker interface {
+	CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID string) error
 }
 
 // Notifier sends an agent-driven notification for a task. Implementations

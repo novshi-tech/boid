@@ -149,6 +149,12 @@ type StartExecRequest struct {
 	// nil, and sessionDispatcherAdapter.StartExec dispatches exactly as
 	// before this PR when it is nil.
 	Connector *ConnectorRef `json:"connector,omitempty"`
+
+	// JobID, CardID and CardRequestID are never client-settable (json:"-") —
+	// only internal/api's card command launcher sets them.
+	JobID         string `json:"-"`
+	CardID        string `json:"-"`
+	CardRequestID string `json:"-"`
 }
 
 // ConnectorRef identifies a signal-derived trigger's connector — the raw
