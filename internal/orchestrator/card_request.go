@@ -360,7 +360,7 @@ func failCardRequest(dbtx db.DBTX, id, errText string, siblings foldedSiblingOut
 	}
 	switch siblings {
 	case foldedSiblingsFail:
-		siblingErrText := fmt.Sprintf("folded into %s, which was force-released: %s", id, errText)
+		siblingErrText := fmt.Sprintf("folded into %s, which failed: %s", id, errText)
 		if _, err := dbtx.Exec(
 			`UPDATE card_requests SET status = ?, folded_into = '', error = ?, updated_at = ? WHERE folded_into = ? AND status = ?`,
 			string(CardRequestStatusFailed), siblingErrText, now, id, string(CardRequestStatusFolded),

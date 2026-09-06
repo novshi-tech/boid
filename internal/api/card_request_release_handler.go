@@ -109,18 +109,10 @@ type releaseCardRequestBody struct {
 // enough (unlike `boid agent start --instruction`'s sandbox.PayloadPatchMaxBytes).
 const releaseReasonMaxBytes = 4096
 
-// releaseResult is Release's response shape: it echoes the request's
-// pre-release target (if any) since force-release only frees the slot, not
-// whatever continuation was still attached to it.
-type releaseResult struct {
-	Status         string `json:"status"`
-	TargetKind     string `json:"target_kind,omitempty"`
-	TargetID       string `json:"target_id,omitempty"`
-	HadLiveTarget  bool   `json:"had_live_target,omitempty"`
-	OperatorNotice string `json:"operator_notice,omitempty"`
-}
-
-// Release handles POST /api/card-requests/{id}/release. Body is optional;
+// Release handles POST /api/card-requests/{id}/release. Its response shape
+// is ReleaseResult (apiwire_aliases.go) — a daemon↔client wire type, so
+// `boid task release-card-request` decodes straight into the SAME type via
+// apiwire instead of keeping its own hand-duplicated copy. Body is optional;
 // an empty/missing reason falls back to ForceReleaseCardRequest's own
 // default message.
 func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
@@ -159,14 +151,36 @@ func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	result := releaseResult{Status: "released"}
-	if before != nil && before.TargetKind != "" && before.TargetID != "" {
+	result := ReleaseResult{Status: "released"}
+	switch {
+	case before != nil && before.TargetKind != "" && before.TargetID != "":
 		result.TargetKind = before.TargetKind
 		result.TargetID = before.TargetID
-		result.HadLiveTarget = true
+		result.HadAttachedTarget = true
 		result.OperatorNotice = fmt.Sprintf(
 			"this only freed the card's execution slot — the %s %s it was attached to is NOT stopped and may still be running; stop it by hand if that's not wanted",
 			before.TargetKind, before.TargetID)
+	case before != nil && before.Status == orchestrator.CardRequestStatusLaunching &&
+		before.LauncherJobID != "" && before.CommandKey == orchestrator.CardRequestCommandKeyGo:
+		// A Go reservation's LauncherJobID is a synthetic "go:"+uuid marker,
+		// never a real job (workflow_card.go) — there is no `boid job` to
+		// inspect. Still tell the operator a card slot was freed while
+		// acceptGo may still be mid-flight and could land a continuation
+		// against this now-released, force-failed row.
+		result.LauncherJobID = before.LauncherJobID
+		result.OperatorNotice = fmt.Sprintf(
+			"this only freed the card's execution slot — the Go reservation %s has no launcher job to inspect (task creation runs in-process); it may still be mid-flight and could try to attach a continuation to this now-released request",
+			before.LauncherJobID)
+	case before != nil && before.Status == orchestrator.CardRequestStatusLaunching && before.LauncherJobID != "":
+		// A launching row has no continuation attached yet — the thing
+		// still possibly running is its OWN launcher job, which force-release
+		// never touches. Without this, the operator gets nothing but
+		// "released" and no hint that the launcher could still land an
+		// AttachCardRequest against this now-released, force-failed row.
+		result.LauncherJobID = before.LauncherJobID
+		result.OperatorNotice = fmt.Sprintf(
+			"this only freed the card's execution slot — launcher job %s is NOT stopped and may still be running (and could still try to attach a continuation to this now-released request); inspect it with `boid job` and stop it by hand if that's not wanted",
+			before.LauncherJobID)
 	}
 	writeJSON(w, http.StatusOK, result)
 }

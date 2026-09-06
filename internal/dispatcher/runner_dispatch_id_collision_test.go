@@ -1,17 +1,17 @@
 package dispatcher
 
-// Pins PR-2d-5 item 5's fix: Runner.Dispatch's token-cleanup defer
-// (`if dispatchErr != nil { r.UnregisterJob(j.ID) } `) used to be registered
-// BEFORE CreateJob ran. Since PR-2d-3 a caller (the card-command launcher,
-// acceptGo) can supply spec.ID up front, so a swallowed GetJob error on the
-// duplicate-id pre-check (or a genuine race) can let Dispatch reach
-// CreateJob with an id that already belongs to another, already-dispatched
-// job. CreateJob's UNIQUE constraint then fails — and pre-fix, the
-// already-registered defer would call r.UnregisterJob(j.ID), revoking the
-// OTHER job's live broker token, not this call's own (which registered
-// none). Moving the defer to after CreateJob succeeds closes this: a
-// failing CreateJob now never unregisters anything this call didn't itself
-// just create.
+// Pins Runner.Dispatch's token-cleanup defer
+// (`if dispatchErr != nil { r.UnregisterJob(j.ID) } `) running only AFTER
+// CreateJob succeeds. A caller (the card-command launcher, acceptGo) can
+// supply spec.ID up front, so a swallowed GetJob error on the duplicate-id
+// pre-check (or a genuine race) can let Dispatch reach CreateJob with an id
+// that already belongs to another, already-dispatched job. CreateJob's
+// UNIQUE constraint then fails — if the cleanup defer were registered
+// before CreateJob ran, it would call r.UnregisterJob(j.ID) and revoke the
+// OTHER job's live broker token instead of this call's own (which
+// registered none). Registering the defer only after CreateJob succeeds
+// means a failing CreateJob never unregisters anything this call didn't
+// itself just create.
 //
 // r.idCheckForTest is swapped out here to simulate the "GetJob's error was
 // swallowed" trigger deterministically, without needing a real concurrent

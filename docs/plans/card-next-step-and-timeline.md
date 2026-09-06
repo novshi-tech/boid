@@ -576,8 +576,8 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   read-then-write。`card_requests` 行を持たない create（`CardRequestID==""`）は
   再チェックと INSERT を同一 `WithinTx` に閉じ、RunCardCommandAsHuman/acceptGo の予約と
   完全に調停する（`TaskAppService.Tx`、`internal/api/task_create.go`）。
-  `CardRequestID!=""` の経路（launcher/Go 自身の継続 create、
-  `CreateTaskLinkedToCardRequest` が既にそれ自体を原子的に行う）は対象外のまま。
+  当時 `CardRequestID!=""` の経路は対象外のままだった
+  （**PR-2d-6 でこちらも同じ `WithinTx` に入れた — 下記参照**）。
 
   **PR-2d-5 で訂正: 「二重に `WithinTx` を開くとデッドロックする」という上記の
   理由づけは不正確だった — 実行して確認済み。**
@@ -593,25 +593,79 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   `CreateTaskLinkedToCardRequest` を生やして `apiTxStore` から
   委譲するだけなら、実際にはデッドロックしない。
 
-  ただし `CardRequestID!=""` の実際の非トランザクション窓は
-  `task_create.go` の `cardParent` 単位の枠チェックではない —
-  launcher の継続は必ず ROOT task（`ParentID==""`）なので `cardParent` は
-  この経路では常に nil で、そもそも枠チェックの対象にならない。真の窓は
-  `internal/server/boid_executor.go`（`BoidOpTaskCreate`）の所有権チェック
-  （`GetCardRequest` の非トランザクション読み）から
-  `TaskAppService.CreateTask`（behavior 解決・ref/idempotency-key 分岐を
-  経て `CreateTaskLinkedToCardRequest` に達するまでの長い呼び出し）までの
-  パッケージ境界をまたぐ区間であり、ここを 1 tx に閉じるには
-  `boid_executor.go` から `CreateTask` の重い前処理パイプライン全体を
-  bypass して tx 付き repo を直接呼ぶ経路を新設する必要がある — 単に
-  interface にメソッドを生やすより大きい変更で、本 PR の範囲を超える。
+  **PR-2d-6 で訂正: 上記「launcher の継続は必ず ROOT task なので `cardParent`
+  はこの経路では常に nil」は不正確だった。** これは launcher/継続タスク自身が
+  さらに子タスクを作る場合（そのタスクの `ParentID` は自分自身が
+  `ParentID==""` の ROOT task）の話であって、acceptGo 自身が「予約した子を
+  task 化する」最初の `TaskCreator.CreateTask` 呼び出しには当てはまらない。
+  `internal/api/workflow_card.go` の acceptGo は `ParentID: taskID`
+  （card 自身）かつ `CardRequestID: cardRequestID`（自分の予約）で呼んでいる —
+  このケースは `cardParent != nil` になり、`createExecutionTask` の
+  非トランザクショナルな `cardSlotConflictWithRequests` 事前チェックを
+  通っていた。**`RunCardCommandAsHuman` はこれには当てはまらない** —
+  その launcher 自身は `TaskCreator.CreateTask` を一度も呼ばず、継続の
+  task 化は launcher job が後で発行する `boid task create` 経由
+  （`internal/server/boid_executor.go`）で、そちらは `--parent <this card>`
+  を明示的に拒否して ROOT task しか継続にできない（`ctx.CardRequestID` は
+  `createReq.ParentID == ""` のときにしかスタンプされない）。
 
-  **実害は変わらず限定的で、ここは維持: 窓の間に競合しても
-  `AttachCardRequest` 自身の `WHERE status='launching'` 原子チェックが
-  ステータス変化を検出して失敗し（`createTaskLinkedToCardRequest` の
-  tx 全体がロールバック）、余計な 409/500 と作成のやり直しに留まる。
-  `idx_card_requests_active_unique` がある限り枠の二重占有には至らない。**
-  根絶は引き続き follow-up。
+  **`idx_card_requests_active_unique` が「調停する」という表現も不正確
+  だった。** この UNIQUE INDEX は `card_requests` テーブル自身の行にしか
+  効かない — `CardRequestID==""` の直接 create は `card_requests` 行を
+  一切取らないので、index がこの create を直接弾くことはできない。実際に
+  効いていたのは `cardSlotConflictWithLister` が `ListCardRequestsByCard` で
+  毎回フレッシュに読む「アクティブな `card_requests` 行があるか」チェックの
+  方で、index はその読みが返す集合が「card あたり高々1行」であることを
+  保証しているだけ。
+
+  **PR-2d-6 で閉じた:** `createExecutionTask` の `atomicCardCheck` 分岐を
+  `CardRequestID!=""` のケースにも拡張し、`cardParent != nil` かつ
+  `s.Tx != nil`（wire.go は本番で常にこれを満たす）ならどちらの
+  `CardRequestID` ケースも同一 `WithinTx` に通すようにした
+  （`internal/api/task_create.go`）。フレッシュな再チェック
+  （`cardSlotConflictWithLister`）と INSERT（`CardRequestID==""` なら
+  `tx.CreateTask`、`CardRequestID!=""` なら `tx.CreateTaskLinkedToCardRequest`
+  — PR-2d-5 が `TxStore` に生やしていたが `createExecutionTask` からは
+  一度も呼ばれていなかったメソッド）が同じトランザクションに入るので、
+  「非トランザクショナルな事前チェック」と「別ラウンドトリップの INSERT」の
+  間の read-then-write の隙間は、acceptGo 自身の子 dispatch と並行する
+  直接 `--parent <card>` create のペアについて構造的になくなった
+  （`RunCardCommandAsHuman` はこの分岐を経路として使わない — 上記参照）。
+  `internal/api/task_create_card_slot_atomic_test.go` の
+  `TestCreateTask_AtomicPath_CardRequestIDCarrying_RoutesThroughOneTx` /
+  `_RejectsWhenAnotherOccupantExists` が実 DB でこれを固定している。
+
+  **`s.Tx` が nil のときは今も旧経路（非トランザクショナルな事前チェック→
+  別ラウンドトリップの `CreateTaskLinkedToCardRequest` 呼び出し）に
+  フォールバックする。** wire.go が本番で常に `Tx` を渡している前提が崩れ
+  ない限り実害はないが、この前提自体は型で強制されているわけではない
+  （nil を渡せば通ってしまう）。
+
+  **今回閉じたのは「card の単一作業枠が二重占有されるか」（PR-1 invariant）
+  という一点のみ。** `internal/server/boid_executor.go`（`BoidOpTaskCreate`）
+  の所有権チェック（`GetCardRequest` の非トランザクション読み）から
+  `TaskAppService.CreateTask` までの区間 — 「この呼び出しは本当にこの
+  `CardRequestID` を保持している launcher からのものか」という別種の
+  TOCTOU（所有権の詐称・誤認の話であって枠の二重占有ではない）には
+  手を付けていない。引き続き follow-up。
+
+  **未着手（レビューが指摘）: 同じ PR-1 invariant に対する
+  非トランザクショナルな pre-check → 別ラウンドトリップの書き込みが、
+  `createExecutionTask` 以外にあと2箇所ある。** どちらも
+  `internal/api/task_service.go` の中で、`cardSlotConflictWithRequests`
+  による pre-check の後、`atomicCardCheck` のような同一 `WithinTx` に
+  入らない別の `s.Tasks.UpdateTask(task)` 呼び出しで書き込む:
+  - `TaskAppService.UpdateTask`（`req.ParentID` を card へ変更する reparent
+    経路）
+  - `TaskAppService.RerunTask`（done/aborted task を pending に戻す経路）
+
+  どちらも `createExecutionTask` の direct-create パスと同型の read-then-write
+  ギャップを持つ — pre-check とその後の `UpdateTask` の間に、別の経路
+  （acceptGo の子作成や別の direct-create）が同じ card の枠を埋める余地が
+  残る。今回 `atomicCardCheck` を拡張した対象は `createExecutionTask` の
+  新規作成パスのみで、この2つの更新系パスは含まれない。単一ユーザー前提
+  では確率は低いが、doc の主張を実装と一致させるため未着手として明記する
+  （Gate A の入口条件対象）。
 - **PR-2d-5 で確定: jobs 行が非終端のまま固まった (daemon プロセスは生きているが
   launcher job の行だけ never-terminal になった、あるいは daemon SIGKILL 等) launching
   card_requests 行は、既知の制約として受け入れる。** 周期 self-heal

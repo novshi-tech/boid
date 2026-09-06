@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/spf13/cobra"
 )
@@ -22,8 +23,11 @@ var taskReleaseCardRequestCmd = &cobra.Command{
 		"reconcile ループが自律的に解放するので、それらが効かない\n" +
 		"詰まりにのみ使うこと。\n\n" +
 		"注意: これは枠を解放するだけで、継続先 (session/task) 自体は\n" +
-		"止めない。生存中の継続先があった場合はコマンドが warning を\n" +
-		"出す — 本当に止めたいなら別途手動で対処すること。",
+		"止めない。解放対象の行に継続先が記録されていた場合、または\n" +
+		"launching のまま (launcher job がまだ動いている可能性がある)\n" +
+		"場合は、コマンドが warning を出す — どちらも「生存を確認した」\n" +
+		"わけではなく「まだ動いている可能性がある」という注意喚起なので、\n" +
+		"本当に止めたいなら別途手動で確認・対処すること。",
 	Args: cobra.ExactArgs(1),
 	RunE: runTaskReleaseCardRequest,
 }
@@ -36,27 +40,20 @@ func init() {
 	taskCmd.AddCommand(taskReleaseCardRequestCmd)
 }
 
-// taskReleaseCardRequestResult mirrors api.releaseResult's wire shape — only
-// the fields this command reads.
-type taskReleaseCardRequestResult struct {
-	Status         string `json:"status"`
-	TargetKind     string `json:"target_kind,omitempty"`
-	TargetID       string `json:"target_id,omitempty"`
-	HadLiveTarget  bool   `json:"had_live_target,omitempty"`
-	OperatorNotice string `json:"operator_notice,omitempty"`
-}
-
 func runTaskReleaseCardRequest(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
 	requestID := args[0]
 
-	var result taskReleaseCardRequestResult
+	var result apiwire.ReleaseResult
 	if err := c.Do("POST", fmt.Sprintf("/api/card-requests/%s/release", requestID), map[string]string{"reason": taskReleaseCardRequestReason}, &result); err != nil {
 		return fmt.Errorf("release card request: %w", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "card request %s released\n", requestID)
-	if result.HadLiveTarget {
+	if result.OperatorNotice != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "warning: %s\n", result.OperatorNotice)
+		if result.LauncherJobID != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  launcher_job_id: %s\n", result.LauncherJobID)
+		}
 	}
 	return nil
 }

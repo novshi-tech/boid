@@ -498,8 +498,7 @@ type TxStore interface {
 	// CreateTaskLinkedToCardRequest lets a caller already inside a
 	// WithinTx close its own read-then-write gap around a card_requests
 	// launcher continuation: TaskRepository's own dbtx type-switch means a
-	// tx-bound call here does not open a nested transaction (see
-	// TestCreateTaskLinkedToCardRequest_TxBoundRepo_DoesNotDeadlockInAnOuterTx).
+	// tx-bound call here does not open a nested transaction.
 	CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID string) error
 }
 

@@ -182,12 +182,11 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 	if card.Type != orchestrator.TaskTypeCard {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: "card command: target task is not a card"}
 	}
-	if card.Status != orchestrator.TaskStatusParked && card.Status != orchestrator.TaskStatusWorking {
-		return nil, &StatusError{
-			Code:    http.StatusConflict,
-			Message: fmt.Sprintf("card command: card is %q, not parked or working — reopen it before running a command", card.Status),
-		}
-	}
+	// No parked/working status guard here: this read is taken before the
+	// reservation Tx even opens, so it can go stale in the gap before that
+	// Tx's own fresh re-check. cardWorkChildOccupantTx re-reads the card
+	// inside that same transaction and is the sole enforcement point — a
+	// duplicate check here would just be dead weight racing its own staleness.
 
 	meta := s.hydrateMetaForTriggers(ctx, card.ProjectID)
 	if meta == nil || len(meta.CardCommands) == 0 {

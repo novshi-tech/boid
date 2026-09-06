@@ -893,9 +893,10 @@ func (s *TaskWorkflowService) reserveGoCardRequest(cardID string) (*orchestrator
 // else. See queue_sweep.go's SweepWake for what wake_due became instead
 // (a fact record, no transition).
 //
-// Compensation order (same-Tx is impossible: SetMaxOpenConns(1),
-// internal/db/db.go, deadlocks a nested TaskCreator.CreateTask call from
-// inside an already-open transaction):
+// Compensation order (same-Tx is impossible: TaskCreator.CreateTask can
+// itself open its own transaction for a card-parented create — nesting that
+// call inside an already-open outer transaction would deadlock under
+// SetMaxOpenConns(1), internal/db/db.go):
 //
 //  1. Task-ify every `specced` child in task_triage.detail.children
 //     (TaskCreator.CreateTask + auto-start) — non-transactional.
