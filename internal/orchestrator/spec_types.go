@@ -508,9 +508,14 @@ type ProjectMeta struct {
 	// CardCommands is a free-naming dictionary from a workspace-chosen key
 	// to a label and a run command; ValidateCardCommands checks shape only.
 	CardCommands map[string]CardCommand `yaml:"card_commands,omitempty" json:"card_commands,omitempty"`
+	// CardCommandsOrder is CardCommands' project.yaml declaration order,
+	// filled separately since a Go map cannot carry it itself.
+	CardCommandsOrder []string `yaml:"-" json:"-"`
 	// CardEvents names the CardCommands key that auto-starts for internal
 	// card events; empty means none. Validated but not yet consumed.
-	CardEvents CardEventsConfig `yaml:"card_events,omitempty" json:"card_events,omitempty"`
+	// json:"-" because CardEventsConfig is a non-pointer struct, so
+	// omitempty can't omit it.
+	CardEvents CardEventsConfig `yaml:"card_events,omitempty" json:"-"`
 	// Triggers is a TOP-LEVEL project.yaml field — deliberately NOT nested
 	// under any TaskBehavior: "when it starts" is a different concern from
 	// task_behaviors' "how it runs". Not part of the workspace envelope

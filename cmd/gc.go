@@ -49,6 +49,8 @@ func runGC(cmd *cobra.Command, args []string) error {
 		TriggerRuns int64 `json:"trigger_runs"`
 		// Signals is the count of signals rows deleted.
 		Signals int64 `json:"signals"`
+		// CardRequests is the count of finished/failed card_requests rows deleted.
+		CardRequests int64 `json:"card_requests"`
 		// WorkspaceHomes lists every workspace HOME VOLUME this install has
 		// on the engine, with its size — visibility only, GC never deletes a
 		// workspace home itself (`workspace remove` does that). Comes back
@@ -67,11 +69,11 @@ func runGC(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 	if dryRun {
-		fmt.Fprintf(out, "dry run: would delete %d tasks, %d jobs, %d actions, %d runtimes, %d sandbox tmp entries, %d trigger runs, %d signals\n",
-			result.Tasks, result.Jobs, result.Actions, result.Runtimes, result.SandboxTmp, result.TriggerRuns, result.Signals)
+		fmt.Fprintf(out, "dry run: would delete %d tasks, %d jobs, %d actions, %d runtimes, %d sandbox tmp entries, %d trigger runs, %d signals, %d card requests\n",
+			result.Tasks, result.Jobs, result.Actions, result.Runtimes, result.SandboxTmp, result.TriggerRuns, result.Signals, result.CardRequests)
 	} else {
-		fmt.Fprintf(out, "deleted: %d tasks, %d jobs, %d actions, %d runtimes, %d sandbox tmp entries, %d trigger runs, %d signals\n",
-			result.Tasks, result.Jobs, result.Actions, result.Runtimes, result.SandboxTmp, result.TriggerRuns, result.Signals)
+		fmt.Fprintf(out, "deleted: %d tasks, %d jobs, %d actions, %d runtimes, %d sandbox tmp entries, %d trigger runs, %d signals, %d card requests\n",
+			result.Tasks, result.Jobs, result.Actions, result.Runtimes, result.SandboxTmp, result.TriggerRuns, result.Signals, result.CardRequests)
 	}
 
 	printWorkspaceHomes(out, result.WorkspaceHomes, result.WorkspaceHomesListError)
