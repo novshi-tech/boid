@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -299,13 +300,15 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(createReq.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
-		// A card-command launcher's own root create claims its
-		// card_requests row's slot (mirrors executeAgentStart's ownership
-		// check) — only when this job actually owns that request, and only
-		// for a parentless create. A launcher's own JobSpec.CardRequestID
-		// never propagates to the continuation task's LATER, ordinary child
-		// creations, so this branch is naturally unreachable for those.
-		if ctx.CardRequestID != "" && createReq.ParentID == "" && e.cardRequests != nil {
+		// A card-command launcher's own root, execution-type create claims
+		// its card_requests row's slot (mirrors executeAgentStart's
+		// ownership check) — only when this job actually owns that request.
+		// A card-type create (initial_status=parked) is never a valid
+		// continuation and must not silently consume the slot. A launcher's
+		// own JobSpec.CardRequestID never propagates to the continuation
+		// task's LATER, ordinary child creations, so this branch is
+		// naturally unreachable for those.
+		if ctx.CardRequestID != "" && createReq.ParentID == "" && createReq.InitialStatus != "parked" && e.cardRequests != nil {
 			row, err := e.cardRequests.GetCardRequest(ctx.CardRequestID)
 			if err != nil {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create: " + err.Error()}
@@ -318,6 +321,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 					// Default so a retried launcher converges via get-or-create.
 					createReq.Ref = ctx.CardRequestID
 				}
+			} else {
+				slog.Warn("boid task create: job carries card request context but does not own it; creating without attaching",
+					"card_request_id", ctx.CardRequestID, "job_id", ctx.JobID, "request_launcher_job_id", row.LauncherJobID, "request_status", row.Status)
 			}
 		}
 		task, err := e.tasks.CreateTask(createReq)

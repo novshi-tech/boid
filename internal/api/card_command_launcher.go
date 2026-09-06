@@ -66,6 +66,21 @@ func currentOccupantResult(store CardCommandLauncherStore, cardID string) (*RunC
 	return nil, &StatusError{Code: http.StatusConflict, Message: "card command: slot reported occupied but no active request found; retry"}
 }
 
+// cardWorkChildOccupant reports the task id of card's live or specced work
+// child, if any — the same occupancy cardSlotOccupied checks for
+// child_added, read non-transactionally here as a pre-dispatch guard so a
+// card command never runs alongside an already-dispatched Go child.
+func (s *TaskWorkflowService) cardWorkChildOccupant(card *orchestrator.Task) (occupantID string, occupied bool) {
+	if s.TaskTriage != nil {
+		if tt, err := s.TaskTriage.GetTaskTriage(card.ID); err == nil {
+			if id, derr := orchestrator.DetailOpenSlotChildID(tt.Detail); derr == nil && id != "" {
+				return id, true
+			}
+		}
+	}
+	return "", card.OpenChildCount > 0
+}
+
 // RunCardCommand fires cardID's commandKey card_commands entry as a human
 // (cause_id empty) command launcher: a short-lived readonly exec job that
 // runs the project.yaml `run:` command with card/request context in its
@@ -101,6 +116,13 @@ func (s *TaskWorkflowService) RunCardCommand(ctx context.Context, cardID, comman
 	cmd, ok := meta.CardCommands[commandKey]
 	if !ok {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("card command: no such command %q", commandKey)}
+	}
+
+	// A live/specced Go work child occupies the SAME shared execution slot
+	// as a card_requests row — checked here too, or a command could dispatch
+	// alongside an already-running Go child.
+	if occupantID, occ := s.cardWorkChildOccupant(card); occ {
+		return &RunCardCommandResult{Occupied: true, TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: occupantID}, nil
 	}
 
 	// Optimization only: the actual safety net is CreateCardRequest's own

@@ -182,3 +182,63 @@ func TestDispatch_NoCallerSuppliedJobID_GeneratesFresh(t *testing.T) {
 		t.Fatalf("want two distinct generated ids, got %q and %q", id1, id2)
 	}
 }
+
+// TestDispatch_DuplicateCallerSuppliedJobID_RejectedCleanly pins the Opus-
+// review fix: a caller-supplied spec.ID colliding with an EXISTING job must
+// fail before ever registering any token under that id — otherwise the
+// deferred cleanup-on-error path would call UnregisterJob(j.ID) and revoke
+// the EXISTING (unrelated) job's tokens.
+func TestDispatch_DuplicateCallerSuppliedJobID_RejectedCleanly(t *testing.T) {
+	d := newGatewayTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	broker := &recordingBroker{}
+	r := &Runner{
+		DB:         d.Conn,
+		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
+		Backend:    &gwFakeBackend{},
+		BoidBinary: "/boid",
+		Broker:     broker,
+	}
+
+	const dupeID = "22222222-2222-2222-2222-222222222222"
+	first := &orchestrator.JobSpec{
+		ID:         dupeID,
+		ProjectID:  "proj-1",
+		Argv:       []string{"echo", "first"},
+		Kind:       orchestrator.JobKindExec,
+		Visibility: orchestrator.Visibility{Writable: false},
+		BuiltinPolicies: map[string]orchestrator.BuiltinPolicy{
+			"boid": {AllowedOps: []string{orchestrator.OpBoidCardContext}},
+		},
+	}
+	if _, err := r.Dispatch(context.Background(), first, nil); err != nil {
+		t.Fatalf("first Dispatch: %v", err)
+	}
+
+	second := &orchestrator.JobSpec{
+		ID:         dupeID,
+		ProjectID:  "proj-1",
+		Argv:       []string{"echo", "second"},
+		Kind:       orchestrator.JobKindExec,
+		Visibility: orchestrator.Visibility{Writable: false},
+		BuiltinPolicies: map[string]orchestrator.BuiltinPolicy{
+			"boid": {AllowedOps: []string{orchestrator.OpBoidCardContext}},
+		},
+	}
+	if _, err := r.Dispatch(context.Background(), second, nil); err == nil {
+		t.Fatal("second Dispatch with a duplicate id: want an error, got success")
+	}
+
+	// The first job's registered broker token must still be tracked — the
+	// second dispatch's failure must not have unregistered it via
+	// r.UnregisterJob(dupeID).
+	r.tokenMu.Lock()
+	_, stillTracked := r.jobTokens[dupeID]
+	r.tokenMu.Unlock()
+	if !stillTracked {
+		t.Fatal("the first job's broker token was revoked by the second, colliding dispatch's error-cleanup path")
+	}
+}

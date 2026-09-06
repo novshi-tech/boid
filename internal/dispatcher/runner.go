@@ -396,7 +396,16 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// A caller-supplied spec.ID (card-command launcher) is honored verbatim
 	// — see JobSpec.ID's own doc comment for why the id must be known before
 	// this call. Every other job keeps the pre-existing fresh-uuid behavior.
+	// Collision check happens BEFORE the token-cleanup defer below is
+	// registered: CreateJob's own INSERT would reject a duplicate id too,
+	// but by then this function would call r.UnregisterJob(j.ID) on the
+	// error path, revoking the EXISTING job's tokens rather than this
+	// call's (which never registered any) — checking here avoids ever
+	// reaching that.
 	if spec.ID != "" {
+		if existing, err := GetJob(r.DB, spec.ID); err == nil && existing != nil {
+			return "", fmt.Errorf("job id %q already exists", spec.ID)
+		}
 		j.ID = spec.ID
 	} else {
 		j.ID = uuid.New().String()

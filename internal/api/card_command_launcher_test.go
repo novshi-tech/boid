@@ -23,6 +23,7 @@ func newCardCommandTestService(t *testing.T, projectID string, meta *orchestrato
 	repo := svc.Triggers.(*orchestrator.TaskRepository)
 	svc.CardRequests = repo
 	svc.Tasks = repo
+	svc.TaskTriage = repo
 
 	card := &orchestrator.Task{
 		Type:      orchestrator.TaskTypeCard,
@@ -197,5 +198,40 @@ func TestRunCardCommand_DispatchFailure_ReleasesSlot(t *testing.T) {
 	}
 	if second.Occupied {
 		t.Fatal("Occupied = true, want the released slot to accept a fresh claim")
+	}
+}
+
+// TestRunCardCommand_LiveGoChild_ReturnsLinkWithoutDispatching pins the
+// Opus-review fix: a card command must not dispatch alongside an
+// already-running Go work child — the two share one execution slot.
+func TestRunCardCommand_LiveGoChild_ReturnsLinkWithoutDispatching(t *testing.T) {
+	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	repo := svc.Tasks.(*orchestrator.TaskRepository)
+	child := &orchestrator.Task{
+		ProjectID: "proj-1", ParentID: card.ID, Type: orchestrator.TaskTypeExecution,
+		Ref: "child-1", Exec: &orchestrator.ExecAttrs{Behavior: "executor"},
+	}
+	if err := repo.CreateTask(child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	result, err := svc.RunCardCommand(context.Background(), card.ID, "review", "")
+	if err != nil {
+		t.Fatalf("RunCardCommand: %v", err)
+	}
+	if !result.Occupied {
+		t.Fatal("Occupied = false, want true — a live Go child must block the command")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("StartExec calls = %d, want 0 — must not dispatch alongside a live Go child", len(exec.calls))
+	}
+	rows, err := repo.ListCardRequestsByCard(card.ID)
+	if err != nil {
+		t.Fatalf("ListCardRequestsByCard: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("card_requests rows = %d, want 0 — no request should be created while a Go child occupies the slot", len(rows))
 	}
 }
