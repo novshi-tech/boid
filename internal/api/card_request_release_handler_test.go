@@ -185,14 +185,48 @@ func TestCardRequestHandler_Release_LiveTarget_ReturnsOperatorNotice(t *testing.
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `"had_live_target":true`) {
-		t.Errorf("body = %s, want had_live_target=true", body)
+	if !strings.Contains(body, `"had_attached_target":true`) {
+		t.Errorf("body = %s, want had_attached_target=true", body)
 	}
 	if !strings.Contains(body, `"target_id":"job-42"`) || !strings.Contains(body, `"target_kind":"session"`) {
 		t.Errorf("body = %s, want the pre-release target echoed back", body)
 	}
 	if !strings.Contains(body, "operator_notice") {
 		t.Errorf("body = %s, want an operator_notice warning it does not stop the continuation", body)
+	}
+}
+
+// TestCardRequestHandler_Release_LaunchingRowNoTarget_ReturnsOperatorNotice
+// pins the case force-release actually exists for: a launching row with no
+// target yet (the launcher's own job never got as far as attaching a
+// continuation). Before this, only an already-attached row produced a
+// notice — a stuck launching row released silently, with no hint that its
+// launcher_job_id might still be running and could later attach a
+// continuation to a request the operator just force-failed.
+func TestCardRequestHandler_Release_LaunchingRowNoTarget_ReturnsOperatorNotice(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{
+		getByID: map[string]*orchestrator.CardRequest{
+			"req-1": {ID: "req-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-99"},
+		},
+	}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/req-1/release", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"launcher_job_id":"job-99"`) {
+		t.Errorf("body = %s, want launcher_job_id=job-99 so the operator can trace it", body)
+	}
+	if !strings.Contains(body, "operator_notice") {
+		t.Errorf("body = %s, want an operator_notice for a stuck launching row", body)
+	}
+	if strings.Contains(body, `"had_attached_target":true`) {
+		t.Errorf("body = %s, want had_attached_target unset — this row never attached a target", body)
 	}
 }
 

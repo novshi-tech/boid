@@ -328,3 +328,83 @@ func TestCreateTask_AtomicPath_RejectsRefMatchWithMismatchedProjectOrBehavior(t 
 		t.Fatalf("children = %d, want 0 — the rejected create must not have inserted a task", len(children))
 	}
 }
+
+// TestCreateTask_AtomicPath_CardRequestIDCarrying_RoutesThroughOneTx pins
+// that a CardRequestID-carrying create under a card (acceptGo's own child
+// dispatch, or a card-command launcher's) now takes the SAME atomic
+// WithinTx branch as a CardRequestID-less direct create, rather than a
+// separate non-transactional pre-check followed by its own transaction: the
+// card_requests row ends up "attached" to the new task, and the slot
+// re-check inside that one transaction correctly excludes the caller's own
+// reservation.
+func TestCreateTask_AtomicPath_CardRequestIDCarrying_RoutesThroughOneTx(t *testing.T) {
+	taskSvc, goSvc, card, repo := newAtomicCardSlotFixture(t)
+
+	cardReq, err := goSvc.reserveGoCardRequest(card.ID)
+	if err != nil {
+		t.Fatalf("reserveGoCardRequest: %v", err)
+	}
+
+	got, err := taskSvc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1", Title: "do it", Behavior: "dev",
+		ParentID: card.ID, Ref: "ch_00", CardRequestID: cardReq.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want success (fulfills its own reservation)", err)
+	}
+
+	updated, gerr := repo.GetCardRequest(cardReq.ID)
+	if gerr != nil {
+		t.Fatalf("GetCardRequest: %v", gerr)
+	}
+	if updated.Status != orchestrator.CardRequestStatusAttached || updated.TargetID != got.ID {
+		t.Errorf("card request = %+v, want attached to the new task %q", updated, got.ID)
+	}
+
+	children, lerr := repo.ListChildren(card.ID)
+	if lerr != nil {
+		t.Fatalf("ListChildren: %v", lerr)
+	}
+	if len(children) != 1 {
+		t.Fatalf("children = %d, want 1", len(children))
+	}
+}
+
+// TestCreateTask_AtomicPath_CardRequestIDCarrying_RejectsWhenAnotherOccupantExists
+// pins the slot re-check side of the same branch: a live child that isn't
+// the reservation's own (i.e. NOT excluded by ownCardRequestID) still
+// blocks, even for a CardRequestID-carrying create.
+func TestCreateTask_AtomicPath_CardRequestIDCarrying_RejectsWhenAnotherOccupantExists(t *testing.T) {
+	taskSvc, goSvc, card, repo := newAtomicCardSlotFixture(t)
+
+	if _, err := taskSvc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1", Title: "already there", Behavior: "dev", ParentID: card.ID, Ref: "ch_other",
+	}); err != nil {
+		t.Fatalf("seed occupant create: %v", err)
+	}
+
+	cardReq, err := goSvc.reserveGoCardRequest(card.ID)
+	if err != nil {
+		t.Fatalf("reserveGoCardRequest: %v (documented to succeed even with a live child already present)", err)
+	}
+
+	_, err = taskSvc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1", Title: "do it", Behavior: "dev",
+		ParentID: card.ID, Ref: "ch_00", CardRequestID: cardReq.ID,
+	})
+	if err == nil {
+		t.Fatal("expected rejection: another live child already occupies the slot")
+	}
+	se2, ok2 := err.(*StatusError)
+	if !ok2 || se2.Code != 409 {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+
+	children, lerr := repo.ListChildren(card.ID)
+	if lerr != nil {
+		t.Fatalf("ListChildren: %v", lerr)
+	}
+	if len(children) != 1 {
+		t.Fatalf("children = %d, want 1 (only the pre-existing occupant) — the rejected create must not have inserted a second", len(children))
+	}
+}

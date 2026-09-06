@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/spf13/cobra"
 )
@@ -36,27 +37,20 @@ func init() {
 	taskCmd.AddCommand(taskReleaseCardRequestCmd)
 }
 
-// taskReleaseCardRequestResult mirrors api.releaseResult's wire shape — only
-// the fields this command reads.
-type taskReleaseCardRequestResult struct {
-	Status         string `json:"status"`
-	TargetKind     string `json:"target_kind,omitempty"`
-	TargetID       string `json:"target_id,omitempty"`
-	HadLiveTarget  bool   `json:"had_live_target,omitempty"`
-	OperatorNotice string `json:"operator_notice,omitempty"`
-}
-
 func runTaskReleaseCardRequest(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
 	requestID := args[0]
 
-	var result taskReleaseCardRequestResult
+	var result api.ReleaseResult
 	if err := c.Do("POST", fmt.Sprintf("/api/card-requests/%s/release", requestID), map[string]string{"reason": taskReleaseCardRequestReason}, &result); err != nil {
 		return fmt.Errorf("release card request: %w", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "card request %s released\n", requestID)
-	if result.HadLiveTarget {
+	if result.OperatorNotice != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "warning: %s\n", result.OperatorNotice)
+		if result.LauncherJobID != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  launcher_job_id: %s\n", result.LauncherJobID)
+		}
 	}
 	return nil
 }

@@ -1,7 +1,6 @@
 package orchestrator_test
 
-// Pins PR-2d-5 item 4's investigated finding (docs/plans/card-next-step-and-timeline.md
-// §10): TaskRepository.CreateTaskLinkedToCardRequest, when bound to an
+// Pins that TaskRepository.CreateTaskLinkedToCardRequest, when bound to an
 // already-open transaction (its db.DBTX is a *sql.Tx, not a *sql.DB), does
 // NOT try to open a second nested transaction — so calling it from inside an
 // outer transaction does not deadlock under SetMaxOpenConns(1), which only

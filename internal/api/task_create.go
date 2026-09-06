@@ -440,20 +440,15 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	// currently-specced child's own reservation (Ref matching its id —
 	// acceptGo's convention) is not treated as a new occupant.
 	//
-	// A CardRequestID-less create under a card takes no card_requests row of
-	// its own, so idx_card_requests_active_unique cannot arbitrate for it the
-	// way it already arbitrates between RunCardCommandAsHuman and acceptGo (whose
-	// own reservation IS the atomic claim). When s.Tx is wired, this path
-	// substitutes a transaction as its arbiter instead: the re-check and the
-	// INSERT below (the atomicCardCheck case) run in the SAME WithinTx call,
-	// closing the read-then-write gap a plain pre-check would otherwise leave
-	// open against a concurrent RunCardCommandAsHuman/acceptGo/reopen. A
-	// CardRequestID-carrying create already holds its own reservation
-	// (excluded from the conflict check via ownCardRequestID) and
-	// CreateTaskLinkedToCardRequest already commits CreateTask+AttachCardRequest
-	// atomically, so it keeps the prior non-transactional pre-check instead —
-	// nesting it in a second transaction here would double-open one, which
-	// SetMaxOpenConns(1) cannot support.
+	// A CardRequestID-less create takes no card_requests row to arbitrate
+	// with, and a CardRequestID-carrying create's own reservation is
+	// excluded from the conflict check (it's the claim being fulfilled, not
+	// a new occupant) — neither has a lock of its own. When s.Tx is wired,
+	// both route through the SAME WithinTx call below (atomicCardCheck): a
+	// fresh re-read plus the INSERT happen atomically, closing the
+	// read-then-write gap a plain pre-check would otherwise leave open.
+	// Only when s.Tx is nil does this fall back to the pre-check below,
+	// followed by a separate write.
 	var cardParent *orchestrator.Task
 	if req.ParentID != "" {
 		if parent, perr := s.Tasks.GetTask(req.ParentID); perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
@@ -465,7 +460,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 		// down the ordinary create path, same posture as the remote_id
 		// inheritance lookups above).
 	}
-	atomicCardCheck := cardParent != nil && req.CardRequestID == "" && s.Tx != nil
+	atomicCardCheck := cardParent != nil && s.Tx != nil
 	if cardParent != nil && !atomicCardCheck {
 		if conflict, occupant := s.cardSlotConflictWithRequests(cardParent, req.Ref, req.ProjectID, req.Behavior, req.CardRequestID); conflict {
 			return nil, &StatusError{
@@ -502,26 +497,28 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	// A card-command launcher's own task continuation (BoidOpTaskCreate's
 	// ownership-verified CardRequestID) must be persisted atomically with
 	// the request→task association — see CardRequestTaskLinker's own doc
-	// comment. Every other caller (CardRequestID always empty) is entirely
-	// unaffected: the ordinary get-or-create INSERT below is unchanged.
+	// comment. atomicCardCheck (cardParent != nil && s.Tx != nil, covering
+	// both CardRequestID cases) takes priority: the CardRequestLinker branch
+	// below now only serves a launcher's own continuation create (ParentID
+	// is the launched ROOT task, not the card — cardParent is nil there) or
+	// the s.Tx-unwired fallback.
 	switch {
-	case req.CardRequestID != "" && s.CardRequestLinker != nil:
-		if err := s.CardRequestLinker.CreateTaskLinkedToCardRequest(task, req.CardRequestID); err != nil {
-			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-		}
 	case atomicCardCheck:
 		txErr := s.Tx.WithinTx(func(tx TxStore) error {
 			freshParent, gerr := tx.GetTask(cardParent.ID)
 			if gerr != nil {
 				return gerr
 			}
-			if conflict, occupant := cardSlotConflictWithLister(tx, freshParent, req.Ref, req.ProjectID, req.Behavior, ""); conflict {
+			if conflict, occupant := cardSlotConflictWithLister(tx, freshParent, req.Ref, req.ProjectID, req.Behavior, req.CardRequestID); conflict {
 				return &StatusError{
 					Code: http.StatusConflict,
 					Message: fmt.Sprintf(
 						"create task: card %q's single work slot is already occupied by %s",
 						req.ParentID, occupant),
 				}
+			}
+			if req.CardRequestID != "" {
+				return tx.CreateTaskLinkedToCardRequest(task, req.CardRequestID)
 			}
 			return tx.CreateTask(task)
 		})
@@ -531,6 +528,10 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 				return nil, se
 			}
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: txErr.Error()}
+		}
+	case req.CardRequestID != "" && s.CardRequestLinker != nil:
+		if err := s.CardRequestLinker.CreateTaskLinkedToCardRequest(task, req.CardRequestID); err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
 	default:
 		if err := s.Tasks.CreateTask(task); err != nil {

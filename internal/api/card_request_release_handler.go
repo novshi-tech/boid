@@ -109,15 +109,26 @@ type releaseCardRequestBody struct {
 // enough (unlike `boid agent start --instruction`'s sandbox.PayloadPatchMaxBytes).
 const releaseReasonMaxBytes = 4096
 
-// releaseResult is Release's response shape: it echoes the request's
+// ReleaseResult is Release's response shape: it echoes the request's
 // pre-release target (if any) since force-release only frees the slot, not
-// whatever continuation was still attached to it.
-type releaseResult struct {
-	Status         string `json:"status"`
-	TargetKind     string `json:"target_kind,omitempty"`
-	TargetID       string `json:"target_id,omitempty"`
-	HadLiveTarget  bool   `json:"had_live_target,omitempty"`
-	OperatorNotice string `json:"operator_notice,omitempty"`
+// whatever continuation was still attached to it. Exported so cmd's
+// `boid task release-card-request` can decode straight into this type
+// instead of keeping its own hand-duplicated copy (a prior duplicate let the
+// two silently drift when only one side renamed a field).
+type ReleaseResult struct {
+	Status     string `json:"status"`
+	TargetKind string `json:"target_kind,omitempty"`
+	TargetID   string `json:"target_id,omitempty"`
+	// LauncherJobID is set alongside OperatorNotice for a released row that
+	// was still "launching" — its own launcher job, not a task/session
+	// continuation, is the thing that may still be running.
+	LauncherJobID string `json:"launcher_job_id,omitempty"`
+	// HadAttachedTarget reports only that the pre-release row HAD a
+	// target_kind/target_id recorded — not that the target is still alive.
+	// A task/session that already reached a terminal state and is merely
+	// awaiting the next reconcile tick to clear the row also sets this true.
+	HadAttachedTarget bool   `json:"had_attached_target,omitempty"`
+	OperatorNotice    string `json:"operator_notice,omitempty"`
 }
 
 // Release handles POST /api/card-requests/{id}/release. Body is optional;
@@ -159,14 +170,25 @@ func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	result := releaseResult{Status: "released"}
-	if before != nil && before.TargetKind != "" && before.TargetID != "" {
+	result := ReleaseResult{Status: "released"}
+	switch {
+	case before != nil && before.TargetKind != "" && before.TargetID != "":
 		result.TargetKind = before.TargetKind
 		result.TargetID = before.TargetID
-		result.HadLiveTarget = true
+		result.HadAttachedTarget = true
 		result.OperatorNotice = fmt.Sprintf(
 			"this only freed the card's execution slot — the %s %s it was attached to is NOT stopped and may still be running; stop it by hand if that's not wanted",
 			before.TargetKind, before.TargetID)
+	case before != nil && before.Status == orchestrator.CardRequestStatusLaunching && before.LauncherJobID != "":
+		// A launching row has no continuation attached yet — the thing
+		// still possibly running is its OWN launcher job, which force-release
+		// never touches. Without this, the operator gets nothing but
+		// "released" and no hint that the launcher could still land an
+		// AttachCardRequest against this now-released, force-failed row.
+		result.LauncherJobID = before.LauncherJobID
+		result.OperatorNotice = fmt.Sprintf(
+			"this only freed the card's execution slot — launcher job %s is NOT stopped and may still be running (and could still try to attach a continuation to this now-released request); inspect it with `boid job` and stop it by hand if that's not wanted",
+			before.LauncherJobID)
 	}
 	writeJSON(w, http.StatusOK, result)
 }

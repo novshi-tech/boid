@@ -123,6 +123,35 @@ func TestRunCardCommandAsHuman_Success_ClaimsSlotAndDispatchesLauncher(t *testin
 	}
 }
 
+// TestRunCardCommandAsHuman_WorkingCard_Succeeds pins the OTHER side of the
+// parked/working guard: a card already `working` (not just freshly `parked`)
+// must still let a card command launch. Every other test in this file that
+// exercises the happy path uses a freshly-created card, which defaults to
+// `parked` — nothing here previously pinned that `working` passes too, so
+// tightening either guard to `!= parked` (dropping the `working` half)
+// would leave this whole suite green.
+func TestRunCardCommandAsHuman_WorkingCard_Succeeds(t *testing.T) {
+	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	repo := svc.Tasks.(*orchestrator.TaskRepository)
+	card.Status = orchestrator.TaskStatusWorking
+	if err := repo.UpdateTask(card); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	result, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "look into this")
+	if err != nil {
+		t.Fatalf("RunCardCommandAsHuman: %v, want success for a working card", err)
+	}
+	if result.Occupied {
+		t.Fatal("Occupied = true, want false for a freshly-claimed slot")
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("StartExec calls = %d, want 1", len(exec.calls))
+	}
+}
+
 func TestRunCardCommandAsHuman_UnknownCommand_Returns404(t *testing.T) {
 	svc, _, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},
@@ -311,14 +340,13 @@ func TestRunCardCommandAsHuman_TerminalCard_Returns409(t *testing.T) {
 	}
 }
 
-// TestCardWorkChildOccupantTx_TerminalCard_Returns409 pins the in-Tx half of
-// the terminal-card guard: RunCardCommandAsHuman's own pre-Tx GetTask read
-// (used only for the earlier command-lookup/meta-hydration steps) can be
-// stale by the time the reservation Tx actually opens — a concurrent
-// complete/drop could land in that gap. cardWorkChildOccupantTx re-reads
-// FRESH from tx and must reject a terminal card there too, mirroring
-// acceptGo's own in-Tx re-verify (workflow_card.go), not just the earlier
-// non-transactional check in RunCardCommandAsHuman.
+// TestCardWorkChildOccupantTx_TerminalCard_Returns409 pins the terminal-card
+// guard as it actually runs: cardWorkChildOccupantTx re-reads the card FRESH
+// from tx and rejects a terminal card there, mirroring acceptGo's own in-Tx
+// re-verify (workflow_card.go). This is RunCardCommandAsHuman's ONLY status
+// guard — a stale read taken before the reservation Tx opens (a concurrent
+// complete/drop could otherwise land in that gap) would defeat the whole
+// point of re-checking inside the same transaction that claims the slot.
 func TestCardWorkChildOccupantTx_TerminalCard_Returns409(t *testing.T) {
 	svc, _, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},
@@ -340,6 +368,28 @@ func TestCardWorkChildOccupantTx_TerminalCard_Returns409(t *testing.T) {
 	var se *StatusError
 	if !errors.As(innerErr, &se) || se.Code != 409 {
 		t.Fatalf("err = %v, want a 409 StatusError", innerErr)
+	}
+}
+
+// TestCardWorkChildOccupantTx_WorkingCard_Succeeds pins the OTHER side of
+// this same guard directly: a `working` card (not just `parked`) must not
+// be rejected — tightening the guard to `!= parked` (dropping the `working`
+// half) would leave this uncaught.
+func TestCardWorkChildOccupantTx_WorkingCard_Succeeds(t *testing.T) {
+	svc, _, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	repo := svc.Tasks.(*orchestrator.TaskRepository)
+	card.Status = orchestrator.TaskStatusWorking
+	if err := repo.UpdateTask(card); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	if err := svc.Tx.WithinTx(func(tx TxStore) error {
+		_, _, err := cardWorkChildOccupantTx(tx, card.ID)
+		return err
+	}); err != nil {
+		t.Fatalf("cardWorkChildOccupantTx: %v, want success for a working card", err)
 	}
 }
 
