@@ -205,15 +205,11 @@ const (
 	BoidOpSignalIngest    BoidOp = "signal_ingest"
 	BoidOpSignalCursorGet BoidOp = "signal_cursor_get"
 
-	// BoidOpCardContext backs `boid card context`: the structured,
-	// token-authoritative input a card-command launcher job reads instead
-	// of expanding free text into a shell command string. No
-	// caller-supplied id: the broker fills CardID/CardRequestID from the
-	// token entry's own context (same mechanism as the Connector fields
-	// above — never the caller's self-report), and the executor does a
-	// live lookup of the card_requests row for command_key/instruction/
-	// origin. A job with no card context gets a clear, distinct error
-	// rather than an empty/zero-value reply.
+	// BoidOpCardContext backs `boid card context`: structured,
+	// token-authoritative input for a card-command launcher job. No
+	// caller-supplied id — the broker fills CardID/CardRequestID from the
+	// token entry, same as the Connector fields above. A job with no card
+	// context gets a clear error rather than an empty reply.
 	BoidOpCardContext BoidOp = "card_context"
 )
 
@@ -397,12 +393,9 @@ type TokenContext struct {
 	SandboxRoot string
 	// CardID / CardRequestID identify the card_requests row a card-command
 	// launcher job was dispatched to service — the ONLY fields
-	// BoidOpCardContext trusts (never a caller-supplied id): the broker
-	// hands them straight from the token entry, the same "broker fills
-	// context from the token, never the caller's self-report" pattern
-	// Service/Connector already use for signal ops. Set by dispatcher from
-	// orchestrator.JobSpec.CardID/CardRequestID. Both empty for every job
-	// that isn't a card-command launcher.
+	// BoidOpCardContext trusts, never a caller-supplied id (same
+	// broker-fills-from-token pattern Service/Connector use above). Both
+	// empty for every job that isn't a card-command launcher.
 	CardID        string
 	CardRequestID string
 }

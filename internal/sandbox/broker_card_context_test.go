@@ -47,14 +47,10 @@ func TestBroker_BoidCardContext_NoCardContext_RejectedBeforeExecutor(t *testing.
 	}
 }
 
-// TestBroker_BoidCardContext_SelfReportedIDsAreIgnored pins the "request ID
-// の自己申告だけで操作権限を与えない" contract: a hand-crafted request that
-// tries to smuggle CardID/CardRequestID through BoidRequest itself (fields
-// BoidRequest doesn't even expose for this op, but the executor would still
-// only ever see whatever the broker forwards) never overrides the token's
-// own context. Registers a token WITH card context and confirms the
-// executor receives that token's ids rather than anything a caller could
-// plant on the request.
+// TestBroker_BoidCardContext_TokenContextReachesExecutor registers a token
+// WITH card context and confirms the executor is invoked with exactly that
+// token's CardID/CardRequestID — never anything a caller could plant on the
+// request, since BoidRequest carries no card fields at all for this op.
 func TestBroker_BoidCardContext_TokenContextReachesExecutor(t *testing.T) {
 	exec := &fakeBoidExecutor{}
 	broker := &sandbox.Broker{BoidExecutor: exec}
@@ -77,13 +73,13 @@ func TestBroker_BoidCardContext_TokenContextReachesExecutor(t *testing.T) {
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
-	if len(exec.calls) != 1 {
-		t.Fatalf("expected exactly one executor call, got %d", len(exec.calls))
+	if len(exec.ctxCalls) != 1 {
+		t.Fatalf("expected exactly one executor call, got %d", len(exec.ctxCalls))
 	}
-	// BoidRequest carries no card fields at all for this op — identity is
-	// TokenContext-only, verified separately at the executor layer
-	// (boid_executor_card_context_test.go), which reads ctx.CardID/
-	// ctx.CardRequestID directly rather than anything on the request.
+	got := exec.ctxCalls[0]
+	if got.CardID != "card-1" || got.CardRequestID != "req-1" {
+		t.Errorf("executor ctx = %+v, want CardID=card-1 CardRequestID=req-1", got)
+	}
 }
 
 func TestBroker_BoidCardContext_DisallowedByPolicy_Rejected(t *testing.T) {

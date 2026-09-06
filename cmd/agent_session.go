@@ -34,11 +34,8 @@ type agentSessionFlags struct {
 	model       string
 	displayName string
 	noAttach    bool
-	// output selects --no-attach's reply shape: "text" (default) keeps the
-	// original stderr-only `job_id=...` line unchanged; "json" additionally
-	// prints a machine-readable `{"kind":"session","job_id":"..."}` line to
-	// stdout for a caller that needs to parse the result rather than scrape
-	// stderr. Only meaningful together with --no-attach.
+	// output selects --no-attach's reply shape: "text" (default, stderr
+	// job_id= line) or "json" (stdout {"kind":"session","job_id":"..."}).
 	output string
 }
 
@@ -49,7 +46,10 @@ func addAgentSessionFlags(cmd *cobra.Command, f *agentSessionFlags) {
 	cmd.Flags().StringVar(&f.model, "model", "", "override the harness binary's default model")
 	cmd.Flags().StringVar(&f.displayName, "name", "", "human-readable session label (default: \"<harness> session\")")
 	cmd.Flags().BoolVar(&f.noAttach, "no-attach", false, "print the job id and exit instead of attaching to the PTY")
-	cmd.Flags().StringVar(&f.output, "output", "text", "with --no-attach, the reply shape: \"text\" (stderr job_id= line) or \"json\" (stdout {\"kind\":\"session\",\"job_id\":\"...\"})")
+	// StringVarP with shorthand "o" locally overrides the root persistent
+	// -o/--output flag (cmd/root.go), matching the same override pattern
+	// workspaceExportCmd uses for its own differently-scoped --output.
+	cmd.Flags().StringVarP(&f.output, "output", "o", "text", "with --no-attach, the reply shape: \"text\" (stderr job_id= line) or \"json\" (stdout {\"kind\":\"session\",\"job_id\":\"...\"})")
 	_ = cmd.RegisterFlagCompletionFunc("project", completeProjectRefs)
 }
 
@@ -127,10 +127,6 @@ func runAgentSession(ctx context.Context, harness string, flags *agentSessionFla
 	// inspection, etc.) where the id is the only useful output.
 	if flags.noAttach {
 		if output == "json" {
-			// stdout carries the machine-readable reply; diagnostics stay on
-			// stderr, matching every other --output json convention in this
-			// CLI. Encoded rather than hand-formatted so a future field
-			// addition to agentStartOutput can't drift from valid JSON.
 			return json.NewEncoder(os.Stdout).Encode(agentStartOutput{Kind: "session", JobID: result.JobID})
 		}
 		fmt.Fprintf(os.Stderr, "job_id=%s\n", result.JobID)

@@ -57,11 +57,8 @@ type actionListService interface {
 }
 
 // cardRequestReader backs BoidOpCardContext's live lookup of the
-// card_requests row identified by the calling job's token context
-// (ctx.CardRequestID — never a caller-supplied id). Taken as an explicit
-// constructor parameter, same convention as `signals` below:
-// *orchestrator.TaskRepository implements it via its own GetCardRequest
-// delegator. Nil disables the op with an "unavailable" error.
+// card_requests row identified by ctx.CardRequestID. Nil disables the op
+// with an "unavailable" error, same convention as `signals` below.
 type cardRequestReader interface {
 	GetCardRequest(id string) (*orchestrator.CardRequest, error)
 }
@@ -1091,11 +1088,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		// The token's own CardID must match the request row's — a mismatch
-		// means the token was stamped inconsistently (a daemon bug, never a
-		// legitimate caller), so refuse rather than return a mismatched
-		// card_id in the reply.
-		if ctx.CardID != "" && row.CardID != ctx.CardID {
+		// The token's own CardID must be set and match the request row's —
+		// a mismatch (or a missing CardID alongside a set CardRequestID)
+		// means the token was stamped inconsistently, so refuse rather than
+		// return a mismatched card_id in the reply.
+		if ctx.CardID == "" || row.CardID != ctx.CardID {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card context: token card_id does not match the request's card_id"}
 		}
 		commandKey := row.Launched.CommandKey

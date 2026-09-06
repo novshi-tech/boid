@@ -120,11 +120,9 @@ type JobSpec struct {
 	SignalConnector string
 
 	// CardID / CardRequestID set sandbox.TokenContext.CardID/CardRequestID
-	// for this job's broker token registration — the ONLY fields that
-	// authorize BoidOpCardContext's broker-side lookup (internal/sandbox/
-	// broker.go) to a specific card_requests row. Mirrors SignalService/
-	// SignalConnector's own wiring exactly. Empty for every job that isn't
-	// a card-command launcher.
+	// for this job's broker token registration, mirroring SignalService/
+	// SignalConnector's own wiring. Empty for every job that isn't a
+	// card-command launcher.
 	CardID        string
 	CardRequestID string
 

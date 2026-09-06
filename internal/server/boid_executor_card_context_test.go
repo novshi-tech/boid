@@ -111,12 +111,10 @@ func TestBoidOpCardContext_EventOrigin_DerivedFromCauseID(t *testing.T) {
 	}
 }
 
-// TestBoidOpCardContext_SelfReportedCardIDCannotForgeAnotherCard pins the
-// "request ID の自己申告だけで操作権限を与えない" contract at the executor
-// layer: even if ctx.CardID somehow disagreed with the looked-up row's own
-// CardID (a daemon bug, since the broker and dispatcher both stamp both
-// fields from the same token/JobSpec together), the op must refuse rather
-// than paper over the mismatch by trusting either side blindly.
+// TestBoidOpCardContext_MismatchedCardID_Rejected pins that a token whose
+// CardID disagrees with the looked-up row's own CardID (a daemon bug, since
+// the broker and dispatcher both stamp both fields from the same
+// token/JobSpec together) is refused rather than papered over.
 func TestBoidOpCardContext_MismatchedCardID_Rejected(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
 		"req-1": {ID: "req-1", CardID: "card-1", Launched: orchestrator.CardRequestDefinition{CommandKey: "review"}},
@@ -125,6 +123,24 @@ func TestBoidOpCardContext_MismatchedCardID_Rejected(t *testing.T) {
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-OTHER", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero for a card_id mismatch")
+	}
+	if !strings.Contains(resp.Stderr, "card_id") {
+		t.Errorf("Stderr = %q, want it to mention card_id", resp.Stderr)
+	}
+}
+
+// TestBoidOpCardContext_EmptyCardIDWithRequestID_Rejected pins that a token
+// stamped with CardRequestID but NOT CardID is refused rather than silently
+// skipping the cross-check (that mis-stamping is exactly the bug class the
+// check exists to catch, so it must not fail open).
+func TestBoidOpCardContext_EmptyCardIDWithRequestID_Rejected(t *testing.T) {
+	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
+		"req-1": {ID: "req-1", CardID: "card-1", Launched: orchestrator.CardRequestDefinition{CommandKey: "review"}},
+	}}
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader)
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
+	if resp.ExitCode == 0 {
+		t.Fatalf("ExitCode = 0, want non-zero when CardID is empty")
 	}
 	if !strings.Contains(resp.Stderr, "card_id") {
 		t.Errorf("Stderr = %q, want it to mention card_id", resp.Stderr)

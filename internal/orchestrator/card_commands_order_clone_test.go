@@ -9,10 +9,12 @@ import (
 )
 
 // TestGetWithWorkspace_CardCommandsOrder_ClonedNotAliased pins that
-// cloneProjectMeta's CardCommandsOrder copy (spec_loader.go) is real: a
-// caller that mutates the slice GetWithWorkspace handed back must never
-// corrupt the store's own cached ProjectMeta. Without the clone, the two
-// GetWithWorkspace calls below would observe each other's mutation.
+// cloneProjectMeta's CardCommandsOrder copy (spec_loader.go) is real, for a
+// project linked to a workspace (the branch that goes through
+// cloneProjectMeta at all — an unlinked project's GetWithWorkspace returns
+// the cached meta unchanged by design, so this test doesn't cover that
+// case). A caller that mutates the slice handed back must never corrupt the
+// store's own cached ProjectMeta.
 func TestGetWithWorkspace_CardCommandsOrder_ClonedNotAliased(t *testing.T) {
 	t.Parallel()
 
