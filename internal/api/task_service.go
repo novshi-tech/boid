@@ -64,15 +64,29 @@ type TaskAppService struct {
 // cardSlotConflictWithRequests wraps cardChildSlotConflict with the other
 // half of the card's single-work-slot invariant: an active card_requests
 // row is also a conflict, even when no live/JSON child occupies the slot
-// yet.
-func (s *TaskAppService) cardSlotConflictWithRequests(parent *orchestrator.Task, ref, projectID, behavior string) (conflict bool, occupant string) {
+// yet. ownCardRequestID excludes acceptGo's own just-created reservation (or
+// a card-command launcher's own, via the boid_executor ownership-verified
+// path) from counting as a conflict against itself — pass "" for every
+// caller that isn't fulfilling a reservation it holds.
+func (s *TaskAppService) cardSlotConflictWithRequests(parent *orchestrator.Task, ref, projectID, behavior, ownCardRequestID string) (conflict bool, occupant string) {
 	if conflict, occupant := cardChildSlotConflict(parent, ref, projectID, behavior); conflict {
 		return conflict, occupant
 	}
-	if s.CardRequests != nil {
-		if n, err := s.CardRequests.CountActiveCardRequests(parent.ID); err == nil && n > 0 {
-			return true, "an active card command or Go request"
+	if s.CardRequests == nil {
+		return false, ""
+	}
+	rows, err := s.CardRequests.ListCardRequestsByCard(parent.ID)
+	if err != nil {
+		return false, ""
+	}
+	for _, r := range rows {
+		if r.Status != orchestrator.CardRequestStatusLaunching && r.Status != orchestrator.CardRequestStatusAttached {
+			continue
 		}
+		if ownCardRequestID != "" && r.ID == ownCardRequestID {
+			continue
+		}
+		return true, "an active card command or Go request"
 	}
 	return false, ""
 }
@@ -220,7 +234,7 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 				behavior = task.Exec.Behavior
 			}
 			if newParent, perr := s.Tasks.GetTask(*req.ParentID); perr == nil && newParent != nil && newParent.Type == orchestrator.TaskTypeCard {
-				if conflict, occupant := s.cardSlotConflictWithRequests(newParent, task.Ref, task.ProjectID, behavior); conflict {
+				if conflict, occupant := s.cardSlotConflictWithRequests(newParent, task.Ref, task.ProjectID, behavior, ""); conflict {
 					return nil, &StatusError{
 						Code: http.StatusConflict,
 						Message: fmt.Sprintf(
@@ -434,7 +448,7 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 	}
 	if task.ParentID != "" {
 		if parent, perr := s.Tasks.GetTask(task.ParentID); perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
-			if conflict, occupant := s.cardSlotConflictWithRequests(parent, task.Ref, task.ProjectID, task.Exec.Behavior); conflict {
+			if conflict, occupant := s.cardSlotConflictWithRequests(parent, task.Ref, task.ProjectID, task.Exec.Behavior, ""); conflict {
 				return nil, &StatusError{
 					Code: http.StatusConflict,
 					Message: fmt.Sprintf(

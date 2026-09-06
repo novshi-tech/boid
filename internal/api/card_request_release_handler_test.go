@@ -15,12 +15,21 @@ type fakeCardRequestReleaseStore struct {
 	err       error
 	lastID    string
 	lastReasn string
+	byCard    map[string][]*orchestrator.CardRequest
+	listErr   error
 }
 
 func (f *fakeCardRequestReleaseStore) ForceReleaseCardRequest(id, reason string) error {
 	f.lastID = id
 	f.lastReasn = reason
 	return f.err
+}
+
+func (f *fakeCardRequestReleaseStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.byCard[cardID], nil
 }
 
 func TestCardRequestHandler_Release_Success(t *testing.T) {
@@ -65,6 +74,52 @@ func TestCardRequestHandler_Release_NotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCardRequestHandler_List_RequiresCardID(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCardRequestHandler_List_ReturnsCardsRequests(t *testing.T) {
+	row := &orchestrator.CardRequest{ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-1"}
+	store := &fakeCardRequestReleaseStore{byCard: map[string][]*orchestrator.CardRequest{"card-1": {row}}}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/?card_id=card-1", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"req-1"`) || !strings.Contains(rec.Body.String(), `"status":"launching"`) {
+		t.Errorf("body = %s, want req-1/launching", rec.Body.String())
+	}
+}
+
+func TestCardRequestHandler_List_EmptyForUnknownCard(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/?card_id=no-such-card", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Errorf("body = %s, want an empty JSON array", rec.Body.String())
 	}
 }
 
