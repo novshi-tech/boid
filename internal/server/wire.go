@@ -1209,10 +1209,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Signals: taskRepo,
 		// CardRequests: taskRepo already implements
 		// api.CardCommandLauncherStore (internal/orchestrator/repository.go's
-		// CreateCardRequest/ClaimQueuedCardRequests/FailCardRequest/
-		// CountActiveCardRequests/ListCardRequestsByCard) — same object as
+		// CreateCardRequest/FailCardRequest/CountActiveCardRequests/
+		// ListCardRequestsByCard) — same object as
 		// Tasks/TaskTriage/Actions/Triggers/Signals above, viewed through a
-		// narrower interface for RunCardCommand's slot claim/release.
+		// narrower interface for RunCardCommandAsHuman's slot claim/release.
 		CardRequests: taskRepo,
 		// TaskCreator is wired below, once taskSvc (*api.TaskAppService) is
 		// constructed — see the comment there for why this can't be set here.
@@ -1643,6 +1643,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// backs cardSlotConflictWithRequests' active-card_requests check
 		// (task_create.go/task_service.go).
 		CardRequests: taskRepo,
+		// Tx: same Transactor RunCardCommandAsHuman/acceptGo use (below), lets
+		// createExecutionTask close the direct-`--parent <card>`-create
+		// TOCTOU atomically instead of falling back to a plain pre-check.
+		Tx: tx,
 		// runtimesRoot (not a fresh runtimesDirFor(cfg)): must agree with
 		// runner's own RuntimesDir and
 		// transcriptLogReader.rootDir just below, both already using

@@ -25,6 +25,11 @@ import (
 type CardRequestReleaseStore interface {
 	ForceReleaseCardRequest(id, reason string) error
 	ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error)
+	// ListActiveCardRequests backs List's bulk mode (no card_id query
+	// param): every launching/attached row across every card in one query,
+	// so a caller checking many cards (`boid task diagnose-cards`) avoids
+	// one GET per card.
+	ListActiveCardRequests() ([]*orchestrator.CardRequest, error)
 }
 
 type CardRequestHandler struct {
@@ -68,15 +73,19 @@ func toCardRequestView(r *orchestrator.CardRequest) cardRequestView {
 }
 
 // List handles GET /api/card-requests?card_id=<id>, oldest first (matches
-// ListCardRequestsByCard's own order). card_id is required — there is no
-// bulk cross-card listing yet.
+// ListCardRequestsByCard's own order). Omitting card_id switches to bulk
+// mode: every currently launching/attached row across EVERY card, in one
+// query — `boid task diagnose-cards` uses this instead of issuing one GET
+// per card.
 func (h *CardRequestHandler) List(w http.ResponseWriter, r *http.Request) {
 	cardID := r.URL.Query().Get("card_id")
+	var rows []*orchestrator.CardRequest
+	var err error
 	if cardID == "" {
-		writeError(w, http.StatusBadRequest, "card_id query parameter is required")
-		return
+		rows, err = h.Store.ListActiveCardRequests()
+	} else {
+		rows, err = h.Store.ListCardRequestsByCard(cardID)
 	}
-	rows, err := h.Store.ListCardRequestsByCard(cardID)
 	if err != nil {
 		writeServiceError(w, err)
 		return

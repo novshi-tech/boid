@@ -496,7 +496,7 @@ func TestReconcileLaunchingCardRequests_MissingJobRowWithinGrace_LeftAlone(t *te
 // TestReconcileLaunchingCardRequests_MissingJobRowPastGrace_FailsRetryable
 // pins the other half: once the grace window has elapsed with still no
 // jobs row at all, the launcher is gone (StartExec itself failed before
-// ever reaching Dispatch's jobs INSERT — RunCardCommand's own synchronous
+// ever reaching Dispatch's jobs INSERT — RunCardCommandAsHuman's own synchronous
 // FailCardRequest on that path should normally have already caught this,
 // but the self-heal must not depend on that call having succeeded).
 func TestReconcileLaunchingCardRequests_MissingJobRowPastGrace_FailsRetryable(t *testing.T) {

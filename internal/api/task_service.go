@@ -59,23 +59,39 @@ type TaskAppService struct {
 	// tolerated (same posture as CardRequestLinker): the additional check is
 	// simply skipped.
 	CardRequests CardCommandLauncherStore
+	// Tx lets createExecutionTask close the direct-`--parent <card>`-create
+	// TOCTOU: a CardRequestID-less create takes no card_requests row of its
+	// own, so the unique index can't arbitrate it the way it arbitrates
+	// RunCardCommandAsHuman/acceptGo — see createExecutionTask's own comment. Nil
+	// is tolerated: the check falls back to its prior non-transactional
+	// read-then-write.
+	Tx Transactor
 }
 
-// cardSlotConflictWithRequests wraps cardChildSlotConflict with the other
-// half of the card's single-work-slot invariant: an active card_requests
-// row is also a conflict, even when no live/JSON child occupies the slot
-// yet. ownCardRequestID excludes acceptGo's own just-created reservation (or
-// a card-command launcher's own, via the boid_executor ownership-verified
+// cardRequestActiveLister is the read-only surface cardSlotConflictWithLister
+// needs — satisfied by both CardCommandLauncherStore (the non-transactional
+// path) and TxStore (the atomic path createExecutionTask uses for a
+// CardRequestID-less create under a card), so the same conflict logic serves
+// both without duplicating it.
+type cardRequestActiveLister interface {
+	ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error)
+}
+
+// cardSlotConflictWithLister wraps cardChildSlotConflict with the other half
+// of the card's single-work-slot invariant: an active card_requests row is
+// also a conflict, even when no live/JSON child occupies the slot yet.
+// ownCardRequestID excludes acceptGo's own just-created reservation (or a
+// card-command launcher's own, via the boid_executor ownership-verified
 // path) from counting as a conflict against itself — pass "" for every
 // caller that isn't fulfilling a reservation it holds.
-func (s *TaskAppService) cardSlotConflictWithRequests(parent *orchestrator.Task, ref, projectID, behavior, ownCardRequestID string) (conflict bool, occupant string) {
+func cardSlotConflictWithLister(lister cardRequestActiveLister, parent *orchestrator.Task, ref, projectID, behavior, ownCardRequestID string) (conflict bool, occupant string) {
 	if conflict, occupant := cardChildSlotConflict(parent, ref, projectID, behavior); conflict {
 		return conflict, occupant
 	}
-	if s.CardRequests == nil {
+	if lister == nil {
 		return false, ""
 	}
-	rows, err := s.CardRequests.ListCardRequestsByCard(parent.ID)
+	rows, err := lister.ListCardRequestsByCard(parent.ID)
 	if err != nil {
 		return false, ""
 	}
@@ -89,6 +105,12 @@ func (s *TaskAppService) cardSlotConflictWithRequests(parent *orchestrator.Task,
 		return true, "an active card command or Go request"
 	}
 	return false, ""
+}
+
+// cardSlotConflictWithRequests is cardSlotConflictWithLister bound to
+// s.CardRequests — see that function's doc comment for the actual logic.
+func (s *TaskAppService) cardSlotConflictWithRequests(parent *orchestrator.Task, ref, projectID, behavior, ownCardRequestID string) (conflict bool, occupant string) {
+	return cardSlotConflictWithLister(s.CardRequests, parent, ref, projectID, behavior, ownCardRequestID)
 }
 
 // CardRequestTaskLinker is the single-method surface createExecutionTask

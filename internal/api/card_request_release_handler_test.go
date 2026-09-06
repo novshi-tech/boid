@@ -17,6 +17,8 @@ type fakeCardRequestReleaseStore struct {
 	lastReasn string
 	byCard    map[string][]*orchestrator.CardRequest
 	listErr   error
+	active    []*orchestrator.CardRequest
+	activeErr error
 }
 
 func (f *fakeCardRequestReleaseStore) ForceReleaseCardRequest(id, reason string) error {
@@ -30,6 +32,13 @@ func (f *fakeCardRequestReleaseStore) ListCardRequestsByCard(cardID string) ([]*
 		return nil, f.listErr
 	}
 	return f.byCard[cardID], nil
+}
+
+func (f *fakeCardRequestReleaseStore) ListActiveCardRequests() ([]*orchestrator.CardRequest, error) {
+	if f.activeErr != nil {
+		return nil, f.activeErr
+	}
+	return f.active, nil
 }
 
 func TestCardRequestHandler_Release_Success(t *testing.T) {
@@ -77,16 +86,37 @@ func TestCardRequestHandler_Release_NotFound(t *testing.T) {
 	}
 }
 
-func TestCardRequestHandler_List_RequiresCardID(t *testing.T) {
-	store := &fakeCardRequestReleaseStore{}
+// TestCardRequestHandler_List_NoCardID_ReturnsBulkActiveRequests pins List's
+// bulk mode: omitting card_id lists every active (launching/attached) row
+// across every card in one call, instead of requiring one GET per card
+// (`boid task diagnose-cards`'s own N+1 fix).
+func TestCardRequestHandler_List_NoCardID_ReturnsBulkActiveRequests(t *testing.T) {
+	row := &orchestrator.CardRequest{ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-1"}
+	store := &fakeCardRequestReleaseStore{active: []*orchestrator.CardRequest{row}}
 	h := &api.CardRequestHandler{Store: store}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	h.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"req-1"`) || !strings.Contains(rec.Body.String(), `"card_id":"card-1"`) {
+		t.Errorf("body = %s, want req-1/card-1", rec.Body.String())
+	}
+}
+
+func TestCardRequestHandler_List_NoCardID_ServiceError_Returns500(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{activeErr: errors.New("db is on fire")}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
 	}
 }
 

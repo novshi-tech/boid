@@ -32,18 +32,35 @@ type CardCommandLauncherStore interface {
 // cap `boid agent start --instruction` already enforces broker-side.
 const cardCommandInstructionMaxBytes = sandbox.PayloadPatchMaxBytes
 
-// RunCardCommandResult is RunCardCommand's response shape.
+// RunCardCommandResult is RunCardCommandAsHuman's response shape.
 type RunCardCommandResult struct {
 	// Occupied is true when the card's execution slot was already taken —
 	// no new request was created; TargetKind/TargetID point at the current
-	// occupant instead.
+	// occupant instead, when a real followable one is known (see
+	// cardWorkChildOccupantTx's own doc comment for when it isn't).
 	Occupied bool `json:"occupied"`
 	// RequestID is the card_requests row this call created (Occupied=false)
-	// or the currently-occupying row (Occupied=true).
-	RequestID  string `json:"request_id,omitempty"`
-	JobID      string `json:"job_id,omitempty"`
+	// or the currently-occupying row, when the occupant IS a card_requests
+	// row (Occupied=true via ErrCardRequestSlotOccupied). Empty when the
+	// occupant is instead a live/JSON work child with no card_requests row
+	// of its own (Occupied=true via cardWorkChildOccupantTx).
+	RequestID string `json:"request_id,omitempty"`
+	// LauncherJobID is THIS call's own launcher exec job (Occupied=false
+	// only) — never the continuation/target job, which TargetKind/TargetID
+	// point at instead. Named launcher_job_id (not job_id) so a caller
+	// cannot mistake it for the continuation's own job id.
+	LauncherJobID string `json:"launcher_job_id,omitempty"`
+	// TargetKind/TargetID name the occupying continuation's REAL task id
+	// (never a task_triage.detail.children JSON child id, which is not a
+	// task id and 404s on GET /api/tasks/<id>) — only set when Occupied and
+	// a live task row actually exists to point at.
 	TargetKind string `json:"target_kind,omitempty"`
 	TargetID   string `json:"target_id,omitempty"`
+	// Instruction echoes back the caller's own submitted instruction on an
+	// Occupied response, so an occupied call never silently drops what the
+	// caller typed. Empty on success (Occupied=false): the instruction was
+	// already persisted onto the new card_requests row itself.
+	Instruction string `json:"instruction,omitempty"`
 }
 
 // cardRequestLister is the read half CardCommandLauncherStore and TxStore
@@ -56,7 +73,10 @@ type cardRequestLister interface {
 
 // currentOccupantResult reads the card's currently-active (launching or
 // attached) card_requests row and renders it as an Occupied result.
-func currentOccupantResult(store cardRequestLister, cardID string) (*RunCardCommandResult, error) {
+// instruction is the CALLER's own just-submitted instruction (not the
+// occupying request's) — echoed back per RunCardCommandResult.Instruction's
+// own doc comment.
+func currentOccupantResult(store cardRequestLister, cardID, instruction string) (*RunCardCommandResult, error) {
 	rows, err := store.ListCardRequestsByCard(cardID)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -64,36 +84,59 @@ func currentOccupantResult(store cardRequestLister, cardID string) (*RunCardComm
 	for _, r := range rows {
 		if r.Status == orchestrator.CardRequestStatusLaunching || r.Status == orchestrator.CardRequestStatusAttached {
 			return &RunCardCommandResult{
-				Occupied:   true,
-				RequestID:  r.ID,
-				TargetKind: r.TargetKind,
-				TargetID:   r.TargetID,
+				Occupied:    true,
+				RequestID:   r.ID,
+				TargetKind:  r.TargetKind,
+				TargetID:    r.TargetID,
+				Instruction: instruction,
 			}, nil
 		}
 	}
 	return nil, &StatusError{Code: http.StatusConflict, Message: "card command: slot reported occupied but no active request found; retry"}
 }
 
-// cardWorkChildOccupantTx reports the task id of cardID's live or specced
-// work child, if any — the same occupancy cardSlotOccupied checks for
+// cardWorkChildOccupantTx reports the REAL, followable task id of cardID's
+// live work child, if any — the same occupancy cardSlotOccupied checks for
 // child_added, but re-read FRESH from tx (not a pre-fetched *orchestrator.Task
 // snapshot) so it can run inside the same transaction as the CreateCardRequest
 // INSERT that claims the slot: a stale snapshot taken before the
 // transaction opened would defeat the whole point of making this atomic.
-func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantID string, occupied bool, err error) {
+//
+// occupantTaskID is only ever a real tasks.id (a live, non-terminal child
+// row) or "" — never a task_triage.detail.children JSON child id. A
+// specced/open JSON child with no task row of its own yet (the common case)
+// occupies the slot (occupied=true) but has nothing real to follow, so
+// occupantTaskID stays "": a caller mislabeling that JSON id as a task id
+// and GETting /api/tasks/<id> would otherwise 404.
+func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantTaskID string, occupied bool, err error) {
 	fresh, err := tx.GetTask(cardID)
 	if err != nil {
 		return "", false, err
 	}
+	jsonOccupied := false
 	if tt, ttErr := tx.GetTaskTriage(cardID); ttErr == nil {
 		if id, derr := orchestrator.DetailOpenSlotChildID(tt.Detail); derr == nil && id != "" {
-			return id, true, nil
+			jsonOccupied = true
 		}
 	}
-	return "", fresh.OpenChildCount > 0, nil
+	if !jsonOccupied && fresh.OpenChildCount == 0 {
+		return "", false, nil
+	}
+	if fresh.OpenChildCount > 0 {
+		children, lerr := tx.ListChildren(cardID)
+		if lerr != nil {
+			return "", true, lerr
+		}
+		for _, c := range children {
+			if !orchestrator.IsTerminalStatus(c.Status) {
+				return c.ID, true, nil
+			}
+		}
+	}
+	return "", true, nil
 }
 
-// RunCardCommand fires cardID's commandKey card_commands entry as a human
+// RunCardCommandAsHuman fires cardID's commandKey card_commands entry as a human
 // (cause_id empty) command launcher: a short-lived readonly exec job that
 // runs the project.yaml `run:` command with card/request context in its
 // broker token, expected to call `boid task create` or `boid agent start`
@@ -102,7 +145,7 @@ func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantID string, occu
 // When the slot is already occupied, this does not queue — it returns a
 // link to the current execution instead; the caller's own UI keeps the
 // typed instruction around.
-func (s *TaskWorkflowService) RunCardCommand(ctx context.Context, cardID, commandKey, instruction string) (*RunCardCommandResult, error) {
+func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID, commandKey, instruction string) (*RunCardCommandResult, error) {
 	if s.Tasks == nil || s.CardRequests == nil || s.Exec == nil || s.Tx == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "card command: not configured"}
 	}
@@ -157,12 +200,16 @@ func (s *TaskWorkflowService) RunCardCommand(ctx context.Context, cardID, comman
 			return &StatusError{Code: http.StatusInternalServerError, Message: operr.Error()}
 		}
 		if occ {
-			occupiedResult = &RunCardCommandResult{Occupied: true, TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: occupantID}
+			occupiedResult = &RunCardCommandResult{Occupied: true, Instruction: instruction}
+			if occupantID != "" {
+				occupiedResult.TargetKind = orchestrator.CardRequestTargetKindTask
+				occupiedResult.TargetID = occupantID
+			}
 			return nil
 		}
 		if err := tx.CreateCardRequest(req); err != nil {
 			if errors.Is(err, orchestrator.ErrCardRequestSlotOccupied) {
-				result, oerr := currentOccupantResult(tx, cardID)
+				result, oerr := currentOccupantResult(tx, cardID, instruction)
 				if oerr != nil {
 					return oerr
 				}
@@ -201,5 +248,5 @@ func (s *TaskWorkflowService) RunCardCommand(ctx context.Context, cardID, comman
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("card command: dispatch: %s", err)}
 	}
 
-	return &RunCardCommandResult{RequestID: req.ID, JobID: result.JobID}, nil
+	return &RunCardCommandResult{RequestID: req.ID, LauncherJobID: result.JobID}, nil
 }

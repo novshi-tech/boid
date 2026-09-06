@@ -115,6 +115,8 @@ var expectedScopeAnnotations = map[string]string{
 	"boid agent opencode":       scopeRemote,
 	"boid agent stop":           scopeRemote,
 	"boid attach":               scopeRemote,
+	"boid card requests":        scopeRemote,
+	"boid card run":             scopeRemote,
 	"boid config apply":         scopeRemote,
 	"boid config edit":          scopeRemote,
 	"boid config get":           scopeRemote,

@@ -9,8 +9,9 @@
 -- card ごとに launching/attached の行は高々一つ、という不変条件は
 -- idx_card_requests_active_unique の部分 UNIQUE インデックスが保証する。
 --
--- command_key: '' は Go (作業実行由来) を表す予約値。card_commands の
--- キーは空文字列を許さないので実在キーと衝突しない。
+-- command_key: Go (作業実行由来) の要求は CardRequestCommandKeyGo
+-- (internal/orchestrator/card_request.go の非空 sentinel 値) を持つ。
+-- card_commands のキーはこの値を宣言できないので実在キーと衝突しない。
 --
 -- cause_id: 内部イベント発の要求が持つ原因 ID。idx_card_requests_cause_unique
 -- が同じ原因の再配達を重複排除する。人発の要求は '' のままで衝突しない。

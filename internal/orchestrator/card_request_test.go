@@ -687,6 +687,52 @@ func TestGetCardRequest_NotFound(t *testing.T) {
 	}
 }
 
+// TestListActiveCardRequests_AcrossAllCards pins the bulk read
+// `boid task diagnose-cards` uses to avoid one GET per card
+// (N+1 — see cmd/task_diagnose_cards.go): every launching/attached row
+// across every card, oldest first, with queued/folded/finished/failed rows
+// excluded.
+func TestListActiveCardRequests_AcrossAllCards(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	card1 := newTestCard(t, d, "proj-1", "card-1")
+	card2 := newTestCard(t, d, "proj-1", "card-2")
+	card3 := newTestCard(t, d, "proj-1", "card-3")
+
+	launching := &orchestrator.CardRequest{CardID: card1, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-1"}
+	if err := orchestrator.CreateCardRequest(d.Conn, launching); err != nil {
+		t.Fatalf("create launching: %v", err)
+	}
+	attached := &orchestrator.CardRequest{CardID: card2, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-2"}
+	if err := orchestrator.CreateCardRequest(d.Conn, attached); err != nil {
+		t.Fatalf("create attached (pre-attach): %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, attached.ID, orchestrator.CardRequestTargetKindTask, "task-2"); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	queued := &orchestrator.CardRequest{CardID: card3, Status: orchestrator.CardRequestStatusQueued}
+	if err := orchestrator.CreateCardRequest(d.Conn, queued); err != nil {
+		t.Fatalf("create queued: %v", err)
+	}
+
+	rows, err := orchestrator.ListActiveCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("ListActiveCardRequests: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (queued row must be excluded), got %+v", len(rows), rows)
+	}
+	byID := map[string]*orchestrator.CardRequest{rows[0].ID: rows[0], rows[1].ID: rows[1]}
+	if _, ok := byID[launching.ID]; !ok {
+		t.Errorf("missing launching row %q in %+v", launching.ID, rows)
+	}
+	if _, ok := byID[attached.ID]; !ok {
+		t.Errorf("missing attached row %q in %+v", attached.ID, rows)
+	}
+	if _, ok := byID[queued.ID]; ok {
+		t.Errorf("queued row %q must not be listed as active", queued.ID)
+	}
+}
+
 func TestGCCardRequests_KeepsActiveDeletesOldTerminal(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")

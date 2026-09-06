@@ -19,7 +19,7 @@ type CardReadService interface {
 // CardCommandRunService is the manual card-command launch surface
 // CardHandler needs — narrowed from *TaskWorkflowService.
 type CardCommandRunService interface {
-	RunCardCommand(ctx context.Context, cardID, commandKey, instruction string) (*RunCardCommandResult, error)
+	RunCardCommandAsHuman(ctx context.Context, cardID, commandKey, instruction string) (*RunCardCommandResult, error)
 }
 
 // CardHandler serves the card read surface.
@@ -59,7 +59,7 @@ func (h *CardHandler) RunCommand(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
-	result, err := h.Commands.RunCardCommand(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "key"), body.Instruction)
+	result, err := h.Commands.RunCardCommandAsHuman(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "key"), body.Instruction)
 	if err != nil {
 		writeServiceError(w, err)
 		return

@@ -1,24 +1,36 @@
 package api
 
-// Concurrent smoke test: a card command launcher (RunCardCommand) and a Go
-// dispatch (acceptGo) must never both succeed in claiming the same card's
-// single execution slot.
+// Concurrency coverage for card_requests's single-execution-slot invariant
+// between a card command launcher (RunCardCommandAsHuman) and a Go dispatch
+// (acceptGo's own reservation, extracted as reserveGoCardRequest so it can
+// be driven directly here).
 //
-// Honesty note: with a single sqlite connection (SetMaxOpenConns(1), the
-// same posture production runs under), any two callers whose occupancy
-// check and claim are each wrapped in one transaction can never truly
-// interleave — so this test cannot itself reproduce a read-then-separately-
-// write race. What it verifies, on every run: the two entry points never
+// A JSON-seeded specced child cannot be used to set this race up: it is the
+// exact condition cardWorkChildOccupantTx treats as "occupied" (see
+// DetailOpenSlotChildID, card.go), so RunCardCommandAsHuman would always concede
+// there before ever attempting the CreateCardRequest INSERT — deterministically,
+// not as a race outcome. A prior version of this test seeded such a child and,
+// as a result, never actually exercised the card_requests unique index: command
+// lost every run for a reason unrelated to Go's own reservation logic, to the
+// point that removing acceptGo's reservation call entirely left the test green.
+// These tests instead drive Go's reservation directly via reserveGoCardRequest,
+// with no specced child in task_triage, so both sides genuinely contend for the
+// same CreateCardRequest INSERT arbitrated by idx_card_requests_active_unique.
+//
+// Honesty note: with a single sqlite connection (SetMaxOpenConns(1), the same
+// posture production runs under), any two callers whose occupancy check and
+// claim are each wrapped in one transaction can never truly interleave mid-Tx
+// — so TestConcurrentCommandAndGo_OnlyOneClaimsTheSlot cannot itself reproduce
+// a read-then-separately-write race; it verifies the two entry points never
 // simultaneously succeed under goroutine-level concurrency, and — with cgo
 // available for `-race` — that neither implementation has an unsynchronized
-// shared-state bug. The occupancy-check-and-claim atomicity itself
-// (cardWorkChildOccupantTx and the CreateCardRequest INSERT sharing one
-// WithinTx call, in both RunCardCommand and acceptGo) is a structural
-// property to verify by code review, not by racing goroutines against a
-// single-connection database.
+// shared-state bug. TestCommandThenGo/TestGoThenCommand instead pin the two
+// orderings deterministically, proving each direction of arbitration on its
+// own without relying on scheduling.
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -27,7 +39,12 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-func TestConcurrentCommandAndGo_OnlyOneClaimsTheSlot(t *testing.T) {
+// newCardSlotConcurrencyFixture builds a fresh in-memory DB, project, and an
+// empty card (no task_triage children) plus a TaskWorkflowService wired for
+// both RunCardCommandAsHuman and reserveGoCardRequest — no TaskTriage/TaskCreator,
+// since none of this file's tests dispatch a full acceptGo.
+func newCardSlotConcurrencyFixture(t *testing.T) (*TaskWorkflowService, *orchestrator.Task, *orchestrator.TaskRepository) {
+	t.Helper()
 	d, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -45,99 +62,120 @@ func TestConcurrentCommandAndGo_OnlyOneClaimsTheSlot(t *testing.T) {
 	if err := repo.CreateTask(card); err != nil {
 		t.Fatalf("create card: %v", err)
 	}
-	// A specced child ready for Go to dispatch.
-	if err := repo.UpsertTaskTriage(&orchestrator.CardAttrs{
-		TaskID: card.ID,
-		Detail: []byte(`{"children":[{"id":"ch_00","status":"specced","spec":{"project":"proj-1","behavior":"dev"}}]}`),
-	}); err != nil {
-		t.Fatalf("seed task_triage: %v", err)
-	}
 
 	jobs := newFakeTriggerJobStore()
 	exec := &fakeTriggerExecDispatcher{jobs: jobs}
-	// creator mimics createExecutionTask's own CardRequestLinker branch
-	// (real production code, api/task_create.go) closely enough for this
-	// race: attach the reservation to the freshly-created task id, same
-	// atomic-from-the-DB's-perspective operation (a single AttachCardRequest
-	// UPDATE), without pulling in the full auto_start/dispatch pipeline this
-	// test has no need to exercise.
-	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
-		task := &orchestrator.Task{
-			ProjectID: req.ProjectID, Type: orchestrator.TaskTypeExecution, ParentID: req.ParentID,
-			Ref: req.Ref, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: req.Behavior},
-		}
-		if err := repo.CreateTask(task); err != nil {
-			return nil, err
-		}
-		if req.CardRequestID != "" {
-			if err := repo.AttachCardRequest(req.CardRequestID, orchestrator.CardRequestTargetKindTask, task.ID); err != nil {
-				return nil, err
-			}
-		}
-		return task, nil
-	}}
-
 	svc := &TaskWorkflowService{
 		Tasks:        repo,
-		TaskTriage:   repo,
 		CardRequests: repo,
 		Tx:           realTransactor{conn: d.Conn},
 		Exec:         exec,
 		Meta:         fakeTriggerMetaStore{byProject: map[string]*orchestrator.ProjectMeta{"proj-1": testCardMeta(map[string]orchestrator.CardCommand{"review": {Label: "Run", Run: "echo hi"}})}},
-		TaskCreator:  creator,
+	}
+	return svc, card, repo
+}
+
+// TestGoThenCommand_CommandSeesOccupiedViaCardRequests pins that once Go has
+// reserved the slot (no specced child involved), a subsequent
+// RunCardCommandAsHuman must see it occupied via the card_requests row
+// itself — not via cardWorkChildOccupantTx's JSON/live-child check, which
+// has nothing to see here.
+func TestGoThenCommand_CommandSeesOccupiedViaCardRequests(t *testing.T) {
+	svc, card, repo := newCardSlotConcurrencyFixture(t)
+
+	goReq, err := svc.reserveGoCardRequest(card.ID)
+	if err != nil || goReq == nil {
+		t.Fatalf("reserveGoCardRequest: got (%+v, %v), want a claimed reservation", goReq, err)
 	}
 
-	var wg sync.WaitGroup
-	var cmdResult *RunCardCommandResult
-	var cmdErr error
-	var goErr error
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		cmdResult, cmdErr = svc.RunCardCommand(context.Background(), card.ID, "review", "")
-	}()
-	go func() {
-		defer wg.Done()
-		_, goErr = svc.acceptGo(context.Background(), card.ID, false)
-	}()
-	wg.Wait()
-
-	cmdWon := cmdErr == nil && cmdResult != nil && !cmdResult.Occupied
-	goWon := goErr == nil
-	if cmdWon == goWon {
-		t.Fatalf("exactly one of {command, go} must win the race, got cmdWon=%v (result=%+v err=%v) goWon=%v (err=%v)",
-			cmdWon, cmdResult, cmdErr, goWon, goErr)
+	result, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
+	if err != nil {
+		t.Fatalf("RunCardCommandAsHuman: %v", err)
+	}
+	if !result.Occupied {
+		t.Fatalf("RunCardCommandAsHuman: Occupied = false, want true (Go already holds the slot)")
 	}
 
-	// After both goroutines finish, the card's slot must have exactly one
-	// active (launching/attached) card_requests row, or none if the loser's
-	// own reservation attempt never got as far as a successful INSERT —
-	// never two, and the live-child count must agree with which side won.
 	active, err := repo.CountActiveCardRequests(card.ID)
 	if err != nil {
 		t.Fatalf("CountActiveCardRequests: %v", err)
 	}
-	if active > 1 {
-		t.Fatalf("active card_requests = %d, want at most 1 — both sides claimed the slot", active)
+	if active != 1 {
+		t.Fatalf("active card_requests = %d, want 1 (Go's own reservation only)", active)
+	}
+}
+
+// TestCommandThenGo_GoRejectedBySlotOccupied is
+// TestGoThenCommand_CommandSeesOccupiedViaCardRequests's mirror: once a
+// command has claimed the slot, reserveGoCardRequest (acceptGo's own
+// reservation logic) must fail with ErrCardRequestSlotOccupied.
+func TestCommandThenGo_GoRejectedBySlotOccupied(t *testing.T) {
+	svc, card, repo := newCardSlotConcurrencyFixture(t)
+
+	result, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
+	if err != nil {
+		t.Fatalf("RunCardCommandAsHuman: %v", err)
+	}
+	if result.Occupied {
+		t.Fatalf("RunCardCommandAsHuman: Occupied = true, want false (nothing else holds the slot yet)")
 	}
 
-	fresh, err := repo.GetTask(card.ID)
-	if err != nil {
-		t.Fatalf("GetTask(card): %v", err)
+	goReq, err := svc.reserveGoCardRequest(card.ID)
+	if !errors.Is(err, orchestrator.ErrCardRequestSlotOccupied) {
+		t.Fatalf("reserveGoCardRequest: err = %v, want ErrCardRequestSlotOccupied", err)
 	}
-	if goWon {
-		if fresh.OpenChildCount != 1 {
-			t.Errorf("OpenChildCount = %d, want 1 (Go's own dispatched child) since Go won the race", fresh.OpenChildCount)
-		}
-		if len(exec.calls) != 0 {
-			t.Errorf("StartExec calls = %d, want 0 — the command must not have dispatched alongside Go's win", len(exec.calls))
-		}
-	} else {
-		if fresh.OpenChildCount != 0 {
-			t.Errorf("OpenChildCount = %d, want 0 (Go must not have dispatched a child) since the command won the race", fresh.OpenChildCount)
-		}
-		if len(exec.calls) != 1 {
-			t.Errorf("StartExec calls = %d, want 1 — the winning command must have dispatched its launcher", len(exec.calls))
-		}
+	if goReq != nil {
+		t.Errorf("reserveGoCardRequest: got a reservation %+v, want nil on rejection", goReq)
+	}
+
+	active, err := repo.CountActiveCardRequests(card.ID)
+	if err != nil {
+		t.Fatalf("CountActiveCardRequests: %v", err)
+	}
+	if active != 1 {
+		t.Fatalf("active card_requests = %d, want 1 (the command's own reservation only)", active)
+	}
+}
+
+// TestConcurrentCommandAndGo_OnlyOneClaimsTheSlot is the goroutine-level
+// smoke test: see this file's header for what it can and cannot prove.
+func TestConcurrentCommandAndGo_OnlyOneClaimsTheSlot(t *testing.T) {
+	svc, card, repo := newCardSlotConcurrencyFixture(t)
+
+	var wg sync.WaitGroup
+	var cmdResult *RunCardCommandResult
+	var cmdErr error
+	var goReq *orchestrator.CardRequest
+	var goErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		cmdResult, cmdErr = svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
+	}()
+	go func() {
+		defer wg.Done()
+		goReq, goErr = svc.reserveGoCardRequest(card.ID)
+	}()
+	wg.Wait()
+
+	cmdWon := cmdErr == nil && cmdResult != nil && !cmdResult.Occupied
+	goWon := goErr == nil && goReq != nil
+	if cmdWon == goWon {
+		t.Fatalf("exactly one of {command, go} must win the race, got cmdWon=%v (result=%+v err=%v) goWon=%v (req=%+v err=%v)",
+			cmdWon, cmdResult, cmdErr, goWon, goReq, goErr)
+	}
+	if !goWon && !errors.Is(goErr, orchestrator.ErrCardRequestSlotOccupied) {
+		t.Errorf("go lost the race with err = %v, want ErrCardRequestSlotOccupied", goErr)
+	}
+	if !cmdWon && (cmdErr != nil || cmdResult == nil || !cmdResult.Occupied) {
+		t.Errorf("command lost the race with result=%+v err=%v, want a non-error Occupied=true result", cmdResult, cmdErr)
+	}
+
+	active, err := repo.CountActiveCardRequests(card.ID)
+	if err != nil {
+		t.Fatalf("CountActiveCardRequests: %v", err)
+	}
+	if active != 1 {
+		t.Fatalf("active card_requests = %d, want exactly 1 — both or neither side claimed the slot", active)
 	}
 }

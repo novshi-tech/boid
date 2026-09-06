@@ -20,6 +20,9 @@ func ValidateCardCommands(commands map[string]CardCommand, events CardEventsConf
 		if strings.TrimSpace(key) == "" {
 			return fmt.Errorf("project.yaml: card_commands: key must not be empty")
 		}
+		if key == CardRequestCommandKeyGo {
+			return fmt.Errorf("project.yaml: card_commands: key %q is reserved for Go", key)
+		}
 		if strings.TrimSpace(cmd.Label) == "" {
 			return fmt.Errorf("project.yaml: card_commands.%s: label must not be empty", key)
 		}

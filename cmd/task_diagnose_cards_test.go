@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/client"
@@ -116,7 +117,7 @@ func TestTaskDiagnoseCards_ActiveCardRequest_FlaggedEvenWithNoUnresolvedChildren
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Query().Get("card_id") != "":
+		case strings.HasPrefix(r.URL.Path, "/api/card-requests"):
 			fmt.Fprint(w, `[{"id":"req-1","card_id":"card-1","status":"launching"}]`)
 		case r.URL.Query().Get("parent_id") != "":
 			fmt.Fprint(w, `[]`)
@@ -148,6 +149,45 @@ func TestTaskDiagnoseCards_ActiveCardRequest_FlaggedEvenWithNoUnresolvedChildren
 	}
 	if !bytes.Contains(out.Bytes(), []byte("card-1")) || !bytes.Contains(out.Bytes(), []byte("req-1")) {
 		t.Errorf("expected card-1 flagged with its active card_request req-1, got: %s", out.String())
+	}
+}
+
+// TestTaskDiagnoseCards_BulkCardRequestsFetchFails_IsFatal pins that a
+// failure listing active card_requests must abort with an error, not
+// silently render "no cards violate the invariant" — that would hide the
+// exact case this column exists to catch (a card whose only problem is a
+// stuck card_request with zero unresolved children).
+func TestTaskDiagnoseCards_BulkCardRequestsFetchFails_IsFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/card-requests") {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"error":"db unavailable"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":"card-1","type":"card","title":"mid-command","status":"working","card":{"detail":{}}}]`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := client.NewClient(srv.URL, "")
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+
+	cmd := taskDiagnoseCardsCmd
+	prev := cmd.Context()
+	t.Cleanup(func() {
+		cmd.SetContext(prev)
+		cmd.SetOut(nil)
+		cmd.SetErr(nil)
+	})
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.SetContext(client.WithClient(context.Background(), c))
+
+	if err := cmd.RunE(cmd, nil); err == nil {
+		t.Fatal("expected an error when the bulk card_requests fetch fails, got nil")
 	}
 }
 

@@ -37,8 +37,20 @@ const (
 // CardRequestCommandKeyGo is the reserved command_key value for a request
 // whose origin is the shared work-execution slot (Go) rather than a
 // project.yaml card_commands entry. ValidateCardCommands rejects an empty
-// card_commands key at load time, so "" never collides with a real one.
-const CardRequestCommandKeyGo = ""
+// card_commands key at load time, so this dedicated sentinel never collides
+// with a real one.
+//
+// This is deliberately non-empty: ReconcileLaunchingCardRequests
+// (card_request_release.go) uses CommandKey == CardRequestCommandKeyGo as
+// its skip predicate for "this row has no real launcher job, don't
+// self-heal it". Only RunCardCommandAsHuman (always a real, non-empty
+// card_commands key) and acceptGo (this sentinel) create card_requests rows
+// today, so an empty CommandKey never occurs in practice — but if that ever
+// changed, a plain "" sentinel would silently also match a row that never
+// meant to claim Go's exemption. A dedicated non-empty value keeps "" free
+// to mean exactly what CardRequest's own zero value implies (no command_key
+// set at all), rather than double-booking it as a magic marker.
+const CardRequestCommandKeyGo = "__go__"
 
 // CardRequestTargetKind vocabulary — the kind of continuation a launcher
 // created.
@@ -403,6 +415,22 @@ func ListCardRequestsByCard(dbtx db.DBTX, cardID string) ([]*CardRequest, error)
 	rows, err := dbtx.Query(cardRequestSelectCols+` FROM card_requests WHERE card_id = ? ORDER BY created_at ASC, id ASC`, cardID)
 	if err != nil {
 		return nil, fmt.Errorf("list card requests: %w", err)
+	}
+	return scanCardRequests(rows)
+}
+
+// ListActiveCardRequests returns every currently launching/attached
+// card_requests row across EVERY card, oldest first — the bulk counterpart
+// to ListCardRequestsByCard for a caller that needs "which cards have an
+// active request" (e.g. `boid task diagnose-cards`) without issuing one
+// query per card.
+func ListActiveCardRequests(dbtx db.DBTX) ([]*CardRequest, error) {
+	rows, err := dbtx.Query(
+		cardRequestSelectCols+` FROM card_requests WHERE status IN (?, ?) ORDER BY created_at ASC, id ASC`,
+		string(CardRequestStatusLaunching), string(CardRequestStatusAttached),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list active card requests: %w", err)
 	}
 	return scanCardRequests(rows)
 }

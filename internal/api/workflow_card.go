@@ -849,6 +849,40 @@ func (s *TaskWorkflowService) releaseCardRequestForTerminalTask(task *orchestrat
 	}
 }
 
+// reserveGoCardRequest claims cardID's shared card_requests execution slot
+// for a Go dispatch, the same way a card-command launcher claims it via
+// CreateCardRequest (card_command_launcher.go) — so the card_requests
+// unique index arbitrates between the two the same way it already
+// arbitrates between two concurrent commands.
+//
+// CommandKey=CardRequestCommandKeyGo marks this as a work-execution
+// reservation, not a project.yaml command. Go has no real launcher job
+// (task creation happens synchronously in the caller), but
+// CreateCardRequest's launching fast path requires a non-empty
+// LauncherJobID — a synthetic, never-a-real-job marker satisfies that.
+// ReconcileLaunchingCardRequests (card_request_release.go) skips
+// CardRequestCommandKeyGo rows accordingly; see that function's doc comment
+// for why.
+//
+// Returns (nil, nil) when s.CardRequests isn't wired — callers must treat a
+// nil result as "no reservation to release", not as an error.
+func (s *TaskWorkflowService) reserveGoCardRequest(cardID string) (*orchestrator.CardRequest, error) {
+	if s.CardRequests == nil {
+		return nil, nil
+	}
+	cardReq := &orchestrator.CardRequest{
+		CardID:        cardID,
+		CommandKey:    orchestrator.CardRequestCommandKeyGo,
+		CauseID:       "",
+		Status:        orchestrator.CardRequestStatusLaunching,
+		LauncherJobID: "go:" + uuid.New().String(),
+	}
+	if err := s.CardRequests.CreateCardRequest(cardReq); err != nil {
+		return nil, err
+	}
+	return cardReq, nil
+}
+
 // acceptGo is accept(go)'s implementation: the human-accept path for a "go"
 // suggestion, and the direct replacement for v1's two-stage
 // ready→(machine "dispatch")→working. v2 has no "ready" status and no
@@ -1042,44 +1076,26 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 	{
 		i := speccedIdx
 
-		// Go claims card_requests's shared execution slot BEFORE creating the
-		// child task, so the card_requests unique index arbitrates against a
-		// concurrent card-command launcher (cardWorkChildOccupantTx,
-		// card_command_launcher.go) the same way it already arbitrates
-		// between two commands.
-		//
-		// CommandKey=CardRequestCommandKeyGo marks this as a work-execution
-		// reservation, not a project.yaml command. Go has no real launcher
-		// job (task creation happens synchronously in this call), but
-		// CreateCardRequest's launching fast path requires a non-empty
-		// LauncherJobID — a synthetic, never-a-real-job marker satisfies that.
-		// ReconcileLaunchingCardRequests (card_request_release.go) skips
-		// CardRequestCommandKeyGo rows accordingly; see that function's doc
-		// comment for why.
-		var cardReq *orchestrator.CardRequest
-		if s.CardRequests != nil {
-			cardReq = &orchestrator.CardRequest{
-				CardID:        taskID,
-				CommandKey:    orchestrator.CardRequestCommandKeyGo,
-				CauseID:       "",
-				Status:        orchestrator.CardRequestStatusLaunching,
-				LauncherJobID: "go:" + uuid.New().String(),
+		cardReq, err := s.reserveGoCardRequest(taskID)
+		if err != nil {
+			if errors.Is(err, orchestrator.ErrCardRequestSlotOccupied) {
+				cerr := fmt.Errorf("accept(go): card %q's single work slot is already occupied by an active card command", taskID)
+				return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
 			}
-			if err := s.CardRequests.CreateCardRequest(cardReq); err != nil {
-				if errors.Is(err, orchestrator.ErrCardRequestSlotOccupied) {
-					cerr := fmt.Errorf("accept(go): card %q's single work slot is already occupied by an active card command", taskID)
-					return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
-				}
-				cerr := fmt.Errorf("accept(go): reserve execution slot: %w", err)
-				s.recordDispatchError(ctx, taskID, task.Status, cerr)
-				return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
-			}
+			cerr := fmt.Errorf("accept(go): reserve execution slot: %w", err)
+			s.recordDispatchError(ctx, taskID, task.Status, cerr)
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
 		}
-		// releaseReservation fails the just-claimed row on any error BEFORE
-		// CreateTask succeeds. Once CreateTask attaches it to the new child
-		// task, ReconcileCardRequestSlots owns its lifecycle from the task's
-		// own terminal status instead — not released here even if the
-		// transition Tx below then fails.
+		// releaseReservation fails the just-claimed row on any error up
+		// through CreateTask's own auto-start check — including the
+		// "still pending" branch below, which runs AFTER CreateTask has
+		// already attached the reservation (CreateTaskLinkedToCardRequest):
+		// FailCardRequest accepts attached rows too, so releasing here is
+		// safe even though the row is no longer merely launching. Once this
+		// function moves past that check (a genuinely running child task),
+		// the task's own terminal status owns the reservation's lifecycle
+		// instead (ReconcileCardRequestSlots) — not released here even if
+		// the transition Tx below then fails.
 		releaseReservation := func(reason string) {
 			if cardReq == nil {
 				return

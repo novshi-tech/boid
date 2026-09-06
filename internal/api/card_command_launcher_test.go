@@ -1,6 +1,6 @@
 package api
 
-// Pins RunCardCommand's manual card-command launch: claims the card's
+// Pins RunCardCommandAsHuman's manual card-command launch: claims the card's
 // shared execution slot with a pre-generated launcher job id, dispatches
 // the project.yaml `run:` command as a readonly exec job carrying
 // card/request context, and releases the slot on a dispatch failure.
@@ -18,10 +18,10 @@ import (
 )
 
 // newCardCommandTestService builds a TaskWorkflowService wired for
-// RunCardCommand tests and creates one card task under projectID.
+// RunCardCommandAsHuman tests and creates one card task under projectID.
 //
 // Builds its own DB/repo (rather than delegating to newTriggerSweepTestService)
-// so it can ALSO wire Tx — RunCardCommand's occupancy check and its
+// so it can ALSO wire Tx — RunCardCommandAsHuman's occupancy check and its
 // CreateCardRequest claim run inside one transaction, which
 // newTriggerSweepTestService's callers never needed since fireTrigger has
 // no such requirement.
@@ -71,20 +71,20 @@ func testCardMeta(commands map[string]orchestrator.CardCommand) *orchestrator.Pr
 	return &orchestrator.ProjectMeta{CardCommands: commands}
 }
 
-func TestRunCardCommand_Success_ClaimsSlotAndDispatchesLauncher(t *testing.T) {
+func TestRunCardCommandAsHuman_Success_ClaimsSlotAndDispatchesLauncher(t *testing.T) {
 	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},
 	}))
 
-	result, err := svc.RunCardCommand(context.Background(), card.ID, "review", "look into this")
+	result, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "look into this")
 	if err != nil {
-		t.Fatalf("RunCardCommand: %v", err)
+		t.Fatalf("RunCardCommandAsHuman: %v", err)
 	}
 	if result.Occupied {
 		t.Fatal("Occupied = true, want false for a freshly-claimed slot")
 	}
-	if result.RequestID == "" || result.JobID == "" {
-		t.Fatalf("result = %+v, want non-empty RequestID and JobID", result)
+	if result.RequestID == "" || result.LauncherJobID == "" {
+		t.Fatalf("result = %+v, want non-empty RequestID and LauncherJobID", result)
 	}
 
 	if len(exec.calls) != 1 {
@@ -123,12 +123,12 @@ func TestRunCardCommand_Success_ClaimsSlotAndDispatchesLauncher(t *testing.T) {
 	}
 }
 
-func TestRunCardCommand_UnknownCommand_Returns404(t *testing.T) {
+func TestRunCardCommandAsHuman_UnknownCommand_Returns404(t *testing.T) {
 	svc, _, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},
 	}))
 
-	_, err := svc.RunCardCommand(context.Background(), card.ID, "nonexistent", "")
+	_, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "nonexistent", "")
 	if err == nil {
 		t.Fatal("want error for an undeclared command key")
 	}
@@ -138,7 +138,7 @@ func TestRunCardCommand_UnknownCommand_Returns404(t *testing.T) {
 	}
 }
 
-func TestRunCardCommand_NotACard_Returns400(t *testing.T) {
+func TestRunCardCommandAsHuman_NotACard_Returns400(t *testing.T) {
 	svc, _, _ := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},
 	}))
@@ -148,7 +148,7 @@ func TestRunCardCommand_NotACard_Returns400(t *testing.T) {
 		t.Fatalf("create execution task: %v", err)
 	}
 
-	_, err := svc.RunCardCommand(context.Background(), exec.ID, "review", "")
+	_, err := svc.RunCardCommandAsHuman(context.Background(), exec.ID, "review", "")
 	if err == nil {
 		t.Fatal("want error targeting a non-card task")
 	}
@@ -158,22 +158,22 @@ func TestRunCardCommand_NotACard_Returns400(t *testing.T) {
 	}
 }
 
-// TestRunCardCommand_Occupied_ReturnsLinkWithoutCreatingARequest pins that a
+// TestRunCardCommandAsHuman_Occupied_ReturnsLinkWithoutCreatingARequest pins that a
 // manual command must NOT be queued behind a busy slot — it returns a link
 // to the current execution, and does not create a second row.
-func TestRunCardCommand_Occupied_ReturnsLinkWithoutCreatingARequest(t *testing.T) {
+func TestRunCardCommandAsHuman_Occupied_ReturnsLinkWithoutCreatingARequest(t *testing.T) {
 	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},
 	}))
 
-	first, err := svc.RunCardCommand(context.Background(), card.ID, "review", "first")
+	first, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "first")
 	if err != nil {
-		t.Fatalf("first RunCardCommand: %v", err)
+		t.Fatalf("first RunCardCommandAsHuman: %v", err)
 	}
 
-	second, err := svc.RunCardCommand(context.Background(), card.ID, "review", "second")
+	second, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "second")
 	if err != nil {
-		t.Fatalf("second RunCardCommand: %v", err)
+		t.Fatalf("second RunCardCommandAsHuman: %v", err)
 	}
 	if !second.Occupied {
 		t.Fatal("Occupied = false, want true — the slot is still held by the first request")
@@ -183,6 +183,11 @@ func TestRunCardCommand_Occupied_ReturnsLinkWithoutCreatingARequest(t *testing.T
 	}
 	if len(exec.calls) != 1 {
 		t.Fatalf("StartExec calls = %d, want exactly 1 — the occupied call must not dispatch a second launcher", len(exec.calls))
+	}
+	// The SECOND call's own submitted instruction ("second") must come
+	// back, not the first request's ("first") or nothing at all.
+	if second.Instruction != "second" {
+		t.Errorf("second.Instruction = %q, want %q (the occupied call's own submitted instruction, echoed back)", second.Instruction, "second")
 	}
 
 	repo := svc.CardRequests.(*orchestrator.TaskRepository)
@@ -195,16 +200,53 @@ func TestRunCardCommand_Occupied_ReturnsLinkWithoutCreatingARequest(t *testing.T
 	}
 }
 
-// TestRunCardCommand_DispatchFailure_ReleasesSlot pins that a launcher
+// TestRunCardCommandAsHuman_SpeccedJSONChildOnly_OccupiedWithNoFakeTarget pins the
+// other half of cardWorkChildOccupantTx's fix: a specced/open task_triage
+// JSON child with NO live task row yet (the common case — acceptGo hasn't
+// task-ified it) occupies the slot, but has no real task id to point at.
+// TargetKind/TargetID must stay empty rather than leak the JSON child's own
+// id as if it were a followable task id (GET /api/tasks/<that id> 404s).
+func TestRunCardCommandAsHuman_SpeccedJSONChildOnly_OccupiedWithNoFakeTarget(t *testing.T) {
+	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	repo := svc.TaskTriage.(*orchestrator.TaskRepository)
+	if err := repo.UpsertTaskTriage(&orchestrator.CardAttrs{
+		TaskID: card.ID,
+		Detail: []byte(`{"children":[{"id":"ch_00","status":"specced","spec":{"project":"proj-1","behavior":"dev"}}]}`),
+	}); err != nil {
+		t.Fatalf("seed task_triage: %v", err)
+	}
+
+	result, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "go do it")
+	if err != nil {
+		t.Fatalf("RunCardCommandAsHuman: %v", err)
+	}
+	if !result.Occupied {
+		t.Fatal("Occupied = false, want true — the specced JSON child occupies the slot")
+	}
+	if result.TargetKind != "" || result.TargetID != "" {
+		t.Errorf("TargetKind/TargetID = %q/%q, want both empty — ch_00 is a JSON id, not a task id, and has no live row yet",
+			result.TargetKind, result.TargetID)
+	}
+	if result.Instruction != "go do it" {
+		t.Errorf("Instruction = %q, want the caller's own submitted instruction echoed back", result.Instruction)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("StartExec calls = %d, want 0 — must not dispatch alongside a specced-but-undispatched child", len(exec.calls))
+	}
+}
+
+// TestRunCardCommandAsHuman_DispatchFailure_ReleasesSlot pins that a launcher
 // dispatch failure fails the claimed request (retry-able) rather than
 // leaving the slot stuck forever.
-func TestRunCardCommand_DispatchFailure_ReleasesSlot(t *testing.T) {
+func TestRunCardCommandAsHuman_DispatchFailure_ReleasesSlot(t *testing.T) {
 	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},
 	}))
 	exec.failNext = 1
 
-	_, err := svc.RunCardCommand(context.Background(), card.ID, "review", "")
+	_, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
 	if err == nil {
 		t.Fatal("want an error when dispatch fails")
 	}
@@ -222,19 +264,19 @@ func TestRunCardCommand_DispatchFailure_ReleasesSlot(t *testing.T) {
 	}
 
 	// The slot must now be free for a subsequent call to succeed.
-	second, err := svc.RunCardCommand(context.Background(), card.ID, "review", "")
+	second, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
 	if err != nil {
-		t.Fatalf("RunCardCommand after release: %v", err)
+		t.Fatalf("RunCardCommandAsHuman after release: %v", err)
 	}
 	if second.Occupied {
 		t.Fatal("Occupied = true, want the released slot to accept a fresh claim")
 	}
 }
 
-// TestRunCardCommand_LiveGoChild_ReturnsLinkWithoutDispatching pins that a
+// TestRunCardCommandAsHuman_LiveGoChild_ReturnsLinkWithoutDispatching pins that a
 // card command must not dispatch alongside an already-running Go work
 // child — the two share one execution slot.
-func TestRunCardCommand_LiveGoChild_ReturnsLinkWithoutDispatching(t *testing.T) {
+func TestRunCardCommandAsHuman_LiveGoChild_ReturnsLinkWithoutDispatching(t *testing.T) {
 	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},
 	}))
@@ -247,15 +289,22 @@ func TestRunCardCommand_LiveGoChild_ReturnsLinkWithoutDispatching(t *testing.T) 
 		t.Fatalf("create child: %v", err)
 	}
 
-	result, err := svc.RunCardCommand(context.Background(), card.ID, "review", "")
+	result, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
 	if err != nil {
-		t.Fatalf("RunCardCommand: %v", err)
+		t.Fatalf("RunCardCommandAsHuman: %v", err)
 	}
 	if !result.Occupied {
 		t.Fatal("Occupied = false, want true — a live Go child must block the command")
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("StartExec calls = %d, want 0 — must not dispatch alongside a live Go child", len(exec.calls))
+	}
+	// The occupant is a REAL live task row (child.ID), not the empty string
+	// and not any task_triage JSON id — a caller following TargetID with
+	// GET /api/tasks/<id> must land on the actual running child.
+	if result.TargetKind != orchestrator.CardRequestTargetKindTask || result.TargetID != child.ID {
+		t.Errorf("TargetKind/TargetID = %q/%q, want %q/%q (the live child's real task id)",
+			result.TargetKind, result.TargetID, orchestrator.CardRequestTargetKindTask, child.ID)
 	}
 	rows, err := repo.ListCardRequestsByCard(card.ID)
 	if err != nil {
