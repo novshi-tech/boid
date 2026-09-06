@@ -748,6 +748,44 @@ func TestWebHandlerPostStartShapingSession_WorkingWithOpenChild(t *testing.T) {
 	}
 }
 
+// TestWebHandlerPostStartShapingSession_InstructionRespectsSingleWorkSlot
+// pins that the shaping instruction never unconditionally tells the agent
+// to add a new child task: applyChildAddedSideEffect rejects with a 409 the
+// moment the card's single work slot is already occupied, so both the
+// working and parked instructions must tell the agent that a NEW
+// child_added is gated on the slot being free.
+func TestWebHandlerPostStartShapingSession_InstructionRespectsSingleWorkSlot(t *testing.T) {
+	for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking} {
+		t.Run(string(status), func(t *testing.T) {
+			svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+				ID: "task-1", Type: orchestrator.TaskTypeCard, ProjectID: "meta-proj",
+				Title: "t", Status: status, Card: &orchestrator.CardAttrs{},
+			}}}
+			dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
+			triage := &stubTaskTriageStore{triage: &orchestrator.CardAttrs{TaskID: "task-1"}}
+			r := newTestWebHandlerWithShaping(svc, dispatcher, triage)
+
+			req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusSeeOther {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+			}
+			instr := dispatcher.lastReq.Instruction
+			if !strings.Contains(instr, "child_added") {
+				t.Errorf("instruction should name child_added as the new-child write path; got:\n%s", instr)
+			}
+			if !strings.Contains(instr, "最大一つ") {
+				t.Errorf("instruction should state the single-work-slot invariant; got:\n%s", instr)
+			}
+			if strings.Contains(instr, "新たに追加した子タスクも同じ形で children に加えてください") {
+				t.Errorf("instruction must not unconditionally instruct adding new children (slot may be occupied); got:\n%s", instr)
+			}
+		})
+	}
+}
+
 func TestWebHandlerPostStartShapingSession_WorkingWithoutTriageRow(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 		ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{},

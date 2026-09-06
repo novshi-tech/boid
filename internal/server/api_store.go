@@ -64,6 +64,10 @@ func (s apiTxStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrato
 	return s.tasks.FindTaskByRef(ref, parentID, projectID)
 }
 
+func (s apiTxStore) FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey string) (*orchestrator.Task, error) {
+	return s.tasks.FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey)
+}
+
 func (s apiTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return s.tasks.ListChildren(parentID)
 }

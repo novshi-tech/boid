@@ -120,10 +120,17 @@ func TestTaskWorkflowService_AcceptGo_DiscardsAndRecordsExistingSuggestion(t *te
 	txStore := &recordingTxStore{
 		task: task,
 		triage: map[string]*orchestrator.CardAttrs{
-			"t1": {TaskID: "t1", SuggestionVerb: "park", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"park","reason":"blocked on review"}}}`)},
+			"t1": {
+				TaskID:         "t1",
+				SuggestionVerb: "park",
+				Detail: json.RawMessage(`{
+					"attrs": {"suggestion": {"verb":"park","reason":"blocked on review"}},
+					"children": [{"id": "ch_00", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]
+				}`),
+			},
 		},
 	}
-	svc := newAcceptGoWorkflowService(task, txStore, nil)
+	svc := newAcceptGoWorkflowService(task, txStore, &fakeTaskCreator{})
 
 	result, err := svc.acceptGo(context.Background(), task.ID, false)
 	if err != nil {

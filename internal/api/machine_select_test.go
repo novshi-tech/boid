@@ -40,8 +40,13 @@ func TestMachineFor_Card_ReturnsCardMachine(t *testing.T) {
 	if !sm.IsManualAction("go") {
 		t.Error("expected the card machine to know the card-only \"go\" verb")
 	}
-	if sm.IsManualAction("start") || sm.IsManualAction("abort") {
-		t.Error("expected the card machine to NOT know execution-only actions (start/abort)")
+	// "start" is now shared vocabulary — machine_test.go's own
+	// TestCardMachine_HasNoExecutionVocabulary/
+	// TestCardMachine_Reopen_ExecutionFromStatusNotHandled pin that it does
+	// NOT share the execution machine's FromStatus for it. "abort" remains
+	// execution-only.
+	if sm.IsManualAction("abort") {
+		t.Error("expected the card machine to NOT know execution-only actions (abort)")
 	}
 }
 

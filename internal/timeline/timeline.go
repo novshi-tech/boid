@@ -79,9 +79,36 @@ type StatusGroup struct {
 	Events       []Event
 }
 
-// IsStateTransition reports whether an action moves the task to a different status.
+// selfLoopTransitionTypes are the action types with a legitimate
+// FromStatus == ToStatus rule in a machine's own rule table (e.g. card
+// "go" working → working). Many non-transitioning action types (progress,
+// attrs_set, child_added, hook_fired, ...) also get FromStatus/ToStatus
+// stamped to the task's current, unchanged status for bookkeeping — that
+// is NOT a state transition and must not be confused with a genuine
+// self-loop just because the two fields happen to be equal and non-empty.
+//
+// The execution machine's own "abort: aborted → aborted" self-loop rule is
+// deliberately NOT listed here — TestSelfLoopTransitionTypes_MatchesMachineRules
+// pins this whole map against both machines' actual rule tables, including
+// that one intentional omission, so a future self-loop rule can't silently
+// go unnoticed by this map.
+var selfLoopTransitionTypes = map[string]bool{
+	"go": true,
+}
+
+// IsStateTransition reports whether an action carries a recorded status
+// change, including a self-loop (FromStatus == ToStatus) for the types in
+// selfLoopTransitionTypes. Build's grouping only opens a new StatusGroup
+// when ToStatus differs from FromStatus, so a self-loop still renders as
+// one Event in the current group rather than a spurious new visit.
 func IsStateTransition(a *orchestrator.Action) bool {
-	return a.FromStatus != "" && a.ToStatus != "" && a.FromStatus != a.ToStatus
+	if a.FromStatus == "" || a.ToStatus == "" {
+		return false
+	}
+	if a.FromStatus != a.ToStatus {
+		return true
+	}
+	return selfLoopTransitionTypes[a.Type]
 }
 
 // IsProgressAction reports whether an action is a non-transitioning progress note.

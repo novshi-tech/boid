@@ -186,6 +186,139 @@ func TestBuild_StickyRunningJobAppearsInCurrentGroup(t *testing.T) {
 // the suggestion card just disappears. Decision: SHOW it — see
 // IsAnsweredAction's own doc comment in timeline.go for the reasoning.
 
+func TestIsStateTransition_SelfLoop(t *testing.T) {
+	if !IsStateTransition(&orchestrator.Action{Type: "go", FromStatus: "working", ToStatus: "working"}) {
+		t.Error("IsStateTransition(working -> working) = false, want true (card self-transition Go)")
+	}
+}
+
+func TestBuild_IncludesSelfLoopAction(t *testing.T) {
+	now := time.Now()
+	task := &orchestrator.Task{Status: "working", CreatedAt: now.Add(-10 * time.Second)}
+	actions := []*orchestrator.Action{
+		{Type: "go", FromStatus: "working", ToStatus: "working", CreatedAt: now},
+	}
+
+	groups := Build(task, actions, nil)
+
+	found := false
+	for _, g := range groups {
+		for _, ev := range g.Events {
+			if ev.Kind == KindAction && ev.Action != nil && ev.Action.Type == "go" {
+				found = true
+				if ev.Label != "go → working" {
+					t.Errorf("self-loop label = %q, want %q", ev.Label, "go → working")
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("self-loop go action should be present in timeline, but was not found")
+	}
+	if len(groups) != 1 {
+		t.Errorf("self-loop should not open a new status group, got %d groups", len(groups))
+	}
+}
+
+// TestIsStateTransition_NonGoSelfLoop_NotATransition pins that a
+// non-"go" action carrying FromStatus == ToStatus (many non-transitioning
+// action types get both fields stamped to the task's current, unchanged
+// status for bookkeeping — see selfLoopTransitionTypes' own doc comment)
+// is NOT treated as a state transition.
+func TestIsStateTransition_NonGoSelfLoop_NotATransition(t *testing.T) {
+	for _, typ := range []string{"progress", "attrs_set", "child_added", "child_specced", "noted", "hook_fired"} {
+		if IsStateTransition(&orchestrator.Action{Type: typ, FromStatus: "executing", ToStatus: "executing"}) {
+			t.Errorf("IsStateTransition(%s, executing -> executing) = true, want false", typ)
+		}
+	}
+}
+
+// TestBuild_ProgressAction_KeepsMessageLabel pins that a production-shaped
+// progress action (FromStatus == ToStatus == the task's current status,
+// per internal/api/task_notify.go) still renders its message text via
+// buildProgressLabel, not as a bare "progress → executing" transition label.
+func TestBuild_ProgressAction_KeepsMessageLabel(t *testing.T) {
+	now := time.Now()
+	task := &orchestrator.Task{Status: "executing", CreatedAt: now.Add(-10 * time.Second)}
+	actions := []*orchestrator.Action{
+		{Type: "progress", FromStatus: "executing", ToStatus: "executing", CreatedAt: now, Payload: []byte(`{"message":"halfway done"}`)},
+	}
+
+	groups := Build(task, actions, nil)
+
+	found := false
+	for _, g := range groups {
+		for _, ev := range g.Events {
+			if ev.Kind == KindAction && ev.Action != nil && ev.Action.Type == "progress" {
+				found = true
+				if !strings.Contains(ev.Label, "halfway done") {
+					t.Errorf("progress label = %q, want it to contain the message", ev.Label)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("progress action should be present in timeline, but was not found")
+	}
+}
+
+// TestBuild_ExcludesNonTransitioningActionsWithStampedStatus pins that
+// non-transitioning action types stamped with FromStatus == ToStatus (the
+// generic ApplyAction path does this for every action, transitioning or
+// not — see internal/api/workflow_action.go) stay excluded from the
+// rendered timeline, same as when FromStatus/ToStatus are empty.
+func TestBuild_ExcludesNonTransitioningActionsWithStampedStatus(t *testing.T) {
+	now := time.Now()
+	task := &orchestrator.Task{Status: "working", CreatedAt: now.Add(-10 * time.Second)}
+	for _, typ := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "hook_fired", "dispatch_error", "wake_due"} {
+		actions := []*orchestrator.Action{
+			{Type: typ, FromStatus: "working", ToStatus: "working", CreatedAt: now},
+		}
+		groups := Build(task, actions, nil)
+		for _, g := range groups {
+			for _, ev := range g.Events {
+				if ev.Kind == KindAction && ev.Action != nil && ev.Action.Type == typ {
+					t.Errorf("%s action should stay excluded from the timeline, but was rendered as %q", typ, ev.Label)
+				}
+			}
+		}
+	}
+}
+
+// TestSelfLoopTransitionTypes_MatchesMachineRules pins selfLoopTransitionTypes
+// against both machines' actual rule tables: every Manual rule with
+// FromStatus == ToStatus (both non-empty) must be either in the map or in
+// this test's own deliberateOmissions set, so a future self-loop rule can't
+// silently drift out of sync with either list.
+func TestSelfLoopTransitionTypes_MatchesMachineRules(t *testing.T) {
+	deliberateOmissions := map[string]bool{
+		// execution machine's "abort: aborted -> aborted" self-loop: a
+		// re-abort of an already-aborted task stays invisible in the
+		// timeline, matching this package's pre-existing baseline.
+		"abort": true,
+	}
+
+	found := map[string]bool{}
+	for _, sm := range []*orchestrator.StateMachine{orchestrator.NewCardMachine(), orchestrator.NewExecutionMachine()} {
+		for _, r := range sm.Rules {
+			if r.Manual && r.FromStatus != "" && r.FromStatus != "*" && r.ToStatus != "" && r.FromStatus == r.ToStatus {
+				found[r.Action] = true
+			}
+		}
+	}
+
+	for action := range found {
+		if !selfLoopTransitionTypes[action] && !deliberateOmissions[action] {
+			t.Errorf("machine rule table has a self-loop for action %q, but it is in neither selfLoopTransitionTypes nor this test's deliberateOmissions", action)
+		}
+	}
+	for action := range selfLoopTransitionTypes {
+		if !found[action] {
+			t.Errorf("selfLoopTransitionTypes contains %q, but no machine rule table actually has a self-loop rule for it", action)
+		}
+	}
+}
+
 func TestIsAnsweredAction(t *testing.T) {
 	if !IsAnsweredAction(&orchestrator.Action{Type: "answered"}) {
 		t.Error("IsAnsweredAction(answered) = false, want true")

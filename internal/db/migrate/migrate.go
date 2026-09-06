@@ -428,6 +428,14 @@ func allMigrations() []migration {
 				return columnExists(tx, "tasks", "idempotency_key")
 			},
 		},
+		{
+			// No skip function: a pure data backfill (UPDATE only, no schema
+			// change) — the migration runner's own version tracking is what
+			// keeps this from re-running, and the UPDATEs are idempotent by
+			// construction (a second run matches zero rows) regardless.
+			version: "0048_card_verb_rename",
+			path:    "migrations/0048_card_verb_rename.sql",
+		},
 	}
 }
 

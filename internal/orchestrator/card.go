@@ -281,6 +281,66 @@ func DetailChildren(detail json.RawMessage) ([]TaskTriageChild, error) {
 	return wrapper.Children, nil
 }
 
+// DetailOpenSlotChildID returns the id of the first child in detail's
+// "children" list whose status is open or specced — a child not yet
+// task-ified — or "" if none exists. This is the JSON-only half of a
+// card's single-work-slot check; a dispatched child is tracked by its own
+// live task row instead (see workflow_card.go's cardSlotOccupied and
+// task_create.go's cardChildSlotConflict, the two callers that combine this
+// with a real-row check), not by this blob, so it is deliberately excluded
+// here.
+//
+// A card that already violates the invariant (legacy data predating this
+// check) is not an error here: this returns whichever occupant it finds
+// first, in list order. Enumerating every offending card for cleanup is a
+// separate diagnostic (cmd's card multi-child report), not this function's
+// job.
+func DetailOpenSlotChildID(detail json.RawMessage) (string, error) {
+	children, err := DetailChildren(detail)
+	if err != nil {
+		return "", err
+	}
+	for _, c := range children {
+		if c.Status == TaskTriageChildStatusOpen || c.Status == TaskTriageChildStatusSpecced {
+			return c.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// CountUnresolvedChildren returns the number of children contending for a
+// card's single work slot: every JSON child not yet task-ified (open/
+// specced) plus every non-terminal live task row, deduped by Ref against
+// those JSON occupants exactly like acceptGo (internal/api/workflow_card.go)
+// so a child's own task row is never counted as a second occupant.
+//
+// Unlike DetailOpenSlotChildID (which only asks "is there ANY occupant"),
+// this answers "how many", so a card that accumulated more than one before
+// this invariant existed can be found and listed.
+func CountUnresolvedChildren(detail json.RawMessage, liveChildren []*Task) (int, error) {
+	children, err := DetailChildren(detail)
+	if err != nil {
+		return 0, err
+	}
+	jsonOccupants := make(map[string]bool, len(children))
+	for _, c := range children {
+		if c.Status == TaskTriageChildStatusOpen || c.Status == TaskTriageChildStatusSpecced {
+			jsonOccupants[c.ID] = true
+		}
+	}
+	n := len(jsonOccupants)
+	for _, lc := range liveChildren {
+		if IsTerminalStatus(lc.Status) {
+			continue
+		}
+		if lc.Ref != "" && jsonOccupants[lc.Ref] {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
 // Suggestion is task_triage.detail.suggestion — the triage agent's single
 // recommendation, derived from primary sources. Verb uses the same
 // vocabulary as nose's own response words: go/shape/manual/park/drop/wake.

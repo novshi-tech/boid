@@ -77,6 +77,10 @@ func (r *TaskRepository) FindTaskByRef(ref, parentID, projectID string) (*Task, 
 	return FindTaskByRef(r.db, ref, parentID, projectID)
 }
 
+func (r *TaskRepository) FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey string) (*Task, error) {
+	return FindTaskByIdempotencyKey(r.db, projectID, parentID, idempotencyKey)
+}
+
 func (r *TaskRepository) ListChildren(parentID string) ([]*Task, error) {
 	return ListChildren(r.db, parentID)
 }

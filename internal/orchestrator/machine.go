@@ -11,9 +11,6 @@
 // Only the StateMachine each task is evaluated against is chosen per task —
 // see internal/api's machineFor, which selects NewCardMachine when the task
 // carries a task_triage sidecar row and NewExecutionMachine otherwise.
-//
-// See docs/plans/suggestion-as-state-transition.md and its -impl.md
-// companion for the full history of this split.
 package orchestrator
 
 import (
@@ -214,11 +211,9 @@ func (sm *StateMachine) CanApplyManualAction(actionType string, status TaskStatu
 // actually flip the task's status from here" — the question a suggestion's
 // own verb (orchestrator.IsCardTransitionAction's six-verb set) always
 // raises, since every one of those verbs names a real transition, never a
-// non-transitioning fact. The card machine rule table admits exactly one
-// status per verb (e.g. "done" only fires from "working"), so this lets a
-// caller ask "would this verb actually apply from the task's current
-// status" before rendering a live Accept button, rather than letting
-// sm.Apply reject with an opaque error.
+// non-transitioning fact. This lets a caller ask "would this verb actually
+// apply from the task's current status" before rendering a live Accept
+// button, rather than letting sm.Apply reject with an opaque error.
 //
 // Deliberately does NOT exclude self-loop rules (ToStatus == FromStatus) the
 // way AvailableActions does: a self-loop rule still makes sm.Apply SUCCEED

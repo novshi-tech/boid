@@ -68,6 +68,9 @@ func (s *sweepFakeStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, 
 func (s *sweepFakeStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
+func (s *sweepFakeStore) FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey string) (*orchestrator.Task, error) {
+	return nil, nil
+}
 func (s *sweepFakeStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }

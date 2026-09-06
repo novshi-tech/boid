@@ -96,6 +96,160 @@ func TestTaskHandlerCreate_IdempotencyKey_RetryReturnsExistingTask(t *testing.T)
 	}
 }
 
+// TestTaskAppServiceCreateTask_IdempotencyKey_HitOnPendingTask_RescuesAutoStart
+// pins that the IdempotencyKey get-or-create fires "start" itself when the
+// existing hit is still pending and req.AutoStart is set — otherwise a
+// resumed caller retrying the same idempotency_key gets the same pending
+// task back forever.
+func TestTaskAppServiceCreateTask_IdempotencyKey_HitOnPendingTask_RescuesAutoStart(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {},
+		},
+	}
+	existing := &orchestrator.Task{
+		ID:        "existing-task-id",
+		Type:      orchestrator.TaskTypeExecution,
+		Status:    orchestrator.TaskStatusPending,
+		ProjectID: "proj-1",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
+	}
+	store := &stubTaskStore{
+		idempotencyTasks: map[string]*orchestrator.Task{
+			"proj-1::resume-key": existing,
+		},
+	}
+	workflow := &stubWorkflowService{}
+	svc := &TaskAppService{
+		Tasks:    store,
+		Meta:     stubMetaStore{meta: meta},
+		Workflow: workflow,
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:      "proj-1",
+		Title:          "resumed create",
+		Behavior:       "dev",
+		IdempotencyKey: "resume-key",
+		AutoStart:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task == nil {
+		t.Fatal("CreateTask() returned nil task")
+	}
+	if task.ID != existing.ID {
+		t.Fatalf("CreateTask() returned id=%q, want the existing hit's id=%q", task.ID, existing.ID)
+	}
+	if workflow.appliedType != "start" {
+		t.Fatalf("ApplyAction not called with start on the pending idempotency-key hit; appliedType = %q, want %q", workflow.appliedType, "start")
+	}
+	if workflow.appliedTaskID != existing.ID {
+		t.Fatalf("ApplyAction called on taskID=%q, want existing id=%q", workflow.appliedTaskID, existing.ID)
+	}
+}
+
+// TestTaskAppServiceCreateTask_IdempotencyKey_HitOnExecutingTask_NoAutoStart
+// is the regression guard alongside the rescue above: a hit that is already
+// past pending must never re-fire start (mirrors main's
+// task.Status == pending gate).
+func TestTaskAppServiceCreateTask_IdempotencyKey_HitOnExecutingTask_NoAutoStart(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {},
+		},
+	}
+	existing := &orchestrator.Task{
+		ID:        "existing-task-id",
+		Type:      orchestrator.TaskTypeExecution,
+		Status:    orchestrator.TaskStatusExecuting,
+		ProjectID: "proj-1",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
+	}
+	store := &stubTaskStore{
+		idempotencyTasks: map[string]*orchestrator.Task{
+			"proj-1::resume-key": existing,
+		},
+	}
+	workflow := &stubWorkflowService{}
+	svc := &TaskAppService{
+		Tasks:    store,
+		Meta:     stubMetaStore{meta: meta},
+		Workflow: workflow,
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:      "proj-1",
+		Title:          "resumed create",
+		Behavior:       "dev",
+		IdempotencyKey: "resume-key",
+		AutoStart:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v", err)
+	}
+	if task.ID != existing.ID {
+		t.Fatalf("CreateTask() returned id=%q, want existing id=%q", task.ID, existing.ID)
+	}
+	if workflow.appliedType != "" {
+		t.Fatalf("ApplyAction should not fire for an already-executing idempotency-key hit; appliedType = %q", workflow.appliedType)
+	}
+}
+
+// TestTaskAppServiceCreateTask_RefMissAndIdempotencyKeyHit_UnderCard pins
+// that a caller under a card supplying BOTH a fresh Ref (that misses
+// FindTaskByRef) and an IdempotencyKey that DOES match an already-created
+// live child gets that existing child back, not a false 409 from the
+// single-work-slot check.
+func TestTaskAppServiceCreateTask_RefMissAndIdempotencyKeyHit_UnderCard(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"dev": {},
+		},
+	}
+	existing := &orchestrator.Task{
+		ID:        "existing-child-id",
+		Type:      orchestrator.TaskTypeExecution,
+		Status:    orchestrator.TaskStatusPending,
+		ProjectID: "proj-1",
+		ParentID:  "card-1",
+		Exec:      &orchestrator.ExecAttrs{Behavior: "dev"},
+	}
+	parent := &orchestrator.Task{
+		ID:             "card-1",
+		Type:           orchestrator.TaskTypeCard,
+		Status:         orchestrator.TaskStatusWorking,
+		ProjectID:      "proj-1",
+		OpenChildCount: 1, // existing's own live row — not a second occupant
+	}
+	store := &stubTaskStore{
+		tasks: map[string]*orchestrator.Task{"card-1": parent},
+		idempotencyTasks: map[string]*orchestrator.Task{
+			"proj-1:card-1:dup-key": existing,
+		},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: meta},
+	}
+
+	task, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:      "proj-1",
+		ParentID:       "card-1",
+		Title:          "retry with a fresh ref, same idempotency key",
+		Behavior:       "dev",
+		Ref:            "brand-new-ref-this-attempt-only",
+		IdempotencyKey: "dup-key",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want the existing idempotency-key hit returned instead of a slot-conflict 409", err)
+	}
+	if task.ID != existing.ID {
+		t.Fatalf("CreateTask() returned id=%q, want existing id=%q", task.ID, existing.ID)
+	}
+}
+
 // TestTaskHandlerCreate_IdempotencyKey_DifferentProject_NoCollision pins
 // project scoping at the HTTP layer, mirroring
 // TestCreateTask_SameIdempotencyKey_DifferentProject_NoCollision at the store

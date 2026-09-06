@@ -218,6 +218,9 @@ func (s *capturingTaskStore) FindTaskByRef(ref, parentID, projectID string) (*or
 	}
 	return nil, nil
 }
+func (s *capturingTaskStore) FindTaskByIdempotencyKey(projectID, parentID, idempotencyKey string) (*orchestrator.Task, error) {
+	return nil, nil
+}
 func (s *capturingTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return nil, nil
 }

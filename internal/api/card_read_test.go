@@ -141,6 +141,9 @@ func (s *multiTaskStore) FindTaskByRemote(string) (*orchestrator.Task, error) {
 func (s *multiTaskStore) FindTaskByRef(string, string, string) (*orchestrator.Task, error) {
 	return nil, nil
 }
+func (s *multiTaskStore) FindTaskByIdempotencyKey(string, string, string) (*orchestrator.Task, error) {
+	return nil, nil
+}
 func (s *multiTaskStore) ListChildren(string) ([]*orchestrator.Task, error) { return nil, nil }
 
 // TestGetCard_ReturnsStoredAndDerivedFields pins S5: a parked triage task's

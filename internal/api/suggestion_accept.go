@@ -32,8 +32,8 @@ type suggestionAttr struct {
 }
 
 // validateSuggestionAttr validates attrs_set's "suggestion" key before it
-// folds into task_triage.detail.attrs. The six verbs (go, working, park,
-// drop, done, reopen) are boid's own state-machine vocabulary
+// folds into task_triage.detail.attrs. The six verbs (go, start, park,
+// drop, complete, reopen) are boid's own state-machine vocabulary
 // (orchestrator.IsCardTransitionAction) — not a workspace-defined one, so
 // this does not cross the workspace-vocabulary boundary the rest of this
 // package protects (verb/basis on the "answered" action are recorded but
@@ -42,33 +42,61 @@ type suggestionAttr struct {
 // A JSON null value is accepted unconditionally (clearing the suggestion
 // via attrs_set — mirrors parsePromotedAttr's null-clears-the-column
 // convention for urgency/kind). Everything else must be a JSON object
-// with a verb from the closed set; params.wake_at, if present, must parse
-// as RFC3339 (the same format a direct park action's wake_at requires).
+// with a verb from the closed set (after normalization, see below);
+// params.wake_at, if present, must parse as RFC3339 (the same format a
+// direct park action's wake_at requires).
 //
-// Returns the validated verb ("" for a null/clearing payload). This is
-// the single parse/validate pass parseAttrsSetPayload's "suggestion" case
-// reuses to populate attrsSetPatch.Verb/HasVerb, the value
+// A verb still spelled the retired way ("working"/"done" — a short compat
+// window for an old write CLI) is normalized to its current name
+// (orchestrator.NormalizeCardVerb) before the closed-set check runs, and
+// the returned normalized bytes carry the current spelling too — so a stale
+// spelling is never persisted into detail.attrs.suggestion.verb by a fresh
+// write. reason/params are preserved byte-for-byte; only the "verb" key is
+// ever replaced.
+//
+// Returns the normalized raw suggestion bytes and the validated verb ("",
+// nil for a null/clearing payload). This is the single parse/validate pass
+// parseAttrsSetPayload's "suggestion" case reuses to populate both
+// attrsSetPatch.Attrs["suggestion"] and Verb/HasVerb — the value
 // applyAttrsSetSideEffect promotes into task_triage.suggestion_verb.
-func validateSuggestionAttr(raw json.RawMessage) (string, error) {
+func validateSuggestionAttr(raw json.RawMessage) (json.RawMessage, string, error) {
 	if string(raw) == "null" {
-		return "", nil
+		return raw, "", nil
 	}
 	var s suggestionAttr
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return "", &StatusError{Code: http.StatusBadRequest, Message: "invalid attrs_set payload: suggestion: " + err.Error()}
+		return nil, "", &StatusError{Code: http.StatusBadRequest, Message: "invalid attrs_set payload: suggestion: " + err.Error()}
 	}
-	if !orchestrator.IsCardTransitionAction(s.Verb) {
-		return "", &StatusError{
+	verb := orchestrator.NormalizeCardVerb(s.Verb)
+	if !orchestrator.IsCardTransitionAction(verb) {
+		return nil, "", &StatusError{
 			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("invalid attrs_set payload: suggestion.verb %q is not a known card transition (allowed: go, working, park, drop, done, reopen)", s.Verb),
+			Message: fmt.Sprintf("invalid attrs_set payload: suggestion.verb %q is not a known card transition (allowed: go, start, park, drop, complete, reopen)", s.Verb),
 		}
 	}
 	if s.Params.WakeAt != "" {
 		if _, err := time.Parse(time.RFC3339, s.Params.WakeAt); err != nil {
-			return "", &StatusError{Code: http.StatusBadRequest, Message: "invalid attrs_set payload: suggestion.params.wake_at: " + err.Error()}
+			return nil, "", &StatusError{Code: http.StatusBadRequest, Message: "invalid attrs_set payload: suggestion.params.wake_at: " + err.Error()}
 		}
 	}
-	return s.Verb, nil
+	normalized := raw
+	if verb != s.Verb {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, "", &StatusError{Code: http.StatusBadRequest, Message: "invalid attrs_set payload: suggestion: " + err.Error()}
+		}
+		verbJSON, err := json.Marshal(verb)
+		if err != nil {
+			return nil, "", &StatusError{Code: http.StatusInternalServerError, Message: "marshal normalized suggestion verb: " + err.Error()}
+		}
+		m["verb"] = verbJSON
+		out, err := json.Marshal(m)
+		if err != nil {
+			return nil, "", &StatusError{Code: http.StatusInternalServerError, Message: "marshal normalized suggestion: " + err.Error()}
+		}
+		normalized = out
+	}
+	return normalized, verb, nil
 }
 
 // applyParkSideEffectFromSuggestion applies accept(park)'s wake condition
@@ -167,6 +195,11 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 		if err := json.Unmarshal(raw, &sugg); err != nil {
 			return fmt.Errorf("answered: parse suggestion: %w", err)
 		}
+		// A stored suggestion still spelled the retired way ("working"/
+		// "done" — a row from before the data migration/write-side
+		// normalization existed) reads as its current name here too, not
+		// just at write time.
+		sugg.Verb = orchestrator.NormalizeCardVerb(sugg.Verb)
 		if !orchestrator.IsCardTransitionAction(sugg.Verb) {
 			// Defensive: validateSuggestionAttr already rejects an unknown
 			// verb at attrs_set time, so this guards only against a row

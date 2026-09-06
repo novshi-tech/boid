@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -92,6 +93,23 @@ func resolveInitialStatus(req CreateTaskRequest) (orchestrator.TaskStatus, error
 	return status, nil
 }
 
+// idempotencyKeyTypeMismatchErr mirrors orchestrator.CreateTask's own
+// rejectIdempotencyKeyTypeMismatch guard: the service-layer get-or-create
+// short-circuits before ever reaching that store-layer check, so it needs
+// its own copy to keep an idempotency-key hit from silently handing back a
+// wrong-typed task.
+func idempotencyKeyTypeMismatchErr(wantType orchestrator.TaskType, existing *orchestrator.Task, key, projectID, parentID string) error {
+	if existing.Type == wantType {
+		return nil
+	}
+	return &StatusError{
+		Code: http.StatusBadRequest,
+		Message: fmt.Sprintf(
+			"idempotency_key %q (project_id=%s, parent_id=%s) already used by a %s task (id=%s); this create requested a %s task",
+			key, projectID, parentID, existing.Type, existing.ID, wantType),
+	}
+}
+
 func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
 	initialStatus, err := resolveInitialStatus(req)
 	if err != nil {
@@ -137,6 +155,35 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 			return existing, nil
 		}
 	}
+	if req.Ref == "" && req.IdempotencyKey != "" {
+		existing, err := s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, req.IdempotencyKey)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if existing != nil {
+			if merr := idempotencyKeyTypeMismatchErr(orchestrator.TaskTypeCard, existing, req.IdempotencyKey, req.ProjectID, req.ParentID); merr != nil {
+				return nil, merr
+			}
+			return existing, nil
+		}
+	}
+
+	// A card-type child has no legitimate "fulfilling a specced reservation"
+	// story (acceptGo only ever dispatches execution tasks) — pass empty
+	// ref/behavior so cardChildSlotConflict's exception can never match and
+	// any real occupant unconditionally blocks this create.
+	if req.ParentID != "" {
+		if parent, perr := s.Tasks.GetTask(req.ParentID); perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
+			if conflict, occupant := cardChildSlotConflict(parent, "", "", ""); conflict {
+				return nil, &StatusError{
+					Code: http.StatusConflict,
+					Message: fmt.Sprintf(
+						"create task: card %q's single work slot is already occupied by %s",
+						req.ParentID, occupant),
+				}
+			}
+		}
+	}
 
 	task := &orchestrator.Task{
 		ID:             req.ID,
@@ -155,6 +202,56 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	return task, nil
+}
+
+// cardChildSlotConflict reports whether creating (or reparenting/rerunning)
+// an execution task with the given ref/projectID/behavior under parent
+// (already confirmed to be type=card) would violate the card's
+// single-work-slot invariant: at most one open/specced/dispatched child at
+// a time. parent.OpenChildCount covers a live task row (dispatched, or
+// created via a bypass with no JSON entry); an open/specced JSON child not
+// yet task-ified is the other half.
+//
+// Fulfilling that child's own reservation (ref == its id, project/behavior
+// matching what child_specced recorded on its Spec — matching by ref alone
+// is spoofable) is not a NEW occupant and is let through, but ONLY when it
+// is the SOLE occupant: a second unresolved sibling still blocks, since
+// fulfilling one reservation does not free up room for another. The
+// project/behavior match raises the bar, not a hard close — card_read.go
+// exposes both to anyone who can already read the card.
+//
+// A plain read-then-decide check, not wrapped in a transaction — same
+// race-tolerant posture as the ref-based get-or-create above (a losing
+// concurrent caller gets a clear 409 to retry). occupant is always a
+// ready-to-use noun phrase for embedding directly in a 409 message.
+func cardChildSlotConflict(parent *orchestrator.Task, ref, projectID, behavior string) (conflict bool, occupant string) {
+	if parent.OpenChildCount > 0 {
+		return true, "a live child task"
+	}
+	var detail json.RawMessage
+	if parent.Card != nil {
+		detail = parent.Card.Detail
+	}
+	children, err := orchestrator.DetailChildren(detail)
+	if err != nil {
+		return false, ""
+	}
+	var occupants []orchestrator.TaskTriageChild
+	for _, c := range children {
+		if c.Status == orchestrator.TaskTriageChildStatusOpen || c.Status == orchestrator.TaskTriageChildStatusSpecced {
+			occupants = append(occupants, c)
+		}
+	}
+	if len(occupants) == 0 {
+		return false, ""
+	}
+	if len(occupants) == 1 {
+		c := occupants[0]
+		if c.ID == ref && c.Spec != nil && c.Spec.Project == projectID && c.Spec.Behavior == behavior {
+			return false, ""
+		}
+	}
+	return true, fmt.Sprintf("child %q", occupants[0].ID)
 }
 
 func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
@@ -290,6 +387,59 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 		}
 	}
 
+	// Get-or-create by IdempotencyKey, independent of Ref (a Ref-miss must
+	// not fall through to the card slot check below, which would otherwise
+	// see this same idempotency key's already-created live row as a
+	// competing occupant). Runs before the card slot check for the same
+	// reason. A pending hit with req.AutoStart set is rescued into "start"
+	// itself, since a hit here returns before ever reaching the ordinary
+	// auto_start block below.
+	if req.IdempotencyKey != "" {
+		existing, err := s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, req.IdempotencyKey)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if existing != nil {
+			if merr := idempotencyKeyTypeMismatchErr(orchestrator.TaskTypeExecution, existing, req.IdempotencyKey, req.ProjectID, req.ParentID); merr != nil {
+				return nil, merr
+			}
+			if req.AutoStart && s.Workflow != nil && existing.Status == orchestrator.TaskStatusPending {
+				result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), existing.ID, ApplyActionRequest{Type: "start"})
+				if err != nil {
+					slog.Error("auto_start: failed to apply start action on idempotency-key hit", "task_id", existing.ID, "error", err)
+				} else {
+					existing = result.Task
+				}
+			}
+			return existing, nil
+		}
+	}
+
+	// The card's single-work-slot invariant applies to this write port too:
+	// any DIRECT task creation under a card (CLI, HTTP API, acceptGo's own
+	// CreateTask call) must not exceed one open/specced/dispatched child.
+	// See cardChildSlotConflict's own doc comment for why
+	// fulfilling the currently-specced child's own reservation (Ref matching
+	// its id — acceptGo's convention) is not treated as a new occupant.
+	if req.ParentID != "" {
+		parent, perr := s.Tasks.GetTask(req.ParentID)
+		if perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
+			if conflict, occupant := cardChildSlotConflict(parent, req.Ref, req.ProjectID, req.Behavior); conflict {
+				return nil, &StatusError{
+					Code: http.StatusConflict,
+					Message: fmt.Sprintf(
+						"create task: card %q's single work slot is already occupied by %s",
+						req.ParentID, occupant),
+				}
+			}
+		}
+		// A parent lookup failure here is deliberately non-fatal: this is a
+		// defense-in-depth check, not the parent existence check itself (a
+		// genuinely missing/unreadable parent surfaces its own error further
+		// down the ordinary create path, same posture as the remote_id
+		// inheritance lookups above).
+	}
+
 	task := &orchestrator.Task{
 		ID:             req.ID,
 		Type:           orchestrator.TaskTypeExecution,
@@ -315,13 +465,13 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
-	// Guard: only fire auto_start for a freshly pending task. When get-or-create
-	// at the store level returns an existing task (e.g. concurrent create race,
-	// or an IdempotencyKey hit landing on a still-pending task from a resumed
-	// caller), the task may already be executing or terminal — this check
-	// covers both Ref's and IdempotencyKey's get-or-create paths, since an
+	// Guard: only fire auto_start for a freshly pending task. Reachable when
+	// the store's OWN get-or-create (a concurrent create race that landed
+	// between the service-layer Ref/IdempotencyKey checks above and this
+	// call) returns an existing task rather than inserting a new row — an
 	// existing task that is executing/awaiting/done/aborted never re-fires
-	// start either way.
+	// start either way. A caller's own Ref/IdempotencyKey hit is handled
+	// above and never reaches here at all.
 
 	// CreateTask has no ctx parameter, so this always stamps ActorHuman even
 	// though this call also backs `boid task create` from inside a sandbox
