@@ -62,11 +62,17 @@ type CardRequestDefinition struct {
 
 // CardRequest is one row of the card_requests table.
 type CardRequest struct {
-	ID            string
-	CardID        string
-	CommandKey    string
-	CauseID       string
-	Status        CardRequestStatus
+	ID         string
+	CardID     string
+	CommandKey string
+	CauseID    string
+	Status     CardRequestStatus
+	// Instruction is the user's free-text input for this request. It lives
+	// on the row from creation and stays untouched by
+	// ClaimQueuedCardRequests/RetryCardRequest (those only ever reset the
+	// launch-time snapshot), so a queued/folded request's input survives
+	// until it is actually claimed.
+	Instruction   string
 	Launched      CardRequestDefinition
 	LauncherJobID string
 	TargetKind    string
@@ -126,12 +132,12 @@ func CreateCardRequest(dbtx db.DBTX, req *CardRequest) error {
 
 	_, err := dbtx.Exec(
 		`INSERT INTO card_requests (
-			id, card_id, command_key, cause_id, status,
+			id, card_id, command_key, cause_id, status, instruction,
 			launched_command_key, launched_label, launched_run, launched_version,
 			launcher_job_id, target_kind, target_id, folded_into, result, error,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		req.ID, req.CardID, req.CommandKey, req.CauseID, string(req.Status),
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.ID, req.CardID, req.CommandKey, req.CauseID, string(req.Status), req.Instruction,
 		req.Launched.CommandKey, req.Launched.Label, req.Launched.Run, req.Launched.Version,
 		req.LauncherJobID, req.TargetKind, req.TargetID, req.FoldedInto, req.Result, req.Error,
 		req.CreatedAt, req.UpdatedAt,
@@ -409,7 +415,7 @@ func rowsAffectedOrNotFoundOrInvalid(dbtx db.DBTX, res sql.Result, id string) er
 	return fmt.Errorf("card request %q: %w", id, ErrCardRequestInvalidTransition)
 }
 
-const cardRequestSelectCols = `SELECT id, card_id, command_key, cause_id, status,
+const cardRequestSelectCols = `SELECT id, card_id, command_key, cause_id, status, instruction,
 	launched_command_key, launched_label, launched_run, launched_version,
 	launcher_job_id, target_kind, target_id, folded_into, result, error,
 	created_at, updated_at`
@@ -424,7 +430,7 @@ func scanCardRequestRow(row cardRequestRowScanner) (*CardRequest, error) {
 	var r CardRequest
 	var status string
 	if err := row.Scan(
-		&r.ID, &r.CardID, &r.CommandKey, &r.CauseID, &status,
+		&r.ID, &r.CardID, &r.CommandKey, &r.CauseID, &status, &r.Instruction,
 		&r.Launched.CommandKey, &r.Launched.Label, &r.Launched.Run, &r.Launched.Version,
 		&r.LauncherJobID, &r.TargetKind, &r.TargetID, &r.FoldedInto, &r.Result, &r.Error,
 		&r.CreatedAt, &r.UpdatedAt,

@@ -82,7 +82,7 @@ CREATE TABLE card_requests (
     error                 TEXT NOT NULL DEFAULT '',
     created_at            DATETIME NOT NULL,
     updated_at            DATETIME NOT NULL
-);
+, instruction TEXT NOT NULL DEFAULT '');
 
 -- table: jobs
 CREATE TABLE "jobs" (

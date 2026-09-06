@@ -1669,7 +1669,9 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// rather than relying on a runtime interface check against
 		// workflow, since workflow's concrete type
 		// *api.TaskWorkflowService does not implement api.SignalStore.
-		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc, taskRepo)
+		// The same taskRepo also implements cardRequestReader (its own
+		// GetCardRequest delegator), backing BoidOpCardContext.
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc, taskRepo, taskRepo)
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{

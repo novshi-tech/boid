@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -33,6 +34,12 @@ type agentSessionFlags struct {
 	model       string
 	displayName string
 	noAttach    bool
+	// output selects --no-attach's reply shape: "text" (default) keeps the
+	// original stderr-only `job_id=...` line unchanged; "json" additionally
+	// prints a machine-readable `{"kind":"session","job_id":"..."}` line to
+	// stdout for a caller that needs to parse the result rather than scrape
+	// stderr. Only meaningful together with --no-attach.
+	output string
 }
 
 func addAgentSessionFlags(cmd *cobra.Command, f *agentSessionFlags) {
@@ -42,7 +49,16 @@ func addAgentSessionFlags(cmd *cobra.Command, f *agentSessionFlags) {
 	cmd.Flags().StringVar(&f.model, "model", "", "override the harness binary's default model")
 	cmd.Flags().StringVar(&f.displayName, "name", "", "human-readable session label (default: \"<harness> session\")")
 	cmd.Flags().BoolVar(&f.noAttach, "no-attach", false, "print the job id and exit instead of attaching to the PTY")
+	cmd.Flags().StringVar(&f.output, "output", "text", "with --no-attach, the reply shape: \"text\" (stderr job_id= line) or \"json\" (stdout {\"kind\":\"session\",\"job_id\":\"...\"})")
 	_ = cmd.RegisterFlagCompletionFunc("project", completeProjectRefs)
+}
+
+// agentStartOutput is `boid agent <harness> --no-attach --output json`'s
+// stdout shape. "kind" is always "session" here — this CLI only ever starts
+// a session.
+type agentStartOutput struct {
+	Kind  string `json:"kind"`
+	JobID string `json:"job_id"`
 }
 
 func init() {
@@ -72,6 +88,16 @@ func runAgentSession(ctx context.Context, harness string, flags *agentSessionFla
 	if flags.projectRef == "" {
 		return errors.New("--project is required")
 	}
+	output := flags.output
+	if output == "" {
+		output = "text"
+	}
+	if output != "text" && output != "json" {
+		return fmt.Errorf("--output must be \"text\" or \"json\" (got %q)", flags.output)
+	}
+	if output == "json" && !flags.noAttach {
+		return errors.New("--output json requires --no-attach")
+	}
 	c := client.FromContext(ctx)
 
 	// Resolve the project ref to its id so the URL path is canonical
@@ -100,6 +126,13 @@ func runAgentSession(ctx context.Context, harness string, flags *agentSessionFla
 	// only when the caller asked us not to attach (script use, daemon job
 	// inspection, etc.) where the id is the only useful output.
 	if flags.noAttach {
+		if output == "json" {
+			// stdout carries the machine-readable reply; diagnostics stay on
+			// stderr, matching every other --output json convention in this
+			// CLI. Encoded rather than hand-formatted so a future field
+			// addition to agentStartOutput can't drift from valid JSON.
+			return json.NewEncoder(os.Stdout).Encode(agentStartOutput{Kind: "session", JobID: result.JobID})
+		}
 		fmt.Fprintf(os.Stderr, "job_id=%s\n", result.JobID)
 		return nil
 	}

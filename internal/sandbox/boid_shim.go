@@ -19,7 +19,7 @@ Commands:
   task     Manage tasks (create, show, update, list, notify, answer, ask, wait, delete, import,
            reopen, current, instructions, env, payload, attachments list, attachments get,
            identity link, identity unlink, identity resolve, resolve-or-capture)
-  card     Read cards (get, list)
+  card     Read cards (get, list, context)
   signal   Scan and ack the signal inbox (list, ack, ingest, cursor)
   job      Manage jobs (done, list, show, log)
   action   Send and list actions (send, list)
@@ -65,6 +65,13 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 		if args[1] == "attachments" {
 			return runTaskAttachmentsShim(args[2:])
 		}
+	}
+
+	// `card context` takes no caller-supplied id at all (see
+	// BoidOpCardContext's own doc comment) but shares the --field/--format
+	// output convention with the task-context subcommands above.
+	if len(args) >= 2 && args[0] == "card" && args[1] == "context" {
+		return runCardContextShim(args)
 	}
 
 	req, err := parseBoidRequest(args)
