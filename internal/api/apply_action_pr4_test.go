@@ -318,9 +318,9 @@ func TestApplyAction_ChildAddedThenChildSpecced(t *testing.T) {
 	}
 }
 
-// TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByOpenChild pins
-// card-next-step-and-timeline.md §3.2's single-work-slot invariant on the
-// child_added write port: a card that already has an open/specced child
+// TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByOpenChild pins the
+// single-work-slot invariant on the child_added write port: a card that
+// already has an open/specced child
 // must reject a NEW child_added for a different id — resending the SAME id
 // stays the pre-existing idempotent no-op (TestApplyAction_ChildAddedThenChildSpecced
 // already covers add-then-specc; this test is the negative "someone else"
@@ -657,11 +657,10 @@ func TestFinalizeTerminal_ChildClosed_SelfRecordsOnParent(t *testing.T) {
 			if a.Actor != orchestrator.ActorDaemon {
 				t.Errorf("child_closed actor = %q, want %q (this is the daemon's own self-record, not a human/task-triggered write)", a.Actor, orchestrator.ActorDaemon)
 			}
-			// card-next-step-and-timeline.md §5.2/§6: child rows are GC'd
-			// after 30 days regardless of the parent card's liveness, so the
-			// child's own result summary must be carried here, on the
-			// PARENT's action log, not left to a task row that will not
-			// outlive it.
+			// Child rows are GC'd after 30 days regardless of the parent
+			// card's liveness, so the child's own result summary must be
+			// carried here, on the PARENT's action log, not left to a task
+			// row that will not outlive it.
 			var payload struct {
 				ChildID      string `json:"child_id"`
 				ChildStatus  string `json:"child_status"`

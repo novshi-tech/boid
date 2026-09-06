@@ -372,9 +372,9 @@ func TestTaskWorkflowServiceApplyAction_Start_ParkedToWorking(t *testing.T) {
 }
 
 // TestTaskWorkflowServiceApplyAction_Working_NormalizesToStart pins the
-// card-next-step-and-timeline.md §8 receive-side compatibility shim: a
-// caller still sending the retired "working" spelling (an old write CLI
-// during the compat window) reaches exactly the same transition as "start".
+// receive-side compatibility shim: a caller still sending the retired
+// "working" spelling (an old write CLI during the compat window) reaches
+// exactly the same transition as "start".
 func TestTaskWorkflowServiceApplyAction_Working_NormalizesToStart(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
@@ -425,19 +425,18 @@ func TestTaskWorkflowServiceApplyAction_StampsActorFromContext(t *testing.T) {
 	}
 }
 
-// TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion is the
-// escape-hatch pin design doc §3.2 explicitly requires: "人の直接操作は常に
-// 全遷移で可能であることを担保する" — every one of card machine v2's edges
-// must be reachable directly by a human (Web UI / CLI, ActorHuman), with NO
-// suggestion involved anywhere in the fixture. suggestion is one entry point
-// into these transitions, never the only one.
+// TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion pins
+// that every one of card machine v2's edges is reachable directly by a
+// human (Web UI / CLI, ActorHuman), with NO suggestion involved anywhere in
+// the fixture. suggestion is one entry point into these transitions, never
+// the only one.
 //
 // "go" (both edges — parked→working and the working→working self-loop) is
 // deliberately NOT in this table: unlike the other five verbs, go bypasses
 // ApplyAction's generic sm.Apply path entirely (acceptGo, workflow_card.go)
-// and additionally requires a specced child to exist or it 409s (§3.2's
-// "子なし Go は拒否" — see accept_go_test.go's own dedicated suite, which
-// this table's generic empty-triage fixture cannot satisfy).
+// and additionally requires a specced child to exist or it 409s — see
+// accept_go_test.go's own dedicated suite, which this table's generic
+// empty-triage fixture cannot satisfy.
 func TestApplyAction_CardTransitions_HumanCanApplyEveryEdge_NoSuggestion(t *testing.T) {
 	cases := []struct {
 		from   orchestrator.TaskStatus
@@ -504,9 +503,9 @@ func TestApplyAction_CardTransitions_RejectedForNonHumanActor(t *testing.T) {
 		{"daemon", orchestrator.WithActor(context.Background(), orchestrator.ActorDaemon)},
 		{"unset", context.Background()},
 	}
-	// Both the current spelling and the retired one (working/done — §8's
-	// short compat window) must be rejected: normalization happens BEFORE
-	// this 403 check, so a legacy spelling gets no free pass through it.
+	// Both the current spelling and the retired one (working/done) must be
+	// rejected: normalization happens BEFORE this 403 check, so a legacy
+	// spelling gets no free pass through it.
 	for _, verb := range []string{"go", "start", "working", "park", "drop", "complete", "done", "reopen"} {
 		for _, a := range actorCases {
 			t.Run(verb+"_"+a.name, func(t *testing.T) {

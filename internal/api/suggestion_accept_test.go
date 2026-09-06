@@ -15,9 +15,8 @@ import (
 // ---- validateSuggestionAttr (PR #987 review, MEDIUM 9 — this function had
 // no dedicated test at all before). PR-2 (docs/plans/
 // suggestion-as-state-transition-impl.md §4.1) changed its signature from
-// `error` to `(string, error)`; card-next-step-and-timeline.md's start/
-// complete rename (§3.1/§8) changed it again to
-// `(json.RawMessage, string, error)` — the returned verb is what
+// `error` to `(string, error)`; the start/complete verb rename changed it
+// again to `(json.RawMessage, string, error)` — the returned verb is what
 // parseAttrsSetPayload promotes into task_triage.suggestion_verb, and the
 // returned bytes are the (possibly normalized) suggestion object to persist,
 // so the one caller that already validates the FULL suggestion object
@@ -37,9 +36,9 @@ func TestValidateSuggestionAttr_KnownVerbsAccepted(t *testing.T) {
 	}
 }
 
-// TestValidateSuggestionAttr_LegacyVerbsNormalized pins
-// card-next-step-and-timeline.md §8's receive-side compatibility: a
-// suggestion still spelled the retired way is accepted, its verb reported as
+// TestValidateSuggestionAttr_LegacyVerbsNormalized pins receive-side
+// compatibility: a suggestion still spelled the retired way is accepted, its
+// verb reported as
 // the CURRENT name, and the persisted bytes rewritten to carry the current
 // name too (never the stale spelling) — while reason/params survive
 // byte-for-byte.
@@ -176,10 +175,9 @@ func TestApplyParkSideEffectFromSuggestion_WritesWakeCondition(t *testing.T) {
 // already had coverage — apply_action_pr3_noted_answered_test.go,
 // accept_go_test.go — these three did not). ----
 
-// TestApplyAction_Answered_AcceptWorking pins card-next-step-and-timeline.md
-// §8's read-side compat: a suggestion stored with the retired "working"
-// spelling (written before this PR's data migration/write-side
-// normalization) is still accepted, normalized to "start" first.
+// TestApplyAction_Answered_AcceptWorking pins read-side compatibility: a
+// suggestion stored with the retired "working" spelling is still accepted,
+// normalized to "start" first.
 func TestApplyAction_Answered_AcceptWorking(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{
@@ -309,10 +307,10 @@ func TestApplyAction_Answered_Accept_AllVerbStatusCombinations(t *testing.T) {
 			verb, status := verb, status
 			t.Run(fmt.Sprintf("%s_from_%s", verb, status), func(t *testing.T) {
 				task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: status, Card: &orchestrator.CardAttrs{}}
-				// go additionally requires a specced child to run (§3.2's
-				// "子なし Go は拒否") — harmless for every other verb, and
-				// for go's own inapplicable-status cases too (acceptGo's
-				// status gate runs before it ever looks at children).
+				// go additionally requires a specced child to run — harmless
+				// for every other verb, and for go's own inapplicable-status
+				// cases too (acceptGo's status gate runs before it ever
+				// looks at children).
 				childrenJSON := ""
 				if verb == "go" {
 					childrenJSON = `,"children":[{"id":"ch_00","status":"specced","spec":{"project":"p2","behavior":"impl"}}]`

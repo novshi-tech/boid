@@ -387,16 +387,14 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 		}
 	}
 
-	// Same get-or-create as Ref above, but for IdempotencyKey: must run
-	// BEFORE the card slot check below, or a retried idempotent create for a
-	// child that already occupies the slot it created gets rejected as if it
-	// were a NEW occupant instead of returning the existing task. Like Ref
-	// above, this returns existing directly without firing auto_start — a
-	// still-pending existing task is never rescued via this path (the
-	// pending-rescue check below, on a freshly-inserted task, is unaffected;
-	// only Ref's and IdempotencyKey's OWN get-or-create hits skip it, same
-	// posture as Ref has always had for its own hits).
-	if req.Ref == "" && req.IdempotencyKey != "" {
+	// Get-or-create by IdempotencyKey, independent of Ref (a Ref-miss must
+	// not fall through to the card slot check below, which would otherwise
+	// see this same idempotency key's already-created live row as a
+	// competing occupant). Runs before the card slot check for the same
+	// reason. A pending hit with req.AutoStart set is rescued into "start"
+	// itself, since a hit here returns before ever reaching the ordinary
+	// auto_start block below.
+	if req.IdempotencyKey != "" {
 		existing, err := s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, req.IdempotencyKey)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -404,6 +402,14 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 		if existing != nil {
 			if merr := idempotencyKeyTypeMismatchErr(orchestrator.TaskTypeExecution, existing, req.IdempotencyKey, req.ProjectID, req.ParentID); merr != nil {
 				return nil, merr
+			}
+			if req.AutoStart && s.Workflow != nil && existing.Status == orchestrator.TaskStatusPending {
+				result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), existing.ID, ApplyActionRequest{Type: "start"})
+				if err != nil {
+					slog.Error("auto_start: failed to apply start action on idempotency-key hit", "task_id", existing.ID, "error", err)
+				} else {
+					existing = result.Task
+				}
 			}
 			return existing, nil
 		}

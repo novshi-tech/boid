@@ -38,13 +38,13 @@ func TestVerbBadgeClass_UnknownVerbFallsBackToNeutral(t *testing.T) {
 	}
 }
 
-// TestVerbBadgeClass_RetiredSpellingsFallBackToNeutral pins
-// knownSuggestionVerbs' own doc comment: this map does not normalize a
-// retired verb spelling (unlike the write-side orchestrator.NormalizeCardVerb)
-// — a suggestion still carrying "working"/"done" would render as unknown
-// here, not as start/complete. In production the §8 data migration keeps a
-// real stored suggestion from ever reaching this state; this test only
-// pins the (deliberate) rendering behavior if one somehow did.
+// TestVerbBadgeClass_RetiredSpellingsFallBackToNeutral pins that this map
+// does not normalize a retired verb spelling (unlike the write-side
+// orchestrator.NormalizeCardVerb) — a suggestion still carrying
+// "working"/"done" would render as unknown here, not as start/complete. In
+// production the data migration keeps a real stored suggestion from ever
+// reaching this state; this test only pins the (deliberate) rendering
+// behavior if one somehow did.
 func TestVerbBadgeClass_RetiredSpellingsFallBackToNeutral(t *testing.T) {
 	for _, verb := range []string{"working", "done"} {
 		if got := VerbBadgeClass(verb); got != "badge-verb-unknown" {

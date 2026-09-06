@@ -79,9 +79,13 @@ type StatusGroup struct {
 	Events       []Event
 }
 
-// IsStateTransition reports whether an action moves the task to a different status.
+// IsStateTransition reports whether an action carries a recorded status
+// change, including a self-loop (FromStatus == ToStatus, e.g. card working
+// Go). Build's grouping only opens a new StatusGroup when ToStatus differs
+// from FromStatus, so a self-loop still renders as one Event in the current
+// group rather than a spurious new visit.
 func IsStateTransition(a *orchestrator.Action) bool {
-	return a.FromStatus != "" && a.ToStatus != "" && a.FromStatus != a.ToStatus
+	return a.FromStatus != "" && a.ToStatus != ""
 }
 
 // IsProgressAction reports whether an action is a non-transitioning progress note.
@@ -136,11 +140,14 @@ func IsAnsweredAction(a *orchestrator.Action) bool {
 // since parseAnsweredPayload validates it before CreateAction, but this
 // stays defensive rather than assuming that invariant).
 func BuildActionLabel(a *orchestrator.Action) string {
-	if IsStateTransition(a) {
-		return a.Type + " → " + string(a.ToStatus)
-	}
+	// Checked before IsStateTransition: an "answered" row always carries
+	// FromStatus == ToStatus (it never changes task status), which now also
+	// satisfies the broadened self-loop-inclusive IsStateTransition below.
 	if IsAnsweredAction(a) {
 		return buildAnsweredLabel(a)
+	}
+	if IsStateTransition(a) {
+		return a.Type + " → " + string(a.ToStatus)
 	}
 	if IsProgressAction(a) {
 		return buildProgressLabel(a)

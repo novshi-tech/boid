@@ -395,11 +395,11 @@ func TestTaskDetailSuggestionSection_GoVerb_AcceptButtonMatchesPrimaryGoWeight(t
 
 // verbApplicableStatus names ONE valid FromStatus per verb (machine_card.go's
 // rule table — go/start/drop only from parked, park only from working,
-// complete from parked OR working, reopen from done or dropped). PR-3 added
-// components.SuggestionInapplicable, which hides the Accept button entirely
-// when a suggestion's verb doesn't match the task's CURRENT status — so
-// every render test below that wants to see a LIVE Accept button (as opposed
-// to the dedicated inapplicable-message tests, further down) must pass a
+// complete from parked OR working, reopen from done or dropped).
+// components.SuggestionInapplicable hides the Accept button entirely when a
+// suggestion's verb doesn't match the task's CURRENT status — so every
+// render test below that wants to see a LIVE Accept button (as opposed to
+// the dedicated inapplicable-message tests, further down) must pass a
 // status the verb actually applies from, not an arbitrary card status.
 // Verbs with more than one valid FromStatus (go, complete, reopen) just
 // pick one here; cardVerbApplicableStatuses (further down) is the
@@ -417,9 +417,9 @@ var verbApplicableStatus = map[string]orchestrator.TaskStatus{
 // negative twin: every non-go, non-drop verb's accept keeps the original
 // compact styling — only "go" carries the "this dispatches real work"
 // weight and "drop" carries the danger weight (its own dedicated test,
-// TestTaskDetailSuggestionSection_DropVerb_AcceptButtonIsDangerAndConfirms,
-// PR #988 review MEDIUM 1) — start/park/complete/reopen suggestions never
-// task-ify or release identities on accept.
+// TestTaskDetailSuggestionSection_DropVerb_AcceptButtonIsDangerAndConfirms)
+// — start/park/complete/reopen suggestions never task-ify or release
+// identities on accept.
 func TestTaskDetailSuggestionSection_NonGoVerb_AcceptButtonStaysCompact(t *testing.T) {
 	for _, verb := range []string{"start", "park", "complete", "reopen"} {
 		suggestion := orchestrator.Suggestion{Verb: verb}

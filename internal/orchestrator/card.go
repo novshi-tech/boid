@@ -308,27 +308,35 @@ func DetailOpenSlotChildID(detail json.RawMessage) (string, error) {
 	return "", nil
 }
 
-// CountUnresolvedChildren returns the total number of children currently
-// contending for a card's single work slot: every JSON child not yet
-// task-ified (open/specced) plus openChildCount — the live (pending/
-// executing/awaiting) execution task rows under the card (a dispatched
-// JSON child's own row, or one created via a direct-CreateTask bypass with
-// no JSON entry at all; see task.OpenChildCount).
+// CountUnresolvedChildren returns the number of children contending for a
+// card's single work slot: every JSON child not yet task-ified (open/
+// specced) plus every non-terminal live task row, deduped by Ref against
+// those JSON occupants exactly like acceptGo (internal/api/workflow_card.go)
+// so a child's own task row is never counted as a second occupant.
 //
-// Unlike DetailOpenSlotChildID (which the write-time gates use to ask only
-// "is there ANY occupant"), this answers "how many", so a card that
-// accumulated more than one before this invariant existed can be found and
-// listed (the `boid task diagnose-cards` CLI).
-func CountUnresolvedChildren(detail json.RawMessage, openChildCount int) (int, error) {
+// Unlike DetailOpenSlotChildID (which only asks "is there ANY occupant"),
+// this answers "how many", so a card that accumulated more than one before
+// this invariant existed can be found and listed.
+func CountUnresolvedChildren(detail json.RawMessage, liveChildren []*Task) (int, error) {
 	children, err := DetailChildren(detail)
 	if err != nil {
 		return 0, err
 	}
-	n := openChildCount
+	jsonOccupants := make(map[string]bool, len(children))
 	for _, c := range children {
 		if c.Status == TaskTriageChildStatusOpen || c.Status == TaskTriageChildStatusSpecced {
-			n++
+			jsonOccupants[c.ID] = true
 		}
+	}
+	n := len(jsonOccupants)
+	for _, lc := range liveChildren {
+		if IsTerminalStatus(lc.Status) {
+			continue
+		}
+		if lc.Ref != "" && jsonOccupants[lc.Ref] {
+			continue
+		}
+		n++
 	}
 	return n, nil
 }

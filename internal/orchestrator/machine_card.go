@@ -1,9 +1,7 @@
 package orchestrator
 
-// NewCardMachine returns the state machine governing cards — the
-// suggestion-as-state-transition redesign's "judgment ledger" object. See
-// docs/plans/suggestion-as-state-transition.md §3.2 and
-// docs/plans/card-next-step-and-timeline.md §3.1 for the full design.
+// NewCardMachine returns the state machine governing cards — a judgment
+// ledger tracking what a human has decided about a card's next step.
 //
 // Four statuses, closed: parked/working/done/dropped. A card NEVER reaches
 // pending/executing/awaiting/aborted/captured/triaged/ready through this

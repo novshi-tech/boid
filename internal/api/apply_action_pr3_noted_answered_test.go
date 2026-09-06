@@ -273,8 +273,8 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 		},
 	}
 	svc := newTriageWorkflowService(task, txStore)
-	// go now requires a specced child to run (§3.2's "子なし Go は拒否") —
-	// harmless for the "reject" case, which never reaches acceptGo at all.
+	// go now requires a specced child to run — harmless for the "reject"
+	// case, which never reaches acceptGo at all.
 	svc.TaskCreator = &fakeTaskCreator{}
 
 	payload, _ := json.Marshal(map[string]string{"answer": answer, "verb": "go", "basis": "issue #42"})
@@ -286,9 +286,8 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 
 	// reject never transitions (unchanged from v1); accept applies the
 	// suggestion's own verb ("go": parked->working, dispatching the
-	// fixture's one specced child) BEFORE stripping it (design doc §3.1) —
-	// a real behavior change from v1, where accept was a no-op besides the
-	// strip.
+	// fixture's one specced child) BEFORE stripping it — a real behavior
+	// change from v1, where accept was a no-op besides the strip.
 	wantStatus := orchestrator.TaskStatusParked
 	if answer == answeredAnswerAccept {
 		wantStatus = orchestrator.TaskStatusWorking

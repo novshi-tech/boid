@@ -55,7 +55,16 @@ func runTaskDiagnoseCards(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: task %s: parse children: %v\n", t.ID, err)
 			continue
 		}
-		count, err := orchestrator.CountUnresolvedChildren(t.Card.Detail, t.OpenChildCount)
+		var liveChildren []orchestrator.Task
+		if err := c.Do("GET", "/api/tasks?parent_id="+t.ID, nil, &liveChildren); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: task %s: list children: %v\n", t.ID, err)
+			continue
+		}
+		liveChildPtrs := make([]*orchestrator.Task, len(liveChildren))
+		for i := range liveChildren {
+			liveChildPtrs[i] = &liveChildren[i]
+		}
+		count, err := orchestrator.CountUnresolvedChildren(t.Card.Detail, liveChildPtrs)
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: task %s: count unresolved children: %v\n", t.ID, err)
 			continue

@@ -7,14 +7,14 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// ---- card-next-step-and-timeline.md §3.2's single-work-slot invariant on
-// the direct-CreateTask write port (createExecutionTask, task_create.go) ----
+// ---- the single-work-slot invariant on the direct-CreateTask write port
+// (createExecutionTask, task_create.go) ----
 //
-// This is the "全書き込み口を棚卸し" port a Go accept (acceptGo,
-// workflow_card.go) ALSO funnels through — its own dedicated tests
-// (accept_go_test.go) exercise it via a fake TaskCreator that bypasses this
-// real code path entirely, so the fulfill-the-reservation exception below
-// needs its own coverage here against the actual TaskAppService.CreateTask.
+// A Go accept (acceptGo, workflow_card.go) ALSO funnels through this same
+// invariant — its own dedicated tests (accept_go_test.go) exercise it via a
+// fake TaskCreator that bypasses this real code path entirely, so the
+// fulfill-the-reservation exception below needs its own coverage here
+// against the actual TaskAppService.CreateTask.
 
 func cardParentWithDetail(id string, detail []byte, openChildCount int) *orchestrator.Task {
 	return &orchestrator.Task{
@@ -461,10 +461,10 @@ func TestCreateTask_RejectsCardTypeChildWhenCardSlotOccupied(t *testing.T) {
 	}
 }
 
-// TestCreateTask_ExecutionParent_NotGated pins card-next-step-and-timeline.md
-// §3.2's own scope limit: "制限は card 直下だけ。execution task の子や並列
-// 実行には適用しない。" A supervisor (execution-type parent) with an already
-// non-terminal child must NOT block a second, parallel child.
+// TestCreateTask_ExecutionParent_NotGated pins that the single-work-slot
+// limit applies only directly under a card, never under an execution
+// parent: a supervisor (execution-type parent) with an already non-terminal
+// child must NOT block a second, parallel child.
 func TestCreateTask_ExecutionParent_NotGated(t *testing.T) {
 	parent := &orchestrator.Task{
 		ID:             "supervisor-1",

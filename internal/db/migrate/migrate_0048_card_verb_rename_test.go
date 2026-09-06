@@ -25,10 +25,10 @@ func apply0048(t *testing.T, conn *sql.DB) {
 	t.Fatal("0048_card_verb_rename not found in allMigrations()")
 }
 
-// TestApply_0048_RenamesSuggestionVerbColumn pins card-next-step-and-
-// timeline.md §8: a card row's promoted suggestion_verb column carrying the
-// retired spelling is rewritten to the current name; an already-current
-// value, and an execution row's own (unrelated) columns, are untouched.
+// TestApply_0048_RenamesSuggestionVerbColumn pins that a card row's promoted
+// suggestion_verb column carrying the retired spelling is rewritten to the
+// current name; an already-current value, and an execution row's own
+// (unrelated) columns, are untouched.
 func TestApply_0048_RenamesSuggestionVerbColumn(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {
@@ -180,5 +180,48 @@ func TestApply_0048_ExecutionRowsUntouched(t *testing.T) {
 	}
 	if status != "executing" {
 		t.Errorf("execution row's own status = %q, want untouched (executing)", status)
+	}
+}
+
+// TestApply_0048_ActionsLedgerUntouched pins that past action history is a
+// ledger this migration never rewrites — only the two `tasks` columns
+// (suggestion_verb, detail) are backfilled. A card action row recorded
+// under the retired `working`/`done` verbs must read back unchanged.
+func TestApply_0048_ActionsLedgerUntouched(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	applyThrough(t, d.Conn, "0047_add_tasks_idempotency_key")
+
+	if _, err := d.Conn.Exec(`INSERT INTO projects (id, work_dir) VALUES ('p1', '/tmp/p1')`); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if _, err := d.Conn.Exec(
+		`INSERT INTO tasks (id, type, project_id, title, status, kind, urgency, wake_task_id, suggestion_verb, detail)
+		 VALUES ('card-1', 'card', 'p1', 't', 'working', '', '', '', 'working', '{}')`,
+	); err != nil {
+		t.Fatalf("insert card: %v", err)
+	}
+	if _, err := d.Conn.Exec(
+		`INSERT INTO actions (id, task_id, type, payload, from_status, to_status, created_at, actor)
+		 VALUES ('a1', 'card-1', 'working', '{}', 'parked', 'working', '2026-01-01T00:00:00Z', 'human')`,
+	); err != nil {
+		t.Fatalf("insert action: %v", err)
+	}
+
+	apply0048(t, d.Conn)
+
+	var actionType, fromStatus, toStatus string
+	if err := d.Conn.QueryRow(`SELECT type, from_status, to_status FROM actions WHERE id = 'a1'`).Scan(&actionType, &fromStatus, &toStatus); err != nil {
+		t.Fatalf("query action a1: %v", err)
+	}
+	if actionType != "working" {
+		t.Errorf("actions.type = %q, want untouched legacy spelling %q", actionType, "working")
+	}
+	if fromStatus != "parked" || toStatus != "working" {
+		t.Errorf("actions.from_status/to_status = %q/%q, want untouched %q/%q", fromStatus, toStatus, "parked", "working")
 	}
 }

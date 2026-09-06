@@ -186,6 +186,40 @@ func TestBuild_StickyRunningJobAppearsInCurrentGroup(t *testing.T) {
 // the suggestion card just disappears. Decision: SHOW it — see
 // IsAnsweredAction's own doc comment in timeline.go for the reasoning.
 
+func TestIsStateTransition_SelfLoop(t *testing.T) {
+	if !IsStateTransition(&orchestrator.Action{Type: "go", FromStatus: "working", ToStatus: "working"}) {
+		t.Error("IsStateTransition(working -> working) = false, want true (card self-transition Go)")
+	}
+}
+
+func TestBuild_IncludesSelfLoopAction(t *testing.T) {
+	now := time.Now()
+	task := &orchestrator.Task{Status: "working", CreatedAt: now.Add(-10 * time.Second)}
+	actions := []*orchestrator.Action{
+		{Type: "go", FromStatus: "working", ToStatus: "working", CreatedAt: now},
+	}
+
+	groups := Build(task, actions, nil)
+
+	found := false
+	for _, g := range groups {
+		for _, ev := range g.Events {
+			if ev.Kind == KindAction && ev.Action != nil && ev.Action.Type == "go" {
+				found = true
+				if ev.Label != "go → working" {
+					t.Errorf("self-loop label = %q, want %q", ev.Label, "go → working")
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("self-loop go action should be present in timeline, but was not found")
+	}
+	if len(groups) != 1 {
+		t.Errorf("self-loop should not open a new status group, got %d groups", len(groups))
+	}
+}
+
 func TestIsAnsweredAction(t *testing.T) {
 	if !IsAnsweredAction(&orchestrator.Action{Type: "answered"}) {
 		t.Error("IsAnsweredAction(answered) = false, want true")

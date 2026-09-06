@@ -7,7 +7,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// ---- card 機械 v2 (docs/plans/card-next-step-and-timeline.md §3.1) ----
+// ---- card 機械 v2 ----
 //
 // Four statuses: parked/working/done/dropped. Manual transitions:
 //
@@ -25,11 +25,10 @@ import (
 // walks the full status × action cross product and asserts EXACTLY these
 // nine edges succeed, everything else (including every old v1 verb —
 // triage/ready/wake_*/dispatch/triage_done/reopen_triaged) is rejected.
-// working/done are the RETIRED spellings of start/complete (see
-// docs/plans/card-next-step-and-timeline.md §8) — the machine itself only
-// ever sees the current names; api.applyAction normalizes an incoming
-// legacy spelling before it ever reaches sm.Apply, so this rule table has
-// no reason to carry both.
+// working/done are the RETIRED spellings of start/complete — the machine
+// itself only ever sees the current names; api.applyAction normalizes an
+// incoming legacy spelling before it ever reaches sm.Apply, so this rule
+// table has no reason to carry both.
 
 // v2CardStatuses is every status the v2 card machine actually reaches
 // (excludes the legacy captured/triaged/ready statuses, which v2 has zero
@@ -59,8 +58,8 @@ func TestCardMachineV2_AllEdges(t *testing.T) {
 		},
 		orchestrator.TaskStatusWorking: {
 			"park": orchestrator.TaskStatusParked,
-			// 9 本目の辺 (card-next-step-and-timeline.md §3.1): working 中に
-			// 用意できた次の specced 子も Go で走らせられるようにする自己遷移。
+			// 9 本目の辺: working 中に用意できた次の specced 子も Go で
+			// 走らせられるようにする自己遷移。
 			"go":       orchestrator.TaskStatusWorking,
 			"complete": orchestrator.TaskStatusDone,
 		},
@@ -310,9 +309,9 @@ func TestCardMachineV2_IsManualAction(t *testing.T) {
 		// v1 verbs, fully deleted:
 		"triage", "ready", "wake_triaged", "wake_ready", "wake_working", "dispatch",
 		"triage_done", "reopen_triaged",
-		// retired card-verb spellings (card-next-step-and-timeline.md §8):
-		// the machine itself never sees these — api.applyAction normalizes
-		// them to start/complete before Apply/IsManualAction is ever consulted.
+		// retired card-verb spellings: the machine itself never sees these —
+		// api.applyAction normalizes them to start/complete before
+		// Apply/IsManualAction is ever consulted.
 		"working", "done",
 	}
 	for _, a := range manual {
@@ -602,9 +601,9 @@ func TestStateMachine_AvailableActionsHint_EmptyStatusFallback(t *testing.T) {
 	}
 }
 
-// TestNormalizeCardVerb pins the retired-spelling → current-spelling map
-// (card-next-step-and-timeline.md §8): every other value, including an
-// already-current name and an unrelated string, passes through unchanged.
+// TestNormalizeCardVerb pins the retired-spelling → current-spelling map:
+// every other value, including an already-current name and an unrelated
+// string, passes through unchanged.
 func TestNormalizeCardVerb(t *testing.T) {
 	cases := map[string]string{
 		"working":  "start",

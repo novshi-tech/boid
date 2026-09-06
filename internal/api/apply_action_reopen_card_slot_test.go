@@ -7,9 +7,9 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// ---- card-next-step-and-timeline.md §3.2's single-work-slot invariant on
-// the reopen write port: "作業子を card の履歴から直接 reopen する経路も枠を
-// 取得する。別の実行中に再開させない。" ----
+// ---- the single-work-slot invariant on the reopen write port: reopening a
+// child from a card's history must also claim the work slot, not let it
+// resume alongside another live occupant ----
 
 // TestApplyAction_Reopen_RejectsWhenCardSlotOccupiedByAnotherLiveChild pins
 // the case where a DIFFERENT child of the same card already has a live

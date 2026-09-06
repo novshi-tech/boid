@@ -189,7 +189,7 @@ _VERB_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "park": (("task_id", "reason"), ("wake_at", "wake_task_id")),
     # start (旧 manual/working) / go / complete (旧 done) / reopen / drop —— 全部 boid
     # 自身の状態遷移語彙 (`orchestrator.IsCardTransitionAction`) を提案するだけの同じ形。
-    # reason は全部必須 (「なぜその遷移を勧めるか」が accept 画面の主表示になる、boid PR #988)。
+    # reason は全部必須(「なぜその遷移を勧めるか」が accept 画面の主表示になる)。
     "start": (("task_id", "reason"), ()),
     "go": (("task_id", "reason"), ()),
     "complete": (("task_id", "reason"), ()),
@@ -290,9 +290,8 @@ _TERMINAL_ALLOWED_VERBS: Mapping[str, frozenset[str]] = MappingProxyType(
 #: (boid 側にも Accept ボタンを描画しない防御を別途入れる予定 — 二重防御)。
 _TRANSITION_VERB_STATUSES: Mapping[str, frozenset[str]] = MappingProxyType(
     {
-        # go は parked/working の両方から提案できる (boid card-next-step-and-timeline.md
-        # §3.1: working 中に用意できた次の specced 子も Go で走らせられる自己遷移が
-        # boid 側の machine_card.go に追加された)。
+        # go は parked/working の両方から提案できる (working 中に用意できた次の
+        # specced 子も Go で走らせられる自己遷移が boid 側にある)。
         "go": frozenset({"parked", "working"}),
         "start": frozenset({"parked"}),
         "drop": frozenset({"parked"}),

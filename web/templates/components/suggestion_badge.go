@@ -61,12 +61,10 @@ func VerbBadgeClass(verb string) string {
 }
 
 // SuggestionInapplicable reports whether a suggestion's own verb cannot fire
-// a card transition from status right now — orchestrator.StateMachine.
-// CanApplyTransitionAction (PR-3, suggestion 状態遷移化 follow-up), which
-// reads card machine v2's own rule table (each of the six verbs admits
-// exactly ONE FromStatus — e.g. "complete" only fires from "working",
-// machine_card.go's own doc comment). NewCardMachine (not machineFor's
-// dynamic task-based selection) is correct here for the same reason
+// a card transition from status right now, via
+// orchestrator.StateMachine.CanApplyTransitionAction against card machine
+// v2's own rule table. NewCardMachine (not machineFor's dynamic task-based
+// selection) is correct here for the same reason
 // TaskDetailSuggestionSection already establishes: a Suggestion only ever
 // exists on a task_triage sidecar row (a card) in the first place.
 func SuggestionInapplicable(verb string, status orchestrator.TaskStatus) bool {

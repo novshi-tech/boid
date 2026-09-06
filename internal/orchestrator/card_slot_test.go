@@ -9,9 +9,8 @@ import (
 
 // TestDetailOpenSlotChildID_EmptyOrAbsent pins the "no occupant" cases: a
 // bare/empty/nil detail blob, and a detail with only closed/dispatched
-// children (dispatched children are already accounted for by a live task
-// row — see the card-next-step-and-timeline.md §3.2 invariant — not by this
-// JSON-only half of the check).
+// children (dispatched children are accounted for by their own live task
+// row, not by this JSON-only half of the check).
 func TestDetailOpenSlotChildID_EmptyOrAbsent(t *testing.T) {
 	for _, detail := range []json.RawMessage{
 		nil, []byte(""), []byte("null"), []byte("{}"),
@@ -64,32 +63,54 @@ func TestDetailOpenSlotChildID_MalformedDetail(t *testing.T) {
 }
 
 // TestCountUnresolvedChildren backs the `boid task diagnose-cards` CLI
-// diagnostic (card-next-step-and-timeline.md §8): unlike
-// DetailOpenSlotChildID (which only needs "is there ANY occupant" for the
-// write-time gates), this counts every contender for the slot — JSON
-// open/specced children plus live task rows — so a pre-PR-1 card that
-// already accumulated more than one can be found and listed.
+// diagnostic: it counts every contender for a card's single work slot —
+// JSON open/specced children plus live task rows, deduped by Ref the same
+// way acceptGo (internal/api/workflow_card.go) does, so a live row that is
+// really a JSON child's own reservation is never counted twice.
 func TestCountUnresolvedChildren(t *testing.T) {
 	cases := []struct {
-		name           string
-		detail         json.RawMessage
-		openChildCount int
-		want           int
+		name         string
+		detail       json.RawMessage
+		liveChildren []*orchestrator.Task
+		want         int
 	}{
-		{"empty", nil, 0, 0},
-		{"one open json child", json.RawMessage(`{"children":[{"id":"c1","status":"open"}]}`), 0, 1},
-		{"one live task row, no json child", nil, 1, 1},
+		{"empty", nil, nil, 0},
+		{"one open json child", json.RawMessage(`{"children":[{"id":"c1","status":"open"}]}`), nil, 1},
+		{"one live task row, no json child", nil, []*orchestrator.Task{{ID: "t1", Status: orchestrator.TaskStatusPending}}, 1},
 		{
-			"legacy violation: two json children plus a live row",
+			"legacy violation: two json children plus an unrelated live row",
 			json.RawMessage(`{"children":[{"id":"c1","status":"open"},{"id":"c2","status":"specced"}]}`),
-			1,
+			[]*orchestrator.Task{{ID: "t1", Status: orchestrator.TaskStatusPending}},
 			3,
 		},
-		{"closed/dispatched json children do not double-count beyond their own live row", json.RawMessage(`{"children":[{"id":"c1","status":"closed"},{"id":"c2","status":"dispatched","task_ref":"t2"}]}`), 1, 1},
+		{
+			"closed/dispatched json children do not double-count beyond their own live row",
+			json.RawMessage(`{"children":[{"id":"c1","status":"closed"},{"id":"c2","status":"dispatched","task_ref":"t2"}]}`),
+			[]*orchestrator.Task{{ID: "t2", Status: orchestrator.TaskStatusExecuting}},
+			1,
+		},
+		{
+			"a specced child's own live row dedups by ref instead of double-counting",
+			json.RawMessage(`{"children":[{"id":"c1","status":"specced"}]}`),
+			[]*orchestrator.Task{{ID: "t1", Status: orchestrator.TaskStatusPending, Ref: "c1"}},
+			1,
+		},
+		{
+			"a specced child plus a genuinely unrelated live row is still 2 occupants",
+			json.RawMessage(`{"children":[{"id":"c1","status":"specced"}]}`),
+			[]*orchestrator.Task{{ID: "t2", Status: orchestrator.TaskStatusPending}},
+			2,
+		},
+		{
+			"terminal live rows never count, ref match or not",
+			json.RawMessage(`{"children":[{"id":"c1","status":"specced"}]}`),
+			[]*orchestrator.Task{{ID: "t2", Status: orchestrator.TaskStatusAborted}},
+			1,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := orchestrator.CountUnresolvedChildren(c.detail, c.openChildCount)
+			got, err := orchestrator.CountUnresolvedChildren(c.detail, c.liveChildren)
 			if err != nil {
 				t.Fatalf("CountUnresolvedChildren: unexpected error: %v", err)
 			}
@@ -101,7 +122,7 @@ func TestCountUnresolvedChildren(t *testing.T) {
 }
 
 func TestCountUnresolvedChildren_MalformedDetail(t *testing.T) {
-	if _, err := orchestrator.CountUnresolvedChildren(json.RawMessage(`not json`), 0); err == nil {
+	if _, err := orchestrator.CountUnresolvedChildren(json.RawMessage(`not json`), nil); err == nil {
 		t.Fatal("CountUnresolvedChildren(malformed): expected error, got nil")
 	}
 }

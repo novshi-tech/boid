@@ -160,16 +160,14 @@ func TestExecutionMachine_HasNoCardVocabulary(t *testing.T) {
 }
 
 // TestCardMachine_HasNoExecutionVocabulary is the symmetric negation for the
-// card machine (abort is checked separately below since it also needs an
-// AvailableActions-level pin per the PR's own "abort は card 機械に入れない"
-// requirement). "done"/"reopen"/"start" are deliberately EXCLUDED from this
-// list as of card-next-step-and-timeline.md §3.1: all three are legitimate
-// card verbs too (start: parked→working; reopen: done/dropped→parked;
-// "done" itself is retired card-side, normalized to "complete" before it
-// ever reaches this machine — see NormalizeCardVerb) — they share a NAME
-// with an execution-only rule without sharing its FromStatus/ToStatus,
-// exactly like "reopen" always did (see
-// TestCardMachine_Reopen_ExecutionFromStatusNotHandled below for the
+// card machine (abort is checked separately below since the card machine
+// never registers it at all). "done"/"reopen"/"start" are deliberately
+// EXCLUDED from this list: all three are legitimate card verbs too (start:
+// parked→working; reopen: done/dropped→parked; "done" itself is retired
+// card-side, normalized to "complete" before it ever reaches this machine —
+// see NormalizeCardVerb) — they share a NAME with an execution-only rule
+// without sharing its FromStatus/ToStatus, exactly like "reopen" always did
+// (see TestCardMachine_Reopen_ExecutionFromStatusNotHandled below for the
 // FromStatus-level pin covering all three).
 func TestCardMachine_HasNoExecutionVocabulary(t *testing.T) {
 	sm := orchestrator.NewCardMachine()

@@ -82,10 +82,9 @@ func newAcceptGoWorkflowService(task *orchestrator.Task, txStore *recordingTxSto
 	}
 }
 
-// TestTaskWorkflowService_AcceptGo_NoChildren_Rejected pins
-// card-next-step-and-timeline.md §3.2's "子なし Go は拒否し、手作業には
-// Start を使う": a card with no specced child at all can no longer accept
-// "go" as bare manual work (that story now belongs to "start" — see
+// TestTaskWorkflowService_AcceptGo_NoChildren_Rejected pins that a card
+// with no specced child at all can no longer accept "go" as bare manual
+// work (that story now belongs to "start" — see
 // TestTaskWorkflowServiceApplyAction_Start_ParkedToWorking,
 // apply_action_phase1_test.go). The card must stay parked and no child
 // task may be created.
@@ -115,9 +114,8 @@ func TestTaskWorkflowService_AcceptGo_NoChildren_Rejected(t *testing.T) {
 }
 
 // TestTaskWorkflowService_AcceptGo_WorkingWithSpeccedChild_DispatchesAndStaysWorking
-// pins card-next-step-and-timeline.md §3.1's ninth edge: a card already
-// working can Go again to dispatch a freshly specced child, without ever
-// leaving "working".
+// pins that a card already working can Go again to dispatch a freshly
+// specced child, without ever leaving "working".
 func TestTaskWorkflowService_AcceptGo_WorkingWithSpeccedChild_DispatchesAndStaysWorking(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	detail := []byte(`{"children": [{"id": "ch_00", "title": "next", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
@@ -379,10 +377,9 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChild_PassesDescriptionSeparatelyFr
 // a direct "go" click (viaAccept=false, this test) and accept(go)
 // (viaAccept=true, the companion test below).
 //
-// Uses "dropped" (not "working") as the inapplicable status: since
-// card-next-step-and-timeline.md §3.1 made working a SECOND valid entry
-// status for go (the working→working self-loop), only done/dropped remain
-// as this branch's actual counter-examples.
+// Uses "dropped" (not "working") as the inapplicable status: working is now
+// a SECOND valid entry status for go (the working→working self-loop), so
+// only done/dropped remain as this branch's actual counter-examples.
 func TestTaskWorkflowService_AcceptGo_RejectsInapplicableStatus_ErrorMessageHint(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusDropped, Card: &orchestrator.CardAttrs{}}
 	txStore := &recordingTxStore{task: task}

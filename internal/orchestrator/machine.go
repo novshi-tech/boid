@@ -214,11 +214,9 @@ func (sm *StateMachine) CanApplyManualAction(actionType string, status TaskStatu
 // actually flip the task's status from here" — the question a suggestion's
 // own verb (orchestrator.IsCardTransitionAction's six-verb set) always
 // raises, since every one of those verbs names a real transition, never a
-// non-transitioning fact. The card machine rule table admits exactly one
-// status per verb (e.g. "done" only fires from "working"), so this lets a
-// caller ask "would this verb actually apply from the task's current
-// status" before rendering a live Accept button, rather than letting
-// sm.Apply reject with an opaque error.
+// non-transitioning fact. This lets a caller ask "would this verb actually
+// apply from the task's current status" before rendering a live Accept
+// button, rather than letting sm.Apply reject with an opaque error.
 //
 // Deliberately does NOT exclude self-loop rules (ToStatus == FromStatus) the
 // way AvailableActions does: a self-loop rule still makes sm.Apply SUCCEED
