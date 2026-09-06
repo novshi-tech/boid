@@ -196,10 +196,10 @@ func TestCardRequestHandler_Release_LiveTarget_ReturnsOperatorNotice(t *testing.
 	}
 }
 
-// TestCardRequestHandler_Release_NoLiveTarget_NoNotice pins the common case
-// (a queued/never-attached row, or the pre-release read failing) — no
-// operator_notice, since there is nothing known to still be running.
-func TestCardRequestHandler_Release_NoLiveTarget_NoNotice(t *testing.T) {
+// TestCardRequestHandler_Release_PreReleaseReadFails_NoNotice pins that a
+// failed pre-release GetCardRequest (before is nil) degrades to no notice
+// rather than blocking the release itself.
+func TestCardRequestHandler_Release_PreReleaseReadFails_NoNotice(t *testing.T) {
 	store := &fakeCardRequestReleaseStore{}
 	h := &api.CardRequestHandler{Store: store}
 
@@ -212,7 +212,32 @@ func TestCardRequestHandler_Release_NoLiveTarget_NoNotice(t *testing.T) {
 	}
 	body := rec.Body.String()
 	if strings.Contains(body, "operator_notice") {
-		t.Errorf("body = %s, want no operator_notice when no live target is known", body)
+		t.Errorf("body = %s, want no operator_notice when the pre-release read failed", body)
+	}
+}
+
+// TestCardRequestHandler_Release_QueuedRowNoTarget_NoNotice pins the OTHER
+// no-notice case: the pre-release read succeeds but the row never had a
+// target (a queued row, never attached to any continuation) — before != nil
+// but TargetKind/TargetID are empty.
+func TestCardRequestHandler_Release_QueuedRowNoTarget_NoNotice(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{
+		getByID: map[string]*orchestrator.CardRequest{
+			"req-1": {ID: "req-1", Status: orchestrator.CardRequestStatusQueued},
+		},
+	}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/req-1/release", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "operator_notice") {
+		t.Errorf("body = %s, want no operator_notice for a never-attached queued row", body)
 	}
 }
 

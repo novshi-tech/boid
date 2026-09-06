@@ -13,7 +13,7 @@ package dispatcher
 // failing CreateJob now never unregisters anything this call didn't itself
 // just create.
 //
-// dispatchIDCheck is swapped out here to simulate the "GetJob's error was
+// r.idCheckForTest is swapped out here to simulate the "GetJob's error was
 // swallowed" trigger deterministically, without needing a real concurrent
 // race to land in the same narrow window.
 
@@ -69,11 +69,9 @@ func TestDispatch_CreateJobFailsOnIDCollision_DoesNotRevokeTheExistingJobsToken(
 	// on the second call's duplicate-id pre-check: it falsely reports
 	// "no such job", so Dispatch proceeds to reuse sharedID as j.ID and
 	// hits the real UNIQUE constraint at CreateJob.
-	orig := dispatchIDCheck
-	dispatchIDCheck = func(dbtx db.DBTX, id string) (*Job, error) {
+	r.idCheckForTest = func(dbtx db.DBTX, id string) (*Job, error) {
 		return nil, nil
 	}
-	t.Cleanup(func() { dispatchIDCheck = orig })
 
 	loserSpec := &orchestrator.JobSpec{
 		ID:        sharedID,

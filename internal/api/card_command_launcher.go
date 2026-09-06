@@ -114,6 +114,15 @@ func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantTaskID string, 
 	if err != nil {
 		return "", false, err
 	}
+	// Re-check the terminal-card guard against a FRESH read, same as
+	// acceptGo's own in-Tx re-verify (workflow_card.go) — the caller's own
+	// pre-Tx read could be stale by the time this transaction opens.
+	if fresh.Status != orchestrator.TaskStatusParked && fresh.Status != orchestrator.TaskStatusWorking {
+		return "", false, &StatusError{
+			Code:    http.StatusConflict,
+			Message: fmt.Sprintf("card command: card is %q, not parked or working — reopen it before running a command", fresh.Status),
+		}
+	}
 	// Propagate errors rather than fail open, matching cardSlotOccupied.
 	jsonOccupied := false
 	tt, ttErr := tx.GetTaskTriage(cardID)
@@ -213,6 +222,10 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
 		occupantID, occ, operr := cardWorkChildOccupantTx(tx, cardID)
 		if operr != nil {
+			var se *StatusError
+			if errors.As(operr, &se) {
+				return se
+			}
 			return &StatusError{Code: http.StatusInternalServerError, Message: operr.Error()}
 		}
 		if occ {

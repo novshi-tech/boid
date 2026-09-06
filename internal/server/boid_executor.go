@@ -314,10 +314,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// its card_requests row's slot (mirrors executeAgentStart's
 		// ownership check) — only when this job actually owns that request.
 		// A card-type create (initial_status=parked) is never a valid
-		// continuation and must not silently consume the slot. A launcher's
-		// own JobSpec.CardRequestID never propagates to the continuation
-		// task's LATER, ordinary child creations, so this branch is
-		// naturally unreachable for those.
+		// continuation and must not silently consume the slot. A TASK
+		// continuation's later, ordinary child creations never carry this
+		// same CardRequestID again — but a SESSION continuation's token
+		// does (StartSessionRequest.CardRequestID), which is exactly the
+		// routine, expected case the `else if` below excludes from its warn.
 		if ctx.CardRequestID != "" && createReq.ParentID == "" && createReq.InitialStatus != "parked" && e.cardRequests != nil {
 			row, err := e.cardRequests.GetCardRequest(ctx.CardRequestID)
 			if err != nil {

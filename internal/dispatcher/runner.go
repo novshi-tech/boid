@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/novshi-tech/boid/internal/apigateway"
+	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/integrationpack"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -362,11 +363,13 @@ type Runner struct {
 	// See workspaceHomeInFlight for the interleaving and for what it does not
 	// close. Zero value ready to use, like every other lock here.
 	homeInFlight workspaceHomeInFlight
+	// idCheckForTest overrides Dispatch's duplicate-id pre-check lookup
+	// (normally GetJob) so a test can inject a swallowed-error scenario
+	// deterministically. nil (the zero value) means "use GetJob" — a
+	// per-Runner field rather than a package var so it carries no shared
+	// mutable state across Runners/tests.
+	idCheckForTest func(db.DBTX, string) (*Job, error)
 }
-
-// dispatchIDCheck is GetJob indirected so a test can inject a swallowed
-// lookup error on Dispatch's duplicate-id pre-check deterministically.
-var dispatchIDCheck = GetJob
 
 // Dispatch launches a sandbox for the given JobSpec. The optional cleanup
 // callback (typically provided by orchestrator's PlanHook for
@@ -401,12 +404,15 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// — see JobSpec.ID's own doc comment for why the id must be known before
 	// this call. Every other job keeps the pre-existing fresh-uuid behavior.
 	// This is a best-effort early rejection, not what makes a collision
-	// safe — a dispatchIDCheck error is treated as "no such job", so a
-	// transient read failure falls through to CreateJob instead of
-	// rejecting outright. The token-cleanup defer below is what's actually
-	// safe against that.
+	// safe — a lookup error is treated as "no such job", so a transient
+	// read failure falls through to CreateJob instead of rejecting outright.
+	// The token-cleanup defer below is what's actually safe against that.
+	idCheck := r.idCheckForTest
+	if idCheck == nil {
+		idCheck = GetJob
+	}
 	if spec.ID != "" {
-		if existing, err := dispatchIDCheck(r.DB, spec.ID); err == nil && existing != nil {
+		if existing, err := idCheck(r.DB, spec.ID); err == nil && existing != nil {
 			return "", fmt.Errorf("job id %q already exists", spec.ID)
 		}
 		j.ID = spec.ID

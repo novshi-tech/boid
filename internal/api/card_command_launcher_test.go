@@ -311,6 +311,38 @@ func TestRunCardCommandAsHuman_TerminalCard_Returns409(t *testing.T) {
 	}
 }
 
+// TestCardWorkChildOccupantTx_TerminalCard_Returns409 pins the in-Tx half of
+// the terminal-card guard: RunCardCommandAsHuman's own pre-Tx GetTask read
+// (used only for the earlier command-lookup/meta-hydration steps) can be
+// stale by the time the reservation Tx actually opens — a concurrent
+// complete/drop could land in that gap. cardWorkChildOccupantTx re-reads
+// FRESH from tx and must reject a terminal card there too, mirroring
+// acceptGo's own in-Tx re-verify (workflow_card.go), not just the earlier
+// non-transactional check in RunCardCommandAsHuman.
+func TestCardWorkChildOccupantTx_TerminalCard_Returns409(t *testing.T) {
+	svc, _, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	repo := svc.Tasks.(*orchestrator.TaskRepository)
+	card.Status = orchestrator.TaskStatusDone
+	if err := repo.UpdateTask(card); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	var innerErr error
+	if err := svc.Tx.WithinTx(func(tx TxStore) error {
+		_, _, err := cardWorkChildOccupantTx(tx, card.ID)
+		innerErr = err
+		return err
+	}); err == nil {
+		t.Fatal("want an error re-checking a terminal card's fresh status inside the Tx")
+	}
+	var se *StatusError
+	if !errors.As(innerErr, &se) || se.Code != 409 {
+		t.Fatalf("err = %v, want a 409 StatusError", innerErr)
+	}
+}
+
 // TestRunCardCommandAsHuman_CorruptTaskTriageDetail_FailsClosed pins that a
 // task_triage detail blob DetailOpenSlotChildID cannot parse propagates as
 // an error rather than reading as "no JSON occupant" — cardWorkChildOccupantTx

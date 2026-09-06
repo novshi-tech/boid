@@ -42,7 +42,7 @@ type taskReleaseCardRequestResult struct {
 	Status         string `json:"status"`
 	TargetKind     string `json:"target_kind,omitempty"`
 	TargetID       string `json:"target_id,omitempty"`
-	HadLiveTarget  bool   `json:"had_live_target"`
+	HadLiveTarget  bool   `json:"had_live_target,omitempty"`
 	OperatorNotice string `json:"operator_notice,omitempty"`
 }
 

@@ -4,6 +4,7 @@ package orchestrator_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -446,6 +447,9 @@ func TestForceReleaseCardRequest_DoesNotRequeueFoldedSiblings(t *testing.T) {
 	}
 	if got.FoldedInto != "" {
 		t.Errorf("second.FoldedInto = %q, want cleared", got.FoldedInto)
+	}
+	if got.Error == "operator says stuck" || !strings.Contains(got.Error, primary.ID) {
+		t.Errorf("second.Error = %q, want text naming %q as what was force-released, not the verbatim reason (a reader must not mistake this sibling for the row the operator actually meant)", got.Error, primary.ID)
 	}
 
 	primaryGot, err := orchestrator.GetCardRequest(d.Conn, primary.ID)

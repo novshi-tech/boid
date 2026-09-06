@@ -555,6 +555,16 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   ない）は従来通り `FailCardRequest` 経由で sibling を queued に戻し再試行を許す。
   両者を同じ関数に統合せず (`failCardRequest` の内部パラメータで分岐)、それぞれの
   意図の違いをコードでも保つ。
+  **現状 fold 自体が本番未使用 (`ClaimQueuedCardRequests` の呼び出し元が無く、
+  人発/Go はどちらも `launching` で直接 INSERT するため queued/folded 行は
+  生まれない) なので、この分岐は PR-4 の内部イベント dispatch が実際に
+  queued 行を作るまで dead code。** PR-4 でワイヤされた後に残るオープン課題:
+  fold は card 単位で command_key/cause_id を区別しないため、無関係な
+  request を巻き込んで force-fail してしまう (`operator_notice` は sibling
+  数を報告しない) ことと、`idx_card_requests_cause_unique` に status 述語が
+  無いため `cause_id` 付きの sibling が `failed` に落ちると再配送が永久に
+  ブロックされること (`FailCardRequest` の再試行なら起きない) — どちらも
+  PR-4 側で対処すること。
 - **PR-2d-5 で一部対応: retry/force-release は前の継続先 (session/task) を止めない
   (KNOWN GAP、`boid_executor_agent_start.go` の孤児 session と同系統)。** 完全な
   停止処理はまだ実装していない — `boid task release-card-request` が解放前の
@@ -602,24 +612,18 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   tx 全体がロールバック）、余計な 409/500 と作成のやり直しに留まる。
   `idx_card_requests_active_unique` がある限り枠の二重占有には至らない。**
   根絶は引き続き follow-up。
-- **PR-2d-5 で確定: jobs 行が非終端のまま固まった (daemon プロセス自体は
-  生きているが launcher job の行だけ never-terminal になった) launching
-  card_requests 行は、既知の制約として受け入れる。** `ReconcileLaunchingCardRequests`
-  (periodic) は launcher job 自身が `completed`/`failed` に達するまで手を
-  出さない設計 (§その関数の doc comment) なので、この状況では永遠に拾われない —
-  ただし daemon 再起動時の `RecoverLaunchingCardRequests` (startup scan) は
-  job の状態を問わず無条件に走るので、再起動すれば解消する。再起動を待てない
-  場合の逃げ道は既存の `boid task release-card-request` (運用者の force-release)。
-  jobs 側の crash recovery を独自に足すのは本 PR の範囲外の別機能。
-- **PR-2d-5 で確定: jobs 行が非終端のまま固まった (daemon SIGKILL 等) launching
-  行の扱いは、daemon 再起動時の startup scan (`RecoverLaunchingCardRequests`)
-  に委ねる。** 周期 self-heal (`ReconcileLaunchingCardRequests`) は launcher job
-  自身のステータスが `completed`/`failed` になったことをトリガに動くので、
-  jobs 行が `running` のまま固まる (プロセスは死んでいるが行は更新されない)
-  ケースは拾えない — daemon が実際に再起動して startup scan が全 launching 行を
-  無条件に処理するまで解放されない。恒久稼働 (systemd 等での自動再起動) を前提に
-  許容し、周期 self-heal 側にランタイム/コンテナの生存確認を持たせる拡張は
-  本 PR の範囲外とする。
+- **PR-2d-5 で確定: jobs 行が非終端のまま固まった (daemon プロセスは生きているが
+  launcher job の行だけ never-terminal になった、あるいは daemon SIGKILL 等) launching
+  card_requests 行は、既知の制約として受け入れる。** 周期 self-heal
+  (`ReconcileLaunchingCardRequests`) は launcher job 自身が `completed`/`failed`
+  に達したことをトリガに動く設計なので、job 行が `running` のまま固まる
+  (プロセスは死んでいるが行は更新されない) ケースは永遠に拾われない —
+  daemon 再起動時の startup scan (`RecoverLaunchingCardRequests`) は job の状態を
+  問わず無条件に走るので、再起動すれば解消する。恒久稼働 (systemd 等での自動再起動)
+  を前提に許容し、再起動を待てない場合の逃げ道は既存の
+  `boid task release-card-request` (運用者の force-release)。周期 self-heal 側に
+  ランタイム/コンテナの生存確認を持たせる拡張や jobs 側の crash recovery を
+  独自に足すのは本 PR の範囲外とする。
 
 これらは §4 の契約・§6 の対処を前提に、Gate A と各実装 PR で確定する。
 単一ユーザーの利用を前提に、対話注入・分散ロック・汎用 DAG scheduler は追加しない。
