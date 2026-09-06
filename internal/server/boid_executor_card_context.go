@@ -1,5 +1,7 @@
 package server
 
+import "github.com/novshi-tech/boid/internal/orchestrator"
+
 // cardContextResponse is BoidOpCardContext's reply shape — `boid card
 // context`'s structured, token-authoritative input. Every field is sourced
 // from the live card_requests row looked up by ctx.CardRequestID, never
@@ -20,3 +22,15 @@ const (
 	cardContextOriginHuman = "human"
 	cardContextOriginEvent = "event"
 )
+
+// cardRequestOrigin derives a card_requests row's origin the ONE way both
+// BoidOpCardContext and BoidOpAgentStart must agree on: empty CauseID means
+// a human issued the command, a non-empty CauseID means an internal event
+// caused it. A single shared helper so a future origin vocabulary change
+// cannot update one call site and silently leave the other behind.
+func cardRequestOrigin(row *orchestrator.CardRequest) string {
+	if row.CauseID != "" {
+		return cardContextOriginEvent
+	}
+	return cardContextOriginHuman
+}

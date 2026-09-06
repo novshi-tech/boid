@@ -47,6 +47,42 @@ func TestBroker_BoidAgentStart_NoCardContext_RejectedBeforeExecutor(t *testing.T
 	}
 }
 
+// TestBroker_BoidAgentStart_OversizedInstruction_RejectedBeforeExecutor pins
+// the write-side cap: BoidOpCardContext already caps a STORED instruction on
+// the way out (sandbox.PayloadPatchMaxBytes), but nothing capped the sandbox
+// -> daemon input side until now — mirrors the same cap `boid task update
+// --payload-patch` and `boid signal ingest` already enforce.
+func TestBroker_BoidAgentStart_OversizedInstruction_RejectedBeforeExecutor(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	token := broker.Register(map[string]sandbox.CommandDef{}, testAgentStartBoidPolicy(), sandbox.TokenContext{
+		JobID:         "job-1",
+		ProjectID:     "proj-1",
+		ProjectDir:    projectDir,
+		CardID:        "card-1",
+		CardRequestID: "req-1",
+	})
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:          sandbox.BoidOpAgentStart,
+			HarnessType: "claude",
+			Instruction: strings.Repeat("x", sandbox.PayloadPatchMaxBytes+1),
+		},
+	})
+
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "exceeds") {
+		t.Fatalf("expected an oversized-instruction rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should never be reached for an oversized instruction, calls=%d", len(exec.calls))
+	}
+}
+
 func TestBroker_BoidAgentStart_DisallowedByPolicy_Rejected(t *testing.T) {
 	exec := &fakeBoidExecutor{}
 	broker := &sandbox.Broker{BoidExecutor: exec}

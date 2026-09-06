@@ -55,16 +55,18 @@ func (e *boidBuiltinExecutor) executeAgentStart(goCtx context.Context, ctx sandb
 	// re-queued and re-claimed under a fresh launcher job after this one
 	// timed out but kept running) must not attach to the CURRENT attempt
 	// just because it still holds a token naming the same request id.
-	// Empty LauncherJobID means no launcher has claimed ownership yet, so
-	// that case is allowed through unchanged.
-	if row.LauncherJobID != "" && row.LauncherJobID != ctx.JobID {
+	// LauncherJobID is now stamped atomically with the queued->launching
+	// promotion (ClaimQueuedCardRequests / the launching fast path in
+	// CreateCardRequest), so an empty value here can only mean a row that
+	// bypassed that invariant — reject rather than treat it as unclaimed.
+	if row.LauncherJobID == "" || row.LauncherJobID != ctx.JobID {
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid agent start: this job is no longer the request's current launcher"}
 	}
 	// A request caused by an internal event must never reach a session: an
 	// unattended session never terminates on its own, so it would hold the
 	// card's single execution slot forever. Only a human-issued command may
 	// take this path.
-	if row.CauseID != "" {
+	if cardRequestOrigin(row) == cardContextOriginEvent {
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid agent start: rejected — this request originated from an internal event, and only a human-issued command may start a session"}
 	}
 
@@ -116,6 +118,13 @@ func (e *boidBuiltinExecutor) executeAgentStart(goCtx context.Context, ctx sandb
 // exists, and otherwise a message naming both the orphan and the actual
 // cause rather than the generic store error, and always logs the orphan
 // since nothing else references it.
+//
+// KNOWN GAP: this only logs — it never stops orphanJobID's container. A
+// session that loses the attach race keeps running unreferenced by any
+// card_requests row until whatever normally ends that session (a person
+// attaching and quitting, or the harness itself exiting) does. Cleanup would
+// mean calling the equivalent of `boid agent stop` here, which this op does
+// not yet do — tracked as follow-up work, not silently unspecified.
 func (e *boidBuiltinExecutor) handleAgentStartAttachFailure(requestID, orphanJobID string, attachErr error) *sandbox.ExecResponse {
 	if errors.Is(attachErr, orchestrator.ErrCardRequestInvalidTransition) {
 		existing, gerr := e.cardRequests.GetCardRequest(requestID)

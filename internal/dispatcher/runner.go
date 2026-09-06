@@ -390,6 +390,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		// 一切これを読まない。
 		Role:           string(spec.Kind),
 		ExecutionState: spec.ExecutionState,
+		CardID:         spec.CardID,
+		CardRequestID:  spec.CardRequestID,
 	}
 	j.ID = uuid.New().String()
 

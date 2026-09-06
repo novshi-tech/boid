@@ -248,6 +248,12 @@ func (r *TaskRepository) AttachCardRequest(id, targetKind, targetID string) erro
 	return AttachCardRequest(r.db, id, targetKind, targetID)
 }
 
+// ForceReleaseCardRequest backs POST /api/card-requests/{id}/release, the
+// §4.4 operator escape hatch for a stuck slot (api.CardRequestReleaseStore).
+func (r *TaskRepository) ForceReleaseCardRequest(id, reason string) error {
+	return ForceReleaseCardRequest(r.db, id, reason)
+}
+
 type ProjectRepository struct {
 	db db.DBTX
 }
