@@ -37,19 +37,8 @@ const (
 // CardRequestCommandKeyGo is the reserved command_key value for a request
 // whose origin is the shared work-execution slot (Go) rather than a
 // project.yaml card_commands entry. ValidateCardCommands rejects an empty
-// card_commands key at load time, so this dedicated sentinel never collides
-// with a real one.
-//
-// This is deliberately non-empty: ReconcileLaunchingCardRequests
-// (card_request_release.go) uses CommandKey == CardRequestCommandKeyGo as
-// its skip predicate for "this row has no real launcher job, don't
-// self-heal it". Only RunCardCommandAsHuman (always a real, non-empty
-// card_commands key) and acceptGo (this sentinel) create card_requests rows
-// today, so an empty CommandKey never occurs in practice — but if that ever
-// changed, a plain "" sentinel would silently also match a row that never
-// meant to claim Go's exemption. A dedicated non-empty value keeps "" free
-// to mean exactly what CardRequest's own zero value implies (no command_key
-// set at all), rather than double-booking it as a magic marker.
+// card_commands key at load time, so this sentinel never collides with a
+// real one; ReconcileLaunchingCardRequests uses it as its skip predicate.
 const CardRequestCommandKeyGo = "__go__"
 
 // CardRequestTargetKind vocabulary — the kind of continuation a launcher
@@ -333,11 +322,27 @@ func FinishCardRequest(dbtx db.DBTX, id, result string) error {
 
 // FailCardRequest records a request's terminal failure from any
 // non-terminal status, and releases anything folded into it back to
-// queued so the next claim reconsiders them. The failed row itself is kept
-// for inspection/retry, not deleted.
+// queued so the next claim reconsiders them (an automatic failure carries
+// no intent to stop the card — contrast ForceReleaseCardRequest). The
+// failed row itself is kept for inspection/retry, not deleted.
 //
 // Must be called within a transaction for atomicity (two UPDATEs).
 func FailCardRequest(dbtx db.DBTX, id, errText string) error {
+	return failCardRequest(dbtx, id, errText, foldedSiblingsRequeue)
+}
+
+// foldedSiblingOutcome selects what failCardRequest does to id's folded
+// siblings once id itself is marked failed.
+type foldedSiblingOutcome int
+
+const (
+	// foldedSiblingsRequeue returns each folded sibling to queued.
+	foldedSiblingsRequeue foldedSiblingOutcome = iota
+	// foldedSiblingsFail marks each folded sibling failed instead.
+	foldedSiblingsFail
+)
+
+func failCardRequest(dbtx db.DBTX, id, errText string, siblings foldedSiblingOutcome) error {
 	if id == "" {
 		return fmt.Errorf("fail card request: id must not be empty")
 	}
@@ -353,11 +358,21 @@ func FailCardRequest(dbtx db.DBTX, id, errText string) error {
 	if err := rowsAffectedOrNotFoundOrInvalid(dbtx, res, id); err != nil {
 		return err
 	}
-	if _, err := dbtx.Exec(
-		`UPDATE card_requests SET status = ?, folded_into = '', updated_at = ? WHERE folded_into = ? AND status = ?`,
-		string(CardRequestStatusQueued), now, id, string(CardRequestStatusFolded),
-	); err != nil {
-		return fmt.Errorf("fail card request: release folded requests: %w", err)
+	switch siblings {
+	case foldedSiblingsFail:
+		if _, err := dbtx.Exec(
+			`UPDATE card_requests SET status = ?, folded_into = '', error = ?, updated_at = ? WHERE folded_into = ? AND status = ?`,
+			string(CardRequestStatusFailed), errText, now, id, string(CardRequestStatusFolded),
+		); err != nil {
+			return fmt.Errorf("fail card request: fail folded requests: %w", err)
+		}
+	default:
+		if _, err := dbtx.Exec(
+			`UPDATE card_requests SET status = ?, folded_into = '', updated_at = ? WHERE folded_into = ? AND status = ?`,
+			string(CardRequestStatusQueued), now, id, string(CardRequestStatusFolded),
+		); err != nil {
+			return fmt.Errorf("fail card request: release folded requests: %w", err)
+		}
 	}
 	return nil
 }

@@ -364,6 +364,10 @@ type Runner struct {
 	homeInFlight workspaceHomeInFlight
 }
 
+// dispatchIDCheck is GetJob indirected so a test can inject a swallowed
+// lookup error on Dispatch's duplicate-id pre-check deterministically.
+var dispatchIDCheck = GetJob
+
 // Dispatch launches a sandbox for the given JobSpec. The optional cleanup
 // callback (typically provided by orchestrator's PlanHook for
 // staging dir teardown) runs after the sandbox process has exited.
@@ -396,19 +400,25 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// A caller-supplied spec.ID (card-command launcher) is honored verbatim
 	// — see JobSpec.ID's own doc comment for why the id must be known before
 	// this call. Every other job keeps the pre-existing fresh-uuid behavior.
-	// Collision check happens BEFORE the token-cleanup defer below is
-	// registered: CreateJob's own INSERT would reject a duplicate id too,
-	// but by then this function would call r.UnregisterJob(j.ID) on the
-	// error path, revoking the EXISTING job's tokens rather than this
-	// call's (which never registered any) — checking here avoids ever
-	// reaching that.
+	// This is a best-effort early rejection, not what makes a collision
+	// safe — a dispatchIDCheck error is treated as "no such job", so a
+	// transient read failure falls through to CreateJob instead of
+	// rejecting outright. The token-cleanup defer below is what's actually
+	// safe against that.
 	if spec.ID != "" {
-		if existing, err := GetJob(r.DB, spec.ID); err == nil && existing != nil {
+		if existing, err := dispatchIDCheck(r.DB, spec.ID); err == nil && existing != nil {
 			return "", fmt.Errorf("job id %q already exists", spec.ID)
 		}
 		j.ID = spec.ID
 	} else {
 		j.ID = uuid.New().String()
+	}
+
+	if err := CreateJob(r.DB, j); err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", fmt.Errorf("create job: %w", err)
 	}
 
 	// Token leak protection on the dispatch error path: the broker token
@@ -420,22 +430,20 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// failure in ResolveHostCommands, BuildSandboxSpec, PrepareSandbox or
 	// Runtime.Start after that point leaked both tokens for the rest of the
 	// daemon's lifetime. UnregisterJob is a no-op for a jobID that was never
-	// registered, so unconditionally calling it here on any error path is
-	// the symmetric fix: one deferred call covers every return site,
-	// present and future, instead of requiring each new early-return to
-	// remember its own cleanup.
+	// registered, so unconditionally calling it here on any error path from
+	// this point on is the symmetric fix: one deferred call covers every
+	// return site, present and future, instead of requiring each new
+	// early-return to remember its own cleanup.
+	//
+	// Registered only after CreateJob succeeds: j.ID may be a caller-supplied
+	// id the pre-check above misjudged as free, and if CreateJob then fails,
+	// that id was never actually claimed by this call — unregistering it
+	// would instead revoke whichever OTHER job really owns it.
 	defer func() {
 		if dispatchErr != nil {
 			r.UnregisterJob(j.ID)
 		}
 	}()
-
-	if err := CreateJob(r.DB, j); err != nil {
-		if cleanup != nil {
-			cleanup()
-		}
-		return "", fmt.Errorf("create job: %w", err)
-	}
 
 	// Notify the web SSE hub (via the optional JobEvents sink) so task detail
 	// timelines refresh as soon as a running job row exists, not only after

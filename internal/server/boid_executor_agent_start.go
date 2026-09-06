@@ -121,10 +121,9 @@ func (e *boidBuiltinExecutor) executeAgentStart(goCtx context.Context, ctx sandb
 //
 // KNOWN GAP: this only logs — it never stops orphanJobID's container. A
 // session that loses the attach race keeps running unreferenced by any
-// card_requests row until whatever normally ends that session (a person
-// attaching and quitting, or the harness itself exiting) does. Cleanup would
-// mean calling the equivalent of `boid agent stop` here, which this op does
-// not yet do — tracked as follow-up work, not silently unspecified.
+// card_requests row until whatever normally ends that session does.
+// `boid task release-card-request` has the same gap and, unable to close it
+// either, at least surfaces it via an explicit operator notice.
 func (e *boidBuiltinExecutor) handleAgentStartAttachFailure(requestID, orphanJobID string, attachErr error) *sandbox.ExecResponse {
 	if errors.Is(attachErr, orchestrator.ErrCardRequestInvalidTransition) {
 		existing, gerr := e.cardRequests.GetCardRequest(requestID)

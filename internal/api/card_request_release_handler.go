@@ -30,6 +30,9 @@ type CardRequestReleaseStore interface {
 	// so a caller checking many cards (`boid task diagnose-cards`) avoids
 	// one GET per card.
 	ListActiveCardRequests() ([]*orchestrator.CardRequest, error)
+	// GetCardRequest backs Release's pre-release read (see Release's own
+	// doc comment for why it needs the row's target BEFORE releasing it).
+	GetCardRequest(id string) (*orchestrator.CardRequest, error)
 }
 
 type CardRequestHandler struct {
@@ -106,6 +109,17 @@ type releaseCardRequestBody struct {
 // enough (unlike `boid agent start --instruction`'s sandbox.PayloadPatchMaxBytes).
 const releaseReasonMaxBytes = 4096
 
+// releaseResult is Release's response shape: it echoes the request's
+// pre-release target (if any) since force-release only frees the slot, not
+// whatever continuation was still attached to it.
+type releaseResult struct {
+	Status         string `json:"status"`
+	TargetKind     string `json:"target_kind,omitempty"`
+	TargetID       string `json:"target_id,omitempty"`
+	HadLiveTarget  bool   `json:"had_live_target"`
+	OperatorNotice string `json:"operator_notice,omitempty"`
+}
+
 // Release handles POST /api/card-requests/{id}/release. Body is optional;
 // an empty/missing reason falls back to ForceReleaseCardRequest's own
 // default message.
@@ -127,6 +141,12 @@ func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read before releasing: ForceReleaseCardRequest clears target_kind/
+	// target_id off the row, so this is the only chance to learn what it
+	// was pointing at. Best-effort — a read failure must not block the
+	// release an operator is trying to perform.
+	before, _ := h.Store.GetCardRequest(id)
+
 	if err := h.Store.ForceReleaseCardRequest(id, body.Reason); err != nil {
 		if errors.Is(err, orchestrator.ErrCardRequestNotFound) {
 			writeError(w, http.StatusNotFound, err.Error())
@@ -139,5 +159,14 @@ func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
+	result := releaseResult{Status: "released"}
+	if before != nil && before.TargetKind != "" && before.TargetID != "" {
+		result.TargetKind = before.TargetKind
+		result.TargetID = before.TargetID
+		result.HadLiveTarget = true
+		result.OperatorNotice = fmt.Sprintf(
+			"this only freed the card's execution slot — the %s %s it was attached to is NOT stopped and may still be running; stop it by hand if that's not wanted",
+			before.TargetKind, before.TargetID)
+	}
+	writeJSON(w, http.StatusOK, result)
 }

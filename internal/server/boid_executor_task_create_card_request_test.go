@@ -147,6 +147,73 @@ func TestBoidOpTaskCreate_StaleLauncher_NotAttached(t *testing.T) {
 	}
 }
 
+// TestBoidOpTaskCreate_AttachedSessionOwnCreate_NoWarn pins that an ordinary
+// `boid task create` from WITHIN a card session job — the session's own
+// token still carries the same CardRequestID it was started with, now
+// attached (not launching) to that very session's own job id — does not
+// log the "does not own it" warning. This is the routine, expected shape of
+// every non-first task create a card session makes, not an anomaly: only a
+// genuine mismatch (wrong job, wrong card, or a stale non-launching row)
+// should warn.
+func TestBoidOpTaskCreate_AttachedSessionOwnCreate_NoWarn(t *testing.T) {
+	buf := captureSlog(t)
+	conn := newBoidExecutorTestDB(t)
+	if err := orchestrator.CreateProject(conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	repo := orchestrator.NewTaskRepository(conn)
+	card := &orchestrator.Task{Type: orchestrator.TaskTypeCard, ProjectID: "proj-1", Card: &orchestrator.CardAttrs{}}
+	if err := repo.CreateTask(card); err != nil {
+		t.Fatalf("create card: %v", err)
+	}
+	cardReq := &orchestrator.CardRequest{
+		CardID:        card.ID,
+		Status:        orchestrator.CardRequestStatusLaunching,
+		LauncherJobID: "launcher-job",
+	}
+	if err := orchestrator.CreateCardRequest(conn, cardReq); err != nil {
+		t.Fatalf("create card request: %v", err)
+	}
+	// The session job itself — NOT the launcher — is what actually goes on
+	// to make ordinary `boid task create` calls, so attach the request to a
+	// session job id distinct from the launcher's.
+	if err := orchestrator.AttachCardRequest(conn, cardReq.ID, orchestrator.CardRequestTargetKindSession, "session-job"); err != nil {
+		t.Fatalf("attach card request: %v", err)
+	}
+
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{
+			Tasks:             repo,
+			CardRequestLinker: repo,
+			Meta:              executorMetaStub{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"executor": {}}}},
+		},
+		cardRequests: repo,
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"},
+		JobID: "session-job", CardID: card.ID, CardRequestID: cardReq.ID,
+	}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: []byte(`{"title":"unrelated work the session decided to do","initial_status":"pending","behavior":"executor"}`),
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("task create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+
+	got, err := repo.GetCardRequest(cardReq.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusAttached || got.TargetKind != orchestrator.CardRequestTargetKindSession {
+		t.Errorf("card request = %+v, want unchanged (still attached to the session, not re-claimed by this create)", got)
+	}
+	if strings.Contains(buf.String(), "does not own it") {
+		t.Errorf("log output contains the ownership-mismatch warning for a routine session create: %s", buf.String())
+	}
+}
+
 // TestBoidOpTaskCreate_ChildCreate_NotTreatedAsRequestContinuation pins that
 // a create carrying an explicit parent_id must never be treated as the
 // launcher's own continuation, even if the caller's token happens to carry

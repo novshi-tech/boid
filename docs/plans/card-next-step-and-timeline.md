@@ -543,21 +543,83 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
 - task bootstrap の workspace workflow 委譲が実 harness で成立するか（Gate A の必須項目）。
 - コマンドの retry 上限・launcher timeout の値、ユーザーへの失敗通知方法。
   trigger の `timeout` / 連続失敗通知を流用する前提で、値だけ決める。
-- 終端 card の**手動**コマンド提供範囲。自動起動は parked/working に限ると確定（§4.6）。
-  自動 reopen はせず必要なら Reopen を提案する原則は維持。
+- **PR-2d-5 で確定: 終端 card への手動コマンドは拒否する。** `RunCardCommandAsHuman`
+  が card の status を全く見ておらず、`done`/`dropped` にもコマンドを撃てて実行枠を
+  取れていた非対称を解消 — 自動起動の parked/working 限定（§4.6）と揃えた。
+  実装は `acceptGo` と同じ 409 ガード。自動 reopen はせず必要なら Reopen を
+  提案する原則は維持。
+- **PR-2d-5 で確定: force-release と abort の sibling 再起動セマンティクスを区別。**
+  `ForceReleaseCardRequest`（運用者の明示的な「止めたい」意思）は fold されていた
+  sibling を queued に戻さず failed にする — 直後の claim で運用者が止めたはずの
+  card が再起動するのを防ぐ。一方 task の `aborted`（自動的な失敗で人の停止意思では
+  ない）は従来通り `FailCardRequest` 経由で sibling を queued に戻し再試行を許す。
+  両者を同じ関数に統合せず (`failCardRequest` の内部パラメータで分岐)、それぞれの
+  意図の違いをコードでも保つ。
+- **PR-2d-5 で一部対応: retry/force-release は前の継続先 (session/task) を止めない
+  (KNOWN GAP、`boid_executor_agent_start.go` の孤児 session と同系統)。** 完全な
+  停止処理はまだ実装していない — `boid task release-card-request` が解放前の
+  target_kind/target_id を読み、生存中の継続先があった場合は operator_notice で
+  警告するところまでで留めた。実際に停止する仕組み（`boid agent stop` 相当）は
+  引き続き follow-up。
 - 履歴 snapshot と GC の保持範囲、既存履歴の再構成限界。タイムゾーンは初期版サーバ TZ で確定（§5.4）。
 - **PR-2d-4 で確定: 直接 `--parent <card>` 実行タスク作成パス（`createExecutionTask`）の
   read-then-write。`card_requests` 行を持たない create（`CardRequestID==""`）は
   再チェックと INSERT を同一 `WithinTx` に閉じ、RunCardCommandAsHuman/acceptGo の予約と
   完全に調停する（`TaskAppService.Tx`、`internal/api/task_create.go`）。
   `CardRequestID!=""` の経路（launcher/Go 自身の継続 create、
-  `CreateTaskLinkedToCardRequest` が既にそれ自体を原子的に行う）は対象外のまま —
-  同じ呼び出し内で二重に `WithinTx` を開くと `SetMaxOpenConns(1)` 下でデッドロックする
-  ため、既存の非トランザクション事前チェック（自分自身の予約を保持している前提）を
-  維持する。この経路の事前チェックと予約 INSERT の間の窓は本 PR の対象外の既知の
-  残存ギャップとして記録するのみ（acceptGo 自身の `unresolvedCount` 事前チェックも
-  同種の非トランザクション読みを経由しており、根絶するには acceptGo 側の設計変更が
-  要る）。
+  `CreateTaskLinkedToCardRequest` が既にそれ自体を原子的に行う）は対象外のまま。
+
+  **PR-2d-5 で訂正: 「二重に `WithinTx` を開くとデッドロックする」という上記の
+  理由づけは不正確だった — 実行して確認済み。**
+  `TaskRepository.CreateTaskLinkedToCardRequest` は自分の `db.DBTX` が生の
+  `*sql.DB` かどうかで分岐しており、tx に紐づいた repo（`apiTransactor.WithinTx`
+  が渡す `apiTxStore.tasks` のように `*sql.Tx` を持つ repo）を通せば
+  `db.InTxDB` を新たに開かず、既存 tx の中でそのまま `CreateTask`+
+  `AttachCardRequest` を実行できる。
+  `TestCreateTaskLinkedToCardRequest_TxBoundRepo_DoesNotDeadlockInAnOuterTx`
+  (`internal/orchestrator/card_request_linked_tx_nesting_test.go`) が
+  `SetMaxOpenConns(1)` 下の実 DB で外側 tx 内から呼んでもデッドロックしない
+  ことを実行して確認している。よって `TxStore` に
+  `CreateTaskLinkedToCardRequest` を生やして `apiTxStore` から
+  委譲するだけなら、実際にはデッドロックしない。
+
+  ただし `CardRequestID!=""` の実際の非トランザクション窓は
+  `task_create.go` の `cardParent` 単位の枠チェックではない —
+  launcher の継続は必ず ROOT task（`ParentID==""`）なので `cardParent` は
+  この経路では常に nil で、そもそも枠チェックの対象にならない。真の窓は
+  `internal/server/boid_executor.go`（`BoidOpTaskCreate`）の所有権チェック
+  （`GetCardRequest` の非トランザクション読み）から
+  `TaskAppService.CreateTask`（behavior 解決・ref/idempotency-key 分岐を
+  経て `CreateTaskLinkedToCardRequest` に達するまでの長い呼び出し）までの
+  パッケージ境界をまたぐ区間であり、ここを 1 tx に閉じるには
+  `boid_executor.go` から `CreateTask` の重い前処理パイプライン全体を
+  bypass して tx 付き repo を直接呼ぶ経路を新設する必要がある — 単に
+  interface にメソッドを生やすより大きい変更で、本 PR の範囲を超える。
+
+  **実害は変わらず限定的で、ここは維持: 窓の間に競合しても
+  `AttachCardRequest` 自身の `WHERE status='launching'` 原子チェックが
+  ステータス変化を検出して失敗し（`createTaskLinkedToCardRequest` の
+  tx 全体がロールバック）、余計な 409/500 と作成のやり直しに留まる。
+  `idx_card_requests_active_unique` がある限り枠の二重占有には至らない。**
+  根絶は引き続き follow-up。
+- **PR-2d-5 で確定: jobs 行が非終端のまま固まった (daemon プロセス自体は
+  生きているが launcher job の行だけ never-terminal になった) launching
+  card_requests 行は、既知の制約として受け入れる。** `ReconcileLaunchingCardRequests`
+  (periodic) は launcher job 自身が `completed`/`failed` に達するまで手を
+  出さない設計 (§その関数の doc comment) なので、この状況では永遠に拾われない —
+  ただし daemon 再起動時の `RecoverLaunchingCardRequests` (startup scan) は
+  job の状態を問わず無条件に走るので、再起動すれば解消する。再起動を待てない
+  場合の逃げ道は既存の `boid task release-card-request` (運用者の force-release)。
+  jobs 側の crash recovery を独自に足すのは本 PR の範囲外の別機能。
+- **PR-2d-5 で確定: jobs 行が非終端のまま固まった (daemon SIGKILL 等) launching
+  行の扱いは、daemon 再起動時の startup scan (`RecoverLaunchingCardRequests`)
+  に委ねる。** 周期 self-heal (`ReconcileLaunchingCardRequests`) は launcher job
+  自身のステータスが `completed`/`failed` になったことをトリガに動くので、
+  jobs 行が `running` のまま固まる (プロセスは死んでいるが行は更新されない)
+  ケースは拾えない — daemon が実際に再起動して startup scan が全 launching 行を
+  無条件に処理するまで解放されない。恒久稼働 (systemd 等での自動再起動) を前提に
+  許容し、周期 self-heal 側にランタイム/コンテナの生存確認を持たせる拡張は
+  本 PR の範囲外とする。
 
 これらは §4 の契約・§6 の対処を前提に、Gate A と各実装 PR で確定する。
 単一ユーザーの利用を前提に、対話注入・分散ロック・汎用 DAG scheduler は追加しない。

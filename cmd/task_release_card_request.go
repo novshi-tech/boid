@@ -20,7 +20,10 @@ var taskReleaseCardRequestCmd = &cobra.Command{
 		"強制解除口。継続先の生存確認をスキップして failed (retry 可能) に\n" +
 		"直接落とす — 通常は `boid task diagnose-cards` や継続先照合の\n" +
 		"reconcile ループが自律的に解放するので、それらが効かない\n" +
-		"詰まりにのみ使うこと。",
+		"詰まりにのみ使うこと。\n\n" +
+		"注意: これは枠を解放するだけで、継続先 (session/task) 自体は\n" +
+		"止めない。生存中の継続先があった場合はコマンドが warning を\n" +
+		"出す — 本当に止めたいなら別途手動で対処すること。",
 	Args: cobra.ExactArgs(1),
 	RunE: runTaskReleaseCardRequest,
 }
@@ -33,14 +36,27 @@ func init() {
 	taskCmd.AddCommand(taskReleaseCardRequestCmd)
 }
 
+// taskReleaseCardRequestResult mirrors api.releaseResult's wire shape — only
+// the fields this command reads.
+type taskReleaseCardRequestResult struct {
+	Status         string `json:"status"`
+	TargetKind     string `json:"target_kind,omitempty"`
+	TargetID       string `json:"target_id,omitempty"`
+	HadLiveTarget  bool   `json:"had_live_target"`
+	OperatorNotice string `json:"operator_notice,omitempty"`
+}
+
 func runTaskReleaseCardRequest(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
 	requestID := args[0]
 
-	var result map[string]string
+	var result taskReleaseCardRequestResult
 	if err := c.Do("POST", fmt.Sprintf("/api/card-requests/%s/release", requestID), map[string]string{"reason": taskReleaseCardRequestReason}, &result); err != nil {
 		return fmt.Errorf("release card request: %w", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "card request %s released\n", requestID)
+	if result.HadLiveTarget {
+		fmt.Fprintf(cmd.OutOrStdout(), "warning: %s\n", result.OperatorNotice)
+	}
 	return nil
 }

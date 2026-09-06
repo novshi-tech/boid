@@ -20,10 +20,12 @@ import (
 // every RegisterCommands call's TokenContext, builtin policy map, and
 // resolved host commands.
 type recordingBroker struct {
-	lastCtx      sandbox.TokenContext
-	lastPolicies map[string]sandbox.BuiltinPolicy
-	lastCommands map[string]orchestrator.CommandDef
-	calls        int
+	lastCtx          sandbox.TokenContext
+	lastPolicies     map[string]sandbox.BuiltinPolicy
+	lastCommands     map[string]orchestrator.CommandDef
+	calls            int
+	unregisterCalls  int
+	lastUnregistered string
 }
 
 func (b *recordingBroker) RegisterCommands(commands map[string]orchestrator.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx sandbox.TokenContext, _ SecretResolver) string {
@@ -36,7 +38,10 @@ func (b *recordingBroker) RegisterCommands(commands map[string]orchestrator.Comm
 
 func (b *recordingBroker) SocketPath() string { return "/tmp/broker.sock" }
 
-func (b *recordingBroker) UnregisterCommandToken(string) {}
+func (b *recordingBroker) UnregisterCommandToken(token string) {
+	b.unregisterCalls++
+	b.lastUnregistered = token
+}
 
 func TestDispatch_SignalServiceConnector_ThreadedIntoTokenContext(t *testing.T) {
 	d := newGatewayTestDB(t)

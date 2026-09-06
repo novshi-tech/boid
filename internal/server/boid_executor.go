@@ -331,7 +331,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 					// Default so a retried launcher converges via get-or-create.
 					createReq.Ref = ctx.CardRequestID
 				}
-			} else {
+			} else if !(row.Status == orchestrator.CardRequestStatusAttached &&
+				row.TargetKind == orchestrator.CardRequestTargetKindSession && row.TargetID == ctx.JobID) {
+				// Exclude the routine case: a card session's own token keeps
+				// naming its (now-attached, not launching) CardRequestID for
+				// every later create it makes — not an ownership mismatch.
 				slog.Warn("boid task create: job carries card request context but does not own it; creating without attaching",
 					"card_request_id", ctx.CardRequestID, "job_id", ctx.JobID, "request_launcher_job_id", row.LauncherJobID, "request_status", row.Status)
 			}

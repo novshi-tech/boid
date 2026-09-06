@@ -145,13 +145,8 @@ func continuationTerminalOutcome(dbtx db.DBTX, req *CardRequest) (finished, ok b
 			return false, false, nil
 		}
 	default:
-		// AttachCardRequest only ever accepts CardRequestTargetKindTask/
-		// Session, so a live attached row should never reach here — but
-		// treating an unrecognized kind as "still running" the same as a
-		// genuinely live continuation would leave it silently stuck forever
-		// (never re-checked at any different outcome), the exact failure
-		// mode this function exists to avoid for a deleted target. Warn so
-		// the stall is at least observable instead of silent.
+		// Should never happen (AttachCardRequest only accepts task/session).
+		// Warn rather than silently treat it as stuck-forever-live.
 		slog.Warn("continuation terminal outcome: unrecognized target_kind, treating as still running (will retry every pass, never resolves on its own)",
 			"request_id", req.ID, "target_kind", req.TargetKind, "target_id", req.TargetID)
 		return false, false, nil
@@ -344,15 +339,14 @@ func RecoverLaunchingCardRequests(conn *sql.DB) ([]CardRequestSlotOutcome, error
 
 // ForceReleaseCardRequest is the operator escape hatch for a stuck slot:
 // fails a queued/launching/attached row regardless of whether its
-// continuation has actually terminated. Thin wrapper over FailCardRequest —
-// forcing is exactly "this slot is stuck, close it out and let a human or a
-// retry deal with the fallout", which is what a failed (retry-able) request
-// already means.
+// continuation has actually terminated. Unlike FailCardRequest, it does NOT
+// requeue folded siblings — it fails them too, since requeuing would let
+// the very next claim restart the card the operator just told to stop.
 func ForceReleaseCardRequest(dbtx db.DBTX, id, reason string) error {
 	if reason == "" {
 		reason = "force-released by operator"
 	}
-	return FailCardRequest(dbtx, id, reason)
+	return failCardRequest(dbtx, id, reason, foldedSiblingsFail)
 }
 
 // ReleaseCardRequestForTerminalTarget releases the attached card_requests

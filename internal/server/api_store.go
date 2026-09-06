@@ -68,6 +68,12 @@ func (s apiTxStore) ReleaseCardRequestForTerminalTarget(targetKind, targetID str
 	return s.tasks.ReleaseCardRequestForTerminalTarget(targetKind, targetID, success)
 }
 
+// CreateTaskLinkedToCardRequest delegates to s.tasks — bound to the SAME
+// *sql.Tx apiTransactor.WithinTx opened, so this does not nest a new one.
+func (s apiTxStore) CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID string) error {
+	return s.tasks.CreateTaskLinkedToCardRequest(t, requestID)
+}
+
 func (s apiTxStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return s.tasks.ListTasks(filter)
 }
