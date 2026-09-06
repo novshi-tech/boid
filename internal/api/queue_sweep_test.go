@@ -42,6 +42,9 @@ func (s *sweepFakeStore) FailCardRequest(id, errText string) error              
 func (s *sweepFakeStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
 	return nil, nil
 }
+func (s *sweepFakeStore) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+	return false, nil
+}
 func (s *sweepFakeStore) GetTask(id string) (*orchestrator.Task, error) {
 	t, ok := s.tasks[id]
 	if !ok {

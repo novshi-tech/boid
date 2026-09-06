@@ -747,6 +747,79 @@ func TestFinalizeTerminal_NonChildTask_NoOp(t *testing.T) {
 	}
 }
 
+// TestFinalizeTerminal_ReleasesAttachedCardRequest_OnDone pins that a task
+// which is the target of an attached card_requests row gets that row
+// released the instant it reaches done, without waiting for
+// ReconcileCardRequestSlots' own periodic tick.
+func TestFinalizeTerminal_ReleasesAttachedCardRequest_OnDone(t *testing.T) {
+	task := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	req := &orchestrator.CardRequest{ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusAttached, TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "child-1"}
+	txStore := &recordingTxStore{task: task, createdCardRequests: []*orchestrator.CardRequest{req}}
+	svc := &TaskWorkflowService{Tx: recordingTransactor{store: txStore}, CardRequests: txStore}
+
+	svc.finalizeTerminal(context.Background(), task)
+
+	if len(txStore.releasedCardRequestTargets) != 1 {
+		t.Fatalf("released targets = %+v, want exactly 1 call", txStore.releasedCardRequestTargets)
+	}
+	got := txStore.releasedCardRequestTargets[0]
+	if got.targetKind != orchestrator.CardRequestTargetKindTask || got.targetID != "child-1" || !got.success {
+		t.Errorf("released target = %+v, want {task, child-1, success=true}", got)
+	}
+	if req.Status != orchestrator.CardRequestStatusFinished {
+		t.Errorf("card_requests row status = %q, want finished", req.Status)
+	}
+}
+
+// TestFinalizeTerminal_ReleasesAttachedCardRequest_OnAborted pins the
+// failure-mapping half: an aborted (not done) target releases the row as
+// failed, not finished.
+func TestFinalizeTerminal_ReleasesAttachedCardRequest_OnAborted(t *testing.T) {
+	task := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", Status: orchestrator.TaskStatusAborted, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	req := &orchestrator.CardRequest{ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusAttached, TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "child-1"}
+	txStore := &recordingTxStore{task: task, createdCardRequests: []*orchestrator.CardRequest{req}}
+	svc := &TaskWorkflowService{Tx: recordingTransactor{store: txStore}, CardRequests: txStore}
+
+	svc.finalizeTerminal(context.Background(), task)
+
+	if len(txStore.releasedCardRequestTargets) != 1 || txStore.releasedCardRequestTargets[0].success {
+		t.Fatalf("released targets = %+v, want exactly 1 call with success=false", txStore.releasedCardRequestTargets)
+	}
+	if req.Status != orchestrator.CardRequestStatusFailed {
+		t.Errorf("card_requests row status = %q, want failed", req.Status)
+	}
+}
+
+// TestFinalizeTerminal_NoAttachedCardRequest_NoOp pins the common case: a
+// terminal task nobody's card_requests row targets makes no release call at
+// all (not even a query wasted on the wrong card).
+func TestFinalizeTerminal_NoAttachedCardRequest_NoOp(t *testing.T) {
+	task := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	txStore := &recordingTxStore{task: task}
+	svc := &TaskWorkflowService{Tx: recordingTransactor{store: txStore}, CardRequests: txStore}
+
+	svc.finalizeTerminal(context.Background(), task)
+
+	if len(txStore.releasedCardRequestTargets) != 1 {
+		t.Fatalf("released targets = %+v, want exactly 1 call (the lookup itself still runs, just finds nothing)", txStore.releasedCardRequestTargets)
+	}
+}
+
+// TestFinalizeTerminal_CardRequestsUnwired_SkipsReleaseCall pins the
+// nil-tolerant posture: when CardRequests isn't wired (most existing
+// callers/tests), finalizeTerminal must not even attempt the release.
+func TestFinalizeTerminal_CardRequestsUnwired_SkipsReleaseCall(t *testing.T) {
+	task := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	txStore := &recordingTxStore{task: task}
+	svc := &TaskWorkflowService{Tx: recordingTransactor{store: txStore}}
+
+	svc.finalizeTerminal(context.Background(), task)
+
+	if len(txStore.releasedCardRequestTargets) != 0 {
+		t.Fatalf("released targets = %+v, want none (CardRequests unwired)", txStore.releasedCardRequestTargets)
+	}
+}
+
 // ---- child_dropped (khi による子の取り下げ) ------------------------------
 
 // TestApplyAction_ChildDropped_ClosesSpeccedChild pins the gap child_closed

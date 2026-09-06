@@ -1832,6 +1832,9 @@ func (s *stubTx) FailCardRequest(id, errText string) error              { return
 func (s *stubTx) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
 	return nil, nil
 }
+func (s *stubTx) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+	return false, nil
+}
 func (s *stubTx) GetTask(id string) (*orchestrator.Task, error) {
 	return nil, fmt.Errorf("not found")
 }

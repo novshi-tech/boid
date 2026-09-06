@@ -61,6 +61,10 @@ func (s apiTxStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardR
 	return s.tasks.ListCardRequestsByCard(cardID)
 }
 
+func (s apiTxStore) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+	return s.tasks.ReleaseCardRequestForTerminalTarget(targetKind, targetID, success)
+}
+
 func (s apiTxStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return s.tasks.ListTasks(filter)
 }

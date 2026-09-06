@@ -461,6 +461,66 @@ func TestReconcileLaunchingCardRequests_LauncherTerminatedNoContinuation_FailsRe
 	}
 }
 
+// TestReconcileLaunchingCardRequests_MissingJobRowWithinGrace_LeftAlone pins
+// that a launching row with no jobs row for its LauncherJobID YET (the gap
+// between CreateCardRequest's commit and StartExec's own jobs INSERT) is
+// left alone, not immediately failed — a reconcile tick can legitimately
+// land in that gap.
+func TestReconcileLaunchingCardRequests_MissingJobRowWithinGrace_LeftAlone(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "review", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-not-yet-created"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	// Deliberately no jobs row for "launcher-not-yet-created" — req.UpdatedAt
+	// defaults to now, well within the grace window.
+
+	outcomes, err := orchestrator.ReconcileLaunchingCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("ReconcileLaunchingCardRequests: %v", err)
+	}
+	if len(outcomes) != 0 {
+		t.Fatalf("outcomes = %+v, want none (still within the job-row creation grace)", outcomes)
+	}
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusLaunching {
+		t.Fatalf("Status = %q, want still launching", got.Status)
+	}
+}
+
+// TestReconcileLaunchingCardRequests_MissingJobRowPastGrace_FailsRetryable
+// pins the other half: once the grace window has elapsed with still no
+// jobs row at all, the launcher is gone (StartExec itself failed before
+// ever reaching Dispatch's jobs INSERT — RunCardCommand's own synchronous
+// FailCardRequest on that path should normally have already caught this,
+// but the self-heal must not depend on that call having succeeded).
+func TestReconcileLaunchingCardRequests_MissingJobRowPastGrace_FailsRetryable(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "review", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-never-created"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	old := time.Now().UTC().Add(-2 * time.Minute)
+	if _, err := d.Conn.Exec(`UPDATE card_requests SET updated_at = ? WHERE id = ?`, old, req.ID); err != nil {
+		t.Fatalf("backdate updated_at: %v", err)
+	}
+
+	outcomes, err := orchestrator.ReconcileLaunchingCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("ReconcileLaunchingCardRequests: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].RequestID != req.ID || outcomes[0].Status != string(orchestrator.CardRequestStatusFailed) {
+		t.Fatalf("outcomes = %+v, want one failed outcome for %q", outcomes, req.ID)
+	}
+}
+
 // TestReconcileLaunchingCardRequests_LauncherTerminatedWithSessionContinuation_Attaches
 // covers the crash-window case even outside a daemon restart: the launcher
 // job (a readonly exec job) called `boid agent start`, which created the
@@ -530,6 +590,88 @@ func TestReconcileLaunchingCardRequests_SkipsGoCommandKeyRows(t *testing.T) {
 	}
 	if got.Status != orchestrator.CardRequestStatusLaunching {
 		t.Fatalf("Status = %q, want still launching (untouched)", got.Status)
+	}
+}
+
+// ---- ReleaseCardRequestForTerminalTarget: the immediate, per-target
+// release finalizeTerminal (internal/api) calls instead of waiting for
+// ReconcileCardRequestSlots' own periodic tick.
+
+func TestReleaseCardRequestForTerminalTarget_Success_Finishes(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	task := newTestExecutionTask(t, d, "task-1", "proj-1", orchestrator.TaskStatusDone)
+	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindTask, task)
+
+	found, err := orchestrator.ReleaseCardRequestForTerminalTarget(d.Conn, orchestrator.CardRequestTargetKindTask, task, true)
+	if err != nil {
+		t.Fatalf("ReleaseCardRequestForTerminalTarget: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusFinished {
+		t.Errorf("Status = %q, want finished", got.Status)
+	}
+}
+
+func TestReleaseCardRequestForTerminalTarget_Failure_Fails(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	task := newTestExecutionTask(t, d, "task-1", "proj-1", orchestrator.TaskStatusAborted)
+	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindTask, task)
+
+	found, err := orchestrator.ReleaseCardRequestForTerminalTarget(d.Conn, orchestrator.CardRequestTargetKindTask, task, false)
+	if err != nil {
+		t.Fatalf("ReleaseCardRequestForTerminalTarget: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusFailed {
+		t.Errorf("Status = %q, want failed", got.Status)
+	}
+}
+
+func TestReleaseCardRequestForTerminalTarget_NoAttachedRow_ReturnsNotFound(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	found, err := orchestrator.ReleaseCardRequestForTerminalTarget(d.Conn, orchestrator.CardRequestTargetKindTask, "no-such-task", true)
+	if err != nil {
+		t.Fatalf("ReleaseCardRequestForTerminalTarget: %v", err)
+	}
+	if found {
+		t.Fatal("found = true, want false")
+	}
+}
+
+func TestTaskRepository_ReleaseCardRequestForTerminalTarget_WrapsInOwnTx(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	task := newTestExecutionTask(t, d, "task-1", "proj-1", orchestrator.TaskStatusDone)
+	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindTask, task)
+
+	repo := orchestrator.NewTaskRepository(d.Conn)
+	found, err := repo.ReleaseCardRequestForTerminalTarget(orchestrator.CardRequestTargetKindTask, task, true)
+	if err != nil {
+		t.Fatalf("ReleaseCardRequestForTerminalTarget: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusFinished {
+		t.Errorf("Status = %q, want finished", got.Status)
 	}
 }
 

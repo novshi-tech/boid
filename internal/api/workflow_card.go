@@ -827,6 +827,28 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 	// not evaluate it here or anywhere else.
 }
 
+// releaseCardRequestForTerminalTask releases the card_requests row (if any)
+// attached to task as a task-kind continuation, the instant task reaches a
+// terminal status — otherwise every occupancy check keeps reporting the
+// card's slot busy until ReconcileCardRequestSlots' next periodic tick.
+// A no-op for the common case (task isn't a card_requests continuation), and
+// gated on s.CardRequests being wired (not itself used below — it stands in
+// for "this deployment/test actually uses card_requests at all") so callers
+// that never touch card_requests don't pay for an extra transaction here.
+func (s *TaskWorkflowService) releaseCardRequestForTerminalTask(task *orchestrator.Task) {
+	if task == nil || s.Tx == nil || s.CardRequests == nil {
+		return
+	}
+	success := task.Status == orchestrator.TaskStatusDone
+	if err := s.Tx.WithinTx(func(tx TxStore) error {
+		_, err := tx.ReleaseCardRequestForTerminalTarget(orchestrator.CardRequestTargetKindTask, task.ID, success)
+		return err
+	}); err != nil {
+		slog.Error("release card_requests slot on task terminal failed; the periodic reconcile will retry",
+			"task_id", task.ID, "error", err)
+	}
+}
+
 // acceptGo is accept(go)'s implementation: the human-accept path for a "go"
 // suggestion, and the direct replacement for v1's two-stage
 // ready→(machine "dispatch")→working. v2 has no "ready" status and no

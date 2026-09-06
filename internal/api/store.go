@@ -491,6 +491,10 @@ type TxStore interface {
 	CreateCardRequest(req *orchestrator.CardRequest) error
 	FailCardRequest(id, errText string) error
 	ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error)
+	// ReleaseCardRequestForTerminalTarget backs finalizeTerminal's immediate
+	// slot release the instant a task reaches a terminal state, instead of
+	// waiting for the periodic ReconcileCardRequestSlots tick.
+	ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error)
 }
 
 type Transactor interface {

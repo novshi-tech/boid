@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/db"
 )
@@ -148,18 +149,27 @@ func continuationTerminalOutcome(dbtx db.DBTX, req *CardRequest) (finished, ok b
 	}
 }
 
+// launcherJobRowCreationGrace bounds how long a launching row may go
+// without a matching jobs row before ReconcileLaunchingCardRequests treats
+// it as gone. The card_requests INSERT and the jobs INSERT are not the same
+// transaction (StartExec's Dispatch() writes the jobs row only after
+// resolving the project, building the JobSpec, and a git subprocess call),
+// so a reconcile tick can legitimately land in that gap. Far larger than
+// that gap ever takes, so it never delays detecting a genuinely gone
+// launcher by more than this.
+const launcherJobRowCreationGrace = 60 * time.Second
+
 // launcherJobTerminalOrGone reports whether the launcher job identified by
-// launcherJobID has reached a terminal status (completed/failed), treating a
-// missing job row the same as terminal — a deleted/nonexistent launcher job
-// can never report back either. Used by ReconcileLaunchingCardRequests to
-// gate its self-heal on the ACTUAL launcher process being done, never on
-// elapsed time (see that function's own doc comment for why).
-func launcherJobTerminalOrGone(dbtx db.DBTX, launcherJobID string) (bool, error) {
+// launcherJobID has reached a terminal status (completed/failed). A missing
+// job row is terminal only once updatedAt (the row's launching promotion
+// time) is older than launcherJobRowCreationGrace — see that constant's own
+// doc comment for why a missing row isn't immediately treated as gone.
+func launcherJobTerminalOrGone(dbtx db.DBTX, launcherJobID string, updatedAt time.Time) (bool, error) {
 	row := dbtx.QueryRow(`SELECT status FROM jobs WHERE id = ?`, launcherJobID)
 	var status string
 	if err := row.Scan(&status); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return true, nil
+			return time.Since(updatedAt) >= launcherJobRowCreationGrace, nil
 		}
 		return false, fmt.Errorf("get launcher job %q: %w", launcherJobID, err)
 	}
@@ -238,7 +248,7 @@ func ReconcileLaunchingCardRequests(conn *sql.DB) ([]CardRequestSlotOutcome, err
 		}
 		var outcome *CardRequestSlotOutcome
 		err := db.InTxDB(conn, func(tx db.DBTX) error {
-			terminal, terr := launcherJobTerminalOrGone(tx, req.LauncherJobID)
+			terminal, terr := launcherJobTerminalOrGone(tx, req.LauncherJobID, req.UpdatedAt)
 			if terr != nil {
 				return terr
 			}
@@ -334,4 +344,34 @@ func ForceReleaseCardRequest(dbtx db.DBTX, id, reason string) error {
 		reason = "force-released by operator"
 	}
 	return FailCardRequest(dbtx, id, reason)
+}
+
+// ReleaseCardRequestForTerminalTarget releases the attached card_requests
+// row (if any) targeting (targetKind, targetID) the instant that target
+// reaches a terminal state, instead of waiting for
+// ReconcileCardRequestSlots' next tick — otherwise every occupancy check
+// (cardSlotOccupied, cardSlotConflictWithRequests) keeps reporting the slot
+// occupied for up to the reconcile interval after the real work already
+// finished. found is false in the common case (most terminal tasks/jobs are
+// not a card_requests continuation at all).
+func ReleaseCardRequestForTerminalTarget(dbtx db.DBTX, targetKind, targetID string, success bool) (found bool, err error) {
+	row := dbtx.QueryRow(
+		`SELECT id FROM card_requests WHERE target_kind = ? AND target_id = ? AND status = ?`,
+		targetKind, targetID, string(CardRequestStatusAttached),
+	)
+	var id string
+	if serr := row.Scan(&id); serr != nil {
+		if errors.Is(serr, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("find attached card request for %s %q: %w", targetKind, targetID, serr)
+	}
+	if success {
+		if ferr := FinishCardRequest(dbtx, id, "continuation reached a terminal successful state"); ferr != nil {
+			return false, fmt.Errorf("finish: %w", ferr)
+		}
+	} else if ferr := FailCardRequest(dbtx, id, "continuation ended without success"); ferr != nil {
+		return false, fmt.Errorf("fail: %w", ferr)
+	}
+	return true, nil
 }

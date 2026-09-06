@@ -12,6 +12,13 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+// releasedCardRequestTarget is one recorded ReleaseCardRequestForTerminalTarget call.
+type releasedCardRequestTarget struct {
+	targetKind string
+	targetID   string
+	success    bool
+}
+
 type recordingTxStore struct {
 	task             *orchestrator.Task
 	updatedTask      *orchestrator.Task
@@ -55,7 +62,8 @@ type recordingTxStore struct {
 	failedCardRequestIDs []string
 	// listCardRequestsByCardFn, when set, backs ListCardRequestsByCard;
 	// otherwise it returns createdCardRequests unfiltered.
-	listCardRequestsByCardFn func(cardID string) ([]*orchestrator.CardRequest, error)
+	listCardRequestsByCardFn   func(cardID string) ([]*orchestrator.CardRequest, error)
+	releasedCardRequestTargets []releasedCardRequestTarget
 }
 
 func (s *recordingTxStore) CountActiveCardRequests(cardID string) (int, error) {
@@ -77,6 +85,23 @@ func (s *recordingTxStore) CreateCardRequest(req *orchestrator.CardRequest) erro
 func (s *recordingTxStore) FailCardRequest(id, errText string) error {
 	s.failedCardRequestIDs = append(s.failedCardRequestIDs, id)
 	return nil
+}
+
+// releasedCardRequestTargets records every (targetKind, targetID, success)
+// tuple ReleaseCardRequestForTerminalTarget was called with, in call order.
+func (s *recordingTxStore) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+	s.releasedCardRequestTargets = append(s.releasedCardRequestTargets, releasedCardRequestTarget{targetKind, targetID, success})
+	for _, r := range s.createdCardRequests {
+		if r.TargetKind == targetKind && r.TargetID == targetID && r.Status == orchestrator.CardRequestStatusAttached {
+			if success {
+				r.Status = orchestrator.CardRequestStatusFinished
+			} else {
+				r.Status = orchestrator.CardRequestStatusFailed
+			}
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *recordingTxStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
