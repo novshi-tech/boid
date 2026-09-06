@@ -104,6 +104,10 @@ func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*Proj
 		return nil, err
 	}
 
+	if err := ValidateCardCommands(meta.CardCommands, meta.CardEvents); err != nil {
+		return nil, err
+	}
+
 	// `id:` is optional; omitting it falls through to the caller's
 	// URL-derived id. A non-empty id must not collide with the prefix
 	// reserved for URL-derived ids.
@@ -501,7 +505,23 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)
 	result.TaskBehaviors = cloneTaskBehaviorMap(meta.TaskBehaviors)
 	result.SessionBehaviors = cloneSessionBehaviorMap(meta.SessionBehaviors)
+	result.CardCommands = cloneCardCommandMap(meta.CardCommands)
 	return &result
+}
+
+// cloneCardCommandMap deep-copies the card command map. Like
+// cloneSessionBehaviorMap, CardCommand has no runtime-overlay fields to
+// reset — a fresh map of copied values is already a deep copy — but a new
+// map instance still keeps two ProjectMeta clones from sharing storage.
+func cloneCardCommandMap(src map[string]CardCommand) map[string]CardCommand {
+	if len(src) == 0 {
+		return nil
+	}
+	result := make(map[string]CardCommand, len(src))
+	for k, v := range src {
+		result[k] = v
+	}
+	return result
 }
 
 // cloneTaskBehaviorMap deep-copies the task behavior map. Runtime-overlay fields

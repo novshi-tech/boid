@@ -484,10 +484,33 @@ type TriggerConnector struct {
 	Config map[string]any
 }
 
+// CardCommand is one project.yaml `card_commands.<key>` entry: a label and
+// a run command. Both fields are required (ValidateCardCommands).
+type CardCommand struct {
+	// Label is the UI button text for this command, workspace-defined.
+	Label string `yaml:"label" json:"label"`
+	// Run is a command string passed to `sh -c` inside the project's sandbox.
+	Run string `yaml:"run" json:"run"`
+}
+
+// CardEventsConfig is ProjectMeta.CardEvents — project.yaml's
+// `card_events:` block.
+type CardEventsConfig struct {
+	// Command must name an existing CardCommands key when non-empty
+	// (ValidateCardCommands).
+	Command string `yaml:"command,omitempty" json:"command,omitempty"`
+}
+
 type ProjectMeta struct {
 	ID            string                  `yaml:"id" json:"id"`
 	Name          string                  `yaml:"name" json:"name"`
 	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
+	// CardCommands is a free-naming dictionary from a workspace-chosen key
+	// to a label and a run command; ValidateCardCommands checks shape only.
+	CardCommands map[string]CardCommand `yaml:"card_commands,omitempty" json:"card_commands,omitempty"`
+	// CardEvents names the CardCommands key that auto-starts for internal
+	// card events; empty means none. Validated but not yet consumed.
+	CardEvents CardEventsConfig `yaml:"card_events,omitempty" json:"card_events,omitempty"`
 	// Triggers is a TOP-LEVEL project.yaml field — deliberately NOT nested
 	// under any TaskBehavior: "when it starts" is a different concern from
 	// task_behaviors' "how it runs". Not part of the workspace envelope

@@ -320,6 +320,58 @@ session_behaviors:
 	}
 }
 
+// TestGetWithWorkspace_CardCommandsNotMutated is
+// TestGetWithWorkspace_SessionBehaviorsNotMutated's counterpart for
+// CardCommands: mutating a hydrated copy's map must not corrupt the
+// ProjectStore's cached meta.
+func TestGetWithWorkspace_CardCommandsNotMutated(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	boidDir := filepath.Join(projectDir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yaml := `id: proj-cc
+name: Card Commands Test
+card_commands:
+  review:
+    label: Run
+    run: python3 scripts/card_review.py
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	wsDir := t.TempDir()
+	setupWorkspaceDir(t, wsDir, "ccws", "")
+
+	s := orchestrator.NewProjectStore()
+	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
+	loadProjectIntoStore(t, s, []*orchestrator.Project{
+		{ID: "proj-cc", WorkDir: projectDir, WorkspaceID: "ccws"},
+	})
+
+	hydrated, err := s.GetWithWorkspace(context.Background(), "proj-cc")
+	if err != nil {
+		t.Fatalf("GetWithWorkspace: %v", err)
+	}
+	review, ok := hydrated.CardCommands["review"]
+	if !ok || review.Label != "Run" {
+		t.Fatalf("card_commands not preserved through hydration: %+v", hydrated.CardCommands)
+	}
+
+	hydrated.CardCommands["review"] = orchestrator.CardCommand{Label: "mutated", Run: "mutated"}
+
+	cached, ok := s.Get("proj-cc")
+	if !ok {
+		t.Fatal("expected cached meta to exist")
+	}
+	if cached.CardCommands["review"].Label != "Run" {
+		t.Fatalf("mutation leaked into cached meta: %+v", cached.CardCommands)
+	}
+}
+
 // TestGetWithWorkspace_WorkspaceEnvWithKitConflict verifies that duplicate
 // host_commands from workspace kits return an error.
 func TestGetWithWorkspace_WorkspaceHostCommandConflict(t *testing.T) {
