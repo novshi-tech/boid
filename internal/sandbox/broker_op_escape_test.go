@@ -123,6 +123,15 @@ func TestBroker_BoidCardContext_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
 }
 
+// BoidOpAgentStart: same "no card context" precondition as BoidOpCardContext,
+// covered end-to-end by
+// TestBroker_BoidAgentStart_NoCardContext_RejectedBeforeExecutor
+// (broker_agent_start_test.go); this closes the plain policy-gate manifest
+// entry point.
+func TestBroker_BoidAgentStart_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+}
+
 // BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink / BoidOpTaskIdentityResolve
 // (docs/plans/ingestion-identity.md PR-1): scoping is broker-authoritative
 // (default from ctx, resolve, AllowsProject — see broker.go's cases and
@@ -332,6 +341,17 @@ var opEscapeCoverage = map[string]opCoverage{
 	// (broker_card_context_test.go); the plain policy-gate manifest entry
 	// point is below.
 	"BoidOpCardContext": {escapeTest: "TestBroker_BoidCardContext_PolicyReject"},
+
+	// BoidOpAgentStart: same "identity comes only from the token entry"
+	// precondition as BoidOpCardContext above, plus broker-authoritative
+	// project resolution/AllowsProject scoping matching BoidOpTaskCreate.
+	// The no-card-context and workspace-boundary rejections are covered
+	// end-to-end by
+	// TestBroker_BoidAgentStart_NoCardContext_RejectedBeforeExecutor and
+	// TestBroker_BoidAgentStart_RejectsProjectOutsideWorkspace
+	// (broker_agent_start_test.go); the plain policy-gate manifest entry
+	// point is below.
+	"BoidOpAgentStart": {escapeTest: "TestBroker_BoidAgentStart_PolicyReject"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly

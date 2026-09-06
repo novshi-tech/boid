@@ -242,6 +242,12 @@ func (r *TaskRepository) GetCardRequest(id string) (*CardRequest, error) {
 	return GetCardRequest(r.db, id)
 }
 
+// AttachCardRequest backs `boid agent start`'s recording of the session
+// continuation it just created (server.cardRequestReader).
+func (r *TaskRepository) AttachCardRequest(id, targetKind, targetID string) error {
+	return AttachCardRequest(r.db, id, targetKind, targetID)
+}
+
 type ProjectRepository struct {
 	db db.DBTX
 }

@@ -74,11 +74,10 @@ type TaskWorkflowService struct {
 	// Exec dispatches the exec job (api.ExecDispatcher.StartExec) a due
 	// trigger's `run` command executes as — the daemon starts an exec job
 	// through the same Runner.Dispatch() path `boid exec` uses. Nil is
-	// tolerated the same way Triggers above is: wire.go can only assign
-	// this once sessionDispatcherAdapter exists (mountRoutes, after
-	// buildRuntime constructs this TaskWorkflowService), so a
-	// construction-order gap must not be fatal — see wire.go's own comment
-	// at the assignment site.
+	// tolerated the same way Triggers above is, as a general defensive
+	// convention rather than an expected runtime state — wire.go's
+	// buildRuntime assigns this as soon as the TaskWorkflowService and its
+	// sessionDispatcherAdapter both exist.
 	Exec ExecDispatcher
 	// Signals backs the `on: signals` trigger predicate's HasPendingSignals
 	// read (SweepTriggers/signalsPendingForTrigger, trigger_loop.go). Nil

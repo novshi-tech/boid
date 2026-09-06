@@ -23,7 +23,7 @@ Commands:
   signal   Scan and ack the signal inbox (list, ack, ingest, cursor)
   job      Manage jobs (done, list, show, log)
   action   Send and list actions (send, list)
-  agent    Manage agent (stop)
+  agent    Manage agent (stop, start)
   project  Inspect projects (list, behaviors)
 
 Run "boid <command> --help" for subcommand usage.
@@ -135,10 +135,14 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("boid shim: missing boid agent subcommand")
 		}
-		if args[1] != "stop" {
+		switch args[1] {
+		case "stop":
+			return parseBoidAgentStop(args[2:])
+		case "start":
+			return parseBoidAgentStart(args[2:])
+		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid agent subcommand %q", args[1])
 		}
-		return parseBoidAgentStop(args[2:])
 	case "job":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("boid shim: missing boid job subcommand")
@@ -281,6 +285,62 @@ func parseBoidAgentStop(args []string) (*BoidRequest, error) {
 		Op:    BoidOpAgentStop,
 		JobID: args[0],
 	}, nil
+}
+
+// parseBoidAgentStart builds the BoidRequest for `boid agent start`: a
+// card-command launcher's session-creation call. Card/request identity is
+// never a flag here — the broker fills it from the launcher's own token,
+// same as `boid card context`.
+func parseBoidAgentStart(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpAgentStart}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--harness" || strings.HasPrefix(arg, "--harness="):
+			value, next, err := takeStringFlagValue(args, i, "--harness")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.HarnessType = value
+		case arg == "--project" || strings.HasPrefix(arg, "--project="):
+			value, next, err := takeStringFlagValue(args, i, "--project")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.ProjectID = value
+		case arg == "--instruction" || strings.HasPrefix(arg, "--instruction="):
+			value, next, err := takeStringFlagValue(args, i, "--instruction")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Instruction = value
+		case arg == "--model" || strings.HasPrefix(arg, "--model="):
+			value, next, err := takeStringFlagValue(args, i, "--model")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Model = value
+		case arg == "--name" || strings.HasPrefix(arg, "--name="):
+			value, next, err := takeStringFlagValue(args, i, "--name")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.DisplayName = value
+		case arg == "--readonly":
+			req.Readonly = true
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid agent start", arg)
+		}
+	}
+	if req.HarnessType == "" {
+		return nil, fmt.Errorf("boid shim: boid agent start requires --harness")
+	}
+	return req, nil
 }
 
 func parseBoidJobDone(args []string) (*BoidRequest, error) {

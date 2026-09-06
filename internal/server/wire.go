@@ -63,14 +63,19 @@ type appRuntime struct {
 	// mountRoutes only mounts the route when this is non-nil.
 	oauthLogin api.OAuthLoginService
 	// packs is the daemon's loaded Integration Pack registry, resolved
-	// once at buildRuntime startup (integrationpack.LoadPacks). Consumed
-	// by mountRoutes to construct sessionDispatcherAdapter, which resolves
-	// a signal-derived trigger's connector reference against it at
-	// StartExec time. nil is a legitimate value (integrations.dir does
-	// not exist — no Packs installed) — every connector-trigger StartExec
-	// then fails with a clear "pack not installed" error rather than a
-	// nil panic.
+	// once at buildRuntime startup (integrationpack.LoadPacks). Consumed by
+	// sessionAdapter (below), which resolves a signal-derived trigger's
+	// connector reference against it at StartExec time. nil is a
+	// legitimate value (integrations.dir does not exist — no Packs
+	// installed) — every connector-trigger StartExec then fails with a
+	// clear "pack not installed" error rather than a nil panic.
 	packs []*integrationpack.Pack
+	// sessionAdapter is the single api.SessionDispatcher/api.ExecDispatcher
+	// instance the daemon runs, constructed once in buildRuntime (its three
+	// dependencies above are already in scope there) so newBoidBuiltinExecutor's
+	// BoidOpAgentStart wiring and mountRoutes' HTTP-route wiring share the
+	// exact same value instead of each constructing their own.
+	sessionAdapter *sessionDispatcherAdapter
 }
 
 func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, map[string]orchestrator.HostCommandSpec, error) {
@@ -1646,6 +1651,18 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// method call. See api.TaskCreator's own doc comment for why this
 	// can't be a literal struct-construction cycle instead.
 	workflow.TaskCreator = taskSvc
+
+	// sessionAdapter is constructed here (not left to mountRoutes, which
+	// used to be the only consumer) because newBoidBuiltinExecutor's
+	// BoidOpAgentStart wiring, just below, needs it too — its three
+	// dependencies (projectSvc, runner, packs) are already in scope by this
+	// point in buildRuntime. mountRoutes reuses runtime.sessionAdapter
+	// instead of constructing a second, independent instance.
+	sessionAdapter := &sessionDispatcherAdapter{service: projectSvc, runner: runner, packs: packs}
+	// The trigger sweep loop dispatches a due trigger's exec job through
+	// the SAME api.ExecDispatcher.StartExec `boid exec` uses.
+	workflow.Exec = sessionAdapter
+
 	if srv.broker != nil {
 		// runner (*dispatcher.Runner) satisfies jobContextProvider
 		// structurally (its JobContext method backs the `boid task env` /
@@ -1670,8 +1687,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// workflow, since workflow's concrete type
 		// *api.TaskWorkflowService does not implement api.SignalStore.
 		// The same taskRepo also implements cardRequestReader (its own
-		// GetCardRequest delegator), backing BoidOpCardContext.
-		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc, taskRepo, taskRepo)
+		// GetCardRequest/AttachCardRequest delegators), backing
+		// BoidOpCardContext and BoidOpAgentStart. sessionAdapter (above)
+		// backs BoidOpAgentStart's actual session dispatch.
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc, taskRepo, taskRepo, sessionAdapter)
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{
@@ -1731,6 +1750,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		workspaceHomes: workspaceHomeStore(dockerClient, srv.installID),
 		oauthLogin:     oauthLoginSvc,
 		packs:          packs,
+		sessionAdapter: sessionAdapter,
 	}, nil
 }
 
@@ -1822,10 +1842,11 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 	// .hydrateProjectWithWorkspace) so Capabilities / Env / SecretNamespace
 	// reflect the linked workspace.yaml.
 	meta := project.Meta
-	// HarnessType validation happens up at the HTTP handlers (see
-	// api.validateHarnessType in session.go, called by SessionHandler /
-	// ProjectHandler / WebHandler before dispatch), so by the time execution
-	// reaches here it is already one of claude / codex / opencode. The old
+	// HarnessType validation happens up at the callers (api.ValidateHarnessType
+	// in session.go — called by SessionHandler / ProjectHandler / WebHandler
+	// before dispatch, and by boid_executor's BoidOpAgentStart case before it
+	// calls this same method directly), so by the time execution reaches here
+	// it is already one of claude / codex / opencode. The old
 	// `boid agent shell` session variant that forced argv=/bin/bash was
 	// retired — `boid exec -p <project> -- bash` runs the shell adapter
 	// through the same Runner.Dispatch() with an interactive PTY, so there
@@ -2071,13 +2092,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		r.Mount("/api/oauth", oauthLoginHandler.Routes())
 	}
 
-	sessionAdapter := &sessionDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner, packs: runtime.packs}
-	// The trigger sweep loop dispatches a due trigger's exec job through
-	// the SAME api.ExecDispatcher.StartExec `boid exec` uses. This can only
-	// be wired here, not alongside workflow's other fields above
-	// (buildRuntime), because sessionAdapter does not exist until this
-	// point — see TaskWorkflowService.Exec's own doc comment.
-	runtime.workflow.Exec = sessionAdapter
+	sessionAdapter := runtime.sessionAdapter
 	projectHandler := &api.ProjectHandler{
 		Service:           runtime.projectSvc,
 		SessionDispatcher: sessionAdapter,

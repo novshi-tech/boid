@@ -55,6 +55,7 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 		OpBoidSignalClaim,
 		OpBoidSignalAck,
 		OpBoidCardContext,
+		OpBoidAgentStart,
 	}
 	if !opsEqual(boidP.AllowedOps, wantOps) {
 		t.Errorf("hook×boid AllowedOps = %v, want %v", boidP.AllowedOps, wantOps)
@@ -151,7 +152,7 @@ func TestConnectorBuiltinPolicies_ExcludesGeneralBoidOps(t *testing.T) {
 	forbidden := []string{
 		OpBoidTaskCreate, OpBoidTaskGet, OpBoidTaskUpdate, OpBoidCardGet, OpBoidCardList,
 		OpBoidSignalList, OpBoidSignalAck, OpBoidActionSend, OpBoidActionList,
-		OpBoidProjectList, OpBoidProjectBehaviors,
+		OpBoidProjectList, OpBoidProjectBehaviors, OpBoidCardContext, OpBoidAgentStart,
 	}
 	for _, op := range forbidden {
 		if boidP.Allows(op) {

@@ -211,6 +211,13 @@ const (
 	// token entry, same as the Connector fields above. A job with no card
 	// context gets a clear error rather than an empty reply.
 	BoidOpCardContext BoidOp = "card_context"
+
+	// BoidOpAgentStart backs `boid agent start`: a card-command launcher's
+	// way to create a session continuation, as a thin wrapper over the same
+	// StartSession path the Web UI and `boid agent <harness>` already use.
+	// Requires card context (TokenContext.CardRequestID), same precondition
+	// as BoidOpCardContext.
+	BoidOpAgentStart BoidOp = "agent_start"
 )
 
 // IdentityNotFoundExitCode is BoidOpTaskIdentityResolve's distinguished exit
@@ -361,6 +368,15 @@ type BoidRequest struct {
 	// line and validating required fields happens server-side in the
 	// executor, not in the shim.
 	IngestPayload []byte `json:"ingest_payload,omitempty"`
+
+	// agent start fields (BoidOpAgentStart), mirroring
+	// api.StartSessionRequest. ProjectID above doubles as that request's
+	// ProjectID.
+	HarnessType string `json:"harness_type,omitempty"`
+	Instruction string `json:"instruction,omitempty"`
+	Readonly    bool   `json:"readonly,omitempty"`
+	Model       string `json:"model,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 type TokenContext struct {

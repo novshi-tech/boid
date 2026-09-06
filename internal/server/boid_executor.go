@@ -57,10 +57,26 @@ type actionListService interface {
 }
 
 // cardRequestReader backs BoidOpCardContext's live lookup of the
-// card_requests row identified by ctx.CardRequestID. Nil disables the op
-// with an "unavailable" error, same convention as `signals` below.
+// card_requests row identified by ctx.CardRequestID, and BoidOpAgentStart's
+// own lookup plus recording of the session continuation it creates. Nil
+// disables both ops with an "unavailable" error, same convention as
+// `signals` below.
 type cardRequestReader interface {
 	GetCardRequest(id string) (*orchestrator.CardRequest, error)
+	// AttachCardRequest records the continuation BoidOpAgentStart just
+	// created, transitioning the row launching -> attached. Returns
+	// orchestrator.ErrCardRequestInvalidTransition when the row was no
+	// longer launching (already attached by a concurrent call).
+	AttachCardRequest(id, targetKind, targetID string) error
+}
+
+// sessionStarter backs BoidOpAgentStart's actual session dispatch — the
+// SAME api.SessionDispatcher the Web UI's [New Session] dialog and `boid
+// agent <harness>` already use, narrowed to the one method this op needs.
+// Nil disables the op with an "unavailable" error, same convention as every
+// other optional dependency here.
+type sessionStarter interface {
+	StartSession(ctx context.Context, req api.StartSessionRequest) (*api.StartSessionResult, error)
 }
 
 // projectSummary is BoidOpProjectList's per-project JSON shape — deliberately
@@ -127,13 +143,16 @@ type boidBuiltinExecutor struct {
 	// "unavailable" error, same convention as every other optional
 	// dependency here.
 	signals api.SignalStore
-	// cardRequests backs BoidOpCardContext. Same explicit-constructor-
-	// parameter convention as signals above (wire.go passes the same
-	// taskRepo value for both).
+	// cardRequests backs BoidOpCardContext and BoidOpAgentStart. Same
+	// explicit-constructor-parameter convention as signals above (wire.go
+	// passes the same taskRepo value for both).
 	cardRequests cardRequestReader
+	// sessionStarter backs BoidOpAgentStart's session dispatch — see its
+	// own doc comment.
+	sessionStarter sessionStarter
 }
 
-func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string, projects projectLookup, signals api.SignalStore, cardRequests cardRequestReader) sandbox.BoidExecutor {
+func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string, projects projectLookup, signals api.SignalStore, cardRequests cardRequestReader, sessions sessionStarter) sandbox.BoidExecutor {
 	if workflow == nil && tasks == nil {
 		return nil
 	}
@@ -157,6 +176,7 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 		actionList:       actionList,
 		signals:          signals,
 		cardRequests:     cardRequests,
+		sessionStarter:   sessions,
 	}
 }
 
@@ -1103,6 +1123,12 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if row.CauseID != "" {
 			origin = cardContextOriginEvent
 		}
+		// Defense in depth against an oversized stored instruction reaching
+		// stdout unbounded: the row itself has no write-time cap yet, so
+		// this read path enforces one independently.
+		if len(row.Instruction) > sandbox.PayloadPatchMaxBytes {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid card context: stored instruction exceeds %d bytes", sandbox.PayloadPatchMaxBytes)}
+		}
 		resp := cardContextResponse{
 			CardID:      row.CardID,
 			RequestID:   row.ID,
@@ -1118,6 +1144,8 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{Stdout: value}
 		}
 		return marshalTaskContextResponse(resp)
+	case sandbox.BoidOpAgentStart:
+		return e.executeAgentStart(goCtx, ctx, req)
 	case sandbox.BoidOpJobList:
 		if e.jobs == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list unavailable"}
