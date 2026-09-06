@@ -160,6 +160,17 @@ func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
 		result.OperatorNotice = fmt.Sprintf(
 			"this only freed the card's execution slot — the %s %s it was attached to is NOT stopped and may still be running; stop it by hand if that's not wanted",
 			before.TargetKind, before.TargetID)
+	case before != nil && before.Status == orchestrator.CardRequestStatusLaunching &&
+		before.LauncherJobID != "" && before.CommandKey == orchestrator.CardRequestCommandKeyGo:
+		// A Go reservation's LauncherJobID is a synthetic "go:"+uuid marker,
+		// never a real job (workflow_card.go) — there is no `boid job` to
+		// inspect. Still tell the operator a card slot was freed while
+		// acceptGo may still be mid-flight and could land a continuation
+		// against this now-released, force-failed row.
+		result.LauncherJobID = before.LauncherJobID
+		result.OperatorNotice = fmt.Sprintf(
+			"this only freed the card's execution slot — the Go reservation %s has no launcher job to inspect (task creation runs in-process); it may still be mid-flight and could try to attach a continuation to this now-released request",
+			before.LauncherJobID)
 	case before != nil && before.Status == orchestrator.CardRequestStatusLaunching && before.LauncherJobID != "":
 		// A launching row has no continuation attached yet — the thing
 		// still possibly running is its OWN launcher job, which force-release

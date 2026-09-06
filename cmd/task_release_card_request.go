@@ -23,8 +23,11 @@ var taskReleaseCardRequestCmd = &cobra.Command{
 		"reconcile ループが自律的に解放するので、それらが効かない\n" +
 		"詰まりにのみ使うこと。\n\n" +
 		"注意: これは枠を解放するだけで、継続先 (session/task) 自体は\n" +
-		"止めない。生存中の継続先があった場合はコマンドが warning を\n" +
-		"出す — 本当に止めたいなら別途手動で対処すること。",
+		"止めない。解放対象の行に継続先が記録されていた場合、または\n" +
+		"launching のまま (launcher job がまだ動いている可能性がある)\n" +
+		"場合は、コマンドが warning を出す — どちらも「生存を確認した」\n" +
+		"わけではなく「まだ動いている可能性がある」という注意喚起なので、\n" +
+		"本当に止めたいなら別途手動で確認・対処すること。",
 	Args: cobra.ExactArgs(1),
 	RunE: runTaskReleaseCardRequest,
 }

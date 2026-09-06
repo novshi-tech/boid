@@ -60,19 +60,22 @@ type TaskAppService struct {
 	// simply skipped.
 	CardRequests CardCommandLauncherStore
 	// Tx lets createExecutionTask close the direct-`--parent <card>`-create
-	// TOCTOU: a CardRequestID-less create takes no card_requests row of its
-	// own, so the unique index can't arbitrate it the way it arbitrates
-	// RunCardCommandAsHuman/acceptGo — see createExecutionTask's own comment. Nil
-	// is tolerated: the check falls back to its prior non-transactional
-	// read-then-write.
+	// TOCTOU for ANY direct task creation under a card — both a
+	// CardRequestID-less create and a CardRequestID-carrying one (e.g.
+	// acceptGo's own CreateTask call): atomicCardCheck re-reads the card
+	// fresh and does the INSERT inside one WithinTx call instead of a
+	// separate pre-check followed by a write — see createExecutionTask's own
+	// comment. Nil is tolerated: both cases fall back to the prior
+	// non-transactional read-then-write.
 	Tx Transactor
 }
 
 // cardRequestActiveLister is the read-only surface cardSlotConflictWithLister
 // needs — satisfied by both CardCommandLauncherStore (the non-transactional
-// path) and TxStore (the atomic path createExecutionTask uses for a
-// CardRequestID-less create under a card), so the same conflict logic serves
-// both without duplicating it.
+// path) and TxStore (the atomic path createExecutionTask uses for any direct
+// create under a card, CardRequestID-less or -carrying — see the Tx field's
+// own doc comment), so the same conflict logic serves both without
+// duplicating it.
 type cardRequestActiveLister interface {
 	ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error)
 }

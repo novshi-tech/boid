@@ -230,6 +230,43 @@ func TestCardRequestHandler_Release_LaunchingRowNoTarget_ReturnsOperatorNotice(t
 	}
 }
 
+// TestCardRequestHandler_Release_GoReservationLaunchingRow_NoticeSkipsBoidJob
+// pins that a stuck Go reservation (acceptGo, CommandKey==CardRequestCommandKeyGo)
+// gets an operator_notice that does NOT tell the operator to inspect it with
+// `boid job` — its LauncherJobID is a synthetic "go:"+uuid marker
+// (workflow_card.go), never a real job, so that command would just fail.
+func TestCardRequestHandler_Release_GoReservationLaunchingRow_NoticeSkipsBoidJob(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{
+		getByID: map[string]*orchestrator.CardRequest{
+			"req-1": {
+				ID:            "req-1",
+				Status:        orchestrator.CardRequestStatusLaunching,
+				CommandKey:    orchestrator.CardRequestCommandKeyGo,
+				LauncherJobID: "go:2f3a-fake-uuid",
+			},
+		},
+	}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/req-1/release", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"launcher_job_id":"go:2f3a-fake-uuid"`) {
+		t.Errorf("body = %s, want launcher_job_id=go:2f3a-fake-uuid", body)
+	}
+	if !strings.Contains(body, "operator_notice") {
+		t.Errorf("body = %s, want an operator_notice for a stuck Go reservation", body)
+	}
+	if strings.Contains(body, "boid job") {
+		t.Errorf("body = %s, must NOT tell the operator to inspect with `boid job` — go:<uuid> is not a real job", body)
+	}
+}
+
 // TestCardRequestHandler_Release_PreReleaseReadFails_NoNotice pins that a
 // failed pre-release GetCardRequest (before is nil) degrades to no notice
 // rather than blocking the release itself.

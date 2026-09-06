@@ -648,6 +648,24 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   `CardRequestID` を保持している launcher からのものか」という別種の
   TOCTOU（所有権の詐称・誤認の話であって枠の二重占有ではない）には
   手を付けていない。引き続き follow-up。
+
+  **未着手（レビューが指摘）: 同じ PR-1 invariant に対する
+  非トランザクショナルな pre-check → 別ラウンドトリップの書き込みが、
+  `createExecutionTask` 以外にあと2箇所ある。** どちらも
+  `internal/api/task_service.go` の中で、`cardSlotConflictWithRequests`
+  による pre-check の後、`atomicCardCheck` のような同一 `WithinTx` に
+  入らない別の `s.Tasks.UpdateTask(task)` 呼び出しで書き込む:
+  - `TaskAppService.UpdateTask`（`req.ParentID` を card へ変更する reparent
+    経路）
+  - `TaskAppService.RerunTask`（done/aborted task を pending に戻す経路）
+
+  どちらも `createExecutionTask` の direct-create パスと同型の read-then-write
+  ギャップを持つ — pre-check とその後の `UpdateTask` の間に、別の経路
+  （acceptGo の子作成や別の direct-create）が同じ card の枠を埋める余地が
+  残る。今回 `atomicCardCheck` を拡張した対象は `createExecutionTask` の
+  新規作成パスのみで、この2つの更新系パスは含まれない。単一ユーザー前提
+  では確率は低いが、doc の主張を実装と一致させるため未着手として明記する
+  （Gate A の入口条件対象）。
 - **PR-2d-5 で確定: jobs 行が非終端のまま固まった (daemon プロセスは生きているが
   launcher job の行だけ never-terminal になった、あるいは daemon SIGKILL 等) launching
   card_requests 行は、既知の制約として受け入れる。** 周期 self-heal
