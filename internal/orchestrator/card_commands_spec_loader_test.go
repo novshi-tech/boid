@@ -6,6 +6,7 @@ package orchestrator_test
 // card_commands key's meaning; it only validates shape at load time.
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -227,5 +228,128 @@ card_events:
 	_, err := projectspec.ReadProjectMeta(dir)
 	if err == nil {
 		t.Fatal("expected error for card_events.command with no card_commands declared, got nil")
+	}
+}
+
+// TestReadProjectMeta_CardCommands_OrderPreserved pins that
+// CardCommandsOrder carries project.yaml's declaration order, not Go map
+// iteration order (which is randomized) and not sorted-key order (which
+// ValidateCardCommands' error reporting uses internally but must not leak
+// into the retained order). A regression back to a bare
+// map[string]CardCommand for order-tracking purposes would make this test
+// flaky/fail depending on map iteration.
+func TestReadProjectMeta_CardCommands_OrderPreserved(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+card_commands:
+  zzz:
+    label: ZZZ
+    run: python3 scripts/zzz.py
+  aaa:
+    label: AAA
+    run: python3 scripts/aaa.py
+  mmm:
+    label: MMM
+    run: python3 scripts/mmm.py
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	want := []string{"zzz", "aaa", "mmm"}
+	if len(meta.CardCommandsOrder) != len(want) {
+		t.Fatalf("CardCommandsOrder = %v, want %v", meta.CardCommandsOrder, want)
+	}
+	for i, k := range want {
+		if meta.CardCommandsOrder[i] != k {
+			t.Fatalf("CardCommandsOrder = %v, want %v", meta.CardCommandsOrder, want)
+		}
+	}
+}
+
+// TestReadProjectMeta_CardCommands_Absent_OrderNilNotError is
+// TestReadProjectMeta_CardCommands_Absent_NilNotError's counterpart for the
+// order side channel.
+func TestReadProjectMeta_CardCommands_Absent_OrderNilNotError(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if len(meta.CardCommandsOrder) != 0 {
+		t.Errorf("CardCommandsOrder = %v, want empty when project.yaml has no card_commands: key", meta.CardCommandsOrder)
+	}
+}
+
+// TestReadProjectMeta_CardEvents_CommandTrimmed pins that stray whitespace
+// around card_events.command (e.g. "review " from a hand-edited
+// project.yaml) is trimmed before being checked against card_commands'
+// keys, and the trimmed value is what callers read back.
+func TestReadProjectMeta_CardEvents_CommandTrimmed(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+card_commands:
+  review:
+    label: Run
+    run: python3 scripts/card_review.py
+card_events:
+  command: "review "
+`)
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if meta.CardEvents.Command != "review" {
+		t.Errorf("CardEvents.Command = %q, want %q (trimmed)", meta.CardEvents.Command, "review")
+	}
+}
+
+// TestReadProjectMeta_CardEvents_TypoField_RejectedAtLoadTime pins that a
+// typo'd field under card_events: (e.g. "commnad" instead of "command")
+// fails load loudly instead of silently reading as unconfigured.
+func TestReadProjectMeta_CardEvents_TypoField_RejectedAtLoadTime(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+card_commands:
+  review:
+    label: Run
+    run: python3 scripts/card_review.py
+card_events:
+  commnad: review
+`)
+	_, err := projectspec.ReadProjectMeta(dir)
+	if err == nil {
+		t.Fatal("expected error for a typo'd card_events field, got nil")
+	}
+}
+
+// TestProjectMeta_CardEvents_NotInJSON pins that CardEvents never appears
+// in ProjectMeta's JSON output, even for a project with no card_commands.
+func TestProjectMeta_CardEvents_NotInJSON(t *testing.T) {
+	meta := projectspec.ProjectMeta{ID: "p", Name: "P"}
+	out, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(out), "card_events") {
+		t.Errorf("JSON = %s, must not contain card_events", out)
 	}
 }

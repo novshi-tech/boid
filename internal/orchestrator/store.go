@@ -561,6 +561,9 @@ type GCResult struct {
 	// Signals is the count of signals rows GCSignals deleted: both acked
 	// rows and unacked (including dead-lettered) rows older than the cutoff.
 	Signals int64
+	// CardRequests is the count of finished/failed card_requests rows
+	// GCCardRequests deleted.
+	CardRequests int64
 }
 
 // GCTasks deletes terminal tasks older than olderThan and their related data
@@ -713,6 +716,37 @@ func GCTriggerRuns(dbtx db.DBTX, olderThan time.Duration, dryRun bool) (int64, e
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("delete trigger_runs: rows affected: %w", err)
+	}
+	return n, nil
+}
+
+// GCCardRequests deletes finished/failed card_requests rows older than
+// olderThan. olderThan=0 disables the time filter. queued/launching/
+// attached/folded rows are never touched regardless of age.
+func GCCardRequests(dbtx db.DBTX, olderThan time.Duration, dryRun bool) (int64, error) {
+	cond := `status IN ('finished', 'failed')`
+	var args []any
+	if olderThan > 0 {
+		cond += ` AND updated_at < ?`
+		args = []any{time.Now().UTC().Add(-olderThan)}
+	}
+
+	if dryRun {
+		var n int64
+		row := dbtx.QueryRow(`SELECT COUNT(*) FROM card_requests WHERE `+cond, args...)
+		if err := row.Scan(&n); err != nil {
+			return 0, fmt.Errorf("count card_requests: %w", err)
+		}
+		return n, nil
+	}
+
+	res, err := dbtx.Exec(`DELETE FROM card_requests WHERE `+cond, args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete card_requests: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete card_requests: rows affected: %w", err)
 	}
 	return n, nil
 }

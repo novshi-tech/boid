@@ -436,6 +436,11 @@ func allMigrations() []migration {
 			version: "0048_card_verb_rename",
 			path:    "migrations/0048_card_verb_rename.sql",
 		},
+		{
+			// No skip function: a brand-new table, same shape as 0043.
+			version: "0049_add_card_requests",
+			path:    "migrations/0049_add_card_requests.sql",
+		},
 	}
 }
 

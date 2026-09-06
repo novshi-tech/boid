@@ -70,6 +70,11 @@ func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*Proj
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse project.yaml: %w", err)
 	}
+
+	if err := hydrateCardCommandsOrderAndEvents(&meta, data); err != nil {
+		return nil, fmt.Errorf("%s: %w", dirLabel, err)
+	}
+
 	interpolateBindMounts(meta.AdditionalBindings)
 	interpolateHostCommands(meta.HostCommands)
 	interpolateEnvMap(meta.Env)
@@ -506,6 +511,7 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.TaskBehaviors = cloneTaskBehaviorMap(meta.TaskBehaviors)
 	result.SessionBehaviors = cloneSessionBehaviorMap(meta.SessionBehaviors)
 	result.CardCommands = cloneCardCommandMap(meta.CardCommands)
+	result.CardCommandsOrder = append([]string(nil), meta.CardCommandsOrder...)
 	return &result
 }
 

@@ -412,6 +412,12 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 			return err
 		}
 		result.Signals = sn
+		// card_requests has no other retention — purge it here too.
+		cn, err := GCCardRequests(dbtx, olderThan, dryRun)
+		if err != nil {
+			return err
+		}
+		result.CardRequests = cn
 		return nil
 	})
 	if err != nil {

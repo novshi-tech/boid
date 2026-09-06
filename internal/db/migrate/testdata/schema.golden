@@ -1,6 +1,22 @@
 -- index: idx_actions_created_at_id
 CREATE INDEX idx_actions_created_at_id ON actions(created_at, id);
 
+-- index: idx_card_requests_active_unique
+CREATE UNIQUE INDEX idx_card_requests_active_unique
+    ON card_requests(card_id) WHERE status IN ('launching', 'attached');
+
+-- index: idx_card_requests_card_status_created
+CREATE INDEX idx_card_requests_card_status_created
+    ON card_requests(card_id, status, created_at);
+
+-- index: idx_card_requests_cause_unique
+CREATE UNIQUE INDEX idx_card_requests_cause_unique
+    ON card_requests(cause_id) WHERE cause_id != '';
+
+-- index: idx_card_requests_terminal_updated
+CREATE INDEX idx_card_requests_terminal_updated
+    ON card_requests(updated_at) WHERE status IN ('finished', 'failed');
+
 -- index: idx_project_workspaces_workspace_id
 CREATE INDEX idx_project_workspaces_workspace_id
     ON project_workspaces(workspace_id);
@@ -45,6 +61,28 @@ CREATE TABLE actions (
     payload    TEXT NOT NULL DEFAULT '{}',
     created_at DATETIME NOT NULL DEFAULT (datetime('now'))
 , from_status TEXT NOT NULL DEFAULT '', to_status   TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT '');
+
+-- table: card_requests
+CREATE TABLE card_requests (
+    id                    TEXT PRIMARY KEY,
+    card_id               TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    command_key           TEXT NOT NULL DEFAULT '',
+    cause_id              TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued', 'launching', 'attached', 'folded', 'finished', 'failed')),
+    launched_command_key  TEXT NOT NULL DEFAULT '',
+    launched_label        TEXT NOT NULL DEFAULT '',
+    launched_run          TEXT NOT NULL DEFAULT '',
+    launched_version      TEXT NOT NULL DEFAULT '',
+    launcher_job_id       TEXT NOT NULL DEFAULT '',
+    target_kind           TEXT NOT NULL DEFAULT '' CHECK (target_kind IN ('', 'task', 'session')),
+    target_id             TEXT NOT NULL DEFAULT '',
+    folded_into           TEXT NOT NULL DEFAULT '',
+    result                TEXT NOT NULL DEFAULT '',
+    error                 TEXT NOT NULL DEFAULT '',
+    created_at            DATETIME NOT NULL,
+    updated_at            DATETIME NOT NULL
+);
 
 -- table: jobs
 CREATE TABLE "jobs" (

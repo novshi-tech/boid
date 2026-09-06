@@ -294,9 +294,9 @@ card_events:
 | `card_commands.<key>.run` | string | はい | サンドボックス内で `sh -c` に渡されるコマンド文字列 (`triggers[].run` と同じ実行モデル) |
 | `card_events.command` | string | いいえ | 内部イベントで自動起動する `card_commands` のキー。宣言する場合は `card_commands` に実在するキーでなければならず、存在しなければロード時にエラー |
 
-**現状の実装範囲**: このセクションは project.yaml の宣言と load 時の shape 検証 (`card_commands.<key>` の label/run 必須、`card_events.command` の参照先存在チェック) のみを提供します。daemon が実際に `run:` を card 文脈付きの trigger run として起動する経路、`boid agent start` op、request store 等はまだ実装されていません — card_commands を宣言しても現時点では何も起動されません。
+**現状の実装範囲**: このセクションは project.yaml の宣言と load 時の shape 検証 (`card_commands.<key>` の label/run 必須、`card_events.command` の参照先存在チェック)、および card ごとの実行要求を保持する内部 store (`card_requests` テーブル、`internal/orchestrator/card_request.go`) のみを提供します。daemon が実際に `run:` を card 文脈付きの trigger run として起動する経路、`boid agent start` op、trigger_loop への配線等はまだ実装されていません — card_commands を宣言しても現時点では何も起動されません。
 
-**既知の制約**: `card_commands` は Go の map として保持されるため、YAML に書いた定義順は失われます。将来 UI がボタンを定義順に並べる要件を持つ場合、この宣言を配列形式に変更する破壊的なスキーマ変更が必要になります。今回は project.yaml の提案スキーマ自体が未確定 (このドキュメントの記法は変更され得る) であることを踏まえ、意図的に先送りしています。
+定義順は失われません。`card_commands` のルックアップ自体は Go の map (`ProjectMeta.CardCommands`) で保持しますが、YAML の生ノード (`yaml.Node` の `MappingNode.Content` は文書順を保持する) から別途 `ProjectMeta.CardCommandsOrder` に定義順のキー一覧を取り出しています。UI が定義順のボタンを描く際はこの順序を使う想定で、`card_commands:` を配列形式に変える破壊的なスキーマ変更は不要です。
 
 ## `signals.sources[]`
 
