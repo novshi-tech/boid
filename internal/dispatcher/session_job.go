@@ -95,6 +95,12 @@ type SessionJobInput struct {
 	// comment). Empty for every ordinary session.
 	CardID        string
 	CardRequestID string
+
+	// JobID, when non-empty, is copied straight onto JobSpec.ID — see that
+	// field's own doc comment. Set only for a card-command launcher exec,
+	// whose job id must be known before Dispatch runs. Empty for every other
+	// caller, leaving Dispatch's own fresh-uuid generation unchanged.
+	JobID string
 }
 
 // BuildSessionJobSpec converts a resolved SessionJobInput into a JobSpec
@@ -155,6 +161,7 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 	}
 
 	spec := &orchestrator.JobSpec{
+		ID:          input.JobID,
 		ProjectID:   input.ProjectID,
 		DisplayName: displayName,
 		Kind:        orchestrator.JobKindSession,

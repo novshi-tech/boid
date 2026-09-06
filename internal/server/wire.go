@@ -1207,6 +1207,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// narrower interface. SweepTriggers' on:signals due predicate reads
 		// this via signalsPendingForTrigger (trigger_loop.go).
 		Signals: taskRepo,
+		// CardRequests: taskRepo already implements
+		// api.CardCommandLauncherStore (internal/orchestrator/repository.go's
+		// CreateCardRequest/ClaimQueuedCardRequests/FailCardRequest/
+		// CountActiveCardRequests/ListCardRequestsByCard) — same object as
+		// Tasks/TaskTriage/Actions/Triggers/Signals above, viewed through a
+		// narrower interface for RunCardCommand's slot claim/release.
+		CardRequests: taskRepo,
 		// TaskCreator is wired below, once taskSvc (*api.TaskAppService) is
 		// constructed — see the comment there for why this can't be set here.
 	}
@@ -1626,6 +1633,12 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// ops. Same repo again — taskRepo already implements
 		// api.TaskIdentityStore (see internal/orchestrator/repository.go).
 		Identities: taskRepo,
+		// CardRequestLinker: taskRepo already implements
+		// api.CardRequestTaskLinker (internal/orchestrator/repository.go's
+		// CreateTaskLinkedToCardRequest) — same object as Tasks/Actions/
+		// Identities above, viewed through a narrower interface for a
+		// card-command launcher's atomic task-continuation attach.
+		CardRequestLinker: taskRepo,
 		// runtimesRoot (not a fresh runtimesDirFor(cfg)): must agree with
 		// runner's own RuntimesDir and
 		// transcriptLogReader.rootDir just below, both already using
@@ -1915,6 +1928,9 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 		AdditionalBindings: meta.AdditionalBindings,
 		SecretNamespace:    meta.SecretNamespace,
 		DockerEnabled:      meta.Capabilities.Docker != nil,
+		JobID:              req.JobID,
+		CardID:             req.CardID,
+		CardRequestID:      req.CardRequestID,
 	}
 
 	// A signal-derived trigger's connector job carries req.Connector — the
@@ -2220,7 +2236,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 
 	// card read surface. Mounted at its own root rather than under
 	// /api/tasks — see api.CardHandler's doc comment.
-	r.Mount("/api/cards", (&api.CardHandler{Service: runtime.workflow}).Routes())
+	r.Mount("/api/cards", (&api.CardHandler{Service: runtime.workflow, Commands: runtime.workflow}).Routes())
 
 	// signal inbox read/ack surface. taskRepo already implements
 	// api.SignalStore (internal/api/store.go's var _ assertion) — same

@@ -79,6 +79,11 @@ type CreateTaskRequest struct {
 	// from task_identities/Ref (no external-identity or link/drop semantics
 	// here — purely an internal dedup key).
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+
+	// CardRequestID is never client-settable (json:"-") — only
+	// BoidOpTaskCreate sets it, after verifying the calling job owns that
+	// request (LauncherJobID matches, status is launching).
+	CardRequestID string `json:"-"`
 }
 
 type DuplicateTaskRequest struct {

@@ -204,6 +204,23 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 	return task, nil
 }
 
+// attachCardRequestIfNeeded runs after a Ref/IdempotencyKey get-or-create
+// hit found an EXISTING task: without this, a launcher-supplied ref or
+// idempotency_key would return early and skip CardRequestLinker entirely,
+// leaving the request permanently "launching" with no continuation ever
+// attached. Reusing CreateTaskLinkedToCardRequest on the already-found
+// existing task is safe and idempotent — its own CreateTask call resolves
+// straight back to the same row.
+func (s *TaskAppService) attachCardRequestIfNeeded(existing *orchestrator.Task, cardRequestID string) (*orchestrator.Task, error) {
+	if cardRequestID == "" || s.CardRequestLinker == nil {
+		return existing, nil
+	}
+	if err := s.CardRequestLinker.CreateTaskLinkedToCardRequest(existing, cardRequestID); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return existing, nil
+}
+
 // cardChildSlotConflict reports whether creating (or reparenting/rerunning)
 // an execution task with the given ref/projectID/behavior under parent
 // (already confirmed to be type=card) would violate the card's
@@ -383,7 +400,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 		if existing != nil {
 			// First-write-wins: return the existing task. Do not fire auto_start
 			// because the task may already be executing or terminal.
-			return existing, nil
+			return s.attachCardRequestIfNeeded(existing, req.CardRequestID)
 		}
 	}
 
@@ -411,7 +428,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 					existing = result.Task
 				}
 			}
-			return existing, nil
+			return s.attachCardRequestIfNeeded(existing, req.CardRequestID)
 		}
 	}
 
@@ -462,7 +479,16 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 			AutoStart:    req.AutoStart,
 		},
 	}
-	if err := s.Tasks.CreateTask(task); err != nil {
+	// A card-command launcher's own task continuation (BoidOpTaskCreate's
+	// ownership-verified CardRequestID) must be persisted atomically with
+	// the request→task association — see CardRequestTaskLinker's own doc
+	// comment. Every other caller (CardRequestID always empty) is entirely
+	// unaffected: the ordinary get-or-create INSERT below is unchanged.
+	if req.CardRequestID != "" && s.CardRequestLinker != nil {
+		if err := s.CardRequestLinker.CreateTaskLinkedToCardRequest(task, req.CardRequestID); err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+	} else if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	// Guard: only fire auto_start for a freshly pending task. Reachable when

@@ -28,6 +28,11 @@ const (
 //
 // dispatcher is the only layer that bridges JobSpec and sandbox.Spec.
 type JobSpec struct {
+	// ID, when non-empty, is the job id dispatcher.Runner.Dispatch must use
+	// verbatim instead of generating a fresh one. Caller-supplied ids must
+	// be unique (uuid.New().String()). Empty means "generate as usual".
+	ID string
+
 	// Identity used by dispatcher for Job DB persistence and state-machine
 	// notification. TaskID and HandlerID are empty for boid-exec jobs.
 	TaskID      string

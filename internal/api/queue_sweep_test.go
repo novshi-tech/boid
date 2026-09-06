@@ -35,7 +35,8 @@ func newSweepFakeStore() *sweepFakeStore {
 	}
 }
 
-func (s *sweepFakeStore) CreateTask(task *orchestrator.Task) error { return nil }
+func (s *sweepFakeStore) CountActiveCardRequests(cardID string) (int, error) { return 0, nil }
+func (s *sweepFakeStore) CreateTask(task *orchestrator.Task) error           { return nil }
 func (s *sweepFakeStore) GetTask(id string) (*orchestrator.Task, error) {
 	t, ok := s.tasks[id]
 	if !ok {
