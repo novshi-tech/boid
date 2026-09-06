@@ -8,10 +8,7 @@ import (
 
 // knownSuggestionVerbs is the single source of truth for suggestion.verb's
 // UI vocabulary — card machine v2's own six transition verbs
-// (orchestrator.IsCardTransitionAction; docs/plans/
-// suggestion-as-state-transition.md §3.1: suggestion.verb is boid's own
-// state-machine vocabulary now, not a free-form workspace word like the old
-// go/shape/manual/park/drop/wake set). Deliberately NOT
+// (orchestrator.IsCardTransitionAction). Deliberately NOT
 // orchestrator.promotedAttrVocabulary: that guard exists so the daemon can
 // trust its own SQL predicates against attrs_set writes (see its doc
 // comment) — verb is neither a stored column nor a query target, and the
@@ -41,18 +38,11 @@ var knownSuggestionVerbs = map[string]bool{
 // Kept in exactly one place and called from every rendering site — the card
 // detail page's suggestion section (web/templates/tasks.templ's
 // TaskDetailSuggestionSection) and the list row's movement line
-// (web/templates/task_list_row.templ, docs/plans/
-// webui-detail-list-redesign.md PR-4) — so a future 7th verb, or a change to
-// the unknown-verb fallback, only needs updating here. An unknown verb still
-// gets a class (badge-verb-unknown, style.css) rather than no badge at all:
-// the verb text itself always renders regardless (rule 5, 隠さない) — only
-// the color is what falls back to neutral gray.
-//
-// Prior to PR-4 this file was task_tree.templ, alongside the list-page tree
-// row (taskTreeRow) that PR-4 deleted (タブ/ツリー撤廃). This function and
-// its two neighbors below survive the deletion — plain Go, no templ syntax
-// — because the card detail page (a caller PR-4 does not touch) still needs
-// them, and the new flat list row (PR-4) needs them too.
+// (web/templates/task_list_row.templ) — so a future 7th verb, or a change
+// to the unknown-verb fallback, only needs updating here. An unknown verb
+// still gets a class (badge-verb-unknown, style.css) rather than no badge
+// at all: the verb text itself always renders regardless — only the color
+// is what falls back to neutral gray.
 func VerbBadgeClass(verb string) string {
 	if !knownSuggestionVerbs[verb] {
 		return "badge-verb-unknown"

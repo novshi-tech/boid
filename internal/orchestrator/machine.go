@@ -11,9 +11,6 @@
 // Only the StateMachine each task is evaluated against is chosen per task —
 // see internal/api's machineFor, which selects NewCardMachine when the task
 // carries a task_triage sidecar row and NewExecutionMachine otherwise.
-//
-// See docs/plans/suggestion-as-state-transition.md and its -impl.md
-// companion for the full history of this split.
 package orchestrator
 
 import (

@@ -79,13 +79,30 @@ type StatusGroup struct {
 	Events       []Event
 }
 
+// selfLoopTransitionTypes are the action types with a legitimate
+// FromStatus == ToStatus rule in a machine's own rule table (e.g. card
+// "go" working → working). Many non-transitioning action types (progress,
+// attrs_set, child_added, hook_fired, ...) also get FromStatus/ToStatus
+// stamped to the task's current, unchanged status for bookkeeping — that
+// is NOT a state transition and must not be confused with a genuine
+// self-loop just because the two fields happen to be equal and non-empty.
+var selfLoopTransitionTypes = map[string]bool{
+	"go": true,
+}
+
 // IsStateTransition reports whether an action carries a recorded status
-// change, including a self-loop (FromStatus == ToStatus, e.g. card working
-// Go). Build's grouping only opens a new StatusGroup when ToStatus differs
-// from FromStatus, so a self-loop still renders as one Event in the current
-// group rather than a spurious new visit.
+// change, including a self-loop (FromStatus == ToStatus) for the types in
+// selfLoopTransitionTypes. Build's grouping only opens a new StatusGroup
+// when ToStatus differs from FromStatus, so a self-loop still renders as
+// one Event in the current group rather than a spurious new visit.
 func IsStateTransition(a *orchestrator.Action) bool {
-	return a.FromStatus != "" && a.ToStatus != ""
+	if a.FromStatus == "" || a.ToStatus == "" {
+		return false
+	}
+	if a.FromStatus != a.ToStatus {
+		return true
+	}
+	return selfLoopTransitionTypes[a.Type]
 }
 
 // IsProgressAction reports whether an action is a non-transitioning progress note.
@@ -140,14 +157,11 @@ func IsAnsweredAction(a *orchestrator.Action) bool {
 // since parseAnsweredPayload validates it before CreateAction, but this
 // stays defensive rather than assuming that invariant).
 func BuildActionLabel(a *orchestrator.Action) string {
-	// Checked before IsStateTransition: an "answered" row always carries
-	// FromStatus == ToStatus (it never changes task status), which now also
-	// satisfies the broadened self-loop-inclusive IsStateTransition below.
-	if IsAnsweredAction(a) {
-		return buildAnsweredLabel(a)
-	}
 	if IsStateTransition(a) {
 		return a.Type + " → " + string(a.ToStatus)
+	}
+	if IsAnsweredAction(a) {
+		return buildAnsweredLabel(a)
 	}
 	if IsProgressAction(a) {
 		return buildProgressLabel(a)

@@ -220,6 +220,71 @@ func TestBuild_IncludesSelfLoopAction(t *testing.T) {
 	}
 }
 
+// TestIsStateTransition_NonGoSelfLoop_NotATransition pins that a
+// non-"go" action carrying FromStatus == ToStatus (many non-transitioning
+// action types get both fields stamped to the task's current, unchanged
+// status for bookkeeping — see selfLoopTransitionTypes' own doc comment)
+// is NOT treated as a state transition.
+func TestIsStateTransition_NonGoSelfLoop_NotATransition(t *testing.T) {
+	for _, typ := range []string{"progress", "attrs_set", "child_added", "child_specced", "noted", "hook_fired"} {
+		if IsStateTransition(&orchestrator.Action{Type: typ, FromStatus: "executing", ToStatus: "executing"}) {
+			t.Errorf("IsStateTransition(%s, executing -> executing) = true, want false", typ)
+		}
+	}
+}
+
+// TestBuild_ProgressAction_KeepsMessageLabel pins that a production-shaped
+// progress action (FromStatus == ToStatus == the task's current status,
+// per internal/api/task_notify.go) still renders its message text via
+// buildProgressLabel, not as a bare "progress → executing" transition label.
+func TestBuild_ProgressAction_KeepsMessageLabel(t *testing.T) {
+	now := time.Now()
+	task := &orchestrator.Task{Status: "executing", CreatedAt: now.Add(-10 * time.Second)}
+	actions := []*orchestrator.Action{
+		{Type: "progress", FromStatus: "executing", ToStatus: "executing", CreatedAt: now, Payload: []byte(`{"message":"halfway done"}`)},
+	}
+
+	groups := Build(task, actions, nil)
+
+	found := false
+	for _, g := range groups {
+		for _, ev := range g.Events {
+			if ev.Kind == KindAction && ev.Action != nil && ev.Action.Type == "progress" {
+				found = true
+				if !strings.Contains(ev.Label, "halfway done") {
+					t.Errorf("progress label = %q, want it to contain the message", ev.Label)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("progress action should be present in timeline, but was not found")
+	}
+}
+
+// TestBuild_ExcludesNonTransitioningActionsWithStampedStatus pins that
+// non-transitioning action types stamped with FromStatus == ToStatus (the
+// generic ApplyAction path does this for every action, transitioning or
+// not — see internal/api/workflow_action.go) stay excluded from the
+// rendered timeline, same as when FromStatus/ToStatus are empty.
+func TestBuild_ExcludesNonTransitioningActionsWithStampedStatus(t *testing.T) {
+	now := time.Now()
+	task := &orchestrator.Task{Status: "working", CreatedAt: now.Add(-10 * time.Second)}
+	for _, typ := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "hook_fired", "dispatch_error", "wake_due"} {
+		actions := []*orchestrator.Action{
+			{Type: typ, FromStatus: "working", ToStatus: "working", CreatedAt: now},
+		}
+		groups := Build(task, actions, nil)
+		for _, g := range groups {
+			for _, ev := range g.Events {
+				if ev.Kind == KindAction && ev.Action != nil && ev.Action.Type == typ {
+					t.Errorf("%s action should stay excluded from the timeline, but was rendered as %q", typ, ev.Label)
+				}
+			}
+		}
+	}
+}
+
 func TestIsAnsweredAction(t *testing.T) {
 	if !IsAnsweredAction(&orchestrator.Action{Type: "answered"}) {
 		t.Error("IsAnsweredAction(answered) = false, want true")

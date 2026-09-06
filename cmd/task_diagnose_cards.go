@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"net/url"
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -56,7 +57,7 @@ func runTaskDiagnoseCards(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		var liveChildren []orchestrator.Task
-		if err := c.Do("GET", "/api/tasks?parent_id="+t.ID, nil, &liveChildren); err != nil {
+		if err := c.Do("GET", "/api/tasks?parent_id="+url.QueryEscape(t.ID), nil, &liveChildren); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: task %s: list children: %v\n", t.ID, err)
 			continue
 		}
