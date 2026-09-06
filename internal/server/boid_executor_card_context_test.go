@@ -21,11 +21,23 @@ import (
 type fakeCardRequestReader struct {
 	rows map[string]*orchestrator.CardRequest
 	err  error
+	// attachErr, when set, is returned by AttachCardRequest instead of
+	// mutating rows — lets a test simulate a concurrent-attach race.
+	attachErr error
+	// winnerAfterAttachErr, when set alongside attachErr, is what
+	// GetCardRequest returns for AFTER AttachCardRequest has failed once —
+	// simulating a concurrent caller's attach having won the race in the
+	// meantime.
+	winnerAfterAttachErr *orchestrator.CardRequest
+	attachFailed         bool
 }
 
 func (f *fakeCardRequestReader) GetCardRequest(id string) (*orchestrator.CardRequest, error) {
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.attachFailed && f.winnerAfterAttachErr != nil {
+		return f.winnerAfterAttachErr, nil
 	}
 	row, ok := f.rows[id]
 	if !ok {
@@ -34,8 +46,26 @@ func (f *fakeCardRequestReader) GetCardRequest(id string) (*orchestrator.CardReq
 	return row, nil
 }
 
+func (f *fakeCardRequestReader) AttachCardRequest(id, targetKind, targetID string) error {
+	if f.attachErr != nil {
+		f.attachFailed = true
+		return f.attachErr
+	}
+	row, ok := f.rows[id]
+	if !ok {
+		return orchestrator.ErrCardRequestNotFound
+	}
+	if row.Status != orchestrator.CardRequestStatusLaunching {
+		return orchestrator.ErrCardRequestInvalidTransition
+	}
+	row.Status = orchestrator.CardRequestStatusAttached
+	row.TargetKind = targetKind
+	row.TargetID = targetID
+	return nil
+}
+
 func TestBoidOpCardContext_NoCardContext_ClearError(t *testing.T) {
-	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, &fakeCardRequestReader{})
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, &fakeCardRequestReader{}, nil)
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero for a job with no card context")
@@ -46,7 +76,7 @@ func TestBoidOpCardContext_NoCardContext_ClearError(t *testing.T) {
 }
 
 func TestBoidOpCardContext_Unavailable_WhenNoReader(t *testing.T) {
-	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, nil)
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, nil, nil)
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero when no cardRequestReader is wired")
@@ -67,7 +97,7 @@ func TestBoidOpCardContext_HumanOrigin_ReturnsFullContext(t *testing.T) {
 			Launched:    orchestrator.CardRequestDefinition{CommandKey: "review", Label: "Run", Run: "python3 scripts/review.py"},
 		},
 	}}
-	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader)
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
 	if resp.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
@@ -97,7 +127,7 @@ func TestBoidOpCardContext_EventOrigin_DerivedFromCauseID(t *testing.T) {
 			Launched: orchestrator.CardRequestDefinition{CommandKey: "review"},
 		},
 	}}
-	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader)
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-2"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
 	if resp.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
@@ -119,7 +149,7 @@ func TestBoidOpCardContext_MismatchedCardID_Rejected(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
 		"req-1": {ID: "req-1", CardID: "card-1", Launched: orchestrator.CardRequestDefinition{CommandKey: "review"}},
 	}}
-	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader)
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-OTHER", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero for a card_id mismatch")
@@ -137,7 +167,7 @@ func TestBoidOpCardContext_EmptyCardIDWithRequestID_Rejected(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
 		"req-1": {ID: "req-1", CardID: "card-1", Launched: orchestrator.CardRequestDefinition{CommandKey: "review"}},
 	}}
-	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader)
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero when CardID is empty")
@@ -156,7 +186,7 @@ func TestBoidOpCardContext_FieldExtraction(t *testing.T) {
 			Launched:    orchestrator.CardRequestDefinition{CommandKey: "review"},
 		},
 	}}
-	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader)
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{
 		Op:        sandbox.BoidOpCardContext,
 		TaskField: "instruction",
@@ -169,9 +199,32 @@ func TestBoidOpCardContext_FieldExtraction(t *testing.T) {
 	}
 }
 
+// TestBoidOpCardContext_OversizedInstruction_Rejected pins the read-side
+// defense against an unbounded stored instruction: the row itself has no
+// write-time size cap yet, so this op refuses to forward an oversized value
+// to stdout rather than silently doing so.
+func TestBoidOpCardContext_OversizedInstruction_Rejected(t *testing.T) {
+	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
+		"req-1": {
+			ID:          "req-1",
+			CardID:      "card-1",
+			Instruction: strings.Repeat("x", sandbox.PayloadPatchMaxBytes+1),
+			Launched:    orchestrator.CardRequestDefinition{CommandKey: "review"},
+		},
+	}}
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
+	if resp.ExitCode == 0 {
+		t.Fatalf("ExitCode = 0, want non-zero for an oversized instruction")
+	}
+	if !strings.Contains(resp.Stderr, "exceeds") {
+		t.Errorf("Stderr = %q, want it to mention the size limit", resp.Stderr)
+	}
+}
+
 func TestBoidOpCardContext_NotFound_PropagatesError(t *testing.T) {
 	reader := &fakeCardRequestReader{err: errors.New("boom")}
-	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader)
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-missing"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero")

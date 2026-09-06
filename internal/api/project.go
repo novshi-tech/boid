@@ -247,7 +247,7 @@ func (h *ProjectHandler) StartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.ProjectID = project.ID
-	if msg := validateHarnessType(req.HarnessType); msg != "" {
+	if msg := ValidateHarnessType(req.HarnessType); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}

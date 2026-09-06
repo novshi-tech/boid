@@ -96,5 +96,12 @@ const (
 	// permission denial (see sandbox.BoidOpCardContext's own doc comment).
 	OpBoidCardContext = "card_context"
 
+	// OpBoidAgentStart backs `boid agent start` from inside the sandbox —
+	// part of the general boidPolicy, same reasoning as OpBoidCardContext:
+	// any job may attempt it, and the executor itself rejects one with no
+	// card context (or an event-originated one) rather than a policy-level
+	// permission denial (see sandbox.BoidOpAgentStart's own doc comment).
+	OpBoidAgentStart = "agent_start"
+
 	OpFetchGet = "get"
 )

@@ -47,7 +47,7 @@ func (h *SessionHandler) dispatch(w http.ResponseWriter, r *http.Request, req St
 		writeError(w, http.StatusServiceUnavailable, "session dispatcher not wired")
 		return
 	}
-	if msg := validateHarnessType(req.HarnessType); msg != "" {
+	if msg := ValidateHarnessType(req.HarnessType); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
@@ -59,12 +59,12 @@ func (h *SessionHandler) dispatch(w http.ResponseWriter, r *http.Request, req St
 	writeJSON(w, http.StatusOK, result)
 }
 
-// validateHarnessType returns "" when harness is allowed for a session, or
+// ValidateHarnessType returns "" when harness is allowed for a session, or
 // the bad-request message otherwise. Only the agent harnesses are accepted;
 // the historical "shell" session variant was retired after the git gateway
 // cutover — use `boid exec -p <project> -- bash` for a shell inside the
 // project sandbox.
-func validateHarnessType(harness string) string {
+func ValidateHarnessType(harness string) string {
 	switch harness {
 	case "claude", "codex", "opencode":
 		return ""

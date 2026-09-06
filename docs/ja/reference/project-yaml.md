@@ -294,7 +294,7 @@ card_events:
 | `card_commands.<key>.run` | string | はい | サンドボックス内で `sh -c` に渡されるコマンド文字列 (`triggers[].run` と同じ実行モデル) |
 | `card_events.command` | string | いいえ | 内部イベントで自動起動する `card_commands` のキー。宣言する場合は `card_commands` に実在するキーでなければならず、存在しなければロード時にエラー |
 
-**現状の実装範囲**: このセクションは project.yaml の宣言と load 時の shape 検証 (`card_commands.<key>` の label/run 必須、`card_events.command` の参照先存在チェック)、および card ごとの実行要求を保持する内部 store (`card_requests` テーブル、`internal/orchestrator/card_request.go`) のみを提供します。daemon が実際に `run:` を card 文脈付きの trigger run として起動する経路、`boid agent start` op、trigger_loop への配線等はまだ実装されていません — card_commands を宣言しても現時点では何も起動されません。
+**現状の実装範囲**: このセクションは project.yaml の宣言と load 時の shape 検証 (`card_commands.<key>` の label/run 必須、`card_events.command` の参照先存在チェック)、card ごとの実行要求を保持する内部 store (`card_requests` テーブル、`internal/orchestrator/card_request.go`)、および launcher から session 継続先を作る `boid agent start` op のみを提供します。daemon が実際に `run:` を card 文脈付きの trigger run として起動する経路、trigger_loop への配線等はまだ実装されていません — card_commands を宣言しても現時点では何も起動されません。
 
 定義順は失われません。`card_commands` のルックアップ自体は Go の map (`ProjectMeta.CardCommands`) で保持しますが、YAML の生ノード (`yaml.Node` の `MappingNode.Content` は文書順を保持する) から別途 `ProjectMeta.CardCommandsOrder` に定義順のキー一覧を取り出しています。UI が定義順のボタンを描く際はこの順序を使う想定で、`card_commands:` を配列形式に変える破壊的なスキーマ変更は不要です。
 

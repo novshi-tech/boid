@@ -1148,7 +1148,7 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 		Readonly:    r.FormValue("readonly") == "on",
 		DisplayName: strings.TrimSpace(r.FormValue("name")),
 	}
-	if msg := validateHarnessType(req.HarnessType); msg != "" {
+	if msg := ValidateHarnessType(req.HarnessType); msg != "" {
 		backURL := "/sessions/new?project=" + url.QueryEscape(projectID) + "&error=" + url.QueryEscape(msg)
 		http.Redirect(w, r, backURL, http.StatusSeeOther)
 		return
@@ -1238,7 +1238,7 @@ func shapingSessionDefaults(svc WebService, projectID string) (harnessType, mode
 	if !ok {
 		return fallbackHarness, ""
 	}
-	if behavior.HarnessType == "" || validateHarnessType(behavior.HarnessType) != "" {
+	if behavior.HarnessType == "" || ValidateHarnessType(behavior.HarnessType) != "" {
 		slog.Warn("session_behaviors.shape.harness_type invalid; falling back to default",
 			"project_id", projectID, "harness_type", behavior.HarnessType)
 		return fallbackHarness, ""

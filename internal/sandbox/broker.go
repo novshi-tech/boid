@@ -688,6 +688,23 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if entry.Context.CardRequestID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid card context: no card context for this job"}
 		}
+	case BoidOpAgentStart:
+		// Same card-context precondition as BoidOpCardContext above — only
+		// a card-command launcher job may create a session continuation.
+		if entry.Context.CardRequestID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid agent start: no card context for this job"}
+		}
+		if boidReq.ProjectID == "" {
+			boidReq.ProjectID = entry.Context.ProjectID
+		}
+		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+		if err != nil {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid agent start: resolve project %q: %s", boidReq.ProjectID, err)}
+		}
+		boidReq.ProjectID = resolved
+		if !entry.Context.AllowsProject(boidReq.ProjectID) {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid agent start is restricted to the current workspace"}
+		}
 	case BoidOpJobList:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid job list requires a task id"}

@@ -132,6 +132,104 @@ func TestRunBoidShim_AgentStopSendsTypedRequest(t *testing.T) {
 	}
 }
 
+func TestRunBoidShim_AgentStartSendsTypedRequest(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0, Stdout: `{"kind":"session","job_id":"job-9"}` + "\n"})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TLS_ADDR", "")
+	t.Setenv("BOID_BROKER_TOKEN", "token-agent-start")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"agent", "start",
+		"--harness", "claude",
+		"--project", "proj-1",
+		"--instruction", "do the thing",
+		"--model", "opus",
+		"--name", "card session",
+		"--readonly",
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0, stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpAgentStart {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpAgentStart)
+	}
+	if req.Boid.HarnessType != "claude" {
+		t.Errorf("harness_type = %q, want claude", req.Boid.HarnessType)
+	}
+	if req.Boid.ProjectID != "proj-1" {
+		t.Errorf("project_id = %q, want proj-1", req.Boid.ProjectID)
+	}
+	if req.Boid.Instruction != "do the thing" {
+		t.Errorf("instruction = %q, want %q", req.Boid.Instruction, "do the thing")
+	}
+	if req.Boid.Model != "opus" {
+		t.Errorf("model = %q, want opus", req.Boid.Model)
+	}
+	if req.Boid.DisplayName != "card session" {
+		t.Errorf("display_name = %q, want %q", req.Boid.DisplayName, "card session")
+	}
+	if !req.Boid.Readonly {
+		t.Error("readonly = false, want true")
+	}
+}
+
+func TestRunBoidShim_AgentStartRequiresHarness(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/unused")
+	t.Setenv("BOID_BROKER_TOKEN", "tok")
+	_, err := sandbox.RunBoidShim([]string{"agent", "start"})
+	if err == nil {
+		t.Fatal("expected error for missing --harness")
+	}
+	if !strings.Contains(err.Error(), "--harness") {
+		t.Fatalf("error = %v, want mention of --harness", err)
+	}
+}
+
+func TestRunBoidShim_AgentStartRejectsUnknownFlag(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/unused")
+	t.Setenv("BOID_BROKER_TOKEN", "tok")
+	_, err := sandbox.RunBoidShim([]string{"agent", "start", "--harness", "claude", "--bogus", "x"})
+	if err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+	if !strings.Contains(err.Error(), "--bogus") {
+		t.Fatalf("error = %v, want mention of --bogus", err)
+	}
+}
+
 func TestRunBoidShim_AgentStopRejectsMissingArg(t *testing.T) {
 	t.Setenv("BOID_BROKER_SOCKET", "/tmp/unused")
 	t.Setenv("BOID_BROKER_TOKEN", "tok")

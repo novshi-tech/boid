@@ -545,7 +545,7 @@ func TestBoidBuiltinExecutor_SignalCursorGet_RequiresScope(t *testing.T) {
 // store provided" case (e.g. a caller that doesn't have PR-3's op set
 // wired up yet).
 func TestNewBoidBuiltinExecutor_SignalsNilWhenNotProvided(t *testing.T) {
-	got := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, nil)
+	got := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, nil, nil)
 	exec, ok := got.(*boidBuiltinExecutor)
 	if !ok {
 		t.Fatalf("newBoidBuiltinExecutor returned %T, want *boidBuiltinExecutor", got)
@@ -573,7 +573,7 @@ func TestNewBoidBuiltinExecutor_WiresSignalsFromRealTaskRepository(t *testing.T)
 	taskRepo := orchestrator.NewTaskRepository(newBoidExecutorTestDB(t))
 	workflow := &api.TaskWorkflowService{}
 
-	got := newBoidBuiltinExecutor(workflow, nil, nil, nil, nil, "", nil, taskRepo, taskRepo)
+	got := newBoidBuiltinExecutor(workflow, nil, nil, nil, nil, "", nil, taskRepo, taskRepo, nil)
 	exec, ok := got.(*boidBuiltinExecutor)
 	if !ok {
 		t.Fatalf("newBoidBuiltinExecutor returned %T, want *boidBuiltinExecutor", got)

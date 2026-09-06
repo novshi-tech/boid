@@ -65,8 +65,13 @@ type CardRequest struct {
 	ID         string
 	CardID     string
 	CommandKey string
-	CauseID    string
-	Status     CardRequestStatus
+	// CauseID's emptiness IS the origin signal downstream (empty = human,
+	// non-empty = internal event — see cardContextResponse.Origin and
+	// BoidOpAgentStart's event rejection). Every event-caused creation path
+	// MUST set a non-empty CauseID, or it becomes indistinguishable from a
+	// human request; this store cannot enforce that on a caller's behalf.
+	CauseID string
+	Status  CardRequestStatus
 	// Instruction is the user's free-text input for this request. It lives
 	// on the row from creation and stays untouched by
 	// ClaimQueuedCardRequests/RetryCardRequest (those only ever reset the

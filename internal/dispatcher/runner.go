@@ -543,10 +543,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			// set by BuildSessionJobSpec from SessionJobInput). See that
 			// field's own doc comment (internal/sandbox/protocol.go) for the
 			// broker-side enforcement this feeds.
-			Service:   spec.SignalService,
-			Connector: spec.SignalConnector,
-			// CardID/CardRequestID: same verbatim copy from JobSpec as
-			// Service/Connector above.
+			Service:       spec.SignalService,
+			Connector:     spec.SignalConnector,
 			CardID:        spec.CardID,
 			CardRequestID: spec.CardRequestID,
 		}
