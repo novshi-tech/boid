@@ -1825,8 +1825,16 @@ type stubTx struct {
 	createdAction *orchestrator.Action
 }
 
-func (s *stubTx) CountActiveCardRequests(cardID string) (int, error) { return 0, nil }
-func (s *stubTx) CreateTask(task *orchestrator.Task) error           { return nil }
+func (s *stubTx) CountActiveCardRequests(cardID string) (int, error)    { return 0, nil }
+func (s *stubTx) CreateTask(task *orchestrator.Task) error              { return nil }
+func (s *stubTx) CreateCardRequest(req *orchestrator.CardRequest) error { return nil }
+func (s *stubTx) FailCardRequest(id, errText string) error              { return nil }
+func (s *stubTx) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
+	return nil, nil
+}
+func (s *stubTx) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+	return false, nil
+}
 func (s *stubTx) GetTask(id string) (*orchestrator.Task, error) {
 	return nil, fmt.Errorf("not found")
 }

@@ -35,8 +35,16 @@ func newSweepFakeStore() *sweepFakeStore {
 	}
 }
 
-func (s *sweepFakeStore) CountActiveCardRequests(cardID string) (int, error) { return 0, nil }
-func (s *sweepFakeStore) CreateTask(task *orchestrator.Task) error           { return nil }
+func (s *sweepFakeStore) CountActiveCardRequests(cardID string) (int, error)    { return 0, nil }
+func (s *sweepFakeStore) CreateTask(task *orchestrator.Task) error              { return nil }
+func (s *sweepFakeStore) CreateCardRequest(req *orchestrator.CardRequest) error { return nil }
+func (s *sweepFakeStore) FailCardRequest(id, errText string) error              { return nil }
+func (s *sweepFakeStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
+	return nil, nil
+}
+func (s *sweepFakeStore) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+	return false, nil
+}
 func (s *sweepFakeStore) GetTask(id string) (*orchestrator.Task, error) {
 	t, ok := s.tasks[id]
 	if !ok {

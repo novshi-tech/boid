@@ -313,6 +313,22 @@ func (r *TaskRepository) ListCardRequestsByCard(cardID string) ([]*CardRequest, 
 	return ListCardRequestsByCard(r.db, cardID)
 }
 
+// ReleaseCardRequestForTerminalTarget backs finalizeTerminal's immediate
+// slot release — same InTxDB-over-raw-*sql.DB shape as FailCardRequest.
+func (r *TaskRepository) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return ReleaseCardRequestForTerminalTarget(r.db, targetKind, targetID, success)
+	}
+	var found bool
+	err := db.InTxDB(conn, func(tx db.DBTX) error {
+		f, ferr := ReleaseCardRequestForTerminalTarget(tx, targetKind, targetID, success)
+		found = f
+		return ferr
+	})
+	return found, err
+}
+
 // CreateTaskLinkedToCardRequest runs CreateTask(t) and AttachCardRequest
 // (requestID, "task", t.ID) IN THE SAME TRANSACTION, so a task continuation
 // is never observable without its request association. Callers are

@@ -12,6 +12,13 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+// releasedCardRequestTarget is one recorded ReleaseCardRequestForTerminalTarget call.
+type releasedCardRequestTarget struct {
+	targetKind string
+	targetID   string
+	success    bool
+}
+
 type recordingTxStore struct {
 	task             *orchestrator.Task
 	updatedTask      *orchestrator.Task
@@ -44,10 +51,65 @@ type recordingTxStore struct {
 	// TestTaskWorkflowService_AcceptGo_WorkingSelfLoop_ConcurrentDispatch_SecondCallerLosesRace.
 	getTaskTriageCallCount int
 	getTaskTriageOnCall    map[int]*orchestrator.CardAttrs
+	// countActiveCardRequests overrides CountActiveCardRequests's default
+	// zero return (occupied-by-card-request simulation).
+	countActiveCardRequests int
+	// createCardRequestErr, when set, is returned by CreateCardRequest
+	// instead of succeeding — used to simulate a slot already claimed
+	// (orchestrator.ErrCardRequestSlotOccupied) inside a transaction.
+	createCardRequestErr error
+	createdCardRequests  []*orchestrator.CardRequest
+	failedCardRequestIDs []string
+	// listCardRequestsByCardFn, when set, backs ListCardRequestsByCard;
+	// otherwise it returns createdCardRequests unfiltered.
+	listCardRequestsByCardFn   func(cardID string) ([]*orchestrator.CardRequest, error)
+	releasedCardRequestTargets []releasedCardRequestTarget
 }
 
-func (s *recordingTxStore) CountActiveCardRequests(cardID string) (int, error) { return 0, nil }
-func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error           { return nil }
+func (s *recordingTxStore) CountActiveCardRequests(cardID string) (int, error) {
+	return s.countActiveCardRequests, nil
+}
+func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error { return nil }
+
+func (s *recordingTxStore) CreateCardRequest(req *orchestrator.CardRequest) error {
+	if s.createCardRequestErr != nil {
+		return s.createCardRequestErr
+	}
+	if req.ID == "" {
+		req.ID = fmt.Sprintf("cardreq-%d", len(s.createdCardRequests)+1)
+	}
+	s.createdCardRequests = append(s.createdCardRequests, req)
+	return nil
+}
+
+func (s *recordingTxStore) FailCardRequest(id, errText string) error {
+	s.failedCardRequestIDs = append(s.failedCardRequestIDs, id)
+	return nil
+}
+
+// releasedCardRequestTargets records every (targetKind, targetID, success)
+// tuple ReleaseCardRequestForTerminalTarget was called with, in call order.
+func (s *recordingTxStore) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+	s.releasedCardRequestTargets = append(s.releasedCardRequestTargets, releasedCardRequestTarget{targetKind, targetID, success})
+	for _, r := range s.createdCardRequests {
+		if r.TargetKind == targetKind && r.TargetID == targetID && r.Status == orchestrator.CardRequestStatusAttached {
+			if success {
+				r.Status = orchestrator.CardRequestStatusFinished
+			} else {
+				r.Status = orchestrator.CardRequestStatusFailed
+			}
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *recordingTxStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
+	if s.listCardRequestsByCardFn != nil {
+		return s.listCardRequestsByCardFn(cardID)
+	}
+	return s.createdCardRequests, nil
+}
 func (s *recordingTxStore) GetTask(id string) (*orchestrator.Task, error) {
 	// Prefer the most recently committed update (if any) over the original
 	// snapshot, so a second WithinTx call within the same test (e.g. PR-2's

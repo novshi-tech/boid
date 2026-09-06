@@ -107,6 +107,50 @@ func TestTaskDiagnoseCards_SpeccedChildsOwnLiveRow_NotFlagged(t *testing.T) {
 	}
 }
 
+// TestTaskDiagnoseCards_ActiveCardRequest_FlaggedEvenWithNoUnresolvedChildren
+// pins that a card with zero unresolved children but an active
+// card_requests row is still surfaced — a child-count-only reader would
+// otherwise report it as "free" when a command or Go dispatch already
+// occupies its slot.
+func TestTaskDiagnoseCards_ActiveCardRequest_FlaggedEvenWithNoUnresolvedChildren(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Query().Get("card_id") != "":
+			fmt.Fprint(w, `[{"id":"req-1","card_id":"card-1","status":"launching"}]`)
+		case r.URL.Query().Get("parent_id") != "":
+			fmt.Fprint(w, `[]`)
+		default:
+			fmt.Fprint(w, `[{"id":"card-1","type":"card","title":"mid-command","status":"working","card":{"detail":{}}}]`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := client.NewClient(srv.URL, "")
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+
+	cmd := taskDiagnoseCardsCmd
+	prev := cmd.Context()
+	t.Cleanup(func() {
+		cmd.SetContext(prev)
+		cmd.SetOut(nil)
+		cmd.SetErr(nil)
+	})
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.SetContext(client.WithClient(context.Background(), c))
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+	if !bytes.Contains(out.Bytes(), []byte("card-1")) || !bytes.Contains(out.Bytes(), []byte("req-1")) {
+		t.Errorf("expected card-1 flagged with its active card_request req-1, got: %s", out.String())
+	}
+}
+
 // TestTaskDiagnoseCards_NoViolations_PrintsClearMessage confirms the empty
 // case is not silent.
 func TestTaskDiagnoseCards_NoViolations_PrintsClearMessage(t *testing.T) {

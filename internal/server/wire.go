@@ -1639,6 +1639,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// Identities above, viewed through a narrower interface for a
 		// card-command launcher's atomic task-continuation attach.
 		CardRequestLinker: taskRepo,
+		// CardRequests: taskRepo also implements api.CardCommandLauncherStore —
+		// backs cardSlotConflictWithRequests' active-card_requests check
+		// (task_create.go/task_service.go).
+		CardRequests: taskRepo,
 		// runtimesRoot (not a fresh runtimesDirFor(cfg)): must agree with
 		// runner's own RuntimesDir and
 		// transcriptLogReader.rootDir just below, both already using

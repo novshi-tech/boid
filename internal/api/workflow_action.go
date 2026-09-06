@@ -882,4 +882,9 @@ func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orches
 	// doc comment (workflow_card.go) for why finalizeTerminal is the right
 	// funnel.
 	s.recordChildClosedOnParent(task)
+	// A terminal task that is a card_requests continuation (Go or a card
+	// command) releases its own slot here instead of waiting for the next
+	// ReconcileCardRequestSlots tick — see releaseCardRequestForTerminalTask's
+	// own doc comment.
+	s.releaseCardRequestForTerminalTask(task)
 }

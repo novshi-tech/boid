@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -160,6 +161,170 @@ func TestCreateTask_RejectsRefMatchWithMismatchedProjectOrBehavior(t *testing.T)
 				t.Fatal("must not have inserted a task row")
 			}
 		})
+	}
+}
+
+// fakeCardCommandLauncherStore is a minimal CardCommandLauncherStore fake
+// for pinning cardSlotConflictWithRequests' own check: countActive
+// simulates that many active (launching) card_requests rows with no
+// live/JSON child at all — the gap cardChildSlotConflict's own child-based
+// check cannot see on its own. activeRows lets a test control exact row ids
+// (e.g. to test the "fulfilling its own reservation" exclusion).
+type fakeCardCommandLauncherStore struct {
+	countActive int
+	activeRows  []*orchestrator.CardRequest
+}
+
+func (f *fakeCardCommandLauncherStore) rows() []*orchestrator.CardRequest {
+	if len(f.activeRows) > 0 {
+		return f.activeRows
+	}
+	rows := make([]*orchestrator.CardRequest, 0, f.countActive)
+	for i := 0; i < f.countActive; i++ {
+		rows = append(rows, &orchestrator.CardRequest{ID: fmt.Sprintf("synthetic-%d", i), Status: orchestrator.CardRequestStatusLaunching})
+	}
+	return rows
+}
+
+func (f *fakeCardCommandLauncherStore) CountActiveCardRequests(cardID string) (int, error) {
+	return len(f.rows()), nil
+}
+func (f *fakeCardCommandLauncherStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
+	return f.rows(), nil
+}
+func (f *fakeCardCommandLauncherStore) CreateCardRequest(req *orchestrator.CardRequest) error {
+	return nil
+}
+func (f *fakeCardCommandLauncherStore) FailCardRequest(id, errText string) error { return nil }
+
+// TestCreateTask_RejectsWhenActiveCardRequestOccupiesSlot pins that a
+// direct `--parent <card>` create (task_create.go) must also see an active
+// card_requests row (a command launcher or a Go reservation that has
+// claimed the slot but not yet created its own continuation) as an
+// occupant, even when no live/JSON child exists yet at all.
+func TestCreateTask_RejectsWhenActiveCardRequestOccupiesSlot(t *testing.T) {
+	parent := cardParentWithDetail("card-1", nil, 0) // no live/JSON child at all
+	store := &stubTaskStore{
+		tasks:    map[string]*orchestrator.Task{"card-1": parent},
+		refTasks: map[string]*orchestrator.Task{},
+	}
+	svc := &TaskAppService{
+		Tasks:        store,
+		Meta:         stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+		CardRequests: &fakeCardCommandLauncherStore{countActive: 1},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "a new child",
+		Behavior:  "dev",
+		ParentID:  "card-1",
+		Ref:       "some-other-id",
+	})
+	if err == nil {
+		t.Fatal("expected rejection creating a direct child while an active card_requests row occupies the slot")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	if store.createdTask != nil {
+		t.Fatal("must not have inserted a task row")
+	}
+}
+
+// TestCreateTask_AllowsFulfillingItsOwnCardRequestReservation pins that
+// acceptGo's own flow — reserve a card_requests row, then CreateTask with
+// CardRequestID set to that SAME reservation — must not self-conflict: the
+// row it just created is not a NEW occupant, it's the reservation this very
+// call is fulfilling.
+func TestCreateTask_AllowsFulfillingItsOwnCardRequestReservation(t *testing.T) {
+	detail := []byte(`{"children":[{"id":"ch_00","status":"specced","spec":{"project":"proj-1","behavior":"dev"}}]}`)
+	parent := cardParentWithDetail("card-1", detail, 0)
+	store := &stubTaskStore{
+		tasks:    map[string]*orchestrator.Task{"card-1": parent},
+		refTasks: map[string]*orchestrator.Task{},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+		CardRequests: &fakeCardCommandLauncherStore{activeRows: []*orchestrator.CardRequest{
+			{ID: "req-1", Status: orchestrator.CardRequestStatusLaunching},
+		}},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:     "proj-1",
+		Title:         "next",
+		Behavior:      "dev",
+		ParentID:      "card-1",
+		Ref:           "ch_00",
+		CardRequestID: "req-1",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want success (fulfills its own reservation req-1)", err)
+	}
+}
+
+// TestCreateTask_RejectsWhenADifferentCardRequestIsActive pins that the
+// exclusion above is narrow: an active row that does NOT match the caller's
+// own CardRequestID must still block, even when the caller carries some
+// (unrelated) CardRequestID of its own.
+func TestCreateTask_RejectsWhenADifferentCardRequestIsActive(t *testing.T) {
+	parent := cardParentWithDetail("card-1", nil, 0)
+	store := &stubTaskStore{
+		tasks:    map[string]*orchestrator.Task{"card-1": parent},
+		refTasks: map[string]*orchestrator.Task{},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+		CardRequests: &fakeCardCommandLauncherStore{activeRows: []*orchestrator.CardRequest{
+			{ID: "someone-elses-request", Status: orchestrator.CardRequestStatusAttached},
+		}},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID:     "proj-1",
+		Title:         "a new child",
+		Behavior:      "dev",
+		ParentID:      "card-1",
+		Ref:           "some-other-id",
+		CardRequestID: "req-1",
+	})
+	if err == nil {
+		t.Fatal("expected rejection: the active row belongs to a different request")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+}
+
+// TestCreateTask_AllowsWhenCardHasNoActiveRequestAndNilCardRequestsStore
+// pins the nil-tolerant posture (CardRequests unset — old callers/tests that
+// never wire it): the additional check must simply be skipped, not panic or
+// reject.
+func TestCreateTask_AllowsWhenCardHasNoActiveRequestAndNilCardRequestsStore(t *testing.T) {
+	parent := cardParentWithDetail("card-1", nil, 0)
+	store := &stubTaskStore{
+		tasks:    map[string]*orchestrator.Task{"card-1": parent},
+		refTasks: map[string]*orchestrator.Task{},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+		// CardRequests deliberately left nil.
+	}
+
+	if _, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "a new child",
+		Behavior:  "dev",
+		ParentID:  "card-1",
+		Ref:       "some-id",
+	}); err != nil {
+		t.Fatalf("CreateTask() error = %v, want success (nil CardRequests store must not block creates)", err)
 	}
 }
 

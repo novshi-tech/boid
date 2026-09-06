@@ -10,8 +10,11 @@ import (
 )
 
 // diagnoseCardsRow is one flagged card in `boid task diagnose-cards`'
-// output: a card carrying more than one unresolved child. Read-only — it
-// never stops, deletes, or otherwise touches any running work.
+// output: a card carrying more than one unresolved child, OR a card an
+// active card_requests row occupies while showing zero unresolved children
+// (a card mid-command or mid-Go-dispatch reads as "free" by child count
+// alone). Read-only — it never stops, deletes, or otherwise touches any
+// running work.
 type diagnoseCardsRow struct {
 	TaskID             string   `json:"task_id"`
 	Title              string   `json:"title"`
@@ -19,6 +22,7 @@ type diagnoseCardsRow struct {
 	UnresolvedChildren int      `json:"unresolved_children"`
 	OpenChildTaskCount int      `json:"open_task_rows"`
 	UnresolvedChildIDs []string `json:"unresolved_child_ids,omitempty"`
+	ActiveCardRequest  string   `json:"active_card_request_id,omitempty"`
 }
 
 var taskDiagnoseCardsCmd = &cobra.Command{
@@ -70,7 +74,17 @@ func runTaskDiagnoseCards(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: task %s: count unresolved children: %v\n", t.ID, err)
 			continue
 		}
-		if count <= 1 {
+
+		// A child count of 0/1 alone reads as "free", but an active
+		// (launching/attached) card_requests row occupies the SAME shared
+		// slot without ever showing up as a child — surface it too, or an
+		// operator sees a "free" card that a retry would still reject.
+		activeRequestID, err := activeCardRequestID(c, t.ID)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: task %s: list card_requests: %v\n", t.ID, err)
+		}
+
+		if count <= 1 && activeRequestID == "" {
 			continue
 		}
 		var unresolvedIDs []string
@@ -86,6 +100,7 @@ func runTaskDiagnoseCards(cmd *cobra.Command, args []string) error {
 			UnresolvedChildren: count,
 			OpenChildTaskCount: t.OpenChildCount,
 			UnresolvedChildIDs: unresolvedIDs,
+			ActiveCardRequest:  activeRequestID,
 		})
 	}
 
@@ -94,11 +109,34 @@ func runTaskDiagnoseCards(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(cmd.OutOrStdout(), "no cards violate the single-work-slot invariant")
 			return nil
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "%-36s %-9s %-6s %-10s %s\n", "TASK ID", "STATUS", "COUNT", "LIVE ROWS", "OPEN/SPECCED CHILD IDS")
+		fmt.Fprintf(cmd.OutOrStdout(), "%-36s %-9s %-6s %-10s %-38s %s\n", "TASK ID", "STATUS", "COUNT", "LIVE ROWS", "ACTIVE CARD REQUEST", "OPEN/SPECCED CHILD IDS")
 		for _, r := range rows {
-			fmt.Fprintf(cmd.OutOrStdout(), "%-36s %-9s %-6d %-10d %v\n", r.TaskID, r.Status, r.UnresolvedChildren, r.OpenChildTaskCount, r.UnresolvedChildIDs)
+			fmt.Fprintf(cmd.OutOrStdout(), "%-36s %-9s %-6d %-10d %-38s %v\n", r.TaskID, r.Status, r.UnresolvedChildren, r.OpenChildTaskCount, r.ActiveCardRequest, r.UnresolvedChildIDs)
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "\nresolve by dropping all but one child: boid action send --task <task_id> --type child_dropped --payload '{\"id\":\"<child_id>\",\"reason\":\"...\"}'")
+		fmt.Fprintln(cmd.OutOrStdout(), "\nresolve extra children by dropping all but one: boid action send --task <task_id> --type child_dropped --payload '{\"id\":\"<child_id>\",\"reason\":\"...\"}'")
+		fmt.Fprintln(cmd.OutOrStdout(), "resolve a stuck card_request: boid action send POST /api/card-requests/<id>/release (see docs)")
 		return nil
 	})
+}
+
+// cardRequestListEntry mirrors api.cardRequestView's wire shape — only the
+// fields this command reads.
+type cardRequestListEntry struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+// activeCardRequestID returns cardID's currently launching/attached
+// card_requests id, if any, via GET /api/card-requests?card_id=<id>.
+func activeCardRequestID(c *client.Client, cardID string) (string, error) {
+	var rows []cardRequestListEntry
+	if err := c.Do("GET", "/api/card-requests?card_id="+url.QueryEscape(cardID), nil, &rows); err != nil {
+		return "", err
+	}
+	for _, r := range rows {
+		if r.Status == "launching" || r.Status == "attached" {
+			return r.ID, nil
+		}
+	}
+	return "", nil
 }

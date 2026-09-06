@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -825,6 +827,28 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 	// not evaluate it here or anywhere else.
 }
 
+// releaseCardRequestForTerminalTask releases the card_requests row (if any)
+// attached to task as a task-kind continuation, the instant task reaches a
+// terminal status — otherwise every occupancy check keeps reporting the
+// card's slot busy until ReconcileCardRequestSlots' next periodic tick.
+// A no-op for the common case (task isn't a card_requests continuation), and
+// gated on s.CardRequests being wired (not itself used below — it stands in
+// for "this deployment/test actually uses card_requests at all") so callers
+// that never touch card_requests don't pay for an extra transaction here.
+func (s *TaskWorkflowService) releaseCardRequestForTerminalTask(task *orchestrator.Task) {
+	if task == nil || s.Tx == nil || s.CardRequests == nil {
+		return
+	}
+	success := task.Status == orchestrator.TaskStatusDone
+	if err := s.Tx.WithinTx(func(tx TxStore) error {
+		_, err := tx.ReleaseCardRequestForTerminalTarget(orchestrator.CardRequestTargetKindTask, task.ID, success)
+		return err
+	}); err != nil {
+		slog.Error("release card_requests slot on task terminal failed; the periodic reconcile will retry",
+			"task_id", task.ID, "error", err)
+	}
+}
+
 // acceptGo is accept(go)'s implementation: the human-accept path for a "go"
 // suggestion, and the direct replacement for v1's two-stage
 // ready→(machine "dispatch")→working. v2 has no "ready" status and no
@@ -1017,13 +1041,68 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 	var newlyDispatched []orchestrator.TaskTriageChild
 	{
 		i := speccedIdx
+
+		// Go claims card_requests's shared execution slot BEFORE creating the
+		// child task, so the card_requests unique index arbitrates against a
+		// concurrent card-command launcher (cardWorkChildOccupantTx,
+		// card_command_launcher.go) the same way it already arbitrates
+		// between two commands.
+		//
+		// CommandKey=CardRequestCommandKeyGo marks this as a work-execution
+		// reservation, not a project.yaml command. Go has no real launcher
+		// job (task creation happens synchronously in this call), but
+		// CreateCardRequest's launching fast path requires a non-empty
+		// LauncherJobID — a synthetic, never-a-real-job marker satisfies that.
+		// ReconcileLaunchingCardRequests (card_request_release.go) skips
+		// CardRequestCommandKeyGo rows accordingly; see that function's doc
+		// comment for why.
+		var cardReq *orchestrator.CardRequest
+		if s.CardRequests != nil {
+			cardReq = &orchestrator.CardRequest{
+				CardID:        taskID,
+				CommandKey:    orchestrator.CardRequestCommandKeyGo,
+				CauseID:       "",
+				Status:        orchestrator.CardRequestStatusLaunching,
+				LauncherJobID: "go:" + uuid.New().String(),
+			}
+			if err := s.CardRequests.CreateCardRequest(cardReq); err != nil {
+				if errors.Is(err, orchestrator.ErrCardRequestSlotOccupied) {
+					cerr := fmt.Errorf("accept(go): card %q's single work slot is already occupied by an active card command", taskID)
+					return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
+				}
+				cerr := fmt.Errorf("accept(go): reserve execution slot: %w", err)
+				s.recordDispatchError(ctx, taskID, task.Status, cerr)
+				return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
+			}
+		}
+		// releaseReservation fails the just-claimed row on any error BEFORE
+		// CreateTask succeeds. Once CreateTask attaches it to the new child
+		// task, ReconcileCardRequestSlots owns its lifecycle from the task's
+		// own terminal status instead — not released here even if the
+		// transition Tx below then fails.
+		releaseReservation := func(reason string) {
+			if cardReq == nil {
+				return
+			}
+			if ferr := s.CardRequests.FailCardRequest(cardReq.ID, reason); ferr != nil {
+				slog.Warn("accept(go): failed to release card_requests reservation after an error; needs an operator force-release",
+					"task_id", taskID, "request_id", cardReq.ID, "reason", reason, "release_error", ferr)
+			}
+		}
+		cardRequestID := ""
+		if cardReq != nil {
+			cardRequestID = cardReq.ID
+		}
+
 		if children[i].Spec == nil {
 			cerr := fmt.Errorf("accept(go): child %q is specced but has no spec", children[i].ID)
+			releaseReservation(cerr.Error())
 			s.recordDispatchError(ctx, taskID, task.Status, cerr)
 			return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
 		}
 		if s.TaskCreator == nil {
 			cerr := fmt.Errorf("accept(go): TaskCreator not configured")
+			releaseReservation(cerr.Error())
 			s.recordDispatchError(ctx, taskID, task.Status, cerr)
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
 		}
@@ -1032,6 +1111,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			marshaled, mErr := json.Marshal([]orchestrator.Instruction{{Message: children[i].Spec.Instruction}})
 			if mErr != nil {
 				cerr := fmt.Errorf("accept(go): marshal instruction: %w", mErr)
+				releaseReservation(cerr.Error())
 				s.recordDispatchError(ctx, taskID, task.Status, cerr)
 				return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
 			}
@@ -1041,17 +1121,19 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		// accept(go) — same reasoning as v1's Dispatch (CreateTask's own
 		// (ref, parent_id) get-or-create dedup, task_create.go).
 		childTask, cErr := s.TaskCreator.CreateTask(CreateTaskRequest{
-			ProjectID:    children[i].Spec.Project,
-			Title:        children[i].Title,
-			Description:  children[i].Spec.Description,
-			Behavior:     children[i].Spec.Behavior,
-			Instructions: instructions,
-			ParentID:     taskID,
-			Ref:          children[i].ID,
-			AutoStart:    true,
+			ProjectID:     children[i].Spec.Project,
+			Title:         children[i].Title,
+			Description:   children[i].Spec.Description,
+			Behavior:      children[i].Spec.Behavior,
+			Instructions:  instructions,
+			ParentID:      taskID,
+			Ref:           children[i].ID,
+			AutoStart:     true,
+			CardRequestID: cardRequestID,
 		})
 		if cErr != nil {
 			cerr := fmt.Errorf("accept(go): create child task %q: %w", children[i].ID, cErr)
+			releaseReservation(cerr.Error())
 			s.recordDispatchError(ctx, taskID, task.Status, cerr)
 			// Propagate the underlying StatusError's code (e.g. a 409 from
 			// CreateTask's own card-slot check) instead of always collapsing
@@ -1066,6 +1148,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		}
 		if childTask.Status == orchestrator.TaskStatusPending {
 			cerr := fmt.Errorf("accept(go): child task %q (%s) was created but failed to auto-start (still pending)", children[i].ID, childTask.ID)
+			releaseReservation(cerr.Error())
 			s.recordDispatchError(ctx, taskID, task.Status, cerr)
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
 		}

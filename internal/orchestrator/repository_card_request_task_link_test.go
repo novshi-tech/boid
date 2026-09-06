@@ -107,3 +107,36 @@ func TestCreateTaskLinkedToCardRequest_AlreadyAttachedToDifferentTask_Errors(t *
 		t.Fatalf("err = %v, want ErrCardRequestInvalidTransition", err)
 	}
 }
+
+// TestCreateTaskLinkedToCardRequest_AttachFailure_RollsBackTheTaskInsert pins
+// CreateTaskLinkedToCardRequest's atomicity: when AttachCardRequest fails,
+// the task INSERT from the SAME call must not survive either — the two
+// writes are one transaction, not "create, then best-effort attach".
+func TestCreateTaskLinkedToCardRequest_AttachFailure_RollsBackTheTaskInsert(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	repo := orchestrator.NewTaskRepository(d.Conn)
+
+	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-1"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, req.ID, orchestrator.CardRequestTargetKindTask, "some-other-task-id"); err != nil {
+		t.Fatalf("AttachCardRequest: %v", err)
+	}
+
+	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Ref: "brand-new-ref", Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
+	if err := repo.CreateTaskLinkedToCardRequest(task, req.ID); !errors.Is(err, orchestrator.ErrCardRequestInvalidTransition) {
+		t.Fatalf("err = %v, want ErrCardRequestInvalidTransition", err)
+	}
+
+	execTasks, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{ProjectID: "proj-1", Behavior: "executor"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	for _, et := range execTasks {
+		if et.Ref == "brand-new-ref" {
+			t.Fatalf("found task %q with Ref=brand-new-ref — the task INSERT must have rolled back alongside the failed attach, not survived it", et.ID)
+		}
+	}
+}

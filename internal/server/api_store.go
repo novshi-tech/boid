@@ -46,6 +46,25 @@ func (s apiTxStore) CountActiveCardRequests(cardID string) (int, error) {
 	return s.tasks.CountActiveCardRequests(cardID)
 }
 
+// CreateCardRequest / FailCardRequest / ListCardRequestsByCard back a
+// transactional slot claim (RunCardCommand's hole-B fix and acceptGo's own
+// Go reservation, internal/api/workflow_card.go and card_command_launcher.go).
+func (s apiTxStore) CreateCardRequest(req *orchestrator.CardRequest) error {
+	return s.tasks.CreateCardRequest(req)
+}
+
+func (s apiTxStore) FailCardRequest(id, errText string) error {
+	return s.tasks.FailCardRequest(id, errText)
+}
+
+func (s apiTxStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
+	return s.tasks.ListCardRequestsByCard(cardID)
+}
+
+func (s apiTxStore) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+	return s.tasks.ReleaseCardRequestForTerminalTarget(targetKind, targetID, success)
+}
+
 func (s apiTxStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return s.tasks.ListTasks(filter)
 }

@@ -300,6 +300,16 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(createReq.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
+		// `--parent <this card>` reads naturally as "the card this command is
+		// about", but the ownership-check branch below only ever attaches a
+		// ROOT (ParentID=="") continuation — reject with an actionable hint
+		// before falling through to the generic card-slot-conflict 409.
+		if ctx.CardRequestID != "" && ctx.CardID != "" && createReq.ParentID == ctx.CardID {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf(
+				"boid task create: --parent %s targets this job's own card — a card-command launcher's continuation must be a ROOT task (omit --parent, or pass --parent %s); "+
+					"a task created directly under the card would not attach to card_request %s",
+				createReq.ParentID, orchestrator.ParentIDSentinelRoot, ctx.CardRequestID)}
+		}
 		// A card-command launcher's own root, execution-type create claims
 		// its card_requests row's slot (mirrors executeAgentStart's
 		// ownership check) — only when this job actually owns that request.
