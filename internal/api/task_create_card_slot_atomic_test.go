@@ -26,6 +26,18 @@ package api
 // a property to verify by reading that code, the same posture
 // card_slot_concurrency_test.go's own header takes for
 // cardWorkChildOccupantTx/CreateCardRequest's atomicity.
+//
+// In practice the race always resolves the same way: createExecutionTask
+// does behavior resolution, a project lookup, and base_branch expansion
+// before it ever opens its transaction, while reserveGoCardRequest is a
+// bare INSERT — Go reaches the shared card_requests unique index first on
+// every observed run, so createWon below never actually triggers. That
+// asymmetry also means idx_card_requests_active_unique alone does NOT
+// arbitrate the reverse order (a live child already created directly,
+// THEN a bare Go reservation attempt) — see
+// TestReserveGoCardRequest_DoesNotSeeADirectlyCreatedLiveChild, which pins
+// that directly and documents where the real protection for that order
+// lives instead (acceptGo's own pre-checks, not this unique index).
 
 import (
 	"sync"
@@ -193,5 +205,126 @@ func TestCreateTask_AtomicPath_RaceWithGoReservation(t *testing.T) {
 		if active != 1 {
 			t.Errorf("active card_requests = %d, want 1 (Go's own reservation) since it won", active)
 		}
+	}
+}
+
+// TestReserveGoCardRequest_DoesNotSeeADirectlyCreatedLiveChild pins the
+// asymmetry this file's header describes: idx_card_requests_active_unique
+// only indexes card_requests, so a bare reserveGoCardRequest call has
+// nothing to collide with when a direct `--parent <card>` create already
+// made the card's live child moments earlier — it succeeds. acceptGo's
+// real production flow never actually hits this: its own unresolvedCount
+// pre-check (ListChildren, before reserveGoCardRequest is ever called)
+// rejects first, and if a reservation somehow still got made, the
+// non-atomic cardSlotConflictWithRequests check in createExecutionTask's
+// child-task-ify step would 409 and releaseReservation would unwind it.
+// reserveGoCardRequest alone is not that whole flow, so this test's
+// success here documents where the real protection lives instead of
+// implying reserveGoCardRequest itself provides it.
+func TestReserveGoCardRequest_DoesNotSeeADirectlyCreatedLiveChild(t *testing.T) {
+	taskSvc, goSvc, card, repo := newAtomicCardSlotFixture(t)
+
+	if _, err := taskSvc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1", Title: "a new child", Behavior: "dev", ParentID: card.ID, Ref: "ch_00",
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := goSvc.reserveGoCardRequest(card.ID); err != nil {
+		t.Fatalf("reserveGoCardRequest: %v, want success — a live child with no card_requests row of its own does not block a bare reservation", err)
+	}
+
+	active, err := repo.CountActiveCardRequests(card.ID)
+	if err != nil {
+		t.Fatalf("CountActiveCardRequests: %v", err)
+	}
+	if active != 1 {
+		t.Fatalf("active card_requests = %d, want 1 (the reservation succeeded alongside the live child)", active)
+	}
+}
+
+// ---- JSON-child conflict cases, ported onto the atomic (Tx-wired) fixture.
+//
+// task_create_card_slot_test.go's stub-based tests exercise the SAME shared
+// cardChildSlotConflict/cardSlotConflictWithLister logic, but through the
+// non-atomic fallback (no Tx wired) — since wire.go now always wires Tx in
+// production, createExecutionTask's real, shipped behavior for a card
+// parent takes the atomicCardCheck branch instead. These three mirror the
+// JSON open-child reject, the specced child's own-reservation exception,
+// and the ref/project/behavior spoofing guard through that actual branch.
+
+func TestCreateTask_AtomicPath_RejectsWhenCardSlotOccupiedByOpenJSONChild(t *testing.T) {
+	taskSvc, _, card, repo := newAtomicCardSlotFixture(t)
+	if err := repo.UpsertTaskTriage(&orchestrator.CardAttrs{
+		TaskID: card.ID,
+		Detail: []byte(`{"children":[{"id":"ch_00","status":"open"}]}`),
+	}); err != nil {
+		t.Fatalf("seed task_triage: %v", err)
+	}
+
+	_, err := taskSvc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1", Title: "a new child", Behavior: "dev", ParentID: card.ID, Ref: "some-other-id",
+	})
+	if err == nil {
+		t.Fatal("expected rejection creating a second child while an open JSON child occupies the slot")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != 409 {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	children, lerr := repo.ListChildren(card.ID)
+	if lerr != nil {
+		t.Fatalf("ListChildren: %v", lerr)
+	}
+	if len(children) != 0 {
+		t.Fatalf("children = %d, want 0 — the rejected create must not have inserted a task", len(children))
+	}
+}
+
+func TestCreateTask_AtomicPath_AllowsFulfillingTheSpeccedChildsOwnReservation(t *testing.T) {
+	taskSvc, _, card, repo := newAtomicCardSlotFixture(t)
+	if err := repo.UpsertTaskTriage(&orchestrator.CardAttrs{
+		TaskID: card.ID,
+		Detail: []byte(`{"children":[{"id":"ch_00","status":"specced","spec":{"project":"proj-1","behavior":"dev"}}]}`),
+	}); err != nil {
+		t.Fatalf("seed task_triage: %v", err)
+	}
+
+	got, err := taskSvc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1", Title: "do it", Behavior: "dev", ParentID: card.ID, Ref: "ch_00",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want success (fulfills ch_00's own reservation)", err)
+	}
+	if got == nil {
+		t.Fatal("expected a task to have been created")
+	}
+}
+
+func TestCreateTask_AtomicPath_RejectsRefMatchWithMismatchedProjectOrBehavior(t *testing.T) {
+	taskSvc, _, card, repo := newAtomicCardSlotFixture(t)
+	if err := repo.UpsertTaskTriage(&orchestrator.CardAttrs{
+		TaskID: card.ID,
+		Detail: []byte(`{"children":[{"id":"ch_00","status":"specced","spec":{"project":"proj-1","behavior":"dev"}}]}`),
+	}); err != nil {
+		t.Fatalf("seed task_triage: %v", err)
+	}
+
+	_, err := taskSvc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-attacker", Title: "planted", Behavior: "dev", ParentID: card.ID, Ref: "ch_00",
+	})
+	if err == nil {
+		t.Fatal("expected rejection: ref matches the occupant but project does not match its own spec")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != 409 {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	children, lerr := repo.ListChildren(card.ID)
+	if lerr != nil {
+		t.Fatalf("ListChildren: %v", lerr)
+	}
+	if len(children) != 0 {
+		t.Fatalf("children = %d, want 0 — the rejected create must not have inserted a task", len(children))
 	}
 }

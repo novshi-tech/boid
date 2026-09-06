@@ -40,7 +40,10 @@ type RunCardCommandResult struct {
 	// cardWorkChildOccupantTx's own doc comment for when it isn't).
 	Occupied bool `json:"occupied"`
 	// RequestID is the card_requests row this call created (Occupied=false)
-	// or the currently-occupying row (Occupied=true).
+	// or the currently-occupying row, when the occupant IS a card_requests
+	// row (Occupied=true via ErrCardRequestSlotOccupied). Empty when the
+	// occupant is instead a live/JSON work child with no card_requests row
+	// of its own (Occupied=true via cardWorkChildOccupantTx).
 	RequestID string `json:"request_id,omitempty"`
 	// LauncherJobID is THIS call's own launcher exec job (Occupied=false
 	// only) — never the continuation/target job, which TargetKind/TargetID

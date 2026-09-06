@@ -294,7 +294,8 @@ card_events:
 | `card_commands.<key>.run` | string | はい | サンドボックス内で `sh -c` に渡されるコマンド文字列 (`triggers[].run` と同じ実行モデル) |
 | `card_events.command` | string | いいえ | 内部イベントで自動起動する `card_commands` のキー。宣言する場合は `card_commands` に実在するキーでなければならず、存在しなければロード時にエラー |
 
-**現状の実装範囲**: project.yaml の宣言と load 時の shape 検証、card ごとの実行要求を保持する内部 store (`card_requests` テーブル、`internal/orchestrator/card_request.go`)、手動起動 (`RunCardCommand` / `POST /api/cards/{id}/commands/{key}`)、launcher から task/session 継続先を作る `boid task create` / `boid agent start` op、`card_requests` の枠解放 (継続先の終端照合、および launcher job 終端かつ継続先が無い launching 行の self-heal) を提供します。内部イベントによる自動起動 (`card_events.command` からの実際の起動) は未実装です。
+**現状の実装範囲**: project.yaml の宣言と load 時の shape 検証、card ごとの実行要求を保持する内部 store (`card_requests` テーブル、`internal/orchestrator/card_request.go`)、手動起動 (`RunCardCommandAsHuman` / `POST /api/cards/{id}/commands/{key}` /
+`boid card run <card-id> <key>`)、launcher から task/session 継続先を作る `boid task create` / `boid agent start` op、`card_requests` の枠解放 (継続先の終端照合、および launcher job 終端かつ継続先が無い launching 行の self-heal) を提供します。内部イベントによる自動起動 (`card_events.command` からの実際の起動) は未実装です。
 
 **launcher の契約**: `run:` は card の実行枠を一つだけ予約した readonly exec job (`boid task create` / `boid agent start` を必ず**一回だけ**呼ぶことを想定した短命プロセス) として起動されます。
 

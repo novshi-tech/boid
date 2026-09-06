@@ -49,10 +49,15 @@ func runTaskDiagnoseCards(cmd *cobra.Command, args []string) error {
 	}
 
 	// One bulk call instead of one GET per card (GET /api/card-requests with
-	// no card_id lists every currently active row across every card).
+	// no card_id lists every currently active row across every card). A
+	// failure here must not degrade into "no cards violate the invariant" —
+	// this column exists specifically to catch a card whose only problem
+	// is a stuck card_request with zero unresolved children, so silently
+	// treating every card as having no active request would hide exactly
+	// that case.
 	activeByCard, err := activeCardRequestIDsByCard(c)
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: list active card_requests: %v\n", err)
+		return fmt.Errorf("list active card_requests: %w", err)
 	}
 
 	var rows []diagnoseCardsRow

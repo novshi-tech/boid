@@ -152,6 +152,45 @@ func TestTaskDiagnoseCards_ActiveCardRequest_FlaggedEvenWithNoUnresolvedChildren
 	}
 }
 
+// TestTaskDiagnoseCards_BulkCardRequestsFetchFails_IsFatal pins that a
+// failure listing active card_requests must abort with an error, not
+// silently render "no cards violate the invariant" — that would hide the
+// exact case this column exists to catch (a card whose only problem is a
+// stuck card_request with zero unresolved children).
+func TestTaskDiagnoseCards_BulkCardRequestsFetchFails_IsFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/card-requests") {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"error":"db unavailable"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":"card-1","type":"card","title":"mid-command","status":"working","card":{"detail":{}}}]`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := client.NewClient(srv.URL, "")
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+
+	cmd := taskDiagnoseCardsCmd
+	prev := cmd.Context()
+	t.Cleanup(func() {
+		cmd.SetContext(prev)
+		cmd.SetOut(nil)
+		cmd.SetErr(nil)
+	})
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.SetContext(client.WithClient(context.Background(), c))
+
+	if err := cmd.RunE(cmd, nil); err == nil {
+		t.Fatal("expected an error when the bulk card_requests fetch fails, got nil")
+	}
+}
+
 // TestTaskDiagnoseCards_NoViolations_PrintsClearMessage confirms the empty
 // case is not silent.
 func TestTaskDiagnoseCards_NoViolations_PrintsClearMessage(t *testing.T) {

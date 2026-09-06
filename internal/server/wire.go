@@ -1209,8 +1209,8 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Signals: taskRepo,
 		// CardRequests: taskRepo already implements
 		// api.CardCommandLauncherStore (internal/orchestrator/repository.go's
-		// CreateCardRequest/ClaimQueuedCardRequests/FailCardRequest/
-		// CountActiveCardRequests/ListCardRequestsByCard) — same object as
+		// CreateCardRequest/FailCardRequest/CountActiveCardRequests/
+		// ListCardRequestsByCard) — same object as
 		// Tasks/TaskTriage/Actions/Triggers/Signals above, viewed through a
 		// narrower interface for RunCardCommandAsHuman's slot claim/release.
 		CardRequests: taskRepo,

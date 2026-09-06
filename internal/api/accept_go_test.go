@@ -244,7 +244,7 @@ func TestTaskWorkflowService_AcceptGo_ReservesCardRequestBeforeCreatingChild(t *
 		t.Errorf("CardID = %q, want t1", req.CardID)
 	}
 	if req.CommandKey != orchestrator.CardRequestCommandKeyGo {
-		t.Errorf("CommandKey = %q, want CardRequestCommandKeyGo (empty string)", req.CommandKey)
+		t.Errorf("CommandKey = %q, want CardRequestCommandKeyGo (%q)", req.CommandKey, orchestrator.CardRequestCommandKeyGo)
 	}
 	if req.LauncherJobID == "" {
 		t.Error("LauncherJobID is empty — CreateCardRequest's launching fast path requires a non-empty synthetic marker")
