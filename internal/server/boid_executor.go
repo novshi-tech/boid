@@ -334,11 +334,8 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				row.LauncherJobID != "" && row.LauncherJobID == ctx.JobID &&
 				row.Status == orchestrator.CardRequestStatusLaunching {
 				createReq.CardRequestID = ctx.CardRequestID
-				// This check just verified ctx.JobID against a SEPARATE,
-				// earlier GetCardRequest read — carry it through so the
-				// eventual attach re-asserts it in the write itself instead
-				// of trusting this read as still true (see
-				// orchestrator.AttachCardRequestOwned's doc comment).
+				// Re-asserted in the eventual attach write, not trusted from
+				// this earlier read.
 				createReq.CardRequestOwnerJobID = ctx.JobID
 				if createReq.Ref == "" {
 					// Default so a retried launcher converges via get-or-create.

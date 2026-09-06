@@ -117,12 +117,9 @@ func (s *TaskAppService) cardSlotConflictWithRequests(parent *orchestrator.Task,
 	return cardSlotConflictWithLister(s.CardRequests, parent, ref, projectID, behavior, ownCardRequestID)
 }
 
-// updateTaskWithCardSlotRecheck writes task via UpdateTask. When s.Tx is
-// wired and cardParentID is non-empty (the write reparents/keeps task under
-// a card), the slot re-check and the write share one WithinTx call — same
-// atomicCardCheck shape createExecutionTask uses (task_create.go). When
-// s.Tx is nil, it falls back to a plain non-atomic UpdateTask; the caller is
-// then responsible for having already run the non-atomic pre-check.
+// updateTaskWithCardSlotRecheck re-checks the card slot and writes task in
+// one WithinTx when s.Tx and cardParentID are set; otherwise falls back to a
+// plain non-atomic UpdateTask.
 func (s *TaskAppService) updateTaskWithCardSlotRecheck(task *orchestrator.Task, cardParentID, conflictMsgFmt string) error {
 	if cardParentID == "" || s.Tx == nil {
 		if err := s.Tasks.UpdateTask(task); err != nil {

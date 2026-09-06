@@ -126,12 +126,9 @@ func (e *boidBuiltinExecutor) executeAgentStart(goCtx context.Context, ctx sandb
 // either, at least surfaces it via an explicit operator notice.
 func (e *boidBuiltinExecutor) handleAgentStartAttachFailure(requestID, orphanJobID string, attachErr error) *sandbox.ExecResponse {
 	if errors.Is(attachErr, orchestrator.ErrCardRequestOwnerMismatch) {
-		// This job's earlier ownership read (at the top of executeAgentStart)
-		// is now stale: a force-release (possibly followed by a different
-		// launcher's reclaim) landed between that read and this attach.
-		// Never treated as a convergence case — this job is no longer the
-		// request's owner of record, whether or not anyone has reclaimed it
-		// yet.
+		// Fires only when a DIFFERENT launcher has actually reclaimed the
+		// request; an unreclaimed force-release alone falls through to the
+		// ErrCardRequestInvalidTransition branch below instead.
 		slog.Warn("boid agent start: session orphaned; this launcher's ownership was reclaimed before it could attach",
 			"job_id", orphanJobID, "request_id", requestID, "error", attachErr)
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf(

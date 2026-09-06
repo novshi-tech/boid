@@ -654,6 +654,17 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   が実 DB で「1回の `WithinTx` を通ること」「別の占有者（Go の予約）が
   いるとき 409 になること」を reparent/rerun それぞれについて固定している。
 
+  **訂正: 「同じ invariant への非トランザクショナル pre-check → 別ラウンド
+  トリップ書き込みが `createExecutionTask` 以外にあと2箇所ある」という当時の
+  数え自体が不正確だった。** 上記の2箇所（`UpdateTask` reparent /
+  `RerunTask`）は閉じたが、**同型の3箇所目が未着手のまま残っている**:
+  `internal/api/task_create.go` の `createCardTask`（:176-186）——
+  `s.cardSlotConflictWithRequests` による非トランザクショナルな pre-check の
+  直後、別ラウンドトリップの `s.Tasks.CreateTask(task)` で card 型の子を
+  card 直下に作る経路。card 型の子作成は現状 UI/CLI からの手動操作が主で
+  acceptGo の自動 dispatch と競合する頻度は低く実務上のリスクは低いと
+  見るが、閉じたわけではない。
+
   **PR-0 で閉じた: 所有権の詐称・誤認 TOCTOU
   （`BoidOpTaskCreate`/`BoidOpAgentStart` の所有権チェックから実際の attach
   までの区間）。** `orchestrator.AttachCardRequestOwned` を新設し、
@@ -674,6 +685,33 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   `internal/server/boid_executor_agent_start_test.go` の
   `TestBoidOpAgentStart_OwnershipReclaimedBeforeAttach_Rejected` が
   executor 層での挙動も固定している。
+- **未着手（PR-0 レビューが指摘、記録のみ）: `ErrCardRequestOwnerMismatch` の
+  `boid task create` 経路での扱いが非対称。** `attachCardRequestIfNeeded` /
+  `createExecutionTask` はこのエラーを専用分岐せず `StatusError{500,
+  err.Error()}` に潰しており、枠を奪われた launcher は
+  `boid_executor_agent_start.go` 側の明確な「もう所有していない」メッセージでは
+  なく不透明な 500 を受ける（task 自体の INSERT は同一 tx で rollback される
+  ので状態破損は無い）。
+- **未着手（PR-0 レビューが指摘、記録のみ）:
+  `TestUpdateTask_AtomicPath_*`/`TestRerunTask_AtomicPath_*` は tx 内の
+  fresh 再読と tx 前の stale 読みを区別できない。** 「`WithinTx` 呼び出しが
+  1回であること」と 409 の発生しか見ておらず、クロージャ内で使う `tx` を
+  意図的に `s.Tasks`/`s.CardRequests`（tx 前の stale store）に差し替えても
+  緑のまま通ってしまう。既存の create 経路のテストと同じ限界。所有権側
+  （`AttachCardRequestOwned`）は mutation testing で証明済みだが、こちらは
+  コード読解での確認に留まる。
+- **未着手（PR-0 レビューが指摘、記録のみ）: `CardRequestID` と
+  `CardRequestOwnerJobID` が一緒に travel することを型が強制していない。**
+  `AttachCardRequestOwned` は owner が空だとランタイム 500 を返すので、
+  将来 `CardRequestID` だけを設定する第三の producer が現れるとコンパイル
+  エラーではなくランタイム失敗になる。`cardRequestClaim{id, ownerJobID}` の
+  ような小さな struct で両者を型に載せる案がある。
+- **既知の制約（この PR が持ち込んだものではない、記録のみ）:
+  `updateTaskWithCardSlotRecheck` は tx の外で読んだ `task` snapshot を
+  `TaskStore.UpdateTask` の全カラム上書きで書いている。**
+  （`internal/api/store.go` に既記の stale-snapshot stomp。）tx は
+  card-slot invariant を守るが snapshot 自体は守らない —
+  `SetMaxOpenConns(1)` 下で BEGIN 待ちが read→write の窓をわずかに広げる。
 - **PR-2d-5 で確定: jobs 行が非終端のまま固まった (daemon プロセスは生きているが
   launcher job の行だけ never-terminal になった、あるいは daemon SIGKILL 等) launching
   card_requests 行は、既知の制約として受け入れる。** 周期 self-heal

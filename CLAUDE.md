@@ -18,7 +18,8 @@ E2E テスト（`e2e/run-container.sh`、real docker/podman engine が必要）�
 
 - `main.go` — エントリポイント
 - `cmd/` — CLI コマンド定義（cobra）
-- `internal/` — 内部パッケージ
+- `internal/` — 内部パッケージ（主要なパッケージのみ列挙。ここに無いディレクトリが
+  `internal/` 配下に存在しないとは限らない — 網羅目的なら `ls internal/` で確認する）
   - `api/` — HTTP ハンドラ
   - `apigateway/` — サンドボックスが資格情報を持たずに設定済み HTTP API を叩ける認証プロキシ
   - `apiwire/` — daemon↔client の wire contract（request/response 型、正規化バリデータ）
