@@ -20,8 +20,8 @@ func TestCardRequestLifecycleLoop_RunStartupRecovery_ReattachesFoundContinuation
 	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
 		t.Fatalf("CreateCardRequest: %v", err)
 	}
-	insertTestJob(t, d, "launcher-crashed", "proj-1", "failed", req.ID)
-	insertTestJob(t, d, "session-job", "proj-1", "running", req.ID)
+	insertTestJob(t, d, "launcher-crashed", "proj-1", "hook", "failed", req.ID)
+	insertTestJob(t, d, "session-job", "proj-1", "session", "running", req.ID)
 
 	loop := &orchestrator.CardRequestLifecycleLoop{DB: d.Conn, Interval: time.Hour, InitialDelay: time.Hour}
 	loop.RunStartupRecovery()

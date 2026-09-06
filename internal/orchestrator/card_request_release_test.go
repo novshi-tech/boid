@@ -30,13 +30,22 @@ func newTestExecutionTask(t *testing.T, d *db.DB, id, projectID string, status o
 
 // insertTestJob inserts a minimal jobs row directly (dispatcher owns the
 // real CreateJob path; this package can't import dispatcher — see
-// card_request_release.go's own doc comment on that constraint).
-func insertTestJob(t *testing.T, d *db.DB, id, projectID, status, cardRequestID string) {
+// card_request_release.go's own doc comment on that constraint). role should
+// be "hook"/"exec" for a launcher's own job or "session" for a continuation
+// — RecoverLaunchingCardRequests' reverse lookup only ever matches "session".
+func insertTestJob(t *testing.T, d *db.DB, id, projectID, role, status, cardRequestID string) {
 	t.Helper()
-	now := time.Now().UTC()
+	insertTestJobAt(t, d, id, projectID, role, status, cardRequestID, time.Now().UTC())
+}
+
+// insertTestJobAt is insertTestJob with an explicit created_at, for tests
+// that need to control job ordering (e.g. a stale prior attempt's job that
+// must predate the current launching promotion).
+func insertTestJobAt(t *testing.T, d *db.DB, id, projectID, role, status, cardRequestID string, createdAt time.Time) {
+	t.Helper()
 	if _, err := d.Conn.Exec(
-		`INSERT INTO jobs (id, project_id, handler_id, role, status, card_request_id, created_at, updated_at) VALUES (?, ?, '', 'hook', ?, ?, ?, ?)`,
-		id, projectID, status, cardRequestID, now, now,
+		`INSERT INTO jobs (id, project_id, handler_id, role, status, card_request_id, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?, ?)`,
+		id, projectID, role, status, cardRequestID, createdAt, createdAt,
 	); err != nil {
 		t.Fatalf("insert test job: %v", err)
 	}
@@ -126,15 +135,14 @@ func TestReconcileCardRequestSlots_LiveTaskUntouched(t *testing.T) {
 }
 
 // TestReconcileCardRequestSlots_SessionReleasesOnJobTerminalNotHookJob pins
-// §4.4's "Run の hook job だけが終わっても解放しない" — only the job named by
-// target_id (the session's own job) releases the slot; an unrelated
-// terminal job for the same card does nothing.
+// that only the job named by target_id (the session's own job) releases the
+// slot — an unrelated terminal hook job for the same card does nothing.
 func TestReconcileCardRequestSlots_SessionReleasesOnJobTerminalNotHookJob(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
-	insertTestJob(t, d, "hook-job-1", "proj-1", "completed", "")
-	insertTestJob(t, d, "session-job-1", "proj-1", "running", "")
+	insertTestJob(t, d, "hook-job-1", "proj-1", "hook", "completed", "")
+	insertTestJob(t, d, "session-job-1", "proj-1", "session", "running", "")
 	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindSession, "session-job-1")
 
 	outcomes, err := orchestrator.ReconcileCardRequestSlots(d.Conn)
@@ -161,7 +169,7 @@ func TestReconcileCardRequestSlots_FailedSessionJobReleasesAsFailed(t *testing.T
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
-	insertTestJob(t, d, "session-job-2", "proj-1", "failed", "")
+	insertTestJob(t, d, "session-job-2", "proj-1", "session", "failed", "")
 	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindSession, "session-job-2")
 
 	if _, err := orchestrator.ReconcileCardRequestSlots(d.Conn); err != nil {
@@ -187,8 +195,8 @@ func TestRecoverLaunchingCardRequests_ReattachesFoundContinuation(t *testing.T) 
 	// The launcher's own job also carries the request's card_request_id
 	// (it needs it to call `boid card context` / `boid agent start`) — the
 	// recovery scan must not mistake it for the continuation it created.
-	insertTestJob(t, d, "launcher-crashed", "proj-1", "failed", req.ID)
-	insertTestJob(t, d, "session-job-3", "proj-1", "running", req.ID)
+	insertTestJob(t, d, "launcher-crashed", "proj-1", "hook", "failed", req.ID)
+	insertTestJob(t, d, "session-job-3", "proj-1", "session", "running", req.ID)
 
 	outcomes, err := orchestrator.RecoverLaunchingCardRequests(d.Conn)
 	if err != nil {
@@ -215,7 +223,7 @@ func TestRecoverLaunchingCardRequests_NoContinuationFoundFailsRetryable(t *testi
 	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
 		t.Fatalf("CreateCardRequest: %v", err)
 	}
-	insertTestJob(t, d, "launcher-crashed-2", "proj-1", "failed", req.ID)
+	insertTestJob(t, d, "launcher-crashed-2", "proj-1", "hook", "failed", req.ID)
 
 	outcomes, err := orchestrator.RecoverLaunchingCardRequests(d.Conn)
 	if err != nil {
@@ -230,11 +238,86 @@ func TestRecoverLaunchingCardRequests_NoContinuationFoundFailsRetryable(t *testi
 		t.Fatalf("GetCardRequest: %v", err)
 	}
 	if got.Status != orchestrator.CardRequestStatusFailed {
-		t.Fatalf("Status = %q, want failed (never finished — §4.4: releasing on failure is not a successful judgment)", got.Status)
+		t.Fatalf("Status = %q, want failed (never finished — releasing on failure is not a successful judgment)", got.Status)
 	}
 	// Retry-able: RetryCardRequest must accept it from here.
 	if err := orchestrator.RetryCardRequest(d.Conn, req.ID); err != nil {
 		t.Fatalf("RetryCardRequest after recovery-failure: %v", err)
+	}
+}
+
+// TestRecoverLaunchingCardRequests_IgnoresStalePriorAttemptSessionJob pins a
+// regression: a retried request keeps its id, so a PRIOR attempt's session
+// job can still carry the same card_request_id. Without excluding the
+// launcher's own job by role AND bounding by the current attempt's start
+// time, the reverse lookup could reattach to that stale, unrelated session
+// instead of correctly reporting "no continuation found" for the current
+// attempt.
+func TestRecoverLaunchingCardRequests_IgnoresStalePriorAttemptSessionJob(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-1"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	past := time.Now().UTC().Add(-time.Hour)
+	// Attempt 1's own launcher job AND the session it dispatched — both
+	// predate the current attempt and must never be picked by a later
+	// recovery scan.
+	insertTestJobAt(t, d, "launcher-1", "proj-1", "hook", "failed", req.ID, past)
+	insertTestJobAt(t, d, "session-job-attempt-1", "proj-1", "session", "completed", req.ID, past)
+
+	if err := orchestrator.FailCardRequest(d.Conn, req.ID, "attempt 1 failed"); err != nil {
+		t.Fatalf("FailCardRequest: %v", err)
+	}
+	if err := orchestrator.RetryCardRequest(d.Conn, req.ID); err != nil {
+		t.Fatalf("RetryCardRequest: %v", err)
+	}
+	def := orchestrator.CardRequestDefinition{CommandKey: "review"}
+	if _, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-2", def); err != nil {
+		t.Fatalf("ClaimQueuedCardRequests (attempt 2): %v", err)
+	}
+	// launcher-2 (attempt 2) crashes before dispatching anything.
+
+	outcomes, err := orchestrator.RecoverLaunchingCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("RecoverLaunchingCardRequests: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].RequestID != req.ID || outcomes[0].Status != string(orchestrator.CardRequestStatusFailed) {
+		t.Fatalf("outcomes = %+v, want ONE failed outcome (attempt 2 has no continuation of its own — must not reattach attempt 1's stale session)", outcomes)
+	}
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusFailed || got.TargetID == "session-job-attempt-1" {
+		t.Fatalf("got = %+v, must not be attached to attempt 1's session-job-attempt-1", got)
+	}
+}
+
+// TestReconcileCardRequestSlots_DeletedTaskReleasesAsFailed pins that a
+// task-kind continuation deleted out from under an attached request (e.g.
+// `boid task delete`) is treated as a terminal non-success, not "still
+// live" — a deleted task can never report back, so leaving the slot
+// attached forever would be the exact stuck-slot failure this function
+// exists to prevent.
+func TestReconcileCardRequestSlots_DeletedTaskReleasesAsFailed(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	task := newTestExecutionTask(t, d, "task-to-delete", "proj-1", orchestrator.TaskStatusExecuting)
+	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindTask, task)
+	if err := orchestrator.DeleteTask(d.Conn, task); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	outcomes, err := orchestrator.ReconcileCardRequestSlots(d.Conn)
+	if err != nil {
+		t.Fatalf("ReconcileCardRequestSlots: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].RequestID != req.ID || outcomes[0].Status != string(orchestrator.CardRequestStatusFailed) {
+		t.Fatalf("outcomes = %+v, want one failed outcome for %q", outcomes, req.ID)
 	}
 }
 

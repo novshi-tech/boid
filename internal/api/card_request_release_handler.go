@@ -11,6 +11,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -37,6 +38,11 @@ type releaseCardRequestBody struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// releaseReasonMaxBytes bounds the operator-supplied reason recorded onto
+// card_requests.error — an operator note, not a payload, so a modest cap is
+// enough (unlike `boid agent start --instruction`'s sandbox.PayloadPatchMaxBytes).
+const releaseReasonMaxBytes = 4096
+
 // Release handles POST /api/card-requests/{id}/release. Body is optional;
 // an empty/missing reason falls back to ForceReleaseCardRequest's own
 // default message.
@@ -52,6 +58,10 @@ func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
 		// and a malformed one should not block an operator trying to
 		// unstick a card — fall back to the default reason rather than 400.
 		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	if len(body.Reason) > releaseReasonMaxBytes {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("reason exceeds %d bytes", releaseReasonMaxBytes))
+		return
 	}
 
 	if err := h.Store.ForceReleaseCardRequest(id, body.Reason); err != nil {

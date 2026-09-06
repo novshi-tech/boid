@@ -249,9 +249,17 @@ func (r *TaskRepository) AttachCardRequest(id, targetKind, targetID string) erro
 }
 
 // ForceReleaseCardRequest backs POST /api/card-requests/{id}/release, the
-// §4.4 operator escape hatch for a stuck slot (api.CardRequestReleaseStore).
+// operator escape hatch for a stuck slot (api.CardRequestReleaseStore).
+// FailCardRequest is two UPDATEs that must land together — same
+// InTxDB-over-raw-*sql.DB shape as ClaimSignals above.
 func (r *TaskRepository) ForceReleaseCardRequest(id, reason string) error {
-	return ForceReleaseCardRequest(r.db, id, reason)
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return ForceReleaseCardRequest(r.db, id, reason)
+	}
+	return db.InTxDB(conn, func(tx db.DBTX) error {
+		return ForceReleaseCardRequest(tx, id, reason)
+	})
 }
 
 type ProjectRepository struct {

@@ -235,8 +235,8 @@ func TestBoidOpAgentStart_IdempotentRetry_ReturnsExistingSession(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
 		"req-1": {
 			ID: "req-1", CardID: "card-1",
-			Status:        orchestrator.CardRequestStatusAttached,
-			TargetKind:    orchestrator.CardRequestTargetKindSession, TargetID: "job-original",
+			Status:     orchestrator.CardRequestStatusAttached,
+			TargetKind: orchestrator.CardRequestTargetKindSession, TargetID: "job-original",
 			LauncherJobID: "job-current",
 		},
 	}}
@@ -261,8 +261,8 @@ func TestBoidOpAgentStart_AlreadyAttachedToTask_Rejected(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
 		"req-1": {
 			ID: "req-1", CardID: "card-1",
-			Status:        orchestrator.CardRequestStatusAttached,
-			TargetKind:    orchestrator.CardRequestTargetKindTask, TargetID: "task-1",
+			Status:     orchestrator.CardRequestStatusAttached,
+			TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "task-1",
 			LauncherJobID: "job-current",
 		},
 	}}

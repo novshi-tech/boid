@@ -205,9 +205,9 @@ type Server struct {
 	// NewTCPAPIAuthMiddleware — a single shared-secret Bearer token, no
 	// TLS, no cookie/loopback-trust fallback. nil whenever the listener
 	// was never bound.
-	cliLn          net.Listener
-	cliServer      *http.Server
-	cliHandler     http.Handler
+	cliLn                    net.Listener
+	cliServer                *http.Server
+	cliHandler               http.Handler
 	gcLoop                   *orchestrator.GCLoop // nil if GC is disabled
 	queueSweepLoop           *api.QueueSweepLoop  // queue の決定論的評価: wake 評価 rule
 	triggerLoop              *api.TriggerLoop     // トリガのスケジュール/single-flight/実行記録
