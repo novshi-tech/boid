@@ -1119,10 +1119,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if commandKey == "" {
 			commandKey = row.CommandKey
 		}
-		origin := cardContextOriginHuman
-		if row.CauseID != "" {
-			origin = cardContextOriginEvent
-		}
+		origin := cardRequestOrigin(row)
 		// Defense in depth against an oversized stored instruction reaching
 		// stdout unbounded: the row itself has no write-time cap yet, so
 		// this read path enforces one independently.

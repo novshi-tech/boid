@@ -407,6 +407,8 @@ type SignalStore interface {
 
 var _ SignalStore = (*orchestrator.TaskRepository)(nil)
 
+var _ CardRequestReleaseStore = (*orchestrator.TaskRepository)(nil)
+
 type ProjectRepository interface {
 	CreateProject(project *orchestrator.Project) error
 	GetProject(id string) (*orchestrator.Project, error)

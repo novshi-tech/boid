@@ -205,13 +205,14 @@ type Server struct {
 	// NewTCPAPIAuthMiddleware — a single shared-secret Bearer token, no
 	// TLS, no cookie/loopback-trust fallback. nil whenever the listener
 	// was never bound.
-	cliLn          net.Listener
-	cliServer      *http.Server
-	cliHandler     http.Handler
-	gcLoop         *orchestrator.GCLoop // nil if GC is disabled
-	queueSweepLoop *api.QueueSweepLoop  // queue の決定論的評価: wake 評価 rule
-	triggerLoop    *api.TriggerLoop     // トリガのスケジュール/single-flight/実行記録
-	workflow       *api.TaskWorkflowService
+	cliLn                    net.Listener
+	cliServer                *http.Server
+	cliHandler               http.Handler
+	gcLoop                   *orchestrator.GCLoop // nil if GC is disabled
+	queueSweepLoop           *api.QueueSweepLoop  // queue の決定論的評価: wake 評価 rule
+	triggerLoop              *api.TriggerLoop     // トリガのスケジュール/single-flight/実行記録
+	cardRequestLifecycleLoop *orchestrator.CardRequestLifecycleLoop
+	workflow                 *api.TaskWorkflowService
 
 	// hostCommands is the aggregated host_commands config assembled by
 	// buildProjectStore's preflight: every installed kit.yaml's
@@ -630,6 +631,13 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start the trigger sweep loop (トリガのスケジュール/single-flight/実行記録).
 	if s.triggerLoop != nil {
 		go s.triggerLoop.Run(ctx)
+	}
+
+	// card_requests の枠解放・復旧走査。起動直後に一度だけ復旧走査を行って
+	// から、周期的な reconcile ループを回す。
+	if s.cardRequestLifecycleLoop != nil {
+		s.cardRequestLifecycleLoop.RunStartupRecovery()
+		go s.cardRequestLifecycleLoop.Run(ctx)
 	}
 
 	// Per-daemon internal CA: loaded (or generated) in New(), not here —

@@ -38,7 +38,8 @@ func TestDispatch_CardContext_ThreadedIntoTokenContext(t *testing.T) {
 		CardRequestID: "req-1",
 	}
 
-	if _, err := r.Dispatch(context.Background(), spec, nil); err != nil {
+	jobID, err := r.Dispatch(context.Background(), spec, nil)
+	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
@@ -50,6 +51,20 @@ func TestDispatch_CardContext_ThreadedIntoTokenContext(t *testing.T) {
 	}
 	if broker.lastCtx.CardRequestID != "req-1" {
 		t.Errorf("TokenContext.CardRequestID = %q, want %q", broker.lastCtx.CardRequestID, "req-1")
+	}
+
+	// jobs.card_id/card_request_id must be persisted too — the in-memory
+	// token registry does not survive a daemon restart, but this row does,
+	// which is what lets the card_requests recovery scan reverse-lookup a
+	// session's continuation job after one (see
+	// internal/orchestrator/card_request_release.go's
+	// RecoverLaunchingCardRequests).
+	job, err := GetJob(d.Conn, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.CardID != "card-1" || job.CardRequestID != "req-1" {
+		t.Errorf("job.CardID/CardRequestID = %q/%q, want card-1/req-1", job.CardID, job.CardRequestID)
 	}
 }
 

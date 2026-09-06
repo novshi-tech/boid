@@ -108,12 +108,12 @@ func TestCreateCardRequest_LaunchingFastPath_ClaimsSlotAtomically(t *testing.T) 
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
-	first := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching}
+	first := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-1"}
 	if err := orchestrator.CreateCardRequest(d.Conn, first); err != nil {
 		t.Fatalf("CreateCardRequest(first, launching): %v", err)
 	}
 
-	second := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching}
+	second := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-2"}
 	err := orchestrator.CreateCardRequest(d.Conn, second)
 	if !errors.Is(err, orchestrator.ErrCardRequestSlotOccupied) {
 		t.Fatalf("CreateCardRequest(second, launching) = %v, want ErrCardRequestSlotOccupied", err)
@@ -184,7 +184,7 @@ func TestCreateCardRequest_InstructionRoundTrips(t *testing.T) {
 	}
 
 	def := orchestrator.CardRequestDefinition{CommandKey: "review", Label: "Run", Run: "python3 scripts/card_review.py", Version: "v1"}
-	primary, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, def)
+	primary, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", def)
 	if err != nil {
 		t.Fatalf("ClaimQueuedCardRequests: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestCardRequest_FullLifecycle_QueuedToFinished(t *testing.T) {
 	}
 
 	def := orchestrator.CardRequestDefinition{CommandKey: "review", Label: "Run", Run: "python3 scripts/card_review.py", Version: "v1"}
-	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, def)
+	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "job-1", def)
 	if err != nil {
 		t.Fatalf("ClaimQueuedCardRequests: %v", err)
 	}
@@ -233,10 +233,10 @@ func TestCardRequest_FullLifecycle_QueuedToFinished(t *testing.T) {
 	if primary.Launched != def {
 		t.Errorf("primary.Launched = %+v, want %+v", primary.Launched, def)
 	}
-
-	if err := orchestrator.SetCardRequestLauncherJobID(d.Conn, req.ID, "job-1"); err != nil {
-		t.Fatalf("SetCardRequestLauncherJobID: %v", err)
+	if primary.LauncherJobID != "job-1" {
+		t.Errorf("primary.LauncherJobID = %q, want %q (stamped atomically by the claim itself)", primary.LauncherJobID, "job-1")
 	}
+
 	if err := orchestrator.AttachCardRequest(d.Conn, req.ID, orchestrator.CardRequestTargetKindTask, "task-1"); err != nil {
 		t.Fatalf("AttachCardRequest: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestClaimQueuedCardRequests_NoPending_ReturnsErrNoQueuedCardRequests(t *tes
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
-	_, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, orchestrator.CardRequestDefinition{})
+	_, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{})
 	if !errors.Is(err, orchestrator.ErrNoQueuedCardRequests) {
 		t.Fatalf("ClaimQueuedCardRequests(no pending) = %v, want ErrNoQueuedCardRequests", err)
 	}
@@ -278,7 +278,7 @@ func TestClaimQueuedCardRequests_SlotOccupied_Rejected(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
-	occupying := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching}
+	occupying := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-0"}
 	if err := orchestrator.CreateCardRequest(d.Conn, occupying); err != nil {
 		t.Fatalf("create occupying request: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestClaimQueuedCardRequests_SlotOccupied_Rejected(t *testing.T) {
 		t.Fatalf("create pending request: %v", err)
 	}
 
-	_, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, orchestrator.CardRequestDefinition{})
+	_, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{})
 	if !errors.Is(err, orchestrator.ErrCardRequestSlotOccupied) {
 		t.Fatalf("ClaimQueuedCardRequests(slot occupied) = %v, want ErrCardRequestSlotOccupied", err)
 	}
@@ -322,7 +322,7 @@ func TestClaimQueuedCardRequests_FoldsExactlyThePreClaimSnapshot(t *testing.T) {
 		time.Sleep(time.Millisecond) // force distinct created_at ordering
 	}
 
-	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, orchestrator.CardRequestDefinition{CommandKey: "review"})
+	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{CommandKey: "review"})
 	if err != nil {
 		t.Fatalf("ClaimQueuedCardRequests: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestFinishCardRequest_ClosesFoldedAndAbsorbsOldFailures(t *testing.T) {
 		t.Fatalf("create old request: %v", err)
 	}
 	if err := db.InTxDB(d.Conn, func(tx db.DBTX) error {
-		_, _, err := orchestrator.ClaimQueuedCardRequests(tx, cardID, orchestrator.CardRequestDefinition{})
+		_, _, err := orchestrator.ClaimQueuedCardRequests(tx, cardID, "launcher-old", orchestrator.CardRequestDefinition{})
 		return err
 	}); err != nil {
 		t.Fatalf("claim old request: %v", err)
@@ -389,7 +389,7 @@ func TestFinishCardRequest_ClosesFoldedAndAbsorbsOldFailures(t *testing.T) {
 	var primary *orchestrator.CardRequest
 	if err := db.InTxDB(d.Conn, func(tx db.DBTX) error {
 		var err error
-		primary, _, err = orchestrator.ClaimQueuedCardRequests(tx, cardID, orchestrator.CardRequestDefinition{})
+		primary, _, err = orchestrator.ClaimQueuedCardRequests(tx, cardID, "launcher-new", orchestrator.CardRequestDefinition{})
 		return err
 	}); err != nil {
 		t.Fatalf("claim new boundary: %v", err)
@@ -431,7 +431,7 @@ func TestFinishCardRequest_DoesNotAbsorbFailuresFromALaterBoundary(t *testing.T)
 	var primary *orchestrator.CardRequest
 	if err := db.InTxDB(d.Conn, func(tx db.DBTX) error {
 		var err error
-		primary, _, err = orchestrator.ClaimQueuedCardRequests(tx, cardID, orchestrator.CardRequestDefinition{})
+		primary, _, err = orchestrator.ClaimQueuedCardRequests(tx, cardID, "launcher-1", orchestrator.CardRequestDefinition{})
 		return err
 	}); err != nil {
 		t.Fatalf("claim: %v", err)
@@ -487,7 +487,7 @@ func TestFailCardRequest_ReleasesFoldedRequestsBackToQueued(t *testing.T) {
 		t.Fatalf("create second: %v", err)
 	}
 
-	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, orchestrator.CardRequestDefinition{})
+	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{})
 	if err != nil {
 		t.Fatalf("ClaimQueuedCardRequests: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestFailCardRequest_ReleasesFoldedRequestsBackToQueued(t *testing.T) {
 
 	// The slot is free again — a fresh claim must succeed and pick up the
 	// released sibling.
-	nextPrimary, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, orchestrator.CardRequestDefinition{})
+	nextPrimary, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-2", orchestrator.CardRequestDefinition{})
 	if err != nil {
 		t.Fatalf("ClaimQueuedCardRequests after failure: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestRetryCardRequest_RequeuesFailedRequest(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
-	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching}
+	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-1"}
 	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -605,19 +605,33 @@ func TestCreateCardRequest_RejectsInvalidStartingStatus(t *testing.T) {
 	}
 }
 
-func TestSetCardRequestLauncherJobID_RejectsNonLaunching(t *testing.T) {
+// TestCreateCardRequest_LaunchingRequiresLauncherJobID pins the atomicity
+// invariant the launching fast path shares with ClaimQueuedCardRequests: a
+// row must never enter launching without a launcher of record in the SAME
+// write (see BoidOpAgentStart's ownership check, which now rejects an empty
+// LauncherJobID rather than treating it as unclaimed).
+func TestCreateCardRequest_LaunchingRequiresLauncherJobID(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
-	req := &orchestrator.CardRequest{CardID: cardID}
-	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
-		t.Fatalf("create: %v", err)
+	err := orchestrator.CreateCardRequest(d.Conn, &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching})
+	if err == nil {
+		t.Fatal("CreateCardRequest(launching, no launcher job id): expected an error, got nil")
 	}
-	if err := orchestrator.SetCardRequestLauncherJobID(d.Conn, req.ID, "job-1"); !errors.Is(err, orchestrator.ErrCardRequestInvalidTransition) {
-		t.Fatalf("SetCardRequestLauncherJobID(queued) = %v, want ErrCardRequestInvalidTransition", err)
+}
+
+// TestClaimQueuedCardRequests_RequiresLauncherJobID is the queued->launching
+// path's counterpart of the above.
+func TestClaimQueuedCardRequests_RequiresLauncherJobID(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	if err := orchestrator.CreateCardRequest(d.Conn, &orchestrator.CardRequest{CardID: cardID}); err != nil {
+		t.Fatalf("create pending: %v", err)
 	}
-	if err := orchestrator.SetCardRequestLauncherJobID(d.Conn, "does-not-exist", "job-1"); !errors.Is(err, orchestrator.ErrCardRequestNotFound) {
-		t.Fatalf("SetCardRequestLauncherJobID(missing id) = %v, want ErrCardRequestNotFound", err)
+
+	_, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "", orchestrator.CardRequestDefinition{})
+	if err == nil {
+		t.Fatal("ClaimQueuedCardRequests(empty launcher job id): expected an error, got nil")
 	}
 }
 
@@ -625,7 +639,7 @@ func TestAttachCardRequest_ValidatesArguments(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
-	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching}
+	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-1"}
 	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -644,7 +658,7 @@ func TestAttachCardRequest_RejectsDoubleAttach(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
-	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching}
+	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-1"}
 	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
 		t.Fatalf("create: %v", err)
 	}

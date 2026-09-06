@@ -1,0 +1,233 @@
+package orchestrator
+
+// card_requests の実行枠を、継続先の終端を照合して解放する処理。
+// 時間経過だけで解放する trigger の self-heal (TriggerRunSelfHealGrace) と
+// は別物 — 継続先の生存が確認できない限り枠は空けず、次の呼び出しで
+// 照合を再試行する。dispatcher パッケージを import できない (循環) ため、
+// GCTasks と同じ流儀で jobs テーブルへ直接 raw SQL を投げる。
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+
+	"github.com/novshi-tech/boid/internal/db"
+)
+
+// jobs.status/role の値。dispatcher.JobStatusCompleted/JobStatusFailed および
+// JobKindSession の文字列と一致させること (dispatcher はこのパッケージを
+// import しているので逆方向の import はできない — GCTasks の raw SQL と
+// 同じ制約)。
+const (
+	jobStatusCompletedLiteral = "completed"
+	jobStatusFailedLiteral    = "failed"
+	jobRoleSessionLiteral     = "session"
+)
+
+// CardRequestSlotOutcome is one row ReconcileCardRequestSlots or
+// RecoverLaunchingCardRequests actually changed.
+type CardRequestSlotOutcome struct {
+	RequestID string
+	// Status is the CardRequest status the row moved to: "finished",
+	// "failed", or "attached" (RecoverLaunchingCardRequests reattaching a
+	// found continuation job).
+	Status string
+}
+
+// ReconcileCardRequestSlots scans every attached card_requests row and
+// releases the ones whose continuation has reached a terminal state:
+//   - target_kind=task: the task's own terminal status (done -> finished,
+//     aborted/dropped -> failed), or the task row no longer existing at all
+//     (deleted -> failed, same as an aborted continuation).
+//   - target_kind=session: the continuation JOB's terminal status
+//     (completed -> finished, failed -> failed). A Run's own hook job
+//     finishing does not count — only the session job named by target_id.
+//
+// A continuation that is still live is left untouched: this function never
+// releases on a guess. Call it repeatedly (a periodic loop) rather than
+// relying on a single pass.
+//
+// Each row's read-outcome-then-write runs in its OWN transaction (conn is
+// *sql.DB, not db.DBTX, specifically so this can call db.InTxDB per row) —
+// FinishCardRequest/FailCardRequest are themselves multiple statements
+// (closing folded siblings, absorbing older failures) that must not land
+// half-applied, but one row's failure must not roll back every other row
+// this pass already released. A single row's error (e.g. it moved out of
+// "attached" between the listing query above and this row's own
+// transaction, because a concurrent force-release beat this pass to it) is
+// logged and skipped rather than aborting the whole pass — a listing query
+// with no snapshot isolation across many rows can't assume none of them
+// raced.
+func ReconcileCardRequestSlots(conn *sql.DB) ([]CardRequestSlotOutcome, error) {
+	rows, err := conn.Query(cardRequestSelectCols+` FROM card_requests WHERE status = ? ORDER BY created_at ASC`, string(CardRequestStatusAttached))
+	if err != nil {
+		return nil, fmt.Errorf("reconcile card request slots: list attached: %w", err)
+	}
+	attached, err := scanCardRequests(rows)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile card request slots: %w", err)
+	}
+
+	var outcomes []CardRequestSlotOutcome
+	for _, req := range attached {
+		var outcome *CardRequestSlotOutcome
+		err := db.InTxDB(conn, func(tx db.DBTX) error {
+			finished, terminal, err := continuationTerminalOutcome(tx, req)
+			if err != nil {
+				return err
+			}
+			if !terminal {
+				return nil
+			}
+			if finished {
+				if err := FinishCardRequest(tx, req.ID, "continuation reached a terminal successful state"); err != nil {
+					return fmt.Errorf("finish: %w", err)
+				}
+				outcome = &CardRequestSlotOutcome{RequestID: req.ID, Status: string(CardRequestStatusFinished)}
+				return nil
+			}
+			if err := FailCardRequest(tx, req.ID, "continuation ended without success"); err != nil {
+				return fmt.Errorf("fail: %w", err)
+			}
+			outcome = &CardRequestSlotOutcome{RequestID: req.ID, Status: string(CardRequestStatusFailed)}
+			return nil
+		})
+		if err != nil {
+			slog.Warn("reconcile card request slot: skipping this row, pass continues", "request_id", req.ID, "error", err)
+			continue
+		}
+		if outcome != nil {
+			outcomes = append(outcomes, *outcome)
+		}
+	}
+	return outcomes, nil
+}
+
+// continuationTerminalOutcome reports whether req's continuation has reached
+// a terminal state and, if so, whether that terminal state counts as
+// success. ok is false only while the continuation is still live. A target
+// row that no longer exists at all (deleted out from under an attached
+// request) is treated as a non-success terminal state, not "still live" —
+// a deleted task/job can never report back, so leaving the slot attached
+// forever would be the exact stuck-slot failure this function exists to
+// prevent.
+func continuationTerminalOutcome(dbtx db.DBTX, req *CardRequest) (finished, ok bool, err error) {
+	switch req.TargetKind {
+	case CardRequestTargetKindTask:
+		status, err := GetTaskStatus(dbtx, req.TargetID)
+		if err != nil {
+			if errors.Is(err, ErrTaskNotFound) {
+				return false, true, nil
+			}
+			return false, false, fmt.Errorf("get task status %q: %w", req.TargetID, err)
+		}
+		if !IsTerminalStatus(status) {
+			return false, false, nil
+		}
+		return status == TaskStatusDone, true, nil
+	case CardRequestTargetKindSession:
+		row := dbtx.QueryRow(`SELECT status FROM jobs WHERE id = ?`, req.TargetID)
+		var status string
+		if err := row.Scan(&status); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, true, nil
+			}
+			return false, false, fmt.Errorf("get job %q: %w", req.TargetID, err)
+		}
+		switch status {
+		case jobStatusCompletedLiteral:
+			return true, true, nil
+		case jobStatusFailedLiteral:
+			return false, true, nil
+		default:
+			return false, false, nil
+		}
+	default:
+		return false, false, nil
+	}
+}
+
+// RecoverLaunchingCardRequests is the daemon-startup recovery scan:
+// task continuations write request->task in the SAME transaction as
+// CreateTask, so they cannot land here mid-flight. A session continuation
+// cannot — Dispatch (an external process launch) can't share a transaction
+// with the DB write that records it — so a request can restart the daemon
+// still "launching" with the session job already created but never attached.
+//
+// For every such row, this reverse-looks-up jobs.card_request_id (persisted
+// on the session job at Dispatch time, independent of the crashed daemon's
+// in-memory state) for the SESSION job (role='session', never the launcher's
+// own exec/hook job) created at or after this row's current launching
+// promotion (req.UpdatedAt — stamped atomically with launcher_job_id by
+// ClaimQueuedCardRequests/the launching fast path). The time bound matters:
+// a retried request keeps its id, so a PRIOR attempt's session job can still
+// carry the same card_request_id, and without it the newest attempt could
+// reattach to a stale, already-finished session from an earlier attempt.
+// Found -> attach it. Not found -> the launcher exited before creating
+// anything, so the request goes to failed (retry-able), never finished —
+// releasing a slot on failure is not the same as a successful judgment.
+//
+// One transaction per row, and a single row's error is logged and skipped
+// rather than aborting the whole scan — same reasoning as
+// ReconcileCardRequestSlots, but more important here: this scan runs once at
+// startup, not on a ticker, so one bad row aborting the loop would leave
+// every OTHER launching row unrecovered until the next daemon restart.
+func RecoverLaunchingCardRequests(conn *sql.DB) ([]CardRequestSlotOutcome, error) {
+	rows, err := conn.Query(cardRequestSelectCols+` FROM card_requests WHERE status = ? ORDER BY created_at ASC`, string(CardRequestStatusLaunching))
+	if err != nil {
+		return nil, fmt.Errorf("recover launching card requests: list: %w", err)
+	}
+	launching, err := scanCardRequests(rows)
+	if err != nil {
+		return nil, fmt.Errorf("recover launching card requests: %w", err)
+	}
+
+	var outcomes []CardRequestSlotOutcome
+	for _, req := range launching {
+		var outcome CardRequestSlotOutcome
+		err := db.InTxDB(conn, func(tx db.DBTX) error {
+			jobRow := tx.QueryRow(
+				`SELECT id FROM jobs WHERE card_request_id = ? AND card_request_id != '' AND id != ? AND role = ? AND created_at >= ?
+				 ORDER BY created_at ASC LIMIT 1`,
+				req.ID, req.LauncherJobID, jobRoleSessionLiteral, req.UpdatedAt,
+			)
+			var jobID string
+			switch err := jobRow.Scan(&jobID); {
+			case errors.Is(err, sql.ErrNoRows):
+				if ferr := FailCardRequest(tx, req.ID, "launcher exited before creating a continuation (daemon restart recovery)"); ferr != nil {
+					return fmt.Errorf("fail: %w", ferr)
+				}
+				outcome = CardRequestSlotOutcome{RequestID: req.ID, Status: string(CardRequestStatusFailed)}
+				return nil
+			case err != nil:
+				return fmt.Errorf("find continuation job: %w", err)
+			default:
+				if aerr := AttachCardRequest(tx, req.ID, CardRequestTargetKindSession, jobID); aerr != nil {
+					return fmt.Errorf("attach %q: %w", jobID, aerr)
+				}
+				outcome = CardRequestSlotOutcome{RequestID: req.ID, Status: string(CardRequestStatusAttached)}
+				return nil
+			}
+		})
+		if err != nil {
+			slog.Warn("recover launching card request: skipping this row, scan continues", "request_id", req.ID, "error", err)
+			continue
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes, nil
+}
+
+// ForceReleaseCardRequest is the operator escape hatch for a stuck slot:
+// fails a queued/launching/attached row regardless of whether its
+// continuation has actually terminated. Thin wrapper over FailCardRequest —
+// forcing is exactly "this slot is stuck, close it out and let a human or a
+// retry deal with the fallout", which is what a failed (retry-able) request
+// already means.
+func ForceReleaseCardRequest(dbtx db.DBTX, id, reason string) error {
+	if reason == "" {
+		reason = "force-released by operator"
+	}
+	return FailCardRequest(dbtx, id, reason)
+}

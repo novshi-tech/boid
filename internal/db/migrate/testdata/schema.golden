@@ -17,6 +17,10 @@ CREATE UNIQUE INDEX idx_card_requests_cause_unique
 CREATE INDEX idx_card_requests_terminal_updated
     ON card_requests(updated_at) WHERE status IN ('finished', 'failed');
 
+-- index: idx_jobs_card_request_id
+CREATE INDEX idx_jobs_card_request_id
+    ON jobs(card_request_id) WHERE card_request_id != '';
+
 -- index: idx_project_workspaces_workspace_id
 CREATE INDEX idx_project_workspaces_workspace_id
     ON project_workspaces(workspace_id);
@@ -100,7 +104,7 @@ CREATE TABLE "jobs" (
     execution_state TEXT NOT NULL DEFAULT '',
     created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at      DATETIME NOT NULL DEFAULT (datetime('now'))
-, display_name TEXT NOT NULL DEFAULT '');
+, display_name TEXT NOT NULL DEFAULT '', card_id TEXT NOT NULL DEFAULT '', card_request_id TEXT NOT NULL DEFAULT '');
 
 -- table: project_workspaces
 CREATE TABLE project_workspaces (

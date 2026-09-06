@@ -694,6 +694,13 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if entry.Context.CardRequestID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid agent start: no card context for this job"}
 		}
+		// Same write-side cap as `boid task update --payload-patch` /
+		// `boid signal ingest` above — the read side (BoidOpCardContext)
+		// already caps a stored instruction on the way out, but nothing
+		// capped it on the way in until now.
+		if len(boidReq.Instruction) > PayloadPatchMaxBytes {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid agent start --instruction exceeds %d bytes", PayloadPatchMaxBytes)}
+		}
 		if boidReq.ProjectID == "" {
 			boidReq.ProjectID = entry.Context.ProjectID
 		}

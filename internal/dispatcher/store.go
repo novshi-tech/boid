@@ -70,6 +70,14 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 		columns = append(columns, "display_name")
 		args = append(args, j.DisplayName)
 	}
+	if cols.hasCardID {
+		columns = append(columns, "card_id")
+		args = append(args, j.CardID)
+	}
+	if cols.hasCardRequestID {
+		columns = append(columns, "card_request_id")
+		args = append(args, j.CardRequestID)
+	}
 
 	columns = append(columns, "created_at", "updated_at")
 	args = append(args, j.CreatedAt, j.UpdatedAt)
@@ -350,8 +358,8 @@ func scanJob(s jobScanner) (*Job, error) {
 	var taskID sql.NullString
 	var exitCode sql.NullInt64
 	var interactive, tty sql.NullInt64
-	var executionState, displayName sql.NullString
-	if err := s.Scan(&j.ID, &taskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &executionState, &displayName, &j.CreatedAt, &j.UpdatedAt); err != nil {
+	var executionState, displayName, cardID, cardRequestID sql.NullString
+	if err := s.Scan(&j.ID, &taskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &executionState, &displayName, &cardID, &cardRequestID, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("job not found")
 		}
@@ -369,6 +377,8 @@ func scanJob(s jobScanner) (*Job, error) {
 	if displayName.Valid {
 		j.DisplayName = displayName.String
 	}
+	j.CardID = cardID.String
+	j.CardRequestID = cardRequestID.String
 	return &j, nil
 }
 
@@ -402,15 +412,25 @@ func jobSelectSQL(dbtx db.DBTX, suffix string) (string, error) {
 	if cols.hasDisplayName {
 		displayNameExpr = "display_name"
 	}
+	cardIDExpr := `'' AS card_id`
+	if cols.hasCardID {
+		cardIDExpr = "card_id"
+	}
+	cardRequestIDExpr := `'' AS card_request_id`
+	if cols.hasCardRequestID {
+		cardRequestIDExpr = "card_request_id"
+	}
 
 	return fmt.Sprintf(
-		`SELECT id, task_id, project_id, %s AS handler_id, role, %s, %s, %s, status, exit_code, output, %s, %s, created_at, updated_at FROM jobs %s`,
+		`SELECT id, task_id, project_id, %s AS handler_id, role, %s, %s, %s, status, exit_code, output, %s, %s, %s, %s, created_at, updated_at FROM jobs %s`,
 		handlerExpr,
 		runtimeExpr,
 		interactiveExpr,
 		ttyExpr,
 		executionStateExpr,
 		displayNameExpr,
+		cardIDExpr,
+		cardRequestIDExpr,
 		suffix,
 	), nil
 }
@@ -422,6 +442,8 @@ type jobColumns struct {
 	hasTTY            bool
 	hasExecutionState bool
 	hasDisplayName    bool
+	hasCardID         bool
+	hasCardRequestID  bool
 }
 
 // inspectJobColumns runs PRAGMA table_info(jobs) once and checks membership
@@ -440,6 +462,8 @@ func inspectJobColumns(dbtx db.DBTX) (jobColumns, error) {
 		hasTTY:            present["tty"],
 		hasExecutionState: present["execution_state"],
 		hasDisplayName:    present["display_name"],
+		hasCardID:         present["card_id"],
+		hasCardRequestID:  present["card_request_id"],
 	}, nil
 }
 

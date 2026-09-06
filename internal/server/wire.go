@@ -1195,7 +1195,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// narrower interface for trigger_runs single-flight/execution-record
 		// read+write.
 		// Exec (api.ExecDispatcher) is deliberately NOT set here — see the
-		// assignment at sessionAdapter's construction below (mountRoutes)
+		// assignment at sessionAdapter's construction below (buildRuntime)
 		// for why it can't be until then.
 		Triggers: taskRepo,
 		// Signals: taskRepo already implements api.SignalStore (see
@@ -1357,7 +1357,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// callers. packs feeds two independent
 	// consumers below: apiGwCreds' service registry (via ResolveServices,
 	// replacing the old services-only-minus-uses view) and
-	// sessionDispatcherAdapter's connector-trigger resolution (mountRoutes).
+	// sessionDispatcherAdapter's connector-trigger resolution (buildRuntime).
 	packs, err := integrationpack.LoadPacks(boidCfg.Integrations.Dir)
 	if err != nil {
 		return nil, fmt.Errorf("daemon startup refused: load integration packs: %w", err)
@@ -1652,12 +1652,12 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// can't be a literal struct-construction cycle instead.
 	workflow.TaskCreator = taskSvc
 
-	// sessionAdapter is constructed here (not left to mountRoutes, which
-	// used to be the only consumer) because newBoidBuiltinExecutor's
-	// BoidOpAgentStart wiring, just below, needs it too — its three
-	// dependencies (projectSvc, runner, packs) are already in scope by this
-	// point in buildRuntime. mountRoutes reuses runtime.sessionAdapter
-	// instead of constructing a second, independent instance.
+	// sessionAdapter is constructed here, not in mountRoutes, because
+	// newBoidBuiltinExecutor's BoidOpAgentStart wiring, just below, needs it
+	// too — its three dependencies (projectSvc, runner, packs) are already
+	// in scope by this point in buildRuntime. mountRoutes reuses
+	// runtime.sessionAdapter instead of constructing a second, independent
+	// instance.
 	sessionAdapter := &sessionDispatcherAdapter{service: projectSvc, runner: runner, packs: packs}
 	// The trigger sweep loop dispatches a due trigger's exec job through
 	// the SAME api.ExecDispatcher.StartExec `boid exec` uses.
@@ -2209,6 +2209,15 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		}
 	}
 
+	// card_requests の実行枠解放・復旧走査ループ。専用の config は今のところ
+	// 持たない — 継続先の終端照合は時間ベースの解放とは別物なので、
+	// gcCfg.GC.Interval とは無関係に固定値で回す。
+	srv.cardRequestLifecycleLoop = &orchestrator.CardRequestLifecycleLoop{
+		DB:           srv.db,
+		Interval:     30 * time.Second,
+		InitialDelay: 10 * time.Second,
+	}
+
 	// card read surface. Mounted at its own root rather than under
 	// /api/tasks — see api.CardHandler's doc comment.
 	r.Mount("/api/cards", (&api.CardHandler{Service: runtime.workflow}).Routes())
@@ -2219,6 +2228,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// shape as TaskTriage/Actions/Triggers above use runtime.workflow's
 	// fields for.
 	r.Mount("/api/signals", (&api.SignalHandler{Store: runtime.taskRepo}).Routes())
+
+	// card_requests の運用者向け強制解除口。taskRepo はここでも
+	// api.CardRequestReleaseStore を直接満たす — Signals と同じ「専用
+	// service 型を挟まない」形。
+	r.Mount("/api/card-requests", (&api.CardRequestHandler{Store: runtime.taskRepo}).Routes())
 
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {

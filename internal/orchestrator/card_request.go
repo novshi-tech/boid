@@ -120,8 +120,17 @@ func CreateCardRequest(dbtx db.DBTX, req *CardRequest) error {
 	switch req.Status {
 	case "":
 		req.Status = CardRequestStatusQueued
-	case CardRequestStatusQueued, CardRequestStatusLaunching:
-		// allowed starting states
+	case CardRequestStatusQueued:
+		// allowed starting state
+	case CardRequestStatusLaunching:
+		// The launching fast path claims the slot in the same INSERT, so it
+		// must carry its launcher's job id atomically too — the same
+		// invariant ClaimQueuedCardRequests enforces for the queued->launching
+		// path below. A row must never be launching with no launcher of
+		// record (see BoidOpAgentStart's ownership check).
+		if req.LauncherJobID == "" {
+			return fmt.Errorf("create card request: launching fast path requires a launcher job id")
+		}
 	default:
 		return fmt.Errorf("create card request: invalid starting status %q", req.Status)
 	}
@@ -161,18 +170,28 @@ func CreateCardRequest(dbtx db.DBTX, req *CardRequest) error {
 
 // ClaimQueuedCardRequests snapshots every currently-queued request for
 // cardID (oldest first), promotes the oldest to launching (claiming the
-// card's shared slot), and folds the rest into it (status=folded,
-// folded_into=primary.id). A request created after this snapshot is not
-// part of it and stays queued for the next claim.
+// card's shared slot) while atomically stamping launcherJobID as its
+// owner, and folds the rest into it (status=folded, folded_into=primary.id).
+// A request created after this snapshot is not part of it and stays queued
+// for the next claim.
+//
+// launcherJobID must be non-empty: stamping it in the SAME statement that
+// promotes the row to launching is what closes the window where a row could
+// sit launching with no launcher of record (see BoidOpAgentStart's ownership
+// check, which now rejects an empty LauncherJobID rather than treating it as
+// unclaimed).
 //
 // Returns ErrNoQueuedCardRequests when cardID has no queued requests.
 // Returns ErrCardRequestSlotOccupied if another row for this card is
 // already launching/attached.
 //
 // Must be called within a transaction for atomicity (multiple statements).
-func ClaimQueuedCardRequests(dbtx db.DBTX, cardID string, def CardRequestDefinition) (primary *CardRequest, folded []*CardRequest, err error) {
+func ClaimQueuedCardRequests(dbtx db.DBTX, cardID, launcherJobID string, def CardRequestDefinition) (primary *CardRequest, folded []*CardRequest, err error) {
 	if cardID == "" {
 		return nil, nil, fmt.Errorf("claim queued card requests: card id must not be empty")
+	}
+	if launcherJobID == "" {
+		return nil, nil, fmt.Errorf("claim queued card requests: launcher job id must not be empty")
 	}
 	rows, err := dbtx.Query(
 		cardRequestSelectCols+` FROM card_requests WHERE card_id = ? AND status = ? ORDER BY created_at ASC, id ASC`,
@@ -192,9 +211,9 @@ func ClaimQueuedCardRequests(dbtx db.DBTX, cardID string, def CardRequestDefinit
 	now := time.Now().UTC()
 	head := pending[0]
 	res, err := dbtx.Exec(
-		`UPDATE card_requests SET status = ?, launched_command_key = ?, launched_label = ?, launched_run = ?, launched_version = ?, updated_at = ?
+		`UPDATE card_requests SET status = ?, launched_command_key = ?, launched_label = ?, launched_run = ?, launched_version = ?, launcher_job_id = ?, updated_at = ?
 		 WHERE id = ? AND status = ?`,
-		string(CardRequestStatusLaunching), def.CommandKey, def.Label, def.Run, def.Version, now,
+		string(CardRequestStatusLaunching), def.CommandKey, def.Label, def.Run, def.Version, launcherJobID, now,
 		head.ID, string(CardRequestStatusQueued),
 	)
 	if err != nil {
@@ -208,6 +227,7 @@ func ClaimQueuedCardRequests(dbtx db.DBTX, cardID string, def CardRequestDefinit
 	}
 	head.Status = CardRequestStatusLaunching
 	head.Launched = def
+	head.LauncherJobID = launcherJobID
 	head.UpdatedAt = now
 
 	rest := pending[1:]
@@ -223,22 +243,6 @@ func ClaimQueuedCardRequests(dbtx db.DBTX, cardID string, def CardRequestDefinit
 		r.UpdatedAt = now
 	}
 	return head, rest, nil
-}
-
-// SetCardRequestLauncherJobID records the launcher's own exec job id, once
-// dispatch succeeds. Only valid while the row is still launching.
-func SetCardRequestLauncherJobID(dbtx db.DBTX, id, jobID string) error {
-	if id == "" {
-		return fmt.Errorf("set card request launcher job id: id must not be empty")
-	}
-	res, err := dbtx.Exec(
-		`UPDATE card_requests SET launcher_job_id = ?, updated_at = ? WHERE id = ? AND status = ?`,
-		jobID, time.Now().UTC(), id, string(CardRequestStatusLaunching),
-	)
-	if err != nil {
-		return fmt.Errorf("set card request launcher job id: %w", err)
-	}
-	return rowsAffectedOrNotFoundOrInvalid(dbtx, res, id)
 }
 
 // AttachCardRequest records the continuation (task or session) a launcher

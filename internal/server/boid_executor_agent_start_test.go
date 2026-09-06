@@ -92,18 +92,24 @@ func TestBoidOpAgentStart_StaleLauncher_Rejected(t *testing.T) {
 	}
 }
 
-// TestBoidOpAgentStart_EmptyLauncherJobID_Allowed: LauncherJobID is not yet
-// wired by any production caller (SetCardRequestLauncherJobID), so an empty
-// value must not be treated as "owned by someone else".
-func TestBoidOpAgentStart_EmptyLauncherJobID_Allowed(t *testing.T) {
+// TestBoidOpAgentStart_EmptyLauncherJobID_Rejected: ClaimQueuedCardRequests
+// and the launching fast path now stamp launcher_job_id atomically with the
+// launching promotion (card_request.go), so a launching row with no
+// launcher of record can only mean it bypassed that invariant — reject
+// rather than treat it as unclaimed (the inverse of this op's old, buggy
+// behavior, which let an empty LauncherJobID through unconditionally).
+func TestBoidOpAgentStart_EmptyLauncherJobID_Rejected(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
 		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: ""},
 	}}
 	starter := &fakeSessionStarter{result: &api.StartSessionResult{JobID: "job-42"}}
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-whatever"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
-	if resp.ExitCode != 0 {
-		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
+	if resp.ExitCode == 0 {
+		t.Fatalf("ExitCode = 0, want non-zero for an empty launcher_job_id")
+	}
+	if len(starter.calls) != 0 {
+		t.Errorf("session dispatch calls = %d, want 0", len(starter.calls))
 	}
 }
 
@@ -113,11 +119,11 @@ func TestBoidOpAgentStart_EmptyLauncherJobID_Allowed(t *testing.T) {
 // can reverse-link the session back to this card_requests row.
 func TestBoidOpAgentStart_PropagatesCardContextOntoSession(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
-		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching},
+		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-current"},
 	}}
 	starter := &fakeSessionStarter{result: &api.StartSessionResult{JobID: "job-42"}}
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
-	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-current"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
 	if resp.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
 	}
@@ -136,11 +142,11 @@ func TestBoidOpAgentStart_PropagatesCardContextOntoSession(t *testing.T) {
 // would hold the card's execution slot forever.
 func TestBoidOpAgentStart_EventOrigin_Rejected(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
-		"req-1": {ID: "req-1", CardID: "card-1", CauseID: "signal-abc", Status: orchestrator.CardRequestStatusLaunching},
+		"req-1": {ID: "req-1", CardID: "card-1", CauseID: "signal-abc", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-current"},
 	}}
 	starter := &fakeSessionStarter{}
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
-	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-current"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero for an event-originated request")
 	}
@@ -154,11 +160,11 @@ func TestBoidOpAgentStart_EventOrigin_Rejected(t *testing.T) {
 
 func TestBoidOpAgentStart_InvalidHarness_Rejected(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
-		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching},
+		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-current"},
 	}}
 	starter := &fakeSessionStarter{}
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
-	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "bogus"})
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-current"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "bogus"})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero for an invalid harness_type")
 	}
@@ -175,10 +181,10 @@ func TestBoidOpAgentStart_NotLaunchable_Rejected(t *testing.T) {
 		orchestrator.CardRequestStatusFailed,
 	} {
 		reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
-			"req-1": {ID: "req-1", CardID: "card-1", Status: status},
+			"req-1": {ID: "req-1", CardID: "card-1", Status: status, LauncherJobID: "job-current"},
 		}}
 		exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, &fakeSessionStarter{})
-		resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+		resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-current"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
 		if resp.ExitCode == 0 {
 			t.Errorf("status=%q: ExitCode = 0, want non-zero (not launchable)", status)
 		}
@@ -190,11 +196,11 @@ func TestBoidOpAgentStart_NotLaunchable_Rejected(t *testing.T) {
 // records the continuation via AttachCardRequest.
 func TestBoidOpAgentStart_Dispatches_AndAttaches(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
-		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching},
+		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-current"},
 	}}
 	starter := &fakeSessionStarter{result: &api.StartSessionResult{JobID: "job-42"}}
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
-	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", ProjectID: "proj-1"}, &sandbox.BoidRequest{
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", ProjectID: "proj-1", JobID: "job-current"}, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpAgentStart,
 		ProjectID:   "proj-1",
 		HarnessType: "claude",
@@ -231,11 +237,12 @@ func TestBoidOpAgentStart_IdempotentRetry_ReturnsExistingSession(t *testing.T) {
 			ID: "req-1", CardID: "card-1",
 			Status:     orchestrator.CardRequestStatusAttached,
 			TargetKind: orchestrator.CardRequestTargetKindSession, TargetID: "job-original",
+			LauncherJobID: "job-current",
 		},
 	}}
 	starter := &fakeSessionStarter{}
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
-	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-current"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
 	if resp.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
 	}
@@ -256,11 +263,12 @@ func TestBoidOpAgentStart_AlreadyAttachedToTask_Rejected(t *testing.T) {
 			ID: "req-1", CardID: "card-1",
 			Status:     orchestrator.CardRequestStatusAttached,
 			TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "task-1",
+			LauncherJobID: "job-current",
 		},
 	}}
 	starter := &fakeSessionStarter{}
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
-	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-current"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero for a task/session target conflict")
 	}
@@ -280,7 +288,7 @@ func TestBoidOpAgentStart_ConcurrentAttachRace_ReturnsWinningTarget(t *testing.T
 			// Still "launching" at the pre-dispatch check — the race is a
 			// SECOND caller for the same request winning AttachCardRequest's
 			// CAS between this call's own check and its own attach attempt.
-			"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching},
+			"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-current"},
 		},
 		attachErr: orchestrator.ErrCardRequestInvalidTransition,
 		winnerAfterAttachErr: &orchestrator.CardRequest{
@@ -292,7 +300,7 @@ func TestBoidOpAgentStart_ConcurrentAttachRace_ReturnsWinningTarget(t *testing.T
 	}
 	starter := &fakeSessionStarter{result: &api.StartSessionResult{JobID: "job-orphan"}}
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
-	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-current"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
 	if resp.ExitCode != 0 {
 		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
 	}
@@ -307,13 +315,13 @@ func TestBoidOpAgentStart_ConcurrentAttachRace_ReturnsWinningTarget(t *testing.T
 func TestBoidOpAgentStart_AttachFailure_SurfacesError(t *testing.T) {
 	reader := &fakeCardRequestReader{
 		rows: map[string]*orchestrator.CardRequest{
-			"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching},
+			"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-current"},
 		},
 		attachErr: errors.New("db is on fire"),
 	}
 	starter := &fakeSessionStarter{result: &api.StartSessionResult{JobID: "job-42"}}
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
-	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-current"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero when recording the association fails")
 	}
@@ -324,11 +332,11 @@ func TestBoidOpAgentStart_AttachFailure_SurfacesError(t *testing.T) {
 
 func TestBoidOpAgentStart_SessionDispatchFailure_Propagates(t *testing.T) {
 	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
-		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching},
+		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-current"},
 	}}
 	starter := &fakeSessionStarter{err: errors.New("dispatch exploded")}
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
-	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-current"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
 	if resp.ExitCode == 0 {
 		t.Fatalf("ExitCode = 0, want non-zero when session dispatch itself fails")
 	}
