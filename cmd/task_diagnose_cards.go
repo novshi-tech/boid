@@ -48,6 +48,13 @@ func runTaskDiagnoseCards(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list cards: %w", err)
 	}
 
+	// One bulk call instead of one GET per card (GET /api/card-requests with
+	// no card_id lists every currently active row across every card).
+	activeByCard, err := activeCardRequestIDsByCard(c)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: list active card_requests: %v\n", err)
+	}
+
 	var rows []diagnoseCardsRow
 	for _, t := range tasks {
 		if t.Card == nil {
@@ -79,10 +86,7 @@ func runTaskDiagnoseCards(cmd *cobra.Command, args []string) error {
 		// (launching/attached) card_requests row occupies the SAME shared
 		// slot without ever showing up as a child — surface it too, or an
 		// operator sees a "free" card that a retry would still reject.
-		activeRequestID, err := activeCardRequestID(c, t.ID)
-		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: task %s: list card_requests: %v\n", t.ID, err)
-		}
+		activeRequestID := activeByCard[t.ID]
 
 		if count <= 1 && activeRequestID == "" {
 			continue
@@ -114,7 +118,7 @@ func runTaskDiagnoseCards(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "%-36s %-9s %-6d %-10d %-38s %v\n", r.TaskID, r.Status, r.UnresolvedChildren, r.OpenChildTaskCount, r.ActiveCardRequest, r.UnresolvedChildIDs)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "\nresolve extra children by dropping all but one: boid action send --task <task_id> --type child_dropped --payload '{\"id\":\"<child_id>\",\"reason\":\"...\"}'")
-		fmt.Fprintln(cmd.OutOrStdout(), "resolve a stuck card_request: boid action send POST /api/card-requests/<id>/release (see docs)")
+		fmt.Fprintln(cmd.OutOrStdout(), "resolve a stuck card_request: boid task release-card-request <request_id>")
 		return nil
 	})
 }
@@ -123,20 +127,23 @@ func runTaskDiagnoseCards(cmd *cobra.Command, args []string) error {
 // fields this command reads.
 type cardRequestListEntry struct {
 	ID     string `json:"id"`
+	CardID string `json:"card_id"`
 	Status string `json:"status"`
 }
 
-// activeCardRequestID returns cardID's currently launching/attached
-// card_requests id, if any, via GET /api/card-requests?card_id=<id>.
-func activeCardRequestID(c *client.Client, cardID string) (string, error) {
+// activeCardRequestIDsByCard returns, for every card with a currently
+// launching/attached card_requests row, that row's id — one bulk
+// GET /api/card-requests (no card_id) instead of one GET per card.
+func activeCardRequestIDsByCard(c *client.Client) (map[string]string, error) {
 	var rows []cardRequestListEntry
-	if err := c.Do("GET", "/api/card-requests?card_id="+url.QueryEscape(cardID), nil, &rows); err != nil {
-		return "", err
+	if err := c.Do("GET", "/api/card-requests", nil, &rows); err != nil {
+		return nil, err
 	}
+	byCard := make(map[string]string, len(rows))
 	for _, r := range rows {
 		if r.Status == "launching" || r.Status == "attached" {
-			return r.ID, nil
+			byCard[r.CardID] = r.ID
 		}
 	}
-	return "", nil
+	return byCard, nil
 }

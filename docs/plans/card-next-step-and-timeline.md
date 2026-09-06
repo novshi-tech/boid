@@ -546,6 +546,18 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
 - 終端 card の**手動**コマンド提供範囲。自動起動は parked/working に限ると確定（§4.6）。
   自動 reopen はせず必要なら Reopen を提案する原則は維持。
 - 履歴 snapshot と GC の保持範囲、既存履歴の再構成限界。タイムゾーンは初期版サーバ TZ で確定（§5.4）。
+- **PR-2d-4 で確定: 直接 `--parent <card>` 実行タスク作成パス（`createExecutionTask`）の
+  read-then-write。`card_requests` 行を持たない create（`CardRequestID==""`）は
+  再チェックと INSERT を同一 `WithinTx` に閉じ、RunCardCommandAsHuman/acceptGo の予約と
+  完全に調停する（`TaskAppService.Tx`、`internal/api/task_create.go`）。
+  `CardRequestID!=""` の経路（launcher/Go 自身の継続 create、
+  `CreateTaskLinkedToCardRequest` が既にそれ自体を原子的に行う）は対象外のまま —
+  同じ呼び出し内で二重に `WithinTx` を開くと `SetMaxOpenConns(1)` 下でデッドロックする
+  ため、既存の非トランザクション事前チェック（自分自身の予約を保持している前提）を
+  維持する。この経路の事前チェックと予約 INSERT の間の窓は本 PR の対象外の既知の
+  残存ギャップとして記録するのみ（acceptGo 自身の `unresolvedCount` 事前チェックも
+  同種の非トランザクション読みを経由しており、根絶するには acceptGo 側の設計変更が
+  要る）。
 
 これらは §4 の契約・§6 の対処を前提に、Gate A と各実装 PR で確定する。
 単一ユーザーの利用を前提に、対話注入・分散ロック・汎用 DAG scheduler は追加しない。

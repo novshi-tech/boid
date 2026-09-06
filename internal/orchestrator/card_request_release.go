@@ -145,6 +145,15 @@ func continuationTerminalOutcome(dbtx db.DBTX, req *CardRequest) (finished, ok b
 			return false, false, nil
 		}
 	default:
+		// AttachCardRequest only ever accepts CardRequestTargetKindTask/
+		// Session, so a live attached row should never reach here — but
+		// treating an unrecognized kind as "still running" the same as a
+		// genuinely live continuation would leave it silently stuck forever
+		// (never re-checked at any different outcome), the exact failure
+		// mode this function exists to avoid for a deleted target. Warn so
+		// the stall is at least observable instead of silent.
+		slog.Warn("continuation terminal outcome: unrecognized target_kind, treating as still running (will retry every pass, never resolves on its own)",
+			"request_id", req.ID, "target_kind", req.TargetKind, "target_id", req.TargetID)
 		return false, false, nil
 	}
 }

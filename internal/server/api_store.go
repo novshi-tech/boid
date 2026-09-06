@@ -47,8 +47,11 @@ func (s apiTxStore) CountActiveCardRequests(cardID string) (int, error) {
 }
 
 // CreateCardRequest / FailCardRequest / ListCardRequestsByCard back a
-// transactional slot claim (RunCardCommand's hole-B fix and acceptGo's own
-// Go reservation, internal/api/workflow_card.go and card_command_launcher.go).
+// transactional slot claim — both RunCardCommandAsHuman's own reservation
+// (card_command_launcher.go) and acceptGo's Go reservation
+// (workflow_card.go) claim card_requests's shared execution slot inside the
+// same transaction as their occupancy re-check, so the two arbitrate
+// through one atomic INSERT rather than a separate check-then-write.
 func (s apiTxStore) CreateCardRequest(req *orchestrator.CardRequest) error {
 	return s.tasks.CreateCardRequest(req)
 }

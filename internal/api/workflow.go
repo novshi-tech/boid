@@ -87,9 +87,9 @@ type TaskWorkflowService struct {
 	// is entirely unaffected either way.
 	Signals SignalStore
 
-	// CardRequests backs RunCardCommand's card_requests slot claim/release
+	// CardRequests backs RunCardCommandAsHuman's card_requests slot claim/release
 	// (card_command_launcher.go). Nil is tolerated the same way Triggers/
-	// Exec/Signals above are — RunCardCommand returns "not configured"
+	// Exec/Signals above are — RunCardCommandAsHuman returns "not configured"
 	// rather than panicking when unwired.
 	CardRequests CardCommandLauncherStore
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/client"
@@ -116,7 +117,7 @@ func TestTaskDiagnoseCards_ActiveCardRequest_FlaggedEvenWithNoUnresolvedChildren
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Query().Get("card_id") != "":
+		case strings.HasPrefix(r.URL.Path, "/api/card-requests"):
 			fmt.Fprint(w, `[{"id":"req-1","card_id":"card-1","status":"launching"}]`)
 		case r.URL.Query().Get("parent_id") != "":
 			fmt.Fprint(w, `[]`)

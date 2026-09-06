@@ -269,24 +269,6 @@ func (r *TaskRepository) CreateCardRequest(req *CardRequest) error {
 	return CreateCardRequest(r.db, req)
 }
 
-// ClaimQueuedCardRequests backs a card command launcher's slot claim —
-// multiple statements (promote + fold) that must land together, same
-// InTxDB-over-raw-*sql.DB shape as ForceReleaseCardRequest above.
-func (r *TaskRepository) ClaimQueuedCardRequests(cardID, launcherJobID string, def CardRequestDefinition) (*CardRequest, []*CardRequest, error) {
-	conn, ok := r.db.(*sql.DB)
-	if !ok {
-		return ClaimQueuedCardRequests(r.db, cardID, launcherJobID, def)
-	}
-	var primary *CardRequest
-	var folded []*CardRequest
-	err := db.InTxDB(conn, func(tx db.DBTX) error {
-		var err error
-		primary, folded, err = ClaimQueuedCardRequests(tx, cardID, launcherJobID, def)
-		return err
-	})
-	return primary, folded, err
-}
-
 // FailCardRequest backs a card command launcher's slot release on dispatch
 // failure — two UPDATEs (fail + release folded siblings) that must land
 // together, same InTxDB-over-raw-*sql.DB shape as ForceReleaseCardRequest.
@@ -311,6 +293,12 @@ func (r *TaskRepository) CountActiveCardRequests(cardID string) (int, error) {
 // single read, no transaction needed.
 func (r *TaskRepository) ListCardRequestsByCard(cardID string) ([]*CardRequest, error) {
 	return ListCardRequestsByCard(r.db, cardID)
+}
+
+// ListActiveCardRequests backs `boid task diagnose-cards`' bulk lookup of
+// every card with an active request — a single read, no transaction needed.
+func (r *TaskRepository) ListActiveCardRequests() ([]*CardRequest, error) {
+	return ListActiveCardRequests(r.db)
 }
 
 // ReleaseCardRequestForTerminalTarget backs finalizeTerminal's immediate

@@ -125,6 +125,29 @@ card_commands:
 	}
 }
 
+// TestReadProjectMeta_CardCommands_ReservedGoKey_RejectedAtLoadTime pins that
+// a project.yaml cannot declare a card_commands key equal to
+// CardRequestCommandKeyGo — that value is reserved to mark acceptGo's own
+// card_requests reservation, and letting a project command collide with it
+// would make ReconcileLaunchingCardRequests's Go skip predicate ambiguous.
+func TestReadProjectMeta_CardCommands_ReservedGoKey_RejectedAtLoadTime(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectYAML(t, dir, `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev: {}
+card_commands:
+  __go__:
+    label: Run
+    run: python3 scripts/card_review.py
+`)
+	_, err := projectspec.ReadProjectMeta(dir)
+	if err == nil {
+		t.Fatal("expected error for card_commands key reserved for Go, got nil")
+	}
+}
+
 func TestReadProjectMeta_CardCommands_WhitespaceOnlyLabel_RejectedAtLoadTime(t *testing.T) {
 	dir := t.TempDir()
 	writeProjectYAML(t, dir, `
