@@ -341,6 +341,28 @@ func TestBuildSessionJobSpec_SignalServiceConnector_Passthrough(t *testing.T) {
 	}
 }
 
+// TestBuildSessionJobSpec_CardIDCardRequestID_Passthrough pins that a card
+// command's session continuation carries its card context onto the
+// resulting JobSpec (and so onto the token via Runner.Dispatch) — required
+// so a daemon-restart recovery scan can reverse-link the session back to
+// its card_requests row. Empty by default for every ordinary session.
+func TestBuildSessionJobSpec_CardIDCardRequestID_Passthrough(t *testing.T) {
+	stubSessionBaseBranch(t, "main")
+
+	in := sampleSessionInput()
+	spec := mustBuildSessionJobSpec(t, in)
+	if spec.CardID != "" || spec.CardRequestID != "" {
+		t.Errorf("CardID/CardRequestID = %q/%q, want empty by default", spec.CardID, spec.CardRequestID)
+	}
+
+	in.CardID = "card-1"
+	in.CardRequestID = "req-1"
+	spec = mustBuildSessionJobSpec(t, in)
+	if spec.CardID != "card-1" || spec.CardRequestID != "req-1" {
+		t.Errorf("CardID/CardRequestID = %q/%q, want card-1/req-1", spec.CardID, spec.CardRequestID)
+	}
+}
+
 // TestBuildSessionJobSpec_ConnectorPolicyTrue_ForcesHostCommandsEmpty pins a
 // blocker found in code review (Q27): internal/sandbox/broker.go's Handle
 // dispatches any non-boid/non-fetch command via entry.Commands — a

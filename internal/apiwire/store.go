@@ -80,6 +80,16 @@ type StartSessionRequest struct {
 	// DisplayName is the human-readable session label persisted to
 	// jobs.display_name. Empty falls back to "<harness> session".
 	DisplayName string `json:"display_name,omitempty"`
+
+	// CardID / CardRequestID mark this session as a card command's
+	// continuation, propagated onto the resulting JobSpec/token so a
+	// daemon-restart recovery scan can reverse-link it to its
+	// card_requests row. Deliberately untagged for JSON (no external
+	// caller may set these on POST /api/sessions or the project-scoped
+	// route) — only boid_executor's BoidOpAgentStart case constructs a
+	// StartSessionRequest with these set, from its own token context.
+	CardID        string `json:"-"`
+	CardRequestID string `json:"-"`
 }
 
 // StartSessionResult is the response shape for POST /api/sessions and the

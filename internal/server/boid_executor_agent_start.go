@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -50,6 +51,15 @@ func (e *boidBuiltinExecutor) executeAgentStart(goCtx context.Context, ctx sandb
 	if ctx.CardID == "" || row.CardID != ctx.CardID {
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid agent start: token card_id does not match the request's card_id"}
 	}
+	// A stale launcher from a superseded attempt (e.g. one RetryCardRequest
+	// re-queued and re-claimed under a fresh launcher job after this one
+	// timed out but kept running) must not attach to the CURRENT attempt
+	// just because it still holds a token naming the same request id.
+	// Empty LauncherJobID means no launcher has claimed ownership yet, so
+	// that case is allowed through unchanged.
+	if row.LauncherJobID != "" && row.LauncherJobID != ctx.JobID {
+		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid agent start: this job is no longer the request's current launcher"}
+	}
 	// A request caused by an internal event must never reach a session: an
 	// unattended session never terminates on its own, so it would hold the
 	// card's single execution slot forever. Only a human-issued command may
@@ -78,27 +88,49 @@ func (e *boidBuiltinExecutor) executeAgentStart(goCtx context.Context, ctx sandb
 	}
 
 	result, err := e.sessionStarter.StartSession(goCtx, api.StartSessionRequest{
-		ProjectID:   req.ProjectID,
-		HarnessType: req.HarnessType,
-		Instruction: req.Instruction,
-		Readonly:    req.Readonly,
-		Model:       req.Model,
-		DisplayName: req.DisplayName,
+		ProjectID:     req.ProjectID,
+		HarnessType:   req.HarnessType,
+		Instruction:   req.Instruction,
+		Readonly:      req.Readonly,
+		Model:         req.Model,
+		DisplayName:   req.DisplayName,
+		CardID:        ctx.CardID,
+		CardRequestID: ctx.CardRequestID,
 	})
 	if err != nil {
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid agent start: %s", err)}
 	}
+	if result == nil {
+		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid agent start: session dispatch returned no result"}
+	}
 
 	if attachErr := e.cardRequests.AttachCardRequest(ctx.CardRequestID, orchestrator.CardRequestTargetKindSession, result.JobID); attachErr != nil {
-		if errors.Is(attachErr, orchestrator.ErrCardRequestInvalidTransition) {
-			// A concurrent call already attached this request first — the
-			// session we just started is an orphan. Report the WINNING
-			// continuation rather than a target the store never recorded.
-			if existing, gerr := e.cardRequests.GetCardRequest(ctx.CardRequestID); gerr == nil && existing.TargetKind == orchestrator.CardRequestTargetKindSession {
-				return agentStartSuccess(existing.TargetID)
-			}
-		}
-		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid agent start: session %s started but recording its association failed: %s", result.JobID, attachErr)}
+		return e.handleAgentStartAttachFailure(ctx.CardRequestID, result.JobID, attachErr)
 	}
 	return agentStartSuccess(result.JobID)
+}
+
+// handleAgentStartAttachFailure runs when the session this call just
+// dispatched (orphanJobID, now referenced by no card_requests row) lost the
+// race to record itself. It reports the WINNING continuation when one
+// exists, and otherwise a message naming both the orphan and the actual
+// cause rather than the generic store error, and always logs the orphan
+// since nothing else references it.
+func (e *boidBuiltinExecutor) handleAgentStartAttachFailure(requestID, orphanJobID string, attachErr error) *sandbox.ExecResponse {
+	if errors.Is(attachErr, orchestrator.ErrCardRequestInvalidTransition) {
+		existing, gerr := e.cardRequests.GetCardRequest(requestID)
+		switch {
+		case gerr != nil:
+			slog.Warn("boid agent start: session orphaned; re-fetching the request that beat it also failed", "job_id", orphanJobID, "request_id", requestID, "error", gerr)
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid agent start: session %s started but lost the attach race, and the winning request could not be re-read: %s", orphanJobID, gerr)}
+		case existing.TargetKind == orchestrator.CardRequestTargetKindSession:
+			slog.Warn("boid agent start: session orphaned by a concurrent attach", "job_id", orphanJobID, "request_id", requestID, "winning_job_id", existing.TargetID)
+			return agentStartSuccess(existing.TargetID)
+		default:
+			slog.Warn("boid agent start: session orphaned; the request was already attached to a different kind of continuation", "job_id", orphanJobID, "request_id", requestID, "target_kind", existing.TargetKind)
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid agent start: session %s started but the request is already attached to a %s, not a session", orphanJobID, existing.TargetKind)}
+		}
+	}
+	slog.Warn("boid agent start: session orphaned; recording its association failed", "job_id", orphanJobID, "request_id", requestID, "error", attachErr)
+	return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid agent start: session %s started but recording its association failed: %s", orphanJobID, attachErr)}
 }

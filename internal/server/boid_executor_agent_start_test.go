@@ -73,6 +73,63 @@ func TestBoidOpAgentStart_MismatchedCardID_Rejected(t *testing.T) {
 	}
 }
 
+// TestBoidOpAgentStart_StaleLauncher_Rejected pins that a job whose token
+// names this card_requests id but is NOT (or no longer is) its current
+// launcher is refused — otherwise a superseded launcher whose container
+// outlived a Retry could hijack the fresh attempt's slot.
+func TestBoidOpAgentStart_StaleLauncher_Rejected(t *testing.T) {
+	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
+		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-current"},
+	}}
+	starter := &fakeSessionStarter{}
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-stale"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	if resp.ExitCode == 0 {
+		t.Fatalf("ExitCode = 0, want non-zero for a stale launcher")
+	}
+	if len(starter.calls) != 0 {
+		t.Errorf("session dispatch calls = %d, want 0", len(starter.calls))
+	}
+}
+
+// TestBoidOpAgentStart_EmptyLauncherJobID_Allowed: LauncherJobID is not yet
+// wired by any production caller (SetCardRequestLauncherJobID), so an empty
+// value must not be treated as "owned by someone else".
+func TestBoidOpAgentStart_EmptyLauncherJobID_Allowed(t *testing.T) {
+	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
+		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: ""},
+	}}
+	starter := &fakeSessionStarter{result: &api.StartSessionResult{JobID: "job-42"}}
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-whatever"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	if resp.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// TestBoidOpAgentStart_PropagatesCardContextOntoSession pins that the
+// created session's own StartSessionRequest carries this launcher's
+// CardID/CardRequestID, so its JobSpec/token (and so a crash-recovery scan)
+// can reverse-link the session back to this card_requests row.
+func TestBoidOpAgentStart_PropagatesCardContextOntoSession(t *testing.T) {
+	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
+		"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching},
+	}}
+	starter := &fakeSessionStarter{result: &api.StartSessionResult{JobID: "job-42"}}
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	if resp.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
+	}
+	if len(starter.calls) != 1 {
+		t.Fatalf("session dispatch calls = %d, want 1", len(starter.calls))
+	}
+	got := starter.calls[0]
+	if got.CardID != "card-1" || got.CardRequestID != "req-1" {
+		t.Errorf("StartSessionRequest CardID/CardRequestID = %q/%q, want card-1/req-1", got.CardID, got.CardRequestID)
+	}
+}
+
 // TestBoidOpAgentStart_EventOrigin_Rejected pins the core rule: a request
 // caused by an internal event (non-empty cause_id) must never reach a
 // session, since an unattended session never terminates on its own and

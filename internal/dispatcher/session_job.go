@@ -87,6 +87,14 @@ type SessionJobInput struct {
 	// comment.
 	SignalService   string
 	SignalConnector string
+
+	// CardID / CardRequestID are copied straight onto
+	// JobSpec.CardID/CardRequestID when this session is a card command's
+	// continuation (set only by sessionDispatcherAdapter.StartSession from
+	// a StartSessionRequest carrying them — see that type's own doc
+	// comment). Empty for every ordinary session.
+	CardID        string
+	CardRequestID string
 }
 
 // BuildSessionJobSpec converts a resolved SessionJobInput into a JobSpec
@@ -168,6 +176,8 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 		APIGatewayServices: input.APIGatewayServices,
 		SignalService:      input.SignalService,
 		SignalConnector:    input.SignalConnector,
+		CardID:             input.CardID,
+		CardRequestID:      input.CardRequestID,
 	}
 	// Instruction is delivered through Env (BOID_USER_ANSWER), which the
 	// runner-inner-child threads into RunContext.UserAnswer. For the claude

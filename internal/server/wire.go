@@ -1867,6 +1867,8 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 		AdditionalBindings: meta.AdditionalBindings,
 		SecretNamespace:    meta.SecretNamespace,
 		DockerEnabled:      meta.Capabilities.Docker != nil,
+		CardID:             req.CardID,
+		CardRequestID:      req.CardRequestID,
 	})
 	if err != nil {
 		return nil, &api.StatusError{Code: http.StatusBadRequest, Message: err.Error()}
