@@ -36,6 +36,8 @@ task_behaviors:
 | `session_behaviors` | map (string → SessionBehavior) | いいえ | session (task を伴わない対話セッション) 起動時の既定 `harness_type`/`model` を用途キーごとに設定する辞書。`task_behaviors` とは別物 — 詳細は [`session_behaviors.<name>`](#session_behaviorsname) を参照 |
 | `default_task_behavior` | string | いいえ | `boid task create` で `--behavior` を省略したときに使う behavior の名前。未指定の場合は `task_behaviors` に `supervisor` があれば暗黙で使う (WARN あり)、なければエラー |
 | `triggers` | list of Trigger | いいえ | daemon が定期的に起こす readonly exec job の一覧 (docs/plans/ingestion-identity.md PR-4/B-5)。`task_behaviors` とは独立したトップレベルのフィールド。詳細は [`triggers[]`](#triggers) を参照 |
+| `card_commands` | map (string → CardCommand) | いいえ | card 上のコマンドボタンの宣言。詳細は [`card_commands` / `card_events`](#card_commands--card_events) を参照 |
+| `card_events` | CardEventsConfig | いいえ | 内部イベントで自動起動する `card_commands` のキー。同上 |
 | `kits` | — | **撤去** | ロード時に reject される (`project.yaml: top-level "kits" is no longer supported`)。 kit 機構自体は Phase 2.5 PR6 で退役済み、 *workspace* 側の `kits` フィールド (`WorkspaceMeta.Kits`) も Phase 2.5 PR7 でコードから完全撤去 (`docs/plans/workspace-db-consolidation.md` 参照)。 `host_commands` / `env` を workspace に直接設定すること (`additional_bindings` は Phase 4 PR4 で撤去済み — [workspace home の `init.sh`](../guide/workspace-home.md) を使う)。 詳細は下記 [`KitRef`](#kitref) と [Kit 作者向け概要](../kit-authoring/overview.md) を参照 |
 | `host_commands` | — | **撤去** | ロード時に reject される。 workspace に設定する (`boid workspace create/edit`) — ただし *workspace* の `host_commands:` は参照 **名前** のリストであり、 下記 [HostCommands](#hostcommands) で説明するマップ形式ではない点に注意 (そのマップ形式は `kit.yaml` と daemon-wide の `~/.config/boid/host_commands.yaml` レジストリで使われ、 workspace の名前はそのレジストリを参照して解決される)。 [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照 |
 | `additional_bindings` | — | **撤去** | `project.yaml` の top-level ではロード時に reject される。 **`workspace.yaml` 側の `additional_bindings` も `docs/plans/home-workspace-volume.md` Phase 4 PR4 で撤去済み** — key 自体はパースされる (エラーにはならない) が値は無視され、 サンドボックスに反映されない。 workspace 側でツールチェーンを永続化したい場合は [workspace home の `init.sh`](../guide/workspace-home.md) を使うこと。 詳細は [BindMount](#bindmount) 参照 |
@@ -269,6 +271,32 @@ triggers:
 - **「未 ack」の定義**: attempts が上限 (`MaxSignalAttempts`) に達し dead-letter 化した Signal はここで言う「未 ack」に含まれない — dead-letter だけが残る workspace で `on: signals` トリガが永久に発火し続けることはない
 
 デバッグ用の手動起動口は `boid trigger run -p <project-ref> <name>` (`every` の経過に加えて `on: signals` の Signal 有無判定もバイパスするが、single-flight は尊重する) — 詳細は [CLI リファレンス](cli.md#サンドボックス操作) を参照。
+
+## `card_commands` / `card_events`
+
+card 詳細画面に表示するコマンドボタンの宣言です (docs/plans/card-next-step-and-timeline.md §4.2)。キーはワークスペースが決める任意の安定した名前で、daemon はキー自体の意味を解釈しません。`triggers[]` と同じくトップレベルのフィールドです。
+
+```yaml
+card_commands:
+  discuss:
+    label: Discuss
+    run: python3 scripts/card_discuss.py
+  review:
+    label: Run
+    run: python3 scripts/card_review.py
+card_events:
+  command: review
+```
+
+| キー | 型 | 必須 | 役割 |
+|---|---|---|---|
+| `card_commands.<key>.label` | string | はい | UI に出すボタンのラベル (ワークスペース定義の任意の英語文言) |
+| `card_commands.<key>.run` | string | はい | サンドボックス内で `sh -c` に渡されるコマンド文字列 (`triggers[].run` と同じ実行モデル) |
+| `card_events.command` | string | いいえ | 内部イベントで自動起動する `card_commands` のキー。宣言する場合は `card_commands` に実在するキーでなければならず、存在しなければロード時にエラー |
+
+**現状の実装範囲**: このセクションは project.yaml の宣言と load 時の shape 検証 (`card_commands.<key>` の label/run 必須、`card_events.command` の参照先存在チェック) のみを提供します。daemon が実際に `run:` を card 文脈付きの trigger run として起動する経路、`boid agent start` op、request store 等はまだ実装されていません — card_commands を宣言しても現時点では何も起動されません。
+
+**既知の制約**: `card_commands` は Go の map として保持されるため、YAML に書いた定義順は失われます。将来 UI がボタンを定義順に並べる要件を持つ場合、この宣言を配列形式に変更する破壊的なスキーマ変更が必要になります。今回は project.yaml の提案スキーマ自体が未確定 (このドキュメントの記法は変更され得る) であることを踏まえ、意図的に先送りしています。
 
 ## `signals.sources[]`
 

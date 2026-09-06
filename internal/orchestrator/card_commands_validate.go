@@ -1,22 +1,29 @@
 package orchestrator
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
-// ValidateCardCommands checks a project.yaml `card_commands:` /
-// `card_events:` declaration at LOAD time (called from
-// parseProjectMetaBytes, spec_loader.go), mirroring ValidateTriggers for
-// `triggers[]`. A malformed declaration must fail `boid project add`/
-// `fetch` loudly rather than surface later as a silently-broken command
-// button or a card_events reference that never fires.
-func ValidateCardCommands(commands map[string]CardCommand, events CardEvents) error {
-	for key, cmd := range commands {
-		if key == "" {
+// ValidateCardCommands checks a project.yaml card_commands: / card_events:
+// declaration at load time, mirroring ValidateTriggers for triggers[].
+func ValidateCardCommands(commands map[string]CardCommand, events CardEventsConfig) error {
+	keys := make([]string, 0, len(commands))
+	for key := range commands {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		cmd := commands[key]
+		if strings.TrimSpace(key) == "" {
 			return fmt.Errorf("project.yaml: card_commands: key must not be empty")
 		}
-		if cmd.Label == "" {
+		if strings.TrimSpace(cmd.Label) == "" {
 			return fmt.Errorf("project.yaml: card_commands.%s: label must not be empty", key)
 		}
-		if cmd.Run == "" {
+		if strings.TrimSpace(cmd.Run) == "" {
 			return fmt.Errorf("project.yaml: card_commands.%s: run must not be empty", key)
 		}
 	}
