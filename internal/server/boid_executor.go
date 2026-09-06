@@ -314,10 +314,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// its card_requests row's slot (mirrors executeAgentStart's
 		// ownership check) — only when this job actually owns that request.
 		// A card-type create (initial_status=parked) is never a valid
-		// continuation and must not silently consume the slot. A launcher's
-		// own JobSpec.CardRequestID never propagates to the continuation
-		// task's LATER, ordinary child creations, so this branch is
-		// naturally unreachable for those.
+		// continuation and must not silently consume the slot. A TASK
+		// continuation's later, ordinary child creations never carry this
+		// same CardRequestID again — but a SESSION continuation's token
+		// does (StartSessionRequest.CardRequestID), which is exactly the
+		// routine, expected case the `else if` below excludes from its warn.
 		if ctx.CardRequestID != "" && createReq.ParentID == "" && createReq.InitialStatus != "parked" && e.cardRequests != nil {
 			row, err := e.cardRequests.GetCardRequest(ctx.CardRequestID)
 			if err != nil {
@@ -331,7 +332,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 					// Default so a retried launcher converges via get-or-create.
 					createReq.Ref = ctx.CardRequestID
 				}
-			} else {
+			} else if !(row.Status == orchestrator.CardRequestStatusAttached &&
+				row.TargetKind == orchestrator.CardRequestTargetKindSession && row.TargetID == ctx.JobID) {
+				// Exclude the routine case: a card session's own token keeps
+				// naming its (now-attached, not launching) CardRequestID for
+				// every later create it makes — not an ownership mismatch.
 				slog.Warn("boid task create: job carries card request context but does not own it; creating without attaching",
 					"card_request_id", ctx.CardRequestID, "job_id", ctx.JobID, "request_launcher_job_id", row.LauncherJobID, "request_status", row.Status)
 			}

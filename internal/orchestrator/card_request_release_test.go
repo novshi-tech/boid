@@ -4,6 +4,7 @@ package orchestrator_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -404,6 +405,67 @@ func TestForceReleaseCardRequest_ReleasesRegardlessOfContinuationState(t *testin
 	}
 }
 
+// TestForceReleaseCardRequest_DoesNotRequeueFoldedSiblings pins the
+// force-release/abort asymmetry: an operator force-releasing a stuck slot
+// means "stop this, don't restart it" — unlike FailCardRequest's default
+// requeue behavior (TestFailCardRequest_ReleasesFoldedRequestsBackToQueued),
+// a sibling folded into the force-released row must NOT come back to
+// queued, or the very next claim would re-launch the card the operator just
+// stopped. It goes to failed instead, same as the primary.
+func TestForceReleaseCardRequest_DoesNotRequeueFoldedSiblings(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	first := &orchestrator.CardRequest{CardID: cardID}
+	second := &orchestrator.CardRequest{CardID: cardID}
+	if err := orchestrator.CreateCardRequest(d.Conn, first); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := orchestrator.CreateCardRequest(d.Conn, second); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+
+	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{})
+	if err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	if len(folded) != 1 {
+		t.Fatalf("folded = %d, want 1", len(folded))
+	}
+
+	if err := orchestrator.ForceReleaseCardRequest(d.Conn, primary.ID, "operator says stuck"); err != nil {
+		t.Fatalf("ForceReleaseCardRequest: %v", err)
+	}
+
+	got, err := orchestrator.GetCardRequest(d.Conn, second.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest(second): %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusFailed {
+		t.Errorf("second.Status = %q, want failed — force-release must not requeue a folded sibling", got.Status)
+	}
+	if got.FoldedInto != "" {
+		t.Errorf("second.FoldedInto = %q, want cleared", got.FoldedInto)
+	}
+	if got.Error == "operator says stuck" || !strings.Contains(got.Error, primary.ID) {
+		t.Errorf("second.Error = %q, want text naming %q as what was force-released, not the verbatim reason (a reader must not mistake this sibling for the row the operator actually meant)", got.Error, primary.ID)
+	}
+
+	primaryGot, err := orchestrator.GetCardRequest(d.Conn, primary.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest(primary): %v", err)
+	}
+	if primaryGot.Status != orchestrator.CardRequestStatusFailed || primaryGot.Error != "operator says stuck" {
+		t.Errorf("primary = %+v, want status=failed with the operator's reason", primaryGot)
+	}
+
+	// The slot is free, but nothing is queued to restart the card with.
+	if _, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-2", orchestrator.CardRequestDefinition{}); !errors.Is(err, orchestrator.ErrNoQueuedCardRequests) {
+		t.Fatalf("ClaimQueuedCardRequests after force-release = %v, want ErrNoQueuedCardRequests", err)
+	}
+}
+
 // ---- ReconcileLaunchingCardRequests: the PERIODIC self-heal for a `run:`
 // script that exits/hangs without ever calling `boid task create` / `boid
 // agent start`. Gated on the LAUNCHER JOB's own terminal status (never
@@ -593,6 +655,32 @@ func TestReconcileLaunchingCardRequests_SkipsGoCommandKeyRows(t *testing.T) {
 	}
 }
 
+// TestReconcileLaunchingCardRequests_EmptyCommandKeyRow_NotSkipped pins the
+// second leg of the "no backfill needed for pre-__go__-sentinel rows"
+// argument: only CardRequestCommandKeyGo ("__go__") is the skip predicate
+// (TestReconcileLaunchingCardRequests_SkipsGoCommandKeyRows) — a row with an
+// EMPTY command_key (the vocabulary a Go reservation used before that
+// sentinel existed) is a real command-launcher row, not a Go reservation,
+// and must still be reconciled normally like any other non-Go row.
+func TestReconcileLaunchingCardRequests_EmptyCommandKeyRow_NotSkipped(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-1"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	insertTestJob(t, d, "launcher-1", "proj-1", "exec", "completed", req.ID)
+
+	outcomes, err := orchestrator.ReconcileLaunchingCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("ReconcileLaunchingCardRequests: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].RequestID != req.ID || outcomes[0].Status != string(orchestrator.CardRequestStatusFailed) {
+		t.Fatalf("outcomes = %+v, want one failed outcome for %q — an empty command_key must not be skipped like CardRequestCommandKeyGo", outcomes, req.ID)
+	}
+}
+
 // ---- ReleaseCardRequestForTerminalTarget: the immediate, per-target
 // release finalizeTerminal (internal/api) calls instead of waiting for
 // ReconcileCardRequestSlots' own periodic tick.
@@ -638,6 +726,55 @@ func TestReleaseCardRequestForTerminalTarget_Failure_Fails(t *testing.T) {
 	}
 	if got.Status != orchestrator.CardRequestStatusFailed {
 		t.Errorf("Status = %q, want failed", got.Status)
+	}
+}
+
+// TestReleaseCardRequestForTerminalTarget_Failure_RequeuesFoldedSiblings pins
+// the other half of the force-release/abort asymmetry
+// (TestForceReleaseCardRequest_DoesNotRequeueFoldedSiblings is the other):
+// a task ABORTING (an automatic, un-chosen outcome — not an operator's
+// stop-this intent) goes through FailCardRequest's default requeue path, so
+// a folded sibling comes back to queued and the next claim may restart the
+// card. This is deliberately different from force-release.
+func TestReleaseCardRequestForTerminalTarget_Failure_RequeuesFoldedSiblings(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	first := &orchestrator.CardRequest{CardID: cardID}
+	second := &orchestrator.CardRequest{CardID: cardID}
+	if err := orchestrator.CreateCardRequest(d.Conn, first); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := orchestrator.CreateCardRequest(d.Conn, second); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{})
+	if err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	if len(folded) != 1 {
+		t.Fatalf("folded = %d, want 1", len(folded))
+	}
+	task := newTestExecutionTask(t, d, "task-1", "proj-1", orchestrator.TaskStatusAborted)
+	if err := orchestrator.AttachCardRequest(d.Conn, primary.ID, orchestrator.CardRequestTargetKindTask, task); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	found, err := orchestrator.ReleaseCardRequestForTerminalTarget(d.Conn, orchestrator.CardRequestTargetKindTask, task, false)
+	if err != nil {
+		t.Fatalf("ReleaseCardRequestForTerminalTarget: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+
+	got, err := orchestrator.GetCardRequest(d.Conn, second.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest(second): %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusQueued || got.FoldedInto != "" {
+		t.Errorf("second = %+v, want status=queued folded_into=\"\" — an abort must requeue a folded sibling (unlike force-release)", got)
 	}
 }
 

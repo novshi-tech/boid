@@ -273,6 +273,103 @@ func TestRunCardCommandAsHuman_DispatchFailure_ReleasesSlot(t *testing.T) {
 	}
 }
 
+// TestRunCardCommandAsHuman_TerminalCard_Returns409 pins that a manual card
+// command is rejected against a done/dropped card — mirrors acceptGo's own
+// parked/working guard (workflow_card.go), so manual and automatic dispatch
+// agree: a terminal card never takes a fresh execution slot, even by hand.
+func TestRunCardCommandAsHuman_TerminalCard_Returns409(t *testing.T) {
+	for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped} {
+		t.Run(string(status), func(t *testing.T) {
+			svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+				"review": {Label: "Run", Run: "echo hi"},
+			}))
+			repo := svc.Tasks.(*orchestrator.TaskRepository)
+			card.Status = status
+			if err := repo.UpdateTask(card); err != nil {
+				t.Fatalf("UpdateTask: %v", err)
+			}
+
+			_, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
+			if err == nil {
+				t.Fatalf("want error for a %s (terminal) card", status)
+			}
+			var se *StatusError
+			if !errors.As(err, &se) || se.Code != 409 {
+				t.Fatalf("err = %v, want a 409 StatusError", err)
+			}
+			if len(exec.calls) != 0 {
+				t.Fatalf("StartExec calls = %d, want 0 — must not dispatch against a terminal card", len(exec.calls))
+			}
+			rows, err := repo.ListCardRequestsByCard(card.ID)
+			if err != nil {
+				t.Fatalf("ListCardRequestsByCard: %v", err)
+			}
+			if len(rows) != 0 {
+				t.Fatalf("card_requests rows = %d, want 0 — no slot should be claimed against a terminal card", len(rows))
+			}
+		})
+	}
+}
+
+// TestCardWorkChildOccupantTx_TerminalCard_Returns409 pins the in-Tx half of
+// the terminal-card guard: RunCardCommandAsHuman's own pre-Tx GetTask read
+// (used only for the earlier command-lookup/meta-hydration steps) can be
+// stale by the time the reservation Tx actually opens — a concurrent
+// complete/drop could land in that gap. cardWorkChildOccupantTx re-reads
+// FRESH from tx and must reject a terminal card there too, mirroring
+// acceptGo's own in-Tx re-verify (workflow_card.go), not just the earlier
+// non-transactional check in RunCardCommandAsHuman.
+func TestCardWorkChildOccupantTx_TerminalCard_Returns409(t *testing.T) {
+	svc, _, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	repo := svc.Tasks.(*orchestrator.TaskRepository)
+	card.Status = orchestrator.TaskStatusDone
+	if err := repo.UpdateTask(card); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	var innerErr error
+	if err := svc.Tx.WithinTx(func(tx TxStore) error {
+		_, _, err := cardWorkChildOccupantTx(tx, card.ID)
+		innerErr = err
+		return err
+	}); err == nil {
+		t.Fatal("want an error re-checking a terminal card's fresh status inside the Tx")
+	}
+	var se *StatusError
+	if !errors.As(innerErr, &se) || se.Code != 409 {
+		t.Fatalf("err = %v, want a 409 StatusError", innerErr)
+	}
+}
+
+// TestRunCardCommandAsHuman_CorruptTaskTriageDetail_FailsClosed pins that a
+// task_triage detail blob DetailOpenSlotChildID cannot parse propagates as
+// an error rather than reading as "no JSON occupant" — cardWorkChildOccupantTx
+// must fail closed here the same way cardSlotOccupied does (workflow_card.go),
+// or a corrupted blob would silently let a second execution through
+// alongside whatever the JSON side actually still holds.
+func TestRunCardCommandAsHuman_CorruptTaskTriageDetail_FailsClosed(t *testing.T) {
+	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	repo := svc.TaskTriage.(*orchestrator.TaskRepository)
+	if err := repo.UpsertTaskTriage(&orchestrator.CardAttrs{
+		TaskID: card.ID,
+		Detail: []byte(`not valid json`),
+	}); err != nil {
+		t.Fatalf("seed task_triage: %v", err)
+	}
+
+	_, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
+	if err == nil {
+		t.Fatal("want an error for a corrupt task_triage detail blob, not a silent fail-open")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("StartExec calls = %d, want 0 — must not dispatch when occupancy could not be determined", len(exec.calls))
+	}
+}
+
 // TestRunCardCommandAsHuman_LiveGoChild_ReturnsLinkWithoutDispatching pins that a
 // card command must not dispatch alongside an already-running Go work
 // child — the two share one execution slot.

@@ -27,6 +27,12 @@ package api
 // shared-state bug. TestCommandThenGo/TestGoThenCommand instead pin the two
 // orderings deterministically, proving each direction of arbitration on its
 // own without relying on scheduling.
+//
+// In practice Go wins this race every observed run (200/200 in local
+// measurement) for the same reason task_create_card_slot_atomic_test.go's
+// header names for its own goroutine race: reserveGoCardRequest is a bare
+// INSERT, while RunCardCommandAsHuman does more work before its own —  so
+// the `!goWon` branch below never actually triggers.
 
 import (
 	"context"

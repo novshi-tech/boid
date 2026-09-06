@@ -19,6 +19,18 @@ type fakeCardRequestReleaseStore struct {
 	listErr   error
 	active    []*orchestrator.CardRequest
 	activeErr error
+	getByID   map[string]*orchestrator.CardRequest
+	getErr    error
+}
+
+func (f *fakeCardRequestReleaseStore) GetCardRequest(id string) (*orchestrator.CardRequest, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if req, ok := f.getByID[id]; ok {
+		return req, nil
+	}
+	return nil, orchestrator.ErrCardRequestNotFound
 }
 
 func (f *fakeCardRequestReleaseStore) ForceReleaseCardRequest(id, reason string) error {
@@ -150,6 +162,82 @@ func TestCardRequestHandler_List_EmptyForUnknownCard(t *testing.T) {
 	}
 	if strings.TrimSpace(rec.Body.String()) != "[]" {
 		t.Errorf("body = %s, want an empty JSON array", rec.Body.String())
+	}
+}
+
+// TestCardRequestHandler_Release_LiveTarget_ReturnsOperatorNotice pins that
+// releasing a request that WAS attached to a continuation surfaces that
+// continuation and an explicit warning that force-release only frees the
+// slot — it does not stop whatever the request was pointing at.
+func TestCardRequestHandler_Release_LiveTarget_ReturnsOperatorNotice(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{
+		getByID: map[string]*orchestrator.CardRequest{
+			"req-1": {ID: "req-1", TargetKind: orchestrator.CardRequestTargetKindSession, TargetID: "job-42"},
+		},
+	}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/req-1/release", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"had_live_target":true`) {
+		t.Errorf("body = %s, want had_live_target=true", body)
+	}
+	if !strings.Contains(body, `"target_id":"job-42"`) || !strings.Contains(body, `"target_kind":"session"`) {
+		t.Errorf("body = %s, want the pre-release target echoed back", body)
+	}
+	if !strings.Contains(body, "operator_notice") {
+		t.Errorf("body = %s, want an operator_notice warning it does not stop the continuation", body)
+	}
+}
+
+// TestCardRequestHandler_Release_PreReleaseReadFails_NoNotice pins that a
+// failed pre-release GetCardRequest (before is nil) degrades to no notice
+// rather than blocking the release itself.
+func TestCardRequestHandler_Release_PreReleaseReadFails_NoNotice(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/req-1/release", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "operator_notice") {
+		t.Errorf("body = %s, want no operator_notice when the pre-release read failed", body)
+	}
+}
+
+// TestCardRequestHandler_Release_QueuedRowNoTarget_NoNotice pins the OTHER
+// no-notice case: the pre-release read succeeds but the row never had a
+// target (a queued row, never attached to any continuation) — before != nil
+// but TargetKind/TargetID are empty.
+func TestCardRequestHandler_Release_QueuedRowNoTarget_NoNotice(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{
+		getByID: map[string]*orchestrator.CardRequest{
+			"req-1": {ID: "req-1", Status: orchestrator.CardRequestStatusQueued},
+		},
+	}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/req-1/release", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "operator_notice") {
+		t.Errorf("body = %s, want no operator_notice for a never-attached queued row", body)
 	}
 }
 

@@ -495,6 +495,12 @@ type TxStore interface {
 	// slot release the instant a task reaches a terminal state, instead of
 	// waiting for the periodic ReconcileCardRequestSlots tick.
 	ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error)
+	// CreateTaskLinkedToCardRequest lets a caller already inside a
+	// WithinTx close its own read-then-write gap around a card_requests
+	// launcher continuation: TaskRepository's own dbtx type-switch means a
+	// tx-bound call here does not open a nested transaction (see
+	// TestCreateTaskLinkedToCardRequest_TxBoundRepo_DoesNotDeadlockInAnOuterTx).
+	CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID string) error
 }
 
 type Transactor interface {

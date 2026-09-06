@@ -8,6 +8,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -113,11 +114,29 @@ func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantTaskID string, 
 	if err != nil {
 		return "", false, err
 	}
-	jsonOccupied := false
-	if tt, ttErr := tx.GetTaskTriage(cardID); ttErr == nil {
-		if id, derr := orchestrator.DetailOpenSlotChildID(tt.Detail); derr == nil && id != "" {
-			jsonOccupied = true
+	// Re-check the terminal-card guard against a FRESH read, same as
+	// acceptGo's own in-Tx re-verify (workflow_card.go) — the caller's own
+	// pre-Tx read could be stale by the time this transaction opens.
+	if fresh.Status != orchestrator.TaskStatusParked && fresh.Status != orchestrator.TaskStatusWorking {
+		return "", false, &StatusError{
+			Code:    http.StatusConflict,
+			Message: fmt.Sprintf("card command: card is %q, not parked or working — reopen it before running a command", fresh.Status),
 		}
+	}
+	// Propagate errors rather than fail open, matching cardSlotOccupied.
+	jsonOccupied := false
+	tt, ttErr := tx.GetTaskTriage(cardID)
+	switch {
+	case ttErr == nil:
+		id, derr := orchestrator.DetailOpenSlotChildID(tt.Detail)
+		if derr != nil {
+			return "", false, derr
+		}
+		jsonOccupied = id != ""
+	case errors.Is(ttErr, sql.ErrNoRows):
+		// no task_triage row at all — nothing to be occupied by.
+	default:
+		return "", false, ttErr
 	}
 	if !jsonOccupied && fresh.OpenChildCount == 0 {
 		return "", false, nil
@@ -163,6 +182,12 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 	if card.Type != orchestrator.TaskTypeCard {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: "card command: target task is not a card"}
 	}
+	if card.Status != orchestrator.TaskStatusParked && card.Status != orchestrator.TaskStatusWorking {
+		return nil, &StatusError{
+			Code:    http.StatusConflict,
+			Message: fmt.Sprintf("card command: card is %q, not parked or working — reopen it before running a command", card.Status),
+		}
+	}
 
 	meta := s.hydrateMetaForTriggers(ctx, card.ProjectID)
 	if meta == nil || len(meta.CardCommands) == 0 {
@@ -197,6 +222,10 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
 		occupantID, occ, operr := cardWorkChildOccupantTx(tx, cardID)
 		if operr != nil {
+			var se *StatusError
+			if errors.As(operr, &se) {
+				return se
+			}
 			return &StatusError{Code: http.StatusInternalServerError, Message: operr.Error()}
 		}
 		if occ {

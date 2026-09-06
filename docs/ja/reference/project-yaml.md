@@ -302,6 +302,9 @@ card_events:
 - 継続先の作成は **root task** (`boid task create` に `--parent` を付けない、または明示的に root sentinel を渡す) でなければなりません。`--parent <このコマンドの対象 card>` は直感的に見えても誤りで、card 直下の子は既にこの起動の枠を占有しているため単一作業枠の invariant に 409 で弾かれます — daemon は「ROOT task にすること」を明示するエラーで即座に拒否します (サイレントに詰まらせません)。
 - 継続先の作成は一度だけです。二つ目を作ろうとした場合の動作は op 側の冪等性/所有権チェックに従います。
 - 起動理由が内部イベント (`cause_id` 付き) の場合、`boid agent start` は拒否されます — 自動起動できる継続先は task のみです (§4.4)。
+- **対象 card は parked/working 限定**: `done`/`dropped` の card にはコマンドを撃てません (409)。自動 reopen はせず、必要なら人が Reopen してから撃つ想定です。
+
+**運用者向けの枠解除**: `boid task release-card-request <request-id>` で card の実行枠を強制解放できます (`boid task diagnose-cards` で詰まった枠を発見)。これは枠を `failed` (retry 可能) に落とすだけで、継続先 (session/task) 自体は止めません — 解放前に継続先があった場合はコマンドが warning を出すので、本当に止めたいなら別途手動で対処してください。force-release は fold されていた sibling request も再起動させません (運用者が止めたい意思の表明のため) が、task が `aborted` になった場合の自動解放は sibling を再度 queued に戻し次の claim での再試行を許します — 両者は意図的に別扱いです。
 
 定義順は失われません。`card_commands` のルックアップ自体は Go の map (`ProjectMeta.CardCommands`) で保持しますが、YAML の生ノード (`yaml.Node` の `MappingNode.Content` は文書順を保持する) から別途 `ProjectMeta.CardCommandsOrder` に定義順のキー一覧を取り出しています。UI が定義順のボタンを描く際はこの順序を使う想定で、`card_commands:` を配列形式に変える破壊的なスキーマ変更は不要です。
 
