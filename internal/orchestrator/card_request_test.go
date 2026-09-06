@@ -57,8 +57,7 @@ func TestCreateCardRequest_AssignsIDAndDefaultsToQueued(t *testing.T) {
 // helper and inserts directly via raw SQL, pinning that the single-active-
 // slot invariant is a real DB constraint (idx_card_requests_active_unique)
 // and not merely an application-level check that CreateCardRequest happens
-// to perform. The task instructions explicitly call for this: "DB 制約が
-// 本当に効いているかを、アプリ層を迂回して...確認する".
+// to perform.
 func TestCreateCardRequest_ActiveSlotUniqueAcrossRawInsert(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
@@ -158,6 +157,53 @@ func TestCreateCardRequest_DuplicateCauseID_Rejected(t *testing.T) {
 	}
 	if err := orchestrator.CreateCardRequest(d.Conn, fifth); err != nil {
 		t.Fatalf("CreateCardRequest(fifth, no cause): %v", err)
+	}
+}
+
+// TestCreateCardRequest_InstructionRoundTrips pins that Instruction is
+// durable row state, not a launch-time argument: it must survive
+// create -> get unchanged, and must NOT be reset by ClaimQueuedCardRequests
+// (which only snapshots the launch-time command definition) or by
+// RetryCardRequest (which only clears the previous attempt's launch
+// snapshot/target/result).
+func TestCreateCardRequest_InstructionRoundTrips(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "review", Instruction: "focus on the auth flow"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Instruction != "focus on the auth flow" {
+		t.Fatalf("Instruction = %q, want %q", got.Instruction, "focus on the auth flow")
+	}
+
+	def := orchestrator.CardRequestDefinition{CommandKey: "review", Label: "Run", Run: "python3 scripts/card_review.py", Version: "v1"}
+	primary, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, def)
+	if err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	if primary.Instruction != "focus on the auth flow" {
+		t.Errorf("primary.Instruction after claim = %q, want unchanged %q", primary.Instruction, "focus on the auth flow")
+	}
+
+	if err := orchestrator.FailCardRequest(d.Conn, req.ID, "boom"); err != nil {
+		t.Fatalf("FailCardRequest: %v", err)
+	}
+	if err := orchestrator.RetryCardRequest(d.Conn, req.ID); err != nil {
+		t.Fatalf("RetryCardRequest: %v", err)
+	}
+	retried, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest (after retry): %v", err)
+	}
+	if retried.Instruction != "focus on the auth flow" {
+		t.Errorf("Instruction after retry = %q, want unchanged %q", retried.Instruction, "focus on the auth flow")
 	}
 }
 

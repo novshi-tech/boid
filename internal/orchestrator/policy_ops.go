@@ -90,5 +90,11 @@ const (
 	OpBoidSignalIngest    = "signal_ingest"
 	OpBoidSignalCursorGet = "signal_cursor_get"
 
+	// OpBoidCardContext backs `boid card context` from inside the sandbox —
+	// part of the general boidPolicy: any job may ask for its own card
+	// context, and one with none set gets a clear error rather than a
+	// permission denial (see sandbox.BoidOpCardContext's own doc comment).
+	OpBoidCardContext = "card_context"
+
 	OpFetchGet = "get"
 )

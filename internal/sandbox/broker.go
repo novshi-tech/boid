@@ -679,6 +679,15 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			return &ExecResponse{ExitCode: 1, Stderr: "boid signal cursor requires a service and connector"}
 		}
 		boidReq.WorkspaceID = entry.Context.WorkspaceID
+	case BoidOpCardContext:
+		// No caller-supplied id at all: card/request identity comes only
+		// from the token entry, exactly like the Service/Connector overwrite
+		// above — a job with no card context gets a clear, distinct error
+		// here rather than reaching the executor with an empty
+		// CardRequestID.
+		if entry.Context.CardRequestID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid card context: no card context for this job"}
+		}
 	case BoidOpJobList:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid job list requires a task id"}

@@ -66,12 +66,17 @@ var testCtx = sandbox.TokenContext{
 
 type fakeBoidExecutor struct {
 	calls []sandbox.BoidRequest
-	resp  *sandbox.ExecResponse
+	// ctxCalls records the TokenContext passed alongside each calls entry
+	// (same index), for tests that need to assert what the broker actually
+	// forwarded rather than just that it was called.
+	ctxCalls []sandbox.TokenContext
+	resp     *sandbox.ExecResponse
 }
 
-func (f *fakeBoidExecutor) ExecuteBoidBuiltin(_ context.Context, _ sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
+func (f *fakeBoidExecutor) ExecuteBoidBuiltin(_ context.Context, ctx sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
 	if req != nil {
 		f.calls = append(f.calls, *req)
+		f.ctxCalls = append(f.ctxCalls, ctx)
 	}
 	if f.resp != nil {
 		return f.resp

@@ -236,6 +236,12 @@ func (r *TaskRepository) HasPendingSignals(workspaceID string, maxAttempts int) 
 	return HasPendingSignals(r.db, workspaceID, maxAttempts)
 }
 
+// GetCardRequest backs `boid card context`'s live lookup of the calling
+// job's card_requests row (server.cardRequestReader).
+func (r *TaskRepository) GetCardRequest(id string) (*CardRequest, error) {
+	return GetCardRequest(r.db, id)
+}
+
 type ProjectRepository struct {
 	db db.DBTX
 }

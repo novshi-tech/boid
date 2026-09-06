@@ -204,6 +204,13 @@ const (
 	// jobs, so they are otherwise unreachable.
 	BoidOpSignalIngest    BoidOp = "signal_ingest"
 	BoidOpSignalCursorGet BoidOp = "signal_cursor_get"
+
+	// BoidOpCardContext backs `boid card context`: structured,
+	// token-authoritative input for a card-command launcher job. No
+	// caller-supplied id — the broker fills CardID/CardRequestID from the
+	// token entry, same as the Connector fields above. A job with no card
+	// context gets a clear error rather than an empty reply.
+	BoidOpCardContext BoidOp = "card_context"
 )
 
 // IdentityNotFoundExitCode is BoidOpTaskIdentityResolve's distinguished exit
@@ -384,6 +391,13 @@ type TokenContext struct {
 	// path, so cwd-based authorization must compare against this
 	// sandbox-side path instead. Empty for every non-clone job.
 	SandboxRoot string
+	// CardID / CardRequestID identify the card_requests row a card-command
+	// launcher job was dispatched to service — the ONLY fields
+	// BoidOpCardContext trusts, never a caller-supplied id (same
+	// broker-fills-from-token pattern Service/Connector use above). Both
+	// empty for every job that isn't a card-command launcher.
+	CardID        string
+	CardRequestID string
 }
 
 func (c TokenContext) AllowsProject(projectID string) bool {

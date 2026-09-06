@@ -545,6 +545,10 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			// broker-side enforcement this feeds.
 			Service:   spec.SignalService,
 			Connector: spec.SignalConnector,
+			// CardID/CardRequestID: same verbatim copy from JobSpec as
+			// Service/Connector above.
+			CardID:        spec.CardID,
+			CardRequestID: spec.CardRequestID,
 		}
 		// SandboxRoot: clone-mode jobs have no host ProjectDir the sandbox's
 		// own filesystem corresponds to — their cwd is always the

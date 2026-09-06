@@ -437,9 +437,15 @@ func allMigrations() []migration {
 			path:    "migrations/0048_card_verb_rename.sql",
 		},
 		{
-			// No skip function: a brand-new table, same shape as 0043.
 			version: "0049_add_card_requests",
 			path:    "migrations/0049_add_card_requests.sql",
+		},
+		{
+			version: "0050_add_card_requests_instruction",
+			path:    "migrations/0050_add_card_requests_instruction.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "card_requests", "instruction")
+			},
 		},
 	}
 }

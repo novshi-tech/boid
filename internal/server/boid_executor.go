@@ -56,6 +56,13 @@ type actionListService interface {
 	ListActions(filter orchestrator.ActionListFilter) (*api.ActionListResult, error)
 }
 
+// cardRequestReader backs BoidOpCardContext's live lookup of the
+// card_requests row identified by ctx.CardRequestID. Nil disables the op
+// with an "unavailable" error, same convention as `signals` below.
+type cardRequestReader interface {
+	GetCardRequest(id string) (*orchestrator.CardRequest, error)
+}
+
 // projectSummary is BoidOpProjectList's per-project JSON shape — deliberately
 // leaner than BoidOpProjectBehaviors' output (no task_behaviors): the list op
 // is for discovery ("what projects can I even ask about"), and a caller that
@@ -120,9 +127,13 @@ type boidBuiltinExecutor struct {
 	// "unavailable" error, same convention as every other optional
 	// dependency here.
 	signals api.SignalStore
+	// cardRequests backs BoidOpCardContext. Same explicit-constructor-
+	// parameter convention as signals above (wire.go passes the same
+	// taskRepo value for both).
+	cardRequests cardRequestReader
 }
 
-func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string, projects projectLookup, signals api.SignalStore) sandbox.BoidExecutor {
+func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string, projects projectLookup, signals api.SignalStore, cardRequests cardRequestReader) sandbox.BoidExecutor {
 	if workflow == nil && tasks == nil {
 		return nil
 	}
@@ -145,6 +156,7 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 		resolveOrCapture: resolveOrCapture,
 		actionList:       actionList,
 		signals:          signals,
+		cardRequests:     cardRequests,
 	}
 }
 
@@ -1062,6 +1074,50 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
+	case sandbox.BoidOpCardContext:
+		// ctx.CardRequestID is already broker-verified non-empty (broker.go's
+		// BoidOpCardContext case) — the check below is defense in depth for
+		// a handwritten request that bypassed the broker.
+		if ctx.CardRequestID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card context: no card context for this job"}
+		}
+		if e.cardRequests == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card context unavailable"}
+		}
+		row, err := e.cardRequests.GetCardRequest(ctx.CardRequestID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		// The token's own CardID must be set and match the request row's —
+		// a mismatch (or a missing CardID alongside a set CardRequestID)
+		// means the token was stamped inconsistently, so refuse rather than
+		// return a mismatched card_id in the reply.
+		if ctx.CardID == "" || row.CardID != ctx.CardID {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card context: token card_id does not match the request's card_id"}
+		}
+		commandKey := row.Launched.CommandKey
+		if commandKey == "" {
+			commandKey = row.CommandKey
+		}
+		origin := cardContextOriginHuman
+		if row.CauseID != "" {
+			origin = cardContextOriginEvent
+		}
+		resp := cardContextResponse{
+			CardID:      row.CardID,
+			RequestID:   row.ID,
+			CommandKey:  commandKey,
+			Instruction: row.Instruction,
+			Origin:      origin,
+		}
+		if req.TaskField != "" {
+			value, err := resolveTaskContextField(resp, req.TaskField)
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			return &sandbox.ExecResponse{Stdout: value}
+		}
+		return marshalTaskContextResponse(resp)
 	case sandbox.BoidOpJobList:
 		if e.jobs == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list unavailable"}

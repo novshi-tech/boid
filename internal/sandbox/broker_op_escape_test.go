@@ -113,6 +113,16 @@ func TestBroker_BoidCardList_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpCardList})
 }
 
+// BoidOpCardContext: the no-card-context rejection is covered separately by
+// broker_card_context_test.go; this closes the plain policy-gate manifest
+// entry point. assertBoidOpRejectedByPolicy registers a token with NO card
+// context either, but that never matters here — the policy gate
+// (allowsBuiltinOp) runs before the op's own switch case, so this always
+// hits "not allowed by policy" regardless of TokenContext.CardRequestID.
+func TestBroker_BoidCardContext_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
+}
+
 // BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink / BoidOpTaskIdentityResolve
 // (docs/plans/ingestion-identity.md PR-1): scoping is broker-authoritative
 // (default from ctx, resolve, AllowsProject — see broker.go's cases and
@@ -314,6 +324,14 @@ var opEscapeCoverage = map[string]opCoverage{
 	// policy doesn't name" for these two.
 	"BoidOpSignalIngest":    {escapeTest: "TestBroker_BoidSignalIngest_PolicyReject"},
 	"BoidOpSignalCursorGet": {escapeTest: "TestBroker_BoidSignalCursorGet_PolicyReject"},
+
+	// BoidOpCardContext: no caller-supplied id at all — identity comes only
+	// from the token entry (TokenContext.CardID/CardRequestID). The
+	// resulting "no card context" rejection is covered end-to-end by
+	// TestBroker_BoidCardContext_NoCardContext_RejectedBeforeExecutor
+	// (broker_card_context_test.go); the plain policy-gate manifest entry
+	// point is below.
+	"BoidOpCardContext": {escapeTest: "TestBroker_BoidCardContext_PolicyReject"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly

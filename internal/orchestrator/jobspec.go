@@ -119,6 +119,13 @@ type JobSpec struct {
 	SignalService   string
 	SignalConnector string
 
+	// CardID / CardRequestID set sandbox.TokenContext.CardID/CardRequestID
+	// for this job's broker token registration, mirroring SignalService/
+	// SignalConnector's own wiring. Empty for every job that isn't a
+	// card-command launcher.
+	CardID        string
+	CardRequestID string
+
 	// Env carries extra environment variables the orchestrator wants to export
 	// (e.g. behavior-level overrides). dispatcher merges these with its own
 	// HOME/PATH/proxy/broker settings.
