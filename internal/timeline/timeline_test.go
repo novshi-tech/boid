@@ -285,6 +285,40 @@ func TestBuild_ExcludesNonTransitioningActionsWithStampedStatus(t *testing.T) {
 	}
 }
 
+// TestSelfLoopTransitionTypes_MatchesMachineRules pins selfLoopTransitionTypes
+// against both machines' actual rule tables: every Manual rule with
+// FromStatus == ToStatus (both non-empty) must be either in the map or in
+// this test's own deliberateOmissions set, so a future self-loop rule can't
+// silently drift out of sync with either list.
+func TestSelfLoopTransitionTypes_MatchesMachineRules(t *testing.T) {
+	deliberateOmissions := map[string]bool{
+		// execution machine's "abort: aborted -> aborted" self-loop: a
+		// re-abort of an already-aborted task stays invisible in the
+		// timeline, matching this package's pre-existing baseline.
+		"abort": true,
+	}
+
+	found := map[string]bool{}
+	for _, sm := range []*orchestrator.StateMachine{orchestrator.NewCardMachine(), orchestrator.NewExecutionMachine()} {
+		for _, r := range sm.Rules {
+			if r.Manual && r.FromStatus != "" && r.FromStatus != "*" && r.ToStatus != "" && r.FromStatus == r.ToStatus {
+				found[r.Action] = true
+			}
+		}
+	}
+
+	for action := range found {
+		if !selfLoopTransitionTypes[action] && !deliberateOmissions[action] {
+			t.Errorf("machine rule table has a self-loop for action %q, but it is in neither selfLoopTransitionTypes nor this test's deliberateOmissions", action)
+		}
+	}
+	for action := range selfLoopTransitionTypes {
+		if !found[action] {
+			t.Errorf("selfLoopTransitionTypes contains %q, but no machine rule table actually has a self-loop rule for it", action)
+		}
+	}
+}
+
 func TestIsAnsweredAction(t *testing.T) {
 	if !IsAnsweredAction(&orchestrator.Action{Type: "answered"}) {
 		t.Error("IsAnsweredAction(answered) = false, want true")

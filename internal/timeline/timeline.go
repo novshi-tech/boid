@@ -86,6 +86,12 @@ type StatusGroup struct {
 // stamped to the task's current, unchanged status for bookkeeping — that
 // is NOT a state transition and must not be confused with a genuine
 // self-loop just because the two fields happen to be equal and non-empty.
+//
+// The execution machine's own "abort: aborted → aborted" self-loop rule is
+// deliberately NOT listed here — TestSelfLoopTransitionTypes_MatchesMachineRules
+// pins this whole map against both machines' actual rule tables, including
+// that one intentional omission, so a future self-loop rule can't silently
+// go unnoticed by this map.
 var selfLoopTransitionTypes = map[string]bool{
 	"go": true,
 }
