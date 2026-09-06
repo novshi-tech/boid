@@ -44,10 +44,47 @@ type recordingTxStore struct {
 	// TestTaskWorkflowService_AcceptGo_WorkingSelfLoop_ConcurrentDispatch_SecondCallerLosesRace.
 	getTaskTriageCallCount int
 	getTaskTriageOnCall    map[int]*orchestrator.CardAttrs
+	// countActiveCardRequests overrides CountActiveCardRequests's default
+	// zero return (occupied-by-card-request simulation).
+	countActiveCardRequests int
+	// createCardRequestErr, when set, is returned by CreateCardRequest
+	// instead of succeeding — used to simulate a slot already claimed
+	// (orchestrator.ErrCardRequestSlotOccupied) inside a transaction.
+	createCardRequestErr error
+	createdCardRequests  []*orchestrator.CardRequest
+	failedCardRequestIDs []string
+	// listCardRequestsByCardFn, when set, backs ListCardRequestsByCard;
+	// otherwise it returns createdCardRequests unfiltered.
+	listCardRequestsByCardFn func(cardID string) ([]*orchestrator.CardRequest, error)
 }
 
-func (s *recordingTxStore) CountActiveCardRequests(cardID string) (int, error) { return 0, nil }
-func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error           { return nil }
+func (s *recordingTxStore) CountActiveCardRequests(cardID string) (int, error) {
+	return s.countActiveCardRequests, nil
+}
+func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error { return nil }
+
+func (s *recordingTxStore) CreateCardRequest(req *orchestrator.CardRequest) error {
+	if s.createCardRequestErr != nil {
+		return s.createCardRequestErr
+	}
+	if req.ID == "" {
+		req.ID = fmt.Sprintf("cardreq-%d", len(s.createdCardRequests)+1)
+	}
+	s.createdCardRequests = append(s.createdCardRequests, req)
+	return nil
+}
+
+func (s *recordingTxStore) FailCardRequest(id, errText string) error {
+	s.failedCardRequestIDs = append(s.failedCardRequestIDs, id)
+	return nil
+}
+
+func (s *recordingTxStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
+	if s.listCardRequestsByCardFn != nil {
+		return s.listCardRequestsByCardFn(cardID)
+	}
+	return s.createdCardRequests, nil
+}
 func (s *recordingTxStore) GetTask(id string) (*orchestrator.Task, error) {
 	// Prefer the most recently committed update (if any) over the original
 	// snapshot, so a second WithinTx call within the same test (e.g. PR-2's

@@ -64,9 +64,24 @@ func (l *CardRequestLifecycleLoop) runOnce() {
 	outcomes, err := ReconcileCardRequestSlots(l.DB)
 	if err != nil {
 		slog.Warn("card request slot reconcile failed", "error", err)
+	} else if len(outcomes) > 0 {
+		slog.Info("card request slot reconcile completed", "released", len(outcomes))
+	}
+
+	// ReconcileLaunchingCardRequests is the OPERATIONAL self-heal for a
+	// `run:` script that exits/hangs without ever calling `boid task create`
+	// / `boid agent start`: without it, only a daemon restart's startup scan
+	// (RecoverLaunchingCardRequests) could ever clear a stuck "launching"
+	// row, leaving a card's slot occupied until an operator restarted the
+	// daemon. Run every tick alongside the attached-row reconcile above —
+	// see that function's own doc comment for why it is gated on the
+	// launcher job's terminal status, never elapsed time.
+	launchingOutcomes, lerr := ReconcileLaunchingCardRequests(l.DB)
+	if lerr != nil {
+		slog.Warn("card request launching self-heal failed", "error", lerr)
 		return
 	}
-	if len(outcomes) > 0 {
-		slog.Info("card request slot reconcile completed", "released", len(outcomes))
+	if len(launchingOutcomes) > 0 {
+		slog.Info("card request launching self-heal completed", "resolved", len(launchingOutcomes))
 	}
 }

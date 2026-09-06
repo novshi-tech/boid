@@ -407,6 +407,37 @@ func TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByLiveTaskRow(t *testing.
 	}
 }
 
+// TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByActiveCardRequest pins
+// cardSlotOccupied's THIRD occupancy signal (workflow_card.go): an active
+// (launching/attached) card_requests row — a command launcher or a Go
+// reservation that has claimed the card's shared execution slot but not yet
+// created its own continuation — must ALSO block a fresh child_added, not
+// just a live task row or a JSON-tracked open/specced child.
+func TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByActiveCardRequest(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+	txStore := &recordingTxStore{task: task, countActiveCardRequests: 1}
+	svc := newTriageWorkflowService(task, txStore)
+
+	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "child_added",
+		Payload: []byte(`{"id":"c1","title":"first"}`),
+	})
+	if err == nil {
+		t.Fatal("expected rejection adding a child while an active card_requests row already occupies the slot")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	children, derr := orchestrator.DetailChildren(txStore.triage["t1"].Detail)
+	if derr != nil {
+		t.Fatalf("DetailChildren: %v", derr)
+	}
+	if len(children) != 0 {
+		t.Fatalf("children = %+v, want none (c1 must not have been added while the card_requests slot is occupied)", children)
+	}
+}
+
 func TestApplyAction_ChildSpecced_UnknownChildRejected(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	svc := newTriageWorkflowService(task, &recordingTxStore{task: task})

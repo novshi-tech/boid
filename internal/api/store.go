@@ -483,6 +483,14 @@ type TxStore interface {
 	// CountActiveCardRequests backs cardSlotOccupied's OR-with-card_requests
 	// check (workflow_card.go) — see that function's own doc comment.
 	CountActiveCardRequests(cardID string) (int, error)
+	// CreateCardRequest / FailCardRequest / ListCardRequestsByCard let a
+	// slot claim (RunCardCommand, acceptGo) read the card's current
+	// occupancy and reserve the slot in the SAME transaction, closing the
+	// TOCTOU window a separate non-transactional read-then-CreateCardRequest
+	// call would otherwise leave open.
+	CreateCardRequest(req *orchestrator.CardRequest) error
+	FailCardRequest(id, errText string) error
+	ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error)
 }
 
 type Transactor interface {

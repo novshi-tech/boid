@@ -9,6 +9,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/api"
@@ -203,7 +204,71 @@ func TestBoidOpTaskCreate_ChildCreate_NotTreatedAsRequestContinuation(t *testing
 	}
 }
 
-// TestBoidOpTaskCreate_LauncherSuppliedRef_StillAttaches pins the P1 fix: a
+// TestBoidOpTaskCreate_ParentIsOwnCard_ExplicitError pins that a
+// card-command launcher's `boid task create --parent <this card>` — the
+// intuitive but wrong way to try to fulfil its own request, since a
+// launcher's continuation must be a ROOT task — gets an explicit,
+// actionable error rather than falling through to an ordinary child create.
+func TestBoidOpTaskCreate_ParentIsOwnCard_ExplicitError(t *testing.T) {
+	conn := newBoidExecutorTestDB(t)
+	if err := orchestrator.CreateProject(conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	repo := orchestrator.NewTaskRepository(conn)
+	card := &orchestrator.Task{Type: orchestrator.TaskTypeCard, ProjectID: "proj-1", Card: &orchestrator.CardAttrs{}}
+	if err := repo.CreateTask(card); err != nil {
+		t.Fatalf("create card: %v", err)
+	}
+	cardReq := &orchestrator.CardRequest{
+		CardID:        card.ID,
+		Status:        orchestrator.CardRequestStatusLaunching,
+		LauncherJobID: "job-launcher",
+	}
+	if err := orchestrator.CreateCardRequest(conn, cardReq); err != nil {
+		t.Fatalf("create card request: %v", err)
+	}
+
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{
+			Tasks:             repo,
+			CardRequestLinker: repo,
+			Meta:              executorMetaStub{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"executor": {}}}},
+		},
+		cardRequests: repo,
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"},
+		JobID: "job-launcher", CardID: card.ID, CardRequestID: cardReq.ID,
+	}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: []byte(`{"title":"should be rejected","parent_id":"` + card.ID + `","ref":"child-1","behavior":"executor"}`),
+	})
+	if resp.ExitCode == 0 {
+		t.Fatalf("expected a non-zero exit code, got stdout: %s", resp.Stdout)
+	}
+	if !strings.Contains(resp.Stderr, "must be a ROOT task") {
+		t.Errorf("stderr = %q, want an explicit hint about the ROOT-task requirement", resp.Stderr)
+	}
+
+	got, err := repo.GetCardRequest(cardReq.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusLaunching {
+		t.Errorf("status = %q, want unchanged launching", got.Status)
+	}
+	children, err := repo.ListChildren(card.ID)
+	if err != nil {
+		t.Fatalf("ListChildren: %v", err)
+	}
+	if len(children) != 0 {
+		t.Errorf("children = %d, want 0 — the rejected create must not have inserted a task row", len(children))
+	}
+}
+
+// TestBoidOpTaskCreate_LauncherSuppliedRef_StillAttaches pins that a
 // launcher-supplied `ref` that CreateTask's own get-or-create resolves to
 // an already-existing task (e.g. a retried launcher run, or one that
 // reused a ref from an earlier unrelated create) must still attach that
@@ -267,7 +332,7 @@ func TestBoidOpTaskCreate_LauncherSuppliedRef_StillAttaches(t *testing.T) {
 	}
 }
 
-// TestBoidOpTaskCreate_CardTypeCreate_NeverAttaches pins the P2 fix: a
+// TestBoidOpTaskCreate_CardTypeCreate_NeverAttaches pins that a
 // card-type create (initial_status=parked) must never be treated as a
 // launcher's continuation, even when the caller owns the card_requests row —
 // only execution-type tasks are valid continuations.

@@ -294,7 +294,13 @@ card_events:
 | `card_commands.<key>.run` | string | はい | サンドボックス内で `sh -c` に渡されるコマンド文字列 (`triggers[].run` と同じ実行モデル) |
 | `card_events.command` | string | いいえ | 内部イベントで自動起動する `card_commands` のキー。宣言する場合は `card_commands` に実在するキーでなければならず、存在しなければロード時にエラー |
 
-**現状の実装範囲**: このセクションは project.yaml の宣言と load 時の shape 検証 (`card_commands.<key>` の label/run 必須、`card_events.command` の参照先存在チェック)、card ごとの実行要求を保持する内部 store (`card_requests` テーブル、`internal/orchestrator/card_request.go`)、および launcher から session 継続先を作る `boid agent start` op のみを提供します。daemon が実際に `run:` を card 文脈付きの trigger run として起動する経路、trigger_loop への配線等はまだ実装されていません — card_commands を宣言しても現時点では何も起動されません。
+**現状の実装範囲**: project.yaml の宣言と load 時の shape 検証、card ごとの実行要求を保持する内部 store (`card_requests` テーブル、`internal/orchestrator/card_request.go`)、手動起動 (`RunCardCommand` / `POST /api/cards/{id}/commands/{key}`)、launcher から task/session 継続先を作る `boid task create` / `boid agent start` op、`card_requests` の枠解放 (継続先の終端照合、および launcher job 終端かつ継続先が無い launching 行の self-heal) を提供します。内部イベントによる自動起動 (`card_events.command` からの実際の起動) は未実装です。
+
+**launcher の契約**: `run:` は card の実行枠を一つだけ予約した readonly exec job (`boid task create` / `boid agent start` を必ず**一回だけ**呼ぶことを想定した短命プロセス) として起動されます。
+
+- 継続先の作成は **root task** (`boid task create` に `--parent` を付けない、または明示的に root sentinel を渡す) でなければなりません。`--parent <このコマンドの対象 card>` は直感的に見えても誤りで、card 直下の子は既にこの起動の枠を占有しているため単一作業枠の invariant に 409 で弾かれます — daemon は「ROOT task にすること」を明示するエラーで即座に拒否します (サイレントに詰まらせません)。
+- 継続先の作成は一度だけです。二つ目を作ろうとした場合の動作は op 側の冪等性/所有権チェックに従います。
+- 起動理由が内部イベント (`cause_id` 付き) の場合、`boid agent start` は拒否されます — 自動起動できる継続先は task のみです (§4.4)。
 
 定義順は失われません。`card_commands` のルックアップ自体は Go の map (`ProjectMeta.CardCommands`) で保持しますが、YAML の生ノード (`yaml.Node` の `MappingNode.Content` は文書順を保持する) から別途 `ProjectMeta.CardCommandsOrder` に定義順のキー一覧を取り出しています。UI が定義順のボタンを描く際はこの順序を使う想定で、`card_commands:` を配列形式に変える破壊的なスキーマ変更は不要です。
 

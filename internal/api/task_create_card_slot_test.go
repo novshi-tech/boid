@@ -163,6 +163,89 @@ func TestCreateTask_RejectsRefMatchWithMismatchedProjectOrBehavior(t *testing.T)
 	}
 }
 
+// fakeCardCommandLauncherStore is a minimal CardCommandLauncherStore fake
+// for pinning cardSlotConflictWithRequests' own check: countActive
+// simulates an active (launching/attached) card_requests row with no
+// live/JSON child at all — the gap cardChildSlotConflict's own child-based
+// check cannot see on its own.
+type fakeCardCommandLauncherStore struct {
+	countActive int
+}
+
+func (f *fakeCardCommandLauncherStore) CountActiveCardRequests(cardID string) (int, error) {
+	return f.countActive, nil
+}
+func (f *fakeCardCommandLauncherStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
+	return nil, nil
+}
+func (f *fakeCardCommandLauncherStore) CreateCardRequest(req *orchestrator.CardRequest) error {
+	return nil
+}
+func (f *fakeCardCommandLauncherStore) FailCardRequest(id, errText string) error { return nil }
+
+// TestCreateTask_RejectsWhenActiveCardRequestOccupiesSlot pins that a
+// direct `--parent <card>` create (task_create.go) must also see an active
+// card_requests row (a command launcher or a Go reservation that has
+// claimed the slot but not yet created its own continuation) as an
+// occupant, even when no live/JSON child exists yet at all.
+func TestCreateTask_RejectsWhenActiveCardRequestOccupiesSlot(t *testing.T) {
+	parent := cardParentWithDetail("card-1", nil, 0) // no live/JSON child at all
+	store := &stubTaskStore{
+		tasks:    map[string]*orchestrator.Task{"card-1": parent},
+		refTasks: map[string]*orchestrator.Task{},
+	}
+	svc := &TaskAppService{
+		Tasks:        store,
+		Meta:         stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+		CardRequests: &fakeCardCommandLauncherStore{countActive: 1},
+	}
+
+	_, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "a new child",
+		Behavior:  "dev",
+		ParentID:  "card-1",
+		Ref:       "some-other-id",
+	})
+	if err == nil {
+		t.Fatal("expected rejection creating a direct child while an active card_requests row occupies the slot")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	if store.createdTask != nil {
+		t.Fatal("must not have inserted a task row")
+	}
+}
+
+// TestCreateTask_AllowsWhenCardHasNoActiveRequestAndNilCardRequestsStore
+// pins the nil-tolerant posture (CardRequests unset — old callers/tests that
+// never wire it): the additional check must simply be skipped, not panic or
+// reject.
+func TestCreateTask_AllowsWhenCardHasNoActiveRequestAndNilCardRequestsStore(t *testing.T) {
+	parent := cardParentWithDetail("card-1", nil, 0)
+	store := &stubTaskStore{
+		tasks:    map[string]*orchestrator.Task{"card-1": parent},
+		refTasks: map[string]*orchestrator.Task{},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+		// CardRequests deliberately left nil.
+	}
+
+	if _, err := svc.CreateTask(CreateTaskRequest{
+		ProjectID: "proj-1",
+		Title:     "a new child",
+		Behavior:  "dev",
+		ParentID:  "card-1",
+		Ref:       "some-id",
+	}); err != nil {
+		t.Fatalf("CreateTask() error = %v, want success (nil CardRequests store must not block creates)", err)
+	}
+}
+
 // TestCreateTask_AllowsWhenCardHasNoOpenSlot is the sanity regression: a
 // card with nothing occupying its slot must let a fresh child through
 // normally.

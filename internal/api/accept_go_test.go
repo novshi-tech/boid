@@ -210,6 +210,115 @@ func TestTaskWorkflowService_AcceptGo_SpeccedChildren_CreatesTasksAndMarksDispat
 	}
 }
 
+// ---- Go now reserves the card's shared execution slot before creating the
+// child task, using CardRequestCommandKeyGo. recordingTxStore also
+// satisfies CardCommandLauncherStore (CreateCardRequest/FailCardRequest/
+// ListCardRequestsByCard, added alongside CountActiveCardRequests), so it
+// doubles as svc.CardRequests here with no separate fake needed.
+
+// TestTaskWorkflowService_AcceptGo_ReservesCardRequestBeforeCreatingChild
+// pins the happy path: a successful Go creates a card_requests row tagged
+// CardRequestCommandKeyGo and threads its id through to TaskCreator.CreateTask
+// as CardRequestID, so createExecutionTask's CardRequestLinker branch attaches
+// it to the new child task in the SAME transaction as the task INSERT.
+func TestTaskWorkflowService_AcceptGo_ReservesCardRequestBeforeCreatingChild(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	detail := []byte(`{"children": [{"id": "ch_00", "title": "next", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	txStore := &recordingTxStore{
+		task:   task,
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
+	}
+	creator := &fakeTaskCreator{}
+	svc := newAcceptGoWorkflowService(task, txStore, creator)
+	svc.CardRequests = txStore
+
+	if _, err := svc.acceptGo(context.Background(), task.ID, false); err != nil {
+		t.Fatalf("acceptGo: %v", err)
+	}
+
+	if len(txStore.createdCardRequests) != 1 {
+		t.Fatalf("card_requests created = %d, want 1", len(txStore.createdCardRequests))
+	}
+	req := txStore.createdCardRequests[0]
+	if req.CardID != "t1" {
+		t.Errorf("CardID = %q, want t1", req.CardID)
+	}
+	if req.CommandKey != orchestrator.CardRequestCommandKeyGo {
+		t.Errorf("CommandKey = %q, want CardRequestCommandKeyGo (empty string)", req.CommandKey)
+	}
+	if req.LauncherJobID == "" {
+		t.Error("LauncherJobID is empty — CreateCardRequest's launching fast path requires a non-empty synthetic marker")
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("CreateTask calls = %d, want 1", len(creator.calls))
+	}
+	if creator.calls[0].CardRequestID != req.ID {
+		t.Errorf("CreateTaskRequest.CardRequestID = %q, want the reservation's id %q", creator.calls[0].CardRequestID, req.ID)
+	}
+}
+
+// TestTaskWorkflowService_AcceptGo_SlotOccupiedByCommand_Rejected pins that
+// when a card command launcher already holds the card's slot (simulated by
+// CreateCardRequest returning ErrCardRequestSlotOccupied, the same
+// unique-index signal the DB would raise), Go must reject BEFORE ever
+// creating the child task.
+func TestTaskWorkflowService_AcceptGo_SlotOccupiedByCommand_Rejected(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	detail := []byte(`{"children": [{"id": "ch_00", "title": "next", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	txStore := &recordingTxStore{
+		task:                 task,
+		triage:               map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
+		createCardRequestErr: orchestrator.ErrCardRequestSlotOccupied,
+	}
+	creator := &fakeTaskCreator{}
+	svc := newAcceptGoWorkflowService(task, txStore, creator)
+	svc.CardRequests = txStore
+
+	_, err := svc.acceptGo(context.Background(), task.ID, false)
+	if err == nil {
+		t.Fatal("expected rejection when the slot is already claimed by an active card command")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	if len(creator.calls) != 0 {
+		t.Fatal("must not create the child task once the slot reservation itself is rejected")
+	}
+}
+
+// TestTaskWorkflowService_AcceptGo_CreateTaskFailure_ReleasesReservation pins
+// that a failure creating the child task (after the slot was successfully
+// reserved) releases the reservation via FailCardRequest — otherwise the
+// slot would stay stuck "launching" forever, since the periodic self-heal
+// (ReconcileLaunchingCardRequests) deliberately skips CardRequestCommandKeyGo
+// rows (see that function's own doc comment).
+func TestTaskWorkflowService_AcceptGo_CreateTaskFailure_ReleasesReservation(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	detail := []byte(`{"children": [{"id": "ch_00", "title": "next", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	txStore := &recordingTxStore{
+		task:   task,
+		triage: map[string]*orchestrator.CardAttrs{"t1": {TaskID: "t1", Detail: detail}},
+	}
+	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
+		return nil, fmt.Errorf("boom")
+	}}
+	svc := newAcceptGoWorkflowService(task, txStore, creator)
+	svc.CardRequests = txStore
+
+	if _, err := svc.acceptGo(context.Background(), task.ID, false); err == nil {
+		t.Fatal("expected acceptGo to surface the CreateTask failure")
+	}
+
+	if len(txStore.createdCardRequests) != 1 {
+		t.Fatalf("card_requests created = %d, want 1", len(txStore.createdCardRequests))
+	}
+	reservedID := txStore.createdCardRequests[0].ID
+	if len(txStore.failedCardRequestIDs) != 1 || txStore.failedCardRequestIDs[0] != reservedID {
+		t.Fatalf("failedCardRequestIDs = %v, want exactly [%q] (the reservation must be released on failure)", txStore.failedCardRequestIDs, reservedID)
+	}
+}
+
 // TestTaskWorkflowService_AcceptGo_MultipleUnresolvedChildren_Rejected pins
 // that a legacy card with more than one unresolved (open/specced) child
 // cannot get acceptGo to dispatch one of them and half-fix itself: the

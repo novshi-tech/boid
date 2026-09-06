@@ -12,18 +12,48 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 // newCardCommandTestService builds a TaskWorkflowService wired for
 // RunCardCommand tests and creates one card task under projectID.
+//
+// Builds its own DB/repo (rather than delegating to newTriggerSweepTestService)
+// so it can ALSO wire Tx — RunCardCommand's occupancy check and its
+// CreateCardRequest claim run inside one transaction, which
+// newTriggerSweepTestService's callers never needed since fireTrigger has
+// no such requirement.
 func newCardCommandTestService(t *testing.T, projectID string, meta *orchestrator.ProjectMeta) (*TaskWorkflowService, *fakeTriggerExecDispatcher, *orchestrator.Task) {
 	t.Helper()
-	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{projectID: meta})
-	repo := svc.Triggers.(*orchestrator.TaskRepository)
-	svc.CardRequests = repo
-	svc.Tasks = repo
-	svc.TaskTriage = repo
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: projectID, WorkDir: "/tmp/" + projectID}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	repo := orchestrator.NewTaskRepository(d.Conn)
+	jobs := newFakeTriggerJobStore()
+	exec := &fakeTriggerExecDispatcher{jobs: jobs}
+
+	svc := &TaskWorkflowService{
+		Triggers:     repo,
+		Projects:     orchestrator.NewProjectRepository(d.Conn),
+		Meta:         fakeTriggerMetaStore{byProject: map[string]*orchestrator.ProjectMeta{projectID: meta}},
+		Jobs:         jobs,
+		Exec:         exec,
+		CardRequests: repo,
+		Tasks:        repo,
+		TaskTriage:   repo,
+		Tx:           realTransactor{conn: d.Conn},
+	}
 
 	card := &orchestrator.Task{
 		Type:      orchestrator.TaskTypeCard,
@@ -201,9 +231,9 @@ func TestRunCardCommand_DispatchFailure_ReleasesSlot(t *testing.T) {
 	}
 }
 
-// TestRunCardCommand_LiveGoChild_ReturnsLinkWithoutDispatching pins the
-// Opus-review fix: a card command must not dispatch alongside an
-// already-running Go work child — the two share one execution slot.
+// TestRunCardCommand_LiveGoChild_ReturnsLinkWithoutDispatching pins that a
+// card command must not dispatch alongside an already-running Go work
+// child — the two share one execution slot.
 func TestRunCardCommand_LiveGoChild_ReturnsLinkWithoutDispatching(t *testing.T) {
 	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},

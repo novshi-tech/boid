@@ -53,6 +53,28 @@ type TaskAppService struct {
 	// creation + card_requests attach (see CreateTaskRequest.CardRequestID).
 	// Nil falls back to the ordinary s.Tasks.CreateTask path.
 	CardRequestLinker CardRequestTaskLinker
+	// CardRequests backs cardSlotConflictWithRequests' check for an active
+	// (launching/attached) card_requests row — a command launcher or Go call
+	// that has claimed the slot but not yet created its continuation. Nil is
+	// tolerated (same posture as CardRequestLinker): the additional check is
+	// simply skipped.
+	CardRequests CardCommandLauncherStore
+}
+
+// cardSlotConflictWithRequests wraps cardChildSlotConflict with the other
+// half of the card's single-work-slot invariant: an active card_requests
+// row is also a conflict, even when no live/JSON child occupies the slot
+// yet.
+func (s *TaskAppService) cardSlotConflictWithRequests(parent *orchestrator.Task, ref, projectID, behavior string) (conflict bool, occupant string) {
+	if conflict, occupant := cardChildSlotConflict(parent, ref, projectID, behavior); conflict {
+		return conflict, occupant
+	}
+	if s.CardRequests != nil {
+		if n, err := s.CardRequests.CountActiveCardRequests(parent.ID); err == nil && n > 0 {
+			return true, "an active card command or Go request"
+		}
+	}
+	return false, ""
 }
 
 // CardRequestTaskLinker is the single-method surface createExecutionTask
@@ -198,7 +220,7 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 				behavior = task.Exec.Behavior
 			}
 			if newParent, perr := s.Tasks.GetTask(*req.ParentID); perr == nil && newParent != nil && newParent.Type == orchestrator.TaskTypeCard {
-				if conflict, occupant := cardChildSlotConflict(newParent, task.Ref, task.ProjectID, behavior); conflict {
+				if conflict, occupant := s.cardSlotConflictWithRequests(newParent, task.Ref, task.ProjectID, behavior); conflict {
 					return nil, &StatusError{
 						Code: http.StatusConflict,
 						Message: fmt.Sprintf(
@@ -412,7 +434,7 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 	}
 	if task.ParentID != "" {
 		if parent, perr := s.Tasks.GetTask(task.ParentID); perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
-			if conflict, occupant := cardChildSlotConflict(parent, task.Ref, task.ProjectID, task.Exec.Behavior); conflict {
+			if conflict, occupant := s.cardSlotConflictWithRequests(parent, task.Ref, task.ProjectID, task.Exec.Behavior); conflict {
 				return nil, &StatusError{
 					Code: http.StatusConflict,
 					Message: fmt.Sprintf(

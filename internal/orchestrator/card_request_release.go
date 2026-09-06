@@ -148,6 +148,124 @@ func continuationTerminalOutcome(dbtx db.DBTX, req *CardRequest) (finished, ok b
 	}
 }
 
+// launcherJobTerminalOrGone reports whether the launcher job identified by
+// launcherJobID has reached a terminal status (completed/failed), treating a
+// missing job row the same as terminal — a deleted/nonexistent launcher job
+// can never report back either. Used by ReconcileLaunchingCardRequests to
+// gate its self-heal on the ACTUAL launcher process being done, never on
+// elapsed time (see that function's own doc comment for why).
+func launcherJobTerminalOrGone(dbtx db.DBTX, launcherJobID string) (bool, error) {
+	row := dbtx.QueryRow(`SELECT status FROM jobs WHERE id = ?`, launcherJobID)
+	var status string
+	if err := row.Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return true, nil
+		}
+		return false, fmt.Errorf("get launcher job %q: %w", launcherJobID, err)
+	}
+	switch status {
+	case jobStatusCompletedLiteral, jobStatusFailedLiteral:
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+// attachFoundContinuationOrFail reverse-looks-up a SESSION job carrying
+// req's card_request_id (created at or after req.UpdatedAt, i.e. this
+// row's current launching promotion — see RecoverLaunchingCardRequests' own
+// doc comment for why the time bound matters for a retried request) and
+// attaches it if found, or fails req (retry-able) if not. Shared body for
+// RecoverLaunchingCardRequests (daemon-startup, unconditional) and
+// ReconcileLaunchingCardRequests (periodic, gated on the launcher job
+// itself having terminated).
+func attachFoundContinuationOrFail(tx db.DBTX, req *CardRequest, failReason string) (*CardRequestSlotOutcome, error) {
+	jobRow := tx.QueryRow(
+		`SELECT id FROM jobs WHERE card_request_id = ? AND card_request_id != '' AND id != ? AND role = ? AND created_at >= ?
+		 ORDER BY created_at ASC LIMIT 1`,
+		req.ID, req.LauncherJobID, jobRoleSessionLiteral, req.UpdatedAt,
+	)
+	var jobID string
+	switch err := jobRow.Scan(&jobID); {
+	case errors.Is(err, sql.ErrNoRows):
+		if ferr := FailCardRequest(tx, req.ID, failReason); ferr != nil {
+			return nil, fmt.Errorf("fail: %w", ferr)
+		}
+		return &CardRequestSlotOutcome{RequestID: req.ID, Status: string(CardRequestStatusFailed)}, nil
+	case err != nil:
+		return nil, fmt.Errorf("find continuation job: %w", err)
+	default:
+		if aerr := AttachCardRequest(tx, req.ID, CardRequestTargetKindSession, jobID); aerr != nil {
+			return nil, fmt.Errorf("attach %q: %w", jobID, aerr)
+		}
+		return &CardRequestSlotOutcome{RequestID: req.ID, Status: string(CardRequestStatusAttached)}, nil
+	}
+}
+
+// ReconcileLaunchingCardRequests is the PERIODIC counterpart to
+// RecoverLaunchingCardRequests: it clears a card_requests row stuck
+// "launching" because its `run:` script exited (or was killed) without
+// ever calling `boid task create` / `boid agent start`, without waiting for
+// a daemon restart.
+//
+// Gated on the LAUNCHER JOB's own terminal status (launcherJobTerminalOrGone),
+// never on elapsed time: a time-based release could fire while the launcher
+// is still legitimately running a long `run:` script, letting a second
+// claim through alongside it.
+//
+// CardRequestCommandKeyGo rows are skipped: a Go reservation (acceptGo,
+// workflow_card.go) has no real launcher job — task creation happens
+// synchronously in-process — so treating a missing job row as "terminal"
+// would fail a Go reservation still legitimately mid-flight between its own
+// CreateCardRequest and CreateTaskLinkedToCardRequest calls. acceptGo
+// releases its own reservation synchronously on every error path instead;
+// only a full daemon crash can leave one stuck, and
+// RecoverLaunchingCardRequests' startup scan (unconditional) handles that.
+func ReconcileLaunchingCardRequests(conn *sql.DB) ([]CardRequestSlotOutcome, error) {
+	rows, err := conn.Query(cardRequestSelectCols+` FROM card_requests WHERE status = ? ORDER BY created_at ASC`, string(CardRequestStatusLaunching))
+	if err != nil {
+		return nil, fmt.Errorf("reconcile launching card requests: list: %w", err)
+	}
+	launching, err := scanCardRequests(rows)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile launching card requests: %w", err)
+	}
+
+	var outcomes []CardRequestSlotOutcome
+	for _, req := range launching {
+		if req.CommandKey == CardRequestCommandKeyGo {
+			continue
+		}
+		var outcome *CardRequestSlotOutcome
+		err := db.InTxDB(conn, func(tx db.DBTX) error {
+			terminal, terr := launcherJobTerminalOrGone(tx, req.LauncherJobID)
+			if terr != nil {
+				return terr
+			}
+			if !terminal {
+				// The launcher is still (or may still be) running normally —
+				// leave the row alone. Call this repeatedly (a periodic loop),
+				// not on a single pass.
+				return nil
+			}
+			found, aerr := attachFoundContinuationOrFail(tx, req, "launcher exited without creating a continuation")
+			if aerr != nil {
+				return aerr
+			}
+			outcome = found
+			return nil
+		})
+		if err != nil {
+			slog.Warn("reconcile launching card request: skipping this row, pass continues", "request_id", req.ID, "error", err)
+			continue
+		}
+		if outcome != nil {
+			outcomes = append(outcomes, *outcome)
+		}
+	}
+	return outcomes, nil
+}
+
 // RecoverLaunchingCardRequests is the daemon-startup recovery scan:
 // task continuations write request->task in the SAME transaction as
 // CreateTask, so they cannot land here mid-flight. A session continuation
@@ -185,36 +303,22 @@ func RecoverLaunchingCardRequests(conn *sql.DB) ([]CardRequestSlotOutcome, error
 
 	var outcomes []CardRequestSlotOutcome
 	for _, req := range launching {
-		var outcome CardRequestSlotOutcome
+		var outcome *CardRequestSlotOutcome
 		err := db.InTxDB(conn, func(tx db.DBTX) error {
-			jobRow := tx.QueryRow(
-				`SELECT id FROM jobs WHERE card_request_id = ? AND card_request_id != '' AND id != ? AND role = ? AND created_at >= ?
-				 ORDER BY created_at ASC LIMIT 1`,
-				req.ID, req.LauncherJobID, jobRoleSessionLiteral, req.UpdatedAt,
-			)
-			var jobID string
-			switch err := jobRow.Scan(&jobID); {
-			case errors.Is(err, sql.ErrNoRows):
-				if ferr := FailCardRequest(tx, req.ID, "launcher exited before creating a continuation (daemon restart recovery)"); ferr != nil {
-					return fmt.Errorf("fail: %w", ferr)
-				}
-				outcome = CardRequestSlotOutcome{RequestID: req.ID, Status: string(CardRequestStatusFailed)}
-				return nil
-			case err != nil:
-				return fmt.Errorf("find continuation job: %w", err)
-			default:
-				if aerr := AttachCardRequest(tx, req.ID, CardRequestTargetKindSession, jobID); aerr != nil {
-					return fmt.Errorf("attach %q: %w", jobID, aerr)
-				}
-				outcome = CardRequestSlotOutcome{RequestID: req.ID, Status: string(CardRequestStatusAttached)}
-				return nil
+			found, aerr := attachFoundContinuationOrFail(tx, req, "launcher exited before creating a continuation (daemon restart recovery)")
+			if aerr != nil {
+				return aerr
 			}
+			outcome = found
+			return nil
 		})
 		if err != nil {
 			slog.Warn("recover launching card request: skipping this row, scan continues", "request_id", req.ID, "error", err)
 			continue
 		}
-		outcomes = append(outcomes, outcome)
+		if outcome != nil {
+			outcomes = append(outcomes, *outcome)
+		}
 	}
 	return outcomes, nil
 }

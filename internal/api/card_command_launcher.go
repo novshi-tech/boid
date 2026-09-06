@@ -46,9 +46,17 @@ type RunCardCommandResult struct {
 	TargetID   string `json:"target_id,omitempty"`
 }
 
+// cardRequestLister is the read half CardCommandLauncherStore and TxStore
+// both satisfy — currentOccupantResult runs either non-transactionally
+// (store) or inside the reservation transaction (tx), so it is written
+// against this narrower interface rather than either concrete one.
+type cardRequestLister interface {
+	ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error)
+}
+
 // currentOccupantResult reads the card's currently-active (launching or
 // attached) card_requests row and renders it as an Occupied result.
-func currentOccupantResult(store CardCommandLauncherStore, cardID string) (*RunCardCommandResult, error) {
+func currentOccupantResult(store cardRequestLister, cardID string) (*RunCardCommandResult, error) {
 	rows, err := store.ListCardRequestsByCard(cardID)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -66,19 +74,23 @@ func currentOccupantResult(store CardCommandLauncherStore, cardID string) (*RunC
 	return nil, &StatusError{Code: http.StatusConflict, Message: "card command: slot reported occupied but no active request found; retry"}
 }
 
-// cardWorkChildOccupant reports the task id of card's live or specced work
-// child, if any — the same occupancy cardSlotOccupied checks for
-// child_added, read non-transactionally here as a pre-dispatch guard so a
-// card command never runs alongside an already-dispatched Go child.
-func (s *TaskWorkflowService) cardWorkChildOccupant(card *orchestrator.Task) (occupantID string, occupied bool) {
-	if s.TaskTriage != nil {
-		if tt, err := s.TaskTriage.GetTaskTriage(card.ID); err == nil {
-			if id, derr := orchestrator.DetailOpenSlotChildID(tt.Detail); derr == nil && id != "" {
-				return id, true
-			}
+// cardWorkChildOccupantTx reports the task id of cardID's live or specced
+// work child, if any — the same occupancy cardSlotOccupied checks for
+// child_added, but re-read FRESH from tx (not a pre-fetched *orchestrator.Task
+// snapshot) so it can run inside the same transaction as the CreateCardRequest
+// INSERT that claims the slot: a stale snapshot taken before the
+// transaction opened would defeat the whole point of making this atomic.
+func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantID string, occupied bool, err error) {
+	fresh, err := tx.GetTask(cardID)
+	if err != nil {
+		return "", false, err
+	}
+	if tt, ttErr := tx.GetTaskTriage(cardID); ttErr == nil {
+		if id, derr := orchestrator.DetailOpenSlotChildID(tt.Detail); derr == nil && id != "" {
+			return id, true, nil
 		}
 	}
-	return "", card.OpenChildCount > 0
+	return "", fresh.OpenChildCount > 0, nil
 }
 
 // RunCardCommand fires cardID's commandKey card_commands entry as a human
@@ -91,7 +103,7 @@ func (s *TaskWorkflowService) cardWorkChildOccupant(card *orchestrator.Task) (oc
 // link to the current execution instead; the caller's own UI keeps the
 // typed instruction around.
 func (s *TaskWorkflowService) RunCardCommand(ctx context.Context, cardID, commandKey, instruction string) (*RunCardCommandResult, error) {
-	if s.Tasks == nil || s.CardRequests == nil || s.Exec == nil {
+	if s.Tasks == nil || s.CardRequests == nil || s.Exec == nil || s.Tx == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "card command: not configured"}
 	}
 	if len(instruction) > cardCommandInstructionMaxBytes {
@@ -118,24 +130,6 @@ func (s *TaskWorkflowService) RunCardCommand(ctx context.Context, cardID, comman
 		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("card command: no such command %q", commandKey)}
 	}
 
-	// A live/specced Go work child occupies the SAME shared execution slot
-	// as a card_requests row — checked here too, or a command could dispatch
-	// alongside an already-running Go child.
-	if occupantID, occ := s.cardWorkChildOccupant(card); occ {
-		return &RunCardCommandResult{Occupied: true, TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: occupantID}, nil
-	}
-
-	// Optimization only: the actual safety net is CreateCardRequest's own
-	// unique index below, which still catches a concurrent claim landing
-	// in between.
-	active, err := s.CardRequests.CountActiveCardRequests(cardID)
-	if err != nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-	}
-	if active > 0 {
-		return currentOccupantResult(s.CardRequests, cardID)
-	}
-
 	launcherJobID := uuid.New().String()
 	def := orchestrator.CardRequestDefinition{CommandKey: commandKey, Label: cmd.Label, Run: cmd.Run}
 	req := &orchestrator.CardRequest{
@@ -147,11 +141,47 @@ func (s *TaskWorkflowService) RunCardCommand(ctx context.Context, cardID, comman
 		Launched:      def,
 		LauncherJobID: launcherJobID,
 	}
-	if err := s.CardRequests.CreateCardRequest(req); err != nil {
-		if errors.Is(err, orchestrator.ErrCardRequestSlotOccupied) {
-			return currentOccupantResult(s.CardRequests, cardID)
+
+	// The occupancy pre-check (a live/specced Go work child via
+	// cardWorkChildOccupantTx, plus any already-active card_requests row)
+	// and the CreateCardRequest INSERT that actually claims the slot run
+	// inside ONE transaction, so a concurrent child_added (its own
+	// transaction) cannot commit an open child in the gap between this
+	// function's reads and its own INSERT. cardSlotOccupied (workflow_card.go)
+	// closes the same gap in the other direction (child_added checking
+	// CountActiveCardRequests inside its own transaction).
+	var occupiedResult *RunCardCommandResult
+	txErr := s.Tx.WithinTx(func(tx TxStore) error {
+		occupantID, occ, operr := cardWorkChildOccupantTx(tx, cardID)
+		if operr != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: operr.Error()}
 		}
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		if occ {
+			occupiedResult = &RunCardCommandResult{Occupied: true, TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: occupantID}
+			return nil
+		}
+		if err := tx.CreateCardRequest(req); err != nil {
+			if errors.Is(err, orchestrator.ErrCardRequestSlotOccupied) {
+				result, oerr := currentOccupantResult(tx, cardID)
+				if oerr != nil {
+					return oerr
+				}
+				occupiedResult = result
+				return nil
+			}
+			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		return nil
+	})
+	if txErr != nil {
+		var se *StatusError
+		if errors.As(txErr, &se) {
+			return nil, se
+		}
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: txErr.Error()}
+	}
+	if occupiedResult != nil {
+		return occupiedResult, nil
 	}
 
 	result, err := s.Exec.StartExec(ctx, StartExecRequest{

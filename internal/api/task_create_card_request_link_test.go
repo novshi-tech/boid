@@ -1,11 +1,11 @@
 package api
 
-// Pins two Opus-review fixes to the launcher task-continuation attach:
+// Pins the launcher task-continuation attach's own edge cases:
 //   - a launcher-supplied ref/idempotency_key hitting CreateTask's own
 //     get-or-create early-return must still attach to its card_requests
-//     row (P1) — otherwise the slot stays "launching" forever.
+//     row — otherwise the slot stays "launching" forever.
 //   - a card-type create (initial_status=parked) must never consume a
-//     card_requests slot (P2) — that guard lives in boid_executor.go, so
+//     card_requests slot — that guard lives in boid_executor.go, so
 //     this file only pins the general-purpose attach helper's own
 //     behavior via the ref/idempotency paths.
 

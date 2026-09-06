@@ -174,7 +174,7 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 	// any real occupant unconditionally blocks this create.
 	if req.ParentID != "" {
 		if parent, perr := s.Tasks.GetTask(req.ParentID); perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
-			if conflict, occupant := cardChildSlotConflict(parent, "", "", ""); conflict {
+			if conflict, occupant := s.cardSlotConflictWithRequests(parent, "", "", ""); conflict {
 				return nil, &StatusError{
 					Code: http.StatusConflict,
 					Message: fmt.Sprintf(
@@ -441,7 +441,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	if req.ParentID != "" {
 		parent, perr := s.Tasks.GetTask(req.ParentID)
 		if perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
-			if conflict, occupant := cardChildSlotConflict(parent, req.Ref, req.ProjectID, req.Behavior); conflict {
+			if conflict, occupant := s.cardSlotConflictWithRequests(parent, req.Ref, req.ProjectID, req.Behavior); conflict {
 				return nil, &StatusError{
 					Code: http.StatusConflict,
 					Message: fmt.Sprintf(

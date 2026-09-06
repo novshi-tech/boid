@@ -246,6 +246,67 @@ func TestRecoverLaunchingCardRequests_NoContinuationFoundFailsRetryable(t *testi
 	}
 }
 
+// TestRecoverLaunchingCardRequests_ExcludesNonSessionRoleJobs pins that the
+// reverse-lookup query's `role = 'session'` clause is load-bearing on its
+// own: a job carrying the request's card_request_id but a non-session role
+// (e.g. the launcher's OWN readonly exec job, which also gets
+// card_request_id stamped so `boid card context` can read it) must NEVER be
+// mistaken for the continuation.
+func TestRecoverLaunchingCardRequests_ExcludesNonSessionRoleJobs(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-x"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	// Only candidate row: same card_request_id, but role=exec (not session).
+	insertTestJob(t, d, "not-a-session-job", "proj-1", "exec", "completed", req.ID)
+
+	outcomes, err := orchestrator.RecoverLaunchingCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("RecoverLaunchingCardRequests: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].RequestID != req.ID || outcomes[0].Status != string(orchestrator.CardRequestStatusFailed) {
+		t.Fatalf("outcomes = %+v, want one FAILED outcome — a non-session-role job must never be mistaken for the continuation", outcomes)
+	}
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.TargetID == "not-a-session-job" {
+		t.Fatalf("got = %+v, must not have attached to the non-session-role job", got)
+	}
+}
+
+// TestRecoverLaunchingCardRequests_ExcludesTheLauncherJobItself pins that
+// `id != launcher_job_id` is independently load-bearing, separate from the
+// role filter above: even a job that happens to carry role='session' must
+// never be matched against itself if it IS the launcher's own job id. This
+// can't happen for a real trigger-run launcher (always role=exec/hook), but
+// pins the query's own defensive clause directly rather than relying on
+// "no real launcher is ever role=session" holding forever.
+func TestRecoverLaunchingCardRequests_ExcludesTheLauncherJobItself(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-y"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	// The ONLY candidate row IS the launcher's own job id, adversarially
+	// tagged role=session and terminal.
+	insertTestJob(t, d, "launcher-y", "proj-1", "session", "completed", req.ID)
+
+	outcomes, err := orchestrator.RecoverLaunchingCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("RecoverLaunchingCardRequests: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].RequestID != req.ID || outcomes[0].Status != string(orchestrator.CardRequestStatusFailed) {
+		t.Fatalf("outcomes = %+v, want one FAILED outcome — the launcher's own job id must never be matched as its own continuation", outcomes)
+	}
+}
+
 // TestRecoverLaunchingCardRequests_IgnoresStalePriorAttemptSessionJob pins a
 // regression: a retried request keeps its id, so a PRIOR attempt's session
 // job can still carry the same card_request_id. Without excluding the
@@ -340,6 +401,135 @@ func TestForceReleaseCardRequest_ReleasesRegardlessOfContinuationState(t *testin
 	}
 	if n, cerr := orchestrator.CountActiveCardRequests(d.Conn, cardID); cerr != nil || n != 0 {
 		t.Fatalf("CountActiveCardRequests after force release = (%d, %v), want (0, nil)", n, cerr)
+	}
+}
+
+// ---- ReconcileLaunchingCardRequests: the PERIODIC self-heal for a `run:`
+// script that exits/hangs without ever calling `boid task create` / `boid
+// agent start`. Gated on the LAUNCHER JOB's own terminal status (never
+// elapsed time) — see the function's own doc comment for why.
+
+func TestReconcileLaunchingCardRequests_LauncherStillRunning_LeftAlone(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "review", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-1"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	insertTestJob(t, d, "launcher-1", "proj-1", "exec", "running", req.ID)
+
+	outcomes, err := orchestrator.ReconcileLaunchingCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("ReconcileLaunchingCardRequests: %v", err)
+	}
+	if len(outcomes) != 0 {
+		t.Fatalf("outcomes = %+v, want none (launcher job still running)", outcomes)
+	}
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusLaunching {
+		t.Errorf("Status = %q, want still launching", got.Status)
+	}
+}
+
+// TestReconcileLaunchingCardRequests_LauncherTerminatedNoContinuation_FailsRetryable
+// pins the core self-heal case: a `run:` script that exits without ever
+// calling `boid task create` / `boid agent start` must fail (retry-able),
+// not stay launching forever.
+func TestReconcileLaunchingCardRequests_LauncherTerminatedNoContinuation_FailsRetryable(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "review", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-1"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	insertTestJob(t, d, "launcher-1", "proj-1", "exec", "completed", req.ID)
+
+	outcomes, err := orchestrator.ReconcileLaunchingCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("ReconcileLaunchingCardRequests: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].RequestID != req.ID || outcomes[0].Status != string(orchestrator.CardRequestStatusFailed) {
+		t.Fatalf("outcomes = %+v, want one failed outcome for %q", outcomes, req.ID)
+	}
+	if n, cerr := orchestrator.CountActiveCardRequests(d.Conn, cardID); cerr != nil || n != 0 {
+		t.Fatalf("CountActiveCardRequests after self-heal = (%d, %v), want (0, nil) — the slot must be free again", n, cerr)
+	}
+}
+
+// TestReconcileLaunchingCardRequests_LauncherTerminatedWithSessionContinuation_Attaches
+// covers the crash-window case even outside a daemon restart: the launcher
+// job (a readonly exec job) called `boid agent start`, which created the
+// session job and returned, but the launcher's OWN process then died before
+// its exec job settled to a terminal status in a way this scan can see
+// (or, simply, the exec job legitimately finished right after dispatching a
+// session and the periodic tick ran before the op's own attach — same
+// reverse-lookup RecoverLaunchingCardRequests already relies on at startup).
+func TestReconcileLaunchingCardRequests_LauncherTerminatedWithSessionContinuation_Attaches(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "review", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-1"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	insertTestJob(t, d, "launcher-1", "proj-1", "exec", "completed", req.ID)
+	insertTestJob(t, d, "session-job-1", "proj-1", "session", "running", req.ID)
+
+	outcomes, err := orchestrator.ReconcileLaunchingCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("ReconcileLaunchingCardRequests: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].RequestID != req.ID || outcomes[0].Status != string(orchestrator.CardRequestStatusAttached) {
+		t.Fatalf("outcomes = %+v, want one attached outcome for %q", outcomes, req.ID)
+	}
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.TargetKind != orchestrator.CardRequestTargetKindSession || got.TargetID != "session-job-1" {
+		t.Fatalf("got = %+v, want attached to session-job-1", got)
+	}
+}
+
+// TestReconcileLaunchingCardRequests_SkipsGoCommandKeyRows pins that a Go
+// reservation (CardRequestCommandKeyGo, acceptGo/workflow_card.go) is never
+// touched by this periodic scan — Go has no real launcher job (its
+// LauncherJobID is a synthetic marker, so a naive check would see "no such
+// job" and immediately treat it as terminal), and would otherwise be failed
+// out from under a legitimately in-flight Go call between its own
+// CreateCardRequest and CreateTaskLinkedToCardRequest. No jobs row is
+// inserted for the LauncherJobID at all, matching a real Go reservation.
+func TestReconcileLaunchingCardRequests_SkipsGoCommandKeyRows(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{
+		CardID: cardID, CommandKey: orchestrator.CardRequestCommandKeyGo,
+		Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "go:synthetic-marker",
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	// Deliberately no jobs row for "go:synthetic-marker".
+
+	outcomes, err := orchestrator.ReconcileLaunchingCardRequests(d.Conn)
+	if err != nil {
+		t.Fatalf("ReconcileLaunchingCardRequests: %v", err)
+	}
+	if len(outcomes) != 0 {
+		t.Fatalf("outcomes = %+v, want none (CardRequestCommandKeyGo rows must be skipped)", outcomes)
+	}
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusLaunching {
+		t.Fatalf("Status = %q, want still launching (untouched)", got.Status)
 	}
 }
 
