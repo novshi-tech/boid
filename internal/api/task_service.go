@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -116,12 +117,52 @@ func (s *TaskAppService) cardSlotConflictWithRequests(parent *orchestrator.Task,
 	return cardSlotConflictWithLister(s.CardRequests, parent, ref, projectID, behavior, ownCardRequestID)
 }
 
+// updateTaskWithCardSlotRecheck writes task via UpdateTask. When s.Tx is
+// wired and cardParentID is non-empty (the write reparents/keeps task under
+// a card), the slot re-check and the write share one WithinTx call — same
+// atomicCardCheck shape createExecutionTask uses (task_create.go). When
+// s.Tx is nil, it falls back to a plain non-atomic UpdateTask; the caller is
+// then responsible for having already run the non-atomic pre-check.
+func (s *TaskAppService) updateTaskWithCardSlotRecheck(task *orchestrator.Task, cardParentID, conflictMsgFmt string) error {
+	if cardParentID == "" || s.Tx == nil {
+		if err := s.Tasks.UpdateTask(task); err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		return nil
+	}
+	var behavior string
+	if task.Exec != nil {
+		behavior = task.Exec.Behavior
+	}
+	txErr := s.Tx.WithinTx(func(tx TxStore) error {
+		freshParent, gerr := tx.GetTask(cardParentID)
+		if gerr != nil {
+			return gerr
+		}
+		if conflict, occupant := cardSlotConflictWithLister(tx, freshParent, task.Ref, task.ProjectID, behavior, ""); conflict {
+			return &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(conflictMsgFmt, cardParentID, occupant)}
+		}
+		return tx.UpdateTask(task)
+	})
+	if txErr != nil {
+		var se *StatusError
+		if errors.As(txErr, &se) {
+			return se
+		}
+		return &StatusError{Code: http.StatusInternalServerError, Message: txErr.Error()}
+	}
+	return nil
+}
+
 // CardRequestTaskLinker is the single-method surface createExecutionTask
 // needs to attach a fresh task to its originating card_requests row inside
 // the SAME transaction as the task's own INSERT. Satisfied by
-// *orchestrator.TaskRepository.
+// *orchestrator.TaskRepository. ownerJobID is the caller-claimed launcher
+// job id (CreateTaskRequest.CardRequestOwnerJobID), re-asserted in the
+// attach's own write instead of trusted from an earlier read — see
+// orchestrator.AttachCardRequestOwned's doc comment.
 type CardRequestTaskLinker interface {
-	CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID string) error
+	CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID, ownerJobID string) error
 }
 
 // Notifier sends an agent-driven notification for a task. Implementations
@@ -247,19 +288,24 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		}
 		task.Exec.Payload = merged
 	}
+	var reparentCardID string
 	if req.ParentID != nil {
 		// A card's single-work-slot invariant must also hold for this write
 		// port: reparenting an EXISTING task under a card is otherwise a
 		// bypass of both the child_added and direct-create gates (neither
 		// runs at update time). Only type=card new parents are checked —
-		// the invariant does not apply to an execution parent.
+		// the invariant does not apply to an execution parent. When s.Tx is
+		// wired the re-check is deferred to updateTaskWithCardSlotRecheck,
+		// which runs it fresh inside the same tx as the write below.
 		if *req.ParentID != "" && *req.ParentID != task.ParentID {
 			var behavior string
 			if task.Exec != nil {
 				behavior = task.Exec.Behavior
 			}
 			if newParent, perr := s.Tasks.GetTask(*req.ParentID); perr == nil && newParent != nil && newParent.Type == orchestrator.TaskTypeCard {
-				if conflict, occupant := s.cardSlotConflictWithRequests(newParent, task.Ref, task.ProjectID, behavior, ""); conflict {
+				if s.Tx != nil {
+					reparentCardID = newParent.ID
+				} else if conflict, occupant := s.cardSlotConflictWithRequests(newParent, task.Ref, task.ProjectID, behavior, ""); conflict {
 					return nil, &StatusError{
 						Code: http.StatusConflict,
 						Message: fmt.Sprintf(
@@ -300,8 +346,9 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		}
 		task.Exec.AutoStart = *req.AutoStart
 	}
-	if err := s.Tasks.UpdateTask(task); err != nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	if err := s.updateTaskWithCardSlotRecheck(task, reparentCardID,
+		"update task: card %q's single work slot is already occupied by %s"); err != nil {
+		return nil, err
 	}
 	if instructionsBefore != nil {
 		s.auditInstructionsChange(task.ID, instructionsBefore, task.Exec.Instructions)
@@ -471,9 +518,15 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 			Message: fmt.Sprintf("task is not in a rerun-able state (status: %s)", task.Status),
 		}
 	}
+	var reparentCardID string
 	if task.ParentID != "" {
 		if parent, perr := s.Tasks.GetTask(task.ParentID); perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
-			if conflict, occupant := s.cardSlotConflictWithRequests(parent, task.Ref, task.ProjectID, task.Exec.Behavior, ""); conflict {
+			if s.Tx != nil {
+				// Deferred to updateTaskWithCardSlotRecheck below, which
+				// re-checks fresh inside the same tx as the pending-reset
+				// write.
+				reparentCardID = parent.ID
+			} else if conflict, occupant := s.cardSlotConflictWithRequests(parent, task.Ref, task.ProjectID, task.Exec.Behavior, ""); conflict {
 				return nil, &StatusError{
 					Code: http.StatusConflict,
 					Message: fmt.Sprintf(
@@ -496,8 +549,9 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 
 	task.Status = orchestrator.TaskStatusPending
 	task.Exec.Payload = json.RawMessage("{}")
-	if err := s.Tasks.UpdateTask(task); err != nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	if err := s.updateTaskWithCardSlotRecheck(task, reparentCardID,
+		"rerun task: card %q's single work slot is already occupied by %s"); err != nil {
+		return nil, err
 	}
 
 	if instructionsBefore != nil {

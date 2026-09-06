@@ -243,10 +243,12 @@ func (r *TaskRepository) GetCardRequest(id string) (*CardRequest, error) {
 	return GetCardRequest(r.db, id)
 }
 
-// AttachCardRequest backs `boid agent start`'s recording of the session
-// continuation it just created (server.cardRequestReader).
-func (r *TaskRepository) AttachCardRequest(id, targetKind, targetID string) error {
-	return AttachCardRequest(r.db, id, targetKind, targetID)
+// AttachCardRequestOwned backs `boid agent start`'s recording of the
+// session continuation it just created (server.cardRequestReader) — the
+// caller's job id is asserted in the write itself, not trusted from an
+// earlier read (see AttachCardRequestOwned's own doc comment).
+func (r *TaskRepository) AttachCardRequestOwned(id, expectedLauncherJobID, targetKind, targetID string) error {
+	return AttachCardRequestOwned(r.db, id, expectedLauncherJobID, targetKind, targetID)
 }
 
 // ForceReleaseCardRequest backs POST /api/card-requests/{id}/release, the
@@ -317,21 +319,22 @@ func (r *TaskRepository) ReleaseCardRequestForTerminalTarget(targetKind, targetI
 	return found, err
 }
 
-// CreateTaskLinkedToCardRequest runs CreateTask(t) and AttachCardRequest
-// (requestID, "task", t.ID) IN THE SAME TRANSACTION, so a task continuation
-// is never observable without its request association. Callers are
-// expected to have already verified launcher ownership (LauncherJobID ==
-// the calling job's id); this method re-checks requestID's status
-// atomically but not ownership. A retry that hits CreateTask's own
-// Ref/IdempotencyKey get-or-create and finds the SAME task already attached
-// is treated as success, not an error.
-func (r *TaskRepository) CreateTaskLinkedToCardRequest(t *Task, requestID string) error {
+// CreateTaskLinkedToCardRequest runs CreateTask(t) and
+// AttachCardRequestOwned(requestID, ownerJobID, "task", t.ID) IN THE SAME
+// TRANSACTION, so a task continuation is never observable without its
+// request association, AND the attach re-asserts ownerJobID as the current
+// owner in its own write rather than trusting an earlier, separate
+// ownership read (see AttachCardRequestOwned's own doc comment for the race
+// this closes). A retry that hits CreateTask's own Ref/IdempotencyKey
+// get-or-create and finds the SAME task already attached is treated as
+// success, not an error.
+func (r *TaskRepository) CreateTaskLinkedToCardRequest(t *Task, requestID, ownerJobID string) error {
 	conn, ok := r.db.(*sql.DB)
 	if !ok {
-		return createTaskLinkedToCardRequest(r.db, t, requestID)
+		return createTaskLinkedToCardRequest(r.db, t, requestID, ownerJobID)
 	}
 	return db.InTxDB(conn, func(tx db.DBTX) error {
-		return createTaskLinkedToCardRequest(tx, t, requestID)
+		return createTaskLinkedToCardRequest(tx, t, requestID, ownerJobID)
 	})
 }
 
@@ -339,11 +342,11 @@ func (r *TaskRepository) CreateTaskLinkedToCardRequest(t *Task, requestID string
 // dbtx-parameterized so both the *sql.DB (wraps its own tx) and already-
 // inside-a-tx (nested call, e.g. from a caller that already holds one)
 // shapes share one implementation.
-func createTaskLinkedToCardRequest(dbtx db.DBTX, t *Task, requestID string) error {
+func createTaskLinkedToCardRequest(dbtx db.DBTX, t *Task, requestID, ownerJobID string) error {
 	if err := CreateTask(dbtx, t); err != nil {
 		return fmt.Errorf("create task linked to card request: %w", err)
 	}
-	if err := AttachCardRequest(dbtx, requestID, CardRequestTargetKindTask, t.ID); err != nil {
+	if err := AttachCardRequestOwned(dbtx, requestID, ownerJobID, CardRequestTargetKindTask, t.ID); err != nil {
 		if errors.Is(err, ErrCardRequestInvalidTransition) {
 			// Idempotent retry (t.ID unchanged via Ref/IdempotencyKey
 			// get-or-create) or a request that raced to a different

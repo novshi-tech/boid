@@ -28,7 +28,7 @@ func TestCreateTaskLinkedToCardRequest_AttachesInOneCall(t *testing.T) {
 		Type:      orchestrator.TaskTypeExecution,
 		Exec:      &orchestrator.ExecAttrs{Behavior: "executor"},
 	}
-	if err := repo.CreateTaskLinkedToCardRequest(task, req.ID); err != nil {
+	if err := repo.CreateTaskLinkedToCardRequest(task, req.ID, "job-1"); err != nil {
 		t.Fatalf("CreateTaskLinkedToCardRequest: %v", err)
 	}
 	if task.ID == "" {
@@ -63,12 +63,12 @@ func TestCreateTaskLinkedToCardRequest_RetrySameRefConverges(t *testing.T) {
 	}
 
 	first := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Ref: req.ID, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
-	if err := repo.CreateTaskLinkedToCardRequest(first, req.ID); err != nil {
+	if err := repo.CreateTaskLinkedToCardRequest(first, req.ID, "job-1"); err != nil {
 		t.Fatalf("first CreateTaskLinkedToCardRequest: %v", err)
 	}
 
 	retry := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Ref: req.ID, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
-	if err := repo.CreateTaskLinkedToCardRequest(retry, req.ID); err != nil {
+	if err := repo.CreateTaskLinkedToCardRequest(retry, req.ID, "job-1"); err != nil {
 		t.Fatalf("retry CreateTaskLinkedToCardRequest: %v", err)
 	}
 	if retry.ID != first.ID {
@@ -102,7 +102,7 @@ func TestCreateTaskLinkedToCardRequest_AlreadyAttachedToDifferentTask_Errors(t *
 	}
 
 	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Ref: "brand-new-ref", Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
-	err := repo.CreateTaskLinkedToCardRequest(task, req.ID)
+	err := repo.CreateTaskLinkedToCardRequest(task, req.ID, "job-1")
 	if !errors.Is(err, orchestrator.ErrCardRequestInvalidTransition) {
 		t.Fatalf("err = %v, want ErrCardRequestInvalidTransition", err)
 	}
@@ -126,7 +126,7 @@ func TestCreateTaskLinkedToCardRequest_AttachFailure_RollsBackTheTaskInsert(t *t
 	}
 
 	task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Ref: "brand-new-ref", Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
-	if err := repo.CreateTaskLinkedToCardRequest(task, req.ID); !errors.Is(err, orchestrator.ErrCardRequestInvalidTransition) {
+	if err := repo.CreateTaskLinkedToCardRequest(task, req.ID, "job-1"); !errors.Is(err, orchestrator.ErrCardRequestInvalidTransition) {
 		t.Fatalf("err = %v, want ErrCardRequestInvalidTransition", err)
 	}
 

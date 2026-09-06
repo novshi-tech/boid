@@ -105,6 +105,14 @@ var (
 	// ErrNoQueuedCardRequests is ClaimQueuedCardRequests' sentinel for "this
 	// card has nothing queued right now".
 	ErrNoQueuedCardRequests = errors.New("card request: no queued requests for card")
+	// ErrCardRequestOwnerMismatch: AttachCardRequestOwned's caller-asserted
+	// launcher_job_id did not match the row's CURRENT owner (re-read after
+	// the owner-scoped UPDATE affected zero rows) — a genuine ownership
+	// violation, distinct from ErrCardRequestInvalidTransition (which also
+	// covers the idempotent-retry case where the row is already correctly
+	// attached to the SAME caller's own target). Callers must not treat this
+	// as a retry-converges outcome.
+	ErrCardRequestOwnerMismatch = errors.New("card request: caller is not the request's current owner")
 )
 
 // CreateCardRequest inserts a new card_requests row. req.ID is generated
@@ -246,10 +254,9 @@ func ClaimQueuedCardRequests(dbtx db.DBTX, cardID, launcherJobID string, def Car
 	return head, rest, nil
 }
 
-// AttachCardRequest records the continuation (task or session) a launcher
-// created, transitioning launching → attached. Only valid from launching;
-// attaching twice is rejected rather than re-pointing the target.
-func AttachCardRequest(dbtx db.DBTX, id, targetKind, targetID string) error {
+// validateAttachArgs is the argument validation AttachCardRequest and
+// AttachCardRequestOwned share.
+func validateAttachArgs(id, targetKind, targetID string) error {
 	if id == "" {
 		return fmt.Errorf("attach card request: id must not be empty")
 	}
@@ -259,6 +266,25 @@ func AttachCardRequest(dbtx db.DBTX, id, targetKind, targetID string) error {
 	if targetID == "" {
 		return fmt.Errorf("attach card request: target id must not be empty")
 	}
+	return nil
+}
+
+// AttachCardRequest records the continuation (task or session) a launcher
+// created, transitioning launching → attached. Only valid from launching;
+// attaching twice is rejected rather than re-pointing the target.
+//
+// No caller identity is asserted here — reserved for the reconcile/recovery
+// paths (attachFoundContinuationOrFail) that establish the continuation's
+// legitimacy some OTHER way (a DB-verified foreign-key match, not a
+// caller-supplied claim). Any path that instead trusts a caller's own
+// assertion of "I am the launcher" — BoidOpTaskCreate, BoidOpAgentStart —
+// MUST use AttachCardRequestOwned instead, so that assertion is re-checked
+// fresh in the same statement that writes, not read separately beforehand
+// and trusted stale.
+func AttachCardRequest(dbtx db.DBTX, id, targetKind, targetID string) error {
+	if err := validateAttachArgs(id, targetKind, targetID); err != nil {
+		return err
+	}
 	res, err := dbtx.Exec(
 		`UPDATE card_requests SET status = ?, target_kind = ?, target_id = ?, updated_at = ? WHERE id = ? AND status = ?`,
 		string(CardRequestStatusAttached), targetKind, targetID, time.Now().UTC(), id, string(CardRequestStatusLaunching),
@@ -267,6 +293,50 @@ func AttachCardRequest(dbtx db.DBTX, id, targetKind, targetID string) error {
 		return fmt.Errorf("attach card request: %w", err)
 	}
 	return rowsAffectedOrNotFoundOrInvalid(dbtx, res, id)
+}
+
+// AttachCardRequestOwned is AttachCardRequest with the caller's claimed
+// launcher_job_id asserted directly in the UPDATE's WHERE clause, instead of
+// trusting a separate, earlier GetCardRequest read of it. Closes the window
+// where a force-release followed by a different launcher's reclaim, landing
+// between that earlier read and this write, would otherwise let the stale
+// caller's attach steal the new owner's slot (the row is "launching" again
+// by then, just under a different launcher_job_id — a plain status check
+// alone cannot tell the two apart).
+//
+// Returns ErrCardRequestOwnerMismatch when the row's CURRENT launcher_job_id
+// differs from expectedLauncherJobID — a real ownership violation. Returns
+// ErrCardRequestInvalidTransition (same as AttachCardRequest) for every
+// other zero-rows-affected case, INCLUDING the row already being attached to
+// expectedLauncherJobID's own earlier attach — callers rely on that
+// distinction to keep an idempotent retry converging (re-read and compare
+// target) without misclassifying it as a stolen slot.
+func AttachCardRequestOwned(dbtx db.DBTX, id, expectedLauncherJobID, targetKind, targetID string) error {
+	if expectedLauncherJobID == "" {
+		return fmt.Errorf("attach card request: expected launcher job id must not be empty")
+	}
+	if err := validateAttachArgs(id, targetKind, targetID); err != nil {
+		return err
+	}
+	res, err := dbtx.Exec(
+		`UPDATE card_requests SET status = ?, target_kind = ?, target_id = ?, updated_at = ? WHERE id = ? AND status = ? AND launcher_job_id = ?`,
+		string(CardRequestStatusAttached), targetKind, targetID, time.Now().UTC(), id, string(CardRequestStatusLaunching), expectedLauncherJobID,
+	)
+	if err != nil {
+		return fmt.Errorf("attach card request: %w", err)
+	}
+	if n, aerr := res.RowsAffected(); aerr == nil && n > 0 {
+		return nil
+	}
+	existing, gerr := GetCardRequest(dbtx, id)
+	if gerr != nil {
+		return gerr
+	}
+	if existing.LauncherJobID != expectedLauncherJobID {
+		return fmt.Errorf("attach card request %q: owned by launcher %q, not %q: %w",
+			id, existing.LauncherJobID, expectedLauncherJobID, ErrCardRequestOwnerMismatch)
+	}
+	return fmt.Errorf("attach card request %q: %w", id, ErrCardRequestInvalidTransition)
 }
 
 // FinishCardRequest records a request's successful outcome — attached →

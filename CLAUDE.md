@@ -20,14 +20,17 @@ E2E テスト（`e2e/run-container.sh`、real docker/podman engine が必要）�
 - `cmd/` — CLI コマンド定義（cobra）
 - `internal/` — 内部パッケージ
   - `api/` — HTTP ハンドラ
+  - `apigateway/` — サンドボックスが資格情報を持たずに設定済み HTTP API を叩ける認証プロキシ
+  - `apiwire/` — daemon↔client の wire contract（request/response 型、正規化バリデータ）
   - `client/` — UNIX ソケット HTTP クライアント
   - `config/` — 設定ファイル読み込み・デフォルト値
   - `daemon/` — デーモン起動・停止・PID 管理
   - `db/` — SQLite 永続化
   - `dispatcher/` — ジョブ dispatch・サンドボックスビルド
+  - `gitgateway/` — サンドボックスの credential-less git と実フォージ（GitHub/Bitbucket）の間の認証プロキシ
   - `initwizard/` — 初回セットアップウィザード
-  - `kit/` — キット（再利用可能な拡張パッケージ）
   - `logrotate/` — ログローテーション
+  - `mtls/` — broker/git-gateway/dockerproxy TCP リスナー向けの自己署名 CA
   - `notify/` — 通知サービス
   - `orchestrator/` — 状態機械・遷移モデル・project.yaml パース・hook 評価
   - `qrterm/` — ターミナル QR コード表示
@@ -35,7 +38,6 @@ E2E テスト（`e2e/run-container.sh`、real docker/podman engine が必要）�
   - `server/` — UNIX ソケット + TCP サーバ・ルーティング
   - `skills/` — 組み込みスキル管理
   - `timeline/` — タイムライン記録
-  - `tui/` — TUI（テキスト UI）
   - `vtsnapshot/` — 録画済み PTY バイト列を「今の画面」へ解決（attach 時のスナップショット）
 - `web/` — Templ テンプレート + 静的ファイル
 - `testutil/` — テストヘルパー

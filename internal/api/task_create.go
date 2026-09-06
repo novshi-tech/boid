@@ -212,11 +212,11 @@ func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orc
 // attached. Reusing CreateTaskLinkedToCardRequest on the already-found
 // existing task is safe and idempotent — its own CreateTask call resolves
 // straight back to the same row.
-func (s *TaskAppService) attachCardRequestIfNeeded(existing *orchestrator.Task, cardRequestID string) (*orchestrator.Task, error) {
+func (s *TaskAppService) attachCardRequestIfNeeded(existing *orchestrator.Task, cardRequestID, ownerJobID string) (*orchestrator.Task, error) {
 	if cardRequestID == "" || s.CardRequestLinker == nil {
 		return existing, nil
 	}
-	if err := s.CardRequestLinker.CreateTaskLinkedToCardRequest(existing, cardRequestID); err != nil {
+	if err := s.CardRequestLinker.CreateTaskLinkedToCardRequest(existing, cardRequestID, ownerJobID); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	return existing, nil
@@ -401,7 +401,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 		if existing != nil {
 			// First-write-wins: return the existing task. Do not fire auto_start
 			// because the task may already be executing or terminal.
-			return s.attachCardRequestIfNeeded(existing, req.CardRequestID)
+			return s.attachCardRequestIfNeeded(existing, req.CardRequestID, req.CardRequestOwnerJobID)
 		}
 	}
 
@@ -429,7 +429,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 					existing = result.Task
 				}
 			}
-			return s.attachCardRequestIfNeeded(existing, req.CardRequestID)
+			return s.attachCardRequestIfNeeded(existing, req.CardRequestID, req.CardRequestOwnerJobID)
 		}
 	}
 
@@ -518,7 +518,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 				}
 			}
 			if req.CardRequestID != "" {
-				return tx.CreateTaskLinkedToCardRequest(task, req.CardRequestID)
+				return tx.CreateTaskLinkedToCardRequest(task, req.CardRequestID, req.CardRequestOwnerJobID)
 			}
 			return tx.CreateTask(task)
 		})
@@ -530,7 +530,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: txErr.Error()}
 		}
 	case req.CardRequestID != "" && s.CardRequestLinker != nil:
-		if err := s.CardRequestLinker.CreateTaskLinkedToCardRequest(task, req.CardRequestID); err != nil {
+		if err := s.CardRequestLinker.CreateTaskLinkedToCardRequest(task, req.CardRequestID, req.CardRequestOwnerJobID); err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
 	default:

@@ -1107,8 +1107,10 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			}
 		}
 		cardRequestID := ""
+		cardRequestOwnerJobID := ""
 		if cardReq != nil {
 			cardRequestID = cardReq.ID
+			cardRequestOwnerJobID = cardReq.LauncherJobID
 		}
 
 		if children[i].Spec == nil {
@@ -1138,15 +1140,16 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		// accept(go) — same reasoning as v1's Dispatch (CreateTask's own
 		// (ref, parent_id) get-or-create dedup, task_create.go).
 		childTask, cErr := s.TaskCreator.CreateTask(CreateTaskRequest{
-			ProjectID:     children[i].Spec.Project,
-			Title:         children[i].Title,
-			Description:   children[i].Spec.Description,
-			Behavior:      children[i].Spec.Behavior,
-			Instructions:  instructions,
-			ParentID:      taskID,
-			Ref:           children[i].ID,
-			AutoStart:     true,
-			CardRequestID: cardRequestID,
+			ProjectID:             children[i].Spec.Project,
+			Title:                 children[i].Title,
+			Description:           children[i].Spec.Description,
+			Behavior:              children[i].Spec.Behavior,
+			Instructions:          instructions,
+			ParentID:              taskID,
+			Ref:                   children[i].ID,
+			AutoStart:             true,
+			CardRequestID:         cardRequestID,
+			CardRequestOwnerJobID: cardRequestOwnerJobID,
 		})
 		if cErr != nil {
 			cerr := fmt.Errorf("accept(go): create child task %q: %w", children[i].ID, cErr)

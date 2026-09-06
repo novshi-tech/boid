@@ -363,8 +363,9 @@ title、実行先 project、仕様・完了条件、状態、主要な進捗、�
 進捗の細かな action を card の履歴に全展開せず、作業項目の中にまとめる。
 
 タイムラインはユーザー指示、判断結果、提案と回答、作業子、重要な外部変化を表現する。
-生 action 履歴は監査用に保持する。既存の execution/TUI 用 status-group timeline を壊さず、
-card 用の読みモデルを設ける。過去の spec が履歴だけから復元できない場合は現在の保存情報を使い、
+生 action 履歴は監査用に保持する。`internal/tui/` は撤去済みで、既存の status-group
+timeline は execution 詳細（Web UI）のみが対象——これを壊さず、card 用の読みモデルを設ける。
+過去の spec が履歴だけから復元できない場合は現在の保存情報を使い、
 当時の完全な snapshot が存在するかのようには表示しない。
 
 ### 5.3 順序・追加読み込み・更新
@@ -526,7 +527,8 @@ PR-5 の読みモデルに合わせた静的 UI サンプルは早めに確認�
 13. 日跨ぎ・年跨ぎ・タイムゾーン境界、同日追加、同時刻の複数項目で順序・区切りが安定する。
 14. SSE と追加読み込みの競合で入力・展開・既読の履歴を失わない。
 15. 一覧だけで作業中/コマンド実行中/入力待ちを判別できる。新規 UI 文言と設定例ラベルは英語。
-16. 長い card と過去に複数子を持つ card を使って表示を確認。execution 詳細と TUI に回帰がない。
+16. 長い card と過去に複数子を持つ card を使って表示を確認。execution 詳細に回帰がない
+    （`internal/tui/` は撤去済みのため検証対象は execution 詳細のみ）。
 17. 作成後の応答欠落、launcher の異常終了、二つ目の作成、継続先 task の通常の子作成を区別できる。
 18. 設定の削除/更新、GC、履歴のページ境界、進行中の子の reopen を検証する。
 
@@ -641,31 +643,37 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   ない限り実害はないが、この前提自体は型で強制されているわけではない
   （nil を渡せば通ってしまう）。
 
-  **今回閉じたのは「card の単一作業枠が二重占有されるか」（PR-1 invariant）
-  という一点のみ。** `internal/server/boid_executor.go`（`BoidOpTaskCreate`）
-  の所有権チェック（`GetCardRequest` の非トランザクション読み）から
-  `TaskAppService.CreateTask` までの区間 — 「この呼び出しは本当にこの
-  `CardRequestID` を保持している launcher からのものか」という別種の
-  TOCTOU（所有権の詐称・誤認の話であって枠の二重占有ではない）には
-  手を付けていない。引き続き follow-up。
+  **PR-0 で閉じた: 上記2つの更新系 write port の非トランザクショナルな
+  pre-check → 別ラウンドトリップ書き込み。** `TaskAppService.UpdateTask`
+  （reparent 経路）と `RerunTask` を、`updateTaskWithCardSlotRecheck`
+  （`internal/api/task_service.go`）経由で `createExecutionTask` の
+  `atomicCardCheck` と同じ形に揃えた — `s.Tx != nil` なら fresh な
+  再チェック（`cardSlotConflictWithLister`）と `tx.UpdateTask` を同一
+  `WithinTx` に閉じ、`s.Tx == nil` なら既存の非トランザクショナル経路に
+  フォールバックする。`internal/api/task_update_rerun_card_slot_atomic_test.go`
+  が実 DB で「1回の `WithinTx` を通ること」「別の占有者（Go の予約）が
+  いるとき 409 になること」を reparent/rerun それぞれについて固定している。
 
-  **未着手（レビューが指摘）: 同じ PR-1 invariant に対する
-  非トランザクショナルな pre-check → 別ラウンドトリップの書き込みが、
-  `createExecutionTask` 以外にあと2箇所ある。** どちらも
-  `internal/api/task_service.go` の中で、`cardSlotConflictWithRequests`
-  による pre-check の後、`atomicCardCheck` のような同一 `WithinTx` に
-  入らない別の `s.Tasks.UpdateTask(task)` 呼び出しで書き込む:
-  - `TaskAppService.UpdateTask`（`req.ParentID` を card へ変更する reparent
-    経路）
-  - `TaskAppService.RerunTask`（done/aborted task を pending に戻す経路）
-
-  どちらも `createExecutionTask` の direct-create パスと同型の read-then-write
-  ギャップを持つ — pre-check とその後の `UpdateTask` の間に、別の経路
-  （acceptGo の子作成や別の direct-create）が同じ card の枠を埋める余地が
-  残る。今回 `atomicCardCheck` を拡張した対象は `createExecutionTask` の
-  新規作成パスのみで、この2つの更新系パスは含まれない。単一ユーザー前提
-  では確率は低いが、doc の主張を実装と一致させるため未着手として明記する
-  （Gate A の入口条件対象）。
+  **PR-0 で閉じた: 所有権の詐称・誤認 TOCTOU
+  （`BoidOpTaskCreate`/`BoidOpAgentStart` の所有権チェックから実際の attach
+  までの区間）。** `orchestrator.AttachCardRequestOwned` を新設し、
+  呼び出し側が主張する `launcher_job_id` を `UPDATE ... WHERE launcher_job_id
+  = ?` として書き込みそのものに埋め込むことで、`GetCardRequest` の別の
+  早い読みを信用する代わりに書き込み時点で所有権を再検証するようにした。
+  `CreateTaskLinkedToCardRequest`（`internal/orchestrator/repository.go`）が
+  `ownerJobID` を受け取って `AttachCardRequestOwned` に渡すよう連鎖し、
+  `apiwire.CreateTaskRequest.CardRequestOwnerJobID`（`CardRequestID` と同じ
+  `json:"-"` で client-settable ではない）が `BoidOpTaskCreate` の所有権
+  チェックが読んだ `ctx.JobID` を運ぶ。`BoidOpAgentStart` 側も同様に
+  `AttachCardRequestOwned(..., ctx.JobID, ...)` を直接呼ぶ。所有権不一致は
+  新設の `ErrCardRequestOwnerMismatch` で、冪等な再試行の収束
+  （`ErrCardRequestInvalidTransition` 経由の既存ロジック）とは別のエラーに
+  区別される。`internal/orchestrator/card_request_owned_test.go` が実 DB で
+  「launching だが launcher_job_id が別」の行への attach 拒否・正しい所有者
+  なら成功・同じ target への再試行の収束の3点を固定し、
+  `internal/server/boid_executor_agent_start_test.go` の
+  `TestBoidOpAgentStart_OwnershipReclaimedBeforeAttach_Rejected` が
+  executor 層での挙動も固定している。
 - **PR-2d-5 で確定: jobs 行が非終端のまま固まった (daemon プロセスは生きているが
   launcher job の行だけ never-terminal になった、あるいは daemon SIGKILL 等) launching
   card_requests 行は、既知の制約として受け入れる。** 周期 self-heal

@@ -255,6 +255,10 @@ func TestTaskWorkflowService_AcceptGo_ReservesCardRequestBeforeCreatingChild(t *
 	if creator.calls[0].CardRequestID != req.ID {
 		t.Errorf("CreateTaskRequest.CardRequestID = %q, want the reservation's id %q", creator.calls[0].CardRequestID, req.ID)
 	}
+	if creator.calls[0].CardRequestOwnerJobID != req.LauncherJobID {
+		t.Errorf("CreateTaskRequest.CardRequestOwnerJobID = %q, want the reservation's own launcher %q",
+			creator.calls[0].CardRequestOwnerJobID, req.LauncherJobID)
+	}
 }
 
 // TestTaskWorkflowService_AcceptGo_SlotOccupiedByCommand_Rejected pins that
