@@ -109,29 +109,10 @@ type releaseCardRequestBody struct {
 // enough (unlike `boid agent start --instruction`'s sandbox.PayloadPatchMaxBytes).
 const releaseReasonMaxBytes = 4096
 
-// ReleaseResult is Release's response shape: it echoes the request's
-// pre-release target (if any) since force-release only frees the slot, not
-// whatever continuation was still attached to it. Exported so cmd's
-// `boid task release-card-request` can decode straight into this type
-// instead of keeping its own hand-duplicated copy (a prior duplicate let the
-// two silently drift when only one side renamed a field).
-type ReleaseResult struct {
-	Status     string `json:"status"`
-	TargetKind string `json:"target_kind,omitempty"`
-	TargetID   string `json:"target_id,omitempty"`
-	// LauncherJobID is set alongside OperatorNotice for a released row that
-	// was still "launching" — its own launcher job, not a task/session
-	// continuation, is the thing that may still be running.
-	LauncherJobID string `json:"launcher_job_id,omitempty"`
-	// HadAttachedTarget reports only that the pre-release row HAD a
-	// target_kind/target_id recorded — not that the target is still alive.
-	// A task/session that already reached a terminal state and is merely
-	// awaiting the next reconcile tick to clear the row also sets this true.
-	HadAttachedTarget bool   `json:"had_attached_target,omitempty"`
-	OperatorNotice    string `json:"operator_notice,omitempty"`
-}
-
-// Release handles POST /api/card-requests/{id}/release. Body is optional;
+// Release handles POST /api/card-requests/{id}/release. Its response shape
+// is ReleaseResult (apiwire_aliases.go) — a daemon↔client wire type, so
+// `boid task release-card-request` decodes straight into the SAME type via
+// apiwire instead of keeping its own hand-duplicated copy. Body is optional;
 // an empty/missing reason falls back to ForceReleaseCardRequest's own
 // default message.
 func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {

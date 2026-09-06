@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/spf13/cobra"
 )
@@ -41,7 +41,7 @@ func runTaskReleaseCardRequest(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
 	requestID := args[0]
 
-	var result api.ReleaseResult
+	var result apiwire.ReleaseResult
 	if err := c.Do("POST", fmt.Sprintf("/api/card-requests/%s/release", requestID), map[string]string{"reason": taskReleaseCardRequestReason}, &result); err != nil {
 		return fmt.Errorf("release card request: %w", err)
 	}

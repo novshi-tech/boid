@@ -596,13 +596,18 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   **PR-2d-6 で訂正: 上記「launcher の継続は必ず ROOT task なので `cardParent`
   はこの経路では常に nil」は不正確だった。** これは launcher/継続タスク自身が
   さらに子タスクを作る場合（そのタスクの `ParentID` は自分自身が
-  `ParentID==""` の ROOT task）の話であって、acceptGo/RunCardCommandAsHuman
-  自身が「予約した子を task 化する」最初の `TaskCreator.CreateTask` 呼び出し
-  には当てはまらない。`internal/api/workflow_card.go` の acceptGo は
-  `ParentID: taskID`（card 自身）かつ `CardRequestID: cardRequestID`
-  （自分の予約）で呼んでいる — このケースは `cardParent != nil` になり、
-  `createExecutionTask` の非トランザクショナルな `cardSlotConflictWithRequests`
-  事前チェックを通っていた（`RunCardCommandAsHuman` も同型）。
+  `ParentID==""` の ROOT task）の話であって、acceptGo 自身が「予約した子を
+  task 化する」最初の `TaskCreator.CreateTask` 呼び出しには当てはまらない。
+  `internal/api/workflow_card.go` の acceptGo は `ParentID: taskID`
+  （card 自身）かつ `CardRequestID: cardRequestID`（自分の予約）で呼んでいる —
+  このケースは `cardParent != nil` になり、`createExecutionTask` の
+  非トランザクショナルな `cardSlotConflictWithRequests` 事前チェックを
+  通っていた。**`RunCardCommandAsHuman` はこれには当てはまらない** —
+  その launcher 自身は `TaskCreator.CreateTask` を一度も呼ばず、継続の
+  task 化は launcher job が後で発行する `boid task create` 経由
+  （`internal/server/boid_executor.go`）で、そちらは `--parent <this card>`
+  を明示的に拒否して ROOT task しか継続にできない（`ctx.CardRequestID` は
+  `createReq.ParentID == ""` のときにしかスタンプされない）。
 
   **`idx_card_requests_active_unique` が「調停する」という表現も不正確
   だった。** この UNIQUE INDEX は `card_requests` テーブル自身の行にしか
@@ -623,9 +628,10 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   — PR-2d-5 が `TxStore` に生やしていたが `createExecutionTask` からは
   一度も呼ばれていなかったメソッド）が同じトランザクションに入るので、
   「非トランザクショナルな事前チェック」と「別ラウンドトリップの INSERT」の
-  間の read-then-write の隙間は、acceptGo/RunCardCommandAsHuman 自身の子
-  dispatch と並行する直接 `--parent <card>` create のペアについて構造的に
-  なくなった。`internal/api/task_create_card_slot_atomic_test.go` の
+  間の read-then-write の隙間は、acceptGo 自身の子 dispatch と並行する
+  直接 `--parent <card>` create のペアについて構造的になくなった
+  （`RunCardCommandAsHuman` はこの分岐を経路として使わない — 上記参照）。
+  `internal/api/task_create_card_slot_atomic_test.go` の
   `TestCreateTask_AtomicPath_CardRequestIDCarrying_RoutesThroughOneTx` /
   `_RejectsWhenAnotherOccupantExists` が実 DB でこれを固定している。
 
