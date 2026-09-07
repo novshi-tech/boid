@@ -89,3 +89,4 @@ type AckSignalsResponse = apiwire.AckSignalsResponse
 
 // from internal/api/card_request_release_handler.go
 type ReleaseResult = apiwire.ReleaseResult
+type FoldedSiblingSummary = apiwire.FoldedSiblingSummary

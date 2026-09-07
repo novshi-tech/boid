@@ -90,6 +90,50 @@ func TestTaskReleaseCardRequest_LaunchingRow_PrintsWarningWithLauncherJobID(t *t
 	}
 }
 
+// TestTaskReleaseCardRequest_FoldedSiblingsFailed_PrintedIndependentlyOfNotice
+// pins that folded_siblings_failed lines print whether or not
+// operator_notice is also set — the CLI must not assume the two always
+// travel together.
+func TestTaskReleaseCardRequest_FoldedSiblingsFailed_PrintedIndependentlyOfNotice(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"released","folded_siblings_failed":[{"id":"req-2","command_key":"deploy"},{"id":"req-3","command_key":"lint"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := client.NewClient(srv.URL, "")
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+
+	cmd := taskReleaseCardRequestCmd
+	prev := cmd.Context()
+	t.Cleanup(func() {
+		cmd.SetContext(prev)
+		cmd.SetOut(nil)
+		cmd.SetErr(nil)
+	})
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.SetContext(client.WithClient(context.Background(), c))
+
+	if err := cmd.RunE(cmd, []string{"req-1"}); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+
+	got := out.String()
+	if bytes.Contains(out.Bytes(), []byte("warning:")) {
+		t.Errorf("output = %s, want no warning line (operator_notice was empty)", got)
+	}
+	if !bytes.Contains(out.Bytes(), []byte("req-2")) || !bytes.Contains(out.Bytes(), []byte("deploy")) {
+		t.Errorf("output = %s, want folded sibling req-2/deploy printed", got)
+	}
+	if !bytes.Contains(out.Bytes(), []byte("req-3")) || !bytes.Contains(out.Bytes(), []byte("lint")) {
+		t.Errorf("output = %s, want folded sibling req-3/lint printed", got)
+	}
+}
+
 // TestTaskReleaseCardRequest_AttachedTarget_PrintsWarning pins the
 // already-covered case still works after the shared api.ReleaseResult type
 // replaced this command's own duplicated struct.

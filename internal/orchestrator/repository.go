@@ -259,14 +259,18 @@ func (r *TaskRepository) AttachCardRequestOwned(id, expectedLauncherJobID, targe
 // operator escape hatch for a stuck slot (api.CardRequestReleaseStore).
 // FailCardRequest is two UPDATEs that must land together — same
 // InTxDB-over-raw-*sql.DB shape as ClaimSignals above.
-func (r *TaskRepository) ForceReleaseCardRequest(id, reason string) error {
+func (r *TaskRepository) ForceReleaseCardRequest(id, reason string) ([]ForceReleasedSibling, error) {
 	conn, ok := r.db.(*sql.DB)
 	if !ok {
 		return ForceReleaseCardRequest(r.db, id, reason)
 	}
-	return db.InTxDB(conn, func(tx db.DBTX) error {
-		return ForceReleaseCardRequest(tx, id, reason)
+	var siblings []ForceReleasedSibling
+	err := db.InTxDB(conn, func(tx db.DBTX) error {
+		var terr error
+		siblings, terr = ForceReleaseCardRequest(tx, id, reason)
+		return terr
 	})
+	return siblings, err
 }
 
 // CreateCardRequest backs a card command launcher's request creation — a

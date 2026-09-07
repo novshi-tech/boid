@@ -461,6 +461,21 @@ func allMigrations() []migration {
 				return columnExists(tx, "card_requests", "launched_card_write")
 			},
 		},
+		{
+			version: "0053_scope_card_requests_cause_unique_exclude_failed",
+			path:    "migrations/0053_scope_card_requests_cause_unique_exclude_failed.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				newIndexAbsent, err := indexNotExists(tx, "idx_card_requests_cause_unique_non_failed")
+				if err != nil {
+					return false, err
+				}
+				oldIndexAbsent, err := indexNotExists(tx, "idx_card_requests_cause_unique")
+				if err != nil {
+					return false, err
+				}
+				return !newIndexAbsent && oldIndexAbsent, nil
+			},
+		},
 	}
 }
 

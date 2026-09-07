@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,7 +24,7 @@ import (
 
 // CardRequestReleaseStore is the persistence surface CardRequestHandler needs.
 type CardRequestReleaseStore interface {
-	ForceReleaseCardRequest(id, reason string) error
+	ForceReleaseCardRequest(id, reason string) ([]orchestrator.ForceReleasedSibling, error)
 	ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error)
 	// ListActiveCardRequests backs List's bulk mode (no card_id query
 	// param): every launching/attached row across every card in one query,
@@ -139,7 +140,8 @@ func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
 	// release an operator is trying to perform.
 	before, _ := h.Store.GetCardRequest(id)
 
-	if err := h.Store.ForceReleaseCardRequest(id, body.Reason); err != nil {
+	siblings, err := h.Store.ForceReleaseCardRequest(id, body.Reason)
+	if err != nil {
 		if errors.Is(err, orchestrator.ErrCardRequestNotFound) {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
@@ -181,6 +183,21 @@ func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
 		result.OperatorNotice = fmt.Sprintf(
 			"this only freed the card's execution slot — launcher job %s is NOT stopped and may still be running (and could still try to attach a continuation to this now-released request); inspect it with `boid job` and stop it by hand if that's not wanted",
 			before.LauncherJobID)
+	}
+	if len(siblings) > 0 {
+		keys := make([]string, len(siblings))
+		for i, s := range siblings {
+			keys[i] = s.CommandKey
+			result.FoldedSiblingsFailed = append(result.FoldedSiblingsFailed, FoldedSiblingSummary{ID: s.ID, CommandKey: s.CommandKey})
+		}
+		siblingNotice := fmt.Sprintf(
+			"this also force-failed %d folded sibling request(s) sharing this card's execution slot (command_key: %s) — fold is scoped to the card, not this request's own command/cause",
+			len(siblings), strings.Join(keys, ", "))
+		if result.OperatorNotice == "" {
+			result.OperatorNotice = siblingNotice
+		} else {
+			result.OperatorNotice += "; " + siblingNotice
+		}
 	}
 	writeJSON(w, http.StatusOK, result)
 }

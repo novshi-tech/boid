@@ -9,9 +9,9 @@ CREATE UNIQUE INDEX idx_card_requests_active_unique
 CREATE INDEX idx_card_requests_card_status_created
     ON card_requests(card_id, status, created_at);
 
--- index: idx_card_requests_cause_unique
-CREATE UNIQUE INDEX idx_card_requests_cause_unique
-    ON card_requests(cause_id) WHERE cause_id != '';
+-- index: idx_card_requests_cause_unique_non_failed
+CREATE UNIQUE INDEX idx_card_requests_cause_unique_non_failed
+    ON card_requests(cause_id) WHERE cause_id != '' AND status != 'failed';
 
 -- index: idx_card_requests_terminal_updated
 CREATE INDEX idx_card_requests_terminal_updated

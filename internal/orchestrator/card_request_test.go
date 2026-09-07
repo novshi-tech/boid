@@ -81,8 +81,8 @@ func TestCreateCardRequest_ActiveSlotUniqueAcrossRawInsert(t *testing.T) {
 
 // TestCreateCardRequest_CauseIDUniqueAcrossRawInsert is the cause_id
 // counterpart of TestCreateCardRequest_ActiveSlotUniqueAcrossRawInsert:
-// idx_card_requests_cause_unique must reject a raw SQL insert too, not
-// merely CreateCardRequest's own Go-level check.
+// idx_card_requests_cause_unique_non_failed must reject a raw SQL insert
+// too, not merely CreateCardRequest's own Go-level check.
 func TestCreateCardRequest_CauseIDUniqueAcrossRawInsert(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
@@ -157,6 +157,57 @@ func TestCreateCardRequest_DuplicateCauseID_Rejected(t *testing.T) {
 	}
 	if err := orchestrator.CreateCardRequest(d.Conn, fifth); err != nil {
 		t.Fatalf("CreateCardRequest(fifth, no cause): %v", err)
+	}
+}
+
+// TestCreateCardRequest_DuplicateCauseID_AllowedAfterFailed pins that
+// idx_card_requests_cause_unique_non_failed excludes failed rows: a
+// cause_id whose prior request ended in failure can be redelivered, since a
+// retry-able failure carries no "already handled" signal for that cause.
+func TestCreateCardRequest_DuplicateCauseID_AllowedAfterFailed(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	first := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-99"}
+	if err := orchestrator.CreateCardRequest(d.Conn, first); err != nil {
+		t.Fatalf("CreateCardRequest(first): %v", err)
+	}
+	if err := orchestrator.FailCardRequest(d.Conn, first.ID, "boom"); err != nil {
+		t.Fatalf("FailCardRequest: %v", err)
+	}
+
+	second := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-99"}
+	if err := orchestrator.CreateCardRequest(d.Conn, second); err != nil {
+		t.Fatalf("CreateCardRequest(second, same cause_id, prior failed) = %v, want nil (failed rows are excluded from the dedup index)", err)
+	}
+}
+
+// TestCreateCardRequest_DuplicateCauseID_StillRejectedAfterFinished pins the
+// other half: a cause_id whose prior request FINISHED must still reject
+// redelivery — the dedup exists to stop an already-handled cause from being
+// reprocessed, which only applies once it actually succeeded.
+func TestCreateCardRequest_DuplicateCauseID_StillRejectedAfterFinished(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	first := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-100"}
+	if err := orchestrator.CreateCardRequest(d.Conn, first); err != nil {
+		t.Fatalf("CreateCardRequest(first): %v", err)
+	}
+	if _, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{}); err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, first.ID, orchestrator.CardRequestTargetKindTask, "task-1"); err != nil {
+		t.Fatalf("AttachCardRequest: %v", err)
+	}
+	if err := orchestrator.FinishCardRequest(d.Conn, first.ID, "ok"); err != nil {
+		t.Fatalf("FinishCardRequest: %v", err)
+	}
+
+	second := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-100"}
+	err := orchestrator.CreateCardRequest(d.Conn, second)
+	if !errors.Is(err, orchestrator.ErrCardRequestDuplicateCause) {
+		t.Fatalf("CreateCardRequest(second, same cause_id, prior finished) = %v, want ErrCardRequestDuplicateCause", err)
 	}
 }
 
@@ -460,6 +511,111 @@ func TestFinishCardRequest_ClosesFoldedAndAbsorbsOldFailures(t *testing.T) {
 	}
 }
 
+// TestFinishCardRequest_DoesNotAbsorbCauseBearingFailure pins that the
+// older-failed absorption sweep excludes cause_id-bearing rows: absorbing
+// one into finished would re-enter it into the cause_id dedup index
+// alongside whatever live row now carries that same cause_id (the
+// redelivery this row's own failure made possible), which the index
+// rejects. The failed row stays failed instead.
+func TestFinishCardRequest_DoesNotAbsorbCauseBearingFailure(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	oldFailed := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-201"}
+	if err := orchestrator.CreateCardRequest(d.Conn, oldFailed); err != nil {
+		t.Fatalf("create old failed: %v", err)
+	}
+	if err := orchestrator.FailCardRequest(d.Conn, oldFailed.ID, "boom"); err != nil {
+		t.Fatalf("fail old: %v", err)
+	}
+
+	// Redelivery of the same cause, now live.
+	redelivered := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-201"}
+	if err := orchestrator.CreateCardRequest(d.Conn, redelivered); err != nil {
+		t.Fatalf("create redelivered: %v", err)
+	}
+	var primary *orchestrator.CardRequest
+	if err := db.InTxDB(d.Conn, func(tx db.DBTX) error {
+		var err error
+		primary, _, err = orchestrator.ClaimQueuedCardRequests(tx, cardID, "launcher-1", orchestrator.CardRequestDefinition{})
+		return err
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, primary.ID, orchestrator.CardRequestTargetKindTask, "task-1"); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	if err := orchestrator.FinishCardRequest(d.Conn, primary.ID, "done"); err != nil {
+		t.Fatalf("finish: %v (must not hit the cause_id unique index)", err)
+	}
+
+	oldGot, err := orchestrator.GetCardRequest(d.Conn, oldFailed.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest(oldFailed): %v", err)
+	}
+	if oldGot.Status != orchestrator.CardRequestStatusFailed {
+		t.Errorf("oldFailed.Status = %q, want still failed (cause-bearing failures are not absorbed)", oldGot.Status)
+	}
+}
+
+// TestFinishCardRequest_MultipleFailedSameCauseNotSweptTogether pins the
+// other shape of the same hazard: TWO failed requests sharing a cause_id
+// (a cause that failed, was redelivered, and failed again) must not both be
+// absorbed by an unrelated success in the same sweep — that would try to
+// set both to finished in one statement, colliding with each other under
+// the cause_id unique index.
+func TestFinishCardRequest_MultipleFailedSameCauseNotSweptTogether(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	firstFailed := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-202"}
+	if err := orchestrator.CreateCardRequest(d.Conn, firstFailed); err != nil {
+		t.Fatalf("create first failed: %v", err)
+	}
+	if err := orchestrator.FailCardRequest(d.Conn, firstFailed.ID, "boom 1"); err != nil {
+		t.Fatalf("fail first: %v", err)
+	}
+	secondFailed := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-202"}
+	if err := orchestrator.CreateCardRequest(d.Conn, secondFailed); err != nil {
+		t.Fatalf("create second failed: %v", err)
+	}
+	if err := orchestrator.FailCardRequest(d.Conn, secondFailed.ID, "boom 2"); err != nil {
+		t.Fatalf("fail second: %v", err)
+	}
+
+	// An unrelated request (different command, no cause) succeeds.
+	unrelated := &orchestrator.CardRequest{CardID: cardID, CommandKey: "deploy"}
+	if err := orchestrator.CreateCardRequest(d.Conn, unrelated); err != nil {
+		t.Fatalf("create unrelated: %v", err)
+	}
+	var primary *orchestrator.CardRequest
+	if err := db.InTxDB(d.Conn, func(tx db.DBTX) error {
+		var err error
+		primary, _, err = orchestrator.ClaimQueuedCardRequests(tx, cardID, "launcher-1", orchestrator.CardRequestDefinition{})
+		return err
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, primary.ID, orchestrator.CardRequestTargetKindTask, "task-1"); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	if err := orchestrator.FinishCardRequest(d.Conn, primary.ID, "done"); err != nil {
+		t.Fatalf("finish: %v (must not hit the cause_id unique index)", err)
+	}
+
+	for _, id := range []string{firstFailed.ID, secondFailed.ID} {
+		got, err := orchestrator.GetCardRequest(d.Conn, id)
+		if err != nil {
+			t.Fatalf("GetCardRequest(%q): %v", id, err)
+		}
+		if got.Status != orchestrator.CardRequestStatusFailed {
+			t.Errorf("request %q: Status = %q, want still failed", id, got.Status)
+		}
+	}
+}
+
 // TestFinishCardRequest_DoesNotAbsorbFailuresFromALaterBoundary pins that a
 // request created (and later failed) AFTER the primary's own boundary was
 // fixed is NOT swept up as "absorbed" by that earlier success — the
@@ -610,6 +766,35 @@ func TestRetryCardRequest_RequeuesFailedRequest(t *testing.T) {
 	// Retrying anything but a failed request is rejected.
 	if err := orchestrator.RetryCardRequest(d.Conn, req.ID); !errors.Is(err, orchestrator.ErrCardRequestInvalidTransition) {
 		t.Errorf("RetryCardRequest(already queued) = %v, want ErrCardRequestInvalidTransition", err)
+	}
+}
+
+// TestRetryCardRequest_DuplicateCauseID_MapsToDuplicateCauseError pins that
+// retrying a failed request whose cause_id is now carried by a different,
+// live row surfaces the same ErrCardRequestDuplicateCause CreateCardRequest
+// maps the constraint violation to — not a raw SQL error.
+func TestRetryCardRequest_DuplicateCauseID_MapsToDuplicateCauseError(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	failedReq := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-300"}
+	if err := orchestrator.CreateCardRequest(d.Conn, failedReq); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := orchestrator.FailCardRequest(d.Conn, failedReq.ID, "boom"); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+
+	// The relaxed index lets the same cause_id be redelivered as its own
+	// new, live row while failedReq sits failed.
+	liveReq := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-300"}
+	if err := orchestrator.CreateCardRequest(d.Conn, liveReq); err != nil {
+		t.Fatalf("create live: %v", err)
+	}
+
+	err := orchestrator.RetryCardRequest(d.Conn, failedReq.ID)
+	if !errors.Is(err, orchestrator.ErrCardRequestDuplicateCause) {
+		t.Fatalf("RetryCardRequest(cause already live elsewhere) = %v, want ErrCardRequestDuplicateCause", err)
 	}
 }
 

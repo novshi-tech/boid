@@ -55,5 +55,8 @@ func runTaskReleaseCardRequest(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "  launcher_job_id: %s\n", result.LauncherJobID)
 		}
 	}
+	for _, s := range result.FoldedSiblingsFailed {
+		fmt.Fprintf(cmd.OutOrStdout(), "  folded sibling force-failed: %s (command_key=%s)\n", s.ID, s.CommandKey)
+	}
 	return nil
 }

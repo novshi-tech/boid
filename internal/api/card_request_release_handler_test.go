@@ -21,6 +21,7 @@ type fakeCardRequestReleaseStore struct {
 	activeErr error
 	getByID   map[string]*orchestrator.CardRequest
 	getErr    error
+	siblings  []orchestrator.ForceReleasedSibling
 }
 
 func (f *fakeCardRequestReleaseStore) GetCardRequest(id string) (*orchestrator.CardRequest, error) {
@@ -33,10 +34,13 @@ func (f *fakeCardRequestReleaseStore) GetCardRequest(id string) (*orchestrator.C
 	return nil, orchestrator.ErrCardRequestNotFound
 }
 
-func (f *fakeCardRequestReleaseStore) ForceReleaseCardRequest(id, reason string) error {
+func (f *fakeCardRequestReleaseStore) ForceReleaseCardRequest(id, reason string) ([]orchestrator.ForceReleasedSibling, error) {
 	f.lastID = id
 	f.lastReasn = reason
-	return f.err
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.siblings, nil
 }
 
 func (f *fakeCardRequestReleaseStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {
@@ -309,6 +313,40 @@ func TestCardRequestHandler_Release_QueuedRowNoTarget_NoNotice(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, "operator_notice") {
 		t.Errorf("body = %s, want no operator_notice for a never-attached queued row", body)
+	}
+}
+
+// TestCardRequestHandler_Release_FoldedSiblingsFailed_ReportsCountAndKeys
+// pins that a release which swept up folded siblings (fold is scoped to the
+// card, not this request's own command_key/cause_id) surfaces how many and
+// which command_key each one belonged to, both as structured fields and in
+// operator_notice — a silent sweep would leave the operator unable to tell
+// an unrelated command's request got force-failed too.
+func TestCardRequestHandler_Release_FoldedSiblingsFailed_ReportsCountAndKeys(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{
+		siblings: []orchestrator.ForceReleasedSibling{
+			{ID: "req-2", CommandKey: "deploy"},
+			{ID: "req-3", CommandKey: "lint"},
+		},
+	}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/req-1/release", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"id":"req-2"`) || !strings.Contains(body, `"command_key":"deploy"`) {
+		t.Errorf("body = %s, want folded_siblings_failed to name req-2/deploy", body)
+	}
+	if !strings.Contains(body, `"id":"req-3"`) || !strings.Contains(body, `"command_key":"lint"`) {
+		t.Errorf("body = %s, want folded_siblings_failed to name req-3/lint", body)
+	}
+	if !strings.Contains(body, "2 folded sibling") || !strings.Contains(body, "deploy") || !strings.Contains(body, "lint") {
+		t.Errorf("body = %s, want operator_notice to report the count and command_keys", body)
 	}
 }
 
