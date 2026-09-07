@@ -198,14 +198,60 @@ func TestCommandActivityLabel_AttachedTaskTarget_Executing_Running(t *testing.T)
 // A task target whose status is not (yet) in the batch map — a narrow,
 // transient window before self-recording lands — must not disappear the
 // badge; it falls back to "Running" rather than going blank.
-func TestCommandActivityLabel_AttachedTaskTarget_UnknownStatus_FallsBackRunning(t *testing.T) {
+// A task target that is terminal, or whose row is already gone to GC, must
+// say nothing rather than claim the command is still running — the same
+// call the work-child axis makes for a dispatched child whose task ended.
+func TestCommandActivityLabel_AttachedTaskTarget_TerminalOrMissing_Empty(t *testing.T) {
 	req := &orchestrator.CardRequest{
 		CommandKey: "discuss", Status: orchestrator.CardRequestStatusAttached,
 		Launched:   orchestrator.CardRequestDefinition{Label: "Discuss"},
-		TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "task-missing",
+		TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "task-1",
 	}
-	if got := CommandActivityLabel(req, map[string]orchestrator.TaskStatus{}); got != "Discuss: Running" {
-		t.Errorf("CommandActivityLabel(attached/task/unknown) = %q, want %q", got, "Discuss: Running")
+	for _, tc := range []struct {
+		name     string
+		statuses map[string]orchestrator.TaskStatus
+	}{
+		{"missing (GC'd)", map[string]orchestrator.TaskStatus{}},
+		{"done", map[string]orchestrator.TaskStatus{"task-1": orchestrator.TaskStatusDone}},
+		{"aborted", map[string]orchestrator.TaskStatus{"task-1": orchestrator.TaskStatusAborted}},
+	} {
+		if got := CommandActivityLabel(req, tc.statuses); got != "" {
+			t.Errorf("CommandActivityLabel(attached/task/%s) = %q, want empty", tc.name, got)
+		}
+	}
+}
+
+// The two axes must map a live task's status through one shared rule, so
+// renaming a word on one axis cannot silently leave the other behind.
+func TestWorkAndCommandAxes_ShareTheSameLiveTaskWords(t *testing.T) {
+	for _, tc := range []struct {
+		status orchestrator.TaskStatus
+		want   string
+	}{
+		{orchestrator.TaskStatusPending, "Queued"},
+		{orchestrator.TaskStatusExecuting, "Running"},
+		{orchestrator.TaskStatusAwaiting, "Needs input"},
+		{orchestrator.TaskStatusDone, ""},
+	} {
+		statuses := map[string]orchestrator.TaskStatus{"t1": tc.status}
+		child := &orchestrator.TaskTriageChild{
+			Status: orchestrator.TaskTriageChildStatusDispatched, TaskRef: "t1",
+		}
+		work := WorkActivityLabel(child, statuses)
+		req := &orchestrator.CardRequest{
+			CommandKey: "discuss", Status: orchestrator.CardRequestStatusAttached,
+			Launched:   orchestrator.CardRequestDefinition{Label: "Discuss"},
+			TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "t1",
+		}
+		command := CommandActivityLabel(req, statuses)
+		wantCommand := ""
+		if tc.want != "" {
+			wantCommand = "Discuss: " + tc.want
+		}
+		if work != tc.want || command != wantCommand {
+			t.Errorf("status %q: work = %q (want %q), command = %q (want %q)",
+				tc.status, work, tc.want, command, wantCommand)
+		}
 	}
 }
 

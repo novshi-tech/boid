@@ -55,16 +55,23 @@ func WorkActivityLabel(child *orchestrator.TaskTriageChild, statuses map[string]
 	case orchestrator.TaskTriageChildStatusSpecced:
 		return "Ready to run"
 	case orchestrator.TaskTriageChildStatusDispatched:
-		switch statuses[child.TaskRef] {
-		case orchestrator.TaskStatusPending:
-			return "Queued"
-		case orchestrator.TaskStatusExecuting:
-			return "Running"
-		case orchestrator.TaskStatusAwaiting:
-			return "Needs input"
-		default:
-			return ""
-		}
+		return liveTaskActivityWord(statuses[child.TaskRef])
+	default:
+		return ""
+	}
+}
+
+// liveTaskActivityWord maps a live task's own status to the activity word
+// both axes show. "" means the task is terminal, missing, or unknown —
+// callers must say nothing rather than claim it is still running.
+func liveTaskActivityWord(status orchestrator.TaskStatus) string {
+	switch status {
+	case orchestrator.TaskStatusPending:
+		return "Queued"
+	case orchestrator.TaskStatusExecuting:
+		return "Running"
+	case orchestrator.TaskStatusAwaiting:
+		return "Needs input"
 	default:
 		return ""
 	}
@@ -89,32 +96,26 @@ func CommandActivityLabel(req *orchestrator.CardRequest, taskStatuses map[string
 	case orchestrator.CardRequestStatusLaunching:
 		return name + ": Launching"
 	case orchestrator.CardRequestStatusAttached:
-		return name + ": " + commandRunningStateLabel(req, taskStatuses)
+		word := commandRunningStateLabel(req, taskStatuses)
+		if word == "" {
+			return ""
+		}
+		return name + ": " + word
 	default:
 		return ""
 	}
 }
 
-// commandRunningStateLabel resolves an attached command's running-state word.
-// For a task target, this is the target task's OWN real status (never
-// inferred from card_requests.status alone — an awaiting dialogue task must
-// read "Needs input", not "Running", the same rule WorkActivityLabel
-// applies to the work-child axis). A session target, or a task target whose
-// status is not yet in taskStatuses, falls back to "Running".
+// commandRunningStateLabel resolves an attached command's running-state word
+// from the target task's OWN status, sharing liveTaskActivityWord with the
+// work-child axis so the two can never drift apart. "" means say nothing.
+// A session target has no task row to read, so it reports "Running" — the
+// card_requests row being attached is the only liveness fact available.
 func commandRunningStateLabel(req *orchestrator.CardRequest, taskStatuses map[string]orchestrator.TaskStatus) string {
 	if req.TargetKind != orchestrator.CardRequestTargetKindTask {
 		return "Running"
 	}
-	switch taskStatuses[req.TargetID] {
-	case orchestrator.TaskStatusPending:
-		return "Queued"
-	case orchestrator.TaskStatusExecuting:
-		return "Running"
-	case orchestrator.TaskStatusAwaiting:
-		return "Needs input"
-	default:
-		return "Running"
-	}
+	return liveTaskActivityWord(taskStatuses[req.TargetID])
 }
 
 // BuildCardActivityStates fans out over three already-batched inputs (no DB

@@ -1647,9 +1647,25 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      コマンド軸の `attached` は当初 `card_requests.status` のみで `Running`
      固定にしていたが、レビューで「§5.5 が要求する『task/session の状態』を
      見せていない」と指摘され、target が task の場合は実 task の状態
-     （pending/executing/awaiting）を見る形に直した——作業子軸と同じ語彙
-     （`Queued`/`Running`/`Needs input`）を再利用し、語彙が2系統に割れない
-     ようにしている。session target は実装を見送った（下記 point 4 参照）。
+     （pending/executing/awaiting）を見る形に直した。session target は
+     実装を見送った（下記 point 4 参照）。
+
+     **語彙は `liveTaskActivityWord`（`web/templates/list_activity.go`）
+     1本に寄せてある。** 当初は両軸が同じ `TaskStatus`→3文字列の switch を
+     別々に手書きしており、片方だけ改名しても全テストが緑で通る状態だった
+     （§6 の表が `promotedAttrVocabulary` について警告している「手書きで
+     手同期」と同型）。共有 helper に寄せた上で
+     `TestWorkAndCommandAxes_ShareTheSameLiveTaskWords` が両軸の対応を
+     1本のテストで縛っている——helper の文字列を書き換えると
+     **両軸のテストが同時に赤くなる**ことを実測で確認済み。
+
+     **終端・不在の task target は「何も言わない」（空）。** 当初は
+     `default: return "Running"` で、`done`/`aborted` の target や GC で
+     消えた target まで `Running` と表示していた。作業子軸は同じ状況を
+     非表示にしており（「`Running` と誤認させるより何も言わない方が安全」）、
+     コマンド軸だけ逆の判断をしていたのを揃えた。**session target のみ
+     `Running`** — 実 task 行が存在せず、`card_requests` が attached である
+     こと自体が唯一の生存情報だから。
 
      作業子・コマンドは独立した2軸で、両方同時に非空になりうる（例:
      specced な子を持つ card で discuss セッションが起動中）。一覧行には
@@ -1808,11 +1824,14 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      **正直な報告: `ListActiveCardRequestsByCardIDs` の `ORDER BY created_at
      ASC, id ASC` 追加（nice-to-have）は mutation で赤くならなかった。**
      `ORDER BY` を外しても `TestListActiveCardRequestsByCardIDs_SameRankTieBreak_OldestWins`
-     は `-count=10` で安定して緑のまま——SQLite が単純な `SELECT` を
-     ROWID（≒挿入順）で返す実装特性に単に助けられているだけで、
-     この特性に依存しないテストは書けていない。追加そのものは構造的に
-     正しい（`ListCardRequestsByCard` と規則を揃える）が、
-     「テストが担保している」とは言えない。次にこのクエリを SQL 側で
+     は `-count=10` で安定して緑のまま。**理由は当初「SQLite が ROWID 順で
+     返すから」と書いていたが、これは誤り** —— `EXPLAIN QUERY PLAN` を取ると
+     `SEARCH card_requests USING INDEX idx_card_requests_card_status_created
+     (card_id=? AND status=?)` で、複合 index `(card_id, status, created_at)`
+     が既に created_at 順を供給している。`PickActiveCardRequest` は同ランク内
+     でしかタイにならないので、この index がある限り `ORDER BY` の有無は
+     結果を変えない。追加そのものは構造的に正しい（index に暗黙依存せず、
+     規則が SQL に書かれる）が、「テストが担保している」とは言えない。次にこのクエリを SQL 側で
      書き換える人は、この tie-break の正しさをテストではなくコード
      レビューで守ること。
 
