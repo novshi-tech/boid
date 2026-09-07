@@ -119,7 +119,7 @@ func TestCardTimelineItem_Suggestion_Historical_RendersReadOnlyNoAcceptReject(t 
 		})},
 	}
 	html := renderItem(t, item, "card-1", orchestrator.TaskStatusWorking, false, "")
-	if !strings.Contains(html, "park") || !strings.Contains(html, "waiting on ci") {
+	if !strings.Contains(html, ">park<") || !strings.Contains(html, "waiting on ci") {
 		t.Errorf("missing verb/reason; got:\n%s", html)
 	}
 	if strings.Contains(html, "detail-suggestion-answer-form") {
@@ -273,6 +273,34 @@ func TestCardTimelineItem_Child_SpecShowsDescriptionOnlyNotInstruction(t *testin
 	}
 	if strings.Contains(html, "never conclude from a guess") {
 		t.Error("spec collapse must not include instruction text")
+	}
+}
+
+// TestCardTimelineItem_Child_DispatchedChild_ChipPrefersLiveStatusOverLedger
+// pins the pre-PR-6a ChildRow.DisplayStatus behavior: once a live status
+// resolves, it wins over the ledger's bare "dispatched".
+func TestCardTimelineItem_Child_DispatchedChild_ChipPrefersLiveStatusOverLedger(t *testing.T) {
+	item := timeline.CardItem{
+		Kind: timeline.CardItemChild, ID: "child:c1", CorrelationID: "c1",
+		Child: &timeline.CardChildDetail{ChildID: "c1", Title: "do it", Status: "dispatched", LiveStatus: "executing"},
+	}
+	html := renderItem(t, item, "card-1", "", true, "")
+	if !strings.Contains(html, `class="badge badge-executing"`) {
+		t.Errorf("chip should show the live status badge-executing; got:\n%s", html)
+	}
+	if strings.Contains(html, `class="badge badge-dispatched"`) {
+		t.Errorf("chip should NOT show the bare ledger badge-dispatched once a live status resolved; got:\n%s", html)
+	}
+}
+
+func TestCardTimelineItem_Child_DispatchedChild_NoLiveStatus_ChipShowsLedger(t *testing.T) {
+	item := timeline.CardItem{
+		Kind: timeline.CardItemChild, ID: "child:c1", CorrelationID: "c1",
+		Child: &timeline.CardChildDetail{ChildID: "c1", Title: "do it", Status: "dispatched"},
+	}
+	html := renderItem(t, item, "card-1", "", true, "")
+	if !strings.Contains(html, `class="badge badge-dispatched"`) {
+		t.Errorf("chip should fall back to the ledger status badge-dispatched when no live status resolved; got:\n%s", html)
 	}
 }
 
@@ -468,10 +496,8 @@ func TestCardHistorySection_NoMore_RendersNoLoadOlderButton(t *testing.T) {
 	}
 }
 
-// --- date separators: asserted against the RENDERED history, not just the
-// pure cardHistoryDateSeparators function — the templ call site
-// (cardHistoryItems' `if seps[i] != ""`) is a separate place this contract
-// can silently break. ---
+// --- date separators, asserted against rendered output (not just the pure
+// cardHistoryDateSeparators function) ---
 
 func TestCardHistoryItems_RendersDateSeparatorAtDayBoundary(t *testing.T) {
 	items := []timeline.CardItem{

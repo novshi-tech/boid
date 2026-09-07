@@ -154,6 +154,74 @@ func getHTML(t *testing.T, h *WebHandler, path string) (int, string) {
 	return w.Code, w.Body.String()
 }
 
+// --- resolveCardItemChildProjects: id -> display name, without mutating
+// the stored spec (dispatch reads Spec.Project back as an id) ---
+
+func TestResolveCardItemChildProjects_ResolvesIDToName(t *testing.T) {
+	svc := &stubWebService{projects: []*orchestrator.Project{{ID: "proj-a", Meta: orchestrator.ProjectMeta{Name: "rook-server"}}}}
+	h := &WebHandler{Service: svc}
+	items := []timeline.CardItem{{
+		Kind:  timeline.CardItemChild,
+		Child: &timeline.CardChildDetail{ChildID: "c1", Spec: &orchestrator.TaskTriageChildSpec{Project: "proj-a"}},
+	}}
+
+	h.resolveCardItemChildProjects(items)
+
+	if got := items[0].Child.Spec.Project; got != "rook-server" {
+		t.Errorf("Spec.Project = %q, want the resolved name %q", got, "rook-server")
+	}
+}
+
+func TestResolveCardItemChildProjects_KeepsUnresolvableProjectAsIs(t *testing.T) {
+	h := &WebHandler{Service: &stubWebService{}}
+	items := []timeline.CardItem{{
+		Kind:  timeline.CardItemChild,
+		Child: &timeline.CardChildDetail{ChildID: "c1", Spec: &orchestrator.TaskTriageChildSpec{Project: "proj-gone"}},
+	}}
+
+	h.resolveCardItemChildProjects(items)
+
+	if got := items[0].Child.Spec.Project; got != "proj-gone" {
+		t.Errorf("Spec.Project = %q, want the raw id kept", got)
+	}
+}
+
+func TestResolveCardItemChildProjects_SpeclessChildLeftUntouched(t *testing.T) {
+	h := &WebHandler{Service: &stubWebService{}}
+	orig := &timeline.CardChildDetail{ChildID: "c1"}
+	items := []timeline.CardItem{{Kind: timeline.CardItemChild, Child: orig}}
+
+	h.resolveCardItemChildProjects(items)
+
+	if items[0].Child != orig {
+		t.Error("a child with no spec should pass through untouched (same *CardChildDetail)")
+	}
+}
+
+// TestResolveCardItemChildProjects_DoesNotMutateStoredSpec pins a
+// load-bearing contract: dispatch reads Spec.Project back as a boid
+// project ID, so the display-name substitution must land only on a fresh
+// copy, never on the caller's own *TaskTriageChildSpec.
+func TestResolveCardItemChildProjects_DoesNotMutateStoredSpec(t *testing.T) {
+	svc := &stubWebService{projects: []*orchestrator.Project{{ID: "proj-a", Meta: orchestrator.ProjectMeta{Name: "rook-server"}}}}
+	h := &WebHandler{Service: svc}
+	spec := &orchestrator.TaskTriageChildSpec{Project: "proj-a"}
+	child := &timeline.CardChildDetail{ChildID: "c1", Spec: spec}
+	items := []timeline.CardItem{{Kind: timeline.CardItemChild, Child: child}}
+
+	h.resolveCardItemChildProjects(items)
+
+	if items[0].Child.Spec.Project != "rook-server" {
+		t.Fatalf("display copy should show the resolved name")
+	}
+	if spec.Project != "proj-a" {
+		t.Errorf("stored Spec.Project = %q, want unchanged %q — dispatch reads this as an id", spec.Project, "proj-a")
+	}
+	if child.Spec != spec {
+		t.Error("the original child's Spec pointer must not be replaced in place")
+	}
+}
+
 // --- pinned suggestion replaces the old movement-row transition edge ---
 
 func TestCardDetail_PinnedSuggestion_RendersAcceptRejectAndNoTransitionEdge(t *testing.T) {
@@ -382,6 +450,90 @@ func TestCardDetail_AwaitingChild_RendersQuestionLink(t *testing.T) {
 	}
 	if !strings.Contains(body, "⚠") {
 		t.Errorf("body missing the warning marker for an awaiting child; got:\n%s", body)
+	}
+	if !strings.Contains(body, `class="badge badge-awaiting"`) {
+		t.Errorf("chip should show the live status badge-awaiting; got:\n%s", body)
+	}
+	if strings.Contains(body, `class="badge badge-dispatched"`) {
+		t.Errorf("chip should NOT show the bare ledger badge-dispatched once a live status resolved; got:\n%s", body)
+	}
+}
+
+// TestCardDetail_DispatchedChild_NotAwaiting_NoQuestionLink is the negative
+// case: a live status other than awaiting must not render a question link
+// or warning marker, even though the child is otherwise pinned/dispatched.
+func TestCardDetail_DispatchedChild_NotAwaiting_NoQuestionLink(t *testing.T) {
+	h, repo, projectID := newCardTimelineTestHandler(t)
+	newCardTimelineTestCard(t, repo, projectID, "card-1")
+	addOpenChild(t, repo, "card-1", "c1", "running child")
+
+	tt, err := orchestrator.GetTaskTriage(repo, "card-1")
+	if err != nil {
+		t.Fatalf("get task_triage: %v", err)
+	}
+	newDetail, err := orchestrator.SpecDetailChild(tt.Detail, "c1", orchestrator.TaskTriageChildSpec{Project: projectID}, "")
+	if err != nil {
+		t.Fatalf("SpecDetailChild: %v", err)
+	}
+	tt.Detail = newDetail
+	if err := orchestrator.UpsertTaskTriage(repo, tt); err != nil {
+		t.Fatalf("upsert task_triage: %v", err)
+	}
+
+	// A stale awaiting-trait blob left in the payload after the task moved
+	// on to executing — needed so the live-status guard actually gets
+	// exercised (an empty payload would pass either way).
+	ap, err := json.Marshal(orchestrator.AwaitingPayload{QuestionID: "stale-q"})
+	if err != nil {
+		t.Fatalf("marshal awaiting payload: %v", err)
+	}
+	staleExecPayload, err := json.Marshal(map[string]json.RawMessage{string(orchestrator.TraitAwaiting): ap})
+	if err != nil {
+		t.Fatalf("marshal exec payload: %v", err)
+	}
+	childTask := &orchestrator.Task{
+		ID: "task-x", ProjectID: projectID, ParentID: "card-1", Type: orchestrator.TaskTypeExecution,
+		Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Payload: staleExecPayload},
+	}
+	if err := orchestrator.CreateTask(repo, childTask); err != nil {
+		t.Fatalf("create child task: %v", err)
+	}
+
+	tt, err = orchestrator.GetTaskTriage(repo, "card-1")
+	if err != nil {
+		t.Fatalf("get task_triage: %v", err)
+	}
+	children, err := orchestrator.DetailChildren(tt.Detail)
+	if err != nil {
+		t.Fatalf("DetailChildren: %v", err)
+	}
+	for i := range children {
+		if children[i].ID == "c1" {
+			children[i].TaskRef = "task-x"
+			children[i].Status = orchestrator.TaskTriageChildStatusDispatched
+		}
+	}
+	newDetail, err = orchestrator.SetDetailChildren(tt.Detail, children)
+	if err != nil {
+		t.Fatalf("SetDetailChildren: %v", err)
+	}
+	tt.Detail = newDetail
+	if err := orchestrator.UpsertTaskTriage(repo, tt); err != nil {
+		t.Fatalf("upsert task_triage: %v", err)
+	}
+
+	code, body := getHTML(t, h, "/tasks/card-1")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", code, body)
+	}
+	if strings.Contains(body, "questions/") {
+		t.Errorf("an executing (non-awaiting) child must not get a question link, even with a stale awaiting payload; got:\n%s", body)
+	}
+	if strings.Contains(body, "⚠") {
+		t.Errorf("an executing (non-awaiting) child must not get the warning marker; got:\n%s", body)
+	}
+	if !strings.Contains(body, `class="badge badge-executing"`) {
+		t.Errorf("chip should show the live status badge-executing; got:\n%s", body)
 	}
 }
 

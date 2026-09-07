@@ -675,10 +675,8 @@ func (h *WebHandler) cardTimelineView(cardID, cursor string) (*templates.CardTim
 }
 
 // cardPinnedView is cardTimelineView's lighter counterpart: pinned items
-// only, no BuildCardTimeline call. TaskDetailCardStatusSection (the
-// kind=status SSE fragment) never reads History/HasMore/NextCursor, so
-// paying for a full timeline scan on every action/job event would be pure
-// waste.
+// only, skipping the BuildCardTimeline history scan a caller that only
+// needs Pinned/AwaitingQuestionID would otherwise pay for on every call.
 func (h *WebHandler) cardPinnedView(cardID string) (*templates.CardTimelineView, error) {
 	if h.CardTimeline == nil {
 		return &templates.CardTimelineView{}, nil
@@ -719,13 +717,9 @@ func (h *WebHandler) resolveCardItemChildProjects(items []timeline.CardItem) {
 }
 
 // enrichPinnedChildLiveStatus resolves the sole pinned dispatched child's
-// live task status — so its chip can show executing/awaiting/done/aborted
-// instead of the ledger's bare "dispatched" — and, when that live status is
-// awaiting, the open question id for a direct-to-question link. Neither
-// CardPinnedItems nor CardChildDetail resolve either fact themselves; it's
-// an extra live lookup only worth paying for the one currently-active child
-// a card can have at a time. Mutates pinned in place (a fresh copy per
-// child, matching resolveCardItemChildProjects's own pattern).
+// live task status (for its chip) and, when that status is awaiting, its
+// open question id (for a direct-to-question link). Mutates pinned in
+// place via a fresh copy per child.
 func (h *WebHandler) enrichPinnedChildLiveStatus(pinned []timeline.CardItem) string {
 	for i := range pinned {
 		it := &pinned[i]

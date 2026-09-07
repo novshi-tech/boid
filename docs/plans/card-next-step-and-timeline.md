@@ -1945,21 +1945,32 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      (`cardItemPinnedStamp`)、履歴項目は時刻のみ。
 
   4. **Load older の HTMX/フォーム的な作り。** サーバ側ページングで、
-     JS の手書きコードは書いていない。`CardHistorySection` が末尾に
-     `<button hx-get="/tasks/{id}/card-timeline?cursor=...&last_date=..."
-     hx-target="this" hx-swap="outerHTML">Load older</button>` を出し、
-     クリックすると新設ハンドラ `WebHandler.TaskCardTimelineOlder`
-     (`GET /tasks/{id}/card-timeline`) が次ページ分の `<li>` 群 +
-     （まだ残りがあれば）新しい Load older ボタン、を返す。
-     `hx-swap="outerHTML"` によりボタン自身がレスポンス全体（新しい
-     項目 + 次のボタン）に置き換わるので、既存の履歴リストは末尾に
-     追記される形になり、`#task-status` の SSE 再描画（`outerHTML` で
-     丸ごと置換）とは競合しない——`CardHistorySection` 自体が
-     `#task-status` の外（`#card-timeline` という別コンテナ）にあり、
-     既存 SSE スクリプトは `kind=status`/`kind=timeline` の2種類しか
-     再取得しないため、この新設コンテナは現状 SSE で自動更新されない
-     （§10 PR-5b が記録した「SSE 未接続の間のページング欠落」は
-     この PR ではそのまま——埋めるのは PR-6c の仕事）。
+     JS の手書きコードは書いていない。`CardHistorySection` は履歴
+     `<ul>` の**内側**の末尾に `<li class="card-timeline-load-older">`
+     として Load older ボタン (`hx-get="/tasks/{id}/card-timeline?
+     cursor=...&last_date=..." hx-target="closest li"
+     hx-swap="outerHTML"`) を置く。クリックすると新設ハンドラ
+     `WebHandler.TaskCardTimelineOlder` (`GET /tasks/{id}/card-timeline`)
+     が次ページ分の `<li>` 群 + （まだ残りがあれば）新しい Load older
+     の `<li>`、を返し、`hx-target="closest li"` + `hx-swap="outerHTML"`
+     によって**そのボタンを囲む `<li>` 自体**がレスポンス全体に
+     置き換わる——新しい項目は同じ `<ul>` 内の兄弟要素として着地し、
+     クリックのたびに置き換わるのは常にこの1個の `<li>` だけなので
+     ネストが深くなっていかない。
+     **フレッシュレビューで発見・修正した実バグ:** 当初の実装は
+     `hx-target="this"`（ボタン自身）かつ Load older の `<li>` を
+     `</ul>` の**外**に置いていた。`hx-swap="outerHTML"` はボタンだけを
+     置き換えるので、2ページ目以降の項目群がリストの外に着地し、
+     クリックのたびに孤立した `<li>` の中にさらに `<li>` がネストして
+     いく壊れた DOM になっていた——実際にレンダリングして HTML を
+     ダンプし、`</ul>` の後に `<li>` が出ていることを目視で確認して
+     修正した。`#task-status` の SSE 再描画（`outerHTML` で丸ごと置換）
+     とは競合しない——`CardHistorySection` 自体が `#task-status` の外
+     （`#card-timeline` という別コンテナ）にあり、既存 SSE スクリプトは
+     `kind=status`/`kind=timeline` の2種類しか再取得しないため、この
+     新設コンテナは現状 SSE で自動更新されない（§10 PR-5b が記録した
+     「SSE 未接続の間のページング欠落」はこの PR ではそのまま——埋める
+     のは PR-6c の仕事）。
 
   5. **既存 `TaskDetailChildrenSection`/`ChildRow`/`cardChildrenFromTriage`
      をどうしたか: 削除した。** 子一覧は固定項目・履歴の `CardItemChild`/
@@ -1978,10 +1989,22 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
 
   6. **awaiting の子への質問導線は維持したが、実装場所は変わった。**
      読みモデル (`timeline.CardChildDetail`) には live task の状態
-     (awaiting かどうか) が無いので、`WebHandler.pinnedChildAwaitingQuestion`
+     (awaiting かどうか) が無いので、`WebHandler.enrichPinnedChildLiveStatus`
      が「固定項目として出ている唯一の dispatched な子」1件だけを対象に
      `GetTaskDetail` で live 状態を追加取得する。§3.2 の単一作業枠の
      invariant により高々1回の追加問い合わせで済む。
+     **フレッシュレビューで発見・修正した機能後退: 同じ関数が live
+     status のチップ表示も担っていたのに、質問導線だけ持ち帰って
+     status は捨てていた。** 旧 `ChildRow.DisplayStatus`（PR-2、
+     webui-detail-list-redesign.md §3.3 item 2）は台帳 status が
+     dispatched の間だけ生 status (executing/awaiting/done/aborted) を
+     チップに差し込んでいたが、新実装は台帳の生 `dispatched` を出し
+     続けていた。`timeline.CardChildDetail` に呼び出し側専用の
+     `LiveStatus` フィールドを足し（読みモデル自体は書かない、project
+     名解決と同じ「呼び出し側が別コピーで足す」パターン）、この関数が
+     既に取得済みの `detail.Task.Status` をそこに書き込むよう変更した
+     （`cardChildDisplayStatus` が `LiveStatus` を優先、無ければ台帳
+     `Status` にフォールバック）。
 
   7. **既存を壊していないことの確認方法。** execution 詳細
      (`TaskDetailExecBody`/`TaskDetailExecStatusSection`) 及びその
@@ -1990,10 +2013,41 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      `TaskDetailLiveScript` と `/tasks/{id}/fragment` の `kind=status`/
      `kind=timeline` は両方とも既存のまま呼ばれ続ける（card の
      `kind=status` は新しい pinned セクションを含むよう中身だけ差し替え、
-     `kind=timeline` は card に対しては今回導入した `#card-timeline`
-     が存在しないため何も置き換えない no-op のまま——壊れてはいないが
-     card にとって意味の無い呼び出しが残る、という記録）。
+     `kind=timeline` は既存どおり `#task-timeline` を対象にするが、
+     card 側にはその id を持つ要素がもう無い——**`#card-timeline` 自体は
+     存在する**が、SSE のリフレッシュ対象は `#task-timeline` の方であり
+     両者は別物——ので JS 側の `document.getElementById('task-timeline')`
+     が見つからず何も置き換えない no-op になる。壊れてはいないが card
+     にとって意味の無い呼び出しが残る、という記録）。
+     **訂正（フレッシュレビュー指摘）:** 初版はここを「今回導入した
+     `#card-timeline` が存在しないため」と書いていたが誤り——
+     `#card-timeline` は `CardHistorySection` が実際にレンダリングして
+     おり存在する。no-op になる理由は id の不一致（`kind=timeline` が
+     探すのは `#task-timeline`）であって、コンテナの不在ではない。
      `go test ./...` は全パッケージ green（実行して確認）。
+
+     **nice-to-have（フレッシュレビュー指摘、対処済み）: `kind=status`
+     が毎回 `BuildCardTimeline` を無駄に呼んでいた。**
+     `TaskDetailCardStatusSection` は `Pinned`/`AwaitingQuestionID` しか
+     読まないのに、`cardTimelineView` 経由で history 用の
+     `BuildCardTimeline`（card の全 action ログを読む）まで毎回走らせ、
+     結果を丸ごと捨てていた——SSE の action/job イベント1回・閲覧者1人
+     につきこの無駄なフルスキャンが発生する。`cardTimelineView` を
+     pinned 専用の `cardPinnedView`（`CardPinnedItems` のみ呼ぶ）と
+     history 込みの `cardTimelineView`（`cardPinnedView` を内部で
+     再利用し、history だけ追加で埋める）に分割し、`kind=status` の
+     フラグメントハンドラは軽い方を呼ぶよう変更した。
+
+     **記録のみ（対処しない）: SSE の `outerHTML` 置換は開いた
+     `<details>` を保持しない。** `#task-status` は action/job イベント
+     のたびに丸ごと `outerHTML` で置き換わり、morph も
+     `hx-preserve` も使っていないので、固定項目の子 spec 折り畳み
+     （`<details class="detail-children-spec">`）を開いた状態は
+     SSE 更新のたびに閉じる。PR-6b がまさに `#task-status` 内に
+     テキスト入力を置く計画なので、入力途中の内容が同じ理由で失われうる
+     ——§5.3 の「指示の入力途中・展開状態・スクロール位置を失わない」を
+     PR-6b が満たすには、この置換方式自体を変える（部分更新 / 状態の
+     クライアント側保持 / `hx-preserve` 等）必要がある。
 
   8. **mutation テスト結果。** 全て「sed でソースを書き換え →
      `git diff` で実際にコードが変わったことを確認 →
@@ -2005,6 +2059,21 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      忘れると「変異は当たっているのに何も壊れない」という誤検知に
      なる——実際に一度この手順ミスで日付セパレータの mutation が
      見逃されかけ、`templ generate` 忘れに気づいて修正した。
+
+     **フレッシュレビューで指摘された穴（BL1/BL2/BL5/BL6）: 純粋関数だけ
+     テストして呼び出し側（レンダリング結果）を一度も assert していない
+     契約が複数あった。** 日付セパレータは `cardHistoryDateSeparators`
+     という純粋関数のテストだけが存在し、その戻り値を実際に描画する
+     `cardHistoryItems` の `if seps[i] != ""` 分岐そのものにはテストが
+     無かった——この分岐を丸ごと無効化しても（`if false && ...`）
+     純粋関数のテストは無関係に green のまま。レンダリング結果に対して
+     `card-timeline-date-sep` の出現回数・位置を assert するテストを
+     `web/templates/card_timeline_test.go` に追加し、同じ mutation で
+     赤くなることを確認してから記録した。追加テストは以下の表に含む。
+     同様に `resolveCardItemChildProjects`（project 名解決）にも
+     テストが無かったため、旧 `resolveChildProjects`（削除済み）が
+     持っていた4本相当（id→name解決・解決不能時は生id維持・spec無し
+     子は不変・**保存済み spec を mutate しない**）を復元した。
 
      | 契約 | mutation | 着弾確認 | 結果 |
      |---|---|---|---|
@@ -2018,6 +2087,14 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      | コマンドラベルの `Label` 優先・`CommandKey` フォールバック | `cardCommandLabel` から `if cmd.Label != ""` 分岐を削除 | diff 確認 | 赤 |
      | エスケープ（子タイトル） | `cardChildItemBody` の `{ c.Title }` を `@templ.Raw(c.Title)` に | diff 確認 | 赤（実DB経由の HTTP レベルテストで確認） |
      | Load older の cursor | `TaskCardTimelineOlder` がクエリの `cursor` を無視して常に `""` を使う | diff 確認 | 赤（15件中10+5の重複・欠落を検出） |
+     | 日付セパレータの**描画** (BL1、純粋関数でなく呼び出し側) | `cardHistoryItems` の `if seps[i] != ""` を `if false && seps[i] != ""` に | diff 確認 + `templ generate` | 赤（templ単体テスト3本・実DB経由の10+5ページングテスト1本の計4本） |
+     | `last_date` の受信配線 (BL2、ハンドラ側) | `TaskCardTimelineOlder` の `lastDate := r.URL.Query().Get("last_date")` を `lastDate := ""` に | diff 確認 | 赤（page1+page2 のセパレータ合計が 1→2 になることを検出） |
+     | `last_date` の送信配線 (BL2、emit 側) | `cardHistoryLoadOlder` の `if last.HasTime` を `if false && last.HasTime` に（常に `lastDateKey=""` のボタンを出す） | diff 確認 + `templ generate` | 赤（同上） |
+     | Load older の DOM 構造 (BL3、実バグの回帰ガード) | 該当なし — 構造そのものが唯一の実装なので「戻す」mutation は書いていない。修正前の状態そのものが不正な DOM だったことをレンダリング結果の目視確認（`</ul>` の後に `<li>` が出ることを実際に確認）で固定した | 目視 diff | （回帰ガードの性質上、赤/緑ではなく構造の一致で確認） |
+     | dispatched な子の生 status チップ (BL4) | `cardChildDisplayStatus` の `if c.LiveStatus != ""` を `if false` に | diff 確認 + `templ generate` | 赤（templ単体テスト・実DB経由の awaiting/executing 両テスト） |
+     | awaiting 以外では質問リンクを出さないガード (BL5 point 2) | `enrichPinnedChildLiveStatus` の `if detail.Task.Status == orchestrator.TaskStatusAwaiting && detail.Task.Exec != nil` から前半条件を削除 | diff 確認 | 最初のフィクスチャ（空 payload）では見逃し（`GetAwaitingPayload` が空 payload に対して常に空を返すため、ガードの有無に関係なく green）— executing な子に stale な awaiting payload を残すフィクスチャに直してから再度当てて赤を確認 |
+     | project 名解決が保存済み spec を mutate しない (BL5 point 1) | `resolveCardItemChildProjects` の copy-then-reassign を `it.Child.Spec.Project = name`（直接代入）に置換 | diff 確認 | 赤 |
+     | `strings.Contains` の部分一致 (BL6) | `cardSuggestionHistoryBody` の verb バッジ文言確認を `>park<` のタグ境界に変更する**前**の状態（`Contains(html,"park")`）で `{ s.Verb }` を `"X"` に固定 | diff 確認 | 修正前は緑のまま見逃し（`badge-verb-park` という CSS クラス名自体が `"park"` を部分一致で満たしていた）— `>park<` に直してから同じ mutation を当てて赤を確認 |
 
      mutation を当てる前に必ず `git diff` （`.templ` は追加で
      `templ generate` 後の生成物差分）で変異が実際にコードへ入った

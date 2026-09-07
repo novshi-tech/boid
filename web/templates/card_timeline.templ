@@ -164,9 +164,8 @@ func cardItemNoteText(item timeline.CardItem) string {
 	return payloadAsYAML(item.Action.Payload)
 }
 
-// cardChildDisplayStatus prefers the live task status (set by the caller
-// for the sole pinned dispatched child) over the ledger's bare "dispatched"
-// — matching the pre-PR-6a ChildRow.DisplayStatus behavior.
+// cardChildDisplayStatus prefers the caller-set live task status over the
+// ledger's bare "dispatched", falling back to the ledger status otherwise.
 func cardChildDisplayStatus(c *timeline.CardChildDetail) string {
 	if c.LiveStatus != "" {
 		return c.LiveStatus
@@ -247,12 +246,10 @@ templ CardHistorySection(tl *CardTimelineView, cardID string) {
 }
 
 // CardHistoryOlderFragment is the "Load older" HTMX response: the next
-// batch of items (continuing priorDateKey's date-separator run) followed by
-// either a fresh Load older control or nothing once exhausted. The
-// requesting button targets "closest li" with hx-swap "outerHTML", so this
-// whole fragment replaces that <li> (not just the <button>) — new items
-// land as siblings inside the same <ul>, and each click still only replaces
-// one <li>, so nesting never grows deeper.
+// batch of items plus a fresh Load older control, or nothing once
+// exhausted. The requesting button targets "closest li" with hx-swap
+// "outerHTML", so this fragment replaces that whole <li>, keeping new items
+// as flat siblings in the same <ul>.
 templ CardHistoryOlderFragment(cardID string, items []timeline.CardItem, hasMore bool, nextCursor string, priorDateKey string) {
 	@cardHistoryItems(items, cardID, priorDateKey)
 	if hasMore {
