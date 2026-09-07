@@ -41,6 +41,40 @@ func TestApplyAction_Reopen_RejectsWhenCardSlotOccupiedByAnotherLiveChild(t *tes
 	}
 }
 
+// TestApplyAction_Reopen_RejectsWhenCardSlotOccupiedByActiveCardRequest is
+// the card_requests half: something is already RUNNING against the card — a
+// command's task or session, or a Go reservation — even though the card has
+// no live child row and no open/specced JSON child. Reopen starts an
+// execution, so it is gated on the wider of §3.2's two constraints
+// (cardExecutionSlotOccupied), unlike child_added which only writes a spec
+// and is gated on the narrower one.
+func TestApplyAction_Reopen_RejectsWhenCardSlotOccupiedByActiveCardRequest(t *testing.T) {
+	child := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", ParentID: "card-1", Status: orchestrator.TaskStatusAborted, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
+	parent := &orchestrator.Task{ID: "card-1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+	txStore := &recordingTxStore{
+		task:                    child,
+		tasks:                   map[string]*orchestrator.Task{"card-1": parent, "child-1": child},
+		countActiveCardRequests: 1,
+	}
+	svc := &TaskWorkflowService{
+		Tasks: &stubTaskStore{task: child},
+		Tx:    recordingTransactor{store: txStore},
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+	}
+
+	_, err := svc.ApplyAction(humanCtx(), child.ID, ApplyActionRequest{Type: "reopen"})
+	if err == nil {
+		t.Fatal("expected rejection reopening a child while an active card_requests row occupies the execution slot")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	if txStore.updatedTask != nil {
+		t.Fatal("child must not have been transitioned to executing")
+	}
+}
+
 // TestApplyAction_Reopen_RejectsWhenCardSlotOccupiedByOpenJSONChild is the
 // JSON-only half: an open/specced child in the card's detail (not yet
 // task-ified) also occupies the slot.
