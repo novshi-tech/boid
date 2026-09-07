@@ -35,7 +35,7 @@ func TestRunBoidShim_TaskAttachmentsList_UsesEnvTaskID(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -129,7 +129,7 @@ func TestRunBoidShim_TaskAttachmentsGet_UsesEnvTaskIDAndName(t *testing.T) {
 		t.Errorf("stdout = %q, want the raw decoded bytes PNGDATA", resp.Stdout)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid.Op != sandbox.BoidOpTaskAttachmentsGet {
 		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskAttachmentsGet)
 	}
@@ -216,7 +216,7 @@ func TestRunBoidShim_TaskAttachmentsGet_DashDashAllowsLeadingDashName(t *testing
 		t.Errorf("stdout = %q, want PNGDATA", resp.Stdout)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid.AttachmentName != "-shot.png" {
 		t.Errorf("attachment name = %q, want -shot.png", req.Boid.AttachmentName)
 	}

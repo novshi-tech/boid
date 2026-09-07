@@ -52,7 +52,28 @@ var isolatedKeys = []string{"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STA
 // material, turning `daemon startup refused: connect to docker` into a
 // machine-dependent test failure. The isolated environment should be
 // self-consistent, not half-inherited.
-var clearedKeys = []string{"DOCKER_API_VERSION", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"}
+//
+// The BOID_* and *_PROXY entries are the same hazard against a different
+// host: a boid job sandbox sets them all, and each one OUTRANKS what a test
+// wires up for itself, so inheriting one redirects the test rather than
+// merely failing to isolate it. BOID_BROKER_TLS_ADDR beats the
+// BOID_BROKER_SOCKET a test points at its own fake broker; HTTP_PROXY applies
+// to a wildcard-bound listener's address, which no NO_PROXY list covers;
+// BOID_SOCKET names the real daemon; BOID_BUILTIN_SHIM makes a `boid`
+// subprocess take the shim path a test meant to withhold.
+//
+// A CI runner sets none of them, so every one of these failure modes is
+// invisible there: clearing them is what makes an in-sandbox run match CI.
+var clearedKeys = []string{
+	"DOCKER_API_VERSION", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY",
+	"BOID_BROKER_SOCKET", "BOID_BROKER_TOKEN", "BOID_BROKER_TLS_ADDR",
+	"BOID_BROKER_TLS_CERT_PATH", "BOID_BROKER_TLS_KEY_PATH",
+	"BOID_BROKER_TLS_CA_PATH", "BOID_BROKER_TLS_SERVER_NAME",
+	"BOID_SOCKET", "BOID_CLI_TOKEN",
+	"BOID_BUILTIN_SHIM", "BOID_TASK_ID", "BOID_JOB_ID",
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+	"http_proxy", "https_proxy", "no_proxy",
+}
 
 // dockerSocketName is the basename Isolate points DOCKER_HOST at, inside its
 // throwaway directory. Nothing ever creates it: an engine that cannot be

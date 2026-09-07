@@ -240,7 +240,20 @@ func newSmokeServer(t *testing.T) *testutil.TestServer {
 	// Isolate from the real $XDG_CONFIG_HOME (see testutil.NewTestServer's
 	// doc comment) — this helper constructs *server.Server directly rather
 	// than via testutil.NewTestServer.
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+
+	// integrations.dir defaults to /opt/boid/integrations, an absolute path
+	// XDG_CONFIG_HOME does not reach and the boid base image populates, so
+	// "no Packs installed" has to be pinned rather than inherited.
+	configDir := filepath.Join(configHome, "boid")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configYAML := "integrations:\n  dir: " + t.TempDir() + "\n"
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
 
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "boid.sock")

@@ -131,3 +131,45 @@ func containsString(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// The ambient boid-job half of this package's isolation: a sandbox sets all
+// of these, and each outranks what a test configures for itself. See
+// clearedKeys for which variable beats what.
+
+func TestIsolate_ClearsAmbientBrokerAndProxyEnv(t *testing.T) {
+	ambient := map[string]string{
+		"BOID_BROKER_TLS_ADDR":        "boid-broker:43495",
+		"BOID_BROKER_SOCKET":          "/run/boid/broker.sock",
+		"BOID_BROKER_TOKEN":           "real-token",
+		"BOID_BROKER_TLS_CERT_PATH":   "/run/boid/bin/broker-tls/cert.pem",
+		"BOID_BROKER_TLS_KEY_PATH":    "/run/boid/bin/broker-tls/key.pem",
+		"BOID_BROKER_TLS_CA_PATH":     "/run/boid/bin/broker-tls/ca.pem",
+		"BOID_BROKER_TLS_SERVER_NAME": "boid-broker",
+		"BOID_SOCKET":                 "/run/boid/server.sock",
+		"BOID_CLI_TOKEN":              "real-cli-token",
+		"BOID_BUILTIN_SHIM":           "1",
+		"BOID_TASK_ID":                "real-task",
+		"BOID_JOB_ID":                 "real-job",
+		"HTTP_PROXY":                  "http://boid-egress:32606",
+		"HTTPS_PROXY":                 "http://boid-egress:32606",
+		"NO_PROXY":                    "localhost,127.0.0.1",
+		"http_proxy":                  "http://boid-egress:32606",
+		"https_proxy":                 "http://boid-egress:32606",
+		"no_proxy":                    "localhost,127.0.0.1",
+	}
+	for key, val := range ambient {
+		t.Setenv(key, val)
+	}
+
+	cleanup, err := Isolate()
+	if err != nil {
+		t.Fatalf("Isolate: %v", err)
+	}
+	defer cleanup()
+
+	for key := range ambient {
+		if got := os.Getenv(key); got != "" {
+			t.Errorf("%s = %q after Isolate, want empty", key, got)
+		}
+	}
+}
