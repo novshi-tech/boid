@@ -1889,3 +1889,156 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
       変える実装はしていない——対象は運用開始直後の一時的な移行データで、
       `boid task diagnose-cards`（PR-1）が既に列挙・解消の手段を提供して
       いるため。
+
+- **PR-6a で確定: card 詳細ページの本体描画（コマンド入力・SSE fan-out は
+  対象外、PR-6b/PR-6c へ）。**
+
+  1. **配置順は §5.1 のとおり実装した。** タイトル・card 状態・現在の要約
+     (`TaskDetailCardSummary`、`task_triage.detail.summary` の現在値) →
+     指示入力欄の場所は空けず何も置いていない (PR-6b が担当) → 固定項目
+     (`CardPinnedItems` をそのまま `CardPinnedSection` で描画) → 最新10件
+     + `Load older` (`CardHistorySection`)。固定項目と履歴は同じ
+     `CardTimelineItem` コンポーネントを使い、`Pinned` 引数だけで分岐する
+     （別コンポーネントを作っていない）。
+
+  2. **5種類の raw Action のラベル描画規則（`web/templates/card_timeline.templ`）。**
+     読みモデルは `*orchestrator.Action` を生で返すだけなので、payload の
+     実キー名を書き込み側から拾って自前でパースした:
+     - `suggestion`: payload の `{"suggestion":{"verb","reason","params"}}`
+       を `orchestrator.Suggestion` にデコードし、固定項目のときだけ
+       既存 `TaskDetailSuggestionSection`（Accept/Reject フォーム込み、
+       無改変で再利用）を呼ぶ。履歴側（既に superseded/answered）は
+       ボタン無しの読み取り専用表示 (`cardSuggestionHistoryBody`) —
+       同じ verb でも「今のカードの状態に対して実際に適用できるか」を
+       決める `CanApplyManualAction`/`SuggestionInapplicable` の判定は
+       *現在* 有効な提案にしか意味を持たないため、履歴項目にボタンを
+       出すと過去の提案を誤って承認できてしまう。
+     - `answered`: `{"answer","verb","basis"}` を decode し、
+       `accept`→"Accepted"、`reject`→"Rejected" の固定英語ラベル。
+     - `summary`: `{"summary": "..."}` の文字列をそのまま表示。
+     - `noted`: 構造検証が無い任意 JSON なので、既存の `payloadAsYAML`
+       （不正 JSON なら生バイト列にフォールバック、パニックしない）を
+       再利用しているだけで新しい parser は書いていない。
+     - `wake_due`: payload 無し。固定文言 "Wake condition due" のみ。
+     いずれも英語ラベル。verb/reason/basis/summary/note 本文は
+     templ の `{ expr }` 式（自動 HTML エスケープ）を通しており、
+     `templ.Raw` 等のエスケープ回避経路は使っていない — 子タイトル
+     フィールドに `templ.Raw` を差し込む mutation で実際に
+     `TestCardDetail_MaliciousChildTitle_Escaped` が赤くなることを
+     確認済み（下記 mutation 表）。
+
+  3. **日付セパレータの実装方式と TZ をどこで当てたか。** 純粋関数
+     `cardHistoryDateSeparators(items, priorDateKey string) []string` が
+     items と同じ長さのスライスを返し、各 index に「その項目の直前に
+     出すべきセパレータ文字列（無ければ空文字）」を持たせる。判定は
+     `item.Time.Local().Format("2006-01-02")` の日付キー同士の比較のみで、
+     タイムゾーン変換は `time.Time.Local()` の呼び出し1箇所（この関数と
+     `cardItemClockLabel`/`cardItemPinnedStamp`）に閉じている——サーバの
+     ローカル TZ で確定という §5.4 の決定どおりで、ブラウザ側 TZ への
+     移行はしていない。画面上の確認手段として `CardHistorySection` に
+     `Times shown in <zone> (UTC±HH:MM)` という固定表示
+     (`cardTimelineTZLabel`、`time.Now().Zone()`) を追加した。
+     「Load older で同じ日を継ぎ足しても区切りを重複させない」は
+     `priorDateKey` 引数（前ページの最終項目の日付キー）を呼び出し側が
+     引き継ぐことで実現し、これは HTTP レイヤーの `last_date` クエリ
+     パラメータとして運ばれる（次項）。固定項目は常に日付+時刻を明記
+     (`cardItemPinnedStamp`)、履歴項目は時刻のみ。
+
+  4. **Load older の HTMX/フォーム的な作り。** サーバ側ページングで、
+     JS の手書きコードは書いていない。`CardHistorySection` が末尾に
+     `<button hx-get="/tasks/{id}/card-timeline?cursor=...&last_date=..."
+     hx-target="this" hx-swap="outerHTML">Load older</button>` を出し、
+     クリックすると新設ハンドラ `WebHandler.TaskCardTimelineOlder`
+     (`GET /tasks/{id}/card-timeline`) が次ページ分の `<li>` 群 +
+     （まだ残りがあれば）新しい Load older ボタン、を返す。
+     `hx-swap="outerHTML"` によりボタン自身がレスポンス全体（新しい
+     項目 + 次のボタン）に置き換わるので、既存の履歴リストは末尾に
+     追記される形になり、`#task-status` の SSE 再描画（`outerHTML` で
+     丸ごと置換）とは競合しない——`CardHistorySection` 自体が
+     `#task-status` の外（`#card-timeline` という別コンテナ）にあり、
+     既存 SSE スクリプトは `kind=status`/`kind=timeline` の2種類しか
+     再取得しないため、この新設コンテナは現状 SSE で自動更新されない
+     （§10 PR-5b が記録した「SSE 未接続の間のページング欠落」は
+     この PR ではそのまま——埋めるのは PR-6c の仕事）。
+
+  5. **既存 `TaskDetailChildrenSection`/`ChildRow`/`cardChildrenFromTriage`
+     をどうしたか: 削除した。** 子一覧は固定項目・履歴の `CardItemChild`/
+     `CardItemChildFinished` 項目に統合され、独立した子一覧セクションは
+     再設置していない。連鎖的に `cardChildrenForDisplay`/`childRowRank`/
+     `resolveChildProjects`/`triageChildrenFor`/`triageChildrenForDisplay`/
+     `triageSuggestionFor`/`childrenOf`/`suggestionOf` も削除した。
+     実装中に気づいた副産物: `triageChildrenFor`/`triageChildrenForDisplay`
+     はこの PR に着手する前から本番コードのどこからも呼ばれていない
+     死にコードだった（`cardChildrenFromTriage` は同じロジックを別経路で
+     再実装しており、この2つを経由していなかった）——専用テスト
+     `web_child_spec_display_test.go` だけがそれを呼んでいたので、
+     このテストごと削除した。子の project 表示名解決ロジック自体は
+     `WebHandler.resolveCardItemChildProjects`（`timeline.CardItem` を
+     対象にした新設の同等品）として残っている。
+
+  6. **awaiting の子への質問導線は維持したが、実装場所は変わった。**
+     読みモデル (`timeline.CardChildDetail`) には live task の状態
+     (awaiting かどうか) が無いので、`WebHandler.pinnedChildAwaitingQuestion`
+     が「固定項目として出ている唯一の dispatched な子」1件だけを対象に
+     `GetTaskDetail` で live 状態を追加取得する。§3.2 の単一作業枠の
+     invariant により高々1回の追加問い合わせで済む。
+
+  7. **既存を壊していないことの確認方法。** execution 詳細
+     (`TaskDetailExecBody`/`TaskDetailExecStatusSection`) 及びその
+     status-group timeline (`TaskDetailTimelineSection`) は無改変
+     ——`TestWebHandler_TaskDetail_Exec*`（既存）がそのまま green。
+     `TaskDetailLiveScript` と `/tasks/{id}/fragment` の `kind=status`/
+     `kind=timeline` は両方とも既存のまま呼ばれ続ける（card の
+     `kind=status` は新しい pinned セクションを含むよう中身だけ差し替え、
+     `kind=timeline` は card に対しては今回導入した `#card-timeline`
+     が存在しないため何も置き換えない no-op のまま——壊れてはいないが
+     card にとって意味の無い呼び出しが残る、という記録）。
+     `go test ./...` は全パッケージ green（実行して確認）。
+
+  8. **mutation テスト結果。** 全て「sed でソースを書き換え →
+     `git diff` で実際にコードが変わったことを確認 →
+     `.templ` を触った場合は必ず `templ generate` を再実行してから
+     生成物 (`_templ.go`) にも変異が反映されたことを確認 →
+     `go test` を実行 → 赤を確認 → revert」の手順で実施した。
+     `.templ` ファイルは `go test` が直接コンパイルする対象ではなく
+     生成後の `_templ.go` だけが対象なので、`templ generate` を
+     忘れると「変異は当たっているのに何も壊れない」という誤検知に
+     なる——実際に一度この手順ミスで日付セパレータの mutation が
+     見逃されかけ、`templ generate` 忘れに気づいて修正した。
+
+     | 契約 | mutation | 着弾確認 | 結果 |
+     |---|---|---|---|
+     | 固定項目が履歴に非重複 | `CardHistorySection` が `tl.History` の代わりに `tl.Pinned` も連結して渡す | diff 確認 | 最初は既存アサーションが `Contains` のみで見逃した（緑のまま）— 固定 suggestion の出現回数を厳密に数える assertion を追加してから再度当てて赤を確認 |
+     | 10件上限に固定項目を含めない | `BuildCardTimeline` 呼び出しの limit 引数を `0`（既定10件）から `999` に変更 | diff 確認 | 赤 |
+     | 日付セパレータのタイブレーク | `cardHistoryDateSeparators` の `if key != last` を `if key == last` に反転 | diff 確認 + `templ generate` 実行確認（初回は generate 忘れで見逃し、再実行して赤を確認） | 赤（5テスト） |
+     | `TaskExists` false → 子タスクへのリンクが消える | `cardChildItemBody` の `if c.TaskExists` を `if true` に | diff 確認 | 赤（templ単体テスト・実DB経由のGC生存テスト両方） |
+     | `TargetExists` false → コマンドのターゲットリンクが消える | `cardCommandItemBody` の `if cmd.TargetExists` を `if true` に | diff 確認 | 最初は実DB側の対応テストが無く見逃し（templ単体テストのみ赤）— コマンド版のGC生存テストを追加してから再度当てて両方赤を確認 |
+     | `answered` ラベル (`Accepted`) | `cardAnsweredLabel` の `"Accepted"` を `"XAccepted"` に | diff 確認 | 最初は `strings.Contains(html,"Accepted")` が `"XAccepted"` を部分一致で拾ってしまい見逃し（緑のまま）— `>Accepted<` のタグ境界アサーションに直してから再度当てて赤を確認。同じ理由で `closed`/`dropped`/`discuss`/`queued`/`Wake condition due` の assertion も同様にタグ境界に固定してから該当 mutation を当てて赤を確認 |
+     | `summary` 本文の抽出 | `cardItemSummaryText` を常に空文字を返すよう変更 | diff 確認 | 赤（templ単体テスト・実DB経由の10件上限テスト両方） |
+     | コマンドラベルの `Label` 優先・`CommandKey` フォールバック | `cardCommandLabel` から `if cmd.Label != ""` 分岐を削除 | diff 確認 | 赤 |
+     | エスケープ（子タイトル） | `cardChildItemBody` の `{ c.Title }` を `@templ.Raw(c.Title)` に | diff 確認 | 赤（実DB経由の HTTP レベルテストで確認） |
+     | Load older の cursor | `TaskCardTimelineOlder` がクエリの `cursor` を無視して常に `""` を使う | diff 確認 | 赤（15件中10+5の重複・欠落を検出） |
+
+     mutation を当てる前に必ず `git diff` （`.templ` は追加で
+     `templ generate` 後の生成物差分）で変異が実際にコードへ入った
+     ことを確認してから `go test` を実行し、結果を見たら
+     `git checkout --` で元に戻してから次の mutation に進んだ。
+
+  9. **PR-6b/PR-6c への申し送り。**
+     - 指示入力欄・カードコマンドボタンの場所は空けてある
+       （`TaskDetailCardStatusSection` の pinned セクションの前後どちらに
+       置くかは PR-6b が決めてよい、この PR では何も描画していない）。
+     - `#card-timeline` は現状 SSE 未接続。PR-6c が子→親 fan-out を実装
+       する際、この新設コンテナへの反映方法（既存 `refresh(['status',
+       'timeline'])` に3つ目の kind を足すか、別の仕組みにするか）を
+       決めること。§10 PR-5b が記録した「SSE 未接続の間のページング
+       欠落」（pinned だった子が Load older 前に終端すると以後のページに
+       出てこない）はこの PR では未解決のまま — PR-6c の SSE 実装が
+       前提として埋める設計であることに変わりない。
+     - 進捗の畳み込み（子の action を親のタイムラインに反映する経路）は
+       PR-5b の時点で「card 側に進捗 action が存在しない」という理由で
+       見送られており、この PR でも同様（読みモデルに無いものは描けない）。
+     - 既存の日本語文字列（一覧側の「⚠ 質問あり」「経過」等）は
+       この PR のスコープ外のまま未着手。この PR で新規に追加した文字列は
+       すべて英語（"No history yet." "Load older" "No more history."
+       "Wake condition due" "Accepted"/"Rejected" "Summary" "Note" 等）。
