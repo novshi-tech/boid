@@ -329,6 +329,24 @@ type CardStore interface {
 	ParkedFrom(taskID string) (orchestrator.TaskStatus, error)
 }
 
+// CardActivityStore backs the task list's per-row activity state: two
+// batched lookups (card_requests, tasks.status) kept separate from
+// CardStore since they read different tables for a list-rendering-specific
+// purpose. Both methods must resolve their entire input in ONE query each
+// (chunked only past a SQL variable ceiling) — adding rows to a page must
+// never add queries.
+type CardActivityStore interface {
+	// ActiveCardRequestsByCardIDs returns, for each id in cardIDs with a
+	// currently queued/launching/attached row, the single highest-priority
+	// one (orchestrator.PickActiveCardRequest chooses attached > launching >
+	// queued) — a cardID with none is simply absent from the result.
+	ActiveCardRequestsByCardIDs(cardIDs []string) (map[string]*orchestrator.CardRequest, error)
+	// TaskStatusesByIDs batch-resolves task ids (a card's sole dispatched
+	// work child's TaskRef) to their live status — an id with no live row
+	// is simply absent from the result.
+	TaskStatusesByIDs(taskIDs []string) (map[string]orchestrator.TaskStatus, error)
+}
+
 // TaskIdentityStore provides access to the identity index
 // (task_identities table): external key -> task, scoped per project.
 // Deliberately separate from TaskStore for the same reason CardStore is: identity bindings are

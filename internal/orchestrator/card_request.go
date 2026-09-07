@@ -734,6 +734,100 @@ func ListActiveCardRequests(dbtx db.DBTX) ([]*CardRequest, error) {
 	return scanCardRequests(rows)
 }
 
+// ListActiveCardRequestsByCardIDs returns, for each id in cardIDs that has
+// at least one currently queued/launching/attached card_requests row, the
+// single one PickActiveCardRequest would choose — one query across every id
+// (chunked like ExistingTaskIDs) rather than one per card, for a caller
+// (the task list) enriching many rows at once. A cardID with no such row is
+// simply absent from the result map.
+func ListActiveCardRequestsByCardIDs(dbtx db.DBTX, cardIDs []string) (map[string]*CardRequest, error) {
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(cardIDs))
+	for _, id := range cardIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	byCard := map[string][]*CardRequest{}
+	for start := 0; start < len(unique); start += existingTaskIDsChunk {
+		end := min(start+existingTaskIDsChunk, len(unique))
+		if err := scanActiveCardRequestsByCardIDs(dbtx, unique[start:end], byCard); err != nil {
+			return nil, err
+		}
+	}
+	out := make(map[string]*CardRequest, len(byCard))
+	for cardID, requests := range byCard {
+		if chosen := PickActiveCardRequest(requests); chosen != nil {
+			out[cardID] = chosen
+		}
+	}
+	return out, nil
+}
+
+func scanActiveCardRequestsByCardIDs(dbtx db.DBTX, cardIDs []string, byCard map[string][]*CardRequest) error {
+	placeholders := make([]string, len(cardIDs))
+	args := make([]any, 0, len(cardIDs)+3)
+	for i, id := range cardIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	args = append(args, string(CardRequestStatusQueued), string(CardRequestStatusLaunching), string(CardRequestStatusAttached))
+	rows, err := dbtx.Query(
+		cardRequestSelectCols+` FROM card_requests WHERE card_id IN (`+strings.Join(placeholders, ",")+`) AND status IN (?, ?, ?) ORDER BY created_at ASC, id ASC`,
+		args...,
+	)
+	if err != nil {
+		return fmt.Errorf("list active card requests by card ids: %w", err)
+	}
+	requests, err := scanCardRequests(rows)
+	if err != nil {
+		return err
+	}
+	for _, r := range requests {
+		byCard[r.CardID] = append(byCard[r.CardID], r)
+	}
+	return nil
+}
+
+// PickActiveCardRequest chooses the single card_requests row that best
+// represents a card's "currently in progress" command, by status priority
+// (attached > launching > queued) rather than creation order — multiple
+// non-terminal rows for one card ARE possible in practice; only launching/
+// attached are mutually exclusive at the database level, so an older queued
+// row (e.g. an internal event request that arrived before a barrier lifted)
+// can otherwise outlive a newer launching/attached one and must never mask
+// it. Skips the shared work slot's own __go__ row — that is Go's work
+// execution, not a card command.
+func PickActiveCardRequest(requests []*CardRequest) *CardRequest {
+	rank := func(s CardRequestStatus) int {
+		switch s {
+		case CardRequestStatusAttached:
+			return 3
+		case CardRequestStatusLaunching:
+			return 2
+		case CardRequestStatusQueued:
+			return 1
+		default:
+			return 0
+		}
+	}
+	var chosen *CardRequest
+	for _, r := range requests {
+		if r.CommandKey == CardRequestCommandKeyGo {
+			continue
+		}
+		if rank(r.Status) == 0 {
+			continue
+		}
+		if chosen == nil || rank(r.Status) > rank(chosen.Status) {
+			chosen = r
+		}
+	}
+	return chosen
+}
+
 // rowsAffectedOrNotFoundOrInvalid turns a zero-rows-affected UPDATE result
 // into ErrCardRequestNotFound (no such row) or ErrCardRequestInvalidTransition
 // (row exists, wrong starting status).

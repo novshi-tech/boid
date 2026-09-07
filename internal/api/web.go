@@ -73,6 +73,13 @@ type WebHandler struct {
 	// Nil-safe: when unset, every row renders with no suggestion edge/
 	// summary badge instead of failing the whole list.
 	TaskTriage CardStore
+
+	// CardActivity backs the list row's activity state: the sole work
+	// child's Draft/Ready to run/Queued/Running/Needs input badge and the
+	// active card command's label+status badge. Nil-safe: when unset, every
+	// card row renders with no activity badge instead of failing the whole
+	// list.
+	CardActivity CardActivityStore
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -273,6 +280,59 @@ func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orch
 	return out
 }
 
+// cardActivityStates computes the list row's activity state for every card
+// in tasks, from triageByTaskID's already-fetched detail JSON plus two more
+// batched reads (h.CardActivity) — never one query per row. h.CardActivity
+// == nil degrades to no activity badges, not an error, same convention as
+// triageByTaskID/h.TaskTriage.
+func (h *WebHandler) cardActivityStates(tasks []*orchestrator.Task, triage map[string]*orchestrator.CardAttrs) map[string]templates.CardActivityState {
+	if h.CardActivity == nil {
+		return nil
+	}
+	var cardIDs []string
+	activeChildren := map[string]*orchestrator.TaskTriageChild{}
+	for _, t := range tasks {
+		if t.Type != orchestrator.TaskTypeCard {
+			continue
+		}
+		cardIDs = append(cardIDs, t.ID)
+		tt, ok := triage[t.ID]
+		if !ok || tt == nil {
+			continue
+		}
+		if child := templates.ActiveChildFromDetail(tt.Detail); child != nil {
+			activeChildren[t.ID] = child
+		}
+	}
+	if len(cardIDs) == 0 {
+		return nil
+	}
+
+	activeRequests, err := h.CardActivity.ActiveCardRequestsByCardIDs(cardIDs)
+	if err != nil {
+		slog.Warn("cardActivityStates: ActiveCardRequestsByCardIDs returned a partial or empty result",
+			"error", err, "card_count", len(cardIDs))
+	}
+
+	var taskIDsToCheck []string
+	for _, c := range activeChildren {
+		if c.Status == orchestrator.TaskTriageChildStatusDispatched && c.TaskRef != "" {
+			taskIDsToCheck = append(taskIDsToCheck, c.TaskRef)
+		}
+	}
+	for _, r := range activeRequests {
+		if r.TargetKind == orchestrator.CardRequestTargetKindTask && r.TargetID != "" {
+			taskIDsToCheck = append(taskIDsToCheck, r.TargetID)
+		}
+	}
+	taskStatuses, err := h.CardActivity.TaskStatusesByIDs(taskIDsToCheck)
+	if err != nil {
+		slog.Warn("cardActivityStates: TaskStatusesByIDs returned a partial or empty result",
+			"error", err, "task_id_count", len(taskIDsToCheck))
+	}
+	return templates.BuildCardActivityStates(cardIDs, activeChildren, taskStatuses, activeRequests)
+}
+
 // taskListPageSize is the list's fixed page size — no user-configurable
 // page-size control.
 const taskListPageSize = 50
@@ -400,7 +460,8 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectNames := projectNameMap(projects)
-	items := templates.BuildListRows(tasks, projectNames, h.triageByTaskID(tasks))
+	triage := h.triageByTaskID(tasks)
+	items := templates.BuildListRows(tasks, projectNames, triage, h.cardActivityStates(tasks, triage))
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 

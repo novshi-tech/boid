@@ -792,6 +792,20 @@ pre {
   color: var(--muted);
 }
 
+.list-row-activity {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.list-row-activity-work {
+  color: var(--accent);
+}
+
+.list-row-activity-command {
+  color: var(--muted);
+}
+
 /* --- Sessions list ---
    Sessions reuse .task-row but render a flat list with no tree nesting. The
    rows carry no inline --depth, so .task-row's --pad-left gutter calc would

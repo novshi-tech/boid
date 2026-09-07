@@ -380,7 +380,7 @@ func loadCardTimelineState(dbtx db.DBTX, cardID string) (*cardTimelineState, err
 	for _, r := range requests {
 		requestsByID[r.ID] = r
 	}
-	activeRequest := pickActiveCardRequest(requests)
+	activeRequest := orchestrator.PickActiveCardRequest(requests)
 
 	// One batched existence check for every task id this pass will need
 	// (child TaskRefs, command targets) instead of one query per id.
@@ -533,41 +533,6 @@ func loadCardTimelineState(dbtx db.DBTX, cardID string) (*cardTimelineState, err
 type cardCommandOutcome struct {
 	action  *orchestrator.Action
 	payload orchestrator.CardRequestOutcomePayload
-}
-
-// pickActiveCardRequest chooses the single card_requests row CardPinnedItems
-// shows as "in progress", by status priority (attached > launching >
-// queued) rather than by creation order. Multiple non-terminal rows for one
-// card ARE possible in practice — only launching/attached are mutually
-// exclusive at the database level, an older queued row (e.g. an internal
-// event request that arrived before a barrier lifted) can otherwise outlive
-// a newer launching/attached one and must never mask it.
-func pickActiveCardRequest(requests []*orchestrator.CardRequest) *orchestrator.CardRequest {
-	rank := func(s orchestrator.CardRequestStatus) int {
-		switch s {
-		case orchestrator.CardRequestStatusAttached:
-			return 3
-		case orchestrator.CardRequestStatusLaunching:
-			return 2
-		case orchestrator.CardRequestStatusQueued:
-			return 1
-		default:
-			return 0
-		}
-	}
-	var chosen *orchestrator.CardRequest
-	for _, r := range requests {
-		if r.CommandKey == orchestrator.CardRequestCommandKeyGo {
-			continue
-		}
-		if rank(r.Status) == 0 {
-			continue
-		}
-		if chosen == nil || rank(r.Status) > rank(chosen.Status) {
-			chosen = r
-		}
-	}
-	return chosen
 }
 
 // buildCommandHistoryItem builds a terminal CardItemCommand from one

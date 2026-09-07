@@ -39,6 +39,10 @@ type ListRow struct {
 	// row, no summary was ever written, or the task is an execution task
 	// (Summary is card-only vocabulary).
 	Summary string
+	// Activity is the card's activity state, populated by BuildListRows
+	// from a caller-resolved map. Zero value for an execution task or a
+	// card with no active work child/command.
+	Activity CardActivityState
 }
 
 // ProjectLabel returns the resolved project name when available, falling
@@ -134,10 +138,10 @@ func relativeTimeLabel(t time.Time) string {
 // BuildQueueItems / BuildFlatItems (deleted by PR-4 alongside
 // components.TreeItem — the four builders existed to serve four different
 // tabs with four different shapes; one flat view needs exactly one builder).
-func BuildListRows(tasks []*orchestrator.Task, projectNames map[string]string, triageByTaskID map[string]*orchestrator.CardAttrs) []ListRow {
+func BuildListRows(tasks []*orchestrator.Task, projectNames map[string]string, triageByTaskID map[string]*orchestrator.CardAttrs, activityByTaskID map[string]CardActivityState) []ListRow {
 	rows := make([]ListRow, 0, len(tasks))
 	for _, t := range tasks {
-		row := ListRow{Task: t, ProjectName: projectNames[t.ProjectID]}
+		row := ListRow{Task: t, ProjectName: projectNames[t.ProjectID], Activity: activityByTaskID[t.ID]}
 		if tt, ok := triageByTaskID[t.ID]; ok && tt != nil {
 			if s, ok := orchestrator.DetailSuggestion(tt.Detail); ok {
 				row.Suggestion = s
@@ -251,6 +255,9 @@ templ taskListRow(row ListRow) {
 // list-row scale — same suggestionTargetStatus/taskStatusClass helpers, so
 // the list row's edge rendering can never drift from the detail page's.
 templ taskListRowMovement(row ListRow) {
+	if row.Task.Type == orchestrator.TaskTypeCard {
+		@cardActivityBadges(row.Activity)
+	}
 	if row.Task.Type == orchestrator.TaskTypeCard && row.Suggestion.Verb != "" {
 		{{ target := suggestionTargetStatus(row.Task.Status, row.Suggestion.Verb) }}
 		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
@@ -275,5 +282,19 @@ templ taskListRowMovement(row ListRow) {
 		<span class="list-row-movement-text">{ row.Summary }</span>
 	} else {
 		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
+	}
+}
+
+// cardActivityBadges renders the card's activity state. Rendered BEFORE the
+// status/suggestion content by its caller, not after: line3's container
+// clamps to 2 lines and hides overflow, so a badge appended after a long
+// reason/summary can be clipped out of view. Renders nothing when both
+// labels are empty.
+templ cardActivityBadges(a CardActivityState) {
+	if a.WorkLabel != "" {
+		<span class="list-row-activity list-row-activity-work">{ a.WorkLabel }</span>
+	}
+	if a.CommandLabel != "" {
+		<span class="list-row-activity list-row-activity-command">{ a.CommandLabel }</span>
 	}
 }
