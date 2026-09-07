@@ -12,7 +12,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// releasedCardRequestTarget is one recorded ReleaseCardRequestForTerminalTarget call.
+// releasedCardRequestTarget is one recorded ReleaseCardRequestForTerminalTargetWithCard call.
 type releasedCardRequestTarget struct {
 	targetKind string
 	targetID   string

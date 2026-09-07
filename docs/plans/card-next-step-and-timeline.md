@@ -874,10 +874,22 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   恒久的な失敗ではないため）。「人の操作」として数えたのは 3 つ: 人発カード
   コマンド (`RunCardCommandAsHuman`)、Go (`reserveGoCardRequest`)、明示的
   Retry (`RetryCardRequest`) — いずれも barrier を無条件にクリアする
-  （Retry は対象 card の barrier のみ、コマンド/Go は呼び出しがあった時点で
-  クリアし、実際に枠を取れたかどうかは問わない —— 占有中の人発コマンドでも
-  「人が今この card を見た」事実自体が barrier を解く根拠として十分と
-  判断した）。各経路を実 DB でテスト:
+  （Retry は対象 card の barrier のみ）。
+
+  **Opus レビューで訂正: 「コマンド/Go は呼び出しがあった時点でクリアし、
+  実際に枠を取れたかどうかは問わない」は不正確だった。**
+  `RunCardCommandAsHuman` の barrier クリアは `s.Tx.WithinTx` の中で
+  `ClearCardForceReleaseBarrier` → `cardWorkChildOccupantTx` の順に走る。
+  `cardWorkChildOccupantTx` は対象 card が `done`/`dropped` なら
+  `StatusError{Code: http.StatusConflict}` を返し、`WithinTx` はその
+  エラーでトランザクション全体（先に呼んだ barrier クリアも含む）を
+  rollback する。つまり終端 card への人発コマンドは barrier を解除しない。
+  占有中（`ErrCardRequestSlotOccupied`）の人発コマンドは
+  `cardWorkChildOccupantTx` 自体はエラーを返さないので、この場合の
+  barrier クリアは意図どおり生き残る — 「実際に枠を取れたかどうかは
+  問わない」が成立するのは占有ケースのみ。実害は無い（終端 card はそもそも
+  自動 dispatch されない — §4.6 の「done/dropped の card には自動起動
+  しない」対象外）が、記述と実装が食い違っていた。各経路を実 DB でテスト:
   `TestForceReleaseCardRequest_SetsBarrier`、
   `TestRunCardCommandAsHuman_ClearsForceReleaseBarrier`、
   `TestReserveGoCardRequest_ClearsForceReleaseBarrier`、
@@ -903,10 +915,29 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
 
   **dispatcher の上限・並行性: 既存 dispatcher に明示的な同時実行上限は
   無いことを確認した**（docker-out-of-docker で job ごとに使い捨てコンテナ、
-  ホストリソースが暗黙の上限）。利用可能枠が無いとき（StartExec が失敗した
-  とき）は `FailCardRequest` で claim した行を failed に戻し、fold されて
-  いた sibling は queued へ戻す
-  (`TestDispatchQueuedCardRequest_StartExecFailure_FailsClaimAndRequeuesFold`)。
+  ホストリソースが暗黙の上限）。
+
+  **Opus レビューで訂正: 「利用可能枠が無いとき（StartExec が失敗した
+  とき）は `FailCardRequest` で claim した行を failed に戻し」は 2 つの
+  別物を混同していた。** 実際には経路が 2 つある。
+  - **枠が占有されている**（`ClaimQueuedCardRequestsForDispatch` が
+    `ErrCardRequestSlotOccupied` を返す、claim 自体が成立しない）場合は
+    §4.6「利用可能枠が無い時には pending のまま保持する」どおり、行は
+    **queued のまま**残る。
+  - **claim には成功したが StartExec が失敗した**場合は別で、claim 済みの
+    head 行は `FailCardRequest` で **永久に failed** になり、fold されて
+    いた sibling だけが queued へ戻る
+    (`TestDispatchQueuedCardRequest_StartExecFailure_FailsClaimAndRequeuesFold`)。
+
+  §4.6 の契約6（「上限に当たったとき queued 行を失わない」）が現状満たされて
+  いるように見えるのは、**container backend に同時実行上限が無いから
+  StartExec がほぼ失敗しない**からに過ぎない。将来 dispatcher に同時実行
+  上限を導入すると、上限に当たった瞬間の claim が StartExec の失敗として
+  現れ、上のパスに落ちて head request が永久に failed になる — 「上限に
+  当たったとき queued 行を失わない」契約はその時点で破られる。上限を導入
+  する PR はこの区別（`ErrCardRequestSlotOccupied` 相当の queued 化 vs
+  `FailCardRequest` による永久 failed 化）を意識すること。
+
   無制限の高速再試行にならない理由: 失敗は即座に再試行されず、次の commit
   契機か 30 秒周期まで待つ。同一 card への並行 claim は
   `idx_card_requests_active_unique` が守り、5 並行呼び出しで 1 件しか起動
@@ -935,6 +966,33 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
     呼び出しでは再試行せず、次の commit か周期ループに委ねる。project.yaml
     の `card_events.command` を運用中に変更した直後の極めて狭い窓でのみ
     発生しうる。
+  - **Opus レビューで判明、未記録だった事実: 人発コマンドは背後の queued な
+    event 行を fold しない。** `RunCardCommandAsHuman` は claim 経路
+    (`ClaimQueuedCardRequestsForDispatch`／`ClaimQueuedCardRequests`) を
+    通らず `CreateCardRequest` で直接 `launching` 行を INSERT するので、
+    その card に既に queued な内部イベント要求があっても fold されない。
+    よって card は `launching`（人発）と `queued`（内部イベント）を
+    同時に持ちうる — 実際に観測されている。PR-6 が「1 card あたり
+    アクティブな要求は高々1件」のような前提を置く場合、この非対称を
+    踏まえること。
+  - **N3（Opus レビュー、記録のみ）: 人発経路との占有チェックの非対称。**
+    `RunCardCommandAsHuman` は `cardWorkChildOccupantTx` が live な子 task
+    を報告すると拒否するが、`dispatchQueuedCardRequest` には同等のチェック
+    が無く `idx_card_requests_active_unique` だけに依存している。
+    force-release + `RetryCardRequest`（barrier を clear する）の後、
+    孤児の継続先はまだ生きていて card の live な子のままだが、その
+    `card_requests` 行は `failed` — なので auto-dispatch は「人なら拒否
+    される」2 本目のコマンドを claim して起動しうる。下流の
+    `boid task create --parent <card>` のゲート（`cardChildSlotConflict`、
+    `OpenChildCount > 0`）が 2 本目の継続先の実作成を止めるので、結果は
+    二重実行ではなく「無駄なコンテナ 1 個と 60 秒後に失敗する request」に
+    留まる。
+  - **N4（Opus レビュー、記録のみ）: 高価な処理が安いリジェクトより先に
+    走る。** `dispatchQueuedCardRequest` は status/barrier/占有チェックの
+    **前**に `GetTask` + `hydrateMetaForTriggers`（`workspaceStore.Load`
+    → workspace.yaml のディスク読み）をやっている。12 時間走る作業 task が
+    枠を握っている card や、設計上ずっと queued のままの barrier ブロック
+    card では、30 秒ごとに永久にディスクを読み続ける。
 - **PR-2d-5 で一部対応: retry/force-release は前の継続先 (session/task) を止めない
   (KNOWN GAP、`boid_executor_agent_start.go` の孤児 session と同系統)。** 完全な
   停止処理はまだ実装していない — `boid task release-card-request` が解放前の

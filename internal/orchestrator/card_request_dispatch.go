@@ -1,9 +1,7 @@
 package orchestrator
 
 // Automatic dispatch of queued card_requests rows: claiming a queued row
-// atomically re-checks two things a plain ClaimQueuedCardRequests has no way
-// to express (it never reads the card's own row) — the card's CURRENT
-// status, and whether an operator force-release is still in effect for it.
+// while also re-checking the card's current status and force-release state.
 
 import (
 	"database/sql"
@@ -32,10 +30,7 @@ var (
 
 // IsCardRequestDispatchSkip reports whether err from
 // ClaimQueuedCardRequestsForDispatch is a legitimate "nothing claimed this
-// time" outcome rather than a genuine failure — every caller (the
-// TaskRepository transaction wrapper below, and api.dispatchQueuedCardRequest)
-// must treat these identically: a plain "try again later", never a warning-
-// worthy error. Kept as one function so the two call sites cannot drift.
+// time" outcome rather than a genuine failure.
 func IsCardRequestDispatchSkip(err error) bool {
 	return errors.Is(err, ErrNoQueuedCardRequests) ||
 		errors.Is(err, ErrCardRequestSlotOccupied) ||
@@ -45,12 +40,8 @@ func IsCardRequestDispatchSkip(err error) bool {
 }
 
 // PeekOldestQueuedCardRequest reads cardID's oldest queued request's id and
-// command_key WITHOUT claiming it — a caller resolving the command
-// definition (which needs project.yaml, unavailable to this package) before
-// calling ClaimQueuedCardRequestsForDispatch. The peeked head is re-verified
-// fresh inside that call, so a stale peek only ever costs a wasted resolve,
-// never a wrong claim. Returns ErrNoQueuedCardRequests when cardID has
-// nothing queued.
+// command_key without claiming it. Returns ErrNoQueuedCardRequests when
+// cardID has nothing queued.
 func PeekOldestQueuedCardRequest(dbtx db.DBTX, cardID string) (id, commandKey string, err error) {
 	row := dbtx.QueryRow(
 		`SELECT id, command_key FROM card_requests WHERE card_id = ? AND status = ? ORDER BY created_at ASC, id ASC LIMIT 1`,
@@ -66,9 +57,7 @@ func PeekOldestQueuedCardRequest(dbtx db.DBTX, cardID string) (id, commandKey st
 }
 
 // failAllQueuedCardRequests fails every currently-queued request for cardID
-// in one statement. No queued row is ever folded (folding only happens once
-// ClaimQueuedCardRequests promotes a head), so there are no siblings to
-// release — a plain bulk UPDATE is the whole operation.
+// in one statement.
 func failAllQueuedCardRequests(dbtx db.DBTX, cardID, reason string) (int64, error) {
 	res, err := dbtx.Exec(
 		`UPDATE card_requests SET status = ?, error = ?, updated_at = ? WHERE card_id = ? AND status = ?`,
@@ -81,35 +70,13 @@ func failAllQueuedCardRequests(dbtx db.DBTX, cardID, reason string) (int64, erro
 	return n, nil
 }
 
-// ClaimQueuedCardRequestsForDispatch is ClaimQueuedCardRequests plus the two
-// guards automatic (internal-event) dispatch needs that a human command or
-// Go already enforce for themselves before ever reaching this package:
-//
-//  1. The card's CURRENT status must be parked/working. IngestCardEventRequest
-//     only checks status at the ACTION's own apply time — a later action
-//     within the SAME transaction (e.g. answered{accept} applying a
-//     complete/drop verb right after) can leave the card done/dropped by
-//     commit time, with a queued row already created against the earlier
-//     snapshot. When ineligible, every queued request for the card is
-//     drained (failed) instead of launched — leaving them queued would have
-//     the periodic recovery sweep re-discover and re-skip the same rows
-//     forever.
-//  2. The card must not be under an active force-release barrier (an
-//     operator's explicit "stop this card" via ForceReleaseCardRequest).
-//     Left in place, an orphaned continuation's later write (the KNOWN GAP
-//     that force-release does not stop the continuation itself) would
-//     otherwise re-queue a fresh request and this claim would relaunch a
-//     card the operator just told to stop. The barrier only suppresses
-//     automatic dispatch — it never fails the queued row, since it is
-//     expected to be cleared shortly (a human command, Go, or an explicit
-//     retry all clear it).
-//
-// expectedCommandKey is the command_key the caller resolved a project.yaml
-// definition FOR (via a prior PeekOldestQueuedCardRequest, necessarily
-// outside any transaction since resolving needs project.yaml, which this
-// package cannot read). This call re-reads the CURRENT head fresh and
-// returns ErrCardRequestCommandKeyChanged if it no longer matches, rather
-// than launching a request under someone else's command definition.
+// ClaimQueuedCardRequestsForDispatch is ClaimQueuedCardRequests plus two
+// guards automatic dispatch needs on top of what a human command/Go already
+// enforce for themselves: the card must currently be parked/working
+// (otherwise every queued request for it is drained instead), and no active
+// force-release barrier may be blocking it. Returns
+// ErrCardRequestCommandKeyChanged if the queued head's command_key no
+// longer matches expectedCommandKey by the time this runs.
 func ClaimQueuedCardRequestsForDispatch(dbtx db.DBTX, cardID, launcherJobID, expectedCommandKey string, def CardRequestDefinition) (primary *CardRequest, folded []*CardRequest, err error) {
 	status, err := GetTaskStatus(dbtx, cardID)
 	if err != nil {

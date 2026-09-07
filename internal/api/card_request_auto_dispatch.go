@@ -1,14 +1,8 @@
 package api
 
-// Automatic dispatch of card_requests rows an internal event queued
-// (card_event_ingest.go, orchestrator package): the queued->launching claim,
-// the launcher exec dispatch, and the periodic recovery sweep. Mirrors
-// RunCardCommandAsHuman's/fireTrigger's shape, with two differences: this
-// never returns "occupied" to a caller — it leaves the row queued and lets a
-// later attempt (another commit, or the periodic sweep) retry; and the claim
-// goes through orchestrator.ClaimQueuedCardRequestsForDispatch, which
-// re-checks the card's status and any force-release barrier that
-// RunCardCommandAsHuman's own occupancy pre-check has no equivalent for.
+// Automatic dispatch of card_requests rows an internal event queued: the
+// queued->launching claim, the launcher exec dispatch, and the periodic
+// recovery sweep.
 
 import (
 	"context"
@@ -23,10 +17,7 @@ import (
 )
 
 // tryDispatchQueuedCardRequest is dispatchQueuedCardRequest, best-effort: an
-// error here is logged, not propagated — every caller is itself a
-// best-effort commit-triggered attempt, and the periodic
-// CardRequestDispatchLoop sweep is the recovery path for whatever this
-// misses.
+// error here is logged, not propagated.
 func (s *TaskWorkflowService) tryDispatchQueuedCardRequest(ctx context.Context, cardID string) {
 	if _, err := s.dispatchQueuedCardRequest(ctx, cardID); err != nil {
 		slog.Warn("card request: automatic dispatch attempt failed; periodic sweep will retry", "card_id", cardID, "error", err)
@@ -35,12 +26,7 @@ func (s *TaskWorkflowService) tryDispatchQueuedCardRequest(ctx context.Context, 
 
 // dispatchQueuedCardRequest attempts to launch cardID's oldest queued
 // card_requests row, if any. dispatched is true only when a launcher was
-// actually started this call — false (with err possibly nil) covers every
-// "nothing to do right now" outcome: no queued row, the card's slot is
-// already occupied, the card is not eligible (not parked/working, drained
-// instead), a force-release barrier is active, or the queued head's
-// command_key drifted since it was resolved (a rare race the caller — this
-// call or the periodic sweep — will simply retry).
+// actually started this call.
 func (s *TaskWorkflowService) dispatchQueuedCardRequest(ctx context.Context, cardID string) (dispatched bool, err error) {
 	if cardID == "" || s.CardRequests == nil || s.Exec == nil || s.Tasks == nil {
 		return false, nil
@@ -60,14 +46,19 @@ func (s *TaskWorkflowService) dispatchQueuedCardRequest(ctx context.Context, car
 	}
 
 	meta := s.hydrateMetaForTriggers(ctx, card.ProjectID)
-	var cmd orchestrator.CardCommand
-	var ok bool
-	if meta != nil {
-		cmd, ok = meta.CardCommands[commandKey]
+	if meta == nil {
+		// The project's meta is transiently unavailable (no ProjectStore
+		// entry yet, a fetch/parse failure, startup ordering) — not the
+		// same claim as "the command was deleted from project.yaml". Leave
+		// the row queued for a later attempt to retry.
+		return false, nil
 	}
+	cmd, ok := meta.CardCommands[commandKey]
 	if !ok {
 		// The command definition vanished from project.yaml while this
 		// request waited — an explicit failure, never silent abandonment.
+		slog.Warn("card request: queued command_key is no longer declared in project.yaml; failing the row",
+			"card_id", cardID, "request_id", headID, "command_key", commandKey)
 		if ferr := s.CardRequests.FailCardRequest(headID, fmt.Sprintf("card command %q is no longer declared in project.yaml", commandKey)); ferr != nil {
 			return false, fmt.Errorf("dispatch queued card request: fail undeclared command: %w", ferr)
 		}
@@ -103,11 +94,8 @@ func (s *TaskWorkflowService) dispatchQueuedCardRequest(ctx context.Context, car
 }
 
 // SweepQueuedCardRequests is CardRequestDispatchLoop's per-tick work: the
-// periodic recovery fallback for a missed immediate dispatch attempt
-// (notification loss, a daemon restart landing between a queued row's
-// creation and the commit-triggered attempt that would have fired for it).
-// Never the primary path — see this package's own doc comment at the top of
-// this file. Returns the card ids a launcher was actually started for.
+// periodic recovery fallback for a missed immediate dispatch attempt.
+// Returns the card ids a launcher was actually started for.
 func (s *TaskWorkflowService) SweepQueuedCardRequests(ctx context.Context, _ time.Time) ([]string, error) {
 	if s.CardRequests == nil || s.Exec == nil || s.Tasks == nil {
 		return nil, nil

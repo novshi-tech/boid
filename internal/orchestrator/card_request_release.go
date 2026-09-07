@@ -370,24 +370,16 @@ func ForceReleaseCardRequest(dbtx db.DBTX, id, reason string) ([]ForceReleasedSi
 	return siblings, nil
 }
 
-// ReleaseCardRequestForTerminalTarget releases the attached card_requests
-// row (if any) targeting (targetKind, targetID) the instant that target
-// reaches a terminal state, instead of waiting for
+// ReleaseCardRequestForTerminalTargetWithCard releases the attached
+// card_requests row (if any) targeting (targetKind, targetID) the instant
+// that target reaches a terminal state, instead of waiting for
 // ReconcileCardRequestSlots' next tick — otherwise every occupancy check
 // (cardSlotOccupied, cardSlotConflictWithRequests) keeps reporting the slot
 // occupied for up to the reconcile interval after the real work already
 // finished. found is false in the common case (most terminal tasks/jobs are
-// not a card_requests continuation at all).
-func ReleaseCardRequestForTerminalTarget(dbtx db.DBTX, targetKind, targetID string, success bool) (found bool, err error) {
-	found, _, err = ReleaseCardRequestForTerminalTargetWithCard(dbtx, targetKind, targetID, success)
-	return found, err
-}
-
-// ReleaseCardRequestForTerminalTargetWithCard is
-// ReleaseCardRequestForTerminalTarget plus the released row's own card_id,
-// for a caller that wants to try an immediate dispatch of that card's
-// queued backlog right after freeing its slot (a released slot is exactly
-// what a queued request was waiting on).
+// not a card_requests continuation at all). Also returns the released row's
+// own card_id, for a caller that wants to try an immediate dispatch of that
+// card's queued backlog right after freeing its slot.
 func ReleaseCardRequestForTerminalTargetWithCard(dbtx db.DBTX, targetKind, targetID string, success bool) (found bool, cardID string, err error) {
 	row := dbtx.QueryRow(
 		`SELECT id, card_id FROM card_requests WHERE target_kind = ? AND target_id = ? AND status = ?`,

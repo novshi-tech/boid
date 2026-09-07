@@ -322,13 +322,6 @@ func (r *TaskRepository) ListActiveCardRequests() ([]*CardRequest, error) {
 	return ListActiveCardRequests(r.db)
 }
 
-// ReleaseCardRequestForTerminalTarget backs finalizeTerminal's immediate
-// slot release — same InTxDB-over-raw-*sql.DB shape as FailCardRequest.
-func (r *TaskRepository) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
-	found, _, err := r.ReleaseCardRequestForTerminalTargetWithCard(targetKind, targetID, success)
-	return found, err
-}
-
 // ReleaseCardRequestForTerminalTargetWithCard backs finalizeTerminal's
 // immediate slot release AND the immediate re-dispatch attempt that follows
 // it — same InTxDB-over-raw-*sql.DB shape as FailCardRequest.
@@ -346,18 +339,11 @@ func (r *TaskRepository) ReleaseCardRequestForTerminalTargetWithCard(targetKind,
 }
 
 // ClaimQueuedCardRequestsForDispatch backs the automatic card-request
-// dispatcher's claim step (api.CardCommandLauncherStore) — a read plus
-// several UPDATEs that must land together, same InTxDB-over-raw-*sql.DB
-// shape as ForceReleaseCardRequest.
-//
-// A "nothing claimed" sentinel (IsCardRequestDispatchSkip) is deliberately
-// NOT returned as the closure's own error: db.InTxDB rolls the whole
-// transaction back on any non-nil error, which would also undo the ONE
-// side effect some of those sentinels carry — draining every queued
-// request for an ineligible card. That drain must commit even though
-// nothing was claimed, so the sentinel is captured separately and returned
-// to the caller only after the transaction (with its drain, if any) has
-// already committed.
+// dispatcher's claim step, same InTxDB-over-raw-*sql.DB shape as
+// ForceReleaseCardRequest. A "nothing claimed" sentinel
+// (IsCardRequestDispatchSkip) is captured separately rather than returned
+// as the closure's own error, so a drain side effect it may carry still
+// commits instead of being rolled back with it.
 func (r *TaskRepository) ClaimQueuedCardRequestsForDispatch(cardID, launcherJobID, expectedCommandKey string, def CardRequestDefinition) (*CardRequest, []*CardRequest, error) {
 	conn, ok := r.db.(*sql.DB)
 	if !ok {

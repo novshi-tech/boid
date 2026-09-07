@@ -169,3 +169,45 @@ func TestTaskReleaseCardRequest_AttachedTarget_PrintsWarning(t *testing.T) {
 		t.Errorf("output = %s, want a warning line for an attached target", out.String())
 	}
 }
+
+// TestTaskReleaseCardRequest_BarrierNotice_PrintsWarning pins that the
+// force-release barrier notice (internal/api's
+// CardRequestHandler.Release — Opus review N1) prints through the CLI's
+// existing generic operator_notice -> warning line, same as any other
+// notice this command already handles.
+func TestTaskReleaseCardRequest_BarrierNotice_PrintsWarning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"status":"released","operator_notice":"this card now has a force-release barrier: automatic (event-triggered) card_requests dispatch for it is suppressed until a human operation clears it — a card command, Go, or an explicit retry of a failed request"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := client.NewClient(srv.URL, "")
+	if err != nil {
+		t.Fatalf("build client: %v", err)
+	}
+
+	cmd := taskReleaseCardRequestCmd
+	prev := cmd.Context()
+	t.Cleanup(func() {
+		cmd.SetContext(prev)
+		cmd.SetOut(nil)
+		cmd.SetErr(nil)
+	})
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	cmd.SetContext(client.WithClient(context.Background(), c))
+
+	if err := cmd.RunE(cmd, []string{"req-1"}); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+
+	got := out.String()
+	if !bytes.Contains(out.Bytes(), []byte("warning:")) {
+		t.Errorf("output = %s, want a warning line for the force-release barrier", got)
+	}
+	if !bytes.Contains(out.Bytes(), []byte("barrier")) {
+		t.Errorf("output = %s, want the barrier mentioned so the operator knows automatic dispatch is suppressed", got)
+	}
+}

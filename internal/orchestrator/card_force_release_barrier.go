@@ -1,9 +1,7 @@
 package orchestrator
 
-// card_force_release_barriers: one row per card an operator force-released,
-// suppressing automatic (internal-event) card_requests dispatch for that
-// card until a human operation (a card command, Go, or an explicit retry)
-// clears it. See ClaimQueuedCardRequestsForDispatch for the read side.
+// card_force_release_barriers: one row per card whose automatic dispatch is
+// currently suppressed by an operator force-release.
 
 import (
 	"database/sql"

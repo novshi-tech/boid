@@ -8,6 +8,7 @@ package api
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,8 +82,10 @@ func TestDispatchQueuedCardRequest_NoQueued_NoOp(t *testing.T) {
 // TestDispatchQueuedCardRequest_UndeclaredCommand_FailsRowWithoutDispatch
 // pins that a queued request whose command_key no longer resolves to a
 // project.yaml card_commands entry is failed explicitly, not launched and
-// not left queued forever.
+// not left queued forever — and that the operator gets a Warn line, since
+// this is the one case that genuinely drains the row (Opus review B1(b)).
 func TestDispatchQueuedCardRequest_UndeclaredCommand_FailsRowWithoutDispatch(t *testing.T) {
+	buf := captureSlog(t)
 	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},
 	}))
@@ -105,6 +108,40 @@ func TestDispatchQueuedCardRequest_UndeclaredCommand_FailsRowWithoutDispatch(t *
 	}
 	if persisted.Status != orchestrator.CardRequestStatusFailed {
 		t.Errorf("Status = %q, want failed (explicit failure, not silent abandonment)", persisted.Status)
+	}
+	if !strings.Contains(buf.String(), "vanished") || !strings.Contains(buf.String(), card.ID) {
+		t.Errorf("expected a Warn log line naming the undeclared command_key and card_id; got:\n%s", buf.String())
+	}
+}
+
+// TestDispatchQueuedCardRequest_MetaUnavailable_LeavesRowQueued pins Opus
+// review Blocker B1: a project meta that is transiently unavailable
+// (ProjectStore.metas has no entry — a `boid project fetch` failure, a
+// project.yaml parse error, or startup ordering) must not be treated the
+// same as "the command was deleted from project.yaml". The row must stay
+// queued for a later attempt (another commit, or the periodic sweep) to
+// retry once the meta is available again.
+func TestDispatchQueuedCardRequest_MetaUnavailable_LeavesRowQueued(t *testing.T) {
+	svc, exec, card := newCardCommandTestService(t, "proj-1", nil)
+	req := enqueueForDispatch(t, svc, card.ID, "review", "cause-1")
+
+	dispatched, err := svc.dispatchQueuedCardRequest(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("dispatchQueuedCardRequest: %v", err)
+	}
+	if dispatched {
+		t.Error("dispatched = true, want false while project meta is unavailable")
+	}
+	if len(exec.calls) != 0 {
+		t.Errorf("StartExec calls = %d, want 0", len(exec.calls))
+	}
+	repo := svc.CardRequests.(*orchestrator.TaskRepository)
+	persisted, err := repo.GetCardRequest(req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if persisted.Status != orchestrator.CardRequestStatusQueued {
+		t.Errorf("Status = %q, want still queued — a transient meta outage must never drain a durable request", persisted.Status)
 	}
 }
 

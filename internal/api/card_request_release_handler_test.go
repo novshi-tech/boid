@@ -271,10 +271,12 @@ func TestCardRequestHandler_Release_GoReservationLaunchingRow_NoticeSkipsBoidJob
 	}
 }
 
-// TestCardRequestHandler_Release_PreReleaseReadFails_NoNotice pins that a
-// failed pre-release GetCardRequest (before is nil) degrades to no notice
-// rather than blocking the release itself.
-func TestCardRequestHandler_Release_PreReleaseReadFails_NoNotice(t *testing.T) {
+// TestCardRequestHandler_Release_PreReleaseReadFails_StillGetsBarrierNotice
+// pins that a failed pre-release GetCardRequest (before is nil) degrades
+// the target-specific warnings but still reports the force-release barrier
+// ForceReleaseCardRequest unconditionally plants — the barrier itself does
+// not depend on the pre-release read succeeding.
+func TestCardRequestHandler_Release_PreReleaseReadFails_StillGetsBarrierNotice(t *testing.T) {
 	store := &fakeCardRequestReleaseStore{}
 	h := &api.CardRequestHandler{Store: store}
 
@@ -286,16 +288,22 @@ func TestCardRequestHandler_Release_PreReleaseReadFails_NoNotice(t *testing.T) {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, "operator_notice") {
-		t.Errorf("body = %s, want no operator_notice when the pre-release read failed", body)
+	if !strings.Contains(body, "operator_notice") {
+		t.Errorf("body = %s, want an operator_notice for the force-release barrier even when the pre-release read failed", body)
+	}
+	if !strings.Contains(body, "barrier") {
+		t.Errorf("body = %s, want the notice to mention the force-release barrier", body)
 	}
 }
 
-// TestCardRequestHandler_Release_QueuedRowNoTarget_NoNotice pins the OTHER
-// no-notice case: the pre-release read succeeds but the row never had a
-// target (a queued row, never attached to any continuation) — before != nil
-// but TargetKind/TargetID are empty.
-func TestCardRequestHandler_Release_QueuedRowNoTarget_NoNotice(t *testing.T) {
+// TestCardRequestHandler_Release_QueuedRowNoTarget_StillGetsBarrierNotice
+// pins the OTHER no-target case: the pre-release read succeeds but the row
+// never had a target (a queued row, never attached to any continuation) —
+// before != nil but TargetKind/TargetID are empty. Opus review N1: every
+// force-release plants a card_force_release_barriers row
+// (ForceReleaseCardRequest), which the operator otherwise has no way to
+// learn about — the notice must say so and name what clears it.
+func TestCardRequestHandler_Release_QueuedRowNoTarget_StillGetsBarrierNotice(t *testing.T) {
 	store := &fakeCardRequestReleaseStore{
 		getByID: map[string]*orchestrator.CardRequest{
 			"req-1": {ID: "req-1", Status: orchestrator.CardRequestStatusQueued},
@@ -311,8 +319,45 @@ func TestCardRequestHandler_Release_QueuedRowNoTarget_NoNotice(t *testing.T) {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, "operator_notice") {
-		t.Errorf("body = %s, want no operator_notice for a never-attached queued row", body)
+	if !strings.Contains(body, "operator_notice") {
+		t.Errorf("body = %s, want an operator_notice reporting the force-release barrier for a never-attached queued row", body)
+	}
+	if !strings.Contains(body, "barrier") {
+		t.Errorf("body = %s, want the notice to mention the force-release barrier", body)
+	}
+	// What clears it — a card command / Go / an explicit retry — must be named,
+	// not just "suppressed" with no way out.
+	if !strings.Contains(body, "retry") {
+		t.Errorf("body = %s, want the notice to name an explicit retry as one way to clear the barrier", body)
+	}
+}
+
+// TestCardRequestHandler_Release_AttachedTarget_NoticeAlsoMentionsBarrier
+// pins that the barrier notice is appended alongside (not instead of) the
+// existing target-specific warning — an operator reading only the
+// attached-target sentence would otherwise never learn automatic dispatch
+// is now suppressed for the card too.
+func TestCardRequestHandler_Release_AttachedTarget_NoticeAlsoMentionsBarrier(t *testing.T) {
+	store := &fakeCardRequestReleaseStore{
+		getByID: map[string]*orchestrator.CardRequest{
+			"req-1": {ID: "req-1", TargetKind: orchestrator.CardRequestTargetKindSession, TargetID: "job-42"},
+		},
+	}
+	h := &api.CardRequestHandler{Store: store}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/req-1/release", nil)
+	h.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "job-42") {
+		t.Errorf("body = %s, want the existing attached-target warning preserved", body)
+	}
+	if !strings.Contains(body, "barrier") {
+		t.Errorf("body = %s, want the barrier notice appended alongside the target warning", body)
 	}
 }
 

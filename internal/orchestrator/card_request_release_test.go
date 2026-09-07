@@ -877,22 +877,25 @@ func TestReconcileLaunchingCardRequests_QueuedRowUntouchedEvenWithTerminalLaunch
 	}
 }
 
-// ---- ReleaseCardRequestForTerminalTarget: the immediate, per-target
-// release finalizeTerminal (internal/api) calls instead of waiting for
-// ReconcileCardRequestSlots' own periodic tick.
+// ---- ReleaseCardRequestForTerminalTargetWithCard: the immediate,
+// per-target release finalizeTerminal (internal/api) calls instead of
+// waiting for ReconcileCardRequestSlots' own periodic tick.
 
-func TestReleaseCardRequestForTerminalTarget_Success_Finishes(t *testing.T) {
+func TestReleaseCardRequestForTerminalTargetWithCard_Success_Finishes(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 	task := newTestExecutionTask(t, d, "task-1", "proj-1", orchestrator.TaskStatusDone)
 	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindTask, task)
 
-	found, err := orchestrator.ReleaseCardRequestForTerminalTarget(d.Conn, orchestrator.CardRequestTargetKindTask, task, true)
+	found, gotCardID, err := orchestrator.ReleaseCardRequestForTerminalTargetWithCard(d.Conn, orchestrator.CardRequestTargetKindTask, task, true)
 	if err != nil {
-		t.Fatalf("ReleaseCardRequestForTerminalTarget: %v", err)
+		t.Fatalf("ReleaseCardRequestForTerminalTargetWithCard: %v", err)
 	}
 	if !found {
 		t.Fatal("found = false, want true")
+	}
+	if gotCardID != cardID {
+		t.Errorf("cardID = %q, want %q", gotCardID, cardID)
 	}
 	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
 	if err != nil {
@@ -903,15 +906,15 @@ func TestReleaseCardRequestForTerminalTarget_Success_Finishes(t *testing.T) {
 	}
 }
 
-func TestReleaseCardRequestForTerminalTarget_Failure_Fails(t *testing.T) {
+func TestReleaseCardRequestForTerminalTargetWithCard_Failure_Fails(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 	task := newTestExecutionTask(t, d, "task-1", "proj-1", orchestrator.TaskStatusAborted)
 	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindTask, task)
 
-	found, err := orchestrator.ReleaseCardRequestForTerminalTarget(d.Conn, orchestrator.CardRequestTargetKindTask, task, false)
+	found, _, err := orchestrator.ReleaseCardRequestForTerminalTargetWithCard(d.Conn, orchestrator.CardRequestTargetKindTask, task, false)
 	if err != nil {
-		t.Fatalf("ReleaseCardRequestForTerminalTarget: %v", err)
+		t.Fatalf("ReleaseCardRequestForTerminalTargetWithCard: %v", err)
 	}
 	if !found {
 		t.Fatal("found = false, want true")
@@ -925,14 +928,14 @@ func TestReleaseCardRequestForTerminalTarget_Failure_Fails(t *testing.T) {
 	}
 }
 
-// TestReleaseCardRequestForTerminalTarget_Failure_RequeuesFoldedSiblings pins
-// the other half of the force-release/abort asymmetry
+// TestReleaseCardRequestForTerminalTargetWithCard_Failure_RequeuesFoldedSiblings
+// pins the other half of the force-release/abort asymmetry
 // (TestForceReleaseCardRequest_DoesNotRequeueFoldedSiblings is the other):
 // a task ABORTING (an automatic, un-chosen outcome — not an operator's
 // stop-this intent) goes through FailCardRequest's default requeue path, so
 // a folded sibling comes back to queued and the next claim may restart the
 // card. This is deliberately different from force-release.
-func TestReleaseCardRequestForTerminalTarget_Failure_RequeuesFoldedSiblings(t *testing.T) {
+func TestReleaseCardRequestForTerminalTargetWithCard_Failure_RequeuesFoldedSiblings(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 
@@ -957,9 +960,9 @@ func TestReleaseCardRequestForTerminalTarget_Failure_RequeuesFoldedSiblings(t *t
 		t.Fatalf("attach: %v", err)
 	}
 
-	found, err := orchestrator.ReleaseCardRequestForTerminalTarget(d.Conn, orchestrator.CardRequestTargetKindTask, task, false)
+	found, _, err := orchestrator.ReleaseCardRequestForTerminalTargetWithCard(d.Conn, orchestrator.CardRequestTargetKindTask, task, false)
 	if err != nil {
-		t.Fatalf("ReleaseCardRequestForTerminalTarget: %v", err)
+		t.Fatalf("ReleaseCardRequestForTerminalTargetWithCard: %v", err)
 	}
 	if !found {
 		t.Fatal("found = false, want true")
@@ -974,30 +977,33 @@ func TestReleaseCardRequestForTerminalTarget_Failure_RequeuesFoldedSiblings(t *t
 	}
 }
 
-func TestReleaseCardRequestForTerminalTarget_NoAttachedRow_ReturnsNotFound(t *testing.T) {
+func TestReleaseCardRequestForTerminalTargetWithCard_NoAttachedRow_ReturnsNotFound(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	found, err := orchestrator.ReleaseCardRequestForTerminalTarget(d.Conn, orchestrator.CardRequestTargetKindTask, "no-such-task", true)
+	found, _, err := orchestrator.ReleaseCardRequestForTerminalTargetWithCard(d.Conn, orchestrator.CardRequestTargetKindTask, "no-such-task", true)
 	if err != nil {
-		t.Fatalf("ReleaseCardRequestForTerminalTarget: %v", err)
+		t.Fatalf("ReleaseCardRequestForTerminalTargetWithCard: %v", err)
 	}
 	if found {
 		t.Fatal("found = true, want false")
 	}
 }
 
-func TestTaskRepository_ReleaseCardRequestForTerminalTarget_WrapsInOwnTx(t *testing.T) {
+func TestTaskRepository_ReleaseCardRequestForTerminalTargetWithCard_WrapsInOwnTx(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 	task := newTestExecutionTask(t, d, "task-1", "proj-1", orchestrator.TaskStatusDone)
 	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindTask, task)
 
 	repo := orchestrator.NewTaskRepository(d.Conn)
-	found, err := repo.ReleaseCardRequestForTerminalTarget(orchestrator.CardRequestTargetKindTask, task, true)
+	found, gotCardID, err := repo.ReleaseCardRequestForTerminalTargetWithCard(orchestrator.CardRequestTargetKindTask, task, true)
 	if err != nil {
-		t.Fatalf("ReleaseCardRequestForTerminalTarget: %v", err)
+		t.Fatalf("ReleaseCardRequestForTerminalTargetWithCard: %v", err)
 	}
 	if !found {
 		t.Fatal("found = false, want true")
+	}
+	if gotCardID != cardID {
+		t.Errorf("cardID = %q, want %q", gotCardID, cardID)
 	}
 	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
 	if err != nil {
