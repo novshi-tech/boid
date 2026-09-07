@@ -346,6 +346,45 @@ func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 	return t, nil
 }
 
+// ExistingTaskIDs returns the subset of ids that still resolve to a live
+// task row, via one batched query — for a caller checking many task
+// references for existence (e.g. GC-safety link resolution) without one
+// round trip per id. Exact-id match only, no GetTask-style prefix fallback.
+func ExistingTaskIDs(dbtx db.DBTX, ids []string) (map[string]bool, error) {
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	exists := make(map[string]bool, len(unique))
+	if len(unique) == 0 {
+		return exists, nil
+	}
+	placeholders := make([]string, len(unique))
+	args := make([]any, len(unique))
+	for i, id := range unique {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := dbtx.Query(`SELECT id FROM tasks WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("existing task ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("existing task ids: scan: %w", err)
+		}
+		exists[id] = true
+	}
+	return exists, rows.Err()
+}
+
 // GetTaskStatus reads only a task's status, by exact id — cheaper than
 // GetTask (whose child-count subqueries scan tasks.parent_id, which is
 // unindexed), for callers that poll tightly. No prefix fallback.

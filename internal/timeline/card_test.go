@@ -237,23 +237,25 @@ func TestBuildCardTimeline_GCSurvival_ChildTaskRowDeleted(t *testing.T) {
 }
 
 // TestBuildCardTimeline_GCSurvival_CardRequestRowDeleted pins the same
-// GC-survival contract for a command's terminal outcome.
+// GC-survival contract for a command's terminal outcome, and — since
+// command_finished is the only outcome that ever carries a non-empty
+// Result — is also the one place that field gets checked against real
+// content rather than the empty string every other outcome legitimately
+// has.
 func TestBuildCardTimeline_GCSurvival_CardRequestRowDeleted(t *testing.T) {
 	d := newTimelineTestDB(t)
 	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
 	req := &orchestrator.CardRequest{
 		CardID:        cardID,
 		CommandKey:    "discuss",
+		CauseID:       "cause-finish",
 		Status:        orchestrator.CardRequestStatusLaunching,
 		LauncherJobID: "launcher-job-1",
 		Instruction:   "please look into this",
+		Launched:      orchestrator.CardRequestDefinition{CommandKey: "discuss", Label: "Discuss"},
 	}
 	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
 		t.Fatalf("CreateCardRequest: %v", err)
-	}
-	if _, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-job-1", orchestrator.CardRequestDefinition{}); err != nil && err != orchestrator.ErrNoQueuedCardRequests {
-		// req was created directly in launching, not queued; ignore.
-		_ = err
 	}
 	if err := orchestrator.AttachCardRequest(d.Conn, req.ID, orchestrator.CardRequestTargetKindTask, "task-cmd-1"); err != nil {
 		t.Fatalf("AttachCardRequest: %v", err)
@@ -281,17 +283,36 @@ func TestBuildCardTimeline_GCSurvival_CardRequestRowDeleted(t *testing.T) {
 	if item.Kind != CardItemCommand {
 		t.Fatalf("Kind = %v, want CardItemCommand", item.Kind)
 	}
-	if item.Command == nil || item.Command.Outcome != "finished" {
-		t.Fatalf("Command = %+v, want Outcome=finished", item.Command)
+	if item.CorrelationID != req.ID {
+		t.Fatalf("CorrelationID = %q, want %q", item.CorrelationID, req.ID)
 	}
-	if item.Command.CommandKey != "discuss" {
-		t.Fatalf("CommandKey = %q, want discuss (from the terminal action payload, not the deleted row)", item.Command.CommandKey)
+	c := item.Command
+	if c == nil || c.Outcome != "finished" {
+		t.Fatalf("Command = %+v, want Outcome=finished", c)
 	}
-	if item.Command.TargetExists {
+	if c.Result != "continuation reached a terminal successful state" {
+		t.Fatalf("Result = %q, want the finish result text", c.Result)
+	}
+	if c.CommandKey != "discuss" {
+		t.Fatalf("CommandKey = %q, want discuss (from the terminal action payload, not the deleted row)", c.CommandKey)
+	}
+	if c.Label != "Discuss" {
+		t.Fatalf("Label = %q, want Discuss", c.Label)
+	}
+	if c.Origin != orchestrator.CardRequestOriginEvent {
+		t.Fatalf("Origin = %q, want event", c.Origin)
+	}
+	if c.CauseID != "cause-finish" {
+		t.Fatalf("CauseID = %q, want cause-finish", c.CauseID)
+	}
+	if c.TargetKind != orchestrator.CardRequestTargetKindTask || c.TargetID != "task-cmd-1" {
+		t.Fatalf("target = %q/%q, want task/task-cmd-1", c.TargetKind, c.TargetID)
+	}
+	if c.TargetExists {
 		t.Fatalf("TargetExists = true after deleting task-cmd-1, want false")
 	}
-	if item.Command.Instruction != "" {
-		t.Fatalf("Instruction = %q, want empty once the live card_requests row is gone (best-effort only)", item.Command.Instruction)
+	if c.Instruction != "" {
+		t.Fatalf("Instruction = %q, want empty once the live card_requests row is gone (best-effort only)", c.Instruction)
 	}
 }
 
@@ -620,6 +641,345 @@ func TestBuildCardTimeline_HasMoreFalseWhenExactlyLimitRemaining(t *testing.T) {
 	}
 	if page.HasMore {
 		t.Fatalf("HasMore = true, want false: exactly %d items exist and all %d were returned", len(page.Items), len(page.Items))
+	}
+}
+
+// TestCardPinnedItems_LaunchingWinsOverOlderQueued pins the priority rule:
+// an older QUEUED internal-event request (no unique-index protection) must
+// not mask a newer, actually-running LAUNCHING human command as the pinned
+// "in progress" item.
+func TestCardPinnedItems_LaunchingWinsOverOlderQueued(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
+
+	queued := &orchestrator.CardRequest{CardID: cardID, CommandKey: "sweep", CauseID: "cause-1", Instruction: "queued event request"}
+	if err := orchestrator.CreateCardRequest(d.Conn, queued); err != nil {
+		t.Fatalf("CreateCardRequest (queued): %v", err)
+	}
+	launching := &orchestrator.CardRequest{
+		CardID: cardID, CommandKey: "discuss", Status: orchestrator.CardRequestStatusLaunching,
+		LauncherJobID: "launcher-1", Instruction: "please look into this",
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, launching); err != nil {
+		t.Fatalf("CreateCardRequest (launching): %v", err)
+	}
+
+	pinned, err := CardPinnedItems(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("CardPinnedItems: %v", err)
+	}
+	var command *CardItem
+	for i := range pinned {
+		if pinned[i].Kind == CardItemCommand {
+			command = &pinned[i]
+		}
+	}
+	if command == nil {
+		t.Fatalf("pinned = %+v, want a pinned CardItemCommand", pinned)
+	}
+	if command.Command.CommandKey != "discuss" {
+		t.Fatalf("pinned command key = %q, want %q (the launching one, not the older queued %q)",
+			command.Command.CommandKey, "discuss", queued.CommandKey)
+	}
+	if command.Command.Status != orchestrator.CardRequestStatusLaunching {
+		t.Fatalf("pinned command status = %q, want launching", command.Command.Status)
+	}
+}
+
+// TestCardPinnedItems_AttachedWinsOverQueued covers the top of the same
+// priority order: an attached (actually dispatched) request must win over
+// an older queued one.
+func TestCardPinnedItems_AttachedWinsOverQueued(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
+
+	queued := &orchestrator.CardRequest{CardID: cardID, CommandKey: "sweep", CauseID: "cause-1"}
+	if err := orchestrator.CreateCardRequest(d.Conn, queued); err != nil {
+		t.Fatalf("CreateCardRequest (queued): %v", err)
+	}
+	launching := &orchestrator.CardRequest{
+		CardID: cardID, CommandKey: "discuss", Status: orchestrator.CardRequestStatusLaunching,
+		LauncherJobID: "launcher-1",
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, launching); err != nil {
+		t.Fatalf("CreateCardRequest (launching): %v", err)
+	}
+	createExecTask(t, d.Conn, "proj-1", "task-discuss", "", orchestrator.TaskStatusPending)
+	if err := orchestrator.AttachCardRequest(d.Conn, launching.ID, orchestrator.CardRequestTargetKindTask, "task-discuss"); err != nil {
+		t.Fatalf("AttachCardRequest: %v", err)
+	}
+
+	pinned, err := CardPinnedItems(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("CardPinnedItems: %v", err)
+	}
+	var command *CardItem
+	for i := range pinned {
+		if pinned[i].Kind == CardItemCommand {
+			command = &pinned[i]
+		}
+	}
+	if command == nil || command.Command.CommandKey != "discuss" {
+		t.Fatalf("pinned = %+v, want the attached %q command", pinned, "discuss")
+	}
+	if command.Command.Status != orchestrator.CardRequestStatusAttached {
+		t.Fatalf("pinned command status = %q, want attached", command.Command.Status)
+	}
+	if !command.Command.TargetExists {
+		t.Fatalf("TargetExists = false, want true (task-discuss exists)")
+	}
+}
+
+// TestBuildCardTimeline_CommandFailed_AllFieldsSurvive pins every field a
+// command_failed terminal item exposes.
+func TestBuildCardTimeline_CommandFailed_AllFieldsSurvive(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "review", CauseID: "cause-xyz", Instruction: "check this"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	primary, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{
+		CommandKey: "review", Label: "Run Review", Run: "python3 review.py", Version: "v1",
+	})
+	if err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	createExecTask(t, d.Conn, "proj-1", "task-review", "", orchestrator.TaskStatusPending)
+	if err := orchestrator.AttachCardRequest(d.Conn, primary.ID, orchestrator.CardRequestTargetKindTask, "task-review"); err != nil {
+		t.Fatalf("AttachCardRequest: %v", err)
+	}
+	if err := orchestrator.FailCardRequest(d.Conn, primary.ID, "review script exited 1"); err != nil {
+		t.Fatalf("FailCardRequest: %v", err)
+	}
+
+	page, err := BuildCardTimeline(d.Conn, cardID, "", 10)
+	if err != nil {
+		t.Fatalf("BuildCardTimeline: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %+v, want 1", page.Items)
+	}
+	item := page.Items[0]
+	if item.CorrelationID != primary.ID {
+		t.Fatalf("CorrelationID = %q, want %q", item.CorrelationID, primary.ID)
+	}
+	c := item.Command
+	if c == nil {
+		t.Fatalf("Command = nil")
+	}
+	if c.Outcome != "failed" {
+		t.Fatalf("Outcome = %q, want failed", c.Outcome)
+	}
+	if c.Error != "review script exited 1" {
+		t.Fatalf("Error = %q, want the failure text", c.Error)
+	}
+	if c.Result != "" {
+		t.Fatalf("Result = %q, want empty on failure", c.Result)
+	}
+	if c.Label != "Run Review" {
+		t.Fatalf("Label = %q, want the launch-time snapshot", c.Label)
+	}
+	if c.CommandKey != "review" {
+		t.Fatalf("CommandKey = %q, want review", c.CommandKey)
+	}
+	if c.Origin != orchestrator.CardRequestOriginEvent {
+		t.Fatalf("Origin = %q, want event (non-empty cause_id)", c.Origin)
+	}
+	if c.CauseID != "cause-xyz" {
+		t.Fatalf("CauseID = %q, want cause-xyz", c.CauseID)
+	}
+	if c.TargetKind != orchestrator.CardRequestTargetKindTask || c.TargetID != "task-review" {
+		t.Fatalf("target = %q/%q, want task/task-review", c.TargetKind, c.TargetID)
+	}
+	if !c.TargetExists {
+		t.Fatalf("TargetExists = false, want true")
+	}
+}
+
+// TestBuildCardTimeline_CommandForceReleased_AllFieldsSurvive is the
+// force_released counterpart, including Reason — an operator's
+// force-release must stay attributable after the card_requests row is GC'd.
+func TestBuildCardTimeline_CommandForceReleased_AllFieldsSurvive(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "discuss"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	primary, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{
+		CommandKey: "discuss", Label: "Discuss",
+	})
+	if err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	if _, err := orchestrator.ForceReleaseCardRequest(d.Conn, primary.ID, "operator said stop"); err != nil {
+		t.Fatalf("ForceReleaseCardRequest: %v", err)
+	}
+
+	page, err := BuildCardTimeline(d.Conn, cardID, "", 10)
+	if err != nil {
+		t.Fatalf("BuildCardTimeline: %v", err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %+v, want 1", page.Items)
+	}
+	c := page.Items[0].Command
+	if c == nil {
+		t.Fatalf("Command = nil")
+	}
+	if c.Outcome != "force_released" {
+		t.Fatalf("Outcome = %q, want force_released", c.Outcome)
+	}
+	if c.Reason != "operator said stop" {
+		t.Fatalf("Reason = %q, want the operator's text (must survive GC of card_requests)", c.Reason)
+	}
+	if c.Label != "Discuss" {
+		t.Fatalf("Label = %q, want Discuss", c.Label)
+	}
+	if c.Origin != orchestrator.CardRequestOriginHuman {
+		t.Fatalf("Origin = %q, want human (empty cause_id)", c.Origin)
+	}
+}
+
+// TestBuildCardTimeline_SuggestionAndSummaryAndNoteAndWakeDue_AllAppear pins
+// every one of the standalone action-backed kinds appearing in history.
+func TestBuildCardTimeline_SuggestionAndSummaryAndNoteAndWakeDue_AllAppear(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
+
+	createAction(t, d.Conn, cardID, "attrs_set", map[string]any{"summary": "did some investigation"})
+	createAction(t, d.Conn, cardID, "noted", map[string]string{"text": "external link arrived"})
+	createAction(t, d.Conn, cardID, "wake_due", map[string]string{"reason": "scheduled wake"})
+
+	page, err := BuildCardTimeline(d.Conn, cardID, "", 10)
+	if err != nil {
+		t.Fatalf("BuildCardTimeline: %v", err)
+	}
+	kinds := map[CardItemKind]bool{}
+	for _, it := range page.Items {
+		kinds[it.Kind] = true
+	}
+	for _, want := range []CardItemKind{CardItemSummary, CardItemNote, CardItemWakeDue} {
+		if !kinds[want] {
+			t.Fatalf("items = %+v, want a %s item present", page.Items, want)
+		}
+	}
+	if len(page.Items) != 3 {
+		t.Fatalf("items = %+v, want exactly 3 (one per action)", page.Items)
+	}
+}
+
+// TestBuildCardTimeline_ChildItem_ExposesCoreReadableFields pins the
+// "read in place" fields (title/project/spec/status/task ref).
+func TestBuildCardTimeline_ChildItem_ExposesCoreReadableFields(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
+	addAndCloseChild(t, d.Conn, cardID, "proj-1", "c1", "task-c1", "r", orchestrator.TaskStatusDone)
+
+	page, err := BuildCardTimeline(d.Conn, cardID, "", 10)
+	if err != nil {
+		t.Fatalf("BuildCardTimeline: %v", err)
+	}
+	var child *CardItem
+	for i := range page.Items {
+		if page.Items[i].Kind == CardItemChild {
+			child = &page.Items[i]
+		}
+	}
+	if child == nil {
+		t.Fatalf("no CardItemChild in %+v", page.Items)
+	}
+	cd := child.Child
+	if cd.Title != "child c1" {
+		t.Fatalf("Title = %q, want %q", cd.Title, "child c1")
+	}
+	if cd.Status != orchestrator.TaskTriageChildStatusClosed {
+		t.Fatalf("Status = %q, want closed", cd.Status)
+	}
+	if cd.TaskRef != "task-c1" {
+		t.Fatalf("TaskRef = %q, want task-c1", cd.TaskRef)
+	}
+	if cd.Spec == nil || cd.Spec.Project != "proj-1" {
+		t.Fatalf("Spec = %+v, want Project=proj-1", cd.Spec)
+	}
+}
+
+// TestCardPinnedItems_Suggestion_PicksLatestOfMultiple pins the "most
+// recent" rule against a card with more than one attrs_set{suggestion}
+// action over its life — the common shape for a long-lived card.
+func TestCardPinnedItems_Suggestion_PicksLatestOfMultiple(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
+
+	createAction(t, d.Conn, cardID, "attrs_set", map[string]any{
+		"suggestion": map[string]string{"verb": "park", "reason": "old suggestion"},
+	})
+	latest := createAction(t, d.Conn, cardID, "attrs_set", map[string]any{
+		"suggestion": map[string]string{"verb": "complete", "reason": "new suggestion"},
+	})
+	tt, err := orchestrator.GetTaskTriage(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("get task_triage: %v", err)
+	}
+	newDetail, err := orchestrator.FoldDetailAttrs(tt.Detail, map[string]json.RawMessage{
+		"suggestion": json.RawMessage(`{"verb":"complete","reason":"new suggestion"}`),
+	})
+	if err != nil {
+		t.Fatalf("FoldDetailAttrs: %v", err)
+	}
+	tt.Detail = newDetail
+	tt.SuggestionVerb = "complete"
+	if err := orchestrator.UpsertTaskTriage(d.Conn, tt); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	pinned, err := CardPinnedItems(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("CardPinnedItems: %v", err)
+	}
+	wantID := latest.ID + ":suggestion"
+	if len(pinned) != 1 || pinned[0].ID != wantID {
+		t.Fatalf("pinned = %+v, want the LATEST suggestion action's id %q", pinned, wantID)
+	}
+}
+
+// TestBuildCardTimeline_ChildWithNoAnchorAction_StillLeavesHistoryOnceClosed
+// pins that a child with no discoverable anchor action (a defensive edge
+// case — see loadCardTimelineState) must not be forced permanently pinned
+// once it is actually closed.
+func TestBuildCardTimeline_ChildWithNoAnchorAction_StillLeavesHistoryOnceClosed(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
+	addAndCloseChild(t, d.Conn, cardID, "proj-1", "c1", "task-c1", "r", orchestrator.TaskStatusDone)
+
+	if _, err := d.Conn.Exec(`DELETE FROM actions WHERE task_id = ? AND type IN (?, ?)`, cardID, "child_added", "child_specced"); err != nil {
+		t.Fatalf("delete anchor actions: %v", err)
+	}
+
+	pinned, err := CardPinnedItems(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("CardPinnedItems: %v", err)
+	}
+	for _, it := range pinned {
+		if it.Kind == CardItemChild {
+			t.Fatalf("pinned = %+v, want the closed child NOT pinned even with no anchor action", pinned)
+		}
+	}
+	page, err := BuildCardTimeline(d.Conn, cardID, "", 10)
+	if err != nil {
+		t.Fatalf("BuildCardTimeline: %v", err)
+	}
+	found := false
+	for _, it := range page.Items {
+		if it.Kind == CardItemChild {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("items = %+v, want the closed child in history despite the missing anchor", page.Items)
 	}
 }
 

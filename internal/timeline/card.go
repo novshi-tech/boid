@@ -108,6 +108,13 @@ type CardCommandDetail struct {
 	// job-table concern the existing job pages already own, out of scope
 	// here.
 	TargetExists bool
+	// Status is the live card_requests.status (queued/launching/attached),
+	// set only while Pinned — a renderer needs this to distinguish "not
+	// dispatched yet" from "running" (a queued request has no target, no
+	// Label, and would otherwise be indistinguishable from a launching
+	// one). Empty for a terminal history item, where Outcome is the
+	// authoritative status instead.
+	Status orchestrator.CardRequestStatus
 	// Outcome is "" while Pinned (still running), else one of "finished" /
 	// "failed" / "force_released".
 	Outcome string
@@ -329,6 +336,7 @@ func loadCardTimelineState(dbtx db.DBTX, cardID string) (*cardTimelineState, err
 	closingByTaskRef := map[string]*orchestrator.Action{}
 	closingByChildID := map[string]*orchestrator.Action{}
 	var suggestionActions []*orchestrator.Action
+	var commandOutcomes []cardCommandOutcome
 
 	for _, a := range actions {
 		switch a.Type {
@@ -355,6 +363,9 @@ func loadCardTimelineState(dbtx db.DBTX, cardID string) (*cardTimelineState, err
 			if hasPayloadKey(a.Payload, "suggestion") {
 				suggestionActions = append(suggestionActions, a)
 			}
+		case orchestrator.ActionTypeCommandFinished, orchestrator.ActionTypeCommandFailed, orchestrator.ActionTypeCommandForceReleased:
+			payload, _ := orchestrator.ParseCardRequestOutcomePayload(a.Payload)
+			commandOutcomes = append(commandOutcomes, cardCommandOutcome{action: a, payload: payload})
 		}
 	}
 
@@ -363,6 +374,31 @@ func loadCardTimelineState(dbtx db.DBTX, cardID string) (*cardTimelineState, err
 		if _, ok := orchestrator.DetailSuggestion(detail); ok {
 			activeSuggestionActionID = suggestionActions[len(suggestionActions)-1].ID
 		}
+	}
+
+	requestsByID := make(map[string]*orchestrator.CardRequest, len(requests))
+	for _, r := range requests {
+		requestsByID[r.ID] = r
+	}
+	activeRequest := pickActiveCardRequest(requests)
+
+	// One batched existence check for every task id this pass will need
+	// (child TaskRefs, command targets) instead of one query per id.
+	var taskIDsToCheck []string
+	for i := range children {
+		taskIDsToCheck = append(taskIDsToCheck, children[i].TaskRef)
+	}
+	for _, co := range commandOutcomes {
+		if co.payload.TargetKind == orchestrator.CardRequestTargetKindTask {
+			taskIDsToCheck = append(taskIDsToCheck, co.payload.TargetID)
+		}
+	}
+	if activeRequest != nil && activeRequest.TargetKind == orchestrator.CardRequestTargetKindTask {
+		taskIDsToCheck = append(taskIDsToCheck, activeRequest.TargetID)
+	}
+	existingTasks, err := orchestrator.ExistingTaskIDs(dbtx, taskIDsToCheck)
+	if err != nil {
+		return nil, err
 	}
 
 	for i := range children {
@@ -375,7 +411,7 @@ func loadCardTimelineState(dbtx db.DBTX, cardID string) (*cardTimelineState, err
 			cd.Spec = &specCopy
 		}
 		if c.TaskRef != "" {
-			cd.TaskExists = taskExists(dbtx, c.TaskRef)
+			cd.TaskExists = existingTasks[c.TaskRef]
 		}
 
 		var closingAction *orchestrator.Action
@@ -409,11 +445,10 @@ func loadCardTimelineState(dbtx db.DBTX, cardID string) (*cardTimelineState, err
 			// Defensive fallback for a child with no anchor action at all
 			// (see the child_specced comment above) — synthesize a stable,
 			// deterministic id so the child is still visible somewhere
-			// rather than silently dropped. Never sorts as a real
-			// timestamped item into history (HasTime stays false), so it
-			// can only ever surface pinned.
+			// rather than silently dropped. Pinned is left as computed
+			// above (!closed): a closed child must still return to
+			// history, just at a synthetic, un-timestamped position.
 			item.ID = "child:" + c.ID
-			item.Pinned = true
 		}
 		st.items = append(st.items, item)
 
@@ -458,51 +493,90 @@ func loadCardTimelineState(dbtx db.DBTX, cardID string) (*cardTimelineState, err
 			st.items = append(st.items, CardItem{ID: a.ID, Kind: CardItemNote, Time: a.CreatedAt, HasTime: !a.CreatedAt.IsZero(), Action: a})
 		case "wake_due":
 			st.items = append(st.items, CardItem{ID: a.ID, Kind: CardItemWakeDue, Time: a.CreatedAt, HasTime: !a.CreatedAt.IsZero(), Action: a})
-		case orchestrator.ActionTypeCommandFinished, orchestrator.ActionTypeCommandFailed, orchestrator.ActionTypeCommandForceReleased:
-			st.items = append(st.items, buildCommandHistoryItem(dbtx, a))
 		}
 	}
+	for _, co := range commandOutcomes {
+		st.items = append(st.items, buildCommandHistoryItem(co, requestsByID, existingTasks))
+	}
 
-	for _, r := range requests {
-		if r.CommandKey == orchestrator.CardRequestCommandKeyGo {
-			continue
-		}
-		switch r.Status {
-		case orchestrator.CardRequestStatusQueued, orchestrator.CardRequestStatusLaunching, orchestrator.CardRequestStatusAttached:
-		default:
-			continue
-		}
+	if activeRequest != nil {
+		targetExists := activeRequest.TargetKind == orchestrator.CardRequestTargetKindTask && existingTasks[activeRequest.TargetID]
 		st.activeCommand = &CardItem{
-			ID:            "pending-command:" + r.ID,
+			ID:            "pending-command:" + activeRequest.ID,
 			Kind:          CardItemCommand,
-			Time:          r.CreatedAt,
+			Time:          activeRequest.CreatedAt,
 			HasTime:       true,
-			CorrelationID: r.ID,
+			CorrelationID: activeRequest.ID,
 			Pinned:        true,
 			Command: &CardCommandDetail{
-				RequestID:    r.ID,
-				CommandKey:   r.CommandKey,
-				Label:        r.Launched.Label,
-				Instruction:  r.Instruction,
-				Origin:       orchestrator.CardRequestOrigin(r.CauseID),
-				CauseID:      r.CauseID,
-				TargetKind:   r.TargetKind,
-				TargetID:     r.TargetID,
-				TargetExists: targetExists(dbtx, r.TargetKind, r.TargetID),
+				RequestID:    activeRequest.ID,
+				CommandKey:   activeRequest.CommandKey,
+				Label:        activeRequest.Launched.Label,
+				Instruction:  activeRequest.Instruction,
+				Origin:       orchestrator.CardRequestOrigin(activeRequest.CauseID),
+				CauseID:      activeRequest.CauseID,
+				TargetKind:   activeRequest.TargetKind,
+				TargetID:     activeRequest.TargetID,
+				TargetExists: targetExists,
+				Status:       activeRequest.Status,
 			},
 		}
-		break // the single execution slot invariant: at most one such row.
 	}
 
 	return st, nil
 }
 
+// cardCommandOutcome pairs a command_finished/command_failed/
+// command_force_released action with its already-parsed payload, so a
+// single pass over the action list can also collect the task ids that need
+// a batched existence check before any CardItem gets built.
+type cardCommandOutcome struct {
+	action  *orchestrator.Action
+	payload orchestrator.CardRequestOutcomePayload
+}
+
+// pickActiveCardRequest chooses the single card_requests row CardPinnedItems
+// shows as "in progress", by status priority (attached > launching >
+// queued) rather than by creation order. Multiple non-terminal rows for one
+// card ARE possible in practice — only launching/attached are mutually
+// exclusive at the database level, an older queued row (e.g. an internal
+// event request that arrived before a barrier lifted) can otherwise outlive
+// a newer launching/attached one and must never mask it.
+func pickActiveCardRequest(requests []*orchestrator.CardRequest) *orchestrator.CardRequest {
+	rank := func(s orchestrator.CardRequestStatus) int {
+		switch s {
+		case orchestrator.CardRequestStatusAttached:
+			return 3
+		case orchestrator.CardRequestStatusLaunching:
+			return 2
+		case orchestrator.CardRequestStatusQueued:
+			return 1
+		default:
+			return 0
+		}
+	}
+	var chosen *orchestrator.CardRequest
+	for _, r := range requests {
+		if r.CommandKey == orchestrator.CardRequestCommandKeyGo {
+			continue
+		}
+		if rank(r.Status) == 0 {
+			continue
+		}
+		if chosen == nil || rank(r.Status) > rank(chosen.Status) {
+			chosen = r
+		}
+	}
+	return chosen
+}
+
 // buildCommandHistoryItem builds a terminal CardItemCommand from one
-// command_finished/command_failed/command_force_released action. Every
+// command_finished/command_failed/command_force_released outcome. Every
 // field comes from the action's own payload except the best-effort
-// Instruction enrichment.
-func buildCommandHistoryItem(dbtx db.DBTX, a *orchestrator.Action) CardItem {
-	p, _ := orchestrator.ParseCardRequestOutcomePayload(a.Payload)
+// Instruction enrichment (requestsByID, from the card's still-live
+// card_requests rows) and TargetExists (existingTasks, the batched check).
+func buildCommandHistoryItem(co cardCommandOutcome, requestsByID map[string]*orchestrator.CardRequest, existingTasks map[string]bool) CardItem {
+	a, p := co.action, co.payload
 	outcome := "finished"
 	switch a.Type {
 	case orchestrator.ActionTypeCommandFailed:
@@ -511,10 +585,8 @@ func buildCommandHistoryItem(dbtx db.DBTX, a *orchestrator.Action) CardItem {
 		outcome = "force_released"
 	}
 	instruction := ""
-	if p.RequestID != "" {
-		if live, err := orchestrator.GetCardRequest(dbtx, p.RequestID); err == nil {
-			instruction = live.Instruction
-		}
+	if live, ok := requestsByID[p.RequestID]; ok {
+		instruction = live.Instruction
 	}
 	return CardItem{
 		ID:            a.ID,
@@ -532,7 +604,7 @@ func buildCommandHistoryItem(dbtx db.DBTX, a *orchestrator.Action) CardItem {
 			CauseID:      p.CauseID,
 			TargetKind:   p.TargetKind,
 			TargetID:     p.TargetID,
-			TargetExists: targetExists(dbtx, p.TargetKind, p.TargetID),
+			TargetExists: p.TargetKind == orchestrator.CardRequestTargetKindTask && existingTasks[p.TargetID],
 			Outcome:      outcome,
 			Result:       p.Result,
 			Error:        p.Error,
@@ -557,26 +629,6 @@ func parseChildClosedPayload(payload json.RawMessage) (summary string, status or
 		return "", ""
 	}
 	return p.Summary, orchestrator.TaskStatus(p.ChildStatus)
-}
-
-// taskExists reports whether taskID still resolves to a live task row.
-func taskExists(dbtx db.DBTX, taskID string) bool {
-	if taskID == "" {
-		return false
-	}
-	_, err := orchestrator.GetTask(dbtx, taskID)
-	return err == nil
-}
-
-// targetExists reports whether a card_requests target still resolves to a
-// live row — only meaningful for TargetKind == "task" (see
-// CardCommandDetail.TargetExists's own doc comment for why session targets
-// are left false rather than resolved here).
-func targetExists(dbtx db.DBTX, targetKind, targetID string) bool {
-	if targetKind != orchestrator.CardRequestTargetKindTask {
-		return false
-	}
-	return taskExists(dbtx, targetID)
 }
 
 // payloadString extracts one string field from a JSON object payload,
