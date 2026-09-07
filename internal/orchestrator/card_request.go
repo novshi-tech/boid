@@ -509,7 +509,7 @@ func recordCardRequestOutcome(dbtx db.DBTX, id, actionType, result, errText, rea
 		Reason:        reason,
 	}
 	for _, s := range siblings {
-		p.ForceFailedSiblings = append(p.ForceFailedSiblings, cardRequestOutcomeSibling{ID: s.ID, CommandKey: s.CommandKey})
+		p.ForceFailedSiblings = append(p.ForceFailedSiblings, cardRequestOutcomeSibling(s))
 	}
 	payload, merr := json.Marshal(p)
 	if merr != nil {
