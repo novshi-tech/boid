@@ -85,6 +85,49 @@ The `readonly` flag is auto-set by the daemon from the behavior name during the
 compatibility period. Reading it from `boid task current` is always safe and will
 remain the sole ground truth after Track A2 (free naming) ships.
 
+### Workspace workflow delegation (checked before either mode's default flow)
+
+Both modes above describe a **default** flow — Supervisor's plan→create-children
+loop, Executor's implement→commit→push loop. Before following either default,
+check whether the active instruction (`boid task instructions`) is itself a
+complete, self-contained workflow to run, rather than a prose description of an
+outcome to reach. A workspace instruction counts as delegating when it names a
+concrete first move to execute — e.g. "**最初の一手として次を実行すること:**
+`python3 scripts/sweep_targets.py ...`" or an equivalent explicit script/skill
+invocation — as opposed to open-ended prose like "implement the feature
+described below."
+
+When it does, **run that delegated workflow instead of this file's generic
+mode procedure.** The delegated workflow may itself decide to create child
+tasks, call a workspace's own record-keeping script (e.g.
+`boidmeta.write` for a metaproject), or do nothing beyond reading state and
+exiting — none of that is dictated by this file. What IS still mandatory
+regardless of which workflow you end up running:
+
+- Step 0's four context commands, on every invocation.
+- `boid task ask` for any mid-flight question — never bare assistant text.
+- `boid task notify --done`/`--fail` exactly once before exiting (never
+  `boid job done` / `boid agent stop`).
+- Supervisor mode's "never edit project files yourself" boundary, if the
+  delegated workflow needs code changes made — those still go through a child
+  executor task, not inline edits from a readonly:true job.
+
+This is not a new mechanism — it is what Sweep has always relied on
+(`readonly: false` + a `default_instruction` whose message opens with "run
+this script first"), formalized here as the general contract instead of a
+Sweep-specific convention, so a readonly:true judgment task (a card-command
+continuation with card-write permission, docs/plans/card-next-step-and-timeline.md
+§4.5) can rely on the same delegation instead of falling into Supervisor's
+generic create-and-monitor-children loop, which its instruction never asked for.
+
+**Never infer delegation from the task's `behavior` name or `readonly` value
+itself** — those only pick the mandatory lifecycle rules above (which mode's
+boundaries apply), never which workflow to run. Whether to delegate, and to
+what, comes only from the active instruction's own content. This mirrors the
+same rule on the adapter side (`internal/adapters/{claude,codex,opencode}/run.go`
+does not branch on behavior names like `drive` or `card-judge` either) — no
+part of the system hardcodes a card-specific vocabulary.
+
 User-facing Q&A flows through `boid task ask` (a blocking RPC that returns the
 reply on stdout, same turn) — see "Asking your owner" below. `$BOID_USER_ANSWER`
 is no longer surfaced to fresh dispatches: the legacy `notify --ask` →

@@ -1148,11 +1148,12 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	lifecycle := jobLifecycleAdapter{runner: runner}
 	claudeAdapter := claude.New()
 	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
-		Meta:     store,
-		Hydrator: store, // workspace-aware hydration at dispatch time
-		Projects: projectCatalog,
-		Tasks:    taskLookup,
-		Adapter:  claudeAdapter,
+		Meta:         store,
+		Hydrator:     store, // workspace-aware hydration at dispatch time
+		Projects:     projectCatalog,
+		Tasks:        taskLookup,
+		Adapter:      claudeAdapter,
+		CardRequests: taskLookup,
 	})
 	adapter := dispatcher.NewOrchestratorAdapter(runner, planner)
 	hub := api.NewTaskEventHub()

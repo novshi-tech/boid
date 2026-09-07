@@ -243,6 +243,10 @@ func (r *TaskRepository) GetCardRequest(id string) (*CardRequest, error) {
 	return GetCardRequest(r.db, id)
 }
 
+func (r *TaskRepository) GetCardRequestByTaskTarget(taskID string) (*CardRequest, error) {
+	return GetCardRequestByTaskTarget(r.db, taskID)
+}
+
 // AttachCardRequestOwned backs `boid agent start`'s recording of the
 // session continuation it just created (server.cardRequestReader) — the
 // caller's job id is asserted in the write itself, not trusted from an

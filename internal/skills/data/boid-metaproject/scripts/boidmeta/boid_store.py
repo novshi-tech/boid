@@ -98,6 +98,11 @@ IDENTITY_CONFLICT_EXIT_CODE = 3
 #: 「無かった」と「本当の失敗」を見分けられるようにするため)。
 IDENTITY_NOT_FOUND_EXIT_CODE = 2
 
+#: `internal/sandbox/protocol.go` の `NoCardContextExitCode`。「このジョブに card 文脈が
+#: 無い」——既存の Sweep task を含む、card_commands 経由でないジョブ全ての通常応答。
+#: `card_context()` がこれを `None` に変換する。
+NO_CARD_CONTEXT_EXIT_CODE = 4
+
 
 class BoidError(RuntimeError):
     """boid CLI の呼び出しが失敗した / 応答を解釈できなかった。"""
@@ -357,6 +362,37 @@ class BoidCLI:
         if not ids:
             return
         self._run(["signal", "ack", *ids])
+
+    def card_context(self) -> Mapping[str, Any] | None:
+        """`boid card context --format json`。
+
+        **card 文脈が無いジョブでは `None`** (`NO_CARD_CONTEXT_EXIT_CODE`) —— これは
+        エラーではなく、既存の Sweep task を含むあらゆる非 card-command ジョブの通常応答
+        (`internal/sandbox/broker.go` の `NoCardContextExitCode`)。呼び出し側
+        (`app/write.py`) はこれを「card 文脈フォールバック不要、既存経路を使う」判定に使う
+        —— stderr 文字列の pattern match はしない。
+
+        文脈があるときの応答は `card_id`/`request_id`/`command_key`/`instruction`/
+        `origin`/`card_write`/`actor` を持つ (`internal/server/
+        boid_executor_card_context.go` の `cardContextResponse`)。`card_write` と
+        `actor` は daemon が server-side で決めた値で、呼び出し側が偽装できない
+        (`origin` と同じ契約)。
+        """
+        code, out, err = self._exec(["card", "context", "--format", "json"])
+        if code == NO_CARD_CONTEXT_EXIT_CODE:
+            return None
+        if code != 0:
+            raise BoidError(f"boid card context が exit={code} で失敗した: {err.strip() or out.strip()}")
+        try:
+            parsed = json.loads(out.strip() or "{}")
+        except ValueError as exc:
+            raise BoidError(f"boid card context の応答を JSON として読めなかった: {out[:200]!r}") from exc
+        if not isinstance(parsed, Mapping) or not parsed.get("card_id") or not parsed.get("request_id"):
+            # exit=0 の空応答は `{}` になり、`isinstance` だけでは通ってしまう
+            # ("card 文脈あり、ただし card_id が空" という壊れた状態を作る) —— fail-closed
+            # のため、card_id/request_id が欠けた応答は「引けなかった」として例外にする。
+            raise BoidError(f"boid card context の応答が想定外: {parsed!r}")
+        return parsed
 
     def resolve_project(self, name_or_id: str) -> str:
         """project 名を UUID へ。既に UUID ならそのまま返す。

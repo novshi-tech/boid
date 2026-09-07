@@ -38,10 +38,14 @@ report モード (dry-run) で入力をそのまま残せるのも同じ形の�
 | `skip` | signals, reason |
 | `done-signal` | task_id, signals |
 
-`signals` (この呼び出しで処理済みにする event_key 群) は**どの verb でも必須**。
-書き込みが成功したら処理記録を自動で付ける (§5.3) ので、**subagent は記録の書式も
-置き場も知らない** —— 知るのは「何を処理したか」だけで、それは sweep task の
-instruction に載っている。
+`signals` (この呼び出しで処理済みにする event_key 群) は Sweep 発の呼び出し (`boid card
+context` が「card 文脈なし」を返すジョブ) では**どの verb でも必須**。書き込みが成功
+したら処理記録を自動で付ける (§5.3) ので、**subagent は記録の書式も置き場も知らない**
+—— 知るのは「何を処理したか」だけで、それは sweep task の instruction に載っている。
+
+**card_commands 経由の呼び出し (docs/plans/card-next-step-and-timeline.md §4.5) では
+signals を渡さない。** 人発コマンドは外部 Signal の inbox を処理しないので、この機構は
+そもそも無縁 —— 書き込み可否は `boid card context` の `card_write` が唯一の根拠になる。
 
 ## 実行部への申し送り
 
@@ -323,17 +327,29 @@ def _transition_verbs_from(status: str) -> tuple[str, ...]:
 _EVENT_KEY_FIELDS = frozenset({"origin"})
 
 
-def validate(verb: str, payload: Mapping[str, object]) -> dict[str, object]:
+def validate(
+    verb: str,
+    payload: Mapping[str, object],
+    *,
+    require_signals: bool = True,
+    allow_signals: bool = True,
+) -> dict[str, object]:
     """stdin の JSON を検証し、正規化した命令を返す。
 
     純粋関数。boid への書き込みも記録も、ここから先の実行部の仕事。
+
+    card 文脈からの呼び出し (§4.5) は `require_signals=False, allow_signals=False` を渡す
+    —— 人発コマンドは Signal の inbox を持たない**うえ**、`signals` を渡すと `_record` が
+    inbox とは無縁の event_key を ack してしまうので、フィールドごと拒否する
+    (`allowed` に含めない —— 渡すと「知らないフィールド」で弾かれる)。
     """
     verb_fields = _VERB_FIELDS.get(verb) or _LEGACY_VERB_ALIASES.get(verb)
     if verb_fields is None:
         raise CommandError(f"知らない verb: {verb!r} (使えるのは {', '.join(VERBS)})")
     verb_required, verb_optional = verb_fields
-    required = set(verb_required) | set(_COMMON_REQUIRED)
-    allowed = required | set(verb_optional)
+    signals_field = set(_COMMON_REQUIRED) if allow_signals else set()
+    required = set(verb_required) | (signals_field if require_signals else set())
+    allowed = required | set(verb_optional) | signals_field
 
     unknown = sorted(set(payload) - allowed)
     if unknown:
@@ -343,7 +359,7 @@ def validate(verb: str, payload: Mapping[str, object]) -> dict[str, object]:
         )
 
     command: dict[str, object] = {"verb": verb, "signals": _signals(payload.get("signals"))}
-    if not command["signals"]:
+    if require_signals and not command["signals"]:
         raise CommandError(
             f"{verb}: signals が要る —— この呼び出しで処理済みにする event_key を "
             "1 件以上渡す (sweep task の instruction に載っている、この対象の event_key)"
@@ -493,7 +509,9 @@ class Executor:
 
     def __init__(self, cli, *, sweep_task_id: str, report: bool = False) -> None:
         self.reported: list[str] = []
-        #: このメタプロジェクト自身の project id (`_own_project` が sweep task から 1 回だけ引く)。
+        #: このメタプロジェクト自身の project id (`_own_project` が sweep_task_id から
+        #: 1 回だけ引く)。card 文脈の呼び出しでは `main()` がここに対象 card 自身の id
+        #: を渡す。
         self._own_project_id: str | None = None
         self.cli = _Reporter(cli, self.reported) if report else cli
         self.sweep_task_id = sweep_task_id
@@ -1055,18 +1073,61 @@ def main(
         print(f"stdin は JSON オブジェクトで渡す (受け取った型: {type(payload).__name__})", file=stderr)
         return 2
 
-    sweep_task_id = env.get(TASK_ID_ENV, "")
-    if not sweep_task_id:
-        # 見送りの記録は sweep task 自身の timeline にしか置けない (§5.3 S-11 後半)。
-        # 書き先が無いまま進むと、記録の付かない書き込みができてしまう。
-        print(f"{TASK_ID_ENV} が無い —— 記録の書き先 (sweep task) が決まらない", file=stderr)
-        return 2
-
     resolved_cli = cli if cli is not None else BoidCLI()
-    if not report and _readonly_forces_report(resolved_cli, stderr):
-        # readonly な task からは argv に `--report` が無くても report を強制する
-        # (`_Reporter` の docstring、2026-08-27 Opus レビュー指摘対応)。
-        report = True
+
+    # card 文脈 (§4.5) の有無で経路を分ける。`card_context()` の3通りの返り値は
+    # 排他的に扱う —— 「引けなかった」を「文脈が無い」と混同すると、本当は
+    # card-command 経由の呼び出しなのに古い Sweep 専用経路 (BOID_TASK_ID 必須) へ
+    # 誤って落ち、書けるはずの card に書けなくなる。逆に「文脈が無い」を「引けな
+    # かった」に倒すと fail-closed の理由が実体と合わなくなる。
+    try:
+        card_ctx = resolved_cli.card_context()
+    except Exception as exc:  # noqa: BLE001 - 判断できないので即拒否する (report にすら倒さない)
+        print(f"[write] card context を引けなかった、安全側で拒否する: {exc}", file=stderr)
+        return 1
+
+    require_signals = True
+    allow_signals = True
+    sweep_task_id = env.get(TASK_ID_ENV, "")
+
+    if card_ctx is not None:
+        # card-command 経由 (task/session どちらでも): signals も BOID_TASK_ID も
+        # 前提にしない。書き込み可否は card_write が唯一の根拠で、readonly や env
+        # では昇格しない (`cardContextResponse.CardWrite` の doc comment と同じ契約)。
+        # signals はフィールドごと拒否する —— 渡せてしまうと inbox とは無縁の
+        # event_key を ack できてしまう。
+        require_signals = False
+        allow_signals = False
+        actor = str(card_ctx.get("actor") or "")
+        # sweep task が無いので、`_refuse_terminal` の project 一致チェックの基準点を
+        # 対象 card 自身に付け替える。
+        sweep_task_id = str(card_ctx.get("card_id") or "")
+        # `is True` で厳密比較する —— 型が想定外 (欠落・文字列等) なら fail-closed 側
+        # (`bool("false")` が真になるような取り違えを避ける)。
+        card_write = card_ctx.get("card_write") is True
+        print(
+            f"[write] card context: actor={actor!r} command={card_ctx.get('command_key')!r} "
+            f"origin={card_ctx.get('origin')!r} card_write={card_write}",
+            file=stderr,
+        )
+        if not report and not card_write:
+            report = True
+            print(
+                f"[write] card_write=false (command={card_ctx.get('command_key')!r})、"
+                "安全側 (report) に倒す",
+                file=stderr,
+            )
+    else:
+        # card 文脈が無い: 既存 Sweep 経路をそのまま維持する。
+        if not sweep_task_id:
+            # 見送りの記録は sweep task 自身の timeline にしか置けない (§5.3 S-11 後半)。
+            # 書き先が無いまま進むと、記録の付かない書き込みができてしまう。
+            print(f"{TASK_ID_ENV} が無い —— 記録の書き先 (sweep task) が決まらない", file=stderr)
+            return 2
+        if not report and _readonly_forces_report(resolved_cli, stderr):
+            # readonly な task からは argv に `--report` が無くても report を強制する
+            # (`_Reporter` の docstring、2026-08-27 Opus レビュー指摘対応)。
+            report = True
 
     executor = Executor(
         resolved_cli,
@@ -1074,7 +1135,7 @@ def main(
         report=report,
     )
     try:
-        executor.run(validate(verbs[0], payload))
+        executor.run(validate(verbs[0], payload, require_signals=require_signals, allow_signals=allow_signals))
     except CommandError as exc:
         print(str(exc), file=stderr)
         return 1

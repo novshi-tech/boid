@@ -195,6 +195,30 @@ class SignalsTest(unittest.TestCase):
         self.assertIn("signals", str(caught.exception))
 
 
+class CardContextValidationTest(unittest.TestCase):
+    """card 文脈からの呼び出し (`require_signals=False, allow_signals=False`) は
+    signals をフィールドごと拒否する —— 渡せてしまうと `_record` が inbox とは無縁の
+    event_key を ack できてしまう。"""
+
+    def test_signals_are_not_required(self):
+        command = validate("go", {"task_id": "t1", "reason": "r"}, require_signals=False, allow_signals=False)
+        self.assertEqual(command["signals"], ())
+
+    def test_a_signals_field_is_rejected_as_unknown(self):
+        with self.assertRaises(CommandError) as caught:
+            validate(
+                "go", {"task_id": "t1", "reason": "r", "signals": ["boid:a1"]},
+                require_signals=False, allow_signals=False,
+            )
+        self.assertIn("signals", str(caught.exception))
+
+    def test_the_sweep_default_is_unchanged(self):
+        """引数を渡さない既存呼び出しは、これまでどおり signals 必須のまま。"""
+        with self.assertRaises(CommandError) as caught:
+            validate("go", {"task_id": "t1", "reason": "r"})
+        self.assertIn("signals", str(caught.exception))
+
+
 class UrgencyTest(unittest.TestCase):
     def test_accepts_the_vocabulary(self):
         for urgency in URGENCIES:

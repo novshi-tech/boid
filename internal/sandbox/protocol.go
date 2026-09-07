@@ -231,6 +231,12 @@ const IdentityNotFoundExitCode = 2
 // (orchestrator.ErrIdentityConflict).
 const IdentityConflictExitCode = 3
 
+// NoCardContextExitCode is BoidOpCardContext's distinguished exit code for
+// "this job has no card context" (the token's CardRequestID is empty) —
+// distinct from 0 (success) and 1 (generic failure), so a caller can tell
+// the two apart without pattern-matching stderr text.
+const NoCardContextExitCode = 4
+
 // PayloadPatchMaxBytes caps the size of a single BoidOpTaskUpdatePayloadPatch
 // request's PayloadPatch content, since it crosses the broker RPC boundary
 // into the daemon process. Enforced independently at both the shim's read

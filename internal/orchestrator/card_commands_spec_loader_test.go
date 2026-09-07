@@ -26,6 +26,7 @@ card_commands:
   discuss:
     label: Discuss
     run: python3 scripts/card_discuss.py
+    card_write: true
   review:
     label: Run
     run: python3 scripts/card_review.py
@@ -41,12 +42,12 @@ card_events:
 		t.Fatalf("CardCommands = %+v, want 2 entries", meta.CardCommands)
 	}
 	discuss, ok := meta.CardCommands["discuss"]
-	if !ok || discuss.Label != "Discuss" || discuss.Run != "python3 scripts/card_discuss.py" {
+	if !ok || discuss.Label != "Discuss" || discuss.Run != "python3 scripts/card_discuss.py" || !discuss.CardWrite {
 		t.Errorf("CardCommands[discuss] = %+v, unexpected", discuss)
 	}
 	review, ok := meta.CardCommands["review"]
-	if !ok || review.Label != "Run" || review.Run != "python3 scripts/card_review.py" {
-		t.Errorf("CardCommands[review] = %+v, unexpected", review)
+	if !ok || review.Label != "Run" || review.Run != "python3 scripts/card_review.py" || review.CardWrite {
+		t.Errorf("CardCommands[review] = %+v, want CardWrite=false (omitted in project.yaml)", review)
 	}
 	if meta.CardEvents.Command != "review" {
 		t.Errorf("CardEvents.Command = %q, want %q", meta.CardEvents.Command, "review")

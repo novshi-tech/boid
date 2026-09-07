@@ -26,6 +26,12 @@ type TaskLookup interface {
 	GetTask(id string) (*Task, error)
 }
 
+// CardRequestByTaskLookup finds the card_requests row a task is the
+// continuation of, if any.
+type CardRequestByTaskLookup interface {
+	GetCardRequestByTaskTarget(taskID string) (*CardRequest, error)
+}
+
 // DispatchPlanner turns state-machine-driven hook fire events into a
 // sandbox-agnostic JobSpec. All sandbox construction concerns (mounts, env,
 // proxy wiring, exit scripts, worktree recreation) live in dispatcher.
@@ -35,6 +41,10 @@ type DispatchPlanner struct {
 	Projects ProjectCatalog
 	Tasks    TaskLookup
 	Adapter  adapters.HarnessAdapter
+	// CardRequests is optional. When set, PlanHook stamps CardID/CardRequestID
+	// onto the JobSpec whenever the firing task is itself a card-command
+	// continuation, so `boid card context` works from inside it.
+	CardRequests CardRequestByTaskLookup
 }
 
 // PlanHook renders a hook fire event into a JobSpec.
@@ -138,6 +148,15 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		// rely on it for live stdout streaming to the Web UI's WebSocket
 		// attach endpoint.
 		Interactive: true,
+	}
+	if p.CardRequests != nil {
+		// Best-effort: a lookup failure just means no card context reaches
+		// this job, not a dispatch failure — write.py's own fail-closed
+		// fallback handles that case safely.
+		if row, err := p.CardRequests.GetCardRequestByTaskTarget(task.ID); err == nil && row != nil {
+			spec.CardID = row.CardID
+			spec.CardRequestID = row.ID
+		}
 	}
 	return spec, nil, nil
 }

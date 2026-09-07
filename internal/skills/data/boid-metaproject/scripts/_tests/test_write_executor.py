@@ -20,7 +20,8 @@ class FakeCLI:
     """`BoidCLI` の書き込み口と読み口を記録するダブル。"""
 
     def __init__(
-        self, *, view=None, attrs=None, created=True, projects=None, behaviors=None, readonly="false"
+        self, *, view=None, attrs=None, created=True, projects=None, behaviors=None, readonly="false",
+        card_ctx=None,
     ) -> None:
         self.calls: list[tuple] = []
         # **既定は `parked`** (2026-08-25、PR-K レビュー MEDIUM 3 — 以前は v1 の legacy
@@ -41,8 +42,15 @@ class FakeCLI:
         #: 既定は real sweep 相当の `"false"` —— readonly に関心の無い既存テストを
         #: report 強制の対象にしない。
         self._readonly = readonly
+        #: `boid card context` の応答。既定は `None` (= card 文脈が無い、既存 Sweep 相当)
+        #: —— card 文脈に関心の無い既存テストの大半をそちらに固定する。
+        self._card_ctx = card_ctx
 
     # -- 読み --
+    def card_context(self):
+        self.calls.append(("card_context",))
+        return self._card_ctx
+
     def get_card(self, task_id):
         self.calls.append(("get_card", task_id))
         if task_id == "sweep-1" and getattr(self, "_sweep_project", None):

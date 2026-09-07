@@ -150,6 +150,17 @@ directory is always mounted read-write and `readonly` is enforced at the gateway
 instead (transport-RO), so "I moved the payload to /tmp" does not make a
 read-only sweep work.
 
+**This `readonly`-forces-report check only applies to `write.py` invocations
+with no card context** — a plain Sweep task, or any other job `boid card
+context` reports nothing for. A card-command continuation (a task or session
+`boid task create` / `boid agent start` dispatched for a project.yaml
+`card_commands.<key>` entry, docs/plans/card-next-step-and-timeline.md §4.5)
+is gated by that entry's own `card_write: true/false` instead — an
+independent axis from this behavior's `readonly`, since it has no
+`BOID_TASK_ID` to ask `boid task current` about in the session case. `write.py`
+tells the two paths apart itself (`boid card context`'s presence), so nothing
+here changes for a plain Sweep behavior.
+
 `--judge-skill` and `--max-targets` are flags rather than a config file on
 purpose — the runner image has no YAML parser, and the behavior instruction is
 already the place that says "run this first", so putting the two knobs there

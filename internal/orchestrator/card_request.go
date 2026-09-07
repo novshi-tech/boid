@@ -59,6 +59,9 @@ type CardRequestDefinition struct {
 	// label+run) callers may use to detect definition drift; the store
 	// itself never interprets it.
 	Version string
+	// CardWrite is CardCommand.CardWrite, snapshotted the same instant as
+	// Label/Run/Version. A CardRequestCommandKeyGo request never sets this.
+	CardWrite bool
 }
 
 // CardRequest is one row of the card_requests table.
@@ -156,12 +159,12 @@ func CreateCardRequest(dbtx db.DBTX, req *CardRequest) error {
 	_, err := dbtx.Exec(
 		`INSERT INTO card_requests (
 			id, card_id, command_key, cause_id, status, instruction,
-			launched_command_key, launched_label, launched_run, launched_version,
+			launched_command_key, launched_label, launched_run, launched_version, launched_card_write,
 			launcher_job_id, target_kind, target_id, folded_into, result, error,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.ID, req.CardID, req.CommandKey, req.CauseID, string(req.Status), req.Instruction,
-		req.Launched.CommandKey, req.Launched.Label, req.Launched.Run, req.Launched.Version,
+		req.Launched.CommandKey, req.Launched.Label, req.Launched.Run, req.Launched.Version, req.Launched.CardWrite,
 		req.LauncherJobID, req.TargetKind, req.TargetID, req.FoldedInto, req.Result, req.Error,
 		req.CreatedAt, req.UpdatedAt,
 	)
@@ -220,9 +223,9 @@ func ClaimQueuedCardRequests(dbtx db.DBTX, cardID, launcherJobID string, def Car
 	now := time.Now().UTC()
 	head := pending[0]
 	res, err := dbtx.Exec(
-		`UPDATE card_requests SET status = ?, launched_command_key = ?, launched_label = ?, launched_run = ?, launched_version = ?, launcher_job_id = ?, updated_at = ?
+		`UPDATE card_requests SET status = ?, launched_command_key = ?, launched_label = ?, launched_run = ?, launched_version = ?, launched_card_write = ?, launcher_job_id = ?, updated_at = ?
 		 WHERE id = ? AND status = ?`,
-		string(CardRequestStatusLaunching), def.CommandKey, def.Label, def.Run, def.Version, launcherJobID, now,
+		string(CardRequestStatusLaunching), def.CommandKey, def.Label, def.Run, def.Version, def.CardWrite, launcherJobID, now,
 		head.ID, string(CardRequestStatusQueued),
 	)
 	if err != nil {
@@ -457,7 +460,7 @@ func RetryCardRequest(dbtx db.DBTX, id string) error {
 		return fmt.Errorf("retry card request: id must not be empty")
 	}
 	res, err := dbtx.Exec(
-		`UPDATE card_requests SET status = ?, error = '', launched_command_key = '', launched_label = '', launched_run = '', launched_version = '', launcher_job_id = '', target_kind = '', target_id = '', result = '', updated_at = ?
+		`UPDATE card_requests SET status = ?, error = '', launched_command_key = '', launched_label = '', launched_run = '', launched_version = '', launched_card_write = FALSE, launcher_job_id = '', target_kind = '', target_id = '', result = '', updated_at = ?
 		 WHERE id = ? AND status = ?`,
 		string(CardRequestStatusQueued), time.Now().UTC(), id, string(CardRequestStatusFailed),
 	)
@@ -480,6 +483,25 @@ func CountActiveCardRequests(dbtx db.DBTX, cardID string) (int, error) {
 		return 0, fmt.Errorf("count active card requests: %w", err)
 	}
 	return n, nil
+}
+
+// GetCardRequestByTaskTarget finds the card_requests row whose continuation
+// is taskID, if any. Returns (nil, nil) — not an error — when taskID is not
+// a card-command continuation, so a caller can treat "no card context" as
+// the ordinary case rather than special-casing a sentinel error.
+func GetCardRequestByTaskTarget(dbtx db.DBTX, taskID string) (*CardRequest, error) {
+	row := dbtx.QueryRow(
+		cardRequestSelectCols+` FROM card_requests WHERE target_kind = ? AND target_id = ? ORDER BY created_at DESC LIMIT 1`,
+		CardRequestTargetKindTask, taskID,
+	)
+	req, err := scanCardRequestRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get card request by task target: %w", err)
+	}
+	return req, nil
 }
 
 // GetCardRequest fetches a single card_requests row by id.
@@ -539,7 +561,7 @@ func rowsAffectedOrNotFoundOrInvalid(dbtx db.DBTX, res sql.Result, id string) er
 }
 
 const cardRequestSelectCols = `SELECT id, card_id, command_key, cause_id, status, instruction,
-	launched_command_key, launched_label, launched_run, launched_version,
+	launched_command_key, launched_label, launched_run, launched_version, launched_card_write,
 	launcher_job_id, target_kind, target_id, folded_into, result, error,
 	created_at, updated_at`
 
@@ -554,7 +576,7 @@ func scanCardRequestRow(row cardRequestRowScanner) (*CardRequest, error) {
 	var status string
 	if err := row.Scan(
 		&r.ID, &r.CardID, &r.CommandKey, &r.CauseID, &status, &r.Instruction,
-		&r.Launched.CommandKey, &r.Launched.Label, &r.Launched.Run, &r.Launched.Version,
+		&r.Launched.CommandKey, &r.Launched.Label, &r.Launched.Run, &r.Launched.Version, &r.Launched.CardWrite,
 		&r.LauncherJobID, &r.TargetKind, &r.TargetID, &r.FoldedInto, &r.Result, &r.Error,
 		&r.CreatedAt, &r.UpdatedAt,
 	); err != nil {

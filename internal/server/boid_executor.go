@@ -1147,10 +1147,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
 	case sandbox.BoidOpCardContext:
 		// ctx.CardRequestID is already broker-verified non-empty (broker.go's
-		// BoidOpCardContext case) — the check below is defense in depth for
-		// a handwritten request that bypassed the broker.
+		// BoidOpCardContext case, same NoCardContextExitCode) — the check
+		// below is defense in depth for a handwritten request that bypassed
+		// the broker.
 		if ctx.CardRequestID == "" {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card context: no card context for this job"}
+			return &sandbox.ExecResponse{ExitCode: sandbox.NoCardContextExitCode, Stderr: "boid card context: no card context for this job"}
 		}
 		if e.cardRequests == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card context unavailable"}
@@ -1183,6 +1184,8 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			CommandKey:  commandKey,
 			Instruction: row.Instruction,
 			Origin:      origin,
+			CardWrite:   row.Launched.CardWrite,
+			Actor:       cardContextActor(ctx),
 		}
 		if req.TaskField != "" {
 			value, err := resolveTaskContextField(resp, req.TaskField)

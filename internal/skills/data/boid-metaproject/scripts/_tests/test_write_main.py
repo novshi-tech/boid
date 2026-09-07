@@ -200,5 +200,98 @@ class ReadonlyForcesReportTest(unittest.TestCase):
         self.assertFalse(cli.wrote("current_field"))
 
 
+class CardContextTest(unittest.TestCase):
+    """card_commands 経由の呼び出し (docs/plans/card-next-step-and-timeline.md §4.5):
+    signals も `BOID_TASK_ID` も要らず、書き込み可否は `card_write` が唯一の根拠 ——
+    readonly や env では昇格しない。既存 Sweep 経路 (`card_context()` が `None`) は
+    このクラス以外の全テストが既に固定している。
+    """
+
+    def _card_ctx(self, **overrides):
+        base = {
+            "card_id": "card-1", "request_id": "req-1", "command_key": "discuss",
+            "instruction": "", "origin": "human", "card_write": True, "actor": "session",
+        }
+        base.update(overrides)
+        return base
+
+    def test_card_write_true_writes_without_signals_or_task_id_env(self):
+        cli = FakeCLI(card_ctx=self._card_ctx())
+        code, _out, err = call(["go"], {"task_id": "t1", "reason": "ready"}, cli=cli, env={})
+        self.assertEqual(code, 0)
+        self.assertTrue(cli.wrote("send_action"))
+        self.assertIn("actor='session'", err)
+
+    def test_card_write_false_forces_report_even_without_the_flag(self):
+        cli = FakeCLI(card_ctx=self._card_ctx(card_write=False, actor="task"))
+        code, out, err = call(["go"], {"task_id": "t1", "reason": "ready"}, cli=cli, env={})
+        self.assertEqual(code, 0)
+        self.assertFalse(cli.wrote("send_action"))
+        self.assertIn("send_action", out)
+        self.assertIn("card_write=false", err)
+
+    def test_a_non_boolean_card_write_value_fails_closed(self):
+        """`card_write` は `is True` で厳密比較する —— `"true"` のような文字列や
+        欠落した応答 (`None`) を真と読む取り違えを防ぐ。"""
+        for bad_value in ("true", 1, None):
+            with self.subTest(bad_value=bad_value):
+                cli = FakeCLI(card_ctx=self._card_ctx(card_write=bad_value))
+                code, out, _err = call(["go"], {"task_id": "t1", "reason": "ready"}, cli=cli, env={})
+                self.assertEqual(code, 0)
+                self.assertFalse(cli.wrote("send_action"))
+                self.assertIn("send_action", out)
+
+    def test_signals_are_not_required(self):
+        cli = FakeCLI(card_ctx=self._card_ctx())
+        code, _out, err = call(["go"], {"task_id": "t1", "reason": "ready"}, cli=cli, env={})
+        self.assertEqual(code, 0)
+        self.assertNotIn("signals が要る", err)
+
+    def test_a_signals_field_is_rejected(self):
+        """人発コマンドは inbox を持たないので `signals` はフィールドごと拒否する ——
+        渡せてしまうと `_record` が inbox とは無縁の event_key を ack できてしまう。"""
+        cli = FakeCLI(card_ctx=self._card_ctx())
+        code, _out, err = call(
+            ["go"], {"task_id": "t1", "reason": "ready", "signals": ["boid:a1"]}, cli=cli, env={}
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("知らないフィールド", err)
+        self.assertIn("signals", err)
+        self.assertFalse(cli.wrote("send_action"))
+        self.assertFalse(cli.wrote("ack_signals"))
+
+    def test_lookup_failure_hard_fails_without_a_dry_run(self):
+        """`readonly` の場合と違い、card context 自体が引けないときは report にすら
+        倒さず即座に拒否する —— 「card 文脈なし」と「引けなかった」を混同すると、
+        本当は card-command 経由の呼び出しが古い Sweep 専用経路 (BOID_TASK_ID 必須) へ
+        誤って落ちてしまう。"""
+
+        class Unreadable(FakeCLI):
+            def card_context(self):
+                raise RuntimeError("broker unreachable")
+
+        cli = Unreadable()
+        code, out, err = call(["go"], {"task_id": "t1", "reason": "ready"}, cli=cli, env={})
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("broker unreachable", err)
+        self.assertFalse(cli.wrote("send_action"))
+
+    def test_no_card_context_still_requires_the_task_id_env(self):
+        """card_context() が `None` (既存 Sweep task を含む非 card-command ジョブの通常
+        応答) のときは、既存の BOID_TASK_ID 必須経路がそのまま働く。"""
+        cli = FakeCLI(card_ctx=None)
+        code, _out, err = call(["done-signal"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=cli, env={})
+        self.assertEqual(code, 2)
+        self.assertIn(TASK_ID_ENV, err)
+
+    def test_explicit_report_flag_still_dry_runs_when_card_write_is_true(self):
+        cli = FakeCLI(card_ctx=self._card_ctx())
+        code, out, _err = call(["go", "--report"], {"task_id": "t1", "reason": "ready"}, cli=cli, env={})
+        self.assertEqual(code, 0)
+        self.assertFalse(cli.wrote("send_action"))
+        self.assertIn("send_action", out)
+
+
 if __name__ == "__main__":
     unittest.main()

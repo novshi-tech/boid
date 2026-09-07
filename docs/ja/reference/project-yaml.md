@@ -292,7 +292,27 @@ card_events:
 |---|---|---|---|
 | `card_commands.<key>.label` | string | はい | UI に出すボタンのラベル (ワークスペース定義の任意の英語文言) |
 | `card_commands.<key>.run` | string | はい | サンドボックス内で `sh -c` に渡されるコマンド文字列 (`triggers[].run` と同じ実行モデル) |
+| `card_commands.<key>.card_write` | bool | いいえ (既定 `false`) | この起動 (launcher とその継続先 task/session) に card 書き込み権限を与えるか。`boid card context` の `card_write` フィールドとして届く。task behavior の `readonly` とは独立した軸 — 詳細は次節 |
 | `card_events.command` | string | いいえ | 内部イベントで自動起動する `card_commands` のキー。宣言する場合は `card_commands` に実在するキーでなければならず、存在しなければロード時にエラー |
+
+### `card_write`: readonly と独立した card 書き込み権限
+
+`readonly` は今も 2 つの役割を兼ねます: (a) API gateway の非 safe メソッド拒否、
+(b) `boid-task` の supervisor/executor 選択。これとは別に、`card_commands.<key>.card_write`
+は「この起動の継続先が共通記録処理 (metaproject の `write.py`) を通して card に書けるか」
+だけを決める、**独立した第三の軸**です (docs/plans/card-next-step-and-timeline.md §4.5)。
+
+- 値は `queued → launching` に遷移した瞬間の `card_commands` 定義から一度だけ
+  スナップショットされ (`launched_card_write` 列)、以降その request の生存中は
+  project.yaml をその場で編集しても変わりません。
+- `boid card context` の応答に `card_write` (bool) として現れます。継続先の
+  sandbox から見えるのはこの値だけで、環境変数や CLI フラグで昇格させる経路はありません。
+- Go (作業子の起動) にはこの軸がありません — 作業 task の card 書き込み可否は
+  従来どおりその task の behavior の `readonly` に従います。判断コマンド
+  (`Discuss`/`Run` 等) だけがこのフィールドの対象です。
+- 「判断 task は `readonly: true` + `card_write: true`」「作業 task は
+  behavior の `readonly` に従う (`card_write` は無関係)」という組み合わせを
+  表現するためのフィールドです。
 
 **現状の実装範囲**: project.yaml の宣言と load 時の shape 検証、card ごとの実行要求を保持する内部 store (`card_requests` テーブル、`internal/orchestrator/card_request.go`)、手動起動 (`RunCardCommandAsHuman` / `POST /api/cards/{id}/commands/{key}` /
 `boid card run <card-id> <key>`)、launcher から task/session 継続先を作る `boid task create` / `boid agent start` op、`card_requests` の枠解放 (継続先の終端照合、および launcher job 終端かつ継続先が無い launching 行の self-heal) を提供します。内部イベントによる自動起動 (`card_events.command` からの実際の起動) は未実装です。

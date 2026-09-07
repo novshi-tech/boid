@@ -485,12 +485,16 @@ type TriggerConnector struct {
 }
 
 // CardCommand is one project.yaml `card_commands.<key>` entry: a label and
-// a run command. Both fields are required (ValidateCardCommands).
+// a run command. Label and Run are required (ValidateCardCommands).
 type CardCommand struct {
 	// Label is the UI button text for this command, workspace-defined.
 	Label string `yaml:"label" json:"label"`
 	// Run is a command string passed to `sh -c` inside the project's sandbox.
 	Run string `yaml:"run" json:"run"`
+	// CardWrite grants this command's continuation the card-write permission
+	// `boid card context` reports, independent of any task behavior's own
+	// readonly. Optional, defaults to false — a command must opt in.
+	CardWrite bool `yaml:"card_write,omitempty" json:"card_write,omitempty"`
 }
 
 // CardEventsConfig is ProjectMeta.CardEvents — project.yaml's
