@@ -752,8 +752,16 @@ func TestWebHandlerPostStartShapingSession_WorkingWithOpenChild(t *testing.T) {
 // pins that the shaping instruction never unconditionally tells the agent
 // to add a new child task: applyChildAddedSideEffect rejects with a 409 the
 // moment the card's single work slot is already occupied, so both the
-// working and parked instructions must tell the agent that a NEW
-// child_added is gated on the slot being free.
+// working and parked instructions must tell the agent that adding a NEW
+// child is gated on the slot being free.
+//
+// It also pins that the instruction states that gate WITHOUT naming a wire
+// action or a workspace. Naming `child_specced`/`child_added` here picked
+// the workspace's write path for it — the raw action send — which is the
+// "daemon fixes the instruction" friction the card-command model removes;
+// a workspace whose write path is the shared recording CLI was told to do
+// something else. The workspace name that used to appear here ("khi の
+// suggest") was a second instance of the same leak.
 func TestWebHandlerPostStartShapingSession_InstructionRespectsSingleWorkSlot(t *testing.T) {
 	for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking} {
 		t.Run(string(status), func(t *testing.T) {
@@ -773,11 +781,16 @@ func TestWebHandlerPostStartShapingSession_InstructionRespectsSingleWorkSlot(t *
 				t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
 			}
 			instr := dispatcher.lastReq.Instruction
-			if !strings.Contains(instr, "child_added") {
-				t.Errorf("instruction should name child_added as the new-child write path; got:\n%s", instr)
-			}
 			if !strings.Contains(instr, "最大一つ") {
 				t.Errorf("instruction should state the single-work-slot invariant; got:\n%s", instr)
+			}
+			if !strings.Contains(instr, "空いている場合のみ") {
+				t.Errorf("instruction should gate adding a new child on the slot being free; got:\n%s", instr)
+			}
+			for _, leak := range []string{"child_added", "child_specced", "khi"} {
+				if strings.Contains(instr, leak) {
+					t.Errorf("instruction must not name a wire action or a workspace (%q); got:\n%s", leak, instr)
+				}
 			}
 			if strings.Contains(instr, "新たに追加した子タスクも同じ形で children に加えてください") {
 				t.Errorf("instruction must not unconditionally instruct adding new children (slot may be occupied); got:\n%s", instr)
