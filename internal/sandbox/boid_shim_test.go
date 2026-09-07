@@ -55,7 +55,7 @@ func TestRunBoidShim_JobDoneSendsTypedRequest(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	// The broker dispatches by req.Boid != nil (typed payload), so req.Command
 	// is informational only. Post 5a-3 the shim sets it to os.Args[0] (the
 	// invocation shape, absolute in unit tests running the test binary) —
@@ -120,7 +120,7 @@ func TestRunBoidShim_AgentStopSendsTypedRequest(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -179,7 +179,7 @@ func TestRunBoidShim_AgentStartSendsTypedRequest(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0, stderr=%q", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -285,7 +285,7 @@ func TestRunBoidShim_TaskAskSendsTypedRequest(t *testing.T) {
 		t.Fatalf("stdout = %q, want the answer 'approved'", resp.Stdout)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -372,7 +372,7 @@ func TestRunBoidShim_TaskCreateSendsTypedRequest(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -465,7 +465,7 @@ func TestRunBoidShim_TaskCreate_IdempotencyKeyFlag(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr = %q, want 0 (--idempotency-key must be accepted)", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -533,7 +533,7 @@ func TestRunBoidShim_TaskCreate_IdempotencyKeyFlagEqualsForm(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr = %q, want 0", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	var createPatch struct {
 		IdempotencyKey string `json:"idempotency_key"`
 	}
@@ -593,7 +593,7 @@ func TestRunBoidShim_TaskCreatePropagatesBaseBranch(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -664,7 +664,7 @@ func TestRunBoidShim_TaskUpdateSendsTypedRequest(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -741,7 +741,7 @@ func TestRunBoidShim_TaskUpdate_RemoteIDOnly_PatchFile(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -827,7 +827,7 @@ behavior_spec:
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -904,7 +904,7 @@ func TestRunBoidShim_TaskCreate_NeitherBehaviorNorSpec_ForwardsToBroker(t *testi
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1007,7 +1007,7 @@ func TestParseBoidTaskImport_Stdin(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1045,7 +1045,7 @@ func TestParseBoidTaskImport_File(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1072,7 +1072,7 @@ func TestParseBoidTaskImport_ProjectOverride(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1098,7 +1098,7 @@ func TestParseBoidTaskImport_EmptyLines(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1160,7 +1160,7 @@ func TestRunBoidShim_TaskReopen_SendsTypedRequest(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1196,7 +1196,7 @@ func TestRunBoidShim_TaskReopen_WithMessage(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1227,7 +1227,7 @@ func TestRunBoidShim_TaskReopen_WithLongMessageFlag(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil || req.Boid.Message != "do over" {
 		t.Fatalf("message = %q, want %q", req.Boid.Message, "do over")
 	}
@@ -1292,7 +1292,7 @@ func TestRunBoidShim_TaskNotify_AskMode(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0 (stderr=%s)", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1329,7 +1329,7 @@ func TestRunBoidShim_TaskNotify_ProgressOnly(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0 (stderr=%s)", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1360,7 +1360,7 @@ func TestRunBoidShim_TaskNotify_NormalMode_NoAsk(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid.Ask != "" {
 		t.Errorf("ask = %q, want empty for normal notify", req.Boid.Ask)
 	}
@@ -1384,7 +1384,7 @@ func TestRunBoidShim_TaskAnswer_SendsTypedRequest(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0 (stderr=%s)", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1468,7 +1468,7 @@ func TestRunBoidShim_JobDoneSilentSkipsMissingOutputFile(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1522,7 +1522,7 @@ func TestRunBoidShim_ActionSend_ParseSuccess(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1591,7 +1591,7 @@ func TestRunBoidShim_ActionSend_NoPayloadIsOptional(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil || req.Boid.Op != sandbox.BoidOpActionSend {
 		t.Fatal("expected action_send request")
 	}
@@ -1643,7 +1643,7 @@ func TestRunBoidShim_ActionList_ParseSuccess(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1699,7 +1699,7 @@ func TestRunBoidShim_ActionList_NoFlagsIsValid(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil || req.Boid.Op != sandbox.BoidOpActionList {
 		t.Fatal("expected action_list request")
 	}
@@ -1761,7 +1761,7 @@ func TestRunBoidShim_JobList_ParseSuccess(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1818,7 +1818,7 @@ func TestRunBoidShim_ProjectBehaviors_ParseSuccess(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1883,7 +1883,7 @@ func TestRunBoidShim_ProjectList_ParseSuccess(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -1948,7 +1948,7 @@ func TestRunBoidShim_JobShow_ParseSuccess(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -2005,7 +2005,7 @@ func TestRunBoidShim_JobLog_ParseSuccess(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -2122,7 +2122,7 @@ func TestRunBoidShim_TaskDelete_Normal(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -2150,7 +2150,7 @@ func TestRunBoidShim_TaskDelete_Force(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}

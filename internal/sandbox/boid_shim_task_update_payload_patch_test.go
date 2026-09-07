@@ -68,7 +68,7 @@ func TestRunBoidShim_TaskUpdatePayloadPatch_Stdin(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -121,7 +121,7 @@ func TestRunBoidShim_TaskUpdatePayloadPatch_InlineValue(t *testing.T) {
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if got, want := string(req.Boid.PayloadPatch), `{"artifact":{"report":{"summary":"done"}}}`; got != want {
 		t.Fatalf("payload patch = %s, want %s", got, want)
 	}
@@ -170,7 +170,7 @@ func TestRunBoidShim_TaskUpdatePayloadPatch_FromFile(t *testing.T) {
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if got, want := string(req.Boid.PayloadPatch), `{"artifact":{"report":{"summary":"done"}}}`; got != want {
 		t.Fatalf("payload patch = %s, want %s", got, want)
 	}
@@ -276,7 +276,7 @@ func TestRunBoidShim_TaskUpdatePayloadPatch_NormalizesNonStringYAMLKeys(t *testi
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
 	}
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if got, want := string(req.Boid.PayloadPatch), `{"artifact":{"report":{"true":"verifying"}}}`; got != want {
 		t.Fatalf("payload patch = %s, want %s", got, want)
 	}

@@ -29,7 +29,7 @@ func TestRunBoidShim_CardContext_NoIDsSent(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -101,7 +101,7 @@ func TestRunBoidShim_CardContext_Field(t *testing.T) {
 		t.Errorf("Stdout = %q, want %q (unrendered scalar)", resp.Stdout, "do the thing")
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid.TaskField != "instruction" {
 		t.Errorf("TaskField = %q, want %q", req.Boid.TaskField, "instruction")
 	}

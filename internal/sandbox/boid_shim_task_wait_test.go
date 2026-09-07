@@ -52,7 +52,7 @@ func TestRunBoidShim_TaskWait_SendsTypedRequest(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected a boid request")
 	}

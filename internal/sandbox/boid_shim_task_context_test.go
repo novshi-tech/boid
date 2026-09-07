@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
@@ -46,6 +47,19 @@ func newFakeBrokerRecording(t *testing.T, resp *sandbox.ExecResponse) (sockPath 
 	return sockPath, reqCh
 }
 
+// recvReq takes the request the fake broker recorded, failing this test rather
+// than blocking until the package-wide timeout fires against an unrelated one.
+func recvReq(t *testing.T, reqCh <-chan sandbox.ExecRequest) sandbox.ExecRequest {
+	t.Helper()
+	select {
+	case req := <-reqCh:
+		return req
+	case <-time.After(30 * time.Second):
+		t.Fatal("fake broker never received a request — the shim did not reach it")
+		return sandbox.ExecRequest{}
+	}
+}
+
 func TestRunBoidShim_TaskCurrent_UsesEnvIDs(t *testing.T) {
 	sockPath, reqCh := newFakeBrokerRecording(t, &sandbox.ExecResponse{
 		Stdout: `{"id":"t1","title":"hello","status":"executing","behavior":"dev"}`,
@@ -63,7 +77,7 @@ func TestRunBoidShim_TaskCurrent_UsesEnvIDs(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")
 	}
@@ -135,7 +149,7 @@ func TestRunBoidShim_TaskCurrent_FieldSkipsFormatting(t *testing.T) {
 		t.Errorf("stdout = %q, want the plain-text field value unmodified", resp.Stdout)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid.TaskField != "title" {
 		t.Errorf("task_field = %q, want title", req.Boid.TaskField)
 	}
@@ -179,7 +193,7 @@ func TestRunBoidShim_TaskInstructions_UsesEnvIDs(t *testing.T) {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid.Op != sandbox.BoidOpTaskInstructions {
 		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskInstructions)
 	}
@@ -208,7 +222,7 @@ func TestRunBoidShim_TaskEnv_UsesEnvIDs(t *testing.T) {
 		t.Errorf("stdout = %q, want the allowed domain rendered", resp.Stdout)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid.Op != sandbox.BoidOpTaskEnv {
 		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskEnv)
 	}
@@ -235,7 +249,7 @@ func TestRunBoidShim_TaskPayload_FieldQuery(t *testing.T) {
 		t.Errorf("stdout = %q, want the sessions array unmodified (field mode skips YAML re-render)", resp.Stdout)
 	}
 
-	req := <-reqCh
+	req := recvReq(t, reqCh)
 	if req.Boid.Op != sandbox.BoidOpTaskPayload {
 		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskPayload)
 	}

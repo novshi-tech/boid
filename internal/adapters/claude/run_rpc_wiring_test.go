@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/testutil/homeenv"
 )
 
 // Phase 5b PR3 (docs/plans/phase5-shim-and-task-context.md) "e2e wiring"
@@ -74,7 +75,11 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(resp.ExitCode)
 	}
-	os.Exit(m.Run())
+	// After the helper branch, never before it: the helper keeps the broker
+	// wiring the parent handed it, while the parent must shed its own ambient
+	// copy — buildTaskPayloadSessionsCmd overlays the test's env map on top of
+	// os.Environ(), so any key the test does not set reaches the helper.
+	os.Exit(homeenv.Run(m))
 }
 
 // startFakeBroker listens on a fresh temp unix socket and, for the single

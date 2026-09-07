@@ -7,7 +7,21 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// recvSignalReq takes the request the fake broker recorded, failing this test
+// rather than blocking until the package-wide timeout fires.
+func recvSignalReq(t *testing.T, reqCh <-chan ExecRequest) ExecRequest {
+	t.Helper()
+	select {
+	case req := <-reqCh:
+		return req
+	case <-time.After(30 * time.Second):
+		t.Fatal("fake broker never received a request — the shim did not reach it")
+		return ExecRequest{}
+	}
+}
 
 // docs/plans/signal-ingest-detailed-design.md §3.2 (PR-3): boid_shim.go's
 // `boid signal list/ack/ingest/cursor` parsing.
@@ -331,7 +345,7 @@ func TestRunBoidShim_SignalAck_TwiceIsHarmless(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		req := <-reqCh
+		req := recvSignalReq(t, reqCh)
 		if req.Boid == nil || req.Boid.Op != BoidOpSignalAck {
 			t.Fatalf("call %d: unexpected request %+v", i, req)
 		}
@@ -381,7 +395,7 @@ func TestRunBoidShim_SignalList_Claim(t *testing.T) {
 		t.Fatalf("stdout = %q, want the fake broker's JSON body", resp.Stdout)
 	}
 
-	req := <-reqCh
+	req := recvSignalReq(t, reqCh)
 	if req.Boid == nil || req.Boid.Op != BoidOpSignalList || !req.Boid.Claim || req.Boid.Limit != 10 {
 		t.Fatalf("unexpected request: %+v", req.Boid)
 	}
