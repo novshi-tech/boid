@@ -344,11 +344,30 @@ func RecoverLaunchingCardRequests(conn *sql.DB) ([]CardRequestSlotOutcome, error
 // the very next claim restart the card the operator just told to stop.
 // Returns every sibling it force-failed this way, since fold is scoped to
 // the card rather than id's own command_key/cause_id.
+//
+// Also plants a force-release barrier on id's card (SetCardForceReleaseBarrier):
+// the continuation force-release just detached is NOT itself stopped (a
+// KNOWN GAP — see this function's own callers), and if it later writes
+// again, that write would otherwise queue a fresh automatic request and let
+// ClaimQueuedCardRequestsForDispatch relaunch the very card the operator
+// just told to stop. The barrier suppresses that until a human operation
+// (a card command, Go, or an explicit RetryCardRequest) clears it.
 func ForceReleaseCardRequest(dbtx db.DBTX, id, reason string) ([]ForceReleasedSibling, error) {
 	if reason == "" {
 		reason = "force-released by operator"
 	}
-	return failCardRequest(dbtx, id, reason, foldedSiblingsFail)
+	siblings, err := failCardRequest(dbtx, id, reason, foldedSiblingsFail)
+	if err != nil {
+		return nil, err
+	}
+	row, gerr := GetCardRequest(dbtx, id)
+	if gerr != nil {
+		return siblings, fmt.Errorf("force release card request: reload for barrier: %w", gerr)
+	}
+	if serr := SetCardForceReleaseBarrier(dbtx, row.CardID); serr != nil {
+		return siblings, fmt.Errorf("force release card request: set barrier: %w", serr)
+	}
+	return siblings, nil
 }
 
 // ReleaseCardRequestForTerminalTarget releases the attached card_requests
@@ -360,23 +379,33 @@ func ForceReleaseCardRequest(dbtx db.DBTX, id, reason string) ([]ForceReleasedSi
 // finished. found is false in the common case (most terminal tasks/jobs are
 // not a card_requests continuation at all).
 func ReleaseCardRequestForTerminalTarget(dbtx db.DBTX, targetKind, targetID string, success bool) (found bool, err error) {
+	found, _, err = ReleaseCardRequestForTerminalTargetWithCard(dbtx, targetKind, targetID, success)
+	return found, err
+}
+
+// ReleaseCardRequestForTerminalTargetWithCard is
+// ReleaseCardRequestForTerminalTarget plus the released row's own card_id,
+// for a caller that wants to try an immediate dispatch of that card's
+// queued backlog right after freeing its slot (a released slot is exactly
+// what a queued request was waiting on).
+func ReleaseCardRequestForTerminalTargetWithCard(dbtx db.DBTX, targetKind, targetID string, success bool) (found bool, cardID string, err error) {
 	row := dbtx.QueryRow(
-		`SELECT id FROM card_requests WHERE target_kind = ? AND target_id = ? AND status = ?`,
+		`SELECT id, card_id FROM card_requests WHERE target_kind = ? AND target_id = ? AND status = ?`,
 		targetKind, targetID, string(CardRequestStatusAttached),
 	)
 	var id string
-	if serr := row.Scan(&id); serr != nil {
+	if serr := row.Scan(&id, &cardID); serr != nil {
 		if errors.Is(serr, sql.ErrNoRows) {
-			return false, nil
+			return false, "", nil
 		}
-		return false, fmt.Errorf("find attached card request for %s %q: %w", targetKind, targetID, serr)
+		return false, "", fmt.Errorf("find attached card request for %s %q: %w", targetKind, targetID, serr)
 	}
 	if success {
 		if ferr := FinishCardRequest(dbtx, id, "continuation reached a terminal successful state"); ferr != nil {
-			return false, fmt.Errorf("finish: %w", ferr)
+			return false, "", fmt.Errorf("finish: %w", ferr)
 		}
 	} else if ferr := FailCardRequest(dbtx, id, "continuation ended without success"); ferr != nil {
-		return false, fmt.Errorf("fail: %w", ferr)
+		return false, "", fmt.Errorf("fail: %w", ferr)
 	}
-	return true, nil
+	return true, cardID, nil
 }

@@ -455,7 +455,7 @@ khi 等の最新 workspace repo と本番 DB は未調査。判断スキルが�
 | PR-2 | カードコマンド宣言、trigger run の card 文脈拡張、`boid agent start` op、op 内の関連付けと冪等性 | 固定した最小スクリプトで task/session を起動し、UI から返却先を開ける。二重作成不可。op 直後に launcher を殺しても関連が残る |
 | PR-3 | 組み込み共通記録の context 対応、workspace workflow の接続 | session/task 両方で読み書き・正しい終了が動く。task bootstrap の委譲を検証 — **実装は完了、実 harness 検証は Gate A へ送った（§10 の「PR-3 で実装」を参照）** |
 | Gate A | 実 workspace のコマンドと判断スキルを使う縦断検証 | 下記項目を通るまでイベント駆動化へ進まない |
-| PR-4 | 内部イベントの耐久要求・起動通知・復旧、外部 Sweep handoff。PR-4a（queued/fold の既知バグ）/ PR-4b（内部イベント→queued 生成、下記参照）/ PR-4c（queued→launching dispatch、周期フォールバック）に分割 | 自己ループ無し、枠占有中の保留、作業終了後の再判断。旧経路とは未併用 |
+| PR-4 | 内部イベントの耐久要求・起動通知・復旧、外部 Sweep handoff。PR-4a（queued/fold の既知バグ、マージ済み）/ PR-4b（内部イベント→queued 生成、マージ済み、下記参照）/ PR-4c（queued→launching dispatch、周期フォールバック、下記参照）に分割 — **3 本とも完了** | 自己ループ無し、枠占有中の保留、作業終了後の再判断。旧経路とは未併用 |
 | PR-5 | card タイムライン読みモデルと一覧活動状態 | stable ID/cursor、関連 task/session、GC 後も読める概要。PR-2 後に着手可能 |
 | PR-6 | 詳細 UI 統合、コマンド入力、最新10件・固定項目・日付・一覧/SSE | 汎用 command UI で期待する操作を行える。定義ラベルは英語 |
 | Gate B / PR-7 | 移行・運用検証・旧 Shape/重複判断の撤去 | 少数 card で外部変化から次の Go まで通し、展開する |
@@ -830,6 +830,111 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   reconcile/recover 関数は queued 行に触らない」テスト
   (`TestQueuedCardRequests_UntouchedByReconcileAndRecovery` 等) も
   引き続き green。dispatch（claim → launch）は PR-4c の担当。
+- **PR-4c で確定: queued 行を捌く dispatcher。** `ClaimQueuedCardRequests` の
+  呼び出し元を実装し、queued→launching→launcher 起動の経路を繋いだ
+  (`internal/orchestrator/card_request_dispatch.go` の
+  `ClaimQueuedCardRequestsForDispatch`、`internal/api/card_request_auto_dispatch.go`
+  の `dispatchQueuedCardRequest`)。起動タイミングは commit 後の即時試行を
+  主経路とし、`tryDispatchQueuedCardRequest` をコミット点 6 か所から呼ぶ
+  (`applyAction` の汎用パス、`applyAnswered`、`recordChildClosedOnParent`、
+  `recordVanishedChildClosedOnParent`、`recordWakeDue`、
+  `releaseCardRequestForTerminalTask`)。周期 `CardRequestDispatchLoop`
+  (`internal/api/card_request_dispatch_loop.go`、30 秒間隔) は通知欠落・
+  daemon 再起動時の復旧専用に位置づけた。
+
+  **claim 側の status 再チェック: 実装した。終端のさせ方は「対象 card の
+  queued 行を全て failed に落とす」。** `ClaimQueuedCardRequestsForDispatch`
+  が claim の直前に card の現在 status を再読し、parked/working 以外なら
+  `failAllQueuedCardRequests` で queued 行を一括 failed にして
+  `ErrCardNotEligibleForDispatch` を返す。`suggestion_accept.go` の
+  answered{accept: complete} が同一 tx 内で queued 行を作ってから card を
+  done にするケースを、実 DB で end-to-end 固定した
+  (`TestApplyAnswered_AcceptComplete_DrainsRaceQueuedRowInsteadOfLaunching`)。
+  1 件だけでなく queued 中の全行を落とす判断にした理由: 対象が終端なら
+  再判断してももう一度同じ結論になるだけで、1 件ずつ周期ループが拾い直すのは
+  無駄。
+
+  実装中に見つけた別バグ: `TaskRepository.ClaimQueuedCardRequestsForDispatch`
+  の transaction wrapper が、`db.InTxDB` の「戻り値が non-nil ならロール
+  バックする」という挙動により、この drain の副作用ごと巻き戻してしまって
+  いた（`ErrCardNotEligibleForDispatch` を素朴に closure の戻り値として
+  返すと drain の UPDATE も一緒に消える）。生の `*sql.DB` に対する直接呼び
+  出しのテストでは各文が個別に auto-commit するため発覚せず、
+  `TaskRepository` 経由（本番が実際に使う経路）で初めて再現した ——
+  `TestTaskRepository_ClaimQueuedCardRequestsForDispatch_IneligibleDrainCommits`
+  として固定。`orchestrator.IsCardRequestDispatchSkip` を新設し、「claim
+  できなかった」系のエラーは wrapper 内で捕捉して commit させ、呼び出し元
+  にはエラー値だけを返すようにした。
+
+  **force-release 抑止の方式: 専用テーブル `card_force_release_barriers`
+  (card_id 主キー) を新設した。** `ForceReleaseCardRequest` が対象 card の
+  barrier 行を立て、`ClaimQueuedCardRequestsForDispatch` は claim 前に
+  barrier の有無をチェックして存在すれば `ErrCardForceReleaseBarrierActive`
+  を返し、queued 行はそのまま（failed にはしない — 一時的な抑止であって
+  恒久的な失敗ではないため）。「人の操作」として数えたのは 3 つ: 人発カード
+  コマンド (`RunCardCommandAsHuman`)、Go (`reserveGoCardRequest`)、明示的
+  Retry (`RetryCardRequest`) — いずれも barrier を無条件にクリアする
+  （Retry は対象 card の barrier のみ、コマンド/Go は呼び出しがあった時点で
+  クリアし、実際に枠を取れたかどうかは問わない —— 占有中の人発コマンドでも
+  「人が今この card を見た」事実自体が barrier を解く根拠として十分と
+  判断した）。各経路を実 DB でテスト:
+  `TestForceReleaseCardRequest_SetsBarrier`、
+  `TestRunCardCommandAsHuman_ClearsForceReleaseBarrier`、
+  `TestReserveGoCardRequest_ClearsForceReleaseBarrier`、
+  `TestRetryCardRequest_ClearsBarrier`。migration 0054。
+
+  **session 継続先の即時/周期: 周期のみとした。即時フックは追加していない。**
+  `ReleaseCardRequestForTerminalTarget`（task 継続先の即時解放）は
+  `ReleaseCardRequestForTerminalTargetWithCard` に拡張し、解放された card_id
+  を呼び出し元に返すようにして task 側の即時 dispatch を実現した
+  (`TestReleaseCardRequestForTerminalTask_CommitTriggersImmediateDispatch`)。
+  一方 session 継続先の終端は既存の `ReconcileCardRequestSlots`（周期 30 秒）
+  が引き続き唯一の解放経路で、そこに即時フックは足していない —— session
+  終端に daemon 内で同期的に反応できるイベントが無く（job 終了は runner
+  からの非同期通知）、新しい配線を増やすより、既に periodic dispatch sweep
+  （同じ 30 秒間隔）が queued 行を拾う構造で十分と判断した。
+
+  **自動起動の継続先を task に限る制約: 未着手ではなく既存実装で成立済みと
+  確認した。** `internal/server/boid_executor_agent_start.go` の
+  `executeAgentStart` が `cardRequestOrigin(row) == cardContextOriginEvent`
+  なら session 起動を拒否する分岐を先行 PR の時点で既に持っていた。ガードを
+  外す mutation を当てて `TestBoidOpAgentStart_EventOrigin_Rejected` が
+  赤くなることを確認済み —— 新規実装は不要だった。
+
+  **dispatcher の上限・並行性: 既存 dispatcher に明示的な同時実行上限は
+  無いことを確認した**（docker-out-of-docker で job ごとに使い捨てコンテナ、
+  ホストリソースが暗黙の上限）。利用可能枠が無いとき（StartExec が失敗した
+  とき）は `FailCardRequest` で claim した行を failed に戻し、fold されて
+  いた sibling は queued へ戻す
+  (`TestDispatchQueuedCardRequest_StartExecFailure_FailsClaimAndRequeuesFold`)。
+  無制限の高速再試行にならない理由: 失敗は即座に再試行されず、次の commit
+  契機か 30 秒周期まで待つ。同一 card への並行 claim は
+  `idx_card_requests_active_unique` が守り、5 並行呼び出しで 1 件しか起動
+  しないことを `-race` 付きで固定した
+  (`TestDispatchQueuedCardRequest_ConcurrentCallersClaimOnlyOnce`)。
+
+  **起動失敗の扱い: 既存の `FailCardRequest` の fold 復帰をそのまま再利用
+  した。** 追加のリトライ上限は設けていない —— 周期ループの間隔（30 秒）
+  自体が既に十分な back-off になっている。
+
+  **スコープ外の外部 Sweep handoff ack 順序の調査結果: 現状で成立している
+  ことを確認した。** `boid-metaproject/scripts/boidmeta/write.py` の
+  `Executor.run()` は handler（capture/link/summary の実処理）→
+  `notify_progress`（耐久化された記録）→ `inbox.ack` の順で呼び、
+  `boid_store.py._run()` が非ゼロ終了で例外を送出するため、途中の失敗は
+  後続（特に ack）を止める。`_record()` のコメントにも「記録の書き込み →
+  ack の順を維持する、ack を先に打たない」と明記されており、実装もその
+  通り。この PR での対応は不要（記録のみ）。
+
+  **未着手（記録のみ）:**
+  - 周期 `CardRequestDispatchLoop` の interval（30 秒）と
+    `CardRequestLifecycleLoop` の interval（30 秒）は独立した値で、将来
+    どちらかだけ変える設定を追加する場合は両者の関係を意識すること。
+  - `dispatchQueuedCardRequest` が peek した commandKey と実際の claim 時の
+    commandKey がズレた場合 (`ErrCardRequestCommandKeyChanged`) は今回の
+    呼び出しでは再試行せず、次の commit か周期ループに委ねる。project.yaml
+    の `card_events.command` を運用中に変更した直後の極めて狭い窓でのみ
+    発生しうる。
 - **PR-2d-5 で一部対応: retry/force-release は前の継続先 (session/task) を止めない
   (KNOWN GAP、`boid_executor_agent_start.go` の孤児 session と同系統)。** 完全な
   停止処理はまだ実装していない — `boid task release-card-request` が解放前の

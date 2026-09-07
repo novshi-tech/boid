@@ -27,6 +27,17 @@ type CardCommandLauncherStore interface {
 	ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error)
 	CreateCardRequest(req *orchestrator.CardRequest) error
 	FailCardRequest(id, errText string) error
+	// ClaimQueuedCardRequestsForDispatch / PeekOldestQueuedCardRequest /
+	// ListCardIDsWithQueuedCardRequests back the automatic card-request
+	// dispatcher (card_request_auto_dispatch.go) — the queued->launching
+	// claim path for internal-event-originated requests, distinct from a
+	// human command's/Go's direct CreateCardRequest(status=launching).
+	ClaimQueuedCardRequestsForDispatch(cardID, launcherJobID, expectedCommandKey string, def orchestrator.CardRequestDefinition) (*orchestrator.CardRequest, []*orchestrator.CardRequest, error)
+	PeekOldestQueuedCardRequest(cardID string) (id, commandKey string, err error)
+	ListCardIDsWithQueuedCardRequests() ([]string, error)
+	// ClearCardForceReleaseBarrier ends automatic-dispatch suppression for a
+	// card once a human operation (here: a card command) touches it again.
+	ClearCardForceReleaseBarrier(cardID string) error
 }
 
 // cardCommandInstructionMaxBytes matches sandbox.PayloadPatchMaxBytes, the
@@ -219,6 +230,15 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 	// CountActiveCardRequests inside its own transaction).
 	var occupiedResult *RunCardCommandResult
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
+		// Ending a force-release barrier is one of the human operations
+		// that lifts automatic-dispatch suppression for this card (Go and
+		// an explicit retry are the other two) — cleared unconditionally,
+		// before the occupancy check, since the human's own act of running
+		// a command against this card is what counts, regardless of
+		// whether it wins the slot.
+		if err := tx.ClearCardForceReleaseBarrier(cardID); err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
 		occupantID, occ, operr := cardWorkChildOccupantTx(tx, cardID)
 		if operr != nil {
 			var se *StatusError

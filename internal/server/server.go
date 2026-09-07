@@ -212,6 +212,7 @@ type Server struct {
 	queueSweepLoop           *api.QueueSweepLoop  // queue の決定論的評価: wake 評価 rule
 	triggerLoop              *api.TriggerLoop     // トリガのスケジュール/single-flight/実行記録
 	cardRequestLifecycleLoop *orchestrator.CardRequestLifecycleLoop
+	cardRequestDispatchLoop  *api.CardRequestDispatchLoop // 復旧用の周期 queued dispatch フォールバック。主経路は commit 後の即時起動
 	workflow                 *api.TaskWorkflowService
 
 	// hostCommands is the aggregated host_commands config assembled by
@@ -638,6 +639,12 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.cardRequestLifecycleLoop != nil {
 		s.cardRequestLifecycleLoop.RunStartupRecovery()
 		go s.cardRequestLifecycleLoop.Run(ctx)
+	}
+
+	// queued な card_requests 行を捌く周期フォールバック。通知欠落や
+	// daemon 再起動で取りこぼした即時起動を拾う復旧用で、主経路ではない。
+	if s.cardRequestDispatchLoop != nil {
+		go s.cardRequestDispatchLoop.Run(ctx)
 	}
 
 	// Per-daemon internal CA: loaded (or generated) in New(), not here —

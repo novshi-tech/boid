@@ -205,6 +205,16 @@ func (f *fakeCardCommandLauncherStore) CreateCardRequest(req *orchestrator.CardR
 	return nil
 }
 func (f *fakeCardCommandLauncherStore) FailCardRequest(id, errText string) error { return nil }
+func (f *fakeCardCommandLauncherStore) ClaimQueuedCardRequestsForDispatch(cardID, launcherJobID, expectedCommandKey string, def orchestrator.CardRequestDefinition) (*orchestrator.CardRequest, []*orchestrator.CardRequest, error) {
+	return nil, nil, orchestrator.ErrNoQueuedCardRequests
+}
+func (f *fakeCardCommandLauncherStore) PeekOldestQueuedCardRequest(cardID string) (string, string, error) {
+	return "", "", orchestrator.ErrNoQueuedCardRequests
+}
+func (f *fakeCardCommandLauncherStore) ListCardIDsWithQueuedCardRequests() ([]string, error) {
+	return nil, nil
+}
+func (f *fakeCardCommandLauncherStore) ClearCardForceReleaseBarrier(cardID string) error { return nil }
 
 // TestCreateTask_RejectsWhenActiveCardRequestOccupiesSlot pins that a
 // direct `--parent <card>` create (task_create.go) must also see an active
