@@ -389,7 +389,7 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		if req.Type == "reopen" && newTask.ParentID != "" {
 			parent, perr := tx.GetTask(newTask.ParentID)
 			if perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
-				occupied, oerr := cardSlotOccupied(tx, parent.ID)
+				occupied, oerr := cardExecutionSlotOccupied(tx, parent.ID)
 				if oerr != nil {
 					return fmt.Errorf("reopen: check card work slot: %w", oerr)
 				}

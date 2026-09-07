@@ -358,6 +358,51 @@ func TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByOpenChild(t *testing.T)
 	}
 }
 
+// TestApplyAction_ChildAdded_AllowedWhileACardCommandHoldsTheExecutionSlot
+// pins that a card command's own continuation does not block the spec it
+// exists to write.
+//
+// docs/plans/card-next-step-and-timeline.md §3.2 states TWO constraints, not
+// one: "次の一手の仕様は最大一つ" (open/specced children — and explicitly
+// "仕様を作る対話・判断と共存できる") and "進行中の実行は最大一つ" (the Go
+// work task, a command's task, a session). child_added writes a spec, so it
+// is gated by the first only. Gating it on the second too made the judgment
+// command unable to record a next step at all: its own card_requests row is
+// `attached` for its whole lifetime, so every child_added it attempted came
+// back 409 "already has an unresolved or in-progress child occupying its
+// single work slot" on a card whose children list was empty.
+func TestApplyAction_ChildAdded_AllowedWhileACardCommandHoldsTheExecutionSlot(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	txStore := &recordingTxStore{task: task, countActiveCardRequests: 1}
+	svc := newTriageWorkflowService(task, txStore)
+
+	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "child_added",
+		Payload: []byte(`{"id":"c1","title":"next step"}`),
+	}); err != nil {
+		t.Fatalf("child_added while a card command holds the execution slot: %v", err)
+	}
+
+	children, derr := orchestrator.DetailChildren(txStore.triage["t1"].Detail)
+	if derr != nil {
+		t.Fatalf("DetailChildren: %v", derr)
+	}
+	if len(children) != 1 || children[0].ID != "c1" {
+		t.Fatalf("children = %+v, want c1 recorded", children)
+	}
+
+	// The spec slot still holds: a SECOND child is rejected, and the
+	// rejection must come from the existing child, not from the request.
+	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
+		Type:    "child_added",
+		Payload: []byte(`{"id":"c2","title":"second"}`),
+	})
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 adding a second child while c1 occupies the spec slot, got %v", err)
+	}
+}
+
 // TestApplyAction_ChildAdded_ResendingSameID_StaysIdempotent pins that a
 // resend of the SAME child id while it is still occupying the slot is the
 // pre-existing idempotent no-op, not a new rejection — the invariant gates
@@ -407,36 +452,12 @@ func TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByLiveTaskRow(t *testing.
 	}
 }
 
-// TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByActiveCardRequest pins
-// cardSlotOccupied's THIRD occupancy signal (workflow_card.go): an active
-// (launching/attached) card_requests row — a command launcher or a Go
-// reservation that has claimed the card's shared execution slot but not yet
-// created its own continuation — must ALSO block a fresh child_added, not
-// just a live task row or a JSON-tracked open/specced child.
-func TestApplyAction_ChildAdded_RejectsWhenSlotOccupiedByActiveCardRequest(t *testing.T) {
-	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
-	txStore := &recordingTxStore{task: task, countActiveCardRequests: 1}
-	svc := newTriageWorkflowService(task, txStore)
-
-	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
-		Type:    "child_added",
-		Payload: []byte(`{"id":"c1","title":"first"}`),
-	})
-	if err == nil {
-		t.Fatal("expected rejection adding a child while an active card_requests row already occupies the slot")
-	}
-	se, ok := err.(*StatusError)
-	if !ok || se.Code != http.StatusConflict {
-		t.Fatalf("expected 409 StatusError, got %v", err)
-	}
-	children, derr := orchestrator.DetailChildren(txStore.triage["t1"].Detail)
-	if derr != nil {
-		t.Fatalf("DetailChildren: %v", derr)
-	}
-	if len(children) != 0 {
-		t.Fatalf("children = %+v, want none (c1 must not have been added while the card_requests slot is occupied)", children)
-	}
-}
+// The card_requests occupancy signal moved off this write port: it belongs
+// to the execution slot, which child_added does not touch. Its coverage now
+// lives on the reopen port
+// (TestApplyAction_Reopen_RejectsWhenCardSlotOccupiedByActiveCardRequest),
+// and the positive case for child_added is
+// TestApplyAction_ChildAdded_AllowedWhileACardCommandHoldsTheExecutionSlot.
 
 func TestApplyAction_ChildSpecced_UnknownChildRejected(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}

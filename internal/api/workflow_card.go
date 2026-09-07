@@ -144,14 +144,14 @@ func applyChildAddedSideEffect(tx TxStore, taskID string, p *childAddedPayload) 
 		}
 	}
 	if !isResend {
-		occupied, oerr := cardSlotOccupied(tx, taskID)
+		occupied, oerr := cardSpecSlotOccupied(tx, taskID)
 		if oerr != nil {
-			return fmt.Errorf("child_added: check work slot: %w", oerr)
+			return fmt.Errorf("child_added: check spec slot: %w", oerr)
 		}
 		if occupied {
 			return &StatusError{
 				Code:    http.StatusConflict,
-				Message: fmt.Sprintf("child_added: card %q already has an unresolved or in-progress child occupying its single work slot", taskID),
+				Message: fmt.Sprintf("child_added: card %q already has an unresolved or in-progress child occupying its single next-step spec slot", taskID),
 			}
 		}
 	}
@@ -169,25 +169,23 @@ func applyChildAddedSideEffect(tx TxStore, taskID string, p *childAddedPayload) 
 	return nil
 }
 
-// cardSlotOccupied reports whether taskID's single work slot is currently
-// occupied: a live execution task row under it, an open/specced entry in
-// task_triage.detail.children, OR a card_requests row currently
-// launching/attached — three independent signals of the SAME shared slot,
-// ORed rather than summed. Must be read inside the same transaction as the
-// write it gates.
-func cardSlotOccupied(tx TxStore, cardID string) (bool, error) {
+// cardSpecSlotOccupied reports whether cardID's NEXT-STEP SPEC slot is taken:
+// a live execution task row under it, or an open/specced entry in
+// task_triage.detail.children. Must be read inside the same transaction as
+// the write it gates.
+//
+// This is the narrower of the two constraints in
+// docs/plans/card-next-step-and-timeline.md §3.2. The spec slot deliberately
+// coexists with the dialogue or judgment that produces the spec, so a
+// running card command must NOT close it — its own card_requests row stays
+// `attached` for its whole lifetime, and counting that here left the
+// judgment command unable to record any next step at all.
+func cardSpecSlotOccupied(tx TxStore, cardID string) (bool, error) {
 	card, err := tx.GetTask(cardID)
 	if err != nil {
 		return false, err
 	}
 	if card.OpenChildCount > 0 {
-		return true, nil
-	}
-	active, err := tx.CountActiveCardRequests(cardID)
-	if err != nil {
-		return false, err
-	}
-	if active > 0 {
 		return true, nil
 	}
 	tt, err := tx.GetTaskTriage(cardID)
@@ -202,6 +200,24 @@ func cardSlotOccupied(tx TxStore, cardID string) (bool, error) {
 		return false, oerr
 	}
 	return occupantID != "", nil
+}
+
+// cardExecutionSlotOccupied reports whether cardID has anything running at
+// all: whatever occupies the spec slot (a dispatched child is both), plus a
+// card_requests row currently launching/attached — the Go work task, a
+// command's task, or a session.
+//
+// §3.2's wider constraint. Gates operations that START an execution, never
+// ones that merely write a spec.
+func cardExecutionSlotOccupied(tx TxStore, cardID string) (bool, error) {
+	active, err := tx.CountActiveCardRequests(cardID)
+	if err != nil {
+		return false, err
+	}
+	if active > 0 {
+		return true, nil
+	}
+	return cardSpecSlotOccupied(tx, cardID)
 }
 
 // childDroppedPayload is the shape of the "child_dropped" action's payload:
