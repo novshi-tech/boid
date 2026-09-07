@@ -91,7 +91,7 @@ func rowIdentityLabel(task *orchestrator.Task, projectName string) string {
 //   - "⚠ K" whenever K = AwaitingChildCount > 0, appended regardless of the
 //     progress/done branch above — this is §2.4's "子が4回 ask を上げたが
 //     親からは dispatched にしか見えなかった" gap closed at the list level
-//     (the detail page's own answer, ChildRow.AwaitingQuestionID, is PR-2)
+//     (the detail page's own answer is its pinned child's question link)
 func childRollupLabel(t *orchestrator.Task) string {
 	if t.TotalChildCount == 0 {
 		return ""

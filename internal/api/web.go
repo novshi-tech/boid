@@ -659,7 +659,7 @@ func (h *WebHandler) cardTimelineView(cardID, cursor string) (*templates.CardTim
 	if h.CardTimeline == nil {
 		return &templates.CardTimelineView{}, nil
 	}
-	pinned, err := h.CardTimeline.CardPinnedItems(cardID)
+	tl, err := h.cardPinnedView(cardID)
 	if err != nil {
 		return nil, err
 	}
@@ -667,14 +667,30 @@ func (h *WebHandler) cardTimelineView(cardID, cursor string) (*templates.CardTim
 	if err != nil {
 		return nil, err
 	}
-	h.resolveCardItemChildProjects(pinned)
 	h.resolveCardItemChildProjects(page.Items)
+	tl.History = page.Items
+	tl.HasMore = page.HasMore
+	tl.NextCursor = page.NextCursor
+	return tl, nil
+}
+
+// cardPinnedView is cardTimelineView's lighter counterpart: pinned items
+// only, no BuildCardTimeline call. TaskDetailCardStatusSection (the
+// kind=status SSE fragment) never reads History/HasMore/NextCursor, so
+// paying for a full timeline scan on every action/job event would be pure
+// waste.
+func (h *WebHandler) cardPinnedView(cardID string) (*templates.CardTimelineView, error) {
+	if h.CardTimeline == nil {
+		return &templates.CardTimelineView{}, nil
+	}
+	pinned, err := h.CardTimeline.CardPinnedItems(cardID)
+	if err != nil {
+		return nil, err
+	}
+	h.resolveCardItemChildProjects(pinned)
 	return &templates.CardTimelineView{
 		Pinned:             pinned,
-		History:            page.Items,
-		HasMore:            page.HasMore,
-		NextCursor:         page.NextCursor,
-		AwaitingQuestionID: h.pinnedChildAwaitingQuestion(pinned),
+		AwaitingQuestionID: h.enrichPinnedChildLiveStatus(pinned),
 	}, nil
 }
 
@@ -702,15 +718,17 @@ func (h *WebHandler) resolveCardItemChildProjects(items []timeline.CardItem) {
 	}
 }
 
-// pinnedChildAwaitingQuestion resolves the sole pinned dispatched child's
-// question id when its live task is currently awaiting an answer, so the
-// card detail page can keep a direct-to-question link. Neither
-// CardPinnedItems nor CardChildDetail resolve this themselves — it's an
-// extra live lookup only worth paying for the one currently-active child a
-// card can have at a time, not something the read model needs to answer for
-// the whole timeline.
-func (h *WebHandler) pinnedChildAwaitingQuestion(pinned []timeline.CardItem) string {
-	for _, it := range pinned {
+// enrichPinnedChildLiveStatus resolves the sole pinned dispatched child's
+// live task status — so its chip can show executing/awaiting/done/aborted
+// instead of the ledger's bare "dispatched" — and, when that live status is
+// awaiting, the open question id for a direct-to-question link. Neither
+// CardPinnedItems nor CardChildDetail resolve either fact themselves; it's
+// an extra live lookup only worth paying for the one currently-active child
+// a card can have at a time. Mutates pinned in place (a fresh copy per
+// child, matching resolveCardItemChildProjects's own pattern).
+func (h *WebHandler) enrichPinnedChildLiveStatus(pinned []timeline.CardItem) string {
+	for i := range pinned {
+		it := &pinned[i]
 		if it.Kind != timeline.CardItemChild || it.Child == nil {
 			continue
 		}
@@ -722,11 +740,13 @@ func (h *WebHandler) pinnedChildAwaitingQuestion(pinned []timeline.CardItem) str
 		if err != nil || detail == nil || detail.Task == nil {
 			continue
 		}
-		if detail.Task.Status != orchestrator.TaskStatusAwaiting || detail.Task.Exec == nil {
-			continue
-		}
-		if qid := orchestrator.GetAwaitingPayload(detail.Task.Exec.Payload).QuestionID; qid != "" {
-			return qid
+		childCopy := *c
+		childCopy.LiveStatus = string(detail.Task.Status)
+		it.Child = &childCopy
+		if detail.Task.Status == orchestrator.TaskStatusAwaiting && detail.Task.Exec != nil {
+			if qid := orchestrator.GetAwaitingPayload(detail.Task.Exec.Payload).QuestionID; qid != "" {
+				return qid
+			}
 		}
 	}
 	return ""
@@ -789,9 +809,9 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 			if triage := h.loadTriage(id); triage != nil {
 				summary = templates.TriageSummary(triage.Detail)
 			}
-			tl, tlErr := h.cardTimelineView(id, "")
+			tl, tlErr := h.cardPinnedView(id)
 			if tlErr != nil {
-				slog.Warn("card timeline view failed", "task_id", id, "error", tlErr)
+				slog.Warn("card pinned view failed", "task_id", id, "error", tlErr)
 				tl = &templates.CardTimelineView{}
 			}
 			templates.TaskDetailCardStatusSection(detail.Task, "", projectName, summary, tl).Render(r.Context(), w)

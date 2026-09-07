@@ -273,6 +273,15 @@ func TestCardDetail_LoadOlder_PagesWithoutDuplicationOrLoss(t *testing.T) {
 	if strings.Contains(page2, "Load older") {
 		t.Errorf("page2 should be exhausted (15 items, 10+5), want no further Load older; body:\n%s", page2)
 	}
+
+	// All 15 items were created moments apart, so they land on the same
+	// calendar day: exactly one date separator should exist across both
+	// pages — page2 must not repeat the day page1's last_date already
+	// carried forward (§5.4's "Load older で同じ日を継ぎ足しても区切りを
+	// 重複させない", end to end through the real HTTP endpoint).
+	if sepTotal := strings.Count(page1, "card-timeline-date-sep") + strings.Count(page2, "card-timeline-date-sep"); sepTotal != 1 {
+		t.Errorf("date separators across page1+page2 = %d, want exactly 1", sepTotal)
+	}
 }
 
 // extractLoadOlderParams pulls the cursor and last_date query params out of

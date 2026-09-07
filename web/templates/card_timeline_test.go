@@ -468,6 +468,74 @@ func TestCardHistorySection_NoMore_RendersNoLoadOlderButton(t *testing.T) {
 	}
 }
 
+// --- date separators: asserted against the RENDERED history, not just the
+// pure cardHistoryDateSeparators function — the templ call site
+// (cardHistoryItems' `if seps[i] != ""`) is a separate place this contract
+// can silently break. ---
+
+func TestCardHistoryItems_RendersDateSeparatorAtDayBoundary(t *testing.T) {
+	items := []timeline.CardItem{
+		{Kind: timeline.CardItemWakeDue, ID: "a", HasTime: true, Time: time.Date(2026, 9, 5, 10, 0, 0, 0, time.Local)},
+		{Kind: timeline.CardItemWakeDue, ID: "b", HasTime: true, Time: time.Date(2026, 9, 5, 9, 0, 0, 0, time.Local)},
+		{Kind: timeline.CardItemWakeDue, ID: "c", HasTime: true, Time: time.Date(2026, 9, 4, 23, 0, 0, 0, time.Local)},
+	}
+	var buf bytes.Buffer
+	if err := cardHistoryItems(items, "card-1", "").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+	if got := strings.Count(html, "card-timeline-date-sep"); got != 2 {
+		t.Fatalf("rendered date separators = %d, want 2 (one per distinct day, including the leading one); html:\n%s", got, html)
+	}
+	if !strings.Contains(html, ">Sep 5, 2026<") || !strings.Contains(html, ">Sep 4, 2026<") {
+		t.Errorf("missing one of the expected separator labels; html:\n%s", html)
+	}
+	// The day-change separator must sit strictly between item b and item c.
+	sepPos := strings.LastIndex(html, "card-timeline-date-sep")
+	bPos := strings.Index(html, `id="card-item-wake_due-b"`)
+	cPos := strings.Index(html, `id="card-item-wake_due-c"`)
+	if sepPos < 0 || bPos < 0 || cPos < 0 || !(bPos < sepPos && sepPos < cPos) {
+		t.Fatalf("day-change separator must render strictly between item b and item c; html:\n%s", html)
+	}
+}
+
+func TestCardHistoryItems_SameDay_RendersExactlyOneLeadingSeparator(t *testing.T) {
+	items := []timeline.CardItem{
+		{Kind: timeline.CardItemWakeDue, ID: "a", HasTime: true, Time: time.Date(2026, 9, 5, 10, 0, 0, 0, time.Local)},
+		{Kind: timeline.CardItemWakeDue, ID: "b", HasTime: true, Time: time.Date(2026, 9, 5, 9, 0, 0, 0, time.Local)},
+	}
+	var buf bytes.Buffer
+	if err := cardHistoryItems(items, "card-1", "").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got := strings.Count(buf.String(), "card-timeline-date-sep"); got != 1 {
+		t.Errorf("rendered date separators = %d, want exactly 1 (no repeat within the same day); html:\n%s", got, buf.String())
+	}
+}
+
+// TestCardHistoryOlderFragment_PriorDateKey_DoesNotRepeatTheContinuedDay is
+// the "Load older" continuity contract rendered end to end: a fragment
+// whose first item continues the day the previous page already showed
+// (priorDateKey) must not repeat that separator, but a genuine day change
+// within the same fragment still gets one.
+func TestCardHistoryOlderFragment_PriorDateKey_DoesNotRepeatTheContinuedDay(t *testing.T) {
+	items := []timeline.CardItem{
+		{Kind: timeline.CardItemWakeDue, ID: "d", HasTime: true, Time: time.Date(2026, 9, 5, 1, 0, 0, 0, time.Local)},
+		{Kind: timeline.CardItemWakeDue, ID: "e", HasTime: true, Time: time.Date(2026, 9, 4, 23, 0, 0, 0, time.Local)},
+	}
+	var buf bytes.Buffer
+	if err := CardHistoryOlderFragment("card-1", items, false, "", "2026-09-05").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+	if got := strings.Count(html, "card-timeline-date-sep"); got != 1 {
+		t.Fatalf("separators = %d, want exactly 1 (only the genuine day change, not the continued day); html:\n%s", got, html)
+	}
+	if !strings.Contains(html, ">Sep 4, 2026<") {
+		t.Errorf("missing the day-change separator label; html:\n%s", html)
+	}
+}
+
 func TestTaskDetailCardSummary_Empty_RendersNothing(t *testing.T) {
 	var buf bytes.Buffer
 	if err := TaskDetailCardSummary("").Render(context.Background(), &buf); err != nil {

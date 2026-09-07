@@ -80,6 +80,10 @@ type CardChildDetail struct {
 	HasResult    bool
 	Result       string
 	ResultStatus orchestrator.TaskStatus
+	// LiveStatus is the dispatched child's live orchestrator.TaskStatus
+	// (executing/awaiting/done/aborted). This package never sets it — it is
+	// a caller-side enrichment; "" means unresolved.
+	LiveStatus string
 }
 
 // CardCommandDetail is CardItem's payload for Kind == CardItemCommand. The

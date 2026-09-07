@@ -164,6 +164,16 @@ func cardItemNoteText(item timeline.CardItem) string {
 	return payloadAsYAML(item.Action.Payload)
 }
 
+// cardChildDisplayStatus prefers the live task status (set by the caller
+// for the sole pinned dispatched child) over the ledger's bare "dispatched"
+// — matching the pre-PR-6a ChildRow.DisplayStatus behavior.
+func cardChildDisplayStatus(c *timeline.CardChildDetail) string {
+	if c.LiveStatus != "" {
+		return c.LiveStatus
+	}
+	return c.Status
+}
+
 func cardChildFinishedLabel(closingActionType string) string {
 	if closingActionType == "child_dropped" {
 		return "dropped"
@@ -230,17 +240,19 @@ templ CardHistorySection(tl *CardTimelineView, cardID string) {
 		} else {
 			<ul class="card-timeline-list">
 				@cardHistoryItems(tl.History, cardID, "")
+				@cardHistoryLoadOlder(cardID, tl.HasMore, tl.NextCursor, lastCardItem(tl.History))
 			</ul>
-			@cardHistoryLoadOlder(cardID, tl.HasMore, tl.NextCursor, lastCardItem(tl.History))
 		}
 	</div>
 }
 
 // CardHistoryOlderFragment is the "Load older" HTMX response: the next
 // batch of items (continuing priorDateKey's date-separator run) followed by
-// either a fresh Load older control or nothing once exhausted. hx-swap
-// "outerHTML" on the button that requested it means this whole fragment
-// lands exactly where that button was — appending items, not replacing them.
+// either a fresh Load older control or nothing once exhausted. The
+// requesting button targets "closest li" with hx-swap "outerHTML", so this
+// whole fragment replaces that <li> (not just the <button>) — new items
+// land as siblings inside the same <ul>, and each click still only replaces
+// one <li>, so nesting never grows deeper.
 templ CardHistoryOlderFragment(cardID string, items []timeline.CardItem, hasMore bool, nextCursor string, priorDateKey string) {
 	@cardHistoryItems(items, cardID, priorDateKey)
 	if hasMore {
@@ -271,7 +283,7 @@ templ cardHistoryLoadOlder(cardID string, hasMore bool, nextCursor string, last 
 				type="button"
 				class="btn btn-secondary btn-sm"
 				hx-get={ cardTimelineOlderURL(cardID, nextCursor, lastDateKey) }
-				hx-target="this"
+				hx-target="closest li"
 				hx-swap="outerHTML"
 			>
 				Load older
@@ -321,9 +333,10 @@ templ CardTimelineItem(item timeline.CardItem, cardID string, cardStatus orchest
 templ cardChildItemBody(item timeline.CardItem, awaitingQuestionID string) {
 	if item.Child != nil {
 		{{ c := item.Child }}
+		{{ displayStatus := cardChildDisplayStatus(c) }}
 		<div class="detail-children-item" id={ "card-child-" + item.CorrelationID }>
 			<div class="detail-children-head">
-				<span class={ "badge", "badge-" + c.Status }>{ c.Status }</span>
+				<span class={ "badge", "badge-" + displayStatus }>{ displayStatus }</span>
 				if c.Spec != nil && c.Spec.Behavior != "" {
 					<span class="badge badge-child-behavior">{ c.Spec.Behavior }</span>
 				}

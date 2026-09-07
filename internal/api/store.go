@@ -330,12 +330,6 @@ type CardStore interface {
 	ParkedFrom(taskID string) (orchestrator.TaskStatus, error)
 }
 
-// CardActivityStore backs the task list's per-row activity state: two
-// batched lookups (card_requests, tasks.status) kept separate from
-// CardStore since they read different tables for a list-rendering-specific
-// purpose. Both methods must resolve their entire input in ONE query each
-// (chunked only past a SQL variable ceiling) — adding rows to a page must
-// never add queries.
 // CardTimelineStore backs the card detail page's timeline read model
 // (internal/timeline.BuildCardTimeline / CardPinnedItems), which reads a
 // card's full action log directly via db.DBTX rather than through
@@ -345,6 +339,12 @@ type CardTimelineStore interface {
 	CardPinnedItems(cardID string) ([]timeline.CardItem, error)
 }
 
+// CardActivityStore backs the task list's per-row activity state: two
+// batched lookups (card_requests, tasks.status) kept separate from
+// CardStore since they read different tables for a list-rendering-specific
+// purpose. Both methods must resolve their entire input in ONE query each
+// (chunked only past a SQL variable ceiling) — adding rows to a page must
+// never add queries.
 type CardActivityStore interface {
 	// ActiveCardRequestsByCardIDs returns, for each id in cardIDs with a
 	// currently queued/launching/attached row, the single highest-priority
