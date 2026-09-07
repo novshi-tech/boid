@@ -1284,6 +1284,147 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   変わっている（より安全側の変化ではあるが、挙動変化として未記録だったので
   ここに記録する）。
 
+- **PR-5a で確定: `FinishCardRequest`/`FailCardRequest`/`ForceReleaseCardRequest`
+  が card_requests の終端を card 自身の action ログへ自己記録する契約。**
+  §4.4 の「card の履歴が request の結果概要を必要とする場合は、request 行では
+  なく card 側の action payload に残す」が未実装だった穴を塞いだ。レビューで
+  2件の blocker（後述）が見つかり、同じ PR 内で対処した。
+
+  1. **action type 3種:** `command_finished`（`FinishCardRequest`）/
+     `command_failed`（`FailCardRequest`）/
+     `command_force_released`（`ForceReleaseCardRequest`、運用者の明示的な
+     force-release）。`card_requests.status` の値と1対1ではなく、書き込み関数
+     と1対1。3つとも `machine_card.go` に `FromStatus: "*", Manual: false`
+     （既定値）の非遷移ルールとして登録 — `IsCardTransitionAction` の6動詞
+     閉集合には含まれない。**この非 Manual であることは実 DB/実コードで
+     mutation テスト済み**（後述の BLOCKER 1）。`internal/timeline` の
+     status-group timeline (execution 詳細専用) はこの3 type を実行して
+     確認したうえで除外される
+     (`TestBuild_ExcludesNonTransitioningActionsWithStampedStatus` に追加、
+     ただし本番はこの3 type に `FromStatus`/`ToStatus` を一切スタンプしない
+     ため、このテスト自体は防御的な多層防御であって実際の payload 形の
+     カバレッジではない — コメントで明記した)。
+  2. **payload の形（JSON）:** `request_id` / `command_key`
+     （`card_requests.command_key`、常に生存）/ `launched_label`
+     （`card_requests.launched_label` のスナップショット、queued のまま
+     終端した行では空）/ `launcher_job_id` / `target_kind` / `target_id`
+     （未 attach なら空）/ `origin`（`"human"`|`"event"`、
+     `orchestrator.CardRequestOrigin(causeID)`）/ `cause_id`（`origin` は
+     これを潰した派生値なので、内部イベントへの遡及リンクには生の
+     `cause_id` が要る）/ `result`（finish のみ）/ `error`（fail のみ）/
+     `reason`（force-release のみ、運用者の指定文言）/
+     `force_failed_siblings`（force-release が巻き込んだ folded sibling の
+     `{id, command_key}` 一覧、force-release のみ）。`Action.FromStatus`/
+     `ToStatus` はどちらも空文字のまま。
+     **`result` は daemon 側の固定文言（例:
+     `"continuation reached a terminal successful state"`）であり、
+     `child_closed` の `childResultSummary`（子の `artifact.report.summary`
+     を掘る）に相当するものは持たない。これは意図した設計** — コマンドの
+     実際の成果は、そのコマンドが card に書いた summary/spec/suggestion が
+     それぞれ独立したタイムライン項目になるので、コマンド項目自身が成果
+     テキストを持つ必要が無いため。
+  3. **Go 除外:** `card_requests.command_key == CardRequestCommandKeyGo`
+     （`__go__`）の行はどの type でも自己記録しない — Go の作業子は
+     `child_closed` に既に結果概要を持つ。ガードは
+     `recordCardRequestOutcome`（3つの書き込み関数が共有する内部ヘルパ）
+     1箇所にあり、呼び出し元ごとに実装していない。`ForceReleaseCardRequest`
+     経由（運用者が Go 予約を force-release する場合）も同じガードを通る
+     ことを実測。
+  4. **card_events allowlist を起こさない:** 3 type とも
+     `cardEventIngestActionTypes`（`card_event_ingest.go`）に加えていない。
+     自己記録は `orchestrator.CreateAction` に `resolver`/`cardEvents` とも
+     `nil` で渡すので、`IngestCardEventRequest` は allowlist を見る前に
+     resolver-nil ガードで no-op になる —
+     **こちらが本番で実際に効いているガード。** allowlist 自体にも3 type を
+     除外側として追加し実測している
+     (`TestIngestCardEventRequest_ActionTypeAllowlist`) が、**このテストは
+     nil ガードの後段にあるため本番は到達しない防御的な pin** であり、
+     生きているガードは (4) の nil 渡し、pin されているだけの防御は
+     allowlist 自体、と役割を区別すること。
+  5. **`IngestActionSignal`（internal signal ingest）も同時にスキップされる —
+     理由は (4) と同じ。** `resolver` を `nil` にしているので、こちらも
+     allowlist を持たない `IngestActionSignal` 自体には到達しない。これは
+     `child_closed`（`recordChildClosedOnParent` が `tx.CreateAction` 経由で
+     `metaResolver`/`cardEventResolver` の両方を実際に wire 済みの
+     `TaskRepository.CreateAction` を呼ぶので、両方の ingest を通る）とは
+     **意図的に異なる**扱い。理由: `IngestActionSignal` には action type の
+     allowlist が一切なく、metaproject を持つ workspace の card task 上の
+     全 action を signal inbox（khi の sweep が読む）に流す。コマンド自身の
+     終了をそこに流すと、§4.6 が禁じる「コマンドが終わった → また判断する」
+     ループを sweep に直接与えてしまう — card_events 除外とまったく同じ
+     理由による、もう一段の除外。
+     **将来の地雷:** もし誰かがこの3 type を将来 `cardEventIngestActionTypes`
+     に足し、かつ書き込みを（`nil` を渡さず）resolver 付きの
+     `TaskRepository.CreateAction` 経由に変えると、自己ループガード
+     （`writerHoldsCardsLiveRequest`、`card_event_ingest.go`）は救えない —
+     このガードは書き手の card_requests 行が `launching`/`attached` の
+     ときしか自己ループと判定しないが、`recordCardRequestOutcome` が走る
+     時点で終端 UPDATE は既にその行を `finished`/`failed`/`fail` 済みに
+     コミットしている。よって正しい writer context があってもガードは
+     false を返し、「コマンド終了 → コマンドを queue → 終了 → …」の
+     無限ループになる。**nil 渡しが唯一のガードであり、allowlist に頼らない
+     こと。**
+  6. **同一 tx:** `recordCardRequestOutcome` は呼び出し元から渡された
+     `dbtx` にそのまま書く（別 tx を開かない）。自己記録の INSERT が失敗すると
+     `FinishCardRequest`/`FailCardRequest`/`ForceReleaseCardRequest` 自体が
+     エラーを返す（best-effort にしていない）ので、呼び出し元が tx で
+     ラップしていれば request の終端 UPDATE も一緒に rollback される。
+  7. **`ForceReleaseCardRequest` も自己記録する（レビューで方針転換、
+     BLOCKER 2 として対処）。** 当初「運用者の force-release にも自己記録を
+     持たせるかは未決」としたが、レビューで以下が判明したため実装した:
+     force-release は barrier（`card_force_release_barriers`）を張って以後の
+     自動 dispatch を抑止する副作用を持つが、その barrier 行には `card_id`/
+     `created_at` しか無く、**読み口が daemon 内の1箇所
+     (`ClaimQueuedCardRequestsForDispatch`) しか無い** — CLI/API/Web UI の
+     どこからも「なぜこの card は自動起動しなくなったか」を読めず、
+     `GCCardRequests` が30日で card_requests 行を消した後は完全に無言になる。
+     `command_force_released` の payload に運用者の `reason` と force-fail
+     した sibling の id/command_key を載せることで、この帰属を耐久化した。
+  8. **GC:** `GCCardRequests` は card_requests 行を年齢だけで無条件に消すが、
+     自己記録の action は card 自身の task_id に対して書かれているので、
+     card が終端していない限り `GCTasks` には巻き込まれない — 実 DB で
+     両方向（`GCCardRequests` 後に action が残ること／card 終端後の
+     `GCTasks` で action ごと消えること）を確認した。
+  9. **fold/retry が生む shape の事実（PR-5b の実装者が必ず踏む）:**
+     - fold が N 件の queued request を吸収しても、自己記録は claim の
+       head（`ClaimQueuedCardRequests` が昇格した1行）だけに書かれる —
+       folded sibling は自分の `launched_*` スナップショットを一度も
+       持たないので、独立した自己記録も持たない。
+     - `RetryCardRequest` は同じ `id` を使い回すので、同一 `request_id` に
+       複数の終端 action（例: 失敗 → retry → 再度失敗）が積まれうる。
+       `request_id` は action の一意キーではない。
+     - **よって PR-5b のタイムライン項目の安定 ID は `actions.id` を使う。**
+       `request_id` は項目の同一性ではなく**相関キー**としてのみ使う
+       （進行中の固定項目 ↔ 終端項目の対応、および retry 系列のまとめ）。
+     - **コマンドには子の `child_added` に相当する起動時 action が存在しない。**
+       launcher 経路（`RunCardCommandAsHuman` / `dispatchQueuedCardRequest` /
+       `ClaimQueuedCardRequestsForDispatch`）は action を一切書かない。
+       したがって §5.3 の「作成位置に項目を置き、終端時刻に軽い finished 項目を
+       出して作成位置へリンクする」という**子のモデルはコマンドには適用できない**。
+       コマンドは別モデルにする — **終端 action 1 件 = タイムライン項目 1 件**を
+       終端時刻の位置に置き、進行中のものだけ live な `card_requests` 行から
+       §5.1 の固定項目として描く。固定項目が終端したら、その終端時刻の位置に
+       通常項目として現れる（§5.1 の「終了後は通常の時系列位置に戻す」は
+       コマンドについてはこの意味になる）。
+  10. **確認した呼び出し元（`FinishCardRequest`/`FailCardRequest` 側 9箇所 +
+      `ForceReleaseCardRequest` 1箇所、実 DB テストで自己記録の有無を固定）:**
+      `ReconcileCardRequestSlots`（task/session の成功・失敗）、
+      `attachFoundContinuationOrFail`（`ReconcileLaunchingCardRequests` と
+      `RecoverLaunchingCardRequests` の双方から、後者は Go 行にも到達するため
+      Go 除外もこの経路で実測）、`ReleaseCardRequestForTerminalTargetWithCard`
+      （成功・失敗）、`dispatchQueuedCardRequest`（未宣言コマンドで queued の
+      まま fail する経路・claim 後の StartExec 失敗）、`RunCardCommandAsHuman`
+      の StartExec 失敗、`acceptGo` の Go 予約解放（自己記録が無いことを確認）、
+      `ForceReleaseCardRequest`（人発コマンド解放・Go 予約解放の両方）。
+      **未対応のまま残る10番目の終端経路:** `failAllQueuedCardRequests`
+      （`card_request_dispatch.go`、`ClaimQueuedCardRequestsForDispatch` が
+      対象 card の status が parked/working でないと判定したときの queued
+      行一括 fail）は `FailCardRequest` を経由せず raw UPDATE で終端させる
+      ため自己記録が無い。価値は低い（その時点で card は既に
+      done/dropped/消滅しているので、コマンドの結果概要としての価値が
+      ほぼ無い）と判断し対処しなかったが、「全経路を自己記録した」わけでは
+      ないことを記録しておく。
+
 これらは §4 の契約・§6 の対処を前提に、Gate A と各実装 PR で確定する。
 単一ユーザーの利用を前提に、対話注入・分散ロック・汎用 DAG scheduler は追加しない。
 本 doc は実装の実測結果に追随させ、コード読解で確認したことと実行して確認したことを混同しない。

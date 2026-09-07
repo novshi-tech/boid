@@ -270,7 +270,15 @@ func TestBuild_ProgressAction_KeepsMessageLabel(t *testing.T) {
 func TestBuild_ExcludesNonTransitioningActionsWithStampedStatus(t *testing.T) {
 	now := time.Now()
 	task := &orchestrator.Task{Status: "working", CreatedAt: now.Add(-10 * time.Second)}
-	for _, typ := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "hook_fired", "dispatch_error", "wake_due"} {
+	// command_finished/command_failed/command_force_released never actually
+	// get FromStatus/ToStatus stamped in production (recordCardRequestOutcome
+	// leaves both empty, so IsStateTransition already excludes them on that
+	// basis alone) — included here only for defense in depth against a
+	// future writer that DID stamp them, not as coverage of the real shape.
+	for _, typ := range []string{
+		"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "hook_fired", "dispatch_error", "wake_due",
+		orchestrator.ActionTypeCommandFinished, orchestrator.ActionTypeCommandFailed, orchestrator.ActionTypeCommandForceReleased,
+	} {
 		actions := []*orchestrator.Action{
 			{Type: typ, FromStatus: "working", ToStatus: "working", CreatedAt: now},
 		}

@@ -30,21 +30,18 @@ type cardContextResponse struct {
 	Actor string `json:"actor"`
 }
 
-const (
-	cardContextOriginHuman = "human"
-	cardContextOriginEvent = "event"
-)
+// cardContextOriginEvent is the only origin value this package compares
+// against directly (BoidOpAgentStart's event-origin rejection) — the
+// "human" side never needs its own local alias.
+const cardContextOriginEvent = orchestrator.CardRequestOriginEvent
 
 // cardRequestOrigin derives a card_requests row's origin the ONE way both
-// BoidOpCardContext and BoidOpAgentStart must agree on: empty CauseID means
-// a human issued the command, a non-empty CauseID means an internal event
-// caused it. A single shared helper so a future origin vocabulary change
-// cannot update one call site and silently leave the other behind.
+// BoidOpCardContext and BoidOpAgentStart must agree on — delegating to
+// orchestrator.CardRequestOrigin, the same rule FinishCardRequest/
+// FailCardRequest's own self-record uses, so a future origin vocabulary
+// change cannot update one call site and silently leave the others behind.
 func cardRequestOrigin(row *orchestrator.CardRequest) string {
-	if row.CauseID != "" {
-		return cardContextOriginEvent
-	}
-	return cardContextOriginHuman
+	return orchestrator.CardRequestOrigin(row.CauseID)
 }
 
 // cardContextActor derives cardContextResponse.Actor from the calling

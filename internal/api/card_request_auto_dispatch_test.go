@@ -114,6 +114,32 @@ func TestDispatchQueuedCardRequest_UndeclaredCommand_FailsRowWithoutDispatch(t *
 	}
 }
 
+// TestDispatchQueuedCardRequest_UndeclaredCommand_RecordsSelfLog pins that
+// failing a still-queued (never launched) row still self-records a
+// command_failed entry on the card's own action log — the call site
+// orchestrator.FailCardRequest reaches via s.CardRequests.FailCardRequest
+// (a *orchestrator.TaskRepository under the hood), not just the leaf
+// function tested directly in internal/orchestrator.
+func TestDispatchQueuedCardRequest_UndeclaredCommand_RecordsSelfLog(t *testing.T) {
+	svc, _, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	enqueueForDispatch(t, svc, card.ID, "vanished", "cause-1")
+
+	if _, err := svc.dispatchQueuedCardRequest(context.Background(), card.ID); err != nil {
+		t.Fatalf("dispatchQueuedCardRequest: %v", err)
+	}
+
+	repo := svc.CardRequests.(*orchestrator.TaskRepository)
+	actions, err := repo.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Type != "command_failed" {
+		t.Fatalf("actions = %+v, want exactly one command_failed self-record", actions)
+	}
+}
+
 // TestDispatchQueuedCardRequest_MetaUnavailable_LeavesRowQueued pins Opus
 // review Blocker B1: a project meta that is transiently unavailable
 // (ProjectStore.metas has no entry — a `boid project fetch` failure, a
@@ -178,6 +204,31 @@ func TestDispatchQueuedCardRequest_StartExecFailure_FailsClaimAndRequeuesFold(t 
 	}
 	if gotSecond.Status != orchestrator.CardRequestStatusQueued {
 		t.Errorf("second.Status = %q, want queued (fold released back, not lost)", gotSecond.Status)
+	}
+}
+
+// TestDispatchQueuedCardRequest_StartExecFailure_RecordsSelfLogForClaimedHead
+// pins that a claim-then-StartExec-failure also self-records — the OTHER
+// FailCardRequest call in dispatchQueuedCardRequest, for the claimed
+// (launching) head rather than a still-queued row.
+func TestDispatchQueuedCardRequest_StartExecFailure_RecordsSelfLogForClaimedHead(t *testing.T) {
+	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	enqueueForDispatch(t, svc, card.ID, "review", "cause-1")
+	exec.failNext = 1
+
+	if _, err := svc.dispatchQueuedCardRequest(context.Background(), card.ID); err == nil {
+		t.Fatal("dispatchQueuedCardRequest: want an error when StartExec fails")
+	}
+
+	repo := svc.CardRequests.(*orchestrator.TaskRepository)
+	actions, err := repo.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Type != "command_failed" {
+		t.Fatalf("actions = %+v, want exactly one command_failed self-record", actions)
 	}
 }
 

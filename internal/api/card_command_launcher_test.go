@@ -350,6 +350,31 @@ func TestRunCardCommandAsHuman_DispatchFailure_ReleasesSlot(t *testing.T) {
 	}
 }
 
+// TestRunCardCommandAsHuman_DispatchFailure_RecordsSelfLog pins that
+// releasing the slot on a human command's dispatch failure also
+// self-records a command_failed entry (this call's request has an empty
+// CauseID, i.e. human origin — TestFailCardRequest_RecordsCommandFailedOnCard_EventOrigin
+// in internal/orchestrator covers the event-origin case at the leaf level).
+func TestRunCardCommandAsHuman_DispatchFailure_RecordsSelfLog(t *testing.T) {
+	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	exec.failNext = 1
+
+	if _, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", ""); err == nil {
+		t.Fatal("want an error when dispatch fails")
+	}
+
+	repo := svc.CardRequests.(*orchestrator.TaskRepository)
+	actions, err := repo.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Type != "command_failed" {
+		t.Fatalf("actions = %+v, want exactly one command_failed self-record", actions)
+	}
+}
+
 // TestRunCardCommandAsHuman_TerminalCard_Returns409 pins that a manual card
 // command is rejected against a done/dropped card — mirrors acceptGo's own
 // parked/working guard (workflow_card.go), so manual and automatic dispatch
