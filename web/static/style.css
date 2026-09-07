@@ -480,6 +480,124 @@ pre {
   .detail-children-ask { color: #fbbf24; }
 }
 
+/* --- Card detail: pinned items + timeline history --- */
+.card-pinned-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.card-timeline {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.card-timeline-tz {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: var(--space-1);
+}
+
+.card-timeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.card-timeline-date-sep {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: var(--space-2);
+}
+
+.card-timeline-item {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.card-timeline-item-time {
+  flex: 0 0 auto;
+  min-width: 3.5em;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.card-timeline-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.card-timeline-item-label {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  margin-right: var(--space-1);
+}
+
+.card-timeline-load-older {
+  list-style: none;
+  margin-top: var(--space-2);
+}
+
+.card-timeline-child-result,
+.card-timeline-command-result,
+.card-timeline-command-error,
+.card-timeline-command-reason,
+.card-timeline-summary-text,
+.card-timeline-note-body {
+  font-size: 0.8125rem;
+  margin-top: 2px;
+}
+
+.card-timeline-command-error {
+  color: #b91c1c;
+}
+
+@media (prefers-color-scheme: dark) {
+  .card-timeline-command-error { color: #f87171; }
+}
+
+.card-timeline-note-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 2px 0 0;
+  padding: var(--space-1);
+  background: var(--surface);
+  border-radius: 4px;
+}
+
+.card-timeline-command {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.card-timeline-command-label {
+  font-weight: 500;
+}
+
+.card-timeline-child-finished,
+.card-timeline-answered {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.8125rem;
+}
+
+.card-timeline-wake-due {
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
 /* --- Task detail: execution root's descendant subtree (§3.4 item 2) ---
    Deliberately separate from .task-list/.task-row (components/task_tree.templ)
    — that machinery is tied to the list page's BuildTreeItems/recursive-CTE
