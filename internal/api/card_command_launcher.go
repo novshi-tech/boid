@@ -97,18 +97,17 @@ func currentOccupantResult(store cardRequestLister, cardID, instruction string) 
 }
 
 // cardWorkChildOccupantTx reports the REAL, followable task id of cardID's
-// live work child, if any — the same occupancy cardSlotOccupied checks for
-// child_added, but re-read FRESH from tx (not a pre-fetched *orchestrator.Task
-// snapshot) so it can run inside the same transaction as the CreateCardRequest
-// INSERT that claims the slot: a stale snapshot taken before the
-// transaction opened would defeat the whole point of making this atomic.
+// live work child, if any — read FRESH from tx (not a pre-fetched
+// *orchestrator.Task snapshot) so it can run inside the same transaction as
+// the CreateCardRequest INSERT that claims the slot: a stale snapshot taken
+// before the transaction opened would defeat the whole point of making this
+// atomic.
 //
-// occupantTaskID is only ever a real tasks.id (a live, non-terminal child
-// row) or "" — never a task_triage.detail.children JSON child id. A
-// specced/open JSON child with no task row of its own yet (the common case)
-// occupies the slot (occupied=true) but has nothing real to follow, so
-// occupantTaskID stays "": a caller mislabeling that JSON id as a task id
-// and GETting /api/tasks/<id> would otherwise 404.
+// This gates STARTING an execution, so it asks only about the execution
+// slot: a live, non-terminal child task row. occupantTaskID is therefore
+// always a real tasks.id or "" — a task_triage.detail.children JSON id is
+// never followable (GET /api/tasks/<it> 404s) and, per §3.2, an
+// open/specced child holds the spec slot rather than this one.
 func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantTaskID string, occupied bool, err error) {
 	fresh, err := tx.GetTask(cardID)
 	if err != nil {
@@ -123,33 +122,34 @@ func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantTaskID string, 
 			Message: fmt.Sprintf("card command: card is %q, not parked or working — reopen it before running a command", fresh.Status),
 		}
 	}
-	// Propagate errors rather than fail open, matching cardSlotOccupied.
-	jsonOccupied := false
+	// Parse the detail blob but do NOT read occupancy out of it. A corrupt
+	// blob still fails closed (the continuation would have to read and write
+	// that same detail, so launching onto it only moves the failure), while a
+	// perfectly good open/specced child does not block: that child holds the
+	// NEXT-STEP SPEC slot, which §3.2 keeps separate from the execution slot
+	// and says coexists with the dialogue or judgment that produces the spec.
+	// Only a live child task row is a running occupant.
 	tt, ttErr := tx.GetTaskTriage(cardID)
 	switch {
 	case ttErr == nil:
-		id, derr := orchestrator.DetailOpenSlotChildID(tt.Detail)
-		if derr != nil {
+		if _, derr := orchestrator.DetailOpenSlotChildID(tt.Detail); derr != nil {
 			return "", false, derr
 		}
-		jsonOccupied = id != ""
 	case errors.Is(ttErr, sql.ErrNoRows):
 		// no task_triage row at all — nothing to be occupied by.
 	default:
 		return "", false, ttErr
 	}
-	if !jsonOccupied && fresh.OpenChildCount == 0 {
+	if fresh.OpenChildCount == 0 {
 		return "", false, nil
 	}
-	if fresh.OpenChildCount > 0 {
-		children, lerr := tx.ListChildren(cardID)
-		if lerr != nil {
-			return "", true, lerr
-		}
-		for _, c := range children {
-			if !orchestrator.IsTerminalStatus(c.Status) {
-				return c.ID, true, nil
-			}
+	children, lerr := tx.ListChildren(cardID)
+	if lerr != nil {
+		return "", true, lerr
+	}
+	for _, c := range children {
+		if !orchestrator.IsTerminalStatus(c.Status) {
+			return c.ID, true, nil
 		}
 	}
 	return "", true, nil

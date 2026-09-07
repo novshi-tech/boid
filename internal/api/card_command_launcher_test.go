@@ -271,13 +271,22 @@ func TestRunCardCommandAsHuman_Occupied_ReturnsLinkWithoutCreatingARequest(t *te
 	}
 }
 
-// TestRunCardCommandAsHuman_SpeccedJSONChildOnly_OccupiedWithNoFakeTarget pins the
-// other half of cardWorkChildOccupantTx's fix: a specced/open task_triage
-// JSON child with NO live task row yet (the common case — acceptGo hasn't
-// task-ified it) occupies the slot, but has no real task id to point at.
-// TargetKind/TargetID must stay empty rather than leak the JSON child's own
-// id as if it were a followable task id (GET /api/tasks/<that id> 404s).
-func TestRunCardCommandAsHuman_SpeccedJSONChildOnly_OccupiedWithNoFakeTarget(t *testing.T) {
+// TestRunCardCommandAsHuman_SpeccedJSONChildOnly_StillLaunches pins that a
+// specced/open task_triage JSON child with NO live task row yet does NOT
+// block a card command.
+//
+// docs/plans/card-next-step-and-timeline.md §3.2 keeps the two constraints
+// apart: a specced child occupies the NEXT-STEP SPEC slot, which explicitly
+// "仕様を作る対話・判断と共存できる", while a command occupies the EXECUTION
+// slot ("Go による作業 task、コマンドが作る task、対話 session の合計"). A
+// spec waiting for Go is not an execution — nothing is running — so pressing
+// Discuss to talk that spec over before pressing Go must work.
+//
+// Treating it as an occupant also produced a dead end: §4.4 has the occupied
+// response point at "現在の実行", and a JSON child has no task row to point
+// at, so the caller got Occupied with an empty TargetKind/TargetID and
+// nothing to follow.
+func TestRunCardCommandAsHuman_SpeccedJSONChildOnly_StillLaunches(t *testing.T) {
 	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
 		"review": {Label: "Run", Run: "echo hi"},
 	}))
@@ -293,18 +302,15 @@ func TestRunCardCommandAsHuman_SpeccedJSONChildOnly_OccupiedWithNoFakeTarget(t *
 	if err != nil {
 		t.Fatalf("RunCardCommandAsHuman: %v", err)
 	}
-	if !result.Occupied {
-		t.Fatal("Occupied = false, want true — the specced JSON child occupies the slot")
-	}
-	if result.TargetKind != "" || result.TargetID != "" {
-		t.Errorf("TargetKind/TargetID = %q/%q, want both empty — ch_00 is a JSON id, not a task id, and has no live row yet",
+	if result.Occupied {
+		t.Fatalf("Occupied = true, want false — a specced child holds the spec slot, not the execution slot (target was %q/%q)",
 			result.TargetKind, result.TargetID)
 	}
-	if result.Instruction != "go do it" {
-		t.Errorf("Instruction = %q, want the caller's own submitted instruction echoed back", result.Instruction)
+	if result.LauncherJobID == "" {
+		t.Error("LauncherJobID is empty, want the launcher exec job id")
 	}
-	if len(exec.calls) != 0 {
-		t.Fatalf("StartExec calls = %d, want 0 — must not dispatch alongside a specced-but-undispatched child", len(exec.calls))
+	if len(exec.calls) != 1 {
+		t.Fatalf("StartExec calls = %d, want 1", len(exec.calls))
 	}
 }
 
