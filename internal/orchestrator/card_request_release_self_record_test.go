@@ -223,7 +223,7 @@ func TestForceReleaseCardRequest_RecordsForceFailedSiblings(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 	head := &orchestrator.CardRequest{CardID: cardID}
-	sibling := &orchestrator.CardRequest{CardID: cardID}
+	sibling := &orchestrator.CardRequest{CardID: cardID, CommandKey: "sibling-key"}
 	if err := orchestrator.CreateCardRequest(d.Conn, head); err != nil {
 		t.Fatalf("create head: %v", err)
 	}
@@ -250,8 +250,9 @@ func TestForceReleaseCardRequest_RecordsForceFailedSiblings(t *testing.T) {
 		t.Fatalf("actions = %d, want 1", len(actions))
 	}
 	p := decodeSelfRecordPayload(t, actions[0].Payload)
-	if len(p.ForceFailedSiblings) != 1 || p.ForceFailedSiblings[0].ID != sibling.ID {
-		t.Fatalf("ForceFailedSiblings = %+v, want exactly [%q]", p.ForceFailedSiblings, sibling.ID)
+	if len(p.ForceFailedSiblings) != 1 || p.ForceFailedSiblings[0].ID != sibling.ID ||
+		p.ForceFailedSiblings[0].CommandKey != "sibling-key" {
+		t.Fatalf("ForceFailedSiblings = %+v, want exactly [{%q sibling-key}]", p.ForceFailedSiblings, sibling.ID)
 	}
 }
 

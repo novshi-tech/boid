@@ -1393,6 +1393,19 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      - `RetryCardRequest` は同じ `id` を使い回すので、同一 `request_id` に
        複数の終端 action（例: 失敗 → retry → 再度失敗）が積まれうる。
        `request_id` は action の一意キーではない。
+     - **よって PR-5b のタイムライン項目の安定 ID は `actions.id` を使う。**
+       `request_id` は項目の同一性ではなく**相関キー**としてのみ使う
+       （進行中の固定項目 ↔ 終端項目の対応、および retry 系列のまとめ）。
+     - **コマンドには子の `child_added` に相当する起動時 action が存在しない。**
+       launcher 経路（`RunCardCommandAsHuman` / `dispatchQueuedCardRequest` /
+       `ClaimQueuedCardRequestsForDispatch`）は action を一切書かない。
+       したがって §5.3 の「作成位置に項目を置き、終端時刻に軽い finished 項目を
+       出して作成位置へリンクする」という**子のモデルはコマンドには適用できない**。
+       コマンドは別モデルにする — **終端 action 1 件 = タイムライン項目 1 件**を
+       終端時刻の位置に置き、進行中のものだけ live な `card_requests` 行から
+       §5.1 の固定項目として描く。固定項目が終端したら、その終端時刻の位置に
+       通常項目として現れる（§5.1 の「終了後は通常の時系列位置に戻す」は
+       コマンドについてはこの意味になる）。
   10. **確認した呼び出し元（`FinishCardRequest`/`FailCardRequest` 側 9箇所 +
       `ForceReleaseCardRequest` 1箇所、実 DB テストで自己記録の有無を固定）:**
       `ReconcileCardRequestSlots`（task/session の成功・失敗）、
