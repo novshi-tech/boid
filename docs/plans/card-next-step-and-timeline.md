@@ -478,7 +478,7 @@ khi 等の最新 workspace repo と本番 DB は未調査。判断スキルが�
 失敗時は PR-3 の context/委譲契約を修正し、成立が未確認のまま PR-4 を積まない。
 PR-5 の読みモデルに合わせた静的 UI サンプルは早めに確認する。
 
-### Gate A の実測 (2026-09-07、途中まで)
+### Gate A の実測 (2026-09-07)
 
 **縦断の対象は nvt-tasks**（default workspace のメタプロジェクト）。khi にも同じ宣言を
 入れたが、実際に撃ったのは nvt-tasks 側。以下は**実行して確認した**ことだけを書く。
@@ -514,14 +514,31 @@ PR-5 の読みモデルに合わせた静的 UI サンプルは早めに確認�
    readonly:true + card 書き込み可」が実 harness で成立した**（PR-3 が Gate A に送った宿題）。
 4. 状態を勝手に変えない。task 面でも session 面でも card は `parked` のまま。子は
    `specced` で止まり、Go を押すまで dispatch されない。
-6. （一部）Go とコマンドが 1 つの実行枠を共有する。Go は `card_requests` に
+5. 作成 op 直後に launcher を止めても関連が残り、再試行で重複しない。`run:` の
+   `boid agent start` の直後に `sleep` を置いた検証専用コマンドを一時的に宣言して窓を
+   広げ、continuation が attached になった状態で launcher の container を
+   `podman rm -f` した。行は `attached` + `session:<job>` のまま生き残り、reconcile を
+   2 ティック（30 秒間隔）跨いでも解放されない。同じキーを再実行すると
+   `occupied:true` + **同じ request_id・同じ session** が返り、2 本目の session は
+   生まれなかった。
+   daemon 停止側は、継続先がまだ無い `launching` の行を作って（`sleep` を op の
+   **手前**に置いた版）daemon を落とすところまで通った。再起動後、起動時スキャンが
+   その行を `failed`（retry 可）に落として枠を解放し、直後に別のコマンドが起動できた
+   —— `RecoverLaunchingCardRequests`（`internal/orchestrator/card_request_release.go`）
+   が実 harness で効いていることの確認。**逆引きで「結び直す」側は当てられていない**
+   （下記「残る未検証」）。
+6. Go とコマンドが 1 つの実行枠を共有する。Go は `card_requests` に
    `__go__` の行を作り、その間のコマンドは `occupied` + 作業 task へのリンクを返す。
    手動コマンド同士も同様で、入力した instruction は応答に echo され失われない。
-   二重起動しない。
-7. （一部）launcher は継続先を作って即終了し（実測 2〜3 秒、exit 0）、枠は継続先が
+   二重起動しない。**逆向きも通った** —— specced な子を持つ card でコマンドが枠を
+   握っている状態で Go を押すと、`accept(go): ... single work slot is already occupied
+   by an active card command` の 409 になる。`speccedIdx == -1` の早期 reject
+   （`internal/api/workflow_card.go`）より奥の、枠のガードそのものに到達している。
+7. launcher は継続先を作って即終了し（実測 2〜3 秒、exit 0）、枠は継続先が
    持つ。session から detach しても `attached` のまま（切断と終了を混同しない）。
    `boid agent stop` で job が終端して初めて `finished` に落ちる。Go の作業 task の
-   終端でも同様に解放される。
+   終端でも同様に解放される。**hook job だけが終わって task が未終端の場合と daemon
+   再起動も通った** —— 詳細は下の「終わり方で枠の扱いが 3 通りに分かれる」。
 
 **見つけて直したもの（どちらもコード読解では出ず、実際に撃って初めて出た）:**
 
@@ -540,20 +557,45 @@ PR-5 の読みモデルに合わせた静的 UI サンプルは早めに確認�
   「現在の実行へのリンク」を返すと決めている）。生きた子 task 行だけを実行の占有とし、
   detail の parse は fail-closed のために残した。
 
-**未了:**
+**終わり方で枠の扱いが 3 通りに分かれる（項目 7 を撃って初めて分かった）:**
 
-- 項目 5 全部（作成 op 直後の launcher 停止、dispatch と関連書き込みの間での daemon 停止）。
-- 項目 6 の残り（specced な子がある状態でコマンドが枠を握っているときに Go が拒まれるか。
-  子が `dispatched` に移ると Go は枠のガードより手前の「no specced child」で落ちるため、
-  枠のガードそのものに到達する状況を作る必要がある）。
-- 項目 7 の残り（task の hook job だけが終わり task が未終端のとき、daemon 再起動時）。
-- **これらは現状の `run:`（2〜3 秒で終わる）では狙った瞬間を手で当てられず、「当てられ
-  なかった」と「当てて通った」を区別できない。** 検証用に `run:` へ `sleep` を挟んだ
-  card_commands を一時的に宣言して窓を広げる案がある（`sleep` 後に create すれば
-  `launching` のまま、create 後に `sleep` すれば継続先ありで launcher だけ残る）。
-  未承認。
-- 検証用の捨て card `cc1af1df-a228-4f69-aa79-7e3ddb2e833c`（nvt-tasks、`[GateA]` 始まり）が
-  残っている。検証完了後に drop する。
+判断 task の hook job を 3 通りの終わり方で終端させると、枠の扱いが変わる。
+
+| hook job の終わり方 | task | card_requests |
+|---|---|---|
+| exit 0（`--done` 無し） | `auto_advance` で `done` | `finished`（解放）|
+| container ごと強制削除（exit 143）| `aborted` | `failed`（解放）|
+| `boid task ask` で待機中に `boid agent stop`（exit 0）| `awaiting` のまま | `attached`（保持）|
+
+つまり **「hook job が終わったのに task が未終端」は `awaiting` でしか起きない** ——
+それ以外の終わり方は task 側が必ず終端に落ちるので、枠は正しく解放される。
+`awaiting` の場合だけ枠が保持され、reconcile を跨いでも誤解放されない。
+
+その `awaiting` の状態で daemon を再起動したところ、task は
+`abort`（`code: daemon_shutdown`）→ 自動 `reopen` → 再 dispatch され、agent が
+**新しい question_id で質問をやり直した**。この間 `card_requests` は一貫して
+`attached` のままで、枠は job ではなく task に付いて回る。回答を投げると task は
+`done` になり、枠も解放された。
+
+**残る未検証:**
+
+- 項目 5 のうち「dispatch と関連書き込みの**間**で daemon を落とし、逆引きで結び直す」。
+  この窓は `executeAgentStart`（`internal/server/boid_executor_agent_start.go`）の
+  `StartSession` と `AttachCardRequestOwned` の**隣り合う 2 行の間**にあり、`run:` に
+  `sleep` を挟んでも広がらない（sandbox 側ではなく daemon プロセス内なので）。
+  手で当てられる幅ではないので、実 harness では**当てていない**。
+  結び直し側は unit test が押さえている ——
+  `TestRecoverLaunchingCardRequests_ReattachesFoundContinuation`、
+  `_IgnoresStalePriorAttemptSessionJob`、
+  `TestReconcileLaunchingCardRequests_LauncherTerminatedWithSessionContinuation_Attaches`。
+  実 harness で確認したのは「継続先がまだ無い launching 行が起動時スキャンで
+  解放される」側だけ。
+
+**後片付け（実施済み）:**
+
+- 検証専用の card コマンド（`gatea-pre` / `gatea-post`）は nvt-tasks から削除し、
+  `boid project fetch` 済み。
+- 検証用の捨て card `cc1af1df-a228-4f69-aa79-7e3ddb2e833c` は `dropped`。
 
 ## 8. 互換性・切替
 
