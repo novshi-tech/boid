@@ -993,6 +993,23 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
     → workspace.yaml のディスク読み）をやっている。12 時間走る作業 task が
     枠を握っている card や、設計上ずっと queued のままの barrier ブロック
     card では、30 秒ごとに永久にディスクを読み続ける。
+
+  **project meta が引けないときは queued のまま残す（B1 の対処で確定した契約）。**
+  `dispatchQueuedCardRequest` は `hydrateMetaForTriggers` が nil を返す状態
+  （project.yaml が今 `ProjectStore.metas` に無い — `boid project fetch` の失敗、
+  parse エラー、起動順序）を **`ErrCardForceReleaseBarrierActive` と同じ
+  「後でまた試す」skip** として扱い、行を `queued` のまま残す。
+  `FailCardRequest` するのは **meta は引けたが `card_commands` にそのキーが
+  無い**ときだけで、そのときは Warn ログを出す。
+  当初の実装はこの 2 つを同一視して「command が project.yaml から削除された」
+  として行を failed に落としており、YAML 構文エラー 1 つで 30 秒以内に
+  その project の queued 行を持つ全 card が無言で drain され、yaml を直しても
+  戻らなかった（手動 `RetryCardRequest` が必要）。§4.4 の「耐久要求」という
+  前提そのものに反するので閉じた。
+  **帰結として、load されない project の queued 行は無期限に残る。** これは
+  「復旧不能かつ無言」より望ましい状態として意図的に受け入れたもので、meta が
+  戻れば同じ行がそのまま dispatch される（実 DB で確認済み）。ただし残った行は
+  上記 N4 のとおり毎 tick hydrate を 1 回ずつ呼ぶので、コストは行数に比例する。
 - **PR-2d-5 で一部対応: retry/force-release は前の継続先 (session/task) を止めない
   (KNOWN GAP、`boid_executor_agent_start.go` の孤児 session と同系統)。** 完全な
   停止処理はまだ実装していない — `boid task release-card-request` が解放前の

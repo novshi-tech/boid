@@ -57,7 +57,9 @@ func PeekOldestQueuedCardRequest(dbtx db.DBTX, cardID string) (id, commandKey st
 }
 
 // failAllQueuedCardRequests fails every currently-queued request for cardID
-// in one statement.
+// in one statement. A queued row is never folded (folding only happens once
+// ClaimQueuedCardRequests promotes a head), so there are no siblings to
+// release and the bare UPDATE is complete on its own.
 func failAllQueuedCardRequests(dbtx db.DBTX, cardID, reason string) (int64, error) {
 	res, err := dbtx.Exec(
 		`UPDATE card_requests SET status = ?, error = ?, updated_at = ? WHERE card_id = ? AND status = ?`,
