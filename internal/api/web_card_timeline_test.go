@@ -216,8 +216,8 @@ func TestCardDetail_TenItemCap_HistoryPagingLeavesLoadOlder(t *testing.T) {
 	if !strings.Contains(body, "Load older") {
 		t.Errorf("expected a Load older control with 12 history items past the 10-cap; body:\n%s", body)
 	}
-	if !strings.Contains(body, "waiting on ci") {
-		t.Errorf("pinned suggestion should still render alongside the capped history; body:\n%s", body)
+	if got := strings.Count(body, "waiting on ci"); got != 1 {
+		t.Errorf("pinned suggestion should render exactly once (pinned section only, not also duplicated into history), got %d; body:\n%s", got, body)
 	}
 }
 
@@ -482,5 +482,38 @@ func TestCardDetail_PinnedCommand_RendersLabelAndTargetLink(t *testing.T) {
 	}
 	if !strings.Contains(body, `href="/tasks/task-y"`) {
 		t.Errorf("pinned command with an existing task target should link to it; body:\n%s", body)
+	}
+}
+
+// TestCardDetail_HistoricalCommand_TargetTaskGCd_NoLink is the command-side
+// counterpart of the child GC-survival test: once a finished command's
+// target task row is gone, its result must still render with no dangling
+// link.
+func TestCardDetail_HistoricalCommand_TargetTaskGCd_NoLink(t *testing.T) {
+	h, repo, projectID := newCardTimelineTestHandler(t)
+	newCardTimelineTestCard(t, repo, projectID, "card-1")
+
+	target := &orchestrator.Task{ID: "task-z", ProjectID: projectID, Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{}}
+	if err := orchestrator.CreateTask(repo, target); err != nil {
+		t.Fatalf("create target task: %v", err)
+	}
+	createCardTimelineAction(t, repo, "card-1", orchestrator.ActionTypeCommandFinished, map[string]string{
+		"request_id": "r1", "command_key": "review", "launched_label": "Run",
+		"target_kind": orchestrator.CardRequestTargetKindTask, "target_id": "task-z",
+		"result": "reviewed and merged",
+	})
+	if err := orchestrator.DeleteTask(repo, "task-z"); err != nil {
+		t.Fatalf("delete target task (simulating GC): %v", err)
+	}
+
+	code, body := getHTML(t, h, "/tasks/card-1")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", code, body)
+	}
+	if !strings.Contains(body, "reviewed and merged") {
+		t.Errorf("command result should survive its target task's GC; body:\n%s", body)
+	}
+	if strings.Contains(body, `href="/tasks/task-z"`) {
+		t.Errorf("a GC'd command target must not render a dangling link; body:\n%s", body)
 	}
 }

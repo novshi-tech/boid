@@ -151,7 +151,7 @@ func TestCardTimelineItem_Answered_RendersAcceptedOrRejectedAndEscapesBasis(t *t
 		})},
 	}
 	html := renderItem(t, item, "card-1", "", false, "")
-	if !strings.Contains(html, "Accepted") {
+	if !strings.Contains(html, ">Accepted<") {
 		t.Errorf("missing Accepted label; got:\n%s", html)
 	}
 	if strings.Contains(html, "<script>alert(1)</script>") {
@@ -168,7 +168,7 @@ func TestCardTimelineItem_Answered_Reject(t *testing.T) {
 		Action: &orchestrator.Action{ID: "a3", Payload: mustJSON(t, map[string]string{"answer": "reject", "verb": "drop"})},
 	}
 	html := renderItem(t, item, "card-1", "", false, "")
-	if !strings.Contains(html, "Rejected") {
+	if !strings.Contains(html, ">Rejected<") {
 		t.Errorf("missing Rejected label; got:\n%s", html)
 	}
 }
@@ -222,7 +222,7 @@ func TestCardTimelineItem_Note_MalformedPayload_DoesNotPanicOrBreak(t *testing.T
 func TestCardTimelineItem_WakeDue_RendersLabel(t *testing.T) {
 	item := timeline.CardItem{Kind: timeline.CardItemWakeDue, ID: "a7", HasTime: true, Time: time.Now()}
 	html := renderItem(t, item, "card-1", "", false, "")
-	if !strings.Contains(html, "Wake condition due") {
+	if !strings.Contains(html, ">Wake condition due<") {
 		t.Errorf("missing wake_due label; got:\n%s", html)
 	}
 }
@@ -299,7 +299,7 @@ func TestCardTimelineItem_ChildFinished_LinksBackToAnchorByCorrelationID(t *test
 	if !strings.Contains(html, `href="#card-child-c1"`) {
 		t.Errorf("finished item should link back to its anchor's DOM id; got:\n%s", html)
 	}
-	if !strings.Contains(html, "closed") {
+	if !strings.Contains(html, ">closed<") {
 		t.Errorf("missing closed label; got:\n%s", html)
 	}
 }
@@ -310,7 +310,7 @@ func TestCardTimelineItem_ChildFinished_Dropped(t *testing.T) {
 		Child: &timeline.CardChildDetail{ChildID: "c1", ClosingActionType: "child_dropped"},
 	}
 	html := renderItem(t, item, "card-1", "", false, "")
-	if !strings.Contains(html, "dropped") {
+	if !strings.Contains(html, ">dropped<") {
 		t.Errorf("missing dropped label; got:\n%s", html)
 	}
 }
@@ -323,10 +323,10 @@ func TestCardTimelineItem_Command_Pinned_UsesLabelFallsBackToCommandKey(t *testi
 		Command: &timeline.CardCommandDetail{RequestID: "r1", CommandKey: "discuss", Status: orchestrator.CardRequestStatusQueued},
 	}
 	html := renderItem(t, item, "card-1", "", true, "")
-	if !strings.Contains(html, "discuss") {
+	if !strings.Contains(html, ">discuss<") {
 		t.Errorf("queued command with no label should fall back to command_key; got:\n%s", html)
 	}
-	if !strings.Contains(html, "queued") {
+	if !strings.Contains(html, ">queued<") {
 		t.Errorf("missing status badge text; got:\n%s", html)
 	}
 }
