@@ -202,14 +202,17 @@ func cardSpecSlotOccupied(tx TxStore, cardID string) (bool, error) {
 	return occupantID != "", nil
 }
 
-// cardExecutionSlotOccupied reports whether cardID has anything running at
-// all: whatever occupies the spec slot (a dispatched child is both), plus a
-// card_requests row currently launching/attached — the Go work task, a
-// command's task, or a session.
+// cardSpecOrExecutionSlotOccupied reports whether EITHER of §3.2's two
+// slots is taken: the spec slot (cardSpecSlotOccupied) or the execution slot
+// (a card_requests row currently launching/attached — the Go work task, a
+// command's task, or a session).
 //
-// §3.2's wider constraint. Gates operations that START an execution, never
-// ones that merely write a spec.
-func cardExecutionSlotOccupied(tx TxStore, cardID string) (bool, error) {
+// For callers that consume both at once. Reopening a terminal child is the
+// case: it becomes an unresolved child (spec slot) AND starts running
+// (execution slot), so either being taken blocks it. A caller that only
+// writes a spec wants cardSpecSlotOccupied; one that only starts an
+// execution wants the card_requests half on its own.
+func cardSpecOrExecutionSlotOccupied(tx TxStore, cardID string) (bool, error) {
 	active, err := tx.CountActiveCardRequests(cardID)
 	if err != nil {
 		return false, err

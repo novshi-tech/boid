@@ -46,7 +46,7 @@ func TestApplyAction_Reopen_RejectsWhenCardSlotOccupiedByAnotherLiveChild(t *tes
 // command's task or session, or a Go reservation — even though the card has
 // no live child row and no open/specced JSON child. Reopen starts an
 // execution, so it is gated on the wider of §3.2's two constraints
-// (cardExecutionSlotOccupied), unlike child_added which only writes a spec
+// (cardSpecOrExecutionSlotOccupied), unlike child_added which only writes a spec
 // and is gated on the narrower one.
 func TestApplyAction_Reopen_RejectsWhenCardSlotOccupiedByActiveCardRequest(t *testing.T) {
 	child := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", ParentID: "card-1", Status: orchestrator.TaskStatusAborted, Exec: &orchestrator.ExecAttrs{Behavior: "dev"}}
