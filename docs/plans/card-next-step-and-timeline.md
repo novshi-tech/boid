@@ -697,6 +697,11 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   吸収されず、failed のまま残る (GC は finished/failed を同じ規則で扱うので
   30 日後に削除される、§4.4 の保持規則どおり)。後続 PR がこの吸収を
   `cause_id` 付き行にも広げる場合は、この UNIQUE 制約を踏まえること。
+  もう一つの含意: 同じ `cause_id` が failed 中に再配送されて新しい行が
+  生まれた状態で古い failed 行を `RetryCardRequest` すると、UNIQUE 違反に
+  なる。生の SQL エラーではなく `ErrCardRequestDuplicateCause` にマップして
+  あるので、retry を UI や自動化に配線する側はこの失敗を「その原因は
+  既に生きている要求として存在する」として扱うこと。
 - **PR-2d-5 で一部対応: retry/force-release は前の継続先 (session/task) を止めない
   (KNOWN GAP、`boid_executor_agent_start.go` の孤児 session と同系統)。** 完全な
   停止処理はまだ実装していない — `boid task release-card-request` が解放前の
