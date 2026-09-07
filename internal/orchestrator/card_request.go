@@ -401,7 +401,8 @@ func FinishCardRequest(dbtx db.DBTX, id, result string) error {
 //
 // Must be called within a transaction for atomicity (two UPDATEs).
 func FailCardRequest(dbtx db.DBTX, id, errText string) error {
-	return failCardRequest(dbtx, id, errText, foldedSiblingsRequeue)
+	_, err := failCardRequest(dbtx, id, errText, foldedSiblingsRequeue)
+	return err
 }
 
 // foldedSiblingOutcome selects what failCardRequest does to id's folded
@@ -415,9 +416,16 @@ const (
 	foldedSiblingsFail
 )
 
-func failCardRequest(dbtx db.DBTX, id, errText string, siblings foldedSiblingOutcome) error {
+// ForceReleasedSibling identifies one folded card_requests row a
+// foldedSiblingsFail pass force-failed alongside the row a caller named.
+type ForceReleasedSibling struct {
+	ID         string
+	CommandKey string
+}
+
+func failCardRequest(dbtx db.DBTX, id, errText string, siblings foldedSiblingOutcome) ([]ForceReleasedSibling, error) {
 	if id == "" {
-		return fmt.Errorf("fail card request: id must not be empty")
+		return nil, fmt.Errorf("fail card request: id must not be empty")
 	}
 	now := time.Now().UTC()
 	res, err := dbtx.Exec(
@@ -426,29 +434,59 @@ func failCardRequest(dbtx db.DBTX, id, errText string, siblings foldedSiblingOut
 		string(CardRequestStatusQueued), string(CardRequestStatusLaunching), string(CardRequestStatusAttached),
 	)
 	if err != nil {
-		return fmt.Errorf("fail card request: %w", err)
+		return nil, fmt.Errorf("fail card request: %w", err)
 	}
 	if err := rowsAffectedOrNotFoundOrInvalid(dbtx, res, id); err != nil {
-		return err
+		return nil, err
 	}
 	switch siblings {
 	case foldedSiblingsFail:
+		// Read the siblings before failing them — the UPDATE below clears
+		// folded_into, so this is the only chance to report which rows (and
+		// their command_key) got swept up.
+		folded, ferr := listFoldedCardRequests(dbtx, id)
+		if ferr != nil {
+			return nil, fmt.Errorf("fail card request: list folded requests: %w", ferr)
+		}
 		siblingErrText := fmt.Sprintf("folded into %s, which failed: %s", id, errText)
 		if _, err := dbtx.Exec(
 			`UPDATE card_requests SET status = ?, folded_into = '', error = ?, updated_at = ? WHERE folded_into = ? AND status = ?`,
 			string(CardRequestStatusFailed), siblingErrText, now, id, string(CardRequestStatusFolded),
 		); err != nil {
-			return fmt.Errorf("fail card request: fail folded requests: %w", err)
+			return nil, fmt.Errorf("fail card request: fail folded requests: %w", err)
 		}
+		return folded, nil
 	default:
 		if _, err := dbtx.Exec(
 			`UPDATE card_requests SET status = ?, folded_into = '', updated_at = ? WHERE folded_into = ? AND status = ?`,
 			string(CardRequestStatusQueued), now, id, string(CardRequestStatusFolded),
 		); err != nil {
-			return fmt.Errorf("fail card request: release folded requests: %w", err)
+			return nil, fmt.Errorf("fail card request: release folded requests: %w", err)
 		}
+		return nil, nil
 	}
-	return nil
+}
+
+// listFoldedCardRequests returns the id/command_key of every row currently
+// folded into id, oldest first.
+func listFoldedCardRequests(dbtx db.DBTX, id string) ([]ForceReleasedSibling, error) {
+	rows, err := dbtx.Query(
+		`SELECT id, command_key FROM card_requests WHERE folded_into = ? AND status = ? ORDER BY created_at ASC`,
+		id, string(CardRequestStatusFolded),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ForceReleasedSibling
+	for rows.Next() {
+		var s ForceReleasedSibling
+		if err := rows.Scan(&s.ID, &s.CommandKey); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 // RetryCardRequest re-queues a failed request explicitly. Only valid from

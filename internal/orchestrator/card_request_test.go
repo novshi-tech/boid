@@ -160,6 +160,57 @@ func TestCreateCardRequest_DuplicateCauseID_Rejected(t *testing.T) {
 	}
 }
 
+// TestCreateCardRequest_DuplicateCauseID_AllowedAfterFailed pins that
+// idx_card_requests_cause_unique excludes failed rows: a cause_id whose
+// prior request ended in failure can be redelivered, since a retry-able
+// failure carries no "already handled" signal for that cause.
+func TestCreateCardRequest_DuplicateCauseID_AllowedAfterFailed(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	first := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-99"}
+	if err := orchestrator.CreateCardRequest(d.Conn, first); err != nil {
+		t.Fatalf("CreateCardRequest(first): %v", err)
+	}
+	if err := orchestrator.FailCardRequest(d.Conn, first.ID, "boom"); err != nil {
+		t.Fatalf("FailCardRequest: %v", err)
+	}
+
+	second := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-99"}
+	if err := orchestrator.CreateCardRequest(d.Conn, second); err != nil {
+		t.Fatalf("CreateCardRequest(second, same cause_id, prior failed) = %v, want nil (failed rows are excluded from the dedup index)", err)
+	}
+}
+
+// TestCreateCardRequest_DuplicateCauseID_StillRejectedAfterFinished pins the
+// other half: a cause_id whose prior request FINISHED must still reject
+// redelivery — the dedup exists to stop an already-handled cause from being
+// reprocessed, which only applies once it actually succeeded.
+func TestCreateCardRequest_DuplicateCauseID_StillRejectedAfterFinished(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	first := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-100"}
+	if err := orchestrator.CreateCardRequest(d.Conn, first); err != nil {
+		t.Fatalf("CreateCardRequest(first): %v", err)
+	}
+	if _, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{}); err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, first.ID, orchestrator.CardRequestTargetKindTask, "task-1"); err != nil {
+		t.Fatalf("AttachCardRequest: %v", err)
+	}
+	if err := orchestrator.FinishCardRequest(d.Conn, first.ID, "ok"); err != nil {
+		t.Fatalf("FinishCardRequest: %v", err)
+	}
+
+	second := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-100"}
+	err := orchestrator.CreateCardRequest(d.Conn, second)
+	if !errors.Is(err, orchestrator.ErrCardRequestDuplicateCause) {
+		t.Fatalf("CreateCardRequest(second, same cause_id, prior finished) = %v, want ErrCardRequestDuplicateCause", err)
+	}
+}
+
 // TestCreateCardRequest_InstructionRoundTrips pins that Instruction is
 // durable row state, not a launch-time argument: it must survive
 // create -> get unchanged, and must NOT be reset by ClaimQueuedCardRequests

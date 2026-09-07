@@ -342,7 +342,9 @@ func RecoverLaunchingCardRequests(conn *sql.DB) ([]CardRequestSlotOutcome, error
 // continuation has actually terminated. Unlike FailCardRequest, it does NOT
 // requeue folded siblings — it fails them too, since requeuing would let
 // the very next claim restart the card the operator just told to stop.
-func ForceReleaseCardRequest(dbtx db.DBTX, id, reason string) error {
+// Returns every sibling it force-failed this way, since fold is scoped to
+// the card rather than id's own command_key/cause_id.
+func ForceReleaseCardRequest(dbtx db.DBTX, id, reason string) ([]ForceReleasedSibling, error) {
 	if reason == "" {
 		reason = "force-released by operator"
 	}

@@ -33,7 +33,7 @@ func TestAttachCardRequestOwned_RejectsWhenLauncherJobIDDiffers(t *testing.T) {
 	// requeues it; the new launcher's claim then re-promotes it to
 	// launching under a DIFFERENT launcher_job_id — the exact shape a
 	// force-release-and-reclaim leaves behind.
-	if err := orchestrator.ForceReleaseCardRequest(d.Conn, req.ID, "operator kill"); err != nil {
+	if _, err := orchestrator.ForceReleaseCardRequest(d.Conn, req.ID, "operator kill"); err != nil {
 		t.Fatalf("ForceReleaseCardRequest: %v", err)
 	}
 	if err := orchestrator.RetryCardRequest(d.Conn, req.ID); err != nil {

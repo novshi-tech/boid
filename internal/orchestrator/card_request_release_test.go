@@ -390,8 +390,12 @@ func TestForceReleaseCardRequest_ReleasesRegardlessOfContinuationState(t *testin
 	liveTask := newTestExecutionTask(t, d, "task-stuck", "proj-1", orchestrator.TaskStatusExecuting)
 	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindTask, liveTask)
 
-	if err := orchestrator.ForceReleaseCardRequest(d.Conn, req.ID, "operator says stuck"); err != nil {
+	siblings, err := orchestrator.ForceReleaseCardRequest(d.Conn, req.ID, "operator says stuck")
+	if err != nil {
 		t.Fatalf("ForceReleaseCardRequest: %v", err)
+	}
+	if len(siblings) != 0 {
+		t.Fatalf("siblings = %+v, want none (nothing was folded into this request)", siblings)
 	}
 	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
 	if err != nil {
@@ -434,7 +438,7 @@ func TestForceReleaseCardRequest_DoesNotRequeueFoldedSiblings(t *testing.T) {
 		t.Fatalf("folded = %d, want 1", len(folded))
 	}
 
-	if err := orchestrator.ForceReleaseCardRequest(d.Conn, primary.ID, "operator says stuck"); err != nil {
+	if _, err := orchestrator.ForceReleaseCardRequest(d.Conn, primary.ID, "operator says stuck"); err != nil {
 		t.Fatalf("ForceReleaseCardRequest: %v", err)
 	}
 
@@ -463,6 +467,54 @@ func TestForceReleaseCardRequest_DoesNotRequeueFoldedSiblings(t *testing.T) {
 	// The slot is free, but nothing is queued to restart the card with.
 	if _, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-2", orchestrator.CardRequestDefinition{}); !errors.Is(err, orchestrator.ErrNoQueuedCardRequests) {
 		t.Fatalf("ClaimQueuedCardRequests after force-release = %v, want ErrNoQueuedCardRequests", err)
+	}
+}
+
+// TestForceReleaseCardRequest_ReportsFoldedSiblingsFailed pins that a
+// force-release which sweeps up folded siblings (fold is scoped to the
+// card, not the released request's own command_key/cause_id) returns enough
+// for a caller to tell the operator what else got force-failed: how many
+// siblings, and which command_key each one belonged to.
+func TestForceReleaseCardRequest_ReportsFoldedSiblingsFailed(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	first := &orchestrator.CardRequest{CardID: cardID, CommandKey: "review"}
+	second := &orchestrator.CardRequest{CardID: cardID, CommandKey: "deploy"}
+	third := &orchestrator.CardRequest{CardID: cardID, CommandKey: "lint"}
+	if err := orchestrator.CreateCardRequest(d.Conn, first); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := orchestrator.CreateCardRequest(d.Conn, second); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := orchestrator.CreateCardRequest(d.Conn, third); err != nil {
+		t.Fatalf("create third: %v", err)
+	}
+
+	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{})
+	if err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	if len(folded) != 2 {
+		t.Fatalf("folded = %d, want 2", len(folded))
+	}
+
+	siblings, err := orchestrator.ForceReleaseCardRequest(d.Conn, primary.ID, "operator says stuck")
+	if err != nil {
+		t.Fatalf("ForceReleaseCardRequest: %v", err)
+	}
+	if len(siblings) != 2 {
+		t.Fatalf("siblings = %+v, want 2 (second and third, folded into primary)", siblings)
+	}
+	gotByID := map[string]string{}
+	for _, s := range siblings {
+		gotByID[s.ID] = s.CommandKey
+	}
+	if gotByID[second.ID] != "deploy" || gotByID[third.ID] != "lint" {
+		t.Fatalf("siblings = %+v, want {%s: deploy, %s: lint}", siblings, second.ID, third.ID)
 	}
 }
 
@@ -681,6 +733,48 @@ func TestReconcileLaunchingCardRequests_EmptyCommandKeyRow_NotSkipped(t *testing
 	}
 }
 
+// TestQueuedCardRequests_UntouchedByReconcileAndRecovery pins that a queued
+// row survives ReconcileCardRequestSlots, ReconcileLaunchingCardRequests,
+// and RecoverLaunchingCardRequests untouched. Each of the three only
+// queries for status=attached or status=launching, but this pins that
+// against the real DB rather than resting on reading the query text.
+func TestQueuedCardRequests_UntouchedByReconcileAndRecovery(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	first := &orchestrator.CardRequest{CardID: cardID, CommandKey: "review", CauseID: "signal-1"}
+	second := &orchestrator.CardRequest{CardID: cardID, CommandKey: "deploy"}
+	if err := orchestrator.CreateCardRequest(d.Conn, first); err != nil {
+		t.Fatalf("CreateCardRequest(first): %v", err)
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, second); err != nil {
+		t.Fatalf("CreateCardRequest(second): %v", err)
+	}
+
+	if _, err := orchestrator.ReconcileCardRequestSlots(d.Conn); err != nil {
+		t.Fatalf("ReconcileCardRequestSlots: %v", err)
+	}
+	if _, err := orchestrator.ReconcileLaunchingCardRequests(d.Conn); err != nil {
+		t.Fatalf("ReconcileLaunchingCardRequests: %v", err)
+	}
+	if _, err := orchestrator.RecoverLaunchingCardRequests(d.Conn); err != nil {
+		t.Fatalf("RecoverLaunchingCardRequests: %v", err)
+	}
+
+	for _, id := range []string{first.ID, second.ID} {
+		got, err := orchestrator.GetCardRequest(d.Conn, id)
+		if err != nil {
+			t.Fatalf("GetCardRequest(%q): %v", id, err)
+		}
+		if got.Status != orchestrator.CardRequestStatusQueued {
+			t.Errorf("request %q: Status = %q, want still queued (untouched by any of the three periodic/recovery functions)", id, got.Status)
+		}
+		if got.LauncherJobID != "" {
+			t.Errorf("request %q: LauncherJobID = %q, want still empty", id, got.LauncherJobID)
+		}
+	}
+}
+
 // ---- ReleaseCardRequestForTerminalTarget: the immediate, per-target
 // release finalizeTerminal (internal/api) calls instead of waiting for
 // ReconcileCardRequestSlots' own periodic tick.
@@ -814,7 +908,7 @@ func TestTaskRepository_ReleaseCardRequestForTerminalTarget_WrapsInOwnTx(t *test
 
 func TestForceReleaseCardRequest_NotFound(t *testing.T) {
 	d := testutil.NewTestDB(t)
-	err := orchestrator.ForceReleaseCardRequest(d.Conn, "does-not-exist", "reason")
+	_, err := orchestrator.ForceReleaseCardRequest(d.Conn, "does-not-exist", "reason")
 	if !errors.Is(err, orchestrator.ErrCardRequestNotFound) {
 		t.Fatalf("ForceReleaseCardRequest(missing id) = %v, want ErrCardRequestNotFound", err)
 	}
