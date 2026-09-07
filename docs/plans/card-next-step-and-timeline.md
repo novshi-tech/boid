@@ -682,13 +682,21 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   **現状 fold 自体が本番未使用 (`ClaimQueuedCardRequests` の呼び出し元が無く、
   人発/Go はどちらも `launching` で直接 INSERT するため queued/folded 行は
   生まれない) なので、この分岐は PR-4 の内部イベント dispatch が実際に
-  queued 行を作るまで dead code。** PR-4 でワイヤされた後に残るオープン課題:
-  fold は card 単位で command_key/cause_id を区別しないため、無関係な
-  request を巻き込んで force-fail してしまう (`operator_notice` は sibling
-  数を報告しない) ことと、`idx_card_requests_cause_unique` に status 述語が
-  無いため `cause_id` 付きの sibling が `failed` に落ちると再配送が永久に
-  ブロックされること (`FailCardRequest` の再試行なら起きない) — どちらも
-  PR-4 側で対処すること。
+  queued 行を作るまで dead code。**
+  **PR-4a で対処済み:** fold は card 単位で command_key/cause_id を区別しない
+  設計自体は維持したまま (§4.4 の「終了時に保留要求があれば一回にまとめて
+  次を起動する」が意図どおり)、`ForceReleaseCardRequest` が巻き込んだ sibling
+  の件数・command_key を返し `operator_notice`/`boid task release-card-request`
+  の出力に含めるようにした (可観測性のみの対処)。`idx_card_requests_cause_unique`
+  には `status != 'failed'` の述語を足し、`cause_id` 付きの行が `failed` に
+  落ちても再配送で新しい行を作れるようにした。ただしこの緩和により
+  `FinishCardRequest` の「同一 card の older failed request を吸収して
+  finished にする」動作 (§4.4) が `cause_id` 付きの failed 行を巻き込むと
+  index の UNIQUE 違反を起こしうることが判明したため、**吸収対象を
+  `cause_id = ''` の行に限定**した — `cause_id` 付きの failed 行は
+  吸収されず、failed のまま残る (GC は finished/failed を同じ規則で扱うので
+  30 日後に削除される、§4.4 の保持規則どおり)。後続 PR がこの吸収を
+  `cause_id` 付き行にも広げる場合は、この UNIQUE 制約を踏まえること。
 - **PR-2d-5 で一部対応: retry/force-release は前の継続先 (session/task) を止めない
   (KNOWN GAP、`boid_executor_agent_start.go` の孤児 session と同系統)。** 完全な
   停止処理はまだ実装していない — `boid task release-card-request` が解放前の

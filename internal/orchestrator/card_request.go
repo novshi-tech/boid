@@ -99,8 +99,8 @@ var (
 	// ErrCardRequestSlotOccupied: idx_card_requests_active_unique rejected
 	// giving a card a second launching-or-attached row.
 	ErrCardRequestSlotOccupied = errors.New("card request: card's single execution slot is already occupied")
-	// ErrCardRequestDuplicateCause: idx_card_requests_cause_unique rejected
-	// a cause_id already recorded on another row.
+	// ErrCardRequestDuplicateCause: idx_card_requests_cause_unique_non_failed
+	// rejected a cause_id already recorded on another non-failed row.
 	ErrCardRequestDuplicateCause = errors.New("card request: cause id already recorded (redelivery)")
 	// ErrCardRequestInvalidTransition: the row is not in a status the
 	// requested transition accepts from.
@@ -384,8 +384,12 @@ func FinishCardRequest(dbtx db.DBTX, id, result string) error {
 	); err != nil {
 		return fmt.Errorf("finish card request: close folded requests: %w", err)
 	}
+	// cause_id = '' only: a cause-bearing failed row stays failed rather
+	// than being absorbed into finished, which would re-enter it into the
+	// cause_id dedup index — colliding with whatever live row now carries
+	// that same cause (the redelivery this row's own failure allowed).
 	if _, err := dbtx.Exec(
-		`UPDATE card_requests SET status = ?, result = ?, error = '', updated_at = ? WHERE card_id = ? AND status = ? AND created_at < ?`,
+		`UPDATE card_requests SET status = ?, result = ?, error = '', updated_at = ? WHERE card_id = ? AND status = ? AND created_at < ? AND cause_id = ''`,
 		string(CardRequestStatusFinished), absorbedResult, now, cardID, string(CardRequestStatusFailed), createdAt,
 	); err != nil {
 		return fmt.Errorf("finish card request: absorb failed requests: %w", err)
@@ -503,6 +507,9 @@ func RetryCardRequest(dbtx db.DBTX, id string) error {
 		string(CardRequestStatusQueued), time.Now().UTC(), id, string(CardRequestStatusFailed),
 	)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: card_requests.cause_id") {
+			return ErrCardRequestDuplicateCause
+		}
 		return fmt.Errorf("retry card request: %w", err)
 	}
 	return rowsAffectedOrNotFoundOrInvalid(dbtx, res, id)

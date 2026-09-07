@@ -4,5 +4,5 @@
 -- (already-handled) causes while letting a retry-able failure's cause_id
 -- be redelivered.
 DROP INDEX IF EXISTS idx_card_requests_cause_unique;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_card_requests_cause_unique_non_failed
+CREATE UNIQUE INDEX idx_card_requests_cause_unique_non_failed
     ON card_requests(cause_id) WHERE cause_id != '' AND status != 'failed';

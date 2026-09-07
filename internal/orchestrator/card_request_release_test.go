@@ -383,6 +383,47 @@ func TestReconcileCardRequestSlots_DeletedTaskReleasesAsFailed(t *testing.T) {
 	}
 }
 
+// TestReconcileCardRequestSlots_ReleasesDespiteOlderFailedCauseRequest pins
+// the worst-case shape of the older-failed absorption hazard: a card with
+// an older failed cause-bearing request must not block
+// ReconcileCardRequestSlots from releasing an attached row whose
+// continuation actually finished — before excluding cause_id-bearing rows
+// from absorption, FinishCardRequest's own UNIQUE violation on that older
+// row rolled back the whole release every tick, leaving the slot stuck.
+func TestReconcileCardRequestSlots_ReleasesDespiteOlderFailedCauseRequest(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	oldFailed := &orchestrator.CardRequest{CardID: cardID, CauseID: "signal-old"}
+	if err := orchestrator.CreateCardRequest(d.Conn, oldFailed); err != nil {
+		t.Fatalf("create old failed: %v", err)
+	}
+	if err := orchestrator.FailCardRequest(d.Conn, oldFailed.ID, "boom"); err != nil {
+		t.Fatalf("fail old: %v", err)
+	}
+
+	doneTask := newTestExecutionTask(t, d, "task-done-with-older-failure", "proj-1", orchestrator.TaskStatusDone)
+	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindTask, doneTask)
+
+	outcomes, err := orchestrator.ReconcileCardRequestSlots(d.Conn)
+	if err != nil {
+		t.Fatalf("ReconcileCardRequestSlots: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].RequestID != req.ID || outcomes[0].Status != string(orchestrator.CardRequestStatusFinished) {
+		t.Fatalf("outcomes = %+v, want one finished outcome for %q — an older failed cause-bearing request must not block the release", outcomes, req.ID)
+	}
+	if n, cerr := orchestrator.CountActiveCardRequests(d.Conn, cardID); cerr != nil || n != 0 {
+		t.Fatalf("CountActiveCardRequests after reconcile = (%d, %v), want (0, nil) — the slot must not stay stuck", n, cerr)
+	}
+	oldGot, err := orchestrator.GetCardRequest(d.Conn, oldFailed.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest(oldFailed): %v", err)
+	}
+	if oldGot.Status != orchestrator.CardRequestStatusFailed {
+		t.Errorf("oldFailed.Status = %q, want still failed", oldGot.Status)
+	}
+}
+
 func TestForceReleaseCardRequest_ReleasesRegardlessOfContinuationState(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
@@ -733,11 +774,9 @@ func TestReconcileLaunchingCardRequests_EmptyCommandKeyRow_NotSkipped(t *testing
 	}
 }
 
-// TestQueuedCardRequests_UntouchedByReconcileAndRecovery pins that a queued
-// row survives ReconcileCardRequestSlots, ReconcileLaunchingCardRequests,
-// and RecoverLaunchingCardRequests untouched. Each of the three only
-// queries for status=attached or status=launching, but this pins that
-// against the real DB rather than resting on reading the query text.
+// TestQueuedCardRequests_UntouchedByReconcileAndRecovery pins that a plain
+// queued row survives ReconcileCardRequestSlots, ReconcileLaunchingCardRequests,
+// and RecoverLaunchingCardRequests untouched.
 func TestQueuedCardRequests_UntouchedByReconcileAndRecovery(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
@@ -772,6 +811,69 @@ func TestQueuedCardRequests_UntouchedByReconcileAndRecovery(t *testing.T) {
 		if got.LauncherJobID != "" {
 			t.Errorf("request %q: LauncherJobID = %q, want still empty", id, got.LauncherJobID)
 		}
+	}
+}
+
+// TestReconcileCardRequestSlots_QueuedRowUntouchedEvenWithTerminalTarget
+// pins the scan predicate itself, not just continuationTerminalOutcome's own
+// guard: a queued row carrying a target_kind/target_id whose task already
+// reached a terminal, non-success state (the shape a real attached row
+// eventually takes) would still get force-failed by continuationTerminalOutcome
+// if the scan predicate ever included queued — only status=attached in the
+// SELECT stops that.
+func TestReconcileCardRequestSlots_QueuedRowUntouchedEvenWithTerminalTarget(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	abortedTask := newTestExecutionTask(t, d, "task-aborted-while-queued", "proj-1", orchestrator.TaskStatusAborted)
+
+	req := &orchestrator.CardRequest{
+		CardID: cardID, CommandKey: "review",
+		TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: abortedTask,
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+
+	if _, err := orchestrator.ReconcileCardRequestSlots(d.Conn); err != nil {
+		t.Fatalf("ReconcileCardRequestSlots: %v", err)
+	}
+
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusQueued {
+		t.Fatalf("Status = %q, want still queued", got.Status)
+	}
+}
+
+// TestReconcileLaunchingCardRequests_QueuedRowUntouchedEvenWithTerminalLauncherJob
+// pins the scan predicate itself, not just launcherJobTerminalOrGone's own
+// guard: a queued row whose launcher_job_id names an already-terminal job
+// (the shape a real launching row takes right before this self-heal fires)
+// would still get force-failed by attachFoundContinuationOrFail if the scan
+// predicate ever included queued — only status=launching in the SELECT
+// stops that.
+func TestReconcileLaunchingCardRequests_QueuedRowUntouchedEvenWithTerminalLauncherJob(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	insertTestJob(t, d, "launcher-terminal-while-queued", "proj-1", "exec", "completed", "")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "review", LauncherJobID: "launcher-terminal-while-queued"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+
+	if _, err := orchestrator.ReconcileLaunchingCardRequests(d.Conn); err != nil {
+		t.Fatalf("ReconcileLaunchingCardRequests: %v", err)
+	}
+
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusQueued {
+		t.Fatalf("Status = %q, want still queued", got.Status)
 	}
 }
 
