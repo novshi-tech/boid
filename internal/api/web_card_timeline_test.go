@@ -19,7 +19,25 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/timeline"
 )
+
+// testCardTimelineStore adapts a db.DBTX to CardTimelineStore by calling
+// internal/timeline's read model functions directly — the production
+// equivalent lives in internal/server (internal/api may not import
+// internal/db directly, see scripts/check-internal-architecture.sh), so
+// tests build this small stand-in instead.
+type testCardTimelineStore struct {
+	db db.DBTX
+}
+
+func (s testCardTimelineStore) BuildCardTimeline(cardID, cursor string, limit int) (*timeline.CardTimelinePage, error) {
+	return timeline.BuildCardTimeline(s.db, cardID, cursor, limit)
+}
+
+func (s testCardTimelineStore) CardPinnedItems(cardID string) ([]timeline.CardItem, error) {
+	return timeline.CardPinnedItems(s.db, cardID)
+}
 
 // dbBackedWebService overrides stubWebService.GetTaskDetail with a real,
 // per-id DB lookup — stubWebService always returns the same fixed
@@ -57,7 +75,7 @@ func newCardTimelineTestHandler(t *testing.T) (*WebHandler, db.DBTX, string) {
 	h := &WebHandler{
 		Service:      dbBackedWebService{stubWebService: &stubWebService{}, repo: repo},
 		TaskTriage:   repo,
-		CardTimeline: DBCardTimelineStore{DB: d.Conn},
+		CardTimeline: testCardTimelineStore{db: d.Conn},
 	}
 	return h, d.Conn, projectID
 }
