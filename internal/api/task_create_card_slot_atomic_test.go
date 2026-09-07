@@ -371,7 +371,7 @@ func TestCreateTask_AtomicPath_CardRequestIDCarrying_RoutesThroughOneTx(t *testi
 
 	got, err := taskSvc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1", Title: "do it", Behavior: "dev",
-		ParentID: card.ID, Ref: "ch_00", CardRequestID: cardReq.ID,
+		ParentID: card.ID, Ref: "ch_00", CardRequestID: cardReq.ID, CardRequestOwnerJobID: cardReq.LauncherJobID,
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want success (fulfills its own reservation)", err)
@@ -417,7 +417,7 @@ func TestCreateTask_AtomicPath_CardRequestIDCarrying_RejectsWhenAnotherOccupantE
 
 	_, err = taskSvc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1", Title: "do it", Behavior: "dev",
-		ParentID: card.ID, Ref: "ch_00", CardRequestID: cardReq.ID,
+		ParentID: card.ID, Ref: "ch_00", CardRequestID: cardReq.ID, CardRequestOwnerJobID: cardReq.LauncherJobID,
 	})
 	if err == nil {
 		t.Fatal("expected rejection: another live child already occupies the slot")

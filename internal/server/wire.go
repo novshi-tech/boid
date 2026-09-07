@@ -1708,7 +1708,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// workflow, since workflow's concrete type
 		// *api.TaskWorkflowService does not implement api.SignalStore.
 		// The same taskRepo also implements cardRequestReader (its own
-		// GetCardRequest/AttachCardRequest delegators), backing
+		// GetCardRequest/AttachCardRequestOwned delegators), backing
 		// BoidOpCardContext and BoidOpAgentStart. sessionAdapter (above)
 		// backs BoidOpAgentStart's actual session dispatch.
 		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc, taskRepo, taskRepo, sessionAdapter)

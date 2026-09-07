@@ -17,17 +17,19 @@ import (
 
 type fakeCardRequestTaskLinker struct {
 	calls []struct {
-		task      *orchestrator.Task
-		requestID string
+		task       *orchestrator.Task
+		requestID  string
+		ownerJobID string
 	}
 	err error
 }
 
-func (f *fakeCardRequestTaskLinker) CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID string) error {
+func (f *fakeCardRequestTaskLinker) CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID, ownerJobID string) error {
 	f.calls = append(f.calls, struct {
-		task      *orchestrator.Task
-		requestID string
-	}{t, requestID})
+		task       *orchestrator.Task
+		requestID  string
+		ownerJobID string
+	}{t, requestID, ownerJobID})
 	return f.err
 }
 
@@ -44,11 +46,12 @@ func TestCreateTask_RefHit_StillAttachesCardRequest(t *testing.T) {
 	}
 
 	got, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID:     "proj-1",
-		Title:         "retry from launcher",
-		Behavior:      "dev",
-		Ref:           "issue-123",
-		CardRequestID: "req-1",
+		ProjectID:             "proj-1",
+		Title:                 "retry from launcher",
+		Behavior:              "dev",
+		Ref:                   "issue-123",
+		CardRequestID:         "req-1",
+		CardRequestOwnerJobID: "job-1",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -61,6 +64,9 @@ func TestCreateTask_RefHit_StillAttachesCardRequest(t *testing.T) {
 	}
 	if linker.calls[0].requestID != "req-1" || linker.calls[0].task.ID != existing.ID {
 		t.Errorf("call = %+v, want request req-1 attached to existing task", linker.calls[0])
+	}
+	if linker.calls[0].ownerJobID != "job-1" {
+		t.Errorf("ownerJobID = %q, want the caller's own job-1 carried through", linker.calls[0].ownerJobID)
 	}
 }
 

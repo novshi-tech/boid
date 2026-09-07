@@ -106,7 +106,7 @@ func (e *boidBuiltinExecutor) executeAgentStart(goCtx context.Context, ctx sandb
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid agent start: session dispatch returned no result"}
 	}
 
-	if attachErr := e.cardRequests.AttachCardRequest(ctx.CardRequestID, orchestrator.CardRequestTargetKindSession, result.JobID); attachErr != nil {
+	if attachErr := e.cardRequests.AttachCardRequestOwned(ctx.CardRequestID, ctx.JobID, orchestrator.CardRequestTargetKindSession, result.JobID); attachErr != nil {
 		return e.handleAgentStartAttachFailure(ctx.CardRequestID, result.JobID, attachErr)
 	}
 	return agentStartSuccess(result.JobID)
@@ -125,6 +125,15 @@ func (e *boidBuiltinExecutor) executeAgentStart(goCtx context.Context, ctx sandb
 // `boid task release-card-request` has the same gap and, unable to close it
 // either, at least surfaces it via an explicit operator notice.
 func (e *boidBuiltinExecutor) handleAgentStartAttachFailure(requestID, orphanJobID string, attachErr error) *sandbox.ExecResponse {
+	if errors.Is(attachErr, orchestrator.ErrCardRequestOwnerMismatch) {
+		// Fires only when a DIFFERENT launcher has actually reclaimed the
+		// request; an unreclaimed force-release alone falls through to the
+		// ErrCardRequestInvalidTransition branch below instead.
+		slog.Warn("boid agent start: session orphaned; this launcher's ownership was reclaimed before it could attach",
+			"job_id", orphanJobID, "request_id", requestID, "error", attachErr)
+		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf(
+			"boid agent start: session %s started but this job no longer owns request %s (released or reclaimed by another launcher)", orphanJobID, requestID)}
+	}
 	if errors.Is(attachErr, orchestrator.ErrCardRequestInvalidTransition) {
 		existing, gerr := e.cardRequests.GetCardRequest(requestID)
 		switch {

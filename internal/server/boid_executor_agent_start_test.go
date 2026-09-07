@@ -312,6 +312,34 @@ func TestBoidOpAgentStart_ConcurrentAttachRace_ReturnsWinningTarget(t *testing.T
 	}
 }
 
+// TestBoidOpAgentStart_OwnershipReclaimedBeforeAttach_Rejected pins the
+// TOCTOU close: the pre-dispatch ownership check (row.LauncherJobID ==
+// ctx.JobID) reads the row once, but by the time this call tries to attach
+// its own dispatched session, a force-release + a DIFFERENT launcher's
+// reclaim may have moved LauncherJobID out from under it. The attach must
+// re-assert ownership in its own write and reject rather than let the
+// stale caller steal the new owner's slot.
+func TestBoidOpAgentStart_OwnershipReclaimedBeforeAttach_Rejected(t *testing.T) {
+	reader := &fakeCardRequestReader{
+		rows: map[string]*orchestrator.CardRequest{
+			"req-1": {ID: "req-1", CardID: "card-1", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-current"},
+		},
+		reclaimAtAttach: "job-new-owner",
+	}
+	starter := &fakeSessionStarter{result: &api.StartSessionResult{JobID: "job-orphan"}}
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, starter)
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-current"}, &sandbox.BoidRequest{Op: sandbox.BoidOpAgentStart, HarnessType: "claude"})
+	if resp.ExitCode == 0 {
+		t.Fatalf("ExitCode = 0, want non-zero when ownership was reclaimed before the attach")
+	}
+	if !strings.Contains(resp.Stderr, "no longer own") {
+		t.Errorf("Stderr = %q, want it to explain the ownership reclaim, not a generic error", resp.Stderr)
+	}
+	if len(starter.calls) != 1 {
+		t.Errorf("session dispatch calls = %d, want 1 (this call does dispatch — it loses ownership only at the attach)", len(starter.calls))
+	}
+}
+
 func TestBoidOpAgentStart_AttachFailure_SurfacesError(t *testing.T) {
 	reader := &fakeCardRequestReader{
 		rows: map[string]*orchestrator.CardRequest{

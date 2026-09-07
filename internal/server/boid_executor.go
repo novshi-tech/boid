@@ -64,11 +64,17 @@ type actionListService interface {
 // `signals` below.
 type cardRequestReader interface {
 	GetCardRequest(id string) (*orchestrator.CardRequest, error)
-	// AttachCardRequest records the continuation BoidOpAgentStart just
-	// created, transitioning the row launching -> attached. Returns
-	// orchestrator.ErrCardRequestInvalidTransition when the row was no
-	// longer launching (already attached by a concurrent call).
-	AttachCardRequest(id, targetKind, targetID string) error
+	// AttachCardRequestOwned records the continuation BoidOpAgentStart just
+	// created, transitioning the row launching -> attached, asserting
+	// expectedLauncherJobID as the row's CURRENT owner in the write itself
+	// (not trusted from GetCardRequest's earlier, separate read — see
+	// orchestrator.AttachCardRequestOwned's doc comment for the race this
+	// closes). Returns orchestrator.ErrCardRequestInvalidTransition when the
+	// row was no longer launching (already attached by a concurrent call,
+	// possibly this same caller retrying), or
+	// orchestrator.ErrCardRequestOwnerMismatch when a DIFFERENT launcher now
+	// owns the row.
+	AttachCardRequestOwned(id, expectedLauncherJobID, targetKind, targetID string) error
 }
 
 // sessionStarter backs BoidOpAgentStart's actual session dispatch — the
@@ -328,6 +334,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				row.LauncherJobID != "" && row.LauncherJobID == ctx.JobID &&
 				row.Status == orchestrator.CardRequestStatusLaunching {
 				createReq.CardRequestID = ctx.CardRequestID
+				// Re-asserted in the eventual attach write, not trusted from
+				// this earlier read.
+				createReq.CardRequestOwnerJobID = ctx.JobID
 				if createReq.Ref == "" {
 					// Default so a retried launcher converges via get-or-create.
 					createReq.Ref = ctx.CardRequestID

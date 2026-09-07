@@ -30,6 +30,13 @@ type fakeCardRequestReader struct {
 	// meantime.
 	winnerAfterAttachErr *orchestrator.CardRequest
 	attachFailed         bool
+	// reclaimAtAttach, when non-empty, is the launcher_job_id
+	// AttachCardRequestOwned compares expectedLauncherJobID against INSTEAD
+	// of the row's own LauncherJobID — simulating a force-release followed
+	// by a different launcher's reclaim landing between the earlier
+	// GetCardRequest read (which still sees the original launcher) and this
+	// write.
+	reclaimAtAttach string
 }
 
 func (f *fakeCardRequestReader) GetCardRequest(id string) (*orchestrator.CardRequest, error) {
@@ -46,7 +53,7 @@ func (f *fakeCardRequestReader) GetCardRequest(id string) (*orchestrator.CardReq
 	return row, nil
 }
 
-func (f *fakeCardRequestReader) AttachCardRequest(id, targetKind, targetID string) error {
+func (f *fakeCardRequestReader) AttachCardRequestOwned(id, expectedLauncherJobID, targetKind, targetID string) error {
 	if f.attachErr != nil {
 		f.attachFailed = true
 		return f.attachErr
@@ -54,6 +61,13 @@ func (f *fakeCardRequestReader) AttachCardRequest(id, targetKind, targetID strin
 	row, ok := f.rows[id]
 	if !ok {
 		return orchestrator.ErrCardRequestNotFound
+	}
+	currentOwner := row.LauncherJobID
+	if f.reclaimAtAttach != "" {
+		currentOwner = f.reclaimAtAttach
+	}
+	if currentOwner != expectedLauncherJobID {
+		return orchestrator.ErrCardRequestOwnerMismatch
 	}
 	if row.Status != orchestrator.CardRequestStatusLaunching {
 		return orchestrator.ErrCardRequestInvalidTransition

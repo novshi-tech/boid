@@ -29,7 +29,7 @@ func TestCreateTaskLinkedToCardRequest_TxBoundRepo_DoesNotDeadlockInAnOuterTx(t 
 		done <- db.InTxDB(d.Conn, func(tx db.DBTX) error {
 			repo := orchestrator.NewTaskRepository(tx)
 			task := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
-			if err := repo.CreateTaskLinkedToCardRequest(task, req.ID); err != nil {
+			if err := repo.CreateTaskLinkedToCardRequest(task, req.ID, "launcher-1"); err != nil {
 				return err
 			}
 			// Also exercise a SECOND call against the same tx-bound repo

@@ -111,7 +111,7 @@ func (s *recordingTxStore) ListCardRequestsByCard(cardID string) ([]*orchestrato
 	return s.createdCardRequests, nil
 }
 
-func (s *recordingTxStore) CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID string) error {
+func (s *recordingTxStore) CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID, ownerJobID string) error {
 	return nil
 }
 func (s *recordingTxStore) GetTask(id string) (*orchestrator.Task, error) {

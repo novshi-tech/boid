@@ -45,7 +45,7 @@ func (s *sweepFakeStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.
 func (s *sweepFakeStore) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
 	return false, nil
 }
-func (s *sweepFakeStore) CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID string) error {
+func (s *sweepFakeStore) CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID, ownerJobID string) error {
 	return nil
 }
 func (s *sweepFakeStore) GetTask(id string) (*orchestrator.Task, error) {

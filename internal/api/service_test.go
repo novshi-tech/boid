@@ -1835,7 +1835,7 @@ func (s *stubTx) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequ
 func (s *stubTx) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
 	return false, nil
 }
-func (s *stubTx) CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID string) error {
+func (s *stubTx) CreateTaskLinkedToCardRequest(t *orchestrator.Task, requestID, ownerJobID string) error {
 	return nil
 }
 func (s *stubTx) GetTask(id string) (*orchestrator.Task, error) {

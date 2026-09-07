@@ -84,6 +84,9 @@ type CreateTaskRequest struct {
 	// BoidOpTaskCreate sets it, after verifying the calling job owns that
 	// request (LauncherJobID matches, status is launching).
 	CardRequestID string `json:"-"`
+	// CardRequestOwnerJobID travels with CardRequestID (same json:"-"
+	// reasoning) so the eventual attach can re-assert ownership in its own write.
+	CardRequestOwnerJobID string `json:"-"`
 }
 
 type DuplicateTaskRequest struct {
