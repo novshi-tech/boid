@@ -116,9 +116,10 @@ This is not a new mechanism — it is what Sweep has always relied on
 (`readonly: false` + a `default_instruction` whose message opens with "run
 this script first"), formalized here as the general contract instead of a
 Sweep-specific convention, so a readonly:true judgment task (a card-command
-continuation with card-write permission, docs/plans/card-next-step-and-timeline.md
-§4.5) can rely on the same delegation instead of falling into Supervisor's
-generic create-and-monitor-children loop, which its instruction never asked for.
+continuation — its `boid task instructions` came from a card command launch
+and `boid card context` reports `card_write: true` for it) can rely on the
+same delegation instead of falling into Supervisor's generic
+create-and-monitor-children loop, which its instruction never asked for.
 
 **Never infer delegation from the task's `behavior` name or `readonly` value
 itself** — those only pick the mandatory lifecycle rules above (which mode's

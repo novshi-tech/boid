@@ -805,6 +805,44 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      増やしていない）。lookup 失敗は best-effort（card 文脈が無いだけに倒れ、dispatch 自体は
      失敗させない）。session/launcher 側は元々正しく配線されていたので変更していない。
      これで session actor に加えて task actor も実際に到達可能になった。
+  7. **Opus 2人目レビューで発覚し、この PR 内で修正: 6. の task 継続先スタンプが
+     広すぎた。** `PlanHook` の `GetCardRequestByTaskTarget` 呼び出しは `row != nil`
+     しか見ておらず、(a) `CommandKey == CardRequestCommandKeyGo` の行 —
+     ターゲットは Go で起動された作業 task 自身 — にもスタンプしてしまい、
+     「Go はこの軸を持たない」（上の 1.）と実装が逆になっていた、(b) `status` を
+     見ていないため `finished`/`failed` になった request の `card_write` が
+     その task の以後の全 dispatch（`boid task reopen` 後を含む）に永続してしまう
+     fail-open 方向の穴があった。**修正:** `PlanHook` に `CommandKey !=
+     CardRequestCommandKeyGo` かつ `Status ∈ {launching, attached}` の
+     フィルタを追加（`card_request_release.go` の Go 除外と同じ方針）。
+     併発ドリフトとして、`internal/server/boid_executor.go` の
+     `BoidOpTaskCreate` 側コメントが「TASK continuation の後続 create は
+     このCardRequestIDを二度と持たない」と書いていたが、この 6. の変更で
+     task 継続先の後続 hook job も同じ CardRequestID を持つようになっていたため
+     誤りになっていた（SESSION の carve-out と同じ理由で、task 継続先が
+     ROOT task を作るたびに所有権不一致の Warn が誤って出ていた）。
+     コメントを実態に合わせ、`else if` の carve-out に
+     `row.TargetKind == task && row.TargetID == ctx.TaskID` のケースを追加した。
+     `internal/orchestrator/planner_test.go` /
+     `internal/server/boid_executor_task_create_card_request_test.go` に
+     それぞれ固定テストを追加済み。
+
+**未着手 (記録のみ、この PR では閉じない):**
+
+- **`card_write:true` の書き込み対象スコープが request の card 単体より広い。**
+  `write.py` の `_refuse_terminal` は書き込み先が `_own_project()`（= その
+  card request が属する project）と一致するかしか見ておらず、`card_write:true`
+  は project 内の任意の card への書き込みを許してしまう（「この request の
+  card だけ」ではない）。Sweep が元々持っていた権限範囲と同じなので今回の
+  変更による新規の昇格ではないが、スコープが request 単位ではないことは
+  未対応のまま残っている。
+- **`write.py` が全呼び出しで `boid card context` を叩くようになった副作用。**
+  host 側 CLI（`cmd/card.go`）には `card context` サブコマンドが無いため、
+  sandbox 外から `write.py` を走らせると（現状は sandbox 専用運用なので実害は
+  無いが）全て exit 1 になる。また broker RPC 呼び出し自体が失敗した場合、
+  従来の Sweep は「report に倒して exit 0」だったのに対し新経路では exit 1 に
+  変わっている（より安全側の変化ではあるが、挙動変化として未記録だったので
+  ここに記録する）。
 
 これらは §4 の契約・§6 の対処を前提に、Gate A と各実装 PR で確定する。
 単一ユーザーの利用を前提に、対話注入・分散ロック・汎用 DAG scheduler は追加しない。

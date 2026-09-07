@@ -158,7 +158,7 @@ func TestPlanHook_StampsCardContextWhenTaskIsCardContinuation(t *testing.T) {
 		Tasks:    stubTaskLookup{task: task},
 		Adapter:  stubHarnessAdapter{},
 		CardRequests: stubCardRequestByTaskLookup{byTaskID: map[string]*CardRequest{
-			"task-1": {ID: "req-1", CardID: "card-1"},
+			"task-1": {ID: "req-1", CardID: "card-1", Status: CardRequestStatusAttached},
 		}},
 	}
 
@@ -205,6 +205,79 @@ func TestPlanHook_NoCardContextWhenTaskIsNotACardContinuation(t *testing.T) {
 	}
 	if req.CardID != "" || req.CardRequestID != "" {
 		t.Errorf("CardID/CardRequestID = %q/%q, want both empty", req.CardID, req.CardRequestID)
+	}
+}
+
+// TestPlanHook_NoCardContextForGoLaunchedWorkTask pins that a task launched
+// via `boid task create` under a Go (__go__) card-command request does NOT
+// get CardID/CardRequestID stamped: a Go request's target_kind='task' row
+// (acceptGo -> CreateTaskLinkedToCardRequest -> AttachCardRequestOwned) marks
+// the launched task itself, but that task's card-write permission must
+// follow its own behavior's readonly flag, not the launcher's card — same
+// carve-out card_request_release.go's sweep already applies.
+func TestPlanHook_NoCardContextForGoLaunchedWorkTask(t *testing.T) {
+	projectDir := t.TempDir()
+	proj := &Project{ID: "proj-1", WorkDir: projectDir}
+	task := &Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "dev"}}
+	meta := &ProjectMeta{ID: proj.ID, TaskBehaviors: map[string]TaskBehavior{task.Exec.Behavior: {}}}
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+		Adapter:  stubHarnessAdapter{},
+		CardRequests: stubCardRequestByTaskLookup{byTaskID: map[string]*CardRequest{
+			"task-1": {ID: "req-1", CardID: "card-1", CommandKey: CardRequestCommandKeyGo, Status: CardRequestStatusAttached},
+		}},
+	}
+
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID: "event-1", TaskID: "task-1", ProjectID: "proj-1",
+		Hook: Hook{ID: "hook-1", Command: "true"},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if req.CardID != "" || req.CardRequestID != "" {
+		t.Errorf("CardID/CardRequestID = %q/%q, want both empty for a Go-launched work task", req.CardID, req.CardRequestID)
+	}
+}
+
+// TestPlanHook_NoCardContextForFinishedCardRequest pins that a card_requests
+// row that no longer holds its slot (finished/failed) does not keep stamping
+// CardID/CardRequestID on every later dispatch of its target task (including
+// after `boid task reopen`) — GetCardRequestByTaskTarget has no status filter
+// of its own (ORDER BY created_at DESC LIMIT 1), so PlanHook must reject a
+// non-active row itself.
+func TestPlanHook_NoCardContextForFinishedCardRequest(t *testing.T) {
+	projectDir := t.TempDir()
+	proj := &Project{ID: "proj-1", WorkDir: projectDir}
+	task := &Task{ID: "task-1", ProjectID: "proj-1", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "dev"}}
+	meta := &ProjectMeta{ID: proj.ID, TaskBehaviors: map[string]TaskBehavior{task.Exec.Behavior: {}}}
+	planner := &DispatchPlanner{
+		Meta:     stubMetaCache{meta: meta},
+		Projects: stubProjectCatalog{projects: []*Project{proj}},
+		Tasks:    stubTaskLookup{task: task},
+		Adapter:  stubHarnessAdapter{},
+		CardRequests: stubCardRequestByTaskLookup{byTaskID: map[string]*CardRequest{
+			"task-1": {ID: "req-1", CardID: "card-1", Status: CardRequestStatusFinished},
+		}},
+	}
+
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID: "event-1", TaskID: "task-1", ProjectID: "proj-1",
+		Hook: Hook{ID: "hook-1", Command: "true"},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if req.CardID != "" || req.CardRequestID != "" {
+		t.Errorf("CardID/CardRequestID = %q/%q, want both empty for a finished card request", req.CardID, req.CardRequestID)
 	}
 }
 

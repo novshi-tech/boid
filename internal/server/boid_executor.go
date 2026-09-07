@@ -308,11 +308,14 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		// `--parent <this card>` reads naturally as "the card this command is
 		// about", but the ownership-check branch below only ever attaches a
-		// ROOT (ParentID=="") continuation — reject with an actionable hint
-		// before falling through to the generic card-slot-conflict 409.
+		// ROOT (ParentID=="") continuation or Go work task — reject with an
+		// actionable hint before falling through to the generic
+		// card-slot-conflict 409. The ROOT requirement holds for both shapes
+		// (a continuation task and a Go work task are both created as ROOT),
+		// so the message applies regardless of which launched this job.
 		if ctx.CardRequestID != "" && ctx.CardID != "" && createReq.ParentID == ctx.CardID {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf(
-				"boid task create: --parent %s targets this job's own card — a card-command launcher's continuation must be a ROOT task (omit --parent, or pass --parent %s); "+
+				"boid task create: --parent %s targets this job's own card — a card-command launcher's continuation or work task must be a ROOT task (omit --parent, or pass --parent %s); "+
 					"a task created directly under the card would not attach to card_request %s",
 				createReq.ParentID, orchestrator.ParentIDSentinelRoot, ctx.CardRequestID)}
 		}
@@ -320,11 +323,18 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// its card_requests row's slot (mirrors executeAgentStart's
 		// ownership check) — only when this job actually owns that request.
 		// A card-type create (initial_status=parked) is never a valid
-		// continuation and must not silently consume the slot. A TASK
-		// continuation's later, ordinary child creations never carry this
-		// same CardRequestID again — but a SESSION continuation's token
-		// does (StartSessionRequest.CardRequestID), which is exactly the
-		// routine, expected case the `else if` below excludes from its warn.
+		// continuation and must not silently consume the slot.
+		//
+		// Since PlanHook also stamps CardID/CardRequestID onto a TASK
+		// continuation's own later hook jobs (non-Go, active-status card
+		// context — see planner.go's PlanHook), that continuation's own
+		// root task creations now carry the same CardRequestID on every
+		// dispatch, not just its first. The ownership match above still
+		// fails for those (ctx.JobID is a fresh hook job each dispatch,
+		// never the original LauncherJobID), so the `else if` below also
+		// excludes a TASK continuation's own request by TaskID — mirroring
+		// the SESSION carve-out, which excludes by the session's own
+		// (attached) JobID for the same reason.
 		if ctx.CardRequestID != "" && createReq.ParentID == "" && createReq.InitialStatus != "parked" && e.cardRequests != nil {
 			row, err := e.cardRequests.GetCardRequest(ctx.CardRequestID)
 			if err != nil {
@@ -342,10 +352,14 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 					createReq.Ref = ctx.CardRequestID
 				}
 			} else if !(row.Status == orchestrator.CardRequestStatusAttached &&
-				row.TargetKind == orchestrator.CardRequestTargetKindSession && row.TargetID == ctx.JobID) {
-				// Exclude the routine case: a card session's own token keeps
-				// naming its (now-attached, not launching) CardRequestID for
-				// every later create it makes — not an ownership mismatch.
+				row.TargetKind == orchestrator.CardRequestTargetKindSession && row.TargetID == ctx.JobID) &&
+				!(row.Status == orchestrator.CardRequestStatusAttached &&
+					row.TargetKind == orchestrator.CardRequestTargetKindTask && row.TargetID == ctx.TaskID) {
+				// Exclude the two routine cases: a card session's own token
+				// (by JobID) and a card task continuation's own dispatches
+				// (by TaskID) both keep naming their (now-attached, not
+				// launching) CardRequestID for every later root create they
+				// make — not an ownership mismatch.
 				slog.Warn("boid task create: job carries card request context but does not own it; creating without attaching",
 					"card_request_id", ctx.CardRequestID, "job_id", ctx.JobID, "request_launcher_job_id", row.LauncherJobID, "request_status", row.Status)
 			}

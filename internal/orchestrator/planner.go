@@ -153,7 +153,22 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		// Best-effort: a lookup failure just means no card context reaches
 		// this job, not a dispatch failure — write.py's own fail-closed
 		// fallback handles that case safely.
-		if row, err := p.CardRequests.GetCardRequestByTaskTarget(task.ID); err == nil && row != nil {
+		//
+		// Two filters beyond row != nil:
+		//   - CommandKey != Go: a Go request's target is the launched work
+		//     task itself (acceptGo -> CreateTaskLinkedToCardRequest ->
+		//     AttachCardRequestOwned(..., TargetKindTask, childTask.ID)), but
+		//     that work task's card-write permission must follow its own
+		//     behavior's readonly flag, not the launcher's card. Same
+		//     carve-out as card_request_release.go's sweep.
+		//   - Status in {launching, attached}: a finished/failed request row
+		//     still satisfies target_kind/target_id, and without this check
+		//     its card_write would keep applying to every future dispatch of
+		//     that task (including after `boid task reopen`) even though the
+		//     request no longer holds the slot.
+		if row, err := p.CardRequests.GetCardRequestByTaskTarget(task.ID); err == nil && row != nil &&
+			row.CommandKey != CardRequestCommandKeyGo &&
+			(row.Status == CardRequestStatusLaunching || row.Status == CardRequestStatusAttached) {
 			spec.CardID = row.CardID
 			spec.CardRequestID = row.ID
 		}
