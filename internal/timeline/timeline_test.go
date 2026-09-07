@@ -270,7 +270,10 @@ func TestBuild_ProgressAction_KeepsMessageLabel(t *testing.T) {
 func TestBuild_ExcludesNonTransitioningActionsWithStampedStatus(t *testing.T) {
 	now := time.Now()
 	task := &orchestrator.Task{Status: "working", CreatedAt: now.Add(-10 * time.Second)}
-	for _, typ := range []string{"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "hook_fired", "dispatch_error", "wake_due"} {
+	for _, typ := range []string{
+		"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "hook_fired", "dispatch_error", "wake_due",
+		orchestrator.ActionTypeCommandFinished, orchestrator.ActionTypeCommandFailed,
+	} {
 		actions := []*orchestrator.Action{
 			{Type: typ, FromStatus: "working", ToStatus: "working", CreatedAt: now},
 		}

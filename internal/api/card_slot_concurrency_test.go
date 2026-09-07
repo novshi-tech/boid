@@ -143,6 +143,34 @@ func TestCommandThenGo_GoRejectedBySlotOccupied(t *testing.T) {
 	}
 }
 
+// TestReserveGoCardRequest_ReleaseOnError_NoSelfRecord exercises
+// workflow_card.go's acceptGo `releaseReservation` closure at the same
+// s.CardRequests.FailCardRequest(cardReq.ID, reason) call it actually makes
+// — cardReq always carries CardRequestCommandKeyGo (reserveGoCardRequest's
+// own CommandKey), so this call site must never self-record (child_closed
+// already covers a Go-dispatched child's own terminal outcome).
+func TestReserveGoCardRequest_ReleaseOnError_NoSelfRecord(t *testing.T) {
+	svc, card, repo := newCardSlotConcurrencyFixture(t)
+
+	goReq, err := svc.reserveGoCardRequest(card.ID)
+	if err != nil || goReq == nil {
+		t.Fatalf("reserveGoCardRequest: got (%+v, %v), want a claimed reservation", goReq, err)
+	}
+	// releaseReservation's own shape (workflow_card.go): FailCardRequest on
+	// the just-reserved Go row after some downstream step failed.
+	if err := svc.CardRequests.FailCardRequest(goReq.ID, "child creation failed"); err != nil {
+		t.Fatalf("FailCardRequest: %v", err)
+	}
+
+	actions, err := repo.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("actions = %+v, want none — releasing Go's own reservation must not self-record", actions)
+	}
+}
+
 // TestConcurrentCommandAndGo_OnlyOneClaimsTheSlot is the goroutine-level
 // smoke test: see this file's header for what it can and cannot prove.
 func TestConcurrentCommandAndGo_OnlyOneClaimsTheSlot(t *testing.T) {

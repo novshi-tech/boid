@@ -1284,6 +1284,60 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   変わっている（より安全側の変化ではあるが、挙動変化として未記録だったので
   ここに記録する）。
 
+- **PR-5a で確定: `FinishCardRequest`/`FailCardRequest` が card_requests の終端を
+  card 自身の action ログへ自己記録する契約。** §4.4 の「card の履歴が request の
+  結果概要を必要とする場合は、request 行ではなく card 側の action payload に残す」
+  が未実装だった穴を塞いだ。
+
+  1. **action type:** `command_finished`（`FinishCardRequest`）/
+     `command_failed`（`FailCardRequest`）。`card_requests.status` の値と1対1では
+     なく、`FinishCardRequest`/`FailCardRequest` という書き込み関数と1対1。
+     どちらも `machine_card.go` に `FromStatus: "*"`（`Manual` 既定 false）の
+     非遷移ルールとして登録済み — `IsCardTransitionAction` の6動詞閉集合には
+     含まれない。`internal/timeline` の status-group timeline (execution 詳細専用)
+     はこの2 type を実行して確認したうえで除外される
+     (`TestBuild_ExcludesNonTransitioningActionsWithStampedStatus` に追加)。
+  2. **payload の形（JSON, すべて文字列フィールド）:** `request_id` /
+     `command_key`（`card_requests.command_key`、常に生存）/
+     `launched_label`（`card_requests.launched_label` のスナップショット、
+     queued のまま終端した行では空）/ `target_kind` / `target_id`（未 attach なら
+     空）/ `origin`（`"human"`|`"event"`、`orchestrator.CardRequestOrigin(causeID)`）/
+     `result`（finish のみ）/ `error`（fail のみ）。`Action.FromStatus`/`ToStatus`は
+     どちらも空文字のまま — card の状態遷移ではないので埋めていない。
+  3. **Go 除外:** `card_requests.command_key == CardRequestCommandKeyGo`
+     （`__go__`）の行は自己記録しない — Go の作業子は `child_closed` に
+     既に結果概要を持つ。ガードは `recordCardRequestTerminalOutcome`
+     （`FinishCardRequest`/`FailCardRequest` 共通の内部ヘルパ）1箇所にあり、
+     呼び出し元ごとに実装していない。
+  4. **allowlist を起こさない:** `command_finished`/`command_failed` は
+     `cardEventIngestActionTypes`（`card_event_ingest.go`）に加えていない —
+     自己記録は `orchestrator.CreateAction` に `resolver`/`cardEvents` とも
+     `nil` で渡すので、`IngestCardEventRequest` は allowlist を見る前に
+     resolver-nil ガードで no-op になる。allowlist 自体も念のため2 type を
+     除外側に加えて実測 (`TestIngestCardEventRequest_ActionTypeAllowlist`)。
+  5. **同一 tx:** `recordCardRequestTerminalOutcome` は呼び出し元から渡された
+     `dbtx` にそのまま書く（別 tx を開かない）。自己記録の INSERT が失敗すると
+     `FinishCardRequest`/`FailCardRequest` 自体がエラーを返す（best-effort に
+     していない）ので、呼び出し元が tx でラップしていれば request の終端
+     UPDATE も一緒に rollback される。
+  6. **`ForceReleaseCardRequest` は対象外のまま。** 内部の `failCardRequest`
+     ヘルパを直接呼ぶ経路で、`FailCardRequest` のラッパーを経由しないため
+     自己記録を持たない — 実測で確認済み。運用者の force-release にも
+     自己記録を持たせるかは未決のまま残す。
+  7. **GC:** `GCCardRequests` は card_requests 行を年齢だけで無条件に消すが、
+     自己記録の action は card 自身の task_id に対して書かれているので、
+     card が終端していない限り `GCTasks` には巻き込まれない — 実 DB で
+     両方向（`GCCardRequests` 後に action が残ること／card 終端後の
+     `GCTasks` で action ごと消えること）を確認した。
+  8. **確認した呼び出し元（全9箇所、実 DB テストで自己記録の有無を固定）:**
+     `ReconcileCardRequestSlots`（task/session の成功・失敗）、
+     `attachFoundContinuationOrFail`（`ReconcileLaunchingCardRequests` と
+     `RecoverLaunchingCardRequests` の双方から、後者は Go 行にも到達するため
+     Go 除外もこの経路で実測）、`ReleaseCardRequestForTerminalTargetWithCard`
+     （成功・失敗）、`dispatchQueuedCardRequest`（未宣言コマンドで queued の
+     まま fail する経路・claim 後の StartExec 失敗）、`RunCardCommandAsHuman`
+     の StartExec 失敗、`acceptGo` の Go 予約解放（自己記録が無いことを確認）。
+
 これらは §4 の契約・§6 の対処を前提に、Gate A と各実装 PR で確定する。
 単一ユーザーの利用を前提に、対話注入・分散ロック・汎用 DAG scheduler は追加しない。
 本 doc は実装の実測結果に追随させ、コード読解で確認したことと実行して確認したことを混同しない。

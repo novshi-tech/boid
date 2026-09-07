@@ -155,6 +155,9 @@ func TestIngestCardEventRequest_ActionTypeAllowlist(t *testing.T) {
 		"go", "start", "park", "complete", "drop", "reopen",
 		"child_added", "child_specced", "child_dropped",
 		"progress", "child_dispatched", "done_request", "fail_request",
+		// FinishCardRequest/FailCardRequest's own self-record: a card
+		// command's continuation terminating must not itself start a new one.
+		orchestrator.ActionTypeCommandFinished, orchestrator.ActionTypeCommandFailed,
 	}
 	all := map[string]bool{}
 	for k := range allowed {

@@ -10,7 +10,9 @@ package orchestrator
 // 起動する launcher 本体や上位の実行枠判定への統合はここでは扱わない。
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -40,6 +42,32 @@ const (
 // card_commands key at load time, so this sentinel never collides with a
 // real one; ReconcileLaunchingCardRequests uses it as its skip predicate.
 const CardRequestCommandKeyGo = "__go__"
+
+// CardRequestOriginHuman/Event are the two values a card_requests row's
+// origin can report — see CardRequestOrigin.
+const (
+	CardRequestOriginHuman = "human"
+	CardRequestOriginEvent = "event"
+)
+
+// CardRequestOrigin derives a card_requests row's origin from its cause_id
+// — the one rule both `boid card context` (server.cardRequestOrigin) and
+// this package's own self-record share, so a future change to it cannot
+// update one call site and leave the other behind.
+func CardRequestOrigin(causeID string) string {
+	if causeID != "" {
+		return CardRequestOriginEvent
+	}
+	return CardRequestOriginHuman
+}
+
+// ActionTypeCommandFinished/Failed are the card action-log entries
+// FinishCardRequest/FailCardRequest self-record — see their own doc
+// comments and recordCardRequestTerminalOutcome.
+const (
+	ActionTypeCommandFinished = "command_finished"
+	ActionTypeCommandFailed   = "command_failed"
+)
 
 // CardRequestTargetKind vocabulary — the kind of continuation a launcher
 // created.
@@ -351,8 +379,11 @@ func AttachCardRequestOwned(dbtx db.DBTX, id, expectedLauncherJobID, targetKind,
 // so a failed request created after id must belong to a LATER boundary this
 // success never actually read, and is deliberately left alone.
 //
+// Also self-records a command_finished action on the card's own action log
+// (recordCardRequestTerminalOutcome) — see that function's own doc comment.
+//
 // Only valid from attached. Must be called within a transaction for
-// atomicity (a read plus three UPDATEs).
+// atomicity (a read plus three UPDATEs, plus the self-record's own INSERT).
 func FinishCardRequest(dbtx db.DBTX, id, result string) error {
 	if id == "" {
 		return fmt.Errorf("finish card request: id must not be empty")
@@ -394,7 +425,7 @@ func FinishCardRequest(dbtx db.DBTX, id, result string) error {
 	); err != nil {
 		return fmt.Errorf("finish card request: absorb failed requests: %w", err)
 	}
-	return nil
+	return recordCardRequestTerminalOutcome(dbtx, id, ActionTypeCommandFinished, result, "")
 }
 
 // FailCardRequest records a request's terminal failure from any
@@ -403,10 +434,67 @@ func FinishCardRequest(dbtx db.DBTX, id, result string) error {
 // no intent to stop the card — contrast ForceReleaseCardRequest). The
 // failed row itself is kept for inspection/retry, not deleted.
 //
-// Must be called within a transaction for atomicity (two UPDATEs).
+// Also self-records a command_failed action on the card's own action log
+// (recordCardRequestTerminalOutcome) — see that function's own doc comment.
+//
+// Must be called within a transaction for atomicity (two UPDATEs, plus the
+// self-record's own INSERT).
 func FailCardRequest(dbtx db.DBTX, id, errText string) error {
-	_, err := failCardRequest(dbtx, id, errText, foldedSiblingsRequeue)
-	return err
+	if _, err := failCardRequest(dbtx, id, errText, foldedSiblingsRequeue); err != nil {
+		return err
+	}
+	return recordCardRequestTerminalOutcome(dbtx, id, ActionTypeCommandFailed, "", errText)
+}
+
+// recordCardRequestTerminalOutcome self-records id's terminal outcome
+// (finished or failed) onto its card's own action log via CreateAction, so
+// the command's history survives GCCardRequests deleting the card_requests
+// row itself. Skipped for a CardRequestCommandKeyGo row — the shared
+// work-execution slot's own outcome already self-records via child_closed,
+// and a second record here would duplicate it.
+//
+// Re-reads id fresh (rather than taking pre-computed fields) so the payload
+// reflects exactly what the caller's own terminal UPDATE just persisted.
+func recordCardRequestTerminalOutcome(dbtx db.DBTX, id, actionType, result, errText string) error {
+	row, err := GetCardRequest(dbtx, id)
+	if err != nil {
+		return fmt.Errorf("record card request terminal outcome: reload %q: %w", id, err)
+	}
+	if row.CommandKey == CardRequestCommandKeyGo {
+		return nil
+	}
+	payload, merr := json.Marshal(struct {
+		RequestID     string `json:"request_id"`
+		CommandKey    string `json:"command_key"`
+		LaunchedLabel string `json:"launched_label"`
+		TargetKind    string `json:"target_kind"`
+		TargetID      string `json:"target_id"`
+		Origin        string `json:"origin"`
+		Result        string `json:"result"`
+		Error         string `json:"error"`
+	}{
+		RequestID:     row.ID,
+		CommandKey:    row.CommandKey,
+		LaunchedLabel: row.Launched.Label,
+		TargetKind:    row.TargetKind,
+		TargetID:      row.TargetID,
+		Origin:        CardRequestOrigin(row.CauseID),
+		Result:        result,
+		Error:         errText,
+	})
+	if merr != nil {
+		return fmt.Errorf("record card request terminal outcome: marshal payload: %w", merr)
+	}
+	action := &Action{
+		TaskID:  row.CardID,
+		Type:    actionType,
+		Payload: payload,
+		Actor:   ActorDaemon,
+	}
+	if err := CreateAction(context.Background(), dbtx, action, nil, nil); err != nil {
+		return fmt.Errorf("record card request terminal outcome: create action: %w", err)
+	}
+	return nil
 }
 
 // foldedSiblingOutcome selects what failCardRequest does to id's folded
