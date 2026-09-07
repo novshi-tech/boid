@@ -454,6 +454,13 @@ func allMigrations() []migration {
 				return columnExists(tx, "jobs", "card_id")
 			},
 		},
+		{
+			version: "0052_add_card_requests_card_write",
+			path:    "migrations/0052_add_card_requests_card_write.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "card_requests", "launched_card_write")
+			},
+		},
 	}
 }
 

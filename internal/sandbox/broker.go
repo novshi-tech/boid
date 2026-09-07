@@ -683,10 +683,9 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		// No caller-supplied id at all: card/request identity comes only
 		// from the token entry, exactly like the Service/Connector overwrite
 		// above — a job with no card context gets a clear, distinct error
-		// here rather than reaching the executor with an empty
-		// CardRequestID.
+		// here rather than reaching the executor with an empty CardRequestID.
 		if entry.Context.CardRequestID == "" {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid card context: no card context for this job"}
+			return &ExecResponse{ExitCode: NoCardContextExitCode, Stderr: "boid card context: no card context for this job"}
 		}
 	case BoidOpAgentStart:
 		// Same card-context precondition as BoidOpCardContext above — only

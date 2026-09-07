@@ -420,8 +420,8 @@ session 起動の broker op、作成 op 内の関連付け、trigger run の car
 | `internal/api/task_create.go` | `FindTaskByRef(ref, parent, project)` / IdempotencyKey の get-or-create。root task でも効く | ref に request_id を載せる。関連付けを同じ transaction に入れる |
 | `internal/api/web.go` の Shape launcher、`session_behaviors.shape` | daemon が card から instruction を組んで StartSession する既存の session 起動口 | card command の最も近い先行実装。PR-2 で `boid agent start` op の HTTP 側に流用し、Gate B で Shape ボタンを撤去 |
 | `internal/api/workflow_card.go` | Go、child_spec、子の終端 reconcile、冪等 create | Go は parked 二段階検査と先行 auto-start。枠予約→関連→起動へ改修。`promotedAttrVocabulary` の suggestion 語彙は手書きで `cardTransitionActions` と手同期 |
-| `internal/skills/data/boid-metaproject/scripts/boidmeta/write.py` | 共通の検証・差分・書き込み | task ID/readonly/signals 依存を分離。session job は TaskID を持たないので現行は `task current` で落ちる。session と人発要求を実際に通す |
-| `internal/adapters/{claude,codex,opencode}/run.go`、`boid-task/SKILL.md` | session instruction、task の既存 lifecycle | task は boid-task 起動。workspace workflow の明示委譲を実 harness で検証 |
+| `internal/skills/data/boid-metaproject/scripts/boidmeta/write.py` | 共通の検証・差分・書き込み | **PR-3 で実装:** `boid card context` の有無で経路を分岐、card 文脈があれば signals/BOID_TASK_ID を要求せず `card_write` だけを根拠にする。task ID/readonly/signals 依存の分離は完了、実 harness (session からの実呼び出し) は Gate A |
+| `internal/adapters/{claude,codex,opencode}/run.go`、`boid-task/SKILL.md` | session instruction、task の既存 lifecycle | **PR-3 で実装:** `boid-task/SKILL.md` に workspace workflow への委譲節を追加 (adapter 側の配線は不要と判断、根拠は §10)。task は boid-task 起動。実 harness での成立確認は Gate A |
 | `internal/orchestrator/signal_ingest_bridge.go` | 内部事実と workspace 解決 | best-effort、project 単位の自己除外。耐久要求と request の由来で補完 |
 | `internal/api/web.go`、`web/templates/tasks.templ`、`internal/timeline/` | task/job ページ、SSE、仕様と実 task の対応 | command/read model、card 側の更新通知、stable cursor を追加。`detailPrimaryAction` / `actionPrimaryClass` は action 名だけで分岐し type を見ないので、card の `start` が primary 扱いにならないよう type で分ける。child_dropped の Web/CLI 操作は無い（action send のみ） |
 | `internal/orchestrator/model.go` の子集計 | execution の階層構造 | command task を作業子に数えず単一枠を共有。reopen/直接作成でも迂回させない |
@@ -453,7 +453,7 @@ khi 等の最新 workspace repo と本番 DB は未調査。判断スキルが�
 |---|---|---|
 | PR-1 | Action 語彙と working Go、単一作業仕様・共有実行枠の store | 全作成/Go/reopen 入口と UI の action 名分岐を棚卸し。予約と型別 Action をテスト。child_closed に結果概要を保存。既存複数子の診断と child drop の手段 |
 | PR-2 | カードコマンド宣言、trigger run の card 文脈拡張、`boid agent start` op、op 内の関連付けと冪等性 | 固定した最小スクリプトで task/session を起動し、UI から返却先を開ける。二重作成不可。op 直後に launcher を殺しても関連が残る |
-| PR-3 | 組み込み共通記録の context 対応、workspace workflow の接続 | session/task 両方で読み書き・正しい終了が動く。task bootstrap の委譲を検証 |
+| PR-3 | 組み込み共通記録の context 対応、workspace workflow の接続 | session/task 両方で読み書き・正しい終了が動く。task bootstrap の委譲を検証 — **実装は完了、実 harness 検証は Gate A へ送った（§10 の「PR-3 で実装」を参照）** |
 | Gate A | 実 workspace のコマンドと判断スキルを使う縦断検証 | 下記項目を通るまでイベント駆動化へ進まない |
 | PR-4 | 内部イベントの耐久要求・起動通知・復旧、外部 Sweep handoff | 自己ループ無し、枠占有中の保留、作業終了後の再判断。旧経路とは未併用 |
 | PR-5 | card タイムライン読みモデルと一覧活動状態 | stable ID/cursor、関連 task/session、GC 後も読める概要。PR-2 後に着手可能 |
@@ -541,8 +541,11 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
 
 - Action の具体英名は Go/Start/Park/Complete/Drop/Reopen 案を基準に最終確認。
 - card_commands/card_events と context op の正式な schema/CLI 名、終了 callback の具体的な配線。
-  権限は「card 書き込み権限を readonly と独立した軸で context に持つ」まで確定（§4.5）。
-- task bootstrap の workspace workflow 委譲が実 harness で成立するか（Gate A の必須項目）。
+  権限は「card 書き込み権限を readonly と独立した軸で context に持つ」を **PR-3 で実装済み**
+  (`card_commands.<key>.card_write` → `card_requests.launched_card_write` スナップショット →
+  `boid card context` の `card_write` フィールド、詳細は下の「PR-3 で実装」を参照)。
+- task bootstrap の workspace workflow 委譲が実 harness で成立するか（Gate A の必須項目、
+  契約自体は PR-3 で `boid-task/SKILL.md` に書いた — 下記参照）。
 - コマンドの retry 上限・launcher timeout の値、ユーザーへの失敗通知方法。
   trigger の `timeout` / 連続失敗通知を流用する前提で、値だけ決める。
 - **PR-2d-5 で確定: 終端 card への手動コマンドは拒否する。** `RunCardCommandAsHuman`
@@ -724,6 +727,122 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   `boid task release-card-request` (運用者の force-release)。周期 self-heal 側に
   ランタイム/コンテナの生存確認を持たせる拡張や jobs 側の crash recovery を
   独自に足すのは本 PR の範囲外とする。
+- **PR-3 で実装: card 書き込み権限の軸、write.py の command context 対応、boid-task の
+  workspace workflow 委譲契約。実 harness での縦断検証は Gate A へ送った。**
+
+  野瀬さんの判断（drive task で確認済み）: 動いている daemon が PR-2 より古く、
+  サンドボックス内 shim が `boid card context` / `boid agent start` をまだ持たない
+  (再デプロイは Gate A の前に別途行う) ため、**この PR では実装と unit/Go テストまでとし、
+  session/task 実物からの縦断検証は行っていない。** 完了条件の「動く」「検証」のうち
+  実 harness 部分は Gate A の必須項目として残る（§7 の PR-3 行を参照）。
+
+  1. **card 書き込み権限:** `CardCommand.CardWrite`（project.yaml `card_commands.<key>.card_write`、
+     既定 false）を新設し、`CardRequestDefinition.CardWrite` として他の `launched_*` 列と
+     同じ「queued→launching の瞬間にスナップショット」対象にした（`card_requests.launched_card_write`
+     列、migration 0052）。`cardContextResponse` に `card_write`（bool）を追加 — 値は daemon が
+     server-side で決めて返し、環境変数・CLI フラグでの昇格経路は無い（`origin` と同じ契約）。
+     Go (`CardRequestCommandKeyGo`) はこの軸を一切持たず、作業 task の card 書き込み可否は
+     従来どおり behavior の `readonly` に従う。write.py 側は `card_ctx.get("card_write") is True`
+     と厳密比較する（Opus レビュー指摘 — truthy 判定だと想定外の値が誤って開く余地があった）。
+  2. **実行主体:** `cardContextResponse` に `actor`（`"task"`/`"session"`）を追加 — 呼び出し
+     トークンの `TaskID` の有無だけから daemon が導出する（session job は `TaskID` を持たない、
+     という既存の事実をそのまま利用）。**設計判断:** 「実行主体を区別して記録する」は
+     `boid card context` がこの値を継続先に渡すところまでとし、boid 側の Action スキーマに
+     actor/human フラグを追加するところまでは本 PR ではやらない — 理由は、その手の記録は
+     §5 のタイムライン読みモデル（PR-5/6）に合わせて設計した方が手戻りが少ないため。
+     write.py は取得した `actor` を stderr の監査痕跡（`[write] card context: actor=...`）に
+     残すのみで、boid 側の書き込み先スキーマは変えていない。
+     **既知の限界（Opus レビュー指摘、未対応）:** launcher exec job も session 継続先も
+     `TaskID` を持たないので、両方とも `"session"` と報告される — launcher 自身が
+     write.py を呼ぶ設計にはなっていないので実害は無いが、`actor` は今のところ
+     「task か、それ以外か」の二値でしかない。
+  3. **`boid card context` の exit code:** 「このジョブに card 文脈が無い」を表す exit code を
+     ExitCode:1（汎用失敗）から専用の `NoCardContextExitCode`（4、既存の
+     `IdentityNotFoundExitCode`/`IdentityConflictExitCode` と同じ並び）に変更した。理由は
+     write.py の「card 文脈あり/無し/引けなかった」の3分岐が stderr 文字列の pattern match
+     に頼らずに区別できるようにするため。broker.go・boid_executor.go 双方のガードと、
+     既存の固定テスト（`TestBroker_BoidCardContext_NoCardContext_RejectedBeforeExecutor` 等）を
+     追随させた。
+  4. **write.py:** `boid card context` の有無で経路を分岐する（`_readonly_forces_report` の
+     Sweep 経路はバイトレベルで無改変）。card 文脈があるときは signals も `BOID_TASK_ID` も
+     要求せず、`card_write` だけを書き込み可否の根拠にする（`validate(..., require_signals=False,
+     allow_signals=False)`）。**`signals` はフィールドごと拒否する**（当初は「必須にしない」
+     だけで受理していたが、Opus レビュー指摘: 渡せてしまうと `_record` が inbox とは無縁の
+     event_key を ack できてしまう — 人発コマンドがこの ack 経路に触れる理由が無いので、
+     フィールド自体を「知らないフィールド」として拒否する側に倒した）。card context の
+     取得自体が失敗したとき（引けなかった、ではなく本当に例外）は report にすら倒さず即座に
+     拒否する — 「文脈なし」と「引けなかった」を混同すると、本来 card-command 経由の呼び出しが
+     古い Sweep 専用経路（`BOID_TASK_ID` 必須）へ誤って落ちるため。`boid_store.card_context()`
+     も exit=0 の空応答（`card_id`/`request_id` が欠けた `{}`）を「文脈あり、権限は不明」として
+     素通ししないよう、欠けていたら例外にする（Opus レビュー指摘、現行の daemon 実装では
+     到達しないが防御的に閉じた）。
+  5. **boid-task/SKILL.md:** 「Workspace workflow delegation」節を新設 — active instruction が
+     具体的な実行手順（スクリプト起動等）を明示していれば、Supervisor/Executor どちらの汎用
+     フローよりそれを優先する契約を明文化した。Sweep が既にこの形（`readonly:false` +
+     「最初の一手」を固定した `default_instruction`）で動いていたのを、Sweep 専用の慣習ではなく
+     一般契約として書き下しただけで、新しい機構は足していない。**adapter 側
+     (`internal/adapters/{claude,codex,opencode}/run.go`) の配線は変更していない** —
+     behavior 名のハードコード分岐が元々存在せず（free naming 前提が既に守られていた）、
+     委譲の判断は agent 自身が active instruction を読んで行うので、adapter が dispatch 時点で
+     behavior 名から挙動を変える必要が無いため。
+  6. **Opus レビューで発覚し、この PR 内で修正: task 継続先には card 文脈が一切
+     届いていなかった。** launcher の exec job とその後の session job（`session_job.go`
+     の `BuildSessionJobSpec` 経由）は `spec.CardID`/`spec.CardRequestID` を持つが、
+     `DispatchPlanner.PlanHook`（`internal/orchestrator/planner.go`、task の hook job を
+     JobSpec にする唯一の経路）はそれを一切見ておらず、task 側は `card_id`/`card_request_id`
+     を自分の行に持たない（`card_requests.target_id` が逆に task を指すだけ）。
+     結果、task 継続先（判断 task の本体）から `boid card context` を呼ぶと常に
+     `NoCardContextExitCode` になり、write.py は Sweep 経路に落ちて `BOID_TASK_ID` は
+     あるが `boid card context` は使えない半端な状態になり、`readonly:true` の判断 task は
+     問答無用で report 強制のまま何も書けない — 「判断 task は readonly:true + card_write:true」
+     という本 PR の柱そのものが task 側では成立していなかった。
+     **修正:** `orchestrator.GetCardRequestByTaskTarget`（`target_kind='task' AND
+     target_id=?` の逆引き）を新設し、`DispatchPlanner` に任意の `CardRequests`
+     （`CardRequestByTaskLookup`）依存として追加、`PlanHook` が task 自身の
+     card_requests 行を引いて `JobSpec.CardID`/`CardRequestID` に積むようにした
+     （`internal/server/wire.go` は `taskLookup`／`DBTaskLookup` をそのまま渡す — 既存の
+     `TaskRepository`/`DBTaskLookup` に同じメソッドを生やしただけで新しい store は
+     増やしていない）。lookup 失敗は best-effort（card 文脈が無いだけに倒れ、dispatch 自体は
+     失敗させない）。session/launcher 側は元々正しく配線されていたので変更していない。
+     これで session actor に加えて task actor も実際に到達可能になった。
+  7. **Opus 2人目レビューで発覚し、この PR 内で修正: 6. の task 継続先スタンプが
+     広すぎた。** `PlanHook` の `GetCardRequestByTaskTarget` 呼び出しは `row != nil`
+     しか見ておらず、(a) `CommandKey == CardRequestCommandKeyGo` の行 —
+     ターゲットは Go で起動された作業 task 自身 — にもスタンプしてしまい、
+     「Go はこの軸を持たない」（上の 1.）と実装が逆になっていた、(b) `status` を
+     見ていないため `finished`/`failed` になった request の `card_write` が
+     その task の以後の全 dispatch（`boid task reopen` 後を含む）に永続してしまう
+     fail-open 方向の穴があった。**修正:** `PlanHook` に `CommandKey !=
+     CardRequestCommandKeyGo` かつ `Status ∈ {launching, attached}` の
+     フィルタを追加（`card_request_release.go` の Go 除外と同じ方針）。
+     併発ドリフトとして、`internal/server/boid_executor.go` の
+     `BoidOpTaskCreate` 側コメントが「TASK continuation の後続 create は
+     このCardRequestIDを二度と持たない」と書いていたが、この 6. の変更で
+     task 継続先の後続 hook job も同じ CardRequestID を持つようになっていたため
+     誤りになっていた（SESSION の carve-out と同じ理由で、task 継続先が
+     ROOT task を作るたびに所有権不一致の Warn が誤って出ていた）。
+     コメントを実態に合わせ、`else if` の carve-out に
+     `row.TargetKind == task && row.TargetID == ctx.TaskID` のケースを追加した。
+     `internal/orchestrator/planner_test.go` /
+     `internal/server/boid_executor_task_create_card_request_test.go` に
+     それぞれ固定テストを追加済み。
+
+**未着手 (記録のみ、この PR では閉じない):**
+
+- **`card_write:true` の書き込み対象スコープが request の card 単体より広い。**
+  `write.py` の `_refuse_terminal` は書き込み先が `_own_project()`（= その
+  card request が属する project）と一致するかしか見ておらず、`card_write:true`
+  は project 内の任意の card への書き込みを許してしまう（「この request の
+  card だけ」ではない）。Sweep が元々持っていた権限範囲と同じなので今回の
+  変更による新規の昇格ではないが、スコープが request 単位ではないことは
+  未対応のまま残っている。
+- **`write.py` が全呼び出しで `boid card context` を叩くようになった副作用。**
+  host 側 CLI（`cmd/card.go`）には `card context` サブコマンドが無いため、
+  sandbox 外から `write.py` を走らせると（現状は sandbox 専用運用なので実害は
+  無いが）全て exit 1 になる。また broker RPC 呼び出し自体が失敗した場合、
+  従来の Sweep は「report に倒して exit 0」だったのに対し新経路では exit 1 に
+  変わっている（より安全側の変化ではあるが、挙動変化として未記録だったので
+  ここに記録する）。
 
 これらは §4 の契約・§6 の対処を前提に、Gate A と各実装 PR で確定する。
 単一ユーザーの利用を前提に、対話注入・分散ロック・汎用 DAG scheduler は追加しない。

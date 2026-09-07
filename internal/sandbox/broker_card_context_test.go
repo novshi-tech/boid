@@ -39,8 +39,8 @@ func TestBroker_BoidCardContext_NoCardContext_RejectedBeforeExecutor(t *testing.
 		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext},
 	})
 
-	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "no card context") {
-		t.Fatalf("expected a clear no-card-context rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	if resp.ExitCode != sandbox.NoCardContextExitCode || !strings.Contains(resp.Stderr, "no card context") {
+		t.Fatalf("expected a clear no-card-context rejection with the distinguished exit code, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("executor should never be reached when the token has no card context, calls=%d", len(exec.calls))

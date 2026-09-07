@@ -123,6 +123,48 @@ func TestRunCardCommandAsHuman_Success_ClaimsSlotAndDispatchesLauncher(t *testin
 	}
 }
 
+// TestRunCardCommandAsHuman_CardWrite_ThreadsIntoLaunchedDefinition pins that
+// a project.yaml card_commands entry's card_write: true reaches the created
+// card_requests row's Launched snapshot — the value `boid card context`
+// later reports to the continuation. A command that omits card_write must
+// snapshot false (opt-in, not opt-out).
+func TestRunCardCommandAsHuman_CardWrite_ThreadsIntoLaunchedDefinition(t *testing.T) {
+	svc, _, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"discuss": {Label: "Discuss", Run: "echo hi", CardWrite: true},
+		"review":  {Label: "Run", Run: "echo hi"},
+	}))
+
+	discussResult, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "discuss", "")
+	if err != nil {
+		t.Fatalf("RunCardCommandAsHuman(discuss): %v", err)
+	}
+	repo := svc.CardRequests.(*orchestrator.TaskRepository)
+	discussReq, err := repo.GetCardRequest(discussResult.RequestID)
+	if err != nil {
+		t.Fatalf("GetCardRequest(discuss): %v", err)
+	}
+	if !discussReq.Launched.CardWrite {
+		t.Errorf("discuss request Launched.CardWrite = false, want true (card_write: true in project.yaml)")
+	}
+
+	// Release the slot before launching the second command.
+	if err := repo.FailCardRequest(discussResult.RequestID, "test cleanup"); err != nil {
+		t.Fatalf("FailCardRequest: %v", err)
+	}
+
+	reviewResult, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
+	if err != nil {
+		t.Fatalf("RunCardCommandAsHuman(review): %v", err)
+	}
+	reviewReq, err := repo.GetCardRequest(reviewResult.RequestID)
+	if err != nil {
+		t.Fatalf("GetCardRequest(review): %v", err)
+	}
+	if reviewReq.Launched.CardWrite {
+		t.Errorf("review request Launched.CardWrite = true, want false (card_write omitted in project.yaml)")
+	}
+}
+
 // TestRunCardCommandAsHuman_WorkingCard_Succeeds pins the OTHER side of the
 // parked/working guard: a card already `working` (not just freshly `parked`)
 // must still let a card command launch. Every other test in this file that

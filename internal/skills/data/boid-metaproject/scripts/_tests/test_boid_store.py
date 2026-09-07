@@ -19,6 +19,7 @@ import unittest
 from boidmeta.boid_store import (
     DEFAULT_SIGNAL_LIST_LIMIT,
     IDENTITY_NOT_FOUND_EXIT_CODE,
+    NO_CARD_CONTEXT_EXIT_CODE,
     PAYLOAD_CONSUMING,
     BoidCLI,
     BoidError,
@@ -226,6 +227,47 @@ class ResolveIdentityTest(unittest.TestCase):
         client, _run = cli((1, "", "boom"))
         with self.assertRaises(BoidError):
             client.resolve_identity("jira:X-1")
+
+
+class CardContextTest(unittest.TestCase):
+    """`boid card context --format json` —— write.py の command-context 対応の入口。"""
+
+    def test_it_returns_the_full_context(self):
+        client, run = cli(json.dumps({
+            "card_id": "card-1", "request_id": "req-1", "command_key": "discuss",
+            "instruction": "focus on auth", "origin": "human", "card_write": True, "actor": "session",
+        }))
+        got = client.card_context()
+        self.assertEqual(got, {
+            "card_id": "card-1", "request_id": "req-1", "command_key": "discuss",
+            "instruction": "focus on auth", "origin": "human", "card_write": True, "actor": "session",
+        })
+        self.assertEqual(run.args, ["boid", "card", "context", "--format", "json"])
+
+    def test_no_card_context_is_none_not_an_error(self):
+        """**exit code を pattern match しない代わりに文字列も見ない** —— 既存の Sweep
+        task を含むあらゆる非 card-command ジョブの通常応答なので、例外にすると
+        write.py の既存経路が全滅する。"""
+        client, _run = cli((NO_CARD_CONTEXT_EXIT_CODE, "", "boid card context: no card context for this job"))
+        self.assertIsNone(client.card_context())
+
+    def test_a_real_failure_still_raises(self):
+        client, _run = cli((1, "", "boom"))
+        with self.assertRaises(BoidError):
+            client.card_context()
+
+    def test_an_empty_success_response_raises_rather_than_a_hollow_context(self):
+        """exit=0 の空応答は `json.loads("")` を素通しにすると `{}` になり、`isinstance`
+        だけでは通ってしまう —— card_id/request_id が無い「壊れた card 文脈あり」を
+        作らないよう、欠けていたら例外にする (fail-closed)。"""
+        client, _run = cli("")
+        with self.assertRaises(BoidError):
+            client.card_context()
+
+    def test_a_response_missing_request_id_raises(self):
+        client, _run = cli(json.dumps({"card_id": "card-1"}))
+        with self.assertRaises(BoidError):
+            client.card_context()
 
 
 class LinkIdentityTest(unittest.TestCase):

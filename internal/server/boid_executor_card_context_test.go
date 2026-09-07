@@ -81,8 +81,8 @@ func (f *fakeCardRequestReader) AttachCardRequestOwned(id, expectedLauncherJobID
 func TestBoidOpCardContext_NoCardContext_ClearError(t *testing.T) {
 	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, &fakeCardRequestReader{}, nil)
 	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
-	if resp.ExitCode == 0 {
-		t.Fatalf("ExitCode = 0, want non-zero for a job with no card context")
+	if resp.ExitCode != sandbox.NoCardContextExitCode {
+		t.Fatalf("ExitCode = %d, want %d (NoCardContextExitCode) for a job with no card context", resp.ExitCode, sandbox.NoCardContextExitCode)
 	}
 	if !strings.Contains(resp.Stderr, "no card context") {
 		t.Errorf("Stderr = %q, want a clear \"no card context\" message", resp.Stderr)
@@ -126,9 +126,102 @@ func TestBoidOpCardContext_HumanOrigin_ReturnsFullContext(t *testing.T) {
 		CommandKey:  "review",
 		Instruction: "focus on the auth flow",
 		Origin:      "human",
+		CardWrite:   false,
+		Actor:       "session",
 	}
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+// TestBoidOpCardContext_CardWrite_FromLaunchedDefinition pins that
+// CardWrite comes from the row's Launched (launch-time-snapshotted)
+// definition, not anything the caller can influence.
+func TestBoidOpCardContext_CardWrite_FromLaunchedDefinition(t *testing.T) {
+	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
+		"req-1": {
+			ID:       "req-1",
+			CardID:   "card-1",
+			Launched: orchestrator.CardRequestDefinition{CommandKey: "discuss", CardWrite: true},
+		},
+	}}
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
+	if resp.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
+	}
+	var got cardContextResponse
+	if err := json.Unmarshal([]byte(resp.Stdout), &got); err != nil {
+		t.Fatalf("unmarshal response: %v (stdout=%q)", err, resp.Stdout)
+	}
+	if !got.CardWrite {
+		t.Errorf("CardWrite = false, want true (row.Launched.CardWrite was true)")
+	}
+}
+
+// TestBoidOpCardContext_CardWrite_DefaultsFalse pins that a request with no
+// snapshotted CardWrite (the CardRequestCommandKeyGo case: Go never sets it)
+// reports card_write=false rather than defaulting open.
+func TestBoidOpCardContext_CardWrite_DefaultsFalse(t *testing.T) {
+	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
+		"req-1": {
+			ID:       "req-1",
+			CardID:   "card-1",
+			Launched: orchestrator.CardRequestDefinition{CommandKey: orchestrator.CardRequestCommandKeyGo},
+		},
+	}}
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
+	if resp.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
+	}
+	var got cardContextResponse
+	if err := json.Unmarshal([]byte(resp.Stdout), &got); err != nil {
+		t.Fatalf("unmarshal response: %v (stdout=%q)", err, resp.Stdout)
+	}
+	if got.CardWrite {
+		t.Errorf("CardWrite = true, want false for a Go-originated request")
+	}
+}
+
+// TestBoidOpCardContext_Actor_TaskWhenTokenHasTaskID pins that Actor is
+// "task" whenever the calling token carries a TaskID — never inferred from
+// anything else.
+func TestBoidOpCardContext_Actor_TaskWhenTokenHasTaskID(t *testing.T) {
+	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
+		"req-1": {ID: "req-1", CardID: "card-1", Launched: orchestrator.CardRequestDefinition{CommandKey: "review"}},
+	}}
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", TaskID: "task-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
+	if resp.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
+	}
+	var got cardContextResponse
+	if err := json.Unmarshal([]byte(resp.Stdout), &got); err != nil {
+		t.Fatalf("unmarshal response: %v (stdout=%q)", err, resp.Stdout)
+	}
+	if got.Actor != "task" {
+		t.Errorf("Actor = %q, want %q", got.Actor, "task")
+	}
+}
+
+// TestBoidOpCardContext_Actor_SessionWhenTokenHasNoTaskID is the session-job
+// counterpart of the task test above.
+func TestBoidOpCardContext_Actor_SessionWhenTokenHasNoTaskID(t *testing.T) {
+	reader := &fakeCardRequestReader{rows: map[string]*orchestrator.CardRequest{
+		"req-1": {ID: "req-1", CardID: "card-1", Launched: orchestrator.CardRequestDefinition{CommandKey: "review"}},
+	}}
+	exec := newBoidBuiltinExecutor(&recordingWorkflow{}, nil, nil, nil, nil, "", nil, nil, reader, nil)
+	resp := exec.ExecuteBoidBuiltin(t.Context(), sandbox.TokenContext{CardID: "card-1", CardRequestID: "req-1", JobID: "job-1"}, &sandbox.BoidRequest{Op: sandbox.BoidOpCardContext})
+	if resp.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, Stderr = %q", resp.ExitCode, resp.Stderr)
+	}
+	var got cardContextResponse
+	if err := json.Unmarshal([]byte(resp.Stdout), &got); err != nil {
+		t.Fatalf("unmarshal response: %v (stdout=%q)", err, resp.Stdout)
+	}
+	if got.Actor != "session" {
+		t.Errorf("Actor = %q, want %q", got.Actor, "session")
 	}
 }
 

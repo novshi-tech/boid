@@ -1,11 +1,14 @@
 package server
 
-import "github.com/novshi-tech/boid/internal/orchestrator"
+import (
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
+)
 
 // cardContextResponse is BoidOpCardContext's reply shape — `boid card
 // context`'s structured, token-authoritative input. Every field is sourced
-// from the live card_requests row looked up by ctx.CardRequestID, never
-// from the request the caller sent.
+// from the live card_requests row looked up by ctx.CardRequestID (CardWrite)
+// or from the token itself (Actor), never from the request the caller sent.
 type cardContextResponse struct {
 	CardID      string `json:"card_id"`
 	RequestID   string `json:"request_id"`
@@ -16,6 +19,15 @@ type cardContextResponse struct {
 	// internal event caused it) — never left for a caller to infer from
 	// cause_id itself.
 	Origin string `json:"origin"`
+	// CardWrite: whether this request's continuation may write to the card,
+	// independent of any task behavior's own readonly. Sourced from
+	// row.Launched.CardWrite, so a caller cannot gain it by any env var or
+	// CLI flag (same contract as Origin).
+	CardWrite bool `json:"card_write"`
+	// Actor is the kind of continuation asking — "task" or "session"
+	// (orchestrator.CardRequestTargetKind{Task,Session}) — derived from
+	// whether the calling token carries a TaskID, never a caller value.
+	Actor string `json:"actor"`
 }
 
 const (
@@ -33,4 +45,13 @@ func cardRequestOrigin(row *orchestrator.CardRequest) string {
 		return cardContextOriginEvent
 	}
 	return cardContextOriginHuman
+}
+
+// cardContextActor derives cardContextResponse.Actor from the calling
+// token's own TaskID, never from anything the caller sends.
+func cardContextActor(ctx sandbox.TokenContext) string {
+	if ctx.TaskID != "" {
+		return orchestrator.CardRequestTargetKindTask
+	}
+	return orchestrator.CardRequestTargetKindSession
 }

@@ -198,7 +198,7 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 	}
 
 	launcherJobID := uuid.New().String()
-	def := orchestrator.CardRequestDefinition{CommandKey: commandKey, Label: cmd.Label, Run: cmd.Run}
+	def := orchestrator.CardRequestDefinition{CommandKey: commandKey, Label: cmd.Label, Run: cmd.Run, CardWrite: cmd.CardWrite}
 	req := &orchestrator.CardRequest{
 		CardID:        cardID,
 		CommandKey:    commandKey,

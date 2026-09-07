@@ -207,6 +207,51 @@ func TestCreateCardRequest_InstructionRoundTrips(t *testing.T) {
 	}
 }
 
+// TestClaimQueuedCardRequests_CardWriteSnapshotted pins that CardWrite
+// travels through the same snapshot-at-claim path as Label/Run/Version, and
+// that RetryCardRequest resets it back to false rather than leaving a stale
+// permission on a request that failed and is being retried under
+// (potentially) a different project.yaml definition.
+func TestClaimQueuedCardRequests_CardWriteSnapshotted(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "discuss"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+
+	def := orchestrator.CardRequestDefinition{CommandKey: "discuss", Label: "Discuss", Run: "python3 scripts/card_discuss.py", CardWrite: true}
+	primary, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", def)
+	if err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	if !primary.Launched.CardWrite {
+		t.Errorf("primary.Launched.CardWrite = false, want true (snapshotted from the claim's definition)")
+	}
+	got, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if !got.Launched.CardWrite {
+		t.Errorf("Launched.CardWrite after GetCardRequest = false, want true (round-tripped through the DB)")
+	}
+
+	if err := orchestrator.FailCardRequest(d.Conn, req.ID, "boom"); err != nil {
+		t.Fatalf("FailCardRequest: %v", err)
+	}
+	if err := orchestrator.RetryCardRequest(d.Conn, req.ID); err != nil {
+		t.Fatalf("RetryCardRequest: %v", err)
+	}
+	retried, err := orchestrator.GetCardRequest(d.Conn, req.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest (after retry): %v", err)
+	}
+	if retried.Launched.CardWrite {
+		t.Errorf("Launched.CardWrite after retry = true, want false (RetryCardRequest clears the whole launch-time snapshot)")
+	}
+}
+
 func TestCardRequest_FullLifecycle_QueuedToFinished(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
@@ -684,6 +729,44 @@ func TestGetCardRequest_NotFound(t *testing.T) {
 	_, err := orchestrator.GetCardRequest(d.Conn, "does-not-exist")
 	if !errors.Is(err, orchestrator.ErrCardRequestNotFound) {
 		t.Fatalf("GetCardRequest(missing) = %v, want ErrCardRequestNotFound", err)
+	}
+}
+
+// TestGetCardRequestByTaskTarget_FindsAttachedRow pins the reverse lookup
+// PlanHook uses to stamp CardID/CardRequestID onto a task-continuation's own
+// hook jobs (a task never stores its own card_requests id, so this is the
+// only way to answer "is this task a card-command continuation").
+func TestGetCardRequestByTaskTarget_FindsAttachedRow(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	req := &orchestrator.CardRequest{CardID: cardID, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-1"}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, req.ID, orchestrator.CardRequestTargetKindTask, "task-99"); err != nil {
+		t.Fatalf("AttachCardRequest: %v", err)
+	}
+
+	got, err := orchestrator.GetCardRequestByTaskTarget(d.Conn, "task-99")
+	if err != nil {
+		t.Fatalf("GetCardRequestByTaskTarget: %v", err)
+	}
+	if got == nil || got.ID != req.ID || got.CardID != cardID {
+		t.Fatalf("GetCardRequestByTaskTarget = %+v, want the attached request", got)
+	}
+}
+
+// TestGetCardRequestByTaskTarget_NoMatchReturnsNilNil pins that "this task is
+// not a card-command continuation" (the ordinary case for every task PlanHook
+// dispatches) is nil/nil, not an error.
+func TestGetCardRequestByTaskTarget_NoMatchReturnsNilNil(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	got, err := orchestrator.GetCardRequestByTaskTarget(d.Conn, "does-not-exist")
+	if err != nil {
+		t.Fatalf("GetCardRequestByTaskTarget: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("GetCardRequestByTaskTarget = %+v, want nil", got)
 	}
 }
 

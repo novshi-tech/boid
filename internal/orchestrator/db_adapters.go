@@ -21,3 +21,7 @@ type DBTaskLookup struct {
 func (l DBTaskLookup) GetTask(id string) (*Task, error) {
 	return GetTask(l.DB, id)
 }
+
+func (l DBTaskLookup) GetCardRequestByTaskTarget(taskID string) (*CardRequest, error) {
+	return GetCardRequestByTaskTarget(l.DB, taskID)
+}
