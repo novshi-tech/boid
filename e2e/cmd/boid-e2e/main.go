@@ -517,8 +517,8 @@ func runFakeDocker(args []string) error {
 
 	// Open log file (append+create so multiple runs accumulate).
 	var (
-		logMu  sync.Mutex
-		logF   *os.File
+		logMu sync.Mutex
+		logF  *os.File
 	)
 	if *logPath != "" {
 		logF, err = os.OpenFile(*logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
