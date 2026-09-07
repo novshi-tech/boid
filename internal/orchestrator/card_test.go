@@ -403,7 +403,7 @@ func TestParkedFrom_DerivesFromLatestParkAction(t *testing.T) {
 	// only currently-valid FromStatus a real park action ever carries.
 	if err := orchestrator.CreateAction(context.Background(), conn, &orchestrator.Action{
 		TaskID: "t1", Type: "park", FromStatus: orchestrator.TaskStatusWorking, ToStatus: orchestrator.TaskStatusParked,
-	}, nil); err != nil {
+	}, nil, nil); err != nil {
 		t.Fatalf("create park action: %v", err)
 	}
 
@@ -442,7 +442,7 @@ func TestParkedFrom_UsesMostRecentParkAction(t *testing.T) {
 		time.Sleep(time.Millisecond) // ensure created_at ordering is stable
 		if err := orchestrator.CreateAction(context.Background(), conn, &orchestrator.Action{
 			TaskID: "t1", Type: a.typ, FromStatus: a.from, ToStatus: a.to,
-		}, nil); err != nil {
+		}, nil, nil); err != nil {
 			t.Fatalf("create action %d: %v", i, err)
 		}
 	}

@@ -516,7 +516,8 @@ type ProjectMeta struct {
 	// filled separately since a Go map cannot carry it itself.
 	CardCommandsOrder []string `yaml:"-" json:"-"`
 	// CardEvents names the CardCommands key that auto-starts for internal
-	// card events; empty means none. Validated but not yet consumed.
+	// card events; empty means none. Consumed by CardEventResolver
+	// (card_event_ingest.go) via ProjectStore.CardEventCommand.
 	// json:"-" because CardEventsConfig is a non-pointer struct, so
 	// omitempty can't omit it.
 	CardEvents CardEventsConfig `yaml:"card_events,omitempty" json:"-"`

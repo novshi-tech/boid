@@ -212,14 +212,14 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "missing boid request"}
 	}
 
-	// This is the ONE place in the daemon that calls WithWriterProjectID:
-	// every sandbox-originated write carries ctx.ProjectID as its "who
-	// wrote this" fact, so orchestrator.CreateAction can tell a
-	// metaproject's own self-authored write (must not ingest — loop risk)
-	// from everything else. Every call site below must pass goCtx (or a
-	// value built from it), not a bare context.Background(), to keep this
-	// attached.
+	// This is the ONE place in the daemon that calls WithWriterProjectID /
+	// WithWriterCardRequestID: every sandbox-originated write carries
+	// ctx.ProjectID / ctx.CardRequestID as its "who wrote this" facts, which
+	// orchestrator.CreateAction's ingest steps use to detect self-writes.
+	// Every call site below must pass goCtx (or a value built from it), not
+	// a bare context.Background(), to keep these attached.
 	goCtx = orchestrator.WithWriterProjectID(goCtx, ctx.ProjectID)
+	goCtx = orchestrator.WithWriterCardRequestID(goCtx, ctx.CardRequestID)
 
 	switch req.Op {
 	case sandbox.BoidOpJobDone:

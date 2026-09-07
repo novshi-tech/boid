@@ -669,6 +669,17 @@ func (s *ProjectStore) MetaProjectIDs(workspaceID string) []string {
 	return ids
 }
 
+// CardEventCommand returns projectID's declared card_events.command key —
+// "" (ok=false) when the project is not cached or declares none. Satisfies
+// CardEventResolver (card_event_ingest.go).
+func (s *ProjectStore) CardEventCommand(projectID string) (string, bool) {
+	meta, ok := s.Get(projectID)
+	if !ok || meta.CardEvents.Command == "" {
+		return "", false
+	}
+	return meta.CardEvents.Command, true
+}
+
 // SetWorkspaceID updates the cached workspace association for a project.
 // Empty workspaceID clears the association. Subsequent GetWithWorkspace calls
 // will hydrate using the new value (or return the cached meta unchanged when

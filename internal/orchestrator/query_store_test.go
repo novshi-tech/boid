@@ -679,7 +679,7 @@ func TestCreateAction(t *testing.T) {
 		Type:    "start",
 		Payload: json.RawMessage(`{"key":"value"}`),
 	}
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil, nil); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 	if action.ID == "" {
@@ -702,7 +702,7 @@ func TestCreateAction_DefaultPayload(t *testing.T) {
 		TaskID: task.ID,
 		Type:   "start",
 	}
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil, nil); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 	if string(action.Payload) != "{}" {
@@ -723,7 +723,7 @@ func TestCreateAction_PersistsActor(t *testing.T) {
 		Type:   "ready",
 		Actor:  orchestrator.ActorHuman,
 	}
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil, nil); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 
@@ -752,11 +752,11 @@ func TestListActionsByTask(t *testing.T) {
 	}
 
 	for _, typ := range []string{"start", "done"} {
-		if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task1.ID, Type: typ}, nil); err != nil {
+		if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task1.ID, Type: typ}, nil, nil); err != nil {
 			t.Fatalf("create action: %v", err)
 		}
 	}
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task2.ID, Type: "start"}, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task2.ID, Type: "start"}, nil, nil); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 
@@ -797,7 +797,7 @@ func TestCreateAction_WithStatusTransition(t *testing.T) {
 		FromStatus: orchestrator.TaskStatusPending,
 		ToStatus:   orchestrator.TaskStatusExecuting,
 	}
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil, nil); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 
@@ -830,7 +830,7 @@ func TestCreateAction_DispatchError_SameFromTo(t *testing.T) {
 		FromStatus: orchestrator.TaskStatusExecuting,
 		ToStatus:   orchestrator.TaskStatusExecuting,
 	}
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil, nil); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 
@@ -862,7 +862,7 @@ func TestCreateAction_LegacyNoStatusTransition(t *testing.T) {
 		TaskID: task.ID,
 		Type:   "start",
 	}
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, action, nil, nil); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 
@@ -905,7 +905,7 @@ func TestDeleteTask(t *testing.T) {
 	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task.ID, Type: "start"}, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task.ID, Type: "start"}, nil, nil); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 

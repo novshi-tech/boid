@@ -35,10 +35,10 @@ func TestGCTasks_DeletesDoneAndAborted(t *testing.T) {
 	}
 
 	// アクションを作成（done タスクに紐付く）
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: doneTask.ID, Type: "start"}, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: doneTask.ID, Type: "start"}, nil, nil); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: doneTask.ID, Type: "done"}, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: doneTask.ID, Type: "done"}, nil, nil); err != nil {
 		t.Fatalf("create action: %v", err)
 	}
 

@@ -39,8 +39,14 @@ type recordingWorkflow struct {
 	// (boid_executor_action_send_test.go).
 	appliedWriterProject string
 	appliedHasWriter     bool
-	applyCallCount       int
-	applyErr             error
+	// appliedWriterCardRequest / appliedHasWriterCardRequest are
+	// appliedWriterProject/appliedHasWriter's companion capture for
+	// orchestrator.WriterCardRequestIDFromContext — the card-event ingest
+	// self-loop guard's regression guard.
+	appliedWriterCardRequest    string
+	appliedHasWriterCardRequest bool
+	applyCallCount              int
+	applyErr                    error
 
 	// PR-5a triage read surface
 	triageGets    []string
@@ -57,6 +63,7 @@ func (w *recordingWorkflow) ApplyAction(ctx context.Context, taskID string, req 
 	w.appliedReq = req
 	w.appliedActor = orchestrator.ActorFromContext(ctx)
 	w.appliedWriterProject, w.appliedHasWriter = orchestrator.WriterProjectIDFromContext(ctx)
+	w.appliedWriterCardRequest, w.appliedHasWriterCardRequest = orchestrator.WriterCardRequestIDFromContext(ctx)
 	w.applyCallCount++
 	if w.applyErr != nil {
 		return nil, w.applyErr
