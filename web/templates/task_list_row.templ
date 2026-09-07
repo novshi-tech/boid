@@ -255,6 +255,9 @@ templ taskListRow(row ListRow) {
 // list-row scale — same suggestionTargetStatus/taskStatusClass helpers, so
 // the list row's edge rendering can never drift from the detail page's.
 templ taskListRowMovement(row ListRow) {
+	if row.Task.Type == orchestrator.TaskTypeCard {
+		@cardActivityBadges(row.Activity)
+	}
 	if row.Task.Type == orchestrator.TaskTypeCard && row.Suggestion.Verb != "" {
 		{{ target := suggestionTargetStatus(row.Task.Status, row.Suggestion.Verb) }}
 		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
@@ -280,14 +283,13 @@ templ taskListRowMovement(row ListRow) {
 	} else {
 		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
 	}
-	if row.Task.Type == orchestrator.TaskTypeCard {
-		@cardActivityBadges(row.Activity)
-	}
 }
 
-// cardActivityBadges renders the card's activity state, appended after the
-// status/suggestion content above rather than replacing it. Renders nothing
-// when both labels are empty.
+// cardActivityBadges renders the card's activity state. Rendered BEFORE the
+// status/suggestion content by its caller, not after: line3's container
+// clamps to 2 lines and hides overflow, so a badge appended after a long
+// reason/summary can be clipped out of view. Renders nothing when both
+// labels are empty.
 templ cardActivityBadges(a CardActivityState) {
 	if a.WorkLabel != "" {
 		<span class="list-row-activity list-row-activity-work">{ a.WorkLabel }</span>

@@ -775,7 +775,7 @@ func scanActiveCardRequestsByCardIDs(dbtx db.DBTX, cardIDs []string, byCard map[
 	}
 	args = append(args, string(CardRequestStatusQueued), string(CardRequestStatusLaunching), string(CardRequestStatusAttached))
 	rows, err := dbtx.Query(
-		cardRequestSelectCols+` FROM card_requests WHERE card_id IN (`+strings.Join(placeholders, ",")+`) AND status IN (?, ?, ?)`,
+		cardRequestSelectCols+` FROM card_requests WHERE card_id IN (`+strings.Join(placeholders, ",")+`) AND status IN (?, ?, ?) ORDER BY created_at ASC, id ASC`,
 		args...,
 	)
 	if err != nil {

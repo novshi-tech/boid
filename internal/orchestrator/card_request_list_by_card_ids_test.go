@@ -7,6 +7,7 @@ package orchestrator_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
@@ -96,6 +97,41 @@ func TestListActiveCardRequestsByCardIDs_ScopedToRequestedIDs(t *testing.T) {
 	}
 	if _, ok := got[outOfScope]; ok {
 		t.Errorf("out-of-scope card %q leaked into result: %+v", outOfScope, got)
+	}
+}
+
+// Two same-rank (queued) rows must resolve in the SAME order this batch
+// lookup and the detail page's own ListCardRequestsByCard would agree on
+// (created_at ASC, id ASC) — otherwise the list and the detail page could
+// point at two different "active" commands for the same card.
+func TestListActiveCardRequestsByCardIDs_SameRankTieBreak_OldestWins(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	card := newTestCard(t, d, "proj-1", "card-1")
+
+	older := &orchestrator.CardRequest{CardID: card, CommandKey: "sweep", Status: orchestrator.CardRequestStatusQueued, CreatedAt: time.Now().UTC().Add(-time.Hour)}
+	if err := orchestrator.CreateCardRequest(d.Conn, older); err != nil {
+		t.Fatalf("create older: %v", err)
+	}
+	newer := &orchestrator.CardRequest{CardID: card, CommandKey: "discuss", Status: orchestrator.CardRequestStatusQueued}
+	if err := orchestrator.CreateCardRequest(d.Conn, newer); err != nil {
+		t.Fatalf("create newer: %v", err)
+	}
+
+	viaDetail, err := orchestrator.ListCardRequestsByCard(d.Conn, card)
+	if err != nil {
+		t.Fatalf("ListCardRequestsByCard: %v", err)
+	}
+	wantID := orchestrator.PickActiveCardRequest(viaDetail).ID
+	if wantID != older.ID {
+		t.Fatalf("test setup: detail-page pick = %q, want the older row %q", wantID, older.ID)
+	}
+
+	got, err := orchestrator.ListActiveCardRequestsByCardIDs(d.Conn, []string{card})
+	if err != nil {
+		t.Fatalf("ListActiveCardRequestsByCardIDs: %v", err)
+	}
+	if got[card] == nil || got[card].ID != wantID {
+		t.Errorf("list-side pick = %+v, want the same row the detail page picks (%q)", got[card], wantID)
 	}
 }
 

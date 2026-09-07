@@ -118,16 +118,16 @@ func TestWorkActivityLabel_DispatchedButTaskMissing_Empty(t *testing.T) {
 // --- CommandActivityLabel ---
 
 func TestCommandActivityLabel_Nil_Empty(t *testing.T) {
-	if got := CommandActivityLabel(nil); got != "" {
+	if got := CommandActivityLabel(nil, nil); got != "" {
 		t.Errorf("CommandActivityLabel(nil) = %q, want empty", got)
 	}
 }
 
 // launched_label is empty for a queued (never-launched) row — the fallback
-// is the raw command_key, not a guessed verb (§10 PR-5c decision).
+// is the raw command_key, not a guessed verb.
 func TestCommandActivityLabel_Queued_FallsBackToCommandKey(t *testing.T) {
 	req := &orchestrator.CardRequest{CommandKey: "sweep", Status: orchestrator.CardRequestStatusQueued}
-	if got := CommandActivityLabel(req); got != "sweep: Queued" {
+	if got := CommandActivityLabel(req, nil); got != "sweep: Queued" {
 		t.Errorf("CommandActivityLabel(queued) = %q, want %q", got, "sweep: Queued")
 	}
 }
@@ -137,24 +137,81 @@ func TestCommandActivityLabel_Launching_UsesLaunchedLabel(t *testing.T) {
 		CommandKey: "discuss", Status: orchestrator.CardRequestStatusLaunching,
 		Launched: orchestrator.CardRequestDefinition{Label: "Discuss"},
 	}
-	if got := CommandActivityLabel(req); got != "Discuss: Launching" {
+	if got := CommandActivityLabel(req, nil); got != "Discuss: Launching" {
 		t.Errorf("CommandActivityLabel(launching) = %q, want %q", got, "Discuss: Launching")
 	}
 }
 
-func TestCommandActivityLabel_Attached_Running(t *testing.T) {
+// Attached + a session target: no real status to check (session liveness is
+// a job-table concern out of scope here), so the label stays "Running".
+func TestCommandActivityLabel_AttachedSessionTarget_Running(t *testing.T) {
 	req := &orchestrator.CardRequest{
 		CommandKey: "discuss", Status: orchestrator.CardRequestStatusAttached,
-		Launched: orchestrator.CardRequestDefinition{Label: "Discuss"},
+		Launched:   orchestrator.CardRequestDefinition{Label: "Discuss"},
+		TargetKind: orchestrator.CardRequestTargetKindSession, TargetID: "job-1",
 	}
-	if got := CommandActivityLabel(req); got != "Discuss: Running" {
-		t.Errorf("CommandActivityLabel(attached) = %q, want %q", got, "Discuss: Running")
+	if got := CommandActivityLabel(req, nil); got != "Discuss: Running" {
+		t.Errorf("CommandActivityLabel(attached/session) = %q, want %q", got, "Discuss: Running")
+	}
+}
+
+// Attached + a task target whose real task is awaiting: the command must
+// say "Needs input", not "Running" — otherwise a user's answer-pending
+// dialogue task is invisible in the list, the exact misreading §5.5 warns
+// against for the work-child axis.
+func TestCommandActivityLabel_AttachedTaskTarget_Awaiting_NeedsInput(t *testing.T) {
+	req := &orchestrator.CardRequest{
+		CommandKey: "discuss", Status: orchestrator.CardRequestStatusAttached,
+		Launched:   orchestrator.CardRequestDefinition{Label: "Discuss"},
+		TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "task-1",
+	}
+	statuses := map[string]orchestrator.TaskStatus{"task-1": orchestrator.TaskStatusAwaiting}
+	if got := CommandActivityLabel(req, statuses); got != "Discuss: Needs input" {
+		t.Errorf("CommandActivityLabel(attached/task/awaiting) = %q, want %q", got, "Discuss: Needs input")
+	}
+}
+
+func TestCommandActivityLabel_AttachedTaskTarget_Pending_Queued(t *testing.T) {
+	req := &orchestrator.CardRequest{
+		CommandKey: "discuss", Status: orchestrator.CardRequestStatusAttached,
+		Launched:   orchestrator.CardRequestDefinition{Label: "Discuss"},
+		TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "task-1",
+	}
+	statuses := map[string]orchestrator.TaskStatus{"task-1": orchestrator.TaskStatusPending}
+	if got := CommandActivityLabel(req, statuses); got != "Discuss: Queued" {
+		t.Errorf("CommandActivityLabel(attached/task/pending) = %q, want %q", got, "Discuss: Queued")
+	}
+}
+
+func TestCommandActivityLabel_AttachedTaskTarget_Executing_Running(t *testing.T) {
+	req := &orchestrator.CardRequest{
+		CommandKey: "discuss", Status: orchestrator.CardRequestStatusAttached,
+		Launched:   orchestrator.CardRequestDefinition{Label: "Discuss"},
+		TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "task-1",
+	}
+	statuses := map[string]orchestrator.TaskStatus{"task-1": orchestrator.TaskStatusExecuting}
+	if got := CommandActivityLabel(req, statuses); got != "Discuss: Running" {
+		t.Errorf("CommandActivityLabel(attached/task/executing) = %q, want %q", got, "Discuss: Running")
+	}
+}
+
+// A task target whose status is not (yet) in the batch map — a narrow,
+// transient window before self-recording lands — must not disappear the
+// badge; it falls back to "Running" rather than going blank.
+func TestCommandActivityLabel_AttachedTaskTarget_UnknownStatus_FallsBackRunning(t *testing.T) {
+	req := &orchestrator.CardRequest{
+		CommandKey: "discuss", Status: orchestrator.CardRequestStatusAttached,
+		Launched:   orchestrator.CardRequestDefinition{Label: "Discuss"},
+		TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "task-missing",
+	}
+	if got := CommandActivityLabel(req, map[string]orchestrator.TaskStatus{}); got != "Discuss: Running" {
+		t.Errorf("CommandActivityLabel(attached/task/unknown) = %q, want %q", got, "Discuss: Running")
 	}
 }
 
 func TestCommandActivityLabel_TerminalStatus_Empty(t *testing.T) {
 	req := &orchestrator.CardRequest{CommandKey: "discuss", Status: orchestrator.CardRequestStatusFinished}
-	if got := CommandActivityLabel(req); got != "" {
+	if got := CommandActivityLabel(req, nil); got != "" {
 		t.Errorf("CommandActivityLabel(finished) = %q, want empty", got)
 	}
 }
@@ -219,6 +276,30 @@ func TestTaskListRowMovement_ExecTask_NeverRendersActivityBadges(t *testing.T) {
 	}
 	if html := buf.String(); strings.Contains(html, "list-row-activity") {
 		t.Errorf("an execution row must never render a card activity badge, got: %s", html)
+	}
+}
+
+// The list-row-line3 container clamps to 2 lines and hides overflow (CSS),
+// so a badge appended AFTER a long suggestion reason/summary can be clipped
+// out of view. Activity badges must render first.
+func TestTaskListRowMovement_CardActivity_RendersBeforeStatusContent(t *testing.T) {
+	row := ListRow{
+		Task:       &orchestrator.Task{ID: "t-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking},
+		Suggestion: orchestrator.Suggestion{Verb: "go", Reason: "children specced"},
+		Activity:   CardActivityState{WorkLabel: "Ready to run", CommandLabel: "Discuss: Launching"},
+	}
+	var buf bytes.Buffer
+	if err := taskListRowMovement(row).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+	activityIdx := strings.Index(html, "list-row-activity")
+	reasonIdx := strings.Index(html, "children specced")
+	if activityIdx == -1 || reasonIdx == -1 {
+		t.Fatalf("expected both the activity badge and the suggestion reason in the output, got: %s", html)
+	}
+	if activityIdx > reasonIdx {
+		t.Errorf("activity badges must render before the status/suggestion content, got: %s", html)
 	}
 }
 

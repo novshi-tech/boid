@@ -121,6 +121,13 @@ func TestWebHandlerTaskList_ActivityState_QueryCountDoesNotScaleWithRowCount(t *
 	if small != large {
 		t.Fatalf("query count scales with row count: 3 cards = %d queries, 30 cards = %d queries (want equal — one page's activity state must be one batch, not one query per row)", small, large)
 	}
+	// Pins the actual fixed count (ListTasks, ListTaskTriageByTaskIDs,
+	// ActiveCardRequestsByCardIDs, TaskStatusesByIDs), not just "equal" — a
+	// change that adds a query but keeps it constant per page would pass the
+	// equality check above but should still be caught.
+	if small != 4 {
+		t.Fatalf("query count = %d, want 4 (ListTasks + ListTaskTriageByTaskIDs + ActiveCardRequestsByCardIDs + TaskStatusesByIDs)", small)
+	}
 }
 
 // End-to-end pin (real DB, real render): the batched activity lookups must
@@ -190,5 +197,76 @@ func TestWebHandlerTaskList_RendersActivityBadgesFromRealDB(t *testing.T) {
 	}
 	if !strings.Contains(body, "Discuss: Running") {
 		t.Errorf("expected the command activity badge with text %q in the rendered page, got:\n%s", "Discuss: Running", body)
+	}
+}
+
+// A command attached to a task target whose real task is awaiting an answer
+// must render "Needs input" for the command axis too, not "Running" — an
+// awaiting dialogue task must never look identical to a live one in the
+// list, the same rule already applied to the work-child axis. This exercises
+// the shared TaskStatusesByIDs batch: the command's TargetID is folded into
+// the same query as the dispatched child's TaskRef, at zero extra queries.
+func TestWebHandlerTaskList_CommandAttachedToAwaitingTask_RendersNeedsInput(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	card := &orchestrator.Task{ID: "card-1", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Card: &orchestrator.CardAttrs{}}
+	if err := orchestrator.CreateTask(d.Conn, card); err != nil {
+		t.Fatalf("create card: %v", err)
+	}
+	// The command's target task, awaiting an answer — no work child on this
+	// card, so only the command axis is exercised.
+	dialogueTask := &orchestrator.Task{ID: "dialogue-1", ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusAwaiting, Exec: &orchestrator.ExecAttrs{}}
+	if err := orchestrator.CreateTask(d.Conn, dialogueTask); err != nil {
+		t.Fatalf("create dialogue task: %v", err)
+	}
+	cmdReq := &orchestrator.CardRequest{
+		CardID: "card-1", CommandKey: "discuss", Status: orchestrator.CardRequestStatusLaunching,
+		LauncherJobID: "job-1", Launched: orchestrator.CardRequestDefinition{Label: "Discuss"},
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, cmdReq); err != nil {
+		t.Fatalf("create card request: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, cmdReq.ID, orchestrator.CardRequestTargetKindTask, "dialogue-1"); err != nil {
+		t.Fatalf("attach card request: %v", err)
+	}
+
+	var count int
+	wrapped := countingDBTX{inner: d.Conn, n: &count}
+	repo := orchestrator.NewTaskRepository(wrapped)
+	h := &WebHandler{
+		Service: &WebAppService{
+			Tasks:    repo,
+			Projects: &stubProjectRepository{},
+			Meta:     stubMetaStore{},
+		},
+		TaskTriage:   repo,
+		CardActivity: repo,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.TaskList(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("TaskList status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Discuss: Needs input") {
+		t.Errorf("expected the command badge to read %q (real task is awaiting), got:\n%s", "Discuss: Needs input", body)
+	}
+	if strings.Contains(body, "Discuss: Running") {
+		t.Errorf("command badge must not say Running while its target task is awaiting an answer, got:\n%s", body)
+	}
+	if count != 4 {
+		t.Errorf("query count = %d, want 4 (folding the command's task target into the same TaskStatusesByIDs batch must not add a query)", count)
 	}
 }

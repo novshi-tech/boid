@@ -1640,7 +1640,16 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      | コマンド | アクティブな `card_requests` 行なし | （非表示）|
      | コマンド | 行が `queued`（`launched_label` 未スナップショット） | `<command_key>: Queued` |
      | コマンド | 行が `launching` | `<launched_label>: Launching` |
-     | コマンド | 行が `attached` | `<launched_label>: Running` |
+     | コマンド | 行が `attached`、target が session、または target が task で実 task が `executing`/不明 | `<launched_label>: Running` |
+     | コマンド | 行が `attached`、target が task で実 task が `pending` | `<launched_label>: Queued` |
+     | コマンド | 行が `attached`、target が task で実 task が `awaiting` | `<launched_label>: Needs input` |
+
+     コマンド軸の `attached` は当初 `card_requests.status` のみで `Running`
+     固定にしていたが、レビューで「§5.5 が要求する『task/session の状態』を
+     見せていない」と指摘され、target が task の場合は実 task の状態
+     （pending/executing/awaiting）を見る形に直した——作業子軸と同じ語彙
+     （`Queued`/`Running`/`Needs input`）を再利用し、語彙が2系統に割れない
+     ようにしている。session target は実装を見送った（下記 point 4 参照）。
 
      作業子・コマンドは独立した2軸で、両方同時に非空になりうる（例:
      specced な子を持つ card で discuss セッションが起動中）。一覧行には
@@ -1676,17 +1685,28 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      2本のクエリを追加した（`orchestrator.TaskStatusesByIDs`、
      `orchestrator.ListActiveCardRequestsByCardIDs` —— どちらも
      ページ全体の card 行に対して1回、`existingTaskIDsChunk`（500）を
-     超えない限りチャンク化されない）。既存の `triageByTaskID`
-     （`ListTaskTriageByTaskIDs`）の1本と合わせ、一覧ページ全体で
-     固定本数。回帰ガードは `internal/api/web_task_list_activity_n1_test.go`
+     超えない限りチャンク化されない）。既存の `ListTasks`/`triageByTaskID`
+     （`ListTaskTriageByTaskIDs`）の2本と合わせ、**一覧ページ全体で固定
+     4本**（実測、`TestWebHandlerTaskList_ActivityState_QueryCountDoesNotScaleWithRowCount`
+     が3 card/30 card どちらも4本であることを直接 assert する）。
+     `ActiveCardRequestsByCardIDs` を先に呼び、その結果（`attached` な
+     `card_requests` 行のうち target が task のもの）の `TargetID` を
+     `TaskStatusesByIDs` の**同じバッチに合流**させている——コマンド軸が
+     実 task の状態を見る (point 1) ようになった後もクエリは4本のまま
+     （フレッシュレビューで「target ごとに追加のバッチ取得が要る」と
+     自己申告していたが誤りで、既存バッチに混ぜるだけで済んだ）。
+     回帰ガードは `internal/api/web_task_list_activity_n1_test.go`
      の `TestWebHandlerTaskList_ActivityState_QueryCountDoesNotScaleWithRowCount`
      —— `db.DBTX` を実クエリ回数を数える wrapper (`countingDBTX`) でラップし、
      実 DB 上で3 card と30 cardの2回 `TaskList` を呼んで、発行された
-     Query/QueryRow/Exec の合計本数が一致することを assert する。
-     `cardActivityStates`（`internal/api/web.go`）を「dispatched な子ごとに
-     `TaskStatusesByIDs` を1件ずつ呼ぶ」実装に書き換えるmutationを当てて
-     このテストが赤くなることを確認済み（3 card=6クエリ、30 card=28クエリ
-     で不一致検出）。
+     Query/QueryRow/Exec の合計本数が一致し、かつ4本ちょうどであることを
+     assert する。`cardActivityStates`（`internal/api/web.go`）を「dispatched
+     な子ごとに `TaskStatusesByIDs` を1件ずつ呼ぶ」実装に書き換えるmutation
+     を当ててこのテストが赤くなることを確認済み（3 card=6クエリ、
+     30 card=28クエリで不一致検出）。コマンド軸の task target 合流を追加
+     した後も4本のままであることは
+     `TestWebHandlerTaskList_CommandAttachedToAwaitingTask_RendersNeedsInput`
+     が実 DB で固定している。
 
   5. **PR-5b との共有: `PickActiveCardRequest` のみ。** 型/ロジック共有の
      判断は以下のとおり。
@@ -1772,14 +1792,81 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      実際にファイルが変わったことを確認してからテストを実行し、その後
      元ファイルへ復元してから次の mutation・最終ビルドに進んだ。
 
-  9. **plan doc の記述と実コードのズレで気づいたもの。** §5.5 は
-     コマンド側の表示について「定義されたラベルと task/session の状態を
-     示す」とだけ書いており、`card_requests.status`（queued/launching/
-     attached）と実 task/session 自身の状態（pending/executing/awaiting
-     等）のどちらを見せるべきかは明記していなかった。本 PR は
-     `card_requests.status` を直接見せる方を選んだ（項目1参照）——
-     実 task/session の状態まで見せる案は、コマンドの target（task か
-     session か）ごとに追加のバッチ取得が要り、§5.5 の「行ごとの追加
-     問い合わせを増やさない」が要求する範囲を超えるため見送った。
-     PR-6 がコマンド詳細ページでより細かい状態を見せたくなった場合は、
-     この一覧の粗い状態と矛盾しない範囲で追加すること。
+     **フレッシュレビュー対応で追加した分（同じ手順）:**
+
+     | 契約 | mutation | 適用確認 | 結果 |
+     |---|---|---|---|
+     | コマンド軸: session/非task target は `Running` 固定 | fallback の `return "Running"` を `"XRunning"` に | diff 確認 | 赤 |
+     | コマンド軸: `TargetKind` の task/非task 分岐そのもの | `!=` を `==` に反転 | diff 確認 | 赤 |
+     | コマンド軸 `Queued`（attached/task/pending） | `return "Queued"` を `"XQueued"` に | diff 確認 | 赤 |
+     | コマンド軸 `Running`（attached/task/executing） | 同様 | diff 確認 | 赤 |
+     | コマンド軸 `Needs input`（attached/task/awaiting） | 同様 | diff 確認 | 赤 |
+     | コマンド軸: 未知 status は `Running` へ fallback | default を `"Needs input"` に | diff 確認 | 赤 |
+     | `cardActivityStates` のバッチ合流（command target を `TaskStatusesByIDs` に混ぜる行を削除） | 対象の `for` ブロックを削除 | diff 確認 | 赤（ラベル誤り + クエリ本数 3 に減少の両方を検出）|
+     | badge の描画位置（status/suggestion 本文より前） | TDD で確認 — 位置 assert のテストを先に書いて赤を確認してから実装、実装後に green | `git diff`（.templ + `templ generate` 再生成込み） | 赤→（実装後）緑 |
+
+     **正直な報告: `ListActiveCardRequestsByCardIDs` の `ORDER BY created_at
+     ASC, id ASC` 追加（nice-to-have）は mutation で赤くならなかった。**
+     `ORDER BY` を外しても `TestListActiveCardRequestsByCardIDs_SameRankTieBreak_OldestWins`
+     は `-count=10` で安定して緑のまま——SQLite が単純な `SELECT` を
+     ROWID（≒挿入順）で返す実装特性に単に助けられているだけで、
+     この特性に依存しないテストは書けていない。追加そのものは構造的に
+     正しい（`ListCardRequestsByCard` と規則を揃える）が、
+     「テストが担保している」とは言えない。次にこのクエリを SQL 側で
+     書き換える人は、この tie-break の正しさをテストではなくコード
+     レビューで守ること。
+
+  9. **plan doc の記述と実コードのズレで気づいたもの（フレッシュレビューで
+     訂正）。** §5.5 は「定義されたラベルと task/session の状態を示す」と
+     書いており、コマンド側にどちらを見せるべきかは明記していなかった。
+     当初は `card_requests.status` だけを見せていたが、レビューで
+     「attached の対話 task が awaiting でも `Running` と出て、回答待ちが
+     隠れる」という §5.5 が最も避けたい誤認そのものの実害が指摘され、
+     point 1 の形に訂正した。**「target ごとに追加のバッチ取得が要る」と
+     いう当初の見送り理由は task target については誤りだった** ——
+     `CardRequest.TargetID`（target が task のとき）を既存の
+     `TaskStatusesByIDs` バッチにそのまま合流させるだけで済み、クエリは
+     増えていない（point 4）。**session target だけは実際に別取得が要る
+     ので今回も見送った** ——session の生死は job テーブル側の関心事で、
+     この PR のスコープ外（`CardCommandDetail.TargetExists` の既存の
+     doc comment と同じ切り分け）。よって session target の `attached` は
+     `card_requests.status` 止まりで `Running` 固定のまま。PR-6 が session
+     target の実状態まで見せたくなった場合は、job テーブル側のバッチ
+     取得を新設すること。
+
+  10. **badge の描画位置と CSS（フレッシュレビューで発見・修正）。**
+      `.list-row-line3` は `max-height: calc(2 * 1.4em); overflow: hidden`
+      で2行クランプする（既存 CSS、`web/static/style.css`）。activity
+      badge を suggestion の reason/summary の**後**に追加していたため、
+      それらが2行に達する card（khi では普通の行）で badge が丸ごと
+      クリップされ**見えなくなっていた**。`cardActivityBadges` の呼び出しを
+      `taskListRowMovement` の**先頭**（status/suggestion 本文より前）に
+      移して解消した
+      （`TestTaskListRowMovement_CardActivity_RendersBeforeStatusContent`
+      が HTML 中の出現位置を直接 assert）。CSS class
+      `list-row-activity`/`list-row-activity-work`/`list-row-activity-command`
+      は当初未定義だったので `flex-shrink: 0` と最小限の色分け（`--accent`/
+      `--muted`、既存のライト/ダーク両対応変数を流用）だけ追加した——
+      **最終的な見た目・レイアウトの作り込みは PR-6 の仕事**であり、この
+      PR が当てたのは「隠れない」を満たす最小限のスタイルに留まる。
+
+  11. **同順位タイの決着規則: `ListActiveCardRequestsByCardIDs` に
+      `ORDER BY created_at ASC, id ASC` を追加した（フレッシュレビュー
+      指摘）。** 追加前は素の `SELECT` で行順が未規定だったため、同じ card に
+      `queued` 行が2件ある場合に `PickActiveCardRequest`（strict `>` な
+      ので同ランクはスライス先頭が勝つ）の選択が SQLite の物理格納順に
+      依存し、PR-5b が使う `ListCardRequestsByCard`（`ORDER BY created_at
+      ASC, id ASC` 済み）の詳細ページ側の選択と食い違いうる状態だった。
+      同じ `ORDER BY` を足して構造的に揃えた。point 3 の「構造的に防ぐ」は
+      この意味で成立する（タイの決着規則も含めて揃っている）。
+
+  12. **既知の劣化（記録のみ、対応しない）: 旧データで非 closed な子が
+      複数ある card は作業子軸が誤報しうる。** `ActiveChildFromDetail` は
+      「JSON 内の最初の非 closed 子」を返す。§3.2 の invariant 下では
+      高々1件のはずだが、PR-1 が「既存複数子の診断」を用意した経緯どおり
+      本番にはこの invariant 成立前のデータが残りうる。実 DB で確認:
+      `children=[{open}, {dispatched→awaiting}]` の card は `Draft` と表示され
+      `Needs input`（本来最も注意を引くべき状態）が隠れる。優先順位を
+      変える実装はしていない——対象は運用開始直後の一時的な移行データで、
+      `boid task diagnose-cards`（PR-1）が既に列挙・解消の手段を提供して
+      いるため。

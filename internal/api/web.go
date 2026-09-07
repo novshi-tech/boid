@@ -308,23 +308,29 @@ func (h *WebHandler) cardActivityStates(tasks []*orchestrator.Task, triage map[s
 		return nil
 	}
 
-	var dispatchedTaskRefs []string
-	for _, c := range activeChildren {
-		if c.Status == orchestrator.TaskTriageChildStatusDispatched && c.TaskRef != "" {
-			dispatchedTaskRefs = append(dispatchedTaskRefs, c.TaskRef)
-		}
-	}
-	childStatuses, err := h.CardActivity.TaskStatusesByIDs(dispatchedTaskRefs)
-	if err != nil {
-		slog.Warn("cardActivityStates: TaskStatusesByIDs returned a partial or empty result",
-			"error", err, "task_ref_count", len(dispatchedTaskRefs))
-	}
 	activeRequests, err := h.CardActivity.ActiveCardRequestsByCardIDs(cardIDs)
 	if err != nil {
 		slog.Warn("cardActivityStates: ActiveCardRequestsByCardIDs returned a partial or empty result",
 			"error", err, "card_count", len(cardIDs))
 	}
-	return templates.BuildCardActivityStates(cardIDs, activeChildren, childStatuses, activeRequests)
+
+	var taskIDsToCheck []string
+	for _, c := range activeChildren {
+		if c.Status == orchestrator.TaskTriageChildStatusDispatched && c.TaskRef != "" {
+			taskIDsToCheck = append(taskIDsToCheck, c.TaskRef)
+		}
+	}
+	for _, r := range activeRequests {
+		if r.TargetKind == orchestrator.CardRequestTargetKindTask && r.TargetID != "" {
+			taskIDsToCheck = append(taskIDsToCheck, r.TargetID)
+		}
+	}
+	taskStatuses, err := h.CardActivity.TaskStatusesByIDs(taskIDsToCheck)
+	if err != nil {
+		slog.Warn("cardActivityStates: TaskStatusesByIDs returned a partial or empty result",
+			"error", err, "task_id_count", len(taskIDsToCheck))
+	}
+	return templates.BuildCardActivityStates(cardIDs, activeChildren, taskStatuses, activeRequests)
 }
 
 // taskListPageSize is the list's fixed page size — no user-configurable
