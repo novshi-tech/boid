@@ -204,6 +204,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// EscapedPath, not r.URL.Path — see parsePath's own doc comment: net/http
 	// decodes %2F into a literal "/" in .Path before a handler ever sees it,
 	// which would silently merge two logically-distinct path segments.
+	// Before parsePath, which rejects a service-less path as a 404: the base
+	// URL itself is the discovery route (see serveDiscovery).
+	if token, ok := parseTokenOnlyPath(r.URL.EscapedPath()); ok {
+		s.serveDiscovery(w, r, token)
+		return
+	}
+
 	rt, err := parsePath(r.URL.EscapedPath())
 	if err != nil {
 		if errors.Is(err, errInvalidAccount) {
