@@ -999,3 +999,61 @@ func TestClampCardTimelineLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestCardPinnedItems_TerminalRowOnly_NoPinnedCommand pins the rank-0 skip:
+// a card whose only card_requests row has already finished must not surface
+// a pinned "in progress" command.
+func TestCardPinnedItems_TerminalRowOnly_NoPinnedCommand(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{
+		CardID: cardID, CommandKey: "discuss", Status: orchestrator.CardRequestStatusLaunching,
+		LauncherJobID: "launcher-1",
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, req.ID, orchestrator.CardRequestTargetKindTask, "task-x"); err != nil {
+		t.Fatalf("AttachCardRequest: %v", err)
+	}
+	if err := orchestrator.FinishCardRequest(d.Conn, req.ID, "done"); err != nil {
+		t.Fatalf("FinishCardRequest: %v", err)
+	}
+
+	pinned, err := CardPinnedItems(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("CardPinnedItems: %v", err)
+	}
+	for _, it := range pinned {
+		if it.Kind == CardItemCommand {
+			t.Fatalf("pinned = %+v, want no CardItemCommand for a finished request", pinned)
+		}
+	}
+}
+
+// TestCardPinnedItems_GoReservation_NotPinnedAsCommand pins the __go__
+// exclusion: a Go reservation holds the same slot but is already visible as
+// its own child item, so pinning it too would double-show the work.
+func TestCardPinnedItems_GoReservation_NotPinnedAsCommand(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "proj-1", "card-1")
+
+	req := &orchestrator.CardRequest{
+		CardID: cardID, CommandKey: orchestrator.CardRequestCommandKeyGo,
+		Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-go",
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+
+	pinned, err := CardPinnedItems(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("CardPinnedItems: %v", err)
+	}
+	for _, it := range pinned {
+		if it.Kind == CardItemCommand {
+			t.Fatalf("pinned = %+v, want no CardItemCommand for a Go reservation", pinned)
+		}
+	}
+}

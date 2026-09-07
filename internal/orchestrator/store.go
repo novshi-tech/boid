@@ -361,28 +361,40 @@ func ExistingTaskIDs(dbtx db.DBTX, ids []string) (map[string]bool, error) {
 		unique = append(unique, id)
 	}
 	exists := make(map[string]bool, len(unique))
-	if len(unique) == 0 {
-		return exists, nil
+	for start := 0; start < len(unique); start += existingTaskIDsChunk {
+		end := min(start+existingTaskIDsChunk, len(unique))
+		if err := scanExistingTaskIDs(dbtx, unique[start:end], exists); err != nil {
+			return nil, err
+		}
 	}
-	placeholders := make([]string, len(unique))
-	args := make([]any, len(unique))
-	for i, id := range unique {
+	return exists, nil
+}
+
+// existingTaskIDsChunk keeps one IN (...) under SQLite's bound-variable
+// ceiling so a caller passing an unbounded id list still gets one query per
+// chunk instead of a "too many SQL variables" failure.
+const existingTaskIDsChunk = 500
+
+func scanExistingTaskIDs(dbtx db.DBTX, ids []string, exists map[string]bool) error {
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
 		placeholders[i] = "?"
 		args[i] = id
 	}
 	rows, err := dbtx.Query(`SELECT id FROM tasks WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("existing task ids: %w", err)
+		return fmt.Errorf("existing task ids: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("existing task ids: scan: %w", err)
+			return fmt.Errorf("existing task ids: scan: %w", err)
 		}
 		exists[id] = true
 	}
-	return exists, rows.Err()
+	return rows.Err()
 }
 
 // GetTaskStatus reads only a task's status, by exact id — cheaper than

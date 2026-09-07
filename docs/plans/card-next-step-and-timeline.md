@@ -1458,9 +1458,12 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      (`orchestrator.EncodeActionCursor`/`DecodeActionCursor` をそのまま流用)
      で項目単位にページングする。理由: 1card の action 総量は個人利用の
      triage キュー規模で小さく、DB 側バッチ読みの複雑さに見合わない。
-     wire cursor の形式自体（項目の (created_at, id) キーセット）はこの
-     選択に依存しないので、後で DB 側バッチ読みに切り替えても cursor の
-     互換性は保たれる。
+     wire cursor の**エンコーディング**（項目の (created_at, id) キーセット）は
+     この選択に依存しない。ただし「切り替えても互換」はエンコーディングの
+     話に限られる — **cursor が運ぶ値は合成された項目 ID であり、順序は
+     導出項目上の DESC で、固定/履歴の分割は live な `task_triage` 状態に
+     依存する。制約の全体は下の point 13 に書いた。この段落だけを読んで
+     「後から自由に DB 側実装へ移せる」と取らないこと。**
   4. **固定項目と履歴の重複回避:** `loadCardTimelineState` が pinned/history
      両方の項目を一度に作り、`Pinned` フラグで分岐するだけ
      （`BuildCardTimeline` は `Pinned==true` を除外、`CardPinnedItems` は
