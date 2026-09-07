@@ -322,6 +322,20 @@ func (r *TaskRepository) ListActiveCardRequests() ([]*CardRequest, error) {
 	return ListActiveCardRequests(r.db)
 }
 
+// ActiveCardRequestsByCardIDs backs the task list's per-row command activity
+// badge — a single batched read across every card on the current page, no
+// transaction needed.
+func (r *TaskRepository) ActiveCardRequestsByCardIDs(cardIDs []string) (map[string]*CardRequest, error) {
+	return ListActiveCardRequestsByCardIDs(r.db, cardIDs)
+}
+
+// TaskStatusesByIDs backs the task list's per-row work-child activity
+// badge — a single batched read of a page's dispatched children's real task
+// status, no transaction needed.
+func (r *TaskRepository) TaskStatusesByIDs(taskIDs []string) (map[string]TaskStatus, error) {
+	return TaskStatusesByIDs(r.db, taskIDs)
+}
+
 // ReleaseCardRequestForTerminalTargetWithCard backs finalizeTerminal's
 // immediate slot release AND the immediate re-dispatch attempt that follows
 // it — same InTxDB-over-raw-*sql.DB shape as FailCardRequest.

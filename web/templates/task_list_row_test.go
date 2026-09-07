@@ -233,7 +233,7 @@ func TestBuildListRows_PopulatesSuggestionFromTriage(t *testing.T) {
 		"t-1": {Detail: []byte(`{"suggestion":{"verb":"go","reason":"ready"}}`)},
 	}
 
-	rows := BuildListRows(tasks, nil, triage)
+	rows := BuildListRows(tasks, nil, triage, nil)
 	if len(rows) != 1 {
 		t.Fatalf("len(rows) = %d, want 1", len(rows))
 	}
@@ -250,7 +250,7 @@ func TestBuildListRows_PopulatesSummaryFromTriage(t *testing.T) {
 		"t-1": {Detail: []byte(`{"summary":"waiting on review"}`)},
 	}
 
-	rows := BuildListRows(tasks, nil, triage)
+	rows := BuildListRows(tasks, nil, triage, nil)
 	if len(rows) != 1 {
 		t.Fatalf("len(rows) = %d, want 1", len(rows))
 	}
@@ -264,7 +264,7 @@ func TestBuildListRows_NoTriageRow_ZeroValues(t *testing.T) {
 		{ID: "t-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1"},
 	}
 
-	rows := BuildListRows(tasks, nil, map[string]*orchestrator.CardAttrs{})
+	rows := BuildListRows(tasks, nil, map[string]*orchestrator.CardAttrs{}, nil)
 	if len(rows) != 1 {
 		t.Fatalf("len(rows) = %d, want 1", len(rows))
 	}
@@ -275,7 +275,7 @@ func TestBuildListRows_NoTriageRow_ZeroValues(t *testing.T) {
 
 func TestBuildListRows_NilTriageMap_ZeroValues(t *testing.T) {
 	tasks := []*orchestrator.Task{{ID: "t-1", ProjectID: "proj-1"}}
-	rows := BuildListRows(tasks, nil, nil)
+	rows := BuildListRows(tasks, nil, nil, nil)
 	if len(rows) != 1 || rows[0].Suggestion.Verb != "" || rows[0].Summary != "" {
 		t.Errorf("nil triage map should not populate anything, got rows=%+v", rows)
 	}
@@ -285,7 +285,7 @@ func TestBuildListRows_ResolvesProjectName(t *testing.T) {
 	tasks := []*orchestrator.Task{{ID: "t-1", ProjectID: "proj-1"}}
 	names := map[string]string{"proj-1": "My Project"}
 
-	rows := BuildListRows(tasks, names, nil)
+	rows := BuildListRows(tasks, names, nil, nil)
 	if len(rows) != 1 {
 		t.Fatalf("len(rows) = %d, want 1", len(rows))
 	}
@@ -300,7 +300,7 @@ func TestBuildListRows_PreservesInputOrder(t *testing.T) {
 	tasks := []*orchestrator.Task{
 		{ID: "t-3"}, {ID: "t-1"}, {ID: "t-2"},
 	}
-	rows := BuildListRows(tasks, nil, nil)
+	rows := BuildListRows(tasks, nil, nil, nil)
 	if len(rows) != 3 {
 		t.Fatalf("len(rows) = %d, want 3", len(rows))
 	}

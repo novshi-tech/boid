@@ -1622,3 +1622,164 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
     完全に同時刻で衝突する頻度は極めて低い（dispatcher の一括 abort のような
     バルク書き込みパターンが suggestion には無い）。次に触る人向けの記録として
     残す。
+
+- **PR-5c で確定: 一覧の活動状態（§5.5、Go 側の読みモデル + 一覧行の算出まで。
+  UI 統合は PR-6）。**
+
+  1. **状態語彙の確定表。** PR-6 はこの表と矛盾しない UI を作ること。
+
+     | 軸 | 入力条件 | 表示文字列 |
+     |---|---|---|
+     | 作業子 | 有効な子なし（open/specced/dispatched の子が JSON に無い） | （非表示）|
+     | 作業子 | 子が `open` | `Draft` |
+     | 作業子 | 子が `specced` | `Ready to run` |
+     | 作業子 | 子が `dispatched`、実 task が `pending` | `Queued` |
+     | 作業子 | 子が `dispatched`、実 task が `executing` | `Running` |
+     | 作業子 | 子が `dispatched`、実 task が `awaiting` | `Needs input` |
+     | 作業子 | 子が `dispatched`、実 task が `done`/`aborted`、または実 task 行が無い | （非表示、下記参照） |
+     | コマンド | アクティブな `card_requests` 行なし | （非表示）|
+     | コマンド | 行が `queued`（`launched_label` 未スナップショット） | `<command_key>: Queued` |
+     | コマンド | 行が `launching` | `<launched_label>: Launching` |
+     | コマンド | 行が `attached` | `<launched_label>: Running` |
+
+     作業子・コマンドは独立した2軸で、両方同時に非空になりうる（例:
+     specced な子を持つ card で discuss セッションが起動中）。一覧行には
+     両方をそのまま並べて出す（`web/templates/task_list_row.templ` の
+     `cardActivityBadges`、CSS class `list-row-activity-work` /
+     `list-row-activity-command`）。`Reviewing`/`Discussing` のような用途の
+     推測はしていない——コマンド側の文字列は `launched_label`（project.yaml
+     の生の定義値のスナップショット）か `command_key`（同じく生の識別子）
+     をそのまま出すだけで、daemon が意味を補完する箇所は無い。
+
+     `dispatched` だが実 task が `done`/`aborted`、または実 task 行が
+     見当たらない場合は非表示にした（`Running` 等にフォールバックしない）。
+     この組み合わせは§3.2の invariant 下では transient（reconcile が
+     `child_closed` を書いて JSON 側の子を `closed` に倒すまでの短い窓）
+     のはずで、実 task が権威だが不整合な間は「何も言わない」方が
+     「まだ動いている」と誤認させるより安全という判断。
+
+  2. **`launched_label` が空のとき（queued 行）の表示: `command_key` を
+     出す方を選んだ。** ラベル無しで状態だけ出す案は「どのコマンドが
+     待っているか」が一覧から分からず診断性が落ちるため採らなかった。
+     `command_key` は project.yaml の生の識別子で、意味の翻訳や補完は
+     一切していない（`CommandActivityLabel`、`web/templates/list_activity.go`）。
+
+  3. **launching + queued 共存時: 一覧は `PickActiveCardRequest`
+     （`internal/orchestrator/card_request.go`、PR-5b の `pickActiveCardRequest`
+     を昇格・export したもの）の優先順位（attached > launching > queued）で
+     選んだ1件だけを出す。両方は出さない。** PR-5b がタイムラインの pinned
+     項目選択のために作った関数をそのまま共有しており、一覧とタイムライン
+     詳細（PR-6）が同じ card に対して異なる「アクティブなコマンド」を
+     指す事態を構造的に防ぐ。
+
+  4. **クエリ本数と N+1 回帰ガード。** `WebHandler.TaskList` はこの PR で
+     2本のクエリを追加した（`orchestrator.TaskStatusesByIDs`、
+     `orchestrator.ListActiveCardRequestsByCardIDs` —— どちらも
+     ページ全体の card 行に対して1回、`existingTaskIDsChunk`（500）を
+     超えない限りチャンク化されない）。既存の `triageByTaskID`
+     （`ListTaskTriageByTaskIDs`）の1本と合わせ、一覧ページ全体で
+     固定本数。回帰ガードは `internal/api/web_task_list_activity_n1_test.go`
+     の `TestWebHandlerTaskList_ActivityState_QueryCountDoesNotScaleWithRowCount`
+     —— `db.DBTX` を実クエリ回数を数える wrapper (`countingDBTX`) でラップし、
+     実 DB 上で3 card と30 cardの2回 `TaskList` を呼んで、発行された
+     Query/QueryRow/Exec の合計本数が一致することを assert する。
+     `cardActivityStates`（`internal/api/web.go`）を「dispatched な子ごとに
+     `TaskStatusesByIDs` を1件ずつ呼ぶ」実装に書き換えるmutationを当てて
+     このテストが赤くなることを確認済み（3 card=6クエリ、30 card=28クエリ
+     で不一致検出）。
+
+  5. **PR-5b との共有: `PickActiveCardRequest` のみ。** 型/ロジック共有の
+     判断は以下のとおり。
+     - **共有した:** `pickActiveCardRequest`（優先順位選択）を
+       `internal/orchestrator/card_request.go` の exported
+       `PickActiveCardRequest` に昇格し、`internal/timeline/card.go`
+       （PR-5b）と一覧側の新設 `orchestrator.ListActiveCardRequestsByCardIDs`
+       の両方がこれを呼ぶ。挙動は変えていない
+       （`TestCardPinnedItems_LaunchingWinsOverOlderQueued` 等 PR-5b の
+       既存テストは無改変のまま green）。
+     - **共有しなかった: `CardChildDetail`/`BuildCardTimeline`。**
+       §5.5 の要求は「一覧は一括取得」で、`BuildCardTimeline` は
+       1 card の全 action 履歴を読む関数（PR-5b §10 point 9 が明記した
+       とおり "card ごとに呼ぶと N+1 どころではない"）。一覧の作業子判定は
+       代わりに `orchestrator.TaskTriageChild`（生の JSON 型、`card.go`）
+       と新設 `orchestrator.TaskStatusesByIDs`（実 task の状態のみを
+       バッチ取得）を直接組み合わせる軽量な経路（`web/templates/list_activity.go`
+       の `ActiveChildFromDetail`/`WorkActivityLabel`）にした。GC 後の
+       概要保持（`CardChildDetail.HasResult`/`Result` 等）のような重い
+       契約は一覧には不要——一覧が見せるのは「今アクティブか」だけで、
+       終端した子の結果概要は一覧の対象外（詳細ページ・PR-6 の仕事）。
+     - **型の重複は許容した。** `web/templates/list_activity.go` の
+       `CardActivityState` は `internal/timeline` の `CardCommandDetail`
+       とは別の、一覧専用の薄い型（`WorkLabel`/`CommandLabel` の2フィールド
+       のみ）。共通化すると `internal/timeline` → `web/templates` の依存が
+       生まれ、PR-5b が §10 point 1 で明記した「`internal/api` は
+       `web/templates` を import しており、`web/templates` は
+       `internal/orchestrator`/`internal/timeline` を直接 import している」
+       という既存の依存方向と矛盾しない位置に一覧専用ロジックを置くには
+       `web/templates` 内に閉じるのが素直だった。
+
+  6. **子の状態と実 task の突き合わせは一覧専用に実装し、
+     `CardChildDetail` は流用しなかった。** 理由は上記5の通り
+     （`BuildCardTimeline` を一覧で呼ぶと N+1 どころではない）。判定ロジック
+     自体（open→Draft、specced→Ready to run、dispatched は実 task 優先）は
+     `WorkActivityLabel`（`web/templates/list_activity.go`）に一本化した。
+
+  7. **既存の一覧テストギャップ: 今回のスコープに隣接する分だけ埋め、
+     残りは埋めていない。** `docs/plans/webui-detail-list-redesign.md`
+     followup が指摘した既存ギャップのうち、この PR は新設ロジックの
+     テスト（後述のmutation結果表）に集中し、以下は**未着手のまま**:
+     `taskListRowMovement` の exec executing 経過表示・awaiting の
+     「⚠ 質問あり」・bare status のデフォルト分岐、`rowIdentityLabel`/
+     `cardIdentityLabel`/`execIdentityLabel`、`relativeTimeLabel` の
+     境界値（59s/60s、59m/60m、23h/24h）。理由: この PR が触った分岐は
+     `taskListRowMovement` の**末尾に追加した新しい `if` ブロック**
+     （`cardActivityBadges` の呼び出し）のみで、既存の分岐自体は無改変。
+     「触る範囲に隣接するものは埋める」の対象として、新設した
+     `CardActivityState`/`ActiveChildFromDetail`/`WorkActivityLabel`/
+     `CommandActivityLabel`/`BuildCardActivityStates` の全分岐と、
+     `taskListRowMovement`/`BuildListRows` への新規追加分（Activity
+     フィールドの伝播、exec 行が活動バッジを出さないことの pin
+     `TestTaskListRowMovement_ExecTask_NeverRendersActivityBadges`）は
+     埋めた。既存の無改変分岐は次の担当者向けに残す。
+
+  8. **mutation テスト結果（全て「変異を当てる → grep/diff で実際に
+     コードが変わったことを確認 → テスト実行」の順で実施。誤って
+     mutation が無効化されたまま緑を確認する事故は、Python スクリプトの
+     assertion が実際の行内容と食い違って例外を投げたことで1回検出できた
+     — 詳細は本 PR の実装記録）:**
+
+     | 契約 | mutation | 適用確認 | 結果 |
+     |---|---|---|---|
+     | 作業子 `Draft` | `return "Draft"` → `"XDraft"` | grep で旧文字列0件 | 赤 |
+     | 作業子 `Ready to run` | 同様に `"XReady"` | grep 0件 | 赤 |
+     | 作業子 `Queued`（dispatched/pending） | `"Queued"` → `"XQueued"`（行番号指定+diff確認） | diff 確認 | 赤 |
+     | 作業子 `Running`（dispatched/executing） | 同様 | diff 確認 | 赤 |
+     | 作業子 `Needs input`（dispatched/awaiting） | 同様 | diff 確認 | 赤 |
+     | 作業子: dispatched だが実 task 終端/不在は非表示 | `default: return ""` → `return "Running"` | diff 確認 | 赤（2テスト）|
+     | コマンド `queued` ラベル | `": Queued"` → `": XQueued"` | diff 確認 | 赤 |
+     | コマンド `launching` ラベル | 同様 | diff 確認 | 赤 |
+     | コマンド `attached`→`Running` | 同様 | diff 確認 | 赤 |
+     | コマンド: `launched_label` 空時に `command_key` へ fallback | fallback の `if`ブロックを削除 | diff 確認（1回目は行番号ずれで assertion 例外により無適用を検知、修正して再実施） | 赤 |
+     | `ActiveChildFromDetail` の非closed選択 | `!=` を `==` に反転 | diff 確認 | 赤（2テスト）|
+     | `BuildCardActivityStates` の両軸空省略 | 省略 `if`ブロックを削除 | diff 確認 | 赤 |
+     | `cardActivityBadges` の exec 行非表示ガード | `.templ` の `if row.Task.Type == ...` を `if true` に（`templ generate` 再生成込み） | diff 確認 + `templ generate` 実行 | 赤 |
+     | `cardActivityBadges` の空文字非表示ガード | `!= ""` を `== "XNEVER"` に | diff 確認 + `templ generate` | 赤 |
+     | `PickActiveCardRequest` 優先順位 | attached/queued の rank値(3/1)を入れ替え | diff 確認 | 赤（2テスト）|
+     | `PickActiveCardRequest`/`ListActiveCardRequestsByCardIDs` の Go 除外 | `CommandKey == CardRequestCommandKeyGo` 分岐を削除 | diff 確認 | 赤（2テスト）|
+     | N+1 回帰ガード | `cardActivityStates` を子ごとに `TaskStatusesByIDs` を呼ぶループへ書き換え | diff 確認 | 赤（3 card=6クエリ vs 30 card=28クエリ）|
+
+     全 mutation は当てた直後に `diff`（または grep でトークン数0件）で
+     実際にファイルが変わったことを確認してからテストを実行し、その後
+     元ファイルへ復元してから次の mutation・最終ビルドに進んだ。
+
+  9. **plan doc の記述と実コードのズレで気づいたもの。** §5.5 は
+     コマンド側の表示について「定義されたラベルと task/session の状態を
+     示す」とだけ書いており、`card_requests.status`（queued/launching/
+     attached）と実 task/session 自身の状態（pending/executing/awaiting
+     等）のどちらを見せるべきかは明記していなかった。本 PR は
+     `card_requests.status` を直接見せる方を選んだ（項目1参照）——
+     実 task/session の状態まで見せる案は、コマンドの target（task か
+     session か）ごとに追加のバッチ取得が要り、§5.5 の「行ごとの追加
+     問い合わせを増やさない」が要求する範囲を超えるため見送った。
+     PR-6 がコマンド詳細ページでより細かい状態を見せたくなった場合は、
+     この一覧の粗い状態と矛盾しない範囲で追加すること。

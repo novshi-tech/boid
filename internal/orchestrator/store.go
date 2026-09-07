@@ -397,6 +397,52 @@ func scanExistingTaskIDs(dbtx db.DBTX, ids []string, exists map[string]bool) err
 	return rows.Err()
 }
 
+// TaskStatusesByIDs batch-resolves task ids to their live status, chunked
+// like ExistingTaskIDs — for a caller that needs many tasks' status (e.g.
+// the task list's per-card work-child lookup) without one query per id. An
+// id with no live row is simply absent from the result, not an error.
+func TaskStatusesByIDs(dbtx db.DBTX, ids []string) (map[string]TaskStatus, error) {
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	out := make(map[string]TaskStatus, len(unique))
+	for start := 0; start < len(unique); start += existingTaskIDsChunk {
+		end := min(start+existingTaskIDsChunk, len(unique))
+		if err := scanTaskStatusesByIDs(dbtx, unique[start:end], out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func scanTaskStatusesByIDs(dbtx db.DBTX, ids []string, out map[string]TaskStatus) error {
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := dbtx.Query(`SELECT id, status FROM tasks WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return fmt.Errorf("task statuses by ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, status string
+		if err := rows.Scan(&id, &status); err != nil {
+			return fmt.Errorf("task statuses by ids: scan: %w", err)
+		}
+		out[id] = TaskStatus(status)
+	}
+	return rows.Err()
+}
+
 // GetTaskStatus reads only a task's status, by exact id — cheaper than
 // GetTask (whose child-count subqueries scan tasks.parent_id, which is
 // unindexed), for callers that poll tightly. No prefix fallback.

@@ -2415,6 +2415,9 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			// list — same taskRepo instance already wired as
 			// TaskWorkflowService.TaskTriage above.
 			TaskTriage: runtime.taskRepo,
+			// List row activity state — same taskRepo instance, viewed
+			// through the narrower CardActivityStore interface.
+			CardActivity: runtime.taskRepo,
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Mount("/", webHandler.Routes())
