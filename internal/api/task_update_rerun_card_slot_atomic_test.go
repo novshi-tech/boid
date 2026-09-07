@@ -139,4 +139,3 @@ func TestRerunTask_AtomicPath_SucceedsWhenSlotFree(t *testing.T) {
 		t.Fatalf("status = %q, want pending", got.Status)
 	}
 }
-

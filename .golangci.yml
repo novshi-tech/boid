@@ -14,10 +14,10 @@ version: "2"
 # test ファイルは errcheck 対象外 (setup のエラー無視は低リスクで、機械的 `_ =`
 # 埋めがプランの嫌う形骸化 churn になるため。docs/plans/quality-gates.md Tier 2 参照)。
 #
-# gofmt / フォーマット系も初回セットに含めない。gofmt 出力は Go のバージョンで揺れ、
+# gofmt / フォーマット系はここには入れない。gofmt 出力は Go のバージョンで揺れ、
 # CI の golangci-lint が同梱する formatter とローカル/CI の go toolchain がズレると
-# spurious diff を生む。フォーマットの enforcement が必要なら go.mod と同一 toolchain の
-# `gofmt -l` を別ステップで足す方が堅い (Tier 0 系の話で、本 Tier の範囲外)。
+# spurious diff を生む。フォーマットの enforcement は CI ワークフローの unit ジョブに
+# ある gofmt ステップが担当する — go.mod と同一 toolchain の `gofmt -l` を直接使う。
 
 linters:
   default: none

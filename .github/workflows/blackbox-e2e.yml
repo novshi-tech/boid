@@ -54,6 +54,19 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: gofmt
+        # .golangci.yml が書いている通り、フォーマットは golangci-lint ではなく
+        # go.mod と同一 toolchain の gofmt で見る (lint 同梱 formatter と
+        # toolchain がズレると spurious diff になるため)。上の Set up Go が
+        # go-version-file: go.mod なので、この gofmt はその toolchain のもの。
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt drift. Run 'gofmt -w' on:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
       - name: go vet
         run: go vet ./...
 
