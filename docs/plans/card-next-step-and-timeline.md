@@ -1428,3 +1428,197 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
 これらは §4 の契約・§6 の対処を前提に、Gate A と各実装 PR で確定する。
 単一ユーザーの利用を前提に、対話注入・分散ロック・汎用 DAG scheduler は追加しない。
 本 doc は実装の実測結果に追随させ、コード読解で確認したことと実行して確認したことを混同しない。
+
+- **PR-5b で確定: card タイムライン読みモデル (Go 側のみ、描画・SSE は PR-6)。**
+  `internal/timeline/card.go`（新規、既存 `Build`/`StatusGroup` とは並立する別関数群）。
+
+  1. **置き場所:** `internal/timeline`（新規パッケージや `internal/api` ではない）。
+     理由: `internal/api` は `web/templates` を import しており（レンダリング用）、
+     `web/templates` は既に `internal/orchestrator` と `internal/timeline` を直接
+     import しているため、`internal/api` に置くと将来 `web/templates` から
+     読みモデルを直接使えない（import cycle）。`internal/timeline` に足せば
+     この制約を素直に満たせる上、新規パッケージを増やさずに済む。
+     既存 `Build` が「呼び出し元が解決済みの入力だけを受け取る純粋関数」
+     なのに対し、card 用の `BuildCardTimeline`/`CardPinnedItems` は
+     `db.DBTX` を受け取り自分で読む — 契約が異なるので `Build` 自体は
+     一切変更していない（`TestBuild_*` は無改変のまま green）。
+  2. **型:** `CardItem`（`ID`/`Kind`/`Time`/`CorrelationID`/`Pinned`/
+     `Action`/`Child`/`Command`）。`Kind` は
+     child/child_finished/command/suggestion/answered/summary/note/wake_due
+     の8種。`Child`（`*CardChildDetail`）と `Command`（`*CardCommandDetail`）
+     はそれぞれ子・コマンドの構造化フィールドを持ち、それ以外の5種は
+     生の `*orchestrator.Action` を持つだけ（label 生成等は PR-6 の仕事）。
+  3. **cursor の方式:** 「バッチで読み進める」ではなく「項目境界を別に持つ」側を
+     選んだ。`BuildCardTimeline`/`CardPinnedItems` はどちらも card の
+     action 全履歴を `orchestrator.ListActionsByTask` で一括取得し、
+     項目境界へのグルーピング（child_added+child_specced→1つの子項目、
+     child_closed/child_dropped→finished項目、attrs_set の
+     suggestion/summary キー分割、コマンド終端 action→1項目、等）を
+     メモリ上で行ってから、`(Time, ID)` のキーセット cursor
+     (`orchestrator.EncodeActionCursor`/`DecodeActionCursor` をそのまま流用)
+     で項目単位にページングする。理由: 1card の action 総量は個人利用の
+     triage キュー規模で小さく、DB 側バッチ読みの複雑さに見合わない。
+     wire cursor の**エンコーディング**（項目の (created_at, id) キーセット）は
+     この選択に依存しない。ただし「切り替えても互換」はエンコーディングの
+     話に限られる — **cursor が運ぶ値は合成された項目 ID であり、順序は
+     導出項目上の DESC で、固定/履歴の分割は live な `task_triage` 状態に
+     依存する。制約の全体は下の point 13 に書いた。この段落だけを読んで
+     「後から自由に DB 側実装へ移せる」と取らないこと。**
+  4. **固定項目と履歴の重複回避:** `loadCardTimelineState` が pinned/history
+     両方の項目を一度に作り、`Pinned` フラグで分岐するだけ
+     （`BuildCardTimeline` は `Pinned==true` を除外、`CardPinnedItems` は
+     `Pinned==true` だけを返す）。同じ計算から作るので、固定表示されている
+     項目が解決した後に**同じ ID** で履歴側に現れることが構造的に保証される
+     （子: `!closed` の間 pinned、closed になった瞬間 history 側に
+     同じ anchor action の ID で出現。suggestion: 現在アクティブな
+     suggestion を持つ最新の `attrs_set{suggestion}` action だけを
+     pinned、answered で解決されると同じ ID が history に戻る）。
+     コマンドの pinned 表現だけは例外 — 進行中のコマンドには対応する
+     action がまだ無いので `"pending-command:<request id>"` という別 ID を
+     一時的に持ち、終端すると全く別の ID（終端 action の `actions.id`）で
+     history に現れる（§10 PR-5a point 9 のコマンドモデルどおり）。
+  5. **日付/TZ:** 読みモデルは `actions.created_at` をそのまま UTC
+     `time.Time` として持ち、タイムゾーン変換は一切行わない。
+     `web/templates/tasks.templ` の既存 execution 詳細タイムラインと同じ
+     方針で、`.Local()` は描画時（PR-6）に呼ぶ。
+  6. **GC 後も読める概要:** 子は `child_closed`/`child_dropped` action の
+     payload から Result/Status/ClosingActionType を復元し、子タスクの
+     行が消えていても `TaskExists=false` で描画を続ける。コマンドは
+     `orchestrator.ParseCardRequestOutcomePayload`（既存の書き込み用
+     private struct を export しただけ、新しい wire 形式は増やしていない）
+     で終端 action の payload から CommandKey/Label/Result/Error/Reason
+     等を復元する。`Instruction` だけは best-effort（生きている
+     `card_requests` 行があれば読む、GC 後は空）——これは意図的な非対称で、
+     完了条件が求める「概要が読める」を満たすのは Result/Error/Reason 等
+     action payload 由来のフィールドの方であり、Instruction はそこに
+     含まれていない（PR-5a の自己記録 payload に元々無いフィールド）。
+     実 DB でどちらも「関連行を DELETE してから読み直しても項目が消えない・
+     TargetExists/TaskExists が false になる」ことをテストで固定済み
+     （`TestBuildCardTimeline_GCSurvival_ChildTaskRowDeleted`、
+     `TestBuildCardTimeline_GCSurvival_CardRequestRowDeleted`）。
+  7. **mutation テスト結果（各契約ごとに個別に mutation を当てて対応する
+     テストが赤くなることを確認済み）:**
+
+     | 契約 | mutation | 結果 |
+     |---|---|---|
+     | 固定項目が履歴に出ない（子） | `Pinned: !closed` を `Pinned: false` に | 赤 |
+     | 固定項目が履歴に出ない（コマンド/子/suggestion 共通ガード） | `BuildCardTimeline` の `if it.Pinned { continue }` を削除 | 赤（2テスト） |
+     | 同時刻タイの cursor 側 tie-break | `isOlderThanCursor` の `id < sinceID` を `false` に | 赤（項目が無言で欠落）|
+     | 同時刻タイの sort 側 tie-break | `sortCardItemsDesc` の `a.ID > b.ID` を `false` に | 赤 |
+     | GC 後も子の概要が読める | `TaskExists` を常に `true` に固定 | 赤 |
+     | GC 後もコマンドの概要が読める | `CommandKey` を payload からでなく空文字に固定 | 赤 |
+     | 子の作成位置≠finished位置 | 子項目の `Time` を anchor でなく closingAction から取る | 赤 |
+     | item 単位 cursor の境界 (`HasMore`) | `len(history) > limit` を `>= limit` に | **最初は既存テストで見逃した（緑のまま）** — 境界一致 (残り件数==limit) を直接見る `TestBuildCardTimeline_HasMoreFalseWhenExactlyLimitRemaining` を追加してから赤に |
+
+     最後の行は「たぶん赤くなるはず」で済ませず実際に当てた結果、既存の
+     ページング系テストが境界値をカバーしていない空振りだと判明したケース
+     — テストを追加してから再度同じ mutation を当てて赤を確認した。
+  8. **既存への影響:** `internal/timeline` の `Build`/`StatusGroup`（execution
+     詳細用）は無改変、既存テスト全 green。`internal/api/card_read.go` の
+     `CardView`/`/api/cards` REST（`boid card get`/`list` が使う）も
+     無改変。既存の card 詳細ページ（`TaskDetailCardBody`/`TaskDetail`）は
+     この PR では未接続のまま（PR-6 で差し替え）。
+  9. **PR-5c/PR-6 への申し送り:** 一覧活動状態（§5.5）はこの読みモデルを
+     参照してよいが未接続。PR-6 は `Action` フィールドのラベル生成
+     （suggestion/summary/answered/note/wake_due の各 kind）を自前で行う
+     必要がある — この PR は生の payload を渡すところまでで、
+     `timeline.BuildActionLabel` 相当の card 版ラベル関数は用意していない。
+     加えて point 10〜13（下記）の `CardCommandDetail.Status`、queued/
+     launching の非対称、SSE 未接続時のページング欠落、進捗の畳み込み
+     未実装を踏まえること。
+  10. **フレッシュレビューで発見・修正した実バグ: 進行中コマンドの固定項目が
+      queued 行に masked されうる。** `CardPinnedItems` の実行中コマンド選択が
+      `ListCardRequestsByCard`（`created_at ASC`）の**先頭一致で `break`**して
+      おり、`idx_card_requests_active_unique` が launching/attached の重複だけを
+      防いで queued には無制約なことと、PR-4c の「card は launching（人発）と
+      queued（内部イベント）を同時に持ちうる — 実際に観測されている」という
+      既知の非対称が組み合わさると、**古い未起動の queued 行が新しい実行中の
+      launching/attached 行を隠す**バグがあった（実 DB で再現: `sweep` が
+      queued のまま先に作られ、`discuss` が後から launching で作られると、
+      固定表示は空の `sweep` を指し `discuss` が見えない）。
+      **修正:** `pickActiveCardRequest`（`internal/timeline/card.go`）が
+      creation 順ではなく **状態の優先順位 (attached > launching > queued)** で
+      選ぶようにした。`TestCardPinnedItems_LaunchingWinsOverOlderQueued` /
+      `_AttachedWinsOverQueued` が実 DB で固定。旧コメント
+      「the single execution slot invariant: at most one such row」は
+      queued を含めると成立しない誤った主張だったため削除した。
+  11. **`CardCommandDetail` に `Status`（`orchestrator.CardRequestStatus`）を
+      追加した。** Pinned のときだけ意味を持ち、queued/launching/attached を
+      区別する — §5.5（一覧活動状態、PR-5c）が「task が pending なら
+      Queued とし実行中と誤認させない」を実装するのに必須で、`Label` は
+      queued 行では空なのでそれだけでは判別できなかった。terminal な履歴項目
+      では空文字のまま（`Outcome` の方が正）。
+  12. **N+1 を解消した。** 子 1 件ごとの `GetTask`、コマンド終端項目 1 件ごとの
+      `GetCardRequest`+`GetTask` を、`orchestrator.ExistingTaskIDs`
+      （新設、`SELECT id FROM tasks WHERE id IN (...)` 1 回）と、既に読んでいた
+      `ListCardRequestsByCard` の結果を id で引く map（`requestsByID`）に
+      置き換えた。実測（in-memory SQLite、300 children/約1200 actions）:
+      **67.1ms → 3.6ms（約18.6倍）**。スキャン軸（action 総量）自体は安く、
+      支配的だったのは N+1 だった。
+      **閾値の記録:** 1 card あたり約 20,000 actions（年単位の運用相当）で
+      スキャン軸も効き始め、ページ描画が概ね 0.5 秒に達する
+      （フレッシュレビューの実測、in-memory SQLite = 楽観側。本番はコンテナ内
+      file-backed DB でさらに重い）。「personal-scale だから大丈夫」だけを
+      根拠にせず、card の action ログは非終端の間 GC されず単調増加すること、
+      PR-4 の内部イベント駆動で生成レートが上がっていることを踏まえ、
+      将来 DB 側バッチ読みへの切替が要る規模の目安として残す。
+  13. **cursor の「実装方式に依存しない」という記述の訂正。** encoding
+      （`(time, id)` の keyset 文字列）自体は安定だが、この PR の cursor は
+      **合成された項目 ID**（`<uuid>:summary`、`<uuid>:suggestion`、
+      `child:<id>`、`pending-command:<id>`）と、**導出項目**上の
+      newest-first `(Time, ID)` 順序を運んでいる。将来 DB 側でバッチ読みに
+      切り替える実装は、この ID 文字列と順序を正確に再現する必要があり、
+      さらに固定/履歴の分割は live な `task_triage` 状態（どの子が
+      open/specced か、どの suggestion が現在有効か）に依存していて SQL の
+      行単位では導出できない — 結局 detail 全体の読みが要る。「cursor
+      互換は壊れない」自体は達成可能だが、当初の記述より制約は強い。
+
+  **記録のみ（この PR では対処しない）:**
+
+  - **既存 flake の根因: 構造的で、同じテストファイル内の別テストが矛盾する
+    前提を assert している。** `TestCreateTask_AtomicPath_RaceWithGoReservation`
+    と `TestReserveGoCardRequest_DoesNotSeeADirectlyCreatedLiveChild`
+    （どちらも `internal/api/task_create_card_slot_atomic_test.go`、
+    PR-0 が最終更新）が、`idx_card_requests_active_unique` が子タスクを
+    index しない同じ事実から逆の期待を導いている——前者は「direct create と
+    go のうち exactly one が勝つ」を assert し、後者は「既に live な子が
+    あっても `reserveGoCardRequest` は成功する」ことを前提にしている。
+    goroutine のスケジューリング順によって create 側が先に live な子を
+    作ってしまうと両方成功し、前者が構造的に失敗しうる。main
+    （`3c1aeaa3`、本 PR 抜き）で `-race -cpu=1 -count=120` を実行すると
+    41% の頻度で再現し、`-count=200`/`-count=400`（cpu 制限なし）では
+    再現しない——CI の通常設定では滅多に出ないが、既存・スケジューラ依存で
+    あり本 PR による回帰ではない。**修正案（次の担当者向け）:** (a)
+    `TestCreateTask_AtomicPath_RaceWithGoReservation` の assertion を
+    「両方 fail はしない／結果として live な占有者がちょうど1つ」まで
+    緩めるか、(b) 2 つの goroutine を直列化してこのテストから真の並行性を
+    抜く。本 PR のスコープ外。
+  - **進捗の畳み込み（§5.2）は未実装。** `loadCardTimelineState` は
+    `progress`/`child_dispatched`/状態遷移 action を単に無視しており、
+    「作業項目の中にまとめる」対象にしていない。ただし今日
+    `notify --progress` は子の**自分の** task に書き込み、親 card の
+    action ログには一切書かない——畳み込む対象の action が card 側に
+    そもそも存在しない。したがって「捨てている」は不正確で、正しくは
+    「card 側に進捗 action の経路が無いので畳み込み対象が無い」。子の
+    進捗を親のタイムラインに反映する経路自体（新しい action 種別や
+    fan-out）を作るかどうかは PR-6 以降の判断。
+  - **SSE 未接続の間のページング欠落 (再現済み)。** ページ1 を読んだ時点で
+    pinned だった子が、Load older を押す前に終端すると、その子の
+    「child項目」は自分の作成位置（= 現在の cursor より古い位置）に
+    履歴として再登場するため、**以後どのページの newest-first スキャンにも
+    含まれない**（新規に読み込む「新しい」ページには乗らず、cursor が既に
+    その位置を通り過ぎている）。6 件中 4 件しか見えない、という形で
+    フレッシュレビューが実際に再現している。PR-6 の SSE による先頭再描画が
+    実質的にこれを埋める設計目算だが、その前提はこれまで文書化されていな
+    かった——PR-6 は SSE の head 再描画がこの欠落を埋める前提で設計すること。
+  - **同時刻タイの中で「最新の suggestion」の選択が非決定的になりうる。**
+    `orchestrator.ListActionsByTask`（`store.go`）の `ORDER BY created_at`
+    には `id` の tie-break が無い。`EncodeActionCursor` 自身の doc コメントが
+    警告している「同時刻の複数行」ケースと同じ穴で、`activeSuggestionActionID`
+    の選択（`suggestionActions` の最後の要素を取る）がその非決定性を継承する。
+    `ListActionsByTask` は execution 詳細タイムライン等の複数箇所で共有されて
+    いる低レベル関数なので、この PR の狭い要求のためだけに順序保証を足すのは
+    見送った——実務上、同一 card への複数 `attrs_set{suggestion}` が
+    完全に同時刻で衝突する頻度は極めて低い（dispatcher の一括 abort のような
+    バルク書き込みパターンが suggestion には無い）。次に触る人向けの記録として
+    残す。

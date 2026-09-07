@@ -447,16 +447,18 @@ func FailCardRequest(dbtx db.DBTX, id, errText string) error {
 	return recordCardRequestTerminalOutcome(dbtx, id, ActionTypeCommandFailed, "", errText)
 }
 
-// cardRequestOutcomeSibling is one row a force-release also force-failed —
-// the payload shape for cardRequestOutcomePayload.ForceFailedSiblings.
-type cardRequestOutcomeSibling struct {
+// CardRequestOutcomeSibling is one row a force-release also force-failed —
+// the payload shape for CardRequestOutcomePayload.ForceFailedSiblings.
+type CardRequestOutcomeSibling struct {
 	ID         string `json:"id"`
 	CommandKey string `json:"command_key"`
 }
 
-// cardRequestOutcomePayload is the JSON shape every card_requests self-record
+// CardRequestOutcomePayload is the JSON shape every card_requests self-record
 // action (command_finished/command_failed/command_force_released) writes.
-type cardRequestOutcomePayload struct {
+// Exported so a reader (the card timeline read model) can parse it back
+// without duplicating this wire shape — see ParseCardRequestOutcomePayload.
+type CardRequestOutcomePayload struct {
 	RequestID           string                      `json:"request_id"`
 	CommandKey          string                      `json:"command_key"`
 	LaunchedLabel       string                      `json:"launched_label"`
@@ -468,7 +470,22 @@ type cardRequestOutcomePayload struct {
 	Result              string                      `json:"result"`
 	Error               string                      `json:"error"`
 	Reason              string                      `json:"reason,omitempty"`
-	ForceFailedSiblings []cardRequestOutcomeSibling `json:"force_failed_siblings,omitempty"`
+	ForceFailedSiblings []CardRequestOutcomeSibling `json:"force_failed_siblings,omitempty"`
+}
+
+// ParseCardRequestOutcomePayload decodes a command_finished/command_failed/
+// command_force_released action's payload. Returns the zero value and no
+// error for empty/malformed input — a reader must never fail to render a
+// card's timeline over one unparseable historical row.
+func ParseCardRequestOutcomePayload(payload json.RawMessage) (CardRequestOutcomePayload, error) {
+	var p CardRequestOutcomePayload
+	if len(payload) == 0 {
+		return p, nil
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return CardRequestOutcomePayload{}, err
+	}
+	return p, nil
 }
 
 // recordCardRequestTerminalOutcome self-records id's finished/failed outcome
@@ -495,7 +512,7 @@ func recordCardRequestOutcome(dbtx db.DBTX, id, actionType, result, errText, rea
 	if row.CommandKey == CardRequestCommandKeyGo {
 		return nil
 	}
-	p := cardRequestOutcomePayload{
+	p := CardRequestOutcomePayload{
 		RequestID:     row.ID,
 		CommandKey:    row.CommandKey,
 		LaunchedLabel: row.Launched.Label,
@@ -509,7 +526,7 @@ func recordCardRequestOutcome(dbtx db.DBTX, id, actionType, result, errText, rea
 		Reason:        reason,
 	}
 	for _, s := range siblings {
-		p.ForceFailedSiblings = append(p.ForceFailedSiblings, cardRequestOutcomeSibling(s))
+		p.ForceFailedSiblings = append(p.ForceFailedSiblings, CardRequestOutcomeSibling(s))
 	}
 	payload, merr := json.Marshal(p)
 	if merr != nil {

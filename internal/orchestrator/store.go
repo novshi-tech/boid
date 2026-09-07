@@ -346,6 +346,57 @@ func GetTask(dbtx db.DBTX, id string) (*Task, error) {
 	return t, nil
 }
 
+// ExistingTaskIDs returns the subset of ids that still resolve to a live
+// task row, via one batched query — for a caller checking many task
+// references for existence (e.g. GC-safety link resolution) without one
+// round trip per id. Exact-id match only, no GetTask-style prefix fallback.
+func ExistingTaskIDs(dbtx db.DBTX, ids []string) (map[string]bool, error) {
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	exists := make(map[string]bool, len(unique))
+	for start := 0; start < len(unique); start += existingTaskIDsChunk {
+		end := min(start+existingTaskIDsChunk, len(unique))
+		if err := scanExistingTaskIDs(dbtx, unique[start:end], exists); err != nil {
+			return nil, err
+		}
+	}
+	return exists, nil
+}
+
+// existingTaskIDsChunk keeps one IN (...) under SQLite's bound-variable
+// ceiling so a caller passing an unbounded id list still gets one query per
+// chunk instead of a "too many SQL variables" failure.
+const existingTaskIDsChunk = 500
+
+func scanExistingTaskIDs(dbtx db.DBTX, ids []string, exists map[string]bool) error {
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := dbtx.Query(`SELECT id FROM tasks WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return fmt.Errorf("existing task ids: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("existing task ids: scan: %w", err)
+		}
+		exists[id] = true
+	}
+	return rows.Err()
+}
+
 // GetTaskStatus reads only a task's status, by exact id — cheaper than
 // GetTask (whose child-count subqueries scan tasks.parent_id, which is
 // unindexed), for callers that poll tightly. No prefix fallback.
