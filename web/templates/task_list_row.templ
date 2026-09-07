@@ -31,7 +31,7 @@ type ListRow struct {
 	// task, and any card khi hasn't evaluated yet.
 	Suggestion orchestrator.Suggestion
 	// Summary is task_triage.detail.summary (or detail.attrs.summary —
-	// triageSummary below), the 3行目 fallback text for a card with NO live
+	// TriageSummary below), the 3行目 fallback text for a card with NO live
 	// suggestion (§5 論点6's card-side candidate: "無い行の有力候補は card =
 	// khi の summary attr" — left as an explicit open question by the design
 	// doc, decided here for PR-4 rather than shipping a blank 3行目 whenever
@@ -146,14 +146,14 @@ func BuildListRows(tasks []*orchestrator.Task, projectNames map[string]string, t
 			if s, ok := orchestrator.DetailSuggestion(tt.Detail); ok {
 				row.Suggestion = s
 			}
-			row.Summary = triageSummary(tt.Detail)
+			row.Summary = TriageSummary(tt.Detail)
 		}
 		rows = append(rows, row)
 	}
 	return rows
 }
 
-// triageSummary extracts the "summary" string from a task_triage detail JSON
+// TriageSummary extracts the "summary" string from a task_triage detail JSON
 // blob (docs/plans/cross-project-issue-triage.md データモデル節), preferring
 // the top-level key and falling back to detail.attrs.summary — the daemon's
 // attrs_set action folds a workspace's write into detail.attrs
@@ -167,7 +167,7 @@ func BuildListRows(tasks []*orchestrator.Task, projectNames map[string]string, t
 // value in one location cannot blank out a well-formed value in the other.
 // Returns "" on any parse failure or when the field is absent — never
 // panics, never partially-fabricates a value.
-func triageSummary(detail []byte) string {
+func TriageSummary(detail []byte) string {
 	if len(detail) == 0 {
 		return ""
 	}

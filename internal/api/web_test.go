@@ -1062,42 +1062,10 @@ func TestWebHandlerPostStartShapingSession_NoDispatcher(t *testing.T) {
 	}
 }
 
-// TestWebHandler_TaskDetail_ShowsTriageChildren covers the gap nose hit
-// after the Shape launcher's first real dispatch: nothing on the task
-// detail page showed whether a triaged card's children had been specced
-// yet, so Go got pressed with no way to check dispatch-readiness first
-// (cross-project-issue-triage 実地テスト, 2026-08-14).
-func TestWebHandler_TaskDetail_ShowsTriageChildren(t *testing.T) {
-	detail := json.RawMessage(`{"children":[
-		{"id":"c1","title":"specced child","status":"specced","spec":{"project":"proj-a"}},
-		{"id":"c2","title":"open child","status":"open"}
-	]}`)
-	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
-		ID:     "task-1",
-		Type:   orchestrator.TaskTypeCard,
-		Title:  "card title",
-		Status: orchestrator.TaskStatusParked,
-		Card:   &orchestrator.CardAttrs{},
-	}}}
-	triage := &stubTaskTriageStore{triage: &orchestrator.CardAttrs{TaskID: "task-1", Detail: detail}}
-	h := &WebHandler{Service: svc, TaskTriage: triage}
-	r := chi.NewRouter()
-	r.Get("/tasks/{id}", h.TaskDetail)
-
-	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
-	}
-	body := w.Body.String()
-	for _, want := range []string{"specced child", "open child", "no spec yet"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("body missing %q; got:\n%s", want, body)
-		}
-	}
-}
+// TestWebHandler_TaskDetail_ShowsTriageChildren moved to
+// web_card_timeline_test.go (PR-6a): a card's children now render from the
+// timeline read model (CardTimeline), which needs a real card_requests/
+// actions-backed DB fixture, not just a stub TaskTriage row.
 
 // TestWebHandler_TaskDetail_NoTriageChildren_NoSection ensures the vast
 // majority of non-triage tasks render with no children section (nil
@@ -1189,36 +1157,13 @@ func TestWebHandler_TaskDetail_Exec_IdentityRow_ShowsProjectAndBehavior(t *testi
 	}
 }
 
-// TestWebHandler_TaskDetail_Card_MovementRow_ShowsTransitionEdgeWithVerb
-// pins §3.1 部品A's movement row contract: when a suggestion is live, the
-// row must show the verb on the edge itself ("parked —go→ working"), not a
-// bare arrow — the design doc requires the verb stay visible because "go"
-// and "working" both land on the same target status (working) but mean
-// very different things (dispatch vs. a bare manual declaration).
-func TestWebHandler_TaskDetail_Card_MovementRow_ShowsTransitionEdgeWithVerb(t *testing.T) {
-	svc := &stubWebService{taskDetail: makeCardTaskDetailView("task-1", orchestrator.TaskStatusParked)}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
-		"task-1": {TaskID: "task-1", Detail: []byte(`{"suggestion":{"verb":"go","reason":"children specced"}}`)},
-	}}
-	h := &WebHandler{Service: svc, TaskTriage: triage}
-	r := chi.NewRouter()
-	r.Get("/tasks/{id}", h.TaskDetail)
-
-	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "—go→") {
-		t.Errorf("movement row should show the verb-labeled transition edge \"—go→\", got: %s", body)
-	}
-	if !strings.Contains(body, `badge-parked`) || !strings.Contains(body, `badge-working`) {
-		t.Errorf("movement row should show both the current status badge (parked) and the target status badge (working), got: %s", body)
-	}
-}
+// TestWebHandler_TaskDetail_Card_MovementRow_ShowsTransitionEdgeWithVerb was
+// the pre-PR-6a movement row contract ("parked —go→ working" inline in the
+// status strip). PR-6a moved the live suggestion into the pinned timeline
+// items (§5.1 item 3) instead — see
+// TestCardDetail_PinnedSuggestion_RendersAcceptRejectAndNoTransitionEdge in
+// web_card_timeline_test.go for the replacement, which also pins that the
+// transition-edge text is now deliberately gone.
 
 // TestWebHandler_TaskDetail_Card_DescriptionShownInBody_NoTabNeeded pins
 // §3.3 item 3 (decided, not left to a later PR): a card's Description is
@@ -1521,70 +1466,14 @@ func makeCardTaskDetailView(id string, status orchestrator.TaskStatus) *TaskDeta
 	}
 }
 
-// TestTaskDetailFragment_Status_RendersSuggestion is a wiring test for the
-// suggestion card on the fragment path (Opus review finding, 2026-08-18):
-// TestTaskDetailFragment_Status above sits right next to this code but
-// never wired a TaskTriage store, so it could not have caught the
-// suggestion parameter being dropped or left at its zero value.
-//
-// webui-detail-list-redesign PR-1: the fixture is now a Card (was an
-// Execution task with a triage row bolted on by the stub — a combination
-// the real DB can never produce, since CardStore.GetTaskTriage only ever
-// matches a `type='card'` row). The entity split branches TaskDetailFragment
-// on task.Type (§7 PR-1 — "分岐軸は task.Type"), and suggestion rendering is
-// card-only, so this test now needs a fixture that reflects that.
-func TestTaskDetailFragment_Status_RendersSuggestion(t *testing.T) {
-	svc := &stubWebService{taskDetail: makeCardTaskDetailView("task-1", orchestrator.TaskStatusDone)}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
-		"task-1": {TaskID: "task-1", Detail: []byte(`{"suggestion":{"verb":"reopen","action":"re-triage now","reason":"source event fired","basis":"issue #42 reopened"}}`)},
-	}}
-	h := &WebHandler{Service: svc, TaskTriage: triage}
-	r := chi.NewRouter()
-	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
-
-	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/fragment?kind=status", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	for _, want := range []string{"badge-verb-reopen", "re-triage now", "source event fired", "issue #42 reopened"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("status fragment missing %q; got: %s", want, body)
-		}
-	}
-}
-
-// TestTaskDetail_RendersSuggestion covers the full-page path (not just the
-// HTMX fragment) — the same wiring gap as above, but for TaskDetail →
-// templates.TaskDetail's threaded suggestion parameter. Card fixture for
-// the same reason as TestTaskDetailFragment_Status_RendersSuggestion above.
-func TestTaskDetail_RendersSuggestion(t *testing.T) {
-	svc := &stubWebService{taskDetail: makeCardTaskDetailView("task-1", orchestrator.TaskStatusDone)}
-	triage := &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{
-		"task-1": {TaskID: "task-1", Detail: []byte(`{"suggestion":{"verb":"reopen","reason":"source event fired"}}`)},
-	}}
-	h := &WebHandler{Service: svc, TaskTriage: triage}
-	r := chi.NewRouter()
-	r.Get("/tasks/{id}", h.TaskDetail)
-
-	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "badge-verb-reopen") {
-		t.Errorf("task detail page should render the suggestion verb badge, got: %s", body)
-	}
-	if !strings.Contains(body, "source event fired") {
-		t.Errorf("task detail page should render the suggestion reason, got: %s", body)
-	}
-}
+// TestTaskDetailFragment_Status_RendersSuggestion and
+// TestTaskDetail_RendersSuggestion moved to web_card_timeline_test.go
+// (PR-6a): the pinned suggestion item now comes from the CardTimeline read
+// model (which derives it from the actions log, not just the live
+// task_triage detail blob a stub TaskTriage row can provide), so the
+// fixture needs a real DB. See
+// TestCardDetail_PinnedSuggestion_RendersAcceptRejectAndNoTransitionEdge
+// and its fragment-path sibling there.
 
 // TestTaskDetailFragment_JobsKindRemoved pins the death of fragment
 // kind=jobs (docs/plans/webui-detail-list-redesign.md §7 PR-1 死骸掃除):

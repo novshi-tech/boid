@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -80,6 +79,12 @@ type WebHandler struct {
 	// card row renders with no activity badge instead of failing the whole
 	// list.
 	CardActivity CardActivityStore
+
+	// CardTimeline backs the card detail page's pinned items and timeline
+	// history (internal/timeline.BuildCardTimeline/CardPinnedItems). Nil-safe:
+	// when unset, a card detail page renders with an empty timeline instead of
+	// failing the whole page.
+	CardTimeline CardTimelineStore
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -89,6 +94,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Post("/tasks", h.PostTaskCreate)
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
+	r.Get("/tasks/{id}/card-timeline", h.TaskCardTimelineOlder)
 	r.Get("/tasks/{id}/edit", h.GetTaskEdit)
 	r.Post("/tasks/{id}/edit", h.PostEdit)
 	r.Post("/tasks/{id}/action", h.PostAction)
@@ -584,17 +590,23 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	var children []templates.ChildRow
-	var suggestion orchestrator.Suggestion
 	var childTree []templates.ChildTreeNode
+	var cardSummary string
+	var cardTL *templates.CardTimelineView
 	if detail.Task.Type == orchestrator.TaskTypeCard {
-		triage := h.loadTriage(id)
-		children = h.cardChildrenFromTriage(id, triage)
-		suggestion = suggestionOf(triage)
+		if triage := h.loadTriage(id); triage != nil {
+			cardSummary = templates.TriageSummary(triage.Detail)
+		}
+		var tlErr error
+		cardTL, tlErr = h.cardTimelineView(id, "")
+		if tlErr != nil {
+			slog.Warn("card timeline view failed", "task_id", id, "error", tlErr)
+			cardTL = &templates.CardTimelineView{}
+		}
 	} else {
 		childTree = h.execChildTree(detail.Task)
 	}
-	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, children, suggestion, childTree).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, cardSummary, cardTL, childTree).Render(r.Context(), w)
 }
 
 // maxChildTreeDepth caps app-side recursion in execChildTree/listDescendants
@@ -607,8 +619,8 @@ const maxChildTreeDepth = 50
 // execChildTree returns task's full descendant subtree, depth-first: a root
 // (parent_id == "") execution task detail page's own child tree. Returns
 // nil for anything that is not a root task — including a card, whose
-// children get the integrated ledger view instead (cardChildrenFromTriage)
-// — or a root task with no children.
+// children are read from the card timeline read model instead
+// (cardTimelineView) — or a root task with no children.
 //
 // Traversal is app-side (repeated ListTasks-by-parent_id calls), not a SQL
 // recursive CTE.
@@ -638,145 +650,92 @@ func (h *WebHandler) listDescendants(parentID string, depth int) []templates.Chi
 	return nodes
 }
 
-// cardChildrenFromTriage builds a card detail page's integrated child rows:
-// the spec ledger (task_triage.detail.children, resolved to display form by
-// resolveChildProjects) merged with the live status of each dispatched
-// child's real task row. The live lookup is one parent_id query covering
-// every child at once, not one query per ledger entry.
-//
-// A ledger entry only gets a LiveStatus when its own Status is "dispatched"
-// AND its TaskRef resolves inside that query's result; otherwise
-// ChildRow.DisplayStatus falls back to the ledger status with no error.
-// When a lookup does succeed, the live status always wins over the bare
-// "dispatched" ledger value.
-func (h *WebHandler) cardChildrenFromTriage(cardID string, triage *orchestrator.CardAttrs) []templates.ChildRow {
-	ledger := h.resolveChildProjects(childrenOf(triage))
-	if len(ledger) == 0 {
-		return nil
+// cardTimelineView builds a card detail page's timeline read-model view:
+// CardPinnedItems plus one BuildCardTimeline page (starting at cursor),
+// resolved to display form (child project ids -> names) and enriched with
+// the pinned dispatched child's awaiting-question link, which neither read
+// model resolves on its own.
+func (h *WebHandler) cardTimelineView(cardID, cursor string) (*templates.CardTimelineView, error) {
+	if h.CardTimeline == nil {
+		return &templates.CardTimelineView{}, nil
 	}
-	live := make(map[string]*orchestrator.Task, len(ledger))
-	if kids, err := h.Service.ListTasks(orchestrator.TaskFilter{ParentID: &cardID}); err == nil {
-		for _, k := range kids {
-			live[k.ID] = k
-		}
-	}
-	rows := make([]templates.ChildRow, 0, len(ledger))
-	for _, c := range ledger {
-		row := templates.ChildRow{Child: c}
-		if c.Status == orchestrator.TaskTriageChildStatusDispatched && c.TaskRef != "" {
-			if t, ok := live[c.TaskRef]; ok && t != nil {
-				row.LiveStatus = string(t.Status)
-				if t.Status == orchestrator.TaskStatusAwaiting && t.Exec != nil {
-					row.AwaitingQuestionID = orchestrator.GetAwaitingPayload(t.Exec.Payload).QuestionID
-				}
-			}
-		}
-		rows = append(rows, row)
-	}
-	sort.SliceStable(rows, func(i, j int) bool { return childRowRank(rows[i]) < childRowRank(rows[j]) })
-	return rows
-}
-
-// cardChildrenForDisplay is cardChildrenFromTriage plus its own triage load,
-// for callers (TaskDetailFragment's "status" kind, hit on every SSE
-// refresh) that don't already hold a loaded triage row.
-func (h *WebHandler) cardChildrenForDisplay(cardID string) []templates.ChildRow {
-	return h.cardChildrenFromTriage(cardID, h.loadTriage(cardID))
-}
-
-// childRowRank sorts by urgency (awaiting → executing → open/specced/other →
-// closed) over ChildRow.DisplayStatus(). Every non-terminal status other
-// than awaiting/executing shares the same middle tier.
-func childRowRank(row templates.ChildRow) int {
-	switch row.DisplayStatus() {
-	case string(orchestrator.TaskStatusAwaiting):
-		return 0
-	case string(orchestrator.TaskStatusExecuting):
-		return 1
-	case string(orchestrator.TaskStatusDone), string(orchestrator.TaskStatusAborted), orchestrator.TaskTriageChildStatusClosed:
-		return 3
-	default:
-		return 2
-	}
-}
-
-// triageChildrenFor returns the task_triage.detail.children for id, or nil
-// when there is no sidecar row / no CardStore wired / the detail blob
-// doesn't parse. Best-effort — a task detail page must still render for a
-// task with no triage children (almost every task).
-func (h *WebHandler) triageChildrenFor(id string) []orchestrator.TaskTriageChild {
-	return childrenOf(h.loadTriage(id))
-}
-
-// triageChildrenForDisplay is triageChildrenFor plus the one substitution the
-// Web UI needs: a child's spec.Project is stored as a boid project id, which
-// tells a reader nothing about where pressing Go would run the child, so
-// this resolves it to the project name in a display-only copy — dispatch
-// still reads the real id from the stored spec, never this copy.
-func (h *WebHandler) triageChildrenForDisplay(id string) []orchestrator.TaskTriageChild {
-	return h.resolveChildProjects(h.triageChildrenFor(id))
-}
-
-// resolveChildProjects is triageChildrenForDisplay's body, split out because
-// the full-page render already holds the parsed triage row and would
-// otherwise re-read it.
-func (h *WebHandler) resolveChildProjects(children []orchestrator.TaskTriageChild) []orchestrator.TaskTriageChild {
-	for i := range children {
-		spec := children[i].Spec
-		if spec == nil || spec.Project == "" {
-			continue
-		}
-		name := h.lookupProjectName(spec.Project)
-		if name == "" {
-			// Removed project or a typo'd id: keep the raw value. Blanking it
-			// would hide where the child would run, which is the exact
-			// question this section exists to answer.
-			continue
-		}
-		shown := *spec
-		shown.Project = name
-		children[i].Spec = &shown
-	}
-	return children
-}
-
-// triageSuggestionFor is triageChildrenFor's counterpart for
-// task_triage.detail.suggestion — same best-effort posture (see suggestionOf).
-func (h *WebHandler) triageSuggestionFor(id string) orchestrator.Suggestion {
-	return suggestionOf(h.loadTriage(id))
-}
-
-// childrenOf parses a (possibly nil) task_triage row's Detail blob into its
-// children list, or nil when the row is nil / has no Detail / the blob
-// doesn't parse.
-func childrenOf(triage *orchestrator.CardAttrs) []orchestrator.TaskTriageChild {
-	if triage == nil || len(triage.Detail) == 0 {
-		return nil
-	}
-	children, err := orchestrator.DetailChildren(triage.Detail)
+	pinned, err := h.CardTimeline.CardPinnedItems(cardID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return children
+	page, err := h.CardTimeline.BuildCardTimeline(cardID, cursor, 0)
+	if err != nil {
+		return nil, err
+	}
+	h.resolveCardItemChildProjects(pinned)
+	h.resolveCardItemChildProjects(page.Items)
+	return &templates.CardTimelineView{
+		Pinned:             pinned,
+		History:            page.Items,
+		HasMore:            page.HasMore,
+		NextCursor:         page.NextCursor,
+		AwaitingQuestionID: h.pinnedChildAwaitingQuestion(pinned),
+	}, nil
 }
 
-// suggestionOf extracts task_triage.detail.suggestion (or detail.attrs.
-// suggestion — orchestrator.DetailSuggestion) from a (possibly nil)
-// task_triage row, mirroring childrenOf's best-effort posture: a missing
-// row / empty detail / malformed suggestion blob all just return the zero
-// Suggestion rather than erroring.
-func suggestionOf(triage *orchestrator.CardAttrs) orchestrator.Suggestion {
-	if triage == nil || len(triage.Detail) == 0 {
-		return orchestrator.Suggestion{}
+// resolveCardItemChildProjects rewrites every CardItemChild's Spec.Project
+// from a raw boid project id to its display name, in place — a raw id tells
+// the reader nothing about where pressing Go would run the child. Falls
+// back to the raw id (leaves the item unchanged) when the project can't be
+// resolved (removed project, typo'd id): blanking it would hide where the
+// child would run, the exact question this field exists to answer.
+func (h *WebHandler) resolveCardItemChildProjects(items []timeline.CardItem) {
+	for i := range items {
+		it := &items[i]
+		if it.Kind != timeline.CardItemChild || it.Child == nil || it.Child.Spec == nil || it.Child.Spec.Project == "" {
+			continue
+		}
+		name := h.lookupProjectName(it.Child.Spec.Project)
+		if name == "" {
+			continue
+		}
+		specCopy := *it.Child.Spec
+		specCopy.Project = name
+		childCopy := *it.Child
+		childCopy.Spec = &specCopy
+		it.Child = &childCopy
 	}
-	s, _ := orchestrator.DetailSuggestion(triage.Detail)
-	return s
 }
 
-// loadTriage is the best-effort task_triage sidecar lookup shared by
-// triageChildrenFor and PostStartShapingSession's working-status gate: a
-// missing sidecar row (nil TaskTriage store, no row, lookup error) is not
-// fatal and simply returns nil.
+// pinnedChildAwaitingQuestion resolves the sole pinned dispatched child's
+// question id when its live task is currently awaiting an answer, so the
+// card detail page can keep a direct-to-question link. Neither
+// CardPinnedItems nor CardChildDetail resolve this themselves — it's an
+// extra live lookup only worth paying for the one currently-active child a
+// card can have at a time, not something the read model needs to answer for
+// the whole timeline.
+func (h *WebHandler) pinnedChildAwaitingQuestion(pinned []timeline.CardItem) string {
+	for _, it := range pinned {
+		if it.Kind != timeline.CardItemChild || it.Child == nil {
+			continue
+		}
+		c := it.Child
+		if c.Status != orchestrator.TaskTriageChildStatusDispatched || !c.TaskExists || c.TaskRef == "" {
+			continue
+		}
+		detail, err := h.Service.GetTaskDetail(c.TaskRef)
+		if err != nil || detail == nil || detail.Task == nil {
+			continue
+		}
+		if detail.Task.Status != orchestrator.TaskStatusAwaiting || detail.Task.Exec == nil {
+			continue
+		}
+		if qid := orchestrator.GetAwaitingPayload(detail.Task.Exec.Payload).QuestionID; qid != "" {
+			return qid
+		}
+	}
+	return ""
+}
+
+// loadTriage is the best-effort task_triage sidecar lookup shared by the
+// card detail page's current-summary read and PostStartShapingSession's
+// working-status gate: a missing sidecar row (nil TaskTriage store, no row,
+// lookup error) is not fatal and simply returns nil.
 func (h *WebHandler) loadTriage(id string) *orchestrator.CardAttrs {
 	if h.TaskTriage == nil {
 		return nil
@@ -826,9 +785,16 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
 		if detail.Task.Type == orchestrator.TaskTypeCard {
-			children := h.cardChildrenForDisplay(id)
-			suggestion := h.triageSuggestionFor(id)
-			templates.TaskDetailCardStatusSection(detail.Task, "", projectName, children, suggestion).Render(r.Context(), w)
+			var summary string
+			if triage := h.loadTriage(id); triage != nil {
+				summary = templates.TriageSummary(triage.Detail)
+			}
+			tl, tlErr := h.cardTimelineView(id, "")
+			if tlErr != nil {
+				slog.Warn("card timeline view failed", "task_id", id, "error", tlErr)
+				tl = &templates.CardTimelineView{}
+			}
+			templates.TaskDetailCardStatusSection(detail.Task, "", projectName, summary, tl).Render(r.Context(), w)
 		} else {
 			childTree := h.execChildTree(detail.Task)
 			templates.TaskDetailExecStatusSection(detail.Task, "", projectName, childTree).Render(r.Context(), w)
@@ -836,6 +802,34 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 	default:
 		http.Error(w, "unknown fragment kind", http.StatusBadRequest)
 	}
+}
+
+// TaskCardTimelineOlder returns the next page of a card's timeline history
+// as an HTML fragment ("Load older"): the older items plus a fresh
+// Load-older control, or none once exhausted. Appended by the client
+// (hx-swap="outerHTML" on the button that requested it), never replacing
+// what is already on the page, so earlier pages already loaded survive.
+func (h *WebHandler) TaskCardTimelineOlder(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil || detail.Task == nil || detail.Task.Type != orchestrator.TaskTypeCard {
+		http.Error(w, "card not found", http.StatusNotFound)
+		return
+	}
+	if h.CardTimeline == nil {
+		http.Error(w, "card timeline not available", http.StatusNotFound)
+		return
+	}
+	cursor := r.URL.Query().Get("cursor")
+	lastDate := r.URL.Query().Get("last_date")
+	page, err := h.CardTimeline.BuildCardTimeline(id, cursor, 0)
+	if err != nil {
+		http.Error(w, "failed to load timeline", http.StatusInternalServerError)
+		return
+	}
+	h.resolveCardItemChildProjects(page.Items)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.CardHistoryOlderFragment(id, page.Items, page.HasMore, page.NextCursor, lastDate).Render(r.Context(), w)
 }
 
 func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {

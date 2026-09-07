@@ -7,6 +7,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/timeline"
 )
 
 type MetaStore interface {
@@ -335,6 +336,15 @@ type CardStore interface {
 // purpose. Both methods must resolve their entire input in ONE query each
 // (chunked only past a SQL variable ceiling) — adding rows to a page must
 // never add queries.
+// CardTimelineStore backs the card detail page's timeline read model
+// (internal/timeline.BuildCardTimeline / CardPinnedItems), which reads a
+// card's full action log directly via db.DBTX rather than through
+// ActionStore's narrower ListActionsByTask.
+type CardTimelineStore interface {
+	BuildCardTimeline(cardID, cursor string, limit int) (*timeline.CardTimelinePage, error)
+	CardPinnedItems(cardID string) ([]timeline.CardItem, error)
+}
+
 type CardActivityStore interface {
 	// ActiveCardRequestsByCardIDs returns, for each id in cardIDs with a
 	// currently queued/launching/attached row, the single highest-priority
