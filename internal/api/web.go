@@ -1253,10 +1253,12 @@ func shapingSessionDefaults(svc WebService, projectID string) (harnessType, mode
 //
 // Deliberately silent on HOW to write the card back: prescribing a
 // procedure here can collide with a workspace's own write conventions. This
-// function states only boid's own contract (record child_specced/
-// child_added, never a card-level state transition — that is a human's
-// accept or a suggest engine's job, never a shaping session's) and defers
-// everything about "how" to the target project's own CLAUDE.md / skills.
+// function states only boid's own contract (leave a next-step child specced
+// within the single-slot invariant, never a card-level state transition —
+// that is a human's accept, never a shaping session's) and defers
+// everything about "how" — including which CLI to write through — to the
+// target project's own CLAUDE.md / skills. It names neither a wire action
+// nor a workspace.
 func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.CardAttrs) string {
 	var b strings.Builder
 	if task.Status == orchestrator.TaskStatusWorking {
@@ -1290,25 +1292,25 @@ func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.CardA
 		b.Write(triage.Detail)
 	}
 	if task.Status == orchestrator.TaskStatusWorking {
-		b.WriteString("\n\n対話で子タスクの対象 project・実行内容・完了条件を固めたら、既存の子タスクは specced に更新してください" +
-			"（`child_specced` を打つだけです — このカード自身の状態遷移は行いません。working のまま子タスクの整形だけを行います）。" +
-			"新規追加 (`child_added`) は次の一手の枠 (open/specced/実行中の子が合わせて最大一つ) が空いている場合のみ可能で、" +
+		b.WriteString("\n\n対話で子タスクの対象 project・実行内容・完了条件を固めたら、既存の子タスクを specced な状態にしてください" +
+			"（このカード自身の状態遷移は行いません。working のまま子タスクの整形だけを行います）。" +
+			"新規追加は次の一手の枠 (open/specced/実行中の子が合わせて最大一つ) が空いている場合のみ可能で、" +
 			"埋まっている間の追加は拒否されます。枠が埋まっていて対応が必要な作業を新たに見つけた場合は、" +
 			"このセッションでは追加せず運用者に伝えてください。" +
-			"card を進める・閉じる・戻す判断は行わないこと — それは人の accept、または khi の suggest 経由でのみ行われます" +
+			"card を進める・閉じる・戻す判断は行わないこと — それは人の accept、または suggestion の accept 経由でのみ行われます" +
 			"（card machine v2, docs/plans/suggestion-as-state-transition.md §3.2）。" +
-			"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
+			"更新の具体的な手順 (書き込み先・経路・使う CLI) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
 			"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
 			"それに従ってください。" +
 			"整形の結果「やらない」と分かった子タスクについては、このセッションでは何もせず運用者に破棄の判断を委ねてください。")
 	} else {
-		b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、既存の子タスクは specced に更新してください" +
-			"（`child_specced` を打つだけです — このカード自身の状態遷移は行いません。card には `ready` 状態も `ready` action も存在しません）。" +
-			"新規追加 (`child_added`) は次の一手の枠 (open/specced/実行中の子が合わせて最大一つ) が空いている場合のみ可能で、" +
+		b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、既存の子タスクを specced な状態にしてください" +
+			"（このカード自身の状態遷移は行いません。card には `ready` 状態も `ready` action も存在しません）。" +
+			"新規追加は次の一手の枠 (open/specced/実行中の子が合わせて最大一つ) が空いている場合のみ可能で、" +
 			"埋まっている間の追加は拒否されます。" +
-			"card を進める・閉じる判断は行わないこと — それは人の accept、または khi の suggest 経由でのみ行われます" +
+			"card を進める・閉じる判断は行わないこと — それは人の accept、または suggestion の accept 経由でのみ行われます" +
 			"（card machine v2, docs/plans/suggestion-as-state-transition.md §3.2）。" +
-			"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
+			"更新の具体的な手順 (書き込み先・経路・使う CLI) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
 			"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
 			"それに従ってください。" +
 			"整形の結果「やらない」と分かった場合は、このセッションでは何もせず運用者に破棄 (drop) の判断を委ねてください。")
