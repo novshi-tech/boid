@@ -60,7 +60,8 @@ func (s *TaskWorkflowService) dispatchQueuedCardRequest(ctx context.Context, car
 	}
 
 	meta := s.hydrateMetaForTriggers(ctx, card.ProjectID)
-	cmd, ok := orchestrator.CardCommand{}, false
+	var cmd orchestrator.CardCommand
+	var ok bool
 	if meta != nil {
 		cmd, ok = meta.CardCommands[commandKey]
 	}
