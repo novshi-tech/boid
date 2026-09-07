@@ -478,6 +478,83 @@ khi 等の最新 workspace repo と本番 DB は未調査。判断スキルが�
 失敗時は PR-3 の context/委譲契約を修正し、成立が未確認のまま PR-4 を積まない。
 PR-5 の読みモデルに合わせた静的 UI サンプルは早めに確認する。
 
+### Gate A の実測 (2026-09-07、途中まで)
+
+**縦断の対象は nvt-tasks**（default workspace のメタプロジェクト）。khi にも同じ宣言を
+入れたが、実際に撃ったのは nvt-tasks 側。以下は**実行して確認した**ことだけを書く。
+
+**前提として入れた変更:**
+
+- boid: `buildShapingInstruction` が `child_specced`/`child_added` を書き込み経路として
+  名指しし、さらに `"khi の suggest 経由でのみ"` と workspace 名を焼き込んでいたのを外した
+  （PR #1066）。§2 が「Shape の『daemon が指示を固定する』friction」と呼んでいたものの実体。
+- nvt-tasks / khi-task-collector: `card_commands` に `discuss`（session、人発）と
+  `judge`（task）を宣言し、`card_events.command: judge`、判断 task 用の `judge` behavior
+  （`readonly: true`）を追加。判断スキル側は最小の手当てのみ（card 文脈経由では対象が
+  `card_id` 1 件で event_key が無いこと、`signals` を渡さないこと、`skip`/`done-signal` が
+  使えないこと、`--done` は親が打つこと）。
+- **nvt-tasks の Shape は元々成立していなかった。** `CLAUDE.md` にも `nvt-sweep/SKILL.md`
+  にも「整形」「Shape」「child_specced」「child_added」がゼロ件で、daemon の指示文を
+  受け止めるものが何も無い。唯一のスキルは `context: fork` の subagent 専用。khi は
+  `khi-shape` を自前で書いて穴を塞いでいたが、その代償が §1 の「Shape と Sweep の判断は
+  同じ仕事を重複して持つ」だった。
+
+**通った項目:**
+
+1. 実 workspace のスキル調査。上記のとおり記録。
+2. session コマンド。`boid card run <card> discuss` で session が立ち、`boid card context`
+   を実際に叩いて card_id を取り、`.claude/skills/nvt-sweep/SKILL.md` を読み、
+   `write.py` で summary / drop-child / complete を書いた。**`boid action send` の
+   直呼びは 0 件。** 対話の継続も確認。session は `BOID_TASK_ID` を持たず、
+   `card_write:false` なら report に倒れるので、**書き込みが実際に landed したこと自体が
+   `card_write:true` が根拠になった証拠**（write.py の stderr 監査行は Claude Code の
+   TUI がツール出力を畳むため transcript に残らない）。
+3. task コマンド。`judge` の継続先が `readonly: true` のまま summary / spec / suggestion を
+   書き、`--done` で正常終了。commit/push の強制は無し。**§4.5 の「判断 task は
+   readonly:true + card 書き込み可」が実 harness で成立した**（PR-3 が Gate A に送った宿題）。
+4. 状態を勝手に変えない。task 面でも session 面でも card は `parked` のまま。子は
+   `specced` で止まり、Go を押すまで dispatch されない。
+6. （一部）Go とコマンドが 1 つの実行枠を共有する。Go は `card_requests` に
+   `__go__` の行を作り、その間のコマンドは `occupied` + 作業 task へのリンクを返す。
+   手動コマンド同士も同様で、入力した instruction は応答に echo され失われない。
+   二重起動しない。
+7. （一部）launcher は継続先を作って即終了し（実測 2〜3 秒、exit 0）、枠は継続先が
+   持つ。session から detach しても `attached` のまま（切断と終了を混同しない）。
+   `boid agent stop` で job が終端して初めて `finished` に落ちる。Go の作業 task の
+   終端でも同様に解放される。
+
+**見つけて直したもの（どちらもコード読解では出ず、実際に撃って初めて出た）:**
+
+- **発見 1（PR #1067）: 判断コマンドが自分の握る実行枠で自分を塞いでいた。**
+  `cardSlotOccupied` が「card 直下の 3 つの占有シグナルは同じ 1 つの枠」として畳んで
+  おり、継続先自身の `card_requests` 行（`attached`）を占有と数えていた。結果、
+  子が 0 件の card で `child_added` が 409 になり、**判断が次の一手を一度も記録できない**。
+  §3.2 の表は制約を 2 本に分けていて、仕様の枠は「仕様を作る対話・判断と共存できる」と
+  明記されている。`cardSpecSlotOccupied` / `cardSpecOrExecutionSlotOccupied` に分け、
+  `child_added` は前者、`reopen` は後者を見るようにした。
+- **発見 2（PR #1068）: その鏡写し。specced な子が card コマンドの起動を塞いでいた。**
+  発見 1 を直して初めて「specced な子を持つ card」が生まれ、そこで露出した。
+  `cardWorkChildOccupantTx` が `DetailOpenSlotChildID` を占有と数えており、何も
+  走っていないのに `occupied` が返り、しかも JSON の子には指せる task 行が無いので
+  `target_kind`/`target_id` が空の行き止まりになっていた（§4.4 は occupied 応答に
+  「現在の実行へのリンク」を返すと決めている）。生きた子 task 行だけを実行の占有とし、
+  detail の parse は fail-closed のために残した。
+
+**未了:**
+
+- 項目 5 全部（作成 op 直後の launcher 停止、dispatch と関連書き込みの間での daemon 停止）。
+- 項目 6 の残り（specced な子がある状態でコマンドが枠を握っているときに Go が拒まれるか。
+  子が `dispatched` に移ると Go は枠のガードより手前の「no specced child」で落ちるため、
+  枠のガードそのものに到達する状況を作る必要がある）。
+- 項目 7 の残り（task の hook job だけが終わり task が未終端のとき、daemon 再起動時）。
+- **これらは現状の `run:`（2〜3 秒で終わる）では狙った瞬間を手で当てられず、「当てられ
+  なかった」と「当てて通った」を区別できない。** 検証用に `run:` へ `sleep` を挟んだ
+  card_commands を一時的に宣言して窓を広げる案がある（`sleep` 後に create すれば
+  `launching` のまま、create 後に `sleep` すれば継続先ありで launcher だけ残る）。
+  未承認。
+- 検証用の捨て card `cc1af1df-a228-4f69-aa79-7e3ddb2e833c`（nvt-tasks、`[GateA]` 始まり）が
+  残っている。検証完了後に drop する。
+
 ## 8. 互換性・切替
 
 - 過去の action 履歴の `working` / `done` は書き換えない。読み側で旧名を解釈する。
