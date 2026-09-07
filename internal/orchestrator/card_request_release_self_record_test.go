@@ -181,11 +181,12 @@ func TestReleaseCardRequestForTerminalTargetWithCard_Failure_RecordsSelfLog(t *t
 	}
 }
 
-// TestForceReleaseCardRequest_DoesNotSelfRecord pins that
-// ForceReleaseCardRequest does not self-record — it calls the shared
-// internal failCardRequest helper directly, bypassing FailCardRequest's own
-// wrapper entirely.
-func TestForceReleaseCardRequest_DoesNotSelfRecord(t *testing.T) {
+// TestForceReleaseCardRequest_RecordsSelfLog pins that ForceReleaseCardRequest
+// self-records the operator's reason as a command_force_released action —
+// otherwise "why did this card stop auto-dispatching" has no durable answer
+// once card_requests is GC'd, since the force-release barrier row itself
+// (card_force_release_barriers) carries no reason and nothing reads it.
+func TestForceReleaseCardRequest_RecordsSelfLog(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	cardID := newTestCard(t, d, "proj-1", "card-1")
 	req := attachedCardRequest(t, d, cardID, "launcher-1", orchestrator.CardRequestTargetKindTask, "task-1")
@@ -198,7 +199,86 @@ func TestForceReleaseCardRequest_DoesNotSelfRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListActionsByTask: %v", err)
 	}
+	if len(actions) != 1 || actions[0].Type != "command_force_released" {
+		t.Fatalf("actions = %+v, want exactly one command_force_released self-record", actions)
+	}
+	p := decodeSelfRecordPayload(t, actions[0].Payload)
+	if p.RequestID != req.ID {
+		t.Errorf("RequestID = %q, want %q", p.RequestID, req.ID)
+	}
+	if p.Reason != "operator stop" {
+		t.Errorf("Reason = %q, want %q", p.Reason, "operator stop")
+	}
+	if p.TargetKind != orchestrator.CardRequestTargetKindTask || p.TargetID != "task-1" {
+		t.Errorf("target = (%q, %q), want (task, task-1) — force-release does not clear target_kind/target_id", p.TargetKind, p.TargetID)
+	}
+}
+
+// TestForceReleaseCardRequest_RecordsForceFailedSiblings pins that a folded
+// sibling force-release also force-fails gets named in the self-record's
+// own payload — the barrier row and the card_requests rows themselves both
+// disappear from GC, so this is the only durable place that association
+// survives.
+func TestForceReleaseCardRequest_RecordsForceFailedSiblings(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	head := &orchestrator.CardRequest{CardID: cardID}
+	sibling := &orchestrator.CardRequest{CardID: cardID}
+	if err := orchestrator.CreateCardRequest(d.Conn, head); err != nil {
+		t.Fatalf("create head: %v", err)
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, sibling); err != nil {
+		t.Fatalf("create sibling: %v", err)
+	}
+	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{CommandKey: "review"})
+	if err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	if len(folded) != 1 {
+		t.Fatalf("folded = %d, want 1", len(folded))
+	}
+
+	if _, err := orchestrator.ForceReleaseCardRequest(d.Conn, primary.ID, "operator stop"); err != nil {
+		t.Fatalf("ForceReleaseCardRequest: %v", err)
+	}
+
+	actions, err := orchestrator.ListActionsByTask(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("actions = %d, want 1", len(actions))
+	}
+	p := decodeSelfRecordPayload(t, actions[0].Payload)
+	if len(p.ForceFailedSiblings) != 1 || p.ForceFailedSiblings[0].ID != sibling.ID {
+		t.Fatalf("ForceFailedSiblings = %+v, want exactly [%q]", p.ForceFailedSiblings, sibling.ID)
+	}
+}
+
+// TestForceReleaseCardRequest_GoCommandKey_NoSelfRecord is the Go-exclusion
+// guard applied to force-release too — an operator force-releasing a stuck
+// Go reservation must not self-record (child_closed already covers a
+// Go-dispatched child's own terminal outcome).
+func TestForceReleaseCardRequest_GoCommandKey_NoSelfRecord(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	req := &orchestrator.CardRequest{
+		CardID: cardID, CommandKey: orchestrator.CardRequestCommandKeyGo,
+		Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "go:launcher-1",
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
+		t.Fatalf("CreateCardRequest: %v", err)
+	}
+
+	if _, err := orchestrator.ForceReleaseCardRequest(d.Conn, req.ID, "operator stop"); err != nil {
+		t.Fatalf("ForceReleaseCardRequest: %v", err)
+	}
+
+	actions, err := orchestrator.ListActionsByTask(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
 	if len(actions) != 0 {
-		t.Fatalf("actions = %+v, want none (ForceReleaseCardRequest does not self-record)", actions)
+		t.Fatalf("actions = %+v, want none — force-releasing a Go reservation must not self-record", actions)
 	}
 }

@@ -30,10 +30,10 @@ type cardContextResponse struct {
 	Actor string `json:"actor"`
 }
 
-const (
-	cardContextOriginHuman = orchestrator.CardRequestOriginHuman
-	cardContextOriginEvent = orchestrator.CardRequestOriginEvent
-)
+// cardContextOriginEvent is the only origin value this package compares
+// against directly (BoidOpAgentStart's event-origin rejection) — the
+// "human" side never needs its own local alias.
+const cardContextOriginEvent = orchestrator.CardRequestOriginEvent
 
 // cardRequestOrigin derives a card_requests row's origin the ONE way both
 // BoidOpCardContext and BoidOpAgentStart must agree on — delegating to

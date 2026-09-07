@@ -14,15 +14,24 @@ import (
 	"github.com/novshi-tech/boid/testutil"
 )
 
+type cardRequestSelfRecordSibling struct {
+	ID         string `json:"id"`
+	CommandKey string `json:"command_key"`
+}
+
 type cardRequestSelfRecordPayload struct {
-	RequestID     string `json:"request_id"`
-	CommandKey    string `json:"command_key"`
-	LaunchedLabel string `json:"launched_label"`
-	TargetKind    string `json:"target_kind"`
-	TargetID      string `json:"target_id"`
-	Origin        string `json:"origin"`
-	Result        string `json:"result"`
-	Error         string `json:"error"`
+	RequestID           string                         `json:"request_id"`
+	CommandKey          string                         `json:"command_key"`
+	LaunchedLabel       string                         `json:"launched_label"`
+	LauncherJobID       string                         `json:"launcher_job_id"`
+	TargetKind          string                         `json:"target_kind"`
+	TargetID            string                         `json:"target_id"`
+	Origin              string                         `json:"origin"`
+	CauseID             string                         `json:"cause_id"`
+	Result              string                         `json:"result"`
+	Error               string                         `json:"error"`
+	Reason              string                         `json:"reason"`
+	ForceFailedSiblings []cardRequestSelfRecordSibling `json:"force_failed_siblings"`
 }
 
 func decodeSelfRecordPayload(t *testing.T, raw []byte) cardRequestSelfRecordPayload {
@@ -94,8 +103,14 @@ func TestFinishCardRequest_RecordsCommandFinishedOnCard_HumanOrigin(t *testing.T
 	if p.TargetKind != orchestrator.CardRequestTargetKindTask || p.TargetID != "task-1" {
 		t.Errorf("target = (%q, %q), want (task, task-1)", p.TargetKind, p.TargetID)
 	}
+	if p.LauncherJobID != "launcher-1" {
+		t.Errorf("LauncherJobID = %q, want %q", p.LauncherJobID, "launcher-1")
+	}
 	if p.Origin != "human" {
 		t.Errorf("Origin = %q, want human (empty cause_id)", p.Origin)
+	}
+	if p.CauseID != "" {
+		t.Errorf("CauseID = %q, want empty (human origin)", p.CauseID)
 	}
 	if p.Result != "no further action" {
 		t.Errorf("Result = %q, want %q", p.Result, "no further action")
@@ -131,6 +146,9 @@ func TestFailCardRequest_RecordsCommandFailedOnCard_EventOrigin(t *testing.T) {
 	}
 	if p.Origin != "event" {
 		t.Errorf("Origin = %q, want event (non-empty cause_id)", p.Origin)
+	}
+	if p.CauseID != "signal-42" {
+		t.Errorf("CauseID = %q, want %q", p.CauseID, "signal-42")
 	}
 	if p.Error != "continuation ended without success" {
 		t.Errorf("Error = %q, want %q", p.Error, "continuation ended without success")
@@ -354,6 +372,90 @@ func TestGCTasks_TerminalOldCard_TakesTheSelfRecordActionsWithIt(t *testing.T) {
 	}
 	if len(actions) != 0 {
 		t.Fatalf("actions after GCTasks on the terminal card = %+v, want none (the whole card is gone)", actions)
+	}
+}
+
+// ---- shape facts a reader of the self-record actions must know ----
+
+// TestFinishCardRequest_FoldedSiblings_OnlyHeadSelfRecords pins that when a
+// claim folds several queued requests into one head, finishing the head
+// writes exactly ONE self-record — the folded siblings never got their own
+// launched snapshot (they were absorbed into the head's single run), so
+// they get no action of their own either.
+func TestFinishCardRequest_FoldedSiblings_OnlyHeadSelfRecords(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	first := &orchestrator.CardRequest{CardID: cardID, CauseID: "cause-1"}
+	second := &orchestrator.CardRequest{CardID: cardID, CauseID: "cause-2"}
+	if err := orchestrator.CreateCardRequest(d.Conn, first); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	if err := orchestrator.CreateCardRequest(d.Conn, second); err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	primary, folded, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-1", orchestrator.CardRequestDefinition{CommandKey: "review"})
+	if err != nil {
+		t.Fatalf("ClaimQueuedCardRequests: %v", err)
+	}
+	if len(folded) != 1 {
+		t.Fatalf("folded = %d, want 1", len(folded))
+	}
+	if err := orchestrator.AttachCardRequest(d.Conn, primary.ID, orchestrator.CardRequestTargetKindTask, "task-1"); err != nil {
+		t.Fatalf("AttachCardRequest: %v", err)
+	}
+
+	if err := orchestrator.FinishCardRequest(d.Conn, primary.ID, "done"); err != nil {
+		t.Fatalf("FinishCardRequest: %v", err)
+	}
+
+	actions, err := orchestrator.ListActionsByTask(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("actions = %d, want exactly 1 (the folded sibling must not get its own self-record)", len(actions))
+	}
+	p := decodeSelfRecordPayload(t, actions[0].Payload)
+	if p.RequestID != primary.ID {
+		t.Errorf("RequestID = %q, want the head %q, not the folded sibling", p.RequestID, primary.ID)
+	}
+}
+
+// TestFailCardRequest_RetryThenFailAgain_TwoSelfRecordsSameRequestID pins
+// that RetryCardRequest keeps the same request_id, so a request that fails,
+// gets retried, and fails again accumulates TWO terminal self-records
+// sharing one request_id — a reader must not assume request_id uniquely
+// identifies one action row.
+func TestFailCardRequest_RetryThenFailAgain_TwoSelfRecordsSameRequestID(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	cardID := newTestCard(t, d, "proj-1", "card-1")
+	req := launchedCardRequest(t, d, cardID, "review", "", "launcher-1", orchestrator.CardRequestTargetKindTask, "task-1")
+
+	if err := orchestrator.FailCardRequest(d.Conn, req.ID, "first failure"); err != nil {
+		t.Fatalf("FailCardRequest (1st): %v", err)
+	}
+	if err := orchestrator.RetryCardRequest(d.Conn, req.ID); err != nil {
+		t.Fatalf("RetryCardRequest: %v", err)
+	}
+	if _, _, err := orchestrator.ClaimQueuedCardRequests(d.Conn, cardID, "launcher-2", orchestrator.CardRequestDefinition{CommandKey: "review"}); err != nil {
+		t.Fatalf("ClaimQueuedCardRequests (retry): %v", err)
+	}
+	if err := orchestrator.FailCardRequest(d.Conn, req.ID, "second failure"); err != nil {
+		t.Fatalf("FailCardRequest (2nd): %v", err)
+	}
+
+	actions, err := orchestrator.ListActionsByTask(d.Conn, cardID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 2 {
+		t.Fatalf("actions = %d, want 2 (both terminal outcomes for the same retried request_id)", len(actions))
+	}
+	for _, a := range actions {
+		p := decodeSelfRecordPayload(t, a.Payload)
+		if p.RequestID != req.ID {
+			t.Errorf("RequestID = %q, want %q on both records", p.RequestID, req.ID)
+		}
 	}
 }
 

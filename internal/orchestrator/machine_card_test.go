@@ -306,6 +306,7 @@ func TestCardMachineV2_IsManualAction(t *testing.T) {
 	nonManual := []string{
 		"job_failed", "progress", "done_request", "fail_request",
 		"child_dispatched", "child_closed", "wake_due", "garbage",
+		orchestrator.ActionTypeCommandFinished, orchestrator.ActionTypeCommandFailed, orchestrator.ActionTypeCommandForceReleased,
 		// v1 verbs, fully deleted:
 		"triage", "ready", "wake_triaged", "wake_ready", "wake_working", "dispatch",
 		"triage_done", "reopen_triaged",
@@ -543,6 +544,7 @@ func TestIsCardTransitionAction(t *testing.T) {
 		"attrs_set", "child_added", "child_specced", "child_dropped", "noted", "answered",
 		"wake_due", "job_failed", "progress", "done_request", "fail_request",
 		"child_dispatched", "child_closed", "abort", "ask", "answer", "garbage",
+		orchestrator.ActionTypeCommandFinished, orchestrator.ActionTypeCommandFailed, orchestrator.ActionTypeCommandForceReleased,
 		// retired card-verb spellings — see the nonManual list's own comment
 		// in TestCardMachineV2_IsManualAction above.
 		"working", "done",

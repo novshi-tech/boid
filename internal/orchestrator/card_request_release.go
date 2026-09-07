@@ -367,6 +367,9 @@ func ForceReleaseCardRequest(dbtx db.DBTX, id, reason string) ([]ForceReleasedSi
 	if serr := SetCardForceReleaseBarrier(dbtx, row.CardID); serr != nil {
 		return siblings, fmt.Errorf("force release card request: set barrier: %w", serr)
 	}
+	if rerr := recordCardRequestOutcome(dbtx, id, ActionTypeCommandForceReleased, "", "", reason, siblings); rerr != nil {
+		return siblings, fmt.Errorf("force release card request: record outcome: %w", rerr)
+	}
 	return siblings, nil
 }
 

@@ -134,10 +134,11 @@ func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read before releasing: ForceReleaseCardRequest clears target_kind/
-	// target_id off the row, so this is the only chance to learn what it
-	// was pointing at. Best-effort — a read failure must not block the
-	// release an operator is trying to perform.
+	// Read before releasing: ForceReleaseCardRequest flips the row's status
+	// to failed (target_kind/target_id themselves are left alone), so this
+	// is the only chance to learn what status it was in — queued/launching/
+	// attached — before that happens. Best-effort — a read failure must not
+	// block the release an operator is trying to perform.
 	before, _ := h.Store.GetCardRequest(id)
 
 	siblings, err := h.Store.ForceReleaseCardRequest(id, body.Reason)

@@ -61,12 +61,13 @@ func CardRequestOrigin(causeID string) string {
 	return CardRequestOriginHuman
 }
 
-// ActionTypeCommandFinished/Failed are the card action-log entries
-// FinishCardRequest/FailCardRequest self-record — see their own doc
-// comments and recordCardRequestTerminalOutcome.
+// ActionTypeCommandFinished/Failed/ForceReleased are the card action-log
+// entries FinishCardRequest/FailCardRequest/ForceReleaseCardRequest
+// self-record — see recordCardRequestOutcome.
 const (
-	ActionTypeCommandFinished = "command_finished"
-	ActionTypeCommandFailed   = "command_failed"
+	ActionTypeCommandFinished      = "command_finished"
+	ActionTypeCommandFailed        = "command_failed"
+	ActionTypeCommandForceReleased = "command_force_released"
 )
 
 // CardRequestTargetKind vocabulary — the kind of continuation a launcher
@@ -446,44 +447,73 @@ func FailCardRequest(dbtx db.DBTX, id, errText string) error {
 	return recordCardRequestTerminalOutcome(dbtx, id, ActionTypeCommandFailed, "", errText)
 }
 
-// recordCardRequestTerminalOutcome self-records id's terminal outcome
-// (finished or failed) onto its card's own action log via CreateAction, so
-// the command's history survives GCCardRequests deleting the card_requests
-// row itself. Skipped for a CardRequestCommandKeyGo row — the shared
-// work-execution slot's own outcome already self-records via child_closed,
-// and a second record here would duplicate it.
+// cardRequestOutcomeSibling is one row a force-release also force-failed —
+// the payload shape for cardRequestOutcomePayload.ForceFailedSiblings.
+type cardRequestOutcomeSibling struct {
+	ID         string `json:"id"`
+	CommandKey string `json:"command_key"`
+}
+
+// cardRequestOutcomePayload is the JSON shape every card_requests self-record
+// action (command_finished/command_failed/command_force_released) writes.
+type cardRequestOutcomePayload struct {
+	RequestID           string                      `json:"request_id"`
+	CommandKey          string                      `json:"command_key"`
+	LaunchedLabel       string                      `json:"launched_label"`
+	LauncherJobID       string                      `json:"launcher_job_id"`
+	TargetKind          string                      `json:"target_kind"`
+	TargetID            string                      `json:"target_id"`
+	Origin              string                      `json:"origin"`
+	CauseID             string                      `json:"cause_id"`
+	Result              string                      `json:"result"`
+	Error               string                      `json:"error"`
+	Reason              string                      `json:"reason,omitempty"`
+	ForceFailedSiblings []cardRequestOutcomeSibling `json:"force_failed_siblings,omitempty"`
+}
+
+// recordCardRequestTerminalOutcome self-records id's finished/failed outcome
+// — see recordCardRequestOutcome, which this and ForceReleaseCardRequest's
+// own self-record both funnel through.
+func recordCardRequestTerminalOutcome(dbtx db.DBTX, id, actionType, result, errText string) error {
+	return recordCardRequestOutcome(dbtx, id, actionType, result, errText, "", nil)
+}
+
+// recordCardRequestOutcome self-records id's terminal outcome onto its
+// card's own action log via CreateAction, so the command's history survives
+// GCCardRequests deleting the card_requests row itself. Skipped for a
+// CardRequestCommandKeyGo row — the shared work-execution slot's own
+// outcome already self-records via child_closed, and a second record here
+// would duplicate it.
 //
 // Re-reads id fresh (rather than taking pre-computed fields) so the payload
 // reflects exactly what the caller's own terminal UPDATE just persisted.
-func recordCardRequestTerminalOutcome(dbtx db.DBTX, id, actionType, result, errText string) error {
+func recordCardRequestOutcome(dbtx db.DBTX, id, actionType, result, errText, reason string, siblings []ForceReleasedSibling) error {
 	row, err := GetCardRequest(dbtx, id)
 	if err != nil {
-		return fmt.Errorf("record card request terminal outcome: reload %q: %w", id, err)
+		return fmt.Errorf("record card request outcome: reload %q: %w", id, err)
 	}
 	if row.CommandKey == CardRequestCommandKeyGo {
 		return nil
 	}
-	payload, merr := json.Marshal(struct {
-		RequestID     string `json:"request_id"`
-		CommandKey    string `json:"command_key"`
-		LaunchedLabel string `json:"launched_label"`
-		TargetKind    string `json:"target_kind"`
-		TargetID      string `json:"target_id"`
-		Origin        string `json:"origin"`
-		Result        string `json:"result"`
-		Error         string `json:"error"`
-	}{
+	p := cardRequestOutcomePayload{
 		RequestID:     row.ID,
 		CommandKey:    row.CommandKey,
 		LaunchedLabel: row.Launched.Label,
+		LauncherJobID: row.LauncherJobID,
 		TargetKind:    row.TargetKind,
 		TargetID:      row.TargetID,
 		Origin:        CardRequestOrigin(row.CauseID),
+		CauseID:       row.CauseID,
 		Result:        result,
 		Error:         errText,
-	})
+		Reason:        reason,
+	}
+	for _, s := range siblings {
+		p.ForceFailedSiblings = append(p.ForceFailedSiblings, cardRequestOutcomeSibling{ID: s.ID, CommandKey: s.CommandKey})
+	}
+	payload, merr := json.Marshal(p)
 	if merr != nil {
-		return fmt.Errorf("record card request terminal outcome: marshal payload: %w", merr)
+		return fmt.Errorf("record card request outcome: marshal payload: %w", merr)
 	}
 	action := &Action{
 		TaskID:  row.CardID,
@@ -492,7 +522,7 @@ func recordCardRequestTerminalOutcome(dbtx db.DBTX, id, actionType, result, errT
 		Actor:   ActorDaemon,
 	}
 	if err := CreateAction(context.Background(), dbtx, action, nil, nil); err != nil {
-		return fmt.Errorf("record card request terminal outcome: create action: %w", err)
+		return fmt.Errorf("record card request outcome: create action: %w", err)
 	}
 	return nil
 }

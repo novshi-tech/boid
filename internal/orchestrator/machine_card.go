@@ -103,14 +103,15 @@ func NewCardMachine() *StateMachine {
 		{Action: "done_request", FromStatus: "*"},
 		{Action: "fail_request", FromStatus: "*"},
 
-		// command_finished/command_failed: FinishCardRequest/FailCardRequest's
-		// own self-record of a card command's terminal outcome
-		// (recordCardRequestTerminalOutcome, card_request.go) — registered
+		// command_finished/command_failed/command_force_released: a card
+		// command's self-recorded terminal outcome
+		// (recordCardRequestOutcome, card_request.go) — registered
 		// non-transitioning purely so Apply/AvailableActions treat the name
 		// as known, same reasoning as child_closed just above; the write
 		// itself goes through CreateAction directly, never Apply.
 		{Action: ActionTypeCommandFinished, FromStatus: "*"},
 		{Action: ActionTypeCommandFailed, FromStatus: "*"},
+		{Action: ActionTypeCommandForceReleased, FromStatus: "*"},
 	}
 
 	// Non-transitioning Manual:true vocabulary — one rule per status in EACH
