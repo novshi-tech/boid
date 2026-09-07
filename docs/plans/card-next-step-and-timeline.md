@@ -1428,3 +1428,95 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
 これらは §4 の契約・§6 の対処を前提に、Gate A と各実装 PR で確定する。
 単一ユーザーの利用を前提に、対話注入・分散ロック・汎用 DAG scheduler は追加しない。
 本 doc は実装の実測結果に追随させ、コード読解で確認したことと実行して確認したことを混同しない。
+
+- **PR-5b で確定: card タイムライン読みモデル (Go 側のみ、描画・SSE は PR-6)。**
+  `internal/timeline/card.go`（新規、既存 `Build`/`StatusGroup` とは並立する別関数群）。
+
+  1. **置き場所:** `internal/timeline`（新規パッケージや `internal/api` ではない）。
+     理由: `internal/api` は `web/templates` を import しており（レンダリング用）、
+     `web/templates` は既に `internal/orchestrator` と `internal/timeline` を直接
+     import しているため、`internal/api` に置くと将来 `web/templates` から
+     読みモデルを直接使えない（import cycle）。`internal/timeline` に足せば
+     この制約を素直に満たせる上、新規パッケージを増やさずに済む。
+     既存 `Build` が「呼び出し元が解決済みの入力だけを受け取る純粋関数」
+     なのに対し、card 用の `BuildCardTimeline`/`CardPinnedItems` は
+     `db.DBTX` を受け取り自分で読む — 契約が異なるので `Build` 自体は
+     一切変更していない（`TestBuild_*` は無改変のまま green）。
+  2. **型:** `CardItem`（`ID`/`Kind`/`Time`/`CorrelationID`/`Pinned`/
+     `Action`/`Child`/`Command`）。`Kind` は
+     child/child_finished/command/suggestion/answered/summary/note/wake_due
+     の8種。`Child`（`*CardChildDetail`）と `Command`（`*CardCommandDetail`）
+     はそれぞれ子・コマンドの構造化フィールドを持ち、それ以外の5種は
+     生の `*orchestrator.Action` を持つだけ（label 生成等は PR-6 の仕事）。
+  3. **cursor の方式:** 「バッチで読み進める」ではなく「項目境界を別に持つ」側を
+     選んだ。`BuildCardTimeline`/`CardPinnedItems` はどちらも card の
+     action 全履歴を `orchestrator.ListActionsByTask` で一括取得し、
+     項目境界へのグルーピング（child_added+child_specced→1つの子項目、
+     child_closed/child_dropped→finished項目、attrs_set の
+     suggestion/summary キー分割、コマンド終端 action→1項目、等）を
+     メモリ上で行ってから、`(Time, ID)` のキーセット cursor
+     (`orchestrator.EncodeActionCursor`/`DecodeActionCursor` をそのまま流用)
+     で項目単位にページングする。理由: 1card の action 総量は個人利用の
+     triage キュー規模で小さく、DB 側バッチ読みの複雑さに見合わない。
+     wire cursor の形式自体（項目の (created_at, id) キーセット）はこの
+     選択に依存しないので、後で DB 側バッチ読みに切り替えても cursor の
+     互換性は保たれる。
+  4. **固定項目と履歴の重複回避:** `loadCardTimelineState` が pinned/history
+     両方の項目を一度に作り、`Pinned` フラグで分岐するだけ
+     （`BuildCardTimeline` は `Pinned==true` を除外、`CardPinnedItems` は
+     `Pinned==true` だけを返す）。同じ計算から作るので、固定表示されている
+     項目が解決した後に**同じ ID** で履歴側に現れることが構造的に保証される
+     （子: `!closed` の間 pinned、closed になった瞬間 history 側に
+     同じ anchor action の ID で出現。suggestion: 現在アクティブな
+     suggestion を持つ最新の `attrs_set{suggestion}` action だけを
+     pinned、answered で解決されると同じ ID が history に戻る）。
+     コマンドの pinned 表現だけは例外 — 進行中のコマンドには対応する
+     action がまだ無いので `"pending-command:<request id>"` という別 ID を
+     一時的に持ち、終端すると全く別の ID（終端 action の `actions.id`）で
+     history に現れる（§10 PR-5a point 9 のコマンドモデルどおり）。
+  5. **日付/TZ:** 読みモデルは `actions.created_at` をそのまま UTC
+     `time.Time` として持ち、タイムゾーン変換は一切行わない。
+     `web/templates/tasks.templ` の既存 execution 詳細タイムラインと同じ
+     方針で、`.Local()` は描画時（PR-6）に呼ぶ。
+  6. **GC 後も読める概要:** 子は `child_closed`/`child_dropped` action の
+     payload から Result/Status/ClosingActionType を復元し、子タスクの
+     行が消えていても `TaskExists=false` で描画を続ける。コマンドは
+     `orchestrator.ParseCardRequestOutcomePayload`（既存の書き込み用
+     private struct を export しただけ、新しい wire 形式は増やしていない）
+     で終端 action の payload から CommandKey/Label/Result/Error/Reason
+     等を復元する。`Instruction` だけは best-effort（生きている
+     `card_requests` 行があれば読む、GC 後は空）——これは意図的な非対称で、
+     完了条件が求める「概要が読める」を満たすのは Result/Error/Reason 等
+     action payload 由来のフィールドの方であり、Instruction はそこに
+     含まれていない（PR-5a の自己記録 payload に元々無いフィールド）。
+     実 DB でどちらも「関連行を DELETE してから読み直しても項目が消えない・
+     TargetExists/TaskExists が false になる」ことをテストで固定済み
+     （`TestBuildCardTimeline_GCSurvival_ChildTaskRowDeleted`、
+     `TestBuildCardTimeline_GCSurvival_CardRequestRowDeleted`）。
+  7. **mutation テスト結果（各契約ごとに個別に mutation を当てて対応する
+     テストが赤くなることを確認済み）:**
+
+     | 契約 | mutation | 結果 |
+     |---|---|---|
+     | 固定項目が履歴に出ない（子） | `Pinned: !closed` を `Pinned: false` に | 赤 |
+     | 固定項目が履歴に出ない（コマンド/子/suggestion 共通ガード） | `BuildCardTimeline` の `if it.Pinned { continue }` を削除 | 赤（2テスト） |
+     | 同時刻タイの cursor 側 tie-break | `isOlderThanCursor` の `id < sinceID` を `false` に | 赤（項目が無言で欠落）|
+     | 同時刻タイの sort 側 tie-break | `sortCardItemsDesc` の `a.ID > b.ID` を `false` に | 赤 |
+     | GC 後も子の概要が読める | `TaskExists` を常に `true` に固定 | 赤 |
+     | GC 後もコマンドの概要が読める | `CommandKey` を payload からでなく空文字に固定 | 赤 |
+     | 子の作成位置≠finished位置 | 子項目の `Time` を anchor でなく closingAction から取る | 赤 |
+     | item 単位 cursor の境界 (`HasMore`) | `len(history) > limit` を `>= limit` に | **最初は既存テストで見逃した（緑のまま）** — 境界一致 (残り件数==limit) を直接見る `TestBuildCardTimeline_HasMoreFalseWhenExactlyLimitRemaining` を追加してから赤に |
+
+     最後の行は「たぶん赤くなるはず」で済ませず実際に当てた結果、既存の
+     ページング系テストが境界値をカバーしていない空振りだと判明したケース
+     — テストを追加してから再度同じ mutation を当てて赤を確認した。
+  8. **既存への影響:** `internal/timeline` の `Build`/`StatusGroup`（execution
+     詳細用）は無改変、既存テスト全 green。`internal/api/card_read.go` の
+     `CardView`/`/api/cards` REST（`boid card get`/`list` が使う）も
+     無改変。既存の card 詳細ページ（`TaskDetailCardBody`/`TaskDetail`）は
+     この PR では未接続のまま（PR-6 で差し替え）。
+  9. **PR-5c/PR-6 への申し送り:** 一覧活動状態（§5.5）はこの読みモデルを
+     参照してよいが未接続。PR-6 は `Action` フィールドのラベル生成
+     （suggestion/summary/answered/note/wake_due の各 kind）を自前で行う
+     必要がある — この PR は生の payload を渡すところまでで、
+     `timeline.BuildActionLabel` 相当の card 版ラベル関数は用意していない。
