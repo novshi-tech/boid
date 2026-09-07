@@ -761,10 +761,12 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
 
   **`taskType != TaskTypeCard` ガードは現状の DB スキーマ下では到達不能
   （mutation testing で判明、記録のみ）。** `0045_card_sti_migration.sql` の
-  CHECK 制約 (`type != 'card' OR status IN ('parked','working','done','dropped')`)
-  により、card 型でない task は parked/working という status を最初から
-  持てない。よってこのアプリ層チェックを外す mutation を当てても既存テストは
-  落ちない。`IngestActionSignal`（`actionTargetTypeAndProject`）との構造的対称、
+  CHECK 制約 `type != 'execution' OR status IN ('pending','executing','awaiting','done','aborted')`
+  と `type IN ('card','execution')` の組み合わせにより、card 型でない task は
+  parked/working という status を最初から持てない（隣接する
+  `type != 'card' OR status IN (...)` の方は card 行を縛るもので、この結論の
+  根拠にはならない）。よってこのアプリ層チェックを外す mutation を当てても
+  既存テストは落ちない。`IngestActionSignal`（`actionTargetTypeAndProject`）との構造的対称、
   および将来のスキーマ変更に対する多層防御として残したが、DB 制約が変わらない
   限り実質 dead code である点は次段の実装者が把握しておくこと。
 
@@ -783,6 +785,45 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   経路には効かない（`TestProjectStore_CardEventCommand_FromRealProjectYAML`
   が実 project.yaml → `ProjectStore.Load` → `CardEventCommand` の全経路を
   実行して確認）。
+
+  **PR-4c への必須前提 1: claim 側で card status を再チェックすること。**
+  ingest は action 適用時点の status を見るが、**その時点で parked/working
+  だった card が同じ transaction 内で終端になる経路がある** —
+  `internal/api/suggestion_accept.go` は `answered` を CreateAction し
+  （この時点で card は working なので queued 行が作られる）、同じ tx の後段で
+  受理された verb（`complete`/`drop`）の `UpdateTask` を走らせる。commit 後に
+  残るのは「done な card に queued な card_events 要求」。`complete` の
+  suggestion を人が accept するのは最も普通の操作なので稀ケースではない。
+  ingest 側で先読みして潰す設計にはしていない（action 適用の途中結果に
+  依存させると contract が壊れる）ので、**§4.6 の「done/dropped の card には
+  自動起動しない」は claim 時の再チェックで担保する。** これを落とすと
+  終端 card が自動起動する。
+
+  **PR-4c への必須前提 2: force-release された card は、孤児継続先の
+  書き込みで再起動しうる。** §10 の既存 KNOWN GAP（retry/force-release は
+  前の継続先 session/task を止めない）との合わせ技。force-release で
+  request は `failed` になるが継続先 job は生きており、その job がその後
+  `attrs_set`（write.py の summary 書き戻し）を撃つと、自己ループ除外の
+  live 判定（launching/attached のみ）を外れるため除外されず、新しい
+  queued 行が生まれる。PR-4a が `ForceReleaseCardRequest` で sibling を
+  queued に戻さず failed にした意図（「直後の claim で運用者が止めたはずの
+  card が再起動するのを防ぐ」）を横から破る経路になる。**PR-4c は
+  「force-release された card を次の人の操作まで claim しない」等の扱いを
+  決めること。** 自己ループ除外を「failed になった書き手の行も除外する」側へ
+  広げる案は、正当な retry 後の書き込みまで殺すので単純には採れない。
+
+  **記録のみ（PR-4c で扱いを決めてよい）:**
+  - Go の作業 task は `PlanHook` が意図的に CardID/CardRequestID を刻まない
+    （`internal/orchestrator/planner.go` の Go 除外）ため、作業 task が card に
+    `noted`/`attrs_set` を書くと自己ループ除外を受けず queued 行が積まれる。
+    無限ループにはならない（枠が空くまで queued、その後の起動は自分の
+    request で除外される）が、`child_closed` と二重に要求が積まれる。
+    fold で吸収される想定なら追加対処は不要。
+  - `ProjectStore.CardEventCommand` は非 hydrate の `Get` を使い、起動側の
+    `RunCardCommandAsHuman` は `hydrateMetaForTriggers`（`GetWithWorkspace`）を
+    使う非対称がある。`card_commands`/`card_events` は workspace hydration の
+    対象外フィールドなので現状は同値だが、hydration の対象が広がると
+    読み取り元が食い違う。
 
   この PR では `ClaimQueuedCardRequests` を呼ぶ経路を追加していない —
   queued 行が積まれるだけで、PR-4a が固定した「既存の 3 つの

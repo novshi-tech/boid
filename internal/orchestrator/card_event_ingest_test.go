@@ -78,6 +78,9 @@ func TestIngestCardEventRequest_ProjectDeclaresNoCardEvents_NoOp(t *testing.T) {
 	}
 }
 
+// An execution task cannot hold parked/working under the tasks CHECK
+// constraints, so the status guard rejects this row before the task-type
+// guard is consulted — removing the type guard leaves this test green.
 func TestIngestCardEventRequest_TaskNotCard_NoOp(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	seedProject(t, d.Conn, "proj-a", "")

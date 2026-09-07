@@ -1,9 +1,5 @@
 package orchestrator
 
-// This file creates a queued card_requests row from an eligible internal
-// action — CreateAction (store.go) calls into it within the same
-// transaction as the action INSERT, alongside IngestActionSignal.
-
 import (
 	"context"
 	"database/sql"
