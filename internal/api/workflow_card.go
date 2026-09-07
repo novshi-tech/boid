@@ -775,10 +775,11 @@ func childResultSummary(task *orchestrator.Task) string {
 // IsManualAction gate rejects any externally-pushed attempt before it ever
 // reaches here (see machine.go's doc comment on the child_dispatched/
 // child_closed rules).
-func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task) {
+func (s *TaskWorkflowService) recordChildClosedOnParent(ctx context.Context, task *orchestrator.Task) {
 	if task == nil || task.ParentID == "" || s.Tx == nil {
 		return
 	}
+	recorded := false
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		tt, err := tx.GetTaskTriage(task.ParentID)
 		if err != nil {
@@ -828,6 +829,7 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 		if err := tx.CreateAction(context.Background(), action); err != nil {
 			return err
 		}
+		recorded = true
 		// A child reaching done/aborted is new judgment material for the
 		// parent card — "can I close this now" — so it bumps the parent's
 		// updated_at the same way a suggestion attaching does. Gated on
@@ -844,27 +846,42 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 	// card itself is done is entirely khi's judgment to suggest and a
 	// human's to accept (card machine v2's `done` verb) — the daemon does
 	// not evaluate it here or anywhere else.
+	if recorded {
+		s.tryDispatchQueuedCardRequest(ctx, task.ParentID)
+	}
 }
 
 // releaseCardRequestForTerminalTask releases the card_requests row (if any)
 // attached to task as a task-kind continuation, the instant task reaches a
 // terminal status — otherwise every occupancy check keeps reporting the
-// card's slot busy until ReconcileCardRequestSlots' next periodic tick.
+// card's slot busy until ReconcileCardRequestSlots' next periodic tick. When
+// a slot was actually released, this also attempts an immediate dispatch of
+// that card's queued backlog, alongside a queued row's own creation the
+// other event that triggers an immediate dispatch attempt.
+//
 // A no-op for the common case (task isn't a card_requests continuation), and
 // gated on s.CardRequests being wired (not itself used below — it stands in
 // for "this deployment/test actually uses card_requests at all") so callers
 // that never touch card_requests don't pay for an extra transaction here.
-func (s *TaskWorkflowService) releaseCardRequestForTerminalTask(task *orchestrator.Task) {
+func (s *TaskWorkflowService) releaseCardRequestForTerminalTask(ctx context.Context, task *orchestrator.Task) {
 	if task == nil || s.Tx == nil || s.CardRequests == nil {
 		return
 	}
 	success := task.Status == orchestrator.TaskStatusDone
+	var releasedCardID string
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
-		_, err := tx.ReleaseCardRequestForTerminalTarget(orchestrator.CardRequestTargetKindTask, task.ID, success)
+		found, cardID, err := tx.ReleaseCardRequestForTerminalTargetWithCard(orchestrator.CardRequestTargetKindTask, task.ID, success)
+		if found {
+			releasedCardID = cardID
+		}
 		return err
 	}); err != nil {
 		slog.Error("release card_requests slot on task terminal failed; the periodic reconcile will retry",
 			"task_id", task.ID, "error", err)
+		return
+	}
+	if releasedCardID != "" {
+		s.tryDispatchQueuedCardRequest(ctx, releasedCardID)
 	}
 }
 
@@ -898,6 +915,14 @@ func (s *TaskWorkflowService) reserveGoCardRequest(cardID string) (*orchestrator
 	}
 	if err := s.CardRequests.CreateCardRequest(cardReq); err != nil {
 		return nil, err
+	}
+	// Go is one of the human operations that lifts automatic-dispatch
+	// suppression (alongside a human card command and an explicit retry) —
+	// best-effort, a narrow non-atomic gap with the INSERT above (a crash
+	// between them leaves the barrier stuck; the next Go/command/retry
+	// clears it).
+	if err := s.CardRequests.ClearCardForceReleaseBarrier(cardID); err != nil {
+		slog.Warn("go: clearing force-release barrier failed", "card_id", cardID, "error", err)
 	}
 	return cardReq, nil
 }
@@ -1396,7 +1421,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			continue
 		}
 		if childTask.Status == orchestrator.TaskStatusDone || childTask.Status == orchestrator.TaskStatusAborted {
-			s.recordChildClosedOnParent(childTask)
+			s.recordChildClosedOnParent(ctx, childTask)
 		}
 	}
 

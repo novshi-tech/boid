@@ -66,6 +66,12 @@ CREATE TABLE actions (
     created_at DATETIME NOT NULL DEFAULT (datetime('now'))
 , from_status TEXT NOT NULL DEFAULT '', to_status   TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT '');
 
+-- table: card_force_release_barriers
+CREATE TABLE card_force_release_barriers (
+    card_id    TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    created_at DATETIME NOT NULL
+);
+
 -- table: card_requests
 CREATE TABLE card_requests (
     id                    TEXT PRIMARY KEY,

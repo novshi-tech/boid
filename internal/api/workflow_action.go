@@ -499,6 +499,13 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
+	// The action just committed may have queued a new card_requests row for
+	// its target (noted/attrs_set are the two allowlisted types this
+	// generic path ever applies) — a no-op for every other action type,
+	// since dispatchQueuedCardRequest itself starts by checking whether
+	// anything is actually queued.
+	s.tryDispatchQueuedCardRequest(ctx, taskID)
+
 	if s.Hub != nil {
 		s.Hub.Broadcast(newTask.ID, TaskEvent{
 			Kind: "action",
@@ -881,10 +888,10 @@ func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orches
 	// child_closed on its parent here — see recordChildClosedOnParent's own
 	// doc comment (workflow_card.go) for why finalizeTerminal is the right
 	// funnel.
-	s.recordChildClosedOnParent(task)
+	s.recordChildClosedOnParent(ctx, task)
 	// A terminal task that is a card_requests continuation (Go or a card
 	// command) releases its own slot here instead of waiting for the next
 	// ReconcileCardRequestSlots tick — see releaseCardRequestForTerminalTask's
 	// own doc comment.
-	s.releaseCardRequestForTerminalTask(task)
+	s.releaseCardRequestForTerminalTask(ctx, task)
 }

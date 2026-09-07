@@ -322,20 +322,82 @@ func (r *TaskRepository) ListActiveCardRequests() ([]*CardRequest, error) {
 	return ListActiveCardRequests(r.db)
 }
 
-// ReleaseCardRequestForTerminalTarget backs finalizeTerminal's immediate
-// slot release — same InTxDB-over-raw-*sql.DB shape as FailCardRequest.
-func (r *TaskRepository) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+// ReleaseCardRequestForTerminalTargetWithCard backs finalizeTerminal's
+// immediate slot release AND the immediate re-dispatch attempt that follows
+// it — same InTxDB-over-raw-*sql.DB shape as FailCardRequest.
+func (r *TaskRepository) ReleaseCardRequestForTerminalTargetWithCard(targetKind, targetID string, success bool) (found bool, cardID string, err error) {
 	conn, ok := r.db.(*sql.DB)
 	if !ok {
-		return ReleaseCardRequestForTerminalTarget(r.db, targetKind, targetID, success)
+		return ReleaseCardRequestForTerminalTargetWithCard(r.db, targetKind, targetID, success)
 	}
-	var found bool
-	err := db.InTxDB(conn, func(tx db.DBTX) error {
-		f, ferr := ReleaseCardRequestForTerminalTarget(tx, targetKind, targetID, success)
-		found = f
+	err = db.InTxDB(conn, func(tx db.DBTX) error {
+		f, cid, ferr := ReleaseCardRequestForTerminalTargetWithCard(tx, targetKind, targetID, success)
+		found, cardID = f, cid
 		return ferr
 	})
-	return found, err
+	return found, cardID, err
+}
+
+// ClaimQueuedCardRequestsForDispatch backs the automatic card-request
+// dispatcher's claim step, same InTxDB-over-raw-*sql.DB shape as
+// ForceReleaseCardRequest. A "nothing claimed" sentinel
+// (IsCardRequestDispatchSkip) is captured separately rather than returned
+// as the closure's own error, so a drain side effect it may carry still
+// commits instead of being rolled back with it.
+func (r *TaskRepository) ClaimQueuedCardRequestsForDispatch(cardID, launcherJobID, expectedCommandKey string, def CardRequestDefinition) (*CardRequest, []*CardRequest, error) {
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return ClaimQueuedCardRequestsForDispatch(r.db, cardID, launcherJobID, expectedCommandKey, def)
+	}
+	var primary *CardRequest
+	var folded []*CardRequest
+	var skip error
+	err := db.InTxDB(conn, func(tx db.DBTX) error {
+		p, f, cerr := ClaimQueuedCardRequestsForDispatch(tx, cardID, launcherJobID, expectedCommandKey, def)
+		primary, folded = p, f
+		if IsCardRequestDispatchSkip(cerr) {
+			skip = cerr
+			return nil
+		}
+		return cerr
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return primary, folded, skip
+}
+
+// PeekOldestQueuedCardRequest backs the automatic dispatcher's pre-claim
+// command definition resolution — a single read, no transaction needed.
+func (r *TaskRepository) PeekOldestQueuedCardRequest(cardID string) (id, commandKey string, err error) {
+	return PeekOldestQueuedCardRequest(r.db, cardID)
+}
+
+// ListCardIDsWithQueuedCardRequests backs the periodic dispatch sweep's work
+// list — a single read, no transaction needed.
+func (r *TaskRepository) ListCardIDsWithQueuedCardRequests() ([]string, error) {
+	return ListCardIDsWithQueuedCardRequests(r.db)
+}
+
+// ClearCardForceReleaseBarrier backs a human-issued card command / Go /
+// explicit retry ending automatic-dispatch suppression for a card — a
+// single DELETE, no transaction needed on its own (callers that need it
+// atomic with a claim run it inside their own WithinTx via TxStore instead).
+func (r *TaskRepository) ClearCardForceReleaseBarrier(cardID string) error {
+	return ClearCardForceReleaseBarrier(r.db, cardID)
+}
+
+// SetCardForceReleaseBarrier backs test setup / a future operator-facing
+// force-release path that wants to plant a barrier directly — a single
+// upsert, no transaction needed on its own.
+func (r *TaskRepository) SetCardForceReleaseBarrier(cardID string) error {
+	return SetCardForceReleaseBarrier(r.db, cardID)
+}
+
+// HasCardForceReleaseBarrier backs a caller checking a card's suppression
+// state directly — a single read, no transaction needed.
+func (r *TaskRepository) HasCardForceReleaseBarrier(cardID string) (bool, error) {
+	return HasCardForceReleaseBarrier(r.db, cardID)
 }
 
 // CreateTaskLinkedToCardRequest runs CreateTask(t) and

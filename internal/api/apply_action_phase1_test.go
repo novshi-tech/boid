@@ -12,7 +12,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// releasedCardRequestTarget is one recorded ReleaseCardRequestForTerminalTarget call.
+// releasedCardRequestTarget is one recorded ReleaseCardRequestForTerminalTargetWithCard call.
 type releasedCardRequestTarget struct {
 	targetKind string
 	targetID   string
@@ -88,8 +88,9 @@ func (s *recordingTxStore) FailCardRequest(id, errText string) error {
 }
 
 // releasedCardRequestTargets records every (targetKind, targetID, success)
-// tuple ReleaseCardRequestForTerminalTarget was called with, in call order.
-func (s *recordingTxStore) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
+// tuple ReleaseCardRequestForTerminalTargetWithCard was called with, in call
+// order.
+func (s *recordingTxStore) ReleaseCardRequestForTerminalTargetWithCard(targetKind, targetID string, success bool) (bool, string, error) {
 	s.releasedCardRequestTargets = append(s.releasedCardRequestTargets, releasedCardRequestTarget{targetKind, targetID, success})
 	for _, r := range s.createdCardRequests {
 		if r.TargetKind == targetKind && r.TargetID == targetID && r.Status == orchestrator.CardRequestStatusAttached {
@@ -98,10 +99,21 @@ func (s *recordingTxStore) ReleaseCardRequestForTerminalTarget(targetKind, targe
 			} else {
 				r.Status = orchestrator.CardRequestStatusFailed
 			}
-			return true, nil
+			return true, r.CardID, nil
 		}
 	}
-	return false, nil
+	return false, "", nil
+}
+
+func (s *recordingTxStore) ClearCardForceReleaseBarrier(cardID string) error { return nil }
+func (s *recordingTxStore) ClaimQueuedCardRequestsForDispatch(cardID, launcherJobID, expectedCommandKey string, def orchestrator.CardRequestDefinition) (*orchestrator.CardRequest, []*orchestrator.CardRequest, error) {
+	return nil, nil, orchestrator.ErrNoQueuedCardRequests
+}
+func (s *recordingTxStore) PeekOldestQueuedCardRequest(cardID string) (string, string, error) {
+	return "", "", orchestrator.ErrNoQueuedCardRequests
+}
+func (s *recordingTxStore) ListCardIDsWithQueuedCardRequests() ([]string, error) {
+	return nil, nil
 }
 
 func (s *recordingTxStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error) {

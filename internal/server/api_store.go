@@ -64,8 +64,15 @@ func (s apiTxStore) ListCardRequestsByCard(cardID string) ([]*orchestrator.CardR
 	return s.tasks.ListCardRequestsByCard(cardID)
 }
 
-func (s apiTxStore) ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error) {
-	return s.tasks.ReleaseCardRequestForTerminalTarget(targetKind, targetID, success)
+func (s apiTxStore) ReleaseCardRequestForTerminalTargetWithCard(targetKind, targetID string, success bool) (bool, string, error) {
+	return s.tasks.ReleaseCardRequestForTerminalTargetWithCard(targetKind, targetID, success)
+}
+
+// ClearCardForceReleaseBarrier backs a human card command's / Go's claim of
+// a card's slot ending automatic-dispatch suppression for it, in the SAME
+// transaction as that claim.
+func (s apiTxStore) ClearCardForceReleaseBarrier(cardID string) error {
+	return s.tasks.ClearCardForceReleaseBarrier(cardID)
 }
 
 // CreateTaskLinkedToCardRequest delegates to s.tasks — bound to the SAME

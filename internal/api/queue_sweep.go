@@ -81,7 +81,7 @@ func (s *TaskWorkflowService) SweepWake(ctx context.Context, now time.Time) (wok
 // forever: with no transition to consume the condition implicitly,
 // clearing it here is the only mechanism left.
 func (s *TaskWorkflowService) recordWakeDue(ctx context.Context, taskID string) error {
-	return s.Tx.WithinTx(func(tx TxStore) error {
+	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		tt, err := tx.GetTaskTriage(taskID)
 		if err != nil {
 			return fmt.Errorf("record wake_due: get task_triage: %w", err)
@@ -103,7 +103,11 @@ func (s *TaskWorkflowService) recordWakeDue(ctx context.Context, taskID string) 
 			Actor:      orchestrator.ActorFromContext(ctx),
 		}
 		return tx.CreateAction(ctx, action)
-	})
+	}); err != nil {
+		return err
+	}
+	s.tryDispatchQueuedCardRequest(ctx, taskID)
+	return nil
 }
 
 // SweepReconcileChildren re-checks every dispatched child of every working
@@ -142,7 +146,7 @@ func (s *TaskWorkflowService) SweepReconcileChildren(ctx context.Context, _ time
 			slog.Warn("sweep reconcile children: parse children failed", "task_id", t.ID, "error", cErr)
 			continue
 		}
-		s.reconcileDispatchedChildren(t.ID, children)
+		s.reconcileDispatchedChildren(ctx, t.ID, children)
 	}
 	return nil
 }
@@ -155,7 +159,7 @@ func (s *TaskWorkflowService) SweepReconcileChildren(ctx context.Context, _ time
 // (recordChildClosedOnParent), so the child_closed action is written exactly
 // once — MarkDetailChildClosed reports changed=false for an already-closed
 // child.
-func (s *TaskWorkflowService) reconcileDispatchedChildren(taskID string, children []orchestrator.TaskTriageChild) {
+func (s *TaskWorkflowService) reconcileDispatchedChildren(ctx context.Context, taskID string, children []orchestrator.TaskTriageChild) {
 	for i := range children {
 		if children[i].Status != orchestrator.TaskTriageChildStatusDispatched || children[i].TaskRef == "" {
 			continue
@@ -172,7 +176,7 @@ func (s *TaskWorkflowService) reconcileDispatchedChildren(taskID string, childre
 				// survives past this call, and the sweep re-derives the same
 				// no-op result every tick forever.
 				children[i].Status = orchestrator.TaskTriageChildStatusClosed
-				s.recordVanishedChildClosedOnParent(taskID, children[i].TaskRef)
+				s.recordVanishedChildClosedOnParent(ctx, taskID, children[i].TaskRef)
 			} else {
 				slog.Warn("sweep reconcile children: get dispatched child failed", "task_id", taskID, "child_task_id", children[i].TaskRef, "error", err)
 			}
@@ -182,7 +186,7 @@ func (s *TaskWorkflowService) reconcileDispatchedChildren(taskID string, childre
 			continue
 		}
 		children[i].Status = orchestrator.TaskTriageChildStatusClosed
-		s.recordChildClosedOnParent(childTask)
+		s.recordChildClosedOnParent(ctx, childTask)
 	}
 }
 
@@ -192,10 +196,11 @@ func (s *TaskWorkflowService) reconcileDispatchedChildren(taskID string, childre
 // reused directly here since it takes a real child *orchestrator.Task, and
 // a vanished child has none of those fields available — only the parent's
 // own task ID and the dangling TaskRef string survive.
-func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, childTaskRef string) {
+func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(ctx context.Context, parentTaskID, childTaskRef string) {
 	if s.Tx == nil {
 		return
 	}
+	recorded := false
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		tt, err := tx.GetTaskTriage(parentTaskID)
 		if err != nil {
@@ -240,12 +245,17 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(parentTaskID, ch
 		if err := tx.CreateAction(context.Background(), action); err != nil {
 			return err
 		}
+		recorded = true
 		// Same updated_at bump recordChildClosedOnParent's real-child path
 		// applies (workflow_card.go): a vanished child is still a
 		// child_closed event from the parent's point of view.
 		return tx.TouchTaskUpdatedAt(parentTaskID)
 	}); err != nil {
 		slog.Error("vanished child_closed self-record failed", "task_id", parentTaskID, "child_task_id", childTaskRef, "error", err)
+		return
+	}
+	if recorded {
+		s.tryDispatchQueuedCardRequest(ctx, parentTaskID)
 	}
 }
 

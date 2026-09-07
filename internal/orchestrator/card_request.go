@@ -497,6 +497,10 @@ func listFoldedCardRequests(dbtx db.DBTX, id string) ([]ForceReleasedSibling, er
 // failed; clears the error, the previous launch-time snapshot, and the
 // previous attempt's continuation target (a stale target/result must not
 // survive onto the fresh attempt).
+//
+// Also clears any force-release barrier on the request's card
+// (ClearCardForceReleaseBarrier) — an explicit Retry lifts automatic-
+// dispatch suppression the same as a fresh human command or Go.
 func RetryCardRequest(dbtx db.DBTX, id string) error {
 	if id == "" {
 		return fmt.Errorf("retry card request: id must not be empty")
@@ -512,7 +516,14 @@ func RetryCardRequest(dbtx db.DBTX, id string) error {
 		}
 		return fmt.Errorf("retry card request: %w", err)
 	}
-	return rowsAffectedOrNotFoundOrInvalid(dbtx, res, id)
+	if err := rowsAffectedOrNotFoundOrInvalid(dbtx, res, id); err != nil {
+		return err
+	}
+	row, gerr := GetCardRequest(dbtx, id)
+	if gerr != nil {
+		return fmt.Errorf("retry card request: reload for barrier: %w", gerr)
+	}
+	return ClearCardForceReleaseBarrier(dbtx, row.CardID)
 }
 
 // CountActiveCardRequests returns the number of card_requests rows

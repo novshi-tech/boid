@@ -476,6 +476,10 @@ func allMigrations() []migration {
 				return !newIndexAbsent && oldIndexAbsent, nil
 			},
 		},
+		{
+			version: "0054_add_card_force_release_barriers",
+			path:    "migrations/0054_add_card_force_release_barriers.sql",
+		},
 	}
 }
 

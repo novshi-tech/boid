@@ -271,6 +271,12 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: txErr.Error()}
 	}
 
+	// The "answered" action just committed may have queued a new
+	// card_requests row — including the case a claim later drains as
+	// ineligible, when the SAME transaction's verb (complete/drop) already
+	// moved the card past parked/working by commit time.
+	s.tryDispatchQueuedCardRequest(ctx, taskID)
+
 	if s.Hub != nil {
 		s.Hub.Broadcast(taskID, TaskEvent{
 			Kind: "action",

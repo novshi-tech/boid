@@ -190,14 +190,24 @@ func (h *CardRequestHandler) Release(w http.ResponseWriter, r *http.Request) {
 			keys[i] = s.CommandKey
 			result.FoldedSiblingsFailed = append(result.FoldedSiblingsFailed, FoldedSiblingSummary{ID: s.ID, CommandKey: s.CommandKey})
 		}
-		siblingNotice := fmt.Sprintf(
+		appendOperatorNotice(&result, fmt.Sprintf(
 			"this also force-failed %d folded sibling request(s) sharing this card's execution slot (command_key: %s) — fold is scoped to the card, not this request's own command/cause",
-			len(siblings), strings.Join(keys, ", "))
-		if result.OperatorNotice == "" {
-			result.OperatorNotice = siblingNotice
-		} else {
-			result.OperatorNotice += "; " + siblingNotice
-		}
+			len(siblings), strings.Join(keys, ", ")))
 	}
+	// ForceReleaseCardRequest unconditionally plants a force-release barrier
+	// on the card (SetCardForceReleaseBarrier) — surface it every time, not
+	// only alongside a target-specific warning, since it is otherwise
+	// invisible to an operator (no CLI/API surface reads it directly).
+	appendOperatorNotice(&result, "this card now has a force-release barrier: automatic (event-triggered) card_requests dispatch for it is suppressed until a human operation clears it — a card command, Go, or an explicit retry of a failed request")
 	writeJSON(w, http.StatusOK, result)
+}
+
+// appendOperatorNotice joins notice onto result.OperatorNotice, separating
+// multiple notices with "; " rather than overwriting an earlier one.
+func appendOperatorNotice(result *ReleaseResult, notice string) {
+	if result.OperatorNotice == "" {
+		result.OperatorNotice = notice
+	} else {
+		result.OperatorNotice += "; " + notice
+	}
 }

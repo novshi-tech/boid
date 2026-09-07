@@ -2247,6 +2247,16 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		InitialDelay: 10 * time.Second,
 	}
 
+	// queued な card_requests 行を捌く周期フォールバック。runtime.workflow
+	// (api.TaskWorkflowService) の SweepQueuedCardRequests を使う — Exec
+	// dispatcher が要るので orchestrator パッケージには置けない
+	// (cardRequestLifecycleLoop と違う理由)。主経路は commit 後の即時起動。
+	srv.cardRequestDispatchLoop = &api.CardRequestDispatchLoop{
+		Store:        runtime.workflow,
+		Interval:     30 * time.Second,
+		InitialDelay: 40 * time.Second,
+	}
+
 	// card read surface. Mounted at its own root rather than under
 	// /api/tasks — see api.CardHandler's doc comment.
 	r.Mount("/api/cards", (&api.CardHandler{Service: runtime.workflow, Commands: runtime.workflow}).Routes())

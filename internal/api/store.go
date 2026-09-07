@@ -491,10 +491,16 @@ type TxStore interface {
 	CreateCardRequest(req *orchestrator.CardRequest) error
 	FailCardRequest(id, errText string) error
 	ListCardRequestsByCard(cardID string) ([]*orchestrator.CardRequest, error)
-	// ReleaseCardRequestForTerminalTarget backs finalizeTerminal's immediate
-	// slot release the instant a task reaches a terminal state, instead of
-	// waiting for the periodic ReconcileCardRequestSlots tick.
-	ReleaseCardRequestForTerminalTarget(targetKind, targetID string, success bool) (bool, error)
+	// ReleaseCardRequestForTerminalTargetWithCard backs finalizeTerminal's
+	// immediate slot release the instant a task reaches a terminal state,
+	// instead of waiting for the periodic ReconcileCardRequestSlots tick —
+	// and the released card_id it returns is what lets the caller attempt
+	// an immediate re-dispatch of that card's queued backlog right after.
+	ReleaseCardRequestForTerminalTargetWithCard(targetKind, targetID string, success bool) (found bool, cardID string, err error)
+	// ClearCardForceReleaseBarrier ends automatic-dispatch suppression for a
+	// card the instant a human operation (RunCardCommandAsHuman, Go) claims
+	// its slot again — run inside the SAME transaction as that claim.
+	ClearCardForceReleaseBarrier(cardID string) error
 	// CreateTaskLinkedToCardRequest lets a caller already inside a
 	// WithinTx close its own read-then-write gap around a card_requests
 	// launcher continuation: TaskRepository's own dbtx type-switch means a
