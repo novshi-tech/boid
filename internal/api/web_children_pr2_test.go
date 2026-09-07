@@ -12,9 +12,9 @@ import (
 
 // docs/plans/webui-detail-list-redesign.md §3.4 item 2 / §7 PR-2: an
 // execution root task's descendant subtree (app-side depth-first
-// traversal). A card's own children moved to the timeline read model in
-// PR-6a (internal/api/web_card_timeline_test.go) — see that file for the
-// card-side equivalent of what this file used to also cover.
+// traversal). A card's own children moved to the timeline read model —
+// see web_card_timeline_test.go for the card-side equivalent of what this
+// file used to also cover.
 
 // --- execChildTree: app-side depth-first traversal, root-only ---
 

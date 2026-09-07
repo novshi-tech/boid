@@ -1063,7 +1063,7 @@ func TestWebHandlerPostStartShapingSession_NoDispatcher(t *testing.T) {
 }
 
 // TestWebHandler_TaskDetail_ShowsTriageChildren moved to
-// web_card_timeline_test.go (PR-6a): a card's children now render from the
+// web_card_timeline_test.go: a card's children now render from the
 // timeline read model (CardTimeline), which needs a real card_requests/
 // actions-backed DB fixture, not just a stub TaskTriage row.
 
@@ -1158,11 +1158,10 @@ func TestWebHandler_TaskDetail_Exec_IdentityRow_ShowsProjectAndBehavior(t *testi
 }
 
 // TestWebHandler_TaskDetail_Card_MovementRow_ShowsTransitionEdgeWithVerb was
-// the pre-PR-6a movement row contract ("parked —go→ working" inline in the
-// status strip). PR-6a moved the live suggestion into the pinned timeline
-// items (§5.1 item 3) instead — see
-// TestCardDetail_PinnedSuggestion_RendersAcceptRejectAndNoTransitionEdge in
-// web_card_timeline_test.go for the replacement, which also pins that the
+// the old movement row contract ("parked —go→ working" inline in the status
+// strip). The live suggestion now renders as a pinned timeline item instead
+// — see TestCardDetail_PinnedSuggestion_RendersAcceptRejectAndNoTransitionEdge
+// in web_card_timeline_test.go for the replacement, which also pins that the
 // transition-edge text is now deliberately gone.
 
 // TestWebHandler_TaskDetail_Card_DescriptionShownInBody_NoTabNeeded pins
@@ -1467,12 +1466,11 @@ func makeCardTaskDetailView(id string, status orchestrator.TaskStatus) *TaskDeta
 }
 
 // TestTaskDetailFragment_Status_RendersSuggestion and
-// TestTaskDetail_RendersSuggestion moved to web_card_timeline_test.go
-// (PR-6a): the pinned suggestion item now comes from the CardTimeline read
-// model (which derives it from the actions log, not just the live
-// task_triage detail blob a stub TaskTriage row can provide), so the
-// fixture needs a real DB. See
-// TestCardDetail_PinnedSuggestion_RendersAcceptRejectAndNoTransitionEdge
+// TestTaskDetail_RendersSuggestion moved to web_card_timeline_test.go: the
+// pinned suggestion item now comes from the CardTimeline read model (which
+// derives it from the actions log, not just the live task_triage detail
+// blob a stub TaskTriage row can provide), so the fixture needs a real DB.
+// See TestCardDetail_PinnedSuggestion_RendersAcceptRejectAndNoTransitionEdge
 // and its fragment-path sibling there.
 
 // TestTaskDetailFragment_JobsKindRemoved pins the death of fragment
