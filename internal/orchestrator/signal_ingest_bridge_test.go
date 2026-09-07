@@ -120,7 +120,7 @@ func TestCreateAction_NilResolver_ActionStillWritesNormally(t *testing.T) {
 	seedCardTask(t, d.Conn, "card-1", "proj-a")
 
 	a := &orchestrator.Action{TaskID: "card-1", Type: "attrs_set", Actor: orchestrator.ActorHuman}
-	if err := orchestrator.CreateAction(context.Background(), d.Conn, a, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), d.Conn, a, nil, nil); err != nil {
 		t.Fatalf("CreateAction: %v", err)
 	}
 	if a.ID == "" {
@@ -267,7 +267,7 @@ func TestCreateAction_IngestFailure_ActionStillCommits(t *testing.T) {
 	// itself is unaffected.
 	a := &orchestrator.Action{TaskID: "card-1", Type: "attrs_set", Actor: strings.Repeat("x", orchestrator.MaxContentBytes+1)}
 
-	if err := orchestrator.CreateAction(ctx, d.Conn, a, resolver); err != nil {
+	if err := orchestrator.CreateAction(ctx, d.Conn, a, resolver, nil); err != nil {
 		t.Fatalf("CreateAction returned an error (ingest failure must not fail the action write): %v", err)
 	}
 	actions, err := orchestrator.ListActionsByTask(d.Conn, "card-1")

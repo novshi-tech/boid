@@ -20,6 +20,10 @@ type TaskRepository struct {
 	// before. Set via SetMetaProjectResolver post-construction rather than a
 	// NewTaskRepository parameter, since most call sites never use it.
 	metaResolver MetaProjectResolver
+	// cardEventResolver backs CreateAction's card-event ingest decision —
+	// same post-construction setter shape as metaResolver, for the same
+	// reason. nil disables that ingest step entirely.
+	cardEventResolver CardEventResolver
 }
 
 func NewTaskRepository(db db.DBTX) *TaskRepository {
@@ -30,6 +34,13 @@ func NewTaskRepository(db db.DBTX) *TaskRepository {
 // step needs — see the metaResolver field's own doc comment.
 func (r *TaskRepository) SetMetaProjectResolver(resolver MetaProjectResolver) {
 	r.metaResolver = resolver
+}
+
+// SetCardEventResolver wires the card_events.command lookup
+// CreateAction's card-event ingest step needs — see the cardEventResolver
+// field's own doc comment.
+func (r *TaskRepository) SetCardEventResolver(resolver CardEventResolver) {
+	r.cardEventResolver = resolver
 }
 
 func (r *TaskRepository) CreateTask(task *Task) error {
@@ -94,10 +105,10 @@ func (r *TaskRepository) ListChildren(parentID string) ([]*Task, error) {
 func (r *TaskRepository) CreateAction(ctx context.Context, action *Action) error {
 	conn, ok := r.db.(*sql.DB)
 	if !ok {
-		return CreateAction(ctx, r.db, action, r.metaResolver)
+		return CreateAction(ctx, r.db, action, r.metaResolver, r.cardEventResolver)
 	}
 	return db.InTxDB(conn, func(tx db.DBTX) error {
-		return CreateAction(ctx, tx, action, r.metaResolver)
+		return CreateAction(ctx, tx, action, r.metaResolver, r.cardEventResolver)
 	})
 }
 

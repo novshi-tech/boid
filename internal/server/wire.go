@@ -995,9 +995,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// the same instance into the one place that had no
 	// constructor-injected access to it yet.
 	taskRepo.SetMetaProjectResolver(store)
+	// CreateAction's card-event ingest step needs the card_events.command
+	// lookup — store already hydrates CardCommands/CardEvents off the same
+	// project.yaml read as everything else, so this reuses it too.
+	taskRepo.SetCardEventResolver(store)
 	jobRepo := dispatcher.NewJobRepository(srv.db)
 	jobStore := jobStoreAdapter{repo: jobRepo}
-	tx := apiTransactor{db: srv.db, metaResolver: store}
+	tx := apiTransactor{db: srv.db, metaResolver: store, cardEventResolver: store}
 
 	boidBin, _ := os.Executable()
 	projectCatalog := orchestrator.DBProjectCatalog{DB: srv.db}

@@ -80,6 +80,27 @@ func WriterProjectIDFromContext(ctx context.Context) (projectID string, ok bool)
 	return projectID, ok
 }
 
+type writerCardRequestContextKey struct{}
+
+// WithWriterCardRequestID marks ctx as carrying a sandbox write's origin
+// card_requests row id — WithWriterProjectID's companion, stamped by the
+// same ExecuteBoidBuiltin call site. id is "" for a write that is not a
+// card-command launcher/continuation.
+func WithWriterCardRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, writerCardRequestContextKey{}, id)
+}
+
+// WriterCardRequestIDFromContext returns the card_requests row id
+// WithWriterCardRequestID stamped, and whether ctx carries one at all.
+func WriterCardRequestIDFromContext(ctx context.Context) (id string, ok bool) {
+	v := ctx.Value(writerCardRequestContextKey{})
+	if v == nil {
+		return "", false
+	}
+	id, ok = v.(string)
+	return id, ok
+}
+
 // IngestActionSignal is CreateAction's internal-signal ingest step. Exported
 // — rather than a private helper only CreateAction calls — so tests can
 // exercise the ingest decision in isolation from the actions table's own id

@@ -492,11 +492,12 @@ func TouchTaskUpdatedAt(dbtx db.DBTX, id string) error {
 	return nil
 }
 
-// CreateAction inserts a, then ingests it into its target card's workspace
-// inbox when eligible. resolver may be nil (no metaproject lookup wired),
-// treated as a quiet no-op. ctx may carry the write's origin project via
-// WriterProjectIDFromContext, used only for the actor-axis self-reference check.
-func CreateAction(ctx context.Context, dbtx db.DBTX, a *Action, resolver MetaProjectResolver) error {
+// CreateAction inserts a, then runs two independent ingest steps against
+// its target card within the SAME transaction: IngestActionSignal
+// (best-effort) and IngestCardEventRequest (queues a card_requests row;
+// unlike IngestActionSignal, fails this call on a genuine error — see its
+// own doc comment). Either resolver may be nil, each a quiet no-op then.
+func CreateAction(ctx context.Context, dbtx db.DBTX, a *Action, resolver MetaProjectResolver, cardEvents CardEventResolver) error {
 	if a.ID == "" {
 		a.ID = uuid.New().String()
 	}
@@ -519,6 +520,11 @@ func CreateAction(ctx context.Context, dbtx db.DBTX, a *Action, resolver MetaPro
 	if ingestErr := IngestActionSignal(ctx, dbtx, a, resolver); ingestErr != nil {
 		slog.Warn("internal signal ingest failed; action was still recorded",
 			"action_id", a.ID, "task_id", a.TaskID, "type", a.Type, "error", ingestErr)
+	}
+
+	// NOT best-effort — see IngestCardEventRequest's own doc comment.
+	if err := IngestCardEventRequest(ctx, dbtx, a, cardEvents); err != nil {
+		return err
 	}
 
 	return nil

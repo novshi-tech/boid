@@ -95,6 +95,73 @@ func TestBoidBuiltinExecutor_ActionSend_StampsWriterProjectFromTokenContext(t *t
 	}
 }
 
+// TestBoidBuiltinExecutor_ActionSend_StampsWriterCardRequestFromTokenContext
+// is the above test's companion for orchestrator.WithWriterCardRequestID —
+// IngestCardEventRequest's self-loop guard depends on ExecuteBoidBuiltin
+// stamping ctx.CardRequestID onto goCtx for every sandbox-originated write,
+// same call site and same regression risk as the writer-project stamp above.
+func TestBoidBuiltinExecutor_ActionSend_StampsWriterCardRequestFromTokenContext(t *testing.T) {
+	store := &capturingTaskStore{created: []*orchestrator.Task{
+		{ID: "t1", ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{}},
+	}}
+	workflow := &recordingWorkflow{}
+	exec := &boidBuiltinExecutor{
+		tasks:    &api.TaskAppService{Tasks: store},
+		workflow: workflow,
+	}
+	ctx := sandbox.TokenContext{
+		TaskID: "caller-task", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"},
+		CardID: "card-1", CardRequestID: "req-1",
+	}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:         sandbox.BoidOpActionSend,
+		TaskID:     "t1",
+		ActionType: "reopen",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	if !workflow.appliedHasWriterCardRequest {
+		t.Fatal("appliedHasWriterCardRequest = false, want true (ExecuteBoidBuiltin must stamp WithWriterCardRequestID on every sandbox-originated write)")
+	}
+	if workflow.appliedWriterCardRequest != ctx.CardRequestID {
+		t.Fatalf("appliedWriterCardRequest = %q, want %q (TokenContext.CardRequestID)", workflow.appliedWriterCardRequest, ctx.CardRequestID)
+	}
+}
+
+// TestBoidBuiltinExecutor_ActionSend_StampsEmptyWriterCardRequest_WhenTokenHasNone
+// proves the ok==true/id=="" case (a sandbox write that IS routed through
+// ExecuteBoidBuiltin but is not a card-command continuation) is
+// distinguishable from "never went through ExecuteBoidBuiltin at all" — the
+// same fail-close shape WriterProjectIDFromContext already has for project id.
+func TestBoidBuiltinExecutor_ActionSend_StampsEmptyWriterCardRequest_WhenTokenHasNone(t *testing.T) {
+	store := &capturingTaskStore{created: []*orchestrator.Task{
+		{ID: "t1", ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusDone, Exec: &orchestrator.ExecAttrs{}},
+	}}
+	workflow := &recordingWorkflow{}
+	exec := &boidBuiltinExecutor{
+		tasks:    &api.TaskAppService{Tasks: store},
+		workflow: workflow,
+	}
+	ctx := sandbox.TokenContext{TaskID: "caller-task", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:         sandbox.BoidOpActionSend,
+		TaskID:     "t1",
+		ActionType: "reopen",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	if !workflow.appliedHasWriterCardRequest {
+		t.Fatal("appliedHasWriterCardRequest = false, want true (context was still routed through ExecuteBoidBuiltin)")
+	}
+	if workflow.appliedWriterCardRequest != "" {
+		t.Fatalf("appliedWriterCardRequest = %q, want empty (TokenContext.CardRequestID was empty)", workflow.appliedWriterCardRequest)
+	}
+}
+
 // TestBoidBuiltinExecutor_ActionSend_ChildSpecced_RejectsProjectOutsideWorkspace
 // pins the codex review Blocker fix: child_specced's payload carries its own
 // "project" field (the project accept(go) will later create/auto-start a

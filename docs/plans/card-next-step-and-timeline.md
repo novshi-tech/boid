@@ -455,7 +455,7 @@ khi 等の最新 workspace repo と本番 DB は未調査。判断スキルが�
 | PR-2 | カードコマンド宣言、trigger run の card 文脈拡張、`boid agent start` op、op 内の関連付けと冪等性 | 固定した最小スクリプトで task/session を起動し、UI から返却先を開ける。二重作成不可。op 直後に launcher を殺しても関連が残る |
 | PR-3 | 組み込み共通記録の context 対応、workspace workflow の接続 | session/task 両方で読み書き・正しい終了が動く。task bootstrap の委譲を検証 — **実装は完了、実 harness 検証は Gate A へ送った（§10 の「PR-3 で実装」を参照）** |
 | Gate A | 実 workspace のコマンドと判断スキルを使う縦断検証 | 下記項目を通るまでイベント駆動化へ進まない |
-| PR-4 | 内部イベントの耐久要求・起動通知・復旧、外部 Sweep handoff | 自己ループ無し、枠占有中の保留、作業終了後の再判断。旧経路とは未併用 |
+| PR-4 | 内部イベントの耐久要求・起動通知・復旧、外部 Sweep handoff。PR-4a（queued/fold の既知バグ）/ PR-4b（内部イベント→queued 生成、下記参照）/ PR-4c（queued→launching dispatch、周期フォールバック）に分割 | 自己ループ無し、枠占有中の保留、作業終了後の再判断。旧経路とは未併用 |
 | PR-5 | card タイムライン読みモデルと一覧活動状態 | stable ID/cursor、関連 task/session、GC 後も読める概要。PR-2 後に着手可能 |
 | PR-6 | 詳細 UI 統合、コマンド入力、最新10件・固定項目・日付・一覧/SSE | 汎用 command UI で期待する操作を行える。定義ラベルは英語 |
 | Gate B / PR-7 | 移行・運用検証・旧 Shape/重複判断の撤去 | 少数 card で外部変化から次の Go まで通し、展開する |
@@ -702,6 +702,93 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   なる。生の SQL エラーではなく `ErrCardRequestDuplicateCause` にマップして
   あるので、retry を UI や自動化に配線する側はこの失敗を「その原因は
   既に生きている要求として存在する」として扱うこと。
+- **PR-4b で確定: 内部イベントから queued な `card_requests` 行を作る唯一の経路が
+  `orchestrator.CreateAction`（`internal/orchestrator/store.go`）に定着した。**
+  既存の `IngestActionSignal`（best-effort、warn のみ）の隣に第二の ingest ステップ
+  `IngestCardEventRequest`（`internal/orchestrator/card_event_ingest.go`）を
+  同一 tx 内に追加。§7 の PR-4a/PR-4b/PR-4c 分割のうち、queued 行を「作る」側を
+  この PR が担当し、「捌く」側（claim/dispatch）は PR-4c に残る。
+
+  **対象 action の allowlist（§4.6「初期版の対象 action は実装時に明示表で固定する」
+  を実施）:**
+
+  | action | 起動する | 根拠 |
+  |---|---|---|
+  | `child_closed` | ✅ | 作業子の終端 |
+  | `wake_due` | ✅ | 起動条件の発火 |
+  | `answered` | ✅ | 人の回答 |
+  | `noted` | ✅ | 外部 link/続報・人の card 更新 |
+  | `attrs_set` | ✅ | Sweep の続報 (summary)。自己ループ除外は type ではなく起動由来で行う（下記） |
+  | `go`/`start`/`park`/`complete`/`drop`/`reopen` | ❌ | 状態遷移そのもの（§4.6） |
+  | `child_added`/`child_specced`/`child_dropped` | ❌ | 判断の産物 (spec)（§4.6） |
+  | `progress`/`child_dispatched`/`done_request`/`fail_request` | ❌ | §4.6 で progress 除外明記。残りは execution machine 共有の非遷移語彙 |
+
+  card machine の全 18 action type について、allowlist の各エントリを個別に
+  外す/足す mutation を当ててそれぞれ対応するテストが赤くなることを確認済み
+  （`TestIngestCardEventRequest_ActionTypeAllowlist`、
+  `internal/orchestrator/card_event_ingest_test.go`）。
+
+  **自己ループ除外は起動由来（launcher/継続先の card_requests 行そのもの）で行う。**
+  `IngestActionSignal` の project 単位の自己除外（`WithWriterProjectID`）とは別軸 —
+  それを流用すると Sweep の capture/link を失う。`sandbox.TokenContext.CardID`/
+  `CardRequestID`（PR-3 が `DispatchPlanner.PlanHook` 経由で task 継続先にも
+  積んでいる）を `internal/server/boid_executor.go` の `ExecuteBoidBuiltin` が
+  新設の `orchestrator.WithWriterCardRequestID` で goCtx に刻み、
+  `IngestCardEventRequest` は書き手の card_requests 行が対象 card 自身の
+  現在 launching/attached な行と一致する場合のみ自己ループとして無視する。
+  別 card 宛の書き込み、既に finished/failed になった書き手の行、writer
+  context 自体が無い書き込み（daemon 自己記録の `child_closed`、人発の
+  Web UI/CLI 書き込み）はいずれも自己ループとして扱わない — 4通りとも
+  実 DB テストで固定 (`TestIngestCardEventRequest_SelfLoop_*`,
+  `_WriterRequestForDifferentCard_*`, `_WriterRequestFinished_*`,
+  `_NoWriterContext_*`)。CardID 等価判定・live 状態判定・自己ループ分岐
+  そのものを個別に外す mutation を当てて、それぞれ対応するテストが
+  赤くなることを確認済み。
+
+  **エラー方針: `IngestCardEventRequest` の失敗は `IngestActionSignal` と違い
+  `CreateAction` のトランザクションを失敗させる。** 「対象外」(resolver 未配線 /
+  action type 対象外 / card status 対象外 / card_events 未宣言 / 自己ループ) と
+  `ErrCardRequestDuplicateCause`（原因 ID の再配達）だけが no-op で、それ以外の
+  エラーは呼び出し元に伝播する。この方針を実装した上で `go test ./...` は
+  全パッケージ green のまま（既存の呼び出し元・テストへの影響なし）—
+  package-level `orchestrator.CreateAction` のシグネチャに `CardEventResolver`
+  引数を追加したことに伴う call-site 更新（既存テスト ~25 箇所へ `nil` を
+  1つ追加）はコンパイルを通すための機械的な変更で、動作の変更ではない。
+  tx 失敗を実 DB で確認するテスト
+  (`TestCreateAction_CardEventIngestHardError_RollsBackActionToo`) は
+  `card_requests` テーブル自体を drop して genuine な DB エラーを起こし、
+  action 行が rollback されることまで固定している。
+
+  **`taskType != TaskTypeCard` ガードは現状の DB スキーマ下では到達不能
+  （mutation testing で判明、記録のみ）。** `0045_card_sti_migration.sql` の
+  CHECK 制約 (`type != 'card' OR status IN ('parked','working','done','dropped')`)
+  により、card 型でない task は parked/working という status を最初から
+  持てない。よってこのアプリ層チェックを外す mutation を当てても既存テストは
+  落ちない。`IngestActionSignal`（`actionTargetTypeAndProject`）との構造的対称、
+  および将来のスキーマ変更に対する多層防御として残したが、DB 制約が変わらない
+  限り実質 dead code である点は次段の実装者が把握しておくこと。
+
+  **判明した制約: 外部 link（identity の束縛）は action 行を書かないので
+  この経路では拾えない。** `write.py` の `link` verb →
+  `TaskAppService.LinkIdentity`（`internal/api/task_identity.go`）は
+  `CreateAction` を一切通らない。実際の Sweep は link の後に `summary`
+  （= `attrs_set`）を書くので、内部イベント起動はそちらで拾われる —
+  Sweep の capture/link 自体を internal event として拾うことは意図的に
+  していない（外部 connector からの新規 capture は Sweep 自身が既存の
+  `triggers[]` 定期起動または手動コマンドで処理する対象で、この PR の
+  スコープ外）。
+
+  **`CardEvents` は `ProjectStore.Get` 経由で実際に引けることを実行して
+  確認した。** `json:"-"` タグは API 直列化のみに影響し、この in-process
+  経路には効かない（`TestProjectStore_CardEventCommand_FromRealProjectYAML`
+  が実 project.yaml → `ProjectStore.Load` → `CardEventCommand` の全経路を
+  実行して確認）。
+
+  この PR では `ClaimQueuedCardRequests` を呼ぶ経路を追加していない —
+  queued 行が積まれるだけで、PR-4a が固定した「既存の 3 つの
+  reconcile/recover 関数は queued 行に触らない」テスト
+  (`TestQueuedCardRequests_UntouchedByReconcileAndRecovery` 等) も
+  引き続き green。dispatch（claim → launch）は PR-4c の担当。
 - **PR-2d-5 で一部対応: retry/force-release は前の継続先 (session/task) を止めない
   (KNOWN GAP、`boid_executor_agent_start.go` の孤児 session と同系統)。** 完全な
   停止処理はまだ実装していない — `boid task release-card-request` が解放前の
