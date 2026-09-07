@@ -373,6 +373,35 @@ sandbox からは `BOID_API_BASE` 環境変数 (`https://<gateway>/api/<job-toke
 
 workspace 単位の有効化は `services_floor` (daemon 全体) + workspace 自身の `Services` リスト (`boid workspace services add/remove/list`、[CLI リファレンス](./cli.md#workspace) 参照) の additive union です。`services_floor` に書いた名前が `services` に存在しない場合は起動時に warning が出ますが、config load 自体は失敗しません。
 
+#### service 名の発見 (`GET $BOID_API_BASE`)
+
+service 名は運用者が `services:` で決めるもので、sandbox 側から推測できる保証はありません
+(Pack が宣言する `serviceProfiles[].name` とも一致するとは限りません)。base URL を
+そのまま GET すると、**その job token が実際に到達できる service 一覧**が返ります。
+
+```bash
+curl --cacert "$BOID_API_CA_FILE" "$BOID_API_BASE"
+```
+
+```json
+{
+  "readonly": false,
+  "services": [
+    {"name": "freee", "requires_account": true},
+    {"name": "github-api", "requires_account": false}
+  ]
+}
+```
+
+- `readonly` — `true` なら GET/HEAD 以外は 403 になります
+- `requires_account` — `true` の service は `@<account>` 修飾が必須で、無しで叩くと 400 になります (下記)
+
+返る一覧は認可判定が引くのと同じ registry entry から作られるため、`services_floor` ∪
+workspace の解決結果に加えて、connector job のトークンに掛かる絞り込みまで反映されます。
+`boid workspace services list` は workspace 自身のリストしか見せず floor を露出しないので、
+実効値を知りたい場合はこちらを使ってください。無効・失効したトークンでは 401、GET/HEAD
+以外では 405 を返します。
+
 ### credential account 修飾 (`<service>@<account>`) — 1 service 複数 credential
 
 同じ `services.<name>` 定義を複数の credential セット (例: 複数の Freee 事業所) で

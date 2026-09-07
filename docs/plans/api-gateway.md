@@ -519,7 +519,7 @@ HOME 内、つまり**サンドボックスから読める場所**に置かれ�
 | # | 論点 | 結論 |
 |---|---|---|
 | 1 | listener を git gateway と同居させるか別ポートか | **確定: 同居** (path prefix `/j/` と `/api/` で分岐)。mTLS listener も流用 |
-| 2 | service 一覧・使い方 (と `BOID_API_BASE`) をエージェントにどう提示するか | **半確定: `boid job env` 的な job スコープ introspection コマンドの方向** — URL に job token が入る以上コマンドが自然 (nose)。ただし**環境情報が複数のコマンドに分散する懸念**があり、既存 introspection 語彙 (`boid project behaviors` 系) への統合、または env 注入 (`BOID_API_BASE` を job プロセス環境へ、新語彙ゼロ) との併用を実装時に最終化。#7 の実験結果と合わせて決める |
+| 2 | service 一覧・使い方 (と `BOID_API_BASE`) をエージェントにどう提示するか | **確定: gateway 自身に答えさせる (`GET $BOID_API_BASE`)**。base URL をそのまま GET すると、その job token の `{readonly, services[{name, requires_account}]}` が返る。当初の「半確定」だった introspection コマンド案 (`boid job env` 的なもの) と `boid task env` への `services` フィールド追加はどちらも採らなかった — 権威ある集合は認可判定 (`Server.ServeHTTP` の `entry.Services`) が引く registry entry そのもので、CLI 側や `WorkspaceEnvView` に載せると floor ∪ workspace を再計算する二つ目の真実になる。特に connector job のトークンは `intersectServiceNames` でさらに絞られるため、workspace レベルの view は実効値より広く出て嘘をつく。新語彙もゼロで済む (論点 6 で `boid api` 糖衣を作らないと決めたのと同じ理由) |
 | 3 | audit log / timeline 記録の粒度 | **確定**: method + service + path + status を timeline に。body は記録しない |
 | 4 | OAuth provider 定義 (token endpoint / client_id / scopes) の置き場 | **確定**: config.yaml の `oauth_providers:` ブロック。client_secret のみ SecretStore 参照 |
 | 5 | 有効化設定の CLI 語彙 | **確定**: `boid workspace services add/remove/list <ws> <service>` 系。allowed_domains の既存語彙に揃える |
