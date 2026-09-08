@@ -379,11 +379,26 @@ class FlagsTest(unittest.TestCase):
     """設定ファイルを置かせない代わりに、behavior の `default_instruction` が
     フラグで渡す (`boidmeta.sweep.main` の docstring)。"""
 
-    def test_the_judge_skill_lands_in_the_description(self):
+    def test_the_intake_skill_lands_in_the_description(self):
+        cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
+        main(["--intake-skill", "/nvt-intake"], cli=cli, stdout=io.StringIO())
+        (_call, _task, description), = cli.named("update_description")
+        self.assertIn("/nvt-intake", description)
+
+    def test_the_deprecated_judge_skill_alias_still_works(self):
+        """runner image のデプロイと `boid project fetch` は別手順で、同時には
+        切り替えられない。旧フラグ名は移行窓のあいだ受け続ける。"""
         cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
         main(["--judge-skill", "/nvt-sweep"], cli=cli, stdout=io.StringIO())
         (_call, _task, description), = cli.named("update_description")
         self.assertIn("/nvt-sweep", description)
+
+    def test_the_new_flag_wins_when_both_are_given(self):
+        cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
+        main(["--judge-skill", "/old", "--intake-skill", "/new"], cli=cli, stdout=io.StringIO())
+        (_call, _task, description), = cli.named("update_description")
+        self.assertIn("/new", description)
+        self.assertNotIn("/old", description)
 
     def test_the_write_command_defaults_to_this_skills_absolute_path(self):
         """**組み込みスキルとして配る意味がここに出る。** メタプロジェクト側にコピーが
@@ -417,9 +432,35 @@ class FlagsTest(unittest.TestCase):
         self.assertEqual(len(round_.targets), 2)
         self.assertEqual(round_.deferred, 4)
 
-    def test_the_judge_skill_is_required(self):
+    def test_an_intake_skill_is_required(self):
         with self.assertRaises(SystemExit):
             main([], cli=FakeCLI(), stdout=io.StringIO())
+
+
+class IntakeScopeTest(unittest.TestCase):
+    """巡が担うのは仕分けまで。**肉付けは card コマンドの側**で、そちらは
+    `capture`/`link` が書く action から daemon が自動で起こす。
+
+    どの段がどの verb を持つかは機構の話なので、workspace のスキル 2 本に
+    書かせず、機構が組む instruction の側で 1 度だけ言う。
+    """
+
+    def description_for(self, **kw):
+        cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
+        main(["--intake-skill", "/intake"], cli=cli, stdout=io.StringIO())
+        (_call, _task, description), = cli.named("update_description")
+        return description
+
+    def test_it_names_the_verbs_this_stage_owns(self):
+        description = self.description_for()
+        for verb in ("capture", "link", "skip"):
+            self.assertIn(verb, description, f"{verb} が仕分けの出口として案内されていない")
+
+    def test_it_refuses_the_verbs_the_next_stage_owns(self):
+        """ここで summary や spec を書かせると、card コマンドと二重に判断が走る。"""
+        description = self.description_for()
+        for verb in ("summary", "spec"):
+            self.assertNotIn(f"`{verb}`", description, f"{verb} が仕分けの出口に混じっている")
 
 
 class MainTest(unittest.TestCase):

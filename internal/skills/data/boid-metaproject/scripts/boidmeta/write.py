@@ -279,7 +279,7 @@ _TERMINAL_ALLOWED_VERBS: Mapping[str, frozenset[str]] = MappingProxyType(
 #:    (`SINGLE_STATUS_VERBS`/`DONE_VALID_STATUSES`/`REOPEN_VALID_STATUSES` ——
 #:    わざと `_TRANSITION_VERB_STATUSES` を import せず書き下している。実装と
 #:    テストの単一情報源化はしない、テストは独立した正解を持つ)
-#: 4. メタプロジェクトの判断スキル (`--judge-skill` が指すもの) の status→verb 表 (「ただし、どの verb を
+#: 4. メタプロジェクトの判断スキル (card コマンドが指すもの) の status→verb 表 (「ただし、どの verb を
 #:    書けるかは card の現在の status で決まる」の下)
 #: 3 と 4 が実装からズレても実行時のエラーメッセージ (`_transition_verbs_from` 由来) が
 #: 訂正するので実害は緩いが、subagent/人が読む文書として揃えておくこと。
