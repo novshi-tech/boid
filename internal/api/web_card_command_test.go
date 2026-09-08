@@ -212,6 +212,19 @@ func TestPostCardCommand_Success_RedirectsToCardOwnPage(t *testing.T) {
 	if location != "/tasks/card-1" {
 		t.Errorf("Location = %q, want the card's own page %q (never a guessed continuation URL)", location, "/tasks/card-1")
 	}
+	// The typed instruction must actually reach the daemon. Asserting only
+	// the redirect passes just as happily when the handler drops it — and a
+	// dropped instruction fails silently, since an empty one is valid.
+	rows, err := orchestrator.ListCardRequestsByCard(repo, "card-1")
+	if err != nil {
+		t.Fatalf("ListCardRequestsByCard: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("card_requests rows = %d, want 1", len(rows))
+	}
+	if rows[0].Instruction != "look into this" {
+		t.Errorf("persisted instruction = %q, want %q", rows[0].Instruction, "look into this")
+	}
 }
 
 func TestPostCardCommand_EmptyInstruction_Succeeds(t *testing.T) {
@@ -385,5 +398,51 @@ func TestPostCardCommand_TerminalCard_RedirectsWithErrorInsteadOfRendering(t *te
 	}
 	if !strings.HasPrefix(location, "/tasks/card-1?error=") {
 		t.Errorf("Location = %q, want an error redirect", location)
+	}
+}
+
+// The command input must not sit inside either SSE-replaced container. Both
+// #task-status and #task-pinned are swapped wholesale via outerHTML on every
+// SSE event, which would rebuild the textarea and discard whatever the user
+// had typed but not yet sent.
+func TestCardDetail_CommandSection_OutsideEverySSEReplacedFragment(t *testing.T) {
+	h, repo, projectID := newCardCommandWebTestHandler(t, cardCommandMeta(
+		[]string{"review"},
+		map[string]orchestrator.CardCommand{"review": {Label: "Run", Run: "echo hi"}},
+	))
+	newCardTimelineTestCard(t, repo, projectID, "card-1")
+
+	for _, kind := range []string{"status", "pinned"} {
+		code, html := getHTML(t, h, "/tasks/card-1/fragment?kind="+kind)
+		if code != http.StatusOK {
+			t.Fatalf("kind=%s: status = %d, want 200; body:\n%s", kind, code, html)
+		}
+		if strings.Contains(html, "card-command-section") {
+			t.Errorf("kind=%s fragment must not contain the command input — it is replaced wholesale on every SSE event; got:\n%s", kind, html)
+		}
+	}
+}
+
+// §5.1 places the instruction input second: below title/status/summary,
+// above the pinned items.
+func TestCardDetail_CommandSection_RendersBetweenStatusAndPinned(t *testing.T) {
+	h, repo, projectID := newCardCommandWebTestHandler(t, cardCommandMeta(
+		[]string{"review"},
+		map[string]orchestrator.CardCommand{"review": {Label: "Run", Run: "echo hi"}},
+	))
+	newCardTimelineTestCard(t, repo, projectID, "card-1")
+
+	code, html := getHTML(t, h, "/tasks/card-1")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", code, html)
+	}
+	status := strings.Index(html, `id="task-status"`)
+	command := strings.Index(html, `id="card-command-section"`)
+	pinned := strings.Index(html, `id="task-pinned"`)
+	if status < 0 || command < 0 || pinned < 0 {
+		t.Fatalf("expected all three sections (status=%d command=%d pinned=%d); got:\n%s", status, command, pinned, html)
+	}
+	if !(status < command && command < pinned) {
+		t.Errorf("expected order status(%d) < command(%d) < pinned(%d)", status, command, pinned)
 	}
 }
