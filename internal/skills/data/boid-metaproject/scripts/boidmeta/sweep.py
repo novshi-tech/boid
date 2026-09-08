@@ -1,7 +1,7 @@
 """1 巡の骨格 —— inbox を読み、対象を組み、自分の description に書く。
 
 sweep task が**最初の一手**として実行する。入口は
-`scripts/sweep_targets.py --judge-skill /<スキル> [--max-targets N]`。
+`scripts/sweep_targets.py --intake-skill /<スキル> [--max-targets N]`。
 
 やること:
 
@@ -224,7 +224,7 @@ def merge_targets(targets: Sequence[Target]) -> tuple[Target, ...]:
     return tuple(merged.values())
 
 
-def instruction(targets: Sequence[Target], *, judge_skill: str, write_command: str) -> str:
+def instruction(targets: Sequence[Target], *, intake_skill: str, write_command: str) -> str:
     """sweep task の description に埋める「対象の一覧」。
 
     **spool ファイルは作らない。** 対象は description に埋める —— ファイルを挟むと
@@ -235,13 +235,22 @@ def instruction(targets: Sequence[Target], *, judge_skill: str, write_command: s
     identity で指す —— 新規候補に id を書けないし、identity が無いと subagent は
     何を読めばよいか分からない。
 
-    `judge_skill` は 1 対象を判断するスキル (`/nvt-sweep` 等)、`write_command` は
-    記録 CLI の叩き方。**どちらもこの機構は中身を知らない** —— 判断そのものは
-    workspace 固有で、そこが唯一の付加価値だから。
+    `intake_skill` は 1 対象を仕分けるスキル、`write_command` は記録 CLI の叩き方。
+    **どちらもこの機構は中身を知らない** —— 判断そのものは workspace 固有で、
+    そこが唯一の付加価値だから。
+
+    **どの段がどの verb を持つかはここで言う。** workspace のスキル 2 本に書かせると
+    同じ表が 2 か所に増えて、片方だけ古くなる。
     """
     lines = [
-        "この巡で考え直す対象。**1 対象につき subagent を 1 枚 fork** して、",
-        f"`{judge_skill}` の手順で判断する。",
+        "この巡で仕分ける対象。**1 対象につき subagent を 1 枚 fork** して、",
+        f"`{intake_skill}` の手順で仕分ける。",
+        "",
+        "**この巡の出口は `capture` / `link` / `note` / `skip` の 4 つだけ。**",
+        "既に card がある対象は `note` で「何が新しいか」を渡す。",
+        "card の中身を書くのはこの巡の仕事ではない —— `capture` / `link` / `note` は",
+        "どれも card イベントとして記録され、続きの判断は daemon が card コマンドとして",
+        "自動で起こす。ここで書き足すと同じ card を二重に判断することになる。",
         "",
     ]
     for target in targets:
@@ -277,7 +286,7 @@ DEFAULT_WRITE_COMMAND = "python3 ~/.claude/skills/boid-metaproject/scripts/write
 def main(argv: Sequence[str] | None = None, *, cli=None, stdout=None) -> int:
     """sweep task が起動直後に実行する 1 巡の骨格。
 
-    `--judge-skill` と `--max-targets` を**フラグで受ける**のは、メタプロジェクト側に
+    `--intake-skill` と `--max-targets` を**フラグで受ける**のは、メタプロジェクト側に
     設定ファイルを置かせないため。runner image には pyyaml が無いので YAML は読めず、
     JSON の設定ファイルを 1 枚増やすくらいなら、既に「最初の一手」を書いている
     behavior の `default_instruction` に 2 つ書いてもらう方が置き場が少ない。
@@ -289,10 +298,12 @@ def main(argv: Sequence[str] | None = None, *, cli=None, stdout=None) -> int:
         description="signal inbox を読み、この巡の対象を組んで自分の description に書く",
     )
     parser.add_argument(
-        "--judge-skill",
-        required=True,
-        help="1 対象を判断するスキル (例: /nvt-sweep)。description に埋める",
+        "--intake-skill",
+        help="1 対象を仕分けるスキル (例: /nvt-intake)。description に埋める",
     )
+    # runner image のデプロイと `boid project fetch` は別手順で、同時には
+    # 切り替えられない。移行窓のあいだ旧名も受ける。
+    parser.add_argument("--judge-skill", help=argparse.SUPPRESS)
     parser.add_argument(
         "--max-targets",
         type=int,
@@ -305,6 +316,9 @@ def main(argv: Sequence[str] | None = None, *, cli=None, stdout=None) -> int:
         help="記録 CLI の叩き方。description に埋める",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
+    intake_skill = args.intake_skill or args.judge_skill
+    if not intake_skill:
+        parser.error("--intake-skill が要る")
     if args.max_targets < 1:
         parser.error("--max-targets は 1 以上")
 
@@ -324,7 +338,7 @@ def main(argv: Sequence[str] | None = None, *, cli=None, stdout=None) -> int:
         own_task_id = resolved_cli.current_field("id")
         resolved_cli.update_description(
             own_task_id,
-            instruction(round_.targets, judge_skill=args.judge_skill, write_command=args.write_command),
+            instruction(round_.targets, intake_skill=intake_skill, write_command=args.write_command),
         )
     except BoidError as exc:
         print(f"[sweep] boid の呼び出しに失敗した: {exc}", file=sys.stderr)

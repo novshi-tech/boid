@@ -16,7 +16,7 @@ import (
 // updated_at = ? WHERE id = ?` (tx.TouchTaskUpdatedAt) fires in the SAME Tx
 // as attrs_set's suggestion-attachment side effect and as child_closed's
 // parent self-record — and nowhere else attrs_set touches (observed/
-// summary/urgency/link/skip/done-signal bookkeeping, noted,
+// summary/urgency/link/skip bookkeeping, noted,
 // child_added/child_specced/child_dropped all stay silent, per the bump
 // table in §3.2). These tests pin exactly that boundary, plus that the
 // pre-existing skipTaskUpdate race defense (workflow_action.go) is

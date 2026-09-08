@@ -121,13 +121,13 @@ class RecordTest(unittest.TestCase):
     **2026-08-29、PR-2やり直しv2: `attrs_set` への構造化書き込みをやめ、常に平文の
     `notify_progress` を sweep task 自身の timeline へ書く** (`domain/record.py` の
     `encode_attrs`/`ATTRS_KEY`/`PROGRESS_PREFIX` はどれも削除した)。task に書き込む
-    verb (`done-signal` 等) でも、記録自体は task の attrs ではなく sweep task の
+    verb (`note` 等) でも、記録自体は task の attrs ではなく sweep task の
     timeline に残る —— 対象 task への書き込みはハンドラ本体 (`_do_*`) の役目。
     """
 
     def test_a_task_bound_verb_records_as_plain_progress(self):
         cli = FakeCLI()
-        run("done-signal", cli, task_id="t1")
+        run("note", cli, task_id="t1", body="続報")
         (_, task_id, message), = cli.named("notify_progress")
         self.assertEqual(task_id, "sweep-1")
         self.assertIn("handled", message)
@@ -149,13 +149,6 @@ class RecordTest(unittest.TestCase):
         (_, _, message), = cli.named("notify_progress")
         self.assertIn("自分の発言だけ", message)
 
-    def test_done_signal_only_records(self):
-        cli = FakeCLI()
-        run("done-signal", cli, task_id="t1")
-        self.assertEqual(len(cli.named("notify_progress")), 1)
-        self.assertFalse(cli.wrote("send_action"))
-        self.assertFalse(cli.wrote("update_description"))
-
 
 class AckTest(unittest.TestCase):
     """2026-08-28、PR-2 §6.1 決定事項 6: 「ack を打つ順序: sweep が判断を書いた直後に
@@ -165,7 +158,7 @@ class AckTest(unittest.TestCase):
 
     def test_a_task_bound_verb_acks_its_signals_after_recording(self):
         cli = FakeCLI()
-        run("done-signal", cli, task_id="t1")
+        run("note", cli, task_id="t1", body="続報")
         self.assertTrue(cli.wrote("notify_progress"))
         (_, ids), = cli.named("ack_signals")
         # ack は event_key ("boid:a1") ではなく envelope_id_of() で逆算した元の
@@ -185,14 +178,14 @@ class AckTest(unittest.TestCase):
 
     def test_multiple_signals_are_all_acked(self):
         cli = FakeCLI()
-        run("done-signal", cli, task_id="t1", signals=["boid:a1", "jira:KT-1:issue:2026-08-28T00:00:00Z"])
+        run("note", cli, task_id="t1", body="続報", signals=["boid:a1", "jira:KT-1:issue:2026-08-28T00:00:00Z"])
         (_, ids), = cli.named("ack_signals")
         self.assertEqual(set(ids), {"a1", "KT-1:issue:2026-08-28T00:00:00Z"})
 
     def test_dry_run_does_not_ack(self):
         """`--report` は書きを全部止める約束 —— ack も含む。"""
         cli = FakeCLI()
-        run("done-signal", cli, report=True, task_id="t1")
+        run("note", cli, report=True, task_id="t1", body="続報")
         self.assertFalse(cli.wrote("ack_signals"))
 
 
@@ -203,8 +196,8 @@ class CrashSafetyTest(unittest.TestCase):
     で `_record` を平文 progress 一本化した際に新たに固定した)。
 
     `_record` は verb に関わらず同じ経路 (`notify_progress` → `inbox.ack`) を通る
-    ので、代表的な verb (task に書く `capture`/`spec`、task を持たない `skip`、
-    task へ何も書かない `done-signal`) で同じ性質を確認する。
+    ので、代表的な verb (task に書く `capture`/`spec`/`note`、task を持たない `skip`)
+    で同じ性質を確認する。
     """
 
     class CrashingCLI(FakeCLI):
@@ -214,10 +207,10 @@ class CrashSafetyTest(unittest.TestCase):
             super().notify_progress(task_id, message)
             raise RuntimeError("sweep task crashed while recording")
 
-    def test_done_signal_does_not_ack_if_recording_fails(self):
+    def test_note_does_not_ack_if_recording_fails(self):
         cli = self.CrashingCLI()
         with self.assertRaises(RuntimeError):
-            run("done-signal", cli, task_id="t1")
+            run("note", cli, task_id="t1", body="続報")
         self.assertFalse(cli.wrote("ack_signals"))
 
     def test_skip_does_not_ack_if_recording_fails(self):
@@ -843,6 +836,42 @@ class SimpleVerbTest(unittest.TestCase):
         self.assertFalse([c for c in cli.actions("attrs_set") if "observed" in (c[3] or {})])
 
 
+class NoteTest(unittest.TestCase):
+    """既にこの card に結びついた identity から続報が来たときの出口。
+
+    action type が `noted` であることが契約の本体で、boid 側の
+    `internal/orchestrator/card_event_ingest.go` の allowlist がそれを見ている。
+    """
+
+    def test_it_writes_a_noted_action(self):
+        cli = FakeCLI()
+        run("note", cli, task_id="t1", body="PR #12 がマージされた")
+        (_, task_id, action_type, payload), = cli.actions("noted")
+        self.assertEqual(task_id, "t1")
+        self.assertEqual(action_type, "noted")
+        self.assertEqual(payload["body"], "PR #12 がマージされた")
+
+    def test_it_does_not_touch_the_summary(self):
+        """サマリーを書くのは判断の段。仕分けは事実を置くだけ。"""
+        cli = FakeCLI()
+        run("note", cli, task_id="t1", body="続報")
+        self.assertFalse(cli.wrote("update_description"))
+        self.assertFalse(cli.actions("attrs_set"))
+
+    def test_it_records_and_acks_like_any_other_verb(self):
+        cli = FakeCLI()
+        run("note", cli, task_id="t1", body="続報")
+        (_, sweep_task_id, message), = cli.named("notify_progress")
+        self.assertEqual(sweep_task_id, "sweep-1")
+        self.assertIn("handled", message)
+        self.assertTrue(cli.wrote("ack_signals"))
+
+    def test_report_mode_writes_nothing(self):
+        cli = FakeCLI()
+        run("note", cli, report=True, task_id="t1", body="続報")
+        self.assertFalse(cli.wrote("send_action"))
+
+
 class ReportModeTest(unittest.TestCase):
     """§10 step 4 の dry-run。**`readonly: true` では止められない** (boid の op は
     readonly のゲート対象外) ので、書き込みが記録 CLI を必ず通ることが前提。
@@ -998,7 +1027,7 @@ class ExternallyResolvedParkedCardScenarioTest(unittest.TestCase):
 class TerminalTaskGuardTest(unittest.TestCase):
     """書けない相手には書かない。**正しい verb を名指しして拒む。**
 
-    2026-08-23 の評価で、終端 task 宛ての `link`/`observed`/`summary`/`done-signal` が
+    2026-08-23 の評価で、終端 task 宛ての `link`/`observed`/`summary` が
     全部拒否され、subagent は生のエラー (`no transition for action "attrs_set" from
     status "done"`) しか読めずに諦めた。次の巡はたまたま `skip` を選んで通った ——
     **同じ状況で判断が割れる**ので、機構が選択肢を絞る。
@@ -1064,6 +1093,15 @@ class TerminalTaskGuardTest(unittest.TestCase):
         with self.assertRaises(Exception) as caught:
             run("summary", cli, task_id="t1", body="本文")
         self.assertIn("skip", str(caught.exception))
+
+    def test_note_is_refused_on_a_done_card(self):
+        """終端 card への続報は `reopen` の提案で受ける。`noted` を書いても
+        自動起動の対象 status が parked/working に限られるので誰も読まない。"""
+        cli = self.cli_for(status="done")
+        with self.assertRaises(Exception) as caught:
+            run("note", cli, task_id="t1", body="続報")
+        self.assertIn("reopen", str(caught.exception))
+        self.assertFalse(cli.wrote("send_action"))
 
     def test_reopen_is_allowed_on_a_dropped_card(self):
         """boid の card 機械 v2 は `dropped → parked : reopen` を持つ (設計 §3.2)。

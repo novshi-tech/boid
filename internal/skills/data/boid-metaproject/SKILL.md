@@ -27,6 +27,32 @@ Two things make a metaproject, and only one of them is yours to write.
 | **the machinery** — read the inbox, group by identity, screen, claim, assemble targets, write judgments back to boid | already written, ships with this skill | `~/.claude/skills/boid-metaproject/scripts/` |
 | **the judgment** — which events matter, what to propose, when something is done | **you** | the metaproject's own repo |
 
+## The judgment runs in two stages
+
+They are separate jobs, started by different things, and each needs its own
+skill in the metaproject's repo.
+
+| stage | started by | scope |
+|---|---|---|
+| **intake** | a sweep round, one subagent per target | is this worth a card at all, and which card is it |
+| **judgment** | a card command the daemon starts per card | what this card now means and what to propose next |
+
+Intake owns what happens *before or outside* a live card: screening a candidate
+away, capturing a new one, joining a follow-up to an existing one. Judgment owns
+everything *on* a live card: the summary, the child specs, the suggestion.
+
+What joins them is the action log. `capture`, `link` and `note` each write a card
+action (`created`, `identity_linked`, `noted`), and those action types are on the
+daemon's card-event allowlist — so a captured, joined or updated card starts its
+own judgment without the sweep round doing anything further. The same is true of a person
+editing a card in the web UI, a work child finishing, a wake condition coming
+due, and an answered suggestion. **The sweep is not the only thing that can
+cause a card to be re-judged, and that is the point of splitting them.**
+
+Do not have intake write summaries or child specs "while it is already there".
+That is not a shortcut — it is a second judgment racing the one the daemon just
+started on the same card.
+
 ## Do not copy the machinery into the metaproject
 
 The scripts here are baked into the runner image and symlinked into every
@@ -44,8 +70,9 @@ you need is here, or it belongs here.
 
 ## Standing up a new metaproject
 
-A metaproject is an ordinary boid project. What makes it a metaproject is four
-declarations in its `.boid/project.yaml` plus one skill that holds the judgment.
+A metaproject is an ordinary boid project. What makes it a metaproject is five
+declarations in its `.boid/project.yaml` plus the two skills that hold the
+judgment.
 
 ### 1. Declare where signals come from
 
@@ -115,13 +142,13 @@ task_behaviors:
         **最初の一手として次を実行すること。**
 
             python3 ~/.claude/skills/boid-metaproject/scripts/sweep_targets.py \
-              --judge-skill /<判断スキル> --max-targets 8
+              --intake-skill /<仕分けスキル> --max-targets 8
 
-        これが inbox を読み、識別子を解決し、篩って対象へ畳み、判断に回す signal を
+        これが inbox を読み、識別子を解決し、篩って対象へ畳み、仕分けに回す signal を
         claim して、**自分の description をその対象一覧で書き換える**。
 
         実行し終わったら `boid task current --field description` で書き換わった
-        description を読み直し、1 対象につき subagent を 1 枚 fork して判断する。
+        description を読み直し、1 対象につき subagent を 1 枚 fork して仕分ける。
 
         **`boid task notify --done` を打つのはあなただけ。** subagent は打たない
         (打つと sweep task ごと終了し、走っている兄弟が道連れになる)。全対象の結果が
@@ -161,35 +188,87 @@ independent axis from this behavior's `readonly`, since it has no
 tells the two paths apart itself (`boid card context`'s presence), so nothing
 here changes for a plain Sweep behavior.
 
-`--judge-skill` and `--max-targets` are flags rather than a config file on
+`--intake-skill` and `--max-targets` are flags rather than a config file on
 purpose — the runner image has no YAML parser, and the behavior instruction is
 already the place that says "run this first", so putting the two knobs there
-costs no new file.
+costs no new file. `--judge-skill` is the old name for `--intake-skill` and
+still works; it names the intake skill now, so prefer the new name.
 
-### 4. Write the judgment skill
+### 4. Declare the card command and arm it
 
-This is the part nobody else can write for you. It receives one target — a card
-id, or a bare identity for something not yet captured — plus the event keys that
-are new about it, and decides what to propose. Everything mechanical is already
-handled, so the skill should be about judgment and nothing else.
+```yaml
+card_commands:
+  judge:
+    label: Judge
+    card_write: true
+    run: |
+      id=$(printf '%s\n' 'title: "[judge]"' 'behavior: judge' 'auto_start: true' | boid task create | awk '{print $3}')
+      [ -n "$id" ] || exit 1
 
-Tell it:
+card_events:
+  command: judge
+```
 
-- **what this workspace is trying to achieve.** A sweep that doesn't know what
+`card_commands` declares what a person can run against one card from the web UI.
+`card_events` names the one of them the daemon starts on its own when something
+happens to a card. Without `card_events` the commands still exist as buttons and
+nothing is automatic — which is the right state while you are still cutting a
+metaproject over, and the switch to flip when intake has stopped judging.
+
+The launcher is short-lived on purpose: it creates the continuation and exits,
+with no `boid task wait`. The card's execution slot is held by the continuation
+rather than by the launcher, so a second event arriving mid-judgment waits for
+the slot instead of starting a second judgment. `card_events.command` must name
+a **task** command — an unattended session has nobody to end it, so the daemon
+refuses to auto-start one.
+
+`card_write: true` is what lets the continuation write to the card. It is an
+independent axis from the behavior's `readonly` (see §3), so the judgment
+behavior does not need `readonly: false` the way the sweep behavior does.
+**Anything under `card_commands.<key>` is not strictly decoded** — a misspelt
+`card_write` silently becomes false, so confirm it with
+`boid card context --field card_write` rather than by reading the YAML.
+
+### 5. Write the two skills
+
+This is the part nobody else can write for you. Everything mechanical is already
+handled, so both skills should be about judgment and nothing else.
+
+**The intake skill** receives one target — a card id, or a bare identity for
+something not yet captured — plus the event keys that are new about it. Tell it:
+
+- **what to skip.** Low-signal sources need a stated bar, or every notification
+  becomes a card. A skip is a real answer and it has to be recorded with a
+  reason, or the next round re-decides the same candidate.
+- **what deserves a card at all.** The usual bar is whether a card takes work off
+  the person's hands, not whether the event is interesting.
+- **how to tell a follow-up from a new thing.** That a mail thread, an issue and
+  an existing card are the same matter is not mechanically derivable; it is the
+  one read only a judgment can do.
+- **what is new about a card it already knows.** A target that arrives as a card
+  id is handed on with a `note` saying what happened. This is the steady state,
+  not the edge case, and it is the only outlet that carries a follow-up forward:
+  intake has no "read it, wrote nothing" verb, precisely because a follow-up that
+  writes nothing to the card starts no judgment.
+
+**The judgment skill** receives one card and works out what it now means. Tell
+it:
+
+- **what this workspace is trying to achieve.** A judgment that doesn't know what
   counts as progress produces tidy lists nobody acts on.
 - **what a good proposal looks like here**, and that not proposing is a real
   answer. Cards with three similar suggestions are worse than cards with none.
 - **when something is done.** There is no mechanical completion rule; this is a
   judgment and it has to be written down.
-- **what to skip.** Low-signal sources need a stated bar, or every notification
-  becomes a card.
 
-Do not tell it: how to write records, how to number children, which verb a card's
-current status allows, or how to ack signals. Those are enforced by the machinery
-and repeating them here creates a second copy that will drift.
+Do not tell either: how to write records, how to number children, which verb a
+card's current status allows, how to ack signals, or which of them owns which
+verb. Those are enforced by the machinery — the last one is written into the
+round's own instruction — and repeating them here creates a second copy that
+will drift.
 
 Read `references/verbs.md` for the record CLI's vocabulary — that reference is
-what the judgment skill should point at rather than restate.
+what both skills should point at rather than restate.
 
 ## Adding a source to an existing metaproject
 

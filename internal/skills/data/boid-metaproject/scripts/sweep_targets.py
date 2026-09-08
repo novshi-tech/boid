@@ -2,7 +2,7 @@
 """sweep task が**最初の一手**として実行する: この巡の対象を組んで自分の description に書く。
 
     python3 ~/.claude/skills/boid-metaproject/scripts/sweep_targets.py \
-        --judge-skill /<判断スキル> [--max-targets N]
+        --intake-skill /<仕分けスキル> [--max-targets N]
 
 中身は `boidmeta.sweep`。このファイルは import パスを通すだけの入口で、メタプロジェクト
 側にコピーするものではない —— 詳しくは `boidmeta/__init__.py`。
