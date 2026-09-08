@@ -912,3 +912,20 @@ func TestTaskDetailExecChildTreeSection_EmptyRendersNothing(t *testing.T) {
 		t.Errorf("no child tree should render nothing, got: %s", got)
 	}
 }
+
+// TestTaskDetailLiveScript_RegistersChildEventListener pins that the
+// browser actually registers a listener for the server's "child" SSE
+// event, refreshing only the pinned fragment.
+func TestTaskDetailLiveScript_RegistersChildEventListener(t *testing.T) {
+	var buf bytes.Buffer
+	if err := TaskDetailLiveScript().Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, "addEventListener('child'") {
+		t.Fatalf("expected a 'child' event listener registration; got:\n%s", html)
+	}
+	if !strings.Contains(html, "addEventListener('child', function() { refresh(['pinned']); });") {
+		t.Errorf("'child' listener must refresh exactly ['pinned']; got:\n%s", html)
+	}
+}

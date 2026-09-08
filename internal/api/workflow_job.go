@@ -71,6 +71,16 @@ func (s *TaskWorkflowService) CompleteJob(ctx context.Context, jobID string, req
 					"new_status": string(job.Status),
 				},
 			})
+			if childTask, terr := s.Tasks.GetTask(job.TaskID); terr == nil {
+				fanOutChildEventToParentCard(s.Hub, s.Tasks, childTask, TaskEvent{
+					Kind: "child",
+					Payload: map[string]any{
+						"child_task_id": job.TaskID,
+						"job_id":        job.ID,
+						"reason":        "job_completed",
+					},
+				})
+			}
 		}
 		return job, nil
 	}
@@ -118,6 +128,14 @@ func (s *TaskWorkflowService) CompleteJob(ctx context.Context, jobID string, req
 			Payload: map[string]any{
 				"job_id":    job.ID,
 				"new_state": string(newTask.Status),
+			},
+		})
+		fanOutChildEventToParentCard(s.Hub, s.Tasks, newTask, TaskEvent{
+			Kind: "child",
+			Payload: map[string]any{
+				"child_task_id": job.TaskID,
+				"job_id":        job.ID,
+				"reason":        "job_failed",
 			},
 		})
 	}

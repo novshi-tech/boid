@@ -80,6 +80,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		if err := s.Actions.CreateAction(ctx, action); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
+		s.broadcastNotifyAction(task, action)
 		return nil
 	}
 	task, err := s.Tasks.GetTask(taskID)
@@ -241,6 +242,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		if err := s.Actions.CreateAction(ctx, action); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
+		s.broadcastNotifyAction(task, action)
 	}
 
 	// Stop the agent of each running hook job gracefully. StopAgent delivers
@@ -269,6 +271,29 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		}
 	}
 	return nil
+}
+
+// broadcastNotifyAction broadcasts a NotifyTask self-report to task's own
+// SSE subscribers, then fans it out to its parent card, if any.
+func (s *TaskAppService) broadcastNotifyAction(task *orchestrator.Task, action *orchestrator.Action) {
+	if s.Hub == nil {
+		return
+	}
+	s.Hub.Broadcast(task.ID, TaskEvent{
+		Kind: "action",
+		Payload: map[string]any{
+			"action_id":  action.ID,
+			"new_status": string(action.ToStatus),
+		},
+	})
+	fanOutChildEventToParentCard(s.Hub, s.Tasks, task, TaskEvent{
+		Kind: "child",
+		Payload: map[string]any{
+			"child_task_id": task.ID,
+			"action_id":     action.ID,
+			"reason":        action.Type,
+		},
+	})
 }
 
 // notifyModeName returns a short label identifying which lifecycle signal

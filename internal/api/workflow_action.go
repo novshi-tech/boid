@@ -514,6 +514,14 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 				"new_status": string(action.ToStatus),
 			},
 		})
+		fanOutChildEventToParentCard(s.Hub, s.Tasks, newTask, TaskEvent{
+			Kind: "child",
+			Payload: map[string]any{
+				"child_task_id": newTask.ID,
+				"action_id":     action.ID,
+				"new_status":    string(action.ToStatus),
+			},
+		})
 	}
 
 	// Log every attrs_set that just landed on a done triage task via

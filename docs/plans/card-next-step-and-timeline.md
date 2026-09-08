@@ -2226,3 +2226,105 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
        `CardCommandDetail`（`launching`/`attached` 優先で選ばれる、
        PR-5b の `pickActiveCardRequest`）が queued 行を拾わないケースは
        PR-5b の既知の非対称のまま。
+
+- **PR-6c-1 で確定: 子→親 SSE fan-out（PR-6c を 6c-1/6c-2 に分割した1本目）。**
+  UI・進捗の畳み込みは対象外（PR-6c-2 へ）。
+
+  1. **埋めた経路 / 埋めなかった経路。** 出発点で確認した4つの欠落のうち
+     全て埋めた: (1) `recordChildClosedOnParent`/
+     `recordVanishedChildClosedOnParent`（`workflow_card.go`/`queue_sweep.go`）
+     が書く `child_closed` action を broadcast、(2) `ApplyAction` の
+     子 executing→awaiting（ask）を親へ fan-out、(3) `TaskAppService` に
+     `Hub` を新設し `progress`/`done_request`/`fail_request`（子自身にも
+     親にも一切届いていなかった）を配線、(4) `CompleteJob` の子 job 完了/
+     失敗を親へ fan-out。既存 7 箇所のうち `persistFiredEvents`
+     （fired_event は card の読みモデルに反映先が無い）、
+     `suggestion_accept.go`・acceptGo の "go" self-broadcast（対象タスクが
+     常に呼び出し元自身で、子→親の関係ではない）は変更していない
+     — 対象外にした理由は「fan-out先に反映するデータが読みモデルに
+     存在しない」か「そもそも子→親の関係を持つ broadcast ではない」の
+     いずれか。
+  2. **`Kind` の語彙: 新設した `child` と、既存 `action` の再利用の二本立て。**
+     `recordChildClosedOnParent`/`recordVanishedChildClosedOnParent` が書く
+     action は `TaskID` が最初から親自身なので、既存の `action` self-broadcast
+     をそのまま親のチャンネルに投げるだけで足りる（新語彙不要）。
+     一方 `ApplyAction`/`CompleteJob`/`NotifyTask` の fan-out は、親の
+     action ログに存在しないイベント（子の action_id/job_id は親の
+     テーブルには無い）を親のチャンネルへ転送するので、新設 `child` を
+     使う。ブラウザ側は `child` 受信時に `refresh(['pinned'])` のみ呼ぶ
+     — `#task-status` は子の情報を一切描画しないため。card の fragment
+     kind は既存どおり `status`/`pinned` の2つのまま変更していない。
+  3. **fan-out の判定を1箇所に寄せた場所: `internal/api/card_child_fanout.go`
+     の `isCardTask`/`fanOutChildEventToParentCard`。** 子の `Task` と
+     `TaskStore` を受け取り、親を引いて型を見てから broadcast するのはこの
+     関数だけで、呼び出し元（`ApplyAction`/`CompleteJob`/
+     `broadcastNotifyAction`）は判定条件を一切持たない。
+     `recordChildClosedOnParent`/`recordVanishedChildClosedOnParent` は
+     action の `TaskID` が最初から親なので `fanOutChildEventToParentCard`
+     は使わないが、同じ `isCardTask` 述語を再利用して判定を分岐させている。
+     **mutation で判明した記録のみの事実: この2箇所での `isCardTask` は
+     現状の DB スキーマ下では到達不能（常に true）。**
+     `orchestrator.UpsertTaskTriage` の UPDATE 文が `WHERE id = ? AND
+     type = 'card'` を持つため、card 以外の task に task_triage 行を
+     持たせること自体ができず、`recordChildClosedOnParent` が
+     `GetTaskTriage` を通過できた時点で親は必ず card。§6 の別の
+     到達不能ガード（`taskType != TaskTypeCard`）と同じ構造で、
+     schema が変わらない限り dead code だが、防御として残した。
+  4. **`progress` は子自身と親の両方に届ける。** 配線前は
+     `TaskAppService` に `Hub` が無く、`progress`/`done_request`/
+     `fail_request` は子自身の購読者にすら届いていなかった
+     （出発点の欠落3）。`broadcastNotifyAction` を新設し、まず
+     action 自身の `TaskID`（=子）へ既存 `action` Kind で self-broadcast
+     してから、`fanOutChildEventToParentCard` で親（card のときのみ）へ
+     `child` Kind を送る。子自身への配信も今回まとめて直した理由:
+     親にだけ届いて子の詳細ページ自身が更新されないのは非対称で、
+     `ApplyAction`/`CompleteJob` の他の action と同じ扱いに揃えるほうが
+     一貫する。
+  5. **PR-6c-2 への申し送り。** 子の `child_task_id` を含む `child` Kind の
+     イベントが親に届くようになったので、PR-6c-2 はこれを使って
+     (a) `#task-pinned` の SSE 置換前に入力途中の指示・展開状態を保持する
+     部分更新、(b) N4（pinned だった子が終端すると履歴に一度も現れない
+     問題）の head 再描画、を実装できる。`child` イベントの payload は
+     `child_task_id`/`reason`（`progress`/`done_request`/`fail_request`/
+     `job_completed`/`job_failed`）を持つが、`ApplyAction` 経由の分だけ
+     `reason` の代わりに `new_status` を積んでいる非対称が残っている
+     — PR-6c-2 が payload を読む設計にする場合はこの差を統一するか
+     吸収すること。
+
+  **見つけた plan doc とのズレ:** §6 の実現可能性チェック表が
+  `internal/api/workflow_card.go`（子 dispatch）の broadcast 先を
+  「`newTask.ID`（新規子）」と記していたが、実装を読むと `acceptGo` の
+  この broadcast は go 遷移そのもの（card 自身の parked→working）の
+  self-broadcast で、`newTask` は新規子ではなく card 自身を指す
+  （`newlyDispatched` 側の `child_dispatched` action には broadcast が
+  無い）。既存 7 箇所の広報先を洗い出す出発点として使ったが、この1件は
+  子→親の欠落ではなく元から self-broadcast だった。
+
+  **mutation テスト結果。** 全て「sed/python でソースを書き換え →
+  `diff` でバックアップと比較して着弾を確認（`.templ` は追加で
+  `templ generate` 後の `_templ.go` 差分も確認）→ `go test` を実行 →
+  赤を確認 → `cp` で復元」の手順で実施した。
+
+  | 契約 | mutation | 着弾確認 | 挙動が変わったか |
+  |---|---|---|---|
+  | card 親のみ fan-out（共通述語） | `fanOutChildEventToParentCard` の `!isCardTask(parent)` 判定を削除 | diff | 赤（execution 親 2 本） |
+  | ApplyAction の子→親 fan-out | 追加した `fanOutChildEventToParentCard` 呼び出しを削除 | diff | 赤 |
+  | CompleteJob 成功時の子→親 fan-out | 追加した呼び出しを削除 | diff | 赤 |
+  | CompleteJob 失敗時の子→親 fan-out | 追加した呼び出しを削除 | diff | 赤 |
+  | NotifyTask progress の自己 broadcast | `broadcastNotifyAction` 呼び出し（progress 分岐）を削除 | diff | 赤 |
+  | NotifyTask fail_request の自己 broadcast | `broadcastNotifyAction` 呼び出し（done/fail 分岐）を削除 | diff | 赤 |
+  | NotifyTask の親への fan-out（自己 broadcast とは独立） | `broadcastNotifyAction` 内の `fanOutChildEventToParentCard` 呼び出しのみ削除 | diff | 赤（2本とも、自己 broadcast 側は緑のまま で分離確認済み） |
+  | child_closed の親への broadcast | `recordChildClosedOnParent` の broadcast ブロックを `if false` に | diff | 赤 |
+  | child_closed の card 判定（`isCardTask(parentTask)`） | 条件を `true` に固定 | diff | **変化なし** — 上記3項の理由で到達不能。既存の「execution 親では broadcast されない」テストは `GetTaskTriage` の `sql.ErrNoRows` 早期リターンで既に緑になっており、この mutation では何も証明していない |
+  | vanished child_closed の親への broadcast | `recordVanishedChildClosedOnParent` の broadcast ブロックを `if false` に | diff | 赤 |
+  | vanished child_closed の card 判定 | 未実施（上記と同一構造、同じ理由で到達不能と判断） |  |  |
+  | ブラウザ `child` リスナーの存在 | `tasks.templ` からリスナー行を削除 | diff + `templ generate` | 赤（新設テストと既存 `TestCardDetail_LiveScript_RefreshesPinnedKind` の両方が5→4件で検出） |
+  | `child` リスナーの refresh 対象 | `refresh(['pinned'])` を `refresh(['status'])` に | diff + `templ generate` | 赤 |
+
+  **記録のみ: card 判定の mutation が「着弾したが挙動を変えなかった」
+  唯一のケース。** 「テストが甘い」のではなく、DB スキーマの制約
+  （3番参照）により child_closed 経路では親が card 以外になり得ないため。
+  テストを「task_triage を無理やり非 card task に付ける」形に作り込む
+  ことも検討したが、`UpsertTaskTriage` 自体がそれを拒否する（対象行が
+  0件で `ErrTaskNotFound` になる）ため実 DB では再現不可能と判断し、
+  この事実を記録するに留めた。
