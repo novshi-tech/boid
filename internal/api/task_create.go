@@ -129,7 +129,7 @@ func (s *TaskAppService) CreateTask(ctx context.Context, req CreateTaskRequest) 
 	if initialStatus == orchestrator.TaskStatusParked {
 		return s.createCardTask(ctx, req, initialStatus)
 	}
-	return s.createExecutionTask(req, initialStatus)
+	return s.createExecutionTask(ctx, req, initialStatus)
 }
 
 // createCardTask builds and inserts a fresh Card. A card created here starts
@@ -199,10 +199,47 @@ func (s *TaskAppService) createCardTask(ctx context.Context, req CreateTaskReque
 		IdempotencyKey: req.IdempotencyKey,
 		Card:           &orchestrator.CardAttrs{},
 	}
-	if err := s.Tasks.CreateTask(task); err != nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	if err := s.createCardWithRecord(ctx, task); err != nil {
+		return nil, err
 	}
 	return task, nil
+}
+
+// createCardWithRecord inserts a card and its own creation record, in one
+// transaction when the service has a transactor.
+func (s *TaskAppService) createCardWithRecord(ctx context.Context, task *orchestrator.Task) error {
+	record := func() *orchestrator.Action {
+		return &orchestrator.Action{
+			TaskID: task.ID,
+			Type:   orchestrator.ActionTypeCardCreated,
+			Actor:  updateActor(ctx),
+		}
+	}
+	if s.Tx == nil {
+		if err := s.Tasks.CreateTask(task); err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if s.Actions == nil {
+			return nil
+		}
+		if err := s.Actions.CreateAction(ctx, record()); err != nil {
+			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		return nil
+	}
+	if err := s.Tx.WithinTx(func(tx TxStore) error {
+		if err := tx.CreateTask(task); err != nil {
+			return err
+		}
+		return tx.CreateAction(ctx, record())
+	}); err != nil {
+		var se *StatusError
+		if errors.As(err, &se) {
+			return se
+		}
+		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return nil
 }
 
 // attachCardRequestIfNeeded runs after a Ref/IdempotencyKey get-or-create
@@ -272,7 +309,7 @@ func cardChildSlotConflict(parent *orchestrator.Task, ref, projectID, behavior s
 	return true, fmt.Sprintf("child %q", occupants[0].ID)
 }
 
-func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
+func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
 	var meta *orchestrator.ProjectMeta
 	if s.Meta != nil {
 		// Hydrate with workspace.yaml so a workspace-level default project
@@ -284,7 +321,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 		// degrades gracefully, rather than failing task creation outright,
 		// for the failure modes GetWithWorkspace can produce that bare Get
 		// never could (a corrupt workspace.yaml, a host_commands conflict).
-		if hydrated, err := s.Meta.GetWithWorkspace(context.Background(), req.ProjectID); err == nil && hydrated != nil {
+		if hydrated, err := s.Meta.GetWithWorkspace(ctx, req.ProjectID); err == nil && hydrated != nil {
 			meta = hydrated
 		} else if m, ok := s.Meta.Get(req.ProjectID); ok {
 			meta = m
@@ -422,7 +459,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 				return nil, merr
 			}
 			if req.AutoStart && s.Workflow != nil && existing.Status == orchestrator.TaskStatusPending {
-				result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), existing.ID, ApplyActionRequest{Type: "start"})
+				result, err := s.Workflow.ApplyAction(orchestrator.WithActor(ctx, updateActor(ctx)), existing.ID, ApplyActionRequest{Type: "start"})
 				if err != nil {
 					slog.Error("auto_start: failed to apply start action on idempotency-key hit", "task_id", existing.ID, "error", err)
 				} else {
@@ -546,12 +583,8 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	// start either way. A caller's own Ref/IdempotencyKey hit is handled
 	// above and never reaches here at all.
 
-	// CreateTask has no ctx parameter, so this always stamps ActorHuman even
-	// though this call also backs `boid task create` from inside a sandbox
-	// and Dispatch's child-task creation, both of which should really carry
-	// the creating task's own actor.
 	if req.AutoStart && s.Workflow != nil && task.Status == orchestrator.TaskStatusPending {
-		result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), task.ID, ApplyActionRequest{Type: "start"})
+		result, err := s.Workflow.ApplyAction(orchestrator.WithActor(ctx, updateActor(ctx)), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {
 			slog.Error("auto_start: failed to apply start action", "task_id", task.ID, "error", err)
 		} else {

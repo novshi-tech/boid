@@ -150,7 +150,8 @@ func TestResolveOrCapture_Created_WritesCreatedAction(t *testing.T) {
 		Title: "ROOKPF-1", Description: "the body",
 	}
 
-	result, err := svc.ResolveOrCapture(context.Background(), req)
+	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorTask("t-writer"))
+	result, err := svc.ResolveOrCapture(ctx, req)
 	if err != nil {
 		t.Fatalf("ResolveOrCapture: %v", err)
 	}
@@ -164,8 +165,8 @@ func TestResolveOrCapture_Created_WritesCreatedAction(t *testing.T) {
 	if actions[0].Type != orchestrator.ActionTypeCardCreated {
 		t.Errorf("action type = %q, want %q", actions[0].Type, orchestrator.ActionTypeCardCreated)
 	}
-	if actions[0].Actor != orchestrator.ActorDaemon {
-		t.Errorf("actor = %q, want %q", actions[0].Actor, orchestrator.ActorDaemon)
+	if actions[0].Actor != orchestrator.ActorTask("t-writer") {
+		t.Errorf("actor = %q, want the capturing task", actions[0].Actor)
 	}
 
 	if _, err := svc.ResolveOrCapture(context.Background(), req); err != nil {

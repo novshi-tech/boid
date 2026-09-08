@@ -152,7 +152,7 @@ func TestIngestCardEventRequest_ActionTypeAllowlist(t *testing.T) {
 		"attrs_set":    true,
 		// The daemon's self-recorded state changes.
 		orchestrator.ActionTypeCardCreated:    true,
-		orchestrator.ActionTypeDescriptionSet: true,
+		orchestrator.ActionTypeCardEdited:     true,
 		orchestrator.ActionTypeIdentityLinked: true,
 	}
 	excluded := []string{

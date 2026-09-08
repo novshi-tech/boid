@@ -112,7 +112,7 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 		if err := tx.CreateAction(ctx, &orchestrator.Action{
 			TaskID: task.ID,
 			Type:   orchestrator.ActionTypeCardCreated,
-			Actor:  orchestrator.ActorDaemon,
+			Actor:  updateActor(ctx),
 		}); err != nil {
 			return fmt.Errorf("resolve or capture: record creation: %w", err)
 		}

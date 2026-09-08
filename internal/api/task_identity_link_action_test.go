@@ -5,7 +5,7 @@ package api
 
 import (
 	"context"
-	"strings"
+	"encoding/json"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
@@ -52,7 +52,8 @@ func TestLinkIdentity_NewBinding_WritesIdentityLinkedAction(t *testing.T) {
 	svc, tasks := newIdentityLinkTestService(t)
 	card := seedLinkCard(t, tasks)
 
-	if err := svc.LinkIdentity(context.Background(), "proj-1", "jira:ROOKPF-1", card.ID); err != nil {
+	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorTask("t-writer"))
+	if err := svc.LinkIdentity(ctx, "proj-1", "jira:ROOKPF-1", card.ID); err != nil {
 		t.Fatalf("LinkIdentity: %v", err)
 	}
 	actions, err := tasks.ListActionsByTask(card.ID)
@@ -65,8 +66,15 @@ func TestLinkIdentity_NewBinding_WritesIdentityLinkedAction(t *testing.T) {
 	if actions[0].Type != orchestrator.ActionTypeIdentityLinked {
 		t.Fatalf("action type = %q, want %q", actions[0].Type, orchestrator.ActionTypeIdentityLinked)
 	}
-	if !strings.Contains(string(actions[0].Payload), "jira:ROOKPF-1") {
-		t.Errorf("payload does not carry the identity: %s", actions[0].Payload)
+	var got orchestrator.IdentityLinkedPayload
+	if err := json.Unmarshal(actions[0].Payload, &got); err != nil {
+		t.Fatalf("unmarshal payload %s: %v", actions[0].Payload, err)
+	}
+	if got.Identity != "jira:ROOKPF-1" {
+		t.Errorf("payload identity = %q, want %q", got.Identity, "jira:ROOKPF-1")
+	}
+	if actions[0].Actor != orchestrator.ActorTask("t-writer") {
+		t.Errorf("actor = %q, want the writing task", actions[0].Actor)
 	}
 }
 
@@ -108,5 +116,74 @@ func TestLinkIdentity_ExecutionTask_WritesNoAction(t *testing.T) {
 	}
 	if len(actions) != 0 {
 		t.Fatalf("execution task wrote %d actions, want 0: %+v", len(actions), actions)
+	}
+}
+
+// TestUnlinkIdentity_Card_WritesIdentityUnlinkedAction: releasing a binding is
+// the symmetric counterpart of making one, and changes the card the same way.
+func TestUnlinkIdentity_Card_WritesIdentityUnlinkedAction(t *testing.T) {
+	svc, tasks := newIdentityLinkTestService(t)
+	card := seedLinkCard(t, tasks)
+	ctx := context.Background()
+	if err := svc.LinkIdentity(ctx, "proj-1", "jira:ROOKPF-9", card.ID); err != nil {
+		t.Fatalf("LinkIdentity: %v", err)
+	}
+
+	if err := svc.UnlinkIdentity(ctx, "proj-1", "jira:ROOKPF-9"); err != nil {
+		t.Fatalf("UnlinkIdentity: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 2 {
+		t.Fatalf("got %d actions, want 2 (linked then unlinked): %+v", len(actions), actions)
+	}
+	if actions[1].Type != orchestrator.ActionTypeIdentityUnlinked {
+		t.Fatalf("second action = %q, want %q", actions[1].Type, orchestrator.ActionTypeIdentityUnlinked)
+	}
+	var got orchestrator.IdentityLinkedPayload
+	if err := json.Unmarshal(actions[1].Payload, &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got.Identity != "jira:ROOKPF-9" {
+		t.Errorf("payload identity = %q, want %q", got.Identity, "jira:ROOKPF-9")
+	}
+}
+
+// TestUnlinkIdentity_NoBinding_WritesNoAction: removing what was never there
+// is not a change.
+func TestUnlinkIdentity_NoBinding_WritesNoAction(t *testing.T) {
+	svc, tasks := newIdentityLinkTestService(t)
+	card := seedLinkCard(t, tasks)
+
+	if err := svc.UnlinkIdentity(context.Background(), "proj-1", "jira:NEVER-BOUND"); err != nil {
+		t.Fatalf("UnlinkIdentity: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("got %d actions, want 0: %+v", len(actions), actions)
+	}
+}
+
+// TestLinkIdentity_NoTransactor_StillRecords pins the fallback branch: losing
+// the transactor costs atomicity, never the record.
+func TestLinkIdentity_NoTransactor_StillRecords(t *testing.T) {
+	svc, tasks := newIdentityLinkTestService(t)
+	svc.Tx = nil
+	card := seedLinkCard(t, tasks)
+
+	if err := svc.LinkIdentity(context.Background(), "proj-1", "jira:ROOKPF-7", card.ID); err != nil {
+		t.Fatalf("LinkIdentity: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Type != orchestrator.ActionTypeIdentityLinked {
+		t.Fatalf("actions = %+v, want one %q", actions, orchestrator.ActionTypeIdentityLinked)
 	}
 }

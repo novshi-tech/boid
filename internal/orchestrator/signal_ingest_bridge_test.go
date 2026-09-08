@@ -479,3 +479,31 @@ func TestTaskRepository_CreateAction_NestsInsideExistingTx(t *testing.T) {
 		t.Fatalf("got %d signals, want 1", len(got))
 	}
 }
+
+// TestIngestActionSignal_CardStateSelfRecords_NotIngested: the daemon's own
+// records of a card's shape are not news for the workspace's judgment — they
+// drive the card-event trigger instead. A human card edit would otherwise
+// land in the inbox, which is live in production.
+func TestIngestActionSignal_CardStateSelfRecords_NotIngested(t *testing.T) {
+	for _, actionType := range []string{
+		orchestrator.ActionTypeCardCreated,
+		orchestrator.ActionTypeCardEdited,
+		orchestrator.ActionTypeIdentityLinked,
+		orchestrator.ActionTypeIdentityUnlinked,
+	} {
+		t.Run(actionType, func(t *testing.T) {
+			d := testutil.NewTestDB(t)
+			seedProject(t, d.Conn, "proj-meta", "ws-1")
+			seedCardTask(t, d.Conn, "card-1", "proj-meta")
+
+			resolver := stubMetaResolver{"ws-1": {"proj-meta"}}
+			a := newAction("act-1", "card-1", actionType, orchestrator.ActorHuman)
+			if err := orchestrator.IngestActionSignal(context.Background(), d.Conn, a, resolver); err != nil {
+				t.Fatalf("IngestActionSignal: %v", err)
+			}
+			if got := listInternalSignals(t, d.Conn, "ws-1"); len(got) != 0 {
+				t.Fatalf("action %q: got %d signals, want 0", actionType, len(got))
+			}
+		})
+	}
+}

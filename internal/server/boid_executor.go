@@ -909,7 +909,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink unavailable"}
 		}
-		if err := e.tasks.UnlinkIdentity(req.ProjectID, req.Identity); err != nil {
+		if err := e.tasks.UnlinkIdentity(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.ProjectID, req.Identity); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: fmt.Sprintf("unlinked: %s\n", req.Identity)}
@@ -967,7 +967,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.resolveOrCapture == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture unavailable"}
 		}
-		result, err := e.resolveOrCapture.ResolveOrCapture(goCtx, api.ResolveOrCaptureRequest{
+		result, err := e.resolveOrCapture.ResolveOrCapture(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), api.ResolveOrCaptureRequest{
 			ProjectID:   req.ProjectID,
 			Identity:    req.Identity,
 			Title:       req.Title,
