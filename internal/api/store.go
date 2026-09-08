@@ -302,7 +302,7 @@ type TaskStore interface {
 }
 
 type ActionStore interface {
-	// CreateAction takes ctx so the internal-signal ingest step it performs
+	// CreateAction takes ctx so the card-event ingest step it performs
 	// can see the write's origin project via
 	// orchestrator.WriterProjectIDFromContext when this
 	// call was routed through internal/server/boid_executor.go's

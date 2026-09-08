@@ -188,9 +188,11 @@ func TestCardMachineV2_DeletedV1Rules(t *testing.T) {
 //     khi can attrs_set a "reopen" suggestion onto a dropped card, the
 //     production path design doc §3.2's `dropped → parked : reopen (via
 //     accept)` edge actually depends on.
-//   - child_added / child_specced / child_dropped: {parked, working} only —
-//     none of the three make sense once a card is terminal (its children
-//     are frozen).
+//   - child_added / child_specced: {parked, working, dropped} — plus done
+//     via the same service-layer guard attrs_set uses, so a reopen proposal
+//     can carry the work it proposes.
+//   - child_dropped: {parked, working} only — withdrawing a child from a
+//     terminal card has no proposal to ride along with.
 //   - noted / answered: {parked, working, done, dropped} — both must
 //     reach a terminal card.
 func TestCardMachineV2_TriageVocabulary_PerActionFromStatus(t *testing.T) {
@@ -227,17 +229,25 @@ func TestCardMachineV2_TriageVocabulary_PerActionFromStatus(t *testing.T) {
 
 	// attrs_set is out of scope for "done" here — that path belongs to
 	// resolveAttrsSetDoneTransition's service-layer guard (attrs_set_done.go),
-	// not this rule table (see NewCardMachine's own doc comment) — so it is
-	// deliberately excluded from the child_* group's universal-disallow loop
-	// below, and handled in its own block (it DOES reach "dropped", unlike
-	// child_added/child_specced/child_dropped — BLOCKER N1).
-	for _, action := range []string{"child_added", "child_specced", "child_dropped"} {
-		for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking} {
+	// not this rule table (see NewCardMachine's own doc comment) — the same
+	// guard child_added/child_specced now share, so "done" is excluded from
+	// their loops here too.
+	for _, action := range []string{"child_added", "child_specced"} {
+		for _, status := range []orchestrator.TaskStatus{
+			orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking, orchestrator.TaskStatusDropped,
+		} {
 			applyNonTransitioning(action, status)
 		}
-		for _, status := range append(universallyDisallowed, orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped) {
+		rejectFrom(action, orchestrator.TaskStatusDone)
+		for _, status := range universallyDisallowed {
 			rejectFrom(action, status)
 		}
+	}
+	for _, status := range []orchestrator.TaskStatus{orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking} {
+		applyNonTransitioning("child_dropped", status)
+	}
+	for _, status := range append(universallyDisallowed, orchestrator.TaskStatusDone, orchestrator.TaskStatusDropped) {
+		rejectFrom("child_dropped", status)
 	}
 	for _, status := range []orchestrator.TaskStatus{
 		orchestrator.TaskStatusParked, orchestrator.TaskStatusWorking, orchestrator.TaskStatusDropped,

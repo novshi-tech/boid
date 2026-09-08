@@ -80,7 +80,6 @@ class MappingTest(unittest.TestCase):
         ("jira-cloud", "assigned-issues", "ROOKPF-311:2026-08-27T01:23:45Z", "jira:ROOKPF-311"),
         ("bitbucket-cloud", "pr-comments", "repo:12:comment:7", "jira:KT-1"),
         ("github", "assigned-issues", "novshi-tech/boid#1033:2026-08-27T01:23:45Z", "github:novshi-tech/boid#1033"),
-        ("boid", "actions", "b1549c70-6e46-4c1c-9092-4ed8fe5d40e6", "b1549c70-6e46-4c1c-9092-4ed8fe5d40e6"),
     ]
 
     def test_the_pack_becomes_the_source_verbatim(self):

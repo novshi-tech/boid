@@ -538,7 +538,7 @@ func recordCardRequestOutcome(dbtx db.DBTX, id, actionType, result, errText, rea
 		Payload: payload,
 		Actor:   ActorDaemon,
 	}
-	if err := CreateAction(context.Background(), dbtx, action, nil, nil); err != nil {
+	if err := CreateAction(context.Background(), dbtx, action, nil); err != nil {
 		return fmt.Errorf("record card request outcome: create action: %w", err)
 	}
 	return nil

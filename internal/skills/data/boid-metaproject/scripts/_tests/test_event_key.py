@@ -32,7 +32,7 @@ class NamespaceTest(unittest.TestCase):
     def test_an_empty_service_falls_back_to_the_pack(self):
         """boid 内部 action の envelope は service が空 (service instance という概念が
         無いため)。"""
-        self.assertEqual(namespace_of(service="", connector="actions", pack="boid"), "boid/actions")
+        self.assertEqual(namespace_of(service="", connector="actions", pack="acme"), "acme/actions")
 
     def test_it_refuses_what_it_cannot_encode(self):
         for kwargs in (
@@ -62,7 +62,7 @@ class RoundTripTest(unittest.TestCase):
     ]
 
     def test_every_id_shape_round_trips(self):
-        for ns in ("slack-cloud/mentions", "jira-cloud/assigned-issues", "boid/actions"):
+        for ns in ("slack-cloud/mentions", "jira-cloud/assigned-issues", "github/assigned-issues"):
             for raw in self.IDS:
                 with self.subTest(namespace=ns, id=raw):
                     key = event_key_of(ns, raw)

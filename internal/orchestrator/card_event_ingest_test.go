@@ -1,8 +1,6 @@
 package orchestrator_test
 
 // Tests IngestCardEventRequest and its CreateAction wiring.
-// seedProject/seedCardTask/newAction are defined in
-// signal_ingest_bridge_test.go (same package).
 
 import (
 	"context"
@@ -13,6 +11,57 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
+
+// seedProject inserts a projects row (and, unless workspaceID is "", a
+// project_workspaces row linking it).
+func seedProject(t *testing.T, dbtx db.DBTX, projectID, workspaceID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if _, err := dbtx.Exec(
+		`INSERT INTO projects (id, work_dir, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		projectID, "/tmp/"+projectID, now, now,
+	); err != nil {
+		t.Fatalf("insert project %q: %v", projectID, err)
+	}
+	if workspaceID == "" {
+		return
+	}
+	if _, err := dbtx.Exec(
+		`INSERT INTO project_workspaces (project_id, workspace_id) VALUES (?, ?)`,
+		projectID, workspaceID,
+	); err != nil {
+		t.Fatalf("insert project_workspaces %q/%q: %v", projectID, workspaceID, err)
+	}
+}
+
+// seedCardTask inserts a working type='card' task owned by projectID.
+func seedCardTask(t *testing.T, dbtx db.DBTX, taskID, projectID string) {
+	t.Helper()
+	seedCardTaskWithStatus(t, dbtx, taskID, projectID, orchestrator.TaskStatusWorking)
+}
+
+// seedExecutionTask inserts a type='execution' task owned by projectID.
+func seedExecutionTask(t *testing.T, dbtx db.DBTX, taskID, projectID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if _, err := dbtx.Exec(
+		`INSERT INTO tasks (id, type, project_id, title, status, behavior, traits, readonly, branch_prefix, base_branch, payload, instructions, auto_start, created_at, updated_at)
+		 VALUES (?, 'execution', ?, ?, 'executing', '', '[]', FALSE, '', '', '{}', '[]', FALSE, ?, ?)`,
+		taskID, projectID, "exec "+taskID, now, now,
+	); err != nil {
+		t.Fatalf("insert execution task %q: %v", taskID, err)
+	}
+}
+
+func newAction(id, taskID, actionType, actor string) *orchestrator.Action {
+	return &orchestrator.Action{
+		ID:        id,
+		TaskID:    taskID,
+		Type:      actionType,
+		Actor:     actor,
+		CreatedAt: time.Now().UTC(),
+	}
+}
 
 // stubCardEventResolver is a CardEventResolver test double: project id ->
 // card_events.command key.
@@ -145,9 +194,9 @@ func TestIngestCardEventRequest_CardStatusGuard(t *testing.T) {
 
 func TestIngestCardEventRequest_ActionTypeAllowlist(t *testing.T) {
 	allowed := map[string]bool{
+		// New information arrived from outside the card's own bookkeeping.
 		"child_closed": true,
 		"wake_due":     true,
-		"answered":     true,
 		"noted":        true,
 		"attrs_set":    true,
 		// The daemon's self-recorded state changes.
@@ -160,6 +209,10 @@ func TestIngestCardEventRequest_ActionTypeAllowlist(t *testing.T) {
 		"go", "start", "park", "complete", "drop", "reopen",
 		"child_added", "child_specced", "child_dropped",
 		"progress", "child_dispatched", "done_request", "fail_request",
+		// A human's answer to a suggestion — accept executes a decision the
+		// card already carries, reject withdraws it. Neither adds material
+		// the next decision could read.
+		"answered",
 		// FinishCardRequest/FailCardRequest's own self-record: a card
 		// command's continuation terminating must not itself start a new one.
 		orchestrator.ActionTypeCommandFinished, orchestrator.ActionTypeCommandFailed, orchestrator.ActionTypeCommandForceReleased,
@@ -432,9 +485,9 @@ func TestCreateAction_CardEventIngestExcludedAction_NoCardRequest(t *testing.T) 
 }
 
 // TestCreateAction_CardEventIngestHardError_RollsBackActionToo pins the
-// tx-failing error policy: unlike IngestActionSignal (best-effort,
-// warn-only), a genuine card-event ingest error must fail CreateAction's
-// whole transaction — the action row must not persist either. Forces a real
+// tx-failing error policy: a genuine card-event ingest error must fail
+// CreateAction's whole transaction — the action row must not persist
+// either. Forces a real
 // error (not ErrCardRequestDuplicateCause) by dropping the card_requests
 // table out from under a legitimately eligible ingest.
 func TestCreateAction_CardEventIngestHardError_RollsBackActionToo(t *testing.T) {

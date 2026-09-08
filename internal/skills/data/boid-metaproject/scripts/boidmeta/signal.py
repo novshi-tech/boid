@@ -9,15 +9,6 @@
 Slack のスレッド全文を展開し、Jira の description を ADF から平文へ潰して持ち歩いていた。
 §9 の表「`adapters/` の Slack / Jira / Bitbucket の**中身取得** → 判断へ」がこの差。
 
-## boid 内部 action もこの型に乗る (2026-08-28、PR-2)
-
-かつては boid だけ別の型 (`domain/boid/action.Action`、削除済み) で読んでいた —— 対象を task id で
-指し、栞が boid 発行の opaque cursor だったため。**PR-1 (boid core) が内部 action を
-signal inbox へ ingest するようになり、読み口も
-`boid signal list --claim` に一本化されたので、その差は消えた**
-(`domain/boid/` は 2026-08-29 に削除)。boid 由来の signal は `source == "boid"` で、
-`identity` が task id そのものである点だけが他 source と違う
-(`app/sweep_targets.resolve_identities` がそこだけ別扱いする)。
 """
 from __future__ import annotations
 

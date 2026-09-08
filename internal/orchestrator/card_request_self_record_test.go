@@ -236,8 +236,8 @@ func TestFailCardRequest_GoCommandKey_NoSelfRecord(t *testing.T) {
 // under it) and pins that the whole FinishCardRequest call fails and, when
 // run inside a transaction, rolls back the card_requests status change
 // alongside it. If the self-record write were instead best-effort
-// (logged and swallowed, the way IngestActionSignal treats its own
-// failures), this test goes red: FinishCardRequest would return nil and the
+// (logged and swallowed), this test goes red: FinishCardRequest would
+// return nil and the
 // row would show finished despite no self-record ever landing.
 func TestFinishCardRequest_SelfRecordFailure_RollsBackTerminalTransitionToo(t *testing.T) {
 	d := testutil.NewTestDB(t)

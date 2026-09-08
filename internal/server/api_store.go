@@ -191,19 +191,17 @@ func (s apiTxStore) UpdateJob(job *api.Job) error {
 
 type apiTransactor struct {
 	db *sql.DB
-	// metaResolver / cardEventResolver are threaded into every per-call
+	// cardEventResolver is threaded into every per-call
 	// actions repository this WithinTx builds: a fresh
 	// *orchestrator.TaskRepository is constructed on each call, so the
 	// resolvers set on the long-lived singleton (wire.go's taskRepo) are
 	// not automatically visible to these.
-	metaResolver      orchestrator.MetaProjectResolver
 	cardEventResolver orchestrator.CardEventResolver
 }
 
 func (t apiTransactor) WithinTx(fn func(api.TxStore) error) error {
 	return db.InTxDB(t.db, func(tx db.DBTX) error {
 		actions := orchestrator.NewTaskRepository(tx)
-		actions.SetMetaProjectResolver(t.metaResolver)
 		actions.SetCardEventResolver(t.cardEventResolver)
 		store := apiTxStore{
 			tasks:   orchestrator.NewTaskRepository(tx),

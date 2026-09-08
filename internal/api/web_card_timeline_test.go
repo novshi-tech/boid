@@ -95,7 +95,7 @@ func createCardTimelineAction(t *testing.T, conn db.DBTX, taskID, actionType str
 		t.Fatalf("marshal payload: %v", err)
 	}
 	a := &orchestrator.Action{TaskID: taskID, Type: actionType, Payload: raw, Actor: orchestrator.ActorDaemon}
-	if err := orchestrator.CreateAction(context.Background(), conn, a, nil, nil); err != nil {
+	if err := orchestrator.CreateAction(context.Background(), conn, a, nil); err != nil {
 		t.Fatalf("create action %s: %v", actionType, err)
 	}
 	return a
