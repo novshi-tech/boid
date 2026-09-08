@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -32,7 +33,7 @@ func TestCreateTask_GetOrCreate_HitSkipsAutoStart(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	got, err := svc.CreateTask(CreateTaskRequest{
+	got, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "Step A (second call)",
 		Behavior:  "dev",
@@ -87,7 +88,7 @@ func TestCreateTask_GetOrCreate_RootTask_HitReturnsExisting(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	got, err := svc.CreateTask(CreateTaskRequest{
+	got, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:     "proj-1",
 		Title:         "BGO-214 (resend)",
 		Behavior:      "dev",
@@ -116,7 +117,7 @@ func TestCreateTask_AutoStart_PendingTaskStarts(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	got, err := svc.CreateTask(CreateTaskRequest{
+	got, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "Step B",
 		Behavior:  "dev",

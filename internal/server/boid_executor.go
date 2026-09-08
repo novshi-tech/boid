@@ -364,7 +364,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 					"card_request_id", ctx.CardRequestID, "job_id", ctx.JobID, "request_launcher_job_id", row.LauncherJobID, "request_status", row.Status)
 			}
 		}
-		task, err := e.tasks.CreateTask(createReq)
+		task, err := e.tasks.CreateTask(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), createReq)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
@@ -413,7 +413,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update: invalid update_patch: " + err.Error()}
 			}
 		}
-		task, err := e.tasks.UpdateTask(req.TaskID, updateReq)
+		task, err := e.tasks.UpdateTask(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.TaskID, updateReq)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
@@ -644,7 +644,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			}
 			reqs = append(reqs, r)
 		}
-		result, err := e.tasks.ImportTasks(reqs)
+		result, err := e.tasks.ImportTasks(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), reqs)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
@@ -895,7 +895,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if existing.ProjectID != req.ProjectID {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link: task belongs to a different project"}
 		}
-		if err := e.tasks.LinkIdentity(req.ProjectID, req.Identity, existing.ID); err != nil {
+		if err := e.tasks.LinkIdentity(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.ProjectID, req.Identity, existing.ID); err != nil {
 			if errors.Is(err, orchestrator.ErrIdentityConflict) {
 				return &sandbox.ExecResponse{ExitCode: sandbox.IdentityConflictExitCode, Stderr: err.Error()}
 			}
@@ -909,7 +909,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink unavailable"}
 		}
-		if err := e.tasks.UnlinkIdentity(req.ProjectID, req.Identity); err != nil {
+		if err := e.tasks.UnlinkIdentity(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.ProjectID, req.Identity); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: fmt.Sprintf("unlinked: %s\n", req.Identity)}
@@ -967,7 +967,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.resolveOrCapture == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture unavailable"}
 		}
-		result, err := e.resolveOrCapture.ResolveOrCapture(goCtx, api.ResolveOrCaptureRequest{
+		result, err := e.resolveOrCapture.ResolveOrCapture(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), api.ResolveOrCaptureRequest{
 			ProjectID:   req.ProjectID,
 			Identity:    req.Identity,
 			Title:       req.Title,

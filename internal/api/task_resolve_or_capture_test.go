@@ -140,6 +140,47 @@ func TestResolveOrCapture_UnregisteredIdentity_CreatesCapturedTaskAndLinks(t *te
 	}
 }
 
+// TestResolveOrCapture_Created_WritesCreatedAction: a capture records itself;
+// resolving an existing identity adds nothing.
+func TestResolveOrCapture_Created_WritesCreatedAction(t *testing.T) {
+	svc := newResolveOrCaptureTestService(t)
+	conn := svc.Tx.(realTransactor).conn
+	req := ResolveOrCaptureRequest{
+		ProjectID: "proj-1", Identity: "jira:ROOKPF-1",
+		Title: "ROOKPF-1", Description: "the body",
+	}
+
+	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorTask("t-writer"))
+	result, err := svc.ResolveOrCapture(ctx, req)
+	if err != nil {
+		t.Fatalf("ResolveOrCapture: %v", err)
+	}
+	actions, err := orchestrator.ListActionsByTask(conn, result.TaskID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("got %d actions, want 1: %+v", len(actions), actions)
+	}
+	if actions[0].Type != orchestrator.ActionTypeCardCreated {
+		t.Errorf("action type = %q, want %q", actions[0].Type, orchestrator.ActionTypeCardCreated)
+	}
+	if actions[0].Actor != orchestrator.ActorTask("t-writer") {
+		t.Errorf("actor = %q, want the capturing task", actions[0].Actor)
+	}
+
+	if _, err := svc.ResolveOrCapture(context.Background(), req); err != nil {
+		t.Fatalf("second ResolveOrCapture: %v", err)
+	}
+	again, err := orchestrator.ListActionsByTask(conn, result.TaskID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask after resolve: %v", err)
+	}
+	if len(again) != 1 {
+		t.Errorf("resolving an existing identity added %d actions, want 0 added", len(again)-1)
+	}
+}
+
 func TestResolveOrCapture_SameIdentityAgain_ReturnsSameTaskNoSecondCreate(t *testing.T) {
 	svc := newResolveOrCaptureTestService(t)
 	ctx := context.Background()

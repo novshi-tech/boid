@@ -282,7 +282,7 @@ func TestTaskAppServiceCreateTask_BehaviorNotFound(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test task",
 		Behavior:  "unknown-behavior",
@@ -309,7 +309,7 @@ func TestTaskAppServiceCreateTask_ProjectNotInMeta_Skips(t *testing.T) {
 		Meta:  stubMetaStore{meta: nil}, // Get returns false → skip validation
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-unknown",
 		Title:     "test task",
 		Behavior:  "any-behavior",
@@ -540,7 +540,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
 
-		got, err := svc.UpdateTask("task-1", UpdateTaskRequest{Title: "new title", Description: "new desc"})
+		got, err := svc.UpdateTask(context.Background(), "task-1", UpdateTaskRequest{Title: "new title", Description: "new desc"})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
@@ -559,7 +559,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 		store := &stubTaskStore{err: fmt.Errorf("task not found")}
 		svc := &TaskAppService{Tasks: store}
 
-		_, err := svc.UpdateTask("nonexistent", UpdateTaskRequest{Title: "x"})
+		_, err := svc.UpdateTask(context.Background(), "nonexistent", UpdateTaskRequest{Title: "x"})
 		if err == nil {
 			t.Fatal("UpdateTask() error = nil, want error")
 		}
@@ -600,7 +600,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 			store := &stubTaskStore{task: task}
 			svc := &TaskAppService{Tasks: store}
 
-			_, err := svc.UpdateTask("task-x", UpdateTaskRequest{Title: "new"})
+			_, err := svc.UpdateTask(context.Background(), "task-x", UpdateTaskRequest{Title: "new"})
 			if err == nil {
 				t.Fatalf("status=%s: expected conflict error, got nil", status)
 			}
@@ -633,7 +633,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 			store := &stubTaskStore{task: task}
 			svc := &TaskAppService{Tasks: store}
 
-			got, err := svc.UpdateTask("task-x", UpdateTaskRequest{Title: "new"})
+			got, err := svc.UpdateTask(context.Background(), "task-x", UpdateTaskRequest{Title: "new"})
 			if err != nil {
 				t.Fatalf("status=%s: UpdateTask() error = %v", status, err)
 			}
@@ -658,7 +658,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 		}
 		svc := &TaskAppService{Tasks: store, Projects: projects}
 
-		got, err := svc.UpdateTask("task-p", UpdateTaskRequest{ProjectID: "proj-new"})
+		got, err := svc.UpdateTask(context.Background(), "task-p", UpdateTaskRequest{ProjectID: "proj-new"})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
@@ -680,7 +680,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 			}
 			svc := &TaskAppService{Tasks: store, Projects: projects}
 
-			_, err := svc.UpdateTask("task-x", UpdateTaskRequest{ProjectID: "proj-new"})
+			_, err := svc.UpdateTask(context.Background(), "task-x", UpdateTaskRequest{ProjectID: "proj-new"})
 			if err == nil {
 				t.Fatalf("status=%s: expected conflict error, got nil", status)
 			}
@@ -703,7 +703,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 		projects := &stubProjectRepository{projects: nil}
 		svc := &TaskAppService{Tasks: store, Projects: projects}
 
-		_, err := svc.UpdateTask("task-p", UpdateTaskRequest{ProjectID: "proj-nonexistent"})
+		_, err := svc.UpdateTask(context.Background(), "task-p", UpdateTaskRequest{ProjectID: "proj-nonexistent"})
 		if err == nil {
 			t.Fatal("UpdateTask() error = nil, want error")
 		}
@@ -726,7 +726,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 		svc := &TaskAppService{Tasks: store}
 
 		newRemote := "JIRA-999"
-		got, err := svc.UpdateTask("task-r", UpdateTaskRequest{RemoteID: &newRemote})
+		got, err := svc.UpdateTask(context.Background(), "task-r", UpdateTaskRequest{RemoteID: &newRemote})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
@@ -748,7 +748,7 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 		svc := &TaskAppService{Tasks: store}
 
 		newRemote := "NEW-1"
-		got, err := svc.UpdateTask("task-exec", UpdateTaskRequest{RemoteID: &newRemote})
+		got, err := svc.UpdateTask(context.Background(), "task-exec", UpdateTaskRequest{RemoteID: &newRemote})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v (should allow remote_id edit while executing)", err)
 		}
@@ -770,7 +770,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		store := &stubTaskStore{task: task}
 		svc := &TaskAppService{Tasks: store}
 
-		got, err := svc.UpdateTask("task-1", UpdateTaskRequest{Title: "new title"})
+		got, err := svc.UpdateTask(context.Background(), "task-1", UpdateTaskRequest{Title: "new title"})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
@@ -796,7 +796,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		svc := &TaskAppService{Tasks: store}
 
 		newPayload := json.RawMessage(`{"artifact":{"url":"new"}}`)
-		got, err := svc.UpdateTask("task-3", UpdateTaskRequest{Title: "title", Payload: newPayload})
+		got, err := svc.UpdateTask(context.Background(), "task-3", UpdateTaskRequest{Title: "title", Payload: newPayload})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
@@ -827,7 +827,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 
 		// artifact だけ更新、verification は残す
 		newPayload := json.RawMessage(`{"artifact":{"url":"https://new.example.com"}}`)
-		got, err := svc.UpdateTask("task-4", UpdateTaskRequest{Title: "title", Payload: newPayload})
+		got, err := svc.UpdateTask(context.Background(), "task-4", UpdateTaskRequest{Title: "title", Payload: newPayload})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
@@ -849,7 +849,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		svc := &TaskAppService{Tasks: store}
 
 		badPayload := json.RawMessage(`{"instructions":{"main":{"type":"execution","agent":"c"}}}`)
-		_, err := svc.UpdateTask("task-5", UpdateTaskRequest{Payload: badPayload})
+		_, err := svc.UpdateTask(context.Background(), "task-5", UpdateTaskRequest{Payload: badPayload})
 		if err == nil {
 			t.Fatal("expected UpdateTask to reject payload containing instructions")
 		}
@@ -867,7 +867,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		svc := &TaskAppService{Tasks: store, Actions: &stubActionStore{}}
 
 		body := json.RawMessage(`[{"type":"execution","agent":"claude-code","message":"do stuff"}]`)
-		got, err := svc.UpdateTask("task-6", UpdateTaskRequest{Instructions: body})
+		got, err := svc.UpdateTask(context.Background(), "task-6", UpdateTaskRequest{Instructions: body})
 		if err != nil {
 			t.Fatalf("UpdateTask() error = %v", err)
 		}
@@ -888,7 +888,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 		svc := &TaskAppService{Tasks: store}
 
 		body := json.RawMessage(`{"main":{"type":"execution","agent":"claude-code","message":"do stuff"}}`)
-		_, err := svc.UpdateTask("task-7", UpdateTaskRequest{Instructions: body})
+		_, err := svc.UpdateTask(context.Background(), "task-7", UpdateTaskRequest{Instructions: body})
 		if err == nil {
 			t.Fatal("expected UpdateTask to reject instructions change while running")
 		}
@@ -914,7 +914,7 @@ func TestTaskAppServiceUpdateTask_PayloadMerge(t *testing.T) {
 			svc := &TaskAppService{Tasks: store}
 
 			body := json.RawMessage(`[{"type":"execution","agent":"claude-code","message":"do stuff"}]`)
-			_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Instructions: body})
+			_, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Instructions: body})
 			if err == nil {
 				t.Fatalf("expected UpdateTask to reject instructions change when status=%s", status)
 			}
@@ -949,7 +949,7 @@ func TestTaskAppServiceImportTasks_AllCreated(t *testing.T) {
 		{ProjectID: "proj-1", Title: "Task 1", Behavior: "dev", RemoteID: "PROJ-1"},
 		{ProjectID: "proj-1", Title: "Task 2", Behavior: "dev", RemoteID: "PROJ-2"},
 	}
-	result, err := svc.ImportTasks(reqs)
+	result, err := svc.ImportTasks(context.Background(), reqs)
 	if err != nil {
 		t.Fatalf("ImportTasks() error = %v", err)
 	}
@@ -983,7 +983,7 @@ func TestTaskAppServiceImportTasks_SkipsDuplicate(t *testing.T) {
 		{ProjectID: "proj-1", Title: "Task 1", Behavior: "any", RemoteID: "PROJ-1"},
 		{ProjectID: "proj-1", Title: "Task 2", Behavior: "any", RemoteID: "PROJ-2"},
 	}
-	result, err := svc.ImportTasks(reqs)
+	result, err := svc.ImportTasks(context.Background(), reqs)
 	if err != nil {
 		t.Fatalf("ImportTasks() error = %v", err)
 	}
@@ -1005,7 +1005,7 @@ func TestTaskAppServiceImportTasks_ValidationError_BothEmpty(t *testing.T) {
 	reqs := []CreateTaskRequest{
 		{ProjectID: "proj-1", Title: "No Remote", Behavior: "any"},
 	}
-	result, err := svc.ImportTasks(reqs)
+	result, err := svc.ImportTasks(context.Background(), reqs)
 	if err != nil {
 		t.Fatalf("ImportTasks() error = %v", err)
 	}
@@ -1035,7 +1035,7 @@ func TestTaskAppServiceImportTasks_BehaviorError(t *testing.T) {
 	reqs := []CreateTaskRequest{
 		{ProjectID: "proj-1", Title: "Task 1", Behavior: "unknown", RemoteID: "PROJ-1"},
 	}
-	result, err := svc.ImportTasks(reqs)
+	result, err := svc.ImportTasks(context.Background(), reqs)
 	if err != nil {
 		t.Fatalf("ImportTasks() error = %v", err)
 	}
@@ -1055,7 +1055,7 @@ func TestTaskAppServiceImportTasks_BehaviorError(t *testing.T) {
 
 func TestTaskAppServiceImportTasks_EmptyInput(t *testing.T) {
 	svc := &TaskAppService{Tasks: &stubTaskStore{}}
-	result, err := svc.ImportTasks(nil)
+	result, err := svc.ImportTasks(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ImportTasks() error = %v", err)
 	}
@@ -1084,7 +1084,7 @@ func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test task",
 		Behavior:  "executor",
@@ -1120,7 +1120,7 @@ func TestCreateTask_NoTaskRowOverridesAvailable(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test task",
 		Behavior:  "executor",
@@ -1155,7 +1155,7 @@ func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test task",
 		Behavior:  "executor",
@@ -1182,7 +1182,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 	// pins the inline behavior_spec path against Behavior and Traits.
 	svc.Meta = stubMetaStore{meta: &orchestrator.ProjectMeta{}}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "spec task",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
@@ -1207,7 +1207,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultInstructionsMerged(t *test
 		Meta:  stubMetaStore{meta: nil},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "spec task",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
@@ -1234,7 +1234,7 @@ func TestTaskAppServiceCreateTask_BehaviorAndSpecMutuallyExclusive(t *testing.T)
 		Meta:  stubMetaStore{meta: nil},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "bad request",
 		Behavior:  "dev",
@@ -1264,7 +1264,7 @@ func TestTaskAppServiceCreateTask_NeitherBehaviorNorSpec_DefaultsToPlan(t *testi
 		Meta:  stubMetaStore{meta: nil},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "no behavior",
 	})
@@ -1291,7 +1291,7 @@ func TestTaskAppServiceCreateTask_DefaultPlan_InheritsTemplate(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "default to supervisor",
 	})
@@ -1312,7 +1312,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_NameRequired(t *testing.T) {
 		Meta:  stubMetaStore{meta: nil},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:    "proj-1",
 		Title:        "bad request",
 		BehaviorSpec: &orchestrator.BehaviorSpec{},
@@ -1350,7 +1350,7 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 			},
 		},
 	}
-	result, err := svc.ImportTasks(reqs)
+	result, err := svc.ImportTasks(context.Background(), reqs)
 	if err != nil {
 		t.Fatalf("ImportTasks() error = %v", err)
 	}
@@ -1385,7 +1385,7 @@ func TestCreateTask_CanonicalSupervisor_ForcesReadonly(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "supervisor task",
 		Behavior:  "supervisor",
@@ -1411,7 +1411,7 @@ func TestCreateTask_CanonicalExecutor_ForcesNotReadonly(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "executor task",
 		Behavior:  "executor",
@@ -1448,7 +1448,7 @@ func TestCreateTask_FormerAliasNames_NoLongerRedirect(t *testing.T) {
 				Meta:  stubMetaStore{meta: meta},
 			}
 
-			_, err := svc.CreateTask(CreateTaskRequest{
+			_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 				ProjectID: "proj-1",
 				Title:     "former alias",
 				Behavior:  tc.requested,
@@ -1478,7 +1478,7 @@ func TestCreateTask_NonCanonicalBehavior_ReadonlyDefaultTrue(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	researchTask, err := svc.CreateTask(CreateTaskRequest{
+	researchTask, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "research",
 		Behavior:  "research",
@@ -1490,7 +1490,7 @@ func TestCreateTask_NonCanonicalBehavior_ReadonlyDefaultTrue(t *testing.T) {
 		t.Errorf("research: Readonly = false, want true (non-canonical default is fail-safe readonly)")
 	}
 
-	devTask, err := svc.CreateTask(CreateTaskRequest{
+	devTask, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "dev-task",
 		Behavior:  "dev-task",
@@ -1574,7 +1574,7 @@ func TestCreateTask_SupervisorCase3_BaseBranchPersisted(t *testing.T) {
 		Meta:     stubMetaStore{meta: meta},
 		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
 	}
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "case3 supervisor",
 		Behavior:  "supervisor",
@@ -1603,7 +1603,7 @@ func TestCreateTask_ExecutorCase3_NoParent_Errors(t *testing.T) {
 		Meta:     stubMetaStore{meta: meta},
 		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
 	}
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "case3 executor no parent",
 		Behavior:  "executor",
@@ -1646,7 +1646,7 @@ func TestCreateTask_ExecutorCase3_WithParent_OK(t *testing.T) {
 		Meta:     stubMetaStore{meta: meta},
 		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
 	}
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "case3 executor with parent",
 		Behavior:  "executor",
@@ -1679,7 +1679,7 @@ func TestCreateTask_EmptyBaseBranch_ExpandsCurrentBranch(t *testing.T) {
 		Meta:     stubMetaStore{meta: meta},
 		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
 	}
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "mera-ui repro",
 		Behavior:  "supervisor",
@@ -1718,7 +1718,7 @@ func TestCreateTask_EmptyBaseBranch_DetachedHead_Returns400(t *testing.T) {
 		Meta:     stubMetaStore{meta: meta},
 		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
 	}
-	_, createErr := svc.CreateTask(CreateTaskRequest{
+	_, createErr := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "detached root task",
 		Behavior:  "executor",
@@ -2060,7 +2060,7 @@ func TestDuplicateTask_CopiesFields(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.DuplicateTask("src-1", false)
+	task, err := svc.DuplicateTask(context.Background(), "src-1", false)
 	if err != nil {
 		t.Fatalf("DuplicateTask() error = %v", err)
 	}
@@ -2103,7 +2103,7 @@ func TestDuplicateTask_InstructionsFromDefaultInstructions(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.DuplicateTask("src-2", false)
+	task, err := svc.DuplicateTask(context.Background(), "src-2", false)
 	if err != nil {
 		t.Fatalf("DuplicateTask() error = %v", err)
 	}
@@ -2143,7 +2143,7 @@ func TestDuplicateTask_AutoStart(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	_, err := svc.DuplicateTask("src-3", true)
+	_, err := svc.DuplicateTask(context.Background(), "src-3", true)
 	if err != nil {
 		t.Fatalf("DuplicateTask() error = %v", err)
 	}
@@ -2180,7 +2180,7 @@ func TestDuplicateTask_AnySourceStatus(t *testing.T) {
 				Tasks: store,
 				Meta:  stubMetaStore{meta: meta},
 			}
-			_, err := svc.DuplicateTask("src-1", false)
+			_, err := svc.DuplicateTask(context.Background(), "src-1", false)
 			if err != nil {
 				t.Fatalf("DuplicateTask() from status %s: error = %v", status, err)
 			}
@@ -2192,7 +2192,7 @@ func TestDuplicateTask_NotFound(t *testing.T) {
 	store := &stubTaskStore{err: fmt.Errorf("task not found")}
 	svc := &TaskAppService{Tasks: store}
 
-	_, err := svc.DuplicateTask("nonexistent", false)
+	_, err := svc.DuplicateTask(context.Background(), "nonexistent", false)
 	if err == nil {
 		t.Fatal("DuplicateTask() error = nil, want error")
 	}
@@ -2824,7 +2824,7 @@ func TestCreateTask_BehaviorBaseBranch_VariableExpanded(t *testing.T) {
 		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: t.TempDir()}},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test",
 		Behavior:  "dev",
@@ -2859,7 +2859,7 @@ func TestCreateTask_InlineBehaviorSpec_BaseBranch_VariableExpanded(t *testing.T)
 		}},
 		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: t.TempDir()}},
 	}
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test",
 		BehaviorSpec: &orchestrator.BehaviorSpec{
@@ -2885,7 +2885,7 @@ func TestCreateTask_DetachedHead_Returns400(t *testing.T) {
 		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{BaseBranch: "${current_branch}", TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 		Projects: &stubProjectLookup{err: fmt.Errorf("project not found")},
 	}
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "test",
 		Behavior:  "dev",
@@ -2962,7 +2962,7 @@ func TestCreateTask_StaticBaseBranch_PassesThrough(t *testing.T) {
 		// project lookup.
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "t",
 		Behavior:  "executor",
@@ -2990,7 +2990,7 @@ func TestCreateTask_DynamicBaseBranch_ExpandsTaskRemoteID(t *testing.T) {
 		// independent of the project working directory.
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "t",
 		Behavior:  "executor",
@@ -3016,7 +3016,7 @@ func TestCreateTask_DynamicBaseBranch_MissingRemoteID_Returns400(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "t",
 		Behavior:  "executor",
@@ -3060,7 +3060,7 @@ func TestCreateTask_ChildResolvesOwnBaseBranch(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "child",
 		Behavior:  "executor",
@@ -3101,7 +3101,7 @@ func TestCreateTask_ChildShareesParentBranchWhenSameRemoteID(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "child",
 		Behavior:  "executor",
@@ -3143,7 +3143,7 @@ func TestCreateTask_ChildInheritsParentRemoteIDByDefault(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "child",
 		Behavior:  "executor",
@@ -3187,7 +3187,7 @@ func TestCreateTask_ChildExplicitRemoteIDOverridesParent(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "child",
 		Behavior:  "executor",
@@ -3231,7 +3231,7 @@ func TestCreateTask_ChildAndParentMissingRemoteID_Returns400(t *testing.T) {
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "child",
 		Behavior:  "executor",
@@ -3278,7 +3278,7 @@ func TestTaskAppServiceCreateTask_BehaviorNamePersistedVerbatim(t *testing.T) {
 				Tasks: store,
 				Meta:  stubMetaStore{meta: meta},
 			}
-			task, err := svc.CreateTask(CreateTaskRequest{
+			task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 				ProjectID: "proj-1",
 				Title:     "verbatim name",
 				Behavior:  tc.behaviorKey,

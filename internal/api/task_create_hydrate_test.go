@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -38,7 +39,7 @@ func TestTaskAppServiceCreateTask_UsesWorkspaceHydratedMeta(t *testing.T) {
 		},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "workspace-only behavior",
 		Behavior:  "extra",
@@ -75,7 +76,7 @@ func TestTaskAppServiceCreateTask_HydrationErrorFallsBackToBareMeta(t *testing.T
 		},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "hydration error still creates the task",
 		Behavior:  "dev",
@@ -108,7 +109,7 @@ func TestTaskAppServiceCreateTask_HydrationErrorAndNoBareMeta_NilMetaContinues(t
 		},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-unknown",
 		Title:     "no meta anywhere",
 		Behavior:  "any-behavior",

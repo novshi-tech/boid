@@ -207,7 +207,7 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	task, err := h.Service.CreateTask(req)
+	task, err := h.Service.CreateTask(r.Context(), req)
 	if err != nil {
 		h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
 		return
@@ -1112,7 +1112,7 @@ func (h *WebHandler) PostEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target := "/tasks/" + id
-	if err := h.Service.UpdateTask(id, req); err != nil {
+	if err := h.Service.UpdateTask(r.Context(), id, req); err != nil {
 		target = "/tasks/" + id + "/edit?error=" + url.QueryEscape(err.Error())
 	}
 
@@ -1121,7 +1121,7 @@ func (h *WebHandler) PostEdit(w http.ResponseWriter, r *http.Request) {
 
 func (h *WebHandler) PostDuplicate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	newID, err := h.Service.DuplicateTask(id)
+	newID, err := h.Service.DuplicateTask(r.Context(), id)
 	if err != nil {
 		redirectTaskErr(w, r, id, err)
 		return

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,7 +15,7 @@ type filterTaskService struct {
 	tasks          []*orchestrator.Task
 }
 
-func (s *filterTaskService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+func (s *filterTaskService) CreateTask(_ context.Context, req CreateTaskRequest) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *filterTaskService) GetTask(id string) (*orchestrator.Task, error) { return nil, nil }
@@ -25,7 +26,7 @@ func (s *filterTaskService) ListTasks(filter orchestrator.TaskFilter) ([]*orches
 	}
 	return s.tasks, nil
 }
-func (s *filterTaskService) UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
+func (s *filterTaskService) UpdateTask(_ context.Context, id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *filterTaskService) DeleteTask(id string, force bool) error { return nil }
@@ -33,10 +34,10 @@ func (s *filterTaskService) GetTaskDetail(id string) (*TaskDetailView, error) {
 	return nil, nil
 }
 func (s *filterTaskService) GetTaskField(id, path string) (string, error) { return "", nil }
-func (s *filterTaskService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error) {
+func (s *filterTaskService) ImportTasks(_ context.Context, reqs []CreateTaskRequest) (*ImportResult, error) {
 	return nil, nil
 }
-func (s *filterTaskService) DuplicateTask(id string, autoStart bool) (*orchestrator.Task, error) {
+func (s *filterTaskService) DuplicateTask(_ context.Context, id string, autoStart bool) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *filterTaskService) RerunTask(id string, req RerunTaskRequest) (*orchestrator.Task, error) {

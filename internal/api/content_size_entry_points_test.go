@@ -33,7 +33,7 @@ func TestCreateTask_DescriptionOverLimit_RejectsAndDoesNotCreate(t *testing.T) {
 		}},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:   "proj-1",
 		Title:       "too big",
 		Description: oversizedContent(),
@@ -55,7 +55,7 @@ func TestUpdateTask_DescriptionOverLimit_RejectsAndDoesNotWrite(t *testing.T) {
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
 
-	_, err := svc.UpdateTask("t1", UpdateTaskRequest{Description: oversizedContent()})
+	_, err := svc.UpdateTask(context.Background(), "t1", UpdateTaskRequest{Description: oversizedContent()})
 	if err == nil {
 		t.Fatal("UpdateTask() with an oversized description = nil error, want a rejection")
 	}

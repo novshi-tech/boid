@@ -23,6 +23,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -126,7 +127,7 @@ func TestTaskAppServiceCreateTask_IdempotencyKey_HitOnPendingTask_RescuesAutoSta
 		Workflow: workflow,
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:      "proj-1",
 		Title:          "resumed create",
 		Behavior:       "dev",
@@ -179,7 +180,7 @@ func TestTaskAppServiceCreateTask_IdempotencyKey_HitOnExecutingTask_NoAutoStart(
 		Workflow: workflow,
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:      "proj-1",
 		Title:          "resumed create",
 		Behavior:       "dev",
@@ -234,7 +235,7 @@ func TestTaskAppServiceCreateTask_RefMissAndIdempotencyKeyHit_UnderCard(t *testi
 		Meta:  stubMetaStore{meta: meta},
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:      "proj-1",
 		ParentID:       "card-1",
 		Title:          "retry with a fresh ref, same idempotency key",

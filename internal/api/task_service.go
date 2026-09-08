@@ -120,13 +120,19 @@ func (s *TaskAppService) cardSlotConflictWithRequests(parent *orchestrator.Task,
 	return cardSlotConflictWithLister(s.CardRequests, parent, ref, projectID, behavior, ownCardRequestID)
 }
 
-// updateTaskWithCardSlotRecheck re-checks the card slot and writes task in
-// one WithinTx when s.Tx and cardParentID are set; otherwise falls back to a
-// plain non-atomic UpdateTask.
-func (s *TaskAppService) updateTaskWithCardSlotRecheck(task *orchestrator.Task, cardParentID, conflictMsgFmt string) error {
-	if cardParentID == "" || s.Tx == nil {
+// updateTaskWithCardSlotRecheck writes task, optionally re-checking the card
+// slot (cardParentID) and recording record alongside it. Both extras need the
+// write to be atomic with them, so either one takes the WithinTx path when
+// s.Tx is wired; without it the writes fall back to being separate.
+func (s *TaskAppService) updateTaskWithCardSlotRecheck(ctx context.Context, task *orchestrator.Task, cardParentID, conflictMsgFmt string, record *orchestrator.Action) error {
+	if s.Tx == nil || (cardParentID == "" && record == nil) {
 		if err := s.Tasks.UpdateTask(task); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if record != nil && s.Actions != nil {
+			if err := s.Actions.CreateAction(ctx, record); err != nil {
+				return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+			}
 		}
 		return nil
 	}
@@ -135,14 +141,22 @@ func (s *TaskAppService) updateTaskWithCardSlotRecheck(task *orchestrator.Task, 
 		behavior = task.Exec.Behavior
 	}
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
-		freshParent, gerr := tx.GetTask(cardParentID)
-		if gerr != nil {
-			return gerr
+		if cardParentID != "" {
+			freshParent, gerr := tx.GetTask(cardParentID)
+			if gerr != nil {
+				return gerr
+			}
+			if conflict, occupant := cardSlotConflictWithLister(tx, freshParent, task.Ref, task.ProjectID, behavior, ""); conflict {
+				return &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(conflictMsgFmt, cardParentID, occupant)}
+			}
 		}
-		if conflict, occupant := cardSlotConflictWithLister(tx, freshParent, task.Ref, task.ProjectID, behavior, ""); conflict {
-			return &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(conflictMsgFmt, cardParentID, occupant)}
+		if err := tx.UpdateTask(task); err != nil {
+			return err
 		}
-		return tx.UpdateTask(task)
+		if record != nil {
+			return tx.CreateAction(ctx, record)
+		}
+		return nil
 	})
 	if txErr != nil {
 		var se *StatusError
@@ -209,17 +223,23 @@ func (s *TaskAppService) GetTaskField(id, path string) (string, error) {
 	return value, nil
 }
 
-func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
+func (s *TaskAppService) UpdateTask(ctx context.Context, id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
 	task, err := s.Tasks.GetTask(id)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
+	// A card's title and description are its own content; one edit is one
+	// record even when both change.
+	var editedFields []string
 	if req.Title != "" {
 		if !orchestrator.IsPreDispatchEditableStatus(task.Type, task.Status) {
 			return nil, &StatusError{
 				Code:    http.StatusConflict,
 				Message: fmt.Sprintf("cannot edit title while task is not pending/pre-dispatch (status: %s)", task.Status),
 			}
+		}
+		if task.Type == orchestrator.TaskTypeCard && req.Title != task.Title {
+			editedFields = append(editedFields, orchestrator.CardEditedFieldTitle)
 		}
 		task.Title = req.Title
 	}
@@ -242,7 +262,14 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		if err := orchestrator.ValidateContentSize("description", []byte(req.Description)); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
+		if task.Type == orchestrator.TaskTypeCard && req.Description != task.Description {
+			editedFields = append(editedFields, orchestrator.CardEditedFieldDescription)
+		}
 		task.Description = req.Description
+	}
+	editedRecord, err := cardEditedAction(ctx, task.ID, editedFields)
+	if err != nil {
+		return nil, err
 	}
 	if req.RemoteID != nil {
 		task.RemoteID = *req.RemoteID
@@ -346,18 +373,15 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		}
 		task.Exec.AutoStart = *req.AutoStart
 	}
-	if err := s.updateTaskWithCardSlotRecheck(task, reparentCardID,
-		"update task: card %q's single work slot is already occupied by %s"); err != nil {
+	if err := s.updateTaskWithCardSlotRecheck(ctx, task, reparentCardID,
+		"update task: card %q's single work slot is already occupied by %s", editedRecord); err != nil {
 		return nil, err
 	}
 	if instructionsBefore != nil {
-		s.auditInstructionsChange(task.ID, instructionsBefore, task.Exec.Instructions)
+		s.auditInstructionsChange(ctx, task.ID, instructionsBefore, task.Exec.Instructions)
 	}
-	// UpdateTask has no ctx, so this always stamps ActorHuman even though
-	// it's also reachable from a sandbox (OpBoidTaskUpdate). See CreateTask's
-	// matching comment (task_create.go).
 	if req.AutoStart != nil && *req.AutoStart && task.Status == orchestrator.TaskStatusPending && s.Workflow != nil {
-		result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), task.ID, ApplyActionRequest{Type: "start"})
+		result, err := s.Workflow.ApplyAction(orchestrator.WithActor(ctx, updateActor(ctx)), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {
 			slog.Error("auto_start: update: failed to apply start action", "task_id", task.ID, "error", err)
 		} else {
@@ -448,7 +472,7 @@ func (s *TaskAppService) DeleteTask(id string, force bool) error {
 	return nil
 }
 
-func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error) {
+func (s *TaskAppService) DuplicateTask(ctx context.Context, sourceID string, autoStart bool) (*orchestrator.Task, error) {
 	source, err := s.GetTask(sourceID)
 	if err != nil {
 		return nil, err
@@ -492,7 +516,7 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 		}
 		req.Instructions = raw
 	}
-	return s.CreateTask(req)
+	return s.CreateTask(ctx, req)
 }
 
 func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrator.Task, error) {
@@ -549,13 +573,14 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 
 	task.Status = orchestrator.TaskStatusPending
 	task.Exec.Payload = json.RawMessage("{}")
-	if err := s.updateTaskWithCardSlotRecheck(task, reparentCardID,
-		"rerun task: card %q's single work slot is already occupied by %s"); err != nil {
+	// A rerun only touches an execution task, so it records nothing.
+	if err := s.updateTaskWithCardSlotRecheck(context.Background(), task, reparentCardID,
+		"rerun task: card %q's single work slot is already occupied by %s", nil); err != nil {
 		return nil, err
 	}
 
 	if instructionsBefore != nil {
-		s.auditInstructionsChange(task.ID, instructionsBefore, task.Exec.Instructions)
+		s.auditInstructionsChange(context.Background(), task.ID, instructionsBefore, task.Exec.Instructions)
 	}
 
 	if req.AutoStart && s.Workflow != nil {
@@ -581,7 +606,7 @@ func cloneInstructions(src orchestrator.Instructions) orchestrator.Instructions 
 
 // auditInstructionsChange records an instructions change as an Action so that
 // the reason behind rerun-over-rerun outcome differences can be traced.
-func (s *TaskAppService) auditInstructionsChange(taskID string, before, after orchestrator.Instructions) {
+func (s *TaskAppService) auditInstructionsChange(ctx context.Context, taskID string, before, after orchestrator.Instructions) {
 	if s.Actions == nil {
 		return
 	}
@@ -597,11 +622,9 @@ func (s *TaskAppService) auditInstructionsChange(taskID string, before, after or
 		TaskID:  taskID,
 		Type:    "update_instructions",
 		Payload: payload,
-		Actor:   orchestrator.ActorHuman,
+		Actor:   updateActor(ctx),
 	}
-	// context.Background(): this call site has no ctx of its own (see
-	// UpdateTask's own comment above for the same limitation on Actor).
-	if err := s.Actions.CreateAction(context.Background(), action); err != nil {
+	if err := s.Actions.CreateAction(ctx, action); err != nil {
 		slog.Error("audit instructions change: create action", "task_id", taskID, "error", err)
 	}
 }
@@ -637,5 +660,32 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		Actions:          actions,
 		Jobs:             jobs,
 		AvailableActions: sm.AvailableActions(task.Status),
+	}, nil
+}
+
+// updateActor is the actor stamped on a card's own state-change records: the
+// writing task when the call came from a sandbox, the human otherwise.
+func updateActor(ctx context.Context) string {
+	if actor := orchestrator.ActorFromContext(ctx); actor != "" {
+		return actor
+	}
+	return orchestrator.ActorHuman
+}
+
+// cardEditedAction builds the record for a card content edit, or nil when
+// nothing actually changed.
+func cardEditedAction(ctx context.Context, taskID string, fields []string) (*orchestrator.Action, error) {
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	payload, err := json.Marshal(orchestrator.CardEditedPayload{Fields: fields})
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return &orchestrator.Action{
+		TaskID:  taskID,
+		Type:    orchestrator.ActionTypeCardEdited,
+		Payload: payload,
+		Actor:   updateActor(ctx),
 	}, nil
 }

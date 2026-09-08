@@ -40,6 +40,7 @@ package api
 // lives instead (acceptGo's own pre-checks, not this unique index).
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -107,7 +108,7 @@ func TestCreateTask_AtomicPath_RejectsWhenGoReservationAlreadyActive(t *testing.
 		t.Fatalf("reserveGoCardRequest: %v", err)
 	}
 
-	_, err := taskSvc.CreateTask(CreateTaskRequest{
+	_, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "a new child",
 		Behavior:  "dev",
@@ -137,7 +138,7 @@ func TestCreateTask_AtomicPath_RejectsWhenGoReservationAlreadyActive(t *testing.
 func TestCreateTask_AtomicPath_SucceedsWhenSlotFree(t *testing.T) {
 	taskSvc, _, card, repo := newAtomicCardSlotFixture(t)
 
-	got, err := taskSvc.CreateTask(CreateTaskRequest{
+	got, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "a new child",
 		Behavior:  "dev",
@@ -180,7 +181,7 @@ func TestCreateTask_AtomicPath_RaceWithGoReservation(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		createRes.task, createRes.err = taskSvc.CreateTask(CreateTaskRequest{
+		createRes.task, createRes.err = taskSvc.CreateTask(context.Background(), CreateTaskRequest{
 			ProjectID: "proj-1", Title: "a new child", Behavior: "dev", ParentID: card.ID, Ref: "ch_00",
 		})
 	}()
@@ -238,7 +239,7 @@ func TestCreateTask_AtomicPath_RaceWithGoReservation(t *testing.T) {
 func TestReserveGoCardRequest_DoesNotSeeADirectlyCreatedLiveChild(t *testing.T) {
 	taskSvc, goSvc, card, repo := newAtomicCardSlotFixture(t)
 
-	if _, err := taskSvc.CreateTask(CreateTaskRequest{
+	if _, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1", Title: "a new child", Behavior: "dev", ParentID: card.ID, Ref: "ch_00",
 	}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -276,7 +277,7 @@ func TestCreateTask_AtomicPath_RejectsWhenCardSlotOccupiedByOpenJSONChild(t *tes
 		t.Fatalf("seed task_triage: %v", err)
 	}
 
-	_, err := taskSvc.CreateTask(CreateTaskRequest{
+	_, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1", Title: "a new child", Behavior: "dev", ParentID: card.ID, Ref: "some-other-id",
 	})
 	if err == nil {
@@ -304,7 +305,7 @@ func TestCreateTask_AtomicPath_AllowsFulfillingTheSpeccedChildsOwnReservation(t 
 		t.Fatalf("seed task_triage: %v", err)
 	}
 
-	got, err := taskSvc.CreateTask(CreateTaskRequest{
+	got, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1", Title: "do it", Behavior: "dev", ParentID: card.ID, Ref: "ch_00",
 	})
 	if err != nil {
@@ -324,7 +325,7 @@ func TestCreateTask_AtomicPath_RejectsRefMatchWithMismatchedProjectOrBehavior(t 
 		t.Fatalf("seed task_triage: %v", err)
 	}
 
-	_, err := taskSvc.CreateTask(CreateTaskRequest{
+	_, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-attacker", Title: "planted", Behavior: "dev", ParentID: card.ID, Ref: "ch_00",
 	})
 	if err == nil {
@@ -369,7 +370,7 @@ func TestCreateTask_AtomicPath_CardRequestIDCarrying_RoutesThroughOneTx(t *testi
 		t.Fatalf("reserveGoCardRequest: %v", err)
 	}
 
-	got, err := taskSvc.CreateTask(CreateTaskRequest{
+	got, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1", Title: "do it", Behavior: "dev",
 		ParentID: card.ID, Ref: "ch_00", CardRequestID: cardReq.ID, CardRequestOwnerJobID: cardReq.LauncherJobID,
 	})
@@ -404,7 +405,7 @@ func TestCreateTask_AtomicPath_CardRequestIDCarrying_RoutesThroughOneTx(t *testi
 func TestCreateTask_AtomicPath_CardRequestIDCarrying_RejectsWhenAnotherOccupantExists(t *testing.T) {
 	taskSvc, goSvc, card, repo := newAtomicCardSlotFixture(t)
 
-	if _, err := taskSvc.CreateTask(CreateTaskRequest{
+	if _, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1", Title: "already there", Behavior: "dev", ParentID: card.ID, Ref: "ch_other",
 	}); err != nil {
 		t.Fatalf("seed occupant create: %v", err)
@@ -415,7 +416,7 @@ func TestCreateTask_AtomicPath_CardRequestIDCarrying_RejectsWhenAnotherOccupantE
 		t.Fatalf("reserveGoCardRequest: %v (documented to succeed even with a live child already present)", err)
 	}
 
-	_, err = taskSvc.CreateTask(CreateTaskRequest{
+	_, err = taskSvc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1", Title: "do it", Behavior: "dev",
 		ParentID: card.ID, Ref: "ch_00", CardRequestID: cardReq.ID, CardRequestOwnerJobID: cardReq.LauncherJobID,
 	})

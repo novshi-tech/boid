@@ -19,7 +19,12 @@ package api
 // which only sees what actually made it into the row.
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
@@ -50,8 +55,10 @@ func newRealTaskAppService(t *testing.T) (*TaskAppService, *orchestrator.TaskRep
 	tasks := orchestrator.NewTaskRepository(d.Conn)
 	svc := &TaskAppService{
 		Tasks:    tasks,
+		Actions:  tasks,
 		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{}},
 		Projects: orchestrator.NewProjectRepository(d.Conn),
+		Tx:       realTransactor{conn: d.Conn},
 	}
 	return svc, tasks
 }
@@ -81,7 +88,7 @@ func TestTaskAppServiceUpdateTask_RemoteID_PersistsToRealDB(t *testing.T) {
 	}
 
 	newRemote := "ROOKPF-306"
-	if _, err := svc.UpdateTask(task.ID, UpdateTaskRequest{RemoteID: &newRemote}); err != nil {
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{RemoteID: &newRemote}); err != nil {
 		t.Fatalf("UpdateTask() error = %v", err)
 	}
 
@@ -111,7 +118,7 @@ func TestTaskAppServiceUpdateTask_ProjectID_PersistsToRealDB(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	if _, err := svc.UpdateTask(task.ID, UpdateTaskRequest{ProjectID: "proj-2"}); err != nil {
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{ProjectID: "proj-2"}); err != nil {
 		t.Fatalf("UpdateTask() error = %v", err)
 	}
 
@@ -150,7 +157,7 @@ func TestTaskAppServiceUpdateTask_Title_ParkedCard_PersistsToRealDB(t *testing.T
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	if _, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Title: "edited while parked"}); err != nil {
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Title: "edited while parked"}); err != nil {
 		t.Fatalf("UpdateTask() on a parked card must succeed, got error: %v", err)
 	}
 
@@ -183,7 +190,7 @@ func TestTaskAppServiceUpdateTask_Title_WorkingCard_StillRejected(t *testing.T) 
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Title: "should not land"})
+	_, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Title: "should not land"})
 	if err == nil {
 		t.Fatal("UpdateTask() on a working card: expected rejection, got success")
 	}
@@ -220,7 +227,7 @@ func TestTaskAppServiceUpdateTask_AutoStart_PersistsToRealDB(t *testing.T) {
 	}
 
 	autoStart := true
-	if _, err := svc.UpdateTask(task.ID, UpdateTaskRequest{AutoStart: &autoStart}); err != nil {
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{AutoStart: &autoStart}); err != nil {
 		t.Fatalf("UpdateTask() error = %v", err)
 	}
 
@@ -255,7 +262,7 @@ func TestTaskAppServiceUpdateTask_Payload_CardTask_Rejected(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Payload: []byte(`{"x":1}`)})
+	_, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Payload: []byte(`{"x":1}`)})
 	if err == nil {
 		t.Fatal("UpdateTask(payload) on a card: expected rejection, got success")
 	}
@@ -285,12 +292,387 @@ func TestTaskAppServiceUpdateTask_AutoStart_CardTask_Rejected(t *testing.T) {
 	}
 
 	autoStart := true
-	_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{AutoStart: &autoStart})
+	_, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{AutoStart: &autoStart})
 	if err == nil {
 		t.Fatal("UpdateTask(auto_start) on a card: expected rejection, got success")
 	}
 	se, ok := err.(*StatusError)
 	if !ok || se.Code != http.StatusConflict {
 		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+}
+
+// TestTaskAppServiceUpdateTask_CardDescription_WritesEditedAction: the record
+// names the changed field, never its body.
+func TestTaskAppServiceUpdateTask_CardDescription_WritesEditedAction(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	card := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeCard,
+		Title: "a card", Description: "before", Status: orchestrator.TaskStatusParked,
+		Card: &orchestrator.CardAttrs{},
+	}
+	if err := tasks.CreateTask(card); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), card.ID, UpdateTaskRequest{Description: "after"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("got %d actions, want 1: %+v", len(actions), actions)
+	}
+	if actions[0].Type != orchestrator.ActionTypeCardEdited {
+		t.Fatalf("action type = %q, want %q", actions[0].Type, orchestrator.ActionTypeCardEdited)
+	}
+	if body := string(actions[0].Payload); strings.Contains(body, "after") {
+		t.Errorf("payload carries the description body, want the fact only: %s", body)
+	}
+	got, err := tasks.GetTask(card.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Description != "after" {
+		t.Errorf("Description = %q, want %q", got.Description, "after")
+	}
+}
+
+// TestTaskAppServiceUpdateTask_DescriptionUnchanged_WritesNoAction: resending
+// the same body is not a change and must not look like one.
+func TestTaskAppServiceUpdateTask_DescriptionUnchanged_WritesNoAction(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	card := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeCard,
+		Title: "a card", Description: "same", Status: orchestrator.TaskStatusParked,
+		Card: &orchestrator.CardAttrs{},
+	}
+	if err := tasks.CreateTask(card); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), card.ID, UpdateTaskRequest{Description: "same"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("resending the same description wrote %d actions, want 0: %+v", len(actions), actions)
+	}
+}
+
+// TestTaskAppServiceUpdateTask_ExecutionDescription_WritesNoAction: the record
+// is card-only.
+func TestTaskAppServiceUpdateTask_ExecutionDescription_WritesNoAction(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	task := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution,
+		Title: "t", Description: "before", Status: orchestrator.TaskStatusExecuting,
+		Exec: &orchestrator.ExecAttrs{Behavior: "dev"},
+	}
+	if err := tasks.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Description: "after"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(task.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("execution task wrote %d actions, want 0: %+v", len(actions), actions)
+	}
+}
+
+// TestTaskAppServiceUpdateTask_CardEdited_PinsFieldsAndActor: the payload
+// names exactly the changed fields, and the record carries the writer.
+func TestTaskAppServiceUpdateTask_CardEdited_PinsFieldsAndActor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		req    UpdateTaskRequest
+		fields []string
+	}{
+		{"description only", UpdateTaskRequest{Description: "after"}, []string{"description"}},
+		{"title only", UpdateTaskRequest{Title: "after"}, []string{"title"}},
+		{"both, one record", UpdateTaskRequest{Title: "after", Description: "after"}, []string{"title", "description"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, tasks := newRealTaskAppService(t)
+			card := &orchestrator.Task{
+				ProjectID: "proj-1", Type: orchestrator.TaskTypeCard,
+				Title: "before", Description: "before", Status: orchestrator.TaskStatusParked,
+				Card: &orchestrator.CardAttrs{},
+			}
+			if err := tasks.CreateTask(card); err != nil {
+				t.Fatalf("CreateTask: %v", err)
+			}
+
+			ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorTask("t-writer"))
+			if _, err := svc.UpdateTask(ctx, card.ID, tc.req); err != nil {
+				t.Fatalf("UpdateTask: %v", err)
+			}
+			actions, err := tasks.ListActionsByTask(card.ID)
+			if err != nil {
+				t.Fatalf("ListActionsByTask: %v", err)
+			}
+			if len(actions) != 1 {
+				t.Fatalf("got %d actions, want exactly 1: %+v", len(actions), actions)
+			}
+			var got orchestrator.CardEditedPayload
+			if err := json.Unmarshal(actions[0].Payload, &got); err != nil {
+				t.Fatalf("unmarshal payload %s: %v", actions[0].Payload, err)
+			}
+			if !reflect.DeepEqual(got.Fields, tc.fields) {
+				t.Errorf("fields = %v, want %v", got.Fields, tc.fields)
+			}
+			if actions[0].Actor != orchestrator.ActorTask("t-writer") {
+				t.Errorf("actor = %q, want the writing task", actions[0].Actor)
+			}
+		})
+	}
+}
+
+// TestTaskAppServiceUpdateTask_CardEdited_ActorDefaultsToHuman: a request with
+// no actor on its context is a person editing through the Web UI.
+func TestTaskAppServiceUpdateTask_CardEdited_ActorDefaultsToHuman(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	card := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeCard,
+		Title: "t", Description: "before", Status: orchestrator.TaskStatusParked,
+		Card: &orchestrator.CardAttrs{},
+	}
+	if err := tasks.CreateTask(card); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), card.ID, UpdateTaskRequest{Description: "after"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Actor != orchestrator.ActorHuman {
+		t.Fatalf("actions = %+v, want one authored %q", actions, orchestrator.ActorHuman)
+	}
+}
+
+// TestTaskAppServiceUpdateTask_CardEdited_IsAtomicWithTheRow: a failing
+// record write leaves the row unchanged.
+func TestTaskAppServiceUpdateTask_CardEdited_IsAtomicWithTheRow(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	card := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeCard,
+		Title: "t", Description: "before", Status: orchestrator.TaskStatusParked,
+		Card: &orchestrator.CardAttrs{},
+	}
+	if err := tasks.CreateTask(card); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	svc.Tx = failingActionTransactor{inner: svc.Tx}
+
+	if _, err := svc.UpdateTask(context.Background(), card.ID, UpdateTaskRequest{Description: "after"}); err == nil {
+		t.Fatal("UpdateTask: expected the failing record write to surface")
+	}
+	got, err := tasks.GetTask(card.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Description != "before" {
+		t.Errorf("Description = %q, want %q — the row committed without its record", got.Description, "before")
+	}
+}
+
+// failingActionTransactor is realTransactor with CreateAction wired to fail,
+// so the row write and the record write can be shown to share a fate.
+type failingActionTransactor struct{ inner Transactor }
+
+func (f failingActionTransactor) WithinTx(fn func(TxStore) error) error {
+	return f.inner.WithinTx(func(tx TxStore) error { return fn(failingActionTxStore{TxStore: tx}) })
+}
+
+type failingActionTxStore struct{ TxStore }
+
+func (failingActionTxStore) CreateAction(context.Context, *orchestrator.Action) error {
+	return errActionWriteRefused
+}
+
+var errActionWriteRefused = errors.New("action write refused")
+
+// TestTaskAppServiceUpdateTask_NoTransactor_StillRecords: losing the
+// transactor costs atomicity, never the record.
+func TestTaskAppServiceUpdateTask_NoTransactor_StillRecords(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	svc.Tx = nil
+	card := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeCard,
+		Title: "t", Description: "before", Status: orchestrator.TaskStatusParked,
+		Card: &orchestrator.CardAttrs{},
+	}
+	if err := tasks.CreateTask(card); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), card.ID, UpdateTaskRequest{Description: "after"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Type != orchestrator.ActionTypeCardEdited {
+		t.Fatalf("actions = %+v, want one %q", actions, orchestrator.ActionTypeCardEdited)
+	}
+}
+
+// TestTaskAppServiceUpdateTask_UnchangedTitle_WritesNoAction: the title needs
+// the same "resending is not a change" guard the description has.
+func TestTaskAppServiceUpdateTask_UnchangedTitle_WritesNoAction(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	card := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeCard,
+		Title: "same", Description: "d", Status: orchestrator.TaskStatusParked,
+		Card: &orchestrator.CardAttrs{},
+	}
+	if err := tasks.CreateTask(card); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), card.ID, UpdateTaskRequest{Title: "same"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("resending the same title wrote %d actions, want 0: %+v", len(actions), actions)
+	}
+}
+
+// TestTaskAppServiceCreateTask_Card_WritesCreatedAction: a card created
+// through the direct route records itself the same way a capture does.
+func TestTaskAppServiceCreateTask_Card_WritesCreatedAction(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+
+	card, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: "proj-1", Title: "a card", InitialStatus: string(orchestrator.TaskStatusParked),
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Type != orchestrator.ActionTypeCardCreated {
+		t.Fatalf("actions = %+v, want one %q", actions, orchestrator.ActionTypeCardCreated)
+	}
+}
+
+// TestTaskAppServiceUpdateTask_ExecutionTitle_WritesNoAction: the title branch
+// needs the same card-only guard the description branch has.
+func TestTaskAppServiceUpdateTask_ExecutionTitle_WritesNoAction(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	task := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution,
+		Title: "before", Status: orchestrator.TaskStatusPending,
+		Exec: &orchestrator.ExecAttrs{Behavior: "dev"},
+	}
+	if err := tasks.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Title: "after"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(task.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("execution task wrote %d actions, want 0: %+v", len(actions), actions)
+	}
+}
+
+// TestTaskAppServiceCreateTask_Card_NoTransactor_StillRecords mirrors the
+// UpdateTask/LinkIdentity fallbacks: no transactor costs atomicity, not the
+// record.
+func TestTaskAppServiceCreateTask_Card_NoTransactor_StillRecords(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	svc.Tx = nil
+
+	card, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: "proj-1", Title: "a card", InitialStatus: string(orchestrator.TaskStatusParked),
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Type != orchestrator.ActionTypeCardCreated {
+		t.Fatalf("actions = %+v, want one %q", actions, orchestrator.ActionTypeCardCreated)
+	}
+}
+
+// TestTaskAppServiceCreateTask_Card_IsAtomicWithTheRow: a failing record write
+// leaves no card behind.
+func TestTaskAppServiceCreateTask_Card_IsAtomicWithTheRow(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	svc.Tx = failingActionTransactor{inner: svc.Tx}
+
+	if _, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: "proj-1", Title: "a card", InitialStatus: string(orchestrator.TaskStatusParked),
+	}); err == nil {
+		t.Fatal("CreateTask: expected the failing record write to surface")
+	}
+	got, err := tasks.ListTasks(orchestrator.TaskFilter{})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("the card committed without its record: %+v", got)
+	}
+}
+
+// TestTaskAppServiceCreateTask_Card_GetOrCreateHit_RecordsOnce: a repeated
+// create resolves to the same card and must not record a second birth.
+func TestTaskAppServiceCreateTask_Card_GetOrCreateHit_RecordsOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  CreateTaskRequest
+	}{
+		{"ref", CreateTaskRequest{ProjectID: "proj-1", Title: "c", Ref: "r-1", InitialStatus: string(orchestrator.TaskStatusParked)}},
+		{"idempotency key", CreateTaskRequest{ProjectID: "proj-1", Title: "c", IdempotencyKey: "k-1", InitialStatus: string(orchestrator.TaskStatusParked)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, tasks := newRealTaskAppService(t)
+			first, err := svc.CreateTask(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("first CreateTask: %v", err)
+			}
+			second, err := svc.CreateTask(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("second CreateTask: %v", err)
+			}
+			if second.ID != first.ID {
+				t.Fatalf("second create made a new card %q, want %q", second.ID, first.ID)
+			}
+			actions, err := tasks.ListActionsByTask(first.ID)
+			if err != nil {
+				t.Fatalf("ListActionsByTask: %v", err)
+			}
+			if len(actions) != 1 {
+				t.Fatalf("got %d actions, want 1 — a get-or-create hit is not a birth: %+v", len(actions), actions)
+			}
+		})
 	}
 }

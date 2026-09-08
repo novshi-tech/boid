@@ -99,7 +99,7 @@ func (s *stubWebService) ApplyAction(taskID string, actionType string) error {
 	return s.applyActionErr
 }
 
-func (s *stubWebService) DuplicateTask(id string) (string, error) {
+func (s *stubWebService) DuplicateTask(_ context.Context, id string) (string, error) {
 	return s.duplicateTaskNewID, s.duplicateTaskErr
 }
 
@@ -122,12 +122,12 @@ func (s *stubWebService) GetJob(id string) (*JobWithContext, error) {
 	return s.jobDetail, nil
 }
 
-func (s *stubWebService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+func (s *stubWebService) CreateTask(_ context.Context, req CreateTaskRequest) (*orchestrator.Task, error) {
 	s.createTaskCalls = append(s.createTaskCalls, req)
 	return s.createTaskResult, s.createTaskErr
 }
 
-func (s *stubWebService) UpdateTask(id string, req UpdateTaskRequest) error {
+func (s *stubWebService) UpdateTask(_ context.Context, id string, req UpdateTaskRequest) error {
 	s.updateTaskCalls = append(s.updateTaskCalls, req)
 	return s.updateTaskErr
 }
@@ -1319,14 +1319,14 @@ type dupTaskSvcCall struct {
 	autoStart bool
 }
 
-func (s *dupTaskSvcStub) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+func (s *dupTaskSvcStub) CreateTask(_ context.Context, req CreateTaskRequest) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *dupTaskSvcStub) GetTask(id string) (*orchestrator.Task, error) { return nil, nil }
 func (s *dupTaskSvcStub) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *dupTaskSvcStub) UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
+func (s *dupTaskSvcStub) UpdateTask(_ context.Context, id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *dupTaskSvcStub) DeleteTask(id string, force bool) error { return nil }
@@ -1334,10 +1334,10 @@ func (s *dupTaskSvcStub) GetTaskDetail(id string) (*TaskDetailView, error) {
 	return nil, nil
 }
 func (s *dupTaskSvcStub) GetTaskField(id, path string) (string, error) { return "", nil }
-func (s *dupTaskSvcStub) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error) {
+func (s *dupTaskSvcStub) ImportTasks(_ context.Context, reqs []CreateTaskRequest) (*ImportResult, error) {
 	return nil, nil
 }
-func (s *dupTaskSvcStub) DuplicateTask(id string, autoStart bool) (*orchestrator.Task, error) {
+func (s *dupTaskSvcStub) DuplicateTask(_ context.Context, id string, autoStart bool) (*orchestrator.Task, error) {
 	s.dupCalls = append(s.dupCalls, dupTaskSvcCall{sourceID: id, autoStart: autoStart})
 	if s.returnError != nil {
 		return nil, s.returnError
@@ -1358,7 +1358,7 @@ func TestWebAppServiceDuplicateTask_DelegatesToTaskSvc(t *testing.T) {
 	stub := &dupTaskSvcStub{returnTask: &orchestrator.Task{ID: "new-id"}}
 	svc := &WebAppService{TaskSvc: stub}
 
-	newID, err := svc.DuplicateTask("orig-id")
+	newID, err := svc.DuplicateTask(context.Background(), "orig-id")
 	if err != nil {
 		t.Fatalf("DuplicateTask() error = %v", err)
 	}
@@ -1380,7 +1380,7 @@ func TestWebAppServiceDuplicateTask_DelegatesToTaskSvc(t *testing.T) {
 
 func TestWebAppServiceDuplicateTask_NoTaskSvc(t *testing.T) {
 	svc := &WebAppService{}
-	_, err := svc.DuplicateTask("any-id")
+	_, err := svc.DuplicateTask(context.Background(), "any-id")
 	if err == nil {
 		t.Fatal("DuplicateTask() error = nil, want error when TaskSvc is unset")
 	}
@@ -1394,7 +1394,7 @@ func TestWebAppServiceDuplicateTask_NotFound(t *testing.T) {
 	stub := &dupTaskSvcStub{returnError: &StatusError{Code: http.StatusNotFound, Message: "task not found"}}
 	svc := &WebAppService{TaskSvc: stub}
 
-	_, err := svc.DuplicateTask("missing-id")
+	_, err := svc.DuplicateTask(context.Background(), "missing-id")
 	if err == nil {
 		t.Fatal("DuplicateTask() error = nil, want error")
 	}

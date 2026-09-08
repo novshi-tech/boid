@@ -112,6 +112,14 @@ func NewCardMachine() *StateMachine {
 		{Action: ActionTypeCommandFinished, FromStatus: "*"},
 		{Action: ActionTypeCommandFailed, FromStatus: "*"},
 		{Action: ActionTypeCommandForceReleased, FromStatus: "*"},
+
+		// The daemon's record of a card state change that lands outside the
+		// action log (the task row, the identity index) — same shape as the
+		// command_* family above.
+		{Action: ActionTypeCardCreated, FromStatus: "*"},
+		{Action: ActionTypeCardEdited, FromStatus: "*"},
+		{Action: ActionTypeIdentityLinked, FromStatus: "*"},
+		{Action: ActionTypeIdentityUnlinked, FromStatus: "*"},
 	}
 
 	// Non-transitioning Manual:true vocabulary — one rule per status in EACH

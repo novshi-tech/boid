@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -22,7 +23,7 @@ func TestCreateTask_ExplicitReadonlyTrue_OverridesExecutorDefault(t *testing.T) 
 	}
 
 	v := true
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "executor with explicit readonly=true",
 		Behavior:  "executor",
@@ -55,7 +56,7 @@ func TestCreateTask_ExplicitReadonlyFalse_OverridesSupervisorDefault(t *testing.
 	}
 
 	v := false
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "supervisor with explicit readonly=false",
 		Behavior:  "supervisor",
@@ -85,7 +86,7 @@ func TestCreateTask_ReadonlyNil_UsesExecutorDefault(t *testing.T) {
 		}},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "executor without explicit readonly",
 		Behavior:  "executor",
@@ -115,7 +116,7 @@ func TestCreateTask_ReadonlyNil_UsesSupervisorDefault(t *testing.T) {
 		}},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "supervisor without explicit readonly",
 		Behavior:  "supervisor",

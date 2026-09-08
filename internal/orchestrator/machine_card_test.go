@@ -307,6 +307,8 @@ func TestCardMachineV2_IsManualAction(t *testing.T) {
 		"job_failed", "progress", "done_request", "fail_request",
 		"child_dispatched", "child_closed", "wake_due", "garbage",
 		orchestrator.ActionTypeCommandFinished, orchestrator.ActionTypeCommandFailed, orchestrator.ActionTypeCommandForceReleased,
+		orchestrator.ActionTypeCardCreated, orchestrator.ActionTypeCardEdited,
+		orchestrator.ActionTypeIdentityLinked, orchestrator.ActionTypeIdentityUnlinked,
 		// v1 verbs, fully deleted:
 		"triage", "ready", "wake_triaged", "wake_ready", "wake_working", "dispatch",
 		"triage_done", "reopen_triaged",
@@ -323,6 +325,30 @@ func TestCardMachineV2_IsManualAction(t *testing.T) {
 	for _, a := range nonManual {
 		if sm.IsManualAction(a) {
 			t.Errorf("IsManualAction(%q) = true, want false", a)
+		}
+	}
+}
+
+// TestCardMachineV2_StateChangeSelfRecords_RegisteredEverywhere: known from
+// every status, and never moves the card.
+func TestCardMachineV2_StateChangeSelfRecords_RegisteredEverywhere(t *testing.T) {
+	sm := orchestrator.NewCardMachine()
+	for _, action := range []string{
+		orchestrator.ActionTypeCardCreated,
+		orchestrator.ActionTypeCardEdited,
+		orchestrator.ActionTypeIdentityLinked,
+		orchestrator.ActionTypeIdentityUnlinked,
+	} {
+		for _, status := range v2CardStatuses {
+			task := &orchestrator.Task{Status: status}
+			next, err := sm.Apply(task, &orchestrator.Action{Type: action})
+			if err != nil {
+				t.Errorf("%s from %s: unexpected error: %v", action, status, err)
+				continue
+			}
+			if next.Status != status {
+				t.Errorf("%s from %s: changed status to %s", action, status, next.Status)
+			}
 		}
 	}
 }
@@ -545,6 +571,8 @@ func TestIsCardTransitionAction(t *testing.T) {
 		"wake_due", "job_failed", "progress", "done_request", "fail_request",
 		"child_dispatched", "child_closed", "abort", "ask", "answer", "garbage",
 		orchestrator.ActionTypeCommandFinished, orchestrator.ActionTypeCommandFailed, orchestrator.ActionTypeCommandForceReleased,
+		orchestrator.ActionTypeCardCreated, orchestrator.ActionTypeCardEdited,
+		orchestrator.ActionTypeIdentityLinked, orchestrator.ActionTypeIdentityUnlinked,
 		// retired card-verb spellings — see the nonManual list's own comment
 		// in TestCardMachineV2_IsManualAction above.
 		"working", "done",

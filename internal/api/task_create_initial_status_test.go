@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -25,7 +26,7 @@ func newInitialStatusTestService() *TaskAppService {
 
 func TestCreateTask_InitialStatus_DefaultsToPending(t *testing.T) {
 	svc := newInitialStatusTestService()
-	task, err := svc.CreateTask(CreateTaskRequest{ProjectID: "proj-1", Title: "t", Behavior: "triage"})
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{ProjectID: "proj-1", Title: "t", Behavior: "triage"})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v", err)
 	}
@@ -43,7 +44,7 @@ func TestCreateTask_InitialStatus_DefaultsToPending(t *testing.T) {
 // RejectsDisallowedValues below for the negative pin.
 func TestCreateTask_InitialStatus_Parked(t *testing.T) {
 	svc := newInitialStatusTestService()
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:     "proj-1",
 		Title:         "t",
 		Behavior:      "triage",
@@ -65,7 +66,7 @@ func TestCreateTask_InitialStatus_Parked(t *testing.T) {
 func TestCreateTask_InitialStatus_RejectsDisallowedValues(t *testing.T) {
 	for _, bad := range []string{"executing", "done", "aborted", "captured", "triaged", "ready", "dropped", "garbage"} {
 		svc := newInitialStatusTestService()
-		_, err := svc.CreateTask(CreateTaskRequest{
+		_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 			ProjectID:     "proj-1",
 			Title:         "t",
 			Behavior:      "triage",
@@ -87,7 +88,7 @@ func TestCreateTask_InitialStatus_RejectsDisallowedValues(t *testing.T) {
 // (Opus指摘#10: 黙って無視されると気づけない)。
 func TestCreateTask_InitialStatus_RejectsAutoStartCombination(t *testing.T) {
 	svc := newInitialStatusTestService()
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:     "proj-1",
 		Title:         "t",
 		Behavior:      "triage",
@@ -105,7 +106,7 @@ func TestCreateTask_InitialStatus_RejectsAutoStartCombination(t *testing.T) {
 
 func TestCreateTask_InitialStatus_AutoStartWithPendingIsFine(t *testing.T) {
 	svc := newInitialStatusTestService()
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:     "proj-1",
 		Title:         "t",
 		Behavior:      "triage",
@@ -126,7 +127,7 @@ func TestCreateTask_InitialStatus_FailsWithoutResolvableBehavior(t *testing.T) {
 		Tasks: &stubTaskStore{},
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{}}, // no TaskBehaviors, no DefaultTaskBehavior
 	}
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:     "proj-1",
 		Title:         "t",
 		InitialStatus: "captured",

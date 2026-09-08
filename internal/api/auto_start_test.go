@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -23,7 +24,7 @@ func TestTaskAppServiceUpdateTask_AutoStart_TriggersStart(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	got, err := svc.UpdateTask("t-1", UpdateTaskRequest{AutoStart: boolPtr(true)})
+	got, err := svc.UpdateTask(context.Background(), "t-1", UpdateTaskRequest{AutoStart: boolPtr(true)})
 	if err != nil {
 		t.Fatalf("UpdateTask() error = %v", err)
 	}
@@ -50,7 +51,7 @@ func TestTaskAppServiceUpdateTask_AutoStart_NotPending_NoStart(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	got, err := svc.UpdateTask("t-2", UpdateTaskRequest{AutoStart: boolPtr(true)})
+	got, err := svc.UpdateTask(context.Background(), "t-2", UpdateTaskRequest{AutoStart: boolPtr(true)})
 	if err != nil {
 		t.Fatalf("UpdateTask() error = %v", err)
 	}
@@ -77,7 +78,7 @@ func TestTaskAppServiceUpdateTask_AutoStart_False_NoStart(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	got, err := svc.UpdateTask("t-3", UpdateTaskRequest{AutoStart: boolPtr(false)})
+	got, err := svc.UpdateTask(context.Background(), "t-3", UpdateTaskRequest{AutoStart: boolPtr(false)})
 	if err != nil {
 		t.Fatalf("UpdateTask() error = %v", err)
 	}
@@ -103,7 +104,7 @@ func TestTaskAppServiceUpdateTask_AutoStart_NoWorkflow_NoError(t *testing.T) {
 		Workflow: nil,
 	}
 
-	got, err := svc.UpdateTask("t-4", UpdateTaskRequest{AutoStart: boolPtr(true)})
+	got, err := svc.UpdateTask(context.Background(), "t-4", UpdateTaskRequest{AutoStart: boolPtr(true)})
 	if err != nil {
 		t.Fatalf("UpdateTask() error = %v when Workflow is nil, want nil", err)
 	}
@@ -126,7 +127,7 @@ func TestTaskAppServiceCreateTask_AutoStart_TriggersStart(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "auto task",
 		Behavior:  "dev",
@@ -157,7 +158,7 @@ func TestTaskAppServiceCreateTask_AutoStartFalse_StaysPending(t *testing.T) {
 		Workflow: workflow,
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "normal task",
 		Behavior:  "dev",
@@ -186,7 +187,7 @@ func TestTaskAppServiceCreateTask_AutoStart_NoWorkflow_NoError(t *testing.T) {
 		Workflow: nil,
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "auto task without workflow",
 		Behavior:  "dev",
@@ -216,7 +217,7 @@ func TestTaskAppServiceCreateTask_AutoStart_StartFails_TaskStillCreated(t *testi
 		Workflow: workflow,
 	}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "auto task",
 		Behavior:  "dev",

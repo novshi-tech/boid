@@ -155,7 +155,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		req.ParentID = ""
 	}
 
-	task, err := h.Service.CreateTask(req)
+	task, err := h.Service.CreateTask(r.Context(), req)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -242,7 +242,7 @@ func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "at least one of title, description, project_id, remote_id, payload, instructions, parent_id, or auto_start is required")
 		return
 	}
-	task, err := h.Service.UpdateTask(id, req)
+	task, err := h.Service.UpdateTask(r.Context(), id, req)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -294,7 +294,7 @@ func (h *TaskHandler) Import(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := h.Service.ImportTasks(reqs)
+	result, err := h.Service.ImportTasks(r.Context(), reqs)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -319,7 +319,7 @@ func (h *TaskHandler) Duplicate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	task, err := h.Service.DuplicateTask(id, req.AutoStart)
+	task, err := h.Service.DuplicateTask(r.Context(), id, req.AutoStart)
 	if err != nil {
 		writeServiceError(w, err)
 		return
