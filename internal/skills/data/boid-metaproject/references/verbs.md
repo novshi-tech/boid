@@ -20,11 +20,15 @@ python3 ~/.claude/skills/boid-metaproject/scripts/write.py <verb> [--report] < p
 
 | 段 | 書ける verb |
 |---|---|
-| **仕分け** (sweep の巡) | `capture` / `link` / `skip` |
+| **仕分け** (sweep の巡) | `capture` / `link` / `note` / `skip` |
 | **判断** (card コマンド) | それ以外すべて |
 
-`capture` と `link` は card の action として記録され、それが判断の起動そのものに
-なる。**仕分けの段で card の中身まで書くと、daemon が起こした判断と二重になる。**
+`capture` / `link` / `note` はどれも card の action として記録され、それが判断の起動
+そのものになる。**仕分けの段で card の中身まで書くと、daemon が起こした判断と
+二重になる。**
+
+**既にある card への続報を `done-signal` で片付けない。** あれは boid に何も書かない
+ので card イベントが出ず、続きの判断が起きないまま signal だけが消える。
 
 ## 提案する (人の accept で初めて適用される)
 
@@ -56,6 +60,7 @@ card の状態は機械では動かない。下の 6 つは `{verb, reason}` を
 |---|---|
 | `capture` | 新規候補が新しい件だと判断したとき (card を立てる。急ぎ具合も同時に渡す) |
 | `link` | 新規候補が既にある件の続きだと分かったとき (その card の判断が起きる) |
+| `note` | 既にこの card に結びついた source から続報が来たとき (何が新しいかを渡す) |
 | `summary` | 現状サマリーを書き直したとき (毎回書き直してよい) |
 | `spec` | 次の一手が書けたとき (子を用意する) |
 | `drop-child` | 立てた子が間違っていた / 要らなくなったとき |

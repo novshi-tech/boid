@@ -157,6 +157,10 @@ _VERB_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     # queue に出なかった。うち 2 件は子を specced まで作ってあった。
     "capture": (("identity", "title", "body", "urgency"), ()),
     "link": (("task_id", "identity"), ()),
+    # 既にこの card に結びついている identity から続報が来たときの出口。**`done-signal`
+    # では代われない** —— あれは boid に何も書かないので card イベントが出ず、続きの
+    # 判断が起きない。body には後段が読み直さずに済むよう「何が新しいか」を書く。
+    "note": (("task_id", "body"), ()),
     "summary": (("task_id", "body"), ()),
     # **`instruction` は任意。** 子の instruction は behavior の `default_instruction` を
     # フィールド単位で上書きする (`internal/orchestrator/payload_merge.go` の
@@ -710,6 +714,11 @@ class Executor:
     def _do_link(self, c: Mapping[str, object]) -> Result:
         self.cli.link_identity(str(c["identity"]), str(c["task_id"]))
         return Result(task_id=str(c["task_id"]), changed=True, note=f"{c['identity']} を合流")
+
+    def _do_note(self, c: Mapping[str, object]) -> Result:
+        task_id = str(c["task_id"])
+        self.cli.send_action(task_id, "noted", {"body": str(c["body"])})
+        return Result(task_id=task_id, changed=True, note="続報を記録")
 
     def _do_summary(self, c: Mapping[str, object]) -> Result:
         task_id = str(c["task_id"])

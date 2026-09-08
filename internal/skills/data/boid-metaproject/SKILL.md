@@ -41,10 +41,10 @@ Intake owns what happens *before or outside* a live card: screening a candidate
 away, capturing a new one, joining a follow-up to an existing one. Judgment owns
 everything *on* a live card: the summary, the child specs, the suggestion.
 
-What joins them is the action log. `capture` and `link` each write a card action
-(`created`, `identity_linked`), and those action types are on the daemon's
-card-event allowlist — so a captured or joined card starts its own judgment
-without the sweep round doing anything further. The same is true of a person
+What joins them is the action log. `capture`, `link` and `note` each write a card
+action (`created`, `identity_linked`, `noted`), and those action types are on the
+daemon's card-event allowlist — so a captured, joined or updated card starts its
+own judgment without the sweep round doing anything further. The same is true of a person
 editing a card in the web UI, a work child finishing, a wake condition coming
 due, and an answered suggestion. **The sweep is not the only thing that can
 cause a card to be re-judged, and that is the point of splitting them.**
@@ -245,6 +245,10 @@ something not yet captured — plus the event keys that are new about it. Tell i
 - **how to tell a follow-up from a new thing.** That a mail thread, an issue and
   an existing card are the same matter is not mechanically derivable; it is the
   one read only a judgment can do.
+- **what is new about a card it already knows.** A target that arrives as a card
+  id needs a `note` saying what happened, not a `done-signal` — `done-signal`
+  writes nothing to boid, so a follow-up parked there acks its signal and starts
+  no judgment. This is the steady state, not the edge case.
 
 **The judgment skill** receives one card and works out what it now means. Tell
 it:

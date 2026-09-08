@@ -439,28 +439,43 @@ class FlagsTest(unittest.TestCase):
 
 class IntakeScopeTest(unittest.TestCase):
     """巡が担うのは仕分けまで。**肉付けは card コマンドの側**で、そちらは
-    `capture`/`link` が書く action から daemon が自動で起こす。
+    `capture`/`link`/`note` が書く action から daemon が自動で起こす。
 
     どの段がどの verb を持つかは機構の話なので、workspace のスキル 2 本に
     書かせず、機構が組む instruction の側で 1 度だけ言う。
     """
 
-    def description_for(self, **kw):
+    def outlet_line(self):
+        """出口を名指ししている**その 1 行**を取り出す。
+
+        description 全体への部分一致では、他の行がたまたま同じ verb 名に触れて
+        いるだけで緑になる (実際に一度そうなった)。
+        """
         cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
         main(["--intake-skill", "/intake"], cli=cli, stdout=io.StringIO())
         (_call, _task, description), = cli.named("update_description")
-        return description
+        lines = [line for line in description.splitlines() if "この巡の出口" in line]
+        self.assertEqual(len(lines), 1, f"出口を名指しする行が 1 行でない: {lines}")
+        return lines[0]
 
-    def test_it_names_the_verbs_this_stage_owns(self):
-        description = self.description_for()
-        for verb in ("capture", "link", "skip"):
-            self.assertIn(verb, description, f"{verb} が仕分けの出口として案内されていない")
+    def test_the_outlet_line_names_every_verb_this_stage_owns(self):
+        line = self.outlet_line()
+        for verb in ("capture", "link", "note", "skip"):
+            self.assertIn(verb, line, f"{verb} が出口の行に無い")
 
-    def test_it_refuses_the_verbs_the_next_stage_owns(self):
+    def test_the_outlet_line_excludes_the_next_stages_verbs(self):
         """ここで summary や spec を書かせると、card コマンドと二重に判断が走る。"""
-        description = self.description_for()
-        for verb in ("summary", "spec"):
-            self.assertNotIn(f"`{verb}`", description, f"{verb} が仕分けの出口に混じっている")
+        line = self.outlet_line()
+        for verb in ("summary", "spec", "go"):
+            self.assertNotIn(verb, line, f"{verb} が出口の行に混じっている")
+
+    def test_the_round_says_done_signal_is_not_the_handoff(self):
+        """`done-signal` は boid に何も書かないので、そこへ落とすと続きの判断が
+        起きない —— 巡の instruction がそれを名指しする。"""
+        cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
+        main(["--intake-skill", "/intake"], cli=cli, stdout=io.StringIO())
+        (_call, _task, description), = cli.named("update_description")
+        self.assertIn("done-signal", description)
 
 
 class MainTest(unittest.TestCase):

@@ -46,7 +46,7 @@ class VerbTest(unittest.TestCase):
         self.assertEqual(
             set(VERBS),
             {
-                "capture", "link", "summary", "spec", "drop-child",
+                "capture", "link", "note", "summary", "spec", "drop-child",
                 "observed", "urgency", "park", "start", "go", "complete", "reopen",
                 "drop", "skip", "done-signal",
             },
@@ -147,6 +147,7 @@ class SignalsTest(unittest.TestCase):
     def test_required_for_every_verb(self):
         for verb, fields in (
             ("done-signal", {"task_id": "t1"}),
+            ("note", {"task_id": "t1", "body": "b"}),
             ("summary", {"task_id": "t1", "body": "b"}),
             ("observed", {"task_id": "t1", "source_closed": True}),
             ("urgency", {"task_id": "t1", "urgency": "week"}),
@@ -217,6 +218,32 @@ class CardContextValidationTest(unittest.TestCase):
         with self.assertRaises(CommandError) as caught:
             validate("go", {"task_id": "t1", "reason": "r"})
         self.assertIn("signals", str(caught.exception))
+
+
+class NoteTest(unittest.TestCase):
+    """既にある card への続報を渡すだけの verb。"""
+
+    def test_accepts_a_task_id_and_a_body(self):
+        command = ok("note", task_id="t1", body="PR がマージされた")
+        self.assertEqual(command["task_id"], "t1")
+        self.assertEqual(command["body"], "PR がマージされた")
+
+    def test_body_is_required(self):
+        """body が無いと後段が「何が新しいのか」を読み直すことになる。"""
+        with self.assertRaises(CommandError) as caught:
+            ok("note", task_id="t1")
+        self.assertIn("body", str(caught.exception))
+
+    def test_task_id_is_required(self):
+        """相手のいない note は書けない。まだ card が無い候補は `capture` の担当。"""
+        with self.assertRaises(CommandError) as caught:
+            ok("note", body="本文")
+        self.assertIn("task_id", str(caught.exception))
+
+    def test_an_empty_body_counts_as_missing(self):
+        with self.assertRaises(CommandError) as caught:
+            ok("note", task_id="t1", body="   ")
+        self.assertIn("body", str(caught.exception))
 
 
 class UrgencyTest(unittest.TestCase):
