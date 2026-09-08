@@ -18,16 +18,20 @@ type CardEventResolver interface {
 // Compile-time proof that *ProjectStore satisfies this interface.
 var _ CardEventResolver = (*ProjectStore)(nil)
 
-// cardEventIngestActionTypes is the closed allowlist of action types that
-// may auto-start a card_events command. Every action type not listed here
-// is a no-op, including future additions to the card machine's vocabulary —
-// this stays a deliberate allowlist, not a derived exclusion.
+// cardEventIngestActionTypes is the allowlist of action types that may
+// auto-start a card_events command. Membership follows one rule: an action
+// belongs here when it leaves the card carrying material the next decision
+// did not have before. A card's own state transitions (go, park, drop,
+// reopen, …) and the human's answer to a suggestion never qualify — they
+// act on what the card already says, so re-deciding on them can only
+// re-derive the same conclusion.
 var cardEventIngestActionTypes = map[string]bool{
+	// Results and deadlines arriving from outside the card.
 	"child_closed": true,
 	"wake_due":     true,
-	"answered":     true,
-	"noted":        true,
-	"attrs_set":    true,
+	// Content written onto the card.
+	"noted":     true,
+	"attrs_set": true,
 	// The daemon's own state-change records: a new card, an edited one and a
 	// changed identity binding are each a change the next decision must see.
 	ActionTypeCardCreated:      true,
@@ -39,9 +43,9 @@ var cardEventIngestActionTypes = map[string]bool{
 // IngestCardEventRequest is CreateAction's card-event ingest step: it
 // queues a card_requests row for an eligible action.
 //
-// Unlike IngestActionSignal, a genuine failure here fails the caller's
-// transaction — only ineligibility and ErrCardRequestDuplicateCause
-// (redelivery) are no-ops; every other error propagates.
+// A genuine failure here fails the caller's transaction — only
+// ineligibility and ErrCardRequestDuplicateCause (redelivery) are no-ops;
+// every other error propagates.
 func IngestCardEventRequest(ctx context.Context, dbtx db.DBTX, a *Action, resolver CardEventResolver) error {
 	if resolver == nil || a == nil || a.TaskID == "" {
 		return nil

@@ -226,7 +226,7 @@ func TestFindDaemonShutdownAbortedTasks_ReturnsShutdownTasks(t *testing.T) {
 		FromStatus: orchestrator.TaskStatusExecuting,
 		ToStatus:   orchestrator.TaskStatusAborted,
 		Payload:    json.RawMessage(`{"code":"daemon_shutdown","message":"shutdown"}`),
-	}, nil, nil); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("create A action: %v", err)
 	}
 
@@ -244,7 +244,7 @@ func TestFindDaemonShutdownAbortedTasks_ReturnsShutdownTasks(t *testing.T) {
 		FromStatus: orchestrator.TaskStatusExecuting,
 		ToStatus:   orchestrator.TaskStatusAborted,
 		Payload:    json.RawMessage(`{"code":"dispatch_error","message":"hook failed"}`),
-	}, nil, nil); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("create B action: %v", err)
 	}
 
@@ -290,7 +290,7 @@ func TestFindDaemonShutdownAbortedTasks_LatestAbortWins(t *testing.T) {
 		FromStatus: orchestrator.TaskStatusExecuting,
 		ToStatus:   orchestrator.TaskStatusAborted,
 		Payload:    json.RawMessage(`{"code":"daemon_shutdown"}`),
-	}, nil, nil); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("create first abort: %v", err)
 	}
 	// Newer abort: dispatch_error (e.g. reopen then hook failed)
@@ -300,7 +300,7 @@ func TestFindDaemonShutdownAbortedTasks_LatestAbortWins(t *testing.T) {
 		FromStatus: orchestrator.TaskStatusExecuting,
 		ToStatus:   orchestrator.TaskStatusAborted,
 		Payload:    json.RawMessage(`{"code":"dispatch_error"}`),
-	}, nil, nil); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("create second abort: %v", err)
 	}
 

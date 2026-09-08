@@ -1,5 +1,13 @@
 # boid 内部シグナルの inbox 統合
 
+> **2026-09-09 撤回。この doc が入れた内部シグナル経路 (`IngestActionSignal`、
+> `boid/actions` source) は撤去済み。** card 自身の action は signal inbox を
+> 経由せず、`card_events` からその card の判断へ直接向かう。identity に card 自身の
+> ID を入れる設計だったため、intake 側の「対応する card はあるか」という問いが
+> 構造的に成立せず (`capture`/`link` が到達不能)、同じ action が card_events からも
+> 届いていたので重複だった。判断の起動条件は
+> `card-next-step-and-timeline.md` の allowlist 表が正。以下は起草時の記録。
+
 2026-08-28 起草。`docs/plans/signal-driven-review.md` §12 に未決として積まれた 1 行に
 答える doc。
 

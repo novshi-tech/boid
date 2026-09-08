@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math/rand/v2"
 	"regexp"
 	"strings"
@@ -589,12 +588,11 @@ func TouchTaskUpdatedAt(dbtx db.DBTX, id string) error {
 	return nil
 }
 
-// CreateAction inserts a, then runs two independent ingest steps against
-// its target card within the SAME transaction: IngestActionSignal
-// (best-effort) and IngestCardEventRequest (queues a card_requests row;
-// unlike IngestActionSignal, fails this call on a genuine error — see its
-// own doc comment). Either resolver may be nil, each a quiet no-op then.
-func CreateAction(ctx context.Context, dbtx db.DBTX, a *Action, resolver MetaProjectResolver, cardEvents CardEventResolver) error {
+// CreateAction inserts a, then runs IngestCardEventRequest against its
+// target card within the SAME transaction (queues a card_requests row; a
+// genuine error fails this call — see its own doc comment). cardEvents may
+// be nil, a quiet no-op then.
+func CreateAction(ctx context.Context, dbtx db.DBTX, a *Action, cardEvents CardEventResolver) error {
 	if a.ID == "" {
 		a.ID = uuid.New().String()
 	}
@@ -610,13 +608,6 @@ func CreateAction(ctx context.Context, dbtx db.DBTX, a *Action, resolver MetaPro
 	)
 	if err != nil {
 		return fmt.Errorf("insert action: %w", err)
-	}
-
-	// Best-effort: a failed ingest must not roll back the action already
-	// committed above — see IngestActionSignal's own doc comment.
-	if ingestErr := IngestActionSignal(ctx, dbtx, a, resolver); ingestErr != nil {
-		slog.Warn("internal signal ingest failed; action was still recorded",
-			"action_id", a.ID, "task_id", a.TaskID, "type", a.Type, "error", ingestErr)
 	}
 
 	// NOT best-effort — see IngestCardEventRequest's own doc comment.

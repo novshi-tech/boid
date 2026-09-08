@@ -144,17 +144,24 @@ func NewCardMachine() *StateMachine {
 	//     deciding the same admission question. dropped IS included: unlike
 	//     done, a dropped card has no equivalent service-layer guard, and
 	//     khi legitimately wants to attrs_set a reopen suggestion onto one.
-	//   - child_added / child_specced / child_dropped: {parked, working}
-	//     only. A terminal card's children list is frozen — there is
-	//     nothing left to specc, add, or withdraw once a card is done or
-	//     dropped.
+	//   - child_added / child_specced: {parked, working, dropped}, plus done
+	//     via the same service-layer guard attrs_set uses. A reopen proposal
+	//     carries the work it proposes: whoever reads the external signal
+	//     that motivates the reopen already knows what the card should do
+	//     next, so it writes the spec and the suggestion together rather
+	//     than proposing first and attaching the spec after a human accept.
+	//   - child_dropped: {parked, working} only. Withdrawing a child from a
+	//     terminal card has no proposal to ride along with.
 	for _, status := range cardActiveAndDroppedStatuses {
 		rules = append(rules, Rule{Action: "attrs_set", FromStatus: status, Manual: true})
 	}
-	for _, action := range []string{"child_added", "child_specced", "child_dropped"} {
-		for _, status := range cardActiveStatuses {
+	for _, action := range []string{"child_added", "child_specced"} {
+		for _, status := range cardActiveAndDroppedStatuses {
 			rules = append(rules, Rule{Action: action, FromStatus: status, Manual: true})
 		}
+	}
+	for _, status := range cardActiveStatuses {
+		rules = append(rules, Rule{Action: "child_dropped", FromStatus: status, Manual: true})
 	}
 	for _, action := range []string{"noted", "answered"} {
 		for _, status := range cardActiveAndTerminalStatuses {

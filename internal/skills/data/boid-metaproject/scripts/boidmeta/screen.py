@@ -62,12 +62,7 @@ def self_authored(candidates: Sequence[Authored], *, mine: str = SELF) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 旧: boid source 由来 signal の 2 段の絞り (「自分自身の書き込みを落とす」) は
-# ここにも `sweep` にも無い。**boid core が ingest の時点で同じ判定をする** ——
-# `internal/orchestrator/signal_ingest_bridge.go` の `IngestActionSignal` が、書き込み元
-# job の project が対象 workspace のメタプロジェクトなら signal を書かない。メタ
-# プロジェクトの task も、そこから fork される subagent も、その子 task も全部その
-# project の sandbox で走るので、書いた action は inbox に載らない。
-#
-# `actor == "daemon"` の action (子 task 終端の `child_closed` 等) は意図して通る ——
-# 「外で仕事が終わった」検知そのもので、自分の書き込みではない。
+# 「自分自身の書き込みを落とす」絞りはここにも `sweep` にも無い。inbox に届く
+# signal は外部コネクタ発のものだけで、card 自身のアクションは signal にならない
+# (card_events 経由でその card の判断へ直接向かう) ので、自分が書いたものを自分で
+# 拾う経路がそもそも無い。

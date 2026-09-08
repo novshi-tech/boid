@@ -1,19 +1,16 @@
 package server
 
-// docs/plans/boid-internal-signal-inbox.md §10 グループB Q6: the OTHER
-// actions-table write mouth (internal/dispatcher/store.go's daemon-restart
-// abort) is out of scope for PR-1 because §4.5 argues dispatched children's
-// terminal status is never silently missed by it — SweepReconcileChildren
-// (internal/api/queue_sweep.go) re-derives it independently via
-// recordChildClosedOnParent (internal/api/workflow_card.go), which
-// self-records through the SAME tx.CreateAction every other write in this
-// codebase goes through. This test proves that claim against the REAL
-// production wiring (apiTxStore/apiTransactor, not a fake) — internal/api's
-// own queue_sweep_test.go cannot do this itself: testutil (needed for a real
-// migrated DB) imports internal/server, so an internal/api test file (same
-// package, not _test) importing testutil would create a build cycle.
-// internal/server has no such problem, since it legitimately imports
-// internal/api already.
+// SweepReconcileChildren (internal/api/queue_sweep.go) records a dispatched
+// child's terminal status onto its parent card via recordChildClosedOnParent
+// (internal/api/workflow_card.go), which must go through the SAME
+// tx.CreateAction every other write in this codebase goes through — so a
+// child closing reaches the card's next decision. This test proves that
+// against the REAL production wiring (apiTxStore/apiTransactor, not a fake)
+// — internal/api's own queue_sweep_test.go cannot do this itself: testutil
+// (needed for a real migrated DB) imports internal/server, so an
+// internal/api test file (same package, not _test) importing testutil would
+// create a build cycle. internal/server has no such problem, since it
+// legitimately imports internal/api already.
 
 import (
 	"context"
@@ -26,15 +23,16 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// sweepStubMetaResolver is a tiny orchestrator.MetaProjectResolver test
-// double (workspaceID -> metaproject ids), local to this file.
-type sweepStubMetaResolver map[string][]string
+// sweepStubCardEventResolver is a tiny orchestrator.CardEventResolver test
+// double (projectID -> card_events command key), local to this file.
+type sweepStubCardEventResolver map[string]string
 
-func (r sweepStubMetaResolver) MetaProjectIDs(workspaceID string) []string {
-	return r[workspaceID]
+func (r sweepStubCardEventResolver) CardEventCommand(projectID string) (string, bool) {
+	key, ok := r[projectID]
+	return key, ok
 }
 
-func TestSweepReconcileChildren_RecordChildClosedOnParent_IngestsInternalSignal(t *testing.T) {
+func TestSweepReconcileChildren_RecordChildClosedOnParent_QueuesCardEvent(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -93,8 +91,9 @@ func TestSweepReconcileChildren_RecordChildClosedOnParent_IngestsInternalSignal(
 		t.Fatalf("upsert task_triage: %v", err)
 	}
 
-	tasks.SetMetaProjectResolver(sweepStubMetaResolver{"ws-1": {"proj-meta"}})
-	tx := apiTransactor{db: d.Conn, metaResolver: sweepStubMetaResolver{"ws-1": {"proj-meta"}}}
+	resolver := sweepStubCardEventResolver{"proj-meta": "judge"}
+	tasks.SetCardEventResolver(resolver)
+	tx := apiTransactor{db: d.Conn, cardEventResolver: resolver}
 
 	svc := &api.TaskWorkflowService{Tasks: tasks, TaskTriage: tasks, Tx: tx}
 	if err := svc.SweepReconcileChildren(context.Background(), time.Now()); err != nil {
@@ -119,19 +118,19 @@ func TestSweepReconcileChildren_RecordChildClosedOnParent_IngestsInternalSignal(
 	}
 
 	// ...and THIS is the part that only holds if the write genuinely reached
-	// orchestrator.CreateAction's ingest step: a signal for the card landed
-	// in ws-1's inbox.
-	signals, err := orchestrator.ListSignals(d.Conn, orchestrator.SignalFilter{WorkspaceID: "ws-1", State: orchestrator.SignalStateAll})
+	// orchestrator.CreateAction's ingest step: the card's card_events command
+	// is queued for it.
+	requests, err := tasks.ListCardRequestsByCard("card")
 	if err != nil {
-		t.Fatalf("ListSignals: %v", err)
+		t.Fatalf("ListCardRequestsByCard: %v", err)
 	}
-	if len(signals) != 1 {
-		t.Fatalf("got %d signals, want 1 (recordChildClosedOnParent must reach CreateAction's ingest step)", len(signals))
+	if len(requests) != 1 {
+		t.Fatalf("got %d card_requests, want 1 (recordChildClosedOnParent must reach CreateAction's ingest step)", len(requests))
 	}
-	if signals[0].Identity != "card" {
-		t.Errorf("Identity = %q, want %q", signals[0].Identity, "card")
+	if requests[0].CommandKey != "judge" {
+		t.Errorf("CommandKey = %q, want %q", requests[0].CommandKey, "judge")
 	}
-	if signals[0].Title != "child_closed" {
-		t.Errorf("Title = %q, want %q", signals[0].Title, "child_closed")
+	if requests[0].Status != orchestrator.CardRequestStatusQueued {
+		t.Errorf("Status = %q, want %q", requests[0].Status, orchestrator.CardRequestStatusQueued)
 	}
 }

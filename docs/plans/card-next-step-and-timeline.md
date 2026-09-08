@@ -332,8 +332,9 @@ done/dropped の card には自動起動しない。終端 card への手動コ�
 
 意味上の終了を持たないイベントを単純な updated_at 変化で検知しない。
 作業子の終端・枠解放・判断要求の記録は整合する transaction 境界に揃え、
-既存の best-effort な IngestActionSignal を唯一の起動根拠にしない。
-旧内部 Signal と新要求の併用期間は原因 ID で重複排除する。
+best-effort な内部 signal ingest を唯一の起動根拠にしない。
+（後日談: その内部 signal ingest 自体を撤去し、card 自身の action は
+card_events だけを通るようにした。下の allowlist 表の注記を参照）
 
 通常は commit 後に起動を試み、定期 Sweep を待たない。
 通知欠落・daemon 再起動時の走査は復旧用に残す。異なる card の並行実行は可能だが、
@@ -422,7 +423,7 @@ session 起動の broker op、作成 op 内の関連付け、trigger run の car
 | `internal/api/workflow_card.go` | Go、child_spec、子の終端 reconcile、冪等 create | Go は parked 二段階検査と先行 auto-start。枠予約→関連→起動へ改修。`promotedAttrVocabulary` の suggestion 語彙は手書きで `cardTransitionActions` と手同期 |
 | `internal/skills/data/boid-metaproject/scripts/boidmeta/write.py` | 共通の検証・差分・書き込み | **PR-3 で実装:** `boid card context` の有無で経路を分岐、card 文脈があれば signals/BOID_TASK_ID を要求せず `card_write` だけを根拠にする。task ID/readonly/signals 依存の分離は完了、実 harness (session からの実呼び出し) は Gate A |
 | `internal/adapters/{claude,codex,opencode}/run.go`、`boid-task/SKILL.md` | session instruction、task の既存 lifecycle | **PR-3 で実装:** `boid-task/SKILL.md` に workspace workflow への委譲節を追加 (adapter 側の配線は不要と判断、根拠は §10)。task は boid-task 起動。実 harness での成立確認は Gate A |
-| `internal/orchestrator/signal_ingest_bridge.go` | 内部事実と workspace 解決 | best-effort、project 単位の自己除外。耐久要求と request の由来で補完 |
+| `internal/orchestrator/card_event_ingest.go` | 内部事実から判断要求を起こす | card 自身の action は signal inbox を経由せず、ここから card_events だけを通る |
 | `internal/api/web.go`、`web/templates/tasks.templ`、`internal/timeline/` | task/job ページ、SSE、仕様と実 task の対応 | command/read model、card 側の更新通知、stable cursor を追加。`detailPrimaryAction` / `actionPrimaryClass` は action 名だけで分岐し type を見ないので、card の `start` が primary 扱いにならないよう type で分ける。child_dropped の Web/CLI 操作は無い（action send のみ） |
 | `internal/orchestrator/model.go` の子集計 | execution の階層構造 | command task を作業子に数えず単一枠を共有。reopen/直接作成でも迂回させない |
 | `internal/orchestrator/store.go` の GCTasks | 終端 status + updated_at で削除 | 親の生死を見ない。生きている card の closed 子 task は 30 日で必ず消える。結果概要は child_closed の payload に持つ |
@@ -710,18 +711,29 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   この PR が担当し、「捌く」側（claim/dispatch）は PR-4c に残る。
 
   **対象 action の allowlist（§4.6「初期版の対象 action は実装時に明示表で固定する」
-  を実施）:**
+  を実施）。基準は 1 つ —— そのアクションを経て card が「直前の判断が持っていなかった
+  材料」を帯びたなら起動する。card 自身の状態遷移も、人が提案に返した答えも、card が
+  既に言っていることに作用するだけなので、そこで再判断しても同じ結論しか導けない:**
 
   | action | 起動する | 根拠 |
   |---|---|---|
-  | `child_closed` | ✅ | 作業子の終端 |
-  | `wake_due` | ✅ | 起動条件の発火 |
-  | `answered` | ✅ | 人の回答 |
+  | `child_closed` | ✅ | 作業子の終端 —— 外から結果が返った |
+  | `wake_due` | ✅ | 起動条件の発火 —— 外から満期が返った |
   | `noted` | ✅ | 外部 link/続報・人の card 更新 |
   | `attrs_set` | ✅ | Sweep の続報 (summary)。自己ループ除外は type ではなく起動由来で行う（下記） |
+  | `answered` | ❌ | 人の回答。accept は card が既に持つ決定の実行、reject はその取り下げで、どちらも次の判断材料を足さない |
   | `go`/`start`/`park`/`complete`/`drop`/`reopen` | ❌ | 状態遷移そのもの（§4.6） |
   | `child_added`/`child_specced`/`child_dropped` | ❌ | 判断の産物 (spec)（§4.6） |
   | `progress`/`child_dispatched`/`done_request`/`fail_request` | ❌ | §4.6 で progress 除外明記。残りは execution machine 共有の非遷移語彙 |
+
+  **改訂 (2026-09-09): `answered` を allowlist から外し、上の基準を明文化した。**
+  当初は「人の回答」を材料として扱っていたが、accept は card が既に持つ決定を
+  boid 自身が実行するだけ、reject はその決定の取り下げで、どちらも次の判断が
+  読める材料を足さない。同時に、card の action を signal inbox へ写す経路
+  (`IngestActionSignal`) を撤去した —— identity に card 自身の ID を入れており、
+  intake 側の「対応する card はあるか」という問いが構造的に成立しない
+  (`capture`/`link` が到達不能で、出口が `note`/`skip` しか無い) 一方、
+  同じ action は card_events から judge へ直接届いていたため、純粋な重複だった。
 
   card machine の全 18 action type について、allowlist の各エントリを個別に
   外す/足す mutation を当ててそれぞれ対応するテストが赤くなることを確認済み

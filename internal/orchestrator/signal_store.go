@@ -144,8 +144,8 @@ func IngestSignals(dbtx db.DBTX, workspaceID, service, connector string, rows []
 	if workspaceID == "" {
 		return fmt.Errorf("ingest signals: workspace id must not be empty")
 	}
-	// service MAY be empty: boid's own internal-signal source never reaches
-	// an external service, so its envelope's source.service is "".
+	// service MAY be empty: a connector that never reaches an external
+	// service leaves its envelope's source.service blank.
 	if connector == "" {
 		return fmt.Errorf("ingest signals: connector must not be empty")
 	}

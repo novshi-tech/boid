@@ -1,12 +1,9 @@
 package api
 
-// Pins accept(go) against the card_events seam, through the REAL
-// orchestrator.CreateAction ingest path: the "answered" action a human accept
-// records is itself ingest-eligible (cardEventIngestActionTypes), so accepting
-// a suggestion on a card whose project declares card_events queues a
-// card_requests row caused by that very action. accept(go) needs the card's
-// single work slot for its own reservation, so that queued row must not be
-// launched ahead of the go it was caused by.
+// Pins accept(go) against a card_requests row already queued on the same
+// card: accept(go) needs the card's single work slot for its own
+// reservation, so applyAnswered's commit-triggered dispatch attempt must not
+// launch that row ahead of the go.
 
 import (
 	"context"
@@ -76,10 +73,13 @@ func newCardEventAcceptService(t *testing.T, detail string) (*TaskWorkflowServic
 	return svc, exec, creator, repo, card
 }
 
-func TestApplyAnswered_AcceptGo_NotBlockedByTheCardEventItsOwnActionQueued(t *testing.T) {
+func TestApplyAnswered_AcceptGo_NotBlockedByAnAlreadyQueuedCardEvent(t *testing.T) {
 	svc, exec, creator, repo, card := newCardEventAcceptService(t,
 		`{"attrs":{"suggestion":{"verb":"go","reason":"the child is specced and ready"}},`+
 			`"children":[{"id":"ch_00","title":"the work","status":"specced","spec":{"project":"proj-1","behavior":"implement"}}]}`)
+	// A card event queued by some earlier information-carrying action (a note,
+	// a summary write) that has not been claimed yet.
+	enqueueForDispatch(t, svc, card.ID, "review", "cause-earlier")
 
 	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
 	payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": "go"})
@@ -110,10 +110,9 @@ func TestApplyAnswered_AcceptGo_NotBlockedByTheCardEventItsOwnActionQueued(t *te
 		t.Fatalf("children = %+v, want the single child marked dispatched", children)
 	}
 
-	// The card_events row the accept's own "answered" action queued must still
-	// be queued: go holds the slot, so an immediate dispatch attempt has
-	// nothing to claim. Launching it instead is what used to take the slot go
-	// needed and turn every accept(go) into a 409.
+	// The already-queued card event must still be queued: go holds the slot,
+	// so an immediate dispatch attempt has nothing to claim. Launching it
+	// first instead takes the slot go needs and turns the accept into a 409.
 	if len(exec.calls) != 0 {
 		t.Fatalf("StartExec calls = %d, want 0 — the queued card event must not launch ahead of go", len(exec.calls))
 	}
@@ -146,6 +145,7 @@ func TestApplyAnswered_AcceptGoFails_StillDispatchesTheQueuedCardEvent(t *testin
 	// a 409 before ever reserving the slot.
 	svc, exec, creator, repo, card := newCardEventAcceptService(t,
 		`{"attrs":{"suggestion":{"verb":"go","reason":"stale — the child was dropped"}},"children":[]}`)
+	enqueueForDispatch(t, svc, card.ID, "review", "cause-earlier")
 
 	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
 	payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": "go"})

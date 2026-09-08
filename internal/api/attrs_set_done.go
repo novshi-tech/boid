@@ -9,18 +9,28 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// resolveAttrsSetDoneTransition special-cases attrs_set against a "done"
-// task: if the task carries a task_triage row (a card), this is treated as
-// a routine, non-transitioning attrs_set (like on any preExecutionStatuses
-// task) instead of the rejection sm.Apply would otherwise produce.
+// doneCardWritableActions are the non-transitioning card writes a done card
+// still accepts: new material (attrs_set) and the child spec a reopen
+// proposal carries with it. child_dropped is deliberately absent — see the
+// card machine's own rule table (machine_card.go).
+var doneCardWritableActions = map[string]bool{
+	"attrs_set":     true,
+	"child_added":   true,
+	"child_specced": true,
+}
+
+// resolveAttrsSetDoneTransition special-cases doneCardWritableActions
+// against a "done" task: if the task carries a task_triage row (a card),
+// this is treated as a routine, non-transitioning write (like on any
+// preExecutionStatuses task) instead of the rejection sm.Apply would
+// otherwise produce.
 //
 // This is a service-layer guard, not a machine.go rule change, because
 // machine.go's preExecutionStatuses FromStatus list is shared across five
 // action verbs (attrs_set/child_added/child_specced/noted/answered) —
-// widening it to include "done" would open the door for all five, not just
-// attrs_set. Background: docs/plans/ingestion-identity.md (I-5b).
+// widening it to include "done" would open the door for all five.
 func resolveAttrsSetDoneTransition(sm *orchestrator.StateMachine, task *orchestrator.Task, action *orchestrator.Action, getTriage func(string) (*orchestrator.CardAttrs, error)) (*orchestrator.Task, *StatusError) {
-	if action.Type == "attrs_set" && task.Status == orchestrator.TaskStatusDone && getTriage != nil {
+	if doneCardWritableActions[action.Type] && task.Status == orchestrator.TaskStatusDone && getTriage != nil {
 		_, err := getTriage(task.ID)
 		switch {
 		case err == nil:

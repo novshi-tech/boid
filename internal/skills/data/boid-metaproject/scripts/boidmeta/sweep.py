@@ -20,8 +20,6 @@ sweep task が**最初の一手**として実行する。入口は
 ならない。claim するのは 2 種類だけ:
 
 - **target になった signal** —— subagent に渡す
-- **identity を解決できなかった boid signal** —— 渡そうとして失敗した。数えないと
-  真に解決できない signal が永久に毎巡返り続ける
 
 claim しないもの:
 
@@ -39,21 +37,11 @@ ack が先に飛んで、まだ判断していない signal が決着する。
 (`write` の `Executor._record`)。ack を先に打つと、subagent が crash した signal が
 pending から消えたまま誰も処理していない状態になる。
 
-**identity を解決できなかった boid signal も ack しない。** 「本当に task が無い」のか
-「daemon の瞬断で一時的に引けなかっただけ」かを区別できないので、対象にもせず
-(`capture` の誤爆を防ぐ)、ack もしない (誤って恒久ロスさせない)。claim はするので、
-真に解決できないものは boid 側の `MaxSignalAttempts` でいずれ dead に落ちる。
-
 ## 自分自身の書き込みを落とす篩いはここに無い
 
-boid core が ingest の時点で同じ判定をする ——
-`internal/orchestrator/signal_ingest_bridge.go` の `IngestActionSignal` が、書き込み元
-job の project が対象 workspace のメタプロジェクトなら ingest しない。sweep task も、
-そこから fork される subagent も、その子 task も全部そのメタプロジェクトの sandbox で
-走るので、書いた action はここへ届かない。
-
-**`actor == "daemon"` の action (子 task 終端の `child_closed` 等) は意図して通る** ——
-「外で仕事が終わった」検知そのものであって、自分の書き込みではない。
+inbox に届く signal は外部コネクタ発のものだけ —— card 自身のアクションは signal に
+ならず、card_events 経由でその card の判断へ直接向かう。だから「自分が書いたものを
+自分で拾う」経路がそもそも無い。
 
 ## dead-letter は core に乗る
 
@@ -73,7 +61,6 @@ from boidmeta.signal import Signal
 
 #: boid 内部 action 由来の signal の `Signal.source` (`inbox` の写像 (envelope の `source.pack` そのまま))。
 #: **この source だけ identity が task id そのもの** —— `resolve_identities` 参照。
-BOID_SOURCE = "boid"
 
 #: 1 巡で読む件数 = `max_targets * READ_MULTIPLIER`。**読みは無料なので、判断する
 #: 件数より広く読む** —— 複数 signal が同じ identity/card に畳まれるため、読む前には
@@ -130,22 +117,8 @@ def build(cli, *, max_targets: int = MAX_TARGETS, limit: int | None = None) -> "
         return Round(ok=False)
 
     resolved = resolve_identities(cli, signals)
-    # boid-pack (identity = task id そのもの) で識別子を解決できなかった signal は、
-    # 新規候補として `capture` させると task id をそのまま identity にした変な card が
-    # 立つ —— 除外する。**ただし ack はしない** (2026-08-28、Opus レビュー finding 7)。
-    # `resolve_identities` は「本当に task が無い」と「一時的に引けなかった」を区別せず
-    # 例外を飲み込んで未解決扱いにする (`resolve_identities` の docstring)。ここで ack
-    # してしまうと、後者 (daemon の瞬断等) のケースで本来まだ生きている signal を
-    # 恒久的に取り逃す。**ack せず、対象にもしない** (=この巡は何もしない) ことで、
-    # 迷ったら pending のまま残す側に倒す。**claim はする** —— 渡そうとして失敗した
-    # のも 1 回の試行で、数えないと真に解決できない signal が永久に返り続ける。
-    unresolvable_boid = frozenset(
-        s.event_key for s in signals if s.source == BOID_SOURCE and s.identity not in resolved
-    )
-    candidates_input = tuple(s for s in signals if s.event_key not in unresolvable_boid)
-
     candidates = plan_candidates(
-        candidates_input,
+        signals,
         resolved=resolved,
         max_targets=max_targets,
     )
@@ -153,7 +126,7 @@ def build(cli, *, max_targets: int = MAX_TARGETS, limit: int | None = None) -> "
     # **溢れた signal はここに入らない。** `plan_candidates` が `max_targets` で
     # 切った分は targets にも screened_out にも現れないので、claim もされず
     # ack もされず、次巡そのまま読み直される。
-    to_claim = frozenset(key for target in targets for key in target.signals) | unresolvable_boid
+    to_claim = frozenset(key for target in targets for key in target.signals)
     return Round(
         targets=targets,
         screened_out=candidates.screened_out,
@@ -166,30 +139,14 @@ def build(cli, *, max_targets: int = MAX_TARGETS, limit: int | None = None) -> "
 def resolve_identities(cli, signals: Sequence[Signal]) -> Mapping[str, tuple[str, str]]:
     """identity → **(task id, status)**。**引けたものだけ**を返す (未登録は新規候補)。
 
-    **2026-08-28、PR-2: boid-pack signal の identity は task id そのもの** (jira の
-    `jira:ROOKPF-309` のような opaque な識別子ではない、PR-1 の envelope 契約)。
-    `boid task identity resolve` (identity link 索引) には登録されていないので、
-    そちらを引いても素通り (未登録) になり、新規候補として `capture` を試みる誤動作に
-    なる —— boid-pack signal だけ `task_field` で直接引く。
-
     **status を捨てない。** 篩い 5 は status で判定する —— 「`triage --list` の集合に
     居るか」で代用すると、あの一覧は pre-execution ∪ working なので **`done` まで
     落ちて S-9 の再燃経路が死ぬ** (2026-08-23 の Fable レビューで発覚)。
-
-    boid-pack で `task_field` が失敗した (task が消えている等) identity は返さない ——
-    呼び出し側 (`build`) がこれを「解決できない boid signal」として screen する。
     """
     resolved: dict[str, tuple[str, str]] = {}
     for signal in signals:
         identity = signal.identity
         if identity in resolved:
-            continue
-        if signal.source == BOID_SOURCE:
-            try:
-                status = cli.task_field(identity, "status")
-            except Exception:  # noqa: BLE001 - 引けない task id はここでは解決しない
-                continue
-            resolved[identity] = (identity, status)
             continue
         found = cli.resolve_identity(identity)
         if found is not None:
@@ -202,10 +159,9 @@ def merge_targets(targets: Sequence[Target]) -> tuple[Target, ...]:
 
     **2 対象にすると 2 枚の subagent が同じ task に同時に書く。** `app/detect.
     plan_candidates` は identity 単位で対象を組む (`grouped` は identity をキーにする)
-    ので、**同じ task_id を異なる identity (例: 外部発の jira identity と、boid-pack の
-    identity=task_id そのもの) から指すことがあり得る** (2026-08-28、PR-2 で boid も
-    plan_candidates を通るようになったため)。そのケースを畳むのがこの関数の役目 ——
-    合流時に候補側の identity を拾う。
+    ので、**同じ task_id を異なる identity (例: jira の課題キーと bitbucket の PR)
+    から指すことがあり得る**。そのケースを畳むのがこの関数の役目 —— 合流時に候補側の
+    identity を拾う。
 
     """
     merged: dict[str, Target] = {}

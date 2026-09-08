@@ -61,24 +61,6 @@ def real_jira_envelope(key: str = "PROJ-1", *, minutes: int = 0) -> dict:
     }
 
 
-def boid_envelope(action_id: str = "a1", *, task_id: str = "triage-1", minutes: int = 0,
-                   author: "str | None" = "human") -> dict:
-    """PR-1 (boid core) が内部 action を signal inbox へ ingest したときの想定形。
-    `identity` は task id そのもの (jira の `jira:KEY` のような opaque な識別子ではない)。
-    """
-    row: dict = {
-        "id": action_id,
-        "occurred_at": _rfc3339(T0 + timedelta(minutes=minutes)),
-        # 内部 action の envelope は service が空 (実データで確認)。`namespace_of` の
-        # pack フォールバックを踏む唯一の経路なので、そこを忠実にしておく。
-        "source": {"pack": "boid", "connector": "actions", "service": ""},
-        "identity": task_id,
-    }
-    if author is not None:
-        row["author"] = author
-    return row
-
-
 class FakeCLI:
     def __init__(self, *, signals=(), signals_error=None, ack_error=None, claim_error=None, identities=None,
                  task_statuses=None, behaviors=None, own_task_id="sweep-1", description_of=None) -> None:
@@ -179,84 +161,6 @@ class BasicTargetTest(unittest.TestCase):
         self.assertEqual((targets, screened_out, ok), ((), frozenset(), True))
 
 
-class BoidPackTest(unittest.TestCase):
-    """2026-08-28、PR-2: boid 内部 signal の identity は task id そのもの。"""
-
-    def test_a_resolvable_boid_signal_becomes_a_target_on_its_task(self):
-        cli = FakeCLI(signals=[boid_envelope(task_id="triage-1")], task_statuses={"triage-1": "parked"})
-        round_ = build(cli)
-        targets, screened_out, ok = round_.targets, round_.screened_out, round_.ok
-        self.assertTrue(ok)
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(targets[0].task_id, "triage-1")
-        self.assertEqual(screened_out, frozenset())
-        # boid-pack の identity resolve は `resolve_identity` (identity link 索引) を
-        # 経由しない —— `task_field` で直接引く。
-        self.assertFalse(cli.wrote("resolve_identity"))
-
-    def test_an_unresolvable_boid_signal_is_excluded_but_not_acked(self):
-        """task が消えている等で引けない boid signal は、新規候補として `capture` させる
-        と変な card が立つので対象にしない。**ただし ack もしない**
-        (2026-08-28、Opus レビュー finding 7) —— 「本当に無い」のか「一時的に引けな
-        かっただけ」かを区別できないので、恒久的に取り逃さないよう pending のまま
-        次巡に委ねる。"""
-        cli = FakeCLI(signals=[boid_envelope(action_id="a1", task_id="gone")])
-        round_ = build(cli)
-        targets, screened_out, ok = round_.targets, round_.screened_out, round_.ok
-        self.assertTrue(ok)
-        self.assertEqual(targets, ())
-        self.assertEqual(screened_out, frozenset())
-
-    def test_khi_own_writes_are_no_longer_screened_here(self):
-        """**2026-08-29: khi 自身の書き込みを落とす篩い (旧 S-9 actor 軸) は削除した。**
-
-        同じ判定を boid core が ingest の時点で行う ——
-        `internal/orchestrator/signal_ingest_bridge.go` の `IngestActionSignal` が、
-        書き込み元 job の project がその workspace のメタプロジェクトなら signal を
-        書かない。khi の sweep task も subagent も `respond` の子 task も
-        khi-task-collector project の sandbox で走るので、ここへは届かない。
-
-        したがって `author` が sweep task であっても、ここは**素通しする**のが正しい
-        —— 届いている以上、それは core が「khi の書き込みではない」と判定したもの
-        (ホスト側 CLI からの手打ち等) だからである。**`behavior` も引かない**
-        (これが旧実装で 1 signal ごとに subprocess を 1 本焼いていた往復)。
-        """
-        cli = FakeCLI(
-            signals=[boid_envelope(action_id="a1", task_id="triage-1", author="task:sweep-old")],
-            task_statuses={"triage-1": "parked"},
-            behaviors={"sweep-old": "sweep"},
-        )
-        round_ = build(cli)
-        targets, screened_out = round_.targets, round_.screened_out
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(screened_out, frozenset())
-        self.assertEqual(
-            [c for c in cli.calls if c[0] == "task_field" and c[2] == "behavior"],
-            [],
-            "actor 軸の篩いを消したので behavior は一度も引かない",
-        )
-
-    def test_a_signal_authored_by_a_child_task_is_not_screened(self):
-        """子 task の書き込みは khi 自身ではない —— 通す。"""
-        cli = FakeCLI(
-            signals=[boid_envelope(action_id="a1", task_id="triage-1", author="task:child-9")],
-            task_statuses={"triage-1": "parked"},
-            behaviors={"child-9": "implement"},
-        )
-        round_ = build(cli)
-        targets, screened_out = round_.targets, round_.screened_out
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(screened_out, frozenset())
-
-    def test_a_human_authored_signal_is_not_screened(self):
-        cli = FakeCLI(signals=[boid_envelope(action_id="a1", task_id="triage-1", author="human")],
-                      task_statuses={"triage-1": "parked"})
-        round_ = build(cli)
-        targets, screened_out = round_.targets, round_.screened_out
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(screened_out, frozenset())
-
-
 class WhatGetsClaimedTest(unittest.TestCase):
     """**この変更の本体** (2026-08-29、boid #1033)。`attempts` は「諦めるまでの回数」
     なので、数える対象は「判断に回した」でなければならない。"""
@@ -273,16 +177,6 @@ class WhatGetsClaimedTest(unittest.TestCase):
         round_ = build(cli)
         self.assertEqual(round_.screened_out, frozenset({"slack-cloud/mentions:C1:1.0"}))
         self.assertEqual(round_.to_claim, frozenset())
-
-    def test_an_unresolvable_boid_signal_is_claimed(self):
-        """「渡そうとしたが identity を解決できなかった」も 1 回の試行。数えないと
-        真に解決できない signal が永久に毎巡返り続ける (ack はしないので、5 回で
-        boid 側の `MaxSignalAttempts` により dead に落ちるのが唯一の出口)。"""
-        cli = FakeCLI(signals=[boid_envelope(action_id="a1", task_id="gone")])
-        round_ = build(cli)
-        self.assertEqual(round_.targets, ())
-        self.assertEqual(round_.screened_out, frozenset())
-        self.assertEqual(round_.to_claim, frozenset({"boid/actions:a1"}))
 
     def test_signals_that_overflow_max_targets_are_neither_claimed_nor_acked(self):
         """**旧 `list --claim` が壊していたのがここ。** 読み出しが返した行を一律で
@@ -303,20 +197,23 @@ class WhatGetsClaimedTest(unittest.TestCase):
 
 
 class MergeTest(unittest.TestCase):
-    def test_a_boid_signal_and_a_jira_signal_on_the_same_task_merge_into_one_target(self):
-        """同じ task に boid-pack (identity=task id) と非 boid (identity=jira:KEY) の
-        両方からシグナルが来たら 1 対象にまとめる —— `plan_candidates` は identity 単位で
-        グループ化するので、放置すると task_id が同じでも 2 つの Target ができてしまう
-        (2026-08-28、PR-2 で boid も `plan_candidates` を通るようになったため新しく
-        起きうるケース)。"""
+    def test_two_signals_resolving_to_the_same_task_merge_into_one_target(self):
+        """同じ task を異なる identity から指すシグナルが 2 本来たら 1 対象にまとめる
+        —— `plan_candidates` は identity 単位でグループ化するので、放置すると task_id が
+        同じでも 2 つの Target ができ、2 枚の subagent が同じ task に同時に書く。"""
         cli = FakeCLI(
-            signals=[boid_envelope(action_id="a1", task_id="triage-1"), bitbucket_envelope()],
-            task_statuses={"triage-1": "parked"},
-            identities={"jira:KT-1": ("triage-1", "parked")},
+            signals=[real_jira_envelope("KT-9"), bitbucket_envelope()],
+            identities={"jira:KT-9": ("triage-1", "parked"), "jira:KT-1": ("triage-1", "parked")},
         )
         targets = build(cli).targets
         self.assertEqual(len(targets), 1)
-        self.assertEqual(set(targets[0].signals), {"boid/actions:a1", "bitbucket-cloud/pr-comments:khi-task-collector:1:comment:7"})
+        self.assertEqual(
+            set(targets[0].signals),
+            {
+                f"jira-cloud/assigned-issues:KT-9:{_rfc3339(T0)}",
+                "bitbucket-cloud/pr-comments:khi-task-collector:1:comment:7",
+            },
+        )
 
 
 class ScreeningTest(unittest.TestCase):

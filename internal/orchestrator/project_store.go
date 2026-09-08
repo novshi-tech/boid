@@ -638,37 +638,6 @@ func (s *ProjectStore) synthesizeMetaForReload(candidate *Project) *ProjectMeta 
 	return &ProjectMeta{ID: candidate.ID, Name: name, NameSource: nameSource}
 }
 
-// MetaProjectIDs returns the ids of every project linked to workspaceID
-// (via SetWorkspaceID/the workspaceIDs map) whose cached meta declares
-// signals.sources[] — i.e. workspaceID's metaprojects. Satisfies
-// MetaProjectResolver (signal_ingest_bridge.go); nil (never a non-nil empty
-// slice) when workspaceID has none, so a caller's len()==0 check works
-// either way.
-//
-// A project whose meta was never Set (in-memory cache miss — e.g. one still
-// mid-registration) is simply absent from this scan, not an error: the same
-// "cannot tell, so behave as if this project has nothing to declare" posture
-// Get's own (meta, false) return already gives every other caller.
-func (s *ProjectStore) MetaProjectIDs(workspaceID string) []string {
-	if workspaceID == "" {
-		return nil
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var ids []string
-	for projectID, wsID := range s.workspaceIDs {
-		if wsID != workspaceID {
-			continue
-		}
-		meta, ok := s.metas[projectID]
-		if !ok || meta == nil || len(meta.Signals.Sources) == 0 {
-			continue
-		}
-		ids = append(ids, projectID)
-	}
-	return ids
-}
-
 // CardEventCommand returns projectID's declared card_events.command key —
 // "" (ok=false) when the project is not cached or declares none. Satisfies
 // CardEventResolver (card_event_ingest.go).

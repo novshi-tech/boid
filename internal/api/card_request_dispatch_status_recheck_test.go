@@ -1,13 +1,10 @@
 package api
 
-// Pins the claim-time card-status re-check end-to-end, through the REAL
-// orchestrator.CreateAction ingest path (not a fake TxStore): a card whose
-// status is still "working" when IngestCardEventRequest queues a
-// card_requests row for it, but which the SAME transaction's own verb
-// transition (complete/drop) moves past parked/working before commit — the
-// exact suggestion_accept.go answered{accept} scenario. The claim-time
-// status re-check must drain the queued row instead of launching it once it
-// gets looked at.
+// Pins the claim-time card-status re-check end-to-end, against a real sqlite
+// store: a card carrying a queued card_requests row that an accepted verb
+// (complete/drop) then moves past parked/working before the row is ever
+// claimed. The claim-time status re-check must drain the row instead of
+// launching it against a card that is already terminal.
 
 import (
 	"context"
@@ -83,6 +80,10 @@ func TestApplyAnswered_AcceptComplete_DrainsRaceQueuedRowInsteadOfLaunching(t *t
 		Tx: cardEventTransactor{conn: d.Conn, cardEvents: fakeCardEventResolver{"proj-1": "review"}},
 	}
 
+	// Queued while the card was still working — by a note, a summary write, or
+	// any other action that leaves new material on the card.
+	enqueueForDispatch(t, svc, card.ID, "review", "cause-earlier")
+
 	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorHuman)
 	payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": "complete"})
 	if _, err := svc.ApplyAction(ctx, card.ID, ApplyActionRequest{Type: "answered", Payload: payload}); err != nil {
@@ -108,7 +109,7 @@ func TestApplyAnswered_AcceptComplete_DrainsRaceQueuedRowInsteadOfLaunching(t *t
 		t.Fatalf("ListCardRequestsByCard: %v", err)
 	}
 	if len(rows) != 1 {
-		t.Fatalf("card_requests rows = %d, want exactly 1 (the one IngestCardEventRequest queued while status was still working)", len(rows))
+		t.Fatalf("card_requests rows = %d, want exactly 1 (the row queued while status was still working)", len(rows))
 	}
 	if rows[0].Status != orchestrator.CardRequestStatusFailed {
 		t.Errorf("queued row status = %q, want failed (drained, not left queued forever and not launched)", rows[0].Status)

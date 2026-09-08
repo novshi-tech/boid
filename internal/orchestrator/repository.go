@@ -15,25 +15,16 @@ import (
 
 type TaskRepository struct {
 	db db.DBTX
-	// metaResolver backs CreateAction's internal-signal ingest decision. nil
-	// disables ingest entirely — CreateAction still writes the action row as
-	// before. Set via SetMetaProjectResolver post-construction rather than a
-	// NewTaskRepository parameter, since most call sites never use it.
-	metaResolver MetaProjectResolver
-	// cardEventResolver backs CreateAction's card-event ingest decision —
-	// same post-construction setter shape as metaResolver, for the same
-	// reason. nil disables that ingest step entirely.
+	// cardEventResolver backs CreateAction's card-event ingest decision. nil
+	// disables that ingest step entirely — CreateAction still writes the
+	// action row as before. Set via SetCardEventResolver post-construction
+	// rather than a NewTaskRepository parameter, since most call sites never
+	// use it.
 	cardEventResolver CardEventResolver
 }
 
 func NewTaskRepository(db db.DBTX) *TaskRepository {
 	return &TaskRepository{db: db}
-}
-
-// SetMetaProjectResolver wires the metaproject lookup CreateAction's ingest
-// step needs — see the metaResolver field's own doc comment.
-func (r *TaskRepository) SetMetaProjectResolver(resolver MetaProjectResolver) {
-	r.metaResolver = resolver
 }
 
 // SetCardEventResolver wires the card_events.command lookup
@@ -97,18 +88,18 @@ func (r *TaskRepository) ListChildren(parentID string) ([]*Task, error) {
 	return ListChildren(r.db, parentID)
 }
 
-// CreateAction persists action, then — within the SAME transaction —
-// ingests it into the target card's workspace inbox when eligible. Same
-// dual-mode shape as DeleteTask above: nests inside an already-open tx when
-// r.db is one, or opens its own spanning transaction when r.db is a raw
-// *sql.DB, so the INSERT and the ingest can never commit independently.
+// CreateAction persists action, then — within the SAME transaction — queues
+// a card_events request for the target card when eligible. Same dual-mode
+// shape as DeleteTask above: nests inside an already-open tx when r.db is
+// one, or opens its own spanning transaction when r.db is a raw *sql.DB, so
+// the INSERT and the ingest can never commit independently.
 func (r *TaskRepository) CreateAction(ctx context.Context, action *Action) error {
 	conn, ok := r.db.(*sql.DB)
 	if !ok {
-		return CreateAction(ctx, r.db, action, r.metaResolver, r.cardEventResolver)
+		return CreateAction(ctx, r.db, action, r.cardEventResolver)
 	}
 	return db.InTxDB(conn, func(tx db.DBTX) error {
-		return CreateAction(ctx, tx, action, r.metaResolver, r.cardEventResolver)
+		return CreateAction(ctx, tx, action, r.cardEventResolver)
 	})
 }
 

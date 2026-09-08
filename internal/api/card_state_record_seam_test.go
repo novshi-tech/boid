@@ -125,7 +125,6 @@ func TestCardEditSeam_JudgesOwnEditDoesNotRelaunchIt(t *testing.T) {
 			requestID := seedLiveJudgeRequest(t, conn, card.ID)
 
 			ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorTask("cont-1"))
-			ctx = orchestrator.WithWriterProjectID(ctx, "proj-1")
 			if tc.carriesWrite {
 				ctx = orchestrator.WithWriterCardRequestID(ctx, requestID)
 			}
@@ -167,8 +166,7 @@ func TestCardEditSeam_IdentityLinkFollowsTheSameRule(t *testing.T) {
 	card := seedSeamCard(t, tasks)
 	requestID := seedLiveJudgeRequest(t, conn, card.ID)
 
-	ctx := orchestrator.WithWriterCardRequestID(
-		orchestrator.WithWriterProjectID(context.Background(), "proj-1"), requestID)
+	ctx := orchestrator.WithWriterCardRequestID(context.Background(), requestID)
 	if err := svc.LinkIdentity(ctx, "proj-1", "jira:SEAM-1", card.ID); err != nil {
 		t.Fatalf("LinkIdentity: %v", err)
 	}

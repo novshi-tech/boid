@@ -97,7 +97,7 @@ func TestBoidBuiltinExecutor_TaskWait_AbortedExitsNonZeroWithReason(t *testing.T
 		ToStatus: orchestrator.TaskStatusAborted,
 		Payload:  payload,
 		Actor:    orchestrator.ActorDaemon,
-	}, nil, nil); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("create abort action: %v", err)
 	}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}

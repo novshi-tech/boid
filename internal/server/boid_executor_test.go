@@ -25,24 +25,13 @@ type recordingWorkflow struct {
 	appliedTaskID string
 	appliedReq    api.ApplyActionRequest
 	appliedActor  string
-	// appliedWriterProject / appliedHasWriter capture what
-	// orchestrator.WriterProjectIDFromContext sees on the ctx ApplyAction
-	// received — the regression guard for docs/plans/
-	// boid-internal-signal-inbox.md §4.3's self-reference block. This is a
-	// sibling of appliedActor above, same capture timing: without
-	// ExecuteBoidBuiltin's goCtx = orchestrator.WithWriterProjectID(goCtx,
-	// ctx.ProjectID) (boid_executor.go), appliedHasWriter would be false for
-	// every sandbox-originated ApplyAction call, and CreateAction's ingest
-	// step would never be able to tell a metaproject's own self-authored
-	// write apart from a human/daemon one — see
-	// TestBoidBuiltinExecutor_ActionSend_StampsWriterProjectFromTokenContext
-	// (boid_executor_action_send_test.go).
-	appliedWriterProject string
-	appliedHasWriter     bool
-	// appliedWriterCardRequest / appliedHasWriterCardRequest are
-	// appliedWriterProject/appliedHasWriter's companion capture for
-	// orchestrator.WriterCardRequestIDFromContext — the card-event ingest
-	// self-loop guard's regression guard.
+	// appliedWriterCardRequest / appliedHasWriterCardRequest capture what
+	// orchestrator.WriterCardRequestIDFromContext sees on the ctx ApplyAction
+	// received — the card-event ingest self-loop guard's regression guard.
+	// Sibling of appliedActor above, same capture timing: without
+	// ExecuteBoidBuiltin's goCtx = orchestrator.WithWriterCardRequestID(
+	// goCtx, ctx.CardRequestID) (boid_executor.go), a card command's own
+	// write to its own card would relaunch it.
 	appliedWriterCardRequest    string
 	appliedHasWriterCardRequest bool
 	applyCallCount              int
@@ -62,7 +51,6 @@ func (w *recordingWorkflow) ApplyAction(ctx context.Context, taskID string, req 
 	w.appliedTaskID = taskID
 	w.appliedReq = req
 	w.appliedActor = orchestrator.ActorFromContext(ctx)
-	w.appliedWriterProject, w.appliedHasWriter = orchestrator.WriterProjectIDFromContext(ctx)
 	w.appliedWriterCardRequest, w.appliedHasWriterCardRequest = orchestrator.WriterCardRequestIDFromContext(ctx)
 	w.applyCallCount++
 	if w.applyErr != nil {
