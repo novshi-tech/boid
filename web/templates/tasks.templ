@@ -720,7 +720,7 @@ func acceptButtonLabel(verb string) string {
 // branches kept here are copied verbatim (same POST targets, same hidden
 // fields, same confirm() text) from that function's hasTriage==true paths,
 // so PR-1's "遷移機能等価" holds. The branches NOT carried over (the
-// hasTriage==false Reopen+Rerun variant, the plain non-Shape/non-menu-item
+// hasTriage==false Reopen+Rerun variant, the plain non-menu-item
 // exec path) never applied to a card in the first place — card machine v2
 // (machine_card.go) has no "abort" rule at all, and "pending"/"executing"/
 // "awaiting"/"aborted" are execution-only statuses a card can never reach,
@@ -745,24 +745,6 @@ templ TaskCardActionBar(task *orchestrator.Task, availableActions []string) {
 				} else {
 					<span class="action-bar-spacer"></span>
 				}
-			}
-			if task.Status == orchestrator.TaskStatusParked || task.Status == orchestrator.TaskStatusWorking {
-				// Shape (UC-3 shaping session launcher, cross-project-issue-triage
-				// plan doc — 整形 in the plan doc's Japanese). Secondary to Go:
-				// shaping is for cards still too fuzzy to Go on directly, not
-				// the default path. Card machine v2 (docs/plans/
-				// suggestion-as-state-transition.md §3.2) folds captured/
-				// triaged into parked, so parked is now the "still needs
-				// shaping" resting state Shape targets — working keeps its
-				// own offer (2026-08-14 follow-up) since a dispatched card's
-				// existing open child may still need its spec defined.
-				// Adding a brand-new child while working is gated by the
-				// single-work-slot invariant — child_added 409s while the
-				// slot is occupied; buildShapingInstruction (web.go) carries
-				// that constraint into the session's own instructions.
-				<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/shape") } class="action-bar-primary-form">
-					<button type="submit" class="btn btn-secondary">Shape</button>
-				</form>
 			}
 			<details class="action-menu">
 				<summary class="action-menu-summary" aria-label="More actions">⋯</summary>
@@ -848,7 +830,7 @@ templ TaskCardActionBar(task *orchestrator.Task, availableActions []string) {
 // tabs (Description/Payload/Instructions) carry no action-bar-relevant
 // state.
 //
-// The card-only branches TaskCardActionBar now owns (Shape, the
+// The card-only branches TaskCardActionBar now owns (the
 // Reopen-without-Rerun variant, the working/park/drop/status-gated-done
 // menu items) are gone from here: machine_execution.go's rule table never
 // grants "working"/"park"/"drop" as an available action for an execution
