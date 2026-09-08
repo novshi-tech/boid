@@ -1402,6 +1402,10 @@ templ TaskDetailLiveScript() {
 			// No-op when #card-timeline is absent. See TaskCardTimelineHead
 			// (internal/api/web.go) for the server side.
 			function refreshHistoryHead() {
+				// Single source for the head endpoint: two call sites below.
+				function historyHeadURL(id, frontier) {
+					return '/tasks/' + id + '/card-timeline/head?frontier=' + encodeURIComponent(frontier);
+				}
 				var container = document.getElementById('card-timeline');
 				if (!container) return;
 				var list = container.querySelector('.card-timeline-list');
@@ -1410,7 +1414,7 @@ templ TaskDetailLiveScript() {
 				// far was pinned) — fetch the head fresh and build the list
 				// for the first time, replacing the "No history yet." copy.
 				if (!list) {
-					fetch('/tasks/' + taskID + '/card-timeline/head?frontier=')
+					fetch(historyHeadURL(taskID, ''))
 						.then(function(r) { return r.ok ? r.text() : null; })
 						.then(function(html) {
 							if (!html) return;
@@ -1449,7 +1453,7 @@ templ TaskDetailLiveScript() {
 				// splice below, so it needs the same treatment.
 				var state = captureSwapState(list);
 
-				fetch('/tasks/' + taskID + '/card-timeline/head?frontier=' + encodeURIComponent(frontier))
+				fetch(historyHeadURL(taskID, frontier))
 					.then(function(r) { return r.ok ? r.text() : null; })
 					.then(function(html) {
 						if (!html) return;

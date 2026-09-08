@@ -14,6 +14,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -153,5 +154,32 @@ func TestCardDetail_LiveScript_HistoryHeadSelectorsMatchRenderedMarkup(t *testin
 	hxGetRegion := body[loadOlderIdx+hxGetIdx : loadOlderIdx+hxGetIdx+200]
 	if !strings.Contains(hxGetRegion, "cursor=") {
 		t.Errorf("Load-older's hx-get should carry a cursor= param (the exact name refreshHistoryHead() reads via searchParams.get('cursor')); got: %s", hxGetRegion)
+	}
+
+	// The URL the script actually builds must be a route the server serves.
+	// Asserting only that the literals exist lets a typo'd path or param
+	// name turn refreshHistoryHead() into a permanent silent no-op (r.ok is
+	// false, the handler returns early) with the whole suite still green.
+	assertScriptHeadURLIsServed(t, h, body)
+}
+
+// assertScriptHeadURLIsServed extracts the head endpoint refreshHistoryHead()
+// builds and issues it, so the JS literal and the registered route cannot
+// drift apart.
+func assertScriptHeadURLIsServed(t *testing.T, h *WebHandler, body string) {
+	t.Helper()
+	m := regexp.MustCompile(`return '/tasks/' \+ id \+ '([^']+)' \+ encodeURIComponent\(frontier\);`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("could not find historyHeadURL's path literal in the rendered script; body:\n%s", body)
+	}
+	// The param name too: the server treats an unknown one as an empty
+	// frontier and still answers 200, so reaching the route is not enough —
+	// the client would splice the whole history in above a mid-list cursor.
+	if !strings.HasSuffix(m[1], "?frontier=") {
+		t.Errorf("script builds %q, want the head path ending in %q (TaskCardTimelineHead reads the frontier param by that name)", m[1], "?frontier=")
+	}
+	code, got := getHTML(t, h, "/tasks/card-1"+m[1])
+	if code != http.StatusOK {
+		t.Errorf("the script fetches /tasks/{id}%s, which the server answers with %d — refreshHistoryHead() would silently no-op; body:\n%s", m[1], code, got)
 	}
 }

@@ -2594,10 +2594,23 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      無く、境界より古い内容を誤って切り詰めた範囲で置き換える可能性が
      理論上ある。対処は見送り——実運用でこの上限（1万件）に達する
      カードは想定していない。
-  8. **対処済み: コメント量。** `comment-review` スキルの観点で
-     `TaskCardTimelineHead` の doc・JS 側の2ブロックを目的の説明に
-     絞って短縮した（本 doc の追記も含め、plan doc 参照はコード側から
-     排除済み）。
+  8. **記録のみ（未対処）: コメント量。** 一度「短縮した」と書いたが**事実に
+     反していた** — `49acb279` は `internal/api/web.go` を touch しておらず、
+     `TaskCardTimelineHead` の 6 行 doc も `cardTimelineHeadMaxPages` の 4 行 doc も
+     ラウンド 1 とバイト一致のままで、JS 側はむしろコメントが +15 行増えている。
+     CLAUDE.md の「目的 1〜2 行」からは外れたままなので、`comment-review` は
+     別途走らせること。**PR 番号・§・plan doc 参照がコードに漏れていない**
+     （規約のうち最も重要な部分）ことは確認済み。
+  9. **対処済み: JS↔Go の HTTP 契約。** head エンドポイントの URL 組み立てが
+     2 箇所にハードコードされていたのを `historyHeadURL()` 1 本に寄せ、
+     `assertScriptHeadURLIsServed` がレンダリングされた script からその
+     パスを抜き出して**実際にサーバへ発行し 200 を確認**する。パラメータ名も
+     `?frontier=` で終わることを assert する — サーバは未知の param を空の
+     frontier として 200 で答えるので、ルートに届くだけでは不十分で、
+     クライアントが履歴全体を mid-list の cursor の上に差し込む形になる。
+     パスを `/card-timeline/headX` に、param を `?cursor=` に変える mutation を
+     それぞれ当てて赤くなることを実測確認済み（どちらもこの pin を入れる前は
+     緑のまま通っていた）。
 
   **mutation テスト結果。** すべて「python での置換 →
   `git diff`/バックアップとの比較で着弾を確認（`.templ` は追加で

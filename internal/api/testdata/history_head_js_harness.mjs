@@ -126,9 +126,10 @@ function runRaceScenario(src) {
 	// the list) WHILE refreshHistoryHead()'s own fetch is still in flight —
 	// the exact interleaving BLOCKER 3 identified.
 	let fetchCalls = 0;
+	let raceReplacement = null;
 	const fakeFetch = () => {
 		fetchCalls++;
-		const raceReplacement = makeNode("li");
+		raceReplacement = makeNode("li");
 		list.removeChild(boundaryLi);
 		list.insertBefore(raceReplacement, null);
 		return Promise.resolve({
@@ -157,6 +158,14 @@ function runRaceScenario(src) {
 		if (!list._children.includes(itemA) || !list._children.includes(itemB)) {
 			throw new Error(
 				"BLOCKER 3 regression: the list was emptied by a stale insertBefore reference after the boundary was detached mid-fetch. Remaining children: " +
+					JSON.stringify(remaining),
+			);
+		}
+		// The second symptom: the replacement control HTMX inserted must
+		// survive too, or paging back is gone until a reload.
+		if (!list._children.includes(raceReplacement)) {
+			throw new Error(
+				"BLOCKER 3 regression: the Load-older control HTMX swapped in was removed, so paging back is unreachable. Remaining children: " +
 					JSON.stringify(remaining),
 			);
 		}
