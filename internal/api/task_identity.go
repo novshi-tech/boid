@@ -20,9 +20,9 @@ var errIdentityStoreUnavailable = errors.New("identity store unavailable")
 // TaskIdentityStore.LinkIdentity for the idempotent-same-task /
 // ErrIdentityConflict-different-task contract.
 //
-// A binding change onto a card is recorded as an action in the same
-// transaction. The binding is read first because the store's return value
-// cannot distinguish a write from an idempotent repeat, which records nothing.
+// A binding change onto a card is recorded in the same transaction. The
+// binding is read first: the store's return value cannot distinguish a write
+// from an idempotent repeat, which records nothing.
 func (s *TaskAppService) LinkIdentity(ctx context.Context, projectID, identity, taskID string) error {
 	if s.Identities == nil {
 		return errIdentityStoreUnavailable
@@ -94,10 +94,16 @@ func linkIdentityIn(ctx context.Context, w identityBindingWriter, projectID, ide
 	if rerr == nil && existing != nil && existing.ID == taskID {
 		return nil
 	}
+	// Resolve the target before touching the index: a writer that cannot
+	// read it must fail before the binding lands, not after.
+	target, gerr := w.GetTask(taskID)
+	if gerr != nil {
+		return gerr
+	}
 	if err := w.LinkIdentity(projectID, identity, taskID); err != nil {
 		return err
 	}
-	return recordIdentityBinding(ctx, w, taskID, identity, orchestrator.ActionTypeIdentityLinked)
+	return recordIdentityBinding(ctx, w, target, identity, orchestrator.ActionTypeIdentityLinked)
 }
 
 func unlinkIdentityIn(ctx context.Context, w identityBindingWriter, projectID, identity string) error {
@@ -108,18 +114,14 @@ func unlinkIdentityIn(ctx context.Context, w identityBindingWriter, projectID, i
 	if err := w.UnlinkIdentity(projectID, identity); err != nil {
 		return err
 	}
-	if rerr != nil || bound == nil {
+	if bound == nil {
 		return nil
 	}
-	return recordIdentityBinding(ctx, w, bound.ID, identity, orchestrator.ActionTypeIdentityUnlinked)
+	return recordIdentityBinding(ctx, w, bound, identity, orchestrator.ActionTypeIdentityUnlinked)
 }
 
-// recordIdentityBinding writes actionType against taskID when it is a card.
-func recordIdentityBinding(ctx context.Context, w identityBindingWriter, taskID, identity, actionType string) error {
-	target, gerr := w.GetTask(taskID)
-	if gerr != nil {
-		return gerr
-	}
+// recordIdentityBinding writes actionType against target when it is a card.
+func recordIdentityBinding(ctx context.Context, w identityBindingWriter, target *orchestrator.Task, identity, actionType string) error {
 	if target.Type != orchestrator.TaskTypeCard {
 		return nil
 	}
@@ -128,7 +130,7 @@ func recordIdentityBinding(ctx context.Context, w identityBindingWriter, taskID,
 		return merr
 	}
 	return w.CreateAction(ctx, &orchestrator.Action{
-		TaskID:  taskID,
+		TaskID:  target.ID,
 		Type:    actionType,
 		Payload: payload,
 		Actor:   updateActor(ctx),

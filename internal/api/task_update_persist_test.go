@@ -575,3 +575,104 @@ func TestTaskAppServiceCreateTask_Card_WritesCreatedAction(t *testing.T) {
 		t.Fatalf("actions = %+v, want one %q", actions, orchestrator.ActionTypeCardCreated)
 	}
 }
+
+// TestTaskAppServiceUpdateTask_ExecutionTitle_WritesNoAction: the title branch
+// needs the same card-only guard the description branch has.
+func TestTaskAppServiceUpdateTask_ExecutionTitle_WritesNoAction(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	task := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution,
+		Title: "before", Status: orchestrator.TaskStatusPending,
+		Exec: &orchestrator.ExecAttrs{Behavior: "dev"},
+	}
+	if err := tasks.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Title: "after"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(task.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("execution task wrote %d actions, want 0: %+v", len(actions), actions)
+	}
+}
+
+// TestTaskAppServiceCreateTask_Card_NoTransactor_StillRecords mirrors the
+// UpdateTask/LinkIdentity fallbacks: no transactor costs atomicity, not the
+// record.
+func TestTaskAppServiceCreateTask_Card_NoTransactor_StillRecords(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	svc.Tx = nil
+
+	card, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: "proj-1", Title: "a card", InitialStatus: string(orchestrator.TaskStatusParked),
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Type != orchestrator.ActionTypeCardCreated {
+		t.Fatalf("actions = %+v, want one %q", actions, orchestrator.ActionTypeCardCreated)
+	}
+}
+
+// TestTaskAppServiceCreateTask_Card_IsAtomicWithTheRow: a failing record write
+// leaves no card behind.
+func TestTaskAppServiceCreateTask_Card_IsAtomicWithTheRow(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	svc.Tx = failingActionTransactor{inner: svc.Tx}
+
+	if _, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: "proj-1", Title: "a card", InitialStatus: string(orchestrator.TaskStatusParked),
+	}); err == nil {
+		t.Fatal("CreateTask: expected the failing record write to surface")
+	}
+	got, err := tasks.ListTasks(orchestrator.TaskFilter{})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("the card committed without its record: %+v", got)
+	}
+}
+
+// TestTaskAppServiceCreateTask_Card_GetOrCreateHit_RecordsOnce: a repeated
+// create resolves to the same card and must not record a second birth.
+func TestTaskAppServiceCreateTask_Card_GetOrCreateHit_RecordsOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  CreateTaskRequest
+	}{
+		{"ref", CreateTaskRequest{ProjectID: "proj-1", Title: "c", Ref: "r-1", InitialStatus: string(orchestrator.TaskStatusParked)}},
+		{"idempotency key", CreateTaskRequest{ProjectID: "proj-1", Title: "c", IdempotencyKey: "k-1", InitialStatus: string(orchestrator.TaskStatusParked)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, tasks := newRealTaskAppService(t)
+			first, err := svc.CreateTask(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("first CreateTask: %v", err)
+			}
+			second, err := svc.CreateTask(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("second CreateTask: %v", err)
+			}
+			if second.ID != first.ID {
+				t.Fatalf("second create made a new card %q, want %q", second.ID, first.ID)
+			}
+			actions, err := tasks.ListActionsByTask(first.ID)
+			if err != nil {
+				t.Fatalf("ListActionsByTask: %v", err)
+			}
+			if len(actions) != 1 {
+				t.Fatalf("got %d actions, want 1 — a get-or-create hit is not a birth: %+v", len(actions), actions)
+			}
+		})
+	}
+}

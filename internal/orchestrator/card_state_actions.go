@@ -8,8 +8,8 @@ const (
 	// ActionTypeCardCreated marks a card's own creation.
 	ActionTypeCardCreated = "created"
 	// ActionTypeCardEdited marks a card's own title/description having been
-	// replaced. One edit is one record even when both fields change; the
-	// payload names the fields, never their bodies.
+	// replaced. One edit is one record — the unit is the operation, not the
+	// field — and the payload names the fields, never their bodies.
 	ActionTypeCardEdited = "edited"
 	// ActionTypeIdentityLinked marks one identity having been bound to a card.
 	ActionTypeIdentityLinked = "identity_linked"

@@ -151,9 +151,10 @@ func TestIngestCardEventRequest_ActionTypeAllowlist(t *testing.T) {
 		"noted":        true,
 		"attrs_set":    true,
 		// The daemon's self-recorded state changes.
-		orchestrator.ActionTypeCardCreated:    true,
-		orchestrator.ActionTypeCardEdited:     true,
-		orchestrator.ActionTypeIdentityLinked: true,
+		orchestrator.ActionTypeCardCreated:      true,
+		orchestrator.ActionTypeCardEdited:       true,
+		orchestrator.ActionTypeIdentityLinked:   true,
+		orchestrator.ActionTypeIdentityUnlinked: true,
 	}
 	excluded := []string{
 		"go", "start", "park", "complete", "drop", "reopen",

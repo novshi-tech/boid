@@ -203,8 +203,8 @@ type HostCommandsProvider interface {
 	HostCommands() map[string]orchestrator.HostCommandSpec
 }
 
-// CreateTask/UpdateTask take ctx because the card records they write go
-// through CreateAction, whose two ingest steps read the writer off it.
+// CreateTask/UpdateTask take ctx: the card records they write read the
+// writer off it.
 type TaskService interface {
 	CreateTask(ctx context.Context, req CreateTaskRequest) (*orchestrator.Task, error)
 	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)

@@ -122,6 +122,12 @@ func IngestActionSignal(ctx context.Context, dbtx db.DBTX, a *Action, resolver M
 		return nil
 	}
 
+	// The daemon's records of a card's own shape drive the card-event
+	// trigger, not the workspace's judgment queue.
+	if IsCardStateSelfRecord(a.Type) {
+		return nil
+	}
+
 	taskType, projectID, err := actionTargetTypeAndProject(dbtx, a.TaskID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -134,13 +140,6 @@ func IngestActionSignal(ctx context.Context, dbtx db.DBTX, a *Action, resolver M
 	if taskType != TaskTypeCard {
 		return nil
 	}
-	// The daemon's records of a card's own shape drive the card-event
-	// trigger, not the workspace's judgment queue. Ingesting them would put
-	// every human card edit into an inbox that charges a decay counter.
-	if IsCardStateSelfRecord(a.Type) {
-		return nil
-	}
-
 	workspaceID, err := projectWorkspaceID(dbtx, projectID)
 	if err != nil {
 		return fmt.Errorf("internal signal ingest: resolve target project workspace: %w", err)
