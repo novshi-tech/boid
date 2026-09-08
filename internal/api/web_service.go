@@ -20,6 +20,25 @@ type WebAppService struct {
 	TaskSvc    TaskService
 	Hooks      HookService
 	Answerer   TaskAnswerService // optional: enables POST /tasks/{id}/answer
+	// Commands backs the card detail page's instruction textarea +
+	// card_commands buttons — nil-safe: a nil Commands makes
+	// RunCardCommandAsHuman a 501 and CardCommandOptionsForProject report no
+	// declared commands, same posture as CardHandler.Commands == nil.
+	Commands CardCommandWebService
+}
+
+func (s *WebAppService) RunCardCommandAsHuman(ctx context.Context, cardID, commandKey, instruction string) (*RunCardCommandResult, error) {
+	if s.Commands == nil {
+		return nil, &StatusError{Code: http.StatusNotImplemented, Message: "card commands not configured"}
+	}
+	return s.Commands.RunCardCommandAsHuman(ctx, cardID, commandKey, instruction)
+}
+
+func (s *WebAppService) CardCommandOptionsForProject(ctx context.Context, projectID string) []CardCommandOption {
+	if s.Commands == nil {
+		return nil
+	}
+	return s.Commands.CardCommandOptionsForProject(ctx, projectID)
 }
 
 func (s *WebAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {

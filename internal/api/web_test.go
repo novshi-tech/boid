@@ -161,6 +161,21 @@ func (s *stubWebService) GetProjectByID(id string) (*orchestrator.Project, error
 	return s.projectByID, s.projectByIDErr
 }
 
+// RunCardCommandAsHuman / CardCommandOptionsForProject: stubWebService
+// itself is used by every non-card-command test in this package (task
+// list/detail/answer/etc.), which never exercise the command UI — a fixed
+// nil result matches CardHandler's own "not configured" posture and keeps
+// every existing fixture from needing to know about card commands at all.
+// Tests that DO exercise the command UI use their own dedicated fake (see
+// web_card_command_test.go's cardCommandWebService).
+func (s *stubWebService) RunCardCommandAsHuman(ctx context.Context, cardID, commandKey, instruction string) (*RunCardCommandResult, error) {
+	return nil, &StatusError{Code: http.StatusNotImplemented, Message: "card commands not configured"}
+}
+
+func (s *stubWebService) CardCommandOptionsForProject(ctx context.Context, projectID string) []CardCommandOption {
+	return nil
+}
+
 // stubWorkflowService implements WorkflowService for WebAppService tests.
 type stubWorkflowService struct {
 	applyActionErr error

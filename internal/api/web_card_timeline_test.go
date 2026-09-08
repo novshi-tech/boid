@@ -244,7 +244,14 @@ func TestCardDetail_PinnedSuggestion_RendersAcceptRejectAndNoTransitionEdge(t *t
 	}
 }
 
-func TestCardDetail_Fragment_Status_IncludesPinnedSuggestion(t *testing.T) {
+// TestCardDetail_Fragment_Status_ExcludesPinnedItems pins the split of the
+// pinned section out of #task-status into its own #task-pinned sibling
+// (TaskDetailCardPinnedSection) — kind=status now renders only the identity
+// row + summary, never the pinned suggestion. See
+// TestCardDetail_Fragment_Pinned_IncludesPinnedSuggestion for the new home
+// of this content, and TaskDetailCardStatusSection's own doc comment for why
+// the split exists.
+func TestCardDetail_Fragment_Status_ExcludesPinnedItems(t *testing.T) {
 	h, repo, projectID := newCardTimelineTestHandler(t)
 	newCardTimelineTestCard(t, repo, projectID, "card-1")
 	writeLiveSuggestion(t, repo, "card-1", "reopen", "source event fired")
@@ -253,10 +260,74 @@ func TestCardDetail_Fragment_Status_IncludesPinnedSuggestion(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body:\n%s", code, body)
 	}
+	if !strings.Contains(body, `id="task-status"`) {
+		t.Errorf("status fragment should contain task-status element, got: %s", body)
+	}
+	for _, notWant := range []string{"badge-verb-reopen", "source event fired"} {
+		if strings.Contains(body, notWant) {
+			t.Errorf("status fragment should NOT include pinned content %q (moved to kind=pinned); got:\n%s", notWant, body)
+		}
+	}
+}
+
+// TestCardDetail_Fragment_Pinned_IncludesPinnedSuggestion is
+// TestCardDetail_Fragment_Status_ExcludesPinnedItems's counterpart: the new
+// kind=pinned fragment (#task-pinned) carries the pinned suggestion content
+// that used to live inside kind=status.
+func TestCardDetail_Fragment_Pinned_IncludesPinnedSuggestion(t *testing.T) {
+	h, repo, projectID := newCardTimelineTestHandler(t)
+	newCardTimelineTestCard(t, repo, projectID, "card-1")
+	writeLiveSuggestion(t, repo, "card-1", "reopen", "source event fired")
+
+	code, body := getHTML(t, h, "/tasks/card-1/fragment?kind=pinned")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", code, body)
+	}
+	if !strings.Contains(body, `id="task-pinned"`) {
+		t.Errorf("pinned fragment should contain task-pinned element, got: %s", body)
+	}
 	for _, want := range []string{"badge-verb-reopen", "source event fired"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("status fragment missing %q; got:\n%s", want, body)
+			t.Errorf("pinned fragment missing %q; got:\n%s", want, body)
 		}
+	}
+}
+
+// TestCardDetail_Fragment_Pinned_ExecTask_NoOp pins that kind=pinned is
+// tolerant of an execution task (which has no #task-pinned element at all)
+// — TaskDetailLiveScript's shared script requests it unconditionally on
+// both layouts, so it must not error for the layout that has nothing to
+// replace.
+func TestCardDetail_Fragment_Pinned_ExecTask_NoOp(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/fragment?kind=pinned", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if body := w.Body.String(); strings.Contains(body, "task-pinned") {
+		t.Errorf("exec task's kind=pinned fragment should be empty, got: %s", body)
+	}
+}
+
+// TestCardDetail_LiveScript_RefreshesPinnedKind pins that the shared SSE
+// script requests kind=pinned (not just status/timeline) on both the
+// action/job event handlers and the visibility/pageshow refresh calls — the
+// #task-pinned split would otherwise go stale.
+func TestCardDetail_LiveScript_RefreshesPinnedKind(t *testing.T) {
+	h, repo, projectID := newCardTimelineTestHandler(t)
+	newCardTimelineTestCard(t, repo, projectID, "card-1")
+
+	code, body := getHTML(t, h, "/tasks/card-1")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", code, body)
+	}
+	if got := strings.Count(body, "'pinned'"); got != 4 {
+		t.Errorf("live script should request kind=pinned from all 4 call sites (action listener, job listener, visibilitychange, pageshow), found %d; got:\n%s", got, body)
 	}
 }
 

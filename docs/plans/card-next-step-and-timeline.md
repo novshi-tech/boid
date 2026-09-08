@@ -2119,3 +2119,110 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
        この PR のスコープ外のまま未着手。この PR で新規に追加した文字列は
        すべて英語（"No history yet." "Load older" "No more history."
        "Wake condition due" "Accepted"/"Rejected" "Summary" "Note" 等）。
+
+- **PR-6b で確定: 共通の指示入力欄とカードコマンドボタン（§5.1 項目 2）。**
+  SSE fan-out・進捗の畳み込みは対象外（PR-6c へ）。
+
+  1. **配置: `#task-status` を分割し、指示入力欄をその外に出した（選択肢
+     (a) の変種）。** PR-6a は「タイトル/状態/要約」と「固定項目」を
+     `TaskDetailCardStatusSection` 内の1つの `#task-status`
+     （SSE `kind=status` で丸ごと `outerHTML` 置換）にまとめていた。
+     指示入力欄は要約の下・固定項目の上という順序指定があるため、
+     `#task-status` に丸ごと入れたまま外に置く手が使えない。そこで
+     固定項目を新設の `#task-pinned`（`TaskDetailCardPinnedSection`、
+     新設の SSE fragment `kind=pinned` で個別に置換）に分離し、
+     指示入力欄 (`CardCommandSection`) をその2つの兄弟として
+     `#task-status` → `CardCommandSection` → `#task-pinned` の順に並べた。
+     これで指示入力欄はどちらの SSE 置換対象の中にも入らず、
+     入力途中を失わない。§5.3 の劣化は**発生しない**（選択肢 (b) は
+     不採用）。`TaskDetailLiveScript` の `refresh()` 呼び出し4箇所
+     （action/job リスナー、visibilitychange、pageshow）に
+     `'pinned'` を追加、`TaskDetailFragment` に `kind=pinned` ケースを
+     追加した（exec task には `#task-pinned` が無いので no-op）。
+  2. **成功時: 任意 URL への redirect ではなく、card 自身のページへ
+     redirect する。** `RunCardCommandAsHuman` の成功応答は
+     `RequestID`/`LauncherJobID` しか返さず（`TargetKind`/`TargetID` は
+     Occupied 応答専用）、この時点では継続先がまだ存在しない可能性がある
+     ため、継続先 URL を組み立てる材料が無い。`LauncherJobID` を継続先だと
+     誤認しない（フィールド名がそう警告している）。代わりに
+     `PostCardCommand` は素の `redirectTask(w, r, id)`（= 自分自身の
+     card ページ）を返す。card ページの固定項目 (`CardPinnedSection`)
+     は既に `card_requests` 行の状態（queued/launching/attached）と
+     `TargetKind`/`TargetID`/`TargetExists` を読んで描画するので、
+     継続先が生まれ次第、SSE の `kind=pinned` 更新（またはページ再読込）
+     で自動的にリンクが現れる — 「daemon が検証済みの関連を取得して
+     該当ページを開く」を、新しい導線を作らずに PR-6a の読みモデルへ
+     委ねる形で満たした。
+  3. **Occupied 時: redirect せず、その場で同じページを直接レンダリング
+     する。** 占有時に入力内容を失わないための手段として、redirect +
+     URL クエリでの往復は採らなかった（instruction の上限が
+     `cardCommandInstructionMaxBytes`＝10MiB で、URL に乗せるのは
+     非現実的）。代わりに `WebHandler.PostCardCommand` は
+     `RunCardCommandAsHuman` の Occupied 応答を受け取ったら
+     `renderTaskDetailPage` を直接呼び、送信された instruction を
+     `templates.CardCommandFormState.Instruction` としてそのまま
+     textarea へ埋め戻す。`TargetKind`/`TargetID` が両方揃っている
+     ときだけ「現在の実行へのリンク」を表示し、揃っていなければ
+     （占有者がまだ `launching` で継続先が無い場合など）リンクを
+     出さない — PR-2d-5/PR-4c が固定した「行き止まりリンクを出さない」
+     契約を UI 側でも踏襲した。占有の告知は `.action-error` と別クラス
+     （`.card-command-occupied`）で中立トーンの英文にし、エラーに
+     見えないようにした。
+  4. **非表示条件: 2つ。** `card_commands` が1件も宣言されていない
+     project（`CardCommandOptionsForProject` が nil を返す）と、
+     card が `done`/`dropped`（`cardCommandTerminalStatus`）のとき、
+     `CardCommandSection` は何も描画しない。後者は
+     `RunCardCommandAsHuman` 自体が終端 card に 409 を返す
+     （PR-2d-5 で確定済み）ことと対にして、押せるのに 4xx が返る
+     ボタンを表示しないようにした。
+  5. **ラベルは `CardCommand.Label` をそのまま表示、`Discuss`/`Run` を
+     固定名として扱わない。** `CardCommandOptionsForProject`
+     （`internal/api/card_command_launcher.go`）が project.yaml の
+     `card_commands` を `CardCommandsOrder` の宣言順で `[]CardCommandOption`
+     に変換し、`CardCommandSection`（`card_timeline.templ`）が
+     そのまま描画する。
+  6. **mutation テスト結果。** `.templ` は毎回 `templ generate`
+     を再実行し、生成物 (`_templ.go`) の差分を確認してから
+     `go test` を実行、赤を確認したら手元のバックアップコピーで
+     元に戻す手順で実施した（`git checkout --` は使わず、mutation
+     適用前に取ったファイルコピーへの `cp` で復元 — 理由は次項）。
+
+     | 契約 | mutation | 着弾確認 | 結果 |
+     |---|---|---|---|
+     | 未宣言 project で非表示 | `CardCommandSection` の `len(options) > 0` を `true` に | diff 確認 + `templ generate` | 赤 |
+     | 終端 card で非表示 | `cardCommandTerminalStatus` を常に `false` に | diff 確認 + `templ generate` | 赤（done/dropped 両方）|
+     | 宣言順 | `CardCommandOptionsForProject` の順序ループの前に `sort.Strings(meta.CardCommandsOrder)` を挿入 | diff 確認 | 赤（純粋関数のテストとレンダリング結果のテスト両方）|
+     | ラベル | ボタンの `{ opt.Label }` を `{ opt.Key }` に | diff 確認 + `templ generate` | 赤（宣言順テスト・エスケープテスト両方）|
+     | Occupied で入力保持 | `cardCommandFormInstruction` を常に `""` を返すよう変更 | diff 確認 + `templ generate` | 赤（2テスト）|
+     | Occupied でリンク有無 | リンクの条件 `TargetKind==task && TargetID!=""` を `true` に固定 | diff 確認 + `templ generate` | 赤（「target 無しでリンクを出さない」テストが検出）|
+     | 成功時の導線 | `redirectTask(w, r, id)` を `LauncherJobID` を使った `/jobs/...` への redirect に変更 | diff 確認 | 赤 |
+     | エスケープ（instruction） | textarea の `{ cardCommandFormInstruction(form) }` を `@templ.Raw(...)` に | diff 確認 + `templ generate` | 赤 |
+     | エスケープ（label） | ボタンの `{ opt.Label }` を `@templ.Raw(opt.Label)` に | diff 確認 + `templ generate` | 赤 |
+     | 空 instruction で起動可能 | `PostCardCommand` に `instruction == ""` の拒否ガードを追加 | diff 確認 | 赤 |
+     | 英語文言 | occupied 告知文を日本語に差し替え | diff 確認 + `templ generate` | 赤 |
+     | SSE の `kind=pinned` 配線 | `refresh()` 呼び出し1箇所から `'pinned'` を削除 | diff 確認 + `templ generate` | 赤 |
+
+     着弾確認は毎回 `git diff`（`.templ` は追加で `templ generate` 後の
+     `_templ.go` 差分）で行い、ビルドはすべて通った状態で計測した
+     （コンパイルを壊す mutation は無し）。1点、実装時に自分自身の
+     mutation テスト手順のミスで機能を巻き戻しかけた事例がある:
+     mutation 確認後の復元に `git checkout --` を使ったところ、
+     まだコミットしていない実装そのもの（HEAD には存在しない新規
+     コード）が消えてしまった。以降は mutation を当てる前に
+     `cp` で作業コピーを保存し、復元も `cp` で行う方式に切り替えた
+     — 未コミットの新規ファイルに対して `git checkout --` を
+     「元に戻す」目的で使わないこと。
+  7. **PR-6c への申し送り。**
+     - `#card-timeline`（履歴）は本 PR でも引き続き SSE 未接続のまま
+       （PR-6a からの持ち越し）。`#task-pinned` は本 PR で SSE
+       接続したが、履歴側は対象外。
+     - 子→親 fan-out の実装先は `kind=pinned`/`kind=timeline`
+       のどちらに寄せるか、あるいは新しい kind を足すかは
+       PR-6c が決めること。
+     - `RunCardCommandAsHuman` は人発コマンド専用で、内部イベント発の
+       queued 行（PR-4c）は今回の UI から見えない。一覧の活動状態
+       （PR-5c）とは別に、card 詳細で「queued な内部イベント要求」を
+       明示する UI は本 PR に含めていない — 固定項目の
+       `CardCommandDetail`（`launching`/`attached` 優先で選ばれる、
+       PR-5b の `pickActiveCardRequest`）が queued 行を拾わないケースは
+       PR-5b の既知の非対称のまま。
