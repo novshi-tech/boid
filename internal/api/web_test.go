@@ -296,33 +296,6 @@ func (s *stubSessionDispatcher) StartSession(ctx context.Context, req StartSessi
 	return s.result, nil
 }
 
-// stubTaskTriageStore backs h.TaskTriage in shaping-session tests. Only
-// GetTaskTriage is exercised; the rest satisfy the interface.
-type stubTaskTriageStore struct {
-	triage *orchestrator.CardAttrs
-	err    error
-}
-
-func (s *stubTaskTriageStore) UpsertTaskTriage(tt *orchestrator.CardAttrs) error { return nil }
-func (s *stubTaskTriageStore) GetTaskTriage(taskID string) (*orchestrator.CardAttrs, error) {
-	return s.triage, s.err
-}
-func (s *stubTaskTriageStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.CardAttrs, error) {
-	out := map[string]*orchestrator.CardAttrs{}
-	if s.triage != nil {
-		for _, id := range taskIDs {
-			if id == s.triage.TaskID {
-				out[id] = s.triage
-			}
-		}
-	}
-	return out, s.err
-}
-func (s *stubTaskTriageStore) DeleteTaskTriage(taskID string) error { return nil }
-func (s *stubTaskTriageStore) ParkedFrom(taskID string) (orchestrator.TaskStatus, error) {
-	return "", nil
-}
-
 func newTestWebHandlerWithSessionStart(dispatcher SessionDispatcher) *chi.Mux {
 	h := &WebHandler{SessionDispatcher: dispatcher}
 	r := chi.NewRouter()
