@@ -344,32 +344,21 @@ func detailRowClasses(task *orchestrator.Task) []string {
 }
 
 // TaskDetailCardStatusSection renders the card detail page's frameless meta
-// strip: the identity row (素性の段, §3.1) followed by the movement row
-// (動きの段) — a bare status badge, or the transition edge
-// "parked —go→ working" when a suggestion is live. The suggestion's own
-// Accept/Reject UI is folded in right here (via TaskDetailSuggestionSection)
-// rather than living in the bottom action bar — §3.3 item 5's role split:
-// approving a suggestion means applying the transition the movement row is
-// already showing, so the affordance belongs next to what it acts on. The
-// action bar (TaskCardActionBar) stays reserved for direct, suggestion-
-// independent operator moves — the escape hatch design doc §3.2 requires.
+// strip: the identity row, a bare status badge, the current summary, and
+// the pinned timeline items (the live suggestion, next work spec/child, sole
+// in-progress task/session). Everything here lives inside #task-status, so
+// it stays live-refreshed by the existing SSE script on the card's own
+// actions (a suggestion write, a command's own terminal record, ...).
 //
 // id="task-status" carries data-task-id so TaskDetailLiveScript (shared by
 // both the card and execution layouts, §7 罠2) can find the task id without
 // depending on #tab-panel, which the card layout does not have.
-templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, projectName string, children []ChildRow, suggestion orchestrator.Suggestion) {
+templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, projectName string, summary string, tl *CardTimelineView) {
 	<div id="task-status" data-task-id={ task.ID }>
 		<div class={ detailRowClasses(task) }>
 			<div class="detail-identity">{ cardIdentityLabel(task, projectName) }</div>
 			<div class="detail-meta">
 				<span class={ taskStatusClass(string(task.Status)) }>{ string(task.Status) }</span>
-				if suggestion.Verb != "" {
-					{{ target := suggestionTargetStatus(task.Status, suggestion.Verb) }}
-					if target != "" {
-						<span class="detail-meta-sep">—{ suggestion.Verb }→</span>
-						<span class={ taskStatusClass(target) }>{ target }</span>
-					}
-				}
 				<span class="detail-meta-sep">·</span>
 				<span class="detail-time">{ task.UpdatedAt.Local().Format("2006-01-02 15:04") }</span>
 			</div>
@@ -377,8 +366,8 @@ templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, proj
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
 		}
-		@TaskDetailSuggestionSection(task.ID, task.Status, suggestion)
-		@TaskDetailChildrenSection(children)
+		@TaskDetailCardSummary(summary)
+		@CardPinnedSection(tl, task.ID, task.Status)
 	</div>
 }
 
@@ -544,118 +533,6 @@ templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus,
 					</form>
 				</div>
 			}
-		</div>
-	}
-}
-
-// ChildRow merges one entry of a card's spec ledger
-// (task_triage.detail.children, orchestrator.TaskTriageChild) with the live
-// status of its dispatched task row (docs/plans/webui-detail-list-redesign.md
-// §3.3 item 2 / §7 PR-2). WebHandler.cardChildrenFromTriage builds these —
-// see that function's doc comment for how LiveStatus/AwaitingQuestionID get
-// populated and the 論点8 edge-case rules (matching ledger vs. live status,
-// unreachable TaskRef) that govern it.
-type ChildRow struct {
-	Child orchestrator.TaskTriageChild
-	// LiveStatus is the dispatched child's live orchestrator.TaskStatus
-	// value, or "" when Child.Status isn't "dispatched" or the live lookup
-	// didn't resolve (no TaskRef, vanished task, etc — 論点8's "突き合わせ
-	// 不能なら台帳のみ").
-	LiveStatus string
-	// AwaitingQuestionID is the qid to link to when LiveStatus == "awaiting"
-	// and the child's own payload carries an unanswered question
-	// (orchestrator.GetAwaitingPayload) — "" otherwise, including when
-	// LiveStatus == "awaiting" but no question id was found.
-	AwaitingQuestionID string
-}
-
-// DisplayStatus is ChildRow's single chip value (§3.3 item 2: "1子=1行、
-// 現在地のチップ1個") — the live task status when it resolved, the ledger
-// status otherwise. Both the chip rendered below and
-// WebHandler.childRowRank's sort read this one method, so the two can never
-// disagree about which status governs a row.
-func (r ChildRow) DisplayStatus() string {
-	if r.LiveStatus != "" {
-		return r.LiveStatus
-	}
-	return r.Child.Status
-}
-
-// TaskDetailChildrenSection lists a triage card's children — the spec ledger
-// merged with live status (ChildRow, above) — right under the status row, so
-// the questions a reader has before pressing Go, or before deciding whether
-// this card even needs attention right now, are answerable from the card
-// itself:
-//
-//  1. "is this card actually dispatch-ready" — nose hit this blind after the
-//     Shape launcher's first real dispatch: no child had been specced yet,
-//     and the Web UI gave no signal (cross-project-issue-triage 実地テスト,
-//     2026-08-14). The status badge (+ "no spec yet") answers it.
-//  2. "what will actually happen" — the 2026-08-14 version stopped at
-//     title+status, so a card with two specced children (a Bitbucket reply
-//     task and a leftover verification stub) looked identical to one with
-//     two real ones (2026-08-21). The behavior badge, project, and the
-//     collapsed spec body answer it.
-//  3. "did a dispatched child ask me something" (§7 PR-2 — closes §2.4's "子が
-//     4回 ask を上げたが親からは dispatched にしか見えなかった" gap): a
-//     dispatched child whose live status is awaiting gets a ⚠ link straight
-//     to /tasks/{child}/questions/{qid}, one tap from the parent card.
-//
-// Project is shown as a NAME: the stored value is a project id
-// (WebHandler.triageChildrenForDisplay resolves it), which on its own tells
-// the reader nothing about where the child would run.
-//
-// spec 折り畳みの中身は description のみ — instruction は毎回テンプレで冗長な
-// ため出さない (2026-08-25 nose, §3.3 item 2; the pre-PR-2 version of this
-// section rendered both).
-//
-// Renders nothing for the (overwhelming majority of) tasks with no children.
-templ TaskDetailChildrenSection(rows []ChildRow) {
-	if len(rows) > 0 {
-		<div class="detail-children">
-			<div class="detail-children-label">Children ({ fmt.Sprintf("%d", len(rows)) })</div>
-			<ul class="detail-children-list">
-				for _, row := range rows {
-					{{ child := row.Child }}
-					{{ status := row.DisplayStatus() }}
-					<li class="detail-children-item">
-						<div class="detail-children-head">
-							<span class={ "badge", "badge-" + status }>{ status }</span>
-							if child.Spec != nil && child.Spec.Behavior != "" {
-								<span class="badge badge-child-behavior">{ child.Spec.Behavior }</span>
-							}
-							<span class="detail-children-title">
-								if child.Title != "" {
-									{ child.Title }
-								} else {
-									{ child.ID }
-								}
-							</span>
-							if child.Spec != nil && child.Spec.Project != "" {
-								<span class="detail-children-project">{ child.Spec.Project }</span>
-							}
-							if child.Status == orchestrator.TaskTriageChildStatusOpen {
-								<span class="detail-children-hint">(no spec yet)</span>
-							}
-							if row.AwaitingQuestionID != "" {
-								<a href={ templ.SafeURL("/tasks/" + child.TaskRef + "/questions/" + row.AwaitingQuestionID) } class="detail-children-ask">
-									<span aria-hidden="true">⚠</span> question
-								</a>
-							}
-							if child.TaskRef != "" {
-								<a href={ templ.SafeURL("/tasks/" + child.TaskRef) } class="detail-children-link">→ task</a>
-							}
-						</div>
-						if child.Spec != nil && child.Spec.Description != "" {
-							<details class="detail-children-spec">
-								<summary class="detail-children-spec-toggle">spec</summary>
-								<div class="detail-children-spec-label">description</div>
-								<pre class="detail-children-spec-body">{ child.Spec.Description }</pre>
-							</details>
-						}
-					</li>
-				}
-			</ul>
 		</div>
 	}
 }
@@ -1575,11 +1452,11 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 	}
 }
 
-// TaskDetailCardBody assembles a card detail page's content (§3.3): meta
-// (identity + movement + suggestion + children, item 1/2), Description in
-// the body (item 3), timeline (item 4, full — no default-collapse-to-N yet,
-// left to a later PR per the design doc's own "実装時に調整"), then the
-// escape-hatch action bar (item 5). No tabs — see §7 罠1.
+// TaskDetailCardBody assembles a card detail page's content: meta (identity
+// + status + current summary + pinned items), Description in the body, the
+// card's own timeline history (CardHistorySection, replacing the raw
+// status-group timeline for cards), then the escape-hatch action bar. No
+// tabs — see §7 罠1.
 //
 // TaskDetailLiveScript renders here, at the body level — nothing on the
 // card layout ever gets HTMX-swapped, so there is no risk of the script
@@ -1588,10 +1465,10 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 // placement (also body-level, also outside anything swappable) precisely
 // so both layouts follow the same rule: the live script is rendered once,
 // never inside a swap target.
-templ TaskDetailCardBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, projectName string, children []ChildRow, suggestion orchestrator.Suggestion) {
-	@TaskDetailCardStatusSection(task, errorMsg, projectName, children, suggestion)
+templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, summary string, tl *CardTimelineView) {
+	@TaskDetailCardStatusSection(task, errorMsg, projectName, summary, tl)
 	@TaskDetailCardDescription(task)
-	@TaskDetailTimelineSection(task, timelineGroups)
+	@CardHistorySection(tl, task.ID)
 	@TaskDetailLiveScript()
 	@TaskCardActionBar(task, availableActions)
 }
@@ -1619,15 +1496,15 @@ templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.Stat
 
 // TaskDetail is the task detail page's single entry point — one URL
 // (/tasks/{id}) for both entities, layout selected by task.Type (the same
-// axis machineFor uses, docs/plans/webui-detail-list-redesign.md §7 PR-1):
-// a card gets TaskDetailCardBody ("判断の場" — movement + children + body
-// text are the main content, history is secondary), anything else gets
-// TaskDetailExecBody ("プロセスの観測窓" — timeline stays the main content,
-// via the existing tab structure).
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, children []ChildRow, suggestion orchestrator.Suggestion, childTree []ChildTreeNode) {
+// axis machineFor uses): a card gets TaskDetailCardBody ("判断の場" —
+// status + pinned items + body text are the main content, timeline history
+// is secondary), anything else gets TaskDetailExecBody ("プロセスの観測窓" —
+// the status-group timeline stays the main content, via the existing tab
+// structure).
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, cardSummary string, cardTL *CardTimelineView, childTree []ChildTreeNode) {
 	@Layout(task.Title, "/") {
 		if task.Type == orchestrator.TaskTypeCard {
-			@TaskDetailCardBody(task, timelineGroups, availableActions, errorMsg, projectName, children, suggestion)
+			@TaskDetailCardBody(task, availableActions, errorMsg, projectName, cardSummary, cardTL)
 		} else {
 			@TaskDetailExecBody(task, timelineGroups, availableActions, errorMsg, activeTab, projectName, childTree)
 		}

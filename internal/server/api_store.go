@@ -16,6 +16,7 @@ import (
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/timeline"
 )
 
 // projectMetaResolver hydrates a project's runtime meta (including the
@@ -523,4 +524,20 @@ func (s hubJobEventSink) JobCreated(taskID, jobID string) {
 			"new_status": "running",
 		},
 	})
+}
+
+// cardTimelineStore adapts a raw db.DBTX connection to api.CardTimelineStore
+// by calling internal/timeline's read model functions directly. Lives here
+// (not internal/api) because internal/api may not import internal/db —
+// architecture rule enforced by scripts/check-internal-architecture.sh.
+type cardTimelineStore struct {
+	db db.DBTX
+}
+
+func (s cardTimelineStore) BuildCardTimeline(cardID, cursor string, limit int) (*timeline.CardTimelinePage, error) {
+	return timeline.BuildCardTimeline(s.db, cardID, cursor, limit)
+}
+
+func (s cardTimelineStore) CardPinnedItems(cardID string) ([]timeline.CardItem, error) {
+	return timeline.CardPinnedItems(s.db, cardID)
 }

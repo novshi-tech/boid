@@ -176,8 +176,9 @@ type Task struct {
 	// at TaskStatusAwaiting, so the list row's child rollup can surface "⚠
 	// N" without a second query: a card whose dispatched child asked a
 	// question was previously invisible from the parent's own row. The
-	// detail page's child ledger has its own equivalent
-	// (ChildRow.AwaitingQuestionID); this is the list-side counterpart.
+	// detail page's own pinned child item has its own equivalent
+	// (timeline.CardChildDetail via the awaiting-question link); this is the
+	// list-side counterpart.
 	AwaitingChildCount int `json:"awaiting_child_count,omitempty"`
 	// Blocked は表示用フィールド（DBには保存しない）
 	Blocked bool `json:"blocked,omitempty"`

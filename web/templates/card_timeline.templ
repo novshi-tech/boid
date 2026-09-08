@@ -1,0 +1,486 @@
+package templates
+
+// Card detail page's timeline rendering: pinned items and history share one
+// item component (timeline.CardItem), so a pinned suggestion/child/command
+// and its eventual historical counterpart never drift apart in how they
+// render.
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"time"
+
+	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/timeline"
+	"github.com/novshi-tech/boid/web/templates/components"
+)
+
+// CardTimelineView is a card detail page's rendering-ready timeline state:
+// CardPinnedItems' result plus one BuildCardTimeline page, with child
+// project ids resolved to display names and the one extra live fact
+// (a pinned dispatched child's awaiting-question link) neither read model
+// resolves on its own.
+type CardTimelineView struct {
+	Pinned             []timeline.CardItem
+	History            []timeline.CardItem
+	HasMore            bool
+	NextCursor         string
+	AwaitingQuestionID string
+}
+
+const (
+	cardItemDateFormat  = "Jan 2, 2006"
+	cardItemClockFormat = "15:04"
+)
+
+func cardItemDateLabel(t time.Time) string { return t.Local().Format(cardItemDateFormat) }
+func cardItemClockLabel(t time.Time) string { return t.Local().Format(cardItemClockFormat) }
+func cardItemDateKey(t time.Time) string { return t.Local().Format("2006-01-02") }
+
+// cardItemPinnedStamp is a pinned item's full date+time label — history
+// items show only the time, since a date separator already carries the day.
+func cardItemPinnedStamp(item timeline.CardItem) string {
+	if !item.HasTime {
+		return ""
+	}
+	return item.Time.Local().Format(cardItemDateFormat + " " + cardItemClockFormat)
+}
+
+// cardTimelineTZLabel names the zone every timestamp on this page is
+// rendered in (server Local()), so the reader can tell which timezone is
+// showing without guessing.
+func cardTimelineTZLabel() string {
+	name, offset := time.Now().Zone()
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	return fmt.Sprintf("%s (UTC%s%02d:%02d)", name, sign, offset/3600, (offset%3600)/60)
+}
+
+// cardHistoryDateSeparators returns, for each index in items, the date
+// separator label to render immediately before that item — "" when the item
+// continues the same calendar day as the previous one (or as priorDateKey,
+// carried over from an earlier "Load older" page so the separator is not
+// repeated for a day already showing). An item with no timestamp neither
+// starts nor breaks a run.
+func cardHistoryDateSeparators(items []timeline.CardItem, priorDateKey string) []string {
+	seps := make([]string, len(items))
+	last := priorDateKey
+	for i, it := range items {
+		if !it.HasTime {
+			continue
+		}
+		key := cardItemDateKey(it.Time)
+		if key != last {
+			seps[i] = cardItemDateLabel(it.Time)
+			last = key
+		}
+	}
+	return seps
+}
+
+func lastCardItem(items []timeline.CardItem) timeline.CardItem {
+	if len(items) == 0 {
+		return timeline.CardItem{}
+	}
+	return items[len(items)-1]
+}
+
+func cardTimelineOlderURL(cardID, cursor, lastDateKey string) string {
+	v := url.Values{}
+	v.Set("cursor", cursor)
+	if lastDateKey != "" {
+		v.Set("last_date", lastDateKey)
+	}
+	return "/tasks/" + cardID + "/card-timeline?" + v.Encode()
+}
+
+// --- raw Action payload decoding (5 kinds the read model hands back
+// un-labeled — internal/timeline's own doc comment on CardItem.Action) ---
+
+func cardItemSuggestionValue(item timeline.CardItem) orchestrator.Suggestion {
+	var p struct {
+		Suggestion orchestrator.Suggestion `json:"suggestion"`
+	}
+	if item.Action != nil {
+		_ = json.Unmarshal(item.Action.Payload, &p)
+	}
+	return p.Suggestion
+}
+
+type cardAnsweredValue struct {
+	Answer string `json:"answer"`
+	Verb   string `json:"verb"`
+	Basis  string `json:"basis"`
+}
+
+func cardItemAnsweredValue(item timeline.CardItem) cardAnsweredValue {
+	var p cardAnsweredValue
+	if item.Action != nil {
+		_ = json.Unmarshal(item.Action.Payload, &p)
+	}
+	return p
+}
+
+func cardAnsweredLabel(answer string) string {
+	switch answer {
+	case "accept":
+		return "Accepted"
+	case "reject":
+		return "Rejected"
+	default:
+		return answer
+	}
+}
+
+func cardAnsweredBadgeClass(answer string) string {
+	if answer == "accept" {
+		return "badge-dispatched"
+	}
+	return "badge-closed"
+}
+
+func cardItemSummaryText(item timeline.CardItem) string {
+	var p struct {
+		Summary string `json:"summary"`
+	}
+	if item.Action != nil {
+		_ = json.Unmarshal(item.Action.Payload, &p)
+	}
+	return p.Summary
+}
+
+// cardItemNoteText renders a "noted" action's arbitrary (structure-free)
+// payload as YAML for readability, falling back to the raw bytes when it
+// isn't valid JSON — payloadAsYAML already handles both cases without ever
+// failing to render.
+func cardItemNoteText(item timeline.CardItem) string {
+	if item.Action == nil {
+		return ""
+	}
+	return payloadAsYAML(item.Action.Payload)
+}
+
+// cardChildDisplayStatus prefers the caller-set live task status over the
+// ledger's bare "dispatched", falling back to the ledger status otherwise.
+func cardChildDisplayStatus(c *timeline.CardChildDetail) string {
+	if c.LiveStatus != "" {
+		return c.LiveStatus
+	}
+	return c.Status
+}
+
+func cardChildFinishedLabel(closingActionType string) string {
+	if closingActionType == "child_dropped" {
+		return "dropped"
+	}
+	return "closed"
+}
+
+// cardCommandLabel uses the launch-time label snapshot, falling back to the
+// raw command_key — never a daemon-invented gloss.
+func cardCommandLabel(cmd *timeline.CardCommandDetail) string {
+	if cmd.Label != "" {
+		return cmd.Label
+	}
+	return cmd.CommandKey
+}
+
+func cardCommandStatusBadgeClass(status orchestrator.CardRequestStatus) string {
+	switch status {
+	case orchestrator.CardRequestStatusAttached:
+		return "badge-dispatched"
+	case orchestrator.CardRequestStatusLaunching:
+		return "badge-specced"
+	default:
+		return "badge-open"
+	}
+}
+
+func cardCommandOutcomeBadgeClass(outcome string) string {
+	switch outcome {
+	case "finished":
+		return "badge-dispatched"
+	case "failed":
+		return "badge-aborted"
+	default:
+		return "badge-closed"
+	}
+}
+
+// --- rendering ---
+
+// CardPinnedSection renders a card's currently-pinned items — the live
+// suggestion, the next work spec/child, the sole in-progress task/session —
+// never subject to the history page's item cap.
+templ CardPinnedSection(tl *CardTimelineView, cardID string, cardStatus orchestrator.TaskStatus) {
+	if tl != nil && len(tl.Pinned) > 0 {
+		<ul class="card-pinned-list">
+			for _, item := range tl.Pinned {
+				@CardTimelineItem(item, cardID, cardStatus, true, tl.AwaitingQuestionID)
+			}
+		</ul>
+	}
+}
+
+// CardHistorySection renders a card's timeline history page (newest-first,
+// paginated, with Load older) in its own container OUTSIDE #task-status —
+// the existing SSE script only ever refreshes #task-status wholesale, and an
+// outerHTML replace there would discard any "Load older" pages already
+// appended. This section is simply not one of the SSE-refreshed targets.
+templ CardHistorySection(tl *CardTimelineView, cardID string) {
+	<div id="card-timeline" class="card-timeline">
+		<div class="card-timeline-tz">Times shown in { cardTimelineTZLabel() }</div>
+		if tl == nil || len(tl.History) == 0 {
+			<p class="tab-empty">No history yet.</p>
+		} else {
+			<ul class="card-timeline-list">
+				@cardHistoryItems(tl.History, cardID, "")
+				@cardHistoryLoadOlder(cardID, tl.HasMore, tl.NextCursor, lastCardItem(tl.History))
+			</ul>
+		}
+	</div>
+}
+
+// CardHistoryOlderFragment is the "Load older" HTMX response: the next
+// batch of items plus a fresh Load older control, or nothing once
+// exhausted. The requesting button targets "closest li" with hx-swap
+// "outerHTML", so this fragment replaces that whole <li>, keeping new items
+// as flat siblings in the same <ul>.
+templ CardHistoryOlderFragment(cardID string, items []timeline.CardItem, hasMore bool, nextCursor string, priorDateKey string) {
+	@cardHistoryItems(items, cardID, priorDateKey)
+	if hasMore {
+		@cardHistoryLoadOlder(cardID, hasMore, nextCursor, lastCardItem(items))
+	} else if len(items) == 0 {
+		<li class="card-timeline-date-sep">No more history.</li>
+	}
+}
+
+templ cardHistoryItems(items []timeline.CardItem, cardID string, priorDateKey string) {
+	{{ seps := cardHistoryDateSeparators(items, priorDateKey) }}
+	for i, item := range items {
+		if seps[i] != "" {
+			<li class="card-timeline-date-sep">{ seps[i] }</li>
+		}
+		@CardTimelineItem(item, cardID, "", false, "")
+	}
+}
+
+templ cardHistoryLoadOlder(cardID string, hasMore bool, nextCursor string, last timeline.CardItem) {
+	if hasMore {
+		{{ lastDateKey := "" }}
+		if last.HasTime {
+			{{ lastDateKey = cardItemDateKey(last.Time) }}
+		}
+		<li class="card-timeline-load-older">
+			<button
+				type="button"
+				class="btn btn-secondary btn-sm"
+				hx-get={ cardTimelineOlderURL(cardID, nextCursor, lastDateKey) }
+				hx-target="closest li"
+				hx-swap="outerHTML"
+			>
+				Load older
+			</button>
+		</li>
+	}
+}
+
+// CardTimelineItem renders one timeline.CardItem — the single shared
+// component pinned and historical items both use. pinned selects the full
+// date+time stamp and (for a suggestion) the live Accept/Reject form;
+// awaitingQuestionID is only ever non-empty for the sole pinned dispatched
+// child that is currently awaiting an answer.
+templ CardTimelineItem(item timeline.CardItem, cardID string, cardStatus orchestrator.TaskStatus, pinned bool, awaitingQuestionID string) {
+	<li id={ "card-item-" + string(item.Kind) + "-" + item.ID } class="card-timeline-item">
+		<div class="card-timeline-item-time">
+			if pinned {
+				{ cardItemPinnedStamp(item) }
+			} else if item.HasTime {
+				{ cardItemClockLabel(item.Time) }
+			}
+		</div>
+		<div class="card-timeline-item-body">
+			if item.Kind == timeline.CardItemChild {
+				@cardChildItemBody(item, awaitingQuestionID)
+			} else if item.Kind == timeline.CardItemChildFinished {
+				@cardChildFinishedItemBody(item)
+			} else if item.Kind == timeline.CardItemCommand {
+				@cardCommandItemBody(item, pinned)
+			} else if item.Kind == timeline.CardItemSuggestion && pinned {
+				@TaskDetailSuggestionSection(cardID, cardStatus, cardItemSuggestionValue(item))
+			} else if item.Kind == timeline.CardItemSuggestion {
+				@cardSuggestionHistoryBody(item)
+			} else if item.Kind == timeline.CardItemAnswered {
+				@cardAnsweredItemBody(item)
+			} else if item.Kind == timeline.CardItemSummary {
+				@cardSummaryItemBody(item)
+			} else if item.Kind == timeline.CardItemNote {
+				@cardNoteItemBody(item)
+			} else if item.Kind == timeline.CardItemWakeDue {
+				<div class="card-timeline-wake-due">Wake condition due</div>
+			}
+		</div>
+	</li>
+}
+
+templ cardChildItemBody(item timeline.CardItem, awaitingQuestionID string) {
+	if item.Child != nil {
+		{{ c := item.Child }}
+		{{ displayStatus := cardChildDisplayStatus(c) }}
+		<div class="detail-children-item" id={ "card-child-" + item.CorrelationID }>
+			<div class="detail-children-head">
+				<span class={ "badge", "badge-" + displayStatus }>{ displayStatus }</span>
+				if c.Spec != nil && c.Spec.Behavior != "" {
+					<span class="badge badge-child-behavior">{ c.Spec.Behavior }</span>
+				}
+				<span class="detail-children-title">
+					if c.Title != "" {
+						{ c.Title }
+					} else {
+						{ c.ChildID }
+					}
+				</span>
+				if c.Spec != nil && c.Spec.Project != "" {
+					<span class="detail-children-project">{ c.Spec.Project }</span>
+				}
+				if c.Status == orchestrator.TaskTriageChildStatusOpen {
+					<span class="detail-children-hint">(no spec yet)</span>
+				}
+				if awaitingQuestionID != "" && c.TaskExists {
+					<a href={ templ.SafeURL("/tasks/" + c.TaskRef + "/questions/" + awaitingQuestionID) } class="detail-children-ask">
+						<span aria-hidden="true">⚠</span> question
+					</a>
+				}
+				if c.TaskExists {
+					<a href={ templ.SafeURL("/tasks/" + c.TaskRef) } class="detail-children-link">→ task</a>
+				}
+			</div>
+			if c.Spec != nil && c.Spec.Description != "" {
+				<details class="detail-children-spec">
+					<summary class="detail-children-spec-toggle">spec</summary>
+					<div class="detail-children-spec-label">description</div>
+					<pre class="detail-children-spec-body">{ c.Spec.Description }</pre>
+				</details>
+			}
+			if c.HasResult {
+				<div class="card-timeline-child-result">
+					<span class={ "badge", taskStatusClass(string(c.ResultStatus)) }>{ string(c.ResultStatus) }</span>
+					if c.Result != "" {
+						<span class="card-timeline-child-result-text">{ c.Result }</span>
+					}
+				</div>
+			}
+		</div>
+	}
+}
+
+templ cardChildFinishedItemBody(item timeline.CardItem) {
+	if item.Child != nil {
+		{{ c := item.Child }}
+		<div class="card-timeline-child-finished">
+			<a href={ templ.SafeURL("#card-child-" + item.CorrelationID) } class="detail-children-link">
+				Finished:
+				if c.Title != "" {
+					{ c.Title }
+				} else {
+					{ c.ChildID }
+				}
+			</a>
+			<span class={ "badge", "badge-" + cardChildFinishedLabel(c.ClosingActionType) }>{ cardChildFinishedLabel(c.ClosingActionType) }</span>
+		</div>
+	}
+}
+
+templ cardCommandItemBody(item timeline.CardItem, pinned bool) {
+	if item.Command != nil {
+		{{ cmd := item.Command }}
+		<div class="card-timeline-command">
+			<span class="card-timeline-command-label">{ cardCommandLabel(cmd) }</span>
+			if pinned {
+				<span class={ "badge", cardCommandStatusBadgeClass(cmd.Status) }>{ string(cmd.Status) }</span>
+			} else {
+				<span class={ "badge", cardCommandOutcomeBadgeClass(cmd.Outcome) }>{ cmd.Outcome }</span>
+			}
+			if cmd.TargetExists {
+				<a href={ templ.SafeURL("/tasks/" + cmd.TargetID) } class="detail-children-link">→ task</a>
+			}
+		</div>
+		if !pinned {
+			if cmd.Result != "" {
+				<div class="card-timeline-command-result">{ cmd.Result }</div>
+			}
+			if cmd.Error != "" {
+				<div class="card-timeline-command-error">{ cmd.Error }</div>
+			}
+			if cmd.Reason != "" {
+				<div class="card-timeline-command-reason">{ cmd.Reason }</div>
+			}
+		}
+	}
+}
+
+// cardSuggestionHistoryBody is a historical (already superseded or
+// resolved) suggestion's read-only display — no Accept/Reject: those only
+// ever apply to the CURRENTLY pinned suggestion (TaskDetailSuggestionSection,
+// used instead for that case — see CardTimelineItem above).
+templ cardSuggestionHistoryBody(item timeline.CardItem) {
+	{{ s := cardItemSuggestionValue(item) }}
+	if s.Verb != "" {
+		<div class="detail-suggestion-header">
+			<span class={ "badge", components.VerbBadgeClass(s.Verb) }>{ s.Verb }</span>
+			if s.Action != "" {
+				<span class="detail-suggestion-action">{ s.Action }</span>
+			}
+		</div>
+		if s.Reason != "" {
+			<div class="detail-suggestion-reason">{ s.Reason }</div>
+		}
+		if s.Basis != "" {
+			<div class="detail-suggestion-basis">basis: { s.Basis }</div>
+		}
+	}
+}
+
+templ cardAnsweredItemBody(item timeline.CardItem) {
+	{{ a := cardItemAnsweredValue(item) }}
+	<div class="card-timeline-answered">
+		<span class={ "badge", cardAnsweredBadgeClass(a.Answer) }>{ cardAnsweredLabel(a.Answer) }</span>
+		if a.Verb != "" {
+			<span class="detail-suggestion-action">{ a.Verb }</span>
+		}
+		if a.Basis != "" {
+			<div class="detail-suggestion-basis">basis: { a.Basis }</div>
+		}
+	</div>
+}
+
+templ cardSummaryItemBody(item timeline.CardItem) {
+	<div class="card-timeline-summary">
+		<span class="card-timeline-item-label">Summary</span>
+		<div class="card-timeline-summary-text">{ cardItemSummaryText(item) }</div>
+	</div>
+}
+
+templ cardNoteItemBody(item timeline.CardItem) {
+	<div class="card-timeline-note">
+		<span class="card-timeline-item-label">Note</span>
+		<pre class="card-timeline-note-body">{ cardItemNoteText(item) }</pre>
+	</div>
+}
+
+// TaskDetailCardSummary renders a card's current summary — the most recent
+// attrs_set{summary} value, task_triage.detail.summary — directly in the
+// page body, collapsing long text the same way TaskDetailCardDescription
+// does. Renders nothing when there is no summary.
+templ TaskDetailCardSummary(summary string) {
+	if summary != "" {
+		<details class="card-description" open?={ cardDescriptionOpenByDefault(summary) }>
+			<summary class="card-description-toggle">Summary</summary>
+			<div class="qa-md-body">{ summary }</div>
+		</details>
+	}
+}

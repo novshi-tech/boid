@@ -2418,6 +2418,10 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			// List row activity state — same taskRepo instance, viewed
 			// through the narrower CardActivityStore interface.
 			CardActivity: runtime.taskRepo,
+			// Card detail page's timeline read model — reads srv.db directly
+			// (internal/timeline.BuildCardTimeline/CardPinnedItems need a
+			// db.DBTX, which taskRepo does not expose).
+			CardTimeline: cardTimelineStore{db: srv.db},
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Mount("/", webHandler.Routes())

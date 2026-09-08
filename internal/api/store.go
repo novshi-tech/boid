@@ -7,6 +7,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/timeline"
 )
 
 type MetaStore interface {
@@ -327,6 +328,15 @@ type CardStore interface {
 	// ParkedFrom derives which status (triaged/ready/working) a parked task
 	// was parked from, from the actions log (not a stored column).
 	ParkedFrom(taskID string) (orchestrator.TaskStatus, error)
+}
+
+// CardTimelineStore backs the card detail page's timeline read model
+// (internal/timeline.BuildCardTimeline / CardPinnedItems), which reads a
+// card's full action log directly via db.DBTX rather than through
+// ActionStore's narrower ListActionsByTask.
+type CardTimelineStore interface {
+	BuildCardTimeline(cardID, cursor string, limit int) (*timeline.CardTimelinePage, error)
+	CardPinnedItems(cardID string) ([]timeline.CardItem, error)
 }
 
 // CardActivityStore backs the task list's per-row activity state: two
