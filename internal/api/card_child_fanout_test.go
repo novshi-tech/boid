@@ -94,6 +94,26 @@ func TestFanOutChildEventToParentCard_ReachesSubscriberOnlyWhenParentIsCard(t *t
 
 // ---- ApplyAction: child executing→awaiting must fan out to a card parent ----
 
+// assertChildPayload pins not just the payload's shape but the arguments each
+// call site passes into childEventPayload — a shared constructor keeps the
+// keys consistent, it cannot keep a success event from claiming "job_failed".
+func assertChildPayload(t *testing.T, ev TaskEvent, wantChildTaskID, wantReason, wantIDKey string) {
+	t.Helper()
+	payload, ok := ev.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("payload = %v, want map[string]any", ev.Payload)
+	}
+	if payload["child_task_id"] != wantChildTaskID {
+		t.Errorf("payload[child_task_id] = %v, want %q", payload["child_task_id"], wantChildTaskID)
+	}
+	if payload["reason"] != wantReason {
+		t.Errorf("payload[reason] = %v, want %q", payload["reason"], wantReason)
+	}
+	if _, present := payload[wantIDKey]; !present {
+		t.Errorf("payload = %v, want a %q key", payload, wantIDKey)
+	}
+}
+
 func TestApplyAction_FansOutToParentCard_WhenParentIsCard(t *testing.T) {
 	card := &orchestrator.Task{ID: "card-1", Type: orchestrator.TaskTypeCard, ProjectID: "proj-1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 	child := &orchestrator.Task{
@@ -127,10 +147,7 @@ func TestApplyAction_FansOutToParentCard_WhenParentIsCard(t *testing.T) {
 	if ev.Kind != "child" {
 		t.Fatalf("event kind = %q, want %q", ev.Kind, "child")
 	}
-	payload, ok := ev.Payload.(map[string]any)
-	if !ok || payload["child_task_id"] != child.ID {
-		t.Fatalf("payload = %v, want child_task_id=%q", ev.Payload, child.ID)
-	}
+	assertChildPayload(t, ev, child.ID, "ask", "action_id")
 }
 
 // TestApplyAction_DoesNotFanOut_WhenParentIsExecution pins that an
@@ -227,6 +244,7 @@ func TestCompleteJob_Success_FansOutToParentCard(t *testing.T) {
 	if ev.Kind != "child" {
 		t.Fatalf("event kind = %q, want %q", ev.Kind, "child")
 	}
+	assertChildPayload(t, ev, child.ID, "job_completed", "job_id")
 }
 
 func TestCompleteJob_Failure_FansOutToParentCard(t *testing.T) {
@@ -257,6 +275,7 @@ func TestCompleteJob_Failure_FansOutToParentCard(t *testing.T) {
 	if ev.Kind != "child" {
 		t.Fatalf("event kind = %q, want %q", ev.Kind, "child")
 	}
+	assertChildPayload(t, ev, child.ID, "job_failed", "job_id")
 }
 
 // TestCompleteJob_Success_DoesNotFanOut_WhenParentIsExecution is CompleteJob's
@@ -353,6 +372,7 @@ func TestNotifyTask_Progress_BroadcastsSelfAndFansOutToParentCard(t *testing.T) 
 	if ev.Kind != "child" {
 		t.Fatalf("event kind = %q, want %q", ev.Kind, "child")
 	}
+	assertChildPayload(t, ev, child.ID, "progress", "action_id")
 }
 
 func TestNotifyTask_FailRequest_BroadcastsSelfAndFansOutToParentCard(t *testing.T) {

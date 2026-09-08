@@ -850,9 +850,12 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(ctx context.Context, tas
 	// human's to accept (card machine v2's `done` verb) — the daemon does
 	// not evaluate it here or anywhere else.
 	if recorded {
+		// Dispatch first: a subscriber's follow-up fragment fetch must find
+		// any card_requests row this close just launched, and nothing
+		// broadcasts again once the dispatch settles.
+		s.tryDispatchQueuedCardRequest(ctx, task.ParentID)
 		// action.TaskID is already the parent's id, so this is a plain
-		// self-broadcast rather than fanOutChildEventToParentCard. Ahead of
-		// tryDispatchQueuedCardRequest so subscribers see it sooner.
+		// self-broadcast rather than fanOutChildEventToParentCard.
 		if s.Hub != nil && isCardTask(parentTask) {
 			s.Hub.Broadcast(action.TaskID, TaskEvent{
 				Kind: "action",
@@ -862,7 +865,6 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(ctx context.Context, tas
 				},
 			})
 		}
-		s.tryDispatchQueuedCardRequest(ctx, task.ParentID)
 	}
 }
 

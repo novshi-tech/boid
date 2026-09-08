@@ -2312,6 +2312,20 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      問題）の head 再描画、を実装できる。**ただし、card コマンドの継続先
      (task/session) は fan-out の対象に含まれない**（下記 nice-to-have 1）
      — PR-6c-2 が「`child` が届けば継続先の出現も分かる」と誤解しないこと。
+  7. **child_closed 経路の broadcast は `tryDispatchQueuedCardRequest` の
+     後に出す（順序が契約）。** 一度「購読者に早く届くように」前に出したが、
+     レビューで穴が判明して戻した — 前に出すと、その close が起動した
+     `card_requests` 行がまだ launching に至っていない状態で購読者が
+     `?kind=pinned` を取りに行き、**dispatch が落ち着いた後に再 broadcast する
+     経路が無い**ため、内部イベント発のコマンドが次のイベントかリロードまで
+     固定項目に現れない。レイテンシの差は無視できる（どちらもコミット後）ので、
+     dispatch を先に済ませて「取りに行けば必ず見える」状態にしてから通知する。
+  8. **回答経路の broadcast は audit 行の書き込み失敗でも出す。**
+     `recordAnswerAction` の耐久的な事実は既にコミット済みの
+     awaiting→executing の反転であって、`actions` 行ではない。書き込み失敗で
+     黙ると B1 と同じ症状（card が子を awaiting のまま表示し、回答済みの質問へ
+     リンクし続ける）が監査失敗時にだけ再発する。
+     `TestAnswerTask_ActionWriteFails_StillBroadcasts` が固定している。
 
   **コミット境界の pin（レビュー BLOCKER 2 対応）: `recordChildClosedOnParent`/
   `recordVanishedChildClosedOnParent`/`ApplyAction`/`CompleteJob` 失敗時分岐

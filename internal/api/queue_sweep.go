@@ -258,9 +258,12 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(ctx context.Cont
 		return
 	}
 	if recorded {
+		// Dispatch first: a subscriber's follow-up fragment fetch must find
+		// any card_requests row this close just launched, and nothing
+		// broadcasts again once the dispatch settles.
+		s.tryDispatchQueuedCardRequest(ctx, parentTaskID)
 		// action.TaskID is already the parent's id, so this is a plain
-		// self-broadcast rather than fanOutChildEventToParentCard. Ahead of
-		// tryDispatchQueuedCardRequest so subscribers see it sooner.
+		// self-broadcast rather than fanOutChildEventToParentCard.
 		if s.Hub != nil && isCardTask(parentTask) {
 			s.Hub.Broadcast(action.TaskID, TaskEvent{
 				Kind: "action",
@@ -270,7 +273,6 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(ctx context.Cont
 				},
 			})
 		}
-		s.tryDispatchQueuedCardRequest(ctx, parentTaskID)
 	}
 }
 

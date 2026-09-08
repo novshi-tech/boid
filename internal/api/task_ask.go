@@ -228,8 +228,10 @@ func (s *TaskAppService) recordAnswerAction(ctx context.Context, task *orchestra
 	}
 	if err := s.Actions.CreateAction(ctx, action); err != nil {
 		slog.Warn("blocking answer: record answer action failed", "task_id", task.ID, "error", err)
-		return
 	}
+	// Broadcast either way: the durable fact is the already-committed status
+	// flip, not this audit row. Staying silent here would leave a watching
+	// card showing the child as awaiting with a link to an answered question.
 	s.broadcastNotifyAction(task, action)
 }
 
