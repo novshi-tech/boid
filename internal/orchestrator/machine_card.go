@@ -115,9 +115,7 @@ func NewCardMachine() *StateMachine {
 
 		// created/description_set/identity_linked: the daemon's record of a
 		// card state change that lands outside the action log (the task row,
-		// the identity index) — see card_state_actions.go. Registered for the
-		// same reason as the command_* family just above; the write goes
-		// through CreateAction directly, never Apply.
+		// the identity index) — same shape as the command_* family above.
 		{Action: ActionTypeCardCreated, FromStatus: "*"},
 		{Action: ActionTypeDescriptionSet, FromStatus: "*"},
 		{Action: ActionTypeIdentityLinked, FromStatus: "*"},

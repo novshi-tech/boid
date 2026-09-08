@@ -299,9 +299,8 @@ func TestTaskAppServiceUpdateTask_AutoStart_CardTask_Rejected(t *testing.T) {
 	}
 }
 
-// TestTaskAppServiceUpdateTask_CardDescription_WritesDescriptionSetAction pins
-// that rewriting a card's description leaves a record in the action log. The
-// body stays on the task row; only the fact of the change is recorded.
+// TestTaskAppServiceUpdateTask_CardDescription_WritesDescriptionSetAction: the
+// record carries the fact of the change, never the body.
 func TestTaskAppServiceUpdateTask_CardDescription_WritesDescriptionSetAction(t *testing.T) {
 	svc, tasks := newRealTaskAppService(t)
 	card := &orchestrator.Task{
@@ -338,9 +337,8 @@ func TestTaskAppServiceUpdateTask_CardDescription_WritesDescriptionSetAction(t *
 	}
 }
 
-// TestTaskAppServiceUpdateTask_DescriptionUnchanged_WritesNoAction: a PATCH
-// that resends the same body is not a change, and must not look like one —
-// the record is what decides whether the next decision runs.
+// TestTaskAppServiceUpdateTask_DescriptionUnchanged_WritesNoAction: resending
+// the same body is not a change and must not look like one.
 func TestTaskAppServiceUpdateTask_DescriptionUnchanged_WritesNoAction(t *testing.T) {
 	svc, tasks := newRealTaskAppService(t)
 	card := &orchestrator.Task{
@@ -365,8 +363,7 @@ func TestTaskAppServiceUpdateTask_DescriptionUnchanged_WritesNoAction(t *testing
 }
 
 // TestTaskAppServiceUpdateTask_ExecutionDescription_WritesNoAction: the record
-// exists for the card timeline and the card-event ingest; an execution task
-// has neither.
+// is card-only.
 func TestTaskAppServiceUpdateTask_ExecutionDescription_WritesNoAction(t *testing.T) {
 	svc, tasks := newRealTaskAppService(t)
 	task := &orchestrator.Task{

@@ -1,10 +1,7 @@
 package api
 
-// LinkIdentity is one of the three card state changes that used to land
-// entirely outside the action log (the other two are a card's creation and
-// its description rewrite). These pin the record it now leaves, against a
-// real sqlite DB — the idempotent re-link must stay silent, because the
-// record is what decides whether the next decision runs.
+// LinkIdentity's action record, pinned against a real sqlite DB. The
+// idempotent re-link must stay silent.
 
 import (
 	"context"

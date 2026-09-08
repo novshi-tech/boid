@@ -21,8 +21,8 @@ var errIdentityStoreUnavailable = errors.New("identity store unavailable")
 // ErrIdentityConflict-different-task contract.
 //
 // A link onto a card is recorded as an action in the same transaction. The
-// idempotent re-link records nothing — the store cannot tell the caller
-// whether it inserted, so the binding is read first inside the transaction.
+// binding is read first because the store's return value cannot distinguish
+// an insert from an idempotent re-link, which records nothing.
 func (s *TaskAppService) LinkIdentity(ctx context.Context, projectID, identity, taskID string) error {
 	if s.Identities == nil {
 		return errIdentityStoreUnavailable

@@ -203,9 +203,8 @@ type HostCommandsProvider interface {
 	HostCommands() map[string]orchestrator.HostCommandSpec
 }
 
-// CreateTask/UpdateTask take ctx for the same reason ActionStore.CreateAction
-// does: a card's creation and description rewrite are recorded as actions, and
-// both ingest steps behind that write read the writer's identity off ctx.
+// CreateTask/UpdateTask take ctx because the card records they write go
+// through CreateAction, whose ingest steps read the writer off it.
 type TaskService interface {
 	CreateTask(ctx context.Context, req CreateTaskRequest) (*orchestrator.Task, error)
 	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)

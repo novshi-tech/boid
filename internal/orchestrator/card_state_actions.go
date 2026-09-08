@@ -4,10 +4,6 @@ package orchestrator
 // rewrite and identity link each mutate a card outside the action log's
 // reach (the task row and the identity index), so each writes one of these
 // alongside the mutation, in the same transaction.
-//
-// Like the ActionTypeCommand* family these are written through CreateAction
-// directly and never through Apply; the card machine registers them only so
-// the names are known.
 const (
 	// ActionTypeCardCreated marks a card's own creation.
 	ActionTypeCardCreated = "created"

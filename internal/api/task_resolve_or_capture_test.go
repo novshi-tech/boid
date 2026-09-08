@@ -140,9 +140,8 @@ func TestResolveOrCapture_UnregisteredIdentity_CreatesCapturedTaskAndLinks(t *te
 	}
 }
 
-// TestResolveOrCapture_Created_WritesCreatedAction pins that a capture leaves
-// its own record in the action log, and that resolving an existing identity
-// adds nothing — a card that already exists was not created again.
+// TestResolveOrCapture_Created_WritesCreatedAction: a capture records itself;
+// resolving an existing identity adds nothing.
 func TestResolveOrCapture_Created_WritesCreatedAction(t *testing.T) {
 	svc := newResolveOrCaptureTestService(t)
 	conn := svc.Tx.(realTransactor).conn

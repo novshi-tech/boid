@@ -251,8 +251,7 @@ func (s *TaskAppService) UpdateTask(ctx context.Context, id string, req UpdateTa
 		}
 		task.ProjectID = req.ProjectID
 	}
-	// A card's description is its summary, and the action log is what the
-	// next decision reads. Resending the same body is not a change.
+	// Resending the same body is not a change.
 	var descriptionRecord *orchestrator.Action
 	if req.Description != "" {
 		// Same description size cap as CreateTask.
@@ -573,8 +572,7 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 
 	task.Status = orchestrator.TaskStatusPending
 	task.Exec.Payload = json.RawMessage("{}")
-	// A rerun only ever touches an execution task, so it records nothing on a
-	// card and the context stays unused.
+	// A rerun only touches an execution task, so it records nothing.
 	if err := s.updateTaskWithCardSlotRecheck(context.Background(), task, reparentCardID,
 		"rerun task: card %q's single work slot is already occupied by %s", nil); err != nil {
 		return nil, err

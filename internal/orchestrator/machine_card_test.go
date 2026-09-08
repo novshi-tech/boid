@@ -328,9 +328,8 @@ func TestCardMachineV2_IsManualAction(t *testing.T) {
 	}
 }
 
-// TestCardMachineV2_StateChangeSelfRecords_RegisteredEverywhere pins that the
-// daemon's own card state-change records are known to the rule table from
-// every status and never move the card.
+// TestCardMachineV2_StateChangeSelfRecords_RegisteredEverywhere: known from
+// every status, and never moves the card.
 func TestCardMachineV2_StateChangeSelfRecords_RegisteredEverywhere(t *testing.T) {
 	sm := orchestrator.NewCardMachine()
 	for _, action := range []string{

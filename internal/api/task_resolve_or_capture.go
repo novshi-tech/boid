@@ -108,8 +108,7 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 			// key create a second one next cycle.
 			return err
 		}
-		// The card's own creation record. Same transaction as the row it
-		// describes, so the two cannot disagree.
+		// The card's own creation record.
 		if err := tx.CreateAction(ctx, &orchestrator.Action{
 			TaskID: task.ID,
 			Type:   orchestrator.ActionTypeCardCreated,
