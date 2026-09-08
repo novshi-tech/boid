@@ -12,6 +12,7 @@ package api
 // the actual runtime DOM/scroll behavior.
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -103,5 +104,54 @@ func TestCardDetail_LiveScript_RefreshHistoryHeadWiredToActionAndRevisit(t *test
 	childListenerEnd := strings.Index(body[childListenerIdx:], "\n")
 	if childListenerEnd >= 0 && strings.Contains(body[childListenerIdx:childListenerIdx+childListenerEnd], "refreshHistoryHead()") {
 		t.Errorf("the 'child' listener must NOT call refreshHistoryHead() (child fan-out never moves a pinned item into history); body:\n%s", body)
+	}
+}
+
+// TestCardDetail_LiveScript_HistoryHeadSelectorsMatchRenderedMarkup pins the
+// seam between refreshHistoryHead()'s hardcoded JS selectors and the actual
+// markup CardHistorySection/cardHistoryLoadOlder render — a one-token typo
+// on either side (JS selector or template class/query-param name) makes
+// refreshHistoryHead() a permanent silent no-op with no test noticing it
+// unless the two sides are cross-checked directly.
+func TestCardDetail_LiveScript_HistoryHeadSelectorsMatchRenderedMarkup(t *testing.T) {
+	h, repo, projectID := newCardTimelineTestHandler(t)
+	newCardTimelineTestCard(t, repo, projectID, "card-1")
+	for i := 0; i < 12; i++ {
+		createCardTimelineAction(t, repo, "card-1", "attrs_set", map[string]string{"summary": "note number " + fmt.Sprintf("%02d", i)})
+	}
+
+	code, body := getHTML(t, h, "/tasks/card-1")
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body:\n%s", code, body)
+	}
+
+	// The exact JS selectors refreshHistoryHead() uses to find the list and
+	// its Load-older boundary.
+	for _, want := range []string{
+		"querySelector('.card-timeline-list')",
+		"querySelector('.card-timeline-load-older button')",
+		"searchParams.get('cursor')",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected refreshHistoryHead() to contain %q; body:\n%s", want, body)
+		}
+	}
+
+	// The exact markup those selectors must match — 12 history items forces
+	// a real Load-older control to render.
+	if !strings.Contains(body, `class="card-timeline-list"`) {
+		t.Fatalf("expected a rendered .card-timeline-list; body:\n%s", body)
+	}
+	if !strings.Contains(body, `class="card-timeline-load-older"`) {
+		t.Fatalf("expected a rendered Load-older control with 12 history items past the 10-cap; body:\n%s", body)
+	}
+	loadOlderIdx := strings.Index(body, "card-timeline-load-older")
+	hxGetIdx := strings.Index(body[loadOlderIdx:], "hx-get=")
+	if hxGetIdx < 0 {
+		t.Fatalf("expected an hx-get attribute on the Load-older control; body:\n%s", body)
+	}
+	hxGetRegion := body[loadOlderIdx+hxGetIdx : loadOlderIdx+hxGetIdx+200]
+	if !strings.Contains(hxGetRegion, "cursor=") {
+		t.Errorf("Load-older's hx-get should carry a cursor= param (the exact name refreshHistoryHead() reads via searchParams.get('cursor')); got: %s", hxGetRegion)
 	}
 }

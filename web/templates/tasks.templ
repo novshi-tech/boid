@@ -1397,14 +1397,36 @@ templ TaskDetailLiveScript() {
 			// refreshHistoryHead re-syncs #card-timeline's already-loaded
 			// head range (top down through the current Load-older boundary,
 			// read off that button's hx-get, or the whole thing when there
-			// is none) in place, without touching pages loaded further back.
-			// No-op when #card-timeline or its list is absent. See
-			// TaskCardTimelineHead (internal/api/web.go) for the server side.
+			// is none) in place, without touching pages loaded further back
+			// — preserving <details> fold state the same way refresh() does.
+			// No-op when #card-timeline is absent. See TaskCardTimelineHead
+			// (internal/api/web.go) for the server side.
 			function refreshHistoryHead() {
 				var container = document.getElementById('card-timeline');
 				if (!container) return;
 				var list = container.querySelector('.card-timeline-list');
-				if (!list) return;
+
+				// No list yet (a brand new card, or one whose only item so
+				// far was pinned) — fetch the head fresh and build the list
+				// for the first time, replacing the "No history yet." copy.
+				if (!list) {
+					fetch('/tasks/' + taskID + '/card-timeline/head?frontier=')
+						.then(function(r) { return r.ok ? r.text() : null; })
+						.then(function(html) {
+							if (!html) return;
+							var tmp = document.createElement('template');
+							tmp.innerHTML = html;
+							if (!tmp.content.firstChild) return;
+							var ul = document.createElement('ul');
+							ul.className = 'card-timeline-list';
+							while (tmp.content.firstChild) ul.appendChild(tmp.content.firstChild);
+							var empty = container.querySelector('.tab-empty');
+							if (empty) empty.remove();
+							container.appendChild(ul);
+						})
+						.catch(function() {});
+					return;
+				}
 
 				var boundaryEl = null;
 				var frontier = '';
@@ -1421,10 +1443,21 @@ templ TaskDetailLiveScript() {
 					});
 				}
 
+				// Captured/restored the same way refresh() does for
+				// #task-status/#task-pinned — a history item's own
+				// <details> fold (a child's spec) is exposed to the same
+				// splice below, so it needs the same treatment.
+				var state = captureSwapState(list);
+
 				fetch('/tasks/' + taskID + '/card-timeline/head?frontier=' + encodeURIComponent(frontier))
 					.then(function(r) { return r.ok ? r.text() : null; })
 					.then(function(html) {
-						if (html === null) return;
+						if (!html) return;
+						// A "Load older" click may have already swapped
+						// (and detached) boundaryEl while this fetch was in
+						// flight — bail rather than empty the list or throw
+						// on a stale insertBefore reference.
+						if (boundaryEl && boundaryEl.parentNode !== list) return;
 						var node = list.firstElementChild;
 						while (node && node !== boundaryEl) {
 							var next = node.nextElementSibling;
@@ -1436,6 +1469,7 @@ templ TaskDetailLiveScript() {
 						while (tmp.content.firstChild) {
 							list.insertBefore(tmp.content.firstChild, boundaryEl);
 						}
+						restoreSwapState(list, state);
 					})
 					.catch(function() {});
 			}

@@ -2420,29 +2420,37 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
 
 - **PR-6c-2 で確定: §5.3 の残り2項目（SSE 更新での状態保持、新着と
   Load older の競合、N4）。** UI の見た目・コマンド入力は対象外
-  （PR-6a/6b で確定済み）。
+  （PR-6a/6b で確定済み）。フレッシュな Opus レビューで NO-GO を受け、
+  BLOCKER 3件・nice-to-have 8件を修正した2ラウンド目の結果。
 
   1. **状態保持は「置換範囲を狭める」でも「morph/`hx-preserve` 導入」でも
      なく、置換前に状態を退避して復元する方式にした。** 既存の
      `outerHTML` 全置換（`#task-status`/`#task-pinned`）はそのまま残し、
      `TaskDetailLiveScript` の `refresh()` に `captureSwapState`/
-     `restoreSwapState` を追加しただけ。外部ライブラリは追加していない
+     `restoreSwapState` を追加。外部ライブラリは追加していない
      （`CLAUDE.md` の「外部ライブラリは最小限」— `querySelectorAll`/
      `closest`/`getBoundingClientRect`/`scrollBy` は標準 DOM API のみ）。
      **保証すること:** 置換対象内の `<details>`（カード要約の折り畳み、
-     固定項目の子 spec 折り畳み）は、置換後の同じ要素
+     固定項目・履歴項目の子 spec 折り畳み）は、置換後の同じ要素
      （closest ancestor id + 自身の class をキーにした対応）が開いていれば
-     再度開く。置換される要素自身（`#task-status`/`#task-pinned`）の
-     viewport 内の上端位置は、置換前後で変わらないよう `scrollBy` で
-     補正する。**保証しないこと:** スクロール位置全般の維持ではない
-     （置換対象そのものの上端だけを固定する設計。置換対象の外側の
-     レイアウトが変わるケースは対象外）。同一要素が置換前後で存在する
-     ことが前提（要素の有無が変わる kind=pinned の exec ページ no-op 等は
-     従来通り何もしない）。指示の入力途中の保持は PR-6b が
-     `CardCommandSection` を置換対象の外に出したことで既に成立しており、
-     この PR では触れていない。追加読み込み済み履歴の保持は
-     `#card-timeline` を SSE 置換対象にしないという PR-6a の決定のまま
-     （下記2項目でこの制約の中で新着を差し込む）。
+     再度開く。置換される要素自身（`#task-status`/`#task-pinned`、および
+     `#card-timeline` 内の履歴リスト、下記2項目）の viewport 内の上端
+     位置は、置換前後で変わらないよう `scrollBy` で補正する。
+     **保証しないこと:** スクロール位置全般の維持ではない（各置換対象
+     自身の上端だけを固定する設計）。既定で開いた `<details>`
+     （`cardDescriptionOpenByDefault`）をユーザが手動で閉じても、次の
+     swap で開いた状態に戻る——開閉の「今の状態」ではなく「開いていた
+     かどうか」だけを見ているため。キーは `closest('[id]').id + own
+     class` で、同じ id 祖先の下に同じ class の `<details>` が複数あると
+     連動して開く（現状の描画では起きない組み合わせだが、汎用の保証では
+     ない）。同一要素が置換前後で存在することが前提（要素の有無が変わる
+     kind=pinned の exec ページ no-op 等は従来通り何もしない）。複数
+     kind が同時に refresh される（action/job イベント）と、それぞれの
+     `scrollBy` 呼び出しが独立に発火する——後から解決したものが実質的に
+     勝つ形になり、「各置換対象自身の上端を固定する」保証は同時発火時は
+     どれか1つにしか厳密には成り立たない。指示の入力途中の保持は PR-6b
+     が `CardCommandSection` を置換対象の外に出したことで既に成立して
+     おり、この PR では触れていない。
   2. **N4 は「head だけを差し替える」でも「pinned から history へ落ちた
      項目だけを挿入する」でもなく、「クライアントが既に読み込み済みの
      先頭範囲を、その範囲の終端（クライアントが持つ Load-older の
@@ -2476,19 +2484,38 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      子が**見えないこと**を確認（ギャップの再現）、(4) 同じ境界 cursor で
      `/card-timeline/head` を叩いて子・Finished マーカー・境界項目自体
      （重複なく1回）が含まれ、境界より古い項目が含まれないことを確認、
-     という手順で通した。
+     という手順で通した。**N4 が閉じているのは子の経路だけ。** pinned な
+     コマンド項目（`internal/orchestrator/card_request.go` の
+     `recordCardRequestOutcome` 等）が履歴へ移るときは broadcast が
+     一切出ない——Hub を持たない層のため。コマンド自身の pinned→history
+     の移動は引き続きページ再読込/`visibilitychange`/`pageshow` の
+     定期 refresh 頼みのまま（次項 point 4 と同じ理由で埋めていない）。
   3. **フロントの JS で担保できていること/できていないこと。** ヘッドレス
-     ブラウザ実行環境がリポジトリに無いため、実行時の DOM/スクロール
-     挙動そのものを検証する自動テストは書けていない。担保したのは
-     ソースレベルの配線（`internal/api/web_card_sse_state_test.go`）:
-     `captureSwapState`/`restoreSwapState` が `refresh()` 内で置換の前後
-     どちらに呼ばれているか（文字列位置の前後関係）、呼び出しが
-     コメントアウトされていないか（`//` 判定）、`refreshHistoryHead()` が
-     `action` リスナー・`visibilitychange`・`pageshow` の3箇所から呼ばれ、
-     `job`/`child` リスナーからは呼ばれないこと。**担保できていないのは:**
-     実際に `<details>` が開閉されるか、スクロール位置が実際に補正
-     されるか、`refreshHistoryHead()` の DOM 差し替え（`<li>` の削除・
-     挿入）が実ブラウザで正しく発生するか。
+     ブラウザは無いが、Node（`internal/api/testdata/history_head_js_harness.mjs`）
+     を使い、レンダリング済みページから実際の `captureSwapState`/
+     `restoreSwapState`/`refreshHistoryHead` ソースをそのまま抽出して
+     (`extractHistoryHeadJS`、`web_card_history_head_race_test.go`)、
+     手組みの fake DOM 上で**実行**するテストを追加した——文字列/構造の
+     assertion では原理的に検出できない、実際の非同期競合と splice の
+     往復を担保する。手組み fake DOM は生成した本物の HTML を実際には
+     パースしない（`querySelector`/`querySelectorAll` は既知の selector
+     文字列に対する固定スタブ）ため、selector 文字列自体が
+     テンプレート側の実クラス名/クエリパラメータ名と一致しているかは
+     別テスト（`TestCardDetail_LiveScript_HistoryHeadSelectorsMatchRenderedMarkup`）
+     が実際にレンダリングした HTML と突き合わせて担保している。
+     **実行ベースで担保したこと:** (a) `refreshHistoryHead()` の splice
+     境界 `<li>` が fetch 実行中に外部から (HTMX の Load older swap で)
+     切り離されても、リストを空にしたり stale な `insertBefore` 参照で
+     例外を投げたりしない、(b) 履歴項目の `<details>` が splice 後に
+     `restoreSwapState` で再度開く、(c) 履歴が一度も無いカード
+     （`.card-timeline-list` 自体が存在しない）でも新規に `<ul>` を
+     組み立てて反映する、(d) 空（but 200 OK）応答をリスト全消去として
+     扱わない。**実行ベースでも担保できていないこと:** 実ブラウザの
+     レイアウト/ペイントを経た `getBoundingClientRect`/`scrollBy` の
+     ピクセル単位の正しさ（fake DOM は `{top:0}` 固定を返すダミー）、
+     `<template>` 要素による実際の HTML 文字列パース（fake DOM は
+     事前に用意したノードを返すだけ）、複数 SSE kind が同時に
+     `scrollBy` を呼んだときの実際の見た目の挙動（point 1 の記録）。
   4. **PR-6b §10 point 2（コマンドの継続先が生まれ次第 SSE で自動的に
      リンクが現れる）はこの PR でも埋めていない。** `card_requests` の
      ライフサイクル遷移（queued→launching→attached→finished/failed）は
@@ -2500,7 +2527,77 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
      呼び出し元ごとに commit 境界を確認する必要がある——PR-6c-1 の
      `child` fan-out がまさにこの確認不足で2ラウンドのレビューを要した
      箇所であり、この PR のスコープ（§5.3 の残り2項目）に無理に含めず
-     独立した変更として次回扱う方が安全と判断した。
+     独立した変更として次回扱う方が安全と判断した。point 2 で触れた
+     コマンドの pinned→history 移動もこの同じ制約（Hub 未配線）の
+     一部で、切り離す判断は同一。
+
+  **フレッシュレビューで発見・修正した実バグ（BLOCKER 1〜3）。**
+
+  - **BLOCKER 1: `refreshHistoryHead()` 自身の splice が
+    `captureSwapState`/`restoreSwapState` を一切通っていなかった。**
+    初版は `refresh()`（`#task-status`/`#task-pinned`）にしか状態保持を
+    入れておらず、`#card-timeline` 内の `<li>` をノード単位で削除・
+    再挿入する `refreshHistoryHead()` 自身の splice は素通りのままだった
+    ——履歴内で開いた子 spec 折り畳みが、次の card action のたびに
+    閉じ、かつ挿入位置によってはスクロール位置もずれる、という
+    §5.3 契約1をこの PR 自身の契約2実装が破っていた実バグ。
+    `refreshHistoryHead()` にも同じ `captureSwapState`/`restoreSwapState`
+    ペアを splice の前後に追加して直した。
+  - **BLOCKER 2: JS↔テンプレートの selector 文字列の継ぎ目にテストが
+    無かった。** `refreshHistoryHead()` の `querySelector('.card-timeline-list')`
+    等の selector 文字列と、実際にテンプレートがレンダリングする class
+    名/クエリパラメータ名が一致しているかを突き合わせるテストが無く、
+    どちらかを1文字変えるだけで `refreshHistoryHead()` が恒久的な
+    no-op になり N4 が無言で無効化されるのに、既存テスト（JS のテキスト
+    存在とコメントアウト判定のみ）は緑のまま通っていた。
+    `TestCardDetail_LiveScript_HistoryHeadSelectorsMatchRenderedMarkup`
+    を追加し、実際にレンダリングした HTML の中で selector 文字列と
+    対応する属性/クラスの両方を直接突き合わせる形にした。
+  - **BLOCKER 3: `refreshHistoryHead()` の fetch 中に HTMX の Load older
+    swap が割り込むと、splice 境界 `<li>` が DOM から切り離され、
+    リストが空になる。** `boundaryEl` を fetch 前に解決し、fetch 後の
+    削除ループがそれを使う設計だったため、fetch 実行中に「Load older」
+    がクリックされて完了すると `boundaryEl` が stale になり、削除ループ
+    が境界に一致せずリストの `<li>` を全部削除、その後の `insertBefore`
+    が例外を投げて `.catch` に飲み込まれる——結果、履歴リストが空になり
+    Load older ボタンも失われる（リロードまで戻らない）。fetch 完了後に
+    `boundaryEl.parentNode !== list` を確認し、不一致なら削除ループへ
+    進まず中断するガードを追加した。
+
+  **nice-to-have（レビュー指摘、優先度上位2件はこの PR で対処、残りは
+  記録のみ）。**
+
+  1. **対処: 履歴ゼロのカードは `refreshHistoryHead()` が永久 no-op
+     だった。** `#card-timeline` に `.card-timeline-list` 自体が存在せず
+     （「No history yet.」のみ）、`if (!list) return;` で早期リターン
+     していたため、新規カードで唯一の項目だった pinned な子が閉じても
+     リロードするまで反映されなかった——N4 の最も素直な発現ケース。
+     `list` が無いときは `frontier=""` で head を取得し、返ってきた
+     内容があれば新しい `<ul class="card-timeline-list">` を組み立てて
+     「No history yet.」の段落と差し替えるようにした。
+  2. **対処: 空（but 200 OK）応答での非対称。** `refresh()` の
+     `if (!html) return;` に対し `refreshHistoryHead()` は
+     `if (html === null) return;` になっており、空文字列の応答
+     （履歴が全部無くなった等の稀なケース）でリストを空にしてしまう
+     経路が残っていた。同じ `if (!html) return;` に揃えた。
+  3. **記録のみ: 継続先リンクだけでなくコマンドの pinned→history 移動も
+     未配線。** point 4 に統合して記載。
+  4. **記録のみ: `scrollBy` の同時発火。** point 1 に統合して記載。
+  5. **記録のみ: `<details>` の閉じ直しは保証しない。** point 1 に
+     統合して記載。
+  6. **記録のみ: キーの脆さ（同一 id 祖先下に同じ class の `<details>`
+     が複数あると連動）。** point 1 に統合して記載。
+  7. **記録のみ: frontier 項目が履歴から消えていた場合の無言の切り詰め。**
+     `cardTimelineHeadMaxPages`（50）× `MaxCardTimelineLimit`（200）の
+     上限に達すると、frontier に到達しないまま打ち切って手元にある分だけ
+     返す。呼び出し側（クライアント）には「truncated」を示すシグナルが
+     無く、境界より古い内容を誤って切り詰めた範囲で置き換える可能性が
+     理論上ある。対処は見送り——実運用でこの上限（1万件）に達する
+     カードは想定していない。
+  8. **対処済み: コメント量。** `comment-review` スキルの観点で
+     `TaskCardTimelineHead` の doc・JS 側の2ブロックを目的の説明に
+     絞って短縮した（本 doc の追記も含め、plan doc 参照はコード側から
+     排除済み）。
 
   **mutation テスト結果。** すべて「python での置換 →
   `git diff`/バックアップとの比較で着弾を確認（`.templ` は追加で
@@ -2517,10 +2614,20 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   | 状態保持: restore 呼び出し（コメントアウト） | `restoreSwapState(...)` 行を `//` でコメントアウト | diff + `templ generate` | 最初は素の部分一致テストでは見逃し（コメント化してもテキストは残る）— 行頭 `//` の有無を見る `lineContainingIsActive` を追加してから再度当てて赤を確認 |
   | history head 配線: action リスナー | `action` リスナーから `refreshHistoryHead()` 呼び出しを削除 | diff + `templ generate` | 赤 |
   | history head 配線: job リスナーに誤って追加 | `job` リスナーにも `refreshHistoryHead()` を追加 | diff + `templ generate` | 赤（「job では呼ばない」contract 側で検出） |
+  | BLOCKER 2: `.card-timeline-list` selector | `querySelector('.card-timeline-list')` を `'.card-timeline-list-MUTANT'` に | diff + `templ generate` | 赤（レビューが実際に当てた mutation と同一） |
+  | BLOCKER 2: cursor パラメータ名 | `searchParams.get('cursor')` を `get('last_date')` に | diff + `templ generate` | 赤（レビューが実際に当てた mutation と同一） |
+  | BLOCKER 3: 競合ガード | fetch 後の `boundaryEl.parentNode !== list` ガードを削除 | diff + `templ generate` | 赤（Node harness が実行時に「リストが空になった」ことを検出。structural テストでは検出不可） |
+  | BLOCKER 1: 履歴 splice の restore 呼び出し | `refreshHistoryHead()` 内の `restoreSwapState(list, state)` 呼び出しを削除 | diff + `templ generate` | 赤（Node harness が「開いていた `<details>` が再度開かなかった」ことを検出） |
+  | nice-to-have 1: 履歴ゼロからの bootstrap | `if (!list) { ... }` ブロックを `if (!list) { return; } if (false) { ... }` に置換 | diff + `templ generate` | 赤（Node harness が frontier 付き fetch が一切発生しないことを検出） |
+  | nice-to-have 2: 空応答の非対称 | 履歴 splice 側の `if (!html) return;` を `if (html === null) return;` に戻す | diff + `templ generate` | 赤（Node harness が空文字列応答でリストが空になることを検出） |
 
   着弾確認は毎回 `git diff`（`.templ` は追加で `templ generate` 後の
   `_templ.go` 差分）で行い、`go test` の結果を見たら元のファイルへ `cp`
-  で復元してから次の mutation に進んだ。
+  で復元してから次の mutation に進んだ。BLOCKER 1/3・nice-to-have 1/2 の
+  4件は、構造的な文字列 assertion だけでは「着弾したのに挙動が
+  変わったか分からない」領域だったため、Node 実行ベースの harness
+  でしか検出できなかった——2ラウンド目で追加した実行テストの価値は
+  ここにある。
 
   **実装中に気づいた plan doc とのズレ:** §10 PR-5b の記録は N4 の
   再現条件を「pinned だった子が Load older を押す前に終端する」とだけ
@@ -2529,3 +2636,9 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   older な位置に来る場合は既存の Load-older 経路だけで正しく拾える
   （ギャップにならない）——ギャップが起きるのは子の実順位が境界と
   同じかそれより newer な場合に限られる、という条件の精緻化。
+  1ラウンド目で見落としていたもう1点: 「`#card-timeline` を SSE
+  置換対象にしない」という PR-6a の決定は、`#card-timeline` の**外側**
+  からの丸ごと置換を禁じているだけで、その**内側**を操作する新設の
+  splice（`refreshHistoryHead()`）まで状態保持の対象外にしてよいことを
+  意味しない——1ラウンド目のドラフトはこれを取り違えていた
+  （BLOCKER 1）。
