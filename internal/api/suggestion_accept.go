@@ -275,7 +275,14 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 	// card_requests row — including the case a claim later drains as
 	// ineligible, when the SAME transaction's verb (complete/drop) already
 	// moved the card past parked/working by commit time.
-	s.tryDispatchQueuedCardRequest(ctx, taskID)
+	//
+	// Deferred, not attempted here: "answered" is itself card-event-eligible,
+	// so the row queued above was caused by this very action — launching it
+	// now takes the single work slot accept(go) below needs for its own
+	// reservation, failing every accept(go) against a command it just
+	// caused. The defer still runs on every exit path, including acceptGo's
+	// failures, which leave the slot free.
+	defer s.tryDispatchQueuedCardRequest(ctx, taskID)
 
 	if s.Hub != nil {
 		s.Hub.Broadcast(taskID, TaskEvent{
