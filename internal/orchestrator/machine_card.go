@@ -112,6 +112,15 @@ func NewCardMachine() *StateMachine {
 		{Action: ActionTypeCommandFinished, FromStatus: "*"},
 		{Action: ActionTypeCommandFailed, FromStatus: "*"},
 		{Action: ActionTypeCommandForceReleased, FromStatus: "*"},
+
+		// created/description_set/identity_linked: the daemon's record of a
+		// card state change that lands outside the action log (the task row,
+		// the identity index) — see card_state_actions.go. Registered for the
+		// same reason as the command_* family just above; the write goes
+		// through CreateAction directly, never Apply.
+		{Action: ActionTypeCardCreated, FromStatus: "*"},
+		{Action: ActionTypeDescriptionSet, FromStatus: "*"},
+		{Action: ActionTypeIdentityLinked, FromStatus: "*"},
 	}
 
 	// Non-transitioning Manual:true vocabulary — one rule per status in EACH

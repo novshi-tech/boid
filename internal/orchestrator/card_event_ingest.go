@@ -28,6 +28,13 @@ var cardEventIngestActionTypes = map[string]bool{
 	"answered":     true,
 	"noted":        true,
 	"attrs_set":    true,
+	// The daemon's own state-change records (card_state_actions.go). A new
+	// card, a rewritten description and a newly linked identity are each a
+	// change the next decision must see; without these the only evidence of
+	// them reaching a card is whatever attrs_set happens to ride along.
+	ActionTypeCardCreated:    true,
+	ActionTypeDescriptionSet: true,
+	ActionTypeIdentityLinked: true,
 }
 
 // IngestCardEventRequest is CreateAction's card-event ingest step: it

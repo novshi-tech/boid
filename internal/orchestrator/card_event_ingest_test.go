@@ -150,6 +150,12 @@ func TestIngestCardEventRequest_ActionTypeAllowlist(t *testing.T) {
 		"answered":     true,
 		"noted":        true,
 		"attrs_set":    true,
+		// The daemon's self-recorded state changes: a card's creation, a
+		// description rewrite and an identity link each carry a change the
+		// action log could not otherwise see.
+		orchestrator.ActionTypeCardCreated:    true,
+		orchestrator.ActionTypeDescriptionSet: true,
+		orchestrator.ActionTypeIdentityLinked: true,
 	}
 	excluded := []string{
 		"go", "start", "park", "complete", "drop", "reopen",

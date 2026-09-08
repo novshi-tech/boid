@@ -108,6 +108,15 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 			// key create a second one next cycle.
 			return err
 		}
+		// The card's own creation record. Same transaction as the row it
+		// describes, so the two cannot disagree.
+		if err := tx.CreateAction(ctx, &orchestrator.Action{
+			TaskID: task.ID,
+			Type:   orchestrator.ActionTypeCardCreated,
+			Actor:  orchestrator.ActorDaemon,
+		}); err != nil {
+			return fmt.Errorf("resolve or capture: record creation: %w", err)
+		}
 		result = ResolveOrCaptureResult{TaskID: task.ID, Created: true}
 		return nil
 	})
