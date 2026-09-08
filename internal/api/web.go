@@ -106,7 +106,6 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/reopen", h.ReopenForm)
 	r.Post("/tasks/{id}/reopen", h.PostReopen)
 	r.Post("/tasks/{id}/delete", h.PostDelete)
-	r.Post("/tasks/{id}/shape", h.PostStartShapingSession)
 	r.Post("/tasks/{id}/answer", h.PostAnswer)
 	r.Get("/tasks/{id}/questions/{question_id}", h.QuestionPage)
 	r.Get("/tasks/{id}/hooks", h.HookReplayList)
@@ -821,10 +820,9 @@ func (h *WebHandler) enrichPinnedChildLiveStatus(pinned []timeline.CardItem) str
 	return ""
 }
 
-// loadTriage is the best-effort task_triage sidecar lookup shared by the
-// card detail page's current-summary read and PostStartShapingSession's
-// working-status gate: a missing sidecar row (nil TaskTriage store, no row,
-// lookup error) is not fatal and simply returns nil.
+// loadTriage is the best-effort task_triage sidecar lookup the card detail
+// page's current-summary read uses: a missing sidecar row (nil TaskTriage
+// store, no row, lookup error) is not fatal and simply returns nil.
 func (h *WebHandler) loadTriage(id string) *orchestrator.CardAttrs {
 	if h.TaskTriage == nil {
 		return nil
@@ -1374,161 +1372,6 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 	}
 	jobURL := "/jobs/" + result.JobID
 	redirectOrHXRedirect(w, r, jobURL)
-}
-
-// PostStartShapingSession launches the "整形" (shaping) session for a triage
-// card. Unlike PostStartSession (a blank session the operator configures by
-// hand), this is a one-click launcher: the triage task's own project
-// supplies the workspace context, and the card's id/title/description/kind/
-// urgency are folded into the bootstrap instruction so the agent has the
-// card in hand at turn one instead of the operator re-typing it.
-//
-// Reachable from a parked card OR a working card that has a task_triage
-// sidecar row. working is included because a working triage task's
-// children (task_triage.detail.children) keep needing shaping-session work
-// after Go: an existing open child may need its spec defined, or a
-// brand-new child may need to be added — the set of children is not fixed
-// at dispatch time. Gated on the triage row existing (not just
-// status=working) because most working tasks have no task_triage sidecar
-// at all — without one there is no children list to add to or shape.
-func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if h.SessionDispatcher == nil {
-		http.Error(w, "session dispatcher not wired", http.StatusNotImplemented)
-		return
-	}
-	detail, err := h.Service.GetTaskDetail(id)
-	if err != nil || detail == nil || detail.Task == nil {
-		redirectTaskErr(w, r, id, fmt.Errorf("task not found: %s", id))
-		return
-	}
-	task := detail.Task
-	if task.Status != orchestrator.TaskStatusParked && task.Status != orchestrator.TaskStatusWorking {
-		redirectTaskErr(w, r, id, fmt.Errorf("shaping session requires a parked or working task (status = %s)", task.Status))
-		return
-	}
-	triage := h.loadTriage(id) // best-effort — a missing sidecar row is not fatal, see card_read.go's GetCard doc comment
-	if task.Status == orchestrator.TaskStatusWorking && triage == nil {
-		redirectTaskErr(w, r, id, fmt.Errorf("shaping session on a working task requires a task_triage sidecar row"))
-		return
-	}
-	harnessType, model := shapingSessionDefaults(h.Service, task.ProjectID)
-	req := StartSessionRequest{
-		ProjectID:   task.ProjectID,
-		HarnessType: harnessType,
-		Model:       model,
-		Instruction: buildShapingInstruction(task, triage),
-		DisplayName: "Shape: " + task.Title,
-	}
-	result, err := h.SessionDispatcher.StartSession(r.Context(), req)
-	if err != nil {
-		redirectTaskErr(w, r, id, err)
-		return
-	}
-	redirectOrHXRedirect(w, r, "/jobs/"+result.JobID)
-}
-
-// shapingSessionKey is the session_behaviors dictionary key the Shape
-// button resolves (project.yaml session_behaviors.shape) — a free-naming
-// dictionary scoped to sessions, unrelated to task_behaviors.
-const shapingSessionKey = "shape"
-
-// shapingSessionDefaults resolves the harness_type/model the Shape button
-// should launch with, from the triage task's own (meta) project's
-// project.yaml session_behaviors.shape entry. Falls back to ("claude", "")
-// when the project can't be loaded, has no such entry, or the entry's
-// harness_type is empty/invalid. The fallback is all-or-nothing (never
-// harnessType=claude with the project's own model still attached): an
-// invalid harness_type makes the whole entry untrustworthy, and forwarding
-// just the model would launch claude with a model nobody chose for it.
-func shapingSessionDefaults(svc WebService, projectID string) (harnessType, model string) {
-	const fallbackHarness = "claude"
-	project, err := svc.GetProjectByID(projectID)
-	if err != nil || project == nil {
-		return fallbackHarness, ""
-	}
-	behavior, ok := project.Meta.SessionBehaviors[shapingSessionKey]
-	if !ok {
-		return fallbackHarness, ""
-	}
-	if behavior.HarnessType == "" || ValidateHarnessType(behavior.HarnessType) != "" {
-		slog.Warn("session_behaviors.shape.harness_type invalid; falling back to default",
-			"project_id", projectID, "harness_type", behavior.HarnessType)
-		return fallbackHarness, ""
-	}
-	return behavior.HarnessType, behavior.Model
-}
-
-// buildShapingInstruction folds a triage card's id/title/description/kind/
-// urgency into the shaping session's bootstrap prompt. detail's opaque JSON
-// is passed through verbatim rather than parsed here — the daemon does not
-// interpret task_triage.detail's keys, and neither does this builder.
-//
-// Deliberately silent on HOW to write the card back: prescribing a
-// procedure here can collide with a workspace's own write conventions. This
-// function states only boid's own contract (leave a next-step child specced
-// within the single-slot invariant, never a card-level state transition —
-// that is a human's accept, never a shaping session's) and defers
-// everything about "how" — including which CLI to write through — to the
-// target project's own CLAUDE.md / skills. It names neither a wire action
-// nor a workspace.
-func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.CardAttrs) string {
-	var b strings.Builder
-	if task.Status == orchestrator.TaskStatusWorking {
-		b.WriteString("整形セッション: この working カードの子タスク一覧 (task_triage.detail.children) を編集してください。" +
-			"次の一手の仕様は常に最大一つです — 既存の open な子タスクがあればそれを詰めてください。" +
-			"新規追加は「次の一手」の枠が空いている場合のみ可能です（枠が埋まっている間の追加は拒否されます）。" +
-			"枠が埋まっていて対応が必要な作業を新たに見つけた場合は、このセッションでは追加せず、" +
-			"description やこのセッションの回答で運用者に伝えてください（必要なら Jira 起票を含む）。" +
-			"子タスクが1件もない状態から追加を始めても構いません。\n\n")
-	} else {
-		b.WriteString("整形セッション: 以下の parked カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")
-	}
-	fmt.Fprintf(&b, "task_id: %s\n", task.ID)
-	fmt.Fprintf(&b, "title: %s\n", task.Title)
-	if triage != nil {
-		if triage.Kind != "" {
-			fmt.Fprintf(&b, "kind: %s\n", triage.Kind)
-		}
-		if triage.Urgency != "" {
-			fmt.Fprintf(&b, "urgency: %s\n", triage.Urgency)
-		}
-	}
-	b.WriteString("\n本文:\n")
-	if task.Description != "" {
-		b.WriteString(task.Description)
-	} else {
-		b.WriteString("(本文なし — summary のみで起票された card)")
-	}
-	if triage != nil && len(triage.Detail) > 0 && string(triage.Detail) != "{}" {
-		b.WriteString("\n\ndetail (raw):\n")
-		b.Write(triage.Detail)
-	}
-	if task.Status == orchestrator.TaskStatusWorking {
-		b.WriteString("\n\n対話で子タスクの対象 project・実行内容・完了条件を固めたら、既存の子タスクを specced な状態にしてください" +
-			"（このカード自身の状態遷移は行いません。working のまま子タスクの整形だけを行います）。" +
-			"新規追加は次の一手の枠 (open/specced/実行中の子が合わせて最大一つ) が空いている場合のみ可能で、" +
-			"埋まっている間の追加は拒否されます。枠が埋まっていて対応が必要な作業を新たに見つけた場合は、" +
-			"このセッションでは追加せず運用者に伝えてください。" +
-			"card を進める・閉じる・戻す判断は行わないこと — それは人の accept、または suggestion の accept 経由でのみ行われます" +
-			"（card machine v2, docs/plans/suggestion-as-state-transition.md §3.2）。" +
-			"更新の具体的な手順 (書き込み先・経路・使う CLI) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
-			"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
-			"それに従ってください。" +
-			"整形の結果「やらない」と分かった子タスクについては、このセッションでは何もせず運用者に破棄の判断を委ねてください。")
-	} else {
-		b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、既存の子タスクを specced な状態にしてください" +
-			"（このカード自身の状態遷移は行いません。card には `ready` 状態も `ready` action も存在しません）。" +
-			"新規追加は次の一手の枠 (open/specced/実行中の子が合わせて最大一つ) が空いている場合のみ可能で、" +
-			"埋まっている間の追加は拒否されます。" +
-			"card を進める・閉じる判断は行わないこと — それは人の accept、または suggestion の accept 経由でのみ行われます" +
-			"（card machine v2, docs/plans/suggestion-as-state-transition.md §3.2）。" +
-			"更新の具体的な手順 (書き込み先・経路・使う CLI) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
-			"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
-			"それに従ってください。" +
-			"整形の結果「やらない」と分かった場合は、このセッションでは何もせず運用者に破棄 (drop) の判断を委ねてください。")
-	}
-	return b.String()
 }
 
 // WebManagementHandler serves the CLI management API at /api/web/*.
