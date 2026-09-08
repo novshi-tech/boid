@@ -45,19 +45,19 @@ class UsageTest(unittest.TestCase):
         self.assertEqual(code, 2)
 
     def test_malformed_stdin(self):
-        code, _out, err = call(["done-signal"], "{ではない")
+        code, _out, err = call(["note"], "{ではない")
         self.assertEqual(code, 2)
         self.assertIn("JSON", err)
 
     def test_a_json_array_is_refused(self):
-        code, _out, err = call(["done-signal"], [1, 2])
+        code, _out, err = call(["note"], [1, 2])
         self.assertEqual(code, 2)
         self.assertIn("オブジェクト", err)
 
     def test_a_missing_task_id_env_is_refused(self):
         """見送りの記録は sweep task 自身の timeline にしか置けない。書き先が無いまま
         進むと、記録の付かない書き込みができてしまう。"""
-        code, _out, err = call(["done-signal"], {"signals": ["boid:a1"], "task_id": "t1"}, env={})
+        code, _out, err = call(["note"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, env={})
         self.assertEqual(code, 2)
         self.assertIn(TASK_ID_ENV, err)
 
@@ -90,7 +90,7 @@ class RejectionTest(unittest.TestCase):
 
                 raise BoidError("exit=1: nope")
 
-        code, _out, err = call(["done-signal"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=Failing())
+        code, _out, err = call(["note"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, cli=Failing())
         self.assertEqual(code, 1)
         self.assertIn("nope", err)
 
@@ -98,20 +98,20 @@ class RejectionTest(unittest.TestCase):
 class SuccessTest(unittest.TestCase):
     def test_a_write_goes_through(self):
         cli = FakeCLI()
-        code, out, err = call(["done-signal"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=cli)
+        code, out, err = call(["note"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, cli=cli)
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, "")
         self.assertTrue(cli.wrote("notify_progress"))
 
     def test_report_mode_writes_nothing_and_prints_the_plan(self):
         cli = FakeCLI()
-        code, out, _err = call(["done-signal", "--report"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=cli)
+        code, out, _err = call(["note", "--report"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, cli=cli)
         self.assertEqual(code, 0)
         self.assertFalse(cli.wrote("notify_progress"))
         self.assertIn("notify_progress", out)
 
     def test_the_report_flag_is_not_taken_for_a_verb(self):
-        code, _out, err = call(["--report", "done-signal"], {"signals": ["boid:a1"], "task_id": "t1"})
+        code, _out, err = call(["--report", "note"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"})
         self.assertEqual((code, err), (0, ""))
 
 
@@ -132,7 +132,7 @@ class ReadonlyForcesReportTest(unittest.TestCase):
 
     def test_a_readonly_task_is_forced_into_report_mode_even_without_the_flag(self):
         cli = FakeCLI(readonly="true")
-        code, out, _err = call(["done-signal"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=cli)
+        code, out, _err = call(["note"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, cli=cli)
         self.assertEqual(code, 0)
         self.assertFalse(cli.wrote("notify_progress"))
         self.assertIn("notify_progress", out)
@@ -140,7 +140,7 @@ class ReadonlyForcesReportTest(unittest.TestCase):
     def test_a_writable_task_still_writes_without_the_flag(self):
         """既存の real sweep の挙動 (`--report` 無しなら普通に書き込む) が壊れていないこと。"""
         cli = FakeCLI(readonly="false")
-        code, _out, _err = call(["done-signal"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=cli)
+        code, _out, _err = call(["note"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, cli=cli)
         self.assertEqual(code, 0)
         self.assertTrue(cli.wrote("notify_progress"))
 
@@ -149,8 +149,8 @@ class ReadonlyForcesReportTest(unittest.TestCase):
         `boid task current` (env に依存しない経路) を見るので誤魔化せない。"""
         cli = FakeCLI(readonly="true")
         code, out, _err = call(
-            ["done-signal"],
-            {"signals": ["boid:a1"], "task_id": "t1"},
+            ["note"],
+            {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"},
             cli=cli,
             env={TASK_ID_ENV: "some-other-real-sweep-task"},
         )
@@ -168,7 +168,7 @@ class ReadonlyForcesReportTest(unittest.TestCase):
                 raise RuntimeError("boid unreachable")
 
         cli = Unreadable()
-        code, _out, err = call(["done-signal"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=cli)
+        code, _out, err = call(["note"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, cli=cli)
         self.assertEqual(code, 0)
         self.assertFalse(cli.wrote("notify_progress"))
         self.assertIn("boid unreachable", err)
@@ -176,7 +176,7 @@ class ReadonlyForcesReportTest(unittest.TestCase):
     def test_an_unexpected_readonly_value_fails_closed(self):
         """`"true"`/`"false"` 以外の値 (CLI の出力形式が変わった等) も fail-closed。"""
         cli = FakeCLI(readonly="")
-        code, _out, err = call(["done-signal"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=cli)
+        code, _out, err = call(["note"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, cli=cli)
         self.assertEqual(code, 0)
         self.assertFalse(cli.wrote("notify_progress"))
         self.assertIn("想定外の値", err)
@@ -186,7 +186,7 @@ class ReadonlyForcesReportTest(unittest.TestCase):
         (readonly 判定が既存挙動を上書きしないことの確認)。"""
         cli = FakeCLI(readonly="false")
         code, out, _err = call(
-            ["done-signal", "--report"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=cli
+            ["note", "--report"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, cli=cli
         )
         self.assertEqual(code, 0)
         self.assertFalse(cli.wrote("notify_progress"))
@@ -196,7 +196,7 @@ class ReadonlyForcesReportTest(unittest.TestCase):
         """`--report` が既に付いているときは `current_field` を呼ぶ必要が無い —— 呼んで
         いないことを確認する (無駄な boid 呼び出しを増やさない)。"""
         cli = FakeCLI(readonly="false")
-        call(["done-signal", "--report"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=cli)
+        call(["note", "--report"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, cli=cli)
         self.assertFalse(cli.wrote("current_field"))
 
 
@@ -281,7 +281,7 @@ class CardContextTest(unittest.TestCase):
         """card_context() が `None` (既存 Sweep task を含む非 card-command ジョブの通常
         応答) のときは、既存の BOID_TASK_ID 必須経路がそのまま働く。"""
         cli = FakeCLI(card_ctx=None)
-        code, _out, err = call(["done-signal"], {"signals": ["boid:a1"], "task_id": "t1"}, cli=cli, env={})
+        code, _out, err = call(["note"], {"signals": ["boid:a1"], "task_id": "t1", "body": "続報"}, cli=cli, env={})
         self.assertEqual(code, 2)
         self.assertIn(TASK_ID_ENV, err)
 

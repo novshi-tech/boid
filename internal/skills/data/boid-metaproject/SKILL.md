@@ -246,9 +246,10 @@ something not yet captured — plus the event keys that are new about it. Tell i
   an existing card are the same matter is not mechanically derivable; it is the
   one read only a judgment can do.
 - **what is new about a card it already knows.** A target that arrives as a card
-  id needs a `note` saying what happened, not a `done-signal` — `done-signal`
-  writes nothing to boid, so a follow-up parked there acks its signal and starts
-  no judgment. This is the steady state, not the edge case.
+  id is handed on with a `note` saying what happened. This is the steady state,
+  not the edge case, and it is the only outlet that carries a follow-up forward:
+  intake has no "read it, wrote nothing" verb, precisely because a follow-up that
+  writes nothing to the card starts no judgment.
 
 **The judgment skill** receives one card and works out what it now means. Tell
 it:

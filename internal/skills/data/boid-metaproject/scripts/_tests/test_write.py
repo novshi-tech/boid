@@ -48,7 +48,7 @@ class VerbTest(unittest.TestCase):
             {
                 "capture", "link", "note", "summary", "spec", "drop-child",
                 "observed", "urgency", "park", "start", "go", "complete", "reopen",
-                "drop", "skip", "done-signal",
+                "drop", "skip",
             },
         )
 
@@ -77,12 +77,12 @@ class RequiredFieldTest(unittest.TestCase):
 
     def test_unknown_field_is_rejected(self):
         with self.assertRaises(CommandError) as caught:
-            ok("done-signal", task_id="t1", reasons="x")
+            ok("note", task_id="t1", body="b", reasons="x")
         self.assertIn("reasons", str(caught.exception))
 
     def test_task_id_is_required_where_the_table_says_so(self):
         with self.assertRaises(CommandError) as caught:
-            ok("done-signal")
+            ok("note", body="b")
         self.assertIn("task_id", str(caught.exception))
 
     def test_capture_needs_no_task_id(self):
@@ -146,7 +146,6 @@ class SignalsTest(unittest.TestCase):
 
     def test_required_for_every_verb(self):
         for verb, fields in (
-            ("done-signal", {"task_id": "t1"}),
             ("note", {"task_id": "t1", "body": "b"}),
             ("summary", {"task_id": "t1", "body": "b"}),
             ("observed", {"task_id": "t1", "source_closed": True}),
@@ -165,34 +164,34 @@ class SignalsTest(unittest.TestCase):
         """subagent が意識しないのは記録の**書式と置き場**であって「何を処理したか」ではない。
         それは sweep task の instruction に載っている (§3.4)。"""
         with self.assertRaises(CommandError) as caught:
-            validate("done-signal", {"task_id": "t1"})
+            validate("note", {"task_id": "t1", "body": "b"})
         self.assertIn("instruction", str(caught.exception))
 
     def test_a_list_is_kept(self):
-        command = validate("done-signal", {"task_id": "t1", "signals": ["boid:a1", "boid:a2"]})
+        command = validate("note", {"task_id": "t1", "body": "b", "signals": ["boid:a1", "boid:a2"]})
         self.assertEqual(command["signals"], ("boid:a1", "boid:a2"))
 
     def test_a_bare_string_is_accepted(self):
         """1 件だけのときに文字列を渡すのは自然な書き方。受けて正規化する。"""
-        self.assertEqual(validate("done-signal", {"task_id": "t1", "signals": "boid:a1"})["signals"], ("boid:a1",))
+        self.assertEqual(validate("note", {"task_id": "t1", "body": "b", "signals": "boid:a1"})["signals"], ("boid:a1",))
 
     def test_surrounding_whitespace_is_stripped(self):
         """記録は event_key の完全一致で引く。空白が混ざると検知が読めない (§3.4)。"""
-        self.assertEqual(validate("done-signal", {"task_id": "t1", "signals": [" boid:a1 "]})["signals"], ("boid:a1",))
+        self.assertEqual(validate("note", {"task_id": "t1", "body": "b", "signals": [" boid:a1 "]})["signals"], ("boid:a1",))
 
     def test_a_malformed_event_key_is_rejected(self):
         with self.assertRaises(CommandError) as caught:
-            validate("done-signal", {"task_id": "t1", "signals": ["not-an-event-key"]})
+            validate("note", {"task_id": "t1", "body": "b", "signals": ["not-an-event-key"]})
         self.assertIn("not-an-event-key", str(caught.exception))
 
     def test_a_prefix_without_a_body_is_rejected(self):
         """`jira:` は「どの出来事か」を指していない。"""
         with self.assertRaises(CommandError):
-            validate("done-signal", {"task_id": "t1", "signals": ["jira:"]})
+            validate("note", {"task_id": "t1", "body": "b", "signals": ["jira:"]})
 
     def test_a_wrong_type_is_rejected(self):
         with self.assertRaises(CommandError) as caught:
-            validate("done-signal", {"task_id": "t1", "signals": 42})
+            validate("note", {"task_id": "t1", "body": "b", "signals": 42})
         self.assertIn("signals", str(caught.exception))
 
 

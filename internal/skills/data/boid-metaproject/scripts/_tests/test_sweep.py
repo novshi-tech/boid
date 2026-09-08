@@ -469,13 +469,16 @@ class IntakeScopeTest(unittest.TestCase):
         for verb in ("summary", "spec", "go"):
             self.assertNotIn(verb, line, f"{verb} が出口の行に混じっている")
 
-    def test_the_round_says_done_signal_is_not_the_handoff(self):
-        """`done-signal` は boid に何も書かないので、そこへ落とすと続きの判断が
-        起きない —— 巡の instruction がそれを名指しする。"""
+    def test_the_round_says_a_card_bearing_target_gets_a_note(self):
+        """対象が card 付きで来たときの出口は 1 つしかない。巡の instruction が
+        それを名指ししないと、subagent は「書くことが無い」と結論して黙る ——
+        そこに落ちた続報は判断を起こさない。"""
         cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
         main(["--intake-skill", "/intake"], cli=cli, stdout=io.StringIO())
         (_call, _task, description), = cli.named("update_description")
-        self.assertIn("done-signal", description)
+        lines = [line for line in description.splitlines() if "既に card がある" in line]
+        self.assertEqual(len(lines), 1, f"card 付き対象の出口を言う行が 1 行でない: {lines}")
+        self.assertIn("note", lines[0])
 
 
 class MainTest(unittest.TestCase):

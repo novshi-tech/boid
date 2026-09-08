@@ -247,10 +247,9 @@ def instruction(targets: Sequence[Target], *, intake_skill: str, write_command: 
         f"`{intake_skill}` の手順で仕分ける。",
         "",
         "**この巡の出口は `capture` / `link` / `note` / `skip` の 4 つだけ。**",
-        "既にある card への続報は `note` で渡す —— `done-signal` は boid に",
-        "何も書かないので、そこへ落とすと続きの判断が起きない。",
-        "card の中身を書くのはこの巡の仕事ではない —— 上の 3 つはどれも card",
-        "イベントとして記録され、続きの判断は daemon が card コマンドとして",
+        "既に card がある対象は `note` で「何が新しいか」を渡す。",
+        "card の中身を書くのはこの巡の仕事ではない —— `capture` / `link` / `note` は",
+        "どれも card イベントとして記録され、続きの判断は daemon が card コマンドとして",
         "自動で起こす。ここで書き足すと同じ card を二重に判断することになる。",
         "",
     ]

@@ -24,6 +24,7 @@ report モード (dry-run) で入力をそのまま残せるのも同じ形の�
 |---|---|
 | `capture` | identity, title, body, urgency |
 | `link` | task_id, identity |
+| `note` | task_id, body — 既にある card への続報 |
 | `summary` | task_id, body |
 | `spec` | task_id, work, origin, title, project, behavior, description (+ 任意で instruction) |
 | `drop-child` | task_id, child_id, reason |
@@ -36,7 +37,6 @@ report モード (dry-run) で入力をそのまま残せるのも同じ形の�
 | `reopen` | task_id, reason — 再オープン、を suggest |
 | `drop` | task_id, reason — 取り下げ、を suggest |
 | `skip` | signals, reason |
-| `done-signal` | task_id, signals |
 
 `signals` (この呼び出しで処理済みにする event_key 群) は Sweep 発の呼び出し (`boid card
 context` が「card 文脈なし」を返すジョブ) では**どの verb でも必須**。書き込みが成功
@@ -157,9 +157,9 @@ _VERB_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     # queue に出なかった。うち 2 件は子を specced まで作ってあった。
     "capture": (("identity", "title", "body", "urgency"), ()),
     "link": (("task_id", "identity"), ()),
-    # 既にこの card に結びついている identity から続報が来たときの出口。**`done-signal`
-    # では代われない** —— あれは boid に何も書かないので card イベントが出ず、続きの
-    # 判断が起きない。body には後段が読み直さずに済むよう「何が新しいか」を書く。
+    # 既にこの card に結びついている identity から続報が来たときの出口。card に
+    # `noted` を書くので続きの判断が起きる。body には後段が読み直さずに済むよう
+    # 「何が新しいか」を書く。
     "note": (("task_id", "body"), ()),
     "summary": (("task_id", "body"), ()),
     # **`instruction` は任意。** 子の instruction は behavior の `default_instruction` を
@@ -204,7 +204,6 @@ _VERB_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "reopen": (("task_id", "reason"), ()),
     "drop": (("task_id", "reason"), ()),
     "skip": (("signals", "reason"), ()),
-    "done-signal": (("task_id", "signals"), ()),
 }
 
 #: 旧語彙の短い互換窓。フィールド要件は改名後の verb (`start`/`complete`) と同一だが、
@@ -913,8 +912,6 @@ class Executor:
         # 書き先の task が無い。記録だけが残る (それがこの verb の全部)。
         return Result(changed=False, note=str(c["reason"]))
 
-    def _do_done_signal(self, c: Mapping[str, object]) -> Result:
-        return Result(task_id=str(c["task_id"]), changed=False, note="処理済み")
 
 
 #: boid CLI 側の書き込みメソッドと、止めたときに返す値。`resolve_or_capture` だけは
