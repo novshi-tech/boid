@@ -1352,23 +1352,98 @@ templ TaskDetailLiveScript() {
 
 			var es = null;
 
+			// captureSwapState/restoreSwapState preserve an open <details>
+			// (keyed by its closest ancestor id plus its own class) and el's
+			// own viewport-relative top position across an outerHTML
+			// replace — only a guarantee about el itself, not scroll
+			// position in general.
+			function captureSwapState(el) {
+				var openKeys = [];
+				el.querySelectorAll('details[open]').forEach(function(d) {
+					var anchor = d.closest('[id]');
+					if (anchor) openKeys.push(anchor.id + '|' + d.className);
+				});
+				return { openKeys: openKeys, top: el.getBoundingClientRect().top };
+			}
+			function restoreSwapState(el, state) {
+				if (!el || !state) return;
+				var keys = {};
+				state.openKeys.forEach(function(k) { keys[k] = true; });
+				el.querySelectorAll('details').forEach(function(d) {
+					var anchor = d.closest('[id]');
+					if (anchor && keys[anchor.id + '|' + d.className]) d.open = true;
+				});
+				var delta = el.getBoundingClientRect().top - state.top;
+				if (delta !== 0) window.scrollBy(0, delta);
+			}
+
 			function refresh(kinds) {
 				kinds.forEach(function(kind) {
+					var before = document.getElementById('task-' + kind);
+					var state = before ? captureSwapState(before) : null;
 					fetch('/tasks/' + taskID + '/fragment?kind=' + kind)
 						.then(function(r) { return r.ok ? r.text() : null; })
 						.then(function(html) {
 							if (!html) return;
 							var el = document.getElementById('task-' + kind);
-							if (el) el.outerHTML = html;
+							if (!el) return;
+							el.outerHTML = html;
+							restoreSwapState(document.getElementById('task-' + kind), state);
 						})
 						.catch(function() {});
 				});
 			}
 
+			// refreshHistoryHead re-syncs #card-timeline's already-loaded
+			// head range (top down through the current Load-older boundary,
+			// read off that button's hx-get, or the whole thing when there
+			// is none) in place, without touching pages loaded further back.
+			// No-op when #card-timeline or its list is absent. See
+			// TaskCardTimelineHead (internal/api/web.go) for the server side.
+			function refreshHistoryHead() {
+				var container = document.getElementById('card-timeline');
+				if (!container) return;
+				var list = container.querySelector('.card-timeline-list');
+				if (!list) return;
+
+				var boundaryEl = null;
+				var frontier = '';
+				var btn = list.querySelector('.card-timeline-load-older button');
+				if (btn) {
+					boundaryEl = btn.closest('li');
+					try {
+						var u = new URL(btn.getAttribute('hx-get'), window.location.href);
+						frontier = u.searchParams.get('cursor') || '';
+					} catch (e) {}
+				} else {
+					list.querySelectorAll('.card-timeline-date-sep').forEach(function(li) {
+						if (!boundaryEl && li.textContent === 'No more history.') boundaryEl = li;
+					});
+				}
+
+				fetch('/tasks/' + taskID + '/card-timeline/head?frontier=' + encodeURIComponent(frontier))
+					.then(function(r) { return r.ok ? r.text() : null; })
+					.then(function(html) {
+						if (html === null) return;
+						var node = list.firstElementChild;
+						while (node && node !== boundaryEl) {
+							var next = node.nextElementSibling;
+							list.removeChild(node);
+							node = next;
+						}
+						var tmp = document.createElement('template');
+						tmp.innerHTML = html;
+						while (tmp.content.firstChild) {
+							list.insertBefore(tmp.content.firstChild, boundaryEl);
+						}
+					})
+					.catch(function() {});
+			}
+
 			function openES() {
 				if (es && es.readyState !== EventSource.CLOSED) return;
 				es = new EventSource('/api/tasks/' + taskID + '/events');
-				es.addEventListener('action', function() { refresh(['status', 'pinned', 'timeline']); });
+				es.addEventListener('action', function() { refresh(['status', 'pinned', 'timeline']); refreshHistoryHead(); });
 				es.addEventListener('job', function() { refresh(['status', 'pinned', 'timeline']); });
 				es.addEventListener('fired_event', function() { refresh(['timeline']); });
 				// 'child' is a card's dispatched-child update; only
@@ -1418,11 +1493,13 @@ templ TaskDetailLiveScript() {
 				} else {
 					openES();
 					refresh(['status', 'pinned', 'timeline']);
+					refreshHistoryHead();
 				}
 			});
 			window.addEventListener('pageshow', function(e) {
 				openES();
 				refresh(['status', 'pinned', 'timeline']);
+				refreshHistoryHead();
 			});
 		})();
 	</script>

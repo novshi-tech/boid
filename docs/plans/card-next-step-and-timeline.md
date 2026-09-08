@@ -2417,3 +2417,115 @@ cutover 前には全体チェックと利用可能なブラウザ/E2E 環境で�
   ことも検討したが、`UpsertTaskTriage` 自体がそれを拒否する（対象行が
   0件で `ErrTaskNotFound` になる）ため実 DB では再現不可能と判断し、
   この事実を記録するに留めた。
+
+- **PR-6c-2 で確定: §5.3 の残り2項目（SSE 更新での状態保持、新着と
+  Load older の競合、N4）。** UI の見た目・コマンド入力は対象外
+  （PR-6a/6b で確定済み）。
+
+  1. **状態保持は「置換範囲を狭める」でも「morph/`hx-preserve` 導入」でも
+     なく、置換前に状態を退避して復元する方式にした。** 既存の
+     `outerHTML` 全置換（`#task-status`/`#task-pinned`）はそのまま残し、
+     `TaskDetailLiveScript` の `refresh()` に `captureSwapState`/
+     `restoreSwapState` を追加しただけ。外部ライブラリは追加していない
+     （`CLAUDE.md` の「外部ライブラリは最小限」— `querySelectorAll`/
+     `closest`/`getBoundingClientRect`/`scrollBy` は標準 DOM API のみ）。
+     **保証すること:** 置換対象内の `<details>`（カード要約の折り畳み、
+     固定項目の子 spec 折り畳み）は、置換後の同じ要素
+     （closest ancestor id + 自身の class をキーにした対応）が開いていれば
+     再度開く。置換される要素自身（`#task-status`/`#task-pinned`）の
+     viewport 内の上端位置は、置換前後で変わらないよう `scrollBy` で
+     補正する。**保証しないこと:** スクロール位置全般の維持ではない
+     （置換対象そのものの上端だけを固定する設計。置換対象の外側の
+     レイアウトが変わるケースは対象外）。同一要素が置換前後で存在する
+     ことが前提（要素の有無が変わる kind=pinned の exec ページ no-op 等は
+     従来通り何もしない）。指示の入力途中の保持は PR-6b が
+     `CardCommandSection` を置換対象の外に出したことで既に成立しており、
+     この PR では触れていない。追加読み込み済み履歴の保持は
+     `#card-timeline` を SSE 置換対象にしないという PR-6a の決定のまま
+     （下記2項目でこの制約の中で新着を差し込む）。
+  2. **N4 は「head だけを差し替える」でも「pinned から history へ落ちた
+     項目だけを挿入する」でもなく、「クライアントが既に読み込み済みの
+     先頭範囲を、その範囲の終端（クライアントが持つ Load-older の
+     cursor）まで丸ごと再計算して置き換える」方式にした。** 新設
+     `WebHandler.TaskCardTimelineHead`（`GET
+     /tasks/{id}/card-timeline/head?frontier=<cursor>`）は `cursor=""`
+     から `BuildCardTimeline` を呼び直し、`frontier` が指す item に
+     到達するまで（無ければ履歴が尽きるまで）ページを重ねて集め、
+     `CardHistoryHeadFragment` として返す。ブラウザ側
+     `refreshHistoryHead()` は `#card-timeline` の Load-older ボタンの
+     `hx-get` から現在の `frontier` を読み、ボタン（または「No more
+     history.」)の手前にある `<li>` を全部フレッシュな内容に総入れ替えする
+     ——ID ベースの merge/dedup は行わない。単純な「先頭 N 件を再取得して
+     プレフィックスに差し込む」方式を採らなかった理由: pin 中に除外されて
+     いた子の実位置は、除外されていなければ本来その範囲の**途中**に
+     入るはずだった位置であり得るため（末尾ではなく中間に挿入され、
+     既存の境界項目の順位がずれる）、固定件数の先頭取得では境界項目を
+     誤って落とす/範囲を誤検出するおそれがある。「範囲の終端まで丸ごと
+     再計算して置き換える」なら、境界項目自体を目印にするので挿入位置に
+     関わらず正しく再現でき、かつ境界より古い（Load older 未読込の）
+     範囲には一切触れない。`#card-timeline` 自体は変わらず SSE 置換対象に
+     していない——このエンドポイントは `#card-timeline` の**内側**の
+     `<li>` 群だけを操作する。
+     **実 DB での再現と修正確認
+     (`TestCardDetail_TimelineHead_RevealsChildSkippedByStaleCursor`,
+     `internal/api/web_card_timeline_head_test.go`):** 子を pin 中に
+     作成し、その前後に非 pin 項目を配置して「子の実順位が page1 の
+     境界項目とちょうど同じ位置に来る」タイムスタンプを組んだ上で、
+     (1) page1 を読んで境界 cursor を取得、(2) 子をクローズ、(3) その
+     境界 cursor で実際に `/card-timeline`（Load older 相当）を叩いて
+     子が**見えないこと**を確認（ギャップの再現）、(4) 同じ境界 cursor で
+     `/card-timeline/head` を叩いて子・Finished マーカー・境界項目自体
+     （重複なく1回）が含まれ、境界より古い項目が含まれないことを確認、
+     という手順で通した。
+  3. **フロントの JS で担保できていること/できていないこと。** ヘッドレス
+     ブラウザ実行環境がリポジトリに無いため、実行時の DOM/スクロール
+     挙動そのものを検証する自動テストは書けていない。担保したのは
+     ソースレベルの配線（`internal/api/web_card_sse_state_test.go`）:
+     `captureSwapState`/`restoreSwapState` が `refresh()` 内で置換の前後
+     どちらに呼ばれているか（文字列位置の前後関係）、呼び出しが
+     コメントアウトされていないか（`//` 判定）、`refreshHistoryHead()` が
+     `action` リスナー・`visibilitychange`・`pageshow` の3箇所から呼ばれ、
+     `job`/`child` リスナーからは呼ばれないこと。**担保できていないのは:**
+     実際に `<details>` が開閉されるか、スクロール位置が実際に補正
+     されるか、`refreshHistoryHead()` の DOM 差し替え（`<li>` の削除・
+     挿入）が実ブラウザで正しく発生するか。
+  4. **PR-6b §10 point 2（コマンドの継続先が生まれ次第 SSE で自動的に
+     リンクが現れる）はこの PR でも埋めていない。** `card_requests` の
+     ライフサイクル遷移（queued→launching→attached→finished/failed）は
+     引き続きどこにも broadcast されておらず、継続先はページ再読込・
+     `visibilitychange`/`pageshow` の定期 refresh に依存したまま
+     （PR-6c-1 §10 nice-to-have の記録どおり）。埋めない判断の理由:
+     遷移箇所は `internal/orchestrator/card_request*.go`（Hub を持たない
+     層）に散らばっており、`internal/api` 側から broadcast を配線するには
+     呼び出し元ごとに commit 境界を確認する必要がある——PR-6c-1 の
+     `child` fan-out がまさにこの確認不足で2ラウンドのレビューを要した
+     箇所であり、この PR のスコープ（§5.3 の残り2項目）に無理に含めず
+     独立した変更として次回扱う方が安全と判断した。
+
+  **mutation テスト結果。** すべて「python での置換 →
+  `git diff`/バックアップとの比較で着弾を確認（`.templ` は追加で
+  `templ generate` 後の `_templ.go` 差分も確認）→ `go test` を実行 →
+  赤を確認 → `cp` で復元」の手順で実施した。
+
+  | 契約 | mutation | 着弾確認 | 挙動が変わったか |
+  |---|---|---|---|
+  | N4: frontier 到達判定 | `it.ID == frontierID && it.Time.Equal(...)` の条件を `false &&` で無効化 | diff | 赤（境界より古い項目が漏れて含まれることを検出） |
+  | N4: レスポンス本体 | `CardHistoryHeadFragment(id, items)` の `items` を `nil` に | diff | 赤 |
+  | N4: ルート未登録 | `/tasks/{id}/card-timeline/head` の route 登録行を削除 | diff | 赤（404） |
+  | N4: 不正 cursor のエラー処理 | `DecodeActionCursor` のエラーを無視するよう変更 | diff | 赤 |
+  | 状態保持: capture 呼び出し | `captureSwapState(before)` を `null` に | diff + `templ generate` | 赤 |
+  | 状態保持: restore 呼び出し（コメントアウト） | `restoreSwapState(...)` 行を `//` でコメントアウト | diff + `templ generate` | 最初は素の部分一致テストでは見逃し（コメント化してもテキストは残る）— 行頭 `//` の有無を見る `lineContainingIsActive` を追加してから再度当てて赤を確認 |
+  | history head 配線: action リスナー | `action` リスナーから `refreshHistoryHead()` 呼び出しを削除 | diff + `templ generate` | 赤 |
+  | history head 配線: job リスナーに誤って追加 | `job` リスナーにも `refreshHistoryHead()` を追加 | diff + `templ generate` | 赤（「job では呼ばない」contract 側で検出） |
+
+  着弾確認は毎回 `git diff`（`.templ` は追加で `templ generate` 後の
+  `_templ.go` 差分）で行い、`go test` の結果を見たら元のファイルへ `cp`
+  で復元してから次の mutation に進んだ。
+
+  **実装中に気づいた plan doc とのズレ:** §10 PR-5b の記録は N4 の
+  再現条件を「pinned だった子が Load older を押す前に終端する」とだけ
+  書いており、子の実際の時系列順位が page1 の境界項目のどちら側に
+  来るかには触れていなかった。実装して初めて分かったのは、境界より
+  older な位置に来る場合は既存の Load-older 経路だけで正しく拾える
+  （ギャップにならない）——ギャップが起きるのは子の実順位が境界と
+  同じかそれより newer な場合に限られる、という条件の精緻化。

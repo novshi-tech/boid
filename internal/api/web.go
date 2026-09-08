@@ -95,6 +95,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Get("/tasks/{id}/card-timeline", h.TaskCardTimelineOlder)
+	r.Get("/tasks/{id}/card-timeline/head", h.TaskCardTimelineHead)
 	r.Post("/tasks/{id}/commands", h.PostCardCommand)
 	r.Get("/tasks/{id}/edit", h.GetTaskEdit)
 	r.Post("/tasks/{id}/edit", h.PostEdit)
@@ -925,6 +926,68 @@ func (h *WebHandler) TaskCardTimelineOlder(w http.ResponseWriter, r *http.Reques
 	h.resolveCardItemChildProjects(page.Items)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	templates.CardHistoryOlderFragment(id, page.Items, page.HasMore, page.NextCursor, lastDate).Render(r.Context(), w)
+}
+
+// cardTimelineHeadMaxPages bounds TaskCardTimelineHead's internal re-scan —
+// a safety valve against a runaway loop on corrupt/foreign frontier input,
+// not a limit any real card timeline is expected to hit (each page already
+// holds timeline.MaxCardTimelineLimit items).
+const cardTimelineHeadMaxPages = 50
+
+// TaskCardTimelineHead re-renders a card's history from the top down
+// through (and including) the item at frontier, as a flat item list with no
+// Load-older control — lets a caller safely replace its own already-loaded
+// head range in place, since an item excluded from that range when it was
+// first loaded can later reappear anywhere within it. frontier empty means
+// walk until history is exhausted.
+func (h *WebHandler) TaskCardTimelineHead(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil || detail.Task == nil || detail.Task.Type != orchestrator.TaskTypeCard {
+		http.Error(w, "card not found", http.StatusNotFound)
+		return
+	}
+	if h.CardTimeline == nil {
+		http.Error(w, "card timeline not available", http.StatusNotFound)
+		return
+	}
+
+	frontier := r.URL.Query().Get("frontier")
+	var frontierTime time.Time
+	var frontierID string
+	if frontier != "" {
+		frontierTime, frontierID, err = orchestrator.DecodeActionCursor(frontier)
+		if err != nil {
+			http.Error(w, "invalid frontier cursor", http.StatusBadRequest)
+			return
+		}
+	}
+
+	var items []timeline.CardItem
+	cursor := ""
+	for i := 0; i < cardTimelineHeadMaxPages; i++ {
+		page, perr := h.CardTimeline.BuildCardTimeline(id, cursor, timeline.MaxCardTimelineLimit)
+		if perr != nil {
+			http.Error(w, "failed to load timeline", http.StatusInternalServerError)
+			return
+		}
+		reachedFrontier := false
+		for _, it := range page.Items {
+			items = append(items, it)
+			if frontier != "" && it.HasTime && it.ID == frontierID && it.Time.Equal(frontierTime) {
+				reachedFrontier = true
+				break
+			}
+		}
+		if reachedFrontier || !page.HasMore {
+			break
+		}
+		cursor = page.NextCursor
+	}
+
+	h.resolveCardItemChildProjects(items)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	templates.CardHistoryHeadFragment(id, items).Render(r.Context(), w)
 }
 
 func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {

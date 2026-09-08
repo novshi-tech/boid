@@ -259,6 +259,13 @@ templ CardHistoryOlderFragment(cardID string, items []timeline.CardItem, hasMore
 	}
 }
 
+// CardHistoryHeadFragment renders items as a flat list of <li>s with no
+// Load-older control — TaskCardTimelineHead's response, for a client to
+// splice into its own already-loaded head range.
+templ CardHistoryHeadFragment(cardID string, items []timeline.CardItem) {
+	@cardHistoryItems(items, cardID, "")
+}
+
 templ cardHistoryItems(items []timeline.CardItem, cardID string, priorDateKey string) {
 	{{ seps := cardHistoryDateSeparators(items, priorDateKey) }}
 	for i, item := range items {

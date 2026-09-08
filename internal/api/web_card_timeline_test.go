@@ -418,7 +418,11 @@ func TestCardDetail_LoadOlder_PagesWithoutDuplicationOrLoss(t *testing.T) {
 	// pages — page2 must not repeat the day page1's last_date already
 	// carried forward (§5.4's "Load older で同じ日を継ぎ足しても区切りを
 	// 重複させない", end to end through the real HTTP endpoint).
-	if sepTotal := strings.Count(page1, "card-timeline-date-sep") + strings.Count(page2, "card-timeline-date-sep"); sepTotal != 1 {
+	// Matches the rendered <li class="..."> attribute, not the bare class
+	// name — TaskDetailLiveScript's own selector text (page1 includes the
+	// full page) also contains "card-timeline-date-sep" as a substring.
+	dateSepAttr := `class="card-timeline-date-sep"`
+	if sepTotal := strings.Count(page1, dateSepAttr) + strings.Count(page2, dateSepAttr); sepTotal != 1 {
 		t.Errorf("date separators across page1+page2 = %d, want exactly 1", sepTotal)
 	}
 }
