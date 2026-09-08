@@ -75,6 +75,47 @@ func TestRecordChildClosedOnParent_BroadcastsToParentCard(t *testing.T) {
 	}
 }
 
+// TestRecordChildClosedOnParent_NoBroadcastOnCommitFailure pins that the
+// broadcast sits AFTER WithinTx returns, not inside its closure: wrapping
+// the same real repo in postCommitFailTransactor still runs the closure
+// body (the task_triage/action writes actually land), but WithinTx itself
+// reports failure — a mutation moving the broadcast inside the closure
+// would still fire it.
+func TestRecordChildClosedOnParent_NoBroadcastOnCommitFailure(t *testing.T) {
+	svc, _, card := newCardCommandTestService(t, "proj-1", testCardMeta(nil))
+	repo := svc.CardRequests.(*orchestrator.TaskRepository)
+
+	child := &orchestrator.Task{
+		Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", ParentID: card.ID,
+		Title: "fix the thing", Status: orchestrator.TaskStatusExecuting,
+		Exec: &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
+	}
+	if err := repo.CreateTask(child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	detail, err := orchestrator.AddDetailChild(nil, orchestrator.TaskTriageChild{
+		ID: "c1", Status: orchestrator.TaskTriageChildStatusDispatched, TaskRef: child.ID,
+	})
+	if err != nil {
+		t.Fatalf("AddDetailChild: %v", err)
+	}
+	if err := repo.UpsertTaskTriage(&orchestrator.CardAttrs{TaskID: card.ID, Detail: detail}); err != nil {
+		t.Fatalf("upsert task_triage: %v", err)
+	}
+
+	hub := NewTaskEventHub()
+	svc.Hub = hub
+	svc.Tx = postCommitFailTransactor{inner: realTaskRepoTxStore{repo}}
+	parentCh := hub.Subscribe(context.Background(), card.ID)
+
+	child.Status = orchestrator.TaskStatusDone
+	svc.recordChildClosedOnParent(context.Background(), child)
+
+	if _, ok := receiveEvent(t, parentCh, 50*time.Millisecond); ok {
+		t.Fatal("hub must not receive a broadcast when WithinTx reports failure")
+	}
+}
+
 func TestRecordChildClosedOnParent_NoBroadcastWhenParentIsNotACard(t *testing.T) {
 	svc, _, _ := newCardCommandTestService(t, "proj-1", testCardMeta(nil))
 	repo := svc.CardRequests.(*orchestrator.TaskRepository)
@@ -153,5 +194,34 @@ func TestRecordVanishedChildClosedOnParent_BroadcastsToParentCard(t *testing.T) 
 	}
 	if !found {
 		t.Fatal("expected a vanished child_closed action on the parent's own action log")
+	}
+}
+
+// TestRecordVanishedChildClosedOnParent_NoBroadcastOnCommitFailure is
+// TestRecordChildClosedOnParent_NoBroadcastOnCommitFailure's vanished-child
+// counterpart.
+func TestRecordVanishedChildClosedOnParent_NoBroadcastOnCommitFailure(t *testing.T) {
+	svc, _, card := newCardCommandTestService(t, "proj-1", testCardMeta(nil))
+	repo := svc.CardRequests.(*orchestrator.TaskRepository)
+
+	detail, err := orchestrator.AddDetailChild(nil, orchestrator.TaskTriageChild{
+		ID: "c1", Status: orchestrator.TaskTriageChildStatusDispatched, TaskRef: "vanished-task-id",
+	})
+	if err != nil {
+		t.Fatalf("AddDetailChild: %v", err)
+	}
+	if err := repo.UpsertTaskTriage(&orchestrator.CardAttrs{TaskID: card.ID, Detail: detail}); err != nil {
+		t.Fatalf("upsert task_triage: %v", err)
+	}
+
+	hub := NewTaskEventHub()
+	svc.Hub = hub
+	svc.Tx = postCommitFailTransactor{inner: realTaskRepoTxStore{repo}}
+	parentCh := hub.Subscribe(context.Background(), card.ID)
+
+	svc.recordVanishedChildClosedOnParent(context.Background(), card.ID, "vanished-task-id")
+
+	if _, ok := receiveEvent(t, parentCh, 50*time.Millisecond); ok {
+		t.Fatal("hub must not receive a broadcast when WithinTx reports failure")
 	}
 }

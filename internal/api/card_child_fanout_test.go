@@ -8,11 +8,26 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+// postCommitFailTransactor runs fn against inner — so a body that (wrongly)
+// broadcasts from INSIDE the transaction still does — then reports the
+// transaction itself as failed. Distinct from alwaysFailTx (hub_broadcast_test.go),
+// which never runs fn at all: this models a commit that fails only after its
+// body already ran.
+type postCommitFailTransactor struct {
+	inner TxStore
+}
+
+func (t postCommitFailTransactor) WithinTx(fn func(TxStore) error) error {
+	_ = fn(t.inner)
+	return fmt.Errorf("simulated post-commit failure")
+}
 
 // ---- fanOutChildEventToParentCard / isCardTask: the single decision point ----
 
@@ -148,6 +163,41 @@ func TestApplyAction_DoesNotFanOut_WhenParentIsExecution(t *testing.T) {
 	}
 }
 
+// TestApplyAction_FanOut_NoBroadcastOnCommitFailure pins that the fan-out
+// call sits AFTER WithinTx returns, not inside its closure: with
+// postCommitFailTransactor the closure body runs (so a mutation moving the
+// fan-out inside it would still fire), but WithinTx itself reports failure.
+func TestApplyAction_FanOut_NoBroadcastOnCommitFailure(t *testing.T) {
+	card := &orchestrator.Task{ID: "card-1", Type: orchestrator.TaskTypeCard, ProjectID: "proj-1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+	child := &orchestrator.Task{
+		ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", ParentID: card.ID,
+		Status: orchestrator.TaskStatusExecuting,
+		Exec:   &orchestrator.ExecAttrs{Behavior: "impl", Payload: []byte(`{}`)},
+	}
+	txStore := &recordingTxStore{task: child, tasks: map[string]*orchestrator.Task{child.ID: child, card.ID: card}}
+	hub := NewTaskEventHub()
+	selfCh := hub.Subscribe(context.Background(), child.ID)
+	parentCh := hub.Subscribe(context.Background(), card.ID)
+
+	svc := &TaskWorkflowService{
+		Tasks: &stubTaskStore{tasks: map[string]*orchestrator.Task{child.ID: child, card.ID: card}},
+		Tx:    postCommitFailTransactor{inner: txStore},
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"impl": {}}}},
+		Hub:   hub,
+	}
+
+	if _, err := svc.ApplyAction(context.Background(), child.ID, ApplyActionRequest{Type: "ask"}); err == nil {
+		t.Fatal("ApplyAction(ask): expected error on commit failure, got nil")
+	}
+
+	if _, ok := receiveEvent(t, selfCh, 50*time.Millisecond); ok {
+		t.Fatal("hub must not receive the self-broadcast event when commit fails")
+	}
+	if _, ok := receiveEvent(t, parentCh, 50*time.Millisecond); ok {
+		t.Fatal("hub must not receive the fan-out event when commit fails")
+	}
+}
+
 // ---- CompleteJob: child job completion/failure must fan out to a card parent ----
 
 func TestCompleteJob_Success_FansOutToParentCard(t *testing.T) {
@@ -206,6 +256,69 @@ func TestCompleteJob_Failure_FansOutToParentCard(t *testing.T) {
 	}
 	if ev.Kind != "child" {
 		t.Fatalf("event kind = %q, want %q", ev.Kind, "child")
+	}
+}
+
+// TestCompleteJob_Success_DoesNotFanOut_WhenParentIsExecution is CompleteJob's
+// success-path negative case — TestApplyAction_DoesNotFanOut_WhenParentIsExecution
+// only covers ApplyAction; the shared helper's own test covers CompleteJob's
+// code path only indirectly.
+func TestCompleteJob_Success_DoesNotFanOut_WhenParentIsExecution(t *testing.T) {
+	parent := &orchestrator.Task{ID: "exec-parent-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
+	child := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", ParentID: parent.ID, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
+	job := &Job{ID: "job-1", TaskID: child.ID, ProjectID: "proj-1", Status: JobStatusRunning}
+
+	hub := NewTaskEventHub()
+	parentCh := hub.Subscribe(context.Background(), parent.ID)
+
+	svc := &TaskWorkflowService{
+		Tasks: &stubTaskStore{tasks: map[string]*orchestrator.Task{child.ID: child, parent.ID: parent}},
+		Jobs:  &stubJobStore{job: job},
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{}},
+		Tx:    &stubTx{},
+		Hub:   hub,
+	}
+
+	if _, err := svc.CompleteJob(context.Background(), job.ID, JobDoneRequest{ExitCode: 0}); err != nil {
+		t.Fatalf("CompleteJob: %v", err)
+	}
+
+	if _, ok := receiveEvent(t, parentCh, 50*time.Millisecond); ok {
+		t.Fatal("execution parent must not receive a child fan-out event")
+	}
+}
+
+// TestCompleteJob_Failure_FanOut_NoBroadcastOnCommitFailure is
+// TestApplyAction_FanOut_NoBroadcastOnCommitFailure's CompleteJob
+// counterpart: the job_failed transaction and the fan-out sit on either
+// side of the same WithinTx boundary.
+func TestCompleteJob_Failure_FanOut_NoBroadcastOnCommitFailure(t *testing.T) {
+	card := &orchestrator.Task{ID: "card-1", Type: orchestrator.TaskTypeCard, ProjectID: "proj-1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
+	child := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", ParentID: card.ID, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
+	job := &Job{ID: "job-1", TaskID: child.ID, ProjectID: "proj-1", Status: JobStatusRunning}
+
+	hub := NewTaskEventHub()
+	selfCh := hub.Subscribe(context.Background(), child.ID)
+	parentCh := hub.Subscribe(context.Background(), card.ID)
+
+	svc := &TaskWorkflowService{
+		Tasks:     &stubTaskStore{tasks: map[string]*orchestrator.Task{child.ID: child, card.ID: card}},
+		Jobs:      &stubJobStore{job: job},
+		Meta:      stubMetaStore{meta: &orchestrator.ProjectMeta{}},
+		Lifecycle: &stubLifecycle{},
+		Tx:        postCommitFailTransactor{inner: &stubTx{}},
+		Hub:       hub,
+	}
+
+	if _, err := svc.CompleteJob(context.Background(), job.ID, JobDoneRequest{ExitCode: 1}); err == nil {
+		t.Fatal("CompleteJob: expected error on commit failure, got nil")
+	}
+
+	if _, ok := receiveEvent(t, selfCh, 50*time.Millisecond); ok {
+		t.Fatal("hub must not receive the self-broadcast event when commit fails")
+	}
+	if _, ok := receiveEvent(t, parentCh, 50*time.Millisecond); ok {
+		t.Fatal("hub must not receive the fan-out event when commit fails")
 	}
 }
 
@@ -274,10 +387,11 @@ func TestNotifyTask_FailRequest_BroadcastsSelfAndFansOutToParentCard(t *testing.
 	}
 }
 
-// TestNotifyTask_Progress_NoParentCard_NoFanOut pins the "card parent only"
-// side for NotifyTask specifically: a root task (no parent at all) must not
-// panic or otherwise misbehave.
-func TestNotifyTask_Progress_NoParentCard_NoFanOut(t *testing.T) {
+// TestNotifyTask_Progress_RootTask_StillBroadcastsSelf pins that a root task
+// (no parent at all) still gets its own self-broadcast — fanOutChildEventToParentCard's
+// own no-parent case (already covered directly) is exercised incidentally
+// here, not asserted on: there is no parent channel to observe.
+func TestNotifyTask_Progress_RootTask_StillBroadcastsSelf(t *testing.T) {
 	task := &orchestrator.Task{ID: "root-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
 
 	hub := NewTaskEventHub()
@@ -295,5 +409,31 @@ func TestNotifyTask_Progress_NoParentCard_NoFanOut(t *testing.T) {
 
 	if _, ok := receiveEvent(t, selfCh, time.Second); !ok {
 		t.Fatal("progress must still broadcast to the reporting task's own subscribers")
+	}
+}
+
+// TestNotifyTask_Progress_DoesNotFanOut_WhenParentIsExecution is
+// broadcastNotifyAction's own execution-parent negative case — the shared
+// fanOutChildEventToParentCard unit test covers the predicate itself, but
+// not that this specific call site actually passes it through untouched.
+func TestNotifyTask_Progress_DoesNotFanOut_WhenParentIsExecution(t *testing.T) {
+	parent := &orchestrator.Task{ID: "exec-parent-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
+	child := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", ParentID: parent.ID, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
+
+	hub := NewTaskEventHub()
+	parentCh := hub.Subscribe(context.Background(), parent.ID)
+
+	svc := &TaskAppService{
+		Tasks:   &stubTaskStore{tasks: map[string]*orchestrator.Task{child.ID: child, parent.ID: parent}},
+		Actions: &capturingActionStore{},
+		Hub:     hub,
+	}
+
+	if err := svc.NotifyTask(context.Background(), child.ID, "", "", "", "progressing", "", ""); err != nil {
+		t.Fatalf("NotifyTask(progress): %v", err)
+	}
+
+	if _, ok := receiveEvent(t, parentCh, 50*time.Millisecond); ok {
+		t.Fatal("execution parent must not receive a child fan-out event")
 	}
 }

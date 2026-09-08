@@ -287,12 +287,8 @@ func (s *TaskAppService) broadcastNotifyAction(task *orchestrator.Task, action *
 		},
 	})
 	fanOutChildEventToParentCard(s.Hub, s.Tasks, task, TaskEvent{
-		Kind: "child",
-		Payload: map[string]any{
-			"child_task_id": task.ID,
-			"action_id":     action.ID,
-			"reason":        action.Type,
-		},
+		Kind:    "child",
+		Payload: childEventPayload(task.ID, action.Type, "action_id", action.ID),
 	})
 }
 

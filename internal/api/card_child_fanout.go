@@ -19,3 +19,13 @@ func fanOutChildEventToParentCard(hub *TaskEventHub, tasks TaskStore, child *orc
 	}
 	hub.Broadcast(parent.ID, ev)
 }
+
+// childEventPayload builds a "child" TaskEvent's payload: child_task_id,
+// reason, and one caller-chosen id field.
+func childEventPayload(childTaskID, reason, idKey, idValue string) map[string]any {
+	return map[string]any{
+		"child_task_id": childTaskID,
+		"reason":        reason,
+		idKey:           idValue,
+	}
+}
