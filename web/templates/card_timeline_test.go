@@ -425,8 +425,12 @@ func TestCardTimelineItem_Pinned_ShowsDateAndTime(t *testing.T) {
 		Time: time.Date(2026, 9, 5, 14, 30, 0, 0, time.Local),
 	}
 	html := renderItem(t, item, "card-1", "", true, "")
-	if !strings.Contains(html, "Sep 5, 2026") {
-		t.Errorf("pinned item should spell out the date; got:\n%s", html)
+	// Both halves: a pinned item sits above the history list, where no date
+	// separator reaches it, so it must carry the date AND the clock.
+	for _, want := range []string{"Sep 5, 2026", "14:30"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("pinned item should spell out %q (date and time); got:\n%s", want, html)
+		}
 	}
 }
 
@@ -438,6 +442,28 @@ func TestCardTimelineItem_NonPinned_ShowsTimeOnlyNotDate(t *testing.T) {
 	html := renderItem(t, item, "card-1", "", false, "")
 	if strings.Contains(html, "Sep 5, 2026") {
 		t.Errorf("a non-pinned (history) item must show time only, no date (the date separator carries it); got:\n%s", html)
+	}
+	// "time only" still means a time is shown — asserting only the date's
+	// absence passes just as happily when the clock is dropped entirely.
+	if !strings.Contains(html, "14:30") {
+		t.Errorf("a history item must still show its clock time; got:\n%s", html)
+	}
+}
+
+// The page must say which timezone its timestamps are in (§5.4's "表示
+// タイムゾーンを画面で確認可能にする"), or a reader cannot tell whether a
+// time is theirs or the server's.
+func TestCardHistorySection_NamesTheDisplayTimezone(t *testing.T) {
+	tl := &CardTimelineView{
+		History: []timeline.CardItem{{Kind: timeline.CardItemWakeDue, ID: "a1", HasTime: true, Time: time.Now()}},
+	}
+	var buf bytes.Buffer
+	if err := CardHistorySection(tl, "card-1").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	zone, _ := time.Now().Zone()
+	if html := buf.String(); !strings.Contains(html, zone) || !strings.Contains(html, "UTC") {
+		t.Errorf("expected the display timezone (%q, UTC offset) to be named on the page, got: %s", zone, html)
 	}
 }
 
@@ -479,6 +505,18 @@ func TestCardHistorySection_HasMore_RendersLoadOlderButton(t *testing.T) {
 	}
 	if !strings.Contains(html, "/tasks/card-1/card-timeline?cursor=") {
 		t.Errorf("Load older button should hx-get the card-timeline endpoint with the next cursor, got: %s", html)
+	}
+	// The control must sit INSIDE the list and swap its own <li>. With
+	// hx-target="this" the loaded page lands inside the button's <li>, one
+	// nesting level deeper per click and outside the list's own styling.
+	if !strings.Contains(html, `hx-target="closest li"`) {
+		t.Errorf("Load older button must target its own li, got: %s", html)
+	}
+	listEnd := strings.Index(html, "</ul>")
+	control := strings.Index(html, "card-timeline-load-older")
+	if listEnd < 0 || control < 0 || control > listEnd {
+		t.Errorf("Load older control must render inside ul.card-timeline-list (control=%d, </ul>=%d), got: %s",
+			control, listEnd, html)
 	}
 }
 
