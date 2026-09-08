@@ -780,6 +780,8 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(ctx context.Context, tas
 		return
 	}
 	recorded := false
+	var action *orchestrator.Action
+	var parentTask *orchestrator.Task
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		tt, err := tx.GetTaskTriage(task.ParentID)
 		if err != nil {
@@ -801,7 +803,8 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(ctx context.Context, tas
 		if err := tx.UpsertTaskTriage(tt); err != nil {
 			return fmt.Errorf("child_closed: upsert parent task_triage: %w", err)
 		}
-		parentTask, gErr := tx.GetTask(task.ParentID)
+		var gErr error
+		parentTask, gErr = tx.GetTask(task.ParentID)
 		if gErr != nil {
 			return fmt.Errorf("child_closed: get parent task: %w", gErr)
 		}
@@ -812,7 +815,7 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(ctx context.Context, tas
 			"child_project": task.ProjectID,
 			"summary":       childResultSummary(task),
 		})
-		action := &orchestrator.Action{
+		action = &orchestrator.Action{
 			TaskID:     task.ParentID,
 			Type:       "child_closed",
 			FromStatus: parentTask.Status,
@@ -847,7 +850,21 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(ctx context.Context, tas
 	// human's to accept (card machine v2's `done` verb) — the daemon does
 	// not evaluate it here or anywhere else.
 	if recorded {
+		// Dispatch first: a subscriber's follow-up fragment fetch must find
+		// any card_requests row this close just launched, and nothing
+		// broadcasts again once the dispatch settles.
 		s.tryDispatchQueuedCardRequest(ctx, task.ParentID)
+		// action.TaskID is already the parent's id, so this is a plain
+		// self-broadcast rather than fanOutChildEventToParentCard.
+		if s.Hub != nil && isCardTask(parentTask) {
+			s.Hub.Broadcast(action.TaskID, TaskEvent{
+				Kind: "action",
+				Payload: map[string]any{
+					"action_id":  action.ID,
+					"new_status": string(action.ToStatus),
+				},
+			})
+		}
 	}
 }
 

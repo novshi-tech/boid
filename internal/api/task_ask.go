@@ -208,25 +208,31 @@ func (s *TaskAppService) consumePendingAnswer(task *orchestrator.Task, answer, a
 	// answer being delivered here was recorded earlier, possibly in a
 	// different request) — harmless either way, since "answer" only ever
 	// targets an awaiting task, and awaiting is execution-only, never a card.
-	s.recordAnswerAction(context.Background(), task.ID, fromStatus, actor)
+	s.recordAnswerAction(context.Background(), task, fromStatus, actor)
 	return answer, nil
 }
 
-// recordAnswerAction writes the awaiting → executing "answer" audit action.
-// Best-effort: a failure is logged, never returned.
-func (s *TaskAppService) recordAnswerAction(ctx context.Context, taskID string, fromStatus orchestrator.TaskStatus, actor string) {
+// recordAnswerAction writes the awaiting → executing "answer" audit action
+// and broadcasts it (self, then fan-out to a parent card). Best-effort: a
+// CreateAction failure is logged, never returned.
+func (s *TaskAppService) recordAnswerAction(ctx context.Context, task *orchestrator.Task, fromStatus orchestrator.TaskStatus, actor string) {
 	if s.Actions == nil {
 		return
 	}
-	if err := s.Actions.CreateAction(ctx, &orchestrator.Action{
-		TaskID:     taskID,
+	action := &orchestrator.Action{
+		TaskID:     task.ID,
 		Type:       "answer",
 		FromStatus: fromStatus,
 		ToStatus:   orchestrator.TaskStatusExecuting,
 		Actor:      actor,
-	}); err != nil {
-		slog.Warn("blocking answer: record answer action failed", "task_id", taskID, "error", err)
 	}
+	if err := s.Actions.CreateAction(ctx, action); err != nil {
+		slog.Warn("blocking answer: record answer action failed", "task_id", task.ID, "error", err)
+	}
+	// Broadcast either way: the durable fact is the already-committed status
+	// flip, not this audit row. Staying silent here would leave a watching
+	// card showing the child as awaiting with a link to an answered question.
+	s.broadcastNotifyAction(task, action)
 }
 
 // answerBlocking resolves a blocking ask (called from AnswerTask). There are two
@@ -265,7 +271,7 @@ func (s *TaskAppService) answerBlocking(ctx context.Context, task *orchestrator.
 		if err := s.Tasks.UpdateTask(task); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
-		s.recordAnswerAction(ctx, task.ID, fromStatus, actor)
+		s.recordAnswerAction(ctx, task, fromStatus, actor)
 		return nil
 	}
 

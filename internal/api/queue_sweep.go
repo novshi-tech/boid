@@ -201,6 +201,8 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(ctx context.Cont
 		return
 	}
 	recorded := false
+	var action *orchestrator.Action
+	var parentTask *orchestrator.Task
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		tt, err := tx.GetTaskTriage(parentTaskID)
 		if err != nil {
@@ -222,7 +224,8 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(ctx context.Cont
 		if err := tx.UpsertTaskTriage(tt); err != nil {
 			return fmt.Errorf("sweep reconcile children: upsert parent task_triage: %w", err)
 		}
-		parentTask, gErr := tx.GetTask(parentTaskID)
+		var gErr error
+		parentTask, gErr = tx.GetTask(parentTaskID)
 		if gErr != nil {
 			return fmt.Errorf("sweep reconcile children: get parent task: %w", gErr)
 		}
@@ -231,7 +234,7 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(ctx context.Cont
 		// future consumer reading this payload by key must not silently miss
 		// vanished-child rows because they alone spelled the value differently.
 		payload, _ := json.Marshal(map[string]string{"child_id": childTaskRef, "child_status": "vanished"})
-		action := &orchestrator.Action{
+		action = &orchestrator.Action{
 			TaskID:     parentTaskID,
 			Type:       "child_closed",
 			FromStatus: parentTask.Status,
@@ -255,7 +258,21 @@ func (s *TaskWorkflowService) recordVanishedChildClosedOnParent(ctx context.Cont
 		return
 	}
 	if recorded {
+		// Dispatch first: a subscriber's follow-up fragment fetch must find
+		// any card_requests row this close just launched, and nothing
+		// broadcasts again once the dispatch settles.
 		s.tryDispatchQueuedCardRequest(ctx, parentTaskID)
+		// action.TaskID is already the parent's id, so this is a plain
+		// self-broadcast rather than fanOutChildEventToParentCard.
+		if s.Hub != nil && isCardTask(parentTask) {
+			s.Hub.Broadcast(action.TaskID, TaskEvent{
+				Kind: "action",
+				Payload: map[string]any{
+					"action_id":  action.ID,
+					"new_status": string(action.ToStatus),
+				},
+			})
+		}
 	}
 }
 

@@ -1371,6 +1371,9 @@ templ TaskDetailLiveScript() {
 				es.addEventListener('action', function() { refresh(['status', 'pinned', 'timeline']); });
 				es.addEventListener('job', function() { refresh(['status', 'pinned', 'timeline']); });
 				es.addEventListener('fired_event', function() { refresh(['timeline']); });
+				// 'child' is a card's dispatched-child update; only
+				// #task-pinned reflects it.
+				es.addEventListener('child', function() { refresh(['pinned']); });
 			}
 
 			function closeES() {

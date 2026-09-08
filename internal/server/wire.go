@@ -1669,6 +1669,8 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		BlockingAsk:        api.NewBlockingAskRegistry(),
 		TaskWaits:          taskWaits,
 		AskDisconnectGrace: boidCfg.TaskAsk.DisconnectGrace,
+		// Hub: same singleton workflow.Hub uses above.
+		Hub: hub,
 	}
 	// Late-bind workflow.TaskCreator to taskSvc now that taskSvc exists:
 	// workflow is constructed before taskSvc (taskSvc.Workflow needs

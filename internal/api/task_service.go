@@ -69,6 +69,9 @@ type TaskAppService struct {
 	// comment. Nil is tolerated: both cases fall back to the prior
 	// non-transactional read-then-write.
 	Tx Transactor
+	// Hub broadcasts NotifyTask's progress/done_request/fail_request writes
+	// over SSE. Nil disables broadcasting; the writes themselves still happen.
+	Hub *TaskEventHub
 }
 
 // cardRequestActiveLister is the read-only surface cardSlotConflictWithLister

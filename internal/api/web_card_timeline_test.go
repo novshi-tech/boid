@@ -315,8 +315,8 @@ func TestCardDetail_Fragment_Pinned_ExecTask_NoOp(t *testing.T) {
 }
 
 // TestCardDetail_LiveScript_RefreshesPinnedKind pins that the shared SSE
-// script requests kind=pinned (not just status/timeline) on both the
-// action/job event handlers and the visibility/pageshow refresh calls — the
+// script requests kind=pinned (not just status/timeline) on the action/job/
+// child event handlers and the visibility/pageshow refresh calls — the
 // #task-pinned split would otherwise go stale.
 func TestCardDetail_LiveScript_RefreshesPinnedKind(t *testing.T) {
 	h, repo, projectID := newCardTimelineTestHandler(t)
@@ -326,8 +326,8 @@ func TestCardDetail_LiveScript_RefreshesPinnedKind(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body:\n%s", code, body)
 	}
-	if got := strings.Count(body, "'pinned'"); got != 4 {
-		t.Errorf("live script should request kind=pinned from all 4 call sites (action listener, job listener, visibilitychange, pageshow), found %d; got:\n%s", got, body)
+	if got := strings.Count(body, "'pinned'"); got != 5 {
+		t.Errorf("live script should request kind=pinned from all 5 call sites (action listener, job listener, child listener, visibilitychange, pageshow), found %d; got:\n%s", got, body)
 	}
 }
 
