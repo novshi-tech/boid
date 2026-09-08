@@ -23,7 +23,7 @@ type fakeTaskCreator struct {
 	byRef    map[string]*orchestrator.Task // "ref:parentID" -> previously created task
 }
 
-func (f *fakeTaskCreator) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+func (f *fakeTaskCreator) CreateTask(_ context.Context, req CreateTaskRequest) (*orchestrator.Task, error) {
 	f.calls = append(f.calls, req)
 	if req.Ref != "" && req.ParentID != "" {
 		if f.byRef == nil {

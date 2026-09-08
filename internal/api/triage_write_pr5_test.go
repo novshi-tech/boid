@@ -231,7 +231,7 @@ func TestApplyAction_AttrsSet_SuggestionNullClearsColumn(t *testing.T) {
 func TestCreateTask_PreExecutionSeedsTriageRow(t *testing.T) {
 	svc := newInitialStatusTestService()
 
-	task, err := svc.CreateTask(CreateTaskRequest{
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:     "proj-1",
 		Title:         "見積もり依頼",
 		Behavior:      "triage",
@@ -258,7 +258,7 @@ func TestCreateTask_PreExecutionSeedsTriageRow(t *testing.T) {
 func TestCreateTask_OrdinaryTaskSeedsNoTriageRow(t *testing.T) {
 	svc := newInitialStatusTestService()
 
-	task, err := svc.CreateTask(CreateTaskRequest{ProjectID: "proj-1", Title: "ingest", Behavior: "triage"})
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{ProjectID: "proj-1", Title: "ingest", Behavior: "triage"})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}

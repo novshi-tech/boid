@@ -41,18 +41,18 @@ func (s *WebAppService) CardCommandOptionsForProject(ctx context.Context, projec
 	return s.Commands.CardCommandOptionsForProject(ctx, projectID)
 }
 
-func (s *WebAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+func (s *WebAppService) CreateTask(ctx context.Context, req CreateTaskRequest) (*orchestrator.Task, error) {
 	if s.TaskSvc == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
 	}
-	return s.TaskSvc.CreateTask(req)
+	return s.TaskSvc.CreateTask(ctx, req)
 }
 
-func (s *WebAppService) UpdateTask(id string, req UpdateTaskRequest) error {
+func (s *WebAppService) UpdateTask(ctx context.Context, id string, req UpdateTaskRequest) error {
 	if s.TaskSvc == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
 	}
-	_, err := s.TaskSvc.UpdateTask(id, req)
+	_, err := s.TaskSvc.UpdateTask(ctx, id, req)
 	return err
 }
 
@@ -151,11 +151,11 @@ func (s *WebAppService) hydrateProjectMeta(project *orchestrator.Project) {
 //
 // The Web UI button does not auto-start the duplicate; the user clicks
 // Start separately.
-func (s *WebAppService) DuplicateTask(id string) (string, error) {
+func (s *WebAppService) DuplicateTask(ctx context.Context, id string) (string, error) {
 	if s.TaskSvc == nil {
 		return "", &StatusError{Code: http.StatusInternalServerError, Message: "task service not configured"}
 	}
-	task, err := s.TaskSvc.DuplicateTask(id, false)
+	task, err := s.TaskSvc.DuplicateTask(ctx, id, false)
 	if err != nil {
 		return "", err
 	}

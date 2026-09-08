@@ -10,6 +10,7 @@ package api
 // s.Tx == nil fallback these two write ports keep.
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -31,7 +32,7 @@ func TestUpdateTask_AtomicPath_RejectsReparentWhenGoReservationActive(t *testing
 	}
 
 	newParent := card.ID
-	_, err := taskSvc.UpdateTask(existing.ID, UpdateTaskRequest{ParentID: &newParent})
+	_, err := taskSvc.UpdateTask(context.Background(), existing.ID, UpdateTaskRequest{ParentID: &newParent})
 	if err == nil {
 		t.Fatal("expected rejection reparenting under a card whose slot Go already holds")
 	}
@@ -63,7 +64,7 @@ func TestUpdateTask_AtomicPath_SucceedsReparentWhenSlotFree(t *testing.T) {
 	}
 
 	newParent := card.ID
-	if _, err := taskSvc.UpdateTask(existing.ID, UpdateTaskRequest{ParentID: &newParent}); err != nil {
+	if _, err := taskSvc.UpdateTask(context.Background(), existing.ID, UpdateTaskRequest{ParentID: &newParent}); err != nil {
 		t.Fatalf("UpdateTask() error = %v, want success (empty slot)", err)
 	}
 	if counting.calls != 1 {

@@ -1200,7 +1200,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		// Ref: children[i].ID makes this idempotent across a retried
 		// accept(go) — same reasoning as v1's Dispatch (CreateTask's own
 		// (ref, parent_id) get-or-create dedup, task_create.go).
-		childTask, cErr := s.TaskCreator.CreateTask(CreateTaskRequest{
+		childTask, cErr := s.TaskCreator.CreateTask(ctx, CreateTaskRequest{
 			ProjectID:             children[i].Spec.Project,
 			Title:                 children[i].Title,
 			Description:           children[i].Spec.Description,

@@ -19,6 +19,7 @@ package api
 // which only sees what actually made it into the row.
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -81,7 +82,7 @@ func TestTaskAppServiceUpdateTask_RemoteID_PersistsToRealDB(t *testing.T) {
 	}
 
 	newRemote := "ROOKPF-306"
-	if _, err := svc.UpdateTask(task.ID, UpdateTaskRequest{RemoteID: &newRemote}); err != nil {
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{RemoteID: &newRemote}); err != nil {
 		t.Fatalf("UpdateTask() error = %v", err)
 	}
 
@@ -111,7 +112,7 @@ func TestTaskAppServiceUpdateTask_ProjectID_PersistsToRealDB(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	if _, err := svc.UpdateTask(task.ID, UpdateTaskRequest{ProjectID: "proj-2"}); err != nil {
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{ProjectID: "proj-2"}); err != nil {
 		t.Fatalf("UpdateTask() error = %v", err)
 	}
 
@@ -150,7 +151,7 @@ func TestTaskAppServiceUpdateTask_Title_ParkedCard_PersistsToRealDB(t *testing.T
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	if _, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Title: "edited while parked"}); err != nil {
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Title: "edited while parked"}); err != nil {
 		t.Fatalf("UpdateTask() on a parked card must succeed, got error: %v", err)
 	}
 
@@ -183,7 +184,7 @@ func TestTaskAppServiceUpdateTask_Title_WorkingCard_StillRejected(t *testing.T) 
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Title: "should not land"})
+	_, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Title: "should not land"})
 	if err == nil {
 		t.Fatal("UpdateTask() on a working card: expected rejection, got success")
 	}
@@ -220,7 +221,7 @@ func TestTaskAppServiceUpdateTask_AutoStart_PersistsToRealDB(t *testing.T) {
 	}
 
 	autoStart := true
-	if _, err := svc.UpdateTask(task.ID, UpdateTaskRequest{AutoStart: &autoStart}); err != nil {
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{AutoStart: &autoStart}); err != nil {
 		t.Fatalf("UpdateTask() error = %v", err)
 	}
 
@@ -255,7 +256,7 @@ func TestTaskAppServiceUpdateTask_Payload_CardTask_Rejected(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{Payload: []byte(`{"x":1}`)})
+	_, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Payload: []byte(`{"x":1}`)})
 	if err == nil {
 		t.Fatal("UpdateTask(payload) on a card: expected rejection, got success")
 	}
@@ -285,7 +286,7 @@ func TestTaskAppServiceUpdateTask_AutoStart_CardTask_Rejected(t *testing.T) {
 	}
 
 	autoStart := true
-	_, err := svc.UpdateTask(task.ID, UpdateTaskRequest{AutoStart: &autoStart})
+	_, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{AutoStart: &autoStart})
 	if err == nil {
 		t.Fatal("UpdateTask(auto_start) on a card: expected rejection, got success")
 	}

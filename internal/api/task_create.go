@@ -111,7 +111,7 @@ func idempotencyKeyTypeMismatchErr(wantType orchestrator.TaskType, existing *orc
 	}
 }
 
-func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+func (s *TaskAppService) CreateTask(ctx context.Context, req CreateTaskRequest) (*orchestrator.Task, error) {
 	initialStatus, err := resolveInitialStatus(req)
 	if err != nil {
 		return nil, err
@@ -127,7 +127,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	// (ExecAttrs is nil), so there is nothing for behavior resolution to
 	// feed into.
 	if initialStatus == orchestrator.TaskStatusParked {
-		return s.createCardTask(req, initialStatus)
+		return s.createCardTask(ctx, req, initialStatus)
 	}
 	return s.createExecutionTask(req, initialStatus)
 }
@@ -136,7 +136,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 // with empty CardAttrs (kind/urgency/wake_at/wake_task_id/suggestion_verb/
 // detail all zero-valued); the row is type='card' from the INSERT itself, so
 // a card cannot be born rowless and needs no separate seeding step.
-func (s *TaskAppService) createCardTask(req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
+func (s *TaskAppService) createCardTask(ctx context.Context, req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
 	// Children inherit remote_id from their parent when they don't supply
 	// their own (see createExecutionTask's matching comment for the full
 	// rationale — remote_id is a common-core field, so this applies to a
@@ -561,7 +561,7 @@ func (s *TaskAppService) createExecutionTask(req CreateTaskRequest, initialStatu
 	return task, nil
 }
 
-func (s *TaskAppService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error) {
+func (s *TaskAppService) ImportTasks(ctx context.Context, reqs []CreateTaskRequest) (*ImportResult, error) {
 	result := &ImportResult{Errors: []ImportError{}}
 	for i, req := range reqs {
 		if req.RemoteID == "" {
@@ -583,7 +583,7 @@ func (s *TaskAppService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, e
 			continue
 		}
 
-		if _, err := s.CreateTask(req); err != nil {
+		if _, err := s.CreateTask(ctx, req); err != nil {
 			msg := err.Error()
 			if se, ok := err.(*StatusError); ok {
 				msg = se.Message

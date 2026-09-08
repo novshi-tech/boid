@@ -203,16 +203,19 @@ type HostCommandsProvider interface {
 	HostCommands() map[string]orchestrator.HostCommandSpec
 }
 
+// CreateTask/UpdateTask take ctx for the same reason ActionStore.CreateAction
+// does: a card's creation and description rewrite are recorded as actions, and
+// both ingest steps behind that write read the writer's identity off ctx.
 type TaskService interface {
-	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
+	CreateTask(ctx context.Context, req CreateTaskRequest) (*orchestrator.Task, error)
 	ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error)
 	GetTask(id string) (*orchestrator.Task, error)
 	GetTaskDetail(id string) (*TaskDetailView, error)
 	GetTaskField(id, path string) (string, error)
-	UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error)
+	UpdateTask(ctx context.Context, id string, req UpdateTaskRequest) (*orchestrator.Task, error)
 	DeleteTask(id string, force bool) error
-	ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error)
-	DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error)
+	ImportTasks(ctx context.Context, reqs []CreateTaskRequest) (*ImportResult, error)
+	DuplicateTask(ctx context.Context, sourceID string, autoStart bool) (*orchestrator.Task, error)
 	RerunTask(id string, req RerunTaskRequest) (*orchestrator.Task, error)
 }
 
@@ -223,13 +226,13 @@ type WebService interface {
 	ListBehaviors() ([]string, error)
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	ApplyAction(taskID string, actionType string) error
-	DuplicateTask(id string) (string, error)
+	DuplicateTask(ctx context.Context, id string) (string, error)
 	DeleteTask(id string, force bool) error
 	ListJobs(status string) ([]JobWithContext, error)
 	ListSessions() ([]JobWithContext, error)
 	GetJob(id string) (*JobWithContext, error)
-	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
-	UpdateTask(id string, req UpdateTaskRequest) error
+	CreateTask(ctx context.Context, req CreateTaskRequest) (*orchestrator.Task, error)
+	UpdateTask(ctx context.Context, id string, req UpdateTaskRequest) error
 	RerunTask(id string, req RerunTaskRequest) error
 	ReopenTask(id string, req ReopenTaskRequest) error
 	AnswerTask(ctx context.Context, taskID, questionID, answer string) error
@@ -274,7 +277,7 @@ type WorkflowService interface {
 // see WorkflowService/TaskAppService.Workflow above) to avoid a literal
 // struct-construction cycle between the two services.
 type TaskCreator interface {
-	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
+	CreateTask(ctx context.Context, req CreateTaskRequest) (*orchestrator.Task, error)
 }
 
 type TaskStore interface {

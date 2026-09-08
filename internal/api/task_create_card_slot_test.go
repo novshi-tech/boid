@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
@@ -47,7 +48,7 @@ func TestCreateTask_RejectsWhenCardSlotOccupiedByOpenChild(t *testing.T) {
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "a new child",
 		Behavior:  "dev",
@@ -77,7 +78,7 @@ func TestCreateTask_RejectsWhenCardSlotOccupiedByLiveTaskRow(t *testing.T) {
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "a new child",
 		Behavior:  "dev",
@@ -108,7 +109,7 @@ func TestCreateTask_AllowsFulfillingTheSpeccedChildsOwnReservation(t *testing.T)
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 	}
 
-	got, err := svc.CreateTask(CreateTaskRequest{
+	got, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "do it",
 		Behavior:  "dev",
@@ -152,7 +153,7 @@ func TestCreateTask_RejectsRefMatchWithMismatchedProjectOrBehavior(t *testing.T)
 				Tasks: store,
 				Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}, "attacker-behavior": {}}}},
 			}
-			_, err := svc.CreateTask(CreateTaskRequest{
+			_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 				ProjectID: c.projectID,
 				Title:     "planted",
 				Behavior:  c.behavior,
@@ -233,7 +234,7 @@ func TestCreateTask_RejectsWhenActiveCardRequestOccupiesSlot(t *testing.T) {
 		CardRequests: &fakeCardCommandLauncherStore{countActive: 1},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "a new child",
 		Behavior:  "dev",
@@ -272,7 +273,7 @@ func TestCreateTask_AllowsFulfillingItsOwnCardRequestReservation(t *testing.T) {
 		}},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:     "proj-1",
 		Title:         "next",
 		Behavior:      "dev",
@@ -303,7 +304,7 @@ func TestCreateTask_RejectsWhenADifferentCardRequestIsActive(t *testing.T) {
 		}},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:     "proj-1",
 		Title:         "a new child",
 		Behavior:      "dev",
@@ -336,7 +337,7 @@ func TestCreateTask_AllowsWhenCardHasNoActiveRequestAndNilCardRequestsStore(t *t
 		// CardRequests deliberately left nil.
 	}
 
-	if _, err := svc.CreateTask(CreateTaskRequest{
+	if _, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "a new child",
 		Behavior:  "dev",
@@ -361,7 +362,7 @@ func TestCreateTask_AllowsWhenCardHasNoOpenSlot(t *testing.T) {
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 	}
 
-	got, err := svc.CreateTask(CreateTaskRequest{
+	got, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "first child",
 		Behavior:  "dev",
@@ -397,7 +398,7 @@ func TestCreateTask_IdempotencyKeyRetry_ReturnsExistingChild_EvenWhenSlotOccupie
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 	}
 
-	got, err := svc.CreateTask(CreateTaskRequest{
+	got, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:      "proj-1",
 		Title:          "retry",
 		Behavior:       "dev",
@@ -434,7 +435,7 @@ func TestCreateTask_IdempotencyKeyTypeMismatch_Rejected(t *testing.T) {
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 	}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:      "proj-1",
 		Title:          "an execution task",
 		Behavior:       "dev",
@@ -482,7 +483,7 @@ func TestCreateTask_RejectsWhenMultipleOccupants_RegardlessOfListOrder(t *testin
 
 			// Attempt to fulfill ch_01's own reservation — must still be
 			// rejected because ch_00 (open) is a second, unresolved occupant.
-			_, err := svc.CreateTask(CreateTaskRequest{
+			_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 				ProjectID: "proj-1",
 				Title:     "do it",
 				Behavior:  "dev",
@@ -520,7 +521,7 @@ func TestUpdateTask_RejectsReparentingWhenCardSlotOccupied(t *testing.T) {
 	svc := &TaskAppService{Tasks: store}
 
 	newParent := "card-1"
-	_, err := svc.UpdateTask("t1", UpdateTaskRequest{ParentID: &newParent})
+	_, err := svc.UpdateTask(context.Background(), "t1", UpdateTaskRequest{ParentID: &newParent})
 	if err == nil {
 		t.Fatal("expected rejection reparenting under a card whose slot is occupied")
 	}
@@ -543,7 +544,7 @@ func TestUpdateTask_AllowsReparentingWhenCardSlotIsFree(t *testing.T) {
 	svc := &TaskAppService{Tasks: store}
 
 	newParent := "card-1"
-	if _, err := svc.UpdateTask("t1", UpdateTaskRequest{ParentID: &newParent}); err != nil {
+	if _, err := svc.UpdateTask(context.Background(), "t1", UpdateTaskRequest{ParentID: &newParent}); err != nil {
 		t.Fatalf("UpdateTask() error = %v, want success (empty slot)", err)
 	}
 	if store.updateCalls != 1 {
@@ -561,7 +562,7 @@ func TestUpdateTask_ExecutionParentReparent_NotGated(t *testing.T) {
 	svc := &TaskAppService{Tasks: store}
 
 	newParent := "supervisor-1"
-	if _, err := svc.UpdateTask("t1", UpdateTaskRequest{ParentID: &newParent}); err != nil {
+	if _, err := svc.UpdateTask(context.Background(), "t1", UpdateTaskRequest{ParentID: &newParent}); err != nil {
 		t.Fatalf("UpdateTask() error = %v, want success (execution parents are not slot-gated)", err)
 	}
 }
@@ -627,7 +628,7 @@ func TestCreateTask_RejectsCardTypeChildWhenCardSlotOccupied(t *testing.T) {
 	}
 	svc := &TaskAppService{Tasks: store}
 
-	_, err := svc.CreateTask(CreateTaskRequest{
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:     "proj-1",
 		Title:         "nested card",
 		ParentID:      "card-1",
@@ -666,7 +667,7 @@ func TestCreateTask_ExecutionParent_NotGated(t *testing.T) {
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 	}
 
-	got, err := svc.CreateTask(CreateTaskRequest{
+	got, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID: "proj-1",
 		Title:     "parallel child #2",
 		Behavior:  "dev",

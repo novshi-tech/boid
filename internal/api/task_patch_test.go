@@ -19,7 +19,7 @@ type patchTaskService struct {
 	err  error
 }
 
-func (s *patchTaskService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+func (s *patchTaskService) CreateTask(_ context.Context, req CreateTaskRequest) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *patchTaskService) GetTask(id string) (*orchestrator.Task, error) {
@@ -31,7 +31,7 @@ func (s *patchTaskService) GetTask(id string) (*orchestrator.Task, error) {
 func (s *patchTaskService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *patchTaskService) UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
+func (s *patchTaskService) UpdateTask(_ context.Context, id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -47,10 +47,10 @@ func (s *patchTaskService) UpdateTask(id string, req UpdateTaskRequest) (*orches
 func (s *patchTaskService) DeleteTask(id string, force bool) error           { return nil }
 func (s *patchTaskService) GetTaskDetail(id string) (*TaskDetailView, error) { return nil, nil }
 func (s *patchTaskService) GetTaskField(id, path string) (string, error)     { return "", nil }
-func (s *patchTaskService) ImportTasks(reqs []CreateTaskRequest) (*ImportResult, error) {
+func (s *patchTaskService) ImportTasks(_ context.Context, reqs []CreateTaskRequest) (*ImportResult, error) {
 	return nil, nil
 }
-func (s *patchTaskService) DuplicateTask(id string, autoStart bool) (*orchestrator.Task, error) {
+func (s *patchTaskService) DuplicateTask(_ context.Context, id string, autoStart bool) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *patchTaskService) RerunTask(id string, req RerunTaskRequest) (*orchestrator.Task, error) {

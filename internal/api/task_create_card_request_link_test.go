@@ -10,6 +10,7 @@ package api
 //     behavior via the ref/idempotency paths.
 
 import (
+	"context"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -45,7 +46,7 @@ func TestCreateTask_RefHit_StillAttachesCardRequest(t *testing.T) {
 		CardRequestLinker: linker,
 	}
 
-	got, err := svc.CreateTask(CreateTaskRequest{
+	got, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:             "proj-1",
 		Title:                 "retry from launcher",
 		Behavior:              "dev",
@@ -82,7 +83,7 @@ func TestCreateTask_IdempotencyKeyHit_StillAttachesCardRequest(t *testing.T) {
 		CardRequestLinker: linker,
 	}
 
-	got, err := svc.CreateTask(CreateTaskRequest{
+	got, err := svc.CreateTask(context.Background(), CreateTaskRequest{
 		ProjectID:      "proj-1",
 		Title:          "retry from launcher",
 		Behavior:       "dev",
@@ -114,7 +115,7 @@ func TestCreateTask_NoCardRequestID_LinkerNeverCalled(t *testing.T) {
 		CardRequestLinker: linker,
 	}
 
-	if _, err := svc.CreateTask(CreateTaskRequest{ProjectID: "proj-1", Title: "ordinary", Behavior: "dev", Ref: "issue-123"}); err != nil {
+	if _, err := svc.CreateTask(context.Background(), CreateTaskRequest{ProjectID: "proj-1", Title: "ordinary", Behavior: "dev", Ref: "issue-123"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 	if len(linker.calls) != 0 {

@@ -364,7 +364,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 					"card_request_id", ctx.CardRequestID, "job_id", ctx.JobID, "request_launcher_job_id", row.LauncherJobID, "request_status", row.Status)
 			}
 		}
-		task, err := e.tasks.CreateTask(createReq)
+		task, err := e.tasks.CreateTask(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), createReq)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
@@ -413,7 +413,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update: invalid update_patch: " + err.Error()}
 			}
 		}
-		task, err := e.tasks.UpdateTask(req.TaskID, updateReq)
+		task, err := e.tasks.UpdateTask(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.TaskID, updateReq)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
@@ -644,7 +644,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			}
 			reqs = append(reqs, r)
 		}
-		result, err := e.tasks.ImportTasks(reqs)
+		result, err := e.tasks.ImportTasks(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), reqs)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}

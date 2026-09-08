@@ -209,7 +209,7 @@ func (s *TaskAppService) GetTaskField(id, path string) (string, error) {
 	return value, nil
 }
 
-func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
+func (s *TaskAppService) UpdateTask(ctx context.Context, id string, req UpdateTaskRequest) (*orchestrator.Task, error) {
 	task, err := s.Tasks.GetTask(id)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
@@ -448,7 +448,7 @@ func (s *TaskAppService) DeleteTask(id string, force bool) error {
 	return nil
 }
 
-func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orchestrator.Task, error) {
+func (s *TaskAppService) DuplicateTask(ctx context.Context, sourceID string, autoStart bool) (*orchestrator.Task, error) {
 	source, err := s.GetTask(sourceID)
 	if err != nil {
 		return nil, err
@@ -492,7 +492,7 @@ func (s *TaskAppService) DuplicateTask(sourceID string, autoStart bool) (*orches
 		}
 		req.Instructions = raw
 	}
-	return s.CreateTask(req)
+	return s.CreateTask(ctx, req)
 }
 
 func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrator.Task, error) {
