@@ -344,16 +344,23 @@ func detailRowClasses(task *orchestrator.Task) []string {
 }
 
 // TaskDetailCardStatusSection renders the card detail page's frameless meta
-// strip: the identity row, a bare status badge, the current summary, and
-// the pinned timeline items (the live suggestion, next work spec/child, sole
-// in-progress task/session). Everything here lives inside #task-status, so
-// it stays live-refreshed by the existing SSE script on the card's own
-// actions (a suggestion write, a command's own terminal record, ...).
+// strip: the identity row, a bare status badge, and the current summary.
+// Lives inside #task-status, so it stays live-refreshed by the existing SSE
+// script on the card's own actions (a suggestion write, a command's own
+// terminal record, ...).
+//
+// The pinned timeline items (the live suggestion, next work spec/child, sole
+// in-progress task/session) used to render here too, but moved out to their
+// own #task-pinned sibling (TaskDetailCardPinnedSection) so the shared
+// instruction textarea + command buttons (CardCommandSection) can sit
+// between this section and the pinned one without living inside either
+// SSE-swapped block — an outerHTML replace of either would otherwise wipe an
+// in-progress instruction on every action/job event.
 //
 // id="task-status" carries data-task-id so TaskDetailLiveScript (shared by
 // both the card and execution layouts, §7 罠2) can find the task id without
 // depending on #tab-panel, which the card layout does not have.
-templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, projectName string, summary string, tl *CardTimelineView) {
+templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, projectName string, summary string) {
 	<div id="task-status" data-task-id={ task.ID }>
 		<div class={ detailRowClasses(task) }>
 			<div class="detail-identity">{ cardIdentityLabel(task, projectName) }</div>
@@ -367,7 +374,15 @@ templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, proj
 			<div class="action-error">{ errorMsg }</div>
 		}
 		@TaskDetailCardSummary(summary)
-		@CardPinnedSection(tl, task.ID, task.Status)
+	</div>
+}
+
+// TaskDetailCardPinnedSection wraps CardPinnedSection in its own
+// SSE-refreshed container (#task-pinned, fragment kind=pinned), split out of
+// #task-status — see that function's own doc comment for why.
+templ TaskDetailCardPinnedSection(tl *CardTimelineView, cardID string, cardStatus orchestrator.TaskStatus) {
+	<div id="task-pinned" data-task-id={ cardID }>
+		@CardPinnedSection(tl, cardID, cardStatus)
 	</div>
 }
 
@@ -1288,12 +1303,17 @@ templ TaskDetailExecTabsSection(task *orchestrator.Task, timelineGroups []timeli
 }
 
 // TaskDetailLiveScript subscribes to /api/tasks/{id}/events (SSE) and keeps
-// #task-status / #task-timeline fresh, and ticks the "MM:SS ago" elapsed
-// text on running-job rows. Shared verbatim by both the card and execution
-// detail layouts (docs/plans/webui-detail-list-redesign.md §7 罠2 — both
-// layouts render the same #task-status/#task-timeline ids and the same
-// fragment kind=status/kind=timeline endpoints, so one copy of this script
-// works for both) rather than duplicated per layout.
+// #task-status / #task-pinned / #task-timeline fresh, and ticks the "MM:SS
+// ago" elapsed text on running-job rows. Shared verbatim by both the card
+// and execution detail layouts (docs/plans/webui-detail-list-redesign.md §7
+// 罠2 — both layouts render the same #task-status/#task-timeline ids and
+// the same fragment kind=status/kind=timeline endpoints, so one copy of
+// this script works for both) rather than duplicated per layout.
+//
+// kind=pinned only ever finds a #task-pinned element on a card layout — an
+// execution page's fetch simply finds nothing to replace (refresh()'s own
+// `if (el)` guard), the same tolerant no-op the shared kind=timeline id
+// mismatch already relies on.
 //
 // Reads the task id off #task-status's data-task-id attribute — both
 // TaskDetailCardStatusSection and TaskDetailExecStatusSection render that —
@@ -1348,8 +1368,8 @@ templ TaskDetailLiveScript() {
 			function openES() {
 				if (es && es.readyState !== EventSource.CLOSED) return;
 				es = new EventSource('/api/tasks/' + taskID + '/events');
-				es.addEventListener('action', function() { refresh(['status', 'timeline']); });
-				es.addEventListener('job', function() { refresh(['status', 'timeline']); });
+				es.addEventListener('action', function() { refresh(['status', 'pinned', 'timeline']); });
+				es.addEventListener('job', function() { refresh(['status', 'pinned', 'timeline']); });
 				es.addEventListener('fired_event', function() { refresh(['timeline']); });
 			}
 
@@ -1394,12 +1414,12 @@ templ TaskDetailLiveScript() {
 					closeES();
 				} else {
 					openES();
-					refresh(['status', 'timeline']);
+					refresh(['status', 'pinned', 'timeline']);
 				}
 			});
 			window.addEventListener('pageshow', function(e) {
 				openES();
-				refresh(['status', 'timeline']);
+				refresh(['status', 'pinned', 'timeline']);
 			});
 		})();
 	</script>
@@ -1452,11 +1472,11 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 	}
 }
 
-// TaskDetailCardBody assembles a card detail page's content: meta (identity
-// + status + current summary + pinned items), Description in the body, the
-// card's own timeline history (CardHistorySection, replacing the raw
-// status-group timeline for cards), then the escape-hatch action bar. No
-// tabs — see §7 罠1.
+// TaskDetailCardBody assembles a card detail page's content, top to bottom:
+// meta (identity + status + current summary), the command section, the
+// pinned items, Description in the body, the card's own timeline history
+// (CardHistorySection, replacing the raw status-group timeline for cards),
+// then the escape-hatch action bar. No tabs — see §7 罠1.
 //
 // TaskDetailLiveScript renders here, at the body level — nothing on the
 // card layout ever gets HTMX-swapped, so there is no risk of the script
@@ -1465,8 +1485,10 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 // placement (also body-level, also outside anything swappable) precisely
 // so both layouts follow the same rule: the live script is rendered once,
 // never inside a swap target.
-templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, summary string, tl *CardTimelineView) {
-	@TaskDetailCardStatusSection(task, errorMsg, projectName, summary, tl)
+templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, summary string, tl *CardTimelineView, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState) {
+	@TaskDetailCardStatusSection(task, errorMsg, projectName, summary)
+	@CardCommandSection(task.ID, task.Status, cmdOptions, cmdForm)
+	@TaskDetailCardPinnedSection(tl, task.ID, task.Status)
 	@TaskDetailCardDescription(task)
 	@CardHistorySection(tl, task.ID)
 	@TaskDetailLiveScript()
@@ -1501,10 +1523,10 @@ templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.Stat
 // is secondary), anything else gets TaskDetailExecBody ("プロセスの観測窓" —
 // the status-group timeline stays the main content, via the existing tab
 // structure).
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, cardSummary string, cardTL *CardTimelineView, childTree []ChildTreeNode) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, cardSummary string, cardTL *CardTimelineView, childTree []ChildTreeNode, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState) {
 	@Layout(task.Title, "/") {
 		if task.Type == orchestrator.TaskTypeCard {
-			@TaskDetailCardBody(task, availableActions, errorMsg, projectName, cardSummary, cardTL)
+			@TaskDetailCardBody(task, availableActions, errorMsg, projectName, cardSummary, cardTL, cmdOptions, cmdForm)
 		} else {
 			@TaskDetailExecBody(task, timelineGroups, availableActions, errorMsg, activeTab, projectName, childTree)
 		}

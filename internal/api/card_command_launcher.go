@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 
 	"github.com/google/uuid"
 
@@ -38,6 +39,25 @@ type CardCommandLauncherStore interface {
 	// ClearCardForceReleaseBarrier ends automatic-dispatch suppression for a
 	// card once a human operation (here: a card command) touches it again.
 	ClearCardForceReleaseBarrier(cardID string) error
+}
+
+// CardCommandOption is one project.yaml card_commands entry resolved to its
+// declared label, for the Web UI's command button row. Key is the wire
+// command_key a button posts back; Label is exactly what the workspace
+// wrote — the daemon never invents a gloss for it.
+type CardCommandOption struct {
+	Key   string
+	Label string
+}
+
+// CardCommandWebService is the card-command surface the Web UI needs:
+// launching one as a human (CardCommandRunService) plus listing a project's
+// declared commands in order for the input+buttons section. Narrowed from
+// *TaskWorkflowService the same way CardCommandRunService already is for
+// CardHandler.
+type CardCommandWebService interface {
+	CardCommandRunService
+	CardCommandOptionsForProject(ctx context.Context, projectID string) []CardCommandOption
 }
 
 // cardCommandInstructionMaxBytes matches sandbox.PayloadPatchMaxBytes, the
@@ -297,4 +317,44 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 	}
 
 	return &RunCardCommandResult{RequestID: req.ID, LauncherJobID: result.JobID}, nil
+}
+
+// CardCommandOptionsForProject lists projectID's card_commands in
+// project.yaml declaration order (meta.CardCommandsOrder), or nil when the
+// project declares none — the Web UI's signal to render no command section
+// at all.
+func (s *TaskWorkflowService) CardCommandOptionsForProject(ctx context.Context, projectID string) []CardCommandOption {
+	meta := s.hydrateMetaForTriggers(ctx, projectID)
+	if meta == nil || len(meta.CardCommands) == 0 {
+		return nil
+	}
+	opts := make([]CardCommandOption, 0, len(meta.CardCommands))
+	seen := make(map[string]bool, len(meta.CardCommands))
+	for _, key := range meta.CardCommandsOrder {
+		cmd, ok := meta.CardCommands[key]
+		if !ok || seen[key] {
+			continue
+		}
+		seen[key] = true
+		opts = append(opts, CardCommandOption{Key: key, Label: cmd.Label})
+	}
+	if len(opts) == len(meta.CardCommands) {
+		return opts
+	}
+	// Defensive fallback: a key present in CardCommands but missing from
+	// CardCommandsOrder (should not happen — spec_loader derives both from
+	// the same YAML document). A map has no order of its own, so any
+	// stragglers are appended sorted by key for determinism rather than in
+	// random map-iteration order.
+	extra := make([]string, 0, len(meta.CardCommands)-len(opts))
+	for key := range meta.CardCommands {
+		if !seen[key] {
+			extra = append(extra, key)
+		}
+	}
+	sort.Strings(extra)
+	for _, key := range extra {
+		opts = append(opts, CardCommandOption{Key: key, Label: meta.CardCommands[key].Label})
+	}
+	return opts
 }

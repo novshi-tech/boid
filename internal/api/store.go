@@ -242,6 +242,11 @@ type WebService interface {
 	ListHooksForStatus(taskID, status string) ([]orchestrator.Hook, error)
 	ReplayHook(ctx context.Context, taskID string, req ReplayHookRequest) (*ReplayHookResult, error)
 	GetProjectByID(id string) (*orchestrator.Project, error)
+	// RunCardCommandAsHuman / CardCommandOptionsForProject back the card
+	// detail page's shared instruction textarea + declared card_commands
+	// buttons — see CardCommandWebService's own doc comment.
+	RunCardCommandAsHuman(ctx context.Context, cardID, commandKey, instruction string) (*RunCardCommandResult, error)
+	CardCommandOptionsForProject(ctx context.Context, projectID string) []CardCommandOption
 }
 
 type WorkflowService interface {

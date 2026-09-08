@@ -1735,6 +1735,11 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		TaskSvc:    taskSvc,
 		Hooks:      workflow,
 		Answerer:   taskSvc,
+		// Commands: the SAME *api.TaskWorkflowService instance CardHandler.Commands
+		// uses (below) — one card_requests occupancy check, whether the
+		// caller is /api/cards/{id}/commands/{key} or the Web UI's
+		// /tasks/{id}/commands.
+		Commands: workflow,
 	}
 
 	authStore := auth.NewStore(srv.db)

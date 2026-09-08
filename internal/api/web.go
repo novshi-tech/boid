@@ -95,6 +95,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Get("/tasks/{id}/card-timeline", h.TaskCardTimelineOlder)
+	r.Post("/tasks/{id}/commands", h.PostCardCommand)
 	r.Get("/tasks/{id}/edit", h.GetTaskEdit)
 	r.Post("/tasks/{id}/edit", h.PostEdit)
 	r.Post("/tasks/{id}/action", h.PostAction)
@@ -573,7 +574,6 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	tab := r.URL.Query().Get("tab")
 	if tab == "" {
 		tab = "timeline"
@@ -585,28 +585,102 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	// tab-swap to target — a card always falls through to the full-page
 	// render below. Only an execution task's tab click takes this shortcut.
 	if r.Header.Get("HX-Request") == "true" && detail.Task.Type != orchestrator.TaskTypeCard {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		templates.TaskDetailExecTabsSection(detail.Task, timelineGroups, detail.AvailableActions, tab).Render(r.Context(), w)
 		return
 	}
 
+	h.renderTaskDetailPage(w, r, detail, tab, errorMsg, nil)
+}
+
+// renderTaskDetailPage assembles and renders a task/card detail page's full
+// body. cmdForm is non-nil only for PostCardCommand's Occupied response —
+// see CardCommandFormState's own doc comment (card_timeline.templ) for why
+// that path renders here directly instead of redirecting.
+func (h *WebHandler) renderTaskDetailPage(w http.ResponseWriter, r *http.Request, detail *TaskDetailView, tab, errorMsg string, cmdForm *templates.CardCommandFormState) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	timelineGroups := detailTimelineGroups(detail)
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
 	var childTree []templates.ChildTreeNode
 	var cardSummary string
 	var cardTL *templates.CardTimelineView
+	var cmdOptions []templates.CardCommandOption
 	if detail.Task.Type == orchestrator.TaskTypeCard {
-		if triage := h.loadTriage(id); triage != nil {
+		if triage := h.loadTriage(detail.Task.ID); triage != nil {
 			cardSummary = templates.TriageSummary(triage.Detail)
 		}
 		var tlErr error
-		cardTL, tlErr = h.cardTimelineView(id, "")
+		cardTL, tlErr = h.cardTimelineView(detail.Task.ID, "")
 		if tlErr != nil {
-			slog.Warn("card timeline view failed", "task_id", id, "error", tlErr)
+			slog.Warn("card timeline view failed", "task_id", detail.Task.ID, "error", tlErr)
 			cardTL = &templates.CardTimelineView{}
 		}
+		cmdOptions = toTemplateCardCommandOptions(h.Service.CardCommandOptionsForProject(r.Context(), detail.Task.ProjectID))
 	} else {
 		childTree = h.execChildTree(detail.Task)
 	}
-	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, cardSummary, cardTL, childTree).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, cardSummary, cardTL, childTree, cmdOptions, cmdForm).Render(r.Context(), w)
+}
+
+// toTemplateCardCommandOptions converts the api-layer option list to
+// web/templates' own display copy (that package cannot import internal/api).
+func toTemplateCardCommandOptions(opts []CardCommandOption) []templates.CardCommandOption {
+	if len(opts) == 0 {
+		return nil
+	}
+	out := make([]templates.CardCommandOption, len(opts))
+	for i, o := range opts {
+		out[i] = templates.CardCommandOption{Key: o.Key, Label: o.Label}
+	}
+	return out
+}
+
+// PostCardCommand handles the card detail page's command form: the shared
+// instruction textarea plus one submit button per declared card_commands
+// entry (the clicked button's own name="key" value identifies which command
+// to run).
+//
+// On success it redirects to the card's own page — never a guessed
+// continuation URL — and lets the pinned section resolve and link the new
+// request's continuation once one exists. On Occupied it renders the same
+// page directly instead of redirecting, echoing the just-submitted
+// instruction back into the form: a redirect would have to round-trip a
+// possibly large instruction through a URL, and the caller's typed text
+// must survive an occupied response regardless.
+func (h *WebHandler) PostCardCommand(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		redirectTaskErr(w, r, id, err)
+		return
+	}
+	key := r.FormValue("key")
+	instruction := r.FormValue("instruction")
+	if key == "" {
+		redirectTaskErr(w, r, id, errors.New("command key is required"))
+		return
+	}
+
+	result, err := h.Service.RunCardCommandAsHuman(r.Context(), id, key, instruction)
+	if err != nil {
+		redirectTaskErr(w, r, id, err)
+		return
+	}
+	if !result.Occupied {
+		redirectTask(w, r, id)
+		return
+	}
+
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+	h.renderTaskDetailPage(w, r, detail, "timeline", "", &templates.CardCommandFormState{
+		Occupied:    true,
+		Instruction: instruction,
+		TargetKind:  result.TargetKind,
+		TargetID:    result.TargetID,
+	})
 }
 
 // maxChildTreeDepth caps app-side recursion in execChildTree/listDescendants
@@ -783,6 +857,8 @@ func (h *WebHandler) lookupProjectName(projectID string) string {
 // The `kind` query parameter selects which section to render:
 //   - "timeline": action history section (shared by both entity layouts)
 //   - "status":   the meta strip — card or execution variant, by task.Type
+//   - "pinned":   a card's pinned items only (#task-pinned) — no-op (empty
+//     body) for an execution task, which has no such section
 func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	detail, err := h.Service.GetTaskDetail(id)
@@ -803,16 +879,21 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 			if triage := h.loadTriage(id); triage != nil {
 				summary = templates.TriageSummary(triage.Detail)
 			}
-			tl, tlErr := h.cardPinnedView(id)
-			if tlErr != nil {
-				slog.Warn("card pinned view failed", "task_id", id, "error", tlErr)
-				tl = &templates.CardTimelineView{}
-			}
-			templates.TaskDetailCardStatusSection(detail.Task, "", projectName, summary, tl).Render(r.Context(), w)
+			templates.TaskDetailCardStatusSection(detail.Task, "", projectName, summary).Render(r.Context(), w)
 		} else {
 			childTree := h.execChildTree(detail.Task)
 			templates.TaskDetailExecStatusSection(detail.Task, "", projectName, childTree).Render(r.Context(), w)
 		}
+	case "pinned":
+		if detail.Task.Type != orchestrator.TaskTypeCard {
+			return
+		}
+		tl, tlErr := h.cardPinnedView(id)
+		if tlErr != nil {
+			slog.Warn("card pinned view failed", "task_id", id, "error", tlErr)
+			tl = &templates.CardTimelineView{}
+		}
+		templates.TaskDetailCardPinnedSection(tl, detail.Task.ID, detail.Task.Status).Render(r.Context(), w)
 	default:
 		http.Error(w, "unknown fragment kind", http.StatusBadRequest)
 	}
