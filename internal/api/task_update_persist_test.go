@@ -21,6 +21,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
@@ -51,8 +52,10 @@ func newRealTaskAppService(t *testing.T) (*TaskAppService, *orchestrator.TaskRep
 	tasks := orchestrator.NewTaskRepository(d.Conn)
 	svc := &TaskAppService{
 		Tasks:    tasks,
+		Actions:  tasks,
 		Meta:     stubMetaStore{meta: &orchestrator.ProjectMeta{}},
 		Projects: orchestrator.NewProjectRepository(d.Conn),
+		Tx:       realTransactor{conn: d.Conn},
 	}
 	return svc, tasks
 }
@@ -293,5 +296,96 @@ func TestTaskAppServiceUpdateTask_AutoStart_CardTask_Rejected(t *testing.T) {
 	se, ok := err.(*StatusError)
 	if !ok || se.Code != http.StatusConflict {
 		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+}
+
+// TestTaskAppServiceUpdateTask_CardDescription_WritesDescriptionSetAction pins
+// that rewriting a card's description leaves a record in the action log. The
+// body stays on the task row; only the fact of the change is recorded.
+func TestTaskAppServiceUpdateTask_CardDescription_WritesDescriptionSetAction(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	card := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeCard,
+		Title: "a card", Description: "before", Status: orchestrator.TaskStatusParked,
+		Card: &orchestrator.CardAttrs{},
+	}
+	if err := tasks.CreateTask(card); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), card.ID, UpdateTaskRequest{Description: "after"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("got %d actions, want 1: %+v", len(actions), actions)
+	}
+	if actions[0].Type != orchestrator.ActionTypeDescriptionSet {
+		t.Fatalf("action type = %q, want %q", actions[0].Type, orchestrator.ActionTypeDescriptionSet)
+	}
+	if body := string(actions[0].Payload); strings.Contains(body, "after") {
+		t.Errorf("payload carries the description body, want the fact only: %s", body)
+	}
+	got, err := tasks.GetTask(card.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Description != "after" {
+		t.Errorf("Description = %q, want %q", got.Description, "after")
+	}
+}
+
+// TestTaskAppServiceUpdateTask_DescriptionUnchanged_WritesNoAction: a PATCH
+// that resends the same body is not a change, and must not look like one —
+// the record is what decides whether the next decision runs.
+func TestTaskAppServiceUpdateTask_DescriptionUnchanged_WritesNoAction(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	card := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeCard,
+		Title: "a card", Description: "same", Status: orchestrator.TaskStatusParked,
+		Card: &orchestrator.CardAttrs{},
+	}
+	if err := tasks.CreateTask(card); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), card.ID, UpdateTaskRequest{Description: "same"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(card.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("resending the same description wrote %d actions, want 0: %+v", len(actions), actions)
+	}
+}
+
+// TestTaskAppServiceUpdateTask_ExecutionDescription_WritesNoAction: the record
+// exists for the card timeline and the card-event ingest; an execution task
+// has neither.
+func TestTaskAppServiceUpdateTask_ExecutionDescription_WritesNoAction(t *testing.T) {
+	svc, tasks := newRealTaskAppService(t)
+	task := &orchestrator.Task{
+		ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution,
+		Title: "t", Description: "before", Status: orchestrator.TaskStatusExecuting,
+		Exec: &orchestrator.ExecAttrs{Behavior: "dev"},
+	}
+	if err := tasks.CreateTask(task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(context.Background(), task.ID, UpdateTaskRequest{Description: "after"}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	actions, err := tasks.ListActionsByTask(task.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("execution task wrote %d actions, want 0: %+v", len(actions), actions)
 	}
 }

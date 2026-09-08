@@ -120,13 +120,19 @@ func (s *TaskAppService) cardSlotConflictWithRequests(parent *orchestrator.Task,
 	return cardSlotConflictWithLister(s.CardRequests, parent, ref, projectID, behavior, ownCardRequestID)
 }
 
-// updateTaskWithCardSlotRecheck re-checks the card slot and writes task in
-// one WithinTx when s.Tx and cardParentID are set; otherwise falls back to a
-// plain non-atomic UpdateTask.
-func (s *TaskAppService) updateTaskWithCardSlotRecheck(task *orchestrator.Task, cardParentID, conflictMsgFmt string) error {
-	if cardParentID == "" || s.Tx == nil {
+// updateTaskWithCardSlotRecheck writes task, optionally re-checking the card
+// slot (cardParentID) and recording record alongside it. Both extras need the
+// write to be atomic with them, so either one takes the WithinTx path when
+// s.Tx is wired; without it the writes fall back to being separate.
+func (s *TaskAppService) updateTaskWithCardSlotRecheck(ctx context.Context, task *orchestrator.Task, cardParentID, conflictMsgFmt string, record *orchestrator.Action) error {
+	if s.Tx == nil || (cardParentID == "" && record == nil) {
 		if err := s.Tasks.UpdateTask(task); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if record != nil && s.Actions != nil {
+			if err := s.Actions.CreateAction(ctx, record); err != nil {
+				return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+			}
 		}
 		return nil
 	}
@@ -135,14 +141,22 @@ func (s *TaskAppService) updateTaskWithCardSlotRecheck(task *orchestrator.Task, 
 		behavior = task.Exec.Behavior
 	}
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
-		freshParent, gerr := tx.GetTask(cardParentID)
-		if gerr != nil {
-			return gerr
+		if cardParentID != "" {
+			freshParent, gerr := tx.GetTask(cardParentID)
+			if gerr != nil {
+				return gerr
+			}
+			if conflict, occupant := cardSlotConflictWithLister(tx, freshParent, task.Ref, task.ProjectID, behavior, ""); conflict {
+				return &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(conflictMsgFmt, cardParentID, occupant)}
+			}
 		}
-		if conflict, occupant := cardSlotConflictWithLister(tx, freshParent, task.Ref, task.ProjectID, behavior, ""); conflict {
-			return &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(conflictMsgFmt, cardParentID, occupant)}
+		if err := tx.UpdateTask(task); err != nil {
+			return err
 		}
-		return tx.UpdateTask(task)
+		if record != nil {
+			return tx.CreateAction(ctx, record)
+		}
+		return nil
 	})
 	if txErr != nil {
 		var se *StatusError
@@ -237,10 +251,20 @@ func (s *TaskAppService) UpdateTask(ctx context.Context, id string, req UpdateTa
 		}
 		task.ProjectID = req.ProjectID
 	}
+	// A card's description is its summary, and the action log is what the
+	// next decision reads. Resending the same body is not a change.
+	var descriptionRecord *orchestrator.Action
 	if req.Description != "" {
 		// Same description size cap as CreateTask.
 		if err := orchestrator.ValidateContentSize("description", []byte(req.Description)); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
+		if task.Type == orchestrator.TaskTypeCard && req.Description != task.Description {
+			descriptionRecord = &orchestrator.Action{
+				TaskID: task.ID,
+				Type:   orchestrator.ActionTypeDescriptionSet,
+				Actor:  updateActor(ctx),
+			}
 		}
 		task.Description = req.Description
 	}
@@ -346,8 +370,8 @@ func (s *TaskAppService) UpdateTask(ctx context.Context, id string, req UpdateTa
 		}
 		task.Exec.AutoStart = *req.AutoStart
 	}
-	if err := s.updateTaskWithCardSlotRecheck(task, reparentCardID,
-		"update task: card %q's single work slot is already occupied by %s"); err != nil {
+	if err := s.updateTaskWithCardSlotRecheck(ctx, task, reparentCardID,
+		"update task: card %q's single work slot is already occupied by %s", descriptionRecord); err != nil {
 		return nil, err
 	}
 	if instructionsBefore != nil {
@@ -549,8 +573,10 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 
 	task.Status = orchestrator.TaskStatusPending
 	task.Exec.Payload = json.RawMessage("{}")
-	if err := s.updateTaskWithCardSlotRecheck(task, reparentCardID,
-		"rerun task: card %q's single work slot is already occupied by %s"); err != nil {
+	// A rerun only ever touches an execution task, so it records nothing on a
+	// card and the context stays unused.
+	if err := s.updateTaskWithCardSlotRecheck(context.Background(), task, reparentCardID,
+		"rerun task: card %q's single work slot is already occupied by %s", nil); err != nil {
 		return nil, err
 	}
 
@@ -638,4 +664,13 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		Jobs:             jobs,
 		AvailableActions: sm.AvailableActions(task.Status),
 	}, nil
+}
+
+// updateActor is the actor stamped on a card's own state-change records: the
+// writing task when the call came from a sandbox, the human otherwise.
+func updateActor(ctx context.Context) string {
+	if actor := orchestrator.ActorFromContext(ctx); actor != "" {
+		return actor
+	}
+	return orchestrator.ActorHuman
 }

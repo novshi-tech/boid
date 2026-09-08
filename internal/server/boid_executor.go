@@ -895,7 +895,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if existing.ProjectID != req.ProjectID {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link: task belongs to a different project"}
 		}
-		if err := e.tasks.LinkIdentity(req.ProjectID, req.Identity, existing.ID); err != nil {
+		if err := e.tasks.LinkIdentity(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.ProjectID, req.Identity, existing.ID); err != nil {
 			if errors.Is(err, orchestrator.ErrIdentityConflict) {
 				return &sandbox.ExecResponse{ExitCode: sandbox.IdentityConflictExitCode, Stderr: err.Error()}
 			}
