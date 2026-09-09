@@ -624,6 +624,7 @@ func (h *WebHandler) renderTaskDetailPage(w http.ResponseWriter, r *http.Request
 		cardTL, tlErr = h.cardTimelineView(detail.Task.ID, "")
 		if tlErr != nil {
 			slog.Warn("card timeline view failed", "task_id", detail.Task.ID, "error", tlErr)
+			errorMsg = strings.TrimSpace(errorMsg + " Unable to load current activity. Refresh status to retry.")
 			cardTL = &templates.CardTimelineView{}
 		}
 		cmdOptions = toTemplateCardCommandOptions(h.Service.CardCommandOptionsForProject(r.Context(), detail.Task.ProjectID))
@@ -907,7 +908,8 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 		tl, tlErr := h.cardPinnedView(id)
 		if tlErr != nil {
 			slog.Warn("card pinned view failed", "task_id", id, "error", tlErr)
-			tl = &templates.CardTimelineView{}
+			http.Error(w, "Unable to load current activity", http.StatusInternalServerError)
+			return
 		}
 		templates.TaskDetailCardPinnedSection(tl, detail.Task.ID, detail.Task.Status).Render(r.Context(), w)
 	default:
