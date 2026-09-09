@@ -35,6 +35,12 @@ func RunContainer(specPath, statePath string) (exitCode int, retErr error) {
 	// RunContainer is the sole entry point for its whole run — record the
 	// spec dump here so runner-state.json still carries it for diagnosis.
 	st.Spec("container", spec)
+	if spec.TTY {
+		if err := ensureInitialTTYSize(); err != nil {
+			st.Fail("container", "terminal-size", err)
+			return 1, err
+		}
+	}
 
 	// reachedAgent gates the broker job-done: a setup failure (below) sends
 	// no `boid job done` and relies on the daemon's "exited without boid

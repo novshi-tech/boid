@@ -62,6 +62,28 @@ func TestContainerBackend_Launch_CreatesContainerWithHostConfigInit(t *testing.T
 	}
 }
 
+func TestContainerBackend_Launch_InitialTerminalSize(t *testing.T) {
+	for _, tty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tty=%v", tty), func(t *testing.T) {
+			api := &fakeDockerAPI{}
+			be := NewContainerBackend(api, ContainerBackendOptions{})
+			sess := mustLaunch(t, be, sandbox.Spec{ID: "initial-size", Argv: []string{"true"}, TTY: tty}, backend.LaunchOptions{JobID: "initial-size"})
+			want := [2]uint{}
+			if tty {
+				want = [2]uint{24, 80}
+			}
+			if got := api.createCalls[0].HostConfig.ConsoleSize; got != want {
+				t.Errorf("initial console size = %v, want %v before the process starts", got, want)
+			}
+			snapshot, _, cancel, _, _ := sess.Subscribe()
+			cancel()
+			if tty && snapshot.Geometry != (backend.TerminalSize{Rows: 24, Cols: 80}) {
+				t.Errorf("initial snapshot geometry = %+v, want 80 columns and 24 rows", snapshot.Geometry)
+			}
+		})
+	}
+}
+
 func TestContainerBackend_Launch_MountSourceKindMapping(t *testing.T) {
 	api := &fakeDockerAPI{}
 	be := NewContainerBackend(api, ContainerBackendOptions{})
@@ -2223,12 +2245,11 @@ func TestContainerSession_Subscribe_ReportsLastResizeGeometry(t *testing.T) {
 		sandbox.Spec{ID: "job-geom", Argv: []string{"true"}, TTY: true},
 		backend.LaunchOptions{JobID: "job-geom"})
 
-	// Before any resize the geometry is zero, which backend.RuntimeSnapshot
-	// documents as "renderer, use your default" — NOT a width to render at.
+	// A newly launched TTY already has the geometry supplied at container creation.
 	snapshot, _, cancel, _, _ := sess.Subscribe()
 	cancel()
-	if snapshot.Geometry != (backend.TerminalSize{}) {
-		t.Errorf("geometry before any resize = %+v, want the zero value", snapshot.Geometry)
+	if snapshot.Geometry != (backend.TerminalSize{Rows: 24, Cols: 80}) {
+		t.Errorf("geometry before any resize = %+v, want 80 columns and 24 rows", snapshot.Geometry)
 	}
 
 	want := backend.TerminalSize{Rows: 60, Cols: 100}

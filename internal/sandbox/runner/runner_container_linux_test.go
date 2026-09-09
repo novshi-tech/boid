@@ -4,13 +4,61 @@ package runner
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"golang.org/x/sys/unix"
 )
+
+func TestRunContainer_InitialTTYSize(t *testing.T) {
+	for _, initial := range [][2]uint16{{0, 0}, {0, 100}, {30, 0}, {40, 120}} {
+		t.Run(fmt.Sprint(initial), func(t *testing.T) {
+			pty, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pty.Close()
+			if err := unix.IoctlSetWinsize(int(pty.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: initial[0], Col: initial[1]}); err != nil {
+				t.Fatal(err)
+			}
+			oldStdin := os.Stdin
+			os.Stdin = pty
+			defer func() { os.Stdin = oldStdin }()
+			dir := t.TempDir()
+			output := filepath.Join(dir, "size.txt")
+			spec := sandbox.Spec{ID: "tty-size", HarnessType: sandbox.HarnessShell,
+				Argv: []string{"/bin/stty", "size"}, WorkDir: dir, TTY: true,
+				StdoutCaptureFile: output, Foreground: true}
+			data, err := json.Marshal(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			specPath := filepath.Join(dir, "spec.json")
+			if err := os.WriteFile(specPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			code, err := RunContainer(specPath, filepath.Join(dir, "state.json"))
+			if err != nil || code != 0 {
+				t.Fatalf("RunContainer: code=%d err=%v", code, err)
+			}
+			want := initial
+			if want[0] == 0 {
+				want[0] = 24
+			}
+			if want[1] == 0 {
+				want[1] = 80
+			}
+			got, err := os.ReadFile(output)
+			if err != nil || strings.TrimSpace(string(got)) != fmt.Sprintf("%d %d", want[0], want[1]) {
+				t.Fatalf("application saw terminal size %q, want %v (read error: %v)", got, want, err)
+			}
+		})
+	}
+}
 
 // TestRunContainer_AppliesFilesSymlinksAndRunsAgent exercises RunContainer
 // end to end (docs/plans/phase6-container-backend.md §PR2 / §決定 2): unlike
