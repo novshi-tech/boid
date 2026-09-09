@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -70,6 +71,20 @@ func TestTaskChildDetail_ResolvesExistingExecutionTask(t *testing.T) {
 
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/tasks/exec-1" {
 		t.Fatalf("response = %d Location=%q", w.Code, w.Header().Get("Location"))
+	}
+}
+
+func TestTaskChildDetail_EscapedChildIDs(t *testing.T) {
+	for _, id := range []string{"ch:review:github-api/assigned-issues:repo#1049", "ch:日本語の確認/source", "ch:日本語", "ch:literal%2F", "ch:100%", "ch:a+b?c#d", "ch:literal%2F/source"} {
+		t.Run(id, func(t *testing.T) {
+			execution := &TaskDetailView{Task: &orchestrator.Task{ID: "exec-1", Type: orchestrator.TaskTypeExecution, ParentID: "card-1"}}
+			_, router := childDetailHandler(t, orchestrator.TaskTriageChild{ID: id, TaskRef: "exec-1"}, execution)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/tasks/card-1/children/"+url.PathEscape(id), nil))
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/tasks/exec-1" {
+				t.Fatalf("response = %d Location=%q body=%s", w.Code, w.Header().Get("Location"), w.Body.String())
+			}
+		})
 	}
 }
 

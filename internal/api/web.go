@@ -627,6 +627,16 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 func (h *WebHandler) TaskChildDetail(w http.ResponseWriter, r *http.Request) {
 	parentID := chi.URLParam(r, "id")
 	childID := chi.URLParam(r, "child_id")
+	// Chi matches RawPath when present, so encoded slashes leave the
+	// parameter escaped. Path-based parameters are already decoded.
+	if r.URL.RawPath != "" {
+		var err error
+		childID, err = url.PathUnescape(childID)
+		if err != nil {
+			http.Error(w, "Invalid child ID", http.StatusBadRequest)
+			return
+		}
+	}
 	parent, err := h.Service.GetTaskDetail(parentID)
 	if err != nil {
 		if errors.Is(err, orchestrator.ErrTaskNotFound) {
