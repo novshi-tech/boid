@@ -1396,7 +1396,9 @@ templ TaskDetailLiveScript() {
 					var anchor = d.closest('[id]');
 					if (anchor) openKeys.push(anchor.id + '|' + d.className);
 				});
-				return { openKeys: openKeys, top: el.getBoundingClientRect().top };
+				var focused = document.activeElement;
+				var operation = focused && el.contains && el.contains(focused) && focused.getAttribute('data-operation-id');
+				return { openKeys: openKeys, top: el.getBoundingClientRect().top, focusedOperation: operation || '' };
 			}
 			function restoreSwapState(el, state) {
 				if (!el || !state) return;
@@ -1406,6 +1408,10 @@ templ TaskDetailLiveScript() {
 					var anchor = d.closest('[id]');
 					if (anchor && keys[anchor.id + '|' + d.className]) d.open = true;
 				});
+				if (state.focusedOperation) {
+					var focused = el.querySelector('[data-operation-id="' + CSS.escape(state.focusedOperation) + '"]');
+					if (focused) { focused.tabIndex = -1; focused.focus({ preventScroll: true }); }
+				}
 				var delta = el.getBoundingClientRect().top - state.top;
 				if (delta !== 0) window.scrollBy(0, delta);
 			}

@@ -3026,3 +3026,11 @@ details[open] > summary {
   color: inherit;
 }
 .task-live-status button { font: inherit; }
+.operation-submit-feedback {
+  margin-block: .75rem;
+  padding: .75rem;
+  border: 1px solid currentColor;
+  border-radius: .4rem;
+  overflow-wrap: anywhere;
+}
+.operation-submit-feedback button { font: inherit; }
