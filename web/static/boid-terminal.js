@@ -374,27 +374,12 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     if (fitRafId) return;
     fitRafId = requestAnimationFrame(function () {
       fitRafId = null;
+      // Preserve screen contents, cursor and terminal modes: the application
+      // may respond to a PTY resize with only a partial redraw.
       fitAddon.fit();
       const dims = fitAddon.proposeDimensions();
       if (!dims) return;
       if (dims.cols !== prevCols || dims.rows !== prevRows) {
-        // Clear the screen before propagating the new size to the PTY. Most
-        // TUIs (claude code, vim, ...) repaint by cursor-up + erase relative
-        // to the old frame; when cols change, that math is wrong and leftover
-        // characters pile up. Resetting xterm makes those erases land on an
-        // empty screen, and the next frame draws cleanly.
-        // Skip the very first fit (prevCols == 0), where there's nothing to
-        // clear and we'd risk dropping the initial output.
-        if (prevCols !== 0) {
-          // Same coupling as the attach-frame term.reset() above: this also
-          // resets xterm's CoreMouseService.activeProtocol to NONE, so the
-          // dedup tracker must follow or a repaint burst right after a
-          // resize gets wrongly stripped as a no-op and mouse reporting
-          // wedges off for the rest of the session.
-          term.reset();
-          mouseProtocol = 'NONE';
-          mouseModeCarry = '';
-        }
         prevCols = dims.cols;
         prevRows = dims.rows;
         sendResize(dims.cols, dims.rows);
@@ -410,17 +395,11 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   const ro = new ResizeObserver(scheduleFit);
   ro.observe(xtermWrap);
 
-  // visualViewport: resize/scroll updates container height on every change
-  // (covers URL bar show/hide and soft keyboard open/close).
-  // PTY resize (scheduleFit) is guarded to >150px changes only — smaller
-  // events from URL bar transitions should not send a new PTY resize message.
+  // Viewport changes resize the container; ResizeObserver then fits the
+  // terminal and notifies the PTY only when its rows or columns change.
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', function () {
       resizeToViewport();
-      const diff = window.innerHeight - window.visualViewport.height;
-      if (diff > 150) {
-        scheduleFit();
-      }
     });
     // scroll fires on iOS when the page shifts to keep a focused element visible
     window.visualViewport.addEventListener('scroll', function () {
