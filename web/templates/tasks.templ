@@ -1380,7 +1380,7 @@ templ TaskDetailLiveScript() {
 				message.textContent = (stale ? 'Updates interrupted. Last retrieved ' : 'Live updates · Last retrieved ') + time;
 			}
 			function fetchHTML(url) {
-				var key = url.replace(/frontier=[^&]*/, "frontier=");
+				var key = url.replace(/frontier=[^&]*/, "frontier=").replace(/&operation=[^&]*/, "");
 				if (requests[key]) requests[key].abort();
 				var controller = new AbortController();
 				requests[key] = controller;
@@ -1416,6 +1416,21 @@ templ TaskDetailLiveScript() {
 			// own viewport-relative top position across an outerHTML
 			// replace — only a guarantee about el itself, not scroll
 			// position in general.
+			function liveFocusKey(control) {
+				if (!control) return '';
+				var receipt = control.closest('[data-operation-id]');
+				var prefix = receipt ? receipt.dataset.operationId + '|' : '';
+				if (control.id) return prefix + 'id:' + control.id;
+				if (control.tagName === 'A') return prefix + 'link:' + control.getAttribute('href');
+				if (control.tagName === 'SUMMARY') return prefix + 'details:' + control.parentElement.className;
+				if (control.form) {
+					var hidden = Array.from(control.form.querySelectorAll('input[type="hidden"]'))
+						.filter(function(input) { return input.name !== '_csrf'; })
+						.map(function(input) { return [input.name, input.value]; });
+					return prefix + JSON.stringify([control.tagName, control.name, control.value, control.form.getAttribute('action'), hidden]);
+				}
+				return '';
+			}
 			function captureSwapState(el) {
 				var openKeys = [];
 				el.querySelectorAll('details[open]').forEach(function(d) {
@@ -1424,7 +1439,7 @@ templ TaskDetailLiveScript() {
 				});
 				var focused = document.activeElement;
 				var operation = focused && el.contains && el.contains(focused) && focused.getAttribute('data-operation-id');
-				return { openKeys: openKeys, top: el.getBoundingClientRect().top, focusedOperation: operation || '' };
+				return { openKeys: openKeys, top: el.getBoundingClientRect().top, focusedOperation: operation || '', focusKey: focused && el.contains && el.contains(focused) ? liveFocusKey(focused) : '' };
 			}
 			function restoreSwapState(el, state) {
 				if (!el || !state) return;
@@ -1434,6 +1449,10 @@ templ TaskDetailLiveScript() {
 					var anchor = d.closest('[id]');
 					if (anchor && keys[anchor.id + '|' + d.className]) d.open = true;
 				});
+				if (state.focusKey) {
+					var match = Array.from(el.querySelectorAll('a,button,input,textarea,summary')).find(function(control) { return liveFocusKey(control) === state.focusKey; });
+					if (match) match.focus({ preventScroll: true });
+				}
 				if (state.focusedOperation) {
 					var focused = el.querySelector('[data-operation-id="' + CSS.escape(state.focusedOperation) + '"]');
 					if (focused) { focused.tabIndex = -1; focused.focus({ preventScroll: true }); }
@@ -1445,12 +1464,31 @@ templ TaskDetailLiveScript() {
 			function refresh(kinds) {
 				kinds.forEach(function(kind) {
 					var before = document.getElementById('task-' + kind);
-					if (!before) return;
-					fetchHTML('/tasks/' + taskID + '/fragment?kind=' + kind)
+					if (!before) {
+						var key = '/tasks/' + taskID + '/fragment?kind=' + kind;
+						if (requests[key]) { requests[key].abort(); delete requests[key]; }
+						delete failures[key];
+						showFreshness();
+						return;
+					}
+					var refreshURL = '/tasks/' + taskID + '/fragment?kind=' + kind;
+					var selectedOperation = '';
+					if (kind === 'operations') {
+						var selected = before.querySelector('[data-operation-id]');
+						if (selected) {
+							selectedOperation = selected.dataset.operationId;
+							refreshURL += '&operation=' + encodeURIComponent(selectedOperation);
+						}
+					}
+					fetchHTML(refreshURL)
 						.then(function(html) {
 							if (!html) return;
 							var before = document.getElementById('task-' + kind);
 							if (!before) return;
+							if (kind === 'operations') {
+								var current = before.querySelector('[data-operation-id]');
+								if ((current ? current.dataset.operationId : '') !== selectedOperation) return;
+							}
 							var state = captureSwapState(before);
 							var el = before;
 							el.outerHTML = html;
@@ -1547,15 +1585,15 @@ templ TaskDetailLiveScript() {
 				es.addEventListener('open', function() {
 					connected = true;
 					showFreshness();
-					refresh(['status', 'pinned', 'timeline']);
+					refresh(['status', 'pinned', 'timeline', 'operations']);
 					refreshHistoryHead();
 				});
 				es.addEventListener('error', function() { connected = false; showFreshness(); });
-				es.addEventListener('action', function() { refresh(['status', 'pinned', 'timeline']); refreshHistoryHead(); });
-				es.addEventListener('job', function() { refresh(['status', 'pinned', 'timeline']); });
+				es.addEventListener('action', function() { refresh(['status', 'pinned', 'timeline', 'operations']); refreshHistoryHead(); });
+				es.addEventListener('job', function() { refresh(['status', 'pinned', 'timeline', 'operations']); });
 				es.addEventListener('fired_event', function() { refresh(['timeline']); });
 				// Child updates affect current activity and historical child rows.
-				es.addEventListener('child', function() { refresh(['status', 'pinned', 'timeline']); refreshHistoryHead(); });
+				es.addEventListener('child', function() { refresh(['status', 'pinned', 'timeline', 'operations']); refreshHistoryHead(); });
 			}
 
 			function closeES() {
@@ -1564,14 +1602,26 @@ templ TaskDetailLiveScript() {
 				showFreshness();
 			}
 
+			document.addEventListener('htmx:afterSwap', function() {
+				if (!document.getElementById('task-timeline')) {
+					var key = '/tasks/' + taskID + '/fragment?kind=timeline';
+					if (requests[key]) { requests[key].abort(); delete requests[key]; }
+					delete failures[key];
+					showFreshness();
+				}
+			});
+			document.addEventListener('boid:operation-result', function() {
+				refresh(['status', 'pinned', 'timeline']);
+				refreshHistoryHead();
+			});
 			document.getElementById('task-live-retry').addEventListener('click', function() {
 				openES();
-				refresh(['status', 'pinned', 'timeline']);
+				refresh(['status', 'pinned', 'timeline', 'operations']);
 				refreshHistoryHead();
 			});
 			setInterval(function() {
 				if (document.visibilityState !== 'hidden') {
-					refresh(['status', 'pinned', 'timeline']);
+					refresh(['status', 'pinned', 'timeline', 'operations']);
 					refreshHistoryHead();
 				}
 			}, 30000);
@@ -1612,13 +1662,13 @@ templ TaskDetailLiveScript() {
 					closeES();
 				} else {
 					openES();
-					refresh(['status', 'pinned', 'timeline']);
+					refresh(['status', 'pinned', 'timeline', 'operations']);
 					refreshHistoryHead();
 				}
 			});
 			window.addEventListener('pageshow', function(e) {
 				openES();
-				refresh(['status', 'pinned', 'timeline']);
+				refresh(['status', 'pinned', 'timeline', 'operations']);
 				refreshHistoryHead();
 			});
 		})();

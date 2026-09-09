@@ -64,3 +64,26 @@ func TestFinishedWorkNeedsDecisionOnlyOnLiveCard(t *testing.T) {
 		t.Fatal("closed card should not solicit a decision")
 	}
 }
+
+// The route's first read can succeed while the activity projection's read fails.
+type secondDetailReadFails struct {
+	WebService
+	reads int
+}
+
+func (s *secondDetailReadFails) GetTaskDetail(id string) (*TaskDetailView, error) {
+	s.reads++
+	if s.reads > 1 {
+		return nil, errors.New("read failed")
+	}
+	return s.WebService.GetTaskDetail(id)
+}
+func TestCurrentActivitySecondaryReadFailurePreservesFragment(t *testing.T) {
+	h, repo, projectID := newCardTimelineTestHandler(t)
+	newCardTimelineTestCard(t, repo, projectID, "card-activity")
+	h.Service = &secondDetailReadFails{WebService: h.Service}
+	code, _ := getHTML(t, h, "/tasks/card-activity/fragment?kind=pinned")
+	if code != 500 {
+		t.Fatalf("secondary read failure = %d, want 500", code)
+	}
+}

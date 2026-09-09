@@ -49,6 +49,8 @@
     busy = true;
     // Capture submitter fields before disabling buttons; command keys live there.
     var data = new FormData(form);
+    var instruction = form.elements.instruction;
+    var sentInstruction = instruction ? instruction.value : null;
     if (event.submitter && event.submitter.name) data.append(event.submitter.name, event.submitter.value);
     var buttons = Array.from(form.querySelectorAll('button[type="submit"], input[type="submit"]'));
     var wasDisabled = buttons.map(function (button) { return button.disabled; });
@@ -69,12 +71,15 @@
       var latest = result && operationID && result.querySelector('.operation-result[data-operation-id="' + CSS.escape(operationID) + '"]');
       if (!result || !target || !latest) throw new Error('No confirmed operation result');
       target.replaceWith(result);
+      var outcome = latest.dataset.operationResult;
+      if (instruction && instruction.value === sentInstruction && (outcome === 'accepted' || outcome === 'started')) {
+        instruction.value = '';
+      }
       notice.remove();
       latest.tabIndex = -1;
       latest.focus({ preventScroll: true });
       latest.scrollIntoView({ block: 'nearest' });
-      var retry = document.getElementById('task-live-retry');
-      if (retry) retry.click();
+      document.dispatchEvent(new CustomEvent('boid:operation-result'));
     } catch (_) {
       feedback(form, 'The operation result could not be confirmed. Check the current status before trying again. Your input has been kept.', true);
     } finally {

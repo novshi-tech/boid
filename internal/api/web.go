@@ -779,11 +779,15 @@ func (h *WebHandler) cardPinnedView(cardID string) (*templates.CardTimelineView,
 		return nil, err
 	}
 	h.resolveCardItemChildProjects(pinned)
-	var activity templates.CardActivityState
-	if detail, err := h.Service.GetTaskDetail(cardID); err == nil && detail != nil && detail.Task != nil {
-		attrs := map[string]*orchestrator.CardAttrs{cardID: h.loadTriage(cardID)}
-		activity = h.cardActivityStates([]*orchestrator.Task{detail.Task}, attrs)[cardID]
+	detail, err := h.Service.GetTaskDetail(cardID)
+	if err != nil {
+		return nil, err
 	}
+	if detail == nil || detail.Task == nil {
+		return nil, errors.New("current card unavailable")
+	}
+	attrs := map[string]*orchestrator.CardAttrs{cardID: h.loadTriage(cardID)}
+	activity := h.cardActivityStates([]*orchestrator.Task{detail.Task}, attrs)[cardID]
 	return &templates.CardTimelineView{
 		Activity:           activity,
 		Pinned:             pinned,
