@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
   const browser = await chromium.launch({ headless: true, executablePath: process.env.BOID_CHROMIUM });
   try {
     const page = await browser.newPage();
+    await page.setViewportSize({ width: 375, height: 667 });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
 
@@ -19,7 +20,10 @@ const assert = require('node:assert/strict');
       }
       count++;
       body = route.request().postData();
-      if (mode === 'failure') return route.abort('failed');
+      if (mode === 'failure') {
+        await new Promise(resolve => { release = resolve; });
+        return route.abort('failed');
+      }
       if (mode === 'old') {
         return route.fulfill({
           contentType: 'text/html',
@@ -41,12 +45,32 @@ const assert = require('node:assert/strict');
     });
 
     await page.goto('http://boid.test/');
-    await page.setContent('<section id="task-operations"></section><div id="task-live-status"><button id="task-live-retry">Refresh</button></div><form method="post" action="/tasks/card/commands"><textarea name="instruction">Keep my input</textarea><input name="_csrf" value="csrf-test" type="hidden"><button type="submit" name="key" value="discuss">Discuss</button></form>');
+    await page.setContent('<div style="height: 900px" aria-hidden="true"></div><section id="task-operations"></section><div id="task-live-status"><button id="task-live-retry">Refresh</button></div><div style="height: 900px" aria-hidden="true"></div><form method="post" action="/tasks/card/commands"><textarea name="instruction">Keep my input</textarea><input name="_csrf" value="csrf-test" type="hidden"><button type="submit" name="key" value="discuss">Discuss</button></form>');
     await page.addScriptTag({ content: fs.readFileSync('web/static/boid-operation-submit.js', 'utf8') });
+
+    async function assertFocusedAndVisible(locator, label) {
+      const state = await locator.evaluate(element => {
+        const rect = element.getBoundingClientRect();
+        return {
+          active: document.activeElement === element,
+          bottom: rect.bottom,
+          top: rect.top,
+          viewportHeight: window.innerHeight,
+        };
+      });
+      assert.equal(state.active, true, `${label} should receive focus`);
+      assert.ok(state.top >= 0 && state.bottom <= state.viewportHeight,
+        `${label} should be visible in the viewport: ${JSON.stringify(state)}`);
+    }
 
     // A transport failure is result-unknown: preserve all submitted input.
     await page.getByText('Discuss', { exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('form').getAttribute('aria-busy') === 'true');
+    await page.locator('form').scrollIntoViewIfNeeded();
+    assert.ok(await page.evaluate(() => window.scrollY > 1200), 'the mobile form should begin well below the outcome region');
+    release();
     await page.waitForFunction(() => document.querySelector('#operation-submit-feedback')?.textContent.includes('could not be confirmed'));
+    await assertFocusedAndVisible(page.locator('#operation-submit-feedback'), 'unknown-result feedback');
     assert.equal(await page.locator('textarea').inputValue(), 'Keep my input');
     assert.equal(new URLSearchParams(body).get('key'), 'discuss');
     assert.equal(new URLSearchParams(body).get('_csrf'), 'csrf-test');
@@ -60,8 +84,10 @@ const assert = require('node:assert/strict');
     assert.equal(await page.getByText('Discuss', { exact: true }).isDisabled(), true);
     await page.locator('form').evaluate(form => form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true })));
     assert.equal(count, 2);
+    await page.locator('form').scrollIntoViewIfNeeded();
     release();
     await page.waitForFunction(() => document.querySelector('#task-operations').textContent === 'Accepted');
+    await assertFocusedAndVisible(page.locator('.operation-result[data-operation-id="result-2"]'), 'accepted result');
     assert.equal(await page.locator('#operation-submit-feedback').count(), 0);
     assert.equal(await page.locator('textarea').inputValue(), '');
 
