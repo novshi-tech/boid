@@ -1,16 +1,21 @@
 package vtsnapshot
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/vt"
 )
 
 func TestRender_Empty(t *testing.T) {
-	if got := Render(nil, 80, 24); got != nil {
+	if got := mustRender(t, nil, 80, 24); got != nil {
 		t.Fatalf("Render(nil) = %q, want nil", got)
 	}
-	if got := Render([]byte{}, 80, 24); got != nil {
+	if got := mustRender(t, []byte{}, 80, 24); got != nil {
 		t.Fatalf("Render(empty) = %q, want nil", got)
 	}
 }
@@ -29,7 +34,7 @@ func TestRender_ResolvesOverdrawnCells(t *testing.T) {
 	raw.WriteString("\x1b[H")
 	raw.WriteString("final")
 
-	got := Render([]byte(raw.String()), 80, 24)
+	got := mustRender(t, []byte(raw.String()), 80, 24)
 	if !strings.Contains(string(got), "final") {
 		t.Fatalf("rendered snapshot lost the last frame: %q", firstLine(got))
 	}
@@ -45,7 +50,7 @@ func TestRender_ResolvesOverdrawnCells(t *testing.T) {
 // emulator joins rows with a bare LF, which a raw-mode terminal treats as
 // line-feed-only and staircases. Every LF must carry a CR.
 func TestRender_RowsAreCRLFTerminated(t *testing.T) {
-	got := Render([]byte("one\r\ntwo\r\nthree"), 80, 24)
+	got := mustRender(t, []byte("one\r\ntwo\r\nthree"), 80, 24)
 	s := string(got)
 	if !strings.Contains(s, "\r\n") {
 		t.Fatalf("no CRLF in rendered snapshot: %q", s)
@@ -64,13 +69,23 @@ func TestRender_RowsAreCRLFTerminated(t *testing.T) {
 func TestRender_DeviceQueryDoesNotDeadlock(t *testing.T) {
 	raw := []byte("\x1b[c\x1b[5n\x1b[>q" + "after queries")
 
-	done := make(chan []byte, 1)
-	go func() { done <- Render(raw, 80, 24) }()
+	type result struct {
+		output []byte
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		output, err := Render(raw, 80, 24)
+		done <- result{output, err}
+	}()
 
 	select {
 	case got := <-done:
-		if !strings.Contains(string(got), "after queries") {
-			t.Errorf("rendered snapshot dropped post-query output: %q", firstLine(got))
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if !strings.Contains(string(got.output), "after queries") {
+			t.Errorf("rendered snapshot dropped post-query output: %q", firstLine(got.output))
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Render deadlocked on a transcript containing device queries")
@@ -79,7 +94,7 @@ func TestRender_DeviceQueryDoesNotDeadlock(t *testing.T) {
 
 func TestRender_InvalidGeometryFallsBack(t *testing.T) {
 	for _, geom := range [][2]int{{0, 0}, {-1, 24}, {80, -1}} {
-		got := Render([]byte("hello"), geom[0], geom[1])
+		got := mustRender(t, []byte("hello"), geom[0], geom[1])
 		if !strings.Contains(string(got), "hello") {
 			t.Errorf("Render(cols=%d, rows=%d) lost its input: %q", geom[0], geom[1], got)
 		}
@@ -96,7 +111,7 @@ func TestRender_ScrollbackIsBounded(t *testing.T) {
 		raw.WriteString("line\r\n")
 	}
 
-	got := Render([]byte(raw.String()), 80, 24)
+	got := mustRender(t, []byte(raw.String()), 80, 24)
 	lines := strings.Count(string(got), "\r\n") + 1
 	if lines > MaxScrollbackLines+24+2 {
 		t.Errorf("rendered snapshot kept %d lines, want at most scrollback cap %d plus one screen", lines, MaxScrollbackLines)
@@ -116,7 +131,7 @@ func TestRender_KeepsScrollbackHistory(t *testing.T) {
 		raw.WriteString("filler\r\n")
 	}
 
-	got := Render([]byte(raw.String()), 80, 24)
+	got := mustRender(t, []byte(raw.String()), 80, 24)
 	if !strings.Contains(string(got), "NEEDLE") {
 		t.Error("rendered snapshot dropped a scrolled-off line that is still within the cap")
 	}
@@ -131,7 +146,7 @@ func TestRender_RestoresCursorPosition(t *testing.T) {
 	// nothing after it should move it again.
 	raw := []byte("\x1b[4;6Hprompt> ")
 
-	got := string(Render(raw, 80, 24))
+	got := string(mustRender(t, raw, 80, 24))
 	want := "\x1b[4;14H" // row 3 -> "4", column 5+len("prompt> ")=13 -> "14", both 1-indexed
 	if !strings.HasSuffix(got, want) {
 		t.Fatalf("rendered snapshot does not end with cursor restore %q: %q", want, got)
@@ -151,7 +166,7 @@ func TestRender_RestoresCursorPositionWithScrollback(t *testing.T) {
 	}
 	raw.WriteString("END") // no trailing CRLF: cursor stays right after it
 
-	got := string(Render([]byte(raw.String()), 80, 24))
+	got := string(mustRender(t, []byte(raw.String()), 80, 24))
 	want := "\x1b[24;4H" // last screen row (24, 1-indexed) x column len("END")+1
 	if !strings.HasSuffix(got, want) {
 		t.Fatalf("rendered snapshot does not end with cursor restore %q: %q", want, got)
@@ -164,4 +179,53 @@ func firstLine(b []byte) string {
 		return s[:i]
 	}
 	return s
+}
+
+func mustRender(t *testing.T, raw []byte, cols, rows int) []byte {
+	t.Helper()
+	got, err := Render(raw, cols, rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func TestRender_ScrollMarginsAfterResize(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw, bounded string
+	}{
+		{"reverse index", "\x1b[1;81r\x1b[H\x1bM", "\x1b[1;5r\x1b[H\x1bM"},
+		{"insert lines", "\x1b[1;81r\x1b[H\x1b[2L", "\x1b[1;5r\x1b[H\x1b[2L"},
+		{"delete lines", "\x1b[1;81r\x1b[H\x1b[2M", "\x1b[1;5r\x1b[H\x1b[2M"},
+		{"horizontal margins", "\x1b[?69h\x1b[1;291s\x1b[H\x1bM", "\x1b[?69h\x1b[1;10s\x1b[H\x1bM"},
+		{"near margin outside screen", "\x1b[70;81r\x1b[H\x1bM", "\x1b[H\x1bM"},
+		{"default near margin", "\x1b[;81r\x1b[H\x1bM", "\x1b[1;5r\x1b[H\x1bM"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := "one\r\ntwo\r\nthree\r\nfour\r\nfive"
+			suffix := "\x1b[Hlive"
+			got := mustRender(t, []byte(prefix+tc.raw+suffix), 10, 5)
+			want := mustRender(t, []byte(prefix+tc.bounded+suffix), 10, 5)
+			if string(got) != string(want) {
+				t.Fatalf("snapshot = %q, want bounded screen %q", got, want)
+			}
+			if !strings.Contains(string(got), "live") {
+				t.Fatalf("lost output after scrolling: %q", got)
+			}
+		})
+	}
+}
+
+func TestRender_PanicReturnsErrorAndClosesReplyPipe(t *testing.T) {
+	emu := vt.NewEmulator(10, 5)
+	emu.RegisterCsiHandler('z', func(ansi.Params) bool { panic("broken emulator") })
+	output, err := render([]byte("\x1b[c\x1b[z"), emu)
+	if err == nil || !strings.Contains(err.Error(), "broken emulator") || output != nil {
+		t.Fatalf("render = %q, %v; want no output and panic error", output, err)
+	}
+	// render joins the reply-draining goroutine before returning, even on
+	// panic. A closed pipe also proves future writes cannot leave it blocked.
+	if _, err := emu.InputPipe().Write([]byte("reply")); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("reply pipe write error = %v, want closed pipe", err)
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -373,6 +374,10 @@ func clampReplayOffset(offset, snapshotLen int) int {
 // ?replay_offset it hands back on its next reconnect — stays anchored to the
 // one thing both ends agree on, regardless of what was actually painted.
 func resolveReplay(snapshot dispatcher.RuntimeSnapshot, requestedOffset int) (replay []byte, offset int, rendered bool) {
+	return resolveReplayWithRenderer(snapshot, requestedOffset, vtsnapshot.Render)
+}
+
+func resolveReplayWithRenderer(snapshot dispatcher.RuntimeSnapshot, requestedOffset int, render func([]byte, int, int) ([]byte, error)) (replay []byte, offset int, rendered bool) {
 	from := clampReplayOffset(requestedOffset, len(snapshot.Raw))
 	if from > 0 {
 		return snapshot.Raw[from:], from, false
@@ -380,7 +385,13 @@ func resolveReplay(snapshot dispatcher.RuntimeSnapshot, requestedOffset int) (re
 	if !snapshot.TTY || len(snapshot.Raw) == 0 {
 		return snapshot.Raw, 0, false
 	}
-	return vtsnapshot.Render(snapshot.Raw, snapshot.Geometry.Cols, snapshot.Geometry.Rows), len(snapshot.Raw), true
+	replay, err := render(snapshot.Raw, snapshot.Geometry.Cols, snapshot.Geometry.Rows)
+	if err != nil {
+		slog.Warn("terminal snapshot failed; replaying raw transcript", "error", err,
+			"cols", snapshot.Geometry.Cols, "rows", snapshot.Geometry.Rows, "transcript_size", len(snapshot.Raw))
+		return snapshot.Raw, 0, false
+	}
+	return replay, len(snapshot.Raw), true
 }
 
 // sendAttach announces, as the first frame of every connection, where the
