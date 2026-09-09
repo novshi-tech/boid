@@ -1539,6 +1539,12 @@ templ TaskDetailLiveScript() {
 							if (kind === 'operations') {
 								var current = before.querySelector('[data-operation-id]');
 								if ((current ? current.dataset.operationId : '') !== selectedOperation) return;
+								// A failed receipt update can leave a durable unknown placeholder.
+								// Keep the outcome observed directly by this browser until revisit.
+								if (current && current.dataset.operationResult && current.dataset.operationResult !== 'unknown') {
+									var incoming = new DOMParser().parseFromString(html, 'text/html').querySelector('[data-operation-id="' + CSS.escape(selectedOperation) + '"]');
+									if (incoming && incoming.dataset.operationResult === 'unknown') return;
+								}
 							}
 							var state = captureSwapState(before);
 							var el = before;
@@ -1738,14 +1744,23 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 }
 
 func operationResultText(result *orchestrator.OperationResult) string {
+	switch result.ReasonCode {
+	case orchestrator.OperationReasonSuggestionAcceptedLaunchRejected:
+		return "The suggestion was accepted, but its execution did not start. Review the current card state before trying again."
+	case orchestrator.OperationReasonSuggestionAcceptedLaunchUnknown:
+		return "The suggestion was accepted, but the server could not confirm whether its execution started. Check the current state before trying again."
+	}
 	if result.Result == orchestrator.OperationResultUnknown {
 		return "The server could not confirm the complete outcome. Check the linked work and refresh the current state before trying again."
 	}
 	switch result.CurrentPhase {
 	case orchestrator.OperationReasonRequestFailed:
+		if result.TargetTaskID != "" || result.TargetSessionID != "" {
+			return "The operation started, but its destination later failed or stopped. Review the linked work before trying again."
+		}
 		return "The request was accepted, but its launch later failed. Review the current card state before trying again."
 	case orchestrator.OperationReasonTargetStarted:
-		return "The accepted operation started and its destination is now available."
+		return "The accepted operation started."
 	}
 	switch result.ReasonCode {
 	case orchestrator.OperationReasonSlotOccupied:
@@ -1775,14 +1790,14 @@ templ OperationResultsSection(results []*orchestrator.OperationResult) {
 	<section id="task-operations" class="operation-results" aria-labelledby="operation-results-heading">
 		if len(results) > 0 {
 			<h2 id="operation-results-heading" class="detail-section-title">Operation results</h2>
-			<div class={ "operation-result", "operation-result-" + results[0].Result } role="status" aria-live="polite" tabindex="-1" data-operation-id={ results[0].ID } data-operation-result={ results[0].Result }>
+			<div id={ "operation-" + results[0].ID } class={ "operation-result", "operation-result-" + results[0].Result } role="status" aria-live="polite" tabindex="-1" data-operation-id={ results[0].ID } data-operation-result={ results[0].Result }>
 				@operationResultBody(results[0])
 			</div>
 			if len(results) > 1 {
 				<details class="operation-result-history">
 					<summary>{ fmt.Sprintf("Earlier operation results (%d)", len(results)-1) }</summary>
 					for _, result := range results[1:] {
-					<div class={ "operation-result", "operation-result-" + result.Result } data-operation-id={ result.ID } data-operation-result={ result.Result }>
+					<div id={ "operation-" + result.ID } class={ "operation-result", "operation-result-" + result.Result } data-operation-id={ result.ID } data-operation-result={ result.Result }>
 						@operationResultBody(result)
 					</div>
 					}
@@ -1801,12 +1816,23 @@ templ operationResultBody(result *orchestrator.OperationResult) {
 		<time datetime={ result.CreatedAt.Format(time.RFC3339) }>{ result.CreatedAt.Local().Format("2006-01-02 15:04:05 MST") }</time>
 	</div>
 	<p>{ operationResultText(result) }</p>
+	if result.Notice != "" {
+		<p class="operation-result-notice">{ result.Notice }</p>
+	}
 	<div class="operation-result-links">
 		if result.TargetTaskID != "" {
-			<a href={ templ.SafeURL("/tasks/" + result.TargetTaskID) }>Open task</a>
+			if result.TargetTaskUnavailable {
+				<span>Task is no longer available.</span>
+			} else {
+				<a href={ templ.SafeURL("/tasks/" + result.TargetTaskID) }>Open task</a>
+			}
 		}
 		if result.TargetSessionID != "" {
-			<a href={ templ.SafeURL("/jobs/" + result.TargetSessionID) }>Open session</a>
+			if result.TargetSessionUnavailable {
+				<span>Session is no longer available.</span>
+			} else {
+				<a href={ templ.SafeURL("/jobs/" + result.TargetSessionID) }>Open session</a>
+			}
 		}
 	</div>
 	<details class="operation-result-diagnostics">
@@ -1817,6 +1843,12 @@ templ operationResultBody(result *orchestrator.OperationResult) {
 			<dt>Reason</dt><dd><code>{ result.ReasonCode }</code></dd>
 			if result.CurrentPhase != "" {
 				<dt>Current phase</dt><dd><code>{ result.CurrentPhase }</code></dd>
+			}
+			if result.TargetTaskID != "" {
+				<dt>Task</dt><dd><code>{ result.TargetTaskID }</code></dd>
+			}
+			if result.TargetSessionID != "" {
+				<dt>Session</dt><dd><code>{ result.TargetSessionID }</code></dd>
 			}
 				if result.TargetRequestID != "" {
 					<dt>Request</dt><dd><code>{ result.TargetRequestID }</code></dd>

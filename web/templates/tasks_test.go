@@ -935,3 +935,82 @@ func TestTaskDetailLiveScript_RegistersChildEventListener(t *testing.T) {
 		t.Errorf("'child' listener must refresh current state and child history; got:\n%s", html)
 	}
 }
+
+func TestOperationResultText_RequestFailureDistinguishesLaunchFromStartedTarget(t *testing.T) {
+	launchFailure := &orchestrator.OperationResult{Result: orchestrator.OperationResultAccepted, CurrentPhase: orchestrator.OperationReasonRequestFailed}
+	if got := operationResultText(launchFailure); !strings.Contains(got, "launch later failed") {
+		t.Fatalf("launch failure text = %q", got)
+	}
+	for _, result := range []*orchestrator.OperationResult{
+		{Result: orchestrator.OperationResultAccepted, CurrentPhase: orchestrator.OperationReasonRequestFailed, TargetTaskID: "task-1"},
+		{Result: orchestrator.OperationResultAccepted, CurrentPhase: orchestrator.OperationReasonRequestFailed, TargetSessionID: "session-1"},
+	} {
+		if got := operationResultText(result); !strings.Contains(got, "started") || !strings.Contains(got, "later failed or stopped") {
+			t.Errorf("started target failure text = %q for %+v", got, result)
+		}
+	}
+}
+
+func TestOperationResultText_TargetStartedDoesNotPromiseAvailability(t *testing.T) {
+	got := operationResultText(&orchestrator.OperationResult{
+		Result: orchestrator.OperationResultAccepted, CurrentPhase: orchestrator.OperationReasonTargetStarted,
+		TargetTaskID: "deleted-task", TargetTaskUnavailable: true,
+	})
+	if got != "The accepted operation started." {
+		t.Fatalf("target-started text = %q", got)
+	}
+}
+
+func TestOperationResultText_AcceptedSuggestionLaunchOutcomes(t *testing.T) {
+	rejected := operationResultText(&orchestrator.OperationResult{Result: orchestrator.OperationResultAccepted, ReasonCode: orchestrator.OperationReasonSuggestionAcceptedLaunchRejected})
+	if !strings.Contains(rejected, "suggestion was accepted") || !strings.Contains(rejected, "did not start") {
+		t.Fatalf("known launch rejection text = %q", rejected)
+	}
+	unknown := operationResultText(&orchestrator.OperationResult{Result: orchestrator.OperationResultUnknown, ReasonCode: orchestrator.OperationReasonSuggestionAcceptedLaunchUnknown})
+	if !strings.Contains(unknown, "suggestion was accepted") || !strings.Contains(unknown, "could not confirm") {
+		t.Fatalf("unknown launch text = %q", unknown)
+	}
+}
+
+func TestOperationResultsSection_UsesStableReceiptIDs(t *testing.T) {
+	results := []*orchestrator.OperationResult{
+		{ID: "latest", Result: orchestrator.OperationResultAccepted, Notice: "Receipt update failed; direct result retained.", CreatedAt: time.Now()},
+		{ID: "earlier", Result: orchestrator.OperationResultRejected, CreatedAt: time.Now()},
+	}
+	var buf bytes.Buffer
+	if err := OperationResultsSection(results).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	for _, id := range []string{`id="operation-latest"`, `id="operation-earlier"`} {
+		if !strings.Contains(html, id) {
+			t.Errorf("missing stable receipt %s in %s", id, html)
+		}
+	}
+	if !strings.Contains(html, `class="operation-result-notice"`) || !strings.Contains(html, "Receipt update failed; direct result retained.") {
+		t.Errorf("missing ephemeral receipt notice in %s", html)
+	}
+}
+
+func TestOperationResultsSection_DoesNotLinkUnavailableDestinations(t *testing.T) {
+	results := []*orchestrator.OperationResult{{
+		ID: "unavailable", Result: orchestrator.OperationResultStarted, CreatedAt: time.Now(),
+		TargetTaskID: "deleted-task", TargetTaskUnavailable: true,
+		TargetSessionID: "deleted-session", TargetSessionUnavailable: true,
+	}}
+	var buf bytes.Buffer
+	if err := OperationResultsSection(results).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	for _, text := range []string{"Task is no longer available.", "Session is no longer available.", "deleted-task", "deleted-session"} {
+		if !strings.Contains(html, text) {
+			t.Errorf("missing %q in %s", text, html)
+		}
+	}
+	for _, href := range []string{`href="/tasks/deleted-task"`, `href="/jobs/deleted-session"`} {
+		if strings.Contains(html, href) {
+			t.Errorf("unavailable destination must not render %s in %s", href, html)
+		}
+	}
+}
