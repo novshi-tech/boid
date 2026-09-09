@@ -15,32 +15,38 @@ const (
 	OperationResultRejected = "rejected"
 	OperationResultUnknown  = "unknown"
 
-	OperationReasonRequestAccepted  = "request_accepted"
-	OperationReasonExecutionStarted = "execution_started"
-	OperationReasonSlotOccupied     = "slot_occupied"
-	OperationReasonNotAvailable     = "not_available"
-	OperationReasonInvalidRequest   = "invalid_request"
-	OperationReasonNotFound         = "not_found"
-	OperationReasonConflict         = "conflict"
-	OperationReasonInternalError    = "internal_error"
-	OperationReasonNoReadyWork      = "no_ready_work"
-	OperationReasonRequestFailed    = "request_failed"
-	OperationReasonTargetStarted    = "target_started"
+	OperationReasonRequestAccepted                  = "request_accepted"
+	OperationReasonExecutionStarted                 = "execution_started"
+	OperationReasonSlotOccupied                     = "slot_occupied"
+	OperationReasonNotAvailable                     = "not_available"
+	OperationReasonInvalidRequest                   = "invalid_request"
+	OperationReasonNotFound                         = "not_found"
+	OperationReasonConflict                         = "conflict"
+	OperationReasonInternalError                    = "internal_error"
+	OperationReasonNoReadyWork                      = "no_ready_work"
+	OperationReasonRequestFailed                    = "request_failed"
+	OperationReasonTargetStarted                    = "target_started"
+	OperationReasonOutcomePending                   = "outcome_pending"
+	OperationReasonSuggestionAcceptedLaunchRejected = "suggestion_accepted_launch_rejected"
+	OperationReasonSuggestionAcceptedLaunchUnknown  = "suggestion_accepted_launch_unknown"
 )
 
 // OperationResult records the server-observed outcome of one human UI operation.
 type OperationResult struct {
-	ID              string
-	TaskID          string
-	OperationType   string
-	OperationLabel  string
-	Result          string
-	ReasonCode      string
-	TargetTaskID    string
-	TargetSessionID string
-	TargetRequestID string
-	CurrentPhase    string
-	CreatedAt       time.Time
+	ID                       string
+	TaskID                   string
+	OperationType            string
+	OperationLabel           string
+	Result                   string
+	ReasonCode               string
+	TargetTaskID             string
+	TargetSessionID          string
+	TargetTaskUnavailable    bool
+	TargetSessionUnavailable bool
+	TargetRequestID          string
+	CurrentPhase             string
+	Notice                   string
+	CreatedAt                time.Time
 }
 
 type OperationResultStore struct{ db db.DBTX }
@@ -66,6 +72,26 @@ func (s *OperationResultStore) CreateOperationResult(r *OperationResult) error {
 	return nil
 }
 
+// UpdateOperationResult finalizes an initial unknown receipt exactly once.
+func (s *OperationResultStore) UpdateOperationResult(r *OperationResult) error {
+	res, err := s.db.Exec(`UPDATE operation_results SET
+		operation_label = ?, result = ?, reason_code = ?, target_task_id = ?, target_session_id = ?, target_request_id = ?
+		WHERE id = ? AND task_id = ? AND result = ? AND reason_code = ?`,
+		r.OperationLabel, r.Result, r.ReasonCode, r.TargetTaskID, r.TargetSessionID, r.TargetRequestID,
+		r.ID, r.TaskID, OperationResultUnknown, OperationReasonOutcomePending)
+	if err != nil {
+		return fmt.Errorf("update operation result: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update operation result rows affected: %w", err)
+	}
+	if n != 1 {
+		return fmt.Errorf("update operation result: pending receipt not found")
+	}
+	return nil
+}
+
 // ListOperationResults returns newest first and resolves a request's eventual
 // task or session association at read time so revisiting the card gains the link.
 func (s *OperationResultStore) ListOperationResults(taskID string, limit int) ([]*OperationResult, error) {
@@ -77,7 +103,9 @@ func (s *OperationResultStore) ListOperationResults(taskID string, limit int) ([
 		CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE o.target_session_id END,
 		o.target_request_id, o.created_at,
 		CASE WHEN o.result = 'accepted' AND cr.status = 'failed' THEN 'request_failed'
-		     WHEN o.result = 'accepted' AND cr.status IN ('attached','finished') THEN 'target_started' ELSE '' END
+		     WHEN o.result = 'accepted' AND cr.status IN ('attached','finished') THEN 'target_started' ELSE '' END,
+        NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = CASE WHEN cr.target_kind = 'task' THEN cr.target_id ELSE o.target_task_id END),
+        NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE o.target_session_id END)
 		FROM operation_results o LEFT JOIN card_requests cr ON cr.id = o.target_request_id
 		WHERE o.task_id = ? ORDER BY o.created_at DESC, o.id DESC LIMIT ?`, taskID, limit)
 	if err != nil {
@@ -88,7 +116,7 @@ func (s *OperationResultStore) ListOperationResults(taskID string, limit int) ([
 	for rows.Next() {
 		r := new(OperationResult)
 		if err := rows.Scan(&r.ID, &r.TaskID, &r.OperationType, &r.OperationLabel, &r.Result, &r.ReasonCode,
-			&r.TargetTaskID, &r.TargetSessionID, &r.TargetRequestID, &r.CreatedAt, &r.CurrentPhase); err != nil {
+			&r.TargetTaskID, &r.TargetSessionID, &r.TargetRequestID, &r.CreatedAt, &r.CurrentPhase, &r.TargetTaskUnavailable, &r.TargetSessionUnavailable); err != nil {
 			return nil, err
 		}
 		results = append(results, r)
@@ -114,7 +142,9 @@ func (s *OperationResultStore) listOperationResults(where string, args []any, li
 		CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE o.target_session_id END,
 		o.target_request_id, o.created_at,
 		CASE WHEN o.result = 'accepted' AND cr.status = 'failed' THEN 'request_failed'
-		     WHEN o.result = 'accepted' AND cr.status IN ('attached','finished') THEN 'target_started' ELSE '' END
+		     WHEN o.result = 'accepted' AND cr.status IN ('attached','finished') THEN 'target_started' ELSE '' END,
+        NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = CASE WHEN cr.target_kind = 'task' THEN cr.target_id ELSE o.target_task_id END),
+        NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE o.target_session_id END)
 		FROM operation_results o LEFT JOIN card_requests cr ON cr.id = o.target_request_id
 		WHERE `+where+` ORDER BY o.created_at DESC, o.id DESC LIMIT ?`, args...)
 	if err != nil {
@@ -125,7 +155,7 @@ func (s *OperationResultStore) listOperationResults(where string, args []any, li
 	for rows.Next() {
 		r := new(OperationResult)
 		if err := rows.Scan(&r.ID, &r.TaskID, &r.OperationType, &r.OperationLabel, &r.Result, &r.ReasonCode,
-			&r.TargetTaskID, &r.TargetSessionID, &r.TargetRequestID, &r.CreatedAt, &r.CurrentPhase); err != nil {
+			&r.TargetTaskID, &r.TargetSessionID, &r.TargetRequestID, &r.CreatedAt, &r.CurrentPhase, &r.TargetTaskUnavailable, &r.TargetSessionUnavailable); err != nil {
 			return nil, err
 		}
 		results = append(results, r)

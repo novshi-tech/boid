@@ -75,9 +75,10 @@ func newCardCommandWebTestHandler(t *testing.T, meta *orchestrator.ProjectMeta) 
 		workflow:           workflow,
 	}
 	h := &WebHandler{
-		Service:      svc,
-		TaskTriage:   repo,
-		CardTimeline: testCardTimelineStore{db: d.Conn},
+		Service:          svc,
+		TaskTriage:       repo,
+		CardTimeline:     testCardTimelineStore{db: d.Conn},
+		OperationResults: orchestrator.NewOperationResultStore(d.Conn),
 	}
 	return h, d.Conn, projectID
 }

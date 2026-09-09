@@ -45,6 +45,42 @@ func TestOperationResultStorePersistsMetadataWithoutInput(t *testing.T) {
 	}
 }
 
+func TestOperationResultStoreFinalizesPendingReceiptExactlyOnce(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatal(err)
+	}
+	store := NewOperationResultStore(d.Conn)
+	receipt := &OperationResult{
+		ID: "receipt", TaskID: "card", OperationType: "go", OperationLabel: "Go",
+		Result: OperationResultUnknown, ReasonCode: OperationReasonOutcomePending,
+		CreatedAt: time.Date(2026, 9, 9, 1, 2, 3, 0, time.UTC),
+	}
+	if err := store.CreateOperationResult(receipt); err != nil {
+		t.Fatal(err)
+	}
+	receipt.Result = OperationResultStarted
+	receipt.ReasonCode = OperationReasonExecutionStarted
+	receipt.TargetTaskID = "child"
+	if err := store.UpdateOperationResult(receipt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetOperationResult("card", "receipt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Result != OperationResultStarted || got.TargetTaskID != "child" || !got.CreatedAt.Equal(receipt.CreatedAt) {
+		t.Fatalf("final receipt = %+v", got)
+	}
+	if err := store.UpdateOperationResult(receipt); err == nil {
+		t.Fatal("second finalization succeeded")
+	}
+}
+
 func TestGCOperationResultsUsesIndependentThirtyDayAge(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {

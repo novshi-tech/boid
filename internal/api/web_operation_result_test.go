@@ -286,4 +286,15 @@ func TestCompletedGoOperationDistinguishesAcceptedStartedAndUnknown(t *testing.T
 	if rejected.Result != orchestrator.OperationResultRejected || rejected.ReasonCode != orchestrator.OperationReasonNoReadyWork {
 		t.Fatalf("rejected=%+v", rejected)
 	}
+	acceptedDecisionRejectedLaunch := completedGoOperation("card", "Go (accepted suggestion)", &ActionApplication{DecisionAccepted: true},
+		&StatusError{Code: http.StatusConflict, Message: "no launch", OperationReason: orchestrator.OperationReasonNoReadyWork, TargetRequestID: "request-1"})
+	if acceptedDecisionRejectedLaunch.Result != orchestrator.OperationResultAccepted ||
+		acceptedDecisionRejectedLaunch.ReasonCode != orchestrator.OperationReasonSuggestionAcceptedLaunchRejected ||
+		acceptedDecisionRejectedLaunch.TargetRequestID != "request-1" {
+		t.Fatalf("accepted decision/rejected launch=%+v", acceptedDecisionRejectedLaunch)
+	}
+	acceptedDecisionUnknownLaunch := completedGoOperation("card", "Go (accepted suggestion)", &ActionApplication{DecisionAccepted: true}, errors.New("database response lost"))
+	if acceptedDecisionUnknownLaunch.Result != orchestrator.OperationResultUnknown || acceptedDecisionUnknownLaunch.ReasonCode != orchestrator.OperationReasonSuggestionAcceptedLaunchUnknown {
+		t.Fatalf("accepted decision/unknown launch=%+v", acceptedDecisionUnknownLaunch)
+	}
 }

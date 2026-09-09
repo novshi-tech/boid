@@ -253,6 +253,7 @@ type WebService interface {
 
 type OperationResultStore interface {
 	CreateOperationResult(result *orchestrator.OperationResult) error
+	UpdateOperationResult(result *orchestrator.OperationResult) error
 	ListOperationResults(taskID string, limit int) ([]*orchestrator.OperationResult, error)
 	GetOperationResult(taskID, id string) (*orchestrator.OperationResult, error)
 }
