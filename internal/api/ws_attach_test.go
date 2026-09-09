@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -1012,5 +1013,52 @@ func readAllOutput(t *testing.T, conn *websocket.Conn, ch chan []byte) string {
 			return b.String()
 		}
 		b.Write(data)
+	}
+}
+
+func TestResolveReplay_RenderFailureFallsBackToRaw(t *testing.T) {
+	raw := []byte("\x1b[Hrecorded output")
+	snapshot := dispatcher.RuntimeSnapshot{Raw: raw, TTY: true, Geometry: dispatcher.TerminalSize{Cols: 10, Rows: 5}}
+	replay, offset, rendered := resolveReplayWithRenderer(snapshot, 0, func([]byte, int, int) ([]byte, error) {
+		return nil, errors.New("emulator failed")
+	})
+	if string(replay) != string(raw) || offset != 0 || rendered {
+		t.Fatalf("fallback = %q, %d, %v; want raw bytes, offset 0, rendered false", replay, offset, rendered)
+	}
+	// A client counting the fallback's raw bytes must resume at the exact
+	// tail without attempting to render the failing transcript again.
+	snapshot.Raw = append(snapshot.Raw, []byte("live")...)
+	replay, offset, rendered = resolveReplayWithRenderer(snapshot, len(raw), func([]byte, int, int) ([]byte, error) {
+		t.Fatal("reconnect attempted rendering")
+		return nil, nil
+	})
+	if string(replay) != "live" || offset != len(raw) || rendered {
+		t.Fatalf("reconnect = %q, %d, %v", replay, offset, rendered)
+	}
+}
+
+func TestWSAttachHandler_ResizedTranscriptKeepsLiveStream(t *testing.T) {
+	raw := []byte("\x1b[1;81r\x1b[H\x1bMsnapshot")
+	sub := &stubSubscriber{snapshot: raw, tty: true,
+		geometry: dispatcher.TerminalSize{Cols: 40, Rows: 24},
+		ch:       make(chan []byte, 1), ok: true}
+	srv := newWSTestServer(&WSAttachHandler{Subscriber: sub})
+	defer srv.Close()
+	conn := dialWSRaw(t, srv, "resized-job", "")
+	defer conn.CloseNow()
+	attach := readWSMsg(t, conn)
+	if attach.Type != "attach" || !attach.Rendered || attach.Offset != len(raw) {
+		t.Fatalf("unexpected attach: %+v", attach)
+	}
+	msg := readWSMsg(t, conn)
+	data, err := base64.StdEncoding.DecodeString(msg.Data)
+	if err != nil || msg.Type != "output" || !strings.Contains(string(data), "snapshot") {
+		t.Fatalf("snapshot = %+v, decode error %v", msg, err)
+	}
+	sub.ch <- []byte("live output")
+	msg = readWSMsg(t, conn)
+	data, err = base64.StdEncoding.DecodeString(msg.Data)
+	if err != nil || msg.Type != "output" || string(data) != "live output" {
+		t.Fatalf("live output = %+v, decode error %v", msg, err)
 	}
 }

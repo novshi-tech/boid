@@ -28,6 +28,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 )
 
@@ -51,26 +52,38 @@ const (
 	defaultRows = 24
 )
 
-// Render feeds raw through a virtual terminal of the given geometry and
-// returns the resolved screen as a width-independent ANSI dump with SGR styles
-// preserved: the most recent MaxScrollbackLines scrolled-off lines, then the
-// visible screen. The caller paints it onto a cleared terminal.
-//
-// Non-positive cols/rows fall back to 80x24. An empty raw returns nil.
-//
-// Render is CPU-bound and proportional to len(raw); callers must not hold a
-// lock across it (the transcript it resolves is appended to by a live read
-// loop). Rendering the 8.7 MB job above takes on the order of a tenth of a
-// second.
-func Render(raw []byte, cols, rows int) []byte {
+// Render resolves a transcript into a styled screen and bounded scrollback,
+// returning emulator failures as errors so callers can replay raw output.
+func Render(raw []byte, cols, rows int) ([]byte, error) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	if cols <= 0 || rows <= 0 {
 		cols, rows = defaultCols, defaultRows
 	}
 
 	emu := vt.NewEmulator(cols, rows)
+	return render(raw, emu)
+}
+
+func render(raw []byte, emu *vt.Emulator) (output []byte, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			output = nil
+			err = fmt.Errorf("render terminal snapshot: %v", recovered)
+		}
+	}()
+
+	// Handlers run newest first. Clamp parser-backed margins to prevent
+	// out-of-bounds scrolling when replaying output from a larger screen.
+	emu.RegisterCsiHandler('r', func(params ansi.Params) bool {
+		clampMargin(params, emu.Height())
+		return false
+	})
+	emu.RegisterCsiHandler('s', func(params ansi.Params) bool {
+		clampMargin(params, emu.Width())
+		return false
+	})
 
 	// The emulator answers device queries (DA1, DSR, XTVERSION, ...) embedded
 	// in the recorded output by writing replies to its synchronous input pipe.
@@ -83,32 +96,24 @@ func Render(raw []byte, cols, rows int) []byte {
 		close(drained)
 	}()
 
+	defer func() {
+		// Close the write end and join the reader before emu.Close changes
+		// the emulator's closed flag, avoiding a race with emu.Read.
+		if pw, ok := emu.InputPipe().(*io.PipeWriter); ok {
+			_ = pw.Close()
+			<-drained
+			_ = emu.Close()
+		} else {
+			// Defensive fallback if x/vt ever changes the pipe type: emu.Close
+			// still unblocks the reader, with the data race noted above.
+			_ = emu.Close()
+			<-drained
+		}
+	}()
+
 	_, _ = emu.Write(raw)
-
-	// Captured before Close: the cursor position the raw stream actually left
-	// the emulator in. Without this, the client repaints the resolved screen
-	// via term.write() and xterm parks its own cursor wherever the last
-	// written byte landed — the end of the last screen row — instead of
-	// wherever the PTY's cursor really was (mid-prompt, a blank line above the
-	// bottom, etc.). See docs/plans/web-terminal-vt-emulator.md.
+	// Preserve the recorded cursor, rather than leaving it at the dump's end.
 	cursor := emu.CursorPosition()
-
-	// Stop the drain reader by closing only the reply pipe's write end, which
-	// hands the reader a clean EOF. We deliberately do NOT use emu.Close() for
-	// that: it flips an internal `closed` flag the reader checks on every
-	// emu.Read, and the race detector (correctly) reports that as a data race
-	// inside x/vt. Once <-drained confirms the reader is gone, flipping the
-	// flag has no concurrent observer.
-	if pw, ok := emu.InputPipe().(*io.PipeWriter); ok {
-		_ = pw.Close()
-		<-drained
-		_ = emu.Close()
-	} else {
-		// Defensive fallback if x/vt ever changes the pipe type: emu.Close
-		// still unblocks the reader, with the data race noted above.
-		_ = emu.Close()
-		<-drained
-	}
 
 	var b strings.Builder
 	if sb := emu.Scrollback(); sb != nil {
@@ -138,5 +143,14 @@ func Render(raw []byte, cols, rows int) []byte {
 	// docs/plans/web-terminal-vt-emulator.md.
 	dump += fmt.Sprintf("\x1b[%d;%dH", cursor.Y+1, cursor.X+1)
 
-	return []byte(dump)
+	return []byte(dump), nil
+}
+
+// clampMargin bounds the far margin, preserving missing/zero defaults.
+// The default handler rejects a near margin at or beyond the far margin.
+func clampMargin(params ansi.Params, size int) {
+	far, more, ok := params.Param(1, size)
+	if ok && far > size {
+		params[1] = ansi.Param(ansi.Parameter(size, more))
+	}
 }
