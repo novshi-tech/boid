@@ -43,14 +43,27 @@ const script = component.match(/<script>([\s\S]*?)<\/script>/)[1];
     await page.setContent(`<div id="task-status" data-task-id="test"></div><div id="task-pinned"></div><div id="task-timeline"></div><section id="task-operations"><div class="operation-result" data-operation-id="operation-a">Selected operation-a</div></section><div id="task-live-status"><span id="task-live-message"></span><button id="task-live-retry">Refresh</button></div><section id="card-timeline"><div class="tab-empty">No history yet.</div></section><textarea id="input">Keep this input</textarea>`);
     await page.evaluate(() => {
       window.EventSource = class {
+        static CONNECTING = 0;
+        static OPEN = 1;
         static CLOSED = 2;
-        constructor() { this.readyState = 1; this.listeners = {}; window.stream = this; }
+        constructor() {
+          this.readyState = EventSource.CONNECTING;
+          this.listeners = {};
+          window.streams = window.streams || [];
+          window.streams.push(this);
+          window.stream = this;
+        }
         addEventListener(name, fn) { this.listeners[name] = fn; }
         close() { this.readyState = 2; }
+        emit(name) {
+          if (name === 'open') this.readyState = EventSource.OPEN;
+          if (name === 'error') this.readyState = EventSource.CONNECTING;
+          this.listeners[name]();
+        }
       };
     });
     await page.addScriptTag({ content: script });
-    await page.evaluate(() => window.stream.listeners.open());
+    await page.evaluate(() => window.stream.emit('open'));
     await page.waitForFunction(() => document.querySelector('#task-status').textContent.includes('Revision 0'));
     await page.locator('#task-status details').evaluate(el => el.open = true);
 
@@ -58,17 +71,17 @@ const script = component.match(/<script>([\s\S]*?)<\/script>/)[1];
     await page.locator('#task-pinned button').focus();
     const pinnedBefore = await page.locator('#task-pinned').getAttribute('data-response');
     revision = 1;
-    await page.evaluate(() => window.stream.listeners.job());
+    await page.evaluate(() => window.stream.emit('job'));
     await page.waitForFunction(previous => document.querySelector('#task-pinned')?.dataset.response !== previous, pinnedBefore);
     assert.equal(await page.evaluate(() => document.activeElement?.closest('#task-pinned') !== null), true);
 
     // A delayed refresh for selection A cannot overwrite a newer selection B.
     delayedOperation = true;
-    await page.evaluate(() => window.stream.listeners.job());
+    await page.evaluate(() => window.stream.emit('job'));
     for (let i = 0; i < 50 && !releaseOldOperation; i++) await page.waitForTimeout(10);
     assert.equal(typeof releaseOldOperation, 'function');
     await page.locator('#task-operations').evaluate(el => { el.innerHTML = '<div class="operation-result" data-operation-id="operation-b">Selected operation-b</div>'; });
-    await page.evaluate(() => window.stream.listeners.job());
+    await page.evaluate(() => window.stream.emit('job'));
     await page.waitForFunction(() => document.querySelector('#task-operations')?.dataset.selected === 'operation-b');
     releaseOldOperation();
     await page.waitForTimeout(100);
@@ -88,11 +101,21 @@ const script = component.match(/<script>([\s\S]*?)<\/script>/)[1];
     await page.waitForFunction(() => document.querySelector('#task-status').textContent.includes('Revision 1'));
     await page.waitForFunction(() => document.querySelector('#task-live-status').dataset.stale === 'false');
     assert.equal(await page.locator('#task-status details').evaluate(el => el.open), true);
-    await page.evaluate(() => window.stream.listeners.error());
+    await page.evaluate(() => {
+      window.oldStream = window.stream;
+      window.oldStream.emit('error');
+    });
     assert.equal(await page.locator('#task-live-status').getAttribute('data-stale'), 'true');
     revision = 2;
-    await page.evaluate(() => window.stream.listeners.open());
+    await page.locator('#task-live-retry').click();
+    assert.equal(await page.evaluate(() => window.stream !== window.oldStream), true);
+    assert.equal(await page.evaluate(() => window.oldStream.readyState), 2);
+    await page.evaluate(() => window.oldStream.emit('open'));
+    assert.equal(await page.locator('#task-live-status').getAttribute('data-stale'), 'true');
+    await page.evaluate(() => window.stream.emit('open'));
     await page.waitForFunction(() => document.querySelector('#task-status').textContent.includes('Revision 2'));
+    assert.equal(await page.locator('#task-live-status').getAttribute('data-stale'), 'false');
+    await page.evaluate(() => window.oldStream.emit('error'));
     assert.equal(await page.locator('#task-live-status').getAttribute('data-stale'), 'false');
     redirected = true;
     await page.locator('#task-live-retry').click();

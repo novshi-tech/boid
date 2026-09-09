@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,30 @@ func newTestEventsRouter(hub *TaskEventHub) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/api/tasks/{id}/events", h.TaskEvents)
 	return r
+}
+
+func TestTaskEvents_SendsInitialBodyWithoutWaitingForEvents(t *testing.T) {
+	srv := httptest.NewServer(newTestEventsRouter(NewTaskEventHub()))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/tasks/idle-task/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+	comment, err := reader.ReadString('\n')
+	if err != nil || !strings.HasPrefix(comment, ":") {
+		t.Fatalf("initial SSE comment = %q, err = %v", comment, err)
+	}
+	if line, err := reader.ReadString('\n'); err != nil || line != "\n" {
+		t.Fatalf("initial SSE frame terminator = %q, err = %v", line, err)
+	}
 }
 
 // TestTaskEvents_StreamsEvents connects via real HTTP and reads 2-3 events.
@@ -153,13 +178,12 @@ func TestTaskEvents_RevokeClosesSSE(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	// Confirm the connection is open by reading the first ping or event.
-	// Then revoke the device and verify the body closes.
+	// Consume all frames and wait for EOF so an initial comment cannot
+	// be mistaken for the stream closing after revocation.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		buf := make([]byte, 1)
-		resp.Body.Read(buf) //nolint:errcheck — just wait for any byte or EOF
+		_, _ = io.Copy(io.Discard, resp.Body)
 	}()
 
 	// Give the handler time to register with the registry.

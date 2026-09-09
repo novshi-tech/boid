@@ -1637,24 +1637,46 @@ templ TaskDetailLiveScript() {
 			}
 
 			function openES() {
-				if (es && es.readyState !== EventSource.CLOSED) return;
-				es = new EventSource('/api/tasks/' + taskID + '/events');
-				es.addEventListener('open', function() {
+				openEventStream(false);
+			}
+			function retryES() {
+				openEventStream(true);
+			}
+			function openEventStream(retryConnecting) {
+				if (es && es.readyState !== EventSource.CLOSED) {
+					if (!retryConnecting || es.readyState === EventSource.OPEN) return;
+					var oldStream = es;
+					es = null;
+					oldStream.close();
+				}
+				var stream = new EventSource('/api/tasks/' + taskID + '/events');
+				es = stream;
+				function currentStream(fn) {
+					return function() {
+						if (es !== stream) return;
+						fn();
+					};
+				}
+				stream.addEventListener('open', currentStream(function() {
 					connected = true;
 					showFreshness();
 					refresh(['status', 'pinned', 'timeline', 'operations']);
 					refreshHistoryHead();
-				});
-				es.addEventListener('error', function() { connected = false; showFreshness(); });
-				es.addEventListener('action', function() { refresh(['status', 'pinned', 'timeline', 'operations']); refreshHistoryHead(); });
-				es.addEventListener('job', function() { refresh(['status', 'pinned', 'timeline', 'operations']); });
-				es.addEventListener('fired_event', function() { refresh(['timeline']); });
+				}));
+				stream.addEventListener('error', currentStream(function() { connected = false; showFreshness(); }));
+				stream.addEventListener('action', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'operations']); refreshHistoryHead(); }));
+				stream.addEventListener('job', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'operations']); }));
+				stream.addEventListener('fired_event', currentStream(function() { refresh(['timeline']); }));
 				// Child updates affect current activity and historical child rows.
-				es.addEventListener('child', function() { refresh(['status', 'pinned', 'timeline', 'operations']); refreshHistoryHead(); });
+				stream.addEventListener('child', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'operations']); refreshHistoryHead(); }));
 			}
 
 			function closeES() {
-				if (es) { es.close(); }
+				if (es) {
+					var oldStream = es;
+					es = null;
+					oldStream.close();
+				}
 				connected = false;
 				showFreshness();
 			}
@@ -1672,7 +1694,7 @@ templ TaskDetailLiveScript() {
 				refreshHistoryHead();
 			});
 			document.getElementById('task-live-retry').addEventListener('click', function() {
-				openES();
+				retryES();
 				refresh(['status', 'pinned', 'timeline', 'operations']);
 				refreshHistoryHead();
 			});

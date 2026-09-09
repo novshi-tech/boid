@@ -29,9 +29,6 @@ func (h *WebHandler) TaskEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
 	ch := h.Hub.Subscribe(r.Context(), id)
 
 	var revokeCh <-chan struct{}
@@ -42,6 +39,13 @@ func (h *WebHandler) TaskEvents(w http.ResponseWriter, r *http.Request) {
 			defer release()
 		}
 	}
+
+	// Send a body immediately so proxies forward the stream without
+	// waiting for the first event or periodic heartbeat.
+	if _, err := fmt.Fprint(w, ":connected\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
 
 	ping := time.NewTicker(20 * time.Second)
 	defer ping.Stop()
