@@ -580,12 +580,19 @@ templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus,
 
 // ChildTreeNode is one direct child on an execution detail page.
 type ChildTreeNode struct {
-	Task          *orchestrator.Task
-	QuestionID    string
-	CreatedAt     time.Time
-	HasCreatedAt  bool
-	FinishedAt    time.Time
-	HasFinishedAt bool
+	Task           *orchestrator.Task
+	QuestionID     string
+	CreatedAt      time.Time
+	HasCreatedAt   bool
+	TerminalEvents []ChildTerminalEvent
+}
+
+// ChildTerminalEvent snapshots one actual terminal transition. Keeping the
+// transition status here prevents a later reopen from rewriting history.
+type ChildTerminalEvent struct {
+	Status  orchestrator.TaskStatus
+	Time    time.Time
+	HasTime bool
 }
 
 type execChildHistoryEvent struct {
@@ -593,14 +600,15 @@ type execChildHistoryEvent struct {
 	Kind    string
 	Time    time.Time
 	HasTime bool
+	Status  orchestrator.TaskStatus
 }
 
 func execChildHistoryEvents(nodes []ChildTreeNode) []execChildHistoryEvent {
 	events := make([]execChildHistoryEvent, 0, len(nodes)*2)
 	for _, node := range nodes {
 		events = append(events, execChildHistoryEvent{Task: node.Task, Kind: "Created", Time: node.CreatedAt, HasTime: node.HasCreatedAt})
-		if node.HasFinishedAt {
-			events = append(events, execChildHistoryEvent{Task: node.Task, Kind: "Finished", Time: node.FinishedAt, HasTime: true})
+		for _, terminal := range node.TerminalEvents {
+			events = append(events, execChildHistoryEvent{Task: node.Task, Kind: "Finished", Time: terminal.Time, HasTime: terminal.HasTime, Status: terminal.Status})
 		}
 	}
 	sort.SliceStable(events, func(i, j int) bool {
@@ -631,7 +639,7 @@ templ TaskDetailExecChildTreeSection(nodes []ChildTreeNode) {
 								if node.QuestionID != "" {
 									<a href={ templ.SafeURL("/tasks/" + node.Task.ID + "/questions/" + node.QuestionID) } class="detail-children-ask"><span aria-hidden="true">⚠</span> question</a>
 								}
-								if orchestrator.IsTerminalStatus(node.Task.Status) && !node.HasFinishedAt {
+								if orchestrator.IsTerminalStatus(node.Task.Status) && len(node.TerminalEvents) == 0 {
 									<span class="detail-children-hint">completion time unavailable</span>
 								}
 							</div>
@@ -653,7 +661,7 @@ templ TaskDetailExecChildTreeSection(nodes []ChildTreeNode) {
 						<div class="card-timeline-item-body card-timeline-child-finished">
 							<a href={ templ.SafeURL("/tasks/" + event.Task.ID) } class="detail-children-link">{ event.Kind }: { event.Task.Title }</a>
 							if event.Kind == "Finished" {
-								<span class={ taskStatusClass(string(event.Task.Status)) }>{ string(event.Task.Status) }</span>
+								<span class={ taskStatusClass(string(event.Status)) }>{ string(event.Status) }</span>
 							}
 						</div>
 					</li>

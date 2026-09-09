@@ -12,10 +12,13 @@ import (
 	"github.com/novshi-tech/boid/internal/timeline"
 )
 
-type childResultTimelineStore struct{ page *timeline.CardTimelinePage }
+type childResultTimelineStore struct {
+	page *timeline.CardTimelinePage
+	err  error
+}
 
 func (s childResultTimelineStore) BuildCardTimeline(string, string, int) (*timeline.CardTimelinePage, error) {
-	return s.page, nil
+	return s.page, s.err
 }
 
 func (s childResultTimelineStore) CardPinnedItems(string) ([]timeline.CardItem, error) {
@@ -123,8 +126,30 @@ func TestCardChildResult_SurvivesDeletedExecutionTask(t *testing.T) {
 			{Kind: timeline.CardItemChild, Child: &timeline.CardChildDetail{ChildID: "child-1", HasResult: true, Result: "Completed safely", ResultStatus: orchestrator.TaskStatusDone}},
 		}},
 	}}
-	result, status, ok := h.cardChildResult("card-1", "child-1")
+	result, status, ok, err := h.cardChildResult("card-1", "child-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !ok || result != "Completed safely" || status != orchestrator.TaskStatusDone {
 		t.Fatalf("result = (%q, %q, %v)", result, status, ok)
+	}
+}
+
+func TestTaskChildDetail_ResultReadFailureIsNotRenderedAsNoResult(t *testing.T) {
+	detail, err := json.Marshal(map[string]any{"children": []orchestrator.TaskTriageChild{{ID: "child-1", TaskRef: "gone-1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &WebHandler{
+		Service:      &stubWebService{taskDetails: map[string]*TaskDetailView{"card-1": {Task: &orchestrator.Task{ID: "card-1", Type: orchestrator.TaskTypeCard}}}},
+		TaskTriage:   &stubTriageStore{rows: map[string]*orchestrator.CardAttrs{"card-1": {TaskID: "card-1", Detail: detail}}},
+		CardTimeline: childResultTimelineStore{err: assertTransientError{}},
+	}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}/children/{child_id}", h.TaskChildDetail)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/tasks/card-1/children/child-1", nil))
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "temporarily unavailable") {
+		t.Fatalf("result read failure misreported; status=%d body=%s", w.Code, w.Body.String())
 	}
 }

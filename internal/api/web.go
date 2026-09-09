@@ -608,8 +608,13 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	// tab-swap to target — a card always falls through to the full-page
 	// render below. Only an execution task's tab click takes this shortcut.
 	if r.Header.Get("HX-Request") == "true" && detail.Task.Type != orchestrator.TaskTypeCard {
+		childTree, childErr := h.execChildTree(detail.Task)
+		if childErr != nil {
+			http.Error(w, "Unable to load subtasks", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		templates.TaskDetailExecTabsSection(detail.Task, timelineGroups, detail.AvailableActions, tab, h.execChildTree(detail.Task)).Render(r.Context(), w)
+		templates.TaskDetailExecTabsSection(detail.Task, timelineGroups, detail.AvailableActions, tab, childTree).Render(r.Context(), w)
 		return
 	}
 
@@ -672,7 +677,11 @@ func (h *WebHandler) TaskChildDetail(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		result, resultStatus, hasResult := h.cardChildResult(parentID, childID)
+		result, resultStatus, hasResult, resultErr := h.cardChildResult(parentID, childID)
+		if resultErr != nil {
+			http.Error(w, "Child result is temporarily unavailable", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		templates.TaskChildSpecDetail(parent.Task, child, child.TaskRef != "", result, resultStatus, hasResult).Render(r.Context(), w)
 		return
@@ -680,27 +689,30 @@ func (h *WebHandler) TaskChildDetail(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Child not found", http.StatusNotFound)
 }
 
-func (h *WebHandler) cardChildResult(cardID, childID string) (string, orchestrator.TaskStatus, bool) {
+func (h *WebHandler) cardChildResult(cardID, childID string) (string, orchestrator.TaskStatus, bool, error) {
 	if h.CardTimeline == nil {
-		return "", "", false
+		return "", "", false, nil
 	}
 	cursor := ""
 	for pageCount := 0; pageCount < 20; pageCount++ {
 		page, err := h.CardTimeline.BuildCardTimeline(cardID, cursor, timeline.MaxCardTimelineLimit)
-		if err != nil || page == nil {
-			return "", "", false
+		if err != nil {
+			return "", "", false, err
+		}
+		if page == nil {
+			return "", "", false, fmt.Errorf("card timeline returned no page")
 		}
 		for _, item := range page.Items {
 			if item.Child != nil && item.Child.ChildID == childID && item.Child.HasResult {
-				return item.Child.Result, item.Child.ResultStatus, true
+				return item.Child.Result, item.Child.ResultStatus, true, nil
 			}
 		}
 		if !page.HasMore || page.NextCursor == "" || page.NextCursor == cursor {
-			break
+			return "", "", false, nil
 		}
 		cursor = page.NextCursor
 	}
-	return "", "", false
+	return "", "", false, fmt.Errorf("child result exceeds timeline scan limit")
 }
 
 // renderTaskDetailPage assembles and renders a task/card detail page's full
@@ -727,7 +739,12 @@ func (h *WebHandler) renderTaskDetailPage(w http.ResponseWriter, r *http.Request
 		}
 		cmdOptions = toTemplateCardCommandOptions(h.Service.CardCommandOptionsForProject(r.Context(), detail.Task.ProjectID))
 	} else {
-		childTree = h.execChildTree(detail.Task)
+		var childErr error
+		childTree, childErr = h.execChildTree(detail.Task)
+		if childErr != nil {
+			slog.Warn("execution child view failed", "task_id", detail.Task.ID, "error", childErr)
+			errorMsg = strings.TrimSpace(errorMsg + " Unable to load subtasks. Refresh to retry.")
+		}
 	}
 	operationResults := h.operationResultsForRequest(r, detail.Task.ID)
 	if transient != nil {
@@ -867,14 +884,17 @@ func (h *WebHandler) operationLabelForCommand(ctx context.Context, taskID, key s
 // execChildTree returns a task's direct children. Every execution detail
 // page calls it, regardless of the task's own depth; opening a child repeats
 // the same one-level navigation without recursively expanding descendants.
-func (h *WebHandler) execChildTree(task *orchestrator.Task) []templates.ChildTreeNode {
+func (h *WebHandler) execChildTree(task *orchestrator.Task) ([]templates.ChildTreeNode, error) {
 	if task == nil {
-		return nil
+		return nil, nil
 	}
 	parentID := task.ID
 	kids, err := h.Service.ListTasks(orchestrator.TaskFilter{ParentID: &parentID})
-	if err != nil || len(kids) == 0 {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("list direct children: %w", err)
+	}
+	if len(kids) == 0 {
+		return nil, nil
 	}
 	nodes := make([]templates.ChildTreeNode, 0, len(kids))
 	for _, k := range kids {
@@ -882,17 +902,23 @@ func (h *WebHandler) execChildTree(task *orchestrator.Task) []templates.ChildTre
 		if k.Exec != nil && k.Status == orchestrator.TaskStatusAwaiting {
 			node.QuestionID = orchestrator.GetAwaitingPayload(k.Exec.Payload).QuestionID
 		}
-		if detail, detailErr := h.Service.GetTaskDetail(k.ID); detailErr == nil && detail != nil && detail.Task != nil && detail.Task.ID == k.ID {
-			for _, action := range detail.Actions {
-				if action != nil && orchestrator.IsTerminalStatus(action.ToStatus) {
-					node.FinishedAt = action.CreatedAt
-					node.HasFinishedAt = !action.CreatedAt.IsZero()
-				}
+		detail, detailErr := h.Service.GetTaskDetail(k.ID)
+		if detailErr != nil {
+			return nil, fmt.Errorf("load child %s history: %w", k.ID, detailErr)
+		}
+		if detail == nil || detail.Task == nil || detail.Task.ID != k.ID {
+			return nil, fmt.Errorf("load child %s history: inconsistent task detail", k.ID)
+		}
+		for _, action := range detail.Actions {
+			if action != nil && orchestrator.IsTerminalStatus(action.ToStatus) {
+				node.TerminalEvents = append(node.TerminalEvents, templates.ChildTerminalEvent{
+					Status: action.ToStatus, Time: action.CreatedAt, HasTime: !action.CreatedAt.IsZero(),
+				})
 			}
 		}
 		nodes = append(nodes, node)
 	}
-	return nodes
+	return nodes, nil
 }
 
 // cardTimelineView builds a card detail page's timeline read-model view:
@@ -1051,7 +1077,12 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 	kind := r.URL.Query().Get("kind")
 	switch kind {
 	case "timeline":
-		templates.TaskDetailTimelineSection(detail.Task, detailTimelineGroups(detail), h.execChildTree(detail.Task)).Render(r.Context(), w)
+		childTree, childErr := h.execChildTree(detail.Task)
+		if childErr != nil {
+			http.Error(w, "Unable to load subtasks", http.StatusInternalServerError)
+			return
+		}
+		templates.TaskDetailTimelineSection(detail.Task, detailTimelineGroups(detail), childTree).Render(r.Context(), w)
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
 		if detail.Task.Type == orchestrator.TaskTypeCard {
@@ -1061,8 +1092,7 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 			}
 			templates.TaskDetailCardStatusSection(detail.Task, "", projectName, summary, detail.Identities).Render(r.Context(), w)
 		} else {
-			childTree := h.execChildTree(detail.Task)
-			templates.TaskDetailExecStatusSection(detail.Task, "", projectName, childTree, detail.Identities).Render(r.Context(), w)
+			templates.TaskDetailExecStatusSection(detail.Task, "", projectName, nil, detail.Identities).Render(r.Context(), w)
 		}
 	case "pinned":
 		if detail.Task.Type != orchestrator.TaskTypeCard {
