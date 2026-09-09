@@ -30,8 +30,7 @@ templ Terminal(jobId string, wsPath string) {
 			// reach for Ctrl+C the highlight (and term.getSelection()) is already gone.
 			// The click also supplies the user gesture navigator.clipboard.writeText
 			// requires on Safari/iOS. Positioned absolutely inside the xterm wrap so
-			// showing it never changes the terminal's row count (a reflow would trigger
-			// scheduleFit and, on a column change, term.reset()).
+			// showing it never changes the terminal's row count or triggers a PTY resize.
 			<div class="boid-terminal-copy-toast" hidden>
 				<button type="button" class="boid-terminal-copy-btn">
 					<span class="boid-terminal-copy-label">コピー</span>
