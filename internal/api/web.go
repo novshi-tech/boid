@@ -638,7 +638,7 @@ func (h *WebHandler) renderTaskDetailPage(w http.ResponseWriter, r *http.Request
 	} else {
 		childTree = h.execChildTree(detail.Task)
 	}
-	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, cardSummary, cardTL, childTree, cmdOptions, cmdForm).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, cardSummary, cardTL, childTree, cmdOptions, cmdForm, detail.Identities).Render(r.Context(), w)
 }
 
 // toTemplateCardCommandOptions converts the api-layer option list to
@@ -903,10 +903,10 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 			if triage := h.loadTriage(id); triage != nil {
 				summary = templates.TriageSummary(triage.Detail)
 			}
-			templates.TaskDetailCardStatusSection(detail.Task, "", projectName, summary).Render(r.Context(), w)
+			templates.TaskDetailCardStatusSection(detail.Task, "", projectName, summary, detail.Identities).Render(r.Context(), w)
 		} else {
 			childTree := h.execChildTree(detail.Task)
-			templates.TaskDetailExecStatusSection(detail.Task, "", projectName, childTree).Render(r.Context(), w)
+			templates.TaskDetailExecStatusSection(detail.Task, "", projectName, childTree, detail.Identities).Render(r.Context(), w)
 		}
 	case "pinned":
 		if detail.Task.Type != orchestrator.TaskTypeCard {

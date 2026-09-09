@@ -18,6 +18,13 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
+func optionalIdentityValue(value string, set bool) *string {
+	if !set {
+		return nil
+	}
+	return &value
+}
+
 // jobContextProvider resolves per-job task-context RPC data that has no
 // standalone DB representation — the reduced environment view + trait-
 // filtered payload — tracked per job by dispatcher.Runner at Dispatch()
@@ -894,7 +901,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if existing.ProjectID != req.ProjectID {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link: task belongs to a different project"}
 		}
-		if err := e.tasks.LinkIdentity(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.ProjectID, req.Identity, existing.ID); err != nil {
+		if err := e.tasks.LinkIdentityWithMetadata(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.ProjectID, req.Identity, existing.ID, optionalIdentityValue(req.IdentityURL, req.IdentityURLSet), optionalIdentityValue(req.IdentityDisplayName, req.IdentityDisplayNameSet)); err != nil {
 			if errors.Is(err, orchestrator.ErrIdentityConflict) {
 				return &sandbox.ExecResponse{ExitCode: sandbox.IdentityConflictExitCode, Stderr: err.Error()}
 			}
@@ -971,6 +978,8 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			Identity:    req.Identity,
 			Title:       req.Title,
 			Description: req.Description,
+			URL:         optionalIdentityValue(req.IdentityURL, req.IdentityURLSet),
+			DisplayName: optionalIdentityValue(req.IdentityDisplayName, req.IdentityDisplayNameSet),
 		})
 		if err != nil {
 			// identity 衝突時は ErrIdentityConflict をそのまま返す —

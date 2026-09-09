@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -730,6 +731,37 @@ func TestWebHandler_TaskDetail_Exec_IdentityRow_ShowsProjectAndBehavior(t *testi
 	body := w.Body.String()
 	if !strings.Contains(body, `<div class="detail-identity">proj-b / implement</div>`) {
 		t.Errorf("expected exec identity row \"proj-b / implement\", got: %s", body)
+	}
+}
+
+func TestTaskDetail_IdentityResourcesRenderInFullPageAndStatusFragment(t *testing.T) {
+	detail := makeTaskDetailView()
+	detail.Identities = []apiwire.TaskIdentity{
+		{Identity: "github:pr:42", URL: "https://github.example/acme/repo/pull/42", DisplayName: "PR 42"},
+		{Identity: "jira:X-1", URL: "https://jira.example/browse/X-1"},
+		{Identity: "slack:thread:123"},
+	}
+	svc := &stubWebService{taskDetail: detail}
+	r := newTestWebHandler(svc)
+
+	for _, path := range []string{"/tasks/task-1", "/tasks/task-1/fragment?kind=status"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200", path, w.Code)
+		}
+		body := w.Body.String()
+		for _, want := range []string{
+			`href="https://github.example/acme/repo/pull/42" target="_blank" rel="noopener noreferrer">PR 42</a>`,
+			`href="https://jira.example/browse/X-1" target="_blank" rel="noopener noreferrer">jira:X-1</a>`,
+			`<span class="task-identity-key">slack:thread:123</span>`,
+			`<span class="task-identity-unset">reference unavailable</span>`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("GET %s missing %q: %s", path, want, body)
+			}
+		}
 	}
 }
 

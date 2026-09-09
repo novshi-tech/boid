@@ -31,6 +31,8 @@ type ResolveOrCaptureRequest struct {
 	Identity    string
 	Title       string
 	Description string
+	URL         *string
+	DisplayName *string
 }
 
 // ResolveOrCaptureResult is the op's return contract: the resolved task's
@@ -64,6 +66,11 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 	if req.ProjectID == "" {
 		return nil, fmt.Errorf("resolve or capture: project id must not be empty")
 	}
+	if req.URL != nil {
+		if err := orchestrator.ValidateIdentityURL(*req.URL); err != nil {
+			return nil, err
+		}
+	}
 	if err := orchestrator.ValidateContentSize("description", []byte(req.Description)); err != nil {
 		return nil, err
 	}
@@ -73,7 +80,20 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 
 	var result ResolveOrCaptureResult
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
+		var metadata identityMetadataWriter
+		if req.URL != nil || req.DisplayName != nil {
+			var ok bool
+			metadata, ok = tx.(identityMetadataWriter)
+			if !ok {
+				return errIdentityMetadataUnavailable
+			}
+		}
 		if existing, rerr := tx.ResolveIdentity(req.ProjectID, req.Identity); rerr == nil {
+			if metadata != nil {
+				if err := metadata.UpdateIdentityMetadata(req.ProjectID, req.Identity, existing.ID, req.URL, req.DisplayName); err != nil {
+					return err
+				}
+			}
 			result = ResolveOrCaptureResult{TaskID: existing.ID, Created: false}
 			return nil
 		} else if !errors.Is(rerr, orchestrator.ErrTaskNotFound) {
@@ -107,6 +127,11 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 			// preventing an orphan captured task that would let the same
 			// key create a second one next cycle.
 			return err
+		}
+		if metadata != nil {
+			if err := metadata.UpdateIdentityMetadata(req.ProjectID, req.Identity, task.ID, req.URL, req.DisplayName); err != nil {
+				return err
+			}
 		}
 		// The card's own creation record.
 		if err := tx.CreateAction(ctx, &orchestrator.Action{

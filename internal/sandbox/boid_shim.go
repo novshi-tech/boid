@@ -1010,7 +1010,8 @@ func parseBoidSignalCursor(args []string) (*BoidRequest, error) {
 }
 
 // parseBoidTaskIdentityLink builds the BoidRequest for
-// `boid task identity link <identity> <task-id> [--project-id P]`.
+// `boid task identity link <identity> <task-id> [--project-id P]
+// [--url U] [--display-name N]`.
 // project_id is optional — the broker defaults it from the token's own
 // context when omitted, exactly like `boid task create`.
 func parseBoidTaskIdentityLink(args []string) (*BoidRequest, error) {
@@ -1020,6 +1021,22 @@ func parseBoidTaskIdentityLink(args []string) (*BoidRequest, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "--url" || strings.HasPrefix(arg, "--url="):
+			value, next, err := takeStringFlagValue(args, i, "--url")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.IdentityURL = value
+			req.IdentityURLSet = true
+		case arg == "--display-name" || strings.HasPrefix(arg, "--display-name="):
+			value, next, err := takeStringFlagValue(args, i, "--display-name")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.IdentityDisplayName = value
+			req.IdentityDisplayNameSet = true
 		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
 			value, next, err := takeStringFlagValue(args, i, "--project-id")
 			if err != nil {
@@ -1115,7 +1132,8 @@ func parseBoidTaskIdentityResolve(args []string) (*BoidRequest, error) {
 
 // parseBoidTaskResolveOrCapture builds the BoidRequest for
 // `boid task resolve-or-capture <identity> [--title T]
-// [--description D | --description-file F] [--project-id P]`.
+// [--description D | --description-file F] [--project-id P]
+// [--url U] [--display-name N]`.
 // Title/description are only used by the executor when Identity is
 // unresolved; a caller that only wants to check for an existing binding can
 // omit both.
@@ -1126,6 +1144,22 @@ func parseBoidTaskResolveOrCapture(args []string) (*BoidRequest, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "--url" || strings.HasPrefix(arg, "--url="):
+			value, next, err := takeStringFlagValue(args, i, "--url")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.IdentityURL = value
+			req.IdentityURLSet = true
+		case arg == "--display-name" || strings.HasPrefix(arg, "--display-name="):
+			value, next, err := takeStringFlagValue(args, i, "--display-name")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.IdentityDisplayName = value
+			req.IdentityDisplayNameSet = true
 		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
 			value, next, err := takeStringFlagValue(args, i, "--project-id")
 			if err != nil {

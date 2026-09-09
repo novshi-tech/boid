@@ -105,8 +105,18 @@ CLI listener のアドレスは `127.0.0.1:8442` 固定（override 不可）。`
 | `boid task notify <id> --message MSG [--ask QUESTION] [--question-id ID] [--done] [--fail] [--progress] [--session-id ID]` | agent からユーザへ通知 (`~/.config/boid/config.yaml` の `notify.command` を起動)。 `--ask` を指定すると Q&A モードになりタスクを `awaiting` に遷移させる |
 | `boid task answer --task ID --question-id ID --answer TEXT` | `awaiting` 状態のタスクに回答を送る。 タスクを `awaiting → executing` に遷移させ hook を再起動する |
 | `boid task import [-f FILE] [--project ID]` | JSONL からタスクを一括インポート |
+| `boid task identity link <identity> <task-id> [--url URL] [--display-name NAME] [--project-id ID]` | 外部identityをタスクへ関連付け、URLと表示名を任意で保存 |
+| `boid task identity unlink <identity> [--project-id ID]` | identityの関連付けを解除 |
+| `boid task identity resolve <identity> [--project-id ID]` | identityからタスクIDと状態を取得 |
+| `boid task resolve-or-capture <identity> [--title TITLE] [--description TEXT \| --description-file FILE] [--url URL] [--display-name NAME] [--project-id ID]` | 既存タスクを取得、またはparkedカードの作成と関連付けを一括実行 |
 
 notify スクリプトには env で `BOID_TASK_ID` / `BOID_TASK_TITLE` / `BOID_PROJECT_ID` / `BOID_PROJECT_NAME` / `BOID_MESSAGE` / `BOID_TASK_URL` (`web.public_url` 設定時のみ) が渡される。
+
+identityとresolve-or-captureのコマンドは、タスクのサンドボックス内のCLIで使用します。
+URLの組み立てはIntegration Packが担当し、boidは絶対HTTP(S) URLの検証・保存・表示を行います。
+`--url`・`--display-name`を省略すると保存済みの値を維持し、`--url=`のように空値を明示すると
+その項目を削除します。メタデータと関連付けは同じトランザクションで保存されます。
+URL未設定のidentityも詳細に表示されます。既存データのURL補完は取り込み側で行ってください。
 
 #### `boid task notify` オプション
 

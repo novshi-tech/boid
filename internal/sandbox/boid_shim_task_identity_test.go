@@ -43,6 +43,22 @@ func TestParseBoidTaskIdentityLink_WithProjectID(t *testing.T) {
 	}
 }
 
+func TestParseBoidTaskIdentityLink_WithMetadata(t *testing.T) {
+	req, err := parseBoidRequest([]string{"task", "identity", "link", "jira:X-1", "t1", "--url", "https://jira.example/X-1", "--display-name", "Issue X-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.IdentityURL != "https://jira.example/X-1" || !req.IdentityURLSet || req.IdentityDisplayName != "Issue X-1" || !req.IdentityDisplayNameSet {
+		t.Fatalf("metadata not parsed: %+v", req)
+	}
+}
+
+func TestParseBoidTaskList_RejectsIdentityMetadataFlags(t *testing.T) {
+	if _, err := parseBoidRequest([]string{"task", "list", "--url", "https://example.com"}); err == nil {
+		t.Fatal("expected list to reject --url")
+	}
+}
+
 func TestParseBoidTaskIdentityLink_RequiresIdentityAndTaskID(t *testing.T) {
 	cases := map[string][]string{
 		"no arguments":     {"task", "identity", "link"},

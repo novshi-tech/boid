@@ -3034,3 +3034,7 @@ details[open] > summary {
   overflow-wrap: anywhere;
 }
 .operation-submit-feedback button { font: inherit; }
+.task-identities { margin: .75rem 0; padding: .65rem .8rem; border: 1px solid var(--border, #ddd); border-radius: .35rem; }
+.task-identity-link { display: flex; gap: .6rem; flex-wrap: wrap; overflow-wrap: anywhere; margin-top: .35rem; }
+.task-identity-key { font-family: var(--font-mono); }
+.task-identity-unset { color: var(--muted, #666); }

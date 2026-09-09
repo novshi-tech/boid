@@ -175,7 +175,7 @@ CREATE TABLE task_identities (
     identity   TEXT NOT NULL,
     project_id TEXT NOT NULL,
     task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    created_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL, url TEXT, display_name TEXT,
     UNIQUE (project_id, identity)
 );
 

@@ -7,11 +7,35 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/timeline"
 	"github.com/novshi-tech/boid/web/templates/components"
 	"gopkg.in/yaml.v3"
 )
+
+templ TaskIdentityLinks(identities []apiwire.TaskIdentity) {
+	if len(identities) > 0 {
+		<div class="task-identities" aria-label="Linked identities">
+			<strong>Linked resources</strong>
+			for _, identity := range identities {
+				<div class="task-identity-link">
+					<span class="task-identity-key">{ identity.Identity }</span>
+					if identity.URL != "" {
+						<a href={ identity.URL } target="_blank" rel="noopener noreferrer">{ identityLinkLabel(identity) }</a>
+					} else {
+						<span class="task-identity-unset">reference unavailable</span>
+					}
+				</div>
+			}
+		</div>
+	}
+}
+
+func identityLinkLabel(identity apiwire.TaskIdentity) string {
+	if identity.DisplayName != "" { return identity.DisplayName }
+	return identity.Identity
+}
 
 // instructionDisplay carries a single instruction history entry annotated
 // with the display label shown in the task detail view. The active
@@ -360,7 +384,7 @@ func detailRowClasses(task *orchestrator.Task) []string {
 // id="task-status" carries data-task-id so TaskDetailLiveScript (shared by
 // both the card and execution layouts, §7 罠2) can find the task id without
 // depending on #tab-panel, which the card layout does not have.
-templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, projectName string, summary string) {
+templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, projectName string, summary string, identities []apiwire.TaskIdentity) {
 	<div id="task-status" data-task-id={ task.ID }>
 		<div class={ detailRowClasses(task) }>
 			<div class="detail-identity">{ cardIdentityLabel(task, projectName) }</div>
@@ -373,7 +397,8 @@ templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, proj
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
 		}
-		@TaskDetailCardSummary(summary)
+			@TaskDetailCardSummary(summary)
+			@TaskIdentityLinks(identities)
 	</div>
 }
 
@@ -399,7 +424,7 @@ templ TaskDetailCardPinnedSection(tl *CardTimelineView, cardID string, cardStatu
 // (parent_id == ""), so it is silently empty (renders nothing,
 // TaskDetailExecChildTreeSection's own guard) for every non-root execution
 // task, i.e. the overwhelming majority of callers.
-templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, projectName string, childTree []ChildTreeNode) {
+templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, projectName string, childTree []ChildTreeNode, identities []apiwire.TaskIdentity) {
 	<div id="task-status" data-task-id={ task.ID }>
 		<div class={ detailRowClasses(task) }>
 			<div class="detail-identity">{ execIdentityLabel(task, projectName) }</div>
@@ -413,6 +438,7 @@ templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, proj
 				<span class="detail-time">{ task.UpdatedAt.Local().Format("2006-01-02 15:04") }</span>
 			</div>
 		</div>
+		@TaskIdentityLinks(identities)
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
 		}
@@ -1659,8 +1685,8 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 // placement (also body-level, also outside anything swappable) precisely
 // so both layouts follow the same rule: the live script is rendered once,
 // never inside a swap target.
-templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, summary string, tl *CardTimelineView, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState) {
-	@TaskDetailCardStatusSection(task, errorMsg, projectName, summary)
+templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, summary string, tl *CardTimelineView, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState, identities []apiwire.TaskIdentity) {
+	@TaskDetailCardStatusSection(task, errorMsg, projectName, summary, identities)
 	@CardCommandSection(task.ID, task.Status, cmdOptions, cmdForm)
 	@TaskDetailCardPinnedSection(tl, task.ID, task.Status)
 	@TaskDetailCardDescription(task)
@@ -1684,8 +1710,8 @@ templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, err
 // updates died permanently after one tab switch. Rendering it once here
 // means #tabs can swap as much as it wants; the script node itself is
 // never touched.
-templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, childTree []ChildTreeNode) {
-	@TaskDetailExecStatusSection(task, errorMsg, projectName, childTree)
+templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, childTree []ChildTreeNode, identities []apiwire.TaskIdentity) {
+	@TaskDetailExecStatusSection(task, errorMsg, projectName, childTree, identities)
 	@TaskDetailExecTabsSection(task, timelineGroups, availableActions, activeTab)
 	@TaskDetailLiveScript()
 }
@@ -1697,12 +1723,12 @@ templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.Stat
 // is secondary), anything else gets TaskDetailExecBody ("プロセスの観測窓" —
 // the status-group timeline stays the main content, via the existing tab
 // structure).
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, cardSummary string, cardTL *CardTimelineView, childTree []ChildTreeNode, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, cardSummary string, cardTL *CardTimelineView, childTree []ChildTreeNode, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState, identities []apiwire.TaskIdentity) {
 	@Layout(task.Title, "/") {
 		if task.Type == orchestrator.TaskTypeCard {
-			@TaskDetailCardBody(task, availableActions, errorMsg, projectName, cardSummary, cardTL, cmdOptions, cmdForm)
+			@TaskDetailCardBody(task, availableActions, errorMsg, projectName, cardSummary, cardTL, cmdOptions, cmdForm, identities)
 		} else {
-			@TaskDetailExecBody(task, timelineGroups, availableActions, errorMsg, activeTab, projectName, childTree)
+			@TaskDetailExecBody(task, timelineGroups, availableActions, errorMsg, activeTab, projectName, childTree, identities)
 		}
 	}
 }

@@ -12,6 +12,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -170,6 +171,41 @@ func TestNewBoidBuiltinExecutor_WiresResolveOrCaptureFromWorkflow(t *testing.T) 
 	}
 	if exec.resolveOrCapture == nil {
 		t.Fatal("resolveOrCapture was not wired from the workflow value")
+	}
+}
+
+func TestBoidBuiltinExecutor_ResolveOrCapture_ProductionAdapterPersistsMetadata(t *testing.T) {
+	conn := newBoidExecutorTestDB(t)
+	dbConn, ok := conn.(*sql.DB)
+	if !ok {
+		t.Fatalf("test DB = %T, want *sql.DB", conn)
+	}
+	if err := orchestrator.CreateProject(conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	workflow := &api.TaskWorkflowService{Tx: apiTransactor{db: dbConn}}
+	builtin := newBoidBuiltinExecutor(workflow, nil, nil, nil, nil, "", nil, nil, nil, nil)
+	resourceURL := "https://jira.example/browse/ADAPTER-1"
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := builtin.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op: sandbox.BoidOpTaskResolveOrCapture, ProjectID: "proj-1", Identity: "jira:ADAPTER-1",
+		Title: "adapter path", IdentityURL: resourceURL, IdentityURLSet: true,
+		IdentityDisplayName: "Adapter issue", IdentityDisplayNameSet: true,
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	resolved, err := orchestrator.ResolveIdentity(conn, "proj-1", "jira:ADAPTER-1")
+	if err != nil {
+		t.Fatalf("resolve persisted identity: %v", err)
+	}
+	metadata, err := orchestrator.ListIdentityMetadataByTask(conn, resolved.ID)
+	if err != nil {
+		t.Fatalf("list metadata: %v", err)
+	}
+	if len(metadata) != 1 || metadata[0].URL != resourceURL || metadata[0].DisplayName != "Adapter issue" {
+		t.Fatalf("metadata through production apiTransactor = %#v", metadata)
 	}
 }
 
