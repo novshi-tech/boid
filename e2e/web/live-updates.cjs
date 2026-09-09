@@ -11,11 +11,13 @@ const script = component.match(/<script>([\s\S]*?)<\/script>/)[1];
     const page = await browser.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    let fail = false;
+    let fail = false, redirected = false;
     let revision = 0;
     await page.route('http://boid.test/**', async route => {
       const url = new URL(route.request().url());
+      if (url.pathname.includes('/card-timeline/head')) return route.fulfill({ contentType: 'text/html', body: '' });
       if (url.pathname.includes('/fragment')) {
+        if (redirected) return route.fulfill({ status: 302, headers: { location: '/login' } });
         if (fail) return route.fulfill({ status: 503, body: 'Unavailable' });
         const kind = url.searchParams.get('kind');
         return route.fulfill({ contentType: 'text/html', body: `<div id="task-${kind}" data-task-id="test">Revision ${revision}<details class="description"><summary>Description</summary>Text</details></div>` });
@@ -23,7 +25,7 @@ const script = component.match(/<script>([\s\S]*?)<\/script>/)[1];
       return route.fulfill({ contentType: 'text/html', body: '<html><body></body></html>' });
     });
     await page.goto('http://boid.test/');
-    await page.setContent(`<div id="task-status" data-task-id="test"></div><div id="task-pinned"></div><div id="task-timeline"></div><div id="task-live-status"><span id="task-live-message"></span><button id="task-live-retry">Refresh</button></div><textarea id="input">Keep this input</textarea>`);
+    await page.setContent(`<div id="task-status" data-task-id="test"></div><div id="task-pinned"></div><div id="task-timeline"></div><div id="task-live-status"><span id="task-live-message"></span><button id="task-live-retry">Refresh</button></div><section id="card-timeline"><div class="tab-empty">No history yet.</div></section><textarea id="input">Keep this input</textarea>`);
     await page.evaluate(() => {
       window.EventSource = class {
         static CLOSED = 2;
@@ -54,7 +56,15 @@ const script = component.match(/<script>([\s\S]*?)<\/script>/)[1];
     await page.evaluate(() => window.stream.listeners.open());
     await page.waitForFunction(() => document.querySelector('#task-status').textContent.includes('Revision 2'));
     assert.equal(await page.locator('#task-live-status').getAttribute('data-stale'), 'false');
+    redirected = true;
+    await page.locator('#task-live-retry').click();
+    await page.waitForFunction(() => document.querySelector('#task-live-status').dataset.stale === 'true');
+    assert.match(await page.locator('#task-status').textContent(), /Revision 2/);
+    redirected = false;
+    await page.locator('#task-live-retry').click();
+    await page.waitForFunction(() => document.querySelector('#task-live-status').dataset.stale === 'false');
+    assert.equal(await page.locator('#card-timeline .tab-empty').textContent(), 'No history yet.');
     assert.deepEqual(errors, []);
-    console.log('PASS: HTTP failure, retry recovery, SSE disconnect/reconnect, input and expansion preservation');
+    console.log('PASS: HTTP failure, retry recovery, SSE disconnect/reconnect, input/expansion preservation, auth redirect and empty history');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
