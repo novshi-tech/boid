@@ -727,6 +727,22 @@ func parseBoidTaskList(args []string) (*BoidRequest, error) {
 			}
 			i = next
 			req.Status = value
+		case arg == "--url" || strings.HasPrefix(arg, "--url="):
+			value, next, err := takeStringFlagValue(args, i, "--url")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.IdentityURL = value
+			req.IdentityURLSet = true
+		case arg == "--display-name" || strings.HasPrefix(arg, "--display-name="):
+			value, next, err := takeStringFlagValue(args, i, "--display-name")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.IdentityDisplayName = value
+			req.IdentityDisplayNameSet = true
 		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
 			value, next, err := takeStringFlagValue(args, i, "--project-id")
 			if err != nil {
@@ -1126,6 +1142,22 @@ func parseBoidTaskResolveOrCapture(args []string) (*BoidRequest, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "--url" || strings.HasPrefix(arg, "--url="):
+			value, next, err := takeStringFlagValue(args, i, "--url")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.IdentityURL = value
+			req.IdentityURLSet = true
+		case arg == "--display-name" || strings.HasPrefix(arg, "--display-name="):
+			value, next, err := takeStringFlagValue(args, i, "--display-name")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.IdentityDisplayName = value
+			req.IdentityDisplayNameSet = true
 		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
 			value, next, err := takeStringFlagValue(args, i, "--project-id")
 			if err != nil {

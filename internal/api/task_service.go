@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -660,7 +661,28 @@ func (s *TaskAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		Actions:          actions,
 		Jobs:             jobs,
 		AvailableActions: sm.AvailableActions(task.Status),
+		Identities:       identityMetadata(s.Identities, task.ID),
 	}, nil
+}
+
+type identityMetadataReader interface {
+	ListIdentityMetadataByTask(string) ([]orchestrator.TaskIdentity, error)
+}
+
+func identityMetadata(store any, taskID string) []apiwire.TaskIdentity {
+	r, ok := store.(identityMetadataReader)
+	if !ok {
+		return nil
+	}
+	values, err := r.ListIdentityMetadataByTask(taskID)
+	if err != nil {
+		return nil
+	}
+	out := make([]apiwire.TaskIdentity, 0, len(values))
+	for _, v := range values {
+		out = append(out, apiwire.TaskIdentity{Identity: v.Identity, URL: v.URL, DisplayName: v.DisplayName})
+	}
+	return out
 }
 
 // updateActor is the actor stamped on a card's own state-change records: the

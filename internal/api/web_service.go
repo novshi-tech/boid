@@ -108,6 +108,7 @@ func (s *WebAppService) GetTaskDetail(id string) (*TaskDetailView, error) {
 		Actions:          actions,
 		Jobs:             jobs,
 		AvailableActions: sm.AvailableActions(task.Status),
+		Identities:       identityMetadata(s.Tasks, task.ID),
 	}, nil
 }
 

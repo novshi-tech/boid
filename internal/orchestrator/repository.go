@@ -153,6 +153,12 @@ func (r *TaskRepository) ResolveIdentity(projectID, identity string) (*Task, err
 func (r *TaskRepository) ListIdentitiesByTask(taskID string) ([]string, error) {
 	return ListIdentitiesByTask(r.db, taskID)
 }
+func (r *TaskRepository) UpdateIdentityMetadata(projectID, identity string, url, displayName *string) error {
+	return UpdateIdentityMetadata(r.db, projectID, identity, url, displayName)
+}
+func (r *TaskRepository) ListIdentityMetadataByTask(taskID string) ([]TaskIdentity, error) {
+	return ListIdentityMetadataByTask(r.db, taskID)
+}
 
 // CreateTriggerRun / CompleteTriggerRun / ListInFlightTriggerRuns /
 // LatestTriggerRun are thin wrappers over trigger_run.go's trigger_runs ledger.

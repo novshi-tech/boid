@@ -480,6 +480,10 @@ func allMigrations() []migration {
 			version: "0054_add_card_force_release_barriers",
 			path:    "migrations/0054_add_card_force_release_barriers.sql",
 		},
+		{
+			version: "0055_add_task_identity_metadata",
+			path:    "migrations/0055_add_task_identity_metadata.sql",
+		},
 	}
 }
 

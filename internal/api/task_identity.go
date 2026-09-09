@@ -35,6 +35,19 @@ func (s *TaskAppService) LinkIdentity(ctx context.Context, projectID, identity, 
 	})
 }
 
+// LinkIdentityWithMetadata links an identity and applies explicitly supplied metadata.
+func (s *TaskAppService) LinkIdentityWithMetadata(ctx context.Context, projectID, identity, taskID string, url, displayName *string) error {
+	if err := s.LinkIdentity(ctx, projectID, identity, taskID); err != nil {
+		return err
+	}
+	if r, ok := s.Identities.(interface {
+		UpdateIdentityMetadata(string, string, *string, *string) error
+	}); ok {
+		return r.UpdateIdentityMetadata(projectID, identity, url, displayName)
+	}
+	return nil
+}
+
 // UnlinkIdentity removes one (projectID, identity) binding, if any.
 func (s *TaskAppService) UnlinkIdentity(ctx context.Context, projectID, identity string) error {
 	if s.Identities == nil {

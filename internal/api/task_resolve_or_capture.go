@@ -31,6 +31,8 @@ type ResolveOrCaptureRequest struct {
 	Identity    string
 	Title       string
 	Description string
+	URL         *string
+	DisplayName *string
 }
 
 // ResolveOrCaptureResult is the op's return contract: the resolved task's
@@ -74,6 +76,13 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 	var result ResolveOrCaptureResult
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
 		if existing, rerr := tx.ResolveIdentity(req.ProjectID, req.Identity); rerr == nil {
+			if r, ok := tx.(interface {
+				UpdateIdentityMetadata(string, string, *string, *string) error
+			}); ok {
+				if err := r.UpdateIdentityMetadata(req.ProjectID, req.Identity, req.URL, req.DisplayName); err != nil {
+					return err
+				}
+			}
 			result = ResolveOrCaptureResult{TaskID: existing.ID, Created: false}
 			return nil
 		} else if !errors.Is(rerr, orchestrator.ErrTaskNotFound) {
@@ -107,6 +116,13 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 			// preventing an orphan captured task that would let the same
 			// key create a second one next cycle.
 			return err
+		}
+		if r, ok := tx.(interface {
+			UpdateIdentityMetadata(string, string, *string, *string) error
+		}); ok {
+			if err := r.UpdateIdentityMetadata(req.ProjectID, req.Identity, req.URL, req.DisplayName); err != nil {
+				return err
+			}
 		}
 		// The card's own creation record.
 		if err := tx.CreateAction(ctx, &orchestrator.Action{

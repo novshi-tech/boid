@@ -16,6 +16,35 @@ import (
 	"github.com/novshi-tech/boid/testutil"
 )
 
+func TestIdentityMetadata_ValidatesAndPreservesOmittedFields(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "p", WorkDir: "/tmp/p"}); err != nil {
+		t.Fatal(err)
+	}
+	task := &orchestrator.Task{ProjectID: "p", Title: "A", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "dev", Payload: []byte(`{}`)}}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := orchestrator.LinkIdentity(d.Conn, "p", "jira:X-1", task.ID); err != nil {
+		t.Fatal(err)
+	}
+	bad := "javascript:alert(1)"
+	if err := orchestrator.UpdateIdentityMetadata(d.Conn, "p", "jira:X-1", &bad, nil); err == nil {
+		t.Fatal("expected URL validation error")
+	}
+	u := "https://jira.example/browse/X-1"
+	if err := orchestrator.UpdateIdentityMetadata(d.Conn, "p", "jira:X-1", &u, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := orchestrator.ListIdentityMetadataByTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].URL != u {
+		t.Fatalf("metadata = %#v", got)
+	}
+}
+
 func TestLinkIdentity_ConflictOnDifferentTask_ButIdempotentOnSameTask(t *testing.T) {
 	d := testutil.NewTestDB(t)
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {

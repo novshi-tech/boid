@@ -14,5 +14,11 @@ type TaskDetailView struct {
 	Task             *orchestrator.Task
 	Actions          []*orchestrator.Action
 	Jobs             []*Job
-	AvailableActions []string `json:"available_actions"`
+	AvailableActions []string       `json:"available_actions"`
+	Identities       []TaskIdentity `json:"identities,omitempty"`
+}
+type TaskIdentity struct {
+	Identity    string `json:"identity"`
+	URL         string `json:"url,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
 }

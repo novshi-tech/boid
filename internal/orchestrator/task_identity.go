@@ -18,11 +18,73 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/db"
 )
+
+type TaskIdentity struct{ Identity, URL, DisplayName string }
+
+func ValidateIdentityURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.ParseRequestURI(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("identity URL must be an absolute HTTP(S) URL")
+	}
+	return nil
+}
+
+func UpdateIdentityMetadata(dbtx db.DBTX, projectID, identity string, urlValue, displayName *string) error {
+	if projectID == "" || identity == "" {
+		return fmt.Errorf("identity metadata requires project and identity")
+	}
+	if urlValue != nil {
+		if err := ValidateIdentityURL(*urlValue); err != nil {
+			return err
+		}
+	}
+	sets, args := []string{}, []any{}
+	if urlValue != nil {
+		sets = append(sets, "url = ?")
+		args = append(args, nullableIdentityString(*urlValue))
+	}
+	if displayName != nil {
+		sets = append(sets, "display_name = ?")
+		args = append(args, nullableIdentityString(*displayName))
+	}
+	if len(sets) == 0 {
+		return nil
+	}
+	args = append(args, projectID, identity)
+	_, err := dbtx.Exec("UPDATE task_identities SET "+strings.Join(sets, ", ")+" WHERE project_id = ? AND identity = ?", args...)
+	return err
+}
+func nullableIdentityString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+func ListIdentityMetadataByTask(dbtx db.DBTX, taskID string) ([]TaskIdentity, error) {
+	rows, err := dbtx.Query(`SELECT identity, COALESCE(url,''), COALESCE(display_name,'') FROM task_identities WHERE task_id = ? ORDER BY identity`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []TaskIdentity{}
+	for rows.Next() {
+		var v TaskIdentity
+		if err := rows.Scan(&v.Identity, &v.URL, &v.DisplayName); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
 
 // ErrIdentityConflict is returned by LinkIdentity when the given
 // (projectID, identity) pair is already bound to a DIFFERENT task. Linking
