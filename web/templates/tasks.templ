@@ -1354,9 +1354,10 @@ templ TaskDetailLiveScript() {
 				message.textContent = (stale ? 'Updates interrupted. Last retrieved ' : 'Live updates · Last retrieved ') + time;
 			}
 			function fetchHTML(url) {
-				if (requests[url]) requests[url].abort();
+				var key = url.replace(/frontier=[^&]*/, "frontier=");
+				if (requests[key]) requests[key].abort();
 				var controller = new AbortController();
-				requests[url] = controller;
+				requests[key] = controller;
 				var timeout = setTimeout(function() { controller.abort(); }, 15000);
 				return fetch(url, { signal: controller.signal, cache: 'no-store' })
 					.then(function(r) {
@@ -1364,23 +1365,23 @@ templ TaskDetailLiveScript() {
 						return r.text();
 					})
 					.then(function(html) {
-						if (requests[url] !== controller) return null;
-						if (!html) throw new Error('Empty response');
-						delete failures[url];
+						if (requests[key] !== controller) return null;
+						if (!html && url.indexOf('/fragment?') !== -1) throw new Error('Empty response');
+						delete failures[key];
 						lastUpdated = new Date();
 						showFreshness();
 						return html;
 					})
 					.catch(function() {
-						if (requests[url] === controller) {
-							failures[url] = true;
+						if (requests[key] === controller) {
+							failures[key] = true;
 							showFreshness();
 						}
 						return null;
 					})
 					.finally(function() {
 						clearTimeout(timeout);
-						if (requests[url] === controller) delete requests[url];
+						if (requests[key] === controller) delete requests[key];
 					});
 			}
 
@@ -1413,12 +1414,13 @@ templ TaskDetailLiveScript() {
 				kinds.forEach(function(kind) {
 					var before = document.getElementById('task-' + kind);
 					if (!before) return;
-					var state = captureSwapState(before);
 					fetchHTML('/tasks/' + taskID + '/fragment?kind=' + kind)
 						.then(function(html) {
 							if (!html) return;
-							var el = document.getElementById('task-' + kind);
-							if (!el) return;
+							var before = document.getElementById('task-' + kind);
+							if (!before) return;
+							var state = captureSwapState(before);
+							var el = before;
 							el.outerHTML = html;
 							restoreSwapState(document.getElementById('task-' + kind), state);
 						})
@@ -1482,8 +1484,6 @@ templ TaskDetailLiveScript() {
 				// #task-status/#task-pinned — a history item's own
 				// <details> fold (a child's spec) is exposed to the same
 				// splice below, so it needs the same treatment.
-				var state = captureSwapState(list);
-
 				fetchHTML(historyHeadURL(taskID, frontier))
 					.then(function(html) {
 						if (!html) return;
@@ -1492,6 +1492,7 @@ templ TaskDetailLiveScript() {
 						// flight — bail rather than empty the list or throw
 						// on a stale insertBefore reference.
 						if (boundaryEl && boundaryEl.parentNode !== list) return;
+						var state = captureSwapState(list);
 						var node = list.firstElementChild;
 						while (node && node !== boundaryEl) {
 							var next = node.nextElementSibling;
