@@ -58,7 +58,13 @@ func ForwardAndWait(cmd *exec.Cmd, label string) (exitCode int, stoppedByDaemon 
 			}
 		case <-winchCh:
 			if cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGWINCH)
+				if cmd.SysProcAttr != nil && cmd.SysProcAttr.Setsid {
+					// Launchers such as Volta and Node may not relay SIGWINCH;
+					// reach the terminal application in the isolated group directly.
+					_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGWINCH)
+				} else {
+					_ = cmd.Process.Signal(syscall.SIGWINCH)
+				}
 			}
 		case werr := <-done:
 			if werr != nil {

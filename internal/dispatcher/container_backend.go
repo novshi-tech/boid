@@ -1071,6 +1071,10 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		UsernsMode: b.resolveUsernsMode(ctx),
 	}
 	hostCfg.Resources.PidsLimit = &pidsLimit
+	if realized.TTY {
+		// Establish usable geometry before the application can draw its first frame.
+		hostCfg.ConsoleSize = [2]uint{24, 80}
+	}
 
 	// dockerCreateWorkingDir: realized.Workdir is spec.WorkDir carried
 	// through unchanged — for a clone-visibility job this is the
@@ -1151,6 +1155,9 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 
 	sess := newContainerSession(b, createRes.ID, realized.TTY, specPath, dockerTLSDir, brokerTLSDir)
+	if realized.TTY {
+		sess.geometry = backend.TerminalSize{Rows: int(hostCfg.ConsoleSize[0]), Cols: int(hostCfg.ConsoleSize[1])}
+	}
 	// Disk transcript spool: only for freshly-Launch'd sessions — see
 	// openTranscriptSpool's doc comment for why Adopt (doAdopt, below)
 	// deliberately does not also open one.
@@ -2314,23 +2321,8 @@ type containerSession struct {
 	nextSubID   int
 	running     bool
 	exit        backend.RuntimeExit
-	// geometry is the PTY size this session's container was last resized
-	// to, recorded here purely so Subscribe can tell a caller the width
-	// the transcript's recent frames were painted at — a snapshot resolved
-	// at any other width is garbage (measured: the same 8.7 MB transcript
-	// renders cleanly at its true 80 columns and into overlapping,
-	// duplicated lines at 100/160/240). Resize is the only writer.
-	//
-	// Zero until the first resize arrives, which is the honest answer for
-	// two real cases and one that only looks like a third: a session
-	// nobody has attached to yet, and a session reconstructed by doAdopt
-	// after a daemon restart (the size lives in the client's resize
-	// frames, and the first of those arrives strictly AFTER the attach
-	// handshake that takes the snapshot — so the very first snapshot of an
-	// adopted session is rendered at vtsnapshot's 80x24 default). That
-	// default matches the engine's own default TTY size for a container
-	// created without one, which is what ContainerCreate does here, so the
-	// untouched-session case is not a guess at all.
+	// geometry supplies the latest PTY size for transcript rendering. Launch
+	// seeds it from ConsoleSize; adopted sessions leave it unknown until Resize.
 	geometry backend.TerminalSize
 	// attached reports whether the session currently has a live attach
 	// connection with its own readLoop actively feeding appendTranscript —
