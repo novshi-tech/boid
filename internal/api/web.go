@@ -316,6 +316,7 @@ func (h *WebHandler) cardActivityStates(tasks []*orchestrator.Task, triage map[s
 	}
 
 	activeRequests, err := h.CardActivity.ActiveCardRequestsByCardIDs(cardIDs)
+	activityUnavailable := err != nil
 	if err != nil {
 		slog.Warn("cardActivityStates: ActiveCardRequestsByCardIDs returned a partial or empty result",
 			"error", err, "card_count", len(cardIDs))
@@ -333,6 +334,7 @@ func (h *WebHandler) cardActivityStates(tasks []*orchestrator.Task, triage map[s
 		}
 	}
 	taskStatuses, err := h.CardActivity.TaskStatusesByIDs(taskIDsToCheck)
+	activityUnavailable = activityUnavailable || err != nil
 	if err != nil {
 		slog.Warn("cardActivityStates: TaskStatusesByIDs returned a partial or empty result",
 			"error", err, "task_id_count", len(taskIDsToCheck))
@@ -343,6 +345,11 @@ func (h *WebHandler) cardActivityStates(tasks []*orchestrator.Task, triage map[s
 			continue
 		}
 		state := states[task.ID]
+		if activityUnavailable {
+			state.DecisionLabel = "Activity unavailable"
+			states[task.ID] = state
+			continue
+		}
 		if activeChildren[task.ID] == nil && state.CommandLabel == "" && task.OpenChildCount == 0 && task.DoneChildCount+task.AbortedChildCount > 0 {
 			state.DecisionLabel = "Work finished · Needs decision"
 			states[task.ID] = state
