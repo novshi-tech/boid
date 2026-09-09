@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/a-h/templ"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/timeline"
 )
@@ -49,10 +50,10 @@ func TestWriteMobileChildTimelineFixture(t *testing.T) {
 			History:            items[1:],
 			AwaitingQuestionID: "question-mobile",
 		}
-		if err := TaskDetailCardPinnedSection(view, "card-mobile", orchestrator.TaskStatusWorking).Render(ctx, w); err != nil {
-			return err
-		}
-		return CardHistorySection(view, "card-mobile").Render(ctx, w)
+		task := &orchestrator.Task{ID: "card-mobile", Type: orchestrator.TaskTypeCard, Title: "Mobile child timeline fixture", Status: orchestrator.TaskStatusWorking, Description: "Detailed description preserved during live refresh."}
+		identities := []apiwire.TaskIdentity{{Identity: "external:0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", URL: "https://example.com/resource", DisplayName: "Long external resource title 日本語の外部リソース"}}
+		receipts := []*orchestrator.OperationResult{{ID: "receipt-mobile", OperationLabel: "Discuss", OperationType: "card_command:discuss", Result: orchestrator.OperationResultRejected, ReasonCode: orchestrator.OperationReasonSlotOccupied, TargetRequestID: "request-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", CreatedAt: time.Now()}}
+		return TaskDetailCardBody(task, nil, "", "project", "Summary stays next to its detailed description.", view, []CardCommandOption{{Key: "discuss", Label: "Discuss"}}, nil, identities, receipts).Render(ctx, w)
 	})
 	ctx := templ.WithChildren(context.Background(), body)
 	var page bytes.Buffer

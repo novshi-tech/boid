@@ -411,6 +411,7 @@ pre {
 
 .detail-children-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
 }
@@ -424,7 +425,8 @@ pre {
 }
 
 .detail-children-project {
-  font-size: 0.8125rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;  font-size: 0.8125rem;
   color: var(--muted);
 }
 
@@ -461,8 +463,8 @@ pre {
 }
 
 .detail-children-title {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 16rem;
+  min-width: min(100%, 16rem);
   overflow-wrap: anywhere;
   color: inherit;
   font-weight: 500;
@@ -531,12 +533,14 @@ pre {
 }
 
 .operation-result {
+  overflow-wrap: anywhere;
   border-left: 3px solid var(--border);
   padding: var(--space-2) var(--space-3);
   background: var(--card);
 }
 
 .operation-result + .operation-result {
+  overflow-wrap: anywhere;
   margin-top: var(--space-2);
 }
 
