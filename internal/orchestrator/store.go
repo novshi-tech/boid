@@ -839,7 +839,11 @@ func GCCardRequests(dbtx db.DBTX, olderThan time.Duration, dryRun bool) (int64, 
 	// request retention policy removes the association source.
 	if _, err := dbtx.Exec(`UPDATE operation_results SET
 		target_task_id = CASE WHEN cr.target_kind = 'task' THEN cr.target_id ELSE operation_results.target_task_id END,
-		target_session_id = CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE operation_results.target_session_id END
+		target_session_id = CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE operation_results.target_session_id END,
+		current_phase = CASE
+			WHEN operation_results.result = 'accepted' AND operation_results.reason_code = 'request_accepted' AND cr.status = 'failed' THEN 'request_failed'
+			WHEN operation_results.result = 'accepted' AND operation_results.reason_code = 'request_accepted' AND cr.status = 'finished' THEN 'target_started'
+			ELSE operation_results.current_phase END
 		FROM card_requests cr WHERE operation_results.target_request_id = cr.id
 		AND cr.id IN (SELECT id FROM card_requests WHERE `+cond+`)`, args...); err != nil {
 		return 0, fmt.Errorf("preserve operation destinations: %w", err)

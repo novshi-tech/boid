@@ -63,9 +63,9 @@ func (s *OperationResultStore) CreateOperationResult(r *OperationResult) error {
 		r.CreatedAt = time.Now().UTC()
 	}
 	_, err := s.db.Exec(`INSERT INTO operation_results
-		(id, task_id, operation_type, operation_label, result, reason_code, target_task_id, target_session_id, target_request_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.ID, r.TaskID, r.OperationType, r.OperationLabel, r.Result, r.ReasonCode,
-		r.TargetTaskID, r.TargetSessionID, r.TargetRequestID, r.CreatedAt)
+		(id, task_id, operation_type, operation_label, result, reason_code, target_task_id, target_session_id, target_request_id, current_phase, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.ID, r.TaskID, r.OperationType, r.OperationLabel, r.Result, r.ReasonCode,
+		r.TargetTaskID, r.TargetSessionID, r.TargetRequestID, r.CurrentPhase, r.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create operation result: %w", err)
 	}
@@ -75,9 +75,9 @@ func (s *OperationResultStore) CreateOperationResult(r *OperationResult) error {
 // UpdateOperationResult finalizes an initial unknown receipt exactly once.
 func (s *OperationResultStore) UpdateOperationResult(r *OperationResult) error {
 	res, err := s.db.Exec(`UPDATE operation_results SET
-		operation_label = ?, result = ?, reason_code = ?, target_task_id = ?, target_session_id = ?, target_request_id = ?
+		operation_label = ?, result = ?, reason_code = ?, target_task_id = ?, target_session_id = ?, target_request_id = ?, current_phase = ?
 		WHERE id = ? AND task_id = ? AND result = ? AND reason_code = ?`,
-		r.OperationLabel, r.Result, r.ReasonCode, r.TargetTaskID, r.TargetSessionID, r.TargetRequestID,
+		r.OperationLabel, r.Result, r.ReasonCode, r.TargetTaskID, r.TargetSessionID, r.TargetRequestID, r.CurrentPhase,
 		r.ID, r.TaskID, OperationResultUnknown, OperationReasonOutcomePending)
 	if err != nil {
 		return fmt.Errorf("update operation result: %w", err)
@@ -102,8 +102,8 @@ func (s *OperationResultStore) ListOperationResults(taskID string, limit int) ([
 		CASE WHEN cr.target_kind = 'task' THEN cr.target_id ELSE o.target_task_id END,
 		CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE o.target_session_id END,
 		o.target_request_id, o.created_at,
-		CASE WHEN o.result = 'accepted' AND cr.status = 'failed' THEN 'request_failed'
-		     WHEN o.result = 'accepted' AND cr.status IN ('attached','finished') THEN 'target_started' ELSE '' END,
+		CASE WHEN o.result = 'accepted' AND o.reason_code = 'request_accepted' AND cr.status = 'failed' THEN 'request_failed'
+		     WHEN o.result = 'accepted' AND o.reason_code = 'request_accepted' AND cr.status IN ('attached','finished') THEN 'target_started' ELSE o.current_phase END,
         NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = CASE WHEN cr.target_kind = 'task' THEN cr.target_id ELSE o.target_task_id END),
         NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE o.target_session_id END)
 		FROM operation_results o LEFT JOIN card_requests cr ON cr.id = o.target_request_id
@@ -141,8 +141,8 @@ func (s *OperationResultStore) listOperationResults(where string, args []any, li
 		CASE WHEN cr.target_kind = 'task' THEN cr.target_id ELSE o.target_task_id END,
 		CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE o.target_session_id END,
 		o.target_request_id, o.created_at,
-		CASE WHEN o.result = 'accepted' AND cr.status = 'failed' THEN 'request_failed'
-		     WHEN o.result = 'accepted' AND cr.status IN ('attached','finished') THEN 'target_started' ELSE '' END,
+		CASE WHEN o.result = 'accepted' AND o.reason_code = 'request_accepted' AND cr.status = 'failed' THEN 'request_failed'
+		     WHEN o.result = 'accepted' AND o.reason_code = 'request_accepted' AND cr.status IN ('attached','finished') THEN 'target_started' ELSE o.current_phase END,
         NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = CASE WHEN cr.target_kind = 'task' THEN cr.target_id ELSE o.target_task_id END),
         NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE o.target_session_id END)
 		FROM operation_results o LEFT JOIN card_requests cr ON cr.id = o.target_request_id

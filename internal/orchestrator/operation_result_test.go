@@ -138,10 +138,14 @@ func TestOperationResultLifecycleOnlyEnrichesAcceptedRequest(t *testing.T) {
 	store := NewOperationResultStore(d.Conn)
 	rejected := &OperationResult{TaskID: "card", OperationType: "card_command:discuss", OperationLabel: "Discuss", Result: OperationResultRejected, ReasonCode: OperationReasonSlotOccupied, TargetRequestID: "req"}
 	accepted := &OperationResult{TaskID: "card", OperationType: "card_command:discuss", OperationLabel: "Discuss", Result: OperationResultAccepted, ReasonCode: OperationReasonRequestAccepted, TargetRequestID: "req"}
+	partialAccepted := &OperationResult{TaskID: "card", OperationType: "go", OperationLabel: "Go (accepted suggestion)", Result: OperationResultAccepted, ReasonCode: OperationReasonSuggestionAcceptedLaunchRejected, TargetRequestID: "req"}
 	if err := store.CreateOperationResult(rejected); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CreateOperationResult(accepted); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateOperationResult(partialAccepted); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.Conn.Exec(`UPDATE card_requests SET status='attached', target_kind='session', target_id='job-1' WHERE id='req'`); err != nil {
@@ -149,11 +153,15 @@ func TestOperationResultLifecycleOnlyEnrichesAcceptedRequest(t *testing.T) {
 	}
 	gotRejected, _ := store.GetOperationResult("card", rejected.ID)
 	gotAccepted, _ := store.GetOperationResult("card", accepted.ID)
+	gotPartial, _ := store.GetOperationResult("card", partialAccepted.ID)
 	if gotRejected.Result != OperationResultRejected || gotRejected.CurrentPhase != "" {
 		t.Fatalf("rejected result mutated: %+v", gotRejected)
 	}
 	if gotAccepted.Result != OperationResultAccepted || gotAccepted.CurrentPhase != OperationReasonTargetStarted || gotAccepted.TargetSessionID != "job-1" {
 		t.Fatalf("accepted result not enriched: %+v", gotAccepted)
+	}
+	if gotPartial.CurrentPhase != "" {
+		t.Fatalf("partial suggestion acceptance inherited competitor lifecycle: %+v", gotPartial)
 	}
 	if _, err := d.Conn.Exec(`UPDATE card_requests SET status='failed' WHERE id='req'`); err != nil {
 		t.Fatal(err)
@@ -161,5 +169,9 @@ func TestOperationResultLifecycleOnlyEnrichesAcceptedRequest(t *testing.T) {
 	gotAccepted, _ = store.GetOperationResult("card", accepted.ID)
 	if gotAccepted.Result != OperationResultAccepted || gotAccepted.CurrentPhase != OperationReasonRequestFailed {
 		t.Fatalf("failed accepted request rewrote receipt: %+v", gotAccepted)
+	}
+	gotPartial, _ = store.GetOperationResult("card", partialAccepted.ID)
+	if gotPartial.CurrentPhase != "" {
+		t.Fatalf("partial suggestion acceptance inherited failed competitor lifecycle: %+v", gotPartial)
 	}
 }

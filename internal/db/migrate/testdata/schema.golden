@@ -131,6 +131,7 @@ CREATE TABLE operation_results (
     target_task_id TEXT NOT NULL DEFAULT '',
     target_session_id TEXT NOT NULL DEFAULT '',
     target_request_id TEXT NOT NULL DEFAULT '',
+    current_phase TEXT NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
