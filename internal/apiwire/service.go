@@ -8,6 +8,7 @@ type ActionApplication struct {
 	Task         *orchestrator.Task   `json:"task"`
 	Action       *orchestrator.Action `json:"action"`
 	MatchedHooks []string             `json:"matched_hooks,omitempty"`
+	TargetTaskID string               `json:"target_task_id,omitempty"`
 }
 
 type TaskDetailView struct {

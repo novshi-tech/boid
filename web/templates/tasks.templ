@@ -413,6 +413,9 @@ templ TaskDetailCardPinnedSection(tl *CardTimelineView, cardID string, cardStatu
 			@cardActivityBadges(tl.Activity)
 		}
 		@CardPinnedSection(tl, cardID, cardStatus)
+		if !cardCommandTerminalStatus(cardStatus) {
+			@CardGoControl(tl, cardID)
+		}
 	</div>
 }
 
@@ -1726,6 +1729,94 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 	}
 }
 
+func operationResultText(result *orchestrator.OperationResult) string {
+	if result.Result == orchestrator.OperationResultUnknown {
+		return "The server could not confirm the complete outcome. Check the linked work and refresh the current state before trying again."
+	}
+	switch result.CurrentPhase {
+	case orchestrator.OperationReasonRequestFailed:
+		return "The request was accepted, but its launch later failed. Review the current card state before trying again."
+	case orchestrator.OperationReasonTargetStarted:
+		return "The accepted operation started and its destination is now available."
+	}
+	switch result.ReasonCode {
+	case orchestrator.OperationReasonSlotOccupied:
+		return "Another operation is using the execution slot. This operation was not accepted or queued."
+	case orchestrator.OperationReasonNoReadyWork:
+		return "There is no ready work to start. This operation was not accepted or queued."
+	case orchestrator.OperationReasonNotAvailable:
+		return "The current card state does not allow this operation. It was not accepted or queued."
+	}
+	switch result.Result {
+	case orchestrator.OperationResultStarted:
+		return "The operation started."
+	case orchestrator.OperationResultAccepted:
+		return "The operation was accepted. Its task or session may be linked when it starts."
+	default:
+		return "The operation was not accepted and was not queued."
+	}
+}
+
+func operationResultLabel(result *orchestrator.OperationResult) string {
+	if result.OperationLabel != "" { return result.OperationLabel }
+	if result.OperationType == "go" { return "Go" }
+	return "Card command"
+}
+
+templ OperationResultsSection(results []*orchestrator.OperationResult) {
+	<section id="task-operations" class="operation-results" aria-labelledby="operation-results-heading">
+		if len(results) > 0 {
+			<h2 id="operation-results-heading" class="detail-section-title">Operation results</h2>
+			<div class={ "operation-result", "operation-result-" + results[0].Result } role="status" aria-live="polite" tabindex="-1" data-operation-id={ results[0].ID } data-operation-result={ results[0].Result }>
+				@operationResultBody(results[0])
+			</div>
+			if len(results) > 1 {
+				<details class="operation-result-history">
+					<summary>{ fmt.Sprintf("Earlier operation results (%d)", len(results)-1) }</summary>
+					for _, result := range results[1:] {
+					<div class={ "operation-result", "operation-result-" + result.Result } data-operation-id={ result.ID } data-operation-result={ result.Result }>
+						@operationResultBody(result)
+					</div>
+					}
+				</details>
+				}
+		} else {
+			<h2 id="operation-results-heading" class="sr-only">Operation results</h2>
+		}
+	</section>
+}
+
+templ operationResultBody(result *orchestrator.OperationResult) {
+	<div class="operation-result-head">
+		<strong>{ operationResultLabel(result) }</strong>
+		<span class={ "badge", "badge-" + result.Result }>{ result.Result }</span>
+		<time datetime={ result.CreatedAt.Format(time.RFC3339) }>{ result.CreatedAt.Local().Format("2006-01-02 15:04:05 MST") }</time>
+	</div>
+	<p>{ operationResultText(result) }</p>
+	<div class="operation-result-links">
+		if result.TargetTaskID != "" {
+			<a href={ templ.SafeURL("/tasks/" + result.TargetTaskID) }>Open task</a>
+		}
+		if result.TargetSessionID != "" {
+			<a href={ templ.SafeURL("/jobs/" + result.TargetSessionID) }>Open session</a>
+		}
+	</div>
+	<details class="operation-result-diagnostics">
+		<summary>Diagnostic details</summary>
+		<dl>
+			<dt>Type</dt><dd><code>{ result.OperationType }</code></dd>
+			<dt>Result</dt><dd><code>{ result.Result }</code></dd>
+			<dt>Reason</dt><dd><code>{ result.ReasonCode }</code></dd>
+			if result.CurrentPhase != "" {
+				<dt>Current phase</dt><dd><code>{ result.CurrentPhase }</code></dd>
+			}
+				if result.TargetRequestID != "" {
+					<dt>Request</dt><dd><code>{ result.TargetRequestID }</code></dd>
+				}
+		</dl>
+	</details>
+}
+
 // TaskDetailCardBody assembles a card detail page's content, top to bottom:
 // meta followed by summary and expandable description, current controls,
 // current activity, the card's own timeline history
@@ -1739,8 +1830,9 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 // placement (also body-level, also outside anything swappable) precisely
 // so both layouts follow the same rule: the live script is rendered once,
 // never inside a swap target.
-templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, summary string, tl *CardTimelineView, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState, identities []apiwire.TaskIdentity) {
+templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, summary string, tl *CardTimelineView, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState, identities []apiwire.TaskIdentity, operationResults []*orchestrator.OperationResult) {
 	@TaskDetailCardStatusSection(task, errorMsg, projectName, summary, identities)
+	@OperationResultsSection(operationResults)
 	@CardCommandSection(task.ID, task.Status, cmdOptions, cmdForm)
 	@TaskDetailCardPinnedSection(tl, task.ID, task.Status)
 	@CardHistorySection(tl, task.ID)
@@ -1776,10 +1868,10 @@ templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.Stat
 // is secondary), anything else gets TaskDetailExecBody ("プロセスの観測窓" —
 // the status-group timeline stays the main content, via the existing tab
 // structure).
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, cardSummary string, cardTL *CardTimelineView, childTree []ChildTreeNode, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState, identities []apiwire.TaskIdentity) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, cardSummary string, cardTL *CardTimelineView, childTree []ChildTreeNode, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState, identities []apiwire.TaskIdentity, operationResults []*orchestrator.OperationResult) {
 	@Layout(task.Title, taskDetailBackURL(task)) {
 		if task.Type == orchestrator.TaskTypeCard {
-			@TaskDetailCardBody(task, availableActions, errorMsg, projectName, cardSummary, cardTL, cmdOptions, cmdForm, identities)
+			@TaskDetailCardBody(task, availableActions, errorMsg, projectName, cardSummary, cardTL, cmdOptions, cmdForm, identities, operationResults)
 		} else {
 			@TaskDetailExecBody(task, timelineGroups, availableActions, errorMsg, activeTab, projectName, childTree, identities)
 		}

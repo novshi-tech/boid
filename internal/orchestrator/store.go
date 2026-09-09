@@ -657,7 +657,8 @@ type GCResult struct {
 	Signals int64
 	// CardRequests is the count of finished/failed card_requests rows
 	// GCCardRequests deleted.
-	CardRequests int64
+	CardRequests     int64
+	OperationResults int64
 }
 
 // GCTasks deletes terminal tasks older than olderThan and their related data

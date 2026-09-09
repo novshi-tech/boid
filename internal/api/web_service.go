@@ -173,11 +173,15 @@ func (s *WebAppService) DeleteTask(id string, force bool) error {
 }
 
 func (s *WebAppService) ApplyAction(taskID string, actionType string) error {
-	if s.Workflow == nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
-	}
-	_, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), taskID, ApplyActionRequest{Type: actionType})
+	_, err := s.ApplyActionWithResult(taskID, actionType)
 	return err
+}
+
+func (s *WebAppService) ApplyActionWithResult(taskID string, actionType string) (*ActionApplication, error) {
+	if s.Workflow == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
+	}
+	return s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), taskID, ApplyActionRequest{Type: actionType})
 }
 
 func (s *WebAppService) ListJobs(status string) ([]JobWithContext, error) {
@@ -290,13 +294,17 @@ type AnswerSuggestionRequest struct {
 // method rather than routing through the generic ApplyAction, mirroring
 // ReopenTask's own instruction-payload pattern just above.
 func (s *WebAppService) AnswerSuggestion(taskID string, req AnswerSuggestionRequest) error {
+	_, err := s.AnswerSuggestionWithResult(taskID, req)
+	return err
+}
+
+func (s *WebAppService) AnswerSuggestionWithResult(taskID string, req AnswerSuggestionRequest) (*ActionApplication, error) {
 	if s.Workflow == nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
 	}
 	payload, err := json.Marshal(req)
 	if err != nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: "payload encode: " + err.Error()}
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "payload encode: " + err.Error()}
 	}
-	_, err = s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), taskID, ApplyActionRequest{Type: "answered", Payload: payload})
-	return err
+	return s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), taskID, ApplyActionRequest{Type: "answered", Payload: payload})
 }

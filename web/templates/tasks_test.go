@@ -904,7 +904,7 @@ func TestTaskDetailCardBody_SummaryAndDescriptionAreAdjacentBeforeCurrentWork(t 
 		Status: orchestrator.TaskStatusParked, Description: "Full description",
 	}
 	var buf bytes.Buffer
-	if err := TaskDetailCardBody(task, nil, "", "project", "Short summary", nil, []CardCommandOption{{Key: "discuss", Label: "Discuss"}}, nil).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailCardBody(task, nil, "", "project", "Short summary", nil, []CardCommandOption{{Key: "discuss", Label: "Discuss"}}, nil, nil, nil).Render(context.Background(), &buf); err != nil {
 		t.Fatal(err)
 	}
 	html := buf.String()

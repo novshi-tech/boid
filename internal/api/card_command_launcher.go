@@ -149,8 +149,9 @@ func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantTaskID string, 
 	// pre-Tx read could be stale by the time this transaction opens.
 	if fresh.Status != orchestrator.TaskStatusParked && fresh.Status != orchestrator.TaskStatusWorking {
 		return "", false, &StatusError{
-			Code:    http.StatusConflict,
-			Message: fmt.Sprintf("card command: card is %q, not parked or working — reopen it before running a command", fresh.Status),
+			Code:            http.StatusConflict,
+			Message:         fmt.Sprintf("card command: card is %q, not parked or working — reopen it before running a command", fresh.Status),
+			OperationReason: orchestrator.OperationReasonNotAvailable,
 		}
 	}
 	// Parse the detail blob but do NOT read occupancy out of it. A corrupt

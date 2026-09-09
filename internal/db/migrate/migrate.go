@@ -484,6 +484,13 @@ func allMigrations() []migration {
 			version: "0055_add_task_identity_metadata",
 			path:    "migrations/0055_add_task_identity_metadata.sql",
 		},
+		{
+			version: "0056_add_operation_results",
+			path:    "migrations/0056_add_operation_results.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return tableExists(tx, "operation_results")
+			},
+		},
 	}
 }
 
