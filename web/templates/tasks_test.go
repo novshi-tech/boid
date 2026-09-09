@@ -54,7 +54,7 @@ func TestTaskCardActionBar_ParkedHasStartMenuItem(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskCardActionBar(task, []string{"go", "start", "drop"}).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "start", "drop"}, nil).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -71,7 +71,7 @@ func TestTaskCardActionBar_ParkedWithoutStartAction(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskCardActionBar(task, []string{"go", "drop"}).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "drop"}, nil).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -93,7 +93,7 @@ func TestTaskCardActionBar_ParkedHasCompleteMenuItem(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskCardActionBar(task, []string{"go", "start", "drop", "complete"}).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "start", "drop", "complete"}, nil).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -105,8 +105,8 @@ func TestTaskCardActionBar_ParkedHasCompleteMenuItem(t *testing.T) {
 		t.Error("parked status action bar should have a visible \"complete\" label")
 	}
 	// The primary slot is unchanged: Go, not Complete.
-	if !strings.Contains(html, `>Go<`) {
-		t.Errorf("parked's primary button must still be Go; got: %s", html)
+	if !strings.Contains(html, `>Start work<`) {
+		t.Errorf("parked's primary button must start work; got: %s", html)
 	}
 }
 
@@ -114,7 +114,7 @@ func TestTaskCardActionBar_ParkedWithoutCompleteAction(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskCardActionBar(task, []string{"go", "drop"}).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "drop"}, nil).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if strings.Contains(buf.String(), `value="complete"`) {
@@ -131,7 +131,7 @@ func TestTaskCardActionBar_WorkingDoesNotDuplicateComplete(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskCardActionBar(task, []string{"park", "complete"}).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"park", "complete"}, &CardTimelineView{}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if got := strings.Count(buf.String(), `value="complete"`); got != 1 {
@@ -139,20 +139,20 @@ func TestTaskCardActionBar_WorkingDoesNotDuplicateComplete(t *testing.T) {
 	}
 }
 
-// TestTaskCardActionBar_WorkingHasGoMenuItem pins the working→working
+// TestTaskCardActionBar_WorkingHasSingleGoControl pins the working→working
 // self-loop's own UI affordance: unlike every other kebab item in this bar,
 // "go" here is gated on status alone (AvailableActions excludes self-loops,
 // so hasAction(availableActions, "go") would never be true for working).
-func TestTaskCardActionBar_WorkingHasGoMenuItem(t *testing.T) {
+func TestTaskCardActionBar_WorkingHasSingleGoControl(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskCardActionBar(task, []string{"park", "complete"}).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"park", "complete"}, &CardTimelineView{}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
 	if !strings.Contains(html, `value="go"`) {
-		t.Error("working status action bar should contain a go action menu item")
+		t.Error("working status action bar should contain one go control")
 	}
 }
 
@@ -163,7 +163,7 @@ func TestTaskCardActionBar_ParkedDoesNotDuplicateGo(t *testing.T) {
 	task := &orchestrator.Task{ID: "task-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
 
 	var buf bytes.Buffer
-	if err := TaskCardActionBar(task, []string{"go", "start", "drop"}).Render(context.Background(), &buf); err != nil {
+	if err := TaskCardActionBar(task, []string{"go", "start", "drop"}, nil).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if got := strings.Count(buf.String(), `value="go"`); got != 1 {
@@ -931,7 +931,7 @@ func TestTaskDetailLiveScript_RegistersChildEventListener(t *testing.T) {
 	if !strings.Contains(html, "addEventListener('child'") {
 		t.Fatalf("expected a 'child' event listener registration; got:\n%s", html)
 	}
-	if !strings.Contains(html, "addEventListener('child', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'operations']); refreshHistoryHead(); }));") {
+	if !strings.Contains(html, "addEventListener('child', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'controls']); refreshHistoryHead(); }));") {
 		t.Errorf("'child' listener must refresh current state and child history; got:\n%s", html)
 	}
 }

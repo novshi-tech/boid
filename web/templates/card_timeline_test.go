@@ -466,12 +466,12 @@ func TestCardTimelineItem_NonPinned_ShowsTimeOnlyNotDate(t *testing.T) {
 // The page must say which timezone its timestamps are in (§5.4's "表示
 // タイムゾーンを画面で確認可能にする"), or a reader cannot tell whether a
 // time is theirs or the server's.
-func TestCardHistorySection_NamesTheDisplayTimezone(t *testing.T) {
+func TestCardTimeline_NamesTheDisplayTimezone(t *testing.T) {
 	tl := &CardTimelineView{
 		History: []timeline.CardItem{{Kind: timeline.CardItemWakeDue, ID: "a1", HasTime: true, Time: time.Now()}},
 	}
 	var buf bytes.Buffer
-	if err := CardHistorySection(tl, "card-1").Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailCardBody(&orchestrator.Task{ID: "card-1", Type: orchestrator.TaskTypeCard}, nil, "", "", "", tl, nil, nil, nil, nil).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	zone, _ := time.Now().Zone()

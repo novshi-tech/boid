@@ -124,6 +124,11 @@ func (s *OperationResultStore) ListOperationResults(taskID string, limit int) ([
 	return results, rows.Err()
 }
 
+// AllOperationResults supplies the complete history to the item-paginated timeline.
+func (s *OperationResultStore) AllOperationResults(taskID string) ([]*OperationResult, error) {
+	return s.listOperationResults("o.task_id = ?", []any{taskID}, -1)
+}
+
 func (s *OperationResultStore) GetOperationResult(taskID, id string) (*OperationResult, error) {
 	rows, err := s.listOperationResults(`o.task_id = ? AND o.id = ?`, []any{taskID, id}, 1)
 	if err != nil || len(rows) == 0 {

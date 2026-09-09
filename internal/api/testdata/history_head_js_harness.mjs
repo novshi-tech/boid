@@ -327,10 +327,9 @@ function runBootstrapScenario(src) {
 	});
 }
 
-// An empty (but 200 OK) response body means "nothing new" — the same
-// no-op refresh()'s own "if (!html) return;" treats it as, not a signal to
-// empty the list with nothing to put back.
-function runEmptyResponseScenario(src) {
+// A successful empty history clears entries that moved to current work.
+// A failed fetch preserves the last known history instead.
+function runEmptyResponseScenario(src, failed = false) {
 	const itemA = makeNode("li", "card-item-summary-a");
 	const list = makeList([itemA], {
 		querySelector: {},
@@ -346,11 +345,11 @@ function runEmptyResponseScenario(src) {
 			return id === "card-timeline" ? container : null;
 		},
 		createElement() {
-			throw new Error("should not build a <template> for an empty response");
+			return { content: { firstChild: null }, innerHTML: "" };
 		},
 	};
 	const fakeWindow = { location: { href: "http://localhost/tasks/card-1" } };
-	const fakeFetch = () => Promise.resolve({ ok: true, text: () => Promise.resolve("") });
+	const fakeFetch = () => Promise.resolve({ ok: !failed, text: () => Promise.resolve("") });
 
 	const factory = new Function(
 		"taskID",
@@ -365,10 +364,8 @@ function runEmptyResponseScenario(src) {
 	refreshHistoryHead();
 
 	return new Promise((resolve) => setTimeout(resolve, 20)).then(() => {
-		if (!list._children.includes(itemA)) {
-			throw new Error(
-				"nice-to-have 6 regression: an empty (but 200 OK) response body emptied the list instead of being treated as a no-op",
-			);
+		if (list._children.includes(itemA) !== failed) {
+			throw new Error(failed ? "failed refresh removed history" : "empty history retained a stale entry");
 		}
 	});
 }
@@ -381,6 +378,7 @@ Promise.resolve()
 	.then(() => runDetailsPreservationScenario(src))
 	.then(() => runBootstrapScenario(src))
 	.then(() => runEmptyResponseScenario(src))
+	.then(() => runEmptyResponseScenario(src, true))
 	.then(() => {
 		console.log("OK");
 		process.exit(0);

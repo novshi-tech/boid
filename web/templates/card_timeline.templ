@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -22,7 +23,7 @@ import (
 // (a pinned dispatched child's awaiting-question link) neither read model
 // resolves on its own.
 type CardTimelineView struct {
-	Activity CardActivityState
+	Activity           CardActivityState
 	Pinned             []timeline.CardItem
 	History            []timeline.CardItem
 	HasMore            bool
@@ -35,9 +36,9 @@ const (
 	cardItemClockFormat = "15:04"
 )
 
-func cardItemDateLabel(t time.Time) string { return t.Local().Format(cardItemDateFormat) }
+func cardItemDateLabel(t time.Time) string  { return t.Local().Format(cardItemDateFormat) }
 func cardItemClockLabel(t time.Time) string { return t.Local().Format(cardItemClockFormat) }
-func cardItemDateKey(t time.Time) string { return t.Local().Format("2006-01-02") }
+func cardItemDateKey(t time.Time) string    { return t.Local().Format("2006-01-02") }
 
 // cardItemPinnedStamp is a pinned item's full date+time label — history
 // items show only the time, since a date separator already carries the day.
@@ -223,14 +224,11 @@ func cardCommandOutcomeBadgeClass(outcome string) string {
 // never subject to the history page's item cap.
 templ CardPinnedSection(tl *CardTimelineView, cardID string, cardStatus orchestrator.TaskStatus) {
 	if tl != nil && len(tl.Pinned) > 0 {
-		<section class="card-current-activity">
-			<h2 class="card-current-activity-title">Current activity</h2>
-			<ul class="card-pinned-list">
-				for _, item := range tl.Pinned {
-					@CardTimelineItem(item, cardID, cardStatus, true, tl.AwaitingQuestionID)
-				}
-			</ul>
-		</section>
+		<ul class="card-pinned-list">
+			for _, item := range tl.Pinned {
+				@CardTimelineItem(item, cardID, cardStatus, true, tl.AwaitingQuestionID)
+			}
+		</ul>
 	}
 }
 
@@ -262,9 +260,9 @@ templ CardGoControl(tl *CardTimelineView, cardID string) {
 	<div class="card-go-control">
 		<form method="post" action={ templ.SafeURL("/tasks/" + cardID + "/action") }>
 			<input type="hidden" name="type" value="go"/>
-			<button type="submit" class="btn btn-primary" disabled?={ !enabled } aria-describedby="card-go-reason">Go</button>
+			<button type="submit" class="btn btn-primary" disabled?={ !enabled } aria-describedby="card-go-reason" title={ reason }>Start work</button>
 		</form>
-		<span id="card-go-reason" class="card-go-reason">{ reason }</span>
+		<span id="card-go-reason" class="sr-only">{ reason }</span>
 	</div>
 }
 
@@ -274,8 +272,7 @@ templ CardGoControl(tl *CardTimelineView, cardID string) {
 // outerHTML replace there would discard any "Load older" pages already
 // appended. This section is simply not one of the SSE-refreshed targets.
 templ CardHistorySection(tl *CardTimelineView, cardID string) {
-	<div id="card-timeline" class="card-timeline">
-		<div class="card-timeline-tz">Times shown in { cardTimelineTZLabel() }</div>
+	<div id="card-timeline">
 		if tl == nil || len(tl.History) == 0 {
 			<p class="tab-empty">No history yet.</p>
 		} else {
@@ -344,21 +341,32 @@ templ cardHistoryLoadOlder(cardID string, hasMore bool, nextCursor string, last 
 // awaitingQuestionID is only ever non-empty for the sole pinned dispatched
 // child that is currently awaiting an answer.
 templ CardTimelineItem(item timeline.CardItem, cardID string, cardStatus orchestrator.TaskStatus, pinned bool, awaitingQuestionID string) {
-	<li id={ "card-item-" + string(item.Kind) + "-" + item.ID } class="card-timeline-item">
+	<li id={ cardTimelineItemID(item) } class="card-timeline-item" data-operation-id={ cardItemOperationID(item) } data-operation-result={ cardItemOperationResult(item) }>
 		<div class="card-timeline-item-time">
-			if pinned {
-				{ cardItemPinnedStamp(item) }
+			if pinned && item.HasTime {
+				<span title={ cardItemPinnedStamp(item) }>{ cardItemClockLabel(item.Time) }</span>
 			} else if item.HasTime {
 				{ cardItemClockLabel(item.Time) }
 			}
 		</div>
 		<div class="card-timeline-item-body">
-			if item.Kind == timeline.CardItemChild {
+			if item.Kind == timeline.CardItemOperation {
+				@operationResultBody(item.Operation)
+			} else if item.Kind == timeline.CardItemChild {
 				@cardChildItemBody(item, cardID, awaitingQuestionID)
 			} else if item.Kind == timeline.CardItemChildFinished {
 				@cardChildFinishedItemBody(item, cardID)
 			} else if item.Kind == timeline.CardItemCommand {
 				@cardCommandItemBody(item, pinned)
+				if item.Operation != nil {
+					if item.Operation.Notice != "" {
+						<p class="operation-result-notice">{ item.Operation.Notice }</p>
+					}
+					<details class="operation-result-diagnostics">
+						<summary>Operation details</summary>
+						@operationResultBody(item.Operation)
+					</details>
+				}
 			} else if item.Kind == timeline.CardItemSuggestion && pinned {
 				@TaskDetailSuggestionSection(cardID, cardStatus, cardItemSuggestionValue(item))
 			} else if item.Kind == timeline.CardItemSuggestion {
@@ -585,7 +593,7 @@ templ CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, opti
 				if !cardCommandTerminalStatus(cardStatus) {
 					<div class="card-command-buttons">
 						for _, opt := range options {
-							<button type="submit" name="key" value={ opt.Key } class="btn btn-secondary">{ opt.Label }</button>
+							<button type="submit" name="key" value={ opt.Key } class="btn btn-secondary">{ "Run " + opt.Label }</button>
 						}
 					</div>
 				}
@@ -600,4 +608,55 @@ templ TaskDetailCardSummary(summary string) {
 	if summary != "" {
 		<div class="card-summary">{ summary }</div>
 	}
+}
+
+func cardTimelineItemID(item timeline.CardItem) string {
+	if item.Operation != nil {
+		return "operation-" + item.Operation.ID
+	}
+	return "card-item-" + string(item.Kind) + "-" + item.ID
+}
+func cardItemOperationID(item timeline.CardItem) string {
+	if item.Operation != nil {
+		return item.Operation.ID
+	}
+	return ""
+}
+func cardItemOperationResult(item timeline.CardItem) string {
+	if item.Operation != nil {
+		return item.Operation.Result
+	}
+	return ""
+}
+
+// Keep direct responses (including unsaved final outcomes) in the same timeline.
+func cardTimelineWithOperations(tl *CardTimelineView, results []*orchestrator.OperationResult) *CardTimelineView {
+	view := CardTimelineView{}
+	if tl != nil {
+		view = *tl
+	}
+	view.History = append([]timeline.CardItem(nil), view.History...)
+	view.Pinned = append([]timeline.CardItem(nil), view.Pinned...)
+	for _, result := range results {
+		found := false
+		for _, items := range [][]timeline.CardItem{view.Pinned, view.History} {
+			for i := range items {
+				if (items[i].Operation != nil && items[i].Operation.ID == result.ID) || (result.Result == orchestrator.OperationResultAccepted && result.TargetRequestID != "" && items[i].Command != nil && items[i].Command.RequestID == result.TargetRequestID) {
+					items[i].Operation = result
+					found = true
+				}
+			}
+		}
+		// Older receipts already belong to a later page; do not duplicate them at the head.
+		if !found && (!view.HasMore || len(view.History) == 0 || !result.CreatedAt.Before(view.History[len(view.History)-1].Time)) {
+			view.History = append(view.History, timeline.OperationCardItem(result))
+		}
+	}
+	sort.SliceStable(view.History, func(i, j int) bool {
+		if view.History[i].Time.Equal(view.History[j].Time) {
+			return view.History[i].ID > view.History[j].ID
+		}
+		return view.History[i].Time.After(view.History[j].Time)
+	})
+	return &view
 }

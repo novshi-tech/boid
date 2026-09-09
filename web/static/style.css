@@ -528,30 +528,6 @@ pre {
   gap: var(--space-2);
 }
 
-.operation-results {
-  margin-top: var(--space-3);
-}
-
-.operation-result {
-  overflow-wrap: anywhere;
-  border-left: 3px solid var(--border);
-  padding: var(--space-2) var(--space-3);
-  background: var(--card);
-}
-
-.operation-result + .operation-result {
-  overflow-wrap: anywhere;
-  margin-top: var(--space-2);
-}
-
-.operation-result-started { border-left-color: var(--success); }
-.operation-result-rejected { border-left-color: var(--danger); }
-.operation-result-unknown { border-left-color: var(--warning); }
-
-.operation-result-history {
-  margin-top: var(--space-2);
-}
-
 .operation-result-diagnostics {
   color: var(--muted);
   font-size: 0.8125rem;
@@ -572,18 +548,12 @@ pre {
   gap: var(--space-2);
 }
 
-.operation-result time,
-.card-go-reason {
-  color: var(--muted);
-  font-size: 0.8125rem;
-}
-
-.operation-result p {
+.card-timeline-item-body p {
   margin: var(--space-1) 0;
 }
 
 .card-go-control {
-  margin-top: var(--space-2);
+  margin-top: 0;
 }
 
 /* --- Card detail: pinned items + timeline history --- */
@@ -594,16 +564,6 @@ pre {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-
-.card-current-activity {
-  margin-top: var(--space-3);
-}
-
-.card-current-activity-title {
-  margin: 0 0 var(--space-2);
-  font-size: 0.875rem;
-  font-weight: 600;
 }
 
 .card-timeline {
@@ -635,9 +595,12 @@ pre {
 }
 
 .card-timeline-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: 3.5rem minmax(0, 1fr);
   gap: var(--space-2);
   align-items: baseline;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
 }
 
 .card-timeline-item-time {
@@ -649,8 +612,8 @@ pre {
 }
 
 .card-timeline-item-body {
-  flex: 1;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .card-timeline-item-label {
@@ -786,9 +749,8 @@ pre {
 
 @media (max-width: 600px) {
   .card-timeline-item {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 2px;
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+    gap: var(--space-2);
   }
 
   .card-timeline-item-time {
@@ -3199,16 +3161,31 @@ details[open] > summary {
   flex-wrap: wrap;
   align-items: center;
   gap: .5rem;
-  margin-block: .75rem;
+  margin-block: var(--space-5) var(--space-3);
+  padding: var(--space-3);
+  border-top: 1px solid var(--border);
+  border-left: 3px solid transparent;
   font-size: .8rem;
   color: var(--muted);
 }
 .task-live-status[data-stale="true"] {
-  border-left: 3px solid var(--warning);
-  padding: .5rem .75rem;
+  border-left-color: var(--warning);
   color: inherit;
 }
-.task-live-status button { font: inherit; }
+.task-live-status button {
+  width: auto;
+  padding: var(--space-2) var(--space-3);
+  min-height: var(--tap-target);
+  font: inherit;
+}
+.card-command-buttons .btn { width: auto; }
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 4px rgb(0 0 0 / 18%);
+}
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
 .operation-submit-feedback {
   margin-block: .75rem;
   padding: .75rem;
@@ -3221,3 +3198,15 @@ details[open] > summary {
 .task-identity-link { display: flex; gap: .6rem; flex-wrap: wrap; overflow-wrap: anywhere; margin-top: .35rem; }
 .task-identity-key { font-family: var(--font-mono); }
 .task-identity-unset { color: var(--muted, #666); }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

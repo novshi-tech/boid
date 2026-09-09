@@ -28,7 +28,7 @@ const assert = require('node:assert/strict');
       if (mode === 'old') {
         return route.fulfill({
           contentType: 'text/html',
-          body: '<section id="task-operations"><div class="operation-result" data-operation-id="old" data-operation-result="accepted">Earlier operation</div></section>',
+          body: '<section class="card-timeline"><div id="card-timeline"><ul class="card-timeline-list"><li class="card-timeline-item" data-operation-id="old" data-operation-result="accepted">Earlier operation</li></ul></div></section>',
         });
       }
       if (mode === 'pending') await new Promise(resolve => { release = resolve; });
@@ -41,12 +41,12 @@ const assert = require('node:assert/strict');
         status: 200,
         headers: { 'X-Boid-Operation-ID': id },
         contentType: 'text/html',
-        body: `<section id="task-operations"><div class="operation-result" data-operation-id="${id}" data-operation-result="${outcome}">${label}</div></section>`,
+        body: `<section class="card-timeline"><div id="${mode === 'pinned' ? 'task-pinned' : 'card-timeline'}"><ul class="card-timeline-list"><li class="card-timeline-item" data-operation-id="${id}" data-operation-result="${outcome}">${label}</li></ul></div></section>`,
       });
     });
 
     await page.goto('http://boid.test/');
-    await page.setContent('<div style="height: 900px" aria-hidden="true"></div><section id="task-operations"></section><div id="task-live-status"><button id="task-live-retry">Refresh</button></div><div style="height: 900px" aria-hidden="true"></div><form method="post" action="/tasks/card/commands"><textarea name="instruction">Keep my input</textarea><input name="_csrf" value="csrf-test" type="hidden"><button type="submit" name="key" value="discuss">Discuss</button></form>');
+    await page.setContent('<div style="height: 900px" aria-hidden="true"></div><section class="card-timeline"><div id="task-pinned"></div><div id="card-timeline"><ul class="card-timeline-list"></ul></div></section><div id="task-live-status"><button id="task-live-retry">Refresh</button></div><div style="height: 900px" aria-hidden="true"></div><form method="post" action="/tasks/card/commands"><textarea name="instruction">Keep my input</textarea><input name="_csrf" value="csrf-test" type="hidden"><button type="submit" name="key" value="discuss">Discuss</button></form>');
     await page.addScriptTag({ content: fs.readFileSync('web/static/boid-operation-submit.js', 'utf8') });
 
     async function assertFocusedAndVisible(locator, label) {
@@ -87,16 +87,21 @@ const assert = require('node:assert/strict');
     assert.equal(count, 2);
     await page.locator('form').scrollIntoViewIfNeeded();
     release();
-    await page.waitForFunction(() => document.querySelector('#task-operations').textContent === 'Accepted');
-    await assertFocusedAndVisible(page.locator('.operation-result[data-operation-id="result-2"]'), 'accepted result');
-    assert.equal(await page.locator('#operation-submit-feedback').count(), 0);
+    await page.waitForFunction(() => document.querySelector('#card-timeline .card-timeline-item')?.textContent === 'Accepted');
+    await assertFocusedAndVisible(page.locator('.card-timeline-item[data-operation-id="result-2"]'), 'accepted result');
+    assert.equal(await page.locator('#operation-submit-feedback').isHidden(), true);
     assert.equal(await page.locator('textarea').inputValue(), '');
+
+    const preserved = await page.evaluate(() => window.boidPreserveOperationResults('<li data-operation-id="result-2" data-operation-result="unknown">Unknown</li>'));
+    assert.match(preserved, /Accepted/);
+    assert.doesNotMatch(preserved, />Unknown</);
+    assert.equal(await page.locator('#task-operations').count(), 0);
 
     // "started" is the other confirmed-success outcome and clears likewise.
     await page.locator('textarea').fill('Start this work');
     mode = 'started';
     await page.getByText('Discuss', { exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('#task-operations').textContent === 'Started');
+    await page.waitForFunction(() => document.querySelector('#card-timeline .card-timeline-item')?.textContent === 'Started');
     assert.equal(await page.locator('textarea').inputValue(), '');
 
     // Do not erase a new draft typed while the accepted request is in flight.
@@ -106,28 +111,35 @@ const assert = require('node:assert/strict');
     await page.waitForFunction(() => document.querySelector('form').getAttribute('aria-busy') === 'true');
     await page.locator('textarea').fill('New draft typed while waiting');
     release();
-    await page.waitForFunction(() => document.querySelector('.operation-result')?.dataset.operationId === 'result-4');
+    await page.waitForFunction(() => document.querySelector('.card-timeline-item')?.dataset.operationId === 'result-4');
     assert.equal(await page.locator('textarea').inputValue(), 'New draft typed while waiting');
 
     // A correlated rejection is known, but it did not start work: retain input.
     mode = 'rejected';
     await page.getByText('Discuss', { exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('#task-operations').textContent === 'Rejected');
+    await page.waitForFunction(() => document.querySelector('#card-timeline .card-timeline-item')?.textContent === 'Rejected');
     assert.equal(await page.locator('textarea').inputValue(), 'New draft typed while waiting');
 
     // An unrelated history response cannot replace the latest correlated row.
     mode = 'old';
     await page.getByText('Discuss', { exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#operation-submit-feedback')?.textContent.includes('could not be confirmed'));
-    assert.equal(await page.locator('#task-operations').textContent(), 'Rejected');
+    assert.equal(await page.locator('#card-timeline .card-timeline-item').first().textContent(), 'Rejected');
     assert.equal(await page.locator('textarea').inputValue(), 'New draft typed while waiting');
     assert.equal(count, 6);
     mode = 'unrecorded';
     await page.getByText('Discuss', { exact: true }).click();
     await page.waitForFunction(() => document.querySelector('#operation-submit-feedback')?.textContent.includes('was not submitted'));
     assert.equal(await page.locator('textarea').inputValue(), 'New draft typed while waiting');
-    assert.equal(await page.locator('#task-operations').textContent(), 'Rejected');
+    assert.equal(await page.locator('#card-timeline .card-timeline-item').first().textContent(), 'Rejected');
     await assertFocusedAndVisible(page.locator('#operation-submit-feedback'), 'unsubmitted feedback');
+    await page.locator('#card-timeline .card-timeline-list').evaluate(list => list.insertAdjacentHTML('afterbegin', '<li data-operation-id="result-8" data-operation-result="unknown">Pending receipt</li>'));
+    mode = 'pinned';
+    await page.getByText('Discuss', { exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('#task-pinned [data-operation-id="result-8"]'));
+    assert.equal(await page.locator('#card-timeline [data-operation-id="result-8"]').count(), 0);
+    await assertFocusedAndVisible(page.locator('#task-pinned [data-operation-id="result-8"]'), 'running command');
+    assert.equal(await page.locator('textarea').inputValue(), '');
     assert.deepEqual(errors, []);
     console.log('PASS: unknown/rejected input retention, accepted clearing, in-flight edits, CSRF/command retention, duplicate suppression and correlated responses');
   } finally {
