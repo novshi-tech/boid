@@ -514,6 +514,62 @@ pre {
   gap: var(--space-2);
 }
 
+.operation-results {
+  margin-top: var(--space-3);
+}
+
+.operation-result {
+  border-left: 3px solid var(--border);
+  padding: var(--space-2) var(--space-3);
+  background: var(--card);
+}
+
+.operation-result + .operation-result {
+  margin-top: var(--space-2);
+}
+
+.operation-result-started { border-left-color: var(--success); }
+.operation-result-rejected { border-left-color: var(--danger); }
+.operation-result-unknown { border-left-color: var(--warning); }
+
+.operation-result-history {
+  margin-top: var(--space-2);
+}
+
+.operation-result-diagnostics {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.operation-result-diagnostics dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
+}
+
+.operation-result-head,
+.operation-result-links,
+.card-go-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.operation-result time,
+.card-go-reason {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.operation-result p {
+  margin: var(--space-1) 0;
+}
+
+.card-go-control {
+  margin-top: var(--space-2);
+}
+
 /* --- Card detail: pinned items + timeline history --- */
 .card-pinned-list {
   list-style: none;

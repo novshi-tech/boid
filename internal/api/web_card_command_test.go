@@ -209,7 +209,7 @@ func TestPostCardCommand_Success_RedirectsToCardOwnPage(t *testing.T) {
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303; body:\n%s", code, body)
 	}
-	if location != "/tasks/card-1" {
+	if !strings.HasPrefix(location, "/tasks/card-1?operation=") {
 		t.Errorf("Location = %q, want the card's own page %q (never a guessed continuation URL)", location, "/tasks/card-1")
 	}
 	// The typed instruction must actually reach the daemon. Asserting only
@@ -238,7 +238,7 @@ func TestPostCardCommand_EmptyInstruction_Succeeds(t *testing.T) {
 	if code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303 (an empty instruction must be allowed); body:\n%s", code, body)
 	}
-	if location != "/tasks/card-1" {
+	if !strings.HasPrefix(location, "/tasks/card-1?operation=") {
 		t.Errorf("Location = %q, want %q", location, "/tasks/card-1")
 	}
 }
@@ -250,12 +250,12 @@ func TestPostCardCommand_MissingKey_RedirectsWithError(t *testing.T) {
 	))
 	newCardTimelineTestCard(t, repo, projectID, "card-1")
 
-	code, _, location := postFormHTML(t, h, "/tasks/card-1/commands", url.Values{"instruction": {"x"}})
-	if code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want 303", code)
+	code, body, location := postFormHTML(t, h, "/tasks/card-1/commands", url.Values{"instruction": {"x"}})
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", code)
 	}
-	if !strings.HasPrefix(location, "/tasks/card-1?error=") {
-		t.Errorf("Location = %q, want an error redirect back to the card page", location)
+	if location != "" || !strings.Contains(body, ">x</textarea>") {
+		t.Errorf("Location = %q, response must preserve submitted input: %s", location, body)
 	}
 }
 
@@ -280,8 +280,8 @@ func TestPostCardCommand_Occupied_PreservesInstructionAndNoLinkWithoutTarget(t *
 	code, body, location := postFormHTML(t, h, "/tasks/card-1/commands", url.Values{
 		"key": {"review"}, "instruction": {"second submission from a different browser tab"},
 	})
-	if code != http.StatusOK {
-		t.Fatalf("occupied call: status = %d, want 200 (render in place, not a redirect); body:\n%s", code, body)
+	if code != http.StatusConflict {
+		t.Fatalf("occupied call: status = %d, want 409 (render in place, not a redirect); body:\n%s", code, body)
 	}
 	if location != "" {
 		t.Errorf("occupied call must not redirect (that would lose a large instruction over a URL round trip), got Location=%q", location)
@@ -292,7 +292,7 @@ func TestPostCardCommand_Occupied_PreservesInstructionAndNoLinkWithoutTarget(t *
 	if strings.Contains(body, "view current run") {
 		t.Errorf("no live target exists yet (still launching) — must not render a dead-end link; got:\n%s", body)
 	}
-	if !strings.Contains(body, "This card's execution slot is busy right now.") {
+	if !strings.Contains(body, "Another operation is using the execution slot") {
 		t.Errorf("occupied response should say so in neutral (non-error) English; got:\n%s", body)
 	}
 	if strings.Contains(body, `class="action-error"`) {
@@ -339,8 +339,8 @@ func TestPostCardCommand_Occupied_ShowsLinkWhenTargetExists(t *testing.T) {
 	code, body, _ = postFormHTML(t, h, "/tasks/card-1/commands", url.Values{
 		"key": {"review"}, "instruction": {"second-call-marker-xyz"},
 	})
-	if code != http.StatusOK {
-		t.Fatalf("occupied call: status = %d, want 200; body:\n%s", code, body)
+	if code != http.StatusConflict {
+		t.Fatalf("occupied call: status = %d, want 409; body:\n%s", code, body)
 	}
 	wantLink := `href="/tasks/` + continuation.ID + `"`
 	if !strings.Contains(body, wantLink) {
@@ -367,15 +367,15 @@ func TestPostCardCommand_Occupied_InstructionEscaped(t *testing.T) {
 	code, body, _ := postFormHTML(t, h, "/tasks/card-1/commands", url.Values{
 		"key": {"review"}, "instruction": {`</textarea><script>alert(1)</script>`},
 	})
-	if code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body:\n%s", code, body)
+	if code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body:\n%s", code, body)
 	}
 	if strings.Contains(body, "<script>alert(1)</script>") {
 		t.Errorf("submitted instruction must be HTML-escaped when echoed back; got raw script tag in:\n%s", body)
 	}
 }
 
-func TestPostCardCommand_TerminalCard_RedirectsWithErrorInsteadOfRendering(t *testing.T) {
+func TestPostCardCommand_TerminalCard_RendersResultAndPreservesInput(t *testing.T) {
 	h, repo, projectID := newCardCommandWebTestHandler(t, cardCommandMeta(
 		[]string{"review"},
 		map[string]orchestrator.CardCommand{"review": {Label: "Run", Run: "echo hi"}},
@@ -393,11 +393,11 @@ func TestPostCardCommand_TerminalCard_RedirectsWithErrorInsteadOfRendering(t *te
 	code, body, location := postFormHTML(t, h, "/tasks/card-1/commands", url.Values{
 		"key": {"review"}, "instruction": {"x"},
 	})
-	if code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want 303 (error redirect, not a 200 render); body:\n%s", code, body)
+	if code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body:\n%s", code, body)
 	}
-	if !strings.HasPrefix(location, "/tasks/card-1?error=") {
-		t.Errorf("Location = %q, want an error redirect", location)
+	if location != "" || !strings.Contains(body, ">x</textarea>") {
+		t.Errorf("Location = %q, body must preserve input: %s", location, body)
 	}
 }
 

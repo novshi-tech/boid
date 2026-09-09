@@ -479,6 +479,20 @@ func TestCardPinnedSection_NilView_RendersNothing(t *testing.T) {
 	}
 }
 
+func TestCardGoEligibilityUsesPinnedServerState(t *testing.T) {
+	ready := &CardTimelineView{Pinned: []timeline.CardItem{{Kind: timeline.CardItemChild, Child: &timeline.CardChildDetail{Status: orchestrator.TaskTriageChildStatusSpecced}}}}
+	if enabled, _ := cardGoEligibility(ready); !enabled {
+		t.Fatal("specced child should enable Go")
+	}
+	occupied := &CardTimelineView{Pinned: []timeline.CardItem{{Kind: timeline.CardItemCommand}}}
+	if enabled, reason := cardGoEligibility(occupied); enabled || !strings.Contains(reason, "not be queued") {
+		t.Fatalf("enabled=%v reason=%q", enabled, reason)
+	}
+	if enabled, reason := cardGoEligibility(nil); enabled || !strings.Contains(reason, "No ready work") {
+		t.Fatalf("enabled=%v reason=%q", enabled, reason)
+	}
+}
+
 func TestCardHistorySection_EmptyHistory_RendersEmptyState(t *testing.T) {
 	var buf bytes.Buffer
 	if err := CardHistorySection(&CardTimelineView{}, "card-1").Render(context.Background(), &buf); err != nil {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,6 +86,9 @@ type WebHandler struct {
 	// when unset, a card detail page renders with an empty timeline instead of
 	// failing the whole page.
 	CardTimeline CardTimelineStore
+
+	// OperationResults keeps human operation outcomes visible across reloads.
+	OperationResults OperationResultStore
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -590,14 +594,13 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.renderTaskDetailPage(w, r, detail, tab, errorMsg, nil)
+	h.renderTaskDetailPage(w, r, detail, tab, errorMsg, nil, nil)
 }
 
 // renderTaskDetailPage assembles and renders a task/card detail page's full
-// body. cmdForm is non-nil only for PostCardCommand's Occupied response —
-// see CardCommandFormState's own doc comment (card_timeline.templ) for why
-// that path renders here directly instead of redirecting.
-func (h *WebHandler) renderTaskDetailPage(w http.ResponseWriter, r *http.Request, detail *TaskDetailView, tab, errorMsg string, cmdForm *templates.CardCommandFormState) {
+// body. cmdForm is non-nil for a failed card-command submission so the direct
+// response can preserve the user's instruction; see CardCommandFormState.
+func (h *WebHandler) renderTaskDetailPage(w http.ResponseWriter, r *http.Request, detail *TaskDetailView, tab, errorMsg string, cmdForm *templates.CardCommandFormState, transient *orchestrator.OperationResult) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	timelineGroups := detailTimelineGroups(detail)
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
@@ -619,7 +622,35 @@ func (h *WebHandler) renderTaskDetailPage(w http.ResponseWriter, r *http.Request
 	} else {
 		childTree = h.execChildTree(detail.Task)
 	}
-	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, cardSummary, cardTL, childTree, cmdOptions, cmdForm).Render(r.Context(), w)
+	operationResults := h.operationResultsForRequest(r, detail.Task.ID)
+	if transient != nil {
+		operationResults = promoteOperationResult(operationResults, transient)
+	}
+	templates.TaskDetail(detail.Task, timelineGroups, detail.AvailableActions, errorMsg, tab, projectName, cardSummary, cardTL, childTree, cmdOptions, cmdForm, operationResults).Render(r.Context(), w)
+}
+
+func (h *WebHandler) operationResultsForRequest(r *http.Request, taskID string) []*orchestrator.OperationResult {
+	if h.OperationResults == nil {
+		return nil
+	}
+	results, _ := h.OperationResults.ListOperationResults(taskID, 20)
+	if requestedID := r.URL.Query().Get("operation"); requestedID != "" {
+		requested, err := h.OperationResults.GetOperationResult(taskID, requestedID)
+		if err == nil && requested != nil {
+			results = promoteOperationResult(results, requested)
+		}
+	}
+	return results
+}
+
+func promoteOperationResult(results []*orchestrator.OperationResult, current *orchestrator.OperationResult) []*orchestrator.OperationResult {
+	out := []*orchestrator.OperationResult{current}
+	for _, result := range results {
+		if result.ID != current.ID {
+			out = append(out, result)
+		}
+	}
+	return out
 }
 
 // toTemplateCardCommandOptions converts the api-layer option list to
@@ -656,31 +687,72 @@ func (h *WebHandler) PostCardCommand(w http.ResponseWriter, r *http.Request) {
 	key := r.FormValue("key")
 	instruction := r.FormValue("instruction")
 	if key == "" {
-		redirectTaskErr(w, r, id, errors.New("command key is required"))
+		h.renderCardCommandFailure(w, r, id, key, instruction, &StatusError{Code: http.StatusBadRequest, Message: "command key is required"})
 		return
 	}
 
 	result, err := h.Service.RunCardCommandAsHuman(r.Context(), id, key, instruction)
 	if err != nil {
-		redirectTaskErr(w, r, id, err)
+		h.renderCardCommandFailure(w, r, id, key, instruction, err)
 		return
 	}
 	if !result.Occupied {
-		redirectTask(w, r, id)
+		op := &orchestrator.OperationResult{TaskID: id, OperationType: "card_command:" + key, OperationLabel: h.operationLabelForCommand(r.Context(), id, key),
+			Result: orchestrator.OperationResultAccepted, ReasonCode: orchestrator.OperationReasonRequestAccepted,
+			TargetRequestID: result.RequestID}
+		if recordErr := h.recordOperation(op); recordErr != nil {
+			h.renderCardCommandState(w, r, id, instruction, http.StatusOK, op)
+			return
+		}
+		http.Redirect(w, r, "/tasks/"+id+"?operation="+url.QueryEscape(op.ID), http.StatusSeeOther)
 		return
 	}
+	op := &orchestrator.OperationResult{TaskID: id, OperationType: "card_command:" + key, OperationLabel: h.operationLabelForCommand(r.Context(), id, key),
+		Result: orchestrator.OperationResultRejected, ReasonCode: orchestrator.OperationReasonSlotOccupied,
+		TargetRequestID: result.RequestID}
+	if result.TargetKind == orchestrator.CardRequestTargetKindTask {
+		op.TargetTaskID = result.TargetID
+	}
+	if result.TargetKind == orchestrator.CardRequestTargetKindSession {
+		op.TargetSessionID = result.TargetID
+	}
+	h.recordOperation(op)
+	h.renderCardCommandState(w, r, id, instruction, http.StatusConflict, op)
+}
 
+func (h *WebHandler) renderCardCommandFailure(w http.ResponseWriter, r *http.Request, id, key, instruction string, err error) {
+	op := operationRejection(id, "card_command:"+key, h.operationLabelForCommand(r.Context(), id, key), err)
+	h.recordOperation(op)
+	h.renderCardCommandState(w, r, id, instruction, statusCodeForOperationError(err), op)
+}
+
+func (h *WebHandler) renderCardCommandState(w http.ResponseWriter, r *http.Request, id, instruction string, code int, transient *orchestrator.OperationResult) {
 	detail, err := h.Service.GetTaskDetail(id)
 	if err != nil {
 		http.Error(w, "Task not found", http.StatusNotFound)
 		return
 	}
-	h.renderTaskDetailPage(w, r, detail, "timeline", "", &templates.CardCommandFormState{
-		Occupied:    true,
-		Instruction: instruction,
-		TargetKind:  result.TargetKind,
-		TargetID:    result.TargetID,
-	})
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if transient != nil {
+		w.Header().Set("X-Boid-Operation-ID", transient.ID)
+	}
+	w.WriteHeader(code)
+	h.renderTaskDetailPage(w, r, detail, "timeline", "", &templates.CardCommandFormState{Instruction: instruction}, transient)
+}
+
+func (h *WebHandler) operationLabelForCommand(ctx context.Context, taskID, key string) string {
+	detail, err := h.Service.GetTaskDetail(taskID)
+	if err == nil && detail != nil && detail.Task != nil {
+		for _, option := range h.Service.CardCommandOptionsForProject(ctx, detail.Task.ProjectID) {
+			if option.Key == key && option.Label != "" {
+				return option.Label
+			}
+		}
+	}
+	if key == "" {
+		return "Card command"
+	}
+	return key
 }
 
 // maxChildTreeDepth caps app-side recursion in execChildTree/listDescendants
@@ -893,6 +965,32 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 			tl = &templates.CardTimelineView{}
 		}
 		templates.TaskDetailCardPinnedSection(tl, detail.Task.ID, detail.Task.Status).Render(r.Context(), w)
+	case "operations":
+		if detail.Task.Type != orchestrator.TaskTypeCard {
+			return
+		}
+		if h.OperationResults == nil {
+			http.Error(w, "operation results unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		results, loadErr := h.OperationResults.ListOperationResults(id, 20)
+		if loadErr != nil {
+			http.Error(w, "failed to load operation results", http.StatusInternalServerError)
+			return
+		}
+		if selectedID := r.URL.Query().Get("operation"); selectedID != "" {
+			selected, getErr := h.OperationResults.GetOperationResult(id, selectedID)
+			if errors.Is(getErr, sql.ErrNoRows) {
+				http.Error(w, "operation result not found", http.StatusNotFound)
+				return
+			}
+			if getErr != nil {
+				http.Error(w, "failed to load operation result", http.StatusInternalServerError)
+				return
+			}
+			results = promoteOperationResult(results, selected)
+		}
+		templates.OperationResultsSection(results).Render(r.Context(), w)
 	default:
 		http.Error(w, "unknown fragment kind", http.StatusBadRequest)
 	}
@@ -995,7 +1093,25 @@ func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {
 		redirectTaskErr(w, r, id, errors.New("type is required"))
 		return
 	}
-	if err := h.Service.ApplyAction(id, actionType); err != nil {
+	var application *ActionApplication
+	var err error
+	if service, ok := h.Service.(interface {
+		ApplyActionWithResult(string, string) (*ActionApplication, error)
+	}); ok {
+		application, err = service.ApplyActionWithResult(id, actionType)
+	} else {
+		err = h.Service.ApplyAction(id, actionType)
+	}
+	if actionType == "go" {
+		op := completedGoOperation(id, "Go", application, err)
+		if recordErr := h.recordOperation(op); recordErr != nil {
+			h.renderOperationState(w, r, id, statusCodeForOperationError(err), err, op)
+			return
+		}
+		redirectOperationResult(w, r, id, op.ID, err)
+		return
+	}
+	if err != nil {
 		redirectTaskErr(w, r, id, err)
 		return
 	}
@@ -1023,11 +1139,134 @@ func (h *WebHandler) PostAnswerSuggestion(w http.ResponseWriter, r *http.Request
 		Verb:   r.FormValue("verb"),
 		Basis:  r.FormValue("basis"),
 	}
-	if err := h.Service.AnswerSuggestion(id, req); err != nil {
+	var application *ActionApplication
+	var err error
+	if service, ok := h.Service.(interface {
+		AnswerSuggestionWithResult(string, AnswerSuggestionRequest) (*ActionApplication, error)
+	}); ok {
+		application, err = service.AnswerSuggestionWithResult(id, req)
+	} else {
+		err = h.Service.AnswerSuggestion(id, req)
+	}
+	if answer == "accept" && req.Verb == "go" {
+		op := completedGoOperation(id, "Go (accepted suggestion)", application, err)
+		if recordErr := h.recordOperation(op); recordErr != nil {
+			h.renderOperationState(w, r, id, statusCodeForOperationError(err), err, op)
+			return
+		}
+		redirectOperationResult(w, r, id, op.ID, err)
+		return
+	}
+	if err != nil {
 		redirectTaskErr(w, r, id, err)
 		return
 	}
 	redirectTask(w, r, id)
+}
+
+func (h *WebHandler) recordOperation(result *orchestrator.OperationResult) error {
+	if result.ID == "" {
+		result.ID = uuid.NewString()
+	}
+	if result.CreatedAt.IsZero() {
+		result.CreatedAt = time.Now().UTC()
+	}
+	if h.OperationResults == nil {
+		return nil
+	}
+	if err := h.OperationResults.CreateOperationResult(result); err != nil {
+		slog.Error("record UI operation result failed", "task_id", result.TaskID, "operation", result.OperationType, "error", err)
+		return err
+	}
+	return nil
+}
+
+func completedGoOperation(taskID, label string, application *ActionApplication, err error) *orchestrator.OperationResult {
+	if err != nil {
+		return operationRejection(taskID, "go", label, err)
+	}
+	op := &orchestrator.OperationResult{TaskID: taskID, OperationType: "go", OperationLabel: label,
+		Result: orchestrator.OperationResultAccepted, ReasonCode: orchestrator.OperationReasonRequestAccepted}
+	if application != nil && application.TargetTaskID != "" {
+		op.TargetTaskID = application.TargetTaskID
+		op.Result = orchestrator.OperationResultStarted
+		op.ReasonCode = orchestrator.OperationReasonExecutionStarted
+	}
+	return op
+}
+
+func operationRejection(taskID, operationType, label string, err error) *orchestrator.OperationResult {
+	op := &orchestrator.OperationResult{TaskID: taskID, OperationType: operationType, OperationLabel: label,
+		Result: orchestrator.OperationResultRejected, ReasonCode: operationReasonForError(err)}
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		op.TargetRequestID = statusErr.TargetRequestID
+		op.TargetTaskID = statusErr.TargetTaskID
+		if statusErr.TargetKind == orchestrator.CardRequestTargetKindTask {
+			op.TargetTaskID = statusErr.TargetID
+		}
+		if statusErr.TargetKind == orchestrator.CardRequestTargetKindSession {
+			op.TargetSessionID = statusErr.TargetID
+		}
+	}
+	if op.ReasonCode == orchestrator.OperationReasonInternalError {
+		op.Result = orchestrator.OperationResultUnknown
+	}
+	return op
+}
+
+func redirectOperationResult(w http.ResponseWriter, r *http.Request, id, operationID string, operationErr error) {
+	values := url.Values{"operation": {operationID}}
+	if operationErr != nil {
+		values.Set("error", operationErr.Error())
+	}
+	http.Redirect(w, r, "/tasks/"+id+"?"+values.Encode(), http.StatusSeeOther)
+}
+
+func (h *WebHandler) renderOperationState(w http.ResponseWriter, r *http.Request, id string, code int, operationErr error, op *orchestrator.OperationResult) {
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+	msg := ""
+	if operationErr != nil {
+		msg = operationErr.Error()
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Boid-Operation-ID", op.ID)
+	w.WriteHeader(code)
+	h.renderTaskDetailPage(w, r, detail, "timeline", msg, nil, op)
+}
+
+func statusCodeForOperationError(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Code
+	}
+	return http.StatusInternalServerError
+}
+
+// operationReasonForError maps typed status metadata, never message text,
+// to the stable reason vocabulary stored for UI operation history.
+func operationReasonForError(err error) string {
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) && statusErr.OperationReason != "" {
+		return statusErr.OperationReason
+	}
+	switch statusCodeForOperationError(err) {
+	case http.StatusBadRequest:
+		return orchestrator.OperationReasonInvalidRequest
+	case http.StatusNotFound:
+		return orchestrator.OperationReasonNotFound
+	case http.StatusConflict:
+		return orchestrator.OperationReasonConflict
+	default:
+		return orchestrator.OperationReasonInternalError
+	}
 }
 
 func (h *WebHandler) GetTaskEdit(w http.ResponseWriter, r *http.Request) {

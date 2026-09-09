@@ -630,7 +630,13 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 			return err
 		}
 		result.Signals = sn
-		// card_requests has no other retention — purge it here too.
+		on, err := GCOperationResults(dbtx, 30*24*time.Hour, dryRun)
+		if err != nil {
+			return err
+		}
+		result.OperationResults = on
+		// Purge requests after receipts so a receipt keeps its final association
+		// through the GC pass that removes both records.
 		cn, err := GCCardRequests(dbtx, olderThan, dryRun)
 		if err != nil {
 			return err

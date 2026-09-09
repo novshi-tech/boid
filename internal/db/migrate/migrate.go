@@ -480,6 +480,13 @@ func allMigrations() []migration {
 			version: "0054_add_card_force_release_barriers",
 			path:    "migrations/0054_add_card_force_release_barriers.sql",
 		},
+		{
+			version: "0056_add_operation_results",
+			path:    "migrations/0056_add_operation_results.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return tableExists(tx, "operation_results")
+			},
+		},
 	}
 }
 

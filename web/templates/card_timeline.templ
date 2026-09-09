@@ -226,6 +226,36 @@ templ CardPinnedSection(tl *CardTimelineView, cardID string, cardStatus orchestr
 	}
 }
 
+func cardGoEligibility(tl *CardTimelineView) (bool, string) {
+	if tl != nil {
+		for _, item := range tl.Pinned {
+			if item.Kind == timeline.CardItemCommand {
+				return false, "Another card command is using the execution slot. This Go will not be queued."
+			}
+			if item.Kind == timeline.CardItemChild && item.Child != nil {
+				if item.Child.Status == orchestrator.TaskTriageChildStatusSpecced {
+					return true, "Ready work can be started now."
+				}
+				if item.Child.Status == orchestrator.TaskTriageChildStatusDispatched {
+					return false, "Work is already running in the execution slot. This Go will not be queued."
+				}
+			}
+		}
+	}
+	return false, "No ready work is available to start."
+}
+
+templ CardGoControl(tl *CardTimelineView, cardID string) {
+	{{ enabled, reason := cardGoEligibility(tl) }}
+	<div class="card-go-control">
+		<form method="post" action={ templ.SafeURL("/tasks/" + cardID + "/action") }>
+			<input type="hidden" name="type" value="go"/>
+			<button type="submit" class="btn btn-primary" disabled?={ !enabled } aria-describedby="card-go-reason">Go</button>
+		</form>
+		<span id="card-go-reason" class="card-go-reason">{ reason }</span>
+	</div>
+}
+
 // CardHistorySection renders a card's timeline history page (newest-first,
 // paginated, with Load older) in its own container OUTSIDE #task-status —
 // the existing SSE script only ever refreshes #task-status wholesale, and an
@@ -413,7 +443,9 @@ templ cardCommandItemBody(item timeline.CardItem, pinned bool) {
 				<span class={ "badge", cardCommandOutcomeBadgeClass(cmd.Outcome) }>{ cmd.Outcome }</span>
 			}
 			if cmd.TargetExists {
-				<a href={ templ.SafeURL("/tasks/" + cmd.TargetID) } class="detail-children-link">→ task</a>
+				<a href={ templ.SafeURL("/tasks/" + cmd.TargetID) } class="detail-children-link">Open task</a>
+			} else if cmd.TargetKind == orchestrator.CardRequestTargetKindSession && cmd.TargetID != "" {
+				<a href={ templ.SafeURL("/jobs/" + cmd.TargetID) } class="detail-children-link">Open session</a>
 			}
 		</div>
 		if !pinned {
@@ -487,10 +519,9 @@ type CardCommandOption struct {
 	Label string
 }
 
-// CardCommandFormState carries a just-submitted command form's state back
-// into the SAME render when the card's execution slot was already occupied
-// — see CardCommandSection's own doc comment for why this exists instead of
-// a redirect.
+// CardCommandFormState carries a failed command form's state back into the
+// same render so its instruction remains available for correction or retry.
+// Occupied adds the currently competing operation when one can be linked.
 type CardCommandFormState struct {
 	Occupied    bool
 	Instruction string
@@ -533,7 +564,7 @@ func cardCommandTerminalStatus(cardStatus orchestrator.TaskStatus) bool {
 // redirecting, so the textarea keeps what the caller typed). A plain GET (or
 // a successful launch, which redirects) always passes form == nil.
 templ CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, options []CardCommandOption, form *CardCommandFormState) {
-	if len(options) > 0 && !cardCommandTerminalStatus(cardStatus) {
+	if (len(options) > 0 && !cardCommandTerminalStatus(cardStatus)) || form != nil {
 		<div id="card-command-section" class="card-command-section">
 			if form != nil && form.Occupied {
 				<div class="card-command-occupied">
@@ -545,11 +576,13 @@ templ CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, opti
 			}
 			<form method="post" action={ templ.SafeURL("/tasks/" + cardID + "/commands") } class="card-command-form">
 				<textarea name="instruction" class="form-input card-command-instruction" rows="3" placeholder="Instruction (optional)">{ cardCommandFormInstruction(form) }</textarea>
-				<div class="card-command-buttons">
-					for _, opt := range options {
-						<button type="submit" name="key" value={ opt.Key } class="btn btn-secondary">{ opt.Label }</button>
-					}
-				</div>
+				if !cardCommandTerminalStatus(cardStatus) {
+					<div class="card-command-buttons">
+						for _, opt := range options {
+							<button type="submit" name="key" value={ opt.Key } class="btn btn-secondary">{ opt.Label }</button>
+						}
+					</div>
+				}
 			</form>
 		</div>
 	}

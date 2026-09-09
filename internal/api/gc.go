@@ -84,8 +84,9 @@ type gcResponse struct {
 	Signals int64 `json:"signals"`
 	// CardRequests is the count of finished/failed card_requests rows
 	// deleted — see orchestrator.GCCardRequests.
-	CardRequests int64 `json:"card_requests"`
-	DryRun       bool  `json:"dry_run,omitempty"`
+	CardRequests     int64 `json:"card_requests"`
+	OperationResults int64 `json:"operation_results"`
+	DryRun           bool  `json:"dry_run,omitempty"`
 	// WorkspaceHomes lists every workspace HOME volume's size — visibility
 	// only, never auto-pruned by GC. Omitted entirely when GCHandler.Homes
 	// was not wired, and empty (with WorkspaceHomesListError set) when the
@@ -130,16 +131,17 @@ func (h *GCHandler) Run(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := gcResponse{
-		Tasks:        result.Tasks,
-		Jobs:         result.Jobs,
-		Actions:      result.Actions,
-		Runtimes:     result.Runtimes,
-		SandboxTmp:   result.SandboxTmp,
-		Devices:      result.Devices,
-		TriggerRuns:  result.TriggerRuns,
-		Signals:      result.Signals,
-		CardRequests: result.CardRequests,
-		DryRun:       req.DryRun,
+		Tasks:            result.Tasks,
+		Jobs:             result.Jobs,
+		Actions:          result.Actions,
+		Runtimes:         result.Runtimes,
+		SandboxTmp:       result.SandboxTmp,
+		Devices:          result.Devices,
+		TriggerRuns:      result.TriggerRuns,
+		Signals:          result.Signals,
+		CardRequests:     result.CardRequests,
+		OperationResults: result.OperationResults,
+		DryRun:           req.DryRun,
 	}
 	if h.Homes != nil {
 		homes, listErr, err := ListWorkspaceHomeSizes(r.Context(), h.Homes, h.Workspaces)

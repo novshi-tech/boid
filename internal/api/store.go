@@ -251,6 +251,12 @@ type WebService interface {
 	CardCommandOptionsForProject(ctx context.Context, projectID string) []CardCommandOption
 }
 
+type OperationResultStore interface {
+	CreateOperationResult(result *orchestrator.OperationResult) error
+	ListOperationResults(taskID string, limit int) ([]*orchestrator.OperationResult, error)
+	GetOperationResult(taskID, id string) (*orchestrator.OperationResult, error)
+}
+
 type WorkflowService interface {
 	ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error)
 	// GetCard / ListCards are the task_triage read surface (card_read.go).
