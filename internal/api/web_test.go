@@ -20,6 +20,8 @@ import (
 type stubWebService struct {
 	tasks                 []*orchestrator.Task
 	taskDetail            *TaskDetailView
+	taskDetails           map[string]*TaskDetailView
+	taskDetailErrs        map[string]error
 	jobDetail             *JobWithContext
 	projects              []*orchestrator.Project
 	behaviors             []string
@@ -77,8 +79,14 @@ func (s *stubWebService) ListTasks(filter orchestrator.TaskFilter) ([]*orchestra
 }
 
 func (s *stubWebService) GetTaskDetail(id string) (*TaskDetailView, error) {
+	if err := s.taskDetailErrs[id]; err != nil {
+		return nil, err
+	}
+	if detail := s.taskDetails[id]; detail != nil {
+		return detail, nil
+	}
 	if s.taskDetail == nil {
-		return nil, fmt.Errorf("task not found: %s", id)
+		return nil, fmt.Errorf("%w: %s", orchestrator.ErrTaskNotFound, id)
 	}
 	return s.taskDetail, nil
 }

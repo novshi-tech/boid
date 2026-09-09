@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,6 +94,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/new", h.TaskNew)
 	r.Post("/tasks", h.PostTaskCreate)
 	r.Get("/tasks/{id}", h.TaskDetail)
+	r.Get("/tasks/{id}/children/{child_id}", h.TaskChildDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Get("/tasks/{id}/card-timeline", h.TaskCardTimelineOlder)
 	r.Get("/tasks/{id}/card-timeline/head", h.TaskCardTimelineHead)
@@ -604,11 +606,98 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	// render below. Only an execution task's tab click takes this shortcut.
 	if r.Header.Get("HX-Request") == "true" && detail.Task.Type != orchestrator.TaskTypeCard {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		templates.TaskDetailExecTabsSection(detail.Task, timelineGroups, detail.AvailableActions, tab).Render(r.Context(), w)
+		templates.TaskDetailExecTabsSection(detail.Task, timelineGroups, detail.AvailableActions, tab, h.execChildTree(detail.Task)).Render(r.Context(), w)
 		return
 	}
 
 	h.renderTaskDetailPage(w, r, detail, tab, errorMsg, nil)
+}
+
+// TaskChildDetail is the stable entry point for a card child. It resolves
+// to the execution task once one exists; before dispatch (or after task GC)
+// it renders the specification that remains on the parent card.
+func (h *WebHandler) TaskChildDetail(w http.ResponseWriter, r *http.Request) {
+	parentID := chi.URLParam(r, "id")
+	childID := chi.URLParam(r, "child_id")
+	parent, err := h.Service.GetTaskDetail(parentID)
+	if err != nil {
+		if errors.Is(err, orchestrator.ErrTaskNotFound) {
+			http.Error(w, "Parent card not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "Parent card is temporarily unavailable", http.StatusInternalServerError)
+		}
+		return
+	}
+	if parent == nil || parent.Task == nil || parent.Task.Type != orchestrator.TaskTypeCard {
+		http.Error(w, "Parent card not found", http.StatusNotFound)
+		return
+	}
+	if h.TaskTriage == nil {
+		http.Error(w, "Child not found", http.StatusNotFound)
+		return
+	}
+	triage, triageErr := h.TaskTriage.GetTaskTriage(parentID)
+	if triageErr != nil {
+		if errors.Is(triageErr, sql.ErrNoRows) || errors.Is(triageErr, orchestrator.ErrTaskNotFound) {
+			http.Error(w, "Child not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "Child details are temporarily unavailable", http.StatusInternalServerError)
+		}
+		return
+	}
+	if triage == nil {
+		http.Error(w, "Child not found", http.StatusNotFound)
+		return
+	}
+	children, err := orchestrator.DetailChildren(triage.Detail)
+	if err != nil {
+		http.Error(w, "Child details are unavailable", http.StatusInternalServerError)
+		return
+	}
+	for _, child := range children {
+		if child.ID != childID {
+			continue
+		}
+		if child.TaskRef != "" {
+			detail, detailErr := h.Service.GetTaskDetail(child.TaskRef)
+			switch {
+			case detailErr == nil && detail != nil && detail.Task != nil && detail.Task.ID == child.TaskRef && detail.Task.ParentID == parentID:
+				http.Redirect(w, r, "/tasks/"+child.TaskRef, http.StatusSeeOther)
+				return
+			case detailErr != nil && !errors.Is(detailErr, orchestrator.ErrTaskNotFound):
+				http.Error(w, "Child execution task is temporarily unavailable", http.StatusInternalServerError)
+				return
+			}
+		}
+		result, resultStatus, hasResult := h.cardChildResult(parentID, childID)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		templates.TaskChildSpecDetail(parent.Task, child, child.TaskRef != "", result, resultStatus, hasResult).Render(r.Context(), w)
+		return
+	}
+	http.Error(w, "Child not found", http.StatusNotFound)
+}
+
+func (h *WebHandler) cardChildResult(cardID, childID string) (string, orchestrator.TaskStatus, bool) {
+	if h.CardTimeline == nil {
+		return "", "", false
+	}
+	cursor := ""
+	for pageCount := 0; pageCount < 20; pageCount++ {
+		page, err := h.CardTimeline.BuildCardTimeline(cardID, cursor, timeline.MaxCardTimelineLimit)
+		if err != nil || page == nil {
+			return "", "", false
+		}
+		for _, item := range page.Items {
+			if item.Child != nil && item.Child.ChildID == childID && item.Child.HasResult {
+				return item.Child.Result, item.Child.ResultStatus, true
+			}
+		}
+		if !page.HasMore || page.NextCursor == "" || page.NextCursor == cursor {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return "", "", false
 }
 
 // renderTaskDetailPage assembles and renders a task/card detail page's full
@@ -702,43 +791,33 @@ func (h *WebHandler) PostCardCommand(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// maxChildTreeDepth caps app-side recursion in execChildTree/listDescendants
-// as a defensive guard against a pathological parent_id cycle — Task.
-// ParentID can be rewritten via UpdateTask, so an unbounded walk is not
-// provably impossible, just never expected in practice. Far above any real
-// supervisor tree depth.
-const maxChildTreeDepth = 50
-
-// execChildTree returns task's full descendant subtree, depth-first: a root
-// (parent_id == "") execution task detail page's own child tree. Returns
-// nil for anything that is not a root task — including a card, whose
-// children are read from the card timeline read model instead
-// (cardTimelineView) — or a root task with no children.
-//
-// Traversal is app-side (repeated ListTasks-by-parent_id calls), not a SQL
-// recursive CTE.
+// execChildTree returns a task's direct children. Every execution detail
+// page calls it, regardless of the task's own depth; opening a child repeats
+// the same one-level navigation without recursively expanding descendants.
 func (h *WebHandler) execChildTree(task *orchestrator.Task) []templates.ChildTreeNode {
-	if task == nil || task.ParentID != "" {
+	if task == nil {
 		return nil
 	}
-	return h.listDescendants(task.ID, 1)
-}
-
-// listDescendants is execChildTree's recursive body: one ListTasks call per
-// tree level, flattened depth-first into a single slice (ChildTreeNode.Depth
-// carries the level so the template can indent without a nested shape).
-func (h *WebHandler) listDescendants(parentID string, depth int) []templates.ChildTreeNode {
-	if depth > maxChildTreeDepth {
-		return nil
-	}
+	parentID := task.ID
 	kids, err := h.Service.ListTasks(orchestrator.TaskFilter{ParentID: &parentID})
 	if err != nil || len(kids) == 0 {
 		return nil
 	}
 	nodes := make([]templates.ChildTreeNode, 0, len(kids))
 	for _, k := range kids {
-		nodes = append(nodes, templates.ChildTreeNode{Task: k, Depth: depth})
-		nodes = append(nodes, h.listDescendants(k.ID, depth+1)...)
+		node := templates.ChildTreeNode{Task: k, CreatedAt: k.CreatedAt, HasCreatedAt: !k.CreatedAt.IsZero()}
+		if k.Exec != nil && k.Status == orchestrator.TaskStatusAwaiting {
+			node.QuestionID = orchestrator.GetAwaitingPayload(k.Exec.Payload).QuestionID
+		}
+		if detail, detailErr := h.Service.GetTaskDetail(k.ID); detailErr == nil && detail != nil && detail.Task != nil && detail.Task.ID == k.ID {
+			for _, action := range detail.Actions {
+				if action != nil && orchestrator.IsTerminalStatus(action.ToStatus) {
+					node.FinishedAt = action.CreatedAt
+					node.HasFinishedAt = !action.CreatedAt.IsZero()
+				}
+			}
+		}
+		nodes = append(nodes, node)
 	}
 	return nodes
 }
@@ -899,7 +978,7 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 	kind := r.URL.Query().Get("kind")
 	switch kind {
 	case "timeline":
-		templates.TaskDetailTimelineSection(detail.Task, detailTimelineGroups(detail)).Render(r.Context(), w)
+		templates.TaskDetailTimelineSection(detail.Task, detailTimelineGroups(detail), h.execChildTree(detail.Task)).Render(r.Context(), w)
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
 		if detail.Task.Type == orchestrator.TaskTypeCard {

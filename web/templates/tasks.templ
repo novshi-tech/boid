@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
-	"strings"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -397,8 +398,9 @@ templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, proj
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
 		}
-			@TaskDetailCardSummary(summary)
-			@TaskIdentityLinks(identities)
+		@TaskDetailCardSummary(summary)
+		@TaskDetailCardDescription(task)
+		@TaskIdentityLinks(identities)
 	</div>
 }
 
@@ -416,14 +418,7 @@ templ TaskDetailCardPinnedSection(tl *CardTimelineView, cardID string, cardStatu
 
 // TaskDetailExecStatusSection is TaskDetailCardStatusSection's execution-task
 // counterpart: identity row is "<project> / <behavior>"; the movement row
-// shows status + elapsed while executing, or the existing awaiting banner
-// (moved here from TaskDetailTimelineSection — see that function's own doc
-// comment — so it surfaces immediately instead of only inside the Timeline
-// tab). childTree renders right below the movement row (§3.4 item 2, §7
-// PR-2) — WebHandler.execChildTree only ever populates it for a root task
-// (parent_id == ""), so it is silently empty (renders nothing,
-// TaskDetailExecChildTreeSection's own guard) for every non-root execution
-// task, i.e. the overwhelming majority of callers.
+// shows status + elapsed while executing, or the existing awaiting banner.
 templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, projectName string, childTree []ChildTreeNode, identities []apiwire.TaskIdentity) {
 	<div id="task-status" data-task-id={ task.ID }>
 		<div class={ detailRowClasses(task) }>
@@ -445,7 +440,6 @@ templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, proj
 		if task.Status == orchestrator.TaskStatusAwaiting {
 			@TaskDetailAwaitingBanner(task)
 		}
-		@TaskDetailExecChildTreeSection(childTree)
 	</div>
 }
 
@@ -581,39 +575,84 @@ templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus,
 	}
 }
 
-// ChildTreeNode is one node of a root execution task's descendant subtree
-// (docs/plans/webui-detail-list-redesign.md §3.4 item 2 / §7 PR-2).
-// WebHandler.execChildTree walks the tree depth-first and flattens it into
-// this slice — Depth (1 for a direct child, 2 for a grandchild, …) is what
-// TaskDetailExecChildTreeSection indents by, so a multi-level supervisor
-// tree renders without needing a nested Go slice-of-slices shape.
+// ChildTreeNode is one direct child on an execution detail page.
 type ChildTreeNode struct {
-	Task  *orchestrator.Task
-	Depth int
+	Task          *orchestrator.Task
+	QuestionID    string
+	CreatedAt     time.Time
+	HasCreatedAt  bool
+	FinishedAt    time.Time
+	HasFinishedAt bool
 }
 
-// TaskDetailExecChildTreeSection renders a root execution task's full
-// descendant subtree (§3.4 item 2): one flat, depth-first list, indented by
-// ChildTreeNode.Depth. Deliberately NOT built from the list page's own
-// row/query machinery (BuildListRows/ListTasks, or the pre-PR-4 tree these
-// replaced — task_tree.templ/BuildTreeItems, both deleted by PR-4) — this is
-// its own small component over WebHandler.execChildTree's app-side, non-CTE
-// traversal.
-//
-// Renders nothing for a non-root task (its own children, if any, are shown
-// on ITS OWN detail page instead — §3.4's "root のみ") or a root task with
-// no children — the overwhelming majority of execution tasks.
+type execChildHistoryEvent struct {
+	Task    *orchestrator.Task
+	Kind    string
+	Time    time.Time
+	HasTime bool
+}
+
+func execChildHistoryEvents(nodes []ChildTreeNode) []execChildHistoryEvent {
+	events := make([]execChildHistoryEvent, 0, len(nodes)*2)
+	for _, node := range nodes {
+		events = append(events, execChildHistoryEvent{Task: node.Task, Kind: "Created", Time: node.CreatedAt, HasTime: node.HasCreatedAt})
+		if node.HasFinishedAt {
+			events = append(events, execChildHistoryEvent{Task: node.Task, Kind: "Finished", Time: node.FinishedAt, HasTime: true})
+		}
+	}
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].HasTime != events[j].HasTime {
+			return events[i].HasTime
+		}
+		return events[i].Time.After(events[j].Time)
+	})
+	return events
+}
+
+// TaskDetailExecChildTreeSection renders direct children. Opening a child
+// repeats the same one-level view for the next depth.
 templ TaskDetailExecChildTreeSection(nodes []ChildTreeNode) {
 	if len(nodes) > 0 {
 		<div class="detail-child-tree">
-			<div class="detail-children-label">Subtasks ({ fmt.Sprintf("%d", len(nodes)) })</div>
+			<div class="detail-children-label">Current subtasks ({ fmt.Sprintf("%d", len(nodes)) })</div>
 			<ul class="detail-child-tree-list">
 				for _, node := range nodes {
-					<li class="detail-child-tree-item" style={ fmt.Sprintf("--depth: %d", node.Depth) }>
-						<a href={ templ.SafeURL("/tasks/" + node.Task.ID) } class="detail-child-tree-link">
-							<span class={ taskStatusClass(string(node.Task.Status)) }>{ string(node.Task.Status) }</span>
-							<span class="detail-child-tree-title">{ node.Task.Title }</span>
-						</a>
+					<li class="detail-child-tree-item">
+						<div class="detail-children-item">
+							<a href={ templ.SafeURL("/tasks/" + node.Task.ID) } class="detail-children-title">{ node.Task.Title }</a>
+							<div class="detail-children-meta">
+								<span class={ taskStatusClass(string(node.Task.Status)) }>{ string(node.Task.Status) }</span>
+								if node.Task.Exec != nil && node.Task.Exec.Behavior != "" {
+									<span class="badge badge-child-behavior">{ node.Task.Exec.Behavior }</span>
+								}
+								if node.QuestionID != "" {
+									<a href={ templ.SafeURL("/tasks/" + node.Task.ID + "/questions/" + node.QuestionID) } class="detail-children-ask"><span aria-hidden="true">⚠</span> question</a>
+								}
+								if orchestrator.IsTerminalStatus(node.Task.Status) && !node.HasFinishedAt {
+									<span class="detail-children-hint">completion time unavailable</span>
+								}
+							</div>
+						</div>
+					</li>
+				}
+			</ul>
+			<div class="detail-children-label exec-child-history-label">Subtask history</div>
+			<ul class="card-timeline-list exec-child-history">
+				for _, event := range execChildHistoryEvents(nodes) {
+					<li class="card-timeline-item">
+						<time class="card-timeline-item-time">
+							if event.HasTime {
+								{ event.Time.Local().Format("Jan 2 15:04") }
+							} else {
+								unknown time
+							}
+						</time>
+						<div class="card-timeline-item-body card-timeline-child-finished">
+							<a href={ templ.SafeURL("/tasks/" + event.Task.ID) } class="detail-children-link">{ event.Kind }: { event.Task.Title }</a>
+							if event.Kind == "Finished" {
+								<span class={ taskStatusClass(string(event.Task.Status)) }>{ string(event.Task.Status) }</span>
+							}
+						</div>
 					</li>
 				}
 			</ul>
@@ -1032,8 +1071,9 @@ func timelineJobSinceUnix(ev timeline.Event) string {
 // actions). Times right-align in a shared column, and the status header
 // uses the same HH:MM:SS format as events so the eye finds them without
 // re-parsing per row.
-templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.StatusGroup) {
+templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.StatusGroup, childTree []ChildTreeNode) {
 	<div id="task-timeline" class="tab-content">
+		@TaskDetailExecChildTreeSection(childTree)
 		if len(groups) == 0 {
 			<p class="tab-empty">(no history)</p>
 		} else {
@@ -1155,10 +1195,10 @@ templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
 // insertion never actually re-subscribed (see TaskDetailLiveScript's own
 // doc comment for the failure mode). The script is rendered exactly once,
 // by TaskDetailExecBody, outside #tabs entirely.
-templ TaskDetailExecTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, activeTab string) {
+templ TaskDetailExecTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, activeTab string, childTree []ChildTreeNode) {
 	<div id="tab-panel" data-task-id={ task.ID }>
 		if activeTab == "timeline" {
-			@TaskDetailTimelineSection(task, timelineGroups)
+			@TaskDetailTimelineSection(task, timelineGroups, childTree)
 		} else if activeTab == "description" {
 			<div class="tab-content">
 				if task.Description != "" {
@@ -1282,7 +1322,7 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 // the request carries HX-Request: true and the task is NOT a card — see
 // WebHandler.TaskDetail's own doc comment on the HX-Request branch for why
 // a card never takes this path.
-templ TaskDetailExecTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, activeTab string) {
+templ TaskDetailExecTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, activeTab string, childTree []ChildTreeNode) {
 	<div id="tabs" class="tabs">
 		<div class="tab-list" role="tablist">
 			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
@@ -1308,7 +1348,7 @@ templ TaskDetailExecTabsSection(task *orchestrator.Task, timelineGroups []timeli
 				</details>
 			</div>
 		</div>
-		@TaskDetailExecTabPanel(task, timelineGroups, activeTab)
+		@TaskDetailExecTabPanel(task, timelineGroups, activeTab, childTree)
 		@TaskExecActionBar(task, availableActions, activeTab)
 	</div>
 }
@@ -1675,56 +1715,20 @@ templ TaskDetailLiveScript() {
 	</script>
 }
 
-// cardDescriptionCollapseThresholdLines is the line count above which a
-// card's Description defaults to collapsed in TaskDetailCardDescription
-// (docs/plans/webui-detail-list-redesign.md §3.3 item 3). Description is
-// shown in the card body, not hidden behind a tab — but an ingested blob
-// can run up to 64KiB (§3.3's own note), and always-expanded would push the
-// rest of the page (timeline, action bar) off the first view, defeating the
-// "判断に要るものが3秒で読める" goal (§1). The doc left the exact threshold to
-// implementation ("折り畳みの既定は実装時判断でよい"); this collapses on
-// visual line count via <details>/<summary> rather than truncating the
-// markdown source itself, so a long description is still fully readable
-// (one tap) and never gets cut mid-block.
-const cardDescriptionCollapseThresholdLines = 12
-
-// cardDescriptionCollapseThresholdBytes is the byte-length side of the same
-// default-collapse decision (Opus review, PR #996, N2): line count alone
-// missed exactly the case §3.3's own note calls out — a 64KiB blob with no
-// "\n" at all (a single huge line, or CRLF-less pasted text) passes the
-// <=12-line check and would render fully expanded regardless of size. 2000
-// bytes is a rough proxy for "about what 12 lines of ordinary prose look
-// like" (~160 chars/line); collapsing on EITHER threshold means a
-// description only stays open by default when it is short on both axes.
-const cardDescriptionCollapseThresholdBytes = 2000
-
-func cardDescriptionOpenByDefault(desc string) bool {
-	if desc == "" {
-		return false
-	}
-	if len(desc) > cardDescriptionCollapseThresholdBytes {
-		return false
-	}
-	return strings.Count(desc, "\n")+1 <= cardDescriptionCollapseThresholdLines
-}
-
-// TaskDetailCardDescription renders a card's Description directly in the
-// page body (§3.3 item 3 — "本文" — decided: not a tab, unlike an execution
-// task's Description). Renders nothing when Description is empty, same
-// posture as TaskDetailChildrenSection/TaskDetailSuggestionSection next to
-// it on the page.
+// TaskDetailCardDescription follows the always-visible summary with an
+// explicit expansion for the full description.
 templ TaskDetailCardDescription(task *orchestrator.Task) {
 	if task.Description != "" {
-		<details class="card-description" open?={ cardDescriptionOpenByDefault(task.Description) }>
-			<summary class="card-description-toggle">Description</summary>
+		<details class="card-description">
+			<summary class="card-description-toggle">Show details</summary>
 			<div class="qa-md-body">@renderMarkdown(task.Description)</div>
 		</details>
 	}
 }
 
 // TaskDetailCardBody assembles a card detail page's content, top to bottom:
-// meta (identity + status + current summary), the command section, the
-// pinned items, Description in the body, the card's own timeline history
+// meta followed by summary and expandable description, current controls,
+// current activity, the card's own timeline history
 // (CardHistorySection, replacing the raw status-group timeline for cards),
 // then the escape-hatch action bar. No tabs — see §7 罠1.
 //
@@ -1739,14 +1743,13 @@ templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, err
 	@TaskDetailCardStatusSection(task, errorMsg, projectName, summary, identities)
 	@CardCommandSection(task.ID, task.Status, cmdOptions, cmdForm)
 	@TaskDetailCardPinnedSection(tl, task.ID, task.Status)
-	@TaskDetailCardDescription(task)
 	@CardHistorySection(tl, task.ID)
 	@TaskDetailLiveScript()
 	@TaskCardActionBar(task, availableActions)
 }
 
 // TaskDetailExecBody assembles an execution task detail page's content
-// (§3.4 item 1 — meta; item 2 — root child tree, §7 PR-2; items 3-5 — the
+// (§3.4 item 1 — meta; item 2 — direct children; items 3-5 — the
 // existing tab structure is kept as-is).
 //
 // TaskDetailLiveScript renders here, as a sibling AFTER
@@ -1762,7 +1765,7 @@ templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, err
 // never touched.
 templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, childTree []ChildTreeNode, identities []apiwire.TaskIdentity) {
 	@TaskDetailExecStatusSection(task, errorMsg, projectName, childTree, identities)
-	@TaskDetailExecTabsSection(task, timelineGroups, availableActions, activeTab)
+	@TaskDetailExecTabsSection(task, timelineGroups, availableActions, activeTab, childTree)
 	@TaskDetailLiveScript()
 }
 
@@ -1774,12 +1777,58 @@ templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.Stat
 // the status-group timeline stays the main content, via the existing tab
 // structure).
 templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, cardSummary string, cardTL *CardTimelineView, childTree []ChildTreeNode, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState, identities []apiwire.TaskIdentity) {
-	@Layout(task.Title, "/") {
+	@Layout(task.Title, taskDetailBackURL(task)) {
 		if task.Type == orchestrator.TaskTypeCard {
 			@TaskDetailCardBody(task, availableActions, errorMsg, projectName, cardSummary, cardTL, cmdOptions, cmdForm, identities)
 		} else {
 			@TaskDetailExecBody(task, timelineGroups, availableActions, errorMsg, activeTab, projectName, childTree, identities)
 		}
+	}
+}
+
+func taskDetailBackURL(task *orchestrator.Task) string {
+	if task != nil && task.ParentID != "" {
+		return "/tasks/" + task.ParentID
+	}
+	return "/"
+}
+
+templ TaskChildSpecDetail(parent *orchestrator.Task, child orchestrator.TaskTriageChild, referencedTaskMissing bool, result string, resultStatus orchestrator.TaskStatus, hasResult bool) {
+	{{ title := child.Title }}
+	if title == "" {
+		{{ title = child.ID }}
+	}
+	@Layout(title, "/tasks/"+parent.ID) {
+		<section class="child-spec-detail">
+			<div class="detail-meta">
+				<span class={ "badge", "badge-" + child.Status }>{ child.Status }</span>
+				if child.Spec != nil && child.Spec.Behavior != "" {
+					<span class="badge badge-child-behavior">{ child.Spec.Behavior }</span>
+				}
+			</div>
+			if referencedTaskMissing {
+				<p class="child-spec-notice">The execution task is no longer available. The saved specification remains below.</p>
+			} else if child.Spec == nil {
+				<p class="child-spec-notice">The specification is not ready yet.</p>
+			}
+			if child.Spec != nil {
+				<dl class="child-spec-fields">
+					<dt>Project</dt><dd>{ child.Spec.Project }</dd>
+					<dt>Behavior</dt><dd>{ child.Spec.Behavior }</dd>
+					<dt>Description</dt><dd class="qa-md-body">@renderMarkdown(child.Spec.Description)</dd>
+					<dt>Instruction</dt><dd><pre class="tab-body-pre">{ child.Spec.Instruction }</pre></dd>
+				</dl>
+			}
+			if hasResult {
+				<section class="child-spec-result">
+					<h2>Result</h2>
+					<span class={ taskStatusClass(string(resultStatus)) }>{ string(resultStatus) }</span>
+					if result != "" {
+						<div class="qa-md-body">@renderMarkdown(result)</div>
+					}
+				</section>
+			}
+		</section>
 	}
 }
 
