@@ -823,13 +823,15 @@ func (h *WebHandler) PostCardCommand(w http.ResponseWriter, r *http.Request) {
 	if result.TargetKind == orchestrator.CardRequestTargetKindSession {
 		op.TargetSessionID = result.TargetID
 	}
-	h.recordOperation(op)
+	// The direct response carries this receipt even if persistence fails.
+	_ = h.recordOperation(op)
 	h.renderCardCommandState(w, r, id, instruction, http.StatusConflict, op)
 }
 
 func (h *WebHandler) renderCardCommandFailure(w http.ResponseWriter, r *http.Request, id, key, instruction string, err error) {
 	op := operationRejection(id, "card_command:"+key, h.operationLabelForCommand(r.Context(), id, key), err)
-	h.recordOperation(op)
+	// The direct response carries this receipt even if persistence fails.
+	_ = h.recordOperation(op)
 	h.renderCardCommandState(w, r, id, instruction, statusCodeForOperationError(err), op)
 }
 
