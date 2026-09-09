@@ -149,6 +149,33 @@ func TestResolveOrCapture_UnregisteredIdentity_CreatesCapturedTaskAndLinks(t *te
 	}
 }
 
+func TestResolveOrCapture_MetadataFailureRollsBackCapturedTaskAndBinding(t *testing.T) {
+	svc := newResolveOrCaptureTestService(t)
+	conn := svc.Tx.(realTransactor).conn
+	if _, err := conn.Exec(`CREATE TRIGGER reject_capture_identity_metadata
+		BEFORE UPDATE OF url, display_name ON task_identities
+		BEGIN SELECT RAISE(FAIL, 'forced metadata failure'); END`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+	resourceURL := "https://jira.example/browse/ROLLBACK-1"
+	_, err := svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
+		ProjectID: "proj-1", Identity: "jira:ROLLBACK-1", Title: "must roll back", URL: &resourceURL,
+	})
+	if err == nil {
+		t.Fatal("ResolveOrCapture returned nil for forced metadata failure")
+	}
+	if _, err := orchestrator.ResolveIdentity(conn, "proj-1", "jira:ROLLBACK-1"); !errors.Is(err, orchestrator.ErrTaskNotFound) {
+		t.Fatalf("binding after failed capture: err = %v, want ErrTaskNotFound", err)
+	}
+	tasks, err := orchestrator.ListTasks(conn, orchestrator.TaskFilter{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("failed capture left %d task(s): %#v", len(tasks), tasks)
+	}
+}
+
 // TestResolveOrCapture_Created_WritesCreatedAction: a capture records itself;
 // resolving an existing identity adds nothing.
 func TestResolveOrCapture_Created_WritesCreatedAction(t *testing.T) {

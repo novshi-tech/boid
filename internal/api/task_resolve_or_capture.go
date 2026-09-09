@@ -80,11 +80,17 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 
 	var result ResolveOrCaptureResult
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
+		var metadata identityMetadataWriter
+		if req.URL != nil || req.DisplayName != nil {
+			var ok bool
+			metadata, ok = tx.(identityMetadataWriter)
+			if !ok {
+				return errIdentityMetadataUnavailable
+			}
+		}
 		if existing, rerr := tx.ResolveIdentity(req.ProjectID, req.Identity); rerr == nil {
-			if r, ok := tx.(interface {
-				UpdateIdentityMetadata(string, string, *string, *string) error
-			}); ok {
-				if err := r.UpdateIdentityMetadata(req.ProjectID, req.Identity, req.URL, req.DisplayName); err != nil {
+			if metadata != nil {
+				if err := metadata.UpdateIdentityMetadata(req.ProjectID, req.Identity, existing.ID, req.URL, req.DisplayName); err != nil {
 					return err
 				}
 			}
@@ -122,10 +128,8 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 			// key create a second one next cycle.
 			return err
 		}
-		if r, ok := tx.(interface {
-			UpdateIdentityMetadata(string, string, *string, *string) error
-		}); ok {
-			if err := r.UpdateIdentityMetadata(req.ProjectID, req.Identity, req.URL, req.DisplayName); err != nil {
+		if metadata != nil {
+			if err := metadata.UpdateIdentityMetadata(req.ProjectID, req.Identity, task.ID, req.URL, req.DisplayName); err != nil {
 				return err
 			}
 		}

@@ -153,8 +153,8 @@ func (r *TaskRepository) ResolveIdentity(projectID, identity string) (*Task, err
 func (r *TaskRepository) ListIdentitiesByTask(taskID string) ([]string, error) {
 	return ListIdentitiesByTask(r.db, taskID)
 }
-func (r *TaskRepository) UpdateIdentityMetadata(projectID, identity string, url, displayName *string) error {
-	return UpdateIdentityMetadata(r.db, projectID, identity, url, displayName)
+func (r *TaskRepository) UpdateIdentityMetadata(projectID, identity, taskID string, url, displayName *string) error {
+	return UpdateIdentityMetadata(r.db, projectID, identity, taskID, url, displayName)
 }
 func (r *TaskRepository) ListIdentityMetadataByTask(taskID string) ([]TaskIdentity, error) {
 	return ListIdentityMetadataByTask(r.db, taskID)

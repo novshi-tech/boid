@@ -27,6 +27,12 @@ import (
 
 type TaskIdentity struct{ Identity, URL, DisplayName string }
 
+// ErrIdentityBindingChanged means metadata could not be written because the
+// identity is no longer bound to the task the caller resolved. Metadata writes
+// deliberately include the expected task id so an unlink/relink race cannot
+// decorate a different task's binding.
+var ErrIdentityBindingChanged = errors.New("identity binding changed")
+
 func ValidateIdentityURL(raw string) error {
 	if raw == "" {
 		return nil
@@ -38,9 +44,12 @@ func ValidateIdentityURL(raw string) error {
 	return nil
 }
 
-func UpdateIdentityMetadata(dbtx db.DBTX, projectID, identity string, urlValue, displayName *string) error {
+func UpdateIdentityMetadata(dbtx db.DBTX, projectID, identity, taskID string, urlValue, displayName *string) error {
 	if projectID == "" || identity == "" {
 		return fmt.Errorf("identity metadata requires project and identity")
+	}
+	if taskID == "" {
+		return fmt.Errorf("identity metadata requires an expected task")
 	}
 	if urlValue != nil {
 		if err := ValidateIdentityURL(*urlValue); err != nil {
@@ -59,9 +68,19 @@ func UpdateIdentityMetadata(dbtx db.DBTX, projectID, identity string, urlValue, 
 	if len(sets) == 0 {
 		return nil
 	}
-	args = append(args, projectID, identity)
-	_, err := dbtx.Exec("UPDATE task_identities SET "+strings.Join(sets, ", ")+" WHERE project_id = ? AND identity = ?", args...)
-	return err
+	args = append(args, projectID, identity, taskID)
+	result, err := dbtx.Exec("UPDATE task_identities SET "+strings.Join(sets, ", ")+" WHERE project_id = ? AND identity = ? AND task_id = ?", args...)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return ErrIdentityBindingChanged
+	}
+	return nil
 }
 func nullableIdentityString(s string) any {
 	if s == "" {

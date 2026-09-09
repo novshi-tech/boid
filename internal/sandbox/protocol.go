@@ -124,7 +124,9 @@ const (
 
 	// BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink / BoidOpTaskIdentityResolve
 	// back `boid task identity link/unlink/resolve` — the identity index
-	// (task_identities table, external key -> task).
+	// (task_identities table, external key -> task). Link optionally accepts
+	// a Pack-constructed absolute HTTP(S) URL and display name. Boid validates
+	// and stores those opaque values; it does not know service URL formats.
 	//
 	// Scoping is broker-authoritative, matching BoidOpTaskCreate: ProjectID
 	// defaults from the token's own context when omitted, is resolved via
@@ -144,7 +146,8 @@ const (
 	BoidOpTaskIdentityResolve BoidOp = "task_identity_resolve"
 
 	// BoidOpTaskResolveOrCapture backs `boid task resolve-or-capture
-	// <identity> [--title T] [--description D|--description-file F]`:
+	// <identity> [--title T] [--description D|--description-file F]
+	// [--url U] [--display-name N]`:
 	// resolve Identity to an existing task, or atomically create a new
 	// `captured` triage task and link Identity to it when unresolved. Kept
 	// separate from BoidOpTaskIdentityLink/BoidOpActionSend rather than a

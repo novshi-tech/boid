@@ -165,8 +165,8 @@ func (s apiTxStore) ListIdentitiesByTask(taskID string) ([]string, error) {
 	return s.tasks.ListIdentitiesByTask(taskID)
 }
 
-func (s apiTxStore) UpdateIdentityMetadata(projectID, identity string, url, displayName *string) error {
-	return s.tasks.UpdateIdentityMetadata(projectID, identity, url, displayName)
+func (s apiTxStore) UpdateIdentityMetadata(projectID, identity, taskID string, url, displayName *string) error {
+	return s.tasks.UpdateIdentityMetadata(projectID, identity, taskID, url, displayName)
 }
 
 func (s apiTxStore) ListIdentityMetadataByTask(taskID string) ([]orchestrator.TaskIdentity, error) {

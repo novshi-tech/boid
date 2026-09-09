@@ -1010,7 +1010,8 @@ func parseBoidSignalCursor(args []string) (*BoidRequest, error) {
 }
 
 // parseBoidTaskIdentityLink builds the BoidRequest for
-// `boid task identity link <identity> <task-id> [--project-id P]`.
+// `boid task identity link <identity> <task-id> [--project-id P]
+// [--url U] [--display-name N]`.
 // project_id is optional — the broker defaults it from the token's own
 // context when omitted, exactly like `boid task create`.
 func parseBoidTaskIdentityLink(args []string) (*BoidRequest, error) {
@@ -1131,7 +1132,8 @@ func parseBoidTaskIdentityResolve(args []string) (*BoidRequest, error) {
 
 // parseBoidTaskResolveOrCapture builds the BoidRequest for
 // `boid task resolve-or-capture <identity> [--title T]
-// [--description D | --description-file F] [--project-id P]`.
+// [--description D | --description-file F] [--project-id P]
+// [--url U] [--display-name N]`.
 // Title/description are only used by the executor when Identity is
 // unresolved; a caller that only wants to check for an existing binding can
 // omit both.

@@ -248,19 +248,14 @@ class BoidCLI:
             raise BoidError(f"boid task identity resolve {identity} が task_id を返さなかった: {parsed!r}")
         return task_id, str(parsed.get("status") or "")
 
-    def link_identity(self, identity: str, task_id: str, *, url: str | None = None, display_name: str | None = None) -> None:
+    def link_identity(self, identity: str, task_id: str) -> None:
         """別 source 発のシグナルを既存の件へ合流させる (S-15)。
 
         引数の順は `boid task identity link <identity> <task-id>`
         (`internal/sandbox/boid_shim.go`)。**逆にすると identity として task id が
         登録され、以降その task を identity で引けなくなる。**
-        `url` / `display_name` are optional Integration Pack metadata. An
-        explicit empty string clears a field; omitted values preserve it.
         """
-        args = ["task", "identity", "link", identity, task_id]
-        if url is not None: args += ["--url", url]
-        if display_name is not None: args += ["--display-name", display_name]
-        self._run(args)
+        self._run(["task", "identity", "link", identity, task_id])
 
     # -- 読み -------------------------------------------------------------
 
