@@ -22,6 +22,7 @@ import (
 // (a pinned dispatched child's awaiting-question link) neither read model
 // resolves on its own.
 type CardTimelineView struct {
+	Activity CardActivityState
 	Pinned             []timeline.CardItem
 	History            []timeline.CardItem
 	HasMore            bool

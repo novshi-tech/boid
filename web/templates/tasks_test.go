@@ -925,7 +925,7 @@ func TestTaskDetailLiveScript_RegistersChildEventListener(t *testing.T) {
 	if !strings.Contains(html, "addEventListener('child'") {
 		t.Fatalf("expected a 'child' event listener registration; got:\n%s", html)
 	}
-	if !strings.Contains(html, "addEventListener('child', function() { refresh(['pinned']); });") {
-		t.Errorf("'child' listener must refresh exactly ['pinned']; got:\n%s", html)
+	if !strings.Contains(html, "addEventListener('child', function() { refresh(['status', 'pinned', 'timeline']); refreshHistoryHead(); });") {
+		t.Errorf("'child' listener must refresh current state and child history; got:\n%s", html)
 	}
 }

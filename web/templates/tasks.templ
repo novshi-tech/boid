@@ -382,6 +382,9 @@ templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, proj
 // #task-status — see that function's own doc comment for why.
 templ TaskDetailCardPinnedSection(tl *CardTimelineView, cardID string, cardStatus orchestrator.TaskStatus) {
 	<div id="task-pinned" data-task-id={ cardID }>
+		if tl != nil {
+			@cardActivityBadges(tl.Activity)
+		}
 		@CardPinnedSection(tl, cardID, cardStatus)
 	</div>
 }
@@ -1323,6 +1326,10 @@ templ TaskDetailExecTabsSection(task *orchestrator.Task, timelineGroups []timeli
 // keep this idempotent across the (now impossible) case of the script
 // somehow rendering twice.
 templ TaskDetailLiveScript() {
+	<div id="task-live-status" class="task-live-status" role="status" aria-live="polite">
+		<span id="task-live-message">Connecting to live updates…</span>
+		<button type="button" id="task-live-retry">Refresh status</button>
+	</div>
 	<script>
 		(function() {
 			if (window.__boidTimelineSubscriber) return;
@@ -1333,6 +1340,49 @@ templ TaskDetailLiveScript() {
 			if (!taskID) return;
 
 			var es = null;
+			var connected = false;
+			var failures = {};
+			var requests = {};
+			var lastUpdated = new Date();
+			function showFreshness() {
+				var box = document.getElementById('task-live-status');
+				var message = document.getElementById('task-live-message');
+				if (!box || !message) return;
+				var stale = !connected || Object.keys(failures).length > 0;
+				box.dataset.stale = stale ? 'true' : 'false';
+				var time = lastUpdated.toLocaleTimeString([], { timeZoneName: 'short' });
+				message.textContent = (stale ? 'Updates interrupted. Last retrieved ' : 'Live updates · Last retrieved ') + time;
+			}
+			function fetchHTML(url) {
+				if (requests[url]) requests[url].abort();
+				var controller = new AbortController();
+				requests[url] = controller;
+				var timeout = setTimeout(function() { controller.abort(); }, 15000);
+				return fetch(url, { signal: controller.signal, cache: 'no-store' })
+					.then(function(r) {
+						if (!r.ok) throw new Error('Status ' + r.status);
+						return r.text();
+					})
+					.then(function(html) {
+						if (requests[url] !== controller) return null;
+						if (!html) throw new Error('Empty response');
+						delete failures[url];
+						lastUpdated = new Date();
+						showFreshness();
+						return html;
+					})
+					.catch(function() {
+						if (requests[url] === controller) {
+							failures[url] = true;
+							showFreshness();
+						}
+						return null;
+					})
+					.finally(function() {
+						clearTimeout(timeout);
+						if (requests[url] === controller) delete requests[url];
+					});
+			}
 
 			// captureSwapState/restoreSwapState preserve an open <details>
 			// (keyed by its closest ancestor id plus its own class) and el's
@@ -1362,9 +1412,9 @@ templ TaskDetailLiveScript() {
 			function refresh(kinds) {
 				kinds.forEach(function(kind) {
 					var before = document.getElementById('task-' + kind);
-					var state = before ? captureSwapState(before) : null;
-					fetch('/tasks/' + taskID + '/fragment?kind=' + kind)
-						.then(function(r) { return r.ok ? r.text() : null; })
+					if (!before) return;
+					var state = captureSwapState(before);
+					fetchHTML('/tasks/' + taskID + '/fragment?kind=' + kind)
 						.then(function(html) {
 							if (!html) return;
 							var el = document.getElementById('task-' + kind);
@@ -1396,8 +1446,7 @@ templ TaskDetailLiveScript() {
 				// far was pinned) — fetch the head fresh and build the list
 				// for the first time, replacing the "No history yet." copy.
 				if (!list) {
-					fetch(historyHeadURL(taskID, ''))
-						.then(function(r) { return r.ok ? r.text() : null; })
+					fetchHTML(historyHeadURL(taskID, ''))
 						.then(function(html) {
 							if (!html) return;
 							var tmp = document.createElement('template');
@@ -1435,8 +1484,7 @@ templ TaskDetailLiveScript() {
 				// splice below, so it needs the same treatment.
 				var state = captureSwapState(list);
 
-				fetch(historyHeadURL(taskID, frontier))
-					.then(function(r) { return r.ok ? r.text() : null; })
+				fetchHTML(historyHeadURL(taskID, frontier))
 					.then(function(html) {
 						if (!html) return;
 						// A "Load older" click may have already swapped
@@ -1463,18 +1511,37 @@ templ TaskDetailLiveScript() {
 			function openES() {
 				if (es && es.readyState !== EventSource.CLOSED) return;
 				es = new EventSource('/api/tasks/' + taskID + '/events');
+				es.addEventListener('open', function() {
+					connected = true;
+					showFreshness();
+					refresh(['status', 'pinned', 'timeline']);
+					refreshHistoryHead();
+				});
+				es.addEventListener('error', function() { connected = false; showFreshness(); });
 				es.addEventListener('action', function() { refresh(['status', 'pinned', 'timeline']); refreshHistoryHead(); });
 				es.addEventListener('job', function() { refresh(['status', 'pinned', 'timeline']); });
 				es.addEventListener('fired_event', function() { refresh(['timeline']); });
-				// 'child' is a card's dispatched-child update; only
-				// #task-pinned reflects it.
-				es.addEventListener('child', function() { refresh(['pinned']); });
+				// Child updates affect current activity and historical child rows.
+				es.addEventListener('child', function() { refresh(['status', 'pinned', 'timeline']); refreshHistoryHead(); });
 			}
 
 			function closeES() {
 				if (es) { es.close(); }
+				connected = false;
+				showFreshness();
 			}
 
+			document.getElementById('task-live-retry').addEventListener('click', function() {
+				openES();
+				refresh(['status', 'pinned', 'timeline']);
+				refreshHistoryHead();
+			});
+			setInterval(function() {
+				if (document.visibilityState !== 'hidden') {
+					refresh(['status', 'pinned', 'timeline']);
+					refreshHistoryHead();
+				}
+			}, 30000);
 			openES();
 
 			// Live-tick the "MM:SS ago" text on running-job rows so

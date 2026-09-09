@@ -3010,3 +3010,19 @@ details[open] > summary {
   min-height: 24rem;
   resize: vertical;
 }
+
+.task-live-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
+  margin-block: .75rem;
+  font-size: .8rem;
+  color: var(--text-muted);
+}
+.task-live-status[data-stale="true"] {
+  border-left: 3px solid #b9770e;
+  padding: .5rem .75rem;
+  color: inherit;
+}
+.task-live-status button { font: inherit; }

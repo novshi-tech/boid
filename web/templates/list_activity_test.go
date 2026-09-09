@@ -198,10 +198,9 @@ func TestCommandActivityLabel_AttachedTaskTarget_Executing_Running(t *testing.T)
 // A task target whose status is not (yet) in the batch map — a narrow,
 // transient window before self-recording lands — must not disappear the
 // badge; it falls back to "Running" rather than going blank.
-// A task target that is terminal, or whose row is already gone to GC, must
-// say nothing rather than claim the command is still running — the same
-// call the work-child axis makes for a dispatched child whose task ended.
-func TestCommandActivityLabel_AttachedTaskTarget_TerminalOrMissing_Empty(t *testing.T) {
+// A completed target with an attached request is finishing; a missing target
+// supplies no evidence of the stage and must not be labeled running.
+func TestCommandActivityLabel_AttachedTaskTarget_TerminalOrMissing(t *testing.T) {
 	req := &orchestrator.CardRequest{
 		CommandKey: "discuss", Status: orchestrator.CardRequestStatusAttached,
 		Launched:   orchestrator.CardRequestDefinition{Label: "Discuss"},
@@ -215,7 +214,11 @@ func TestCommandActivityLabel_AttachedTaskTarget_TerminalOrMissing_Empty(t *test
 		{"done", map[string]orchestrator.TaskStatus{"task-1": orchestrator.TaskStatusDone}},
 		{"aborted", map[string]orchestrator.TaskStatus{"task-1": orchestrator.TaskStatusAborted}},
 	} {
-		if got := CommandActivityLabel(req, tc.statuses); got != "" {
+		want := ""
+		if tc.name == "done" || tc.name == "aborted" {
+			want = "Discuss: Finishing"
+		}
+		if got := CommandActivityLabel(req, tc.statuses); got != want {
 			t.Errorf("CommandActivityLabel(attached/task/%s) = %q, want empty", tc.name, got)
 		}
 	}
@@ -247,6 +250,9 @@ func TestWorkAndCommandAxes_ShareTheSameLiveTaskWords(t *testing.T) {
 		wantCommand := ""
 		if tc.want != "" {
 			wantCommand = "Discuss: " + tc.want
+		}
+		if tc.status == orchestrator.TaskStatusDone {
+			wantCommand = "Discuss: Finishing"
 		}
 		if work != tc.want || command != wantCommand {
 			t.Errorf("status %q: work = %q (want %q), command = %q (want %q)",
@@ -382,5 +388,12 @@ func TestBuildListRows_NilActivityMap_ZeroValue(t *testing.T) {
 	rows := BuildListRows(tasks, nil, nil, nil)
 	if len(rows) != 1 || rows[0].Activity != (CardActivityState{}) {
 		t.Errorf("Activity = %+v, want zero value", rows[0].Activity)
+	}
+}
+
+func TestCommandActivityLabelTerminalTargetFinishing(t *testing.T) {
+	req := &orchestrator.CardRequest{Status: orchestrator.CardRequestStatusAttached, TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: "child", Launched: orchestrator.CardRequestDefinition{Label: "Inspect"}}
+	if got := CommandActivityLabel(req, map[string]orchestrator.TaskStatus{"child": orchestrator.TaskStatusDone}); got != "Inspect: Finishing" {
+		t.Fatalf("attached request with completed target = %q, want finishing", got)
 	}
 }

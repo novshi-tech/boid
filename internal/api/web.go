@@ -337,7 +337,18 @@ func (h *WebHandler) cardActivityStates(tasks []*orchestrator.Task, triage map[s
 		slog.Warn("cardActivityStates: TaskStatusesByIDs returned a partial or empty result",
 			"error", err, "task_id_count", len(taskIDsToCheck))
 	}
-	return templates.BuildCardActivityStates(cardIDs, activeChildren, taskStatuses, activeRequests)
+	states := templates.BuildCardActivityStates(cardIDs, activeChildren, taskStatuses, activeRequests)
+	for _, task := range tasks {
+		if task.Type != orchestrator.TaskTypeCard || orchestrator.IsTerminalStatus(task.Status) {
+			continue
+		}
+		state := states[task.ID]
+		if activeChildren[task.ID] == nil && state.CommandLabel == "" && task.OpenChildCount == 0 && task.DoneChildCount+task.AbortedChildCount > 0 {
+			state.DecisionLabel = "Work finished · Needs decision"
+			states[task.ID] = state
+		}
+	}
+	return states
 }
 
 // taskListPageSize is the list's fixed page size — no user-configurable
@@ -760,7 +771,13 @@ func (h *WebHandler) cardPinnedView(cardID string) (*templates.CardTimelineView,
 		return nil, err
 	}
 	h.resolveCardItemChildProjects(pinned)
+	var activity templates.CardActivityState
+	if detail, err := h.Service.GetTaskDetail(cardID); err == nil && detail != nil && detail.Task != nil {
+		attrs := map[string]*orchestrator.CardAttrs{cardID: h.loadTriage(cardID)}
+		activity = h.cardActivityStates([]*orchestrator.Task{detail.Task}, attrs)[cardID]
+	}
 	return &templates.CardTimelineView{
+		Activity:           activity,
 		Pinned:             pinned,
 		AwaitingQuestionID: h.enrichPinnedChildLiveStatus(pinned),
 	}, nil
