@@ -1,6 +1,17 @@
 (function () {
   'use strict';
   var busy = false;
+  var observed = new Map();
+  // A durable unknown receipt must not overwrite the outcome this browser saw.
+  window.boidPreserveOperationResults = function (html) {
+    var template = document.createElement('template');
+    template.innerHTML = html;
+    template.content.querySelectorAll('[data-operation-id]').forEach(function (row) {
+      var known = observed.get(row.dataset.operationId);
+      if (known && row.dataset.operationResult === 'unknown') row.replaceWith(known.cloneNode(true));
+    });
+    return template.innerHTML;
+  };
 
   function operationForm(form) {
     if (!form || form.tagName !== 'FORM' || form.method.toLowerCase() !== 'post') return false;
@@ -21,14 +32,19 @@
       el.tabIndex = -1;
     }
     // Keep feedback outside fragments that live updates replace.
-    var anchor = document.getElementById('task-operations') || document.getElementById('task-live-status');
-    if (anchor) anchor.insertAdjacentElement('afterend', el);
-    else form.insertAdjacentElement('afterend', el);
+    var anchor = document.querySelector('.card-timeline');
+    if (!el.isConnected) {
+      if (anchor) anchor.prepend(el);
+      else form.insertAdjacentElement('afterend', el);
+    }
+    el.hidden = false;
+    el.className = 'operation-submit-feedback';
     el.textContent = text;
     if (unknown) {
       var button = document.createElement('button');
       button.type = 'button';
       button.textContent = 'Refresh status';
+      button.className = 'btn btn-secondary btn-sm';
       button.addEventListener('click', function () {
         var retry = document.getElementById('task-live-retry');
         if (retry) retry.click();
@@ -69,17 +85,36 @@
         return;
       }
       var doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-      var result = doc.getElementById('task-operations');
-      var target = document.getElementById('task-operations');
       var operationID = response.headers.get('X-Boid-Operation-ID') || new URL(response.url).searchParams.get('operation');
-      var latest = result && operationID && result.querySelector('.operation-result[data-operation-id="' + CSS.escape(operationID) + '"]');
-      if (!result || !target || !latest) throw new Error('No confirmed operation result');
-      target.replaceWith(result);
+      var selector = '[data-operation-id="' + CSS.escape(operationID || '') + '"]';
+      var latest = operationID && doc.querySelector(selector);
+      var history = document.getElementById('card-timeline');
+      if (!history || !latest) throw new Error('No confirmed operation result');
+      observed.set(operationID, latest.cloneNode(true));
+      var previous = document.querySelector(selector);
+      if (latest.closest('#task-pinned')) {
+        if (previous) previous.remove();
+        document.getElementById('task-pinned').replaceWith(doc.getElementById('task-pinned'));
+      } else if (previous && history.contains(previous)) {
+        previous.replaceWith(latest);
+      } else {
+        if (previous) previous.remove();
+        var list = history.querySelector('.card-timeline-list');
+        if (!list) {
+          list = document.createElement('ul');
+          list.className = 'card-timeline-list';
+          var empty = history.querySelector('.tab-empty');
+          if (empty) empty.remove();
+          history.appendChild(list);
+        }
+        list.prepend(latest);
+      }
       var outcome = latest.dataset.operationResult;
       if (instruction && instruction.value === sentInstruction && (outcome === 'accepted' || outcome === 'started')) {
         instruction.value = '';
       }
-      notice.remove();
+      notice.hidden = true;
+      notice.textContent = "";
       latest.tabIndex = -1;
       latest.focus({ preventScroll: true });
       latest.scrollIntoView({ block: 'nearest' });

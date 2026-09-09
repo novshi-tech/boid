@@ -88,8 +88,8 @@ func TestCardDetail_LiveScript_RefreshHistoryHeadWiredToActionAndRevisit(t *test
 		t.Errorf("the 'action' listener's refreshHistoryHead() call must not be commented out; body:\n%s", body)
 	}
 	jobListenerEnd := strings.Index(body[jobListenerIdx:], "\n")
-	if jobListenerEnd >= 0 && strings.Contains(body[jobListenerIdx:jobListenerIdx+jobListenerEnd], "refreshHistoryHead()") {
-		t.Errorf("the 'job' listener must NOT call refreshHistoryHead() (jobs never move a pinned item into history); body:\n%s", body)
+	if jobListenerEnd >= 0 && !strings.Contains(body[jobListenerIdx:jobListenerIdx+jobListenerEnd], "refreshHistoryHead()") {
+		t.Errorf("the 'job' listener must refresh operation associations in history; body:\n%s", body)
 	}
 	childListenerEnd := strings.Index(body[childListenerIdx:], "\n")
 	if childListenerEnd >= 0 && !strings.Contains(body[childListenerIdx:childListenerIdx+childListenerEnd], "refreshHistoryHead()") {

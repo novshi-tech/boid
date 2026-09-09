@@ -34,7 +34,9 @@ templ TaskIdentityLinks(identities []apiwire.TaskIdentity) {
 }
 
 func identityLinkLabel(identity apiwire.TaskIdentity) string {
-	if identity.DisplayName != "" { return identity.DisplayName }
+	if identity.DisplayName != "" {
+		return identity.DisplayName
+	}
 	return identity.Identity
 }
 
@@ -374,13 +376,8 @@ func detailRowClasses(task *orchestrator.Task) []string {
 // script on the card's own actions (a suggestion write, a command's own
 // terminal record, ...).
 //
-// The pinned timeline items (the live suggestion, next work spec/child, sole
-// in-progress task/session) used to render here too, but moved out to their
-// own #task-pinned sibling (TaskDetailCardPinnedSection) so the shared
-// instruction textarea + command buttons (CardCommandSection) can sit
-// between this section and the pinned one without living inside either
-// SSE-swapped block — an outerHTML replace of either would otherwise wipe an
-// in-progress instruction on every action/job event.
+// Current timeline items live in #task-pinned. The instruction form stays
+// outside both refreshed sections so live updates preserve an unfinished draft.
 //
 // id="task-status" carries data-task-id so TaskDetailLiveScript (shared by
 // both the card and execution layouts, §7 罠2) can find the task id without
@@ -410,12 +407,9 @@ templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, proj
 templ TaskDetailCardPinnedSection(tl *CardTimelineView, cardID string, cardStatus orchestrator.TaskStatus) {
 	<div id="task-pinned" data-task-id={ cardID }>
 		if tl != nil {
-			@cardActivityBadges(tl.Activity)
+			@cardActivityBadges(CardActivityState{WorkLabel: tl.Activity.WorkLabel, DecisionLabel: tl.Activity.DecisionLabel})
 		}
 		@CardPinnedSection(tl, cardID, cardStatus)
-		if !cardCommandTerminalStatus(cardStatus) {
-			@CardGoControl(tl, cardID)
-		}
 	</div>
 }
 
@@ -805,8 +799,8 @@ func acceptButtonLabel(verb string) string {
 // "awaiting"/"aborted" are execution-only statuses a card can never reach,
 // so the removed code paths were unreachable dead branches for a card
 // caller both before and after this split.
-templ TaskCardActionBar(task *orchestrator.Task, availableActions []string) {
-	<div class="action-bar">
+templ TaskCardActionBar(task *orchestrator.Task, availableActions []string, tl *CardTimelineView) {
+	<div id="task-controls" class="action-bar">
 		<div class="action-bar-inner">
 			if task.Status == orchestrator.TaskStatusDone || task.Status == orchestrator.TaskStatusDropped {
 				// card machine v2 (docs/plans/suggestion-as-state-transition.md
@@ -816,7 +810,9 @@ templ TaskCardActionBar(task *orchestrator.Task, availableActions []string) {
 				<a href={ templ.SafeURL("/tasks/" + task.ID + "/reopen") } class="btn btn-primary action-bar-primary-form">Reopen</a>
 			} else {
 				{{ action, label := detailPrimaryAction(task, availableActions) }}
-				if action != "" {
+				if action == "go" {
+					@CardGoControl(tl, task.ID)
+				} else if action != "" {
 					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } class="action-bar-primary-form">
 						<input type="hidden" name="type" value={ action }/>
 						<button type="submit" class={ actionPrimaryClass(action) }>{ label }</button>
@@ -824,6 +820,9 @@ templ TaskCardActionBar(task *orchestrator.Task, availableActions []string) {
 				} else {
 					<span class="action-bar-spacer"></span>
 				}
+			}
+			if task.Status == orchestrator.TaskStatusWorking {
+				@CardGoControl(tl, task.ID)
 			}
 			<details class="action-menu">
 				<summary class="action-menu-summary" aria-label="More actions">⋯</summary>
@@ -841,21 +840,6 @@ templ TaskCardActionBar(task *orchestrator.Task, availableActions []string) {
 						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
 							<input type="hidden" name="type" value="start"/>
 							<button type="submit" class="action-menu-item">start</button>
-						</form>
-					}
-					// go, offered here ONLY while working (a working→working
-					// self-loop): a freshly specced child can be run again
-					// without leaving working. AvailableActions deliberately
-					// excludes self-loops (see its own doc comment), so this
-					// item cannot use hasAction the way every other item
-					// here does — it is gated on status alone, and a click
-					// with no specced child to run gets the server's own
-					// clear 409 (acceptGo, workflow_card.go), same as every
-					// other action this menu can 409 on.
-					if task.Status == orchestrator.TaskStatusWorking {
-						<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
-							<input type="hidden" name="type" value="go"/>
-							<button type="submit" class="action-menu-item">go</button>
 						</form>
 					}
 					// park (working → parked, card machine v2, queue から
@@ -1213,8 +1197,9 @@ templ TaskDetailExecTabPanel(task *orchestrator.Task, timelineGroups []timeline.
 		} else if activeTab == "description" {
 			<div class="tab-content">
 				if task.Description != "" {
-					<div class="qa-md-body">@renderMarkdown(task.Description)
-</div>
+					<div class="qa-md-body">
+						@renderMarkdown(task.Description)
+					</div>
 				} else {
 					<p class="tab-empty">(not set)</p>
 				}
@@ -1405,7 +1390,7 @@ templ TaskDetailExecTabsSection(task *orchestrator.Task, timelineGroups []timeli
 templ TaskDetailLiveScript() {
 	<div id="task-live-status" class="task-live-status" role="status" aria-live="polite">
 		<span id="task-live-message">Connecting to live updates…</span>
-		<button type="button" id="task-live-retry">Refresh status</button>
+		<button type="button" id="task-live-retry" class="btn btn-secondary btn-sm">Refresh status</button>
 	</div>
 	<script>
 		(function() {
@@ -1523,29 +1508,14 @@ templ TaskDetailLiveScript() {
 						return;
 					}
 					var refreshURL = '/tasks/' + taskID + '/fragment?kind=' + kind;
-					var selectedOperation = '';
-					if (kind === 'operations') {
-						var selected = before.querySelector('[data-operation-id]');
-						if (selected) {
-							selectedOperation = selected.dataset.operationId;
-							refreshURL += '&operation=' + encodeURIComponent(selectedOperation);
-						}
-					}
+
 					fetchHTML(refreshURL)
 						.then(function(html) {
 							if (!html) return;
 							var before = document.getElementById('task-' + kind);
 							if (!before) return;
-							if (kind === 'operations') {
-								var current = before.querySelector('[data-operation-id]');
-								if ((current ? current.dataset.operationId : '') !== selectedOperation) return;
-								// A failed receipt update can leave a durable unknown placeholder.
-								// Keep the outcome observed directly by this browser until revisit.
-								if (current && current.dataset.operationResult && current.dataset.operationResult !== 'unknown') {
-									var incoming = new DOMParser().parseFromString(html, 'text/html').querySelector('[data-operation-id="' + CSS.escape(selectedOperation) + '"]');
-									if (incoming && incoming.dataset.operationResult === 'unknown') return;
-								}
-							}
+
+							if (window.boidPreserveOperationResults) html = window.boidPreserveOperationResults(html);
 							var state = captureSwapState(before);
 							var el = before;
 							el.outerHTML = html;
@@ -1577,7 +1547,7 @@ templ TaskDetailLiveScript() {
 				if (!list) {
 					fetchHTML(historyHeadURL(taskID, ''))
 						.then(function(html) {
-							if (!html) return;
+							if (html === null) return;
 							var tmp = document.createElement('template');
 							tmp.innerHTML = html;
 							if (!tmp.content.firstChild) return;
@@ -1613,12 +1583,13 @@ templ TaskDetailLiveScript() {
 				// splice below, so it needs the same treatment.
 				fetchHTML(historyHeadURL(taskID, frontier))
 					.then(function(html) {
-						if (!html) return;
+						if (html === null) return;
 						// A "Load older" click may have already swapped
 						// (and detached) boundaryEl while this fetch was in
 						// flight — bail rather than empty the list or throw
 						// on a stale insertBefore reference.
 						if (boundaryEl && boundaryEl.parentNode !== list) return;
+						if (window.boidPreserveOperationResults) html = window.boidPreserveOperationResults(html);
 						var state = captureSwapState(list);
 						var node = list.firstElementChild;
 						while (node && node !== boundaryEl) {
@@ -1660,15 +1631,15 @@ templ TaskDetailLiveScript() {
 				stream.addEventListener('open', currentStream(function() {
 					connected = true;
 					showFreshness();
-					refresh(['status', 'pinned', 'timeline', 'operations']);
+					refresh(['status', 'pinned', 'timeline', 'controls']);
 					refreshHistoryHead();
 				}));
 				stream.addEventListener('error', currentStream(function() { connected = false; showFreshness(); }));
-				stream.addEventListener('action', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'operations']); refreshHistoryHead(); }));
-				stream.addEventListener('job', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'operations']); }));
+				stream.addEventListener('action', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'controls']); refreshHistoryHead(); }));
+				stream.addEventListener('job', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'controls']); refreshHistoryHead(); }));
 				stream.addEventListener('fired_event', currentStream(function() { refresh(['timeline']); }));
 				// Child updates affect current activity and historical child rows.
-				stream.addEventListener('child', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'operations']); refreshHistoryHead(); }));
+				stream.addEventListener('child', currentStream(function() { refresh(['status', 'pinned', 'timeline', 'controls']); refreshHistoryHead(); }));
 			}
 
 			function closeES() {
@@ -1690,17 +1661,17 @@ templ TaskDetailLiveScript() {
 				}
 			});
 			document.addEventListener('boid:operation-result', function() {
-				refresh(['status', 'pinned', 'timeline']);
+				refresh(['status', 'pinned', 'timeline', 'controls']);
 				refreshHistoryHead();
 			});
 			document.getElementById('task-live-retry').addEventListener('click', function() {
 				retryES();
-				refresh(['status', 'pinned', 'timeline', 'operations']);
+				refresh(['status', 'pinned', 'timeline', 'controls']);
 				refreshHistoryHead();
 			});
 			setInterval(function() {
 				if (document.visibilityState !== 'hidden') {
-					refresh(['status', 'pinned', 'timeline', 'operations']);
+					refresh(['status', 'pinned', 'timeline', 'controls']);
 					refreshHistoryHead();
 				}
 			}, 30000);
@@ -1741,13 +1712,13 @@ templ TaskDetailLiveScript() {
 					closeES();
 				} else {
 					openES();
-					refresh(['status', 'pinned', 'timeline', 'operations']);
+					refresh(['status', 'pinned', 'timeline', 'controls']);
 					refreshHistoryHead();
 				}
 			});
 			window.addEventListener('pageshow', function(e) {
 				openES();
-				refresh(['status', 'pinned', 'timeline', 'operations']);
+				refresh(['status', 'pinned', 'timeline', 'controls']);
 				refreshHistoryHead();
 			});
 		})();
@@ -1760,7 +1731,9 @@ templ TaskDetailCardDescription(task *orchestrator.Task) {
 	if task.Description != "" {
 		<details class="card-description">
 			<summary class="card-description-toggle">Show details</summary>
-			<div class="qa-md-body">@renderMarkdown(task.Description)</div>
+			<div class="qa-md-body">
+				@renderMarkdown(task.Description)
+			</div>
 		</details>
 	}
 }
@@ -1803,39 +1776,28 @@ func operationResultText(result *orchestrator.OperationResult) string {
 }
 
 func operationResultLabel(result *orchestrator.OperationResult) string {
-	if result.OperationLabel != "" { return result.OperationLabel }
-	if result.OperationType == "go" { return "Go" }
+	if result.OperationLabel != "" {
+		return result.OperationLabel
+	}
+	if result.OperationType == "go" {
+		return "Go"
+	}
 	return "Card command"
 }
 
+// Compatibility fragment: operation rows use the timeline's item renderer.
 templ OperationResultsSection(results []*orchestrator.OperationResult) {
-	<section id="task-operations" class="operation-results" aria-labelledby="operation-results-heading">
-		if len(results) > 0 {
-			<h2 id="operation-results-heading" class="detail-section-title">Operation results</h2>
-			<div id={ "operation-" + results[0].ID } class={ "operation-result", "operation-result-" + results[0].Result } role="status" aria-live="polite" tabindex="-1" data-operation-id={ results[0].ID } data-operation-result={ results[0].Result }>
-				@operationResultBody(results[0])
-			</div>
-			if len(results) > 1 {
-				<details class="operation-result-history">
-					<summary>{ fmt.Sprintf("Earlier operation results (%d)", len(results)-1) }</summary>
-					for _, result := range results[1:] {
-					<div id={ "operation-" + result.ID } class={ "operation-result", "operation-result-" + result.Result } data-operation-id={ result.ID } data-operation-result={ result.Result }>
-						@operationResultBody(result)
-					</div>
-					}
-				</details>
-				}
-		} else {
-			<h2 id="operation-results-heading" class="sr-only">Operation results</h2>
+	<ul id="task-operations" class="card-timeline-list">
+		for _, result := range results {
+			@CardTimelineItem(timeline.OperationCardItem(result), result.TaskID, "", false, "")
 		}
-	</section>
+	</ul>
 }
 
 templ operationResultBody(result *orchestrator.OperationResult) {
 	<div class="operation-result-head">
 		<strong>{ operationResultLabel(result) }</strong>
 		<span class={ "badge", "badge-" + result.Result }>{ result.Result }</span>
-		<time datetime={ result.CreatedAt.Format(time.RFC3339) }>{ result.CreatedAt.Local().Format("2006-01-02 15:04:05 MST") }</time>
 	</div>
 	<p>{ operationResultText(result) }</p>
 	if result.Notice != "" {
@@ -1860,30 +1822,35 @@ templ operationResultBody(result *orchestrator.OperationResult) {
 	<details class="operation-result-diagnostics">
 		<summary>Diagnostic details</summary>
 		<dl>
-			<dt>Type</dt><dd><code>{ result.OperationType }</code></dd>
-			<dt>Result</dt><dd><code>{ result.Result }</code></dd>
-			<dt>Reason</dt><dd><code>{ result.ReasonCode }</code></dd>
+			<dt>Type</dt>
+			<dd><code>{ result.OperationType }</code></dd>
+			<dt>Result</dt>
+			<dd><code>{ result.Result }</code></dd>
+			<dt>Reason</dt>
+			<dd><code>{ result.ReasonCode }</code></dd>
 			if result.CurrentPhase != "" {
-				<dt>Current phase</dt><dd><code>{ result.CurrentPhase }</code></dd>
+				<dt>Current phase</dt>
+				<dd><code>{ result.CurrentPhase }</code></dd>
 			}
 			if result.TargetTaskID != "" {
-				<dt>Task</dt><dd><code>{ result.TargetTaskID }</code></dd>
+				<dt>Task</dt>
+				<dd><code>{ result.TargetTaskID }</code></dd>
 			}
 			if result.TargetSessionID != "" {
-				<dt>Session</dt><dd><code>{ result.TargetSessionID }</code></dd>
+				<dt>Session</dt>
+				<dd><code>{ result.TargetSessionID }</code></dd>
 			}
-				if result.TargetRequestID != "" {
-					<dt>Request</dt><dd><code>{ result.TargetRequestID }</code></dd>
-				}
+			if result.TargetRequestID != "" {
+				<dt>Request</dt>
+				<dd><code>{ result.TargetRequestID }</code></dd>
+			}
 		</dl>
 	</details>
 }
 
 // TaskDetailCardBody assembles a card detail page's content, top to bottom:
-// meta followed by summary and expandable description, current controls,
-// current activity, the card's own timeline history
-// (CardHistorySection, replacing the raw status-group timeline for cards),
-// then the escape-hatch action bar. No tabs — see §7 罠1.
+// meta followed by summary and expandable description, a unified timeline,
+// then command input and the footer controls. No tabs — see §7 罠1.
 //
 // TaskDetailLiveScript renders here, at the body level — nothing on the
 // card layout ever gets HTMX-swapped, so there is no risk of the script
@@ -1894,12 +1861,17 @@ templ operationResultBody(result *orchestrator.OperationResult) {
 // never inside a swap target.
 templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, summary string, tl *CardTimelineView, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState, identities []apiwire.TaskIdentity, operationResults []*orchestrator.OperationResult) {
 	@TaskDetailCardStatusSection(task, errorMsg, projectName, summary, identities)
-	@OperationResultsSection(operationResults)
+	{{ view := cardTimelineWithOperations(tl, operationResults) }}
+	<section class="card-timeline" aria-label="Timeline">
+		<h2 class="detail-section-title">Timeline</h2>
+		<div class="card-timeline-tz">Times shown in { cardTimelineTZLabel() }</div>
+		<div id="operation-submit-feedback" role="status" aria-live="polite" tabindex="-1" hidden></div>
+		@TaskDetailCardPinnedSection(view, task.ID, task.Status)
+		@CardHistorySection(view, task.ID)
+	</section>
 	@CardCommandSection(task.ID, task.Status, cmdOptions, cmdForm)
-	@TaskDetailCardPinnedSection(tl, task.ID, task.Status)
-	@CardHistorySection(tl, task.ID)
+	@TaskCardActionBar(task, availableActions, view)
 	@TaskDetailLiveScript()
-	@TaskCardActionBar(task, availableActions)
 }
 
 // TaskDetailExecBody assembles an execution task detail page's content
@@ -1967,10 +1939,16 @@ templ TaskChildSpecDetail(parent *orchestrator.Task, child orchestrator.TaskTria
 			}
 			if child.Spec != nil {
 				<dl class="child-spec-fields">
-					<dt>Project</dt><dd>{ child.Spec.Project }</dd>
-					<dt>Behavior</dt><dd>{ child.Spec.Behavior }</dd>
-					<dt>Description</dt><dd class="qa-md-body">@renderMarkdown(child.Spec.Description)</dd>
-					<dt>Instruction</dt><dd><pre class="tab-body-pre">{ child.Spec.Instruction }</pre></dd>
+					<dt>Project</dt>
+					<dd>{ child.Spec.Project }</dd>
+					<dt>Behavior</dt>
+					<dd>{ child.Spec.Behavior }</dd>
+					<dt>Description</dt>
+					<dd class="qa-md-body">
+						@renderMarkdown(child.Spec.Description)
+					</dd>
+					<dt>Instruction</dt>
+					<dd><pre class="tab-body-pre">{ child.Spec.Instruction }</pre></dd>
 				</dl>
 			}
 			if hasResult {
@@ -1978,7 +1956,9 @@ templ TaskChildSpecDetail(parent *orchestrator.Task, child orchestrator.TaskTria
 					<h2>Result</h2>
 					<span class={ taskStatusClass(string(resultStatus)) }>{ string(resultStatus) }</span>
 					if result != "" {
-						<div class="qa-md-body">@renderMarkdown(result)</div>
+						<div class="qa-md-body">
+							@renderMarkdown(result)
+						</div>
 					}
 				</section>
 			}

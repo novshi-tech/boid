@@ -257,6 +257,25 @@ func TestBuildCardTimeline_GCSurvival_CardRequestRowDeleted(t *testing.T) {
 	if err := orchestrator.CreateCardRequest(d.Conn, req); err != nil {
 		t.Fatalf("CreateCardRequest: %v", err)
 	}
+	receipt := &orchestrator.OperationResult{TaskID: cardID, OperationType: "card_command:discuss", Result: orchestrator.OperationResultAccepted, TargetRequestID: req.ID}
+	if err := orchestrator.NewOperationResultStore(d.Conn).CreateOperationResult(receipt); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := CardPinnedItems(d.Conn, cardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pinned) != 1 || pinned[0].Operation == nil || pinned[0].Operation.ID != receipt.ID {
+		t.Fatalf("receipt must belong to running command: %+v", pinned)
+	}
+	history, err := BuildCardTimeline(d.Conn, cardID, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Items) != 0 {
+		t.Fatalf("running command receipt duplicated in history: %+v", history.Items)
+	}
+
 	if err := orchestrator.AttachCardRequest(d.Conn, req.ID, orchestrator.CardRequestTargetKindTask, "task-cmd-1"); err != nil {
 		t.Fatalf("AttachCardRequest: %v", err)
 	}
@@ -280,6 +299,10 @@ func TestBuildCardTimeline_GCSurvival_CardRequestRowDeleted(t *testing.T) {
 		t.Fatalf("items after GC = %+v, want 1 command item", page.Items)
 	}
 	item := page.Items[0]
+	if item.Operation == nil || item.Operation.ID != receipt.ID {
+		t.Fatal("finished command lost its operation identity")
+	}
+
 	if item.Kind != CardItemCommand {
 		t.Fatalf("Kind = %v, want CardItemCommand", item.Kind)
 	}
@@ -1055,5 +1078,41 @@ func TestCardPinnedItems_GoReservation_NotPinnedAsCommand(t *testing.T) {
 		if it.Kind == CardItemCommand {
 			t.Fatalf("pinned = %+v, want no CardItemCommand for a Go reservation", pinned)
 		}
+	}
+}
+
+func TestCardTimelineIncludesOperationHistoryAcrossPages(t *testing.T) {
+	d := newTimelineTestDB(t)
+	cardID := newTestCardForTimeline(t, d.Conn, "project-operations", "card-operations")
+	store := orchestrator.NewOperationResultStore(d.Conn)
+	for i := 0; i < 23; i++ {
+		receipt := &orchestrator.OperationResult{TaskID: cardID, OperationType: "go", Result: "rejected", CreatedAt: time.Date(2026, 9, 10, 0, i, 0, 0, time.UTC)}
+		if err := store.CreateOperationResult(receipt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := map[string]bool{}
+	cursor := ""
+	for {
+		page, err := BuildCardTimeline(d.Conn, cardID, cursor, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range page.Items {
+			if item.Kind != CardItemKind("operation") {
+				continue
+			}
+			if seen[item.ID] {
+				t.Fatalf("duplicate item %s", item.ID)
+			}
+			seen[item.ID] = true
+		}
+		if !page.HasMore {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if len(seen) != 23 {
+		t.Fatalf("got %d operation entries, want 23", len(seen))
 	}
 }

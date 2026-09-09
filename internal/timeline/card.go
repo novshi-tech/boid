@@ -52,6 +52,8 @@ const (
 	CardItemNote CardItemKind = "note"
 	// CardItemWakeDue is one "wake_due" action.
 	CardItemWakeDue CardItemKind = "wake_due"
+	// CardItemOperation is an attempt without a corresponding command item.
+	CardItemOperation CardItemKind = "operation"
 )
 
 // CardChildDetail is CardItem's payload for Kind == CardItemChild (both the
@@ -163,6 +165,8 @@ type CardItem struct {
 	Child *CardChildDetail
 	// Command is populated only for Kind == CardItemCommand.
 	Command *CardCommandDetail
+	// Operation is the associated human attempt, or a standalone receipt.
+	Operation *orchestrator.OperationResult
 }
 
 // DefaultCardTimelineLimit / MaxCardTimelineLimit bound one BuildCardTimeline
@@ -527,7 +531,34 @@ func loadCardTimelineState(dbtx db.DBTX, cardID string) (*cardTimelineState, err
 		}
 	}
 
+	receipts, err := orchestrator.NewOperationResultStore(dbtx).AllOperationResults(cardID)
+	if err != nil {
+		return nil, err
+	}
+	for _, receipt := range receipts {
+		matched := false
+		if receipt.Result == orchestrator.OperationResultAccepted && receipt.TargetRequestID != "" {
+			if st.activeCommand != nil && st.activeCommand.Command.RequestID == receipt.TargetRequestID {
+				st.activeCommand.Operation = receipt
+				matched = true
+			}
+			for i := range st.items {
+				if st.items[i].Command != nil && st.items[i].Command.RequestID == receipt.TargetRequestID {
+					st.items[i].Operation = receipt
+					matched = true
+				}
+			}
+		}
+		if !matched {
+			st.items = append(st.items, OperationCardItem(receipt))
+		}
+	}
 	return st, nil
+}
+
+// OperationCardItem retains rejected and unconfirmed attempts alongside work history.
+func OperationCardItem(receipt *orchestrator.OperationResult) CardItem {
+	return CardItem{ID: "operation:" + receipt.ID, Kind: CardItemOperation, Time: receipt.CreatedAt, HasTime: !receipt.CreatedAt.IsZero(), Operation: receipt}
 }
 
 // cardCommandOutcome pairs a command_finished/command_failed/

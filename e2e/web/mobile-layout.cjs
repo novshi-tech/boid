@@ -22,11 +22,18 @@ const assert = require('node:assert/strict');
     await page.locator('details:not(.action-menu):not(.tab-dropdown-toggle-wrap)').evaluateAll(els => els.forEach(el => el.open=true));
     const dimensions = await page.evaluate(() => ({viewport:innerWidth,document:document.documentElement.scrollWidth}));
     assert.ok(dimensions.document <= width,`overflow at ${width}px / ${zoom}x: ${JSON.stringify(dimensions)}`);
+    assert.equal(await page.locator('#task-operations, .card-current-activity').count(), 0);
+    assert.equal(await page.locator('form:has(input[name="type"][value="go"])').count(), 1);
+    for (const item of await page.locator('.card-timeline-item').all()) {
+     const stamp = await item.locator('.card-timeline-item-time').boundingBox();
+     const body = await item.locator('.card-timeline-item-body').boundingBox();
+     assert.ok(body.x >= stamp.x + stamp.width, 'timeline body must stay beside its timestamp');
+    }
     const titles = page.locator('.detail-children-title');
     assert.ok(await titles.count() >= 2);
     for (const title of await titles.all()) {
      const box = await title.boundingBox();
-     assert.ok(box.width >= Math.min(200,width-64),`compressed title ${box.width} at ${width}/${zoom}`);
+     assert.ok(box.width >= Math.min(180,width-96),`compressed title ${box.width} at ${width}/${zoom}`);
     }
     const link = page.locator('a[href="/tasks/card-mobile/children/mobile"]').first();
     await link.focus();

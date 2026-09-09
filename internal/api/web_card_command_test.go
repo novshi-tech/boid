@@ -117,8 +117,8 @@ func TestCardDetail_CommandSection_RendersButtonsInDeclaredOrder(t *testing.T) {
 	if !strings.Contains(body, `id="card-command-section"`) {
 		t.Fatalf("missing card-command-section; got:\n%s", body)
 	}
-	zetaIdx := strings.Index(body, ">Zeta Command<")
-	alphaIdx := strings.Index(body, ">Alpha Command<")
+	zetaIdx := strings.Index(body, ">Run Zeta Command<")
+	alphaIdx := strings.Index(body, ">Run Alpha Command<")
 	if zetaIdx == -1 || alphaIdx == -1 {
 		t.Fatalf("missing one or both command buttons; got:\n%s", body)
 	}
@@ -426,7 +426,7 @@ func TestCardDetail_CommandSection_OutsideEverySSEReplacedFragment(t *testing.T)
 
 // §5.1 places the instruction input second: below title/status/summary,
 // above the pinned items.
-func TestCardDetail_CommandSection_RendersBetweenStatusAndPinned(t *testing.T) {
+func TestCardDetail_CommandSection_RendersAfterTimeline(t *testing.T) {
 	h, repo, projectID := newCardCommandWebTestHandler(t, cardCommandMeta(
 		[]string{"review"},
 		map[string]orchestrator.CardCommand{"review": {Label: "Run", Run: "echo hi"}},
@@ -443,7 +443,7 @@ func TestCardDetail_CommandSection_RendersBetweenStatusAndPinned(t *testing.T) {
 	if status < 0 || command < 0 || pinned < 0 {
 		t.Fatalf("expected all three sections (status=%d command=%d pinned=%d); got:\n%s", status, command, pinned, html)
 	}
-	if !(status < command && command < pinned) {
-		t.Errorf("expected order status(%d) < command(%d) < pinned(%d)", status, command, pinned)
+	if !(status < pinned && pinned < command) {
+		t.Errorf("expected order status(%d) < pinned(%d) < command(%d)", status, pinned, command)
 	}
 }

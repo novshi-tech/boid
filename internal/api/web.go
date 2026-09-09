@@ -1133,6 +1133,16 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		templates.TaskDetailCardPinnedSection(tl, detail.Task.ID, detail.Task.Status).Render(r.Context(), w)
+	case "controls":
+		if detail.Task.Type != orchestrator.TaskTypeCard {
+			return
+		}
+		tl, err := h.cardPinnedView(id)
+		if err != nil {
+			http.Error(w, "Unable to load controls", http.StatusInternalServerError)
+			return
+		}
+		templates.TaskCardActionBar(detail.Task, detail.AvailableActions, tl).Render(r.Context(), w)
 	case "operations":
 		if detail.Task.Type != orchestrator.TaskTypeCard {
 			return
