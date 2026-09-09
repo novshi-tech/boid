@@ -3018,10 +3018,10 @@ details[open] > summary {
   gap: .5rem;
   margin-block: .75rem;
   font-size: .8rem;
-  color: var(--text-muted);
+  color: var(--muted);
 }
 .task-live-status[data-stale="true"] {
-  border-left: 3px solid #b9770e;
+  border-left: 3px solid var(--warning);
   padding: .5rem .75rem;
   color: inherit;
 }
