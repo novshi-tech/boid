@@ -506,6 +506,20 @@ func TestCardGoEligibilityUsesPinnedServerState(t *testing.T) {
 	}
 }
 
+func TestCardGoEligibilityOccupiedTakesPrecedenceOverReady(t *testing.T) {
+	ready := timeline.CardItem{Kind: timeline.CardItemChild, Child: &timeline.CardChildDetail{Status: orchestrator.TaskTriageChildStatusSpecced}}
+	occupied := timeline.CardItem{Kind: timeline.CardItemCommand}
+	for _, pinned := range [][]timeline.CardItem{
+		{ready, occupied},
+		{occupied, ready},
+	} {
+		tl := &CardTimelineView{Pinned: pinned}
+		if enabled, reason := cardGoEligibility(tl); enabled || !strings.Contains(reason, "not be queued") {
+			t.Errorf("pinned=%+v: enabled=%v reason=%q", pinned, enabled, reason)
+		}
+	}
+}
+
 func TestCardHistorySection_EmptyHistory_RendersEmptyState(t *testing.T) {
 	var buf bytes.Buffer
 	if err := CardHistorySection(&CardTimelineView{}, "card-1").Render(context.Background(), &buf); err != nil {

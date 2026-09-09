@@ -235,6 +235,7 @@ templ CardPinnedSection(tl *CardTimelineView, cardID string, cardStatus orchestr
 }
 
 func cardGoEligibility(tl *CardTimelineView) (bool, string) {
+	ready := false
 	if tl != nil {
 		for _, item := range tl.Pinned {
 			if item.Kind == timeline.CardItemCommand {
@@ -242,13 +243,16 @@ func cardGoEligibility(tl *CardTimelineView) (bool, string) {
 			}
 			if item.Kind == timeline.CardItemChild && item.Child != nil {
 				if item.Child.Status == orchestrator.TaskTriageChildStatusSpecced {
-					return true, "Ready work can be started now."
+					ready = true
 				}
 				if item.Child.Status == orchestrator.TaskTriageChildStatusDispatched {
 					return false, "Work is already running in the execution slot. This Go will not be queued."
 				}
 			}
 		}
+	}
+	if ready {
+		return true, "Ready work can be started now."
 	}
 	return false, "No ready work is available to start."
 }

@@ -271,6 +271,7 @@ func CardPinnedSection(tl *CardTimelineView, cardID string, cardStatus orchestra
 }
 
 func cardGoEligibility(tl *CardTimelineView) (bool, string) {
+	ready := false
 	if tl != nil {
 		for _, item := range tl.Pinned {
 			if item.Kind == timeline.CardItemCommand {
@@ -278,13 +279,16 @@ func cardGoEligibility(tl *CardTimelineView) (bool, string) {
 			}
 			if item.Kind == timeline.CardItemChild && item.Child != nil {
 				if item.Child.Status == orchestrator.TaskTriageChildStatusSpecced {
-					return true, "Ready work can be started now."
+					ready = true
 				}
 				if item.Child.Status == orchestrator.TaskTriageChildStatusDispatched {
 					return false, "Work is already running in the execution slot. This Go will not be queued."
 				}
 			}
 		}
+	}
+	if ready {
+		return true, "Ready work can be started now."
 	}
 	return false, "No ready work is available to start."
 }
@@ -318,7 +322,7 @@ func CardGoControl(tl *CardTimelineView, cardID string) templ.Component {
 		var templ_7745c5c3_Var3 templ.SafeURL
 		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + cardID + "/action"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 259, Col: 76}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 263, Col: 76}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
@@ -341,7 +345,7 @@ func CardGoControl(tl *CardTimelineView, cardID string) templ.Component {
 		var templ_7745c5c3_Var4 string
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(reason)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 263, Col: 59}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 267, Col: 59}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -388,7 +392,7 @@ func CardHistorySection(tl *CardTimelineView, cardID string) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(cardTimelineTZLabel())
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 274, Col: 70}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 278, Col: 70}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -537,7 +541,7 @@ func cardHistoryItems(items []timeline.CardItem, cardID string, priorDateKey str
 				var templ_7745c5c3_Var10 string
 				templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(seps[i])
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 311, Col: 47}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 315, Col: 47}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 				if templ_7745c5c3_Err != nil {
@@ -594,7 +598,7 @@ func cardHistoryLoadOlder(cardID string, hasMore bool, nextCursor string, last t
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(cardTimelineOlderURL(cardID, nextCursor, lastDateKey))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 327, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 331, Col: 66}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -642,7 +646,7 @@ func CardTimelineItem(item timeline.CardItem, cardID string, cardStatus orchestr
 		var templ_7745c5c3_Var14 string
 		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs("card-item-" + string(item.Kind) + "-" + item.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 343, Col: 58}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 347, Col: 58}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
@@ -656,7 +660,7 @@ func CardTimelineItem(item timeline.CardItem, cardID string, cardStatus orchestr
 			var templ_7745c5c3_Var15 string
 			templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(cardItemPinnedStamp(item))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 346, Col: 31}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 350, Col: 31}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 			if templ_7745c5c3_Err != nil {
@@ -666,7 +670,7 @@ func CardTimelineItem(item timeline.CardItem, cardID string, cardStatus orchestr
 			var templ_7745c5c3_Var16 string
 			templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(cardItemClockLabel(item.Time))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 348, Col: 35}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 352, Col: 35}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 			if templ_7745c5c3_Err != nil {
@@ -762,7 +766,7 @@ func cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID
 			var templ_7745c5c3_Var18 string
 			templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs("card-child-" + item.CorrelationID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 379, Col: 75}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 383, Col: 75}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 			if templ_7745c5c3_Err != nil {
@@ -797,7 +801,7 @@ func cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID
 			var templ_7745c5c3_Var21 string
 			templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(displayStatus)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 381, Col: 69}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 385, Col: 69}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 			if templ_7745c5c3_Err != nil {
@@ -815,7 +819,7 @@ func cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID
 				var templ_7745c5c3_Var22 string
 				templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(c.Spec.Behavior)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 383, Col: 63}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 387, Col: 63}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 				if templ_7745c5c3_Err != nil {
@@ -833,7 +837,7 @@ func cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID
 			var templ_7745c5c3_Var23 templ.SafeURL
 			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(cardChildDetailURL(cardID, c.ChildID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 385, Col: 96}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 389, Col: 96}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 			if templ_7745c5c3_Err != nil {
@@ -847,7 +851,7 @@ func cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID
 				var templ_7745c5c3_Var24 string
 				templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(c.Title)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 387, Col: 15}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 391, Col: 15}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 				if templ_7745c5c3_Err != nil {
@@ -857,7 +861,7 @@ func cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID
 				var templ_7745c5c3_Var25 string
 				templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(c.ChildID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 389, Col: 17}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 393, Col: 17}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 				if templ_7745c5c3_Err != nil {
@@ -876,7 +880,7 @@ func cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID
 				var templ_7745c5c3_Var26 string
 				templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(c.Spec.Project)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 393, Col: 59}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 397, Col: 59}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 				if templ_7745c5c3_Err != nil {
@@ -901,7 +905,7 @@ func cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID
 				var templ_7745c5c3_Var27 templ.SafeURL
 				templ_7745c5c3_Var27, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + c.TaskRef + "/questions/" + awaitingQuestionID))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 399, Col: 88}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 403, Col: 88}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var27))
 				if templ_7745c5c3_Err != nil {
@@ -946,7 +950,7 @@ func cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID
 				var templ_7745c5c3_Var30 string
 				templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(string(c.ResultStatus))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 406, Col: 94}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 410, Col: 94}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 				if templ_7745c5c3_Err != nil {
@@ -964,7 +968,7 @@ func cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID
 					var templ_7745c5c3_Var31 string
 					templ_7745c5c3_Var31, templ_7745c5c3_Err = templ.JoinStringErrs(c.Result)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 408, Col: 62}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 412, Col: 62}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var31))
 					if templ_7745c5c3_Err != nil {
@@ -1024,7 +1028,7 @@ func cardChildFinishedItemBody(item timeline.CardItem, cardID string) templ.Comp
 				var templ_7745c5c3_Var33 templ.SafeURL
 				templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(cardChildDetailURL(cardID, c.ChildID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 421, Col: 66}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 425, Col: 66}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 				if templ_7745c5c3_Err != nil {
@@ -1038,7 +1042,7 @@ func cardChildFinishedItemBody(item timeline.CardItem, cardID string) templ.Comp
 					var templ_7745c5c3_Var34 string
 					templ_7745c5c3_Var34, templ_7745c5c3_Err = templ.JoinStringErrs(c.Title)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 424, Col: 15}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 428, Col: 15}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var34))
 					if templ_7745c5c3_Err != nil {
@@ -1048,7 +1052,7 @@ func cardChildFinishedItemBody(item timeline.CardItem, cardID string) templ.Comp
 					var templ_7745c5c3_Var35 string
 					templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(c.ChildID)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 426, Col: 17}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 430, Col: 17}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 					if templ_7745c5c3_Err != nil {
@@ -1090,7 +1094,7 @@ func cardChildFinishedItemBody(item timeline.CardItem, cardID string) templ.Comp
 			var templ_7745c5c3_Var38 string
 			templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(cardChildFinishedLabel(c.ClosingActionType))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 432, Col: 128}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 436, Col: 128}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 			if templ_7745c5c3_Err != nil {
@@ -1135,7 +1139,7 @@ func cardCommandItemBody(item timeline.CardItem, pinned bool) templ.Component {
 			var templ_7745c5c3_Var40 string
 			templ_7745c5c3_Var40, templ_7745c5c3_Err = templ.JoinStringErrs(cardCommandLabel(cmd))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 441, Col: 68}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 445, Col: 68}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var40))
 			if templ_7745c5c3_Err != nil {
@@ -1171,7 +1175,7 @@ func cardCommandItemBody(item timeline.CardItem, pinned bool) templ.Component {
 				var templ_7745c5c3_Var43 string
 				templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(string(cmd.Status))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 443, Col: 89}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 447, Col: 89}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 				if templ_7745c5c3_Err != nil {
@@ -1207,7 +1211,7 @@ func cardCommandItemBody(item timeline.CardItem, pinned bool) templ.Component {
 				var templ_7745c5c3_Var46 string
 				templ_7745c5c3_Var46, templ_7745c5c3_Err = templ.JoinStringErrs(cmd.Outcome)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 445, Col: 84}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 449, Col: 84}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var46))
 				if templ_7745c5c3_Err != nil {
@@ -1226,7 +1230,7 @@ func cardCommandItemBody(item timeline.CardItem, pinned bool) templ.Component {
 				var templ_7745c5c3_Var47 templ.SafeURL
 				templ_7745c5c3_Var47, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + cmd.TargetID))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 448, Col: 53}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 452, Col: 53}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var47))
 				if templ_7745c5c3_Err != nil {
@@ -1244,7 +1248,7 @@ func cardCommandItemBody(item timeline.CardItem, pinned bool) templ.Component {
 				var templ_7745c5c3_Var48 templ.SafeURL
 				templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/jobs/" + cmd.TargetID))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 450, Col: 52}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 454, Col: 52}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
 				if templ_7745c5c3_Err != nil {
@@ -1268,7 +1272,7 @@ func cardCommandItemBody(item timeline.CardItem, pinned bool) templ.Component {
 					var templ_7745c5c3_Var49 string
 					templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(cmd.Result)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 455, Col: 58}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 459, Col: 58}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
 					if templ_7745c5c3_Err != nil {
@@ -1291,7 +1295,7 @@ func cardCommandItemBody(item timeline.CardItem, pinned bool) templ.Component {
 					var templ_7745c5c3_Var50 string
 					templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(cmd.Error)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 458, Col: 56}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 462, Col: 56}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 					if templ_7745c5c3_Err != nil {
@@ -1314,7 +1318,7 @@ func cardCommandItemBody(item timeline.CardItem, pinned bool) templ.Component {
 					var templ_7745c5c3_Var51 string
 					templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.JoinStringErrs(cmd.Reason)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 461, Col: 58}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 465, Col: 58}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var51))
 					if templ_7745c5c3_Err != nil {
@@ -1387,7 +1391,7 @@ func cardSuggestionHistoryBody(item timeline.CardItem) templ.Component {
 			var templ_7745c5c3_Var55 string
 			templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinStringErrs(s.Verb)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 475, Col: 70}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 479, Col: 70}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
 			if templ_7745c5c3_Err != nil {
@@ -1405,7 +1409,7 @@ func cardSuggestionHistoryBody(item timeline.CardItem) templ.Component {
 				var templ_7745c5c3_Var56 string
 				templ_7745c5c3_Var56, templ_7745c5c3_Err = templ.JoinStringErrs(s.Action)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 477, Col: 53}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 481, Col: 53}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var56))
 				if templ_7745c5c3_Err != nil {
@@ -1428,7 +1432,7 @@ func cardSuggestionHistoryBody(item timeline.CardItem) templ.Component {
 				var templ_7745c5c3_Var57 string
 				templ_7745c5c3_Var57, templ_7745c5c3_Err = templ.JoinStringErrs(s.Reason)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 481, Col: 51}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 485, Col: 51}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var57))
 				if templ_7745c5c3_Err != nil {
@@ -1451,7 +1455,7 @@ func cardSuggestionHistoryBody(item timeline.CardItem) templ.Component {
 				var templ_7745c5c3_Var58 string
 				templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.JoinStringErrs(s.Basis)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 484, Col: 56}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 488, Col: 56}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var58))
 				if templ_7745c5c3_Err != nil {
@@ -1518,7 +1522,7 @@ func cardAnsweredItemBody(item timeline.CardItem) templ.Component {
 		var templ_7745c5c3_Var62 string
 		templ_7745c5c3_Var62, templ_7745c5c3_Err = templ.JoinStringErrs(cardAnsweredLabel(a.Answer))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 492, Col: 89}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 496, Col: 89}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var62))
 		if templ_7745c5c3_Err != nil {
@@ -1536,7 +1540,7 @@ func cardAnsweredItemBody(item timeline.CardItem) templ.Component {
 			var templ_7745c5c3_Var63 string
 			templ_7745c5c3_Var63, templ_7745c5c3_Err = templ.JoinStringErrs(a.Verb)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 494, Col: 50}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 498, Col: 50}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var63))
 			if templ_7745c5c3_Err != nil {
@@ -1555,7 +1559,7 @@ func cardAnsweredItemBody(item timeline.CardItem) templ.Component {
 			var templ_7745c5c3_Var64 string
 			templ_7745c5c3_Var64, templ_7745c5c3_Err = templ.JoinStringErrs(a.Basis)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 497, Col: 56}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 501, Col: 56}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var64))
 			if templ_7745c5c3_Err != nil {
@@ -1602,7 +1606,7 @@ func cardSummaryItemBody(item timeline.CardItem) templ.Component {
 		var templ_7745c5c3_Var66 string
 		templ_7745c5c3_Var66, templ_7745c5c3_Err = templ.JoinStringErrs(cardItemSummaryText(item))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 505, Col: 69}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 509, Col: 69}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var66))
 		if templ_7745c5c3_Err != nil {
@@ -1644,7 +1648,7 @@ func cardNoteItemBody(item timeline.CardItem) templ.Component {
 		var templ_7745c5c3_Var68 string
 		templ_7745c5c3_Var68, templ_7745c5c3_Err = templ.JoinStringErrs(cardItemNoteText(item))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 512, Col: 63}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 516, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var68))
 		if templ_7745c5c3_Err != nil {
@@ -1749,7 +1753,7 @@ func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, optio
 					var templ_7745c5c3_Var70 templ.SafeURL
 					templ_7745c5c3_Var70, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + form.TargetID))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 575, Col: 56}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 579, Col: 56}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var70))
 					if templ_7745c5c3_Err != nil {
@@ -1772,7 +1776,7 @@ func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, optio
 			var templ_7745c5c3_Var71 templ.SafeURL
 			templ_7745c5c3_Var71, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + cardID + "/commands"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 579, Col: 79}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 583, Col: 79}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var71))
 			if templ_7745c5c3_Err != nil {
@@ -1785,7 +1789,7 @@ func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, optio
 			var templ_7745c5c3_Var72 string
 			templ_7745c5c3_Var72, templ_7745c5c3_Err = templ.JoinStringErrs(cardCommandFormInstruction(form))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 580, Col: 157}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 584, Col: 157}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var72))
 			if templ_7745c5c3_Err != nil {
@@ -1808,7 +1812,7 @@ func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, optio
 					var templ_7745c5c3_Var73 string
 					templ_7745c5c3_Var73, templ_7745c5c3_Err = templ.JoinStringErrs(opt.Key)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 584, Col: 55}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 588, Col: 55}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var73))
 					if templ_7745c5c3_Err != nil {
@@ -1821,7 +1825,7 @@ func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, optio
 					var templ_7745c5c3_Var74 string
 					templ_7745c5c3_Var74, templ_7745c5c3_Err = templ.JoinStringErrs(opt.Label)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 584, Col: 95}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 588, Col: 95}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var74))
 					if templ_7745c5c3_Err != nil {
@@ -1877,7 +1881,7 @@ func TaskDetailCardSummary(summary string) templ.Component {
 			var templ_7745c5c3_Var76 string
 			templ_7745c5c3_Var76, templ_7745c5c3_Err = templ.JoinStringErrs(summary)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 597, Col: 37}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 601, Col: 37}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var76))
 			if templ_7745c5c3_Err != nil {
