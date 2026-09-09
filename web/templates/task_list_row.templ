@@ -291,6 +291,9 @@ templ taskListRowMovement(row ListRow) {
 // reason/summary can be clipped out of view. Renders nothing when both
 // labels are empty.
 templ cardActivityBadges(a CardActivityState) {
+	if a.DecisionLabel != "" {
+		<span class="list-row-activity list-row-activity-decision">{ a.DecisionLabel }</span>
+	}
 	if a.WorkLabel != "" {
 		<span class="list-row-activity list-row-activity-work">{ a.WorkLabel }</span>
 	}

@@ -26,6 +26,7 @@ templ Layout(title string, backURL string) {
 			<link rel="stylesheet" href={ StaticCSSURL() }/>
 			<script src="/static/assets/htmx-2.0.4.min.js"></script>
 			<script src="/static/boid-paste-attach.js" defer></script>
+			<script src="/static/boid-operation-submit.js" defer></script>
 			<script>
 				// This script runs in <head> before <body> exists, so attach
 				// to `document` (htmx events bubble up). htmx 2.x dropped
@@ -60,19 +61,19 @@ templ Layout(title string, backURL string) {
 				// menus (kebab / tab-more) don't linger over freshly loaded
 				// content.
 				document.addEventListener("htmx:afterSwap",function(){
-					document.querySelectorAll("details[open]").forEach(function(d){d.open=false;});
+					document.querySelectorAll("details.action-menu[open], details.tab-dropdown-toggle-wrap[open]").forEach(function(d){d.open=false;});
 				});
 				// Close any open <details> dropdowns when the user clicks
 				// (or taps) outside them. Matches the expected behaviour
 				// of kebab / tab-more menus.
 				document.addEventListener("click",function(e){
-					document.querySelectorAll("details[open]").forEach(function(d){
+					document.querySelectorAll("details.action-menu[open], details.tab-dropdown-toggle-wrap[open]").forEach(function(d){
 						if(!d.contains(e.target)) d.open=false;
 					});
 				});
 				document.addEventListener("keydown",function(e){
 					if(e.key!=="Escape") return;
-					document.querySelectorAll("details[open]").forEach(function(d){d.open=false;});
+					document.querySelectorAll("details.action-menu[open], details.tab-dropdown-toggle-wrap[open]").forEach(function(d){d.open=false;});
 				});
 				// Hide the bottom action bar when the page is scrolled away
 				// from the top. Feels more app-like: bar is only in the way

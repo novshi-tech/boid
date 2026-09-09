@@ -105,8 +105,14 @@ Creating, observing, and updating tasks lives under `boid task`. See [Concepts /
 | `boid task notify <id> --message MSG [--ask QUESTION] [--question-id ID] [--done] [--fail] [--progress] [--session-id ID]` | Send a notification to the user from an agent. Invokes `notify.command` from `~/.config/boid/config.yaml`. With `--ask`, enters Q&A mode and transitions the task to `awaiting`. |
 | `boid task answer --task ID --question-id ID --answer TEXT` | Submit a user reply to an `awaiting` task. Transitions the task `awaiting → executing` and restarts the hook. |
 | `boid task import [-f FILE] [--project ID]` | Bulk import tasks from JSONL. |
+| `boid task identity link <identity> <task-id> [--url URL] [--display-name NAME] [--project-id ID]` | Link an external identity to a task. Integration Packs may attach the resource's absolute HTTP(S) URL and a display name. |
+| `boid task identity unlink <identity> [--project-id ID]` | Remove an identity binding. |
+| `boid task identity resolve <identity> [--project-id ID]` | Resolve an identity to its task ID and status. |
+| `boid task resolve-or-capture <identity> [--title TITLE] [--description TEXT \| --description-file FILE] [--url URL] [--display-name NAME] [--project-id ID]` | Resolve an identity or atomically create and link a parked card. |
 
 The notify script receives: `BOID_TASK_ID`, `BOID_TASK_TITLE`, `BOID_PROJECT_ID`, `BOID_PROJECT_NAME`, `BOID_MESSAGE`, `BOID_TASK_URL` (set only when `web.public_url` is configured).
+
+The identity and resolve-or-capture commands run inside a task sandbox through the brokered CLI. Integration Packs construct identity resource URLs because they own each service's URL rules. Boid accepts only absolute `http://` or `https://` URLs, stores them without service-specific rewriting, and renders them in task detail. Omitting `--url` or `--display-name` preserves that field's stored value; passing the flag with an empty value clears it. Metadata is saved atomically with the identity link or capture, including when an existing binding is updated. This interface does not rewrite Packs or backfill existing identities; identities without a URL remain visible as unavailable references.
 
 #### `boid task notify` flags
 

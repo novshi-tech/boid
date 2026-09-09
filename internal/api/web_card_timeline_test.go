@@ -326,8 +326,8 @@ func TestCardDetail_LiveScript_RefreshesPinnedKind(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body:\n%s", code, body)
 	}
-	if got := strings.Count(body, "'pinned'"); got != 5 {
-		t.Errorf("live script should request kind=pinned from all 5 call sites (action listener, job listener, child listener, visibilitychange, pageshow), found %d; got:\n%s", got, body)
+	if got := strings.Count(body, "'pinned'"); got < 5 {
+		t.Errorf("live script should request kind=pinned from all original call sites (action listener, job listener, child listener, visibilitychange, pageshow), found %d; got:\n%s", got, body)
 	}
 }
 

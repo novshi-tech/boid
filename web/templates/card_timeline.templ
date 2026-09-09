@@ -22,6 +22,7 @@ import (
 // (a pinned dispatched child's awaiting-question link) neither read model
 // resolves on its own.
 type CardTimelineView struct {
+	Activity CardActivityState
 	Pinned             []timeline.CardItem
 	History            []timeline.CardItem
 	HasMore            bool
@@ -180,6 +181,10 @@ func cardChildFinishedLabel(closingActionType string) string {
 	return "closed"
 }
 
+func cardChildDetailURL(cardID, childID string) string {
+	return "/tasks/" + url.PathEscape(cardID) + "/children/" + url.PathEscape(childID)
+}
+
 // cardCommandLabel uses the launch-time label snapshot, falling back to the
 // raw command_key — never a daemon-invented gloss.
 func cardCommandLabel(cmd *timeline.CardCommandDetail) string {
@@ -218,12 +223,49 @@ func cardCommandOutcomeBadgeClass(outcome string) string {
 // never subject to the history page's item cap.
 templ CardPinnedSection(tl *CardTimelineView, cardID string, cardStatus orchestrator.TaskStatus) {
 	if tl != nil && len(tl.Pinned) > 0 {
-		<ul class="card-pinned-list">
-			for _, item := range tl.Pinned {
-				@CardTimelineItem(item, cardID, cardStatus, true, tl.AwaitingQuestionID)
-			}
-		</ul>
+		<section class="card-current-activity">
+			<h2 class="card-current-activity-title">Current activity</h2>
+			<ul class="card-pinned-list">
+				for _, item := range tl.Pinned {
+					@CardTimelineItem(item, cardID, cardStatus, true, tl.AwaitingQuestionID)
+				}
+			</ul>
+		</section>
 	}
+}
+
+func cardGoEligibility(tl *CardTimelineView) (bool, string) {
+	ready := false
+	if tl != nil {
+		for _, item := range tl.Pinned {
+			if item.Kind == timeline.CardItemCommand {
+				return false, "Another card command is using the execution slot. This Go will not be queued."
+			}
+			if item.Kind == timeline.CardItemChild && item.Child != nil {
+				if item.Child.Status == orchestrator.TaskTriageChildStatusSpecced {
+					ready = true
+				}
+				if item.Child.Status == orchestrator.TaskTriageChildStatusDispatched {
+					return false, "Work is already running in the execution slot. This Go will not be queued."
+				}
+			}
+		}
+	}
+	if ready {
+		return true, "Ready work can be started now."
+	}
+	return false, "No ready work is available to start."
+}
+
+templ CardGoControl(tl *CardTimelineView, cardID string) {
+	{{ enabled, reason := cardGoEligibility(tl) }}
+	<div class="card-go-control">
+		<form method="post" action={ templ.SafeURL("/tasks/" + cardID + "/action") }>
+			<input type="hidden" name="type" value="go"/>
+			<button type="submit" class="btn btn-primary" disabled?={ !enabled } aria-describedby="card-go-reason">Go</button>
+		</form>
+		<span id="card-go-reason" class="card-go-reason">{ reason }</span>
+	</div>
 }
 
 // CardHistorySection renders a card's timeline history page (newest-first,
@@ -312,9 +354,9 @@ templ CardTimelineItem(item timeline.CardItem, cardID string, cardStatus orchest
 		</div>
 		<div class="card-timeline-item-body">
 			if item.Kind == timeline.CardItemChild {
-				@cardChildItemBody(item, awaitingQuestionID)
+				@cardChildItemBody(item, cardID, awaitingQuestionID)
 			} else if item.Kind == timeline.CardItemChildFinished {
-				@cardChildFinishedItemBody(item)
+				@cardChildFinishedItemBody(item, cardID)
 			} else if item.Kind == timeline.CardItemCommand {
 				@cardCommandItemBody(item, pinned)
 			} else if item.Kind == timeline.CardItemSuggestion && pinned {
@@ -334,7 +376,7 @@ templ CardTimelineItem(item timeline.CardItem, cardID string, cardStatus orchest
 	</li>
 }
 
-templ cardChildItemBody(item timeline.CardItem, awaitingQuestionID string) {
+templ cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID string) {
 	if item.Child != nil {
 		{{ c := item.Child }}
 		{{ displayStatus := cardChildDisplayStatus(c) }}
@@ -344,13 +386,13 @@ templ cardChildItemBody(item timeline.CardItem, awaitingQuestionID string) {
 				if c.Spec != nil && c.Spec.Behavior != "" {
 					<span class="badge badge-child-behavior">{ c.Spec.Behavior }</span>
 				}
-				<span class="detail-children-title">
+				<a class="detail-children-title" href={ templ.SafeURL(cardChildDetailURL(cardID, c.ChildID)) }>
 					if c.Title != "" {
 						{ c.Title }
 					} else {
 						{ c.ChildID }
 					}
-				</span>
+				</a>
 				if c.Spec != nil && c.Spec.Project != "" {
 					<span class="detail-children-project">{ c.Spec.Project }</span>
 				}
@@ -362,17 +404,7 @@ templ cardChildItemBody(item timeline.CardItem, awaitingQuestionID string) {
 						<span aria-hidden="true">⚠</span> question
 					</a>
 				}
-				if c.TaskExists {
-					<a href={ templ.SafeURL("/tasks/" + c.TaskRef) } class="detail-children-link">→ task</a>
-				}
 			</div>
-			if c.Spec != nil && c.Spec.Description != "" {
-				<details class="detail-children-spec">
-					<summary class="detail-children-spec-toggle">spec</summary>
-					<div class="detail-children-spec-label">description</div>
-					<pre class="detail-children-spec-body">{ c.Spec.Description }</pre>
-				</details>
-			}
 			if c.HasResult {
 				<div class="card-timeline-child-result">
 					<span class={ "badge", taskStatusClass(string(c.ResultStatus)) }>{ string(c.ResultStatus) }</span>
@@ -385,18 +417,22 @@ templ cardChildItemBody(item timeline.CardItem, awaitingQuestionID string) {
 	}
 }
 
-templ cardChildFinishedItemBody(item timeline.CardItem) {
+templ cardChildFinishedItemBody(item timeline.CardItem, cardID string) {
 	if item.Child != nil {
 		{{ c := item.Child }}
 		<div class="card-timeline-child-finished">
-			<a href={ templ.SafeURL("#card-child-" + item.CorrelationID) } class="detail-children-link">
-				Finished:
-				if c.Title != "" {
-					{ c.Title }
-				} else {
-					{ c.ChildID }
-				}
-			</a>
+			if c.ChildID != "" {
+				<a href={ templ.SafeURL(cardChildDetailURL(cardID, c.ChildID)) } class="detail-children-link">
+					Finished:
+					if c.Title != "" {
+						{ c.Title }
+					} else {
+						{ c.ChildID }
+					}
+				</a>
+			} else {
+				<span class="detail-children-hint">Finished child (details unavailable)</span>
+			}
 			<span class={ "badge", "badge-" + cardChildFinishedLabel(c.ClosingActionType) }>{ cardChildFinishedLabel(c.ClosingActionType) }</span>
 		</div>
 	}
@@ -413,7 +449,9 @@ templ cardCommandItemBody(item timeline.CardItem, pinned bool) {
 				<span class={ "badge", cardCommandOutcomeBadgeClass(cmd.Outcome) }>{ cmd.Outcome }</span>
 			}
 			if cmd.TargetExists {
-				<a href={ templ.SafeURL("/tasks/" + cmd.TargetID) } class="detail-children-link">→ task</a>
+				<a href={ templ.SafeURL("/tasks/" + cmd.TargetID) } class="detail-children-link">Open task</a>
+			} else if cmd.TargetKind == orchestrator.CardRequestTargetKindSession && cmd.TargetID != "" {
+				<a href={ templ.SafeURL("/jobs/" + cmd.TargetID) } class="detail-children-link">Open session</a>
 			}
 		</div>
 		if !pinned {
@@ -487,10 +525,9 @@ type CardCommandOption struct {
 	Label string
 }
 
-// CardCommandFormState carries a just-submitted command form's state back
-// into the SAME render when the card's execution slot was already occupied
-// — see CardCommandSection's own doc comment for why this exists instead of
-// a redirect.
+// CardCommandFormState carries a failed command form's state back into the
+// same render so its instruction remains available for correction or retry.
+// Occupied adds the currently competing operation when one can be linked.
 type CardCommandFormState struct {
 	Occupied    bool
 	Instruction string
@@ -533,7 +570,7 @@ func cardCommandTerminalStatus(cardStatus orchestrator.TaskStatus) bool {
 // redirecting, so the textarea keeps what the caller typed). A plain GET (or
 // a successful launch, which redirects) always passes form == nil.
 templ CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, options []CardCommandOption, form *CardCommandFormState) {
-	if len(options) > 0 && !cardCommandTerminalStatus(cardStatus) {
+	if (len(options) > 0 && !cardCommandTerminalStatus(cardStatus)) || form != nil {
 		<div id="card-command-section" class="card-command-section">
 			if form != nil && form.Occupied {
 				<div class="card-command-occupied">
@@ -545,25 +582,22 @@ templ CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, opti
 			}
 			<form method="post" action={ templ.SafeURL("/tasks/" + cardID + "/commands") } class="card-command-form">
 				<textarea name="instruction" class="form-input card-command-instruction" rows="3" placeholder="Instruction (optional)">{ cardCommandFormInstruction(form) }</textarea>
-				<div class="card-command-buttons">
-					for _, opt := range options {
-						<button type="submit" name="key" value={ opt.Key } class="btn btn-secondary">{ opt.Label }</button>
-					}
-				</div>
+				if !cardCommandTerminalStatus(cardStatus) {
+					<div class="card-command-buttons">
+						for _, opt := range options {
+							<button type="submit" name="key" value={ opt.Key } class="btn btn-secondary">{ opt.Label }</button>
+						}
+					</div>
+				}
 			</form>
 		</div>
 	}
 }
 
-// TaskDetailCardSummary renders a card's current summary — the most recent
-// attrs_set{summary} value, task_triage.detail.summary — directly in the
-// page body, collapsing long text the same way TaskDetailCardDescription
-// does. Renders nothing when there is no summary.
+// TaskDetailCardSummary renders the current summary as the always-visible
+// lead-in to the expandable description. It renders nothing when empty.
 templ TaskDetailCardSummary(summary string) {
 	if summary != "" {
-		<details class="card-description" open?={ cardDescriptionOpenByDefault(summary) }>
-			<summary class="card-description-toggle">Summary</summary>
-			<div class="qa-md-body">{ summary }</div>
-		</details>
+		<div class="card-summary">{ summary }</div>
 	}
 }

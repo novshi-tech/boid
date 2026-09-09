@@ -36,6 +36,8 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+func ptrString(s string) *string { return &s }
+
 // realTaskRepoTxStore adapts *orchestrator.TaskRepository (which implements
 // every Task/Action/CardAttrs/TaskIdentity method TxStore needs) plus
 // trivial Job stubs (unused by ResolveOrCapture) into a full TxStore, backed
@@ -89,15 +91,22 @@ func newResolveOrCaptureTestService(t *testing.T) *TaskWorkflowService {
 
 func TestResolveOrCapture_UnregisteredIdentity_CreatesCapturedTaskAndLinks(t *testing.T) {
 	svc := newResolveOrCaptureTestService(t)
+	resourceURL := "https://jira.example/browse/ROOKPF-1"
 
 	result, err := svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
 		ProjectID:   "proj-1",
 		Identity:    "jira:ROOKPF-1",
 		Title:       "ROOKPF-1: something broke",
 		Description: "the body",
+		URL:         &resourceURL,
+		DisplayName: ptrString("Incident ROOKPF-1"),
 	})
 	if err != nil {
 		t.Fatalf("ResolveOrCapture() error = %v", err)
+	}
+	metadata, err := orchestrator.ListIdentityMetadataByTask(svc.Tx.(realTransactor).conn, result.TaskID)
+	if err != nil || len(metadata) != 1 || metadata[0].URL != resourceURL || metadata[0].DisplayName != "Incident ROOKPF-1" {
+		t.Fatalf("saved identity metadata = %#v, err=%v", metadata, err)
 	}
 	if !result.Created {
 		t.Error("Created = false, want true for an unregistered identity")
@@ -137,6 +146,33 @@ func TestResolveOrCapture_UnregisteredIdentity_CreatesCapturedTaskAndLinks(t *te
 	}
 	if tt.TaskID != result.TaskID {
 		t.Errorf("CardAttrs.TaskID = %q, want %q", tt.TaskID, result.TaskID)
+	}
+}
+
+func TestResolveOrCapture_MetadataFailureRollsBackCapturedTaskAndBinding(t *testing.T) {
+	svc := newResolveOrCaptureTestService(t)
+	conn := svc.Tx.(realTransactor).conn
+	if _, err := conn.Exec(`CREATE TRIGGER reject_capture_identity_metadata
+		BEFORE UPDATE OF url, display_name ON task_identities
+		BEGIN SELECT RAISE(FAIL, 'forced metadata failure'); END`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+	resourceURL := "https://jira.example/browse/ROLLBACK-1"
+	_, err := svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
+		ProjectID: "proj-1", Identity: "jira:ROLLBACK-1", Title: "must roll back", URL: &resourceURL,
+	})
+	if err == nil {
+		t.Fatal("ResolveOrCapture returned nil for forced metadata failure")
+	}
+	if _, err := orchestrator.ResolveIdentity(conn, "proj-1", "jira:ROLLBACK-1"); !errors.Is(err, orchestrator.ErrTaskNotFound) {
+		t.Fatalf("binding after failed capture: err = %v, want ErrTaskNotFound", err)
+	}
+	tasks, err := orchestrator.ListTasks(conn, orchestrator.TaskFilter{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("failed capture left %d task(s): %#v", len(tasks), tasks)
 	}
 }
 

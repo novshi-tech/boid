@@ -15,6 +15,11 @@ import (
 
 // errIdentityStoreUnavailable guards the three identity ops when no identity store is configured.
 var errIdentityStoreUnavailable = errors.New("identity store unavailable")
+var errIdentityMetadataUnavailable = errors.New("identity metadata store unavailable")
+
+type identityMetadataWriter interface {
+	UpdateIdentityMetadata(projectID, identity, taskID string, url, displayName *string) error
+}
 
 // LinkIdentity binds identity to taskID within projectID's scope. See
 // TaskIdentityStore.LinkIdentity for the idempotent-same-task /
@@ -32,6 +37,34 @@ func (s *TaskAppService) LinkIdentity(ctx context.Context, projectID, identity, 
 	}
 	return s.Tx.WithinTx(func(tx TxStore) error {
 		return linkIdentityIn(ctx, tx, projectID, identity, taskID)
+	})
+}
+
+// LinkIdentityWithMetadata links an identity and applies explicitly supplied metadata.
+func (s *TaskAppService) LinkIdentityWithMetadata(ctx context.Context, projectID, identity, taskID string, url, displayName *string) error {
+	if url == nil && displayName == nil {
+		return s.LinkIdentity(ctx, projectID, identity, taskID)
+	}
+	if url != nil {
+		if err := orchestrator.ValidateIdentityURL(*url); err != nil {
+			return err
+		}
+	}
+	if s.Tx == nil {
+		// A metadata-bearing link is one logical write. Refuse it when no
+		// transaction is available rather than leaving a binding behind if
+		// the metadata update fails.
+		return errIdentityMetadataUnavailable
+	}
+	return s.Tx.WithinTx(func(tx TxStore) error {
+		r, ok := tx.(identityMetadataWriter)
+		if !ok {
+			return errIdentityMetadataUnavailable
+		}
+		if err := linkIdentityIn(ctx, tx, projectID, identity, taskID); err != nil {
+			return err
+		}
+		return r.UpdateIdentityMetadata(projectID, identity, taskID, url, displayName)
 	})
 }
 

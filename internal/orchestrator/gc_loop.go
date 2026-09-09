@@ -57,5 +57,6 @@ func (l *GCLoop) runOnce() {
 		"runtimes", result.Runtimes,
 		"sandbox_tmp", result.SandboxTmp,
 		"devices", result.Devices,
+		"operation_results", result.OperationResults,
 	)
 }

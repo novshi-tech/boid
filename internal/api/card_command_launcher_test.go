@@ -323,8 +323,8 @@ func TestRunCardCommandAsHuman_DispatchFailure_ReleasesSlot(t *testing.T) {
 	}))
 	exec.failNext = 1
 
-	_, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
-	if err == nil {
+	_, operationErr := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
+	if operationErr == nil {
 		t.Fatal("want an error when dispatch fails")
 	}
 
@@ -339,6 +339,10 @@ func TestRunCardCommandAsHuman_DispatchFailure_ReleasesSlot(t *testing.T) {
 	if rows[0].Status != orchestrator.CardRequestStatusFailed {
 		t.Errorf("status = %q, want failed (retry-able) after a dispatch failure", rows[0].Status)
 	}
+	var statusErr *StatusError
+	if !errors.As(operationErr, &statusErr) || statusErr.TargetRequestID != rows[0].ID {
+		t.Fatalf("error = %#v, want StatusError correlated to reserved request %q", operationErr, rows[0].ID)
+	}
 
 	// The slot must now be free for a subsequent call to succeed.
 	second, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
@@ -347,6 +351,42 @@ func TestRunCardCommandAsHuman_DispatchFailure_ReleasesSlot(t *testing.T) {
 	}
 	if second.Occupied {
 		t.Fatal("Occupied = true, want the released slot to accept a fresh claim")
+	}
+}
+
+type failingReleaseCardRequestStore struct {
+	CardCommandLauncherStore
+}
+
+func (f failingReleaseCardRequestStore) FailCardRequest(string, string) error {
+	return errors.New("forced release failure")
+}
+
+// A release failure leaves the reserved row in launching state for operator
+// recovery. The returned error must still identify that exact row so the UI
+// receipt can follow the known reservation instead of losing correlation.
+func TestRunCardCommandAsHuman_DispatchAndReleaseFailure_PreservesRequestCorrelation(t *testing.T) {
+	svc, exec, card := newCardCommandTestService(t, "proj-1", testCardMeta(map[string]orchestrator.CardCommand{
+		"review": {Label: "Run", Run: "echo hi"},
+	}))
+	repo := svc.CardRequests.(*orchestrator.TaskRepository)
+	svc.CardRequests = failingReleaseCardRequestStore{CardCommandLauncherStore: repo}
+	exec.failNext = 1
+
+	_, err := svc.RunCardCommandAsHuman(context.Background(), card.ID, "review", "")
+	if err == nil {
+		t.Fatal("want an error when dispatch and reservation release fail")
+	}
+	rows, listErr := repo.ListCardRequestsByCard(card.ID)
+	if listErr != nil {
+		t.Fatalf("ListCardRequestsByCard: %v", listErr)
+	}
+	if len(rows) != 1 || rows[0].Status != orchestrator.CardRequestStatusLaunching {
+		t.Fatalf("card_requests = %+v, want the unreleased launching reservation", rows)
+	}
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) || statusErr.TargetRequestID != rows[0].ID {
+		t.Fatalf("error = %#v, want StatusError correlated to unreleased request %q", err, rows[0].ID)
 	}
 }
 

@@ -149,8 +149,9 @@ func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantTaskID string, 
 	// pre-Tx read could be stale by the time this transaction opens.
 	if fresh.Status != orchestrator.TaskStatusParked && fresh.Status != orchestrator.TaskStatusWorking {
 		return "", false, &StatusError{
-			Code:    http.StatusConflict,
-			Message: fmt.Sprintf("card command: card is %q, not parked or working — reopen it before running a command", fresh.Status),
+			Code:            http.StatusConflict,
+			Message:         fmt.Sprintf("card command: card is %q, not parked or working — reopen it before running a command", fresh.Status),
+			OperationReason: orchestrator.OperationReasonNotAvailable,
 		}
 	}
 	// Parse the detail blob but do NOT read occupancy out of it. A corrupt
@@ -313,7 +314,11 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 			slog.Warn("card command: dispatch failed and releasing the claimed slot also failed; needs an operator force-release",
 				"card_id", cardID, "request_id", req.ID, "dispatch_error", err, "release_error", ferr)
 		}
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("card command: dispatch: %s", err)}
+		return nil, &StatusError{
+			Code:            http.StatusInternalServerError,
+			Message:         fmt.Sprintf("card command: dispatch: %s", err),
+			TargetRequestID: req.ID,
+		}
 	}
 
 	return &RunCardCommandResult{RequestID: req.ID, LauncherJobID: result.JobID}, nil

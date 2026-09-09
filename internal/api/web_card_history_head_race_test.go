@@ -25,7 +25,7 @@ import (
 // with no re-typing that could drift from the real script.
 func extractHistoryHeadJS(t *testing.T, body string) string {
 	t.Helper()
-	start := strings.Index(body, "function captureSwapState(el) {")
+	start := strings.Index(body, "var es = null;")
 	if start < 0 {
 		t.Fatalf("captureSwapState not found in body:\n%s", body)
 	}

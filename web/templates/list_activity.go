@@ -18,8 +18,9 @@ import (
 // either, neither, or both at once (a card command and a specced-but-not-yet
 // -Go'd child can coexist).
 type CardActivityState struct {
-	WorkLabel    string
-	CommandLabel string
+	WorkLabel     string
+	CommandLabel  string
+	DecisionLabel string
 }
 
 // ActiveChildFromDetail returns the first non-closed entry in a task_triage
@@ -106,16 +107,17 @@ func CommandActivityLabel(req *orchestrator.CardRequest, taskStatuses map[string
 	}
 }
 
-// commandRunningStateLabel resolves an attached command's running-state word
-// from the target task's OWN status, sharing liveTaskActivityWord with the
-// work-child axis so the two can never drift apart. "" means say nothing.
-// A session target has no task row to read, so it reports "Running" — the
-// card_requests row being attached is the only liveness fact available.
+// commandRunningStateLabel distinguishes active work from an attached request
+// whose task has ended but whose execution slot has not yet been released.
 func commandRunningStateLabel(req *orchestrator.CardRequest, taskStatuses map[string]orchestrator.TaskStatus) string {
 	if req.TargetKind != orchestrator.CardRequestTargetKindTask {
 		return "Running"
 	}
-	return liveTaskActivityWord(taskStatuses[req.TargetID])
+	status := taskStatuses[req.TargetID]
+	if orchestrator.IsTerminalStatus(status) {
+		return "Finishing"
+	}
+	return liveTaskActivityWord(status)
 }
 
 // BuildCardActivityStates fans out over three already-batched inputs (no DB

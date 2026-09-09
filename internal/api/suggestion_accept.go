@@ -159,6 +159,7 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 	action := &orchestrator.Action{TaskID: taskID, Type: "answered", Payload: payload, Actor: orchestrator.ActorFromContext(ctx)}
 	var newTask *orchestrator.Task
 	acceptGoRequested := false
+	targetTaskID := ""
 
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
 		fresh, ferr := tx.GetTask(taskID)
@@ -308,10 +309,16 @@ func (s *TaskWorkflowService) applyAnswered(ctx context.Context, taskID string, 
 			// request: the card never actually reached working, and
 			// acceptGo's own failure path already left the suggestion in
 			// place and recorded dispatch_error.
-			return nil, goErr
+			return &ActionApplication{Task: newTask, Action: action, DecisionAccepted: true}, goErr
 		}
 		newTask = applied.Task
+		targetTaskID = applied.TargetTaskID
 	}
 
-	return &ActionApplication{Task: newTask, Action: action}, nil
+	return &ActionApplication{
+		Task:             newTask,
+		Action:           action,
+		TargetTaskID:     targetTaskID,
+		DecisionAccepted: parsed.Answer == answeredAnswerAccept,
+	}, nil
 }

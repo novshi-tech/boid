@@ -2422,7 +2422,8 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			// Card detail page's timeline read model — reads srv.db directly
 			// (internal/timeline.BuildCardTimeline/CardPinnedItems need a
 			// db.DBTX, which taskRepo does not expose).
-			CardTimeline: cardTimelineStore{db: srv.db},
+			CardTimeline:     cardTimelineStore{db: srv.db},
+			OperationResults: orchestrator.NewOperationResultStore(srv.db),
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Mount("/", webHandler.Routes())

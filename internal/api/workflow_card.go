@@ -1029,8 +1029,9 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		// comment), and both a direct "go" click and accept(go) share this
 		// message.
 		return nil, &StatusError{
-			Code:    http.StatusConflict,
-			Message: fmt.Sprintf("accept(go): cannot dispatch task in status %q (must be parked or working); %s", task.Status, orchestrator.NewCardMachine().AvailableActionsHint(task.Status)),
+			Code:            http.StatusConflict,
+			Message:         fmt.Sprintf("accept(go): cannot dispatch task in status %q (must be parked or working); %s", task.Status, orchestrator.NewCardMachine().AvailableActionsHint(task.Status)),
+			OperationReason: orchestrator.OperationReasonNotAvailable,
 		}
 	}
 
@@ -1100,6 +1101,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		}
 	}
 	unresolvedCount := len(jsonOccupants)
+	currentTargetTaskID := ""
 	if s.Tasks != nil {
 		liveChildren, lcErr := s.Tasks.ListChildren(taskID)
 		if lcErr != nil {
@@ -1112,12 +1114,19 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			if lc.Ref != "" && jsonOccupants[lc.Ref] {
 				continue
 			}
+			if currentTargetTaskID == "" {
+				currentTargetTaskID = lc.ID
+			}
 			unresolvedCount++
 		}
 	}
 	if speccedIdx == -1 {
 		cerr := fmt.Errorf("accept(go): no specced child to run — use Start for manual work")
-		return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
+		reason := orchestrator.OperationReasonNoReadyWork
+		if unresolvedCount > 0 {
+			reason = orchestrator.OperationReasonSlotOccupied
+		}
+		return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error(), OperationReason: reason, TargetTaskID: currentTargetTaskID}
 	}
 	if unresolvedCount > 1 {
 		cerr := fmt.Errorf(
@@ -1125,7 +1134,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 				"run `boid task diagnose-cards` and resolve extras with "+
 				"`boid action send --type child_dropped` before Go can proceed",
 			taskID, unresolvedCount)
-		return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
+		return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error(), OperationReason: orchestrator.OperationReasonSlotOccupied}
 	}
 
 	childrenChanged := false
@@ -1142,7 +1151,13 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		if err != nil {
 			if errors.Is(err, orchestrator.ErrCardRequestSlotOccupied) {
 				cerr := fmt.Errorf("accept(go): card %q's single work slot is already occupied by an active card command", taskID)
-				return nil, &StatusError{Code: http.StatusConflict, Message: cerr.Error()}
+				se := &StatusError{Code: http.StatusConflict, Message: cerr.Error(), OperationReason: orchestrator.OperationReasonSlotOccupied}
+				if rows, lerr := s.CardRequests.ListCardRequestsByCard(taskID); lerr == nil {
+					if active := orchestrator.PickActiveCardRequest(rows); active != nil {
+						se.TargetRequestID, se.TargetKind, se.TargetID = active.ID, active.TargetKind, active.TargetID
+					}
+				}
+				return nil, se
 			}
 			cerr := fmt.Errorf("accept(go): reserve execution slot: %w", err)
 			s.recordDispatchError(ctx, taskID, task.Status, cerr)
@@ -1231,7 +1246,7 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 			cerr := fmt.Errorf("accept(go): child task %q (%s) was created but failed to auto-start (still pending)", children[i].ID, childTask.ID)
 			releaseReservation(cerr.Error())
 			s.recordDispatchError(ctx, taskID, task.Status, cerr)
-			return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error()}
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: cerr.Error(), TargetTaskID: childTask.ID}
 		}
 		children[i].Status = orchestrator.TaskTriageChildStatusDispatched
 		children[i].TaskRef = childTask.ID
@@ -1411,9 +1426,16 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		s.recordDispatchError(ctx, taskID, task.Status, txErr, orphanedChildTaskIDs...)
 		var statusErr *StatusError
 		if errors.As(txErr, &statusErr) {
+			if statusErr.TargetTaskID == "" && len(newlyDispatched) > 0 {
+				statusErr.TargetTaskID = newlyDispatched[0].TaskRef
+			}
 			return nil, statusErr
 		}
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: txErr.Error()}
+		se := &StatusError{Code: http.StatusInternalServerError, Message: txErr.Error()}
+		if len(newlyDispatched) > 0 {
+			se.TargetTaskID = newlyDispatched[0].TaskRef
+		}
+		return nil, se
 	}
 
 	if s.Hub != nil {
@@ -1442,5 +1464,9 @@ func (s *TaskWorkflowService) acceptGo(ctx context.Context, taskID string, viaAc
 		}
 	}
 
-	return &ActionApplication{Task: newTask, Action: action}, nil
+	targetTaskID := ""
+	if len(newlyDispatched) > 0 {
+		targetTaskID = newlyDispatched[0].TaskRef
+	}
+	return &ActionApplication{Task: newTask, Action: action, TargetTaskID: targetTaskID}, nil
 }

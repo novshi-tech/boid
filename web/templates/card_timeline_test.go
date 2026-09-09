@@ -229,7 +229,7 @@ func TestCardTimelineItem_WakeDue_RendersLabel(t *testing.T) {
 
 // --- child / child_finished ---
 
-func TestCardTimelineItem_Child_TaskExistsFalse_NoLink(t *testing.T) {
+func TestCardTimelineItem_Child_TaskExistsFalse_UsesStableChildLink(t *testing.T) {
 	item := timeline.CardItem{
 		Kind: timeline.CardItemChild, ID: "child:c1", CorrelationID: "c1",
 		Child: &timeline.CardChildDetail{ChildID: "c1", Title: "do it", Status: "dispatched", TaskRef: "task-x", TaskExists: false},
@@ -238,22 +238,23 @@ func TestCardTimelineItem_Child_TaskExistsFalse_NoLink(t *testing.T) {
 	if strings.Contains(html, `href="/tasks/task-x"`) {
 		t.Errorf("TaskExists=false must drop the task link; got:\n%s", html)
 	}
+	if !strings.Contains(html, `href="/tasks/card-1/children/c1"`) {
+		t.Errorf("missing stable child detail link; got:\n%s", html)
+	}
 }
 
-func TestCardTimelineItem_Child_TaskExistsTrue_RendersLink(t *testing.T) {
+func TestCardTimelineItem_Child_TaskExistsTrue_UsesStableChildLink(t *testing.T) {
 	item := timeline.CardItem{
 		Kind: timeline.CardItemChild, ID: "child:c1", CorrelationID: "c1",
 		Child: &timeline.CardChildDetail{ChildID: "c1", Title: "do it", Status: "dispatched", TaskRef: "task-x", TaskExists: true},
 	}
 	html := renderItem(t, item, "card-1", "", true, "")
-	if !strings.Contains(html, `href="/tasks/task-x"`) {
-		t.Errorf("TaskExists=true should render the task link; got:\n%s", html)
+	if !strings.Contains(html, `href="/tasks/card-1/children/c1"`) || strings.Contains(html, `→ task`) {
+		t.Errorf("child title should be the sole stable detail link; got:\n%s", html)
 	}
 }
 
-// TestCardTimelineItem_Child_SpecShowsDescriptionOnlyNotInstruction: the
-// spec collapse shows description, never instruction.
-func TestCardTimelineItem_Child_SpecShowsDescriptionOnlyNotInstruction(t *testing.T) {
+func TestCardTimelineItem_Child_SpecContentMovesToDetailPage(t *testing.T) {
 	item := timeline.CardItem{
 		Kind: timeline.CardItemChild, ID: "child:c1", CorrelationID: "c1",
 		Child: &timeline.CardChildDetail{
@@ -266,13 +267,15 @@ func TestCardTimelineItem_Child_SpecShowsDescriptionOnlyNotInstruction(t *testin
 		},
 	}
 	html := renderItem(t, item, "card-1", "", true, "")
-	for _, want := range []string{"research", "rook-server", "investigate the conflict handling in PR #1063"} {
+	for _, want := range []string{"research", "rook-server"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %q; got:\n%s", want, html)
 		}
 	}
-	if strings.Contains(html, "never conclude from a guess") {
-		t.Error("spec collapse must not include instruction text")
+	for _, hidden := range []string{"investigate the conflict handling in PR #1063", "never conclude from a guess", ">spec<"} {
+		if strings.Contains(html, hidden) {
+			t.Errorf("timeline row should not expand spec content %q", hidden)
+		}
 	}
 }
 
@@ -318,14 +321,14 @@ func TestCardTimelineItem_Child_AwaitingQuestion_RendersWarningAndLink(t *testin
 	}
 }
 
-func TestCardTimelineItem_ChildFinished_LinksBackToAnchorByCorrelationID(t *testing.T) {
+func TestCardTimelineItem_ChildFinished_LinksToStableChildDetail(t *testing.T) {
 	item := timeline.CardItem{
 		Kind: timeline.CardItemChildFinished, ID: "action-1", CorrelationID: "c1",
 		Child: &timeline.CardChildDetail{ChildID: "c1", Title: "do it", ClosingActionType: "child_closed"},
 	}
 	html := renderItem(t, item, "card-1", "", false, "")
-	if !strings.Contains(html, `href="#card-child-c1"`) {
-		t.Errorf("finished item should link back to its anchor's DOM id; got:\n%s", html)
+	if !strings.Contains(html, `href="/tasks/card-1/children/c1"`) {
+		t.Errorf("finished item should link to the stable child detail; got:\n%s", html)
 	}
 	if !strings.Contains(html, ">closed<") {
 		t.Errorf("missing closed label; got:\n%s", html)
@@ -340,6 +343,16 @@ func TestCardTimelineItem_ChildFinished_Dropped(t *testing.T) {
 	html := renderItem(t, item, "card-1", "", false, "")
 	if !strings.Contains(html, ">dropped<") {
 		t.Errorf("missing dropped label; got:\n%s", html)
+	}
+}
+
+func TestCardTimelineItem_ChildFinished_MissingIdentityExplainsUnavailableDetail(t *testing.T) {
+	item := timeline.CardItem{
+		Kind: timeline.CardItemChildFinished, ID: "legacy-action", Child: &timeline.CardChildDetail{ClosingActionType: "child_closed"},
+	}
+	html := renderItem(t, item, "card-1", "", false, "")
+	if strings.Contains(html, `href="/tasks/card-1/children/`) || !strings.Contains(html, "details unavailable") {
+		t.Fatalf("legacy unresolved history should not emit a broken link; got %s", html)
 	}
 }
 
@@ -476,6 +489,34 @@ func TestCardPinnedSection_NilView_RendersNothing(t *testing.T) {
 	}
 	if got := strings.TrimSpace(buf.String()); got != "" {
 		t.Errorf("nil view should render nothing, got: %s", got)
+	}
+}
+
+func TestCardGoEligibilityUsesPinnedServerState(t *testing.T) {
+	ready := &CardTimelineView{Pinned: []timeline.CardItem{{Kind: timeline.CardItemChild, Child: &timeline.CardChildDetail{Status: orchestrator.TaskTriageChildStatusSpecced}}}}
+	if enabled, _ := cardGoEligibility(ready); !enabled {
+		t.Fatal("specced child should enable Go")
+	}
+	occupied := &CardTimelineView{Pinned: []timeline.CardItem{{Kind: timeline.CardItemCommand}}}
+	if enabled, reason := cardGoEligibility(occupied); enabled || !strings.Contains(reason, "not be queued") {
+		t.Fatalf("enabled=%v reason=%q", enabled, reason)
+	}
+	if enabled, reason := cardGoEligibility(nil); enabled || !strings.Contains(reason, "No ready work") {
+		t.Fatalf("enabled=%v reason=%q", enabled, reason)
+	}
+}
+
+func TestCardGoEligibilityOccupiedTakesPrecedenceOverReady(t *testing.T) {
+	ready := timeline.CardItem{Kind: timeline.CardItemChild, Child: &timeline.CardChildDetail{Status: orchestrator.TaskTriageChildStatusSpecced}}
+	occupied := timeline.CardItem{Kind: timeline.CardItemCommand}
+	for _, pinned := range [][]timeline.CardItem{
+		{ready, occupied},
+		{occupied, ready},
+	} {
+		tl := &CardTimelineView{Pinned: pinned}
+		if enabled, reason := cardGoEligibility(tl); enabled || !strings.Contains(reason, "not be queued") {
+			t.Errorf("pinned=%+v: enabled=%v reason=%q", pinned, enabled, reason)
+		}
 	}
 }
 

@@ -5,14 +5,22 @@ import (
 )
 
 type ActionApplication struct {
-	Task         *orchestrator.Task   `json:"task"`
-	Action       *orchestrator.Action `json:"action"`
-	MatchedHooks []string             `json:"matched_hooks,omitempty"`
+	Task             *orchestrator.Task   `json:"task"`
+	Action           *orchestrator.Action `json:"action"`
+	MatchedHooks     []string             `json:"matched_hooks,omitempty"`
+	TargetTaskID     string               `json:"target_task_id,omitempty"`
+	DecisionAccepted bool                 `json:"decision_accepted,omitempty"`
 }
 
 type TaskDetailView struct {
 	Task             *orchestrator.Task
 	Actions          []*orchestrator.Action
 	Jobs             []*Job
-	AvailableActions []string `json:"available_actions"`
+	AvailableActions []string       `json:"available_actions"`
+	Identities       []TaskIdentity `json:"identities,omitempty"`
+}
+type TaskIdentity struct {
+	Identity    string `json:"identity"`
+	URL         string `json:"url,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
 }

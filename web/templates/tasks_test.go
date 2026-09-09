@@ -6,9 +6,22 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+func TestTaskIdentityLinks_RendersExternalAndUnsetResources(t *testing.T) {
+	var buf bytes.Buffer
+	if err := TaskIdentityLinks([]apiwire.TaskIdentity{{Identity: "jira:X-1", URL: "https://jira.example/X-1", DisplayName: "Issue X-1"}, {Identity: "slack:42"}}).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	body := buf.String()
+	if !strings.Contains(body, `target="_blank"`) || !strings.Contains(body, "Issue X-1") || !strings.Contains(body, "reference unavailable") {
+		t.Fatalf("identity links = %s", body)
+	}
+}
 
 // card machine v2: working's primary bottom-bar action is "complete" (the
 // forward edge once work is underway) — parked's is "go" (see
@@ -841,54 +854,14 @@ func TestTaskDetailAwaitingBanner_NoQuestionID_RendersNothing(t *testing.T) {
 	}
 }
 
-// TestCardDescriptionOpenByDefault_ByteLengthGuard pins Opus review finding
-// N2 (PR #996, non-blocking but folded into the B1 fix commit): the
-// original implementation collapsed only on line count
-// (cardDescriptionCollapseThresholdLines), which missed exactly the case
-// its own doc comment calls out — an ingested description can run up to
-// 64KiB with NO newlines at all (a single huge line, or pasted text with no
-// line breaks), and would have rendered fully expanded regardless of size.
-func TestCardDescriptionOpenByDefault_ByteLengthGuard(t *testing.T) {
-	longSingleLine := strings.Repeat("x", cardDescriptionCollapseThresholdBytes+1)
-	if strings.Contains(longSingleLine, "\n") {
-		t.Fatal("test fixture must have zero newlines to actually exercise the byte-length guard")
-	}
-	if got := cardDescriptionOpenByDefault(longSingleLine); got {
-		t.Errorf("a %d-byte single-line description should collapse by default (byte guard), got open=%v", len(longSingleLine), got)
-	}
-}
-
-func TestCardDescriptionOpenByDefault_ShortSingleLine_StaysOpen(t *testing.T) {
-	short := "a short single-line description"
-	if got := cardDescriptionOpenByDefault(short); !got {
-		t.Errorf("a short single-line description should stay open by default, got open=%v", got)
-	}
-}
-
-func TestCardDescriptionOpenByDefault_ManyShortLines_Collapses(t *testing.T) {
-	manyLines := strings.Repeat("line\n", cardDescriptionCollapseThresholdLines+1)
-	if len(manyLines) >= cardDescriptionCollapseThresholdBytes {
-		t.Fatal("test fixture must stay under the byte threshold to actually exercise the line-count guard")
-	}
-	if got := cardDescriptionOpenByDefault(manyLines); got {
-		t.Errorf("a description with more than %d lines should collapse by default (line guard), got open=%v", cardDescriptionCollapseThresholdLines, got)
-	}
-}
-
-func TestCardDescriptionOpenByDefault_Empty_ReturnsFalse(t *testing.T) {
-	if got := cardDescriptionOpenByDefault(""); got {
-		t.Errorf("empty description should return open=false (nothing to collapse or show), got open=%v", got)
-	}
-}
-
 // --- PR-2 (docs/plans/webui-detail-list-redesign.md §3.4 item 2 / §7 PR-2):
 // the exec root child tree (ChildTreeNode). A card's own children moved to
 // the timeline read model in PR-6a (card_timeline_test.go). ---
 
-func TestTaskDetailExecChildTreeSection_RendersNestedRowsIndentedByDepth(t *testing.T) {
+func TestTaskDetailExecChildTreeSection_RendersDirectChildLinks(t *testing.T) {
 	nodes := []ChildTreeNode{
-		{Task: &orchestrator.Task{ID: "c1", Title: "child A", Status: orchestrator.TaskStatusExecuting}, Depth: 1},
-		{Task: &orchestrator.Task{ID: "c1-1", Title: "grandchild A1", Status: orchestrator.TaskStatusDone}, Depth: 2},
+		{Task: &orchestrator.Task{ID: "c1", Title: "child A", Status: orchestrator.TaskStatusExecuting}},
+		{Task: &orchestrator.Task{ID: "c1-1", Title: "grandchild A1", Status: orchestrator.TaskStatusDone}},
 	}
 
 	var buf bytes.Buffer
@@ -896,7 +869,7 @@ func TestTaskDetailExecChildTreeSection_RendersNestedRowsIndentedByDepth(t *test
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
-	for _, want := range []string{"child A", "grandchild A1", `href="/tasks/c1"`, `href="/tasks/c1-1"`, "--depth: 1", "--depth: 2"} {
+	for _, want := range []string{"child A", "grandchild A1", `href="/tasks/c1"`, `href="/tasks/c1-1"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %q; got:\n%s", want, html)
 		}
@@ -913,6 +886,39 @@ func TestTaskDetailExecChildTreeSection_EmptyRendersNothing(t *testing.T) {
 	}
 }
 
+func TestTaskDetailExecChildTreeSection_DoesNotInventMissingCompletionEvent(t *testing.T) {
+	nodes := []ChildTreeNode{{Task: &orchestrator.Task{ID: "done-1", Title: "legacy child", Status: orchestrator.TaskStatusDone}, HasCreatedAt: true, CreatedAt: time.Now()}}
+	var buf bytes.Buffer
+	if err := TaskDetailExecChildTreeSection(nodes).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	if strings.Contains(html, "Finished: legacy child") || !strings.Contains(html, "completion time unavailable") {
+		t.Fatalf("missing terminal history should be explained without a fabricated event; got %s", html)
+	}
+}
+
+func TestTaskDetailCardBody_SummaryAndDescriptionAreAdjacentBeforeCurrentWork(t *testing.T) {
+	task := &orchestrator.Task{
+		ID: "card-1", Type: orchestrator.TaskTypeCard, Title: "Card",
+		Status: orchestrator.TaskStatusParked, Description: "Full description",
+	}
+	var buf bytes.Buffer
+	if err := TaskDetailCardBody(task, nil, "", "project", "Short summary", nil, []CardCommandOption{{Key: "discuss", Label: "Discuss"}}, nil, nil, nil).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	summaryAt := strings.Index(html, "Short summary")
+	detailsAt := strings.Index(html, "Show details")
+	commandAt := strings.Index(html, "card-command-section")
+	if summaryAt < 0 || detailsAt < summaryAt || commandAt < detailsAt {
+		t.Fatalf("want summary then expandable description then current controls; got %s", html)
+	}
+	if !strings.Contains(html, `<details class="card-description"><summary class="card-description-toggle">Show details`) {
+		t.Errorf("full description should be collapsed by default; got %s", html)
+	}
+}
+
 // TestTaskDetailLiveScript_RegistersChildEventListener pins that the
 // browser actually registers a listener for the server's "child" SSE
 // event, refreshing only the pinned fragment.
@@ -925,7 +931,86 @@ func TestTaskDetailLiveScript_RegistersChildEventListener(t *testing.T) {
 	if !strings.Contains(html, "addEventListener('child'") {
 		t.Fatalf("expected a 'child' event listener registration; got:\n%s", html)
 	}
-	if !strings.Contains(html, "addEventListener('child', function() { refresh(['pinned']); });") {
-		t.Errorf("'child' listener must refresh exactly ['pinned']; got:\n%s", html)
+	if !strings.Contains(html, "addEventListener('child', function() { refresh(['status', 'pinned', 'timeline', 'operations']); refreshHistoryHead(); });") {
+		t.Errorf("'child' listener must refresh current state and child history; got:\n%s", html)
+	}
+}
+
+func TestOperationResultText_RequestFailureDistinguishesLaunchFromStartedTarget(t *testing.T) {
+	launchFailure := &orchestrator.OperationResult{Result: orchestrator.OperationResultAccepted, CurrentPhase: orchestrator.OperationReasonRequestFailed}
+	if got := operationResultText(launchFailure); !strings.Contains(got, "launch later failed") {
+		t.Fatalf("launch failure text = %q", got)
+	}
+	for _, result := range []*orchestrator.OperationResult{
+		{Result: orchestrator.OperationResultAccepted, CurrentPhase: orchestrator.OperationReasonRequestFailed, TargetTaskID: "task-1"},
+		{Result: orchestrator.OperationResultAccepted, CurrentPhase: orchestrator.OperationReasonRequestFailed, TargetSessionID: "session-1"},
+	} {
+		if got := operationResultText(result); !strings.Contains(got, "started") || !strings.Contains(got, "later failed or stopped") {
+			t.Errorf("started target failure text = %q for %+v", got, result)
+		}
+	}
+}
+
+func TestOperationResultText_TargetStartedDoesNotPromiseAvailability(t *testing.T) {
+	got := operationResultText(&orchestrator.OperationResult{
+		Result: orchestrator.OperationResultAccepted, CurrentPhase: orchestrator.OperationReasonTargetStarted,
+		TargetTaskID: "deleted-task", TargetTaskUnavailable: true,
+	})
+	if got != "The accepted operation started." {
+		t.Fatalf("target-started text = %q", got)
+	}
+}
+
+func TestOperationResultText_AcceptedSuggestionLaunchOutcomes(t *testing.T) {
+	rejected := operationResultText(&orchestrator.OperationResult{Result: orchestrator.OperationResultAccepted, ReasonCode: orchestrator.OperationReasonSuggestionAcceptedLaunchRejected})
+	if !strings.Contains(rejected, "suggestion was accepted") || !strings.Contains(rejected, "did not start") {
+		t.Fatalf("known launch rejection text = %q", rejected)
+	}
+	unknown := operationResultText(&orchestrator.OperationResult{Result: orchestrator.OperationResultUnknown, ReasonCode: orchestrator.OperationReasonSuggestionAcceptedLaunchUnknown})
+	if !strings.Contains(unknown, "suggestion was accepted") || !strings.Contains(unknown, "could not confirm") {
+		t.Fatalf("unknown launch text = %q", unknown)
+	}
+}
+
+func TestOperationResultsSection_UsesStableReceiptIDs(t *testing.T) {
+	results := []*orchestrator.OperationResult{
+		{ID: "latest", Result: orchestrator.OperationResultAccepted, Notice: "Receipt update failed; direct result retained.", CreatedAt: time.Now()},
+		{ID: "earlier", Result: orchestrator.OperationResultRejected, CreatedAt: time.Now()},
+	}
+	var buf bytes.Buffer
+	if err := OperationResultsSection(results).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	for _, id := range []string{`id="operation-latest"`, `id="operation-earlier"`} {
+		if !strings.Contains(html, id) {
+			t.Errorf("missing stable receipt %s in %s", id, html)
+		}
+	}
+	if !strings.Contains(html, `class="operation-result-notice"`) || !strings.Contains(html, "Receipt update failed; direct result retained.") {
+		t.Errorf("missing ephemeral receipt notice in %s", html)
+	}
+}
+
+func TestOperationResultsSection_DoesNotLinkUnavailableDestinations(t *testing.T) {
+	results := []*orchestrator.OperationResult{{
+		ID: "unavailable", Result: orchestrator.OperationResultStarted, CreatedAt: time.Now(),
+		TargetTaskID: "deleted-task", TargetTaskUnavailable: true,
+		TargetSessionID: "deleted-session", TargetSessionUnavailable: true,
+	}}
+	var buf bytes.Buffer
+	if err := OperationResultsSection(results).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	for _, text := range []string{"Task is no longer available.", "Session is no longer available.", "deleted-task", "deleted-session"} {
+		if !strings.Contains(html, text) {
+			t.Errorf("missing %q in %s", text, html)
+		}
+	}
+	for _, href := range []string{`href="/tasks/deleted-task"`, `href="/jobs/deleted-session"`} {
+		if strings.Contains(html, href) {
+			t.Errorf("unavailable destination must not render %s in %s", href, html)
+		}
 	}
 }

@@ -657,7 +657,8 @@ type GCResult struct {
 	Signals int64
 	// CardRequests is the count of finished/failed card_requests rows
 	// GCCardRequests deleted.
-	CardRequests int64
+	CardRequests     int64
+	OperationResults int64
 }
 
 // GCTasks deletes terminal tasks older than olderThan and their related data
@@ -832,6 +833,20 @@ func GCCardRequests(dbtx db.DBTX, olderThan time.Duration, dryRun bool) (int64, 
 			return 0, fmt.Errorf("count card_requests: %w", err)
 		}
 		return n, nil
+	}
+
+	// Preserve resolved destinations in the 30-day receipt before a shorter
+	// request retention policy removes the association source.
+	if _, err := dbtx.Exec(`UPDATE operation_results SET
+		target_task_id = CASE WHEN cr.target_kind = 'task' THEN cr.target_id ELSE operation_results.target_task_id END,
+		target_session_id = CASE WHEN cr.target_kind = 'session' THEN cr.target_id ELSE operation_results.target_session_id END,
+		current_phase = CASE
+			WHEN operation_results.result = 'accepted' AND operation_results.reason_code = 'request_accepted' AND cr.status = 'failed' THEN 'request_failed'
+			WHEN operation_results.result = 'accepted' AND operation_results.reason_code = 'request_accepted' AND cr.status = 'finished' THEN 'target_started'
+			ELSE operation_results.current_phase END
+		FROM card_requests cr WHERE operation_results.target_request_id = cr.id
+		AND cr.id IN (SELECT id FROM card_requests WHERE `+cond+`)`, args...); err != nil {
+		return 0, fmt.Errorf("preserve operation destinations: %w", err)
 	}
 
 	res, err := dbtx.Exec(`DELETE FROM card_requests WHERE `+cond, args...)
