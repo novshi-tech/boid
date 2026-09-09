@@ -286,7 +286,7 @@ func (s *TaskAppService) broadcastNotifyAction(task *orchestrator.Task, action *
 			"new_status": string(action.ToStatus),
 		},
 	})
-	fanOutChildEventToParentCard(s.Hub, s.Tasks, task, TaskEvent{
+	fanOutChildEventToParent(s.Hub, s.Tasks, task, TaskEvent{
 		Kind:    "child",
 		Payload: childEventPayload(task.ID, action.Type, "action_id", action.ID),
 	})

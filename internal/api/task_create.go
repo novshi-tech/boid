@@ -202,6 +202,10 @@ func (s *TaskAppService) createCardTask(ctx context.Context, req CreateTaskReque
 	if err := s.createCardWithRecord(ctx, task); err != nil {
 		return nil, err
 	}
+	fanOutChildEventToParent(s.Hub, s.Tasks, task, TaskEvent{
+		Kind:    "child",
+		Payload: childEventPayload(task.ID, "created", "task_id", task.ID),
+	})
 	return task, nil
 }
 
@@ -575,6 +579,10 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
 	}
+	fanOutChildEventToParent(s.Hub, s.Tasks, task, TaskEvent{
+		Kind:    "child",
+		Payload: childEventPayload(task.ID, "created", "task_id", task.ID),
+	})
 	// Guard: only fire auto_start for a freshly pending task. Reachable when
 	// the store's OWN get-or-create (a concurrent create race that landed
 	// between the service-layer Ref/IdempotencyKey checks above and this

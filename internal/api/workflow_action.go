@@ -514,7 +514,7 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 				"new_status": string(action.ToStatus),
 			},
 		})
-		fanOutChildEventToParentCard(s.Hub, s.Tasks, newTask, TaskEvent{
+		fanOutChildEventToParent(s.Hub, s.Tasks, newTask, TaskEvent{
 			Kind:    "child",
 			Payload: childEventPayload(newTask.ID, action.Type, "action_id", action.ID),
 		})

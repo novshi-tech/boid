@@ -415,6 +415,14 @@ pre {
   gap: var(--space-2);
 }
 
+.detail-children-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
 .detail-children-project {
   font-size: 0.8125rem;
   color: var(--muted);
@@ -454,6 +462,10 @@ pre {
 
 .detail-children-title {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: inherit;
+  font-weight: 500;
 }
 
 .detail-children-hint {
@@ -522,6 +534,16 @@ pre {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+.card-current-activity {
+  margin-top: var(--space-3);
+}
+
+.card-current-activity-title {
+  margin: 0 0 var(--space-2);
+  font-size: 0.875rem;
+  font-weight: 600;
 }
 
 .card-timeline {
@@ -632,11 +654,7 @@ pre {
   color: var(--muted);
 }
 
-/* --- Task detail: execution root's descendant subtree (§3.4 item 2) ---
-   Deliberately separate from .task-list/.task-row (components/task_tree.templ)
-   — that machinery is tied to the list page's BuildTreeItems/recursive-CTE
-   flow, which is slated for removal (PR-4); this is its own small,
-   depth-indented flat list over WebHandler.execChildTree's app-side walk. */
+/* --- Task detail: an execution task's direct children --- */
 .detail-child-tree {
   margin-top: var(--space-2);
   padding-top: var(--space-2);
@@ -652,10 +670,6 @@ pre {
   gap: var(--space-1);
 }
 
-.detail-child-tree-item {
-  padding-left: calc(var(--depth, 0) * 16px);
-}
-
 .detail-child-tree-link {
   display: flex;
   align-items: center;
@@ -666,6 +680,108 @@ pre {
 
 .detail-child-tree-title {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.exec-child-history-label {
+  margin-top: var(--space-3);
+}
+
+.child-spec-detail {
+  padding-top: var(--space-3);
+}
+
+.child-spec-notice {
+  color: var(--muted);
+}
+
+.child-spec-fields {
+  display: grid;
+  grid-template-columns: minmax(6rem, auto) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-3);
+}
+
+.child-spec-fields dt {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.child-spec-fields dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.child-spec-result {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.child-spec-result h2 {
+  margin: 0 0 var(--space-2);
+  font-size: 0.9375rem;
+}
+
+@media (max-width: 600px) {
+  .card-timeline-item {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+
+  .card-timeline-item-time {
+    min-width: 0;
+  }
+
+  .detail-children-head {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--space-1) var(--space-2);
+  }
+
+  .detail-children-title {
+    order: -1;
+    flex: 0 0 100%;
+    width: 100%;
+  }
+
+  .detail-children-project,
+  .detail-children-ask {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .detail-children-ask {
+    flex-basis: 100%;
+  }
+
+  .card-timeline-child-finished,
+  .detail-child-tree-link {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .card-timeline-child-finished .detail-children-link {
+    flex: 1 1 12rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .detail-child-tree-title {
+    flex-basis: 100%;
+    order: -1;
+  }
+
+  .child-spec-fields {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
+
+  .child-spec-fields dd {
+    margin-bottom: var(--space-2);
+  }
 }
 
 /* --- Card --- */
@@ -1707,8 +1823,15 @@ body:has(.action-bar) {
    blob can run up to 64KiB, so a long one defaults to collapsed via
    <details>/<summary> (cardDescriptionOpenByDefault, tasks.templ). */
 .card-description {
-  padding-top: var(--space-3);
+
   margin-bottom: var(--space-3);
+}
+
+.card-summary {
+  padding-top: var(--space-3);
+  margin-bottom: var(--space-2);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .card-description-toggle {

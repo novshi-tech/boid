@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -841,54 +842,14 @@ func TestTaskDetailAwaitingBanner_NoQuestionID_RendersNothing(t *testing.T) {
 	}
 }
 
-// TestCardDescriptionOpenByDefault_ByteLengthGuard pins Opus review finding
-// N2 (PR #996, non-blocking but folded into the B1 fix commit): the
-// original implementation collapsed only on line count
-// (cardDescriptionCollapseThresholdLines), which missed exactly the case
-// its own doc comment calls out — an ingested description can run up to
-// 64KiB with NO newlines at all (a single huge line, or pasted text with no
-// line breaks), and would have rendered fully expanded regardless of size.
-func TestCardDescriptionOpenByDefault_ByteLengthGuard(t *testing.T) {
-	longSingleLine := strings.Repeat("x", cardDescriptionCollapseThresholdBytes+1)
-	if strings.Contains(longSingleLine, "\n") {
-		t.Fatal("test fixture must have zero newlines to actually exercise the byte-length guard")
-	}
-	if got := cardDescriptionOpenByDefault(longSingleLine); got {
-		t.Errorf("a %d-byte single-line description should collapse by default (byte guard), got open=%v", len(longSingleLine), got)
-	}
-}
-
-func TestCardDescriptionOpenByDefault_ShortSingleLine_StaysOpen(t *testing.T) {
-	short := "a short single-line description"
-	if got := cardDescriptionOpenByDefault(short); !got {
-		t.Errorf("a short single-line description should stay open by default, got open=%v", got)
-	}
-}
-
-func TestCardDescriptionOpenByDefault_ManyShortLines_Collapses(t *testing.T) {
-	manyLines := strings.Repeat("line\n", cardDescriptionCollapseThresholdLines+1)
-	if len(manyLines) >= cardDescriptionCollapseThresholdBytes {
-		t.Fatal("test fixture must stay under the byte threshold to actually exercise the line-count guard")
-	}
-	if got := cardDescriptionOpenByDefault(manyLines); got {
-		t.Errorf("a description with more than %d lines should collapse by default (line guard), got open=%v", cardDescriptionCollapseThresholdLines, got)
-	}
-}
-
-func TestCardDescriptionOpenByDefault_Empty_ReturnsFalse(t *testing.T) {
-	if got := cardDescriptionOpenByDefault(""); got {
-		t.Errorf("empty description should return open=false (nothing to collapse or show), got open=%v", got)
-	}
-}
-
 // --- PR-2 (docs/plans/webui-detail-list-redesign.md §3.4 item 2 / §7 PR-2):
 // the exec root child tree (ChildTreeNode). A card's own children moved to
 // the timeline read model in PR-6a (card_timeline_test.go). ---
 
-func TestTaskDetailExecChildTreeSection_RendersNestedRowsIndentedByDepth(t *testing.T) {
+func TestTaskDetailExecChildTreeSection_RendersDirectChildLinks(t *testing.T) {
 	nodes := []ChildTreeNode{
-		{Task: &orchestrator.Task{ID: "c1", Title: "child A", Status: orchestrator.TaskStatusExecuting}, Depth: 1},
-		{Task: &orchestrator.Task{ID: "c1-1", Title: "grandchild A1", Status: orchestrator.TaskStatusDone}, Depth: 2},
+		{Task: &orchestrator.Task{ID: "c1", Title: "child A", Status: orchestrator.TaskStatusExecuting}},
+		{Task: &orchestrator.Task{ID: "c1-1", Title: "grandchild A1", Status: orchestrator.TaskStatusDone}},
 	}
 
 	var buf bytes.Buffer
@@ -896,7 +857,7 @@ func TestTaskDetailExecChildTreeSection_RendersNestedRowsIndentedByDepth(t *test
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
-	for _, want := range []string{"child A", "grandchild A1", `href="/tasks/c1"`, `href="/tasks/c1-1"`, "--depth: 1", "--depth: 2"} {
+	for _, want := range []string{"child A", "grandchild A1", `href="/tasks/c1"`, `href="/tasks/c1-1"`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %q; got:\n%s", want, html)
 		}
@@ -910,6 +871,39 @@ func TestTaskDetailExecChildTreeSection_EmptyRendersNothing(t *testing.T) {
 	}
 	if got := strings.TrimSpace(buf.String()); got != "" {
 		t.Errorf("no child tree should render nothing, got: %s", got)
+	}
+}
+
+func TestTaskDetailExecChildTreeSection_DoesNotInventMissingCompletionEvent(t *testing.T) {
+	nodes := []ChildTreeNode{{Task: &orchestrator.Task{ID: "done-1", Title: "legacy child", Status: orchestrator.TaskStatusDone}, HasCreatedAt: true, CreatedAt: time.Now()}}
+	var buf bytes.Buffer
+	if err := TaskDetailExecChildTreeSection(nodes).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	if strings.Contains(html, "Finished: legacy child") || !strings.Contains(html, "completion time unavailable") {
+		t.Fatalf("missing terminal history should be explained without a fabricated event; got %s", html)
+	}
+}
+
+func TestTaskDetailCardBody_SummaryAndDescriptionAreAdjacentBeforeCurrentWork(t *testing.T) {
+	task := &orchestrator.Task{
+		ID: "card-1", Type: orchestrator.TaskTypeCard, Title: "Card",
+		Status: orchestrator.TaskStatusParked, Description: "Full description",
+	}
+	var buf bytes.Buffer
+	if err := TaskDetailCardBody(task, nil, "", "project", "Short summary", nil, []CardCommandOption{{Key: "discuss", Label: "Discuss"}}, nil).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	summaryAt := strings.Index(html, "Short summary")
+	detailsAt := strings.Index(html, "Show details")
+	commandAt := strings.Index(html, "card-command-section")
+	if summaryAt < 0 || detailsAt < summaryAt || commandAt < detailsAt {
+		t.Fatalf("want summary then expandable description then current controls; got %s", html)
+	}
+	if !strings.Contains(html, `<details class="card-description"><summary class="card-description-toggle">Show details`) {
+		t.Errorf("full description should be collapsed by default; got %s", html)
 	}
 }
 

@@ -180,6 +180,10 @@ func cardChildFinishedLabel(closingActionType string) string {
 	return "closed"
 }
 
+func cardChildDetailURL(cardID, childID string) string {
+	return "/tasks/" + url.PathEscape(cardID) + "/children/" + url.PathEscape(childID)
+}
+
 // cardCommandLabel uses the launch-time label snapshot, falling back to the
 // raw command_key — never a daemon-invented gloss.
 func cardCommandLabel(cmd *timeline.CardCommandDetail) string {
@@ -218,11 +222,14 @@ func cardCommandOutcomeBadgeClass(outcome string) string {
 // never subject to the history page's item cap.
 templ CardPinnedSection(tl *CardTimelineView, cardID string, cardStatus orchestrator.TaskStatus) {
 	if tl != nil && len(tl.Pinned) > 0 {
-		<ul class="card-pinned-list">
-			for _, item := range tl.Pinned {
-				@CardTimelineItem(item, cardID, cardStatus, true, tl.AwaitingQuestionID)
-			}
-		</ul>
+		<section class="card-current-activity">
+			<h2 class="card-current-activity-title">Current activity</h2>
+			<ul class="card-pinned-list">
+				for _, item := range tl.Pinned {
+					@CardTimelineItem(item, cardID, cardStatus, true, tl.AwaitingQuestionID)
+				}
+			</ul>
+		</section>
 	}
 }
 
@@ -312,9 +319,9 @@ templ CardTimelineItem(item timeline.CardItem, cardID string, cardStatus orchest
 		</div>
 		<div class="card-timeline-item-body">
 			if item.Kind == timeline.CardItemChild {
-				@cardChildItemBody(item, awaitingQuestionID)
+				@cardChildItemBody(item, cardID, awaitingQuestionID)
 			} else if item.Kind == timeline.CardItemChildFinished {
-				@cardChildFinishedItemBody(item)
+				@cardChildFinishedItemBody(item, cardID)
 			} else if item.Kind == timeline.CardItemCommand {
 				@cardCommandItemBody(item, pinned)
 			} else if item.Kind == timeline.CardItemSuggestion && pinned {
@@ -334,7 +341,7 @@ templ CardTimelineItem(item timeline.CardItem, cardID string, cardStatus orchest
 	</li>
 }
 
-templ cardChildItemBody(item timeline.CardItem, awaitingQuestionID string) {
+templ cardChildItemBody(item timeline.CardItem, cardID string, awaitingQuestionID string) {
 	if item.Child != nil {
 		{{ c := item.Child }}
 		{{ displayStatus := cardChildDisplayStatus(c) }}
@@ -344,13 +351,13 @@ templ cardChildItemBody(item timeline.CardItem, awaitingQuestionID string) {
 				if c.Spec != nil && c.Spec.Behavior != "" {
 					<span class="badge badge-child-behavior">{ c.Spec.Behavior }</span>
 				}
-				<span class="detail-children-title">
+				<a class="detail-children-title" href={ templ.SafeURL(cardChildDetailURL(cardID, c.ChildID)) }>
 					if c.Title != "" {
 						{ c.Title }
 					} else {
 						{ c.ChildID }
 					}
-				</span>
+				</a>
 				if c.Spec != nil && c.Spec.Project != "" {
 					<span class="detail-children-project">{ c.Spec.Project }</span>
 				}
@@ -362,17 +369,7 @@ templ cardChildItemBody(item timeline.CardItem, awaitingQuestionID string) {
 						<span aria-hidden="true">⚠</span> question
 					</a>
 				}
-				if c.TaskExists {
-					<a href={ templ.SafeURL("/tasks/" + c.TaskRef) } class="detail-children-link">→ task</a>
-				}
 			</div>
-			if c.Spec != nil && c.Spec.Description != "" {
-				<details class="detail-children-spec">
-					<summary class="detail-children-spec-toggle">spec</summary>
-					<div class="detail-children-spec-label">description</div>
-					<pre class="detail-children-spec-body">{ c.Spec.Description }</pre>
-				</details>
-			}
 			if c.HasResult {
 				<div class="card-timeline-child-result">
 					<span class={ "badge", taskStatusClass(string(c.ResultStatus)) }>{ string(c.ResultStatus) }</span>
@@ -385,18 +382,22 @@ templ cardChildItemBody(item timeline.CardItem, awaitingQuestionID string) {
 	}
 }
 
-templ cardChildFinishedItemBody(item timeline.CardItem) {
+templ cardChildFinishedItemBody(item timeline.CardItem, cardID string) {
 	if item.Child != nil {
 		{{ c := item.Child }}
 		<div class="card-timeline-child-finished">
-			<a href={ templ.SafeURL("#card-child-" + item.CorrelationID) } class="detail-children-link">
-				Finished:
-				if c.Title != "" {
-					{ c.Title }
-				} else {
-					{ c.ChildID }
-				}
-			</a>
+			if c.ChildID != "" {
+				<a href={ templ.SafeURL(cardChildDetailURL(cardID, c.ChildID)) } class="detail-children-link">
+					Finished:
+					if c.Title != "" {
+						{ c.Title }
+					} else {
+						{ c.ChildID }
+					}
+				</a>
+			} else {
+				<span class="detail-children-hint">Finished child (details unavailable)</span>
+			}
 			<span class={ "badge", "badge-" + cardChildFinishedLabel(c.ClosingActionType) }>{ cardChildFinishedLabel(c.ClosingActionType) }</span>
 		</div>
 	}
@@ -555,15 +556,10 @@ templ CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, opti
 	}
 }
 
-// TaskDetailCardSummary renders a card's current summary — the most recent
-// attrs_set{summary} value, task_triage.detail.summary — directly in the
-// page body, collapsing long text the same way TaskDetailCardDescription
-// does. Renders nothing when there is no summary.
+// TaskDetailCardSummary renders the current summary as the always-visible
+// lead-in to the expandable description. It renders nothing when empty.
 templ TaskDetailCardSummary(summary string) {
 	if summary != "" {
-		<details class="card-description" open?={ cardDescriptionOpenByDefault(summary) }>
-			<summary class="card-description-toggle">Summary</summary>
-			<div class="qa-md-body">{ summary }</div>
-		</details>
+		<div class="card-summary">{ summary }</div>
 	}
 }

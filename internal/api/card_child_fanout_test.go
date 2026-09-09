@@ -1,10 +1,7 @@
 package api
 
-// Pins that a card's dispatched child's progress/awaiting/job-completion
-// events reach the card's own SSE subscribers, not just its own action
-// log. Both "fans out" and "does NOT fan out to a non-card parent" are
-// pinned for each call site, plus the shared fanOutChildEventToParentCard/
-// isCardTask decision point itself.
+// Pins that child progress/awaiting/job-completion events reach the direct
+// parent's SSE subscribers, for both cards and execution tasks.
 
 import (
 	"context"
@@ -29,28 +26,7 @@ func (t postCommitFailTransactor) WithinTx(fn func(TxStore) error) error {
 	return fmt.Errorf("simulated post-commit failure")
 }
 
-// ---- fanOutChildEventToParentCard / isCardTask: the single decision point ----
-
-func TestIsCardTask(t *testing.T) {
-	cases := []struct {
-		name string
-		task *orchestrator.Task
-		want bool
-	}{
-		{"nil task", nil, false},
-		{"card", &orchestrator.Task{Type: orchestrator.TaskTypeCard}, true},
-		{"execution", &orchestrator.Task{Type: orchestrator.TaskTypeExecution}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isCardTask(tc.task); got != tc.want {
-				t.Errorf("isCardTask(%+v) = %v, want %v", tc.task, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestFanOutChildEventToParentCard_ReachesSubscriberOnlyWhenParentIsCard(t *testing.T) {
+func TestFanOutChildEventToParent_ReachesCardAndExecutionParents(t *testing.T) {
 	card := &orchestrator.Task{ID: "card-1", Type: orchestrator.TaskTypeCard}
 	execParent := &orchestrator.Task{ID: "exec-parent-1", Type: orchestrator.TaskTypeExecution}
 	childOfCard := &orchestrator.Task{ID: "child-1", ParentID: card.ID}
@@ -65,31 +41,51 @@ func TestFanOutChildEventToParentCard_ReachesSubscriberOnlyWhenParentIsCard(t *t
 	t.Run("card parent receives the event", func(t *testing.T) {
 		hub := NewTaskEventHub()
 		ch := hub.Subscribe(context.Background(), card.ID)
-		fanOutChildEventToParentCard(hub, tasks, childOfCard, TaskEvent{Kind: "child"})
+		fanOutChildEventToParent(hub, tasks, childOfCard, TaskEvent{Kind: "child"})
 		ev, ok := receiveEvent(t, ch, time.Second)
 		if !ok || ev.Kind != "child" {
 			t.Fatalf("expected a %q event on the card's channel, got ok=%v ev=%+v", "child", ok, ev)
 		}
 	})
 
-	t.Run("execution parent does not receive the event", func(t *testing.T) {
+	t.Run("execution parent receives the event", func(t *testing.T) {
 		hub := NewTaskEventHub()
 		ch := hub.Subscribe(context.Background(), execParent.ID)
-		fanOutChildEventToParentCard(hub, tasks, childOfExec, TaskEvent{Kind: "child"})
-		if _, ok := receiveEvent(t, ch, 50*time.Millisecond); ok {
-			t.Fatal("execution parent must not receive a child fan-out event")
+		fanOutChildEventToParent(hub, tasks, childOfExec, TaskEvent{Kind: "child"})
+		if _, ok := receiveEvent(t, ch, time.Second); !ok {
+			t.Fatal("execution parent did not receive a child fan-out event")
 		}
 	})
 
 	t.Run("root task (no parent) is a no-op", func(t *testing.T) {
 		hub := NewTaskEventHub()
 		// Must not panic or block — there is no parent id to resolve at all.
-		fanOutChildEventToParentCard(hub, tasks, rootTask, TaskEvent{Kind: "child"})
+		fanOutChildEventToParent(hub, tasks, rootTask, TaskEvent{Kind: "child"})
 	})
 
 	t.Run("nil hub is a no-op", func(t *testing.T) {
-		fanOutChildEventToParentCard(nil, tasks, childOfCard, TaskEvent{Kind: "child"})
+		fanOutChildEventToParent(nil, tasks, childOfCard, TaskEvent{Kind: "child"})
 	})
+}
+
+func TestCreateTask_FansOutChildCreationToExecutionParent(t *testing.T) {
+	parent := &orchestrator.Task{ID: "exec-parent-1", Type: orchestrator.TaskTypeExecution}
+	tasks := &stubTaskStore{tasks: map[string]*orchestrator.Task{parent.ID: parent}}
+	hub := NewTaskEventHub()
+	parentCh := hub.Subscribe(context.Background(), parent.ID)
+	svc := &TaskAppService{Tasks: tasks, Actions: &capturingActionStore{}, Hub: hub}
+
+	child, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ID: "child-card-1", InitialStatus: string(orchestrator.TaskStatusParked), ParentID: parent.ID, Title: "child card",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	ev, ok := receiveEvent(t, parentCh, time.Second)
+	if !ok || ev.Kind != "child" {
+		t.Fatalf("parent did not receive child creation: ok=%v ev=%+v", ok, ev)
+	}
+	assertChildPayload(t, ev, child.ID, "created", "task_id")
 }
 
 // ---- ApplyAction: child executing→awaiting must fan out to a card parent ----
@@ -150,10 +146,7 @@ func TestApplyAction_FansOutToParentCard_WhenParentIsCard(t *testing.T) {
 	assertChildPayload(t, ev, child.ID, "ask", "action_id")
 }
 
-// TestApplyAction_DoesNotFanOut_WhenParentIsExecution pins that an
-// execution parent (e.g. a supervisor/executor pair) sees no behavior
-// change — only the child's own existing self-broadcast fires.
-func TestApplyAction_DoesNotFanOut_WhenParentIsExecution(t *testing.T) {
+func TestApplyAction_FansOut_WhenParentIsExecution(t *testing.T) {
 	parent := &orchestrator.Task{ID: "exec-parent-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
 	child := &orchestrator.Task{
 		ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", ParentID: parent.ID,
@@ -175,8 +168,8 @@ func TestApplyAction_DoesNotFanOut_WhenParentIsExecution(t *testing.T) {
 		t.Fatalf("ApplyAction(ask): %v", err)
 	}
 
-	if _, ok := receiveEvent(t, parentCh, 50*time.Millisecond); ok {
-		t.Fatal("execution parent must not receive a child fan-out event")
+	if _, ok := receiveEvent(t, parentCh, time.Second); !ok {
+		t.Fatal("execution parent did not receive a child fan-out event")
 	}
 }
 
@@ -278,11 +271,7 @@ func TestCompleteJob_Failure_FansOutToParentCard(t *testing.T) {
 	assertChildPayload(t, ev, child.ID, "job_failed", "job_id")
 }
 
-// TestCompleteJob_Success_DoesNotFanOut_WhenParentIsExecution is CompleteJob's
-// success-path negative case — TestApplyAction_DoesNotFanOut_WhenParentIsExecution
-// only covers ApplyAction; the shared helper's own test covers CompleteJob's
-// code path only indirectly.
-func TestCompleteJob_Success_DoesNotFanOut_WhenParentIsExecution(t *testing.T) {
+func TestCompleteJob_Success_FansOut_WhenParentIsExecution(t *testing.T) {
 	parent := &orchestrator.Task{ID: "exec-parent-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
 	child := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", ParentID: parent.ID, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
 	job := &Job{ID: "job-1", TaskID: child.ID, ProjectID: "proj-1", Status: JobStatusRunning}
@@ -302,8 +291,8 @@ func TestCompleteJob_Success_DoesNotFanOut_WhenParentIsExecution(t *testing.T) {
 		t.Fatalf("CompleteJob: %v", err)
 	}
 
-	if _, ok := receiveEvent(t, parentCh, 50*time.Millisecond); ok {
-		t.Fatal("execution parent must not receive a child fan-out event")
+	if _, ok := receiveEvent(t, parentCh, time.Second); !ok {
+		t.Fatal("execution parent did not receive a child fan-out event")
 	}
 }
 
@@ -432,11 +421,7 @@ func TestNotifyTask_Progress_RootTask_StillBroadcastsSelf(t *testing.T) {
 	}
 }
 
-// TestNotifyTask_Progress_DoesNotFanOut_WhenParentIsExecution is
-// broadcastNotifyAction's own execution-parent negative case — the shared
-// fanOutChildEventToParentCard unit test covers the predicate itself, but
-// not that this specific call site actually passes it through untouched.
-func TestNotifyTask_Progress_DoesNotFanOut_WhenParentIsExecution(t *testing.T) {
+func TestNotifyTask_Progress_FansOut_WhenParentIsExecution(t *testing.T) {
 	parent := &orchestrator.Task{ID: "exec-parent-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
 	child := &orchestrator.Task{ID: "child-1", Type: orchestrator.TaskTypeExecution, ProjectID: "proj-1", ParentID: parent.ID, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "impl"}}
 
@@ -453,7 +438,7 @@ func TestNotifyTask_Progress_DoesNotFanOut_WhenParentIsExecution(t *testing.T) {
 		t.Fatalf("NotifyTask(progress): %v", err)
 	}
 
-	if _, ok := receiveEvent(t, parentCh, 50*time.Millisecond); ok {
-		t.Fatal("execution parent must not receive a child fan-out event")
+	if _, ok := receiveEvent(t, parentCh, time.Second); !ok {
+		t.Fatal("execution parent did not receive a child fan-out event")
 	}
 }
