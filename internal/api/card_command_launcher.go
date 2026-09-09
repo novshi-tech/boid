@@ -314,7 +314,11 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 			slog.Warn("card command: dispatch failed and releasing the claimed slot also failed; needs an operator force-release",
 				"card_id", cardID, "request_id", req.ID, "dispatch_error", err, "release_error", ferr)
 		}
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("card command: dispatch: %s", err)}
+		return nil, &StatusError{
+			Code:            http.StatusInternalServerError,
+			Message:         fmt.Sprintf("card command: dispatch: %s", err),
+			TargetRequestID: req.ID,
+		}
 	}
 
 	return &RunCardCommandResult{RequestID: req.ID, LauncherJobID: result.JobID}, nil

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -264,6 +265,57 @@ func TestApplyAction_Answered_AcceptDone(t *testing.T) {
 	suggestion, ok := orchestrator.DetailSuggestion(txStore.triage["t1"].Detail)
 	if ok || suggestion.Verb != "" {
 		t.Errorf("suggestion still present after accept: %+v", suggestion)
+	}
+}
+
+func TestApplyAction_Answered_AcceptGoFailureReturnsCommittedDecision(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	txStore := &recordingTxStore{
+		task: task,
+		triage: map[string]*orchestrator.CardAttrs{
+			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go"}},"children":[{"id":"ch_00","status":"specced","spec":{"project":"p2","behavior":"impl"}}]}`)},
+		},
+	}
+	creator := &fakeTaskCreator{createFn: func(CreateTaskRequest) (*orchestrator.Task, error) {
+		return nil, errors.New("launcher unavailable")
+	}}
+	svc := newAcceptGoWorkflowService(task, txStore, creator)
+	svc.CardRequests = txStore
+	payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": "go"})
+
+	application, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+	if err == nil {
+		t.Fatal("want the Go follow-through failure")
+	}
+	if application == nil || !application.DecisionAccepted {
+		t.Fatalf("application = %+v, want the already-committed accepted decision alongside the error", application)
+	}
+	if application.Action == nil || application.Action.Type != "answered" {
+		t.Fatalf("application action = %+v, want the committed answered action", application.Action)
+	}
+	if len(txStore.actions) == 0 || txStore.actions[0].Type != "answered" {
+		t.Fatalf("actions = %+v, want answered committed before launch follow-through", txStore.actions)
+	}
+}
+
+func TestApplyAction_Answered_AcceptGoSuccessReturnsDecisionAndTarget(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}
+	txStore := &recordingTxStore{
+		task: task,
+		triage: map[string]*orchestrator.CardAttrs{
+			"t1": {TaskID: "t1", Detail: json.RawMessage(`{"attrs":{"suggestion":{"verb":"go"}},"children":[{"id":"ch_00","status":"specced","spec":{"project":"p2","behavior":"impl"}}]}`)},
+		},
+	}
+	svc := newAcceptGoWorkflowService(task, txStore, &fakeTaskCreator{})
+	svc.CardRequests = txStore
+	payload, _ := json.Marshal(map[string]string{"answer": answeredAnswerAccept, "verb": "go"})
+
+	application, err := svc.ApplyAction(humanCtx(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload})
+	if err != nil {
+		t.Fatalf("ApplyAction(answered, accept go): %v", err)
+	}
+	if !application.DecisionAccepted || application.TargetTaskID != "child-1" {
+		t.Fatalf("application = %+v, want accepted decision linked to child-1", application)
 	}
 }
 
