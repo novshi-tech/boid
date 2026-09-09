@@ -15,6 +15,7 @@ import (
 
 // errIdentityStoreUnavailable guards the three identity ops when no identity store is configured.
 var errIdentityStoreUnavailable = errors.New("identity store unavailable")
+var errIdentityMetadataUnavailable = errors.New("identity metadata store unavailable")
 
 // LinkIdentity binds identity to taskID within projectID's scope. See
 // TaskIdentityStore.LinkIdentity for the idempotent-same-task /
@@ -37,6 +38,9 @@ func (s *TaskAppService) LinkIdentity(ctx context.Context, projectID, identity, 
 
 // LinkIdentityWithMetadata links an identity and applies explicitly supplied metadata.
 func (s *TaskAppService) LinkIdentityWithMetadata(ctx context.Context, projectID, identity, taskID string, url, displayName *string) error {
+	if url == nil && displayName == nil {
+		return s.LinkIdentity(ctx, projectID, identity, taskID)
+	}
 	if url != nil {
 		if err := orchestrator.ValidateIdentityURL(*url); err != nil {
 			return err
@@ -44,26 +48,28 @@ func (s *TaskAppService) LinkIdentityWithMetadata(ctx context.Context, projectID
 	}
 	if s.Tx != nil {
 		return s.Tx.WithinTx(func(tx TxStore) error {
+			r, ok := tx.(interface {
+				UpdateIdentityMetadata(string, string, *string, *string) error
+			})
+			if !ok {
+				return errIdentityMetadataUnavailable
+			}
 			if err := linkIdentityIn(ctx, tx, projectID, identity, taskID); err != nil {
 				return err
 			}
-			if r, ok := tx.(interface {
-				UpdateIdentityMetadata(string, string, *string, *string) error
-			}); ok {
-				return r.UpdateIdentityMetadata(projectID, identity, url, displayName)
-			}
-			return nil
+			return r.UpdateIdentityMetadata(projectID, identity, url, displayName)
 		})
+	}
+	r, ok := s.Identities.(interface {
+		UpdateIdentityMetadata(string, string, *string, *string) error
+	})
+	if !ok {
+		return errIdentityMetadataUnavailable
 	}
 	if err := s.LinkIdentity(ctx, projectID, identity, taskID); err != nil {
 		return err
 	}
-	if r, ok := s.Identities.(interface {
-		UpdateIdentityMetadata(string, string, *string, *string) error
-	}); ok {
-		return r.UpdateIdentityMetadata(projectID, identity, url, displayName)
-	}
-	return nil
+	return r.UpdateIdentityMetadata(projectID, identity, url, displayName)
 }
 
 // UnlinkIdentity removes one (projectID, identity) binding, if any.
