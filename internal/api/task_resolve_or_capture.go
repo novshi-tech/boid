@@ -66,6 +66,11 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 	if req.ProjectID == "" {
 		return nil, fmt.Errorf("resolve or capture: project id must not be empty")
 	}
+	if req.URL != nil {
+		if err := orchestrator.ValidateIdentityURL(*req.URL); err != nil {
+			return nil, err
+		}
+	}
 	if err := orchestrator.ValidateContentSize("description", []byte(req.Description)); err != nil {
 		return nil, err
 	}

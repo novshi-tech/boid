@@ -7,8 +7,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+func TestTaskIdentityLinks_RendersExternalAndUnsetResources(t *testing.T) {
+	var buf bytes.Buffer
+	if err := TaskIdentityLinks([]apiwire.TaskIdentity{{Identity: "jira:X-1", URL: "https://jira.example/X-1", DisplayName: "Issue X-1"}, {Identity: "slack:42"}}).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	body := buf.String()
+	if !strings.Contains(body, `target="_blank"`) || !strings.Contains(body, "Issue X-1") || !strings.Contains(body, "reference unavailable") {
+		t.Fatalf("identity links = %s", body)
+	}
+}
 
 // card machine v2: working's primary bottom-bar action is "complete" (the
 // forward edge once work is underway) — parked's is "go" (see

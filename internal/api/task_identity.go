@@ -37,6 +37,24 @@ func (s *TaskAppService) LinkIdentity(ctx context.Context, projectID, identity, 
 
 // LinkIdentityWithMetadata links an identity and applies explicitly supplied metadata.
 func (s *TaskAppService) LinkIdentityWithMetadata(ctx context.Context, projectID, identity, taskID string, url, displayName *string) error {
+	if url != nil {
+		if err := orchestrator.ValidateIdentityURL(*url); err != nil {
+			return err
+		}
+	}
+	if s.Tx != nil {
+		return s.Tx.WithinTx(func(tx TxStore) error {
+			if err := linkIdentityIn(ctx, tx, projectID, identity, taskID); err != nil {
+				return err
+			}
+			if r, ok := tx.(interface {
+				UpdateIdentityMetadata(string, string, *string, *string) error
+			}); ok {
+				return r.UpdateIdentityMetadata(projectID, identity, url, displayName)
+			}
+			return nil
+		})
+	}
 	if err := s.LinkIdentity(ctx, projectID, identity, taskID); err != nil {
 		return err
 	}

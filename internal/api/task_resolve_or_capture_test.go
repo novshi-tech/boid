@@ -36,6 +36,8 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+func ptrString(s string) *string { return &s }
+
 // realTaskRepoTxStore adapts *orchestrator.TaskRepository (which implements
 // every Task/Action/CardAttrs/TaskIdentity method TxStore needs) plus
 // trivial Job stubs (unused by ResolveOrCapture) into a full TxStore, backed
@@ -89,15 +91,22 @@ func newResolveOrCaptureTestService(t *testing.T) *TaskWorkflowService {
 
 func TestResolveOrCapture_UnregisteredIdentity_CreatesCapturedTaskAndLinks(t *testing.T) {
 	svc := newResolveOrCaptureTestService(t)
+	resourceURL := "https://jira.example/browse/ROOKPF-1"
 
 	result, err := svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
 		ProjectID:   "proj-1",
 		Identity:    "jira:ROOKPF-1",
 		Title:       "ROOKPF-1: something broke",
 		Description: "the body",
+		URL:         &resourceURL,
+		DisplayName: ptrString("Incident ROOKPF-1"),
 	})
 	if err != nil {
 		t.Fatalf("ResolveOrCapture() error = %v", err)
+	}
+	metadata, err := orchestrator.ListIdentityMetadataByTask(svc.Tx.(realTransactor).conn, result.TaskID)
+	if err != nil || len(metadata) != 1 || metadata[0].URL != resourceURL || metadata[0].DisplayName != "Incident ROOKPF-1" {
+		t.Fatalf("saved identity metadata = %#v, err=%v", metadata, err)
 	}
 	if !result.Created {
 		t.Error("Created = false, want true for an unregistered identity")

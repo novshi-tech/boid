@@ -165,6 +165,14 @@ func (s apiTxStore) ListIdentitiesByTask(taskID string) ([]string, error) {
 	return s.tasks.ListIdentitiesByTask(taskID)
 }
 
+func (s apiTxStore) UpdateIdentityMetadata(projectID, identity string, url, displayName *string) error {
+	return s.tasks.UpdateIdentityMetadata(projectID, identity, url, displayName)
+}
+
+func (s apiTxStore) ListIdentityMetadataByTask(taskID string) ([]orchestrator.TaskIdentity, error) {
+	return s.tasks.ListIdentityMetadataByTask(taskID)
+}
+
 func (s apiTxStore) GetJob(id string) (*api.Job, error) {
 	job, err := s.jobs.GetJob(id)
 	if err != nil {
