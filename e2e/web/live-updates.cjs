@@ -14,7 +14,7 @@ const script = component.match(/<script>([\s\S]*?)<\/script>/)[1];
     let fail = false, failKind = '', redirected = false;
     let revision = 0;
     let delayedOperation = false, releaseOldOperation;
-    let pinnedResponses = 0;
+    let pinnedResponses = 0, unknownPlaceholder = false;
     const operationRequests = [];
     await page.route('http://boid.test/**', async route => {
       const url = new URL(route.request().url());
@@ -29,7 +29,7 @@ const script = component.match(/<script>([\s\S]*?)<\/script>/)[1];
           if (selected === 'operation-a' && delayedOperation) {
             await new Promise(resolve => { releaseOldOperation = resolve; });
           }
-          return route.fulfill({ contentType: 'text/html', body: `<section id="task-operations" data-selected="${selected}"><div class="operation-result" data-operation-id="${selected}">Selected ${selected}</div></section>` });
+          return route.fulfill({ contentType: 'text/html', body: `<section id="task-operations" data-selected="${selected}"><div class="operation-result" data-operation-id="${selected}" data-operation-result="${unknownPlaceholder ? 'unknown' : 'accepted'}">Selected ${selected}</div></section>` });
         }
         if (kind === 'pinned') {
           pinnedResponses++;
@@ -102,6 +102,19 @@ const script = component.match(/<script>([\s\S]*?)<\/script>/)[1];
     await page.locator('#task-live-retry').click();
     await page.waitForFunction(() => document.querySelector('#task-live-status').dataset.stale === 'false');
     assert.equal(await page.locator('#card-timeline .tab-empty').textContent(), 'No history yet.');
+
+    // An audit finalization failure must not overwrite an outcome this
+    // browser observed directly with the older durable unknown placeholder.
+    await page.locator('#task-operations [data-operation-id]').evaluate(el => {
+      el.dataset.operationResult = 'accepted'; el.textContent = 'Observed accepted; history update failed';
+    });
+    unknownPlaceholder = true;
+    const pendingPlaceholder = page.waitForResponse(response => response.url().includes('kind=operations'));
+    await page.locator('#task-live-retry').click();
+    await pendingPlaceholder;
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.match(await page.locator('#task-operations').textContent(), /Observed accepted; history update failed/);
+    unknownPlaceholder = false;
 
     // Once an HTMX tab swap removes Timeline, its old failure must no longer
     // make successfully refreshed visible sections appear stale.

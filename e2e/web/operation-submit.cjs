@@ -24,6 +24,7 @@ const assert = require('node:assert/strict');
         await new Promise(resolve => { release = resolve; });
         return route.abort('failed');
       }
+      if (mode === 'unrecorded') return route.fulfill({status:503,headers:{'X-Boid-Operation-Status':'not-submitted'},body:'Unavailable'});
       if (mode === 'old') {
         return route.fulfill({
           contentType: 'text/html',
@@ -121,6 +122,12 @@ const assert = require('node:assert/strict');
     assert.equal(await page.locator('#task-operations').textContent(), 'Rejected');
     assert.equal(await page.locator('textarea').inputValue(), 'New draft typed while waiting');
     assert.equal(count, 6);
+    mode = 'unrecorded';
+    await page.getByText('Discuss', { exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('#operation-submit-feedback')?.textContent.includes('was not submitted'));
+    assert.equal(await page.locator('textarea').inputValue(), 'New draft typed while waiting');
+    assert.equal(await page.locator('#task-operations').textContent(), 'Rejected');
+    await assertFocusedAndVisible(page.locator('#operation-submit-feedback'), 'unsubmitted feedback');
     assert.deepEqual(errors, []);
     console.log('PASS: unknown/rejected input retention, accepted clearing, in-flight edits, CSRF/command retention, duplicate suppression and correlated responses');
   } finally {

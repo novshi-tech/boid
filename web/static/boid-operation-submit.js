@@ -64,6 +64,10 @@
         method: 'POST', body: new URLSearchParams(data), signal: controller.signal,
         credentials: 'same-origin', headers: { 'Accept': 'text/html' }
       });
+      if (response.headers.get('X-Boid-Operation-Status') === 'not-submitted') {
+        feedback(form, 'The operation was not submitted because its history could not be saved. Your input has been kept. Refresh the current state before trying again.', true);
+        return;
+      }
       var doc = new DOMParser().parseFromString(await response.text(), 'text/html');
       var result = doc.getElementById('task-operations');
       var target = document.getElementById('task-operations');
