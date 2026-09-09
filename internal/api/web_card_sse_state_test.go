@@ -74,7 +74,6 @@ func TestCardDetail_LiveScript_RefreshHistoryHeadWiredToActionAndRevisit(t *test
 
 	_, body := getHTML(t, h, "/tasks/card-1")
 
-
 	actionListenerIdx := strings.Index(body, "addEventListener('action'")
 	jobListenerIdx := strings.Index(body, "addEventListener('job'")
 	childListenerIdx := strings.Index(body, "addEventListener('child'")
