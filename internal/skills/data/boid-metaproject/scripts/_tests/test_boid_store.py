@@ -279,6 +279,22 @@ class LinkIdentityTest(unittest.TestCase):
         self.assertEqual(run.args, ["boid", "task", "identity", "link", "jira:X-1", "task-9"])
 
 
+class IdentityMetadataTest(unittest.TestCase):
+    def test_capture_passes_url_and_display_name(self):
+        client, run = cli('{"task_id":"t1","created":false}')
+        self.assertEqual(client.resolve_or_capture(
+            "jira:X-1", title="題", description="本文",
+            url="https://example.com/browse/X-1", display_name="X-1",
+        ), ("t1", False))
+        self.assertIn("--url=https://example.com/browse/X-1", run.args)
+        self.assertIn("--display-name=X-1", run.args)
+
+    def test_link_preserves_explicit_empty_metadata(self):
+        client, run = cli()
+        client.link_identity("jira:X-1", "t1", url="", display_name="")
+        self.assertEqual(run.args, ["boid", "task", "identity", "link", "jira:X-1", "t1", "--url=", "--display-name="])
+
+
 class ResolveProjectTest(unittest.TestCase):
     """`child_specced` の project は**解決済み UUID でなければならない** ——
     `action send` は broker で名前解決されず、executor の `AllowsProject` は UUID の

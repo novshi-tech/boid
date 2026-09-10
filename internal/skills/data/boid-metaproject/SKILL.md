@@ -251,6 +251,12 @@ something not yet captured — plus the event keys that are new about it. Tell i
   intake has no "read it, wrote nothing" verb, precisely because a follow-up that
   writes nothing to the card starts no judgment.
 
+For linked resources, pass the Pack signal's external `url` with its matching
+`identity` to `capture` or `link`. A follow-up `note` can also include `identity`
+and `url` to fill in links on existing cards. `display_name` is optional. Omit
+unknown metadata; an explicit empty string clears the saved value. See
+[verbs.md](references/verbs.md) for the input contract.
+
 **The judgment skill** receives one card and works out what it now means. Tell
 it:
 

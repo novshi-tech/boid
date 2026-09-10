@@ -22,9 +22,9 @@ report モード (dry-run) で入力をそのまま残せるのも同じ形の�
 
 | verb | 渡すもの |
 |---|---|
-| `capture` | identity, title, body, urgency |
-| `link` | task_id, identity |
-| `note` | task_id, body — 既にある card への続報 |
+| `capture` | identity, title, body, urgency (+ 任意で url, display_name) |
+| `link` | task_id, identity (+ 任意で url, display_name) |
+| `note` | task_id, body — 既にある card への続報 (+ URL補完時は identity, url, 任意で display_name) |
 | `summary` | task_id, body |
 | `spec` | task_id, work, origin, title, project, behavior, description (+ 任意で instruction) |
 | `drop-child` | task_id, child_id, reason |
@@ -155,12 +155,12 @@ _VERB_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     # urgency を必須にしているのは S-11。**起票と urgency を分けると打ち忘れが起きる** ——
     # 2026-08-23 の本番投入で起票 8 件のうち 5 件が urgency 無しの captured で止まり、
     # queue に出なかった。うち 2 件は子を specced まで作ってあった。
-    "capture": (("identity", "title", "body", "urgency"), ()),
-    "link": (("task_id", "identity"), ()),
+    "capture": (("identity", "title", "body", "urgency"), ("url", "display_name")),
+    "link": (("task_id", "identity"), ("url", "display_name")),
     # 既にこの card に結びついている identity から続報が来たときの出口。card に
     # `noted` を書くので続きの判断が起きる。body には後段が読み直さずに済むよう
     # 「何が新しいか」を書く。
-    "note": (("task_id", "body"), ()),
+    "note": (("task_id", "body"), ("identity", "url", "display_name")),
     "summary": (("task_id", "body"), ()),
     # **`instruction` は任意。** 子の instruction は behavior の `default_instruction` を
     # フィールド単位で上書きする (`internal/orchestrator/payload_merge.go` の
@@ -375,6 +375,8 @@ def validate(
             continue
         command[name] = _field(verb, name, payload[name], required=name in required)
 
+    if verb == "note" and ("url" in command or "display_name" in command) and not command.get("identity"):
+        raise _missing(verb, "identity", " (URL・表示名の補完先)")
     _check_verb_rules(verb, command)
     return command
 
@@ -684,7 +686,8 @@ class Executor:
         identity = str(c["identity"])
         urgency = str(c["urgency"])
         task_id, created = self.cli.resolve_or_capture(
-            identity, title=str(c["title"]), description=str(c["body"])
+            identity, title=str(c["title"]), description=str(c["body"]),
+            **self._identity_metadata(c)
         )
         if created:
             # identity を attrs にも置く —— 検知が task を identity で引ける索引になる。
@@ -711,11 +714,19 @@ class Executor:
         self.cli.send_action(task_id, "attrs_set", {"urgency": urgency, "kind": "signal"})
 
     def _do_link(self, c: Mapping[str, object]) -> Result:
-        self.cli.link_identity(str(c["identity"]), str(c["task_id"]))
+        self.cli.link_identity(str(c["identity"]), str(c["task_id"]), **self._identity_metadata(c))
         return Result(task_id=str(c["task_id"]), changed=True, note=f"{c['identity']} を合流")
+
+    @staticmethod
+    def _identity_metadata(c: Mapping[str, object]) -> dict[str, str]:
+        """指定された項目だけを CLI に渡し、既存メタデータを維持する。"""
+        return {key: str(c[key]) for key in ("url", "display_name") if key in c}
 
     def _do_note(self, c: Mapping[str, object]) -> Result:
         task_id = str(c["task_id"])
+        metadata = self._identity_metadata(c)
+        if metadata:
+            self.cli.link_identity(str(c["identity"]), task_id, **metadata)
         self.cli.send_action(task_id, "noted", {"body": str(c["body"])})
         return Result(task_id=task_id, changed=True, note="続報を記録")
 

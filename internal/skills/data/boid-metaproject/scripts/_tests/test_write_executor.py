@@ -79,7 +79,9 @@ class FakeCLI:
     def send_action(self, task_id, action_type, payload=None):
         self.calls.append(("send_action", task_id, action_type, payload))
 
-    def resolve_or_capture(self, identity, *, title, description):
+    def resolve_or_capture(self, identity, *, title, description, **metadata):
+        if metadata:
+            self.calls.append(("identity_metadata", metadata))
         self.calls.append(("resolve_or_capture", identity, title, description))
         return "new-task", self._created
 
@@ -92,7 +94,9 @@ class FakeCLI:
     def notify(self, task_id, message):
         self.calls.append(("notify", task_id, message))
 
-    def link_identity(self, identity, task_id):
+    def link_identity(self, identity, task_id, **metadata):
+        if metadata:
+            self.calls.append(("identity_metadata", metadata))
         self.calls.append(("link_identity", identity, task_id))
 
     def ack_signals(self, ids):
@@ -809,6 +813,44 @@ class CaptureTest(unittest.TestCase):
         run("capture", cli, identity="jira:X-1", title="題", body="本文", urgency="now")
         self.assertFalse([c for c in cli.actions("attrs_set") if "urgency" in (c[3] or {})])
         self.assertFalse(cli.actions("triage"))
+
+
+class LinkedResourcesTest(unittest.TestCase):
+    def test_capture_metadata_for_new_and_existing_cards(self):
+        for created in (True, False):
+            with self.subTest(created=created):
+                cli = FakeCLI(created=created)
+                run("capture", cli, identity="jira:X-1", title="題", body="本文", urgency="week",
+                    url="https://example.com/browse/X-1", display_name="X-1")
+                self.assertEqual(cli.named("identity_metadata"), [("identity_metadata", {
+                    "url": "https://example.com/browse/X-1", "display_name": "X-1"})])
+
+    def test_link_metadata(self):
+        cli = FakeCLI()
+        run("link", cli, task_id="t1", identity="jira:X-1", url="", display_name="")
+        self.assertEqual(cli.named("identity_metadata"), [("identity_metadata", {"url": "", "display_name": ""})])
+
+    def test_note_backfills_metadata_before_recording_followup(self):
+        cli = FakeCLI()
+        run("note", cli, task_id="t1", body="続報", identity="jira:X-1", url="https://example.com/browse/X-1")
+        self.assertEqual(cli.named("link_identity"), [("link_identity", "jira:X-1", "t1")])
+        self.assertEqual(cli.named("identity_metadata"), [("identity_metadata", {"url": "https://example.com/browse/X-1"})])
+        self.assertLess(cli.calls.index(cli.named("link_identity")[0]), cli.calls.index(cli.actions("noted")[0]))
+
+    def test_metadata_failure_does_not_record_or_ack_followup(self):
+        class FailingCLI(FakeCLI):
+            def link_identity(self, *args, **kwargs):
+                raise RuntimeError("invalid URL")
+
+        cli = FailingCLI()
+        with self.assertRaisesRegex(RuntimeError, "invalid URL"):
+            run("note", cli, task_id="t1", body="続報", identity="jira:X-1", url="invalid")
+        self.assertFalse(cli.actions("noted"))
+        self.assertFalse(cli.named("ack_signals"))
+
+    def test_note_metadata_requires_identity(self):
+        with self.assertRaises(CommandError):
+            run("note", FakeCLI(), task_id="t1", body="続報", url="https://example.com")
 
 
 class SimpleVerbTest(unittest.TestCase):
