@@ -602,11 +602,25 @@ templ CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, opti
 	}
 }
 
-// TaskDetailCardSummary renders the current summary as the always-visible
-// lead-in to the expandable description. It renders nothing when empty.
-templ TaskDetailCardSummary(summary string) {
-	if summary != "" {
+// TaskDetailCardSummary combines the current summary and full description in
+// one compact disclosure. It renders nothing when both are empty.
+templ TaskDetailCardSummary(summary string, description string) {
+	if summary != "" && description != "" {
+		<details class="card-description">
+			<summary class="card-summary">{ summary }</summary>
+			<div class="qa-md-body">
+				@renderMarkdown(description)
+			</div>
+		</details>
+	} else if summary != "" {
 		<div class="card-summary">{ summary }</div>
+	} else if description != "" {
+		<details class="card-description">
+			<summary class="card-summary">Show details</summary>
+			<div class="qa-md-body">
+				@renderMarkdown(description)
+			</div>
+		</details>
 	}
 }
 

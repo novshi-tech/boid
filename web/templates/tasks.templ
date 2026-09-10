@@ -395,8 +395,7 @@ templ TaskDetailCardStatusSection(task *orchestrator.Task, errorMsg string, proj
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
 		}
-		@TaskDetailCardSummary(summary)
-		@TaskDetailCardDescription(task)
+		@TaskDetailCardSummary(summary, task.Description)
 		@TaskIdentityLinks(identities)
 	</div>
 }
@@ -1723,19 +1722,6 @@ templ TaskDetailLiveScript() {
 			});
 		})();
 	</script>
-}
-
-// TaskDetailCardDescription follows the always-visible summary with an
-// explicit expansion for the full description.
-templ TaskDetailCardDescription(task *orchestrator.Task) {
-	if task.Description != "" {
-		<details class="card-description">
-			<summary class="card-description-toggle">Show details</summary>
-			<div class="qa-md-body">
-				@renderMarkdown(task.Description)
-			</div>
-		</details>
-	}
 }
 
 func operationResultText(result *orchestrator.OperationResult) string {

@@ -909,12 +909,12 @@ func TestTaskDetailCardBody_SummaryAndDescriptionAreAdjacentBeforeCurrentWork(t 
 	}
 	html := buf.String()
 	summaryAt := strings.Index(html, "Short summary")
-	detailsAt := strings.Index(html, "Show details")
+	detailsAt := strings.Index(html, `<summary class="card-summary">Short summary</summary>`)
 	commandAt := strings.Index(html, "card-command-section")
-	if summaryAt < 0 || detailsAt < summaryAt || commandAt < detailsAt {
+	if summaryAt < 0 || detailsAt < 0 || commandAt < detailsAt {
 		t.Fatalf("want summary then expandable description then current controls; got %s", html)
 	}
-	if !strings.Contains(html, `<details class="card-description"><summary class="card-description-toggle">Show details`) {
+	if !strings.Contains(html, `<details class="card-description"><summary class="card-summary">Short summary</summary>`) {
 		t.Errorf("full description should be collapsed by default; got %s", html)
 	}
 }

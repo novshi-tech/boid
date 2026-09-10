@@ -643,7 +643,7 @@ func TestCardHistoryOlderFragment_PriorDateKey_DoesNotRepeatTheContinuedDay(t *t
 
 func TestTaskDetailCardSummary_Empty_RendersNothing(t *testing.T) {
 	var buf bytes.Buffer
-	if err := TaskDetailCardSummary("").Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailCardSummary("", "").Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if got := strings.TrimSpace(buf.String()); got != "" {
@@ -653,7 +653,7 @@ func TestTaskDetailCardSummary_Empty_RendersNothing(t *testing.T) {
 
 func TestTaskDetailCardSummary_RendersAndEscapes(t *testing.T) {
 	var buf bytes.Buffer
-	if err := TaskDetailCardSummary("found a fix <script>alert(1)</script>").Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailCardSummary("found a fix <script>alert(1)</script>", "full description").Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -662,5 +662,8 @@ func TestTaskDetailCardSummary_RendersAndEscapes(t *testing.T) {
 	}
 	if strings.Contains(html, "<script>alert(1)</script>") {
 		t.Errorf("summary was not escaped, got: %s", html)
+	}
+	if !strings.Contains(html, `<details class="card-description"><summary class="card-summary">`) {
+		t.Errorf("summary should toggle the description, got: %s", html)
 	}
 }
