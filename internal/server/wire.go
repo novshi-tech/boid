@@ -306,7 +306,7 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 // project reload` (or the next startup) captures it.
 func backfillUpstreamURLs(projectRepo *orchestrator.ProjectRepository, projects []*orchestrator.Project) {
 	for _, p := range projects {
-		if p.UpstreamURL != "" {
+		if p.UpstreamURL != "" || orchestrator.IsDefaultMetaproject(p) {
 			continue
 		}
 		url, err := dispatcher.CaptureUpstreamURL(p.WorkDir)
@@ -1721,6 +1721,11 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		projects: projectRepo,
 	}
 	webSvc := &api.WebAppService{
+		EnsureCardProjects: func() error {
+			return projectSvc.WithProjectLock(func() error {
+				return orchestrator.EnsureDefaultMetaprojects(srv.db, store)
+			})
+		},
 		Tasks:      taskRepo,
 		Actions:    taskRepo,
 		Jobs:       jobStore,

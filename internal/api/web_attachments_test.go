@@ -119,7 +119,7 @@ func TestPostAnswer_MultipartRejectsBadAttachment(t *testing.T) {
 func TestPostTaskCreate_MultipartFlow(t *testing.T) {
 	attachRoot := t.TempDir()
 	created := &orchestrator.Task{ID: "new-task-1", ProjectID: "proj-1", Title: "demo"}
-	svc := &stubWebService{createTaskResult: created}
+	svc := &stubWebService{createTaskResult: created, projects: []*orchestrator.Project{testCardProject("proj-1", "default")}}
 	h := &WebHandler{Service: svc, AttachmentsRoot: attachRoot}
 	r := chi.NewRouter()
 	r.Post("/tasks", h.PostTaskCreate)
@@ -136,7 +136,7 @@ func TestPostTaskCreate_MultipartFlow(t *testing.T) {
 	if len(svc.createTaskCalls) != 1 {
 		t.Fatalf("CreateTask calls = %d, want 1", len(svc.createTaskCalls))
 	}
-	saved, err := os.ReadFile(filepath.Join(attachRoot, "tasks", "new-task-1", "attachments", "ui.png"))
+	saved, err := os.ReadFile(filepath.Join(attachRoot, "tasks", svc.createTaskCalls[0].ID, "attachments", "ui.png"))
 	if err != nil {
 		t.Fatalf("attachment not persisted to created task dir: %v", err)
 	}

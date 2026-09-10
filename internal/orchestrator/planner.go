@@ -77,6 +77,11 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		return nil, nil, fmt.Errorf("hook fire event for task %q, which is not an execution task (no Exec attrs)", task.ID)
 	}
 
+	clone := BuildCloneDeclaration(task, meta.ForkPoint)
+	if IsDefaultMetaproject(proj) {
+		clone = nil // the built-in judge runs in workspace HOME, without a repository
+	}
+
 	// Business payload filter: limit task.payload to the traits this hook declares.
 	payload := FilterPayloadByTraits(task.Exec.Payload, event.Hook.Traits.Consumes)
 
@@ -132,7 +137,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 			DockerEnabled:      meta.Capabilities.Docker != nil,
 			// dispatcher clones inside the sandbox and resolves the
 			// declared branch there, rather than a host-repo worktree.
-			Clone: BuildCloneDeclaration(task, meta.ForkPoint),
+			Clone: clone,
 		},
 		BuiltinPolicies: DefaultBuiltinPolicies(
 			RoleHook,

@@ -1,7 +1,7 @@
 package templates
 
 import (
-	"encoding/json"
+    "fmt"
 	"net/url"
 	"sort"
 
@@ -12,173 +12,94 @@ import (
 // dropdown. Meta.Name is the human label (e.g. "boid", "freee-cli"); the
 // raw project ID is only surfaced when a project lacks a name.
 func taskNewProjectLabel(p *orchestrator.Project) string {
+	if orchestrator.IsDefaultMetaproject(p) { return "Default" }
 	if p.Meta.Name != "" {
 		return p.Meta.Name
 	}
 	return p.ID
 }
 
-// taskNewBehaviors returns the union of behavior names defined across
-// all projects, sorted alphabetically. Used as the default Behavior
-// option list when no project is selected.
-//
-// The two canonical behaviors are `supervisor` and `executor`. Legacy
-// alias mirror entries (the now-deprecated `plan` / `dev` keys, kept in
-// the in-memory project map for back-compat) are filtered out so the UI
-// shows each behavior once and uses the canonical name.
-func taskNewBehaviors(projects []*orchestrator.Project) []string {
-	seen := map[string]bool{}
-	for _, p := range projects {
-		for _, name := range visibleBehaviorNames(p.Meta.TaskBehaviors) {
-			seen[name] = true
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for n := range seen {
-		out = append(out, n)
-	}
-	sort.Strings(out)
-	return out
+// Card creation chooses a workspace and its judgment project. Execution tasks
+// continue to be created through the CLI/API and card Go flow.
+func cardFormWorkspace(form url.Values) string {
+    if ws := form.Get("workspace"); ws != "" { return ws }
+    return orchestrator.DefaultWorkspaceSlug
 }
 
-// taskNewBehaviorsByProjectJSON builds a {projectID: [behavior…]} map
-// as a JSON string. Embedded in a <script> so the inline project→behavior
-// filter can rebuild the behavior options without an extra round trip.
-func taskNewBehaviorsByProjectJSON(projects []*orchestrator.Project) string {
-	m := make(map[string][]string, len(projects))
-	for _, p := range projects {
-		names := visibleBehaviorNames(p.Meta.TaskBehaviors)
-		sort.Strings(names)
-		m[p.ID] = names
-	}
-	b, err := json.Marshal(m)
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
+func cardFormProject(form url.Values) string {
+    if id := form.Get("project_id"); id != "" { return id }
+    return orchestrator.DefaultMetaprojectID(cardFormWorkspace(form))
 }
 
-// visibleBehaviorNames returns the keys of a behavior map. Every key is shown:
-// behavior names carry no built-in meaning, so there are no synthetic mirror
-// entries to filter out.
-func visibleBehaviorNames(behaviors map[string]orchestrator.TaskBehavior) []string {
-	out := make([]string, 0, len(behaviors))
-	for name := range behaviors {
-		out = append(out, name)
-	}
-	return out
+func cardFormWorkspaces(projects []*orchestrator.Project) []string {
+    seen := map[string]bool{}
+    var result []string
+    for _, p := range projects {
+        if !seen[p.WorkspaceID] { seen[p.WorkspaceID] = true; result = append(result, p.WorkspaceID) }
+    }
+    sort.Strings(result)
+    return result
 }
 
-// TaskNew renders the minimal task-creation form. Only the fields a human
-// realistically touches when creating a task from the Web UI are shown
-// (title / project / behavior / description / auto-start). Per-task
-// overrides for worktree / readonly / base_branch / branch_prefix have
-// been removed: those are now derived from the canonical behavior name
-// (supervisor / executor) combined with the project-top `worktree:` /
-// `base_branch:` fields in project.yaml. The back arrow in the header
-// acts as cancel, so no separate cancel button is needed.
 templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values) {
-	@Layout("New Task", "/") {
-		if errorMsg != "" {
-			<div class="action-error">{ errorMsg }</div>
-		}
-		<div class="task-form-body">
-			<form id="task-new-form" method="post" action="/tasks" enctype="multipart/form-data" data-paste-attach-form>
-				<div class="form-group">
-					<label for="title" class="form-label">Title *</label>
-					<input type="text" id="title" name="title" class="form-input" required autocomplete="off" autofocus value={ form.Get("title") }/>
-				</div>
-				<div class="form-group">
-					<label for="project_id" class="form-label">Project</label>
-					<select id="project_id" name="project_id" class="form-input">
-						<option value="">-- Select --</option>
-						for _, p := range projects {
-							<option value={ p.ID } selected?={ form.Get("project_id") == p.ID }>{ taskNewProjectLabel(p) }</option>
-						}
-					</select>
-				</div>
-				<div class="form-group">
-					<label for="behavior" class="form-label">Behavior</label>
-					<select
-						id="behavior"
-						name="behavior"
-						class="form-input"
-						data-behaviors-by-project={ taskNewBehaviorsByProjectJSON(projects) }
-					>
-						<option value="">-- Select --</option>
-						for _, b := range taskNewBehaviors(projects) {
-							<option value={ b } selected?={ form.Get("behavior") == b }>{ b }</option>
-						}
-					</select>
-				</div>
-				<div class="form-group">
-					<label for="description" class="form-label">Description</label>
-					<textarea id="description" name="description" class="form-input" rows="6" data-paste-attach>{ form.Get("description") }</textarea>
-					<div class="form-hint">Paste images or text files from the clipboard (Ctrl+V). The agent fetches them with <code>boid task attachments get &lt;name&gt;</code>.</div>
-					<ul class="paste-attach-list" data-paste-attach-list></ul>
-				</div>
-				<div class="form-group">
-					<label for="model" class="form-label">Model</label>
-					<input type="text" id="model" name="model" class="form-input" autocomplete="off" placeholder="opus / sonnet / haiku" value={ form.Get("model") }/>
-				</div>
-				<div class="form-group">
-					<label for="agent" class="form-label">Agent</label>
-					<input type="text" id="agent" name="agent" class="form-input" autocomplete="off" placeholder="claude-code" value={ form.Get("agent") }/>
-				</div>
-				<div class="form-group">
-					<label for="remote_id" class="form-label">Remote ID</label>
-					<input type="text" id="remote_id" name="remote_id" class="form-input" autocomplete="off" value={ form.Get("remote_id") }/>
-				</div>
-				<div class="form-group">
-					<label class="form-check">
-						<input type="checkbox" name="auto_start" checked?={ form.Get("auto_start") == "on" }/>
-						<span>Auto Start</span>
-					</label>
-				</div>
-			</form>
-		</div>
-		<div class="action-bar">
-			<div class="action-bar-inner">
-				<button type="submit" form="task-new-form" class="btn btn-primary action-bar-primary-form">Create</button>
-				<span class="action-bar-spacer"></span>
-			</div>
-		</div>
-		<script>
-			(function () {
-				var projSel = document.getElementById("project_id");
-				var behSel = document.getElementById("behavior");
-				var data = {};
-				try {
-					data = JSON.parse(behSel.dataset.behaviorsByProject || "{}");
-				} catch (e) { data = {}; }
-				// Snapshot the initial (union) behavior options as fallback
-				// when no project is selected.
-				var allOptions = Array.prototype.slice.call(behSel.options).map(function (o) {
-					return { value: o.value, label: o.textContent };
-				});
-				function rebuild() {
-					var pid = projSel.value;
-					var current = behSel.value;
-					var list;
-					if (pid && data[pid]) {
-						list = [{ value: "", label: "-- Select --" }].concat(
-							data[pid].map(function (b) { return { value: b, label: b }; })
-						);
-					} else {
-						list = allOptions;
-					}
-					behSel.innerHTML = "";
-					list.forEach(function (o) {
-						var opt = document.createElement("option");
-						opt.value = o.value;
-						opt.textContent = o.label;
-						if (o.value === current) opt.selected = true;
-						behSel.appendChild(opt);
-					});
-				}
-				projSel.addEventListener("change", rebuild);
-				rebuild();
-			})();
-		</script>
-	}
+    @Layout("New Card", "/") {
+        if errorMsg != "" {
+            <div class="action-error">{ errorMsg }</div>
+        }
+        <div class="task-form-body">
+            <form id="task-new-form" method="post" action="/tasks" enctype="multipart/form-data" data-paste-attach-form>
+                <div class="form-group">
+                    <label for="title" class="form-label">Title *</label>
+                    <input type="text" id="title" name="title" class="form-input" required autocomplete="off" autofocus value={ form.Get("title") }/>
+                </div>
+                <div class="form-group">
+                    <label for="workspace" class="form-label">Workspace</label>
+                    <select id="workspace" name="workspace" class="form-input" required>
+                        for _, ws := range cardFormWorkspaces(projects) {
+                            <option value={ ws } selected?={ cardFormWorkspace(form) == ws }>{ ws }</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="project_id" class="form-label">Metaproject</label>
+                    <select id="project_id" name="project_id" class="form-input" required>
+                        for _, p := range projects {
+                            <option value={ p.ID } data-workspace={ p.WorkspaceID } data-default={ fmt.Sprint(orchestrator.IsDefaultMetaproject(p)) } selected?={ cardFormProject(form) == p.ID } disabled?={ p.WorkspaceID != cardFormWorkspace(form) } hidden?={ p.WorkspaceID != cardFormWorkspace(form) }>{ taskNewProjectLabel(p) }</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="description" class="form-label">Description</label>
+                    <textarea id="description" name="description" class="form-input" rows="6" data-paste-attach>{ form.Get("description") }</textarea>
+                    <div class="form-hint">Paste images or text files from the clipboard (Ctrl+V).</div>
+                    <ul class="paste-attach-list" data-paste-attach-list></ul>
+                </div>
+            </form>
+        </div>
+        <div class="action-bar">
+            <div class="action-bar-inner">
+                <button type="submit" form="task-new-form" class="btn btn-primary action-bar-primary-form" disabled?={ len(projects) == 0 }>Create</button>
+                <span class="action-bar-spacer"></span>
+            </div>
+        </div>
+        <script>
+            (function () {
+                var workspace = document.getElementById("workspace");
+                var project = document.getElementById("project_id");
+                function update(reset) {
+                    var preferred = null;
+                    Array.from(project.options).forEach(function (option) {
+                        var matches = option.dataset.workspace === workspace.value;
+                        option.disabled = !matches;
+                        option.hidden = !matches;
+                        if (matches && (!preferred || option.dataset.default === "true")) preferred = option;
+                    });
+                    var current = project.selectedOptions[0];
+                    if (preferred && (reset || !current || current.disabled)) project.value = preferred.value;
+                }
+                workspace.addEventListener("change", function () { update(true); });
+                update(false);
+            })();
+        </script>
+    }
 }

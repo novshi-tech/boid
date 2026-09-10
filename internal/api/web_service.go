@@ -10,6 +10,8 @@ import (
 )
 
 type WebAppService struct {
+	EnsureCardProjects func() error // prepares built-in receivers before Web creation
+
 	Tasks      TaskStore
 	Actions    ActionStore
 	Jobs       JobStore

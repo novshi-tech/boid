@@ -195,8 +195,8 @@ func applyWorkspaceProjectAssignments(tx *sql.Tx, slug string, targetIDsByName m
 	}
 
 	for _, id := range current {
-		if targetSet[id] {
-			continue
+		if targetSet[id] || id == DefaultMetaprojectID(slug) {
+			continue // the built-in receiver is not part of user-managed assignments
 		}
 		if err := SetProjectWorkspace(tx, id, DefaultWorkspaceSlug); err != nil {
 			return nil, nil, nil, fmt.Errorf("detach project %q: %w", id, err)

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -150,16 +151,23 @@ func redirectOrHXRedirect(w http.ResponseWriter, r *http.Request, target string)
 // renderTaskNewErr re-renders the "new task" form with msg surfaced as a
 // validation error, preserving the previously submitted form values.
 func (h *WebHandler) renderTaskNewErr(w http.ResponseWriter, r *http.Request, msg string, form url.Values) {
-	projects, _ := h.Service.ListProjects()
+	projects, loadErr := h.listCardProjects()
+	if loadErr != nil {
+		msg += ": " + loadErr.Error()
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
 	templates.TaskNew(projects, msg, form).Render(r.Context(), w)
 }
 
 func (h *WebHandler) TaskNew(w http.ResponseWriter, r *http.Request) {
-	projects, _ := h.Service.ListProjects()
+	projects, err := h.listCardProjects()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.TaskNew(projects, "", nil).Render(r.Context(), w)
+	templates.TaskNew(projects, "", r.URL.Query()).Render(r.Context(), w)
 }
 
 func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
@@ -174,29 +182,16 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	projectID, err := h.resolveCardProject(r.FormValue("workspace"), r.FormValue("project_id"))
+	if err != nil {
+		h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
+		return
+	}
 	req := CreateTaskRequest{
-		ProjectID:   r.FormValue("project_id"),
-		Title:       title,
-		Behavior:    r.FormValue("behavior"),
-		Description: r.FormValue("description"),
-		RemoteID:    r.FormValue("remote_id"),
-		ParentID:    r.FormValue("parent_id"),
-		AutoStart:   r.FormValue("auto_start") == "on",
-	}
-
-	if raw := strings.TrimSpace(r.FormValue("traits")); raw != "" {
-		req.Traits = strings.Fields(raw)
-	}
-
-	agent := strings.TrimSpace(r.FormValue("agent"))
-	model := strings.TrimSpace(r.FormValue("model"))
-	if agent != "" || model != "" {
-		instsJSON, err := json.Marshal(orchestrator.Instructions{{Agent: agent, Model: model}})
-		if err != nil {
-			h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
-			return
-		}
-		req.Instructions = instsJSON
+		ProjectID:     projectID,
+		Title:         title,
+		Description:   r.FormValue("description"),
+		InitialStatus: "parked",
 	}
 
 	uploads := taskFormAttachments(r)
@@ -211,27 +206,30 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Persist uploads before card_created can enqueue and launch the judge.
+	req.ID = uuid.NewString()
+	created := false
+	if h.AttachmentsRoot != "" {
+		defer func() {
+			if !created {
+				_ = os.RemoveAll(AttachmentsRootForTask(h.AttachmentsRoot, req.ID))
+			}
+		}()
+		if _, err := EnsureAttachmentsDir(h.AttachmentsRoot, req.ID); err != nil {
+			h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
+			return
+		}
+		if _, err := SaveMultipartAttachments(h.AttachmentsRoot, req.ID, uploads); err != nil {
+			h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
+			return
+		}
+	}
 	task, err := h.Service.CreateTask(r.Context(), req)
 	if err != nil {
 		h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
 		return
 	}
-
-	if len(uploads) > 0 {
-		if _, err := SaveMultipartAttachments(h.AttachmentsRoot, task.ID, uploads); err != nil {
-			// Task is already created — surface the error via ?error= so the
-			// user sees the task page with the failure context and can decide
-			// whether to retry, delete, or proceed.
-			redirectTaskErr(w, r, task.ID, fmt.Errorf("attachment save failed: %w", err))
-			return
-		}
-	} else if h.AttachmentsRoot != "" {
-		// Always pre-create the attachments dir so subsequent task-ask
-		// answers can drop files into a live-bound location. Failure here is
-		// non-fatal — the bind has an optional guard and the worst case is
-		// the user re-attaches after we recover.
-		_, _ = EnsureAttachmentsDir(h.AttachmentsRoot, task.ID)
-	}
+	created = true
 
 	redirectTask(w, r, task.ID)
 }

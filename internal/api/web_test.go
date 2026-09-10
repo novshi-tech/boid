@@ -1146,7 +1146,7 @@ func newTestWebHandlerWithTaskCreate(svc WebService) *chi.Mux {
 func TestWebHandler_TaskNew_Renders(t *testing.T) {
 	svc := &stubWebService{
 		projects: []*orchestrator.Project{
-			{ID: "proj-1"},
+			testCardProject("proj-1", "default"),
 		},
 	}
 	r := newTestWebHandlerWithTaskCreate(svc)
@@ -1168,20 +1168,20 @@ func TestWebHandler_TaskNew_Renders(t *testing.T) {
 	if !strings.Contains(body, `name="project_id"`) {
 		t.Error("form should contain project_id field")
 	}
-	if !strings.Contains(body, `name="behavior"`) {
-		t.Error("form should contain behavior field")
+	if strings.Contains(body, `name="behavior"`) {
+		t.Error("Card form must not contain behavior field")
 	}
 	if !strings.Contains(body, `name="description"`) {
 		t.Error("form should contain description field")
 	}
-	if !strings.Contains(body, `name="auto_start"`) {
-		t.Error("form should contain auto_start field")
+	if strings.Contains(body, `name="auto_start"`) {
+		t.Error("Card form must not contain auto_start field")
 	}
 }
 
 func TestWebHandler_PostTaskCreate_Success(t *testing.T) {
 	newTask := &orchestrator.Task{ID: "new-task-id", Title: "My Task"}
-	svc := &stubWebService{createTaskResult: newTask}
+	svc := &stubWebService{createTaskResult: newTask, projects: []*orchestrator.Project{testCardProject("proj-1", "default")}}
 	r := newTestWebHandlerWithTaskCreate(svc)
 
 	body := url.Values{"title": {"My Task"}, "project_id": {"proj-1"}, "behavior": {"dev"}}.Encode()
@@ -1202,7 +1202,7 @@ func TestWebHandler_PostTaskCreate_Success(t *testing.T) {
 func TestWebHandler_PostTaskCreate_ValidationError(t *testing.T) {
 	svc := &stubWebService{
 		projects: []*orchestrator.Project{
-			{ID: "proj-1"},
+			testCardProject("proj-1", "default"),
 		},
 	}
 	r := newTestWebHandlerWithTaskCreate(svc)
@@ -1229,11 +1229,11 @@ func TestWebHandler_PostTaskCreate_ValidationError(t *testing.T) {
 	if !strings.Contains(respBody, "残しておきたい説明文") {
 		t.Errorf("response should preserve description value, got: %s", respBody)
 	}
-	if !strings.Contains(respBody, `value="proj-1" selected`) {
+	if !strings.Contains(respBody, `data-default="false" selected`) {
 		t.Errorf("response should mark project_id selected, got: %s", respBody)
 	}
-	if !strings.Contains(respBody, `name="auto_start" checked`) {
-		t.Errorf("response should preserve auto_start checked state, got: %s", respBody)
+	if strings.Contains(respBody, `name="auto_start"`) {
+		t.Error("Card form must not restore execution-only fields")
 	}
 }
 
@@ -1359,180 +1359,48 @@ func TestWebHandler_PostEdit_Success(t *testing.T) {
 	}
 }
 
-func TestWebHandler_PostTaskCreate_RemoteIDAndDatasourceID(t *testing.T) {
-	newTask := &orchestrator.Task{ID: "new-task-id", Title: "My Task"}
-	svc := &stubWebService{createTaskResult: newTask}
-	r := newTestWebHandlerWithTaskCreate(svc)
-
-	body := url.Values{
-		"title":      {"My Task"},
-		"project_id": {"proj-1"},
-		"behavior":   {"executor"},
-		"remote_id":  {"JIRA-123"},
-	}.Encode()
-	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
-	}
-	if len(svc.createTaskCalls) != 1 {
-		t.Fatalf("CreateTask calls = %d, want 1", len(svc.createTaskCalls))
-	}
-	call := svc.createTaskCalls[0]
-	if call.RemoteID != "JIRA-123" {
-		t.Errorf("RemoteID = %q, want JIRA-123", call.RemoteID)
-	}
-}
-
-func TestWebHandler_PostTaskCreate_AgentAndModel(t *testing.T) {
-	newTask := &orchestrator.Task{ID: "new-task-id", Title: "My Task"}
-	svc := &stubWebService{createTaskResult: newTask}
-	r := newTestWebHandlerWithTaskCreate(svc)
-
-	body := url.Values{
-		"title": {"My Task"},
-		"agent": {"claude-code"},
-		"model": {"opus"},
-	}.Encode()
-	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
-	}
-	if len(svc.createTaskCalls) != 1 {
-		t.Fatalf("CreateTask calls = %d, want 1", len(svc.createTaskCalls))
-	}
-	call := svc.createTaskCalls[0]
-	if len(call.Instructions) == 0 {
-		t.Fatal("Instructions should be set when agent and model are provided")
-	}
-	var insts orchestrator.Instructions
-	if err := json.Unmarshal(call.Instructions, &insts); err != nil {
-		t.Fatalf("failed to unmarshal Instructions: %v", err)
-	}
-	if len(insts) != 1 {
-		t.Fatalf("Instructions length = %d, want 1", len(insts))
-	}
-	if insts[0].Agent != "claude-code" {
-		t.Errorf("Agent = %q, want claude-code", insts[0].Agent)
-	}
-	if insts[0].Model != "opus" {
-		t.Errorf("Model = %q, want opus", insts[0].Model)
-	}
-}
-
-func TestWebHandler_PostTaskCreate_AgentOnly(t *testing.T) {
-	newTask := &orchestrator.Task{ID: "new-task-id", Title: "My Task"}
-	svc := &stubWebService{createTaskResult: newTask}
-	r := newTestWebHandlerWithTaskCreate(svc)
-
-	body := url.Values{
-		"title": {"My Task"},
-		"agent": {"claude-code"},
-	}.Encode()
-	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
-	}
-	if len(svc.createTaskCalls) != 1 {
-		t.Fatalf("CreateTask calls = %d, want 1", len(svc.createTaskCalls))
-	}
-	call := svc.createTaskCalls[0]
-	if len(call.Instructions) == 0 {
-		t.Fatal("Instructions should be set when agent is provided")
-	}
-	var insts orchestrator.Instructions
-	if err := json.Unmarshal(call.Instructions, &insts); err != nil {
-		t.Fatalf("failed to unmarshal Instructions: %v", err)
-	}
-	if insts[0].Agent != "claude-code" {
-		t.Errorf("Agent = %q, want claude-code", insts[0].Agent)
-	}
-	if insts[0].Model != "" {
-		t.Errorf("Model = %q, want empty (unset)", insts[0].Model)
-	}
-}
-
-func TestWebHandler_PostTaskCreate_NoAgentNoModel(t *testing.T) {
-	newTask := &orchestrator.Task{ID: "new-task-id", Title: "My Task"}
-	svc := &stubWebService{createTaskResult: newTask}
-	r := newTestWebHandlerWithTaskCreate(svc)
-
-	body := url.Values{
-		"title": {"My Task"},
-	}.Encode()
-	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
-	}
-	if len(svc.createTaskCalls) != 1 {
-		t.Fatalf("CreateTask calls = %d, want 1", len(svc.createTaskCalls))
-	}
-	call := svc.createTaskCalls[0]
-	if len(call.Instructions) != 0 {
-		t.Errorf("Instructions should be nil when neither agent nor model is provided, got: %s", call.Instructions)
-	}
-}
-
-func TestWebHandler_TaskNew_RendersAgentAndModelFields(t *testing.T) {
-	svc := &stubWebService{}
-	r := newTestWebHandlerWithTaskCreate(svc)
-
-	req := httptest.NewRequest(http.MethodGet, "/tasks/new", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, `name="agent"`) {
-		t.Error("form should contain agent field")
-	}
-	if !strings.Contains(body, `name="model"`) {
-		t.Error("form should contain model field")
-	}
-}
-
-func TestWebHandler_PostTaskCreate_ValidationError_PreservesAgentModel(t *testing.T) {
+func TestWebHandler_PostTaskCreate_IgnoresExecutionFields(t *testing.T) {
 	svc := &stubWebService{
-		projects: []*orchestrator.Project{{ID: "proj-1"}},
+		createTaskResult: &orchestrator.Task{ID: "new-task-id"},
+		projects:         []*orchestrator.Project{testCardProject("proj-1", "default")},
 	}
-	r := newTestWebHandlerWithTaskCreate(svc)
-
 	body := url.Values{
-		"title": {""},
-		"agent": {"claude-code"},
-		"model": {"sonnet"},
+		"title": {"My Card"}, "project_id": {"proj-1"}, "description": {"A goal"},
+		"behavior": {"executor"}, "auto_start": {"on"}, "agent": {"claude-code"},
+		"model": {"sonnet"}, "parent_id": {"other"}, "remote_id": {"OLD-1"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	newTestWebHandlerWithTaskCreate(svc).ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	got := svc.createTaskCalls[0]
+	if got.InitialStatus != "parked" || got.AutoStart || got.Behavior != "" || len(got.Instructions) != 0 || got.ParentID != "" || got.RemoteID != "" {
+		t.Fatalf("Card request carries execution fields: %+v", got)
+	}
+	if got.Title != "My Card" || got.Description != "A goal" {
+		t.Fatalf("lost Card input: %+v", got)
+	}
+}
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", w.Code)
+func TestWebHandler_TaskNew_OnlyCardFields(t *testing.T) {
+	svc := &stubWebService{projects: []*orchestrator.Project{testCardProject("proj-1", "default")}}
+	w := httptest.NewRecorder()
+	newTestWebHandlerWithTaskCreate(svc).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/tasks/new", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
 	}
-	respBody := w.Body.String()
-	if !strings.Contains(respBody, `value="claude-code"`) {
-		t.Errorf("response should preserve agent value, got: %s", respBody)
+	for _, field := range []string{"title", "description", "workspace", "project_id"} {
+		if !strings.Contains(w.Body.String(), `name="`+field+`"`) {
+			t.Errorf("missing %s", field)
+		}
 	}
-	if !strings.Contains(respBody, `value="sonnet"`) {
-		t.Errorf("response should preserve model value, got: %s", respBody)
+	for _, field := range []string{"agent", "model", "behavior", "auto_start", "remote_id"} {
+		if strings.Contains(w.Body.String(), `name="`+field+`"`) {
+			t.Errorf("unexpected %s", field)
+		}
 	}
 }
 
