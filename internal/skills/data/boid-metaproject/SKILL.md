@@ -1,6 +1,7 @@
 ---
 name: boid-metaproject
-description: Stand up or extend a boid METAPROJECT — the project in a workspace
+description: >-
+  Stand up or extend a boid METAPROJECT — the project in a workspace
   that watches the signal inbox and turns incoming events into judged, actionable
   cards. Use this whenever someone wants a workspace to notice things on its own:
   "make boid watch my Jira/GitHub/mail", "set up a task collector for this
