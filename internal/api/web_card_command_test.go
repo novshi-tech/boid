@@ -424,9 +424,9 @@ func TestCardDetail_CommandSection_OutsideEverySSEReplacedFragment(t *testing.T)
 	}
 }
 
-// §5.1 places the instruction input second: below title/status/summary,
-// above the pinned items.
-func TestCardDetail_CommandSection_RendersAfterTimeline(t *testing.T) {
+// §5.1 places the instruction input below title/status/summary and directly
+// above the unified timeline.
+func TestCardDetail_CommandSection_RendersBeforeTimeline(t *testing.T) {
 	h, repo, projectID := newCardCommandWebTestHandler(t, cardCommandMeta(
 		[]string{"review"},
 		map[string]orchestrator.CardCommand{"review": {Label: "Run", Run: "echo hi"}},
@@ -440,10 +440,11 @@ func TestCardDetail_CommandSection_RendersAfterTimeline(t *testing.T) {
 	status := strings.Index(html, `id="task-status"`)
 	command := strings.Index(html, `id="card-command-section"`)
 	pinned := strings.Index(html, `id="task-pinned"`)
-	if status < 0 || command < 0 || pinned < 0 {
-		t.Fatalf("expected all three sections (status=%d command=%d pinned=%d); got:\n%s", status, command, pinned, html)
+	timeline := strings.Index(html, `<section class="card-timeline" aria-label="Timeline">`)
+	if status < 0 || command < 0 || pinned < 0 || timeline < 0 {
+		t.Fatalf("expected all sections (status=%d command=%d pinned=%d timeline=%d); got:\n%s", status, command, pinned, timeline, html)
 	}
-	if !(status < pinned && pinned < command) {
-		t.Errorf("expected order status(%d) < pinned(%d) < command(%d)", status, pinned, command)
+	if !(status < command && command < timeline && timeline < pinned) {
+		t.Errorf("expected order status(%d) < command(%d) < timeline(%d) < pinned(%d)", status, command, timeline, pinned)
 	}
 }
