@@ -175,7 +175,10 @@ class BoidCLI:
             stdin = json.dumps(payload, ensure_ascii=False)
         self._run(args, stdin=stdin)
 
-    def resolve_or_capture(self, identity: str, *, title: str, description: str) -> tuple[str, bool]:
+    def resolve_or_capture(
+        self, identity: str, *, title: str, description: str,
+        url: str | None = None, display_name: str | None = None,
+    ) -> tuple[str, bool]:
         """identity で task を引き当て、無ければ立てる。返るのは `(task_id, created)`。
 
         **返るのは JSON** —— `{"task_id": "...", "created": true}` (`internal/server/
@@ -188,6 +191,7 @@ class BoidCLI:
         ここで暗黙に解決すると判断を機構が横取りすることになる。
         """
         args = ["task", "resolve-or-capture", identity, "--title", title, "--description-file", "-"]
+        args += self._identity_metadata_args(url, display_name)
         code, out, err = self._exec(args, stdin=description)
         if code == IDENTITY_CONFLICT_EXIT_CODE:
             raise BoidError(f"identity が既存 task と衝突した: {identity!r} ({err.strip()})")
@@ -248,14 +252,28 @@ class BoidCLI:
             raise BoidError(f"boid task identity resolve {identity} が task_id を返さなかった: {parsed!r}")
         return task_id, str(parsed.get("status") or "")
 
-    def link_identity(self, identity: str, task_id: str) -> None:
+    def link_identity(
+        self, identity: str, task_id: str, *,
+        url: str | None = None, display_name: str | None = None,
+    ) -> None:
         """別 source 発のシグナルを既存の件へ合流させる (S-15)。
 
         引数の順は `boid task identity link <identity> <task-id>`
         (`internal/sandbox/boid_shim.go`)。**逆にすると identity として task id が
         登録され、以降その task を identity で引けなくなる。**
         """
-        self._run(["task", "identity", "link", identity, task_id])
+        self._run(["task", "identity", "link", identity, task_id]
+                  + self._identity_metadata_args(url, display_name))
+
+    @staticmethod
+    def _identity_metadata_args(url: str | None, display_name: str | None) -> list[str]:
+        """省略は既存値を維持し、明示した空文字はメタデータを削除する。"""
+        args = []
+        if url is not None:
+            args.append(f"--url={url}")
+        if display_name is not None:
+            args.append(f"--display-name={display_name}")
+        return args
 
     # -- 読み -------------------------------------------------------------
 
