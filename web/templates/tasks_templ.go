@@ -4334,8 +4334,8 @@ func operationResultBody(result *orchestrator.OperationResult) templ.Component {
 }
 
 // TaskDetailCardBody assembles a card detail page's content, top to bottom:
-// meta followed by summary and expandable description, a unified timeline,
-// then command input and the footer controls. No tabs — see §7 罠1.
+// meta followed by summary and expandable description, command input, a
+// unified timeline, then the footer controls. No tabs — see §7 罠1.
 //
 // TaskDetailLiveScript renders here, at the body level — nothing on the
 // card layout ever gets HTMX-swapped, so there is no risk of the script
@@ -4370,6 +4370,10 @@ func TaskDetailCardBody(task *orchestrator.Task, availableActions []string, erro
 			return templ_7745c5c3_Err
 		}
 		view := cardTimelineWithOperations(tl, operationResults)
+		templ_7745c5c3_Err = CardCommandSection(task.ID, task.Status, cmdOptions, cmdForm).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
 		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 302, "<section class=\"card-timeline\" aria-label=\"Timeline\"><h2 class=\"detail-section-title\">Timeline</h2><div class=\"card-timeline-tz\">Times shown in ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
@@ -4377,7 +4381,7 @@ func TaskDetailCardBody(task *orchestrator.Task, availableActions []string, erro
 		var templ_7745c5c3_Var196 string
 		templ_7745c5c3_Var196, templ_7745c5c3_Err = templ.JoinStringErrs(cardTimelineTZLabel())
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1867, Col: 70}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/tasks.templ`, Line: 1868, Col: 70}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var196))
 		if templ_7745c5c3_Err != nil {
@@ -4396,10 +4400,6 @@ func TaskDetailCardBody(task *orchestrator.Task, availableActions []string, erro
 			return templ_7745c5c3_Err
 		}
 		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 304, "</section>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = CardCommandSection(task.ID, task.Status, cmdOptions, cmdForm).Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

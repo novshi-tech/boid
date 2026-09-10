@@ -1849,8 +1849,8 @@ templ operationResultBody(result *orchestrator.OperationResult) {
 }
 
 // TaskDetailCardBody assembles a card detail page's content, top to bottom:
-// meta followed by summary and expandable description, a unified timeline,
-// then command input and the footer controls. No tabs — see §7 罠1.
+// meta followed by summary and expandable description, command input, a
+// unified timeline, then the footer controls. No tabs — see §7 罠1.
 //
 // TaskDetailLiveScript renders here, at the body level — nothing on the
 // card layout ever gets HTMX-swapped, so there is no risk of the script
@@ -1862,6 +1862,7 @@ templ operationResultBody(result *orchestrator.OperationResult) {
 templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, summary string, tl *CardTimelineView, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState, identities []apiwire.TaskIdentity, operationResults []*orchestrator.OperationResult) {
 	@TaskDetailCardStatusSection(task, errorMsg, projectName, summary, identities)
 	{{ view := cardTimelineWithOperations(tl, operationResults) }}
+	@CardCommandSection(task.ID, task.Status, cmdOptions, cmdForm)
 	<section class="card-timeline" aria-label="Timeline">
 		<h2 class="detail-section-title">Timeline</h2>
 		<div class="card-timeline-tz">Times shown in { cardTimelineTZLabel() }</div>
@@ -1869,7 +1870,6 @@ templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, err
 		@TaskDetailCardPinnedSection(view, task.ID, task.Status)
 		@CardHistorySection(view, task.ID)
 	</section>
-	@CardCommandSection(task.ID, task.Status, cmdOptions, cmdForm)
 	@TaskCardActionBar(task, availableActions, view)
 	@TaskDetailLiveScript()
 }
