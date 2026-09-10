@@ -1850,18 +1850,13 @@ body:has(.action-bar) {
 }
 
 .card-summary {
-  padding-top: var(--space-3);
-  margin-bottom: var(--space-2);
+  padding: var(--space-2) 0;
+  margin-bottom: 0;
   line-height: 1.5;
   overflow-wrap: anywhere;
-}
-
-.card-description-toggle {
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 0.875rem;
   color: var(--fg);
-  margin-bottom: 6px;
+  font-size: 1rem;
+  font-weight: 500;
 }
 
 .tab-toolbar {
