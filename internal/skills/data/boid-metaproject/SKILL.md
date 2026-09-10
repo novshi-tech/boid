@@ -14,7 +14,7 @@ description: Stand up or extend a boid METAPROJECT — the project in a workspac
 
 # boid metaproject
 
-A **metaproject** is the one project in a workspace whose job is not to build
+A **metaproject** is a project in a workspace whose job is not to build
 anything. It watches the workspace's signal inbox, decides which incoming events
 deserve a human's attention, and turns them into cards a person can act on with
 one click. Every other project in the workspace does work; this one decides what
@@ -69,6 +69,16 @@ writing Python in a metaproject that talks to `boid`, stop — either the script
 you need is here, or it belongs here.
 
 ## Standing up a new metaproject
+
+The Web UI includes a built-in Default metaproject in every workspace. It uses
+`/boid-card-judge`, asks for missing requirements with `boid task ask`, and needs
+no external signals. Create a separate metaproject when you need a specialized
+judgment policy or intake sources. Multiple metaprojects may share a workspace.
+Projects with a configured `card_events.command` and its matching `card_commands`
+entry appear as Card creation destinations in that workspace. No extra marker
+is required. Steps 1–3 below are only needed for external signal intake; a
+manually fed metaproject needs the judgment behavior, command and skill.
+
 
 A metaproject is an ordinary boid project. What makes it a metaproject is five
 declarations in its `.boid/project.yaml` plus the two skills that hold the

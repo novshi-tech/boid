@@ -1440,7 +1440,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.attachmentsRoot == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task attachments list unavailable"}
 		}
-		names, err := api.ListAttachments(e.attachmentsRoot, req.TaskID)
+		names, err := e.listTaskAttachments(ctx, req.TaskID)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
@@ -1450,7 +1450,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.attachmentsRoot == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task attachments get unavailable"}
 		}
-		data, err := api.ReadAttachment(e.attachmentsRoot, req.TaskID, req.AttachmentName)
+		data, err := e.readTaskAttachment(ctx, req.TaskID, req.AttachmentName)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}

@@ -94,6 +94,10 @@ func ListProjects(dbtx db.DBTX) ([]*Project, error) {
 // validation; any non-empty slug must satisfy ValidWorkspaceSlug so we never
 // persist a malformed identifier even if an upstream layer forgets to check.
 func SetProjectWorkspace(dbtx db.DBTX, projectID, workspaceID string) error {
+	if project, err := GetProject(dbtx, projectID); err == nil && IsDefaultMetaproject(project) && project.WorkspaceID != workspaceID {
+		return fmt.Errorf("the default metaproject belongs to workspace %q and cannot be reassigned", project.WorkspaceID)
+	}
+
 	if workspaceID == "" {
 		if _, err := dbtx.Exec(`DELETE FROM project_workspaces WHERE project_id = ?`, projectID); err != nil {
 			return fmt.Errorf("clear project workspace: %w", err)

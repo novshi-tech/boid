@@ -23,3 +23,11 @@ BOID_UI_FIXTURE_DIR="$boid_fixture_dir" node e2e/web/mobile-layout.cjs
 ```
 
 The mobile check covers 320, 375, 390, and 1024 pixel viewports at 100% and 200% text size. It writes a full-page 375 pixel screenshot to `/tmp/boid-ui-mobile-375.png`.
+
+The Card creation check verifies workspace-scoped destinations and preserved form input:
+
+```sh
+boid_fixture_dir="$(mktemp -d)"
+BOID_UI_FIXTURE_DIR="$boid_fixture_dir" go test ./web/templates -run '^TestWriteCardFormFixture$' -count=1
+BOID_UI_FIXTURE_DIR="$boid_fixture_dir" node e2e/web/card-create.cjs
+```

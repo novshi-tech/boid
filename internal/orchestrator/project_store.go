@@ -443,7 +443,7 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	// supplied behavior needs that same per-behavior injection a
 	// project.yaml-defined one gets — running this merge afterward would
 	// leave a workspace-only behavior's HostCommands/Env unpopulated.
-	if len(ws.TaskBehaviors) > 0 {
+	if len(ws.TaskBehaviors) > 0 && projectID != DefaultMetaprojectID(workspaceID) {
 		if out.TaskBehaviors == nil {
 			out.TaskBehaviors = make(map[string]TaskBehavior)
 		}
@@ -514,10 +514,10 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	// gated on out.X being empty first so ws.X never clobbers an
 	// already-set project.yaml value. There is deliberately no way to
 	// explicitly un-set an inherited value back to empty.
-	if out.BaseBranch == "" {
+	if out.BaseBranch == "" && projectID != DefaultMetaprojectID(workspaceID) {
 		out.BaseBranch = ws.BaseBranch
 	}
-	if out.ForkPoint == "" {
+	if out.ForkPoint == "" && projectID != DefaultMetaprojectID(workspaceID) {
 		out.ForkPoint = ws.ForkPoint
 	}
 	if out.DefaultTaskBehavior == "" {
@@ -696,6 +696,11 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 
 	var errs []error
 	for _, candidate := range projects {
+		if IsDefaultMetaproject(candidate) {
+			s.SetSynthesizedMeta(candidate.ID, DefaultMetaprojectMeta(candidate.WorkspaceID))
+			s.SetWorkspaceID(candidate.ID, candidate.WorkspaceID)
+			continue
+		}
 		var meta *ProjectMeta
 		var loadErr error
 		if IsBareRepoDir(candidate.WorkDir) {

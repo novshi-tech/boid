@@ -483,6 +483,23 @@ func (r *WorkspaceRepository) Remove(slug string) error {
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
+	// The built-in receiver has an intrinsic workspace identity. Ordinary
+	// projects can move to default, but this one must not become an invalid
+	// receiver on restart. Remove an empty receiver; preserve Cards otherwise.
+	receiver, receiverErr := GetProject(tx, DefaultMetaprojectID(slug))
+	if receiverErr == nil && IsDefaultMetaproject(receiver) {
+		var taskCount int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE project_id = ?`, receiver.ID).Scan(&taskCount); err != nil {
+			return err
+		}
+		if taskCount != 0 {
+			return fmt.Errorf("workspace %q has Cards or tasks in its default metaproject; remove them before deleting the workspace", slug)
+		}
+		if err := DeleteProject(tx, receiver.ID); err != nil {
+			return err
+		}
+	}
+
 	if _, err := tx.Exec(
 		`UPDATE project_workspaces SET workspace_id = ? WHERE workspace_id = ?`,
 		DefaultWorkspaceSlug, slug,
