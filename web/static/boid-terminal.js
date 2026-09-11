@@ -181,6 +181,8 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   // whole session from the top.
   let replayOffset = 0;
   let snapshotRemaining = 0;
+  let snapshotAccountingKnown = true;
+  let renderedReplay = false;
   let connectionGeneration = 0;
   let reconnectAttempt = 0;
   let reconnectTimer = null;
@@ -299,7 +301,9 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
         // we still have.
         const offset = msg.offset || 0;
         snapshotRemaining = msg.snapshot_bytes || 0;
-        if (msg.rendered && !msg.snapshot_bytes) {
+        renderedReplay = !!msg.rendered;
+        snapshotAccountingKnown = !msg.rendered || msg.snapshot_bytes > 0;
+        if (msg.rendered && !snapshotAccountingKnown) {
           // An old daemon cannot safely be resumed after a rendered replay:
           // its payload length is unknown, so request a fresh screen next.
           replayOffset = 0;
@@ -319,7 +323,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
         const countedGeneration = generation;
         term.write(stripRedundantMouseModeAssertions(bytes), function () {
           if (countedGeneration !== connectionGeneration) return;
-          if (snapshotRemaining > 0) {
+          if (snapshotRemaining > 0 || (renderedReplay && !snapshotAccountingKnown)) {
             snapshotRemaining = Math.max(0, snapshotRemaining - bytes.length);
           } else {
             replayOffset += bytes.length;

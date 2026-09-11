@@ -98,7 +98,14 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	replay, replayFrom, rendered := resolveReplay(snapshot, replayOffsetFromRequest(r))
-	if err := h.sendAttach(ctx, conn, replayFrom, rendered, len(replay)); err != nil {
+	// The payload length is an opt-in protocol extension. Keeping it off for
+	// legacy clients preserves the old attach frame shape and lets a capable
+	// client detect an old daemon unambiguously.
+	snapshotBytes := 0
+	if r.URL.Query().Get("snapshot_bytes") == "1" && rendered {
+		snapshotBytes = len(replay)
+	}
+	if err := h.sendAttach(ctx, conn, replayFrom, rendered, snapshotBytes); err != nil {
 		return
 	}
 	if err := h.sendOutput(ctx, conn, replay); err != nil {

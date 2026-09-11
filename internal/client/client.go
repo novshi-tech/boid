@@ -848,8 +848,8 @@ func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Write
 		case "attach":
 			offset = msg.Offset
 			remainingSnapshot = msg.SnapshotBytes
-			if msg.Rendered && msg.SnapshotBytes == 0 && freshOnReconnect != nil {
-				*freshOnReconnect = true
+			if freshOnReconnect != nil {
+				*freshOnReconnect = msg.Rendered && msg.SnapshotBytes == 0
 			}
 			if msg.Rendered {
 				// A rendered screen dump uses absolute positioning, so it
