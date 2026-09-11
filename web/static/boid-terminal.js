@@ -183,6 +183,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   let snapshotRemaining = 0;
   let snapshotAccountingKnown = true;
   let renderedReplay = false;
+  let forceFreshAttach = false;
   let connectionGeneration = 0;
   let reconnectAttempt = 0;
   let reconnectTimer = null;
@@ -269,8 +270,10 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     disconnectOverlay.hidden = true;
 
     const generation = ++connectionGeneration;
+    let connectionClosed = false;
+    let pendingWrites = 0;
     let url = wsUrl.startsWith('ws') ? wsUrl : wsUrlFromPath(wsUrl);
-    if (replayOffset > 0) {
+    if (replayOffset > 0 && !forceFreshAttach) {
       url += (url.indexOf('?') === -1 ? '?' : '&') + 'replay_offset=' + replayOffset;
     }
     url += (url.indexOf('?') === -1 ? '?' : '&') + 'snapshot_bytes=1';
@@ -300,12 +303,13 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
         // is already there. Anything else is a reconnect splice onto a screen
         // we still have.
         const offset = msg.offset || 0;
-        snapshotRemaining = msg.snapshot_bytes || 0;
+        snapshotRemaining = Number.isInteger(msg.snapshot_bytes) && msg.snapshot_bytes > 0 ? msg.snapshot_bytes : 0;
         renderedReplay = !!msg.rendered;
-        snapshotAccountingKnown = !msg.rendered || msg.snapshot_bytes > 0;
+        snapshotAccountingKnown = !msg.rendered || snapshotRemaining > 0;
         if (msg.rendered && !snapshotAccountingKnown) {
           // An old daemon cannot safely be resumed after a rendered replay:
           // its payload length is unknown, so request a fresh screen next.
+          forceFreshAttach = true;
           replayOffset = 0;
         }
         // term.reset() resets xterm's own CoreMouseService.activeProtocol to
@@ -317,14 +321,23 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
         // splice picks up mid-stream at a different position than whatever
         // byte offset the carry was measured from.
         if (offset === 0 || msg.rendered) { term.reset(); mouseProtocol = 'NONE'; mouseModeCarry = ''; }
-        replayOffset = offset;
+        if (generation === connectionGeneration && !connectionClosed) {
+          replayOffset = offset;
+          if (!msg.rendered || snapshotAccountingKnown) forceFreshAttach = false;
+        }
       } else if (msg.type === 'output') {
         const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0));
         const countedGeneration = generation;
+        pendingWrites++;
         term.write(stripRedundantMouseModeAssertions(bytes), function () {
-          if (countedGeneration !== connectionGeneration) return;
-          if (snapshotRemaining > 0 || (renderedReplay && !snapshotAccountingKnown)) {
-            snapshotRemaining = Math.max(0, snapshotRemaining - bytes.length);
+          pendingWrites--;
+          if (countedGeneration !== connectionGeneration || connectionClosed) return;
+          if (snapshotRemaining > 0) {
+            const snapshotBytes = Math.min(snapshotRemaining, bytes.length);
+            snapshotRemaining -= snapshotBytes;
+            if (bytes.length > snapshotBytes) replayOffset += bytes.length - snapshotBytes;
+          } else if (renderedReplay && !snapshotAccountingKnown) {
+            forceFreshAttach = true;
           } else {
             replayOffset += bytes.length;
           }
@@ -339,12 +352,17 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     };
 
     ws.onclose = function () {
+      connectionClosed = true;
+      connectionGeneration++;
       setStatus('disconnected');
       if (exitReceived || closedByUser) {
         if (!exitReceived) showOverlay('接続が切断されました');
         return;
       }
-      if (snapshotRemaining > 0) replayOffset = 0;
+      if (snapshotRemaining > 0 || pendingWrites > 0 || (renderedReplay && !snapshotAccountingKnown)) {
+        forceFreshAttach = true;
+        replayOffset = 0;
+      }
       scheduleReconnect();
     };
 

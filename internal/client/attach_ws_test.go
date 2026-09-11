@@ -182,6 +182,53 @@ func TestAttachJob_ServerErrorFrame_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestAttachReadOutput_InterruptedRenderedSnapshotForcesFresh(t *testing.T) {
+	c := newUnixWSServer(t, newWSHandler(t, func(t *testing.T, conn *websocket.Conn, r *http.Request) {
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "attach", Rendered: true, Offset: 100, SnapshotBytes: 10})
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "output", Data: base64.StdEncoding.EncodeToString([]byte("half"))})
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, c.baseURL+"/test", &websocket.DialOptions{HTTPClient: c.httpClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	var out bytes.Buffer
+	fresh := false
+	offset, done, err := attachReadOutput(ctx, conn, &out, 0, &fresh)
+	if offset != 0 || !fresh || done {
+		t.Fatalf("offset=%d fresh=%v done=%v err=%v", offset, fresh, done, err)
+	}
+	if out.String() != "\x1b[2J\x1b[Hhalf" {
+		t.Fatalf("stdout=%q", out.String())
+	}
+}
+
+func TestAttachReadOutput_CompletedSnapshotCountsOnlyRawBytes(t *testing.T) {
+	c := newUnixWSServer(t, newWSHandler(t, func(t *testing.T, conn *websocket.Conn, r *http.Request) {
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "attach", Rendered: true, Offset: 100, SnapshotBytes: 4})
+		// The second frame deliberately crosses the snapshot/live boundary.
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "output", Data: base64.StdEncoding.EncodeToString([]byte("snapabc"))})
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, c.baseURL+"/test", &websocket.DialOptions{HTTPClient: c.httpClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	var out bytes.Buffer
+	fresh := false
+	offset, done, err := attachReadOutput(ctx, conn, &out, 0, &fresh)
+	if offset != 103 || fresh || done {
+		t.Fatalf("offset=%d fresh=%v done=%v err=%v", offset, fresh, done, err)
+	}
+	if out.String() != "\x1b[2J\x1b[Hsnapabc" {
+		t.Fatalf("stdout=%q", out.String())
+	}
+}
+
 // TestAttachJob_DetachKey_ReturnsNilPromptly proves that when stdin's Read
 // reports ErrAttachDetached (cmd/attach.go's detachReader on Ctrl-]),
 // AttachJob returns nil immediately rather than waiting for the server to

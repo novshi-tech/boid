@@ -834,10 +834,17 @@ func attachDialError(resp *http.Response, err error) error {
 // looking like a finished one before reconnect existed.
 func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Writer, offset int64, freshOnReconnect *bool) (newOffset int64, done bool, err error) {
 	remainingSnapshot := 0
+	renderedSnapshot := false
 	for {
 		_, raw, readErr := conn.Read(ctx)
 		if readErr != nil {
 			finished, normalized := classifyAttachWSError(readErr)
+			if remainingSnapshot > 0 || renderedSnapshot && freshOnReconnect != nil && *freshOnReconnect {
+				if freshOnReconnect != nil {
+					*freshOnReconnect = true
+				}
+				return 0, finished, normalized
+			}
 			return offset, finished, normalized
 		}
 		var msg wsAttachServerMsg
@@ -847,9 +854,13 @@ func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Write
 		switch msg.Type {
 		case "attach":
 			offset = msg.Offset
-			remainingSnapshot = msg.SnapshotBytes
+			remainingSnapshot = 0
+			renderedSnapshot = msg.Rendered
 			if freshOnReconnect != nil {
-				*freshOnReconnect = msg.Rendered && msg.SnapshotBytes == 0
+				*freshOnReconnect = msg.Rendered && msg.SnapshotBytes <= 0
+			}
+			if msg.Rendered && msg.SnapshotBytes > 0 {
+				remainingSnapshot = msg.SnapshotBytes
 			}
 			if msg.Rendered {
 				// A rendered screen dump uses absolute positioning, so it
@@ -869,12 +880,18 @@ func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Write
 				return offset, true, writeErr
 			}
 			if remainingSnapshot > 0 {
-				remainingSnapshot -= len(data)
-				if remainingSnapshot < 0 {
-					remainingSnapshot = 0
+				snapshotBytes := minInt(remainingSnapshot, len(data))
+				remainingSnapshot -= snapshotBytes
+				if len(data) > snapshotBytes {
+					offset += int64(len(data) - snapshotBytes)
+				}
+				if remainingSnapshot == 0 && freshOnReconnect != nil {
+					*freshOnReconnect = false
 				}
 			} else {
-				offset += int64(len(data))
+				if !renderedSnapshot || freshOnReconnect == nil || !*freshOnReconnect {
+					offset += int64(len(data))
+				}
 			}
 		case "exit":
 			// msg.Code is always 0 today — exit codes are surfaced via a
@@ -888,6 +905,13 @@ func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Write
 			return offset, true, errors.New(msg.Message)
 		}
 	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // attachSendInputClose sends the "input_close" frame (see

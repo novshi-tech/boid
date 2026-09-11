@@ -145,3 +145,65 @@ test('terminal preserves state across keyboard, URL bar and width changes', asyn
     });
   }
 });
+
+test('attach replay accounting makes legacy and interrupted rendered reconnects fresh', async t => {
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined,
+  });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  t.after(() => page.close());
+  await page.route('http://boid.test/**', async route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/') return route.fulfill({ contentType: 'text/html', body: fixture });
+    return route.fulfill({
+      contentType: pathname.endsWith('.css') ? 'text/css' : 'text/javascript',
+      body: await fs.readFile(path.join(__dirname, pathname)),
+    });
+  });
+  await page.addInitScript(() => {
+    window.sockets = [];
+    window.WebSocket = class {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      constructor(url) { this.url = url; this.readyState = 1; sockets.push(this); setTimeout(() => this.onopen?.(), 0); }
+      send() {}
+      close() { this.onclose?.(); }
+    };
+    window.testViewport = new EventTarget();
+    testViewport.height = 844;
+    Object.defineProperty(window, 'visualViewport', { value: testViewport });
+  });
+  await page.goto('http://boid.test/');
+  await page.waitForFunction(() => window.widget && window.sockets.length === 1);
+  await page.evaluate(() => {
+    window.pendingWrites = [];
+    const write = widget.term.write.bind(widget.term);
+    widget.term.write = (data, callback) => {
+      write(data, () => {});
+      if (callback) pendingWrites.push(callback);
+    };
+  });
+  const send = async msg => page.evaluate(msg => sockets.at(-1).onmessage({ data: JSON.stringify(msg) }), msg);
+  const b64 = s => Buffer.from(s).toString('base64');
+
+  // An old server's rendered byte count is unknowable: it must not resume at
+  // the raw offset even after its queued write callback has run.
+  await send({ type: 'attach', rendered: true, offset: 100 });
+  await send({ type: 'output', data: b64('snapshot') });
+  await page.evaluate(() => pendingWrites.splice(0).forEach(callback => callback()));
+  await page.evaluate(() => sockets.at(-1).onclose());
+  await page.waitForTimeout(1100);
+  assert.equal(new URL(await page.evaluate(() => sockets.at(-1).url), 'http://boid.test').searchParams.has('replay_offset'), false);
+
+  // Closing with queued snapshot writes invalidates their callbacks. A later
+  // reconnect is therefore fresh, even if those callbacks run afterwards.
+  await send({ type: 'attach', rendered: true, offset: 100, snapshot_bytes: 4 });
+  await send({ type: 'output', data: b64('snap') });
+  await send({ type: 'output', data: b64('abc') });
+  await page.evaluate(() => sockets.at(-1).onclose());
+  await page.evaluate(() => pendingWrites.splice(0).forEach(callback => callback()));
+  await page.waitForTimeout(1100);
+  assert.equal(new URL(await page.evaluate(() => sockets.at(-1).url), 'http://boid.test').searchParams.has('replay_offset'), false);
+});
