@@ -30,6 +30,7 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/realization"
+	"github.com/novshi-tech/boid/internal/terminaltitle"
 	"github.com/novshi-tech/boid/internal/version"
 )
 
@@ -1155,6 +1156,9 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 
 	sess := newContainerSession(b, createRes.ID, realized.TTY, specPath, dockerTLSDir, brokerTLSDir)
+	if realized.TTY && opts.OnTerminalTitle != nil {
+		sess.titleTracker = terminaltitle.New(opts.OnTerminalTitle)
+	}
 	if realized.TTY {
 		sess.geometry = backend.TerminalSize{Rows: int(hostCfg.ConsoleSize[0]), Cols: int(hostCfg.ConsoleSize[1])}
 	}
@@ -2243,10 +2247,11 @@ func withBrokerTLSEnv(env map[string]string, addr string) map[string]string {
 // here satisfies live Subscribe/snapshot semantics for the lifetime of the
 // containerBackend process.
 type containerSession struct {
-	backend *containerBackend
-	id      string
-	api     dockerAPI
-	tty     bool
+	titleTracker *terminaltitle.Tracker // guarded by mu, like the transcript
+	backend      *containerBackend
+	id           string
+	api          dockerAPI
+	tty          bool
 
 	// specPath is removed unconditionally once the container exits (it
 	// carries secrets — same retention contract as cleanupSandboxSpec for
@@ -2679,6 +2684,11 @@ func (s *containerSession) appendTranscript(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.transcript = append(s.transcript, chunk...)
+	if s.titleTracker != nil {
+		if err := s.titleTracker.Write(chunk); err != nil {
+			slog.Warn("persist terminal title failed", "container_id", s.id, "error", err)
+		}
+	}
 	// Disk spool: mirrors localRuntimeSession.appendTranscript's own
 	// `s.transcriptFile.Write(chunk)` — nil (spooling disabled or an
 	// Adopt-reconstructed session, see openTranscriptSpool's doc comment)

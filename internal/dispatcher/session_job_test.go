@@ -161,7 +161,13 @@ func TestBuildSessionJobSpec_DisplayNameFallback(t *testing.T) {
 		t.Errorf("DisplayName = %q, want %q", got, "claude session")
 	}
 
+	if !mustBuildSessionJobSpec(t, in).DisplayNameDefault {
+		t.Fatal("generated name must allow terminal titles")
+	}
 	in.DisplayName = "my session"
+	if mustBuildSessionJobSpec(t, in).DisplayNameDefault {
+		t.Fatal("explicit name must take priority")
+	}
 	if got := mustBuildSessionJobSpec(t, in).DisplayName; got != "my session" {
 		t.Errorf("DisplayName = %q, want %q (explicit name must win)", got, "my session")
 	}
@@ -218,6 +224,9 @@ func TestBuildExecJobSpec_DisplayNameFallsBackToArgv0(t *testing.T) {
 	in := sampleSessionInput()
 	in.DisplayName = ""
 	spec := mustBuildExecJobSpec(t, in, []string{"/usr/bin/make", "build"}, false)
+	if !spec.DisplayNameDefault {
+		t.Fatal("generated exec name must allow terminal titles")
+	}
 	if spec.DisplayName != "/usr/bin/make" {
 		t.Errorf("DisplayName = %q, want %q (argv[0] fallback)", spec.DisplayName, "/usr/bin/make")
 	}

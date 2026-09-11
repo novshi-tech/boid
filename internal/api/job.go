@@ -226,6 +226,7 @@ func (h *JobHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job.DisplayName = strings.TrimSpace(*req.DisplayName)
+	job.DisplayNameDefault = false
 	if err := h.Jobs.UpdateJob(job); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

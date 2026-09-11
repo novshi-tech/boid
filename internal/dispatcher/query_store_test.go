@@ -429,3 +429,52 @@ func TestListJobsFiltered_TasklessOnly(t *testing.T) {
 		}
 	})
 }
+
+func TestTerminalTitleSurvivesStaleJobUpdate(t *testing.T) {
+	d := createDispatcherTask(t)
+	job := &dispatcher.Job{ProjectID: "proj-1", DisplayName: "shell session", DisplayNameDefault: true}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.UpdateJobTerminalTitle(d.Conn, job.ID, "日本語 title"); err != nil {
+		t.Fatal(err)
+	}
+	// The launch/completion path may still hold the job loaded before the OSC.
+	job.Status = dispatcher.JobStatusCompleted
+	if err := dispatcher.UpdateJob(d.Conn, job); err != nil {
+		t.Fatal(err)
+	}
+	got, err := dispatcher.GetJob(d.Conn, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TerminalTitle != "日本語 title" || got.EffectiveDisplayName() != "日本語 title" || got.Status != dispatcher.JobStatusCompleted {
+		t.Fatalf("job = %+v", got)
+	}
+	got.DisplayName = "manual"
+	got.DisplayNameDefault = false
+	if err := dispatcher.UpdateJob(d.Conn, got); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.UpdateJobTerminalTitle(d.Conn, job.ID, "next title"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = dispatcher.GetJob(d.Conn, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EffectiveDisplayName() != "manual" || got.TerminalTitle != "next title" {
+		t.Fatalf("job = %+v", got)
+	}
+	got.DisplayName = ""
+	if err := dispatcher.UpdateJob(d.Conn, got); err != nil {
+		t.Fatal(err)
+	}
+	got, err = dispatcher.GetJob(d.Conn, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EffectiveDisplayName() != "next title" {
+		t.Fatalf("job = %+v", got)
+	}
+}

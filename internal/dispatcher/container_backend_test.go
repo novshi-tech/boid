@@ -2300,3 +2300,42 @@ func TestContainerSession_Subscribe_GeometrySurvivesEngineFailure(t *testing.T) 
 		t.Errorf("geometry after a failed engine resize = %+v, want the attempted %+v", snapshot.Geometry, want)
 	}
 }
+
+func TestContainerBackend_TerminalTitleWithoutSubscribers(t *testing.T) {
+	for _, tty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tty=%v", tty), func(t *testing.T) {
+			api := &fakeDockerAPI{}
+			titles := make(chan string, 4)
+			be := NewContainerBackend(api, ContainerBackendOptions{})
+			sess := mustLaunch(t, be, sandbox.Spec{ID: "title", Argv: []string{"true"}, TTY: tty}, backend.LaunchOptions{
+				JobID: "title", OnTerminalTitle: func(title string) error { titles <- title; return nil },
+			}).(*containerSession)
+			defer sess.Stop(context.Background())
+			// Exercise the actual session ingestion with no browser subscription.
+			for _, chunk := range []string{"\x1b]", "2;日本語", " title\x1b", "\\"} {
+				sess.appendTranscript([]byte(chunk))
+			}
+			if tty {
+				select {
+				case got := <-titles:
+					if got != "日本語 title" {
+						t.Fatalf("title = %q", got)
+					}
+				default:
+					t.Fatal("no terminal title")
+				}
+			} else {
+				select {
+				case got := <-titles:
+					t.Fatalf("non-TTY emitted title %q", got)
+				default:
+				}
+			}
+			snapshot, _, cancel, _, _ := sess.Subscribe()
+			cancel()
+			if string(snapshot.Raw) != "\x1b]2;日本語 title\x1b\\" {
+				t.Fatalf("transcript changed: %q", snapshot.Raw)
+			}
+		})
+	}
+}

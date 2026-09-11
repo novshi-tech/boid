@@ -30,7 +30,7 @@ func jobPatchRequest(t *testing.T, handler http.Handler, id string, body any) *h
 }
 
 func TestJobHandlerPatch_UpdatesDisplayName(t *testing.T) {
-	store := &stubJobStore{job: &Job{ID: "j1", DisplayName: "old"}}
+	store := &stubJobStore{job: &Job{ID: "j1", DisplayName: "old", DisplayNameDefault: true, TerminalTitle: "terminal"}}
 	h := &JobHandler{Jobs: store}
 
 	w := jobPatchRequest(t, http.HandlerFunc(h.Patch), "j1", map[string]any{
@@ -41,6 +41,19 @@ func TestJobHandlerPatch_UpdatesDisplayName(t *testing.T) {
 	}
 	if store.job.DisplayName != "new name" {
 		t.Errorf("DisplayName = %q, want %q", store.job.DisplayName, "new name")
+	}
+}
+
+func TestJobHandlerPatch_ManualNameOverridesTerminal(t *testing.T) {
+	store := &stubJobStore{job: &Job{ID: "j1", DisplayName: "default", DisplayNameDefault: true, TerminalTitle: "terminal"}}
+	h := &JobHandler{Jobs: store}
+	w := jobPatchRequest(t, http.HandlerFunc(h.Patch), "j1", map[string]any{"display_name": "manual"})
+	if w.Code != http.StatusOK || store.job.EffectiveDisplayName() != "manual" || store.job.TerminalTitle != "terminal" {
+		t.Fatalf("job = %+v, response = %s", store.job, w.Body.String())
+	}
+	w = jobPatchRequest(t, http.HandlerFunc(h.Patch), "j1", map[string]any{"display_name": ""})
+	if w.Code != http.StatusOK || store.job.EffectiveDisplayName() != "terminal" {
+		t.Fatalf("job = %+v", store.job)
 	}
 }
 
