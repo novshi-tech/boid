@@ -303,3 +303,29 @@ func TestInitScript_LinkVoltaBins_ExposesShimsOnPath(t *testing.T) {
 		t.Errorf("npx was linked even though no shim exists for it (err=%v)", err)
 	}
 }
+
+// TestInitScript_InstallOpencode_LinksExistingDirectBinaryIntoLocalBin:
+// opencode の公式 installer は `$HOME/.opencode/bin/opencode` に直接置くだけで、
+// `$HOME/.local/bin` には何も張らない。PATH に乗るのは `.local/bin` なので、
+// この link が無いと opencode は sandbox から呼べない。「既にインストール済み」
+// 分岐は relativize_symlink (既存 link の張り替え) だけを呼んでいたため、
+// link が一度も存在しないケースでは永久に作られなかった (実機の default
+// workspace で発覚: バイナリは 7/24 install 済みなのに link は無かった)。
+func TestInitScript_InstallOpencode_LinksExistingDirectBinaryIntoLocalBin(t *testing.T) {
+	home := t.TempDir()
+	mustFile(t, filepath.Join(home, ".opencode/bin/opencode"))
+
+	runInitScriptHelper(t, home, "install_opencode")
+
+	link := filepath.Join(home, ".local/bin/opencode")
+	got, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("opencode was not linked into .local/bin (it is not on PATH otherwise): %v", err)
+	}
+	if filepath.IsAbs(got) {
+		t.Errorf("opencode -> %q is absolute; it must be relative to survive the next home move", got)
+	}
+	if _, err := os.Stat(link); err != nil {
+		t.Errorf("opencode link does not resolve: %v", err)
+	}
+}
