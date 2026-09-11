@@ -70,6 +70,10 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 		columns = append(columns, "display_name")
 		args = append(args, j.DisplayName)
 	}
+	if cols.hasTerminalTitle {
+		columns = append(columns, "terminal_title", "display_name_default")
+		args = append(args, j.TerminalTitle, boolToInt(j.DisplayNameDefault))
+	}
 	if cols.hasCardID {
 		columns = append(columns, "card_id")
 		args = append(args, j.CardID)
@@ -343,6 +347,12 @@ func UpdateJob(dbtx db.DBTX, j *Job) error {
 		args = append(args, j.DisplayName)
 	}
 
+	if cols.hasTerminalTitle {
+		assignments = append(assignments, "display_name_default = ?")
+		args = append(args, boolToInt(j.DisplayNameDefault))
+	}
+	// terminal_title is owned by the PTY reader. Never overwrite it with a
+	// possibly stale job loaded before the latest terminal output.
 	assignments = append(assignments, "updated_at = ?")
 	args = append(args, j.UpdatedAt, j.ID)
 
@@ -357,9 +367,10 @@ func scanJob(s jobScanner) (*Job, error) {
 	var j Job
 	var taskID sql.NullString
 	var exitCode sql.NullInt64
-	var interactive, tty sql.NullInt64
+	var interactive, tty, displayNameDefault sql.NullInt64
+	var terminalTitle sql.NullString
 	var executionState, displayName, cardID, cardRequestID sql.NullString
-	if err := s.Scan(&j.ID, &taskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &executionState, &displayName, &cardID, &cardRequestID, &j.CreatedAt, &j.UpdatedAt); err != nil {
+	if err := s.Scan(&j.ID, &taskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &executionState, &displayName, &cardID, &cardRequestID, &terminalTitle, &displayNameDefault, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("job not found")
 		}
@@ -377,6 +388,8 @@ func scanJob(s jobScanner) (*Job, error) {
 	if displayName.Valid {
 		j.DisplayName = displayName.String
 	}
+	j.TerminalTitle = terminalTitle.String
+	j.DisplayNameDefault = displayNameDefault.Valid && displayNameDefault.Int64 != 0
 	j.CardID = cardID.String
 	j.CardRequestID = cardRequestID.String
 	return &j, nil
@@ -421,8 +434,12 @@ func jobSelectSQL(dbtx db.DBTX, suffix string) (string, error) {
 		cardRequestIDExpr = "card_request_id"
 	}
 
+	terminalTitleExpr := "'' AS terminal_title, 0 AS display_name_default"
+	if cols.hasTerminalTitle {
+		terminalTitleExpr = "terminal_title, display_name_default"
+	}
 	return fmt.Sprintf(
-		`SELECT id, task_id, project_id, %s AS handler_id, role, %s, %s, %s, status, exit_code, output, %s, %s, %s, %s, created_at, updated_at FROM jobs %s`,
+		`SELECT id, task_id, project_id, %s AS handler_id, role, %s, %s, %s, status, exit_code, output, %s, %s, %s, %s, %s, created_at, updated_at FROM jobs %s`,
 		handlerExpr,
 		runtimeExpr,
 		interactiveExpr,
@@ -431,11 +448,13 @@ func jobSelectSQL(dbtx db.DBTX, suffix string) (string, error) {
 		displayNameExpr,
 		cardIDExpr,
 		cardRequestIDExpr,
+		terminalTitleExpr,
 		suffix,
 	), nil
 }
 
 type jobColumns struct {
+	hasTerminalTitle  bool
 	hasHookID         bool
 	hasRuntimeID      bool
 	hasInteractive    bool
@@ -457,6 +476,7 @@ func inspectJobColumns(dbtx db.DBTX) (jobColumns, error) {
 	}
 	return jobColumns{
 		hasHookID:         present["hook_id"],
+		hasTerminalTitle:  present["terminal_title"] && present["display_name_default"],
 		hasRuntimeID:      present["runtime_id"],
 		hasInteractive:    present["interactive"],
 		hasTTY:            present["tty"],
@@ -533,4 +553,11 @@ func jobColumnSet(dbtx db.DBTX) (map[string]bool, error) {
 		present[name] = true
 	}
 	return present, rows.Err()
+}
+
+// UpdateJobTerminalTitle updates only PTY-owned metadata so concurrent job
+// completion or manual renaming cannot be overwritten by terminal output.
+func UpdateJobTerminalTitle(dbtx db.DBTX, jobID, title string) error {
+	_, err := dbtx.Exec(`UPDATE jobs SET terminal_title = ? WHERE id = ? AND terminal_title <> ?`, title, jobID, title)
+	return err
 }

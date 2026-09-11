@@ -118,7 +118,7 @@ CREATE TABLE "jobs" (
     execution_state TEXT NOT NULL DEFAULT '',
     created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at      DATETIME NOT NULL DEFAULT (datetime('now'))
-, display_name TEXT NOT NULL DEFAULT '', card_id TEXT NOT NULL DEFAULT '', card_request_id TEXT NOT NULL DEFAULT '');
+, display_name TEXT NOT NULL DEFAULT '', card_id TEXT NOT NULL DEFAULT '', card_request_id TEXT NOT NULL DEFAULT '', terminal_title TEXT NOT NULL DEFAULT '', display_name_default INTEGER NOT NULL DEFAULT 0);
 
 -- table: operation_results
 CREATE TABLE operation_results (

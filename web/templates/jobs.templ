@@ -20,6 +20,7 @@ type JobContextView struct {
 	ProjectID   string
 	TaskTitle   string
 	HandlerID   string
+	RenameValue string // explicit user name; empty allows terminal titles
 	DisplayName string // optional; preferred over HandlerID when non-empty (hook job's `name`)
 	Role        string
 	HookID      string // set when job is a hook job; used for hook replay form
@@ -88,10 +89,25 @@ func jobPageTitle(job *JobContextView) string {
 	}
 }
 
+// JobTitleLabel can refresh independently without remounting the terminal or
+// interrupting the rename form. Hidden labels are left alone during editing.
+templ JobTitleLabel(job *JobContextView) {
+	<span
+		id="job-rename-label"
+		class="job-rename-label"
+		if job.Status == "running" {
+			hx-get={ "/jobs/" + job.ID + "?title=1" }
+			hx-trigger="every 2s [document.querySelector('.job-rename-form').hidden]"
+			hx-swap="outerHTML"
+			hx-on::before-swap="if (!document.querySelector('.job-rename-form').hidden) event.detail.shouldSwap = false;"
+		}
+	>{ jobPageTitle(job) }</span>
+}
+
 templ JobDetail(job *JobContextView) {
 	@Layout(jobPageTitle(job), jobBackURL(job)) {
 		<div class="job-rename" id="job-rename" data-job-id={ job.ID } data-fallback={ job.HandlerID }>
-			<span id="job-rename-label" class="job-rename-label">{ jobPageTitle(job) }</span>
+			@JobTitleLabel(job)
 			<button
 				id="job-rename-edit-btn"
 				class="btn-icon job-rename-edit-btn"
@@ -102,11 +118,11 @@ templ JobDetail(job *JobContextView) {
 			<form
 				class="job-rename-form"
 				hidden
-				onsubmit="(function(f){f.preventDefault();var c=document.getElementById('job-rename');var input=f.querySelector('input');var name=input.value.trim();var csrfM=document.cookie.match(/(?:^|;)\s*csrf_token=([^;]+)/);var hdrs={'Content-Type':'application/json'};if(csrfM)hdrs['X-CSRF-Token']=decodeURIComponent(csrfM[1]);fetch('/api/jobs/'+c.dataset.jobId,{method:'PATCH',headers:hdrs,body:JSON.stringify({display_name:name})}).then(function(r){if(r.ok){var label=c.querySelector('.job-rename-label');label.textContent=name||c.dataset.fallback;label.hidden=false;document.getElementById('job-rename-edit-btn').hidden=false;f.hidden=true;}});})(this)"
+				onsubmit="(function(f){f.preventDefault();var c=document.getElementById('job-rename');var input=f.querySelector('input');var name=input.value.trim();var csrfM=document.cookie.match(/(?:^|;)\s*csrf_token=([^;]+)/);var hdrs={'Content-Type':'application/json'};if(csrfM)hdrs['X-CSRF-Token']=decodeURIComponent(csrfM[1]);fetch('/api/jobs/'+c.dataset.jobId,{method:'PATCH',headers:hdrs,body:JSON.stringify({display_name:name})}).then(function(r){if(r.ok){var label=c.querySelector('.job-rename-label');label.hidden=false;document.getElementById('job-rename-edit-btn').hidden=false;f.hidden=true;htmx.ajax('GET','/jobs/'+c.dataset.jobId+'?title=1',{target:'#job-rename-label',swap:'outerHTML'});}});})(this)"
 			>
 				<input
 					type="text"
-					value={ job.DisplayName }
+					value={ job.RenameValue }
 					placeholder={ job.HandlerID }
 					class="job-rename-input"
 				/>

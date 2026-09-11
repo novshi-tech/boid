@@ -161,12 +161,13 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 	}
 
 	spec := &orchestrator.JobSpec{
-		ID:          input.JobID,
-		ProjectID:   input.ProjectID,
-		DisplayName: displayName,
-		Kind:        orchestrator.JobKindSession,
-		HarnessType: input.HarnessType,
-		Argv:        input.Argv, // consumed by shell adapter only; agent adapters ignore it
+		ID:                 input.JobID,
+		ProjectID:          input.ProjectID,
+		DisplayName:        displayName,
+		DisplayNameDefault: input.DisplayName == "",
+		Kind:               orchestrator.JobKindSession,
+		HarnessType:        input.HarnessType,
+		Argv:               input.Argv, // consumed by shell adapter only; agent adapters ignore it
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         input.ProjectWorkDir,
 			ProjectName:        input.ProjectName,
@@ -271,6 +272,7 @@ func resolveSessionBaseBranch(projectWorkDir string) string {
 // Propagates any error from BuildSessionJobSpec (in particular a session
 // clone-declaration failure — see buildSessionCloneDeclaration).
 func BuildExecJobSpec(input SessionJobInput, argv []string, interactive bool) (*orchestrator.JobSpec, error) {
+	defaultName := input.DisplayName == ""
 	input.HarnessType = "shell"
 	if input.DisplayName == "" && len(argv) > 0 {
 		input.DisplayName = argv[0]
@@ -279,6 +281,7 @@ func BuildExecJobSpec(input SessionJobInput, argv []string, interactive bool) (*
 	if err != nil {
 		return nil, err
 	}
+	spec.DisplayNameDefault = defaultName
 	spec.Kind = orchestrator.JobKindExec
 	spec.Argv = argv
 	spec.Interactive = interactive

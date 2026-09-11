@@ -18,6 +18,8 @@ type Job struct {
 	ProjectID             string     `json:"project_id"`
 	HandlerID             string     `json:"handler_id"`
 	DisplayName           string     `json:"display_name,omitempty"`
+	TerminalTitle         string     `json:"terminal_title,omitempty"`
+	DisplayNameDefault    bool       `json:"display_name_default,omitempty"`
 	Role                  string     `json:"role"`
 	RuntimeID             string     `json:"runtime_id,omitempty"`
 	WorkspacePath         string     `json:"workspace_path,omitempty"`
@@ -46,4 +48,16 @@ type JobListFilter struct {
 	Status       string
 	Interactive  *bool // nil = no filter
 	TasklessOnly bool  // true = only jobs where task_id IS NULL
+}
+
+// EffectiveDisplayName prefers an explicit name, then the terminal title,
+// then the name generated when the job was launched.
+func (j *Job) EffectiveDisplayName() string {
+	if j.DisplayName != "" && !j.DisplayNameDefault {
+		return j.DisplayName
+	}
+	if j.TerminalTitle != "" {
+		return j.TerminalTitle
+	}
+	return j.DisplayName
 }

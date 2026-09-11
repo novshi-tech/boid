@@ -161,3 +161,15 @@ The current Web UI covers:
 ---
 
 Next: [Troubleshooting](troubleshooting.md)
+
+### Job names and terminal titles
+
+For new sessions and interactive exec jobs without an explicit name, boid uses
+window titles emitted by the program (OSC 0 or OSC 2). The daemon captures and
+stores these even when no browser is connected. The job detail label refreshes
+every two seconds while running, without reconnecting the terminal.
+
+Explicit names take priority over terminal titles; automatically generated names
+are the fallback when no terminal title is available. Clear the name using the
+job's rename button to follow terminal titles again. Existing jobs keep their
+names after upgrading because their original naming source is unknown.

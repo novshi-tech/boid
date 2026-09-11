@@ -491,6 +491,7 @@ func allMigrations() []migration {
 				return tableExists(tx, "operation_results")
 			},
 		},
+		{version: "0057_add_jobs_terminal_title", path: "migrations/0057_add_jobs_terminal_title.sql"},
 	}
 }
 

@@ -43,7 +43,7 @@ func detailTimelineGroups(detail *TaskDetailView) []timeline.StatusGroup {
 			ID:          j.ID,
 			Role:        j.Role,
 			HandlerID:   j.HandlerID,
-			DisplayName: j.DisplayName,
+			DisplayName: j.EffectiveDisplayName(),
 			Status:      string(j.Status),
 			ExitCode:    j.ExitCode,
 			CreatedAt:   j.CreatedAt,
@@ -531,7 +531,7 @@ func (h *WebHandler) SessionList(w http.ResponseWriter, r *http.Request) {
 			ProjectID:   j.ProjectID,
 			ProjectName: j.ProjectName,
 			HandlerID:   j.HandlerID,
-			DisplayName: j.DisplayName,
+			DisplayName: j.EffectiveDisplayName(),
 			CreatedAt:   j.CreatedAt,
 		})
 	}
@@ -1798,7 +1798,7 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 		ProjectID:   job.ProjectID,
 		TaskTitle:   job.TaskTitle,
 		HandlerID:   job.HandlerID,
-		DisplayName: job.DisplayName,
+		DisplayName: job.EffectiveDisplayName(),
 		Role:        job.Role,
 		HookID:      hookID,
 		Status:      string(job.Status),
@@ -1808,7 +1808,14 @@ func (h *WebHandler) JobDetail(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:   job.UpdatedAt,
 		Output:      job.Output,
 	}
+	if !job.DisplayNameDefault {
+		view.RenameValue = job.DisplayName
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if r.URL.Query().Get("title") == "1" {
+		templates.JobTitleLabel(view).Render(r.Context(), w)
+		return
+	}
 	templates.JobDetail(view).Render(r.Context(), w)
 }
 

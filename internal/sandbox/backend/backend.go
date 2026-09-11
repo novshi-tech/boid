@@ -77,6 +77,10 @@ type RuntimeExit struct {
 // `boid runner-container`; the retired userns backend built `boid runner-outer
 // --spec ... --state ...`).
 type LaunchOptions struct {
+	// OnTerminalTitle persists title changes independently of browser subscribers.
+	// It is called serially by the TTY output reader; errors may be retried.
+	OnTerminalTitle func(string) error
+
 	JobID     string
 	TaskID    string
 	ProjectID string

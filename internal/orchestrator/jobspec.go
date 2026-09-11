@@ -35,10 +35,11 @@ type JobSpec struct {
 
 	// Identity used by dispatcher for Job DB persistence and state-machine
 	// notification. TaskID and HandlerID are empty for boid-exec jobs.
-	TaskID      string
-	ProjectID   string
-	HandlerID   string
-	DisplayName string // human-readable label (hook name or command-session name); persisted to jobs.display_name
+	TaskID             string
+	ProjectID          string
+	HandlerID          string
+	DisplayNameDefault bool   // true when DisplayName is generated, rather than explicitly supplied
+	DisplayName        string // human-readable label (hook name or command-session name); persisted to jobs.display_name
 
 	// HookTraitsProduces captures the firing hook's own `traits.produces`
 	// list (event.Hook.Traits.Produces) AT DISPATCH TIME — the exact value
