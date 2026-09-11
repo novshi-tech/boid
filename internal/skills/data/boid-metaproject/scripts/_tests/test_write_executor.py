@@ -768,8 +768,24 @@ class CaptureTest(unittest.TestCase):
         cli = FakeCLI(created=True)
         run("capture", cli, identity="jira:X-1", title="題", body="本文", urgency="week")
         (_, identity, title, description), = cli.named("resolve_or_capture")
-        self.assertEqual((identity, title, description), ("jira:X-1", "題", "本文"))
+        self.assertEqual((identity, title, description), ("jira:X-1", "題", "<!-- boid:summary -->\n本文"))
         self.assertEqual(cli.actions("attrs_set")[0][3]["identity"], "jira:X-1")
+
+    def test_capture_then_summary_replaces_initial_progress_and_keeps_human_notes(self):
+        cli = FakeCLI(created=True)
+        run("capture", cli, identity="jira:X-1", title="題",
+            body="何を解決しようとしている件か: X\nどこまで進んだか: 未着手", urgency="week")
+        (_, _, _, initial), = cli.named("resolve_or_capture")
+        cli._view["description"] = "人が追記した判断材料\n\n" + initial
+        for progress in ("検証中", "完了"):
+            body = f"何を解決しようとしている件か: X\nどこまで進んだか: {progress}"
+            run("summary", cli, task_id="new-task", body=body)
+            updated = cli.named("update_description")[-1][2]
+            self.assertEqual(updated, "人が追記した判断材料\n\n<!-- boid:summary -->\n" + body)
+            cli._view["description"] = updated
+        writes = len(cli.named("update_description"))
+        run("summary", cli, task_id="new-task", body=body)
+        self.assertEqual(len(cli.named("update_description")), writes)
 
     def test_an_existing_task_is_not_re_initialised(self):
         """`resolve-or-capture` は既存に当たっても成功で返る。毎回初期化すると
@@ -777,6 +793,7 @@ class CaptureTest(unittest.TestCase):
         cli = FakeCLI(created=False)
         run("capture", cli, identity="jira:X-1", title="題", body="本文", urgency="week")
         self.assertFalse([c for c in cli.actions("attrs_set") if "identity" in (c[3] or {})])
+        self.assertFalse(cli.wrote("update_description"))
 
     def test_the_record_is_written_to_the_sweep_task_timeline(self):
         """**2026-08-29、PR-2やり直しv2**: 記録は task の attrs ではなく、常に

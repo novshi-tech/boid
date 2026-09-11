@@ -686,7 +686,8 @@ class Executor:
         identity = str(c["identity"])
         urgency = str(c["urgency"])
         task_id, created = self.cli.resolve_or_capture(
-            identity, title=str(c["title"]), description=str(c["body"]),
+            # 起票時の生成本文も、次回の summary で置換する機械領域に置く。
+            identity, title=str(c["title"]), description=summary.merge("", str(c["body"])),
             **self._identity_metadata(c)
         )
         if created:
