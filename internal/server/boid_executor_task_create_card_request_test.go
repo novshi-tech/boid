@@ -75,15 +75,39 @@ func TestBoidOpTaskCreate_OwnedCardRequest_AttachesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTask(%q): %v", got.TargetID, err)
 	}
-	if task.ParentID != "" {
-		t.Errorf("ParentID = %q, want empty — a card-command launcher's continuation is a root task", task.ParentID)
+	if task.ParentID != card.ID {
+		t.Errorf("ParentID = %q, want card %q — a card-command launcher's continuation is a child of the card", task.ParentID, card.ID)
 	}
 	// Idempotency default: since the script omitted `ref:`, the daemon
 	// defaults it to the request id, so a retried `boid task create` from a
-	// re-run launcher converges onto the same task instead of planting a
-	// second one.
+	// re-run launcher converges onto the same Card child instead of planting
+	// a second one.
 	if task.Ref != cardReq.ID {
 		t.Errorf("Ref = %q, want the request id %q defaulted in", task.Ref, cardReq.ID)
+	}
+
+	// A retry after the request has already attached must recover the same
+	// Card child instead of falling back to an unparented duplicate.
+	retry := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: []byte(`{"title":"review findings","initial_status":"pending","behavior":"executor"}`),
+	})
+	if retry.ExitCode != 0 {
+		t.Fatalf("retry task create exit code = %d, stderr: %s", retry.ExitCode, retry.Stderr)
+	}
+	children, err := repo.ListChildren(card.ID)
+	if err != nil {
+		t.Fatalf("ListChildren: %v", err)
+	}
+	if len(children) != 1 || children[0].ID != task.ID {
+		t.Fatalf("children after retry = %+v, want only the original child %q", children, task.ID)
+	}
+	allTasks, err := repo.ListTasks(orchestrator.TaskFilter{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(allTasks) != 2 { // the Card and its one judge child
+		t.Fatalf("tasks after retry = %d, want 2 (Card + one judge child)", len(allTasks))
 	}
 }
 
@@ -341,12 +365,9 @@ func TestBoidOpTaskCreate_ChildCreate_NotTreatedAsRequestContinuation(t *testing
 	}
 }
 
-// TestBoidOpTaskCreate_ParentIsOwnCard_ExplicitError pins that a
-// card-command launcher's `boid task create --parent <this card>` — the
-// intuitive but wrong way to try to fulfil its own request, since a
-// launcher's continuation must be a ROOT task — gets an explicit,
-// actionable error rather than falling through to an ordinary child create.
-func TestBoidOpTaskCreate_ParentIsOwnCard_ExplicitError(t *testing.T) {
+// TestBoidOpTaskCreate_ParentIsOwnCard_ExplicitAttaches pins that the owning
+// launcher may explicitly name the Card as the continuation's parent.
+func TestBoidOpTaskCreate_ParentIsOwnCard_ExplicitAttaches(t *testing.T) {
 	conn := newBoidExecutorTestDB(t)
 	if err := orchestrator.CreateProject(conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
 		t.Fatalf("create project: %v", err)
@@ -382,26 +403,23 @@ func TestBoidOpTaskCreate_ParentIsOwnCard_ExplicitError(t *testing.T) {
 		Op:          sandbox.BoidOpTaskCreate,
 		CreatePatch: []byte(`{"title":"should be rejected","parent_id":"` + card.ID + `","ref":"child-1","behavior":"executor"}`),
 	})
-	if resp.ExitCode == 0 {
-		t.Fatalf("expected a non-zero exit code, got stdout: %s", resp.Stdout)
-	}
-	if !strings.Contains(resp.Stderr, "must be a ROOT task") {
-		t.Errorf("stderr = %q, want an explicit hint about the ROOT-task requirement", resp.Stderr)
+	if resp.ExitCode != 0 {
+		t.Fatalf("task create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
 	}
 
 	got, err := repo.GetCardRequest(cardReq.ID)
 	if err != nil {
 		t.Fatalf("GetCardRequest: %v", err)
 	}
-	if got.Status != orchestrator.CardRequestStatusLaunching {
-		t.Errorf("status = %q, want unchanged launching", got.Status)
+	if got.Status != orchestrator.CardRequestStatusAttached {
+		t.Errorf("status = %q, want attached", got.Status)
 	}
 	children, err := repo.ListChildren(card.ID)
 	if err != nil {
 		t.Fatalf("ListChildren: %v", err)
 	}
-	if len(children) != 0 {
-		t.Errorf("children = %d, want 0 — the rejected create must not have inserted a task row", len(children))
+	if len(children) != 1 {
+		t.Errorf("children = %d, want 1 — the owned launcher create should insert one Card child", len(children))
 	}
 }
 
@@ -421,9 +439,10 @@ func TestBoidOpTaskCreate_LauncherSuppliedRef_StillAttaches(t *testing.T) {
 	if err := repo.CreateTask(card); err != nil {
 		t.Fatalf("create card: %v", err)
 	}
-	// A pre-existing task already owns "issue-123" as a root ref — simulates
-	// a launcher reusing a ref it (or something else) created earlier.
-	preexisting := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Ref: "issue-123", Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
+	// A pre-existing task already owns "issue-123" under this Card — simulates
+	// a launcher retrying after the task insert committed but before the
+	// launcher observed the attached request.
+	preexisting := &orchestrator.Task{ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, ParentID: card.ID, Ref: "issue-123", Exec: &orchestrator.ExecAttrs{Behavior: "executor"}}
 	if err := repo.CreateTask(preexisting); err != nil {
 		t.Fatalf("create preexisting: %v", err)
 	}
@@ -519,5 +538,12 @@ func TestBoidOpTaskCreate_CardTypeCreate_NeverAttaches(t *testing.T) {
 	}
 	if got.Status != orchestrator.CardRequestStatusLaunching {
 		t.Errorf("status = %q, want unchanged launching — a card-type create must never consume the slot", got.Status)
+	}
+	cards, err := repo.ListTasks(orchestrator.TaskFilter{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(cards) != 2 || cards[1].ParentID != "" || cards[1].Ref != "" {
+		t.Errorf("tasks after card-type create = %+v, want a parentless, ref-less Card sibling", cards)
 	}
 }

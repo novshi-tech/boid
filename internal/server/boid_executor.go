@@ -301,6 +301,45 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if createReq.ProjectID == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create requires a project"}
 		}
+		// A card-command launcher has no TaskID of its own.  Its first
+		// execution task is nevertheless a real child of the card, so the
+		// launcher-owned request supplies the missing parent.  Restrict this
+		// to the still-launching request owned by THIS job: later hook jobs
+		// for the continuation also carry CardRequestID, but must continue
+		// to default children to their own TaskID instead.
+		launcherOwnsCardRequest := false
+		launcherCanResumeCardRequest := false
+		if ctx.CardID != "" && ctx.CardRequestID != "" && e.cardRequests != nil {
+			row, rowErr := e.cardRequests.GetCardRequest(ctx.CardRequestID)
+			if rowErr != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create: " + rowErr.Error()}
+			}
+			launcherOwnsCardRequest = row.CardID == ctx.CardID &&
+				row.LauncherJobID != "" && row.LauncherJobID == ctx.JobID &&
+				row.Status == orchestrator.CardRequestStatusLaunching
+			launcherCanResumeCardRequest = launcherOwnsCardRequest ||
+				(row.CardID == ctx.CardID && row.TargetKind == orchestrator.CardRequestTargetKindTask &&
+					row.TargetID != "" && row.LauncherJobID == ctx.JobID &&
+					row.Status == orchestrator.CardRequestStatusAttached)
+			if launcherCanResumeCardRequest && createReq.InitialStatus != "parked" && createReq.ParentID == "" {
+				createReq.ParentID = ctx.CardID
+				// The Card child now needs a ref before the generic child
+				// validation below.  Keep the existing request-id default so
+				// retries still converge through the (parent_id, ref) key.
+				if createReq.Ref == "" {
+					createReq.Ref = ctx.CardRequestID
+				}
+			}
+			// Once this launcher has claimed the request, carry the claim
+			// through the task service immediately.  The service/repository
+			// will re-assert ownership in the same transaction as INSERT;
+			// without these fields, a request released between the read above
+			// and that transaction could leave an unattached Card child behind.
+			if launcherOwnsCardRequest && createReq.InitialStatus != "parked" && createReq.ParentID == ctx.CardID {
+				createReq.CardRequestID = ctx.CardRequestID
+				createReq.CardRequestOwnerJobID = ctx.JobID
+			}
+		}
 		if createReq.ParentID == orchestrator.ParentIDSentinelRoot {
 			createReq.ParentID = ""
 		} else if createReq.ParentID == "" {
@@ -312,36 +351,33 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(createReq.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
-		// `--parent <this card>` reads naturally as "the card this command is
-		// about", but the ownership-check branch below only ever attaches a
-		// ROOT (ParentID=="") continuation or Go work task — reject with an
-		// actionable hint before falling through to the generic
-		// card-slot-conflict 409. The ROOT requirement holds for both shapes
-		// (a continuation task and a Go work task are both created as ROOT),
-		// so the message applies regardless of which launched this job.
-		if ctx.CardRequestID != "" && ctx.CardID != "" && createReq.ParentID == ctx.CardID {
+		// A continuation task may be created directly under its card only by
+		// the launcher that owns the still-launching request. Other jobs must
+		// not smuggle a CardRequest context into an unrelated Card child.
+		if ctx.CardRequestID != "" && ctx.CardID != "" && createReq.ParentID == ctx.CardID &&
+			(!launcherCanResumeCardRequest || createReq.InitialStatus == "parked") {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf(
-				"boid task create: --parent %s targets this job's own card — a card-command launcher's continuation or work task must be a ROOT task (omit --parent, or pass --parent %s); "+
-					"a task created directly under the card would not attach to card_request %s",
-				createReq.ParentID, orchestrator.ParentIDSentinelRoot, ctx.CardRequestID)}
+				"boid task create: --parent %s targets this job's own card, but this job does not own the launching card_request %s",
+				createReq.ParentID, ctx.CardRequestID)}
 		}
-		// A card-command launcher's own root, execution-type create claims
+		// A card-command launcher's own execution-type create claims
 		// its card_requests row's slot (mirrors executeAgentStart's
-		// ownership check) — only when this job actually owns that request.
+		// ownership check) — whether it is a root task or a direct Card child,
+		// only when this job actually owns that request.
 		// A card-type create (initial_status=parked) is never a valid
 		// continuation and must not silently consume the slot.
 		//
 		// Since PlanHook also stamps CardID/CardRequestID onto a TASK
 		// continuation's own later hook jobs (non-Go, active-status card
 		// context — see planner.go's PlanHook), that continuation's own
-		// root task creations now carry the same CardRequestID on every
+		// task creations now carry the same CardRequestID on every
 		// dispatch, not just its first. The ownership match above still
 		// fails for those (ctx.JobID is a fresh hook job each dispatch,
 		// never the original LauncherJobID), so the `else if` below also
 		// excludes a TASK continuation's own request by TaskID — mirroring
 		// the SESSION carve-out, which excludes by the session's own
 		// (attached) JobID for the same reason.
-		if ctx.CardRequestID != "" && createReq.ParentID == "" && createReq.InitialStatus != "parked" && e.cardRequests != nil {
+		if ctx.CardRequestID != "" && (createReq.ParentID == "" || createReq.ParentID == ctx.CardID) && createReq.InitialStatus != "parked" && e.cardRequests != nil {
 			row, err := e.cardRequests.GetCardRequest(ctx.CardRequestID)
 			if err != nil {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create: " + err.Error()}
@@ -360,7 +396,10 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			} else if !(row.Status == orchestrator.CardRequestStatusAttached &&
 				row.TargetKind == orchestrator.CardRequestTargetKindSession && row.TargetID == ctx.JobID) &&
 				!(row.Status == orchestrator.CardRequestStatusAttached &&
-					row.TargetKind == orchestrator.CardRequestTargetKindTask && row.TargetID == ctx.TaskID) {
+					row.TargetKind == orchestrator.CardRequestTargetKindTask && row.TargetID == ctx.TaskID) &&
+				!(row.Status == orchestrator.CardRequestStatusAttached &&
+					row.TargetKind == orchestrator.CardRequestTargetKindTask && row.TargetID != "" &&
+					row.LauncherJobID == ctx.JobID) {
 				// Exclude the two routine cases: a card session's own token
 				// (by JobID) and a card task continuation's own dispatches
 				// (by TaskID) both keep naming their (now-attached, not
