@@ -65,11 +65,65 @@ func Render(raw []byte, cols, rows int) ([]byte, error) {
 
 	prefix, tail := splitAtSafeBoundary(raw)
 	emu := vt.NewEmulator(cols, rows)
-	out, err := render(prefix, emu)
+	// x/vt's parser has the same UTF-8 transition behavior as ansi.Parser:
+	// after a non-ASCII rune in an OSC it can dispatch the rune as printable
+	// text. Title OSCs are metadata, so omit completed OSC 0/1/2 sequences from
+	// the emulator input while preserving every other control sequence.
+	out, err := render(stripCompletedTitleOSC(prefix), emu)
 	if err != nil {
 		return nil, err
 	}
-	return append(out, tail...), nil
+	return append(out, stripCompletedTitleOSC(tail)...), nil
+}
+
+func stripCompletedTitleOSC(raw []byte) []byte {
+	var out []byte
+	for i := 0; i < len(raw); {
+		if i+4 < len(raw) && raw[i] == 0x1B && raw[i+1] == ']' &&
+			(raw[i+2] == '0' || raw[i+2] == '1' || raw[i+2] == '2') && raw[i+3] == ';' {
+			end := i + 4
+			utf8Remaining := 0
+			for end < len(raw) {
+				if utf8Remaining > 0 {
+					utf8Remaining--
+					end++
+					continue
+				}
+				if raw[end] >= 0xC2 && raw[end] <= 0xDF {
+					utf8Remaining = 1
+				} else if raw[end] >= 0xE0 && raw[end] <= 0xEF {
+					utf8Remaining = 2
+				} else if raw[end] >= 0xF0 && raw[end] <= 0xF4 {
+					utf8Remaining = 3
+				}
+				if raw[end] == 0x07 || raw[end] == 0x9C {
+					break
+				}
+				if raw[end] == 0x1B && end+1 < len(raw) && raw[end+1] == '\\' {
+					break
+				}
+				end++
+			}
+			if end < len(raw) {
+				if out == nil {
+					out = append([]byte(nil), raw[:i]...)
+				}
+				i = end + 1
+				if raw[end] == 0x1B {
+					i++
+				}
+				continue
+			}
+		}
+		if out != nil {
+			out = append(out, raw[i])
+		}
+		i++
+	}
+	if out == nil {
+		return raw
+	}
+	return out
 }
 
 // splitAtSafeBoundary keeps parser state that has not reached ground state in
@@ -79,21 +133,92 @@ func Render(raw []byte, cols, rows int) ([]byte, error) {
 func splitAtSafeBoundary(raw []byte) (prefix, tail []byte) {
 	p := ansi.NewParser()
 	last := 0
+	state := boundaryGround
+	utf8Remaining := 0
 	for i, b := range raw {
-		// ansi.Parser temporarily enters Utf8State for a rune, but after
-		// completing a rune inside an OSC/DCS string it returns to GroundState
-		// and loses the enclosing string state. Keep any non-ASCII byte that
-		// occurs outside ground state in the tail; this also keeps a split
-		// UTF-8 rune intact for the attaching terminal.
-		if p.State() != parser.GroundState && b >= 0x80 {
-			break
-		}
 		p.Advance(b)
-		if p.State() == 0 { // parser.GroundState
+		state, utf8Remaining = advanceBoundary(state, utf8Remaining, b)
+		// The ansi parser returns to GroundState after a complete UTF-8 rune,
+		// even when that rune was inside an OSC/DCS string. The small scanner
+		// above preserves that enclosing string state for the boundary decision.
+		if p.State() == parser.GroundState && state == boundaryGround && utf8Remaining == 0 {
 			last = i + 1
 		}
 	}
 	return raw[:last], raw[last:]
+}
+
+type boundaryState uint8
+
+const (
+	boundaryGround boundaryState = iota
+	boundaryEscape
+	boundaryCSI
+	boundaryString
+	boundaryStringEscape
+)
+
+// advanceBoundary tracks the parser context that ansi.Parser cannot retain
+// across a completed UTF-8 rune in a string sequence.
+func advanceBoundary(state boundaryState, remaining int, b byte) (boundaryState, int) {
+	if remaining > 0 {
+		return state, remaining - 1
+	}
+	if b >= 0xC2 && b <= 0xDF {
+		return state, 1
+	}
+	if b >= 0xE0 && b <= 0xEF {
+		return state, 2
+	}
+	if b >= 0xF0 && b <= 0xF4 {
+		return state, 3
+	}
+	if state == boundaryString {
+		if b == 0x07 || b == 0x9C {
+			return boundaryGround, 0
+		}
+		if b == 0x1B {
+			return boundaryStringEscape, 0
+		}
+		if b == 0x18 || b == 0x1A {
+			return boundaryGround, 0
+		}
+		return state, 0
+	}
+	switch state {
+	case boundaryGround:
+		if b == 0x1B {
+			return boundaryEscape, 0
+		}
+	case boundaryEscape:
+		switch b {
+		case '[':
+			return boundaryCSI, 0
+		case ']', 'P', '^', '_':
+			return boundaryString, 0
+		default:
+			return boundaryGround, 0
+		}
+	case boundaryCSI:
+		if b >= 0x40 && b <= 0x7E {
+			return boundaryGround, 0
+		}
+		if b == 0x1B {
+			return boundaryEscape, 0
+		}
+		if b == 0x18 || b == 0x1A {
+			return boundaryGround, 0
+		}
+	case boundaryStringEscape:
+		if b == '\\' {
+			return boundaryGround, 0
+		}
+		if b == 0x1B {
+			return boundaryStringEscape, 0
+		}
+		return boundaryString, 0
+	}
+	return state, 0
 }
 
 func render(raw []byte, emu *vt.Emulator) (output []byte, err error) {

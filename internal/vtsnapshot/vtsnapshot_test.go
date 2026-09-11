@@ -100,11 +100,28 @@ term.write(snapshot, () => term.write(suffix, () => {
 				if len(live) != 0 && (len(result.Titles) == 0 || result.Titles[len(result.Titles)-1] != tc.title) {
 					t.Fatalf("split %d: titles = %q, want final title %q", split, result.Titles, tc.title)
 				}
-				if strings.Contains(result.Screen, tc.title) {
-					t.Fatalf("split %d: title %q leaked into screen", split, tc.title)
+				if strings.TrimRight(result.Screen, " \n") != "prompt>" {
+					t.Fatalf("split %d: screen = %q, want exactly prompt", split, result.Screen)
 				}
 			}
 		})
+	}
+}
+
+func TestRender_UnicodeDoesNotDisableSnapshotCompaction(t *testing.T) {
+	raw := []byte(strings.Repeat("\x1b[H日本語の画面", 1000))
+	got := mustRender(t, raw, 80, 24)
+	if len(got) >= 1000 {
+		t.Fatalf("Unicode transcript was not compacted: got %d bytes from %d", len(got), len(raw))
+	}
+
+	raw = []byte("\x1b]0;日本語タイトル\x07" + strings.Repeat("\x1b[H画面", 1000))
+	got = mustRender(t, raw, 80, 24)
+	if len(got) >= 1000 {
+		t.Fatalf("Unicode title transcript was not compacted: got %d bytes from %d", len(got), len(raw))
+	}
+	if strings.Contains(string(got), "日本語タイトル") {
+		t.Fatalf("completed title leaked into rendered snapshot: %q", got)
 	}
 }
 
