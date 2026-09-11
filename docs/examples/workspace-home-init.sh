@@ -346,26 +346,24 @@ install_codex() {
 }
 
 # ---- OpenCode ---------------------------------------------------------------
-# 公式インストーラ。~/.opencode/bin/opencode か ~/.local/bin/opencode に着地する。
-# claude 同様、 installer が絶対 symlink を張る可能性があるので事後で relative 化。
+# 公式インストーラは ~/.opencode/bin/opencode に置くだけで .local/bin には
+# 何も張らない。PATH に乗るのは .local/bin 側なので、ここで明示的に link する
+# (claude/codex と違い installer 自身が link を作らない分岐)。
 install_opencode() {
     local opencode_bin_direct="$HOME/.opencode/bin/opencode"
     local opencode_bin_link="$HOME/.local/bin/opencode"
-    # claude と同じく、 旧 HOME を指したまま持ち込まれた link を先に張り直す。
-    rehome_dangling_symlink "$opencode_bin_link"
-    if [ -e "$opencode_bin_direct" ] && "$opencode_bin_direct" --version >/dev/null 2>&1; then
+    if ! { [ -e "$opencode_bin_direct" ] && "$opencode_bin_direct" --version >/dev/null 2>&1; }; then
+        log "installing opencode"
+        curl -fsSL https://opencode.ai/install | bash
+        if ! [ -e "$opencode_bin_direct" ] || ! "$opencode_bin_direct" --version >/dev/null 2>&1; then
+            log "error: opencode is still not runnable after the opencode.ai installer"
+            exit 1
+        fi
+    else
         log "opencode already installed"
-        relativize_symlink "$opencode_bin_link"
-        return 0
     fi
-    if [ -e "$opencode_bin_link" ] && "$opencode_bin_link" --version >/dev/null 2>&1; then
-        log "opencode already installed"
-        relativize_symlink "$opencode_bin_link"
-        return 0
-    fi
-    log "installing opencode"
-    curl -fsSL https://opencode.ai/install | bash
-    relativize_symlink "$opencode_bin_link"
+    mkdir -p "$HOME/.local/bin"
+    link_sandbox_safe "$opencode_bin_direct" "$opencode_bin_link"
 }
 
 # ---- main -------------------------------------------------------------------
