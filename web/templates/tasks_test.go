@@ -858,14 +858,14 @@ func TestTaskDetailAwaitingBanner_NoQuestionID_RendersNothing(t *testing.T) {
 // the exec root child tree (ChildTreeNode). A card's own children moved to
 // the timeline read model in PR-6a (card_timeline_test.go). ---
 
-func TestTaskDetailExecChildTreeSection_RendersDirectChildLinks(t *testing.T) {
+func TestTaskDetailTimelineChildren_RendersDirectChildLinks(t *testing.T) {
 	nodes := []ChildTreeNode{
 		{Task: &orchestrator.Task{ID: "c1", Title: "child A", Status: orchestrator.TaskStatusExecuting}},
 		{Task: &orchestrator.Task{ID: "c1-1", Title: "grandchild A1", Status: orchestrator.TaskStatusDone}},
 	}
 
 	var buf bytes.Buffer
-	if err := TaskDetailExecChildTreeSection(nodes).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailTimelineSection(&orchestrator.Task{}, nil, nodes).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -876,20 +876,10 @@ func TestTaskDetailExecChildTreeSection_RendersDirectChildLinks(t *testing.T) {
 	}
 }
 
-func TestTaskDetailExecChildTreeSection_EmptyRendersNothing(t *testing.T) {
-	var buf bytes.Buffer
-	if err := TaskDetailExecChildTreeSection(nil).Render(context.Background(), &buf); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if got := strings.TrimSpace(buf.String()); got != "" {
-		t.Errorf("no child tree should render nothing, got: %s", got)
-	}
-}
-
-func TestTaskDetailExecChildTreeSection_DoesNotInventMissingCompletionEvent(t *testing.T) {
+func TestTaskDetailTimelineChildren_DoesNotInventMissingCompletionEvent(t *testing.T) {
 	nodes := []ChildTreeNode{{Task: &orchestrator.Task{ID: "done-1", Title: "legacy child", Status: orchestrator.TaskStatusDone}, HasCreatedAt: true, CreatedAt: time.Now()}}
 	var buf bytes.Buffer
-	if err := TaskDetailExecChildTreeSection(nodes).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailTimelineSection(&orchestrator.Task{}, nil, nodes).Render(context.Background(), &buf); err != nil {
 		t.Fatal(err)
 	}
 	html := buf.String()

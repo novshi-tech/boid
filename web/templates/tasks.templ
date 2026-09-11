@@ -429,6 +429,7 @@ templ TaskDetailExecStatusSection(task *orchestrator.Task, errorMsg string, proj
 				<span class="detail-time">{ task.UpdatedAt.Local().Format("2006-01-02 15:04") }</span>
 			</div>
 		</div>
+		@TaskDetailCardSummary("", task.Description)
 		@TaskIdentityLinks(identities)
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
@@ -594,12 +595,14 @@ type execChildHistoryEvent struct {
 	Time    time.Time
 	HasTime bool
 	Status  orchestrator.TaskStatus
+	QuestionID string
+	MissingCompletion bool
 }
 
 func execChildHistoryEvents(nodes []ChildTreeNode) []execChildHistoryEvent {
 	events := make([]execChildHistoryEvent, 0, len(nodes)*2)
 	for _, node := range nodes {
-		events = append(events, execChildHistoryEvent{Task: node.Task, Kind: "Created", Time: node.CreatedAt, HasTime: node.HasCreatedAt})
+		events = append(events, execChildHistoryEvent{Task: node.Task, Kind: "Created", Time: node.CreatedAt, HasTime: node.HasCreatedAt, Status: node.Task.Status, QuestionID: node.QuestionID, MissingCompletion: orchestrator.IsTerminalStatus(node.Task.Status) && len(node.TerminalEvents) == 0})
 		for _, terminal := range node.TerminalEvents {
 			events = append(events, execChildHistoryEvent{Task: node.Task, Kind: "Finished", Time: terminal.Time, HasTime: terminal.HasTime, Status: terminal.Status})
 		}
@@ -611,57 +614,6 @@ func execChildHistoryEvents(nodes []ChildTreeNode) []execChildHistoryEvent {
 		return events[i].Time.After(events[j].Time)
 	})
 	return events
-}
-
-// TaskDetailExecChildTreeSection renders direct children. Opening a child
-// repeats the same one-level view for the next depth.
-templ TaskDetailExecChildTreeSection(nodes []ChildTreeNode) {
-	if len(nodes) > 0 {
-		<div class="detail-child-tree">
-			<div class="detail-children-label">Current subtasks ({ fmt.Sprintf("%d", len(nodes)) })</div>
-			<ul class="detail-child-tree-list">
-				for _, node := range nodes {
-					<li class="detail-child-tree-item">
-						<div class="detail-children-item">
-							<a href={ templ.SafeURL("/tasks/" + node.Task.ID) } class="detail-children-title">{ node.Task.Title }</a>
-							<div class="detail-children-meta">
-								<span class={ taskStatusClass(string(node.Task.Status)) }>{ string(node.Task.Status) }</span>
-								if node.Task.Exec != nil && node.Task.Exec.Behavior != "" {
-									<span class="badge badge-child-behavior">{ node.Task.Exec.Behavior }</span>
-								}
-								if node.QuestionID != "" {
-									<a href={ templ.SafeURL("/tasks/" + node.Task.ID + "/questions/" + node.QuestionID) } class="detail-children-ask"><span aria-hidden="true">⚠</span> question</a>
-								}
-								if orchestrator.IsTerminalStatus(node.Task.Status) && len(node.TerminalEvents) == 0 {
-									<span class="detail-children-hint">completion time unavailable</span>
-								}
-							</div>
-						</div>
-					</li>
-				}
-			</ul>
-			<div class="detail-children-label exec-child-history-label">Subtask history</div>
-			<ul class="card-timeline-list exec-child-history">
-				for _, event := range execChildHistoryEvents(nodes) {
-					<li class="card-timeline-item">
-						<time class="card-timeline-item-time">
-							if event.HasTime {
-								{ event.Time.Local().Format("Jan 2 15:04") }
-							} else {
-								unknown time
-							}
-						</time>
-						<div class="card-timeline-item-body card-timeline-child-finished">
-							<a href={ templ.SafeURL("/tasks/" + event.Task.ID) } class="detail-children-link">{ event.Kind }: { event.Task.Title }</a>
-							if event.Kind == "Finished" {
-								<span class={ taskStatusClass(string(event.Status)) }>{ string(event.Status) }</span>
-							}
-						</div>
-					</li>
-				}
-			</ul>
-		</div>
-	}
 }
 
 // detailPrimaryAction picks the single state-aware "primary" action for the
@@ -1046,39 +998,28 @@ func timelineJobSinceUnix(ev timeline.Event) string {
 	return fmt.Sprintf("%d", ev.Job.CreatedAt.Unix())
 }
 
-// TaskDetailTimelineSection renders the action-and-job history grouped by
-// status visit. The grouping, sort, and label text are built by
-// internal/timeline so the TUI and Web UI render the same structure. Shared
-// verbatim by both the card and execution detail layouts (§7 罠2 — same
-// #task-timeline id, same fragment kind=timeline in both).
-//
-// The awaiting call-to-action (TaskDetailAwaitingBanner) used to render at
-// the top of this section; it moved to TaskDetailExecStatusSection's
-// movement row (§3.1 部品A — exec's movement row is "状態+経過/awaitingバナー")
-// so it surfaces immediately instead of only once the reader is already
-// inside the (execution-only) Timeline tab, and so it does not render
-// twice when Timeline is the default active tab.
-//
-// Layout: one continuous left rail across the whole timeline; each row
-// (status header + events) sits on the rail with its own marker (○ for
-// status header, ● for jobs with status color, ◆ for state-transition
-// actions). Times right-align in a shared column, and the status header
-// uses the same HH:MM:SS format as events so the eye finds them without
-// re-parsing per row.
+// TaskDetailTimelineSection merges status, job, action and child history on
+// one newest-first rail. Child state and question links live in the child
+// entries themselves. The section refreshes on parent and child SSE events.
 templ TaskDetailTimelineSection(task *orchestrator.Task, groups []timeline.StatusGroup, childTree []ChildTreeNode) {
-	<div id="task-timeline" class="tab-content">
-		@TaskDetailExecChildTreeSection(childTree)
-		if len(groups) == 0 {
+	<div id="task-timeline">
+		{{ rows := execTimelineRows(groups, childTree) }}
+		if len(rows) == 0 {
 			<p class="tab-empty">(no history)</p>
 		} else {
 			<div class="timeline">
-				for _, group := range groups {
+				for _, row := range rows {
+					if row.Group != nil {
+					{{ group := *row.Group }}
 					<div class={ "timeline-row", "timeline-row-header", "timeline-header-" + group.Status }>
 						<time class="timeline-time">{ timelineGroupTime(group) }</time>
 						<span class="timeline-marker timeline-marker-status" aria-hidden="true"></span>
 						<span class={ taskStatusClass(group.Status) }>{ group.Status }</span>
 					</div>
-					for _, ev := range group.Events {
+					} else if row.Child != nil {
+						@execChildTimelineRow(*row.Child)
+					} else if row.Event != nil {
+						{{ ev := *row.Event }}
 						if ev.Kind == timeline.KindJob && ev.Job != nil {
 							<a class={ "timeline-row", "timeline-row-event", "timeline-row-job", "timeline-row-job-" + timelineJobStatusClass(ev, string(task.Status)), templ.KV("timeline-row-job-sticky", ev.Sticky) } href={ templ.SafeURL("/jobs/" + ev.Job.ID) }>
 								if ev.Sticky {
@@ -1191,6 +1132,11 @@ templ TaskDetailAwaitingBanner(task *orchestrator.Task) {
 // by TaskDetailExecBody, outside #tabs entirely.
 templ TaskDetailExecTabPanel(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, activeTab string, childTree []ChildTreeNode) {
 	<div id="tab-panel" data-task-id={ task.ID }>
+		@taskDetailExecContent(task, timelineGroups, activeTab, childTree)
+	</div>
+}
+
+templ taskDetailExecContent(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, activeTab string, childTree []ChildTreeNode) {
 		if activeTab == "timeline" {
 			@TaskDetailTimelineSection(task, timelineGroups, childTree)
 		} else if activeTab == "description" {
@@ -1240,7 +1186,6 @@ templ TaskDetailExecTabPanel(task *orchestrator.Task, timelineGroups []timeline.
 				}
 			</div>
 		}
-	</div>
 }
 
 // tabClass returns the CSS class for a tab, adding "active" when it matches the current tab.
@@ -1860,34 +1805,29 @@ templ TaskDetailCardBody(task *orchestrator.Task, availableActions []string, err
 	@TaskDetailLiveScript()
 }
 
-// TaskDetailExecBody assembles an execution task detail page's content
-// (§3.4 item 1 — meta; item 2 — direct children; items 3-5 — the
-// existing tab structure is kept as-is).
-//
-// TaskDetailLiveScript renders here, as a sibling AFTER
-// TaskDetailExecTabsSection — deliberately outside the #tabs node HTMX
-// swaps on every tab-link click (Opus review, PR #996, blocking finding
-// B1). It used to render inside TaskDetailExecTabPanel (inside #tabs) with
-// an htmx:beforeSwap teardown that closed the EventSource whenever #tabs
-// was about to be swapped; the very first tab click tore the connection
-// down and the script's own top-of-IIFE re-entry guard then silently
-// prevented the freshly-swapped-in copy from ever reopening it — SSE
-// updates died permanently after one tab switch. Rendering it once here
-// means #tabs can swap as much as it wants; the script node itself is
-// never touched.
+// TaskDetailExecBody follows the card layout with execution-specific disclosures.
+// The live script stays outside every refreshed section.
 templ TaskDetailExecBody(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, childTree []ChildTreeNode, identities []apiwire.TaskIdentity) {
 	@TaskDetailExecStatusSection(task, errorMsg, projectName, childTree, identities)
-	@TaskDetailExecTabsSection(task, timelineGroups, availableActions, activeTab, childTree)
+	<details class="card-description" open?={ activeTab == "payload" }>
+		<summary class="card-summary">Payload</summary>
+		@taskDetailExecContent(task, nil, "payload", nil)
+	</details>
+	<details class="card-description" open?={ activeTab == "instructions" }>
+		<summary class="card-summary">Instructions</summary>
+		@taskDetailExecContent(task, nil, "instructions", nil)
+	</details>
+	<section class="card-timeline" aria-label="Timeline">
+		<h2 class="detail-section-title">Timeline</h2>
+		<div class="card-timeline-tz">Times shown in { cardTimelineTZLabel() }</div>
+		@TaskDetailTimelineSection(task, timelineGroups, childTree)
+	</section>
+	@TaskExecActionBar(task, availableActions, "timeline")
 	@TaskDetailLiveScript()
 }
 
-// TaskDetail is the task detail page's single entry point — one URL
-// (/tasks/{id}) for both entities, layout selected by task.Type (the same
-// axis machineFor uses): a card gets TaskDetailCardBody ("判断の場" —
-// status + pinned items + body text are the main content, timeline history
-// is secondary), anything else gets TaskDetailExecBody ("プロセスの観測窓" —
-// the status-group timeline stays the main content, via the existing tab
-// structure).
+// TaskDetail selects card or execution content within the same continuous
+// detail layout. Cards additionally expose commands and card-specific activity.
 templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, availableActions []string, errorMsg string, activeTab string, projectName string, cardSummary string, cardTL *CardTimelineView, childTree []ChildTreeNode, cmdOptions []CardCommandOption, cmdForm *CardCommandFormState, identities []apiwire.TaskIdentity, operationResults []*orchestrator.OperationResult) {
 	@Layout(task.Title, taskDetailBackURL(task)) {
 		if task.Type == orchestrator.TaskTypeCard {
@@ -2009,4 +1949,34 @@ templ TaskEditPage(task *orchestrator.Task, projects []*orchestrator.Project, er
 			</div>
 		</div>
 	}
+}
+
+// execChildTimelineRow keeps child state and navigation on the same rail as
+// every other event. Completion rows retain their historical status.
+templ execChildTimelineRow(event execChildHistoryEvent) {
+	<div class="timeline-row timeline-row-event timeline-row-child">
+		<time class="timeline-time">
+			if event.HasTime {
+				{ event.Time.Local().Format("15:04:05") }
+			} else {
+				unknown time
+			}
+		</time>
+		<span class="timeline-marker timeline-marker-action" aria-hidden="true"></span>
+		<div class="detail-children-item">
+			<div class="detail-children-head">
+				<span class={ taskStatusClass(string(event.Status)) }>{ string(event.Status) }</span>
+				if event.Kind == "Created" && event.Task.Exec != nil && event.Task.Exec.Behavior != "" {
+					<span class="badge badge-child-behavior">{ event.Task.Exec.Behavior }</span>
+				}
+				<a class="detail-children-title" href={ templ.SafeURL("/tasks/" + event.Task.ID) }>{ event.Kind }: { event.Task.Title }</a>
+				if event.QuestionID != "" {
+					<a href={ templ.SafeURL("/tasks/" + event.Task.ID + "/questions/" + event.QuestionID) } class="detail-children-ask"><span aria-hidden="true">⚠</span> question</a>
+				}
+				if event.MissingCompletion {
+					<span class="detail-children-hint">completion time unavailable</span>
+				}
+			</div>
+		</div>
+	</div>
 }

@@ -707,10 +707,6 @@ pre {
   overflow-wrap: anywhere;
 }
 
-.exec-child-history-label {
-  margin-top: var(--space-3);
-}
-
 .child-spec-detail {
   padding-top: var(--space-3);
 }
@@ -3204,4 +3200,14 @@ details[open] > summary {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+}
+
+/* Child titles remain readable on the shared history rail. */
+.timeline-row-child {
+  align-items: flex-start;
+}
+
+.timeline-row-child > .detail-children-item {
+  flex: 1;
+  min-width: 0;
 }

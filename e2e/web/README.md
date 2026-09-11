@@ -24,6 +24,16 @@ BOID_UI_FIXTURE_DIR="$boid_fixture_dir" node e2e/web/mobile-layout.cjs
 
 The mobile check covers 320, 375, 390, and 1024 pixel viewports at 100% and 200% text size. It writes a full-page 375 pixel screenshot to `/tmp/boid-ui-mobile-375.png`.
 
+To check the execution detail layout with the same viewport and text sizes:
+
+```sh
+boid_fixture_dir="$(mktemp -d)"
+BOID_UI_FIXTURE_DIR="$boid_fixture_dir" go test ./web/templates -run '^TestWriteMobile.*Fixture$' -count=1
+BOID_UI_FIXTURE_DIR="$boid_fixture_dir" node e2e/web/exec-layout.cjs
+```
+
+The execution check verifies disclosures, child history and question links, the bottom action bar, and horizontal overflow. It writes `exec-375.png` in the fixture directory.
+
 The Card creation check verifies workspace-scoped destinations and preserved form input:
 
 ```sh

@@ -809,11 +809,8 @@ func TestWebHandler_TaskDetail_Card_DescriptionShownInBody_NoTabNeeded(t *testin
 	}
 }
 
-// TestWebHandler_TaskDetail_Exec_DescriptionNotShownByDefault is the
-// execution-task counterpart: Description stays behind the existing
-// Description tab (unchanged for PR-1 — §3.4), so the default (Timeline)
-// view must NOT show it.
-func TestWebHandler_TaskDetail_Exec_DescriptionNotShownByDefault(t *testing.T) {
+// Execution descriptions use the same collapsed disclosure as cards.
+func TestWebHandler_TaskDetail_Exec_DescriptionDisclosure(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 		ID:          "task-1",
 		Type:        orchestrator.TaskTypeExecution,
@@ -833,8 +830,8 @@ func TestWebHandler_TaskDetail_Exec_DescriptionNotShownByDefault(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
 	}
-	if strings.Contains(w.Body.String(), "exec task description text") {
-		t.Errorf("exec detail's default (Timeline) view should not show Description, got: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), `class="card-description"`) || !strings.Contains(w.Body.String(), "exec task description text") {
+		t.Error("exec detail should include its description in a disclosure")
 	}
 }
 
@@ -1614,9 +1611,9 @@ func TestTaskDetail_CardVsExec_RenderDifferently(t *testing.T) {
 		t.Fatalf("status = (exec %d, card %d), want (200, 200)", execW.Code, cardW.Code)
 	}
 
-	// An execution task's detail page has tabs; a card's does not.
-	if !strings.Contains(execBody, `id="tabs"`) {
-		t.Error("execution task detail should render #tabs")
+	// Both detail pages use a continuous layout without tabs.
+	if strings.Contains(execBody, `id="tabs"`) {
+		t.Error("execution task detail should not render #tabs")
 	}
 	if strings.Contains(cardBody, `id="tabs"`) {
 		t.Error("card detail should NOT render #tabs (§7 罠1 — no tabs on the card layout)")

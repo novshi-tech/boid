@@ -74,3 +74,23 @@ func TestWriteMobileChildTimelineFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWriteMobileExecTimelineFixture(t *testing.T) {
+	dir := os.Getenv("BOID_UI_FIXTURE_DIR")
+	if dir == "" {
+		t.Skip("BOID_UI_FIXTURE_DIR is not set")
+	}
+	now := time.Now()
+	task := &orchestrator.Task{ID: "exec-mobile", Type: orchestrator.TaskTypeExecution, Title: "Task detail", ProjectID: "project", UpdatedAt: now, Status: orchestrator.TaskStatusExecuting, Description: "Task description", Exec: &orchestrator.ExecAttrs{Behavior: "implementation", Payload: []byte(`{"message":"payload"}`)}}
+	children := []ChildTreeNode{{Task: &orchestrator.Task{ID: "child-mobile", Title: "モバイルで子タスクの長い日本語タイトルを自然に折り返して表示するための確認", Status: orchestrator.TaskStatusAwaiting}, QuestionID: "question-mobile", CreatedAt: now, HasCreatedAt: true}}
+	var page bytes.Buffer
+	if err := TaskDetail(task, []timeline.StatusGroup{{Status: "executing", EnteredAt: now.Add(-time.Minute), HasEnteredAt: true}}, []string{"abort"}, "", "timeline", "project", "", nil, children, nil, nil, nil, nil).Render(context.Background(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "exec.html"), page.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
