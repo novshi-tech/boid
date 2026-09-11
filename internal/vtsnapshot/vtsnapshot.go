@@ -77,11 +77,15 @@ func Render(raw []byte, cols, rows int) ([]byte, error) {
 }
 
 func stripCompletedTitleOSC(raw []byte) []byte {
-	var out []byte
+	// Keep the output non-nil from the start. A nil output used to be treated
+	// as the "nothing removed" sentinel, which lost bytes after a title OSC at
+	// offset zero and returned raw (including the title) at the end.
+	out := make([]byte, 0, len(raw))
 	for i := 0; i < len(raw); {
 		if i+4 < len(raw) && raw[i] == 0x1B && raw[i+1] == ']' &&
 			(raw[i+2] == '0' || raw[i+2] == '1' || raw[i+2] == '2') && raw[i+3] == ';' {
 			end := i + 4
+			completed := false
 			utf8Remaining := 0
 			for end < len(raw) {
 				if utf8Remaining > 0 {
@@ -97,17 +101,23 @@ func stripCompletedTitleOSC(raw []byte) []byte {
 					utf8Remaining = 3
 				}
 				if raw[end] == 0x07 || raw[end] == 0x9C {
+					completed = true
 					break
 				}
 				if raw[end] == 0x1B && end+1 < len(raw) && raw[end+1] == '\\' {
+					completed = true
+					break
+				}
+				// CAN/SUB cancel the string. An ESC that is not ST starts a
+				// new escape sequence; neither case completes this OSC. Keep
+				// the bytes rather than swallowing intervening screen text up
+				// to a later BEL/ST.
+				if raw[end] == 0x18 || raw[end] == 0x1A || raw[end] == 0x1B {
 					break
 				}
 				end++
 			}
-			if end < len(raw) {
-				if out == nil {
-					out = append([]byte(nil), raw[:i]...)
-				}
+			if completed {
 				i = end + 1
 				if raw[end] == 0x1B {
 					i++
@@ -115,13 +125,8 @@ func stripCompletedTitleOSC(raw []byte) []byte {
 				continue
 			}
 		}
-		if out != nil {
-			out = append(out, raw[i])
-		}
+		out = append(out, raw[i])
 		i++
-	}
-	if out == nil {
-		return raw
 	}
 	return out
 }

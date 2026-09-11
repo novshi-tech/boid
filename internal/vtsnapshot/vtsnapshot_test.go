@@ -108,6 +108,58 @@ term.write(snapshot, () => term.write(suffix, () => {
 	}
 }
 
+func TestRender_TitleAtStartAndCancelledOSC(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skipf("vendored xterm regression test requires node: %v", err)
+	}
+	xtermPath, err := filepath.Abs("../../web/static/assets/xterm-5.x/xterm.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, raw, want string
+	}{
+		{"ascii-bel", "\x1b]0;TITLE\x07prompt> ", "prompt>"},
+		{"unicode-bel", "\x1b]0;日本語タイトル\x07prompt> ", "prompt>"},
+		{"ascii-st", "\x1b]0;TITLE\x1b\\prompt> ", "prompt>"},
+		{"consecutive", "\x1b]0;FIRST\x07\x1b]0;SECOND\x07prompt> ", "prompt>"},
+		{"cancel-can", "\x1b]0;discarded\x18visible\x07prompt> ", "visibleprompt>"},
+		{"cancel-sub", "\x1b]0;discarded\x1asurvives\x07prompt> ", "survivesprompt>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := mustRender(t, []byte(tc.raw), 80, 24)
+			if strings.Contains(string(snapshot), "TITLE") || strings.Contains(string(snapshot), "タイトル") || strings.Contains(string(snapshot), "FIRST") || strings.Contains(string(snapshot), "SECOND") {
+				t.Fatalf("title leaked into snapshot: %q", snapshot)
+			}
+			result := runXterm(t, node, xtermPath, titleReplayRunner, snapshot, nil)
+			if len(result.Data) != 0 {
+				t.Fatalf("onData = %q, want empty", result.Data)
+			}
+			if !strings.Contains(result.Screen, tc.want) {
+				t.Fatalf("screen = %q, want %q", result.Screen, tc.want)
+			}
+		})
+	}
+}
+
+const titleReplayRunner = `
+const { Terminal } = require(process.env.BOID_XTERM_JS);
+const snapshot = Buffer.from(process.argv[1], 'base64');
+const suffix = Buffer.from(process.argv[2], 'base64');
+const term = new Terminal({cols: 80, rows: 24, scrollback: 100});
+const data = [];
+term.onData(value => data.push(value));
+term.write(snapshot, () => term.write(suffix, () => {
+  const lines = [];
+  for (let row = 0; row < term.rows; row++) {
+    lines.push(term.buffer.active.getLine(row)?.translateToString(true) || '');
+  }
+  process.stdout.write(JSON.stringify({titles: [], data, screen: lines.join('\n')}));
+}));
+`
+
 func TestRender_UnicodeDoesNotDisableSnapshotCompaction(t *testing.T) {
 	raw := []byte(strings.Repeat("\x1b[H日本語の画面", 1000))
 	got := mustRender(t, raw, 80, 24)
