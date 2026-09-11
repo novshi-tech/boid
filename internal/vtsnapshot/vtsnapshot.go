@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/ansi/parser"
 	"github.com/charmbracelet/x/vt"
 )
 
@@ -79,6 +80,14 @@ func splitAtSafeBoundary(raw []byte) (prefix, tail []byte) {
 	p := ansi.NewParser()
 	last := 0
 	for i, b := range raw {
+		// ansi.Parser temporarily enters Utf8State for a rune, but after
+		// completing a rune inside an OSC/DCS string it returns to GroundState
+		// and loses the enclosing string state. Keep any non-ASCII byte that
+		// occurs outside ground state in the tail; this also keeps a split
+		// UTF-8 rune intact for the attaching terminal.
+		if p.State() != parser.GroundState && b >= 0x80 {
+			break
+		}
 		p.Advance(b)
 		if p.State() == 0 { // parser.GroundState
 			last = i + 1

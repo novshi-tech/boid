@@ -1,8 +1,13 @@
 package vtsnapshot
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +43,94 @@ func TestRender_PreservesIncompleteParserTail(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRender_ReplaysParserBoundaryInVendoredXterm exercises the actual client
+// parser. A snapshot may end at every byte of an OSC (including a split UTF-8
+// title); the rendered prefix and untouched tail must still compose into the
+// same title without painting the title text or producing input data.
+func TestRender_ReplaysParserBoundaryInVendoredXterm(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skipf("vendored xterm regression test requires node: %v", err)
+	}
+	xtermPath, err := filepath.Abs("../../web/static/assets/xterm-5.x/xterm.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(xtermPath); err != nil {
+		t.Fatal(err)
+	}
+
+	const runner = `
+const { Terminal } = require(process.env.BOID_XTERM_JS);
+const snapshot = Buffer.from(process.argv[1], 'base64');
+const suffix = Buffer.from(process.argv[2], 'base64');
+const term = new Terminal({cols: 80, rows: 24, scrollback: 100});
+const titles = [], data = [];
+term.onTitleChange(title => titles.push(title));
+term.onData(value => data.push(value));
+term.write(snapshot, () => term.write(suffix, () => {
+  const lines = [];
+  for (let row = 0; row < term.rows; row++) {
+    lines.push(term.buffer.active.getLine(row)?.translateToString(true) || '');
+  }
+  process.stdout.write(JSON.stringify({titles, data, screen: lines.join('\n')}));
+}));
+`
+	tests := []struct {
+		name, title, terminator string
+	}{
+		{"ascii-bel", "TEST TITLE", "\x07"},
+		{"ascii-st", "TEST TITLE", "\x1b\\"},
+		{"utf8-bel", "日本語タイトル", "\x07"},
+		{"utf8-st", "日本語タイトル", "\x1b\\"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sequence := []byte("\x1b]0;" + tc.title + tc.terminator)
+			for split := 0; split <= len(sequence); split++ {
+				raw := append([]byte("prompt> "), sequence[:split]...)
+				snapshot := mustRender(t, raw, 80, 24)
+				live := sequence[split:]
+				result := runXterm(t, node, xtermPath, runner, snapshot, live)
+				if len(result.Data) != 0 {
+					t.Fatalf("split %d: onData = %q, want empty", split, result.Data)
+				}
+				if len(live) != 0 && (len(result.Titles) == 0 || result.Titles[len(result.Titles)-1] != tc.title) {
+					t.Fatalf("split %d: titles = %q, want final title %q", split, result.Titles, tc.title)
+				}
+				if strings.Contains(result.Screen, tc.title) {
+					t.Fatalf("split %d: title %q leaked into screen", split, tc.title)
+				}
+			}
+		})
+	}
+}
+
+type xtermReplayResult struct {
+	Titles []string `json:"titles"`
+	Data   []string `json:"data"`
+	Screen string   `json:"screen"`
+}
+
+func runXterm(t *testing.T, node, xtermPath, runner string, snapshot, suffix []byte) xtermReplayResult {
+	t.Helper()
+	encode := func(value []byte) string { return base64.StdEncoding.EncodeToString(value) }
+	cmd := exec.Command(node, "-e", runner, encode(snapshot), encode(suffix))
+	cmd.Env = append(os.Environ(), "BOID_XTERM_JS="+xtermPath)
+	out, err := cmd.Output()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("xterm replay: %v: %s", err, exit.Stderr)
+		}
+		t.Fatalf("xterm replay: %v", err)
+	}
+	var result xtermReplayResult
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("decode xterm replay result %q: %v", out, err)
+	}
+	return result
 }
 
 // TestRender_ResolvesOverdrawnCells is the whole point of this package: a TUI

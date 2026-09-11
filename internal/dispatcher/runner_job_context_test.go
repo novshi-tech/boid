@@ -284,9 +284,11 @@ func TestDispatch_TracksJobContext_WorkspacePeerAdvertise(t *testing.T) {
 
 	gwURL := "http://10.0.2.2:9"
 	r := &dispatcher.Runner{
-		DB:          d.Conn,
-		Projects:    orchestrator.DBProjectCatalog{DB: d.Conn},
-		Backend:     &capturingSandboxBackend{},
+		DB:       d.Conn,
+		Projects: orchestrator.DBProjectCatalog{DB: d.Conn},
+		// Keep the runtime alive while this test reads JobContext; the
+		// capturing session exits immediately and races watchRuntime's cleanup.
+		Backend:     newStatefulBackend(),
 		BoidBinary:  "/boid",
 		GitGateway:  gitgateway.NewRegistry(),
 		GatewayURL:  &gwURL,
