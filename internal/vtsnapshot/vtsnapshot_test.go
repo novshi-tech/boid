@@ -20,6 +20,26 @@ func TestRender_Empty(t *testing.T) {
 	}
 }
 
+func TestRender_PreservesIncompleteParserTail(t *testing.T) {
+	for _, tc := range []struct {
+		name, prefix, tail string
+	}{
+		{"osc-bel", "prompt> \x1b]0;", "TEST TITLE"},
+		{"osc-st", "prompt> \x1b]0;TEST TITLE", "\x1b"},
+		{"csi", "prompt> \x1b[", "31"},
+		{"dcs", "prompt> \x1bP1;", "2;3+"},
+		{"utf8", "prompt> ", "\xe3\x81"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(tc.prefix + tc.tail)
+			got := mustRender(t, raw, 80, 24)
+			if !strings.HasSuffix(string(got), tc.tail) {
+				t.Fatalf("snapshot = %q, want original parser tail %q at end", got, tc.tail)
+			}
+		})
+	}
+}
+
 // TestRender_ResolvesOverdrawnCells is the whole point of this package: a TUI
 // paints the same cells over and over, and replaying that raw stream costs the
 // client every intermediate frame. The rendered snapshot must carry only the

@@ -62,8 +62,29 @@ func Render(raw []byte, cols, rows int) ([]byte, error) {
 		cols, rows = defaultCols, defaultRows
 	}
 
+	prefix, tail := splitAtSafeBoundary(raw)
 	emu := vt.NewEmulator(cols, rows)
-	return render(raw, emu)
+	out, err := render(prefix, emu)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, tail...), nil
+}
+
+// splitAtSafeBoundary keeps parser state that has not reached ground state in
+// the replay stream. This matters for strings, escape sequences, and split
+// UTF-8 runes: rendering only their prefix would make the next live bytes be
+// interpreted as ordinary text by the attaching terminal.
+func splitAtSafeBoundary(raw []byte) (prefix, tail []byte) {
+	p := ansi.NewParser()
+	last := 0
+	for i, b := range raw {
+		p.Advance(b)
+		if p.State() == 0 { // parser.GroundState
+			last = i + 1
+		}
+	}
+	return raw[:last], raw[last:]
 }
 
 func render(raw []byte, emu *vt.Emulator) (output []byte, err error) {

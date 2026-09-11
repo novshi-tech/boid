@@ -236,14 +236,16 @@ cols=80 で通すと綺麗に出るが、100/160/240/296 ではいずれも行�
 | `internal/vtsnapshot/` (新規) | `Render(raw, cols, rows)` — 旧 `renderTerminalSnapshot` を独立パッケージ化 (sqlite 非依存なので単体でテストできる) |
 | `internal/sandbox/backend/backend.go` | `RuntimeSnapshot{Raw, TTY, Geometry}` を追加し `SandboxSession.Subscribe` の第1返り値に |
 | `internal/dispatcher/container_backend.go` | `containerSession.geometry` を `Resize` で記録、`Subscribe` が `TTY`/`Geometry` を申告 |
-| `internal/api/ws_attach.go` | `resolveReplay` で三分岐 (reconnect splice / TTY = render / 非TTY = verbatim)、attach フレームに `rendered` |
+| `internal/api/ws_attach.go` | `resolveReplay` で三分岐 (reconnect splice / TTY = render / 非TTY = verbatim)、attach フレームに `rendered` と `snapshot_bytes` |
 | `internal/api/job_log_sse.go` | `snapshot.Raw` を verbatim (非対話ログは絶対にレンダリングしない) |
 | `web/static/boid-terminal.js` / `internal/client/client.go` | `rendered` で画面クリア |
 
 旧実装との差分で意図的に変えた点:
 
 - **offset 会計は raw transcript 基準のまま**。rendered を送るときも `attach.offset` は
-  `len(raw)` を返すので、クライアントの `?replay_offset` は従来どおり噛み合う。
+  `len(raw)` を返す。rendered payload の decoded 長は `snapshot_bytes` で別に通知し、
+  クライアントはそのバイト列を offset に加算しない。旧形式で長さが無い場合は、次回を
+  fresh attach に戻して raw offset の継ぎ足しをしない。
 - **再接続 (`replay_offset` 有効) はレンダリングしない**。クライアントは画面を持っている
   ので、欠けた raw tail を splice する方が小さく正確。
 - **CLI (`internal/client`) の画面クリアは `rendered` のときだけ**。Web UI は xterm を

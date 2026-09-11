@@ -423,7 +423,8 @@ type wsAttachServerMsg struct {
 	// replay that follows is a resolved screen dump rather than raw
 	// transcript bytes, and must be painted onto a cleared screen. See
 	// ws_attach.go's resolveReplay for when the server chooses it.
-	Rendered bool `json:"rendered,omitempty"`
+	Rendered      bool `json:"rendered,omitempty"`
+	SnapshotBytes int  `json:"snapshot_bytes,omitempty"`
 }
 
 // AttachJob opens a live interactive attach to jobID over WebSocket and
@@ -565,6 +566,9 @@ type attachState struct {
 	// stdinClosed records that stdin already hit EOF, so every subsequent
 	// connection re-announces it (the server tracks this per connection).
 	stdinClosed bool
+	// freshOnReconnect is set when a rendered attach from an older daemon did
+	// not advertise its payload size; raw offset accounting is then unsafe.
+	freshOnReconnect bool
 }
 
 // waitBeforeReconnect sleeps for d, returning early with true if stdin
@@ -661,9 +665,15 @@ func (p *stdinPump) stop() { close(p.stopped) }
 // needs.
 func (c *Client) attachOnce(ctx context.Context, st *attachState) (done bool, err error) {
 	url := c.baseURL + "/api/jobs/" + st.jobID + "/attach/ws"
-	if st.offset > 0 {
+	if st.offset > 0 && !st.freshOnReconnect {
 		url += "?replay_offset=" + strconv.FormatInt(st.offset, 10)
 	}
+	url += func() string {
+		if strings.Contains(url, "?") {
+			return "&snapshot_bytes=1"
+		}
+		return "?snapshot_bytes=1"
+	}()
 	// The dial gets its own bounded context (see attachDialTimeout); the
 	// established connection does NOT inherit it — net/http clears the
 	// request's canceler once it sees the protocol-switched response body,
@@ -701,7 +711,7 @@ func (c *Client) attachOnce(ctx context.Context, st *attachState) (done bool, er
 	}
 	outputCh := make(chan readResult, 1)
 	go func() {
-		offset, done, err := attachReadOutput(connCtx, conn, st.stdout, st.offset)
+		offset, done, err := attachReadOutput(connCtx, conn, st.stdout, st.offset, &st.freshOnReconnect)
 		outputCh <- readResult{offset: offset, done: done, err: err}
 	}()
 	// Every return path below goes through finish, so the reader goroutine
@@ -822,7 +832,8 @@ func attachDialError(resp *http.Response, err error) error {
 // when it reaps an idle connection). Only the latter is worth reconnecting
 // on, and conflating the two is precisely what left a dropped session
 // looking like a finished one before reconnect existed.
-func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Writer, offset int64) (newOffset int64, done bool, err error) {
+func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Writer, offset int64, freshOnReconnect *bool) (newOffset int64, done bool, err error) {
+	remainingSnapshot := 0
 	for {
 		_, raw, readErr := conn.Read(ctx)
 		if readErr != nil {
@@ -836,6 +847,10 @@ func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Write
 		switch msg.Type {
 		case "attach":
 			offset = msg.Offset
+			remainingSnapshot = msg.SnapshotBytes
+			if msg.Rendered && msg.SnapshotBytes == 0 && freshOnReconnect != nil {
+				*freshOnReconnect = true
+			}
 			if msg.Rendered {
 				// A rendered screen dump uses absolute positioning, so it
 				// must land on a cleared screen. ED 2 + CUP home rather
@@ -853,7 +868,14 @@ func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Write
 			if _, writeErr := stdout.Write(data); writeErr != nil {
 				return offset, true, writeErr
 			}
-			offset += int64(len(data))
+			if remainingSnapshot > 0 {
+				remainingSnapshot -= len(data)
+				if remainingSnapshot < 0 {
+					remainingSnapshot = 0
+				}
+			} else {
+				offset += int64(len(data))
+			}
 		case "exit":
 			// msg.Code is always 0 today — exit codes are surfaced via a
 			// separate REST call (cmd/exec.go's fetchExecExitCode), not
