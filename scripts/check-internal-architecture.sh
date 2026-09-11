@@ -35,6 +35,7 @@ current_allowed=(
   selfuser
   server
   skills
+  terminaltitle
   timeline
   version
   vtsnapshot
@@ -70,6 +71,7 @@ target_allowed=(
   selfuser
   server
   skills
+  terminaltitle
   timeline
   version
   vtsnapshot
