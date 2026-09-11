@@ -602,9 +602,9 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	errorMsg := r.URL.Query().Get("error")
 	timelineGroups := detailTimelineGroups(detail)
 
-	// A card detail page has no tabs, so there is nothing for an HX-Request
-	// tab-swap to target — a card always falls through to the full-page
-	// render below. Only an execution task's tab click takes this shortcut.
+	// Keep serving tab fragments for execution pages already open in an older
+	// client. Newly rendered detail pages use disclosures and a continuous
+	// timeline, so they no longer request these legacy tab swaps.
 	if r.Header.Get("HX-Request") == "true" && detail.Task.Type != orchestrator.TaskTypeCard {
 		childTree, childErr := h.execChildTree(detail.Task)
 		if childErr != nil {

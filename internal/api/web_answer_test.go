@@ -188,11 +188,8 @@ func TestWebHandler_TaskDetail_AwaitingShowsBanner(t *testing.T) {
 	if !strings.Contains(body, "/tasks/task-1/questions/qid-1") {
 		t.Errorf("banner should link to the Q&A page for the active question")
 	}
-	// The full question text and form should NOT appear inline on the task
-	// detail page anymore — they live on the dedicated /questions/{qid} page.
-	if strings.Contains(body, "What should we do?") {
-		t.Errorf("question text should not appear inline on task detail (moved to Q&A page)")
-	}
+	// The raw question payload remains available in the collapsed Payload
+	// disclosure; answering still belongs to the dedicated question page.
 	if strings.Contains(body, `name="answer"`) {
 		t.Errorf("answer textarea should not appear inline on task detail (moved to Q&A page)")
 	}
