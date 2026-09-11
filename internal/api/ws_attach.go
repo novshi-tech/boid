@@ -63,6 +63,9 @@ type wsServerMsg struct {
 	// applying it (a screen dump spliced onto whatever was already there
 	// would double the visible content). See sendAttach.
 	Rendered bool `json:"rendered,omitempty"`
+	// SnapshotBytes is the decoded size of a rendered replay payload. It is
+	// excluded from raw transcript offset accounting by capable clients.
+	SnapshotBytes int `json:"snapshot_bytes,omitempty"`
 }
 
 func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +98,14 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	replay, replayFrom, rendered := resolveReplay(snapshot, replayOffsetFromRequest(r))
-	if err := h.sendAttach(ctx, conn, replayFrom, rendered); err != nil {
+	// The payload length is an opt-in protocol extension. Keeping it off for
+	// legacy clients preserves the old attach frame shape and lets a capable
+	// client detect an old daemon unambiguously.
+	snapshotBytes := 0
+	if r.URL.Query().Get("snapshot_bytes") == "1" && rendered {
+		snapshotBytes = len(replay)
+	}
+	if err := h.sendAttach(ctx, conn, replayFrom, rendered, snapshotBytes); err != nil {
 		return
 	}
 	if err := h.sendOutput(ctx, conn, replay); err != nil {
@@ -410,8 +420,11 @@ func resolveReplayWithRenderer(snapshot dispatcher.RuntimeSnapshot, requestedOff
 // did not clear. That is a cosmetic duplication on first connect, not a
 // desync — offset accounting is unaffected — and it self-corrects on the
 // job's next full repaint.
-func (h *WSAttachHandler) sendAttach(ctx context.Context, conn *websocket.Conn, offset int, rendered bool) error {
-	msg := wsServerMsg{Type: "attach", Offset: offset, Rendered: rendered}
+func (h *WSAttachHandler) sendAttach(ctx context.Context, conn *websocket.Conn, offset int, rendered bool, snapshotBytes int) error {
+	if !rendered {
+		snapshotBytes = 0
+	}
+	msg := wsServerMsg{Type: "attach", Offset: offset, Rendered: rendered, SnapshotBytes: snapshotBytes}
 	b, _ := json.Marshal(msg)
 	return conn.Write(ctx, websocket.MessageText, b)
 }

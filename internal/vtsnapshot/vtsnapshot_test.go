@@ -1,8 +1,13 @@
 package vtsnapshot
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +23,183 @@ func TestRender_Empty(t *testing.T) {
 	if got := mustRender(t, []byte{}, 80, 24); got != nil {
 		t.Fatalf("Render(empty) = %q, want nil", got)
 	}
+}
+
+func TestRender_PreservesIncompleteParserTail(t *testing.T) {
+	for _, tc := range []struct {
+		name, prefix, tail string
+	}{
+		{"osc-bel", "prompt> \x1b]0;", "TEST TITLE"},
+		{"osc-st", "prompt> \x1b]0;TEST TITLE", "\x1b"},
+		{"csi", "prompt> \x1b[", "31"},
+		{"dcs", "prompt> \x1bP1;", "2;3+"},
+		{"utf8", "prompt> ", "\xe3\x81"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(tc.prefix + tc.tail)
+			got := mustRender(t, raw, 80, 24)
+			if !strings.HasSuffix(string(got), tc.tail) {
+				t.Fatalf("snapshot = %q, want original parser tail %q at end", got, tc.tail)
+			}
+		})
+	}
+}
+
+// TestRender_ReplaysParserBoundaryInVendoredXterm exercises the actual client
+// parser. A snapshot may end at every byte of an OSC (including a split UTF-8
+// title); the rendered prefix and untouched tail must still compose into the
+// same title without painting the title text or producing input data.
+func TestRender_ReplaysParserBoundaryInVendoredXterm(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skipf("vendored xterm regression test requires node: %v", err)
+	}
+	xtermPath, err := filepath.Abs("../../web/static/assets/xterm-5.x/xterm.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(xtermPath); err != nil {
+		t.Fatal(err)
+	}
+
+	const runner = `
+const { Terminal } = require(process.env.BOID_XTERM_JS);
+const snapshot = Buffer.from(process.argv[1], 'base64');
+const suffix = Buffer.from(process.argv[2], 'base64');
+const term = new Terminal({cols: 80, rows: 24, scrollback: 100});
+const titles = [], data = [];
+term.onTitleChange(title => titles.push(title));
+term.onData(value => data.push(value));
+term.write(snapshot, () => term.write(suffix, () => {
+  const lines = [];
+  for (let row = 0; row < term.rows; row++) {
+    lines.push(term.buffer.active.getLine(row)?.translateToString(true) || '');
+  }
+  process.stdout.write(JSON.stringify({titles, data, screen: lines.join('\n')}));
+}));
+`
+	tests := []struct {
+		name, title, terminator string
+	}{
+		{"ascii-bel", "TEST TITLE", "\x07"},
+		{"ascii-st", "TEST TITLE", "\x1b\\"},
+		{"utf8-bel", "日本語タイトル", "\x07"},
+		{"utf8-st", "日本語タイトル", "\x1b\\"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sequence := []byte("\x1b]0;" + tc.title + tc.terminator)
+			for split := 0; split <= len(sequence); split++ {
+				raw := append([]byte("prompt> "), sequence[:split]...)
+				snapshot := mustRender(t, raw, 80, 24)
+				live := sequence[split:]
+				result := runXterm(t, node, xtermPath, runner, snapshot, live)
+				if len(result.Data) != 0 {
+					t.Fatalf("split %d: onData = %q, want empty", split, result.Data)
+				}
+				if len(live) != 0 && (len(result.Titles) == 0 || result.Titles[len(result.Titles)-1] != tc.title) {
+					t.Fatalf("split %d: titles = %q, want final title %q", split, result.Titles, tc.title)
+				}
+				if strings.TrimRight(result.Screen, " \n") != "prompt>" {
+					t.Fatalf("split %d: screen = %q, want exactly prompt", split, result.Screen)
+				}
+			}
+		})
+	}
+}
+
+func TestRender_TitleAtStartAndCancelledOSC(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skipf("vendored xterm regression test requires node: %v", err)
+	}
+	xtermPath, err := filepath.Abs("../../web/static/assets/xterm-5.x/xterm.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, raw, want string
+	}{
+		{"ascii-bel", "\x1b]0;TITLE\x07prompt> ", "prompt>"},
+		{"unicode-bel", "\x1b]0;日本語タイトル\x07prompt> ", "prompt>"},
+		{"ascii-st", "\x1b]0;TITLE\x1b\\prompt> ", "prompt>"},
+		{"consecutive", "\x1b]0;FIRST\x07\x1b]0;SECOND\x07prompt> ", "prompt>"},
+		{"cancel-can", "\x1b]0;discarded\x18visible\x07prompt> ", "visibleprompt>"},
+		{"cancel-sub", "\x1b]0;discarded\x1asurvives\x07prompt> ", "survivesprompt>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := mustRender(t, []byte(tc.raw), 80, 24)
+			if strings.Contains(string(snapshot), "TITLE") || strings.Contains(string(snapshot), "タイトル") || strings.Contains(string(snapshot), "FIRST") || strings.Contains(string(snapshot), "SECOND") {
+				t.Fatalf("title leaked into snapshot: %q", snapshot)
+			}
+			result := runXterm(t, node, xtermPath, titleReplayRunner, snapshot, nil)
+			if len(result.Data) != 0 {
+				t.Fatalf("onData = %q, want empty", result.Data)
+			}
+			if !strings.Contains(result.Screen, tc.want) {
+				t.Fatalf("screen = %q, want %q", result.Screen, tc.want)
+			}
+		})
+	}
+}
+
+const titleReplayRunner = `
+const { Terminal } = require(process.env.BOID_XTERM_JS);
+const snapshot = Buffer.from(process.argv[1], 'base64');
+const suffix = Buffer.from(process.argv[2], 'base64');
+const term = new Terminal({cols: 80, rows: 24, scrollback: 100});
+const data = [];
+term.onData(value => data.push(value));
+term.write(snapshot, () => term.write(suffix, () => {
+  const lines = [];
+  for (let row = 0; row < term.rows; row++) {
+    lines.push(term.buffer.active.getLine(row)?.translateToString(true) || '');
+  }
+  process.stdout.write(JSON.stringify({titles: [], data, screen: lines.join('\n')}));
+}));
+`
+
+func TestRender_UnicodeDoesNotDisableSnapshotCompaction(t *testing.T) {
+	raw := []byte(strings.Repeat("\x1b[H日本語の画面", 1000))
+	got := mustRender(t, raw, 80, 24)
+	if len(got) >= 1000 {
+		t.Fatalf("Unicode transcript was not compacted: got %d bytes from %d", len(got), len(raw))
+	}
+
+	raw = []byte("\x1b]0;日本語タイトル\x07" + strings.Repeat("\x1b[H画面", 1000))
+	got = mustRender(t, raw, 80, 24)
+	if len(got) >= 1000 {
+		t.Fatalf("Unicode title transcript was not compacted: got %d bytes from %d", len(got), len(raw))
+	}
+	if strings.Contains(string(got), "日本語タイトル") {
+		t.Fatalf("completed title leaked into rendered snapshot: %q", got)
+	}
+}
+
+type xtermReplayResult struct {
+	Titles []string `json:"titles"`
+	Data   []string `json:"data"`
+	Screen string   `json:"screen"`
+}
+
+func runXterm(t *testing.T, node, xtermPath, runner string, snapshot, suffix []byte) xtermReplayResult {
+	t.Helper()
+	encode := func(value []byte) string { return base64.StdEncoding.EncodeToString(value) }
+	cmd := exec.Command(node, "-e", runner, encode(snapshot), encode(suffix))
+	cmd.Env = append(os.Environ(), "BOID_XTERM_JS="+xtermPath)
+	out, err := cmd.Output()
+	if err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("xterm replay: %v: %s", err, exit.Stderr)
+		}
+		t.Fatalf("xterm replay: %v", err)
+	}
+	var result xtermReplayResult
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("decode xterm replay result %q: %v", out, err)
+	}
+	return result
 }
 
 // TestRender_ResolvesOverdrawnCells is the whole point of this package: a TUI
