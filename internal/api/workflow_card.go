@@ -120,8 +120,8 @@ func parseChildAddedPayload(payload json.RawMessage) (*childAddedPayload, error)
 //
 // Enforces the card's single-work-slot invariant for this write port: a
 // genuinely NEW child id is rejected (409) while the slot is already
-// occupied (cardSlotOccupied — an open/specced JSON child, or a live
-// execution task row). A resend of an ALREADY-present id is left to
+// occupied (cardSpecSlotOccupied — an open/specced JSON child, or a live work
+// task row). A resend of an ALREADY-present id is left to
 // AddDetailChild's own idempotent no-op, matching every other
 // idempotent-by-id action in this file — it is not a new occupant.
 func applyChildAddedSideEffect(tx TxStore, taskID string, p *childAddedPayload) error {
@@ -170,23 +170,56 @@ func applyChildAddedSideEffect(tx TxStore, taskID string, p *childAddedPayload) 
 }
 
 // cardSpecSlotOccupied reports whether cardID's NEXT-STEP SPEC slot is taken:
-// a live execution task row under it, or an open/specced entry in
+// a live work task row under it, or an open/specced entry in
 // task_triage.detail.children. Must be read inside the same transaction as
 // the write it gates.
 //
 // This is the narrower of the two constraints in
 // docs/plans/card-next-step-and-timeline.md §3.2. The spec slot deliberately
 // coexists with the dialogue or judgment that produces the spec, so a
-// running card command must NOT close it — its own card_requests row stays
-// `attached` for its whole lifetime, and counting that here left the
-// judgment command unable to record any next step at all.
+// running card command must NOT close it. Since card-command continuations
+// became direct children of their cards, OpenChildCount alone can no longer
+// distinguish the command producing a spec from a work child consuming one.
+// An attached non-Go card_requests target identifies the former and is
+// excluded below; every other live child still occupies the spec slot.
 func cardSpecSlotOccupied(tx TxStore, cardID string) (bool, error) {
 	card, err := tx.GetTask(cardID)
 	if err != nil {
 		return false, err
 	}
 	if card.OpenChildCount > 0 {
-		return true, nil
+		children, err := tx.ListChildren(cardID)
+		if err != nil {
+			return false, err
+		}
+		requests, err := tx.ListCardRequestsByCard(cardID)
+		if err != nil {
+			return false, err
+		}
+		commandContinuations := make(map[string]bool)
+		for _, req := range requests {
+			if req.Status == orchestrator.CardRequestStatusAttached &&
+				req.CommandKey != orchestrator.CardRequestCommandKeyGo &&
+				req.TargetKind == orchestrator.CardRequestTargetKindTask && req.TargetID != "" {
+				commandContinuations[req.TargetID] = true
+			}
+		}
+		observedOpen := 0
+		for _, child := range children {
+			if orchestrator.IsTerminalStatus(child.Status) {
+				continue
+			}
+			observedOpen++
+			if !commandContinuations[child.ID] {
+				return true, nil
+			}
+		}
+		// OpenChildCount and ListChildren share the same transaction snapshot,
+		// so a short list indicates corrupt/inconsistent data. Fail closed rather
+		// than accidentally admitting a second work child.
+		if observedOpen < card.OpenChildCount {
+			return true, nil
+		}
 	}
 	tt, err := tx.GetTaskTriage(cardID)
 	if err != nil {
