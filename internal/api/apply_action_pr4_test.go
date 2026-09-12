@@ -403,6 +403,63 @@ func TestApplyAction_ChildAdded_AllowedWhileACardCommandHoldsTheExecutionSlot(t 
 	}
 }
 
+// TestApplyAction_ChildAdded_AllowedWhileCardCommandContinuationIsLive pins
+// the direct-child shape introduced when card-command continuations became
+// visible in the card hierarchy. The continuation itself is the judgment
+// producing this spec, so it must not make the card reject its own
+// child_added through OpenChildCount.
+func TestApplyAction_ChildAdded_AllowedWhileCardCommandContinuationIsLive(t *testing.T) {
+	card := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}, OpenChildCount: 1}
+	judge := &orchestrator.Task{ID: "judge-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", ParentID: card.ID, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "judge"}}
+	txStore := &recordingTxStore{
+		task: card,
+		listChildrenFn: func(parentID string) ([]*orchestrator.Task, error) {
+			return []*orchestrator.Task{judge}, nil
+		},
+		createdCardRequests: []*orchestrator.CardRequest{{
+			ID: "request-1", CardID: card.ID, CommandKey: "judge",
+			Status:     orchestrator.CardRequestStatusAttached,
+			TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: judge.ID,
+		}},
+	}
+	svc := newTriageWorkflowService(card, txStore)
+
+	if _, err := svc.ApplyAction(context.Background(), card.ID, ApplyActionRequest{
+		Type:    "child_added",
+		Payload: []byte(`{"id":"c1","title":"next step"}`),
+	}); err != nil {
+		t.Fatalf("child_added while its card-command continuation is live: %v", err)
+	}
+}
+
+// A Go request's target is the actual work child consuming the spec. It must
+// remain an occupant even though it is also an attached card_requests target.
+func TestApplyAction_ChildAdded_GoContinuationStillOccupiesSpecSlot(t *testing.T) {
+	card := &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Card: &orchestrator.CardAttrs{}, OpenChildCount: 1}
+	work := &orchestrator.Task{ID: "work-1", Type: orchestrator.TaskTypeExecution, ProjectID: "p1", ParentID: card.ID, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{Behavior: "implement"}}
+	txStore := &recordingTxStore{
+		task: card,
+		listChildrenFn: func(parentID string) ([]*orchestrator.Task, error) {
+			return []*orchestrator.Task{work}, nil
+		},
+		createdCardRequests: []*orchestrator.CardRequest{{
+			ID: "request-1", CardID: card.ID, CommandKey: orchestrator.CardRequestCommandKeyGo,
+			Status:     orchestrator.CardRequestStatusAttached,
+			TargetKind: orchestrator.CardRequestTargetKindTask, TargetID: work.ID,
+		}},
+	}
+	svc := newTriageWorkflowService(card, txStore)
+
+	_, err := svc.ApplyAction(context.Background(), card.ID, ApplyActionRequest{
+		Type:    "child_added",
+		Payload: []byte(`{"id":"c1","title":"second next step"}`),
+	})
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("child_added while Go work child is live = %v, want 409", err)
+	}
+}
+
 // TestApplyAction_ChildAdded_ResendingSameID_StaysIdempotent pins that a
 // resend of the SAME child id while it is still occupying the slot is the
 // pre-existing idempotent no-op, not a new rejection — the invariant gates

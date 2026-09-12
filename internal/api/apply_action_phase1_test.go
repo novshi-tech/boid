@@ -54,6 +54,9 @@ type recordingTxStore struct {
 	// countActiveCardRequests overrides CountActiveCardRequests's default
 	// zero return (occupied-by-card-request simulation).
 	countActiveCardRequests int
+	// listChildrenFn, when set, backs ListChildren. Most fixtures have no
+	// children and use the default empty result.
+	listChildrenFn func(parentID string) ([]*orchestrator.Task, error)
 	// createCardRequestErr, when set, is returned by CreateCardRequest
 	// instead of succeeding — used to simulate a slot already claimed
 	// (orchestrator.ErrCardRequestSlotOccupied) inside a transaction.
@@ -174,6 +177,9 @@ func (s *recordingTxStore) FindTaskByIdempotencyKey(projectID, parentID, idempot
 	return nil, nil
 }
 func (s *recordingTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
+	if s.listChildrenFn != nil {
+		return s.listChildrenFn(parentID)
+	}
 	return nil, nil
 }
 func (s *recordingTxStore) CreateAction(_ context.Context, action *orchestrator.Action) error {
