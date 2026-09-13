@@ -36,7 +36,7 @@ report モード (dry-run) で入力をそのまま残せるのも同じ形の�
 | `complete` | task_id, reason — 完了、を suggest (旧 `done`) |
 | `reopen` | task_id, reason — 再オープン、を suggest |
 | `drop` | task_id, reason — 取り下げ、を suggest |
-| `skip` | signals, reason |
+| `skip` | identity, signals, reason — task に未解決の新規候補だけ |
 
 `signals` (この呼び出しで処理済みにする event_key 群) は Sweep 発の呼び出し (`boid card
 context` が「card 文脈なし」を返すジョブ) では**どの verb でも必須**。書き込みが成功
@@ -203,7 +203,11 @@ _VERB_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "complete": (("task_id", "reason"), ()),
     "reopen": (("task_id", "reason"), ()),
     "drop": (("task_id", "reason"), ()),
-    "skip": (("signals", "reason"), ()),
+    # skip は「まだ task が無い新規候補」専用。identity を必須にして実行時にも
+    # resolve し直すことで、subagent が既存 card を新規候補と読み違えても signal だけを
+    # ack することはできない。sweep の対象組み立て後に別経路で link された競合も同じ
+    # ガードで拾う。
+    "skip": (("identity", "signals", "reason"), ()),
 }
 
 #: 旧語彙の短い互換窓。フィールド要件は改名後の verb (`start`/`complete`) と同一だが、
@@ -921,7 +925,45 @@ class Executor:
         return Result(task_id=task_id, changed=True, note=f"source_closed={closed}")
 
     def _do_skip(self, c: Mapping[str, object]) -> Result:
-        # 書き先の task が無い。記録だけが残る (それがこの verb の全部)。
+        """task に未解決の新規候補だけを見送る。
+
+        2026-09-12、既存 card の GitHub issue close を intake が「GitHub Issues 側で
+        管理済みの新規候補」と誤分類し、skip で signal だけを ack した。その結果
+        `noted` と後続 judge が起きず、complete 提案が失われた。instruction には以前から
+        「既存 card は note」とあったが、重要な不変条件を prompt 遵守だけに置かない。
+
+        identity は sweep の対象を作った時点でも解決済みだが、書く直前に引き直す。
+        これにより判断中の link 競合も、安全側（ack しない）へ倒せる。
+        """
+        identity = str(c["identity"])
+        resolved = self.cli.resolve_identity(identity)
+        if resolved is not None:
+            task_id, status = resolved
+            try:
+                view = self.cli.get_card(task_id)
+                project = str(view.get("project_id") or "")
+                status = str(view.get("status") or status)
+                own = self._own_project()
+            except Exception as exc:  # noqa: BLE001 - 帰属を確認できないなら ack しない
+                raise CommandError(
+                    f"skip: identity {identity!r} は task {task_id} に解決済みだが、"
+                    f"対象 project を確認できない ({exc})。signal は ack しません"
+                ) from exc
+
+            # 別 project の task はこのメタプロジェクトから記録できないため、従来どおり
+            # skip が出口になる。aborted も detect が通常は機械的に screen するが、
+            # resolve と write の間の race に備えてここでは許可する。
+            if (project and own and project != own) or status in _NO_WRITE_STATUSES:
+                return Result(changed=False, note=str(c["reason"]))
+
+            next_verb = "reopen" if status in _TERMINAL_ALLOWED_VERBS else "note"
+            raise CommandError(
+                f"skip: identity {identity!r} は既存 card {task_id} (status={status or 'unknown'}) "
+                f"に解決済みです。`skip` は新規候補専用なので、`{next_verb}` で既存 card に"
+                "続報を渡してください。signal は ack していません"
+            )
+
+        # 書き先の task が無い新規候補。記録だけが残る (それがこの verb の全部)。
         return Result(changed=False, note=str(c["reason"]))
 
 

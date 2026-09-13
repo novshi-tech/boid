@@ -203,7 +203,8 @@ def instruction(targets: Sequence[Target], *, intake_skill: str, write_command: 
         f"`{intake_skill}` の手順で仕分ける。",
         "",
         "**この巡の出口は `capture` / `link` / `note` / `skip` の 4 つだけ。**",
-        "既に card がある対象は `note` で「何が新しいか」を渡す。",
+        "task id のある対象は既に card がある対象なので、最初に card を読み、`skip` せず `note` で「何が新しいか」を渡す。",
+        "`skip` は **まだ task の無い新規候補だけ**で、payload にその identity も渡す。",
         "`capture` / `link` / `note` には、対象の identity に対応する外部 URL を `url` として渡す。",
         "`note` で URL を補完するときは `identity` も渡す。複数リソースを混同しないこと。",
         "表示名が分かれば `display_name` も渡せる。URL・表示名が不明なら省略し、空文字で既存値を消さない。",
@@ -231,6 +232,7 @@ def instruction(targets: Sequence[Target], *, intake_skill: str, write_command: 
         "",
         f"記録は `{write_command} <verb> < payload.json` を通す。",
         "`signals` には上に並んでいる event_key をそのまま渡すこと。",
+        "`skip` には対象行の `identity` も渡すこと。identity が既存 card に解決されたら CLI が拒否する。",
         "**書き込みが成功すると、その event_key の signal も自動で ack される** ——",
         "ack 自体は subagent が意識しなくてよい。",
     ]

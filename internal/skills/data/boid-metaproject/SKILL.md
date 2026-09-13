@@ -248,19 +248,24 @@ handled, so both skills should be about judgment and nothing else.
 **The intake skill** receives one target — a card id, or a bare identity for
 something not yet captured — plus the event keys that are new about it. Tell it:
 
-- **what to skip.** Low-signal sources need a stated bar, or every notification
-  becomes a card. A skip is a real answer and it has to be recorded with a
-  reason, or the next round re-decides the same candidate.
+- **to classify the target before reading it.** A target with a card id must read
+  that card first and stay on the existing-card path; the source content cannot
+  turn it back into a new candidate. A bare identity is the only shape that can
+  reach `skip`.
+- **what new candidates to skip.** Low-signal sources need a stated bar, or every
+  notification becomes a card. A skip carries the candidate identity and a
+  reason. The writer resolves that identity again and refuses to ack if it now
+  belongs to an existing card.
 - **what deserves a card at all.** The usual bar is whether a card takes work off
   the person's hands, not whether the event is interesting.
 - **how to tell a follow-up from a new thing.** That a mail thread, an issue and
   an existing card are the same matter is not mechanically derivable; it is the
   one read only a judgment can do.
 - **what is new about a card it already knows.** A target that arrives as a card
-  id is handed on with a `note` saying what happened. This is the steady state,
-  not the edge case, and it is the only outlet that carries a follow-up forward:
-  intake has no "read it, wrote nothing" verb, precisely because a follow-up that
-  writes nothing to the card starts no judgment.
+  id must first be read, then handed on with a `note` saying what happened. This
+  is the steady state, not the edge case, and it is the only outlet that carries
+  a follow-up forward: intake has no "read it, wrote nothing" verb, precisely
+  because a follow-up that writes nothing to the card starts no judgment.
 
 For linked resources, pass the Pack signal's external `url` with its matching
 `identity` to `capture` or `link`. A follow-up `note` can also include `identity`

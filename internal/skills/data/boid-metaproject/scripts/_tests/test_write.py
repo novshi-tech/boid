@@ -85,6 +85,11 @@ class RequiredFieldTest(unittest.TestCase):
             ok("note", body="b")
         self.assertIn("task_id", str(caught.exception))
 
+    def test_skip_requires_identity_so_existing_cards_can_be_guarded(self):
+        with self.assertRaises(CommandError) as caught:
+            ok("skip", reason="起票に値しない")
+        self.assertIn("identity", str(caught.exception))
+
     def test_capture_needs_no_task_id(self):
         """まだ task が無い —— `resolve-or-capture` で立てるのがこの verb (S-15)。"""
         self.assertEqual(
@@ -154,7 +159,7 @@ class SignalsTest(unittest.TestCase):
             ("go", {"task_id": "t1", "reason": "r"}),
             ("complete", {"task_id": "t1", "reason": "r"}),
             ("reopen", {"task_id": "t1", "reason": "r"}),
-            ("skip", {"reason": "r"}),
+            ("skip", {"identity": "jira:NEW-1", "reason": "r"}),
         ):
             with self.assertRaises(CommandError, msg=verb) as caught:
                 validate(verb, dict(fields))
