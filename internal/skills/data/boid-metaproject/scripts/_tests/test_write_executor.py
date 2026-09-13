@@ -21,7 +21,7 @@ class FakeCLI:
 
     def __init__(
         self, *, view=None, attrs=None, created=True, projects=None, behaviors=None, readonly="false",
-        card_ctx=None,
+        card_ctx=None, identities=None,
     ) -> None:
         self.calls: list[tuple] = []
         # **既定は `parked`** (2026-08-25、PR-K レビュー MEDIUM 3 — 以前は v1 の legacy
@@ -45,6 +45,8 @@ class FakeCLI:
         #: `boid card context` の応答。既定は `None` (= card 文脈が無い、既存 Sweep 相当)
         #: —— card 文脈に関心の無い既存テストの大半をそちらに固定する。
         self._card_ctx = card_ctx
+        # identity -> (task_id, status)。既定は未解決の新規候補。
+        self._identities = identities or {}
 
     # -- 読み --
     def card_context(self):
@@ -66,6 +68,10 @@ class FakeCLI:
     def resolve_project(self, name_or_id):
         self.calls.append(("resolve_project", name_or_id))
         return self._projects.get(name_or_id, name_or_id)
+
+    def resolve_identity(self, identity):
+        self.calls.append(("resolve_identity", identity))
+        return self._identities.get(identity)
 
     def behaviors_of(self, project_id):
         self.calls.append(("behaviors_of", project_id))
@@ -141,7 +147,7 @@ class RecordTest(unittest.TestCase):
         """見送った候補には task が無い —— どのみち記録は常に sweep task 自身へ書く
         (§5.3 S-11 後半)。"""
         cli = FakeCLI()
-        run("skip", cli, reason="自分の発言だけ")
+        run("skip", cli, identity="jira:NEW-1", reason="自分の発言だけ")
         (_, task_id, message), = cli.named("notify_progress")
         self.assertEqual(task_id, "sweep-1")
         self.assertIn("skipped", message)
@@ -149,7 +155,7 @@ class RecordTest(unittest.TestCase):
 
     def test_the_reason_rides_along_as_the_note(self):
         cli = FakeCLI()
-        run("skip", cli, reason="自分の発言だけ")
+        run("skip", cli, identity="jira:NEW-1", reason="自分の発言だけ")
         (_, _, message), = cli.named("notify_progress")
         self.assertIn("自分の発言だけ", message)
 
@@ -176,7 +182,7 @@ class AckTest(unittest.TestCase):
     def test_a_skip_verb_also_acks(self):
         """task を持たない見送りも「判断を書いた」ことに変わりない。"""
         cli = FakeCLI()
-        run("skip", cli, reason="自分の発言だけ")
+        run("skip", cli, identity="jira:NEW-1", reason="自分の発言だけ")
         (_, ids), = cli.named("ack_signals")
         self.assertEqual(ids, ("a1",))
 
@@ -220,7 +226,7 @@ class CrashSafetyTest(unittest.TestCase):
     def test_skip_does_not_ack_if_recording_fails(self):
         cli = self.CrashingCLI()
         with self.assertRaises(RuntimeError):
-            run("skip", cli, reason="自分の発言だけ")
+            run("skip", cli, identity="jira:NEW-1", reason="自分の発言だけ")
         self.assertFalse(cli.wrote("ack_signals"))
 
     def test_capture_does_not_ack_if_recording_fails(self):
@@ -1204,5 +1210,70 @@ class TerminalTaskGuardTest(unittest.TestCase):
     def test_a_verb_without_a_task_is_untouched(self):
         """`skip` は task を持たない —— 問う相手が居ない。"""
         cli = self.cli_for(status="done")
-        run("skip", cli, reason="起票に値しない")
+        run("skip", cli, identity="jira:NEW-1", reason="起票に値しない")
         self.assertTrue(cli.wrote("notify_progress"))
+
+
+class SkipTargetGuardTest(unittest.TestCase):
+    """skip は未解決の新規候補専用。既存 card の signal を無言で失わない。"""
+
+    def test_an_unresolved_identity_can_be_skipped(self):
+        cli = FakeCLI()
+        run("skip", cli, identity="jira:NEW-1", reason="起票に値しない")
+        self.assertTrue(cli.wrote("notify_progress"))
+        self.assertTrue(cli.wrote("ack_signals"))
+
+    def test_an_active_card_identity_is_refused_without_ack(self):
+        cli = FakeCLI(
+            view={"task_id": "card-1", "status": "working", "project_id": "own-project"},
+            identities={"github:org/repo#1": ("card-1", "working")},
+        )
+        cli._sweep_project = "own-project"
+
+        with self.assertRaises(CommandError) as caught:
+            run("skip", cli, identity="github:org/repo#1", reason="外で完了済み")
+
+        message = str(caught.exception)
+        self.assertIn("card-1", message)
+        self.assertIn("note", message)
+        self.assertFalse(cli.wrote("notify_progress"))
+        self.assertFalse(cli.wrote("ack_signals"))
+
+    def test_a_terminal_card_identity_points_to_reopen_without_ack(self):
+        cli = FakeCLI(
+            view={"task_id": "card-1", "status": "done", "project_id": "own-project"},
+            identities={"github:org/repo#1": ("card-1", "done")},
+        )
+        cli._sweep_project = "own-project"
+
+        with self.assertRaises(CommandError) as caught:
+            run("skip", cli, identity="github:org/repo#1", reason="続報なし")
+
+        self.assertIn("reopen", str(caught.exception))
+        self.assertFalse(cli.wrote("ack_signals"))
+
+    def test_another_projects_identity_can_still_be_skipped(self):
+        cli = FakeCLI(
+            view={"task_id": "foreign-1", "status": "working", "project_id": "other-project"},
+            identities={"jira:X-1": ("foreign-1", "working")},
+        )
+        cli._sweep_project = "own-project"
+
+        run("skip", cli, identity="jira:X-1", reason="別 project で管理")
+
+        self.assertTrue(cli.wrote("notify_progress"))
+        self.assertTrue(cli.wrote("ack_signals"))
+
+    def test_an_unreadable_resolved_card_fails_closed_without_ack(self):
+        class UnreadableCard(FakeCLI):
+            def get_card(self, task_id):
+                raise RuntimeError("card read failed")
+
+        cli = UnreadableCard(identities={"jira:X-1": ("card-1", "working")})
+
+        with self.assertRaises(CommandError) as caught:
+            run("skip", cli, identity="jira:X-1", reason="起票に値しない")
+
+        self.assertIn("card read failed", str(caught.exception))
+        self.assertFalse(cli.wrote("notify_progress"))
+        self.assertFalse(cli.wrote("ack_signals"))

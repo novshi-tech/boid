@@ -377,6 +377,21 @@ class IntakeScopeTest(unittest.TestCase):
         self.assertEqual(len(lines), 1, f"card 付き対象の出口を言う行が 1 行でない: {lines}")
         self.assertIn("note", lines[0])
 
+    def test_the_round_limits_skip_to_a_taskless_candidate(self):
+        cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
+        main(["--intake-skill", "/intake"], cli=cli, stdout=io.StringIO())
+        (_call, _task, description), = cli.named("update_description")
+        lines = [line for line in description.splitlines() if "`skip` は" in line]
+        self.assertEqual(len(lines), 1, f"skip の対象を限定する行が 1 行でない: {lines}")
+        self.assertIn("新規候補", lines[0])
+        self.assertIn("identity", lines[0])
+
+    def test_the_round_requires_identity_for_skip(self):
+        cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
+        main(["--intake-skill", "/intake"], cli=cli, stdout=io.StringIO())
+        (_call, _task, description), = cli.named("update_description")
+        self.assertIn("`skip` には対象行の `identity` も渡す", description)
+
 
 class MainTest(unittest.TestCase):
     def test_updates_its_own_description_with_the_instruction(self):
