@@ -297,97 +297,66 @@ func TestBuildCardActivityStates_NeitherAxisActive_CardAbsentFromResult(t *testi
 	}
 }
 
-// --- render-level pin: the activity badges must actually reach the HTML ---
-
-func TestTaskListRowMovement_CardActivity_RendersBothBadges(t *testing.T) {
-	row := ListRow{
-		Task:     &orchestrator.Task{ID: "t-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking},
-		Activity: CardActivityState{WorkLabel: "Running", CommandLabel: "Discuss: Launching"},
-	}
-	var buf bytes.Buffer
-	if err := taskListRowMovement(row).Render(context.Background(), &buf); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	html := buf.String()
-	if !strings.Contains(html, "Running") {
-		t.Errorf("expected the work activity label, got: %s", html)
-	}
-	if !strings.Contains(html, "Discuss: Launching") {
-		t.Errorf("expected the command activity label, got: %s", html)
-	}
-}
-
-func TestTaskListRowMovement_ExecTask_NeverRendersActivityBadges(t *testing.T) {
-	row := ListRow{
-		Task:     &orchestrator.Task{ID: "t-1", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{}},
-		Activity: CardActivityState{WorkLabel: "Running", CommandLabel: "Discuss: Launching"},
-	}
-	var buf bytes.Buffer
-	if err := taskListRowMovement(row).Render(context.Background(), &buf); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	if html := buf.String(); strings.Contains(html, "list-row-activity") {
-		t.Errorf("an execution row must never render a card activity badge, got: %s", html)
-	}
-}
-
-// The list-row-line3 container clamps to 2 lines and hides overflow (CSS),
-// so a badge appended AFTER a long suggestion reason/summary can be clipped
-// out of view. Activity badges must render first.
-func TestTaskListRowMovement_CardActivity_RendersBeforeStatusContent(t *testing.T) {
-	row := ListRow{
-		Task:       &orchestrator.Task{ID: "t-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking},
-		Suggestion: orchestrator.Suggestion{Verb: "go", Reason: "children specced"},
-		Activity:   CardActivityState{WorkLabel: "Ready to run", CommandLabel: "Discuss: Launching"},
-	}
-	var buf bytes.Buffer
-	if err := taskListRowMovement(row).Render(context.Background(), &buf); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	html := buf.String()
-	activityIdx := strings.Index(html, "list-row-activity")
-	reasonIdx := strings.Index(html, "children specced")
-	if activityIdx == -1 || reasonIdx == -1 {
-		t.Fatalf("expected both the activity badge and the suggestion reason in the output, got: %s", html)
-	}
-	if activityIdx > reasonIdx {
-		t.Errorf("activity badges must render before the status/suggestion content, got: %s", html)
+// Card list execution state is independent of the detail activity badges.
+func TestTaskListRow_ExecutionBadge(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		state       orchestrator.CardExecutionState
+		unavailable bool
+		want        string
+		absent      string
+	}{
+		{name: "idle", absent: "list-row-execution"},
+		{name: "Go", state: orchestrator.CardExecutionState{Occupied: true}, want: "稼働中", absent: "__go__"},
+		{name: "Discuss", state: orchestrator.CardExecutionState{Occupied: true, CommandLabel: "Discuss"}, want: "Discuss", absent: "入力待ち"},
+		{name: "awaiting wins", state: orchestrator.CardExecutionState{Occupied: true, NeedsInput: true, CommandLabel: "Discuss"}, want: "入力待ち", absent: "稼働中"},
+		{name: "awaiting without slot", state: orchestrator.CardExecutionState{NeedsInput: true}, want: "入力待ち", absent: "稼働中"},
+		{name: "read failure", unavailable: true, want: "状態を取得できません", absent: "稼働中"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			row := ListRow{
+				Task:     &orchestrator.Task{ID: "card", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusWorking},
+				Activity: tt.state, ActivityUnavailable: tt.unavailable,
+				Summary: strings.Repeat("長いサマリー", 100),
+			}
+			var buf bytes.Buffer
+			if err := taskListRow(row).Render(context.Background(), &buf); err != nil {
+				t.Fatal(err)
+			}
+			html := buf.String()
+			if tt.want != "" && !strings.Contains(html, tt.want) {
+				t.Fatalf("missing %q: %s", tt.want, html)
+			}
+			if tt.absent != "" && strings.Contains(html, tt.absent) {
+				t.Fatalf("unexpected %q: %s", tt.absent, html)
+			}
+			if tt.want != "" && strings.Index(html, "list-row-execution") > strings.Index(html, "list-row-line3") {
+				t.Fatal("execution state must be outside the clamped summary line")
+			}
+		})
 	}
 }
 
-func TestTaskListRowMovement_CardNoActivity_RendersNoBadges(t *testing.T) {
+func TestTaskListRow_ExecTaskNeverRendersCardExecutionBadge(t *testing.T) {
 	row := ListRow{
-		Task: &orchestrator.Task{ID: "t-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked},
+		Task:     &orchestrator.Task{ID: "exec", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusExecuting, Exec: &orchestrator.ExecAttrs{}},
+		Activity: orchestrator.CardExecutionState{Occupied: true},
 	}
 	var buf bytes.Buffer
-	if err := taskListRowMovement(row).Render(context.Background(), &buf); err != nil {
-		t.Fatalf("render: %v", err)
+	if err := taskListRow(row).Render(context.Background(), &buf); err != nil {
+		t.Fatal(err)
 	}
-	if html := buf.String(); strings.Contains(html, "list-row-activity") {
-		t.Errorf("a card with no active work child/command must render no activity badge, got: %s", html)
+	if strings.Contains(buf.String(), "list-row-execution") {
+		t.Fatal("execution task rendered a card badge")
 	}
 }
-
-// --- BuildListRows attaches Activity per task id ---
 
 func TestBuildListRows_AttachesActivityByTaskID(t *testing.T) {
-	tasks := []*orchestrator.Task{{ID: "t-1", Type: orchestrator.TaskTypeCard, ProjectID: "proj-1"}}
-	activity := map[string]CardActivityState{"t-1": {WorkLabel: "Draft"}}
-
-	rows := BuildListRows(tasks, nil, nil, activity)
-	if len(rows) != 1 {
-		t.Fatalf("len(rows) = %d, want 1", len(rows))
-	}
-	if rows[0].Activity.WorkLabel != "Draft" {
-		t.Errorf("Activity = %+v, want WorkLabel=Draft", rows[0].Activity)
-	}
-}
-
-func TestBuildListRows_NilActivityMap_ZeroValue(t *testing.T) {
-	tasks := []*orchestrator.Task{{ID: "t-1", ProjectID: "proj-1"}}
-	rows := BuildListRows(tasks, nil, nil, nil)
-	if len(rows) != 1 || rows[0].Activity != (CardActivityState{}) {
-		t.Errorf("Activity = %+v, want zero value", rows[0].Activity)
+	tasks := []*orchestrator.Task{{ID: "t-1", Type: orchestrator.TaskTypeCard}, {ID: "t-2", Type: orchestrator.TaskTypeCard}}
+	state := orchestrator.CardExecutionState{Occupied: true, NeedsInput: true}
+	rows := BuildListRows(tasks, nil, nil, map[string]orchestrator.CardExecutionState{"t-1": state})
+	if len(rows) != 2 || rows[0].Activity != state || rows[1].Activity != (orchestrator.CardExecutionState{}) {
+		t.Fatalf("incorrect activity mapping: %+v", rows)
 	}
 }
 

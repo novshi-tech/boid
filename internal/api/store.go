@@ -353,13 +353,12 @@ type CardTimelineStore interface {
 	CardPinnedItems(cardID string) ([]timeline.CardItem, error)
 }
 
-// CardActivityStore backs the task list's per-row activity state: two
-// batched lookups (card_requests, tasks.status) kept separate from
-// CardStore since they read different tables for a list-rendering-specific
-// purpose. Both methods must resolve their entire input in ONE query each
-// (chunked only past a SQL variable ceiling) — adding rows to a page must
-// never add queries.
+// CardActivityStore backs list execution state and detail activity. Reads
+// are batched (chunked only past a SQL variable ceiling).
 type CardActivityStore interface {
+	// CardExecutionStatesByIDs resolves slot occupancy and input requests
+	// across all descendants in one batched read for the card list.
+	CardExecutionStatesByIDs(cardIDs []string) (map[string]orchestrator.CardExecutionState, error)
 	// ActiveCardRequestsByCardIDs returns, for each id in cardIDs with a
 	// currently queued/launching/attached row, the single highest-priority
 	// one (orchestrator.PickActiveCardRequest chooses attached > launching >

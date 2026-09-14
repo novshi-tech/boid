@@ -92,84 +92,6 @@ func TestTriageSummary_BadTopLevelStillReadsAttrs(t *testing.T) {
 	}
 }
 
-// --- childRollupLabel ---
-//
-// Pins §3.5's row-2 child rollup shape (task_list_row.templ's own doc
-// comment): "子 N" always when N>0, "進行 M"/"完了 M" mutually exclusive,
-// "⚠ K" appended regardless. Previously untested — a mutation that always
-// returns "" passed `go test ./web/...` green (memory:
-// [[next-session-webui-detail-list-impl]] follow-up 1, N1).
-
-func TestChildRollupLabel_NoChildren_ReturnsEmpty(t *testing.T) {
-	task := &orchestrator.Task{TotalChildCount: 0}
-	if got := childRollupLabel(task); got != "" {
-		t.Errorf("childRollupLabel(no children) = %q, want empty", got)
-	}
-}
-
-func TestChildRollupLabel_InProgress(t *testing.T) {
-	task := &orchestrator.Task{TotalChildCount: 3, OpenChildCount: 2}
-	want := "子 3 · 進行 2"
-	if got := childRollupLabel(task); got != want {
-		t.Errorf("childRollupLabel = %q, want %q", got, want)
-	}
-}
-
-func TestChildRollupLabel_AllDoneNoneInProgress(t *testing.T) {
-	task := &orchestrator.Task{TotalChildCount: 2, OpenChildCount: 0, DoneChildCount: 2}
-	want := "子 2 · 完了 2"
-	if got := childRollupLabel(task); got != want {
-		t.Errorf("childRollupLabel = %q, want %q", got, want)
-	}
-}
-
-func TestChildRollupLabel_NoneInProgressNoneDone_OnlyCount(t *testing.T) {
-	// e.g. every child aborted: no in-progress, nothing done either — just the
-	// bare count, no 進行/完了 segment.
-	task := &orchestrator.Task{TotalChildCount: 1, OpenChildCount: 0, DoneChildCount: 0, AbortedChildCount: 1}
-	want := "子 1"
-	if got := childRollupLabel(task); got != want {
-		t.Errorf("childRollupLabel = %q, want %q", got, want)
-	}
-}
-
-// §2.4's gap this rollup closes: awaiting is always surfaced, on top of
-// whichever progress/done segment applies.
-func TestChildRollupLabel_AwaitingAppendedOnTopOfInProgress(t *testing.T) {
-	task := &orchestrator.Task{TotalChildCount: 4, OpenChildCount: 3, AwaitingChildCount: 1}
-	want := "子 4 · 進行 2 · ⚠ 1"
-	if got := childRollupLabel(task); got != want {
-		t.Errorf("childRollupLabel = %q, want %q", got, want)
-	}
-}
-
-func TestChildRollupLabel_AwaitingAppendedOnTopOfDone(t *testing.T) {
-	task := &orchestrator.Task{TotalChildCount: 2, OpenChildCount: 1, AwaitingChildCount: 1, DoneChildCount: 1}
-	// inProgress = OpenChildCount - AwaitingChildCount = 0, so it falls to the
-	// done branch even though OpenChildCount > 0.
-	want := "子 2 · 完了 1 · ⚠ 1"
-	if got := childRollupLabel(task); got != want {
-		t.Errorf("childRollupLabel = %q, want %q", got, want)
-	}
-}
-
-// Defense-in-depth: OpenChildCount should never be less than
-// AwaitingChildCount in practice, but the function clamps rather than
-// rendering a negative "進行 -1".
-func TestChildRollupLabel_InProgressNeverNegative(t *testing.T) {
-	task := &orchestrator.Task{TotalChildCount: 1, OpenChildCount: 0, AwaitingChildCount: 1}
-	got := childRollupLabel(task)
-	if strings.Contains(got, "進行 -") {
-		t.Errorf("childRollupLabel must not render a negative 進行 count, got %q", got)
-	}
-	want := "子 1 · ⚠ 1"
-	if got != want {
-		t.Errorf("childRollupLabel = %q, want %q", got, want)
-	}
-}
-
-// --- relativeTimeLabel ---
-
 func TestRelativeTimeLabel_JustNow(t *testing.T) {
 	if got := relativeTimeLabel(time.Now().Add(-10 * time.Second)); got != "たった今" {
 		t.Errorf("relativeTimeLabel(10s ago) = %q, want たった今", got)
@@ -315,7 +237,7 @@ func TestBuildListRows_PreservesInputOrder(t *testing.T) {
 // --- render-level pins: the rollup and the summary fallback must actually
 // reach the HTML, not just the Go struct. ---
 
-func TestTaskListRow_ChildRollup_RendersInLine2(t *testing.T) {
+func TestTaskListRow_ChildCountsAreNotDisplayed(t *testing.T) {
 	row := ListRow{Task: &orchestrator.Task{
 		ID: "t-1", Title: "parent task", Status: orchestrator.TaskStatusExecuting,
 		Exec: &orchestrator.ExecAttrs{}, TotalChildCount: 3, OpenChildCount: 2,
@@ -326,8 +248,8 @@ func TestTaskListRow_ChildRollup_RendersInLine2(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
-	if !strings.Contains(html, "子 3") || !strings.Contains(html, "進行 2") {
-		t.Errorf("expected the child rollup in the rendered row, got: %s", html)
+	if strings.Contains(html, "子 3") || strings.Contains(html, "進行 2") || strings.Contains(html, "list-row-rollup") {
+		t.Errorf("child counts must not appear in the rendered row, got: %s", html)
 	}
 }
 
