@@ -1,0 +1,31 @@
+name: Race detector
+
+on:
+  schedule:
+    # Daily at 03:17 JST (18:17 UTC), away from the top-of-hour queue.
+    # Scheduled workflows test the default branch (main).
+    - cron: '17 18 * * *'
+  # Select a PR branch in Run workflow when changing concurrent code.
+  workflow_dispatch:
+  # Release CI calls this on the same commit as the release tag.
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  race:
+    name: Race detector
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests with race detector
+        run: go test -race ./...

@@ -11,6 +11,9 @@ go test -race ./...     # レースコンディション検出
 go vet ./...            # 静的解析
 ```
 
+CIの全体race検査は毎日03:17 JST予定でmainに対して実行し、リリースタグでも必須とする。
+通常のPR/main pushでは省略する。並行処理を変更するPRでは、GitHub Actionsの「Race detector」→「Run workflow」で対象ブランチを選択して実行する。
+
 E2E テスト（`e2e/run-container.sh`、real docker/podman engine が必要）はホスト側では `./e2e/run-container.sh` で実行する。 PR-4（`docs/plans/volume-only-daemon.md` §論点e）で userns backend を撤去したのに伴い、それに依存していた per-scenario black-box harness（`e2e/run.sh` + `e2e/scenarios/*`）は撤去済み — container backend の compose sibling-connectivity / workspace network isolation / reap 系の固定 flow のみを検証する単一スクリプトになった。
 サンドボックス内 (Claude Code 等) からは `run-e2e` (declared short name、scenario 引数は撤去済み) を PATH 経由で呼ぶ — `/run/boid/bin/run-e2e` symlink 経由で host 側 broker に dispatch される (実体は host で動く)。 サンドボックス内で `./e2e/run-container.sh` を直接叩くと、 サンドボックス内から docker/podman engine にアクセスできないため失敗する。
 
