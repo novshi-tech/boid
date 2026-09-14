@@ -111,6 +111,70 @@ func TestBoidOpTaskCreate_OwnedCardRequest_AttachesAtomically(t *testing.T) {
 	}
 }
 
+func TestBoidOpTaskCreate_OwnedCardCommandCoexistsWithSpeccedChild(t *testing.T) {
+	conn := newBoidExecutorTestDB(t)
+	if err := orchestrator.CreateProject(conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	repo := orchestrator.NewTaskRepository(conn)
+	card := &orchestrator.Task{Type: orchestrator.TaskTypeCard, ProjectID: "proj-1", Card: &orchestrator.CardAttrs{}}
+	if err := repo.CreateTask(card); err != nil {
+		t.Fatalf("create card: %v", err)
+	}
+	if err := repo.UpsertTaskTriage(&orchestrator.CardAttrs{
+		TaskID: card.ID,
+		Detail: []byte(`{"children":[{"id":"ch_00","status":"specced","spec":{"project":"proj-1","behavior":"executor"}}]}`),
+	}); err != nil {
+		t.Fatalf("seed specced child: %v", err)
+	}
+	cardReq := &orchestrator.CardRequest{
+		CardID:        card.ID,
+		CommandKey:    "judge",
+		Status:        orchestrator.CardRequestStatusLaunching,
+		LauncherJobID: "job-launcher",
+	}
+	if err := orchestrator.CreateCardRequest(conn, cardReq); err != nil {
+		t.Fatalf("create card request: %v", err)
+	}
+
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{
+			Tasks:             repo,
+			CardRequestLinker: repo,
+			CardRequests:      repo,
+			Meta:              executorMetaStub{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"judge": {}}}},
+		},
+		cardRequests: repo,
+	}
+	ctx := sandbox.TokenContext{
+		ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"},
+		JobID: "job-launcher", CardID: card.ID, CardRequestID: cardReq.ID,
+	}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: []byte(`{"title":"[judge]","behavior":"judge"}`),
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("task create exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+
+	got, err := repo.GetCardRequest(cardReq.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if got.Status != orchestrator.CardRequestStatusAttached || got.TargetKind != orchestrator.CardRequestTargetKindTask || got.TargetID == "" {
+		t.Fatalf("card request = %+v, want attached task continuation", got)
+	}
+	continuation, err := repo.GetTask(got.TargetID)
+	if err != nil {
+		t.Fatalf("GetTask(%q): %v", got.TargetID, err)
+	}
+	if continuation.ParentID != card.ID {
+		t.Errorf("ParentID = %q, want card %q", continuation.ParentID, card.ID)
+	}
+}
+
 // TestBoidOpTaskCreate_StaleLauncher_NotAttached pins that a job whose
 // token names a card_requests id it does NOT currently own (a superseded
 // launcher, or simply the wrong job) creates the task normally but does

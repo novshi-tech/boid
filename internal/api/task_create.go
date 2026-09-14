@@ -175,7 +175,7 @@ func (s *TaskAppService) createCardTask(ctx context.Context, req CreateTaskReque
 	// any real occupant unconditionally blocks this create.
 	if req.ParentID != "" {
 		if parent, perr := s.Tasks.GetTask(req.ParentID); perr == nil && parent != nil && parent.Type == orchestrator.TaskTypeCard {
-			if conflict, occupant := s.cardSlotConflictWithRequests(parent, "", "", "", ""); conflict {
+			if conflict, occupant := s.cardSlotConflictWithRequests(parent, "", "", "", "", ""); conflict {
 				return nil, &StatusError{
 					Code: http.StatusConflict,
 					Message: fmt.Sprintf(
@@ -474,17 +474,16 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 		}
 	}
 
-	// The card's single-work-slot invariant applies to this write port too:
-	// any DIRECT task creation under a card (CLI, HTTP API, acceptGo's own
-	// CreateTask call) must not exceed one open/specced/dispatched child.
+	// The card's slot invariants apply to this write port too. Ordinary direct
+	// children and Go work must not exceed one open/specced/dispatched child;
+	// an owned non-Go card-command continuation may coexist with a spec.
 	// See cardChildSlotConflict's own doc comment for why fulfilling the
 	// currently-specced child's own reservation (Ref matching its id —
 	// acceptGo's convention) is not treated as a new occupant.
 	//
 	// A CardRequestID-less create takes no card_requests row to arbitrate
-	// with, and a CardRequestID-carrying create's own reservation is
-	// excluded from the conflict check (it's the claim being fulfilled, not
-	// a new occupant) — neither has a lock of its own. When s.Tx is wired,
+	// with. A CardRequestID-carrying create excludes only its verified owned
+	// reservation from the conflict check. When s.Tx is wired,
 	// both route through the SAME WithinTx call below (atomicCardCheck): a
 	// fresh re-read plus the INSERT happen atomically, closing the
 	// read-then-write gap a plain pre-check would otherwise leave open.
@@ -503,7 +502,7 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 	}
 	atomicCardCheck := cardParent != nil && s.Tx != nil
 	if cardParent != nil && !atomicCardCheck {
-		if conflict, occupant := s.cardSlotConflictWithRequests(cardParent, req.Ref, req.ProjectID, req.Behavior, req.CardRequestID); conflict {
+		if conflict, occupant := s.cardSlotConflictWithRequests(cardParent, req.Ref, req.ProjectID, req.Behavior, req.CardRequestID, req.CardRequestOwnerJobID); conflict {
 			return nil, &StatusError{
 				Code: http.StatusConflict,
 				Message: fmt.Sprintf(
@@ -539,10 +538,8 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 	// ownership-verified CardRequestID) must be persisted atomically with
 	// the request→task association — see CardRequestTaskLinker's own doc
 	// comment. atomicCardCheck (cardParent != nil && s.Tx != nil, covering
-	// both CardRequestID cases) takes priority: the CardRequestLinker branch
-	// below now only serves a launcher's own continuation create (ParentID
-	// is the launched ROOT task, not the card — cardParent is nil there) or
-	// the s.Tx-unwired fallback.
+	// both CardRequestID cases) takes priority; the CardRequestLinker branch
+	// below serves root continuations and the s.Tx-unwired fallback.
 	switch {
 	case atomicCardCheck:
 		txErr := s.Tx.WithinTx(func(tx TxStore) error {
@@ -550,7 +547,7 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 			if gerr != nil {
 				return gerr
 			}
-			if conflict, occupant := cardSlotConflictWithLister(tx, freshParent, req.Ref, req.ProjectID, req.Behavior, req.CardRequestID); conflict {
+			if conflict, occupant := cardSlotConflictWithLister(tx, freshParent, req.Ref, req.ProjectID, req.Behavior, req.CardRequestID, req.CardRequestOwnerJobID); conflict {
 				return &StatusError{
 					Code: http.StatusConflict,
 					Message: fmt.Sprintf(
