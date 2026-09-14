@@ -269,20 +269,95 @@ func TestCreateTask_AllowsFulfillingItsOwnCardRequestReservation(t *testing.T) {
 		Tasks: store,
 		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
 		CardRequests: &fakeCardCommandLauncherStore{activeRows: []*orchestrator.CardRequest{
-			{ID: "req-1", Status: orchestrator.CardRequestStatusLaunching},
+			{ID: "req-1", CardID: "card-1", CommandKey: orchestrator.CardRequestCommandKeyGo, Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "go-owner"},
 		}},
 	}
 
 	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
-		ProjectID:     "proj-1",
-		Title:         "next",
-		Behavior:      "dev",
-		ParentID:      "card-1",
-		Ref:           "ch_00",
-		CardRequestID: "req-1",
+		ProjectID:             "proj-1",
+		Title:                 "next",
+		Behavior:              "dev",
+		ParentID:              "card-1",
+		Ref:                   "ch_00",
+		CardRequestID:         "req-1",
+		CardRequestOwnerJobID: "go-owner",
 	})
 	if err != nil {
 		t.Fatalf("CreateTask() error = %v, want success (fulfills its own reservation req-1)", err)
+	}
+}
+
+func TestCreateTask_AllowsOwnedCardCommandAlongsideSpeccedChild(t *testing.T) {
+	detail := []byte(`{"children":[{"id":"ch_00","status":"specced","spec":{"project":"proj-1","behavior":"dev"}}]}`)
+	parent := cardParentWithDetail("card-1", detail, 0)
+	store := &stubTaskStore{
+		tasks:    map[string]*orchestrator.Task{"card-1": parent},
+		refTasks: map[string]*orchestrator.Task{},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"judge": {}}}},
+		CardRequests: &fakeCardCommandLauncherStore{activeRows: []*orchestrator.CardRequest{
+			{ID: "req-1", CardID: "card-1", CommandKey: "judge", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-1"},
+		}},
+	}
+
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: "proj-1", Title: "[judge]", Behavior: "judge",
+		ParentID: "card-1", Ref: "req-1",
+		CardRequestID: "req-1", CardRequestOwnerJobID: "job-1",
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want card command continuation to coexist with specced child", err)
+	}
+}
+
+func TestCreateTask_OwnedCardCommandStillRejectsLiveChild(t *testing.T) {
+	parent := cardParentWithDetail("card-1", nil, 1)
+	store := &stubTaskStore{
+		tasks:    map[string]*orchestrator.Task{"card-1": parent},
+		refTasks: map[string]*orchestrator.Task{},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"judge": {}}}},
+		CardRequests: &fakeCardCommandLauncherStore{activeRows: []*orchestrator.CardRequest{
+			{ID: "req-1", CardID: "card-1", CommandKey: "judge", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-1"},
+		}},
+	}
+
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: "proj-1", Title: "[judge]", Behavior: "judge",
+		ParentID: "card-1", Ref: "req-1",
+		CardRequestID: "req-1", CardRequestOwnerJobID: "job-1",
+	})
+	if err == nil {
+		t.Fatal("expected rejection while a live child task occupies the card")
+	}
+}
+
+func TestCreateTask_CardCommandOwnerMismatchDoesNotBypassSpeccedChild(t *testing.T) {
+	detail := []byte(`{"children":[{"id":"ch_00","status":"specced","spec":{"project":"proj-1","behavior":"dev"}}]}`)
+	parent := cardParentWithDetail("card-1", detail, 0)
+	store := &stubTaskStore{
+		tasks:    map[string]*orchestrator.Task{"card-1": parent},
+		refTasks: map[string]*orchestrator.Task{},
+	}
+	svc := &TaskAppService{
+		Tasks: store,
+		Meta:  stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"judge": {}}}},
+		CardRequests: &fakeCardCommandLauncherStore{activeRows: []*orchestrator.CardRequest{
+			{ID: "req-1", CardID: "card-1", CommandKey: "judge", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "real-owner"},
+		}},
+	}
+
+	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: "proj-1", Title: "[judge]", Behavior: "judge",
+		ParentID: "card-1", Ref: "req-1",
+		CardRequestID: "req-1", CardRequestOwnerJobID: "wrong-owner",
+	})
+	if err == nil {
+		t.Fatal("expected rejection when the request owner does not match")
 	}
 }
 

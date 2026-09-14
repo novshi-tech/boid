@@ -345,15 +345,8 @@ func TestCreateTask_AtomicPath_RejectsRefMatchWithMismatchedProjectOrBehavior(t 
 }
 
 // TestCreateTask_AtomicPath_CardRequestIDCarrying_RoutesThroughOneTx pins
-// that a CardRequestID-carrying create under a card (acceptGo's own child
-// dispatch — the only caller that ever passes both ParentID=<the card> and
-// a non-empty CardRequestID to CreateTask; a card-command launcher's own
-// continuation is instead forced to a ROOT ParentID, internal/server/boid_executor.go)
-// now takes the SAME atomic WithinTx branch as a CardRequestID-less direct
-// create, rather than a separate non-transactional pre-check followed by
-// its own transaction: the card_requests row ends up "attached" to the new
-// task, and the slot re-check inside that one transaction correctly
-// excludes the caller's own reservation.
+// that a CardRequestID-carrying create under a card takes the same atomic
+// transaction as a direct child create.
 func TestCreateTask_AtomicPath_CardRequestIDCarrying_RoutesThroughOneTx(t *testing.T) {
 	taskSvc, goSvc, card, repo := newAtomicCardSlotFixture(t)
 
@@ -395,6 +388,39 @@ func TestCreateTask_AtomicPath_CardRequestIDCarrying_RoutesThroughOneTx(t *testi
 	}
 	if len(children) != 1 {
 		t.Fatalf("children = %d, want 1", len(children))
+	}
+}
+
+func TestCreateTask_AtomicPath_CardCommandCoexistsWithSpeccedChild(t *testing.T) {
+	taskSvc, _, card, repo := newAtomicCardSlotFixture(t)
+	if err := repo.UpsertTaskTriage(&orchestrator.CardAttrs{
+		TaskID: card.ID,
+		Detail: []byte(`{"children":[{"id":"ch_00","status":"specced","spec":{"project":"proj-1","behavior":"dev"}}]}`),
+	}); err != nil {
+		t.Fatalf("seed specced child: %v", err)
+	}
+	cardReq := &orchestrator.CardRequest{
+		CardID: card.ID, CommandKey: "judge",
+		Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "job-1",
+	}
+	if err := repo.CreateCardRequest(cardReq); err != nil {
+		t.Fatalf("create card request: %v", err)
+	}
+
+	got, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{
+		ProjectID: "proj-1", Title: "[judge]", Behavior: "dev",
+		ParentID: card.ID, Ref: cardReq.ID,
+		CardRequestID: cardReq.ID, CardRequestOwnerJobID: cardReq.LauncherJobID,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask() error = %v, want card command continuation to coexist with specced child", err)
+	}
+	updated, err := repo.GetCardRequest(cardReq.ID)
+	if err != nil {
+		t.Fatalf("GetCardRequest: %v", err)
+	}
+	if updated.Status != orchestrator.CardRequestStatusAttached || updated.TargetID != got.ID {
+		t.Fatalf("card request = %+v, want attached to %q", updated, got.ID)
 	}
 }
 
