@@ -3,7 +3,7 @@ package api
 // TestWebHandlerTaskList_ActivityState_QueryCountDoesNotScaleWithRowCount
 // pins §5.5's "一覧の読みは一括取得とし、行ごとの追加問い合わせを増やさない"
 // (docs/plans/card-next-step-and-timeline.md): the list's new per-card
-// activity state (card_requests + dispatched-child status) must add a FIXED
+// activity state (execution slot + descendant input requests) must add a FIXED
 // number of queries per page, not one per card row.
 
 import (
@@ -42,10 +42,7 @@ func (c countingDBTX) QueryRow(query string, args ...any) *sql.Row {
 }
 
 // seedActivityN1Fixture creates n cards under projectID, each with one
-// dispatched work child pointing at a real (pending) task, plus a queued
-// card command on every other card — a realistic mix that exercises both
-// batched lookups (TaskStatusesByIDs, ActiveCardRequestsByCardIDs), not just
-// their zero-row fast paths.
+// dispatched work child and an occupied execution slot on every other card.
 func seedActivityN1Fixture(t *testing.T, conn *sql.DB, projectID string, n int) {
 	t.Helper()
 	if err := orchestrator.CreateProject(conn, &orchestrator.Project{ID: projectID, WorkDir: "/tmp/" + projectID}); err != nil {
@@ -59,7 +56,7 @@ func seedActivityN1Fixture(t *testing.T, conn *sql.DB, projectID string, n int) 
 		if err := orchestrator.CreateTask(conn, card); err != nil {
 			t.Fatalf("create card %q: %v", cardID, err)
 		}
-		child := &orchestrator.Task{ID: childTaskID, ProjectID: projectID, Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{}}
+		child := &orchestrator.Task{ID: childTaskID, ParentID: cardID, ProjectID: projectID, Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusAwaiting, Exec: &orchestrator.ExecAttrs{}}
 		if err := orchestrator.CreateTask(conn, child); err != nil {
 			t.Fatalf("create child task %q: %v", childTaskID, err)
 		}
@@ -68,7 +65,7 @@ func seedActivityN1Fixture(t *testing.T, conn *sql.DB, projectID string, n int) 
 			t.Fatalf("upsert task triage for %q: %v", cardID, err)
 		}
 		if i%2 == 0 {
-			req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "sweep", Status: orchestrator.CardRequestStatusQueued}
+			req := &orchestrator.CardRequest{CardID: cardID, CommandKey: "sweep", Status: orchestrator.CardRequestStatusLaunching, LauncherJobID: "launcher-" + cardID}
 			if err := orchestrator.CreateCardRequest(conn, req); err != nil {
 				t.Fatalf("create card request for %q: %v", cardID, err)
 			}
@@ -122,11 +119,11 @@ func TestWebHandlerTaskList_ActivityState_QueryCountDoesNotScaleWithRowCount(t *
 		t.Fatalf("query count scales with row count: 3 cards = %d queries, 30 cards = %d queries (want equal — one page's activity state must be one batch, not one query per row)", small, large)
 	}
 	// Pins the actual fixed count (ListTasks, ListTaskTriageByTaskIDs,
-	// ActiveCardRequestsByCardIDs, TaskStatusesByIDs), not just "equal" — a
+	// CardExecutionStatesByIDs), not just "equal" — a
 	// change that adds a query but keeps it constant per page would pass the
 	// equality check above but should still be caught.
-	if small != 4 {
-		t.Fatalf("query count = %d, want 4 (ListTasks + ListTaskTriageByTaskIDs + ActiveCardRequestsByCardIDs + TaskStatusesByIDs)", small)
+	if small != 3 {
+		t.Fatalf("query count = %d, want 3 (ListTasks + ListTaskTriageByTaskIDs + CardExecutionStatesByIDs)", small)
 	}
 }
 
@@ -189,23 +186,51 @@ func TestWebHandlerTaskList_RendersActivityBadgesFromRealDB(t *testing.T) {
 		t.Fatalf("TaskList status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	// The dispatched child's REAL task is "executing" — the work badge must
-	// say "Running", proving the real task row (not the JSON "dispatched"
-	// status) drove the label.
-	if !strings.Contains(body, "list-row-activity-work") || !strings.Contains(body, ">Running<") {
-		t.Errorf("expected the work activity badge with text %q in the rendered page, got:\n%s", "Running", body)
+	// The occupied Discuss slot supplies the sole running indicator.
+	if !strings.Contains(body, "list-row-execution-running") || !strings.Contains(body, "稼働中") {
+		t.Errorf("expected running execution state in the rendered page, got:\n%s", body)
 	}
-	if !strings.Contains(body, "Discuss: Running") {
-		t.Errorf("expected the command activity badge with text %q in the rendered page, got:\n%s", "Discuss: Running", body)
+	if !strings.Contains(body, "Discuss") {
+		t.Errorf("expected Discuss label in the rendered page, got:\n%s", body)
+	}
+
+	// A grandchild ask must replace the running indicator on the next poll,
+	// even though the card and the command's target task have not changed.
+	grandchild := &orchestrator.Task{ID: "grandchild", ParentID: "child-1", ProjectID: "proj-1", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusAwaiting, Exec: &orchestrator.ExecAttrs{}}
+	if err := orchestrator.CreateTask(d.Conn, grandchild); err != nil {
+		t.Fatal(err)
+	}
+	poll := func() string {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("HX-Request", "true")
+		w := httptest.NewRecorder()
+		h.TaskList(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("poll status: %d", w.Code)
+		}
+		return w.Body.String()
+	}
+	if body := poll(); !strings.Contains(body, "入力待ち") || strings.Contains(body, "list-row-execution-running") {
+		t.Fatalf("grandchild input must override slot activity: %s", body)
+	}
+	grandchild.Status = orchestrator.TaskStatusDone
+	if err := orchestrator.UpdateTask(d.Conn, grandchild); err != nil {
+		t.Fatal(err)
+	}
+	if body := poll(); strings.Contains(body, "入力待ち") || !strings.Contains(body, "list-row-execution-running") {
+		t.Fatalf("answered grandchild must restore slot activity: %s", body)
+	}
+	if err := orchestrator.FinishCardRequest(d.Conn, cmdReq.ID, "finished"); err != nil {
+		t.Fatal(err)
+	}
+	if body := poll(); strings.Contains(body, "list-row-execution") {
+		t.Fatalf("released slot must clear activity despite stale executing child: %s", body)
 	}
 }
 
-// A command attached to a task target whose real task is awaiting an answer
-// must render "Needs input" for the command axis too, not "Running" — an
-// awaiting dialogue task must never look identical to a live one in the
-// list, the same rule already applied to the work-child axis. This exercises
-// the shared TaskStatusesByIDs batch: the command's TargetID is folded into
-// the same query as the dispatched child's TaskRef, at zero extra queries.
+// An awaiting command task takes priority over the occupied slot, even when
+// its parent_id is empty. Target lookup adds no extra query.
 func TestWebHandlerTaskList_CommandAttachedToAwaitingTask_RendersNeedsInput(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {
@@ -260,13 +285,13 @@ func TestWebHandlerTaskList_CommandAttachedToAwaitingTask_RendersNeedsInput(t *t
 		t.Fatalf("TaskList status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Discuss: Needs input") {
-		t.Errorf("expected the command badge to read %q (real task is awaiting), got:\n%s", "Discuss: Needs input", body)
+	if !strings.Contains(body, "入力待ち") {
+		t.Errorf("expected input waiting state, got:\n%s", body)
 	}
-	if strings.Contains(body, "Discuss: Running") {
+	if strings.Contains(body, "稼働中") {
 		t.Errorf("command badge must not say Running while its target task is awaiting an answer, got:\n%s", body)
 	}
-	if count != 4 {
-		t.Errorf("query count = %d, want 4 (folding the command's task target into the same TaskStatusesByIDs batch must not add a query)", count)
+	if count != 3 {
+		t.Errorf("query count = %d, want 3 (command targets must be included in the execution-state batch)", count)
 	}
 }

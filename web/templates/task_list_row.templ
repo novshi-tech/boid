@@ -3,23 +3,14 @@ package templates
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/timeline"
 )
 
-// ListRow is one row of the flat, top-level-only task list (docs/plans/
-// webui-detail-list-redesign.md §3.5, PR-4). It replaces
-// components.TreeItem (task_tree.templ, BuildTreeItems family — both
-// deleted by this PR): the list no longer needs tree-shape fields (Depth/
-// HasChildren/ParentID) now that tabs AND the tree are both gone — the list
-// only ever shows root (parent_id-less) tasks (WebHandler.TaskList filters
-// ParentID == ""), and a card's own children are read from the task's own
-// aggregate child-count columns (orchestrator.Task.{Total,Done,Aborted,
-// Open,Awaiting}ChildCount, store.go's taskChildCountCols) rather than a
-// second recursive query the way the old tree needed.
+// ListRow is one row of the flat, root-only task list. Card activity is a
+// batched projection of shared execution-slot occupancy and descendant asks.
 type ListRow struct {
 	Task        *orchestrator.Task
 	ProjectName string
@@ -39,10 +30,9 @@ type ListRow struct {
 	// row, no summary was ever written, or the task is an execution task
 	// (Summary is card-only vocabulary).
 	Summary string
-	// Activity is the card's activity state, populated by BuildListRows
-	// from a caller-resolved map. Zero value for an execution task or a
-	// card with no active work child/command.
-	Activity CardActivityState
+	// Activity is separate from the card's workflow status and suggestion.
+	Activity            orchestrator.CardExecutionState
+	ActivityUnavailable bool
 }
 
 // ProjectLabel returns the resolved project name when available, falling
@@ -64,45 +54,6 @@ func rowIdentityLabel(task *orchestrator.Task, projectName string) string {
 		return cardIdentityLabel(task, projectName)
 	}
 	return execIdentityLabel(task, projectName)
-}
-
-// childRollupLabel renders §3.5's row-2 child rollup ("子 N · 進行 M · ⚠ K"
-// / "子 N · 完了 M") straight from a task's own aggregate child-count
-// columns (no second query — store.go's taskChildCountCols already computed
-// these alongside the row itself). Returns "" for a childless task, so the
-// caller can skip the rollup segment entirely.
-//
-// Shape (deliberately NOT a 1:1 dump of every count column):
-//   - "子 N" always, when N > 0
-//   - "進行 M" when there is at least one non-terminal, non-awaiting child
-//     (M = OpenChildCount - AwaitingChildCount) — the child rollup's answer
-//     to "is anything actually moving"
-//   - otherwise, when there is no in-progress child, "完了 M" (M =
-//     DoneChildCount) if any child has finished — answers "did the work
-//     that happened actually finish"
-//   - "⚠ K" whenever K = AwaitingChildCount > 0, appended regardless of the
-//     progress/done branch above — this is §2.4's "子が4回 ask を上げたが
-//     親からは dispatched にしか見えなかった" gap closed at the list level
-//     (the detail page's own answer is its pinned child's question link)
-func childRollupLabel(t *orchestrator.Task) string {
-	if t.TotalChildCount == 0 {
-		return ""
-	}
-	inProgress := t.OpenChildCount - t.AwaitingChildCount
-	if inProgress < 0 {
-		inProgress = 0
-	}
-	parts := []string{fmt.Sprintf("子 %d", t.TotalChildCount)}
-	switch {
-	case inProgress > 0:
-		parts = append(parts, fmt.Sprintf("進行 %d", inProgress))
-	case t.DoneChildCount > 0:
-		parts = append(parts, fmt.Sprintf("完了 %d", t.DoneChildCount))
-	}
-	if t.AwaitingChildCount > 0 {
-		parts = append(parts, fmt.Sprintf("⚠ %d", t.AwaitingChildCount))
-	}
-	return strings.Join(parts, " · ")
 }
 
 // relativeTimeLabel renders row 1's trailing timestamp (§3.5's "12m"/"2h"/
@@ -129,8 +80,7 @@ func relativeTimeLabel(t time.Time) string {
 
 // BuildListRows attaches each task's resolved project name and (for a card)
 // its live suggestion — the two per-row enrichments the list template needs
-// beyond what orchestrator.Task itself already carries via its own
-// child-count columns. Input order is preserved untouched: store.go's
+// alongside the caller-resolved execution state. Input order is preserved: store.go's
 // ListTasks already applies the view's ORDER BY (updated_at DESC, id —
 // unified across every view by this same PR), so this must not re-sort.
 //
@@ -138,7 +88,7 @@ func relativeTimeLabel(t time.Time) string {
 // BuildQueueItems / BuildFlatItems (deleted by PR-4 alongside
 // components.TreeItem — the four builders existed to serve four different
 // tabs with four different shapes; one flat view needs exactly one builder).
-func BuildListRows(tasks []*orchestrator.Task, projectNames map[string]string, triageByTaskID map[string]*orchestrator.CardAttrs, activityByTaskID map[string]CardActivityState) []ListRow {
+func BuildListRows(tasks []*orchestrator.Task, projectNames map[string]string, triageByTaskID map[string]*orchestrator.CardAttrs, activityByTaskID map[string]orchestrator.CardExecutionState) []ListRow {
 	rows := make([]ListRow, 0, len(tasks))
 	for _, t := range tasks {
 		row := ListRow{Task: t, ProjectName: projectNames[t.ProjectID], Activity: activityByTaskID[t.ID]}
@@ -214,10 +164,10 @@ templ taskListRows(rows []ListRow) {
 	</div>
 }
 
-// taskListRow renders one §3.5 3-line row:
+// taskListRow renders the title, identity, optional execution state, and movement:
 //
 //  1. title + relative time
-//  2. identity path (素性の段, §3.1) + child rollup (childRollupLabel)
+//  2. identity path (素性の段, §3.1)
 //  3. 動きの段 — a suggestion's transition edge (card) or plain status +
 //     situational text (exec's elapsed / awaiting), wrapped rather than
 //     ellipsis-truncated and clamped to 2 lines (list-row-line3's CSS,
@@ -237,10 +187,10 @@ templ taskListRow(row ListRow) {
 			</div>
 			<div class="list-row-line2">
 				<span class="task-row-project">{ rowIdentityLabel(row.Task, row.ProjectName) }</span>
-				if rollup := childRollupLabel(row.Task); rollup != "" {
-					<span class="list-row-rollup">{ rollup }</span>
-				}
 			</div>
+			if row.Task.Type == orchestrator.TaskTypeCard {
+				@cardListExecutionBadge(row)
+			}
 			<div class="list-row-line3">
 				@taskListRowMovement(row)
 			</div>
@@ -255,9 +205,6 @@ templ taskListRow(row ListRow) {
 // list-row scale — same suggestionTargetStatus/taskStatusClass helpers, so
 // the list row's edge rendering can never drift from the detail page's.
 templ taskListRowMovement(row ListRow) {
-	if row.Task.Type == orchestrator.TaskTypeCard {
-		@cardActivityBadges(row.Activity)
-	}
 	if row.Task.Type == orchestrator.TaskTypeCard && row.Suggestion.Verb != "" {
 		{{ target := suggestionTargetStatus(row.Task.Status, row.Suggestion.Verb) }}
 		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
@@ -282,6 +229,22 @@ templ taskListRowMovement(row ListRow) {
 		<span class="list-row-movement-text">{ row.Summary }</span>
 	} else {
 		<span class={ taskStatusClass(string(row.Task.Status)) }>{ string(row.Task.Status) }</span>
+	}
+}
+
+// cardListExecutionBadge has its own line so summary clamping cannot hide it.
+templ cardListExecutionBadge(row ListRow) {
+	if row.ActivityUnavailable {
+		<div class="list-row-execution list-row-execution-unavailable">状態を取得できません</div>
+	} else if row.Activity.NeedsInput {
+		<div class="list-row-execution list-row-execution-awaiting"><span aria-hidden="true">⚠ </span>入力待ち</div>
+	} else if row.Activity.Occupied {
+		<div class="list-row-execution list-row-execution-running">
+			if row.Activity.CommandLabel != "" {
+				<span>{ row.Activity.CommandLabel } · </span>
+			}
+			<span><span aria-hidden="true">● </span>稼働中</span>
+		</div>
 	}
 }
 

@@ -75,11 +75,8 @@ type WebHandler struct {
 	// summary badge instead of failing the whole list.
 	TaskTriage CardStore
 
-	// CardActivity backs the list row's activity state: the sole work
-	// child's Draft/Ready to run/Queued/Running/Needs input badge and the
-	// active card command's label+status badge. Nil-safe: when unset, every
-	// card row renders with no activity badge instead of failing the whole
-	// list.
+	// CardActivity backs the list's execution state and the detail page's
+	// work/command activity. Nil disables the optional activity projection.
 	CardActivity CardActivityStore
 
 	// CardTimeline backs the card detail page's pinned items and timeline
@@ -489,7 +486,25 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 
 	projectNames := projectNameMap(projects)
 	triage := h.triageByTaskID(tasks)
-	items := templates.BuildListRows(tasks, projectNames, triage, h.cardActivityStates(tasks, triage))
+	var activity map[string]orchestrator.CardExecutionState
+	activityUnavailable := false
+	if h.CardActivity != nil {
+		var cardIDs []string
+		for _, task := range tasks {
+			if task.Type == orchestrator.TaskTypeCard {
+				cardIDs = append(cardIDs, task.ID)
+			}
+		}
+		activity, err = h.CardActivity.CardExecutionStatesByIDs(cardIDs)
+		if err != nil {
+			activityUnavailable = true
+			slog.Warn("TaskList: card execution state unavailable", "error", err)
+		}
+	}
+	items := templates.BuildListRows(tasks, projectNames, triage, activity)
+	for i := range items {
+		items[i].ActivityUnavailable = activityUnavailable
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 

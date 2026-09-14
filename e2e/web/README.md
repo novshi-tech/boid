@@ -1,5 +1,9 @@
 # Web browser checks
 
+For Card list execution indicators (including long summaries and 200% text size), generate
+`TestWriteCardListFixture` with `BOID_UI_FIXTURE_DIR` set, then run
+`node e2e/web/card-list.cjs` with the same environment and browser settings below.
+
 Run these checks from the repository root. They require Node.js, a Playwright installation, and a compatible Chromium executable. Point the scripts at those existing local installations; the repository does not install browser packages.
 
 ```sh

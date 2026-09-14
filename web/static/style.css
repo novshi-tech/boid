@@ -1045,9 +1045,22 @@ pre {
   white-space: nowrap;
 }
 
-.list-row-rollup {
-  flex-shrink: 0;
-  white-space: nowrap;
+.list-row-execution {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.list-row-execution-running {
+  color: var(--accent);
+}
+
+.list-row-execution-awaiting {
+  color: var(--warning);
+}
+
+.list-row-execution-unavailable {
+  color: var(--muted);
 }
 
 /* 動きの段 (§3.1): a transition edge or a bare status, plus situational
