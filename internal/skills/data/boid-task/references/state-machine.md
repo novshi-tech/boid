@@ -17,11 +17,11 @@ All boid tasks share the unified state machine defined in `internal/orchestrator
 |---|---|
 | `pending` | Created but not yet started. With `auto_start: true` this is transient — the dispatch loop picks it up almost immediately. |
 | `executing` | Child agent is running. Keep polling. |
-| `awaiting` | Child agent called `notify --ask` and is paused for a user reply. Keep polling — the reply returns it to `executing`. |
+| `awaiting` | Child agent is waiting for a user reply. A connected `boid task ask` agent returns to `executing` immediately on reply; after disconnect, the reply is parked and consumed when it re-asks. Legacy `notify --ask` does not start a resume hook. |
 | `done` | Terminal (success). Read the artifact and run the integration step from the active instruction. |
 | `aborted` | Terminal (failure). Read `lifecycle.abort.message`; diagnose with `boid job list/show/log`. |
 
-The supervisor itself runs as `executing` and transitions to `awaiting` when it calls `notify --ask`, then back to `executing` when the user replies.
+The supervisor itself runs as `executing` and transitions to `awaiting` when it calls `notify --ask`; that legacy path does not restart a hook when the user replies. A blocking `boid task ask` returns to `executing` when its connected or re-attached agent receives the reply.
 
 ## Manual Transitions
 
@@ -33,7 +33,7 @@ Triggered by explicit CLI calls (`boid task ...` or `boid action send --type ...
 | `done` | executing | done | `boid agent stop "$BOID_JOB_ID"` from the agent (daemon SIGUSR1s the runtime → the harness adapter's `Run()` SIGTERMs `claude`; the go-native runner then posts `boid job done` through the broker directly as the canonical CompleteJob caller — preserves the session id, which was already applied via `--payload-patch` before the agent started) |
 | `reopen` | done | executing | `boid task reopen <id> -m "<msg>"` |
 | `ask` | executing | awaiting | `boid task notify --ask` |
-| `answer` | awaiting | executing | `boid task answer` (or the Web UI Q&A reply) |
+| `answer` | awaiting | executing when a blocking agent is connected; otherwise remains awaiting with `pending_answer` | `boid task answer` (or the Web UI Q&A reply) |
 | `abort` | * | aborted | `boid action send --type abort` |
 
 ## Event-Driven Transitions
@@ -60,7 +60,7 @@ Triggered by condition rules evaluated after each dispatch step.
 |---|---|
 | `pending` (lingering) | Verify `auto_start: true` was set; rarely seen otherwise. |
 | `executing` | Sleep and re-poll. |
-| `awaiting` | Sleep and re-poll. The child returns to `executing` on user reply. |
+| `awaiting` | Sleep and re-poll. A connected blocking asker returns to `executing`; after disconnect, it consumes a parked reply on the next identical ask. |
 | `done` | Read artifacts (`boid task show <id> --field artifact.<key>`), run the integration step from the active instruction, then either spawn the next child or move to exit handling. |
 | `aborted` | Read `lifecycle.abort.message` (`boid task show <id> --field lifecycle.abort.message`) and the job log (`boid job list/show/log`). Decide between: retry via `boid task reopen` (only valid from `done`, so unavailable here — see "Reopen Semantics"), creating a fresh child with a revised description, or escalating via `notify --ask`. |
 

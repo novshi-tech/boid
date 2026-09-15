@@ -116,7 +116,7 @@ var taskAnswerCmd = &cobra.Command{
 	Use:   "answer",
 	Short: "Submit a user answer to a pending Q&A question",
 	Long: "awaiting 状態のタスクに回答を送る。 --task / --question-id / --answer はすべて必須。\n" +
-		"回答が保存されると タスクは awaiting → executing に遷移する。",
+		"接続中の agent には直ちに届いて executing に戻る。切断中は pending_answer に保存され、再 ask まで awaiting のまま。",
 	RunE: runTaskAnswer,
 }
 

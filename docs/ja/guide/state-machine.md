@@ -7,19 +7,15 @@
 ## 状態
 
 ```
-                 +--------+    abort / job_failed
-                 |aborted | <--------------------+
-                 +--------+                      |
-                                                 |
-   start                                         |
-pending -----> executing -----> done             |
-                  ^    ^                         |
-                  |    | ask                     |
-                  |    +------+                  |
-                  |           v                  |
-                  |       awaiting               |
-                  |           |                  |
-                  +-- answer -+                  |
+pending -----> executing -----> done
+                  |    ^
+                  |    | answer (connected)
+                  |    |
+                  +--> awaiting
+                       answer (disconnected): awaiting のまま、
+                       pending_answer に保存
+
+abort / job_failed: 終端でない任意の状態 -----> aborted
 ```
 
 | 状態 | 意味 |
@@ -43,7 +39,7 @@ pending -----> executing -----> done             |
 | `reopen` | `done` | `executing` | 新しい instruction を append して再開 (`--message` で渡す) |
 | `reopen` | `aborted` | `executing` | aborted のタスクを executing に戻す |
 | `ask` | `executing` | `awaiting` | `boid task ask` (blocking RPC) または `boid task notify --ask` が発行。 task を `awaiting` に置く |
-| `answer` | `awaiting` | `executing` | 接続中の `boid task ask` agent には直ちに回答が届く。切断中なら回答を `pending_answer` に保存し、agent が再 ask するまで task は `awaiting` のまま。`notify --ask` が回答のために resume hook を起動することはない |
+| `answer` | `awaiting` | 接続中は `executing`、切断中は `awaiting` のまま | 接続中の `boid task ask` agent には直ちに回答が届く。切断中なら回答を `pending_answer` に保存し、agent が再 ask した時に消費する。`notify --ask` が回答のために resume hook を起動することはない |
 | `abort` | 終端でない任意の状態 | `aborted` | |
 | `job_failed` (system) | 終端でない任意の状態 | `aborted` | |
 

@@ -70,8 +70,8 @@ func init() {
 			Short: fmt.Sprintf("Start an interactive %s session for a project", h),
 			Long: fmt.Sprintf(`Start a %s session under the daemon's sandbox for a project.
 
-The session inherits the project's host_commands / additional_bindings /
-env / secret_namespace traits and runs through internal/adapters/%s. The
+The session inherits the project's workspace host_commands / env /
+capabilities and secret namespace and runs through internal/adapters/%s. The
 command attaches to the resulting job's PTY unless --no-attach is set.`, h, h),
 			Args:        cobra.NoArgs,
 			Annotations: map[string]string{scopeAnnotationKey: scopeRemote},

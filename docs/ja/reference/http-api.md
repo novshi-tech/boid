@@ -91,7 +91,7 @@ curl --unix-socket "$XDG_RUNTIME_DIR/boid.sock" http://localhost/api/health
 | POST | `/api/tasks/{id}/hooks/{hook_id}/replay` | 特定 hook を再実行 |
 | GET | `/api/tasks/{id}/events` | **SSE** ストリーム (タスクイベント) |
 | POST | `/api/tasks/{id}/notify` | agent からの通知を送信。 `ask` フィールドがあると `awaiting` に遷移 |
-| POST | `/api/tasks/{id}/answer` | `awaiting` タスクにユーザの回答を送信し `executing` に遷移 |
+| POST | `/api/tasks/{id}/answer` | `awaiting` タスクに回答を送信。blocking agent 接続中なら即時復帰し、切断中なら次回の再 ask 用に保存 |
 
 `POST /api/tasks` のリクエスト形式:
 

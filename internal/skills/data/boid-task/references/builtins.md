@@ -156,7 +156,7 @@ The call holds the connection open: your turn stays alive, the task transitions 
 - Re-asking the **same** question is the retry above and is always allowed. Only a **different** `boid task ask` while one is still pending fails immediately with `task_ask: another question is pending`.
 - The user/parent answers with `boid task answer` (see below).
 
-`boid task ask` is the only supported Q&A path. `notify --ask` still transitions the task to `awaiting` for compatibility, but the daemon no longer dispatches a resume hook on answer — the agent has already exited and there is nowhere for the reply to land.
+`boid task ask` is the only supported Q&A path. `notify --ask` still transitions the task to `awaiting` for compatibility, but the daemon no longer dispatches a resume hook on answer. If a blocking asker disconnects, the answer is parked durably and consumed by its next identical ask.
 
 ## boid task answer
 

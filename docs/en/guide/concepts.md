@@ -20,7 +20,7 @@ A directory that contains a `.boid/project.yaml` file — a portable, git-checke
 - An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
 - One or more **task_behaviors** — a map of behavior names to `hooks` / `default_instruction` templates. Names are free-form (free naming). Each behavior can set `readonly`; the default when omitted is `true` (fail-safe).
 
-You register a project with `boid project add <path>` / `boid project init <path>`. Any number of projects can coexist; each task belongs to exactly one of them. Registering a project assigns it to the `default` workspace automatically.
+You register a project from a Git remote with `boid project add <git-url> --workspace <slug>`. Use `boid project init [dir]` to scaffold a project locally before committing and pushing it. Any number of projects can coexist; each task belongs to exactly one of them. Registering a project assigns it to the selected workspace (or `default` when using the daemon's direct registration paths).
 
 > **History**: A project used to carry `kits:` / `host_commands` / `env` / `additional_bindings` / `secret_namespace` / `capabilities` directly (top-level `project.yaml`, or `.boid/project.local.yaml`). Phase 2.5 (workspace DB consolidation) made `project.yaml` reject all of these; every machine-local runtime setting now lives on a workspace instead. An old-schema `project.yaml` can be converted with `boid project migrate <dir>` — see the [Migration guide](migration.md).
 

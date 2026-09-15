@@ -104,7 +104,7 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 | POST | `/api/tasks/{id}/hooks/{hook_id}/replay` | Replay one hook. |
 | GET | `/api/tasks/{id}/events` | **SSE** stream of task events. |
 | POST | `/api/tasks/{id}/notify` | Send an agent notification. When `ask` is present, transitions the task to `awaiting`. |
-| POST | `/api/tasks/{id}/answer` | Submit a user reply to an `awaiting` task and resume it. |
+| POST | `/api/tasks/{id}/answer` | Submit a user reply to an `awaiting` task; deliver it immediately when the blocking agent is connected, otherwise persist it for the next re-ask. |
 
 `POST /api/tasks` request body:
 

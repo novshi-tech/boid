@@ -270,7 +270,7 @@ role 分岐はなく、全 role で同じ op セットが許可されます。
 | `task.reopen` | `boid task reopen <id>` | done の task を executing に戻す |
 | `task_list` | `boid task list` | workspace 内の task を列挙する |
 | `task_notify` | `boid task notify <id>` | 通知または Q&A (`--ask`) を送信する |
-| `task_answer` | `boid task answer` | awaiting → executing に遷移させる |
+| `task_answer` | `boid task answer` | 回答を渡す。接続中は executing に戻し、切断中は `pending_answer` に保存 |
 | `task_delete` | `boid task delete <id>` | task を削除する |
 | `task_current` | `boid task current` | この task の id/title/description/status/behavior/readonly を取得する |
 | `task_instructions` | `boid task instructions` | この job 自身の routed instruction を取得する |
@@ -305,5 +305,5 @@ role 分岐はなく、全 role で同じ op セットが許可されます。
 - [アーキテクチャ概要](overview.md) — sandbox レイヤの位置づけ
 - [概念 / サンドボックス](../guide/concepts.md#サンドボックス-sandbox) — ユーザ視点での意味
 - [Hook スクリプトプロトコル](../reference/hook-contract.md) — sandbox 内 handler の I/O
-- [`project.yaml` リファレンス](../reference/project-yaml.md) — `host_commands` / `additional_bindings` / `capabilities` の宣言
+- [`project.yaml` リファレンス](../reference/project-yaml.md) — task behavior と capabilities の宣言。host command 名は workspace で設定し、`additional_bindings` は撤去済み
 - [Docker プロキシ移行ガイド](../guide/docker-proxy-migration.md) — docker kit (cetusguard) から native proxy への移行

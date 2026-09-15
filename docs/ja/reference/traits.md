@@ -31,7 +31,7 @@
 
 ### awaiting trait
 
-`boid task ask` (blocking RPC) または `boid task notify --ask` が呼ばれたときに `boid` コアが自動的に設定します。 `boid task ask` 経路では agent が broker 接続を握ったまま回答を待ち、 daemon の in-memory レジストリ経由で回答が直接 agent に届きます。 `notify --ask` 経路は agent が exit した上で `awaiting` に遷移するだけで、 daemon は resume hook を dispatch しません (session-id resume は廃止済)。 実用の Q&A は `boid task ask` を使ってください。
+`boid task ask` (blocking RPC) または `boid task notify --ask` が呼ばれたときに `boid` コアが自動的に設定します。接続中の agent には broker 経由で直接届き、切断中は `pending_answer` に永続化されて同じ ask の再試行時に消費されます。`notify --ask` は互換経路であり resume hook は起動しません。実用の Q&A は `boid task ask` を使ってください。
 
 フィールド:
 
@@ -39,7 +39,7 @@
 |---|---|---|---|
 | `question` | string | boid コア | ユーザに表示する質問テキスト |
 | `question_id` | string | boid コア | この Q&A ターンを識別する UUID |
-| `pending_answer` | string | boid コア | レガシー `notify --ask` 経路でユーザの回答を保持していたフィールド。 `boid task ask` 経路では使われません (回答は in-memory で直接配送される) |
+| `pending_answer` | string | boid コア | blocking agent に直ちに届けられない回答を永続保持するスロット。再 ask した `boid task ask` が消費する。legacy hook dispatch では `BOID_USER_ANSWER` として渡る場合もある |
 
 `awaiting` トレイトは boid コアと `ApplyAction("ask"/"answer")` のみが管理します。 hook から直接書き込んではいけません。 過去レコードに残っている `session_id` / `mode` フィールドは互換のためデシリアライズは silently 無視されます (構造体からは削除済)。
 

@@ -69,15 +69,15 @@ The hook runs with the following environment variables set:
 | `BOID_BROKER_SOCKET` | Path to the host-command broker UNIX socket. |
 | `BOID_BROKER_TOKEN` | Auth token for the broker socket. |
 | `BOID_SOCKET` | Path to the boid daemon UNIX socket (for `boid` CLI calls from inside the hook). |
-| `BOID_USER_ANSWER` | (legacy) The `pending_answer` from a `notify --ask` awaiting record, surfaced to the hook environment. The daemon no longer dispatches a resume hook on answer so this is normally empty; `boid task ask` replies arrive in-memory and never appear in env. |
-| `BOID_QUESTION_ID` | The question ID corresponding to `BOID_USER_ANSWER`. Only meaningful for the same legacy path. |
+| `BOID_USER_ANSWER` | A pending reply surfaced when a hook dispatch carries `awaiting.pending_answer` (mainly legacy `notify --ask` compatibility). Blocking `boid task ask` normally receives replies on stdout instead. |
+| `BOID_QUESTION_ID` | The question ID corresponding to `BOID_USER_ANSWER`, when that variable is set. |
 | `TERM` | Terminal type (e.g. `xterm-256color`). |
 | `HOME` | The sandbox home directory. |
 | `PATH` | Inherited from the launcher; may be overridden by the kit's `env`. |
 
 > **Note**: `BOID_PROJECT_ID` is **not** set in the hook environment. It is only exported by the `boid task notify` command internally.
 
-> **Q&A**: agent-driven Q&A is unified on `boid task ask` (blocking RPC) — the agent process does not exit, it holds the broker connection open and receives the reply on stdout. `BOID_AGENT_SESSION_ID` is gone (session-id resume itself was removed). `BOID_USER_ANSWER` / `BOID_QUESTION_ID` are only populated when re-dispatching a legacy `notify --ask` awaiting record, and the daemon never performs that re-dispatch — they are effectively dormant.
+> **Q&A**: agent-driven Q&A is unified on `boid task ask` (blocking RPC) — the agent process holds the broker connection open and receives the reply on stdout, or re-asks to consume a durably parked reply after disconnecting. `BOID_AGENT_SESSION_ID` is gone (session-id resume itself was removed). `BOID_USER_ANSWER` / `BOID_QUESTION_ID` are compatibility variables for dispatches that carry a pending reply.
 
 Any variables declared in the kit's `kit.yaml` are also exported.
 

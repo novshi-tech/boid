@@ -7,19 +7,15 @@ This page documents the states, the transitions, and the rules that fire them. F
 ## States
 
 ```
-                 +--------+    abort / job_failed
-                 |aborted | <--------------------+
-                 +--------+                      |
-                                                 |
-   start                                         |
-pending -----> executing -----> done             |
-                  ^    ^                         |
-                  |    | ask                     |
-                  |    +------+                  |
-                  |           v                  |
-                  |       awaiting               |
-                  |           |                  |
-                  +-- answer -+                  |
+pending -----> executing -----> done
+                  |    ^
+                  |    | answer (connected)
+                  |    |
+                  +--> awaiting
+                       answer (disconnected): remain awaiting,
+                       store pending_answer
+
+abort / job_failed: any non-terminal state -----> aborted
 ```
 
 | State | Meaning |
@@ -43,7 +39,7 @@ Sent as actions by the user or by hooks (`boid action send --task <id> --type <a
 | `reopen` | `done` | `executing` | Appends a new instruction and restarts (`--message` to supply it). |
 | `reopen` | `aborted` | `executing` | Return an aborted task to executing. |
 | `ask` | `executing` | `awaiting` | Issued by `boid task ask` (blocking RPC) or `boid task notify --ask`. Places the task in `awaiting`. |
-| `answer` | `awaiting` | `executing` | A connected `boid task ask` agent receives the answer immediately. If it is disconnected, the answer is parked in `pending_answer`; the task remains `awaiting` until the agent re-asks. `notify --ask` does not start a resume hook. |
+| `answer` | `awaiting` | `executing` if connected; otherwise `awaiting` | A connected `boid task ask` agent receives the answer immediately. If it is disconnected, the answer is parked in `pending_answer` until the agent re-asks. `notify --ask` does not start a resume hook. |
 | `abort` | any non-terminal state | `aborted` | |
 | `job_failed` (system) | any non-terminal state | `aborted` | |
 

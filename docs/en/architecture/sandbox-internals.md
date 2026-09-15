@@ -266,7 +266,7 @@ All roles (hook) share the same allowed op set — there is no role branching.
 | `task.reopen` | `boid task reopen <id>` | Transition a done task back to executing |
 | `task_list` | `boid task list` | List tasks in the workspace |
 | `task_notify` | `boid task notify <id>` | Send a notification or Q&A (`--ask`) |
-| `task_answer` | `boid task answer` | Transition awaiting → executing |
+| `task_answer` | `boid task answer` | Deliver the reply; transition to executing when a blocking agent is connected, otherwise persist `pending_answer` |
 | `task_delete` | `boid task delete <id>` | Delete a task |
 | `task_current` | `boid task current` | Read this task's id/title/description/status/behavior/readonly |
 | `task_instructions` | `boid task instructions` | Read this job's own routed instruction |

@@ -160,7 +160,7 @@ boid task notify ${BOID_TASK_ID} --progress --message "ステップ 2/5 完了"
 | `--answer TEXT` | ◎ | 回答テキスト |
 
 **終了コード**:
-- `0`: 回答を保存し、タスクを `awaiting → executing` に遷移させた
+- `0`: 回答を受理。接続中の agent は直ちに再開し、切断中なら `pending_answer` に保存されて再 ask 時に渡される
 - `1`: タスクが `awaiting` 状態でない、または引数不正
 
 ```bash

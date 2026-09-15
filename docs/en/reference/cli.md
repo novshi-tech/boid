@@ -156,7 +156,7 @@ boid task notify ${BOID_TASK_ID} --progress --message "Step 2 of 5 complete"
 | `--answer TEXT` | ◎ | Answer text |
 
 **Exit codes**:
-- `0`: Answer saved; task transitioned `awaiting → executing`.
+- `0`: Answer accepted; the connected agent resumes immediately, or the answer is stored in `pending_answer` until the agent re-asks.
 - `1`: Task is not in `awaiting` state, or an argument is missing.
 
 ```bash
