@@ -159,7 +159,7 @@ agent からユーザへ通知を送信します。 `ask` フィールドが存�
 
 #### `POST /api/tasks/{id}/answer`
 
-`awaiting` 状態のタスクにユーザの回答を送信します。 `payload.awaiting.pending_answer` に回答を設定し、タスクを `awaiting → executing` に遷移させて hook を再起動します。
+`awaiting` 状態のタスクにユーザの回答を送信します。接続中の待機者がいれば回答を直ちに渡して `executing` に戻します。待機者がいなければ `pending_answer` として保存し、タスクは `awaiting` のままです。agent が再度質問したときに保存済みの回答が返されます。
 
 リクエスト形式:
 

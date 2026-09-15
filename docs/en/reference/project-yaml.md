@@ -8,7 +8,7 @@ This page is the schema reference. For the meaning of the underlying terms, see 
 
 - Path: `.boid/project.yaml` directly under the project root.
 - Role: registers the directory as a `boid` project and declares the kinds of tasks (behaviors) it supports. Portable, checked into git.
-- Registration: `boid project add <project-root>` reads the file into `boid`'s database.
+- Registration: commit and push the file, then run `boid project add <git-url> --workspace <slug>`; the daemon clones the URL into its managed repository.
 - Reload: after editing, run `boid project reload`.
 
 > **Note:** `project.yaml` no longer configures the runtime environment (kits / `host_commands` / `env` / `secret_namespace` / `capabilities`). That machine-local configuration lives on a **workspace** instead (`boid workspace create/edit`) — see the [Top-level fields](#top-level-fields) table below for what moved where, and [Onboarding](../guide/onboarding.md) for the current setup flow. `additional_bindings` has been retired on both project.yaml and workspace; toolchain persistence moved to the [workspace home `init.sh`](../guide/workspace-home.md) in Phase 4 PR4.
@@ -27,7 +27,7 @@ task_behaviors:
 
 | Key | Type | Required | Role |
 |---|---|---|---|
-| `id` | string | **yes for legacy host-directory registration** (`boid project add <project-root>`); **optional for git-URL registration** (`boid project add <git-url>`, docs/plans/workspace-default-project.md 論点h 案1) | Unique identifier for this project inside `boid`. Tasks reference it via `project_id`. **When omitted on a git-URL registration**: `boid project add <git-url>` derives an id from the origin URL (`url-` + first 16 hex chars of the slug's sha256). Once a project is registered under this URL-derived id, it never changes, even if a later commit adds/changes `id:` — that field is then ignored (with a warning), but only when the registered id was itself actually derived from the project's upstream URL; a hand-authored `id:` that happens to start with `url-` without ever having been derived this way is not covered by that exception, and a later change to it is treated as an ordinary id drift. On the legacy host-directory path there is no URL to fall back on, so an id-less `project.yaml` is still rejected outright. **Note:** id derivation also requires a slugifiable URL — an origin normalized to `file://` (as opposed to `https://`) cannot be slugified, so an id-less `project.yaml` registered via a `file://` git URL is rejected the same way as on the legacy host-directory path, even though `file://` origins are otherwise accepted for git-URL registration. |
+| `id` | string | optional for git-URL registration (`boid project add <git-url>`) | Unique identifier for this project inside `boid`. When omitted, the daemon derives a stable id from the origin URL. A `file://` URL cannot be slugified, so an id-less project registered that way is rejected. |
 | `name` | string | yes | Display name shown in UIs. |
 | `worktree` | bool | `false` | Used to allocate a dedicated **isolated branch** (`boid/<id8>`) to executor and supervisor tasks when `true`. **docs/plans/branch-policy-simplification.md Phase 1 (v0.0.11) retired the per-task branch and fork-point concepts**: every task, root or child, now checks out `base_branch` directly on its in-sandbox clone, so this field no longer affects checkout behaviour (it is still accepted for schema compatibility). See [Task kinds and HEAD branch](#task-kinds-and-head-branch) for the full breakdown. |
 | `base_branch` | string | (see below) | The PR target branch, resolved at task creation and stored in the row. **When omitted**: root tasks expand to the daemon's current HEAD branch (`${current_branch}` equivalent) at creation time — a detached-HEAD repository returns 400. Child tasks inherit the parent's `base_branch`. Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
@@ -286,6 +286,21 @@ default_instruction:
 | `name` | string | Optional sub-identifier when several instructions go to the same agent. |
 | `message` | string | The instruction text given to the agent. |
 | `model` | string | Model selector the kit will pass through (e.g. `opus`, `sonnet`). |
+
+## Triggers, cards, and signals
+
+The current schema also supports project-defined automation:
+
+- `triggers[]` defines periodic or manually runnable connector/command work.
+- `card_commands` defines human-launched next steps for Card tasks; their
+  launch state is recorded in `card_requests`.
+- `signals.sources[]` defines Integration Pack connectors that ingest external
+  observations into the signal inbox.
+
+Use `boid trigger run -p <project-ref> <name>` for a one-shot trigger run and
+`boid signal list` / `boid signal ack` to operate the inbox. Connector and
+service details are configured through `integrations`, `services`, and
+`services_floor` in `config.yaml`.
 
 > **Note:** `type:` and `interactive:` are not fields of `Instruction` and are silently ignored if present in YAML.
 

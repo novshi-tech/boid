@@ -8,7 +8,7 @@
 
 - パス: プロジェクトルート直下の `.boid/project.yaml`
 - 役割: そのディレクトリを `boid` プロジェクトとして登録し、タスクの種類 (behavior) を宣言する。 ポータブルで git 管理される
-- 登録: `boid project add <project-root>` で `boid` の DB に取り込まれる
+- 登録: ファイルを commit・push した後、`boid project add <git-url> --workspace <slug>` を実行する。daemon が URL を管理下の repository に clone する
 - 変更後の反映: `boid project reload` で再読み込みする
 
 > **注意:** `project.yaml` はもう実行環境 (kits / `host_commands` / `env` / `secret_namespace` / `capabilities`) を設定しません。 これらの machine-local な設定は代わりに **workspace** に置きます (`boid workspace create/edit`)。 何がどこへ移動したかは下記 [トップレベルのフィールド](#トップレベルのフィールド) の表を、 現行のセットアップ手順は [オンボーディング](../guide/onboarding.md) を参照してください。 なお `additional_bindings` は project.yaml でも workspace でも撤去済みで、ツールチェーンの永続化は [workspace home の `init.sh`](../guide/workspace-home.md) に移りました (Phase 4 PR4)。
@@ -27,7 +27,7 @@ task_behaviors:
 
 | キー | 型 | 必須 | 役割 |
 |---|---|---|---|
-| `id` | string | レガシーなホストディレクトリ登録 (`boid project add <project-root>`) では**必須**。git-URL 登録 (`boid project add <git-url>`) では**省略可** (docs/plans/workspace-default-project.md 論点h 案1) | `boid` 内でプロジェクトを一意に識別する文字列。タスク作成時に `project_id` で参照される。**git-URL 登録で省略時**: `boid project add <git-url>` 時点で origin URL から導出した id (`url-` + slug の sha256 先頭 16 文字) を使う。一度この URL 由来 id で登録された project は、後から project.yaml に `id:` が追加/変更されても id は変わらない (既存タスクとの紐付けを切らないため) — ただしこれは登録されている id が実際にその project の upstream URL から導出されたものである場合に限る。たまたま `url-` で始まるだけの手書き `id:` はこの例外の対象外であり、後からの変更は通常の id drift として扱われる。レガシーなホストディレクトリ登録には導出元となる URL が無いため、`id:` を省略した project.yaml は引き続き拒否される。**注**: id 導出には slug 化可能な URL が必要であり、`https://` と異なり `file://` に正規化された origin は slug 化できない。そのため `file://` 形式の git URL で登録する場合、`file://` 自体は git-URL 登録として通常受理されるにもかかわらず、`id:` を省略した project.yaml はレガシーなホストディレクトリ登録と同様に拒否される。 |
+| `id` | string | git-URL 登録 (`boid project add <git-url>`) では省略可 | `boid` 内でプロジェクトを一意に識別する文字列。省略時は daemon が origin URL から安定した id を導出する。`file://` URL は slug 化できないため、id 省略時は拒否される。 |
 | `name` | string | はい | UI で表示するプロジェクト名 |
 | `worktree` | bool | `false` | 以前は `true` で executor / supervisor タスクに専用の isolated branch (`boid/<id8>`) を割り当てていた。 **docs/plans/branch-policy-simplification.md Phase 1 (v0.0.11) で per-task branch と fork point 概念が廃止**され、 root / child を問わず全タスクが sandbox 内 clone 上で `base_branch` を直接 checkout するようになったため、 このフィールドは現在 checkout 挙動に影響しない (スキーマ上は引き続き受理される)。 詳細は [タスク種別と HEAD branch](#タスク種別と-head-branch) を参照 |
 | `base_branch` | string | (省略時は後述) | PR ターゲットとなるベースブランチ。 タスク作成時に解決して row に保存される。 **省略時**: root task は daemon の現 HEAD branch (`${current_branch}` 相当) に展開; child task は親の `base_branch` を継承。 detached HEAD で root task 作成時に省略すると 400 エラー。 `${TASK_REMOTE_ID}` / `${current_branch}` の展開をサポート (後述 [動的 base_branch](#動的-base_branch)) |

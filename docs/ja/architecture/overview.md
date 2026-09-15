@@ -132,7 +132,7 @@ HTTP ハンドラと、その内部で動く `TaskWorkflowService`。タスク�
 - **状態機械** (`machine.go`) — `pending → executing → awaiting / done` のルール、自動遷移条件、 abort 条件
 - **Coordinator** (`coordinator.go`) — 1 ステップの dispatch + advance を実行
 - **Evaluator** (`evaluator.go`) — どの hook を発火させるかを評価
-- **ProjectStore** (`project_store.go`) — プロジェクトのメタ情報のメモリ上キャッシュ。 project に紐付く workspace の `host_commands` / `env` / `capabilities` / `additional_bindings` を投影して返す (`GetWithWorkspace`)。 kit を per-request に解決・注入する経路は Phase 2.5 PR6 で撤去済み (下記「kit」節参照)
+- **ProjectStore** (`project_store.go`) — プロジェクトのメタ情報のメモリ上キャッシュ。 project に紐付く workspace の `host_commands` / `env` / `capabilities` / `allowed_domains` / `services` を投影して返す (`GetWithWorkspace`)。 kit を per-request に解決・注入する経路は Phase 2.5 PR6 で撤去済み (下記「kit」節参照)
 - **lifecycle / payload merge / blocked / readonly** — 状態遷移条件で使う計算 trait や評価ヘルパ
 
 dispatcher / sandbox に依存しないため、状態機械の挙動は単体テストで追えます。
@@ -162,7 +162,7 @@ orchestrator のドメイン型を見ない (依存方向の制約)。 入力は
 
 ### workspace (DB 一元化。kit 機構は退役済み)
 
-workspace は project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_domains` / `additional_bindings`) を machine 単位でまとめる設定単位で、`workspaces` テーブルで DB 管理されています (Phase 2.5、`docs/plans/workspace-db-consolidation.md`)。`default` workspace は daemon 起動時に常に自動生成され、project は登録時に自動的にそこへ割り当てられます。
+workspace は project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_domains` / `services`) を machine 単位でまとめる設定単位で、`workspaces` テーブルで DB 管理されています (Phase 2.5、`docs/plans/workspace-db-consolidation.md`)。`additional_bindings` は撤去済みです。`default` workspace は daemon 起動時に常に自動生成され、project は登録時に自動的にそこへ割り当てられます。
 
 かつて存在した kit 機構 (`internal/orchestrator/kit_registry.go` によるツール供給単位の動的解決、`boid kit init` によるマシンスキャン + カタログ生成、`boid workspace configure` による LLM 対話ベースの workspace 設定生成) は Phase 2.5 PR6 (2026-07) で撤去されました。project ごとに kit を per-request 解決して merge する経路 (`ProjectStore.GetWithWorkspace` 内の `MergeKitRuntime` 呼び出し) も同時に削除されています。
 

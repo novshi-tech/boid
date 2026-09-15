@@ -89,7 +89,7 @@ Commands like `git`, `gh`, and language toolchains therefore do not need explici
 
 ### File system access
 
-Hooks run inside the sandbox. They can read and write inside the in-sandbox clone (or nowhere writable at all for `readonly: true` behaviors — the local clone itself still exists but pushes are refused at the git gateway) and `$HOME`. Paths declared in the kit's `additional_bindings` are mounted in addition. The host's home directory, SSH keys, and other projects are not visible.
+Hooks run inside the sandbox. They can read and write inside the in-sandbox clone (or nowhere writable at all for `readonly: true` behaviors — the local clone itself still exists but pushes are refused at the git gateway) and `$HOME`. The retired `additional_bindings` mechanism does not add mounts. The host's home directory, SSH keys, and other projects are not visible.
 
 `$HOME` is a **workspace-scoped volume that persists across jobs in the same workspace** — not a fresh directory per job. Files a hook writes under `$HOME` (config, credentials, caches, dotfiles) are visible to later jobs dispatched against the same workspace; they are not thrown away with this job's sandbox. `$HOME/.boid` is no longer an exception — it persists across jobs like the rest of `$HOME` (before Phase 6 PR8 it was a fresh, job-scoped tmpfs to keep the shared `$HOME/.boid/output/payload_patch.json` path from leaking between jobs; that file-based path was retired instead, so there is nothing left there to isolate — see "Outputs" below). Persisting on disk under `$HOME` is not the same as being part of a task's deliverable — only what lands in the project clone's git history (committed **and** pushed) counts as output.
 

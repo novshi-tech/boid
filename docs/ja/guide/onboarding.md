@@ -151,7 +151,7 @@ boid host-commands list
 ## 各レイヤの概念
 
 - **project**: 作業パターン（portable、git commit 対象）。`.boid/project.yaml` に記述する。
-- **workspace**: 実行環境（machine 単位、workspaces テーブルで DB 管理）。`host_commands` / `env` / `capabilities` / `allowed_domains` / `additional_bindings` などを持ち、project に割り当てる。`default` workspace は常に自動生成される。
+- **workspace**: 実行環境（machine 単位、workspaces テーブルで DB 管理）。`host_commands` / `env` / `capabilities` / `allowed_domains` / `services` を持ち、project に割り当てる。`default` workspace は常に自動生成される。`additional_bindings` は撤去済みで、永続的なツールチェーンは workspace home に置く。
 
 ## kit 機構の退役について
 

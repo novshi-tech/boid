@@ -11,7 +11,7 @@ The sandbox draws four boundaries simultaneously:
 1. **Filesystem.** Writable areas are confined to the in-sandbox project clone (or, for jobs where no project is visible, the project root).
 2. **Network.** Only domains in the built-in allowlist or `config.yaml`'s `sandbox.allowed_domains` can be reached.
 3. **User ID.** The host's `root` is unreachable (rootless).
-4. **Commands.** Only host commands declared in the kit's `host_commands` cross the boundary.
+4. **Commands.** Only host commands named by the workspace and present in the daemon-wide `host_commands` registry cross the boundary.
 
 All of this is delegated to a Docker/Podman container runtime by the boid daemon (as of PR-4 = the volume-only cutover, the container backend is the sole sandbox backend — `sandbox.backend` config was removed). Mount/network/user namespace isolation and the root filesystem switch are handled entirely by the container runtime; boid no longer issues any namespace-related syscalls directly.
 
@@ -301,5 +301,5 @@ All roles (hook) share the same allowed op set — there is no role branching.
 - [Architecture overview](overview.md) — where the sandbox layer sits.
 - [Concepts / Sandbox](../guide/concepts.md#sandbox) — the user-visible meaning.
 - [Hook script protocol](../reference/hook-contract.md) — the I/O contract for handlers running inside.
-- [`project.yaml` reference](../reference/project-yaml.md) — declaring `host_commands` / `additional_bindings` / `capabilities`.
+- [`project.yaml` reference](../reference/project-yaml.md) — declaring task behaviors and capabilities; host command names are configured on workspaces, and `additional_bindings` is retired.
 - [Docker proxy migration guide](../guide/docker-proxy-migration.md) — migrating from the docker kit (cetusguard) to the native proxy.

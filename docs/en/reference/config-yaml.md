@@ -85,6 +85,20 @@ sandbox:
 These are merged with `defaultAllowedDomains` (Anthropic/OpenAI APIs, language package registries, etc.) at startup.
 See [Sandbox Internals](../architecture/sandbox-internals.md) for details on the proxy allow list.
 
+The sandbox section also accepts `egress_proxy_port_low` and
+`egress_proxy_port_high` to override the inclusive stable-port range used by
+the workspace egress proxies. Zero selects boid's default range.
+
+## log — Logging
+
+```yaml
+log:
+  level: info                 # debug, info, warn, or error
+```
+
+`log.level` changes the daemon's minimum log level and takes effect after a
+restart. Invalid values are rejected during config load.
+
 ---
 
 ## gateway — git gateway
@@ -141,6 +155,35 @@ gateway:
 ```
 
 If both `forges` and `hosts` are present, **`forges` wins**; any `hosts` entry for a host already configured via `forges` is ignored (with a warning logged).
+
+## services and services_floor — API gateway
+
+`services` defines logical API gateway destinations. A service has a
+`base_url` (or `base_url_secret_key`) and an `auth` block whose kind is one of
+`bearer`, `basic`, `header`, `query`, or `oauth2`. Credentials are referenced
+from the secret store; plaintext tokens do not belong in this file.
+
+```yaml
+services:
+  myapp:
+    base_url: https://api.example.com
+    auth: {kind: bearer, secret_key: myapp-token}
+
+services_floor: [myapp]       # enabled for every workspace
+```
+
+Workspace services are additive to `services_floor`. See the [Japanese
+configuration reference](../../ja/reference/config-yaml.md) for the full
+service, account, and OAuth field tables.
+
+## integrations and oauth_providers
+
+`integrations.dir` selects the directory containing installed Integration
+Packs (default `/opt/boid/integrations`). `oauth_providers` defines OAuth2
+token and authorization endpoints referenced by `services.*.auth.provider`.
+Use `boid secret oauth login <service>` for a configured interactive flow, or
+store a refresh token in the secret store when the provider is configured for
+manual credential provisioning.
 
 ---
 

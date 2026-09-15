@@ -103,7 +103,7 @@ Creating, observing, and updating tasks lives under `boid task`. See [Concepts /
 | `boid task reopen <id> [-m MSG \| --message MSG]` | Return a `done` task to `executing`, appending the `--message` text as a new entry on `Task.Instructions` (e.g. when auto-merge hits a conflict). `-m` is a shorthand for `--message`. |
 | `boid task rerun <id> [--auto-start] [--instructions-file FILE]` | Reset a `done` / `aborted` task to `pending` and re-run it under the same ID. |
 | `boid task notify <id> --message MSG [--ask QUESTION] [--question-id ID] [--done] [--fail] [--progress] [--session-id ID]` | Send a notification to the user from an agent. Invokes `notify.command` from `~/.config/boid/config.yaml`. With `--ask`, enters Q&A mode and transitions the task to `awaiting`. |
-| `boid task answer --task ID --question-id ID --answer TEXT` | Submit a user reply to an `awaiting` task. Transitions the task `awaiting → executing` and restarts the hook. |
+| `boid task answer --task ID --question-id ID --answer TEXT` | Submit a user reply to an `awaiting` task. If the blocking agent is connected, it transitions immediately to `executing`; if disconnected, it stores `pending_answer` and leaves the task `awaiting` until the agent re-asks. It never starts a second hook for the answer. |
 | `boid task import [-f FILE] [--project ID]` | Bulk import tasks from JSONL. |
 | `boid task identity link <identity> <task-id> [--url URL] [--display-name NAME] [--project-id ID]` | Link an external identity to a task. Integration Packs may attach the resource's absolute HTTP(S) URL and a display name. |
 | `boid task identity unlink <identity> [--project-id ID]` | Remove an identity binding. |
@@ -211,6 +211,20 @@ boid action send --task <task-id> --type <action-type> [--payload FILE]
 
 Common `<action-type>` values: `start`, `done`, `reopen`, `abort`. See [State machine / Manual transitions](../guide/state-machine.md#manual-transitions). To reopen a task with a new instruction, prefer `boid task reopen <id> --message "..."`.
 
+## Cards, signals, and triggers
+
+| Command | Role |
+|---|---|
+| `boid card run <card-id> <key> [--instruction TEXT]` | Run a project-defined card command. |
+| `boid card requests <card-id>` | Inspect card command requests. |
+| `boid signal list [--workspace <slug>]` | List signals in the inbox. |
+| `boid signal ack <id> [--workspace <slug>]` | Acknowledge a signal. |
+| `boid trigger run -p <project-ref> <name>` | Run a named `project.yaml` trigger once, subject to single-flight rules. |
+
+Card commands, signal sources, and triggers are defined in the current
+[`project.yaml` reference](project-yaml.md). Cards use the separate
+`parked` / `working` / `dropped` state vocabulary described in the [state machine](../guide/state-machine.md#card-states).
+
 ## Job
 
 Inspect hook execution records.
@@ -254,6 +268,7 @@ Encrypted storage for tokens and similar values. The encryption key is `~/.local
 | `boid secret get <key> [-n NAMESPACE \| --namespace NAMESPACE]` | Retrieve a value. |
 | `boid secret list [-n NAMESPACE \| --namespace NAMESPACE]` | List keys. |
 | `boid secret delete <key> [-n NAMESPACE \| --namespace NAMESPACE]` | Remove a value. |
+| `boid secret oauth login <service> [--account NAME]` | Start the configured OAuth2 login flow for an API gateway service. |
 
 ## Workspace
 

@@ -26,7 +26,7 @@
 
 ## ワークスペース (workspace)
 
-プロジェクトの **実行環境** です。 単なる分類ラベルではなく、 `host_commands` (参照名) / `env` / `capabilities` / `allowed_domains` / `additional_bindings` を持ち、 サンドボックスの設定に直接効きます。 machine 単位で `workspaces` テーブルに DB 管理され (Phase 2.5)、 project に割り当てて使います。 1 つのプロジェクトは最大 1 つの workspace に所属します。 `default` workspace は daemon 起動時に常に自動生成されるため、 カスタマイズが不要なら何もしなくても動きます。
+プロジェクトの **実行環境** です。 単なる分類ラベルではなく、 `host_commands` (参照名) / `env` / `capabilities` / `allowed_domains` / `services` を持ち、 サンドボックスの設定に直接効きます。 machine 単位で `workspaces` テーブルに DB 管理され (Phase 2.5)、 project に割り当てて使います。 1 つのプロジェクトは最大 1 つの workspace に所属します。 `default` workspace は daemon 起動時に常に自動生成されるため、 カスタマイズが不要なら何もしなくても動きます。 `additional_bindings` は撤去済みです。
 
 - `boid workspace list` で登録済み workspace 一覧
 - `boid workspace show <slug>` でその workspace の設定内容 (`host_commands`/`env`/`capabilities` 等) と割り当て済みプロジェクト・最近のタスクを表示
@@ -104,7 +104,7 @@ boid exec           -p <project> -- bash   # サンドボックス内でシェ�
 | 設定 | behavior (hooks / readonly 等) | workspace の設定のみ継承 |
 | 用途 | 自律・長時間タスク | 対話的な作業・試験的なデバッグ |
 
-セッションは project が割り当てられている **workspace** の `env` / `host_commands` / `additional_bindings` / `capabilities` を継承します。 secret は workspace 自身の slug をネームスペースとして解決されます。 behavior 定義は参照しません。
+セッションは project が割り当てられている **workspace** の `env` / `host_commands` / `capabilities` と有効なネットワーク/API gateway policy を継承します。 `additional_bindings` は適用されません。 secret は workspace 自身の slug をネームスペースとして解決されます。 behavior 定義は参照しません。
 
 セッションを終了するにはエージェントを exit させるか、 `boid agent stop <job-id>` を使います。 ブラウザを閉じてもセッションプロセスは生き続け、 Web UI から再 attach できます。
 

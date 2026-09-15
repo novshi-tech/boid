@@ -103,7 +103,7 @@ CLI listener のアドレスは `127.0.0.1:8442` 固定（override 不可）。`
 | `boid task reopen <id> [-m MSG \| --message MSG]` | done のタスクを executing に戻し、 `--message` で渡した instruction を `Task.Instructions` 配列に append (auto-merge コンフリクト時など)。`-m` は `--message` のショートハンド |
 | `boid task rerun <id> [--auto-start] [--instructions-file FILE]` | done / aborted のタスクを pending にリセットして同じ ID で再実行 |
 | `boid task notify <id> --message MSG [--ask QUESTION] [--question-id ID] [--done] [--fail] [--progress] [--session-id ID]` | agent からユーザへ通知 (`~/.config/boid/config.yaml` の `notify.command` を起動)。 `--ask` を指定すると Q&A モードになりタスクを `awaiting` に遷移させる |
-| `boid task answer --task ID --question-id ID --answer TEXT` | `awaiting` 状態のタスクに回答を送る。 タスクを `awaiting → executing` に遷移させ hook を再起動する |
+| `boid task answer --task ID --question-id ID --answer TEXT` | `awaiting` 状態のタスクに回答を送る。 blocking agent が接続中なら直ちに `executing` へ遷移する。切断中なら `pending_answer` に保存して `awaiting` のままとし、agent の再 ask 時に消費する。回答のために別 hook は起動しない |
 | `boid task import [-f FILE] [--project ID]` | JSONL からタスクを一括インポート |
 | `boid task identity link <identity> <task-id> [--url URL] [--display-name NAME] [--project-id ID]` | 外部identityをタスクへ関連付け、URLと表示名を任意で保存 |
 | `boid task identity unlink <identity> [--project-id ID]` | identityの関連付けを解除 |

@@ -89,7 +89,7 @@ project が可視なタスクの hook cwd は、 sandbox 内に git gateway 経�
 
 ### ファイルシステムアクセス
 
-hook はサンドボックス内で動きます。 読み書き可能なのは sandbox 内の clone (または readonly = true な supervisor タスクではどこも書けない — この場合も clone 自体はローカルに存在するが、 push が git gateway 側で拒否される) と `$HOME` です。 kit が `additional_bindings` で宣言したパスは追加でマウントされます。 host のホーム / SSH 鍵 / 他プロジェクトは見えません。
+hook はサンドボックス内で動きます。 読み書き可能なのは sandbox 内の clone (または readonly = true な supervisor タスクではどこも書けない — この場合も clone 自体はローカルに存在するが、 push が git gateway 側で拒否される) と `$HOME` です。`additional_bindings` は撤去済みで、追加マウントには使われません。 host のホーム / SSH 鍵 / 他プロジェクトは見えません。
 
 `$HOME` は **同一 workspace 内の job 間で永続する workspace スコープの volume** であり、 job ごとに毎回まっさらになるわけではありません。 hook が `$HOME` 配下に書いたファイル (設定・認証情報・キャッシュ・dotfile 等) は、 同じ workspace に対して後から dispatch される job からも見えます — この job の sandbox と一緒に消えるわけではありません。 `$HOME/.boid` も例外ではなく、 他の `$HOME` 配下と同じく workspace 内で永続します (Phase 6 PR8 以前は job ごとの tmpfs で隔離されていましたが、 `$HOME/.boid/output/payload_patch.json` という共有ファイル経路自体が撤廃されたため、 隔離する対象がなくなりました — 下記「出力」参照)。 `$HOME` 配下にディスク上残ることと、 task の成果物であることは別の話です — project clone の git 履歴に (commit **かつ** push で) 反映されたものだけが成果として扱われます。
 

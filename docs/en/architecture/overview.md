@@ -128,7 +128,7 @@ The domain layer.
 - **State machine** (`machine.go`) — rules for `pending → executing → awaiting / done`, auto-transitions, abort conditions.
 - **Coordinator** (`coordinator.go`) — runs one dispatch + advance step.
 - **Evaluator** (`evaluator.go`) — picks which hooks fire.
-- **ProjectStore** (`project_store.go`) — in-memory cache of project metadata. `GetWithWorkspace` projects each project's assigned workspace's `host_commands` / `env` / `capabilities` / `additional_bindings` onto it. The per-request kit resolution/merge path was removed in Phase 2.5 PR6 (see the "kit" section below).
+- **ProjectStore** (`project_store.go`) — in-memory cache of project metadata. `GetWithWorkspace` projects each project's assigned workspace's `host_commands` / `env` / `capabilities` / `allowed_domains` / `services` onto it. The per-request kit resolution/merge path was removed in Phase 2.5 PR6 (see the "kit" section below).
 - **lifecycle / payload merge / blocked / readonly** — computed traits and helpers used in transition rules.
 
 Because it does not depend on dispatcher or sandbox, the state machine is fully unit-testable.
@@ -158,11 +158,11 @@ Does not see orchestrator types (the layering rule). Inputs come in as primitive
 
 ### workspace (DB-consolidated; the kit mechanism has been retired)
 
-A workspace groups a project's runtime environment (`host_commands` / `env` / `capabilities` / `allowed_domains` / `additional_bindings`) at the machine level, backed by the `workspaces` table (Phase 2.5, `docs/plans/workspace-db-consolidation.md`). The `default` workspace is always created automatically at daemon startup, and a project is assigned to it automatically when registered.
+A workspace groups a project's runtime environment (`host_commands` / `env` / `capabilities` / `allowed_domains` / `services`) at the machine level, backed by the `workspaces` table (Phase 2.5, `docs/plans/workspace-db-consolidation.md`). The `default` workspace is always created automatically at daemon startup, and a project is assigned to it automatically when registered. `additional_bindings` is retired; persistent toolchains belong in the workspace home `init.sh`.
 
 The former kit mechanism — `internal/orchestrator/kit_registry.go`'s dynamic per-project resolution of tool-supply units, `boid kit init`'s host scan + catalog generation, and `boid workspace configure`'s LLM-driven workspace configuration — was removed in Phase 2.5 PR6 (2026-07). The per-request kit resolve-and-merge path (the `MergeKitRuntime` call inside `ProjectStore.GetWithWorkspace`) was deleted along with it.
 
-The `kit.yaml` file format itself hasn't gone away. The `WorkspaceMeta.Kits` field (workspace.yaml's `kits:`) was removed from the code outright in Phase 2.5 PR7, and `POST`/`PUT /api/workspaces` now reject a body containing `kits:` — but the expand-once-into-`host_commands`/`env`/`additional_bindings` path (`workspace_migration.go`'s `MaterializeWorkspaceKitsForPersist`/`materializeKitRuntimeIntoWorkspace`) is still there, called from exactly two places: (1) `boid workspace assign`'s auto-create convenience path (`cmd/workspace.go`, which resolves a legacy shadow yaml's `kits:` client-side), and (2) the one-time DB migration at daemon startup (`MigrateWorkspaceYAMLToDB`, for pre-cutover workspace yaml). The legacy kit `boid project migrate` generates (bundling a project.yaml's own `host_commands`/`additional_bindings`) no longer goes through a kit-directory round trip at all — its content is folded directly into the workspace's own fields.
+The `kit.yaml` file format remains only for legacy compatibility. `WorkspaceMeta.Kits` was removed from the code in Phase 2.5 PR7, and `POST`/`PUT /api/workspaces` reject `kits:`. Legacy kit references may still be materialized by the workspace migration and `workspace assign` compatibility paths, but `additional_bindings` is retired and is never applied; new runtime configuration uses workspace fields and the workspace-home `init.sh`.
 
 Entry: [`internal/orchestrator/workspace_repository.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/workspace_repository.go) (DB CRUD), [`internal/orchestrator/workspace_meta.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/workspace_meta.go) (the `WorkspaceMeta` schema), [`internal/orchestrator/workspace_migration.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/workspace_migration.go) (yaml → DB migration + legacy kit expansion).
 
