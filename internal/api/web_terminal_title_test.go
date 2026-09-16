@@ -10,7 +10,7 @@ import (
 func TestJobTerminalTitleRendering(t *testing.T) {
 	svc := &stubWebService{jobDetail: &JobWithContext{Job: Job{
 		ID: "title-job", Role: "session", Status: JobStatusRunning,
-		DisplayName: "discuss",
+		DisplayName:   "discuss",
 		TerminalTitle: "日本語 <script>alert(1)</script>",
 	}}}
 	r := newTestWebHandlerWithJobDetail(svc)
