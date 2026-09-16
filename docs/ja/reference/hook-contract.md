@@ -69,15 +69,15 @@ hook の実行コンテキストには次の環境変数が設定されます。
 | `BOID_BROKER_SOCKET` | ホストコマンドブローカーの UNIX ソケットパス |
 | `BOID_BROKER_TOKEN` | ブローカーソケットの認証トークン |
 | `BOID_SOCKET` | boid デーモンの UNIX ソケットパス (hook 内から `boid` CLI を呼ぶために使う) |
-| `BOID_USER_ANSWER` | (レガシー) `notify --ask` 経路の awaiting レコードに残った `pending_answer` を hook 環境に流し込む。 daemon は answer 時の resume hook を dispatch しないため、 通常は空。 `boid task ask` 経由の回答は in-memory で agent に直接届くので env には現れない |
-| `BOID_QUESTION_ID` | `BOID_USER_ANSWER` に対応する質問 ID。 同じくレガシー経路でのみ意味を持つ |
+| `BOID_USER_ANSWER` | hook dispatch が `awaiting.pending_answer` を伴う場合に回答を渡す変数（主に legacy `notify --ask` 互換用）。通常の `boid task ask` は stdout で回答を受け取る |
+| `BOID_QUESTION_ID` | `BOID_USER_ANSWER` に対応する質問 ID（同変数が設定される場合） |
 | `TERM` | ターミナルタイプ (例: `xterm-256color`) |
 | `HOME` | サンドボックス内のホームディレクトリ |
 | `PATH` | 起動側から継承したパス (kit の `env` で上書き可能) |
 
 > **注意**: `BOID_PROJECT_ID` は hook 環境には**設定されません**。この変数は `boid task notify` コマンドが内部的にエクスポートするもので、hook スクリプトには渡されません。
 
-> **Q&A**: agent 主導の Q&A は `boid task ask` (blocking RPC) に統一されており、 agent process は exit せず broker 接続を握ったまま回答を待ちます。 `BOID_AGENT_SESSION_ID` は廃止 (session-id resume 経路自体が削除されました)。 `BOID_USER_ANSWER` / `BOID_QUESTION_ID` はレガシー `notify --ask` 経路の awaiting レコードを再ディスパッチする際にしか set されず、 daemon はその再ディスパッチを行わないため実質的に非アクティブな env です。
+> **Q&A**: agent 主導の Q&A は `boid task ask` (blocking RPC) に統一されています。agent process は broker 接続を握ったまま回答を待ち、切断後は再 ask して永続化された回答を受け取れます。`BOID_AGENT_SESSION_ID` は廃止されました。`BOID_USER_ANSWER` / `BOID_QUESTION_ID` は pending reply を伴う dispatch 向けの互換 env です。
 
 加えて、 kit の `kit.yaml` で宣言した変数がすべて流し込まれます。
 
@@ -89,7 +89,7 @@ project が可視なタスクの hook cwd は、 sandbox 内に git gateway 経�
 
 ### ファイルシステムアクセス
 
-hook はサンドボックス内で動きます。 読み書き可能なのは sandbox 内の clone (または readonly = true な supervisor タスクではどこも書けない — この場合も clone 自体はローカルに存在するが、 push が git gateway 側で拒否される) と `$HOME` です。 kit が `additional_bindings` で宣言したパスは追加でマウントされます。 host のホーム / SSH 鍵 / 他プロジェクトは見えません。
+hook はサンドボックス内で動きます。 読み書き可能なのは sandbox 内の clone (または readonly = true な supervisor タスクではどこも書けない — この場合も clone 自体はローカルに存在するが、 push が git gateway 側で拒否される) と `$HOME` です。`additional_bindings` は撤去済みで、追加マウントには使われません。 host のホーム / SSH 鍵 / 他プロジェクトは見えません。
 
 `$HOME` は **同一 workspace 内の job 間で永続する workspace スコープの volume** であり、 job ごとに毎回まっさらになるわけではありません。 hook が `$HOME` 配下に書いたファイル (設定・認証情報・キャッシュ・dotfile 等) は、 同じ workspace に対して後から dispatch される job からも見えます — この job の sandbox と一緒に消えるわけではありません。 `$HOME/.boid` も例外ではなく、 他の `$HOME` 配下と同じく workspace 内で永続します (Phase 6 PR8 以前は job ごとの tmpfs で隔離されていましたが、 `$HOME/.boid/output/payload_patch.json` という共有ファイル経路自体が撤廃されたため、 隔離する対象がなくなりました — 下記「出力」参照)。 `$HOME` 配下にディスク上残ることと、 task の成果物であることは別の話です — project clone の git 履歴に (commit **かつ** push で) 反映されたものだけが成果として扱われます。
 

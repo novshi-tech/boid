@@ -20,13 +20,13 @@ A directory that contains a `.boid/project.yaml` file — a portable, git-checke
 - An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
 - One or more **task_behaviors** — a map of behavior names to `hooks` / `default_instruction` templates. Names are free-form (free naming). Each behavior can set `readonly`; the default when omitted is `true` (fail-safe).
 
-You register a project with `boid project add <path>` / `boid project init <path>`. Any number of projects can coexist; each task belongs to exactly one of them. Registering a project assigns it to the `default` workspace automatically.
+You register a project from a Git remote with `boid project add <git-url> --workspace <slug>`. Use `boid project init [dir]` to scaffold a project locally before committing and pushing it. Any number of projects can coexist; each task belongs to exactly one of them. Registering a project assigns it to the selected workspace (or `default` when using the daemon's direct registration paths).
 
 > **History**: A project used to carry `kits:` / `host_commands` / `env` / `additional_bindings` / `secret_namespace` / `capabilities` directly (top-level `project.yaml`, or `.boid/project.local.yaml`). Phase 2.5 (workspace DB consolidation) made `project.yaml` reject all of these; every machine-local runtime setting now lives on a workspace instead. An old-schema `project.yaml` can be converted with `boid project migrate <dir>` — see the [Migration guide](migration.md).
 
 ## Workspace
 
-A project's **runtime environment**. Not just a classification label — it holds `host_commands` (reference names) / `env` / `capabilities` / `allowed_domains` / `additional_bindings`, and these directly shape the sandbox. It is machine-scoped, stored in the `workspaces` table (Phase 2.5), and assigned to projects. A project can belong to at most one workspace. The `default` workspace is always created automatically at daemon startup, so nothing needs to be configured if you don't need to customize it.
+A project's **runtime environment**. Not just a classification label — it holds `host_commands` (reference names) / `env` / `capabilities` / `allowed_domains` / `services`, and these directly shape the sandbox. It is machine-scoped, stored in the `workspaces` table (Phase 2.5), and assigned to projects. A project can belong to at most one workspace. The `default` workspace is always created automatically at daemon startup, so nothing needs to be configured if you don't need to customize it.
 
 - `boid workspace list` lists the configured workspaces.
 - `boid workspace show <slug>` shows that workspace's settings (`host_commands`/`env`/`capabilities`, etc.), its assigned projects, and their recent tasks.
@@ -72,7 +72,7 @@ Hooks communicate with `boid` over a fixed protocol: the task payload arrives on
 A **kit** is a distribution unit for bundling part of the sandbox's runtime environment. **Hooks and task behaviors are not a kit's job** — hooks are always authoritative in `project.yaml`'s `task_behaviors.<name>.hooks` (a kit has never provided hooks). What a kit can actually package is limited to:
 
 - **host_commands** — the allow-list of commands the sandbox may forward to the host.
-- **additional_bindings** — extra paths to mount into the sandbox.
+- **additional_bindings** — a retired legacy field; persistent toolchains now belong in the workspace home `init.sh`.
 - **env** — environment variables set inside the sandbox.
 
 On disk a kit is a directory holding a `kit.yaml` alongside the relevant files. **Phase 2.5 PR7 (2026-07) removed the `WorkspaceMeta.Kits` field (a workspace's `kits:`) from the code outright** — `project.yaml` no longer has a `kits:` path either. Kit directories (`~/.local/share/boid/kits/<name>/kit.yaml`) still exist on disk, but the only remaining load paths are the legacy kit `boid project migrate` generates (used solely to register host_commands definitions in the daemon-wide registry) and `boid workspace assign`'s auto-create convenience path. Official packages live in the [boid-kits](https://github.com/novshi-tech/boid-kits) repository; see the [kit authoring overview](../kit-authoring/overview.md) for the on-disk layout and the full field reference. For the history behind retiring the kit mechanism's tooling, see [Onboarding / On the retirement of the kit mechanism](onboarding.md#on-the-retirement-of-the-kit-mechanism) and [Migration guide / Final retirement of the kit mechanism](migration.md#final-retirement-of-the-kit-mechanism-phase-25-pr7).
@@ -104,7 +104,7 @@ Sessions always start fresh — the session-id resume path was removed repo-wide
 | Config | behavior (hooks / readonly …) | workspace settings only |
 | Use case | autonomous long-running work | interactive or exploratory work |
 
-A session inherits the `env`, `host_commands`, `additional_bindings`, and `capabilities` of the project's assigned **workspace**. Secrets are resolved under the workspace's own slug as the namespace. It does not use any behavior definition.
+A session inherits the `env`, `host_commands`, and `capabilities` of the project's assigned **workspace** (plus its effective network/API-gateway policy). `additional_bindings` is not applied. Secrets are resolved under the workspace's own slug as the namespace. It does not use any behavior definition.
 
 To stop a session, exit the agent or run `boid agent stop <job-id>`. Closing the browser does not kill the session process — you can reattach from the Web UI.
 

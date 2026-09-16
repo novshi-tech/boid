@@ -91,7 +91,7 @@ curl --unix-socket "$XDG_RUNTIME_DIR/boid.sock" http://localhost/api/health
 | POST | `/api/tasks/{id}/hooks/{hook_id}/replay` | 特定 hook を再実行 |
 | GET | `/api/tasks/{id}/events` | **SSE** ストリーム (タスクイベント) |
 | POST | `/api/tasks/{id}/notify` | agent からの通知を送信。 `ask` フィールドがあると `awaiting` に遷移 |
-| POST | `/api/tasks/{id}/answer` | `awaiting` タスクにユーザの回答を送信し `executing` に遷移 |
+| POST | `/api/tasks/{id}/answer` | `awaiting` タスクに回答を送信。blocking agent 接続中なら即時復帰し、切断中なら次回の再 ask 用に保存 |
 
 `POST /api/tasks` のリクエスト形式:
 
@@ -159,7 +159,7 @@ agent からユーザへ通知を送信します。 `ask` フィールドが存�
 
 #### `POST /api/tasks/{id}/answer`
 
-`awaiting` 状態のタスクにユーザの回答を送信します。 `payload.awaiting.pending_answer` に回答を設定し、タスクを `awaiting → executing` に遷移させて hook を再起動します。
+`awaiting` 状態のタスクにユーザの回答を送信します。接続中の待機者がいれば回答を直ちに渡して `executing` に戻します。待機者がいなければ `pending_answer` として保存し、タスクは `awaiting` のままです。agent が再度質問したときに保存済みの回答が返されます。
 
 リクエスト形式:
 

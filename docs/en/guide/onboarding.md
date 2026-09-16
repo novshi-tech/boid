@@ -151,7 +151,7 @@ See [CLI reference / Host Commands](../reference/cli.md#host-commands) for full 
 ## Concepts
 
 - **project**: Work patterns (portable, checked into git). Defined in `.boid/project.yaml`.
-- **workspace**: The runtime environment (machine-scoped, stored in the `workspaces` table). Holds `host_commands` / `env` / `capabilities` / `allowed_domains` / `additional_bindings`, etc., and is assigned to projects. The `default` workspace is always created automatically.
+- **workspace**: The runtime environment (machine-scoped, stored in the `workspaces` table). Holds `host_commands` / `env` / `capabilities` / `allowed_domains` / `services`, and is assigned to projects. The `default` workspace is always created automatically. `additional_bindings` is retired; persistent toolchains belong in the workspace home.
 
 ## On the retirement of the kit mechanism
 

@@ -46,6 +46,7 @@ Concept-oriented how-to.
 - [Payload trait reference](reference/traits.md) — the shape of `artifact` / `lifecycle`, what the state machine reads, and the merge modes
 - [CLI reference](reference/cli.md) — index of every subcommand grouped by role (per-flag detail lives in `boid <subcommand> --help`)
 - [HTTP API reference](reference/http-api.md) — the `/api/*` endpoints the daemon exposes over the UNIX socket and HTTP listener, plus SSE and error format
+- [Configuration reference](reference/config-yaml.md) — daemon configuration, API gateway services, Integration Packs, and OAuth providers
 
 ### Kit authoring
 

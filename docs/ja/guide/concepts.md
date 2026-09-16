@@ -20,13 +20,13 @@
 - `id` (この `boid` 内でプロジェクトを一意に識別する文字列) と `name` (表示名)
 - 1 つ以上の **task_behaviors** — behavior 名をキーにして `hooks` / `default_instruction` 雛形を束ねたもの。 名前は自由 (free naming)。 `readonly` は behavior ごとに設定でき、 省略時は `true` (fail-safe)
 
-プロジェクトは `boid project add <path>` / `boid project init <path>` で `boid` に登録します。プロジェクトは何個でも登録でき、各タスクはいずれか 1 つに属します。 登録すると自動的に `default` workspace に割り当てられます。
+プロジェクトは Git remote から `boid project add <git-url> --workspace <slug>` で登録します。ローカルで雛形を作る場合は、先に `boid project init [dir]` を実行して commit・push してください。プロジェクトは何個でも登録でき、各タスクはいずれか 1 つに属します。登録時に指定した workspace（省略可能な直接登録経路では `default`）に割り当てられます。
 
 > **歴史的経緯**: 以前は project 自身が `kits:` / `host_commands` / `env` / `additional_bindings` / `secret_namespace` / `capabilities` を直接持っていました (`project.yaml` トップレベル、 または `.boid/project.local.yaml`)。 Phase 2.5 (workspace DB 一元化) でこれらは `project.yaml` からは reject されるようになり、 machine-local な実行環境は全て workspace 側に集約されました。 旧スキーマの `project.yaml` は `boid project migrate <dir>` で変換できます。詳細は [移行ガイド](migration.md) を参照してください。
 
 ## ワークスペース (workspace)
 
-プロジェクトの **実行環境** です。 単なる分類ラベルではなく、 `host_commands` (参照名) / `env` / `capabilities` / `allowed_domains` / `additional_bindings` を持ち、 サンドボックスの設定に直接効きます。 machine 単位で `workspaces` テーブルに DB 管理され (Phase 2.5)、 project に割り当てて使います。 1 つのプロジェクトは最大 1 つの workspace に所属します。 `default` workspace は daemon 起動時に常に自動生成されるため、 カスタマイズが不要なら何もしなくても動きます。
+プロジェクトの **実行環境** です。 単なる分類ラベルではなく、 `host_commands` (参照名) / `env` / `capabilities` / `allowed_domains` / `services` を持ち、 サンドボックスの設定に直接効きます。 machine 単位で `workspaces` テーブルに DB 管理され (Phase 2.5)、 project に割り当てて使います。 1 つのプロジェクトは最大 1 つの workspace に所属します。 `default` workspace は daemon 起動時に常に自動生成されるため、 カスタマイズが不要なら何もしなくても動きます。 `additional_bindings` は撤去済みです。
 
 - `boid workspace list` で登録済み workspace 一覧
 - `boid workspace show <slug>` でその workspace の設定内容 (`host_commands`/`env`/`capabilities` 等) と割り当て済みプロジェクト・最近のタスクを表示
@@ -72,7 +72,7 @@ hook と `boid` 本体は、 stdin にタスクの payload、 stdout に payload
 サンドボックスの実行環境の一部をまとめて配布するための単位が **kit** です。 **hook や task behavior は kit の役割ではありません** — hook は常に `project.yaml` の `task_behaviors.<name>.hooks` が権威です (kit が hook を提供したことは一度もありません)。 kit が実際に同梱できるのは次の要素だけです:
 
 - **host_commands** — サンドボックスから host に流せるコマンドの許可リスト
-- **additional_bindings** — サンドボックスにマウントしたい追加パス
+- **additional_bindings** — 撤去済みの legacy フィールド。永続的なツールチェーンは workspace home の `init.sh` に置きます
 - **env** — サンドボックス内に設定する環境変数
 
 ディスク上は `kit.yaml` と関連ファイルを並べたディレクトリです。 **Phase 2.5 PR7 (2026-07) で `WorkspaceMeta.Kits` フィールド (workspace の `kits:`) はコードから完全撤去されました** — `project.yaml` に `kits:` を書く経路も既に撤去済みです。 kit ディレクトリ自体 (`~/.local/share/boid/kits/<name>/kit.yaml`) は残っていますが、 参照して読み込む経路は `boid project migrate` が生成する legacy kit (host_commands 定義を daemon 側の集約レジストリに登録する用途のみ) と `boid workspace assign` の auto-create 補助経路に限られます。 公式パッケージは [boid-kits](https://github.com/novshi-tech/boid-kits) リポジトリにあり、 ファイル構造や各フィールドの詳細は [Kit 作者向け 概要](../kit-authoring/overview.md) を参照してください。 kit 機構自体の退役の経緯は [オンボーディング / kit 機構の退役について](onboarding.md#kit-機構の退役について) と [移行ガイド / kit 機構の最終撤去](migration.md#kit-機構の最終撤去-phase-25-pr7) を参照してください。
@@ -104,7 +104,7 @@ boid exec           -p <project> -- bash   # サンドボックス内でシェ�
 | 設定 | behavior (hooks / readonly 等) | workspace の設定のみ継承 |
 | 用途 | 自律・長時間タスク | 対話的な作業・試験的なデバッグ |
 
-セッションは project が割り当てられている **workspace** の `env` / `host_commands` / `additional_bindings` / `capabilities` を継承します。 secret は workspace 自身の slug をネームスペースとして解決されます。 behavior 定義は参照しません。
+セッションは project が割り当てられている **workspace** の `env` / `host_commands` / `capabilities` と有効なネットワーク/API gateway policy を継承します。 `additional_bindings` は適用されません。 secret は workspace 自身の slug をネームスペースとして解決されます。 behavior 定義は参照しません。
 
 セッションを終了するにはエージェントを exit させるか、 `boid agent stop <job-id>` を使います。 ブラウザを閉じてもセッションプロセスは生き続け、 Web UI から再 attach できます。
 

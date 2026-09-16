@@ -33,8 +33,8 @@ compose daemon 配下のプロジェクトについては、 完全に安全な�
 ### `boid project migrate` の変換内容
 
 1. `project.yaml` の撤去対象フィールド (`kits` / `env` / `host_commands` / `additional_bindings` / `secret_namespace` / `capabilities`、 および behavior-level の `task_behaviors.<name>.kits`) を検出する
-2. **(Phase 2.5 PR7 で変更)** 既存の `kits:` 参照 (`github.com/.../foo` のような ref) は、 名前検証 (`ValidKitName`) のみ行い、 migrate の dry-run/apply 出力に informational な note として表示される。 `WorkspaceMeta.Kits` フィールド自体が撤去されたため、 workspace へは一切引き継がれない — その kit が host_commands/env/additional_bindings を供給していた場合は、 移行後に手で workspace.yaml に追記すること
-3. `host_commands` / `additional_bindings` のどちらかが非空なら、 その内容を同梱した **新規の legacy kit** を `~/.local/share/boid/kits/legacy-<slug>/kit.yaml` として生成する。 **(Phase 2.5 PR7 で変更)** この kit の host_commands 名リストと additional_bindings は、 kit 参照経由ではなく workspace の `host_commands:` / `additional_bindings:` に **直接** 追記される (project.yaml 自身のフィールドなので kit ディレクトリを介した再解決は不要)。 legacy kit の `host_commands` 定義自体は、 daemon 側の集約レジストリ `~/.config/boid/host_commands.yaml` にもマージされ (`workspace.host_commands` の名前参照が解決できるように)、 daemon に到達可能なら reload を指示する
+2. **(Phase 2.5 PR7 で変更)** 既存の `kits:` 参照 (`github.com/.../foo` のような ref) は、名前検証 (`ValidKitName`) のみ行い、 migrate の dry-run/apply 出力に informational な note として表示する。`WorkspaceMeta.Kits` は撤去済みのため workspace へ自動解決されない。必要な `host_commands` / `env` は移行後に手で workspace に追記すること。`additional_bindings` は撤去済みで復元できない
+3. `host_commands` が非空なら、参照名を workspace の `host_commands:` に追加し、定義を daemon 側の集約レジストリ `~/.config/boid/host_commands.yaml` にマージする。`additional_bindings` は撤去済みで適用されない。永続的なツールチェーンは workspace home の `init.sh` に移す
 4. `env` は workspace の `env` へ直接マージする (同一キーは新値、 つまり project.yaml 側が優先)
 5. `capabilities.docker` は workspace の `capabilities.docker` へ直接マージする (project.yaml 側が設定していれば上書き)
 6. `secret_namespace` が設定されていれば、 旧 namespace の secret を新 namespace (= workspace の slug そのもの) へコピーする。 **`secret_namespace` という別フィールドが workspace に生えるわけではない** — workspace は元々 slug 自体を secret のネームスペースとして使う設計であり、 移行が行うのは値のコピーだけ
@@ -69,7 +69,7 @@ compose daemon 配下のプロジェクトについては、 完全に安全な�
 |---|---|
 | `env` | workspace の `env` へ直接マージ |
 | `host_commands` | workspace の `host_commands:` (参照名リスト) に直接追記 + daemon 側 `~/.config/boid/host_commands.yaml` に実定義をマージ (非空なら生成される legacy kit 経由、 Phase 2.5 PR7) |
-| `additional_bindings` | workspace の `additional_bindings:` に直接追記 (Phase 2.5 PR7、 kit ディレクトリを介した再解決は不要) |
+| `additional_bindings` | 移行しない (撤去済み)。永続的なツールチェーンは workspace home の `init.sh` を使う |
 | `secret_namespace` | workspace に同名の別フィールドとして生えるのではなく、 **workspace の slug そのものが新しい secret namespace になる**。 移行が行うのは旧 namespace から新 namespace (= workspace slug) への secret 値コピーのみ |
 
 ## workspace DB 移行について (Phase 2.5、自動・手動操作不要)
@@ -96,7 +96,7 @@ workspace の中身を新規に用意する場合は、`boid workspace configure
 `WorkspaceMeta.Kits` フィールド (workspace.yaml の `kits:`) は Phase 2.5 PR7 (2026-07) でコードから完全撤去されました。影響:
 
 - `POST` / `PUT /api/workspaces` に `kits:` キーを含む body を送ると 400 (`unknown field kits`) で reject される
-- `boid project migrate` は legacy project.yaml の `kits:` 参照を名前検証・informational 表示のみ行い、 workspace への自動解決はしなくなった (上の「`boid project migrate` の変換内容」参照)。 migrate が生成する legacy kit 自体 (`host_commands` + `additional_bindings` を同梱) は変わらず生成され、 その内容は workspace の対応フィールドに直接追記される
+- `boid project migrate` は legacy project.yaml の `kits:` 参照を名前検証・informational 表示のみ行い、 workspace への自動解決はしない。host command の参照名・定義は移行されるが、`additional_bindings` は撤去済みのため無視される
 - 唯一残る legacy `kits:` 対応経路は `boid workspace assign` の auto-create 補助 (手書き/e2e フィクスチャの workspace shadow yaml 向け) — クライアント側でインストール済み kit を解決してから (kits: を含まない) body を送信する
 - **(訂正)** rollback 用に残置している shadow yaml (`~/.config/boid/workspaces/*.yaml`) や `~/.local/share/boid/kits/` ディレクトリは、 「DB 権威切り替え後は読まれない」わけではなく、 依然として次の 2 経路から読まれる依存が残っている — 「削除しても daemon の動作に影響はない」という案内は誤りなので撤回する:
   - shadow yaml: `boid workspace assign` の auto-create 経路 (直前の箇条書き参照) が、 assign 先の slug にまだ DB row が無い場合に `~/.config/boid/workspaces/<slug>.yaml` を読みに行く。 未 assign の workspace slug に対して今後も `assign` を使う可能性があるなら、 該当 slug の shadow yaml を消してはいけない

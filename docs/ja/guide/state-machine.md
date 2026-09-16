@@ -7,19 +7,15 @@
 ## 状態
 
 ```
-                 +--------+    abort / job_failed
-                 |aborted | <--------------------+
-                 +--------+                      |
-                                                 |
-   start                                         |
-pending -----> executing -----> done             |
-                  ^    ^                         |
-                  |    | ask                     |
-                  |    +------+                  |
-                  |           v                  |
-                  |       awaiting               |
-                  |           |                  |
-                  +-- answer -+                  |
+pending -----> executing -----> done
+                  |    ^
+                  |    | answer (connected)
+                  |    |
+                  +--> awaiting
+                       answer (disconnected): awaiting のまま、
+                       pending_answer に保存
+
+abort / job_failed: 終端でない任意の状態 -----> aborted
 ```
 
 | 状態 | 意味 |
@@ -43,9 +39,15 @@ pending -----> executing -----> done             |
 | `reopen` | `done` | `executing` | 新しい instruction を append して再開 (`--message` で渡す) |
 | `reopen` | `aborted` | `executing` | aborted のタスクを executing に戻す |
 | `ask` | `executing` | `awaiting` | `boid task ask` (blocking RPC) または `boid task notify --ask` が発行。 task を `awaiting` に置く |
-| `answer` | `awaiting` | `executing` | `boid task answer` または Web UI が発行。 `boid task ask` 経由の awaiting にしか到達できない (parked broker 接続経由で agent に届ける)。 `notify --ask` の場合は agent が既に exit しているため 409 で reject される |
+| `answer` | `awaiting` | 接続中は `executing`、切断中は `awaiting` のまま | 接続中の `boid task ask` agent には直ちに回答が届く。切断中なら回答を `pending_answer` に保存し、agent が再 ask した時に消費する。`notify --ask` が回答のために resume hook を起動することはない |
 | `abort` | 終端でない任意の状態 | `aborted` | |
 | `job_failed` (system) | 終端でない任意の状態 | `aborted` | |
+
+### Card の状態
+
+Card は別の task type であり、agent session は実行しません。状態は
+`parked` (初期・保留)、`working` (次の処理中)、`dropped` (終端) です。
+上記の execution task 用5状態は Card には適用されません。
 
 ### 非遷移アクション (タイムライン記録のみ)
 

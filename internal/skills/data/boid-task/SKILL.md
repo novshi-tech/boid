@@ -198,7 +198,8 @@ esac
 
 `boid task ask` targets your own task (no id needed), transitions it to
 `awaiting`, and **blocks** until the user/supervisor answers — then the task
-returns to `executing` and the call prints the reply. For child tasks the parent
+returns to `executing` and the call prints the reply. If the harness disconnects,
+the answer is durably parked and consumed by the next identical re-ask. For child tasks the parent
 supervisor answers (`boid task answer`); for root tasks the user is notified
 directly. boid itself never times the call out (it waits indefinitely).
 
@@ -220,7 +221,7 @@ question is the retry above and is always allowed, but issuing a **different**
 
 > The legacy `boid task notify --ask` flag still transitions the task to
 > `awaiting`, but the daemon no longer dispatches a resume hook on answer —
-> the answer has nowhere to land. Use `boid task ask` for any real Q&A; treat
+> the legacy path does not start a resume hook. Use `boid task ask` for any real Q&A; treat
 > `notify --ask` as a vestigial API.
 
 **Never use `notify` without `--done`/`--fail` for decision branches.** Bare

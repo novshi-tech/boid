@@ -407,7 +407,7 @@ wrap は不要 — `set -eu` は POSIX 準拠なので dash でもそのまま�
 
 ## 関連 memory / doc
 
-- [container-git-gateway-design](../../../.claude/projects/-home-nosen-src-github-com-novshi-tech-boid/memory/container-git-gateway-design.md) — cutover 全体像
+- `container-git-gateway-design` — cutover 全体像（ローカル memory のためリポジトリには含まれません）
 - `docs/plans/git-gateway-cutover.md` — §3 の元記述 (post-cutover 改善)
 - `docs/plans/agent-aware-boid.md` — Phase 3-d/3-e の HarnessAdapter 化背景
 - 前セッション調査 (2026-07-15): script hook 実利用実態と削除実現可能性

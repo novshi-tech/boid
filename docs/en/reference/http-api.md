@@ -47,6 +47,7 @@ curl --unix-socket "$XDG_RUNTIME_DIR/boid.sock" http://localhost/api/health
 | GET | `/api/health` | Health check (200 = alive). |
 | POST | `/api/shutdown` | Stop the daemon (used by `boid stop`). |
 | GET | `/api/proxy` | Metadata for the sandbox-facing HTTP proxy. |
+| GET | `/api/cli-token-check` | Authenticated readiness check for CLI host mode. |
 
 ### Project
 
@@ -57,10 +58,11 @@ curl --unix-socket "$XDG_RUNTIME_DIR/boid.sock" http://localhost/api/health
 | GET | `/api/projects/{id}` | Project detail. |
 | DELETE | `/api/projects/{id}` | Unregister a project. |
 | POST | `/api/projects/reload` | Re-read every project's `project.yaml`. |
-| GET | `/api/projects/{id}/commands` | List the project's `commands`. |
-| GET | `/api/projects/{id}/commands/{name}` | Show one command. |
-| POST | `/api/projects/{id}/commands/{name}/execute` | Execute a named command. |
 | PUT | `/api/projects/{id}/workspace` | Update workspace assignment. |
+| POST | `/api/projects/{id}/exec` | Start an arbitrary sandbox command. |
+| POST | `/api/projects/{id}/sessions` | Start an agent session. |
+| POST | `/api/projects/{id}/triggers/{name}/run` | Run a project trigger once. |
+| POST | `/api/projects/{id}/fetch` | Fetch a git-URL project and reload its metadata. |
 
 For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, see [CLI / Project](cli.md#project).
 
@@ -69,6 +71,17 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 | Method | Path | Role |
 |---|---|---|
 | GET | `/api/workspaces` | List workspaces. |
+| GET/POST/PUT/DELETE | `/api/workspaces/{slug}...` | Manage workspaces, init scripts, assignments, and export/apply operations. |
+
+### Cards and signals
+
+| Method | Path | Role |
+|---|---|---|
+| POST | `/api/cards/{id}/commands/{key}` | Launch a project-defined card command. |
+| GET | `/api/card-requests` | List card command requests. |
+| POST | `/api/card-requests/{id}/release` | Release a stuck card request. |
+| GET | `/api/signals` | List signals in the inbox. |
+| POST | `/api/signals/ack` | Acknowledge signals. |
 
 ### Task
 
@@ -80,6 +93,7 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 | GET | `/api/tasks/{id}` | Task detail. |
 | GET | `/api/tasks/{id}/detail` | Task detail plus actions / jobs (used by the Web UI detail view). |
 | PATCH | `/api/tasks/{id}` | Update a task (`UpdateTaskRequest`: `payload` / `instructions` / other fields). |
+| GET | `/api/tasks/{id}/field` | Read one dotted task field. |
 | DELETE | `/api/tasks/{id}` | Delete a task (`?force=true` to skip state checks). |
 | POST | `/api/tasks/{id}/duplicate` | Duplicate a task. |
 | POST | `/api/tasks/{id}/rerun` | Reset a `done` / `aborted` task to `pending` and re-run. |
@@ -90,7 +104,7 @@ For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, se
 | POST | `/api/tasks/{id}/hooks/{hook_id}/replay` | Replay one hook. |
 | GET | `/api/tasks/{id}/events` | **SSE** stream of task events. |
 | POST | `/api/tasks/{id}/notify` | Send an agent notification. When `ask` is present, transitions the task to `awaiting`. |
-| POST | `/api/tasks/{id}/answer` | Submit a user reply to an `awaiting` task and resume it. |
+| POST | `/api/tasks/{id}/answer` | Submit a user reply to an `awaiting` task; deliver it immediately when the blocking agent is connected, otherwise persist it for the next re-ask. |
 
 `POST /api/tasks` request body:
 
@@ -158,7 +172,7 @@ Error codes:
 
 #### `POST /api/tasks/{id}/answer`
 
-Submit the user's reply to an `awaiting` task. Stores the answer in `payload.awaiting.pending_answer` and transitions the task `awaiting → executing`, which restarts the hook.
+Submit the user's reply to an `awaiting` task. A connected blocking agent receives the answer and the task moves to `executing`; when no agent is connected, the answer is stored in `payload.awaiting.pending_answer` and the task remains `awaiting` until the agent re-asks. No resume hook is started by this endpoint.
 
 Request body:
 

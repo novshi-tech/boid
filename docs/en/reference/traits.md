@@ -31,7 +31,7 @@ Written by hooks that perform verification steps. Unlike `artifact`, the merge m
 
 ### `awaiting` trait
 
-Set automatically by `boid` when `boid task ask` (blocking RPC) or `boid task notify --ask` is called. The `boid task ask` flow holds the agent's broker connection open and routes the reply back over the same socket via an in-memory registry; `notify --ask` only flips the task into `awaiting` and exits the agent — the daemon no longer dispatches a resume hook on answer (session-id resume was removed). Prefer `boid task ask` for any real Q&A.
+Set automatically by `boid` when `boid task ask` (blocking RPC) or `boid task notify --ask` is called. A connected blocking agent receives the reply over the same socket; if it is disconnected, the reply is persisted in `pending_answer` for the next identical ask. `notify --ask` remains a compatibility path and does not start a resume hook. Prefer `boid task ask` for real Q&A.
 
 Fields:
 
@@ -39,7 +39,7 @@ Fields:
 |---|---|---|---|
 | `question` | string | boid core | Human-readable question text shown to the user. |
 | `question_id` | string | boid core | UUID identifying this Q&A turn. |
-| `pending_answer` | string | boid core | Legacy `notify --ask` reply slot. Unused by the `boid task ask` path (answers are delivered in-memory). |
+| `pending_answer` | string | boid core | Durable reply slot used when an answer cannot reach a blocking agent immediately. A re-asked `boid task ask` consumes it; legacy hook dispatches may also expose it as `BOID_USER_ANSWER`. |
 
 The `awaiting` trait is managed exclusively by `boid` core and the `ApplyAction("ask"/"answer")` path. Hooks must not write to it directly. Legacy records may still carry `session_id` / `mode` fields — the deserializer silently ignores them (they were removed from the struct).
 
