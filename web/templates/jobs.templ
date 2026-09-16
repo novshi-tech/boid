@@ -20,7 +20,7 @@ type JobContextView struct {
 	ProjectID   string
 	TaskTitle   string
 	HandlerID   string
-	RenameValue string // explicit user name; empty allows terminal titles
+	RenameValue string // explicit fallback name used when no terminal title is available
 	DisplayName string // optional; preferred over HandlerID when non-empty (hook job's `name`)
 	Role        string
 	HookID      string // set when job is a hook job; used for hook replay form

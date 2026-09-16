@@ -44,11 +44,11 @@ func TestJobHandlerPatch_UpdatesDisplayName(t *testing.T) {
 	}
 }
 
-func TestJobHandlerPatch_ManualNameOverridesTerminal(t *testing.T) {
+func TestJobHandlerPatch_ManualNamePreservesTerminalPriority(t *testing.T) {
 	store := &stubJobStore{job: &Job{ID: "j1", DisplayName: "default", DisplayNameDefault: true, TerminalTitle: "terminal"}}
 	h := &JobHandler{Jobs: store}
 	w := jobPatchRequest(t, http.HandlerFunc(h.Patch), "j1", map[string]any{"display_name": "manual"})
-	if w.Code != http.StatusOK || store.job.EffectiveDisplayName() != "manual" || store.job.TerminalTitle != "terminal" {
+	if w.Code != http.StatusOK || store.job.EffectiveDisplayName() != "terminal" || store.job.DisplayName != "manual" || store.job.DisplayNameDefault {
 		t.Fatalf("job = %+v, response = %s", store.job, w.Body.String())
 	}
 	w = jobPatchRequest(t, http.HandlerFunc(h.Patch), "j1", map[string]any{"display_name": ""})
