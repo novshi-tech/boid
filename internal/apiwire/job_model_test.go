@@ -7,7 +7,8 @@ func TestEffectiveDisplayName(t *testing.T) {
 		job  Job
 		want string
 	}{
-		{Job{DisplayName: "manual", TerminalTitle: "terminal"}, "manual"},
+		{Job{DisplayName: "manual", TerminalTitle: "terminal"}, "terminal"},
+		{Job{DisplayName: "manual"}, "manual"},
 		{Job{DisplayName: "default", DisplayNameDefault: true, TerminalTitle: "terminal"}, "terminal"},
 		{Job{DisplayName: "default", DisplayNameDefault: true}, "default"},
 		{Job{TerminalTitle: "terminal"}, "terminal"},

@@ -46,12 +46,9 @@ type JobCompletionResult struct {
 	ExitCode int
 }
 
-// EffectiveDisplayName prefers an explicit name, then the terminal title,
-// then the name generated when the job was launched.
+// EffectiveDisplayName prefers the terminal title, falling back to the
+// configured or generated name when no terminal title is available.
 func (j *Job) EffectiveDisplayName() string {
-	if j.DisplayName != "" && !j.DisplayNameDefault {
-		return j.DisplayName
-	}
 	if j.TerminalTitle != "" {
 		return j.TerminalTitle
 	}

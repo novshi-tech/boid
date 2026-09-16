@@ -463,8 +463,21 @@ func TestTerminalTitleSurvivesStaleJobUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.EffectiveDisplayName() != "manual" || got.TerminalTitle != "next title" {
+	if got.EffectiveDisplayName() != "next title" || got.DisplayName != "manual" {
 		t.Fatalf("job = %+v", got)
+	}
+	if err := dispatcher.UpdateJobTerminalTitle(d.Conn, job.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err = dispatcher.GetJob(d.Conn, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EffectiveDisplayName() != "manual" {
+		t.Fatalf("cleared title must fall back to configured name: %+v", got)
+	}
+	if err := dispatcher.UpdateJobTerminalTitle(d.Conn, job.ID, "next title"); err != nil {
+		t.Fatal(err)
 	}
 	got.DisplayName = ""
 	if err := dispatcher.UpdateJob(d.Conn, got); err != nil {

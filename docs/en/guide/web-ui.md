@@ -164,12 +164,12 @@ Next: [Troubleshooting](troubleshooting.md)
 
 ### Job names and terminal titles
 
-For new sessions and interactive exec jobs without an explicit name, boid uses
+For sessions and interactive exec jobs, boid uses
 window titles emitted by the program (OSC 0 or OSC 2). The daemon captures and
 stores these even when no browser is connected. The job detail label refreshes
 every two seconds while running, without reconnecting the terminal.
 
-Explicit names take priority over terminal titles; automatically generated names
-are the fallback when no terminal title is available. Clear the name using the
-job's rename button to follow terminal titles again. Existing jobs keep their
-names after upgrading because their original naming source is unknown.
+Terminal titles take priority even when a job has an explicit name. Configured
+or automatically generated names are the fallback when no terminal title is
+available. Renaming a job changes this fallback without hiding the terminal
+title. This also applies to existing jobs with a captured terminal title.
