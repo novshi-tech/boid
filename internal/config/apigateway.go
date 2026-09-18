@@ -49,6 +49,8 @@ type ServiceAuthConfig struct {
 // ServiceConfig declares one logical service the API gateway can proxy job
 // requests to.
 type ServiceConfig struct {
+	// Redirects is an operator-controlled policy, also supported with uses.
+	Redirects apigateway.RedirectPolicy `yaml:"redirects,omitempty"`
 	// BaseURL is the upstream base URL (scheme + host, optionally a path
 	// prefix) — never exposed to the sandbox; only the logical service name
 	// in the route path is.
@@ -186,6 +188,9 @@ func ValidateServiceURL(serviceName, fieldName, rawURL string, allowInsecure boo
 // validateServiceConfig validates one services.<name> entry, returning a
 // descriptive error naming both the service and the missing/invalid field.
 func validateServiceConfig(name string, sc ServiceConfig) error {
+	if err := sc.Redirects.Validate(); err != nil {
+		return fmt.Errorf("services[%q].redirects: %w", name, err)
+	}
 	// The service registry built from this config is keyed verbatim by the
 	// services.<name> map key, but ResolveEnabledServices trims every
 	// service name it resolves before matching — so a whitespace-padded
@@ -413,6 +418,7 @@ func (c Config) APIGatewayServices() []apigateway.ServiceConfig {
 				Provider:          sc.Auth.Provider,
 			},
 			AllowReadOnlyWrite: sc.AllowReadOnlyWrite,
+			Redirects:          sc.Redirects,
 			RequireAccount:     sc.RequireAccount,
 		})
 	}

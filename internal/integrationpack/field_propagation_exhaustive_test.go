@@ -136,7 +136,7 @@ func TestServiceConfigFieldPropagation_Exhaustive(t *testing.T) {
 			continue
 		}
 		kind := scField.Type.Kind()
-		if kind != reflect.Bool && kind != reflect.String {
+		if kind != reflect.Bool && kind != reflect.String && scField.Type != reflect.TypeOf(apigateway.RedirectPolicy{}) {
 			t.Errorf("field %q matches config.ServiceConfig/apigateway.ServiceConfig by name+type but this test only knows how to synthesize a distinguishing value for bool/string fields — extend it (or add an exclusion with a reason) before shipping this field", scField.Name)
 			continue
 		}
@@ -192,7 +192,7 @@ func TestServiceConfigFieldPropagation_Exhaustive(t *testing.T) {
 	// the DesugarService/resolve.go propagation this test's own failure
 	// pointed at before that fix landed. BaseURLSecretKey is checked here
 	// too now (free-form path only — serviceConfigFreeFormOnlyFields).
-	want := map[string]bool{"AllowReadOnlyWrite": true, "RequireAccount": true, "AllowInsecure": true, "BaseURLSecretKey": true}
+	want := map[string]bool{"Redirects": true, "AllowReadOnlyWrite": true, "RequireAccount": true, "AllowInsecure": true, "BaseURLSecretKey": true}
 	if len(checked) != len(want) {
 		t.Fatalf("round-trip-checked fields = %v, want exactly %v — a new same-name/same-type field appeared on both structs: give it a round-trip check (it will run automatically) and update `want` here, or add it to serviceConfigPassthroughExclusions/serviceConfigFreeFormOnlyFields with a reason", checked, want)
 	}
@@ -295,6 +295,8 @@ func TestServiceConfigFieldPropagation_Exhaustive_Auth(t *testing.T) {
 func setDistinguishingValue(t *testing.T, v reflect.Value, kind reflect.Kind) {
 	t.Helper()
 	switch kind {
+	case reflect.Struct:
+		v.Set(reflect.ValueOf(apigateway.RedirectPolicy{AllowedHosts: []string{"*.downloads.example.com"}}))
 	case reflect.Bool:
 		v.SetBool(true)
 	case reflect.String:
@@ -310,6 +312,10 @@ func setDistinguishingValue(t *testing.T, v reflect.Value, kind reflect.Kind) {
 func checkDistinguishingValue(t *testing.T, v reflect.Value, kind reflect.Kind, label string) {
 	t.Helper()
 	switch kind {
+	case reflect.Struct:
+		if !reflect.DeepEqual(v.Interface(), apigateway.RedirectPolicy{AllowedHosts: []string{"*.downloads.example.com"}}) {
+			t.Errorf("%s redirect policy dropped", label)
+		}
 	case reflect.Bool:
 		if !v.Bool() {
 			t.Errorf("%s = false, want true (dropped)", label)

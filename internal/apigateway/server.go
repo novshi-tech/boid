@@ -18,11 +18,12 @@ import (
 // per-service credential injection (CredentialProvider) around the standard
 // library's streaming transport.
 type Server struct {
-	registry    *Registry
-	credentials *CredentialProvider
-	notifier    UpstreamAuthFailureNotifier
-	recorder    RequestRecorder
-	proxy       *httputil.ReverseProxy
+	registry          *Registry
+	credentials       *CredentialProvider
+	notifier          UpstreamAuthFailureNotifier
+	recorder          RequestRecorder
+	proxy             *httputil.ReverseProxy
+	redirectTransport http.RoundTripper
 }
 
 // routeInfoKey is the context key used to hand the authorized route's
@@ -107,10 +108,11 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 		recorder = noopRecorder
 	}
 	s := &Server{
-		registry:    registry,
-		credentials: credentials,
-		notifier:    notifier,
-		recorder:    recorder,
+		registry:          registry,
+		credentials:       credentials,
+		notifier:          notifier,
+		recorder:          recorder,
+		redirectTransport: newRedirectTransport(),
 	}
 
 	s.proxy = &httputil.ReverseProxy{
@@ -167,6 +169,9 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 				slog.Warn("apigateway: upstream rejected credentials (401); the configured secret may be expired or revoked",
 					"service", recSvc)
 				s.notifier.NotifyUpstreamAuthFailure(recSvc)
+			}
+			if err := s.followRedirect(resp); err != nil {
+				return err
 			}
 			s.recorder(info.taskID, info.method, recSvc, info.path, resp.StatusCode)
 			return nil

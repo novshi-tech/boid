@@ -59,9 +59,10 @@ type ServiceAuth struct {
 // ServiceConfig declares one logical service the gateway can proxy to:
 // its upstream base URL and how to authenticate requests to it.
 type ServiceConfig struct {
-	Name    string
-	BaseURL string
-	Auth    ServiceAuth
+	Redirects RedirectPolicy
+	Name      string
+	BaseURL   string
+	Auth      ServiceAuth
 	// BaseURLSecretKey, when non-empty, resolves BaseURL from the secret
 	// store instead of using the literal BaseURL field — account-qualified
 	// via the same accountSecretKey composition auth.SecretKey already
@@ -115,6 +116,7 @@ type SecretResolver func(namespace, key string) (string, error)
 // consulted. Exactly one of baseURL/baseURLSecretKey is set for any
 // resolvedService in the map.
 type resolvedService struct {
+	redirects        RedirectPolicy
 	auth             ServiceAuth
 	baseURL          *url.URL
 	baseURLSecretKey string
@@ -152,8 +154,13 @@ type CredentialProvider struct {
 func NewCredentialProvider(services []ServiceConfig, resolver SecretResolver) *CredentialProvider {
 	m := make(map[string]resolvedService, len(services))
 	for _, s := range services {
+		if err := s.Redirects.Validate(); err != nil {
+			slog.Warn("apigateway: invalid redirect policy; skipping service", "service", s.Name)
+			continue
+		}
+		redirects := RedirectPolicy{AllowedHosts: append([]string(nil), s.Redirects.AllowedHosts...)}
 		if s.BaseURLSecretKey != "" {
-			m[s.Name] = resolvedService{
+			m[s.Name] = resolvedService{redirects: redirects,
 				auth:               s.Auth,
 				baseURLSecretKey:   s.BaseURLSecretKey,
 				allowInsecure:      s.AllowInsecure,
@@ -168,7 +175,7 @@ func NewCredentialProvider(services []ServiceConfig, resolver SecretResolver) *C
 				"service", s.Name, "base_url", s.BaseURL, "error", err)
 			continue
 		}
-		m[s.Name] = resolvedService{auth: s.Auth, baseURL: u, allowReadOnlyWrite: s.AllowReadOnlyWrite, requireAccount: s.RequireAccount}
+		m[s.Name] = resolvedService{redirects: redirects, auth: s.Auth, baseURL: u, allowReadOnlyWrite: s.AllowReadOnlyWrite, requireAccount: s.RequireAccount}
 	}
 	return &CredentialProvider{services: m, resolver: resolver}
 }

@@ -3,6 +3,7 @@ package integrationpack
 import (
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/apigateway"
@@ -282,7 +283,7 @@ func TestDesugarService_D13_LiteralEndpointAndUsernameStillWorkUnchanged(t *test
 			Username:  "alice@example.com",
 		},
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("DesugarService() = %+v, want %+v", got, want)
 	}
 }
