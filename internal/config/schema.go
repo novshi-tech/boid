@@ -155,6 +155,7 @@ var Schema = []FieldSpec{
 	// for the reflection-based guard against a new ServiceConfig field
 	// missing its Schema entry.
 	{Path: "services.*.allow_readonly_write", Kind: KindBool, Reload: ReloadRestartRequired},
+	{Path: "services.*.redirects.allowed_hosts", Kind: KindStringArray, Reload: ReloadRestartRequired},
 	{Path: "services.*.require_account", Kind: KindBool, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.kind", Kind: KindEnum, Reload: ReloadRestartRequired,
 		EnumValues: []string{"bearer", "basic", "header", "query", "oauth2"}},

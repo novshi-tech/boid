@@ -1,6 +1,7 @@
 package integrationpack
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -45,7 +46,7 @@ func TestDesugarService_Valid(t *testing.T) {
 			SecretKey: "JIRA_TOKEN",
 		},
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("DesugarService() = %+v, want %+v", got, want)
 	}
 }

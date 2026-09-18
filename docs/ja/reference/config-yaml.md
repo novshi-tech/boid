@@ -355,6 +355,7 @@ services_floor:
 | `services.<name>.base_url_secret_key` | string | `base_url` と排他で必須 | `base_url` の代わりに secret store から base_url を引くためのキー参照 (下記「credential account 修飾」節の D12)。account 修飾 (`<key>@<account>`) に対応 — テナントごとに subdomain が変わる service (Jira Cloud 等) 向け。値は secret store 経由でしか分からないため config load 時の URL 検証はできず、request 時に検証される |
 | `services.<name>.allow_insecure` | bool | `false` | `base_url` に `https` 以外のスキームを許可する明示的な opt-in。無いまま `http://` 等を指定すると config load エラー (内部テスト API 等 TLS が無い環境向けの意図的な抜け道であり、黙って許可はしない) |
 | `services.<name>.allow_readonly_write` | bool | `false` | readonly な job token (`task.readonly`/`command.readonly`) でもこの service への GET/HEAD 以外のメソッドを許可する opt-in。既定は fail-closed で readonly job は 403。**config.yaml (daemon 側) にしか置けない** — project.yaml / task_behaviors には無い。repo 側から書き込み許可を付与できてしまうと readonly ゲートの意味が無くなるため (prompt injection されたエージェントが自分で自分に書き込み権限を与えられてしまう) |
+| `services.<name>.redirects.allowed_hosts` | []string | `[]` | GET / HEAD のリダイレクト追従先。完全一致または `*.example.com`。詳細は下記「リダイレクト追従」節 |
 | `services.<name>.require_account` | bool | `false` | この service への account 無しリクエストを 400 で拒否する opt-in (下記「credential account 修飾」節)。既定は false で既存 service の挙動は変わらない。**config.yaml (daemon 側) にしか置けない** — project.yaml / task_behaviors には無い (`allow_readonly_write` と同じ理由) |
 | `services.<name>.auth.kind` | string | (必須) | `bearer` / `basic` / `header` / `query` / `oauth2` のいずれか |
 | `services.<name>.auth.secret_key` | string | kind により必須 | secret store 参照キー (`bearer`/`basic`/`header`/`query` で必須。`oauth2` では未使用) |
@@ -401,6 +402,36 @@ workspace の解決結果に加えて、connector job のトークンに掛か�
 `boid workspace services list` は workspace 自身のリストしか見せず floor を露出しないので、
 実効値を知りたい場合はこちらを使ってください。無効・失効したトークンでは 401、GET/HEAD
 以外では 405 を返します。
+
+### リダイレクト追従
+
+既定では上流のリダイレクトをそのままクライアントへ返します。
+`services.<name>.redirects.allowed_hosts` を設定すると、gateway が GET / HEAD の
+301・302・303・307・308 に追従し、最終レスポンスをストリーミングで返します。
+
+```yaml
+services:
+  github-api:
+    base_url: https://api.github.com
+    auth: {kind: bearer, secret_key: github-pat}
+    redirects:
+      allowed_hosts:
+        - "*.blob.core.windows.net"
+        - "*.actions.githubusercontent.com"
+```
+
+汎用のサービス単位の設定で、`uses:` とも併用できます。ホストは完全一致、または
+`*.example.com`（サブドメインのみ。example.com 自体は含まない）で指定します。
+同一ホストへの転送も含め、各段階で許可リストを検証します。追従先は HTTPS の
+443 番ポートかつ公開 IP に限り、`allow_insecure` による緩和はありません。
+許可されない転送先は 502 を返します。サンドボックスの通信許可は広がりません。
+
+追従時は GET / HEAD を維持し、元のヘッダー・Cookie・本文・注入した認証情報を
+同一ホストにも転送しません。クエリは解決済み Location URL のものだけを使用します。
+認証情報の引き継ぎが必要なリダイレクトには対応しません。最終ステータスと本文を返し、
+Set-Cookie と Location ヘッダーは除去します。
+上限は転送3回・合計2分・512 MiB です。本文送信開始後に上限に達した場合は通信を中断します。
+未設定・空リスト・GET / HEAD 以外は従来の動作です。設定変更後は daemon の再起動が必要です。
 
 ### credential account 修飾 (`<service>@<account>`) — 1 service 複数 credential
 

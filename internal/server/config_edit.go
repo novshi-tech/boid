@@ -472,14 +472,15 @@ var restartFieldExtractorExemptions = map[string]string{
 	"services.*.auth.username_secret_key": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	// services.*.allow_readonly_write/require_account — same reasoning as
 	// allow_insecure just above.
-	"services.*.allow_readonly_write": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.require_account":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.kind":            "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.secret_key":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.username":        "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.header":          "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.query":           "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
-	"services.*.auth.provider":        "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.allow_readonly_write":    "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.redirects.allowed_hosts": "covered by changedServiceLeaves per-service redirect host list diff",
+	"services.*.require_account":         "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.kind":               "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.secret_key":         "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.username":           "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.header":             "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.query":              "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.provider":           "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	// services.*.uses/endpoint/credentials.* — same reasoning as the
 	// base_url/auth septet above: changedServiceLeaves' per-id, per-field
 	// diff already covers all three.
@@ -625,6 +626,9 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			// restartFieldExtractors entry.
 			if o.AllowReadOnlyWrite != n.AllowReadOnlyWrite {
 				changed = append(changed, name+".allow_readonly_write")
+			}
+			if !slices.Equal(o.Redirects.AllowedHosts, n.Redirects.AllowedHosts) {
+				changed = append(changed, name+".redirects.allowed_hosts")
 			}
 			if o.RequireAccount != n.RequireAccount {
 				changed = append(changed, name+".require_account")

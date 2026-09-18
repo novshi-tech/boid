@@ -1222,3 +1222,32 @@ func writeAndLoad(t *testing.T, path, content string) error {
 	_, err := loadFromPath(path)
 	return err
 }
+
+func TestLoadFromPath_ServiceRedirects(t *testing.T) {
+	for _, uses := range []bool{false, true} {
+		for _, hosts := range []string{`["cdn.example.com", "*.storage.example.com"]`, `["*"]`} {
+			service := "base_url: https://api.example.com\n    auth: {kind: bearer, secret_key: token}"
+			if uses {
+				service = "uses: example/api@1.0.0\n    credentials: {token: secret}"
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			content := "services:\n  svc:\n    " + service + "\n    redirects:\n      allowed_hosts: " + hosts + "\n"
+			if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := loadFromPath(path)
+			if hosts == `["*"]` {
+				if err == nil || !strings.Contains(err.Error(), "redirects") {
+					t.Fatalf("wanted redirect validation error, got %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := cfg.Services["svc"].Redirects.AllowedHosts; len(got) != 2 {
+					t.Fatalf("hosts = %v", got)
+				}
+			}
+		}
+	}
+}

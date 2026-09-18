@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/config"
 )
 
@@ -178,5 +179,16 @@ func TestMutateConfig_Batch_FinalValidationFailure_LiveConfigUnchanged(t *testin
 	}
 	if !reflect.DeepEqual(srv.liveConfig, before) {
 		t.Errorf("srv.liveConfig contents changed despite the batch failing final validation:\nbefore=%+v\nafter=%+v", before, srv.liveConfig)
+	}
+}
+
+func TestChangedServiceLeaves_RedirectHosts(t *testing.T) {
+	old := map[string]config.ServiceConfig{"svc": {Redirects: apigateway.RedirectPolicy{AllowedHosts: []string{"a.example.com"}}}}
+	updated := map[string]config.ServiceConfig{"svc": {Redirects: apigateway.RedirectPolicy{AllowedHosts: []string{"b.example.com"}}}}
+	if got := changedServiceLeaves(old, updated); !reflect.DeepEqual(got, []string{"svc.redirects.allowed_hosts"}) {
+		t.Fatalf("changed leaves: %v", got)
+	}
+	if got := changedServiceLeaves(updated, updated); len(got) != 0 {
+		t.Fatalf("unchanged leaves: %v", got)
 	}
 }

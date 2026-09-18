@@ -176,6 +176,40 @@ Workspace services are additive to `services_floor`. See the [Japanese
 configuration reference](../../ja/reference/config-yaml.md) for the full
 service, account, and OAuth field tables.
 
+### Following redirects
+
+By default the gateway passes redirects back to the client. Set
+`services.<name>.redirects.allowed_hosts` to let the gateway follow GET/HEAD
+redirects (301/302/303/307/308) and stream the final response instead:
+
+```yaml
+services:
+  github-api:
+    base_url: https://api.github.com
+    auth: {kind: bearer, secret_key: github-pat}
+    redirects:
+      allowed_hosts:
+        - "*.blob.core.windows.net"
+        - "*.actions.githubusercontent.com"
+```
+
+This is a generic per-service policy, also supported alongside `uses:`.
+Entries are exact DNS names or `*.example.com` patterns (subdomains only,
+not the apex). Every redirect target, including same-origin targets, must
+match. Targets must use HTTPS on port 443 and resolve to public IPs;
+`allow_insecure` does not relax these rules. Unapproved targets return 502.
+The sandbox egress allowlist is unaffected.
+
+Follow-up requests preserve GET/HEAD but carry no original headers, cookies,
+body, or injected credentials, including on same-origin redirects. Only the
+query from the resolved Location URL is used. Authenticated redirects that
+require forwarding credentials are therefore not supported. The final status
+and body are returned; Set-Cookie and Location headers are removed.
+Downloads are streamed with limits of 3 hops, 2 minutes, and 512 MiB. A limit
+hit after streaming starts aborts the response. Empty/omitted hosts and other
+HTTP methods retain the original redirect behavior. Restart the daemon after
+changing this configuration.
+
 ## integrations and oauth_providers
 
 `integrations.dir` selects the directory containing installed Integration
