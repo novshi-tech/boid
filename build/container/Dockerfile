@@ -142,36 +142,11 @@ FROM docker.io/library/debian:bookworm-slim
 # really carries it.
 LABEL boid.runner_protocol="v1"
 
-# gh CLI version pin (Minor 14, PR6 codex review): `apt-get install gh`
-# with no version pin picks up whatever GitHub's apt repo currently
-# publishes as `stable`, so two builds of this same Dockerfile on
-# different days can silently produce different gh versions — bump this
-# deliberately (`apt-cache madison gh` against
-# https://cli.github.com/packages, after adding its repo, lists the exact
-# version string apt expects) rather than floating on latest.
-# Note that GitHub's apt repo keeps ONLY the current release — it does not
-# archive older ones. A pin therefore stops building the moment upstream
-# publishes the next version, so this needs a deliberate bump on that cadence
-# rather than only when we want a newer gh. It has now happened twice:
-#
-#   - 2.96.0 vanished on 2026-07-31
-#   - 2.97.0 vanished on 2026-08-21, hours after upstream published 2.98.0
-#     (2026-08-20 22:15 UTC) — every branch including main stopped building
-#   - 2.98.0 vanished by 2026-09-05, after upstream published 2.100.0
-#     (2026-09-03) — same failure mode, this PR's bump
-#
-# This bump is deliberate stopgap, not the fix. nose の判断 (2026-08-21):
-# **gh はこのイメージから退役させ、GitHub API は API gateway (`services:` に
-# github-api を足す) に倒す** —— pin が腐る問題ごと無くなる。順序があるので
-# 分けてある: 先に Dockerfile から消すと、サンドボックス内で PR を作る経路
-# (internal/skills/data/boid-task の PR 手順、dev-pr-flow スキル) が死ぬ。
-# gateway 側の service 追加とスキルの書き換えが済んでから削る。
-#
-# もし退役より先にまた apt から消えたら、その場しのぎで bump するより
-# GitHub Releases の tarball
-# (https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_$(dpkg --print-architecture).tar.gz)
-# へ切り替える方が安い —— Releases は古いバージョンを永続保持するので pin が
-# 腐らず、pin 本来の目的 (再現性) は apt より強く満たされる。
+# Keep the host-command gh version reproducible. GitHub's apt repository
+# removes older versions, which repeatedly broke pinned image builds.
+# Download the pinned GitHub Releases archive and verify its published SHA256
+# instead. gh remains available until host-command workflows migrate to the
+# API gateway; removing it earlier would break existing PR workflows.
 ARG GH_VERSION=2.100.0
 
 RUN apt-get update \
@@ -211,10 +186,8 @@ RUN apt-get update \
 # ResolveHostCommands, no shim/sandbox involved) has to actually be
 # installed here, not just declared in some project's host_commands.yaml.
 #
-#   - gh (GitHub CLI): installed from GitHub's own apt repo below (Debian's
-#     default repos do not carry it), pinned to GH_VERSION (Minor 14, PR6
-#     codex review) so the image is reproducible across builds instead of
-#     picking up whatever `stable` happens to publish that day.
+#   - gh (GitHub CLI): installed from GitHub Releases below, pinned to
+#     GH_VERSION and verified against the release checksums.
 #   - project-local scripts (a host_commands entry with an explicit
 #     project-relative `path:`) are NOT baked in here — §決定4 is explicit
 #     that these "come from the project side", not the image. §決定4 also
@@ -229,12 +202,19 @@ RUN apt-get update \
 #     daemon service (build/container/compose.yml) is where a real
 #     deployment would bind-mount such a tool's actual host directory onto
 #     this path and add it to PATH via host_commands.<name>.path.
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends "gh=${GH_VERSION}" \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eu; \
+    gh_arch="$(dpkg --print-architecture)"; \
+    gh_archive="gh_${GH_VERSION}_linux_${gh_arch}.tar.gz"; \
+    gh_release="https://github.com/cli/cli/releases/download/v${GH_VERSION}"; \
+    mkdir /tmp/gh-install; \
+    cd /tmp/gh-install; \
+    curl -fsSL "${gh_release}/${gh_archive}" -o "${gh_archive}"; \
+    curl -fsSL "${gh_release}/gh_${GH_VERSION}_checksums.txt" -o checksums.txt; \
+    sha256sum --check --ignore-missing checksums.txt; \
+    tar -xzf "${gh_archive}" --strip-components=2 -C /usr/local/bin "gh_${GH_VERSION}_linux_${gh_arch}/bin/gh"; \
+    gh --version; \
+    cd /; \
+    rm -rf /tmp/gh-install
 
 # python3 runtime for pip-distributed host_commands (e.g. az CLI, which has
 # no standalone/single-binary distribution — it is a pip package and needs a
