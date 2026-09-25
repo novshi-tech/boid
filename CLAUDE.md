@@ -70,7 +70,7 @@ boid daemon 起動時に GC goroutine が立ち上がり、起動 **10 秒後**�
 
 ## Web UI
 
-- `boid start` のデフォルトで Web UI は有効 (`http://localhost:8080`、 listen アドレスは `boid web set-addr <addr>` で変更可)
+- `boid start` のデフォルトで Web UI は有効 (`http://localhost:8080`)。host 側のポートは `boid start --web-port`/`--cli-port` で変更し `~/.config/boid/host-ports.json` に保存される (同一マシンで複数ユーザが動かす場合用)。`boid web set-addr` はコンテナ内部の bind アドレス
 - 初回は `boid web pair` でペアリングコード (5 分有効、単回) を発行、コード / URL / QR で登録
 - デバイス管理: `boid web devices` / `boid web revoke <id>` / `boid web revoke-all`
 - loopback (127.0.0.1/::1) からはペアリング不要、外部公開 (Cloudflare Tunnel 等) からは必須

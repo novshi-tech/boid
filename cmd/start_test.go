@@ -504,7 +504,7 @@ exit 0
 	defer ts.Close()
 
 	var out strings.Builder
-	if err := runComposeUp(context.Background(), ts.Listener.Addr().String(), &out); err != nil {
+	if err := runComposeUp(context.Background(), hostPortsForAddr(t, ts.Listener.Addr().String()), &out); err != nil {
 		t.Fatalf("runComposeUp: %v (BOID_NO_AUTOSTART=1 must not block an explicit `boid start`)", err)
 	}
 

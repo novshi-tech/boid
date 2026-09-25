@@ -407,25 +407,31 @@ func TestComposeDaemonHasCLITokenEnv(t *testing.T) {
 	}
 }
 
-// TestComposeDaemonPublishesCLIPortOnLoopbackOnly pins the CLI listener's
-// host-side publish: 127.0.0.1:8442:8442, matching client.DefaultCLIAddr()
-// — a bare "8442:8442" or "0.0.0.0:8442:8442" would expose the token-only
-// (no TLS) listener to every other interface on the host, not just the
-// same-host `boid` CLI process host mode is designed for.
-func TestComposeDaemonPublishesCLIPortOnLoopbackOnly(t *testing.T) {
+// TestComposeDaemonPublishesPortsOnLoopbackOnly pins the host-side publish
+// of the CLI listener and the Web UI: loopback only, host port taken from
+// BOID_CLI_PORT/BOID_WEB_PORT (cmd/host_ports.go) so two users can run
+// their own stacks on one host, container port fixed.
+func TestComposeDaemonPublishesPortsOnLoopbackOnly(t *testing.T) {
 	doc := loadComposeDoc(t)
 
 	daemon, ok := doc.Services["daemon"]
 	if !ok {
 		t.Fatal(`compose.yml has no "daemon" service`)
 	}
-	want := "127.0.0.1:8442:8442"
-	for _, p := range daemon.Ports {
-		if p == want {
-			return
+	for _, want := range []string{
+		"127.0.0.1:${BOID_CLI_PORT:-8442}:8442",
+		"127.0.0.1:${BOID_WEB_PORT:-8080}:8080",
+	} {
+		found := false
+		for _, p := range daemon.Ports {
+			if p == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("daemon service ports = %v, want %q present", daemon.Ports, want)
 		}
 	}
-	t.Errorf("daemon service ports = %v, want %q present", daemon.Ports, want)
 }
 
 // TestComposeDaemonUsesBridgeNetworking pins the REVERT of PR-3 round-1's
@@ -435,7 +441,7 @@ func TestComposeDaemonPublishesCLIPortOnLoopbackOnly(t *testing.T) {
 // cannot join any other docker network at all — a hard engine
 // constraint), so Option 4 goes back to ordinary bridge networking + an
 // explicit loopback-only port publish for the one listener a HOST process
-// needs (TestComposeDaemonPublishesCLIPortOnLoopbackOnly above) instead of
+// needs (TestComposeDaemonPublishesPortsOnLoopbackOnly above) instead of
 // exposing the daemon's entire host network namespace.
 func TestComposeDaemonUsesBridgeNetworking(t *testing.T) {
 	data, err := os.ReadFile("compose.yml")

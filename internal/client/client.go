@@ -257,17 +257,12 @@ func DefaultSocketPath() string {
 	return fmt.Sprintf("/tmp/boid-%s.sock", uid)
 }
 
-// defaultCLIAddrHost is the loopback literal DefaultCLIAddr always binds/
-// dials — mirrors newHTTPClient's own loopback-only restriction.
+// defaultCLIAddrHost is the loopback literal DefaultCLIAddr always binds.
 const defaultCLIAddrHost = "127.0.0.1"
 
-// DefaultCLIAddr resolves the "host:port" the container-backend daemon's
-// dedicated CLI TCP listener binds/is published on, dialed by the CLI's
-// host-mode orchestration once the daemon container is confirmed healthy.
-// cmd/start.go's buildStartConfig uses this same value to bind
-// server.Config.CLIAddr, and build/container/compose.yml publishes the
-// identical port — all three must be kept in lockstep if this literal
-// ever changes; there is no runtime override.
+// DefaultCLIAddr is the daemon's default CLI listener bind address, which
+// is the container side of compose.yml's publish. The host side the CLI
+// dials is configurable separately (cmd/host_ports.go).
 func DefaultCLIAddr() string {
 	return defaultCLIAddrHost + ":8442"
 }

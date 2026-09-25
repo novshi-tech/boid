@@ -22,13 +22,14 @@ package cmd
 //
 //  1. Read (or, on first use, generate) a persistent shared-secret token
 //     from ~/.config/boid/cli-token (loadOrCreateCLIToken).
-//  2. Confirm the daemon container answers GET /api/health on
-//     client.DefaultCLIAddr() (127.0.0.1:8442); if not, serialize behind
+//  2. Confirm the daemon container answers GET /api/health on the host
+//     CLI port from ~/.config/boid/host-ports.json (default
+//     127.0.0.1:8442, see cmd/host_ports.go); if not, serialize behind
 //     an flock (~/.config/boid/cli-lock) and invoke
 //     scripts/deploy-container.sh (build image if needed, `compose up -d`)
 //     with BOID_CLI_TOKEN set to the token from step 1, then poll health
 //     until it answers or a deadline passes.
-//  3. Build a *client.Client against "http://<DefaultCLIAddr>" with the
+//  3. Build a *client.Client against that same address with the
 //     token as its Bearer credential and inject it into cmd's context,
 //     exactly like the ordinary path's resolveClient does.
 //
@@ -201,12 +202,9 @@ func validateCLIToken(path string, raw []byte) (string, error) {
 type hostModeProbeResult int
 
 const (
-	// hostModeUnreachable covers everything retry-worthy: connection
-	// refused/timeout (daemon still starting), and any non-2xx/non-404
-	// status (e.g. 401 for a wrong/stale token — see
-	// TestHostModeHealthy_WrongToken_ReportsUnhealthy's own comment for why
-	// that specific case is deliberately treated as retryable here rather
-	// than a third terminal outcome).
+	// hostModeUnreachable covers connection refused/timeout (daemon still
+	// starting) and any other unexpected status. waitForHealthy keeps
+	// polling through it, and through hostModeUnauthorized too.
 	hostModeUnreachable hostModeProbeResult = iota
 	hostModeHealthyResult
 	// hostModeStaleImage means the daemon answered HTTP at all but returned
@@ -218,6 +216,10 @@ const (
 	// own wastes 5 minutes on every single invocation; ensureHostModeDaemon
 	// already has everything it needs to detect this immediately.
 	hostModeStaleImage
+	// hostModeUnauthorized means something answered on the port but
+	// rejected this user's token — typically another user's daemon holding
+	// the same host port.
+	hostModeUnauthorized
 )
 
 // probeHostMode issues one GET /api/cli-token-check against addr — an
@@ -253,6 +255,8 @@ func probeHostMode(ctx context.Context, addr, token string) hostModeProbeResult 
 		return hostModeHealthyResult
 	case resp.StatusCode == http.StatusNotFound:
 		return hostModeStaleImage
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return hostModeUnauthorized
 	default:
 		return hostModeUnreachable
 	}
@@ -504,7 +508,7 @@ func runDeployScript(ctx context.Context, root, token, addr string, build bool, 
 // (internal/version) rather than the script's own git-based guess (which
 // has nothing to work from here — no .git in an extracted asset
 // directory).
-func deployFromEmbeddedAssets(ctx context.Context, token, addr string) error {
+func deployFromEmbeddedAssets(ctx context.Context, token string, ports hostPorts) error {
 	if _, _, err := detectComposeEngine(ctx); err != nil {
 		return fmt.Errorf(
 			"no boid repo checkout found (set BOID_COMPOSE_ROOT to one — findComposeRoot no longer auto-discovers a checkout by walking up from cwd, codex round-10 review of PR5) to build a fresh image, and %w", err)
@@ -521,7 +525,7 @@ func deployFromEmbeddedAssets(ctx context.Context, token, addr string) error {
 	}
 	fmt.Fprintln(os.Stderr, "boid: daemon container not reachable; no boid repo checkout found, pulling "+image+" via the embedded scripts/deploy-container.sh...")
 
-	return runDeployScript(ctx, root, token, addr, false, "BOID_IMAGE="+image)
+	return runDeployScript(ctx, root, token, ports.cliAddr(), false, append(ports.composeEnv(), "BOID_IMAGE="+image)...)
 }
 
 // resolveEmbeddedDeployImage picks the image ref the checkout-less deploy
@@ -589,9 +593,9 @@ func waitForHealthy(ctx context.Context, addr, token string) error {
 // keep picking up local code changes on every `boid start` — a checkout is
 // the one place that opt-in actually makes sense (it is also the only
 // place it is even possible, per this file's own header comment).
-func deployFromCheckout(ctx context.Context, root, token, addr string) error {
+func deployFromCheckout(ctx context.Context, root, token string, ports hostPorts) error {
 	fmt.Fprintln(os.Stderr, "boid: daemon container not reachable; starting it now (this can take a while on first run)...")
-	return runDeployScript(ctx, root, token, addr, true)
+	return runDeployScript(ctx, root, token, ports.cliAddr(), true, ports.composeEnv()...)
 }
 
 // withHostModeLock serializes concurrent daemon-start attempts (multiple
@@ -648,17 +652,30 @@ func filterEnv(env []string, key string) []string {
 	return out
 }
 
-// ensureHostModeDaemon confirms the daemon container is reachable at addr
-// (client.DefaultCLIAddr() in production; a parameter here so tests can
-// point it at an httptest server instead), starting it if it is not — via
+// ensureHostModeDaemon confirms the daemon container is reachable on
+// ports.CLI (a parameter so tests can point it at an httptest server),
+// starting it if it is not — via
 // deployFromCheckout or deployFromEmbeddedAssets, see this file's own
 // header comment for which one and why — unless client.NoAutostartEnv
 // (BOID_NO_AUTOSTART=1) is set, in which case it fails fast with a clear
 // message instead, the same as the bare-metal client.EnsureRunningAt path.
-func ensureHostModeDaemon(ctx context.Context, addr, token string) error {
-	if hostModeHealthy(ctx, addr, token) {
+func ensureHostModeDaemon(ctx context.Context, ports hostPorts, token string) error {
+	addr := ports.cliAddr()
+	probe := probeHostMode(ctx, addr, token)
+	if probe == hostModeHealthyResult {
 		return nil
 	}
+	err := startHostModeDaemon(ctx, ports, token)
+	if err != nil && probe == hostModeUnauthorized {
+		return fmt.Errorf(
+			"%w\n(%s answered but rejected this user's CLI token — if another user's boid already owns this port, "+
+				"pick free ones with `boid start --cli-port <port> --web-port <port>`)", err, addr)
+	}
+	return err
+}
+
+func startHostModeDaemon(ctx context.Context, ports hostPorts, token string) error {
+	addr := ports.cliAddr()
 	if os.Getenv(client.NoAutostartEnv) == "1" {
 		return fmt.Errorf(
 			"daemon container not reachable at %s and %s=1 is set; start it manually with `docker compose`/`podman compose` (see scripts/deploy-container.sh) up -d",
@@ -679,9 +696,9 @@ func ensureHostModeDaemon(ctx context.Context, addr, token string) error {
 		// reimplementing a second, narrower copy of it. See this file's own
 		// header comment for the full rationale.
 		if root, err := findComposeRoot(); err == nil {
-			return deployFromCheckout(ctx, root, token, addr)
+			return deployFromCheckout(ctx, root, token, ports)
 		}
-		return deployFromEmbeddedAssets(ctx, token, addr)
+		return deployFromEmbeddedAssets(ctx, token, ports)
 	})
 }
 
@@ -695,8 +712,12 @@ func resolveHostModeClient(ctx context.Context) (*client.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("host mode: %w", err)
 	}
-	addr := client.DefaultCLIAddr()
-	if err := ensureHostModeDaemon(ctx, addr, token); err != nil {
+	ports, err := loadHostPorts()
+	if err != nil {
+		return nil, fmt.Errorf("host mode: %w", err)
+	}
+	addr := ports.cliAddr()
+	if err := ensureHostModeDaemon(ctx, ports, token); err != nil {
 		return nil, fmt.Errorf("host mode: %w", err)
 	}
 	c, err := client.NewClient("http://"+addr, token)
@@ -718,7 +739,11 @@ func resolveHostModeClientNoAutostart(ctx context.Context) (*client.Client, erro
 	if err != nil {
 		return nil, fmt.Errorf("host mode: %w", err)
 	}
-	addr := client.DefaultCLIAddr()
+	ports, err := loadHostPorts()
+	if err != nil {
+		return nil, fmt.Errorf("host mode: %w", err)
+	}
+	addr := ports.cliAddr()
 	if !hostModeHealthy(ctx, addr, token) {
 		return nil, fmt.Errorf(
 			"host mode: daemon container not reachable at %s; not starting it automatically for this command — run `boid start` first",

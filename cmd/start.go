@@ -116,6 +116,8 @@ var (
 	startKeyFilePath string
 	startCLIAddr     string
 	startForeground  bool
+	startHostCLIPort int
+	startHostWebPort int
 )
 
 func init() {
@@ -127,6 +129,10 @@ func init() {
 	startCmd.Flags().StringVar(&startSocketPath, "socket-path", "", "Path to the UNIX socket")
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
+	startCmd.Flags().IntVar(&startHostCLIPort, "cli-port", 0,
+		"Host port the compose stack publishes the CLI listener on (default: the saved value, else 8442); saved to ~/.config/boid/"+hostPortsFileName+" so later commands dial it")
+	startCmd.Flags().IntVar(&startHostWebPort, "web-port", 0,
+		"Host port the compose stack publishes the Web UI on (default: the saved value, else 8080); saved to ~/.config/boid/"+hostPortsFileName)
 	startCmd.Flags().StringVar(&startCLIAddr, "cli-addr", "", "host:port for the dedicated CLI TCP listener (docs/plans/volume-only-daemon.md §論点c; only bound when BOID_CLI_TOKEN is also set; default: client.DefaultCLIAddr(), \"127.0.0.1:8442\")")
 	// --auto-migrate (bare-metal double-fork respawn-after-migrate) is
 	// removed (docs/plans/release-onboarding.md 決定2): its only
@@ -363,6 +369,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// effectiveBoidUID(), which would let a root operator bypass the
 	// refusal via `BOID_UID=1000 boid start --foreground`.
 	if shouldRunForeground(startForeground) {
+		if err := refuseHostPortFlagsWithForeground(cmd); err != nil {
+			return err
+		}
 		if err := refuseRootUID(os.Getuid()); err != nil {
 			return err
 		}
@@ -410,7 +419,22 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return runComposeUp(cmd.Context(), client.DefaultCLIAddr(), cmd.OutOrStdout())
+	ports, err := resolveStartHostPorts(cmd)
+	if err != nil {
+		return err
+	}
+	return runComposeUp(cmd.Context(), ports, cmd.OutOrStdout())
+}
+
+// refuseHostPortFlagsWithForeground rejects --cli-port/--web-port on the
+// foreground path, which binds container-side addresses and never reads them.
+func refuseHostPortFlagsWithForeground(cmd *cobra.Command) error {
+	for _, name := range []string{"cli-port", "web-port"} {
+		if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
+			return fmt.Errorf("boid start: --%s sets the compose stack's host-side port and has no effect with --foreground (use --cli-addr or web.http_addr there)", name)
+		}
+	}
+	return nil
 }
 
 // refuseDaemonConfigFlagsWithoutForeground reports an error naming every
@@ -471,17 +495,13 @@ func shouldRunForeground(foregroundFlag bool) bool {
 // stop an UNRELATED command from silently spinning up a daemon as a
 // side effect, not to make `boid start` itself a no-op.
 //
-// addr takes the CLI listener address as a parameter (production always
-// passes client.DefaultCLIAddr(), the fixed "127.0.0.1:8442" — see that
-// function's own doc comment for why it isn't independently configurable)
-// rather than calling client.DefaultCLIAddr() internally, mirroring
-// ensureHostModeDaemon's identical parameterization in cmd/host.go: a test
-// can point it at an httptest server instead of the real fixed port.
+// ports is a parameter, mirroring ensureHostModeDaemon, so a test can point
+// the CLI port at an httptest server.
 //
 // out takes the success/guidance output writer as a parameter (production
 // passes cmd.OutOrStdout()) for the same reason: a test can capture it
 // instead of asserting against the real os.Stdout.
-func runComposeUp(ctx context.Context, addr string, out io.Writer) error {
+func runComposeUp(ctx context.Context, ports hostPorts, out io.Writer) error {
 	token, err := loadOrCreateCLIToken()
 	if err != nil {
 		return fmt.Errorf("boid start: %w", err)
@@ -489,14 +509,14 @@ func runComposeUp(ctx context.Context, addr string, out io.Writer) error {
 
 	err = withHostModeLock(func() error {
 		if root, ferr := findComposeRoot(); ferr == nil {
-			return deployFromCheckout(ctx, root, token, addr)
+			return deployFromCheckout(ctx, root, token, ports)
 		}
-		return deployFromEmbeddedAssets(ctx, token, addr)
+		return deployFromEmbeddedAssets(ctx, token, ports)
 	})
 	if err != nil {
 		return fmt.Errorf("boid start: %w", err)
 	}
-	fmt.Fprintf(out, "boid server started (compose, cli: http://%s)\n", addr)
+	fmt.Fprintf(out, "boid server started (compose, cli: http://%s, web: http://localhost:%d)\n", ports.cliAddr(), ports.Web)
 	printNextStepsGuidance(out)
 	return nil
 }
