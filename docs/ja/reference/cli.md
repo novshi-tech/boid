@@ -38,8 +38,8 @@ daemon は compose 一本（`scripts/deploy-container.sh`、`build/container/com
 scope=`remote` なコマンド（`task list` 等、daemon の HTTP API を叩くもの）を呼ぶと、`boid` は内部で:
 
 1. `~/.config/boid/cli-token`（無ければ生成、0600）を読み込む
-2. `http://127.0.0.1:8442/api/cli-token-check` に `Authorization: Bearer <token>` 付きで届くか確認し（届かない、または token が daemon 側と不一致なら）`scripts/deploy-container.sh` を起動（image build + `compose up -d`）してから再確認 — 認証済みの endpoint を叩くのは、daemon が起動していても token が古い（`~/.config/boid/cli-token` を消して作り直した等）ケースを見逃さないため（`/api/health` は無認証なので token 不一致を検知できない）
-3. `Authorization: Bearer <token>` を付けて `http://127.0.0.1:8442` へ実コマンドを dispatch
+2. `http://127.0.0.1:<CLI ポート>/api/cli-token-check`（既定 8442、下記「host 側のポート」参照）に `Authorization: Bearer <token>` 付きで届くか確認し（届かない、または token が daemon 側と不一致なら）`scripts/deploy-container.sh` を起動（image build + `compose up -d`）してから再確認 — 認証済みの endpoint を叩くのは、daemon が起動していても token が古い（`~/.config/boid/cli-token` を消して作り直した等）ケースを見逃さないため（`/api/health` は無認証なので token 不一致を検知できない）
+3. `Authorization: Bearer <token>` を付けて同じアドレスへ実コマンドを dispatch
 
 を行います。`boid start`/`stop` などの scope=`local` コマンド（compose lifecycle 機構そのもの）、`login`/`logout` などの scope=`neutral` コマンドは host mode の影響を受けません。`gc` は scope=`remote` ですが `annotationSkipAutostart` が付いており、daemon が unreachable でも自動起動せず即座にエラーで失敗します（`resolveHostModeClientNoAutostart`、`cmd/host.go`）——「daemon を gc するためだけに daemon を起動する」を避けるための挙動で、`BOID_NO_AUTOSTART=1` を明示指定した場合と同じ結果になります。
 
@@ -53,13 +53,21 @@ scope=`remote` なコマンド（`task list` 等、daemon の HTTP API を叩く
 
 boid リポジトリのチェックアウトが見つからない場合（`/usr/local/bin/boid` を単体インストールし、任意の project ディレクトリから起動する等）は、埋め込み済みの `compose.yml`（`build/container/assets.go`、`go:embed`）を `$XDG_STATE_HOME/boid/compose/` に展開し、`BOID_IMAGE` にこの CLI バイナリ自身のバージョンに対応する image ref（`internal/version.DefaultContainerImage()`）をセットした上で `compose up -d` を実行するフォールバックが働きます（round-2 codex review Major 1、PR4 でローカル image 前提を撤去 — 事前にローカルへ image が存在している必要はなく、`compose up -d` 自身が pull する）。**`DefaultContainerImage()` が実際に返す値は 2 パターンある** (`internal/version/version.go`): CLI バイナリが exact release tag (`vX.Y.Z` ちょうど) でビルドされている場合のみ `ghcr.io/novshi-tech/boid-runner:<そのタグ>` を返し、それ以外 (pseudo-version・`+dirty`・`(devel)` 等、`go install @latest` 以外の経路で入れた大半のケース) は登録済み GHCR ref を持たないローカルタグ `boid-runner:latest` を返す — 後者はレジストリ prefix を持たないため、ローカルに同名 image が無ければ pull は失敗する。`go install github.com/novshi-tech/boid@latest` は通常リリースタグに解決されるため前者に該当するが、保証ではない。image を fresh build できるのはチェックアウトがある場合のみ（`Dockerfile` の build context が `COPY . .` = go source tree 全体のため）。pull 自体が失敗した場合（ネットワーク不通、arch mismatch、上記のローカルタグ未解決等）は明確なエラーで失敗します。
 
-CLI listener のアドレスは `127.0.0.1:8442` 固定（override 不可）。`build/container/compose.yml` の port publish (`127.0.0.1:8442:8442`) と daemon 自身の listener bind の双方に配線されていない override は実質機能しないため（round-2 codex review Major 2）、host 側は override 手段を持たない。
+### host 側のポート
+
+compose スタックが host に公開するポートは、CLI listener が既定 `127.0.0.1:8442`、Web UI が既定 `127.0.0.1:8080` です。同じマシンで複数ユーザがそれぞれ boid を動かす場合（rootless podman はユーザごとに engine が分かれるが、host のポートは共有）は、後から起動するユーザが空いているポートを指定します:
+
+```bash
+boid start --cli-port 9442 --web-port 9080
+```
+
+指定値は `~/.config/boid/host-ports.json` に保存され、以降のコマンド（自動起動を含む）はこのファイルを読んで接続先と compose の `ports:`（`BOID_CLI_PORT`/`BOID_WEB_PORT`）を決めます。変えるのは host 側だけで、コンテナ内部の listen ポート（8442/8080）はそのままです。既定ポートに他人の daemon が居ると token 不一致で 401 が返るため、起動に失敗したときのエラーでこのフラグを案内します。
 
 ## サーバライフサイクル
 
 | コマンド | 役割 |
 |---|---|
-| `boid start` | compose スタックを起動 (`docker/podman compose up -d` 相当、`docs/plans/release-onboarding.md` 決定2)。HTTP アドレスは `boid config set web.http_addr <addr>` で設定する。`--foreground`（または compose 自身の daemon service が設定する `BOID_DAEMON_CHILD=1`）を渡すと、この呼び出し自身が daemon プロセスそのものになる（compose の entrypoint 用 — 通常の対話利用では不要） |
+| `boid start` | compose スタックを起動 (`docker/podman compose up -d` 相当、`docs/plans/release-onboarding.md` 決定2)。host 側に公開するポートは `--cli-port`/`--web-port` で変える（上記「host 側のポート」）。`--foreground`（または compose 自身の daemon service が設定する `BOID_DAEMON_CHILD=1`）を渡すと、この呼び出し自身が daemon プロセスそのものになる（compose の entrypoint 用 — 通常の対話利用では不要） |
 | `boid stop` | compose スタックを停止 (`docker/podman compose down` 相当) |
 | `boid gc [--older-than DURATION] [--dry-run]` | 古い完了 / abort タスクを GC (daemon が起動時から自動でも回している)。`--dry-run` を付けると削除せずに対象一覧を表示する。出力には workspace home のサイズ一覧も表示される (表示のみ、削除はしない。詳細は [workspace home ガイド](../guide/workspace-home.md#boid-gc-の-workspace-home-表示)) |
 | `boid check` | host の前提コマンドや hook の依存をチェック |
@@ -246,7 +254,7 @@ hook の実行記録を扱います。
 | `boid web revoke <id>` | 特定デバイスを失効 |
 | `boid web revoke-all` | 全デバイスを失効 |
 | `boid web set-url <URL>` | 公開 URL (`web.public_url`、マジックリンクのレンダリングに使う) を設定。実体は `boid config set web.public_url <URL>` と同じ `POST /api/config/mutate` 呼び出し (穴8 (b)、`docs/plans/release-onboarding.md`) — compose daemon の `boid_state` volume 内の config.yaml に daemon 側が書き込むので、host 側で直接ファイルを編集する必要はない |
-| `boid web set-addr <ADDR>` | HTTP リッスンアドレス (`web.http_addr`) を設定 (例: `boid web set-addr :9090`)。同じく `config set` 相当の API 呼び出し。反映には daemon の再起動 (`boid stop && boid start`) が必要。**注意:** これはコンテナ**内部**の bind アドレスであり、標準の compose デプロイでは host 側に公開されるポート (既定 8080) 自体は変わらない — ポート番号を変えると Web UI に到達できなくなる (詳細は [Getting started / 3. Web UI をセットアップする](../getting-started/03-web-ui.md#listen-アドレスを変える-任意)) |
+| `boid web set-addr <ADDR>` | HTTP リッスンアドレス (`web.http_addr`) を設定 (例: `boid web set-addr :9090`)。同じく `config set` 相当の API 呼び出し。反映には daemon の再起動 (`boid stop && boid start`) が必要。**注意:** これはコンテナ**内部**の bind アドレスであり、標準の compose デプロイでは host 側に公開されるポート (既定 8080) 自体は変わらない — host 側のポートを変えたいなら `boid start --web-port` を使う (詳細は [Getting started / 3. Web UI をセットアップする](../getting-started/03-web-ui.md#listen-アドレスを変える-任意)) |
 
 ## Secret
 

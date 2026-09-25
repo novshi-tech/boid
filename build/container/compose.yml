@@ -532,9 +532,14 @@ services:
     # note used to require. An explicit web.http_addr in config.yaml (e.g.
     # from a prior `boid config set`/`web set-addr` run) still overrides
     # it either way.
+    #
+    # The HOST side of both publishes comes from BOID_CLI_PORT/BOID_WEB_PORT
+    # (the CLI passes them from ~/.config/boid/host-ports.json, set via
+    # `boid start --cli-port/--web-port`) so two users sharing one host can
+    # each run a stack. The container side stays 8442/8080.
     ports:
-      - "127.0.0.1:8442:8442"
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${BOID_CLI_PORT:-8442}:8442"
+      - "127.0.0.1:${BOID_WEB_PORT:-8080}:8080"
     volumes:
       # DooD: sibling job containers, not nested (§決定4). Engine-agnostic
       # source (docs/plans/volume-only-daemon.md §論点 i, 案 X — Podman

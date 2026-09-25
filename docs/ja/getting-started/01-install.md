@@ -44,7 +44,7 @@ boid start
 起動が終わると、次にやるべきことのガイダンスが表示されます:
 
 ```
-boid server started (compose, cli: http://127.0.0.1:8442)
+boid server started (compose, cli: http://127.0.0.1:8442, web: http://localhost:8080)
 
 Next steps:
   1. boid web pair                                      # Web UI をこのブラウザとペアリング

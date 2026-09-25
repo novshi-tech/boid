@@ -30,7 +30,7 @@ When the next chapter creates a task, it is convenient to keep this tab open nex
 
 ## Change the listen address (optional)
 
-**Note:** under the standard compose deployment, `boid web set-addr` alone does NOT resolve a port conflict. `build/container/compose.yml`'s `ports:` mapping is fixed at host `127.0.0.1:8080` → container `8080`. `boid web set-addr` only changes the bind address **inside the container** — pointing it at anything other than port 8080 (e.g. `127.0.0.1:5171`) means nothing listens on the container's port 8080 anymore, and port 5171 was never published to the host, so **the Web UI becomes unreachable**:
+**Note:** under the standard compose deployment, `boid web set-addr` alone does NOT resolve a port conflict. `build/container/compose.yml`'s `ports:` mapping is host `127.0.0.1:8080` (default) → container `8080`, and the container side is fixed. `boid web set-addr` only changes the bind address **inside the container** — pointing it at anything other than port 8080 (e.g. `127.0.0.1:5171`) means nothing listens on the container's port 8080 anymore, and port 5171 was never published to the host, so **the Web UI becomes unreachable**:
 
 ```bash
 # Only changes the in-container bind address -- becomes unreachable from the host
@@ -39,7 +39,13 @@ boid stop
 boid start
 ```
 
-To actually change the port visible from the host (default 8080), edit the `ports:` section of `build/container/compose.yml` directly (the `"127.0.0.1:8080:8080"` line) — this is a developer workflow that requires a checkout of this repository; there is currently no equivalent a `go install`-only user can reach for (the embedded `compose.yml` extracted when no checkout is found gets overwritten on every `boid start`, so a hand edit there would not persist either). If the default `:8080` clashes with something else, either free up that port on the conflicting service instead, or put a reverse proxy in front that forwards a different host port to `:8080`.
+To change the port visible from the host (default 8080), use `boid start --web-port`. The value is saved to `~/.config/boid/host-ports.json` and reused on later starts:
+
+```bash
+boid start --web-port 9080   # Web UI at http://localhost:9080
+```
+
+If another user on the same machine also runs boid and the CLI port 8442 clashes too, pass `--cli-port` as well ([CLI reference / Host-side ports](../reference/cli.md#host-side-ports)).
 
 > **Note:** There is currently no way to disable the Web UI entirely. Passing an empty string still causes the daemon to fall back to `:8080` and keep the TCP listener running.
 

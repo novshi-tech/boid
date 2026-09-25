@@ -38,8 +38,8 @@ The daemon has exactly one shape: a compose stack (`scripts/deploy-container.sh`
 For any `scope=remote` command (things like `task list` that talk to the daemon's HTTP API), `boid` internally:
 
 1. Loads (or generates, on first use) `~/.config/boid/cli-token` (mode 0600)
-2. Confirms `http://127.0.0.1:8442/api/cli-token-check` answers with `Authorization: Bearer <token>` — if it does not (or the token no longer matches the daemon's), it invokes `scripts/deploy-container.sh` (build/pull the image, `compose up -d`) and checks again — hitting an authenticated endpoint, not the public `/api/health`, catches the case where the daemon is running but its token is stale
-3. Dispatches the real command to `http://127.0.0.1:8442` with `Authorization: Bearer <token>`
+2. Confirms `http://127.0.0.1:<CLI port>/api/cli-token-check` (default 8442, see "Host-side ports" below) answers with `Authorization: Bearer <token>` — if it does not (or the token no longer matches the daemon's), it invokes `scripts/deploy-container.sh` (build/pull the image, `compose up -d`) and checks again — hitting an authenticated endpoint, not the public `/api/health`, catches the case where the daemon is running but its token is stale
+3. Dispatches the real command to that same address with `Authorization: Bearer <token>`
 
 `boid start`/`stop` and other `scope=local` commands (the compose lifecycle machinery itself), and `scope=neutral` commands like `login`/`logout`, are unaffected by host mode. `gc` is `scope=remote` but carries `annotationSkipAutostart` — it fails fast instead of autostarting the daemon just to garbage-collect it (`resolveHostModeClientNoAutostart`, `cmd/host.go`), the same outcome as passing `BOID_NO_AUTOSTART=1` explicitly.
 
@@ -53,13 +53,21 @@ Set `BOID_NO_AUTOSTART=1` to fail fast instead of autostarting when the daemon i
 
 If no boid repo checkout can be found (e.g. `/usr/local/bin/boid` installed standalone and invoked from an arbitrary project directory), `boid` extracts the embedded `compose.yml` (`build/container/assets.go`, `go:embed`) into `$XDG_STATE_HOME/boid/compose/`, sets `BOID_IMAGE` to this CLI binary's own version-matched image ref (`internal/version.DefaultContainerImage()`), and runs `compose up -d` — there is no local-image precondition to satisfy beforehand; `compose up -d` pulls it. **`DefaultContainerImage()` actually returns one of two shapes** (`internal/version/version.go`): only when the CLI binary was built at an exact release tag (`vX.Y.Z`) does it return `ghcr.io/novshi-tech/boid-runner:<that tag>`; for every other build shape (pseudo-version, `+dirty`, `(devel)`, ... — most ways of installing this binary other than `go install ...@latest`) it returns the bare local tag `boid-runner:latest`, which has no registry prefix and fails to pull unless an image with that exact local tag already exists. `go install github.com/novshi-tech/boid@latest` normally resolves to a release tag (the first case), but that is not guaranteed. Building a fresh image is only possible from a real checkout (the Dockerfile's build context is `COPY . .`, the entire Go source tree). If the pull itself fails (no network, an arch mismatch, an unresolved local tag as above, ...) you get a clear error.
 
-The CLI listener address is fixed at `127.0.0.1:8442` (not overridable) — both `build/container/compose.yml`'s port publish (`127.0.0.1:8442:8442`) and the daemon's own listener bind would need to change together for an override to do anything, so the host side offers no override knob at all.
+### Host-side ports
+
+The compose stack publishes the CLI listener on `127.0.0.1:8442` and the Web UI on `127.0.0.1:8080` by default. When several users run their own boid on one machine (rootless podman gives each user a separate engine, but host ports are shared), the user who starts second picks free ports:
+
+```bash
+boid start --cli-port 9442 --web-port 9080
+```
+
+The values are saved to `~/.config/boid/host-ports.json`; every later command (autostart included) reads that file to pick the address it dials and the compose `ports:` (`BOID_CLI_PORT`/`BOID_WEB_PORT`). Only the host side changes — the daemon still listens on 8442/8080 inside the container. When another user's daemon holds the default port it answers 401 (token mismatch), and the resulting startup error points at these flags.
 
 ## Server lifecycle
 
 | Command | Role |
 |---|---|
-| `boid start` | Bring the compose stack up (`docker/podman compose up -d` equivalent, `docs/plans/release-onboarding.md` decision 2). Configure the HTTP address with `boid config set web.http_addr <addr>`. Passing `--foreground` (or `BOID_DAEMON_CHILD=1`, set by compose's own daemon service) makes this invocation itself become the daemon process — used by compose's entrypoint, not needed for ordinary interactive use. |
+| `boid start` | Bring the compose stack up (`docker/podman compose up -d` equivalent, `docs/plans/release-onboarding.md` decision 2). Change the host-side ports with `--cli-port`/`--web-port` (see "Host-side ports" above). Passing `--foreground` (or `BOID_DAEMON_CHILD=1`, set by compose's own daemon service) makes this invocation itself become the daemon process — used by compose's entrypoint, not needed for ordinary interactive use. |
 | `boid stop` | Bring the compose stack down (`docker/podman compose down` equivalent). |
 | `boid gc [--older-than DURATION] [--dry-run]` | Garbage collect old completed/aborted tasks (the daemon also runs this on its own at startup). `--dry-run` prints what would be deleted without removing anything. Output also lists every workspace home's on-disk size (display only, never deletes — see the [workspace home guide](../guide/workspace-home.md#boid-gcs-workspace-home-listing)). |
 | `boid check` | Check host prerequisites for the container backend and hook dependencies. |
@@ -256,7 +264,7 @@ Manage [Web UI](../guide/web-ui.md) device authentication.
 | `boid web revoke <id>` | Revoke a specific device. |
 | `boid web revoke-all` | Revoke every device. |
 | `boid web set-url <URL>` | Set the public URL (`web.public_url`, used to render magic links). Internally the same `POST /api/config/mutate` call as `boid config set web.public_url <URL>` (穴8 (b), `docs/plans/release-onboarding.md`) — the daemon writes it into `config.yaml` inside its own `boid_state` volume, so there is no host-side file to edit. |
-| `boid web set-addr <ADDR>` | Set the HTTP listen address (`web.http_addr`, e.g. `boid web set-addr :9090`). Same `config set`-equivalent API call. Takes effect after a daemon restart (`boid stop && boid start`). **Note:** this is the bind address INSIDE the container — under the standard compose deployment, the port actually published to the host (default 8080) does not change; changing the port number here makes the Web UI unreachable (see [Getting started / 3. Set up the Web UI](../getting-started/03-web-ui.md#change-the-listen-address-optional)) |
+| `boid web set-addr <ADDR>` | Set the HTTP listen address (`web.http_addr`, e.g. `boid web set-addr :9090`). Same `config set`-equivalent API call. Takes effect after a daemon restart (`boid stop && boid start`). **Note:** this is the bind address INSIDE the container — under the standard compose deployment, the port actually published to the host (default 8080) does not change; to change the host-side port use `boid start --web-port` instead (see [Getting started / 3. Set up the Web UI](../getting-started/03-web-ui.md#change-the-listen-address-optional)) |
 
 ## Secret
 

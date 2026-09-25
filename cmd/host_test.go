@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -338,7 +339,7 @@ func TestEnsureHostModeDaemon_NoAutostart_FailsFastWithoutDeploying(t *testing.T
 	addr := ln.Addr().String()
 	ln.Close()
 
-	err = ensureHostModeDaemon(context.Background(), addr, "some-token")
+	err = ensureHostModeDaemon(context.Background(), hostPortsForAddr(t, addr), "some-token")
 	if err == nil {
 		t.Fatal("expected an error when the daemon is unreachable and BOID_NO_AUTOSTART=1")
 	}
@@ -348,6 +349,64 @@ func TestEnsureHostModeDaemon_NoAutostart_FailsFastWithoutDeploying(t *testing.T
 	if strings.Contains(err.Error(), "could not locate") {
 		t.Errorf("error = %q, must not be the findComposeRoot error — autostart-skip should short-circuit before ever trying to locate the deploy script", err.Error())
 	}
+}
+
+// TestEnsureHostModeDaemon_PortOwnedByAnotherDaemon_HintsCLIPort covers two
+// users on one host: the second user's CLI reaches the first user's daemon
+// on the default port, gets 401, and must be told to pick another port.
+func TestEnsureHostModeDaemon_PortOwnedByAnotherDaemon_HintsCLIPort(t *testing.T) {
+	t.Setenv(client.NoAutostartEnv, "1")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer ts.Close()
+
+	err := ensureHostModeDaemon(context.Background(), hostPortsForAddr(t, ts.Listener.Addr().String()), "my-token")
+	if err == nil {
+		t.Fatal("expected an error when the port answers with 401")
+	}
+	for _, want := range []string{"rejected", "--cli-port"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err.Error(), want)
+		}
+	}
+}
+
+func TestEnsureHostModeDaemon_Unreachable_NoCLIPortHint(t *testing.T) {
+	t.Setenv(client.NoAutostartEnv, "1")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	err = ensureHostModeDaemon(context.Background(), hostPortsForAddr(t, addr), "my-token")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "--cli-port") {
+		t.Errorf("error = %q, must not suggest --cli-port when nothing is listening", err.Error())
+	}
+}
+
+// hostPortsForAddr builds hostPorts whose CLI port is addr's port, so a test
+// can aim the CLI at an httptest server.
+func hostPortsForAddr(t *testing.T, addr string) hostPorts {
+	t.Helper()
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split %q: %v", addr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse port %q: %v", portStr, err)
+	}
+	return hostPorts{CLI: port, Web: defaultHostWebPort}
 }
 
 // writeFakeExecutable writes an executable shell script named name into
@@ -596,7 +655,7 @@ func TestDeployFromEmbeddedAssets_NoEngine_ClearError(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	err := deployFromEmbeddedAssets(context.Background(), "some-token", "127.0.0.1:8442")
+	err := deployFromEmbeddedAssets(context.Background(), "some-token", defaultHostPorts())
 	if err == nil {
 		t.Fatal("expected an error when no engine is usable at all")
 	}
@@ -731,6 +790,7 @@ func TestDeployFromEmbeddedAssets_RunsUnifiedScript_StartsComposeStack(t *testin
 {
   echo "ARGS: $*"
   echo "BOID_IMAGE=${BOID_IMAGE:-unset}"
+  echo "PORTS=${BOID_CLI_PORT:-unset},${BOID_WEB_PORT:-unset}"
 } >> %q
 exit 0
 `, logPath))
@@ -759,7 +819,9 @@ exit 0
 
 	wantImage := version.DefaultContainerImage()
 
-	if err := deployFromEmbeddedAssets(context.Background(), "good-token", addr); err != nil {
+	ports := hostPortsForAddr(t, addr)
+	ports.Web = 9080
+	if err := deployFromEmbeddedAssets(context.Background(), "good-token", ports); err != nil {
 		t.Fatalf("deployFromEmbeddedAssets: %v", err)
 	}
 
@@ -795,6 +857,9 @@ exit 0
 		found = true
 		if want := "BOID_IMAGE=" + wantImage; lines[i+1] != want {
 			t.Errorf("compose invocation %q ran with %q, want %q; log:\n%s", lines[i], lines[i+1], want, log)
+		}
+		if want := fmt.Sprintf("PORTS=%d,9080", ports.CLI); i+2 >= len(lines) || lines[i+2] != want {
+			t.Errorf("compose invocation %q did not see the host ports %q; log:\n%s", lines[i], want, log)
 		}
 	}
 	if !found {
