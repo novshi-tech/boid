@@ -276,6 +276,17 @@ unknown metadata; an explicit empty string clears the saved value. See
 **The judgment skill** receives one card and works out what it now means. Tell
 it:
 
+- **to establish what changed since the previous judgment before deciding.**
+  The existing summary records an earlier judgment, not proof that a new event
+  is already reflected. A `noted` body may supply enough context; read the
+  original source when it does not. An `identity_linked` action records a
+  binding, not the follow-up's content, so read the newly linked source before
+  deciding whether the summary or next step needs to change. For signal-driven
+  events, `boid signal list --state all --source <pack>/<connector>` can supply
+  identities, timestamps and URLs even after intake has acked them. An ack
+  means intake finished, not that judgment incorporated the source's content.
+  Do not conclude "nothing changed" without checking the new information; if
+  the source cannot be read, report what remains unverified and why.
 - **what this workspace is trying to achieve.** A judgment that doesn't know what
   counts as progress produces tidy lists nobody acts on.
 - **what a good proposal looks like here**, and that not proposing is a real
