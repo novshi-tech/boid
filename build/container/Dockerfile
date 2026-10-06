@@ -149,8 +149,9 @@ LABEL boid.runner_protocol="v1"
 # API gateway; removing it earlier would break existing PR workflows.
 ARG GH_VERSION=2.100.0
 
+# Codex's PID-managed app-server startup requires ps (provided by procps).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git curl gpg jq \
+    && apt-get install -y --no-install-recommends ca-certificates git curl gpg jq procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Native runtime dependencies for workspace-HOME-installed toolchains.
