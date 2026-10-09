@@ -12,6 +12,7 @@ current_allowed=(
   apigateway
   apiwire
   atomicfile
+  checkout
   client
   config
   daemon
@@ -48,6 +49,7 @@ target_allowed=(
   apigateway
   apiwire
   atomicfile
+  checkout
   client
   config
   daemon
