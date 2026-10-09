@@ -3,6 +3,7 @@ package checkout
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // ValidateRepo accepts a host/owner/repo identity safe for URLs and local paths.
@@ -68,7 +70,7 @@ func Run(ctx context.Context, repo, base, cacheRoot, root string, warnings io.Wr
 	cache := ""
 	if cacheRoot != "" {
 		cache = filepath.Join(cacheRoot, filepath.FromSlash(repo)+".git")
-		release, err := lockCache(cache)
+		release, err := lockCache(ctx, cache)
 		if err != nil {
 			fmt.Fprintf(warnings, "warning: git cache unavailable: %v\n", err)
 			cache = ""
@@ -110,7 +112,7 @@ func Run(ctx context.Context, repo, base, cacheRoot, root string, warnings io.Wr
 }
 
 // lockCache uses a sibling lock file so the bare repository may be created or repaired.
-func lockCache(cache string) (func(), error) {
+func lockCache(ctx context.Context, cache string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(cache), 0755); err != nil {
 		return nil, err
 	}
@@ -118,9 +120,23 @@ func lockCache(cache string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, err
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			f.Close()
+			return nil, err
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			f.Close()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }
