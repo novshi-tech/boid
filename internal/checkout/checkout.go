@@ -3,15 +3,12 @@ package checkout
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 )
 
 // ValidateRepo accepts a host/owner/repo identity safe for URLs and local paths.
@@ -60,7 +57,7 @@ func Run(ctx context.Context, repo, base, cacheRoot, root string, warnings io.Wr
 	}()
 	url := strings.TrimRight(base, "/") + "/" + repo + ".git"
 	run := func(args ...string) error {
-		c := exec.CommandContext(ctx, "git", args...)
+		c := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)...)
 		b, err := c.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("git: %w: %s", err, strings.ReplaceAll(strings.TrimSpace(string(b)), base, "<git-base>"))
@@ -82,7 +79,7 @@ func Run(ctx context.Context, repo, base, cacheRoot, root string, warnings io.Wr
 					fmt.Fprintf(warnings, "warning: cache clone failed: %v\n", err)
 				}
 			} else {
-				if err := run("-C", cache, "fetch", "--prune", "--no-write-fetch-head", url, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"); err != nil {
+				if err := fetchCache(ctx, cache, root, url, base, run); err != nil {
 					fmt.Fprintf(warnings, "warning: cache fetch failed: %v\n", err)
 				}
 			}
@@ -111,32 +108,30 @@ func Run(ctx context.Context, repo, base, cacheRoot, root string, warnings io.Wr
 	return dest, nil
 }
 
-// lockCache uses a sibling lock file so the bare repository may be created or repaired.
-func lockCache(ctx context.Context, cache string) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(cache), 0755); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(cache+".lock", os.O_CREATE|os.O_RDWR, 0600)
+// fetchCache reads only cached objects, never the shared repository's config or
+// hooks. A readonly job can modify that config (including URL rewrites, credential
+// helpers and includes), so command-line hook overrides alone are insufficient.
+// Refs are private: the shared repository is only an object cache for --reference.
+func fetchCache(ctx context.Context, cache, root, url, base string, run func(...string) error) error {
+	control, err := os.MkdirTemp(root, ".boid-cache-fetch-")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	for {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
-			f.Close()
-			return nil, err
-		}
-		timer := time.NewTimer(25 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			f.Close()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
+	defer os.RemoveAll(control)
+	if err := run("init", "--bare", "--template=", control); err != nil {
+		return err
 	}
-	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
+	objects, err := filepath.Abs(filepath.Join(cache, "objects"))
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath="+os.DevNull,
+		"-c", "gc.auto=0", "-c", "maintenance.auto=false", "--git-dir="+control,
+		"fetch", "--no-write-fetch-head", url, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
+	cmd.Env = append(os.Environ(), "GIT_OBJECT_DIRECTORY="+objects)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git cache fetch: %w: %s", err, strings.ReplaceAll(strings.TrimSpace(string(output)), base, "<git-base>"))
+	}
+	return nil
 }

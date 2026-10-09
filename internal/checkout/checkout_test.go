@@ -3,15 +3,12 @@ package checkout
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
-	"time"
 )
 
 func git(t *testing.T, args ...string) string {
@@ -153,36 +150,82 @@ func TestCacheDoesNotPersistJobToken(t *testing.T) {
 	}
 }
 
-func TestCancelledCheckoutStopsWaitingForCacheLock(t *testing.T) {
-	base, cache, root := upstream(t), t.TempDir(), t.TempDir()
-	path := filepath.Join(cache, "host", "owner", "repo.git.lock")
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+func TestCacheCannotExecuteJobCode(t *testing.T) {
+	for _, attack := range []string{"hooks", "hooksPath", "urlRewrite", "fsmonitor"} {
+		t.Run(attack, func(t *testing.T) {
+			base, cache := upstream(t), t.TempDir()
+			if _, err := Run(context.Background(), "host/owner/repo", base, cache, t.TempDir(), &bytes.Buffer{}); err != nil {
+				t.Fatal(err)
+			}
+			bare := filepath.Join(cache, "host", "owner", "repo.git")
+			marker := filepath.Join(t.TempDir(), "executed")
+			script := filepath.Join(t.TempDir(), "attack")
+			if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			switch attack {
+			case "hooks", "hooksPath":
+				hooks := filepath.Join(bare, "hooks")
+				if attack == "hooksPath" {
+					hooks = t.TempDir()
+					git(t, "-C", bare, "config", "core.hooksPath", hooks)
+				}
+				for _, hook := range []string{"reference-transaction", "post-fetch", "pre-auto-gc"} {
+					if err := os.WriteFile(filepath.Join(hooks, hook), []byte("#!/bin/sh\n'"+script+"'\n"), 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "urlRewrite":
+				git(t, "-C", bare, "config", "protocol.ext.allow", "always")
+				git(t, "-C", bare, "config", "url.ext::"+script+".insteadOf", base)
+			case "fsmonitor":
+				git(t, "-C", bare, "config", "core.fsmonitor", script)
+			}
+			// Make the fetch update refs and acquire new objects, so this also
+			// exercises reference-transaction hooks rather than a no-op fetch.
+			src := strings.TrimPrefix(base, "file://") + "/src"
+			git(t, "-C", src, "commit", "--allow-empty", "-m", "next")
+			git(t, "-C", src, "push", strings.TrimPrefix(base, "file://")+"/host/owner/repo.git", "main")
+			var warnings bytes.Buffer
+			out, err := Run(context.Background(), "host/owner/repo", base, cache, t.TempDir(), &warnings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if warnings.Len() != 0 {
+				t.Fatalf("cache refresh failed: %s", &warnings)
+			}
+			verify(t, out)
+			if got, want := git(t, "-C", out, "rev-parse", "HEAD"), git(t, "-C", src, "rev-parse", "HEAD"); got != want {
+				t.Fatalf("checkout = %s, want %s", got, want)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("cache executed code: %v", err)
+			}
+		})
+	}
+}
+
+func TestCacheCloneDisablesTemplateHooks(t *testing.T) {
+	base := upstream(t)
+	template := t.TempDir()
+	if err := os.Mkdir(filepath.Join(template, "hooks"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	marker := filepath.Join(t.TempDir(), "executed")
+	if err := os.WriteFile(filepath.Join(template, "hooks", "reference-transaction"), []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_TEMPLATE_DIR", template)
+	var warnings bytes.Buffer
+	out, err := Run(context.Background(), "host/owner/repo", base, t.TempDir(), t.TempDir(), &warnings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		t.Fatal(err)
+	verify(t, out)
+	if warnings.Len() != 0 {
+		t.Fatalf("cache clone failed: %s", &warnings)
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { _, err := Run(ctx, "host/owner/repo", base, cache, root, &bytes.Buffer{}); done <- err }()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("checkout error=%v", err)
-		}
-	case <-time.After(time.Second):
-		syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-		<-done
-		t.Fatal("cancelled checkout remains blocked by another job's cache lock")
-	}
-	if _, err := os.Stat(filepath.Join(root, "repo")); !os.IsNotExist(err) {
-		t.Fatalf("cancelled destination remains: %v", err)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("template hook executed: %v", err)
 	}
 }
