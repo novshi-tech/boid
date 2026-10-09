@@ -68,7 +68,7 @@ const (
 
 // preserves reports whether p protects volumeName from destruction.
 func (p WorkspaceHomePolicy) preserves(volumeName string) bool {
-	return p == PreserveWorkspaceHomes && dockerres.IsWorkspaceHomeVolumeName(volumeName)
+	return dockerres.IsWorkspaceGitCacheVolumeName(volumeName) || (p == PreserveWorkspaceHomes && dockerres.IsWorkspaceHomeVolumeName(volumeName))
 }
 
 // dockerAPI is the narrow, package-owned subset of the docker Engine API

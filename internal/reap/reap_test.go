@@ -738,3 +738,16 @@ func TestReport_EmptyIgnoresSkippedVolumes(t *testing.T) {
 		t.Error("Report.Empty() = false for a skip-only report, want true (skip is not destroy)")
 	}
 }
+
+func TestGitCacheSurvivesReap(t *testing.T) {
+	name := dockerres.WorkspaceGitCacheVolumeName("install-a", "team")
+	api := &fakeDockerAPI{volumes: []volume.Volume{{Name: name, Labels: map[string]string{LabelInstallID: "install-a"}}}}
+	if _, err := Run(context.Background(), api, "install-a", t.TempDir(), PreserveWorkspaceHomes); err != nil {
+		t.Fatal(err)
+	}
+	for _, removed := range api.removedVolumes {
+		if removed == name {
+			t.Fatal("workspace cache reaped")
+		}
+	}
+}

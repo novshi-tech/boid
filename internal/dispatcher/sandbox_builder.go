@@ -220,7 +220,10 @@ type SandboxRuntimeInfo struct {
 	// The ProfileInit branch never reads this field at
 	// all — see its own doc comment for why bind-mounting HOME there would
 	// defeat its host-tool-discovery purpose.
-	WorkspaceHomeVolume string
+	WorkspaceHomeVolume     string
+	WorkspaceGitCacheVolume string
+	PrimaryRepo             string
+	ForkPoint               string
 
 	// WorkspaceSlug is the normalized workspace slug WorkspaceHomeVolume was
 	// resolved for, taken straight from resolveWorkspaceHome's second return
@@ -299,6 +302,13 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	env := cloneStringMap(spec.Env)
 	if env == nil {
 		env = map[string]string{}
+	}
+	env["BOID_PRIMARY_REPO"] = rt.PrimaryRepo
+	env["BOID_FORK_POINT"] = rt.ForkPoint
+	env["BOID_GIT_CACHE"] = "/var/cache/boid/git"
+	env["BOID_GIT_BASE"] = ""
+	if rt.GatewayURL != "" && rt.GatewayJobToken != "" {
+		env["BOID_GIT_BASE"] = strings.TrimRight(rt.GatewayURL, "/") + "/j/" + rt.GatewayJobToken
 	}
 	setIfNonEmpty(env, "BOID_TASK_ID", spec.TaskID)
 	setIfNonEmpty(env, "BOID_JOB_ID", rt.JobID)
@@ -391,6 +401,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		env["BOID_BROKER_TOKEN"] = rt.BrokerToken
 	}
 
+	if rt.WorkspaceGitCacheVolume != "" {
+		mounts = append(mounts, sandbox.Mount{Source: rt.WorkspaceGitCacheVolume, Target: "/var/cache/boid/git", Type: sandbox.MountBind})
+	}
 	// Project / workspace peers / .boid layer.
 	projectDir := spec.Visibility.ProjectDir
 	switch {

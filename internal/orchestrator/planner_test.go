@@ -1241,3 +1241,17 @@ func newPlannerWithCapabilities(proj *Project, behavior TaskBehavior, task *Task
 		Adapter:  stubHarnessAdapter{},
 	}
 }
+
+func TestDispatchPlannerPropagatesForkPoint(t *testing.T) {
+	task := &Task{ID: "task", ProjectID: "project", Type: TaskTypeExecution, Status: TaskStatusExecuting, Exec: &ExecAttrs{Behavior: "dev", BaseBranch: "work"}}
+	planner := newPlannerForTest(&Project{ID: "project", WorkDir: t.TempDir()}, TaskBehavior{}, task)
+	meta, _ := planner.Meta.Get("project")
+	meta.ForkPoint = "origin/develop"
+	spec, _, err := planner.PlanHook(&HookFireEvent{TaskID: "task", ProjectID: "project", Hook: Hook{ID: "hook", Command: "true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := spec.Env["BOID_FORK_POINT"]; got != "origin/develop" {
+		t.Fatalf("fork point=%q", got)
+	}
+}

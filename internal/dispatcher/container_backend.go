@@ -1518,8 +1518,9 @@ func (b *containerBackend) reapOrphanVolumes(ctx context.Context, filters client
 	}
 	for _, v := range listRes.Items {
 		_, hasHomeLabel := v.Labels[dockerres.LabelWorkspaceHome]
-		if dockerres.IsWorkspaceHomeVolumeName(v.Name) || hasHomeLabel {
-			slog.Debug("container backend: preserving workspace HOME volume during orphan sweep",
+		_, hasCacheLabel := v.Labels[dockerres.LabelWorkspaceGitCache]
+		if dockerres.IsWorkspaceHomeVolumeName(v.Name) || dockerres.IsWorkspaceGitCacheVolumeName(v.Name) || hasHomeLabel || hasCacheLabel {
+			slog.Debug("container backend: preserving workspace volume during orphan sweep",
 				"volume", v.Name, "workspace", v.Labels[dockerres.LabelWorkspaceHome])
 			continue
 		}
@@ -1874,6 +1875,7 @@ func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []strin
 		}
 
 		isWorkspaceHome := dockerres.IsWorkspaceHomeVolumeName(name)
+		isGitCache := dockerres.IsWorkspaceGitCacheVolumeName(name)
 		labels := jobLabels
 		if isWorkspaceHome {
 			candidate, err := newWorkspaceHomeID()
@@ -1889,6 +1891,12 @@ func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []strin
 			}
 		}
 
+		if isGitCache {
+			labels = map[string]string{dockerres.LabelWorkspaceGitCache: workspaceSlug}
+			if b.installID != "" {
+				labels[dockerres.LabelWorkspaceGitCacheInstallID] = b.installID
+			}
+		}
 		res, err := b.api.VolumeCreate(ctx, client.VolumeCreateOptions{Name: name, Labels: labels})
 		if err != nil {
 			return fmt.Errorf("create named volume %q: %w", name, err)
@@ -1899,7 +1907,7 @@ func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []strin
 			}
 			continue
 		}
-		if res.Volume.Labels[labelJobID] == "" {
+		if !isGitCache && res.Volume.Labels[labelJobID] == "" {
 			slog.Warn("container backend: named volume exists without a boid.job_id label; ReapOrphans's volume sweep will not find it",
 				"volume", name)
 		}

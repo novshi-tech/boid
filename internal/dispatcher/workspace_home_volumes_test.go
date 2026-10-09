@@ -497,8 +497,8 @@ func TestWorkspaceHomeVolumeStore_Remove_RemovesTheVolumeAndReportsPriorSize(t *
 	if info.Bytes != 4242 {
 		t.Errorf("info.Bytes = %d, want 4242 (size as observed before deletion)", info.Bytes)
 	}
-	if len(api.removed) != 1 || api.removed[0] != name {
-		t.Errorf("removed = %v, want [%s]", api.removed, name)
+	if len(api.removed) != 2 || api.removed[0] != name {
+		t.Errorf("removed = %v, want [%s %s]", api.removed, name, dockerres.WorkspaceGitCacheVolumeName("inst", "team-a"))
 	}
 	if _, still := api.volumes[name]; still {
 		t.Error("volume still present after Remove")
@@ -659,7 +659,7 @@ func TestWorkspaceHomeVolumeStore_Remove_InspectFailureStillAttemptsDeletion(t *
 	if _, _, err := store.Remove(context.Background(), "team-a"); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if len(api.removed) != 1 || api.removed[0] != name {
+	if len(api.removed) != 2 || api.removed[0] != name {
 		t.Errorf("removed = %v, want [%s] — an inspect failure must not skip the delete attempt", api.removed, name)
 	}
 }
@@ -680,8 +680,8 @@ func TestWorkspaceHomeVolumeStore_Remove_UsesForce(t *testing.T) {
 	if _, _, err := store.Remove(context.Background(), "team-a"); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if len(api.removeForced) != 1 || !api.removeForced[0] {
-		t.Errorf("VolumeRemoveOptions.Force = %v, want [true]", api.removeForced)
+	if len(api.removeForced) != 2 || !api.removeForced[0] || !api.removeForced[1] {
+		t.Errorf("VolumeRemoveOptions.Force = %v, want [true true]", api.removeForced)
 	}
 }
 
@@ -711,3 +711,21 @@ func TestWorkspaceHomeVolumeStore_NilAPI_DegradesGracefully(t *testing.T) {
 // type satisfies the narrow interface — the same compile-time assertion
 // SelfContainerInspector carries for the same reason.
 var _ WorkspaceHomeVolumeAPI = (*client.Client)(nil)
+
+func TestWorkspaceRemovalDeletesGitCacheOnlyForItsWorkspace(t *testing.T) {
+	install, slug := "12345678-install", "team-a"
+	home := dockerres.WorkspaceHomeVolumeName(install, slug)
+	cache := dockerres.WorkspaceGitCacheVolumeName(install, slug)
+	other := dockerres.WorkspaceGitCacheVolumeName(install, "team-b")
+	api := &stubWorkspaceHomeVolumeAPI{volumes: map[string]volume.Volume{home: {Name: home}, cache: {Name: cache}, other: {Name: other}}}
+	store := &WorkspaceHomeVolumeStore{API: api, InstallID: install}
+	if _, _, err := store.Remove(context.Background(), slug); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := api.volumes[cache]; ok {
+		t.Fatal("cache survives workspace deletion")
+	}
+	if _, ok := api.volumes[other]; !ok {
+		t.Fatal("other workspace's cache removed")
+	}
+}

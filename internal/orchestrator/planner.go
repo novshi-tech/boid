@@ -154,6 +154,10 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		// attach endpoint.
 		Interactive: true,
 	}
+	if spec.Env == nil {
+		spec.Env = map[string]string{}
+	}
+	spec.Env["BOID_FORK_POINT"] = meta.ForkPoint
 	if p.CardRequests != nil {
 		// Best-effort: a lookup failure just means no card context reaches
 		// this job, not a dispatch failure — write.py's own fail-closed

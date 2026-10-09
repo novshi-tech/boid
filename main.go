@@ -92,7 +92,7 @@ func isReservedRunnerSubcommand(argv []string) bool {
 // container backend genuinely never dispatched a real capabilities.docker
 // job successfully before this fix).
 func shouldRunBoidBuiltinShim(command string, argv []string) bool {
-	if isReservedRunnerSubcommand(argv) {
+	if isReservedRunnerSubcommand(argv) || (len(argv) > 1 && argv[1] == "checkout") {
 		return false
 	}
 	return command == "boid" && os.Getenv("BOID_BUILTIN_SHIM") != ""

@@ -19,6 +19,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/integrationpack"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -884,7 +885,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 	}
 
+	primaryRepo, forkPoint := r.checkoutInputs(spec, workspaceID)
 	rtInfo := SandboxRuntimeInfo{
+		PrimaryRepo:                primaryRepo,
+		ForkPoint:                  forkPoint,
+		WorkspaceGitCacheVolume:    dockerres.WorkspaceGitCacheVolumeName(r.InstallID, workspaceSlug),
 		JobID:                      j.ID,
 		BoidBinary:                 r.BoidBinary,
 		ServerSocket:               r.ServerSocket,
