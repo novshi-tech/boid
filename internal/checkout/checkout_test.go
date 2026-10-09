@@ -3,6 +3,7 @@ package checkout
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -227,5 +228,150 @@ func TestCacheCloneDisablesTemplateHooks(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("template hook executed: %v", err)
+	}
+}
+
+func TestCacheRefreshNegotiatesAndTracksRefs(t *testing.T) {
+	base, cacheRoot := upstream(t), t.TempDir()
+	up := strings.TrimPrefix(base, "file://") + "/host/owner/repo.git"
+	src := strings.TrimPrefix(base, "file://") + "/src"
+	data := make([]byte, 256*1024)
+	if _, err := rand.Read(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "large"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", src, "add", ".")
+	git(t, "-C", src, "commit", "-m", "large payload")
+	git(t, "-C", src, "push", up, "main")
+	transfer := filepath.Join(t.TempDir(), "pack")
+	hook := filepath.Join(t.TempDir(), "pack-hook")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\n\"$@\" | tee '"+transfer+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "config")
+	git(t, "config", "--file", config, "uploadpack.packObjectsHook", hook)
+	t.Setenv("GIT_CONFIG_GLOBAL", config)
+	checkout := func() {
+		t.Helper()
+		var warnings bytes.Buffer
+		if _, err := Run(context.Background(), "host/owner/repo", base, cacheRoot, t.TempDir(), &warnings); err != nil {
+			t.Fatal(err)
+		}
+		if warnings.Len() != 0 {
+			t.Fatalf("warnings: %s", &warnings)
+		}
+	}
+	checkout()
+	initial, err := os.Stat(transfer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(cacheRoot, "host/owner/repo.git")
+	packStats := func() (int, int64) {
+		t.Helper()
+		files, err := filepath.Glob(filepath.Join(cache, "objects/pack/*.pack"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var size int64
+		for _, file := range files {
+			st, err := os.Stat(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			size += st.Size()
+		}
+		return len(files), size
+	}
+	count, size := packStats()
+	for i := 0; i < 3; i++ {
+		if err := os.WriteFile(transfer, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		checkout()
+		if n, s := packStats(); n != count || s != size {
+			t.Fatalf("unchanged refresh grew packs: %d/%d -> %d/%d", count, size, n, s)
+		}
+		st, err := os.Stat(transfer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Size() != 0 {
+			t.Fatalf("unchanged refresh transferred %d bytes", st.Size())
+		}
+	}
+	git(t, "-C", src, "commit", "--allow-empty", "-m", "next")
+	git(t, "-C", src, "tag", "next")
+	git(t, "-C", src, "push", up, "main", "refs/tags/next")
+	checkout()
+	if got, want := git(t, "-C", cache, "rev-parse", "main"), git(t, "-C", src, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("cache main = %s, want %s", got, want)
+	}
+	if got, want := git(t, "-C", cache, "rev-parse", "next"), git(t, "-C", src, "rev-parse", "next"); got != want {
+		t.Fatalf("cache tag = %s, want %s", got, want)
+	}
+	incremental, err := os.Stat(transfer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if incremental.Size() == 0 || incremental.Size()*10 >= initial.Size() {
+		t.Fatalf("transfer initial=%d incremental=%d", initial.Size(), incremental.Size())
+	}
+	t.Logf("pack transfer: initial=%d bytes, incremental=%d bytes", initial.Size(), incremental.Size())
+	count, size = packStats()
+	checkout()
+	if n, s := packStats(); n != count || s != size {
+		t.Fatalf("updated refresh grew packs: %d/%d -> %d/%d", count, size, n, s)
+	}
+}
+
+func TestCacheRefsRejectUntrustedInput(t *testing.T) {
+	hash := strings.Repeat("a", 40)
+	for _, line := range []string{
+		hash + " refs/heads/main\nupdate refs/heads/injected " + hash,
+		"not-a-hash refs/heads/main",
+		hash + " refs/heads/../../config",
+		hash + " refs/heads/main.lock",
+		hash + " refs/heads/-bad\toption no-deref",
+	} {
+		t.Run(line, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "packed-refs"), []byte(line), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readCacheRefs(dir); err == nil {
+				t.Fatal("accepted unsafe cache refs")
+			}
+		})
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(dir, "refs")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCacheRefs(dir); err == nil {
+		t.Fatal("accepted symlinked cache refs")
+	}
+}
+
+func TestCacheLooseRefsOverridePackedRefs(t *testing.T) {
+	dir := t.TempDir()
+	old, current := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	if err := os.WriteFile(filepath.Join(dir, "packed-refs"), []byte("# pack-refs with: peeled\n"+old+" refs/heads/main\n"+old+" refs/tags/release\n^"+old+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "refs/heads"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "refs/heads/main"), []byte(current+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := readCacheRefs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 || refs["refs/heads/main"] != current || refs["refs/tags/release"] != old {
+		t.Fatalf("refs = %v", refs)
 	}
 }
