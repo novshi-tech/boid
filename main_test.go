@@ -3,6 +3,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +70,31 @@ func TestIsReservedRunnerSubcommand(t *testing.T) {
 		if got := isReservedRunnerSubcommand(c.argv); got != c.want {
 			t.Errorf("isReservedRunnerSubcommand(%v) = %v, want %v", c.argv, got, c.want)
 		}
+	}
+}
+
+func TestCheckoutBypassesBuiltinShim(t *testing.T) {
+	t.Setenv("BOID_BUILTIN_SHIM", "1")
+	for _, args := range [][]string{{"boid", "checkout"}, {"boid", "checkout", "peer"}} {
+		if shouldRunBoidBuiltinShim("boid", args) {
+			t.Fatalf("checkout routed to broker: %v", args)
+		}
+	}
+	if !shouldRunBoidBuiltinShim("boid", []string{"boid", "project", "list"}) {
+		t.Fatal("project list must retain broker routing")
+	}
+}
+
+func TestCheckoutLocalEntrypoint(t *testing.T) {
+	if os.Getenv("BOID_TEST_CHECKOUT_ENTRYPOINT") == "1" {
+		os.Args = []string{"boid", "checkout"}
+		main()
+		return
+	}
+	c := exec.Command(os.Args[0], "-test.run=^TestCheckoutLocalEntrypoint$")
+	c.Env = append(os.Environ(), "BOID_TEST_CHECKOUT_ENTRYPOINT=1", "BOID_PRIMARY_REPO=", "BOID_BUILTIN_SHIM=1", "BOID_BROKER_SOCKET=/missing/broker.sock", "BOID_BROKER_TLS_ADDR=", "BOID_PROFILE=does-not-exist")
+	b, err := c.CombinedOutput()
+	if err == nil || !strings.Contains(string(b), "no primary repository") {
+		t.Fatalf("local checkout entrypoint: %v\n%s", err, b)
 	}
 }

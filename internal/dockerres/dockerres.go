@@ -16,9 +16,8 @@
 // itself and the sandbox is not the one naming them.
 //
 // WorkspaceHomeVolumePrefix ("boid-ws-home-") is the NARROWER set the
-// reapers skip. Only these volumes hold state that cannot be regenerated
-// (harness credentials, a ~1.5GB toolchain) — a workspace network is
-// recreated on demand, so reap is still free to destroy it.
+// reapers skip. Git cache volumes also survive between jobs; workspace
+// deletion removes them. Workspace networks are recreated on demand.
 package dockerres
 
 import "strings"
@@ -38,9 +37,11 @@ import "strings"
 // boid.install_id or boid.job_id would get it force-removed by one of the
 // reapers' sweeps.
 const (
-	LabelJobID     = "boid.job_id"
-	LabelWorkspace = "boid.workspace"
-	LabelInstallID = "boid.install_id"
+	LabelWorkspaceGitCache          = "boid.workspace_gitcache"
+	LabelWorkspaceGitCacheInstallID = "boid.workspace_gitcache_install_id"
+	LabelJobID                      = "boid.job_id"
+	LabelWorkspace                  = "boid.workspace"
+	LabelInstallID                  = "boid.install_id"
 
 	// LabelWorkspaceHome carries the workspace slug. Its mere presence is
 	// also what containerBackend.reapOrphanVolumes uses as a second,
@@ -90,7 +91,8 @@ const (
 
 	// WorkspaceHomeVolumePrefix is the persistent workspace HOME volume
 	// namespace — the volumes both reapers skip by default.
-	WorkspaceHomeVolumePrefix = ReservedVolumeNamePrefix + "home-"
+	WorkspaceHomeVolumePrefix     = ReservedVolumeNamePrefix + "home-"
+	WorkspaceGitCacheVolumePrefix = ReservedVolumeNamePrefix + "gitcache-"
 
 	// WorkspaceInitContainerPrefix namespaces the throwaway CONTAINER that
 	// prepares a workspace HOME. Note this is a container namespace, not a
@@ -222,4 +224,14 @@ func IsValidVolumeName(name string) bool {
 		}
 	}
 	return true
+}
+
+// WorkspaceGitCacheVolumeName returns a cache volume scoped to one install and workspace.
+func WorkspaceGitCacheVolumeName(installID, workspace string) string {
+	return WorkspaceGitCacheVolumePrefix + installIDPart(installID) + "-" + SanitizeNamePart(workspace)
+}
+
+// IsWorkspaceGitCacheVolumeName identifies volumes retained between jobs.
+func IsWorkspaceGitCacheVolumeName(name string) bool {
+	return strings.HasPrefix(name, WorkspaceGitCacheVolumePrefix)
 }

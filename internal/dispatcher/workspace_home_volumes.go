@@ -282,8 +282,14 @@ func (s *WorkspaceHomeVolumeStore) Remove(ctx context.Context, slug string) (Wor
 	// comment for the failure this prevents).
 	removeCtx, cancelRemove := engineCall(ctx)
 	defer cancelRemove()
-	if _, err := s.API.VolumeRemove(removeCtx, info.Volume, client.VolumeRemoveOptions{Force: true}); err != nil {
+	if _, err := s.API.VolumeRemove(removeCtx, info.Volume, client.VolumeRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
 		return info, false, fmt.Errorf("remove workspace home volume %q: %w", info.Volume, err)
+	}
+	cacheName := dockerres.WorkspaceGitCacheVolumeName(s.InstallID, slug)
+	cacheCtx, cancelCache := engineCall(ctx)
+	defer cancelCache()
+	if _, err := s.API.VolumeRemove(cacheCtx, cacheName, client.VolumeRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
+		return info, info.Exists, fmt.Errorf("remove workspace git cache volume %q: %w", cacheName, err)
 	}
 	return info, info.Exists, nil
 }

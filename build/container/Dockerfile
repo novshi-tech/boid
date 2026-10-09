@@ -346,6 +346,9 @@ RUN mkdir -p /run/boid/bin \
 # on its own — e.g. for exactly this kind of standalone image smoke test.
 RUN mkdir -p /workspace && chgrp 0 /workspace && chmod g=u /workspace
 
+# Docker seeds a fresh cache volume from this group-writable mount point.
+RUN mkdir -p /var/cache/boid/git && chgrp 0 /var/cache/boid/git && chmod g=u /var/cache/boid/git
+
 # /home/boid/.local/share/boid, /home/boid/.config/boid: pre-create the
 # daemon's XDG data/config directories with gid-0/g=u permissions before the
 # compose stack mounts named volumes over them (docs/plans/

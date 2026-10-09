@@ -224,3 +224,33 @@ func repoKeyFromUpstreamURL(upstreamURL string) (gitgateway.RepoKey, error) {
 	}
 	return gitgateway.NewRepoKey(parts[0], parts[1], parts[2]), nil
 }
+
+// checkoutInputs resolves checkout identity and the task or workspace fork point for every job kind.
+func (r *Runner) checkoutInputs(spec *orchestrator.JobSpec, workspaceID string) (primaryRepo, forkPoint string) {
+	if r.Projects != nil {
+		if project, err := r.Projects.GetProject(spec.ProjectID); err == nil && project != nil && project.UpstreamURL != "" {
+			if key, err := repoKeyFromUpstreamURL(project.UpstreamURL); err == nil {
+				primaryRepo = string(key)
+			}
+		}
+	}
+	forkPoint = spec.Env["BOID_FORK_POINT"]
+	if forkPoint == "" && spec.Visibility.Clone != nil {
+		forkPoint = spec.Visibility.Clone.BaseBranchForkPoint
+	}
+	if forkPoint == "" && r.Hydrator != nil && spec.ProjectID != "" {
+		if meta, err := r.Hydrator.GetWithWorkspace(context.Background(), spec.ProjectID); err == nil && meta != nil {
+			forkPoint = meta.ForkPoint
+		}
+	}
+	if forkPoint == "" && r.Workspaces != nil {
+		slug, err := normalizeWorkspaceSlug(workspaceID)
+		if err != nil {
+			return primaryRepo, forkPoint
+		}
+		if meta, err := r.Workspaces.Load(slug); err == nil && meta != nil {
+			forkPoint = meta.ForkPoint
+		}
+	}
+	return primaryRepo, forkPoint
+}

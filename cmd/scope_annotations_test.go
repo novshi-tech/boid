@@ -227,6 +227,7 @@ var expectedScopeAnnotations = map[string]string{
 	// commands that never talk to a daemon, or (see the doc comment above)
 	// a deliberate judgment call reconciling mechanism against the plan doc.
 	"boid check":           scopeLocal,
+	"boid checkout":        scopeLocal,
 	"boid fetch":           scopeLocal,
 	"boid init":            scopeLocal,
 	"boid project migrate": scopeLocal,

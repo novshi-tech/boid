@@ -16,6 +16,7 @@ func TestVolumesCreate_reservedName_deny(t *testing.T) {
 	for _, name := range []string{
 		"boid-ws-home-abcd1234-default",
 		dockerres.WorkspaceHomeVolumeName("abcd12345678", "default"),
+		dockerres.WorkspaceGitCacheVolumeName("abcd12345678", "team"),
 		"boid-ws-abcd1234-default", // whole reserved namespace, not just HOME
 		"boid-ws-anything",
 	} {
@@ -35,6 +36,7 @@ func TestVolumesCreate_ordinaryName_allow(t *testing.T) {
 // sandbox learned the name of some other way (it is deterministic), and
 // DELETE /volumes/* used to be an unconditional pass-through.
 func TestVolumesDelete_reservedName_deny(t *testing.T) {
+	assertDenyContains(t, "DELETE", "/volumes/boid-ws-gitcache-abcd1234-team", nil, "reserved by boid")
 	assertDenyContains(t, "DELETE", "/volumes/boid-ws-home-abcd1234-default", nil, "reserved by boid")
 	assertDenyContains(t, "DELETE", "/v1.43/volumes/boid-ws-home-abcd1234-default", nil, "reserved by boid")
 	assertDenyContains(t, "DELETE", "/volumes/boid-ws-abcd1234-default", nil, "reserved by boid")
@@ -100,6 +102,7 @@ func TestContainersCreate_mountSourceReservedVolume_deny(t *testing.T) {
 	for _, name := range []string{
 		"boid-ws-home-abcd1234-default",
 		dockerres.WorkspaceHomeVolumeName("abcd12345678", "default"),
+		dockerres.WorkspaceGitCacheVolumeName("abcd12345678", "team"),
 		"boid-ws-abcd1234-default", // whole reserved namespace, as with create/delete
 	} {
 		body := createBody(map[string]interface{}{
