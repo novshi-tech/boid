@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -84,6 +85,9 @@ func Run(ctx context.Context, repo, base, cacheRoot, root string, warnings io.Wr
 			} else {
 				if err := fetchCache(ctx, cache, root, url, base, run); err != nil {
 					fmt.Fprintf(warnings, "warning: cache fetch failed: %v\n", err)
+					if errors.Is(err, errInvalidCacheRefs) {
+						cache = ""
+					}
 				}
 			}
 		}
@@ -127,7 +131,7 @@ func fetchCache(ctx context.Context, cache, root, url, base string, run func(...
 	}
 	refs, err := readCacheRefs(cache)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errInvalidCacheRefs, err)
 	}
 	var updates strings.Builder
 	for name, hash := range refs {
@@ -186,10 +190,49 @@ func validCacheRef(name, hash string) bool {
 	return true
 }
 
+var errInvalidCacheRefs = errors.New("invalid cache refs")
+
+const maxCacheRefBytes = 16 << 20
+
+// readCacheRefFile rejects special files and bounds reads of untrusted cache data.
+func readCacheRefFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("cache ref %s is not a regular file", path)
+	}
+	file, err := openCacheRefFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	// Recheck the opened file: another job may replace it after Lstat.
+	info, err = file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("cache ref %s is not a regular file", path)
+	}
+	if info.Size() > maxCacheRefBytes {
+		return nil, fmt.Errorf("cache ref %s exceeds %d bytes", path, maxCacheRefBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxCacheRefBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxCacheRefBytes {
+		return nil, fmt.Errorf("cache ref %s exceeds %d bytes", path, maxCacheRefBytes)
+	}
+	return data, nil
+}
+
 // readCacheRefs reads validated packed and loose refs without loading Git config.
 func readCacheRefs(dir string) (map[string]string, error) {
 	refs := make(map[string]string)
-	packed, err := os.ReadFile(filepath.Join(dir, "packed-refs"))
+	packed, err := readCacheRefFile(filepath.Join(dir, "packed-refs"))
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -225,7 +268,7 @@ func readCacheRefs(dir string) (map[string]string, error) {
 		if err != nil {
 			return err
 		}
-		data, err := os.ReadFile(path)
+		data, err := readCacheRefFile(path)
 		if err != nil {
 			return err
 		}
