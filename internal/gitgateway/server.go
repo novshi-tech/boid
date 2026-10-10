@@ -13,11 +13,7 @@ import (
 	"github.com/novshi-tech/boid/internal/gwtransport"
 )
 
-// Server is the git gateway's HTTP handler: a thin net/http/httputil.
-// ReverseProxy wrapper that does path-based authorization (Registry) and
-// forge credential injection (CredentialProvider) around the standard
-// library's streaming transport. It never buffers request bodies —
-// packfile POSTs stream straight through to the upstream forge.
+// Server authorizes Git requests and proxies packfiles with forge credentials.
 type Server struct {
 	registry    *Registry
 	credentials *CredentialProvider
@@ -175,6 +171,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.StatusBadGateway)
 			return
 		}
+	}
+
+	if op == OpPush && r.Method == http.MethodPost && entry.ObservePush != nil {
+		body, err := observeReceivePack(r.Body, func(ref string) { entry.ObservePush(repo, ref) })
+		if err != nil {
+			http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		r.Body = body
 	}
 
 	// Rewrite the request path in place to the upstream's canonical

@@ -45,7 +45,7 @@
      └──(env: BOID_PRIMARY_REPO / BOID_BASE_BRANCH / BOID_FORK_POINT / BOID_GIT_BASE / BOID_GIT_CACHE)──▶ job
 
 [job の中]
-  agent か command hook ──exec──▶ C4 boid checkout
+  sandbox 内の起動ラッパー ──exec──▶ C4 boid checkout
      C4 ──flock + git fetch──▶ C5
      C4 ──git clone --reference C5 --dissociate──▶ C6 ──▶ forge
   agent ──git switch (base_branch)──▶ 作業ツリー
@@ -133,11 +133,12 @@ boid checkout <name>     # 登録済みのほかのリポジトリを clone す�
 
 branch は agent が自分で切り替える。dispatcher は `BOID_BASE_BRANCH` / `BOID_FORK_POINT` を env に書くだけで、`boid-task` スキルには次のことを書く。
 
-- 最初に `boid checkout` して、出力されたパスに cd する
+- 主リポジトリは sandbox 内の起動ラッパーが `boid checkout` 済みであり、agent の cwd はその出力パス。agent は重ねて checkout しない
+- 別リポジトリは `boid checkout <name>` で取得する
 - `BOID_BASE_BRANCH` が origin にあれば、その branch に `git switch` する
 - なければ、`BOID_FORK_POINT` (空なら origin の default branch) から `git switch -c` で作る
 
-呼ぶのは agent か command hook。runner は呼ばない。job は空の `/workspace` で始まる。default metaproject の judge はもう clone なしで HOME で動いている (`planner.go:81-83`) ので、workspace 直属の task は今と同じ形になる。
+呼ぶのは sandbox 内の起動ラッパー (claude/codex/opencode の adapter run、および command hook / exec の shell adapter run)。`BOID_PRIMARY_REPO` が非空なら起動前に `boid checkout` を 1 回呼び、出力された `/workspace/<repo名>` を cwd にする。runner / daemon は checkout を呼ばず、branch も切り替えない。主リポジトリなしの job は既存の cwd のまま。default metaproject の judge はもう clone なしで HOME で動いている (`planner.go:81-83`) ので、workspace 直属の task は今と同じ形になる。
 
 ### 4.5 C5 参照キャッシュ
 
@@ -166,7 +167,7 @@ branch は agent が自分で切り替える。dispatcher は `BOID_BASE_BRANCH`
 | 段 | PR | 内容 | 採点 |
 |---|---|---|---|
 | 1 | PR-1 | C5 の volume と C4 の `boid checkout`、env の配線 | Q4-Q8 |
-| 1 | PR-2 | job を空の `/workspace` で始める。`PrepareJobCheckout`、runner の clone と branch 解決 (`ResolveCloneBranchRef`)、`/mnt/refs/*` のマウント、dispatch 前の `FetchBareRepo` を消す。`boid-task` スキルに checkout と branch 切り替えを書く。peer の広告から `reference_path` を消す | Q9-Q12 |
+| 1 | PR-2 | sandbox 内の起動ラッパーが主リポジトリの `boid checkout` を呼び、そのパスを cwd にして起動する (runner / daemon は呼ばない)。`PrepareJobCheckout`、runner の clone と branch 解決 (`ResolveCloneBranchRef`)、`/mnt/refs/*` のマウント、dispatch 前の `FetchBareRepo` を消す。`boid-task` スキルに起動時 checkout 済みと agent 自身の branch 切り替えを書く。peer の広告から `reference_path` を消す | Q9-Q12 |
 | 2 | PR-3 | C2: workspace に triggers / signals / card_commands / card_events を足す。読むときは project.yaml との和集合にする (名前がぶつかったら project.yaml を優先) | Q13-Q15 |
 | 2 | (運用) | 実際の workspace ごとに、project.yaml の定義を workspace に移す | Q16 |
 | 2 | PR-4 | C1 + C3 + C6: `perm` 列、`tasks` / `jobs` の `workspace_id`、`project_id` を nullable に、`trigger_runs` の付け替え、default metaproject の撤去、git gateway の権限の決め方の変更 | Q17-Q22 |

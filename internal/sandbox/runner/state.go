@@ -76,7 +76,6 @@ type specDump struct {
 	StopSignal  string            `json:"stop_signal"`
 	Mounts      []mountDump       `json:"mounts"`
 	Env         map[string]string `json:"env"`
-	Clone       *cloneDump        `json:"clone,omitempty"`
 }
 
 type mountDump struct {
@@ -86,19 +85,6 @@ type mountDump struct {
 	ReadOnly bool   `json:"ro,omitempty"`
 	Slave    bool   `json:"slave,omitempty"`
 	Guard    string `json:"guard,omitempty"`
-}
-
-// cloneDump is the redacted, JSON-friendly view of a sandbox.CloneSpec.
-// Only present (non-nil) in specDump when the sequence is actually enabled.
-type cloneDump struct {
-	URL                 string `json:"url,omitempty"` // job token redacted, see redactCloneURLToken
-	ReferenceDir        string `json:"reference_dir,omitempty"`
-	TargetDir           string `json:"target_dir,omitempty"`
-	RealGitBin          string `json:"real_git_bin,omitempty"`
-	Branch              string `json:"branch,omitempty"`
-	BaseBranch          string `json:"base_branch,omitempty"`
-	CheckoutOnly        bool   `json:"checkout_only,omitempty"`
-	BaseBranchForkPoint string `json:"base_branch_fork_point,omitempty"`
 }
 
 // redactCloneURLToken replaces the job-token path segment of a gitgateway
@@ -140,19 +126,6 @@ func buildSpecDump(spec sandbox.Spec) specDump {
 			Guard:    m.Guard,
 		})
 	}
-	var cloneDumpPtr *cloneDump
-	if spec.Clone.Enabled {
-		cloneDumpPtr = &cloneDump{
-			URL:                 redactCloneURLToken(spec.Clone.URL),
-			ReferenceDir:        spec.Clone.ReferenceDir,
-			TargetDir:           spec.Clone.TargetDir,
-			RealGitBin:          spec.Clone.RealGitBin,
-			Branch:              spec.Clone.Branch,
-			BaseBranch:          spec.Clone.BaseBranch,
-			CheckoutOnly:        spec.Clone.CheckoutOnly,
-			BaseBranchForkPoint: spec.Clone.BaseBranchForkPoint,
-		}
-	}
 	return specDump{
 		ID:          spec.ID,
 		HarnessType: string(spec.HarnessType),
@@ -165,7 +138,6 @@ func buildSpecDump(spec sandbox.Spec) specDump {
 		StopSignal:  "USR1", // hardcoded; see runner.stopSignal()
 		Mounts:      mounts,
 		Env:         redactEnv(spec.Env),
-		Clone:       cloneDumpPtr,
 	}
 }
 

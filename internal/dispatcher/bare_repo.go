@@ -207,16 +207,6 @@ func hostFromGitURL(rawURL string) (string, error) {
 // (useful for reading the error, still safe to log/return to a client).
 var credentialHeaderPattern = regexp.MustCompile(`(?i)(Authorization:\s*(?:Basic|Bearer)\s+)\S+`)
 
-// gatewayJobTokenPathPattern matches the per-job git gateway job token
-// embedded in a gateway clone URL's path (dispatcher.buildGatewayCloneURL's
-// "<gatewayURL>/j/<token>/<host>/<owner>/<repo>.git" form — gitgateway.
-// PathPrefix is "/j/"), the shape checkout.go's PrepareJobCheckout embeds
-// as remoteURL. This is a different credential shape than
-// credentialHeaderPattern above (an HTTP Basic/Bearer auth header) — the
-// token lives in the URL path, not an Authorization header or `user:pass@`
-// prefix — so neither existing pattern catches it; without this,
-// PrepareJobCheckout's `git remote set-url origin <remoteURL>` error path
-// would leak a live, single-job gateway token through runGit's error message.
 var gatewayJobTokenPathPattern = regexp.MustCompile(`(/j/)[^/]+`)
 
 // redactGitArgs returns a copy of args with any embedded credential value

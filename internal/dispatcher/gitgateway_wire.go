@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -24,6 +25,17 @@ func (r *Runner) registerGatewayToken(jobID string, spec *orchestrator.JobSpec, 
 	}
 	repos := r.buildGatewayRepos(spec, workspaceID)
 	token = r.GitGateway.Register(repos, spec.SecretNamespace)
+	r.GitGateway.ObservePush(token, func(repo gitgateway.RepoKey, ref string) {
+		message := fmt.Sprintf("git push requested: job=%s repo=%s ref=%s base_branch=%s", jobID, repo, ref, spec.Env["BOID_BASE_BRANCH"])
+		slog.Info(message)
+		if spec.TaskID == "" || r.DB == nil {
+			return
+		}
+		payload, _ := json.Marshal(map[string]string{"message": message, "job_id": jobID, "repo": string(repo), "ref": ref, "base_branch": spec.Env["BOID_BASE_BRANCH"]})
+		if err := orchestrator.CreateAction(context.Background(), r.DB, &orchestrator.Action{TaskID: spec.TaskID, Type: "progress", Payload: payload, Actor: orchestrator.ActorDaemon}, nil); err != nil {
+			slog.Warn("record git push diagnostic", "job_id", jobID, "error", err)
+		}
+	})
 
 	r.gatewayMu.Lock()
 	if r.gatewayTokens == nil {
@@ -113,53 +125,7 @@ func (r *Runner) buildGatewayRepos(spec *orchestrator.JobSpec, workspaceID strin
 	return repos
 }
 
-// buildGatewayCloneURL builds the full gateway clone URL for spec's own
-// project — "<gatewayURL>/j/<gatewayToken>/<host>/<owner>/<repo>.git" —
-// which the opt-in sandbox-clone path threads through
-// SandboxRuntimeInfo.GatewayCloneURL for the runner to `git clone`. Returns
-// "" (and logs a warning on a resolution failure) when
-// any input is missing: gatewayURL/gatewayToken empty (gateway unwired),
-// Projects unset, or the project's own upstream_url is empty/unparseable.
-// Callers only invoke this when spec.Visibility.Clone != nil, so the lookup
-// never runs for the default (non-opt-in) dispatch path.
-func (r *Runner) buildGatewayCloneURL(spec *orchestrator.JobSpec, gatewayURL, gatewayToken string) string {
-	if spec == nil || gatewayURL == "" || gatewayToken == "" || r.Projects == nil {
-		return ""
-	}
-	self, err := r.Projects.GetProject(spec.ProjectID)
-	if err != nil || self == nil || self.UpstreamURL == "" {
-		slog.Warn("git gateway: cannot build clone URL, project has no captured upstream_url",
-			"project_id", spec.ProjectID)
-		return ""
-	}
-	key, err := repoKeyFromUpstreamURL(self.UpstreamURL)
-	if err != nil {
-		slog.Warn("git gateway: cannot build clone URL, upstream_url did not parse",
-			"project_id", spec.ProjectID, "upstream_url", self.UpstreamURL, "error", err)
-		return ""
-	}
-	// gatewayURL (Server.GatewayURL(), e.g. "http://10.0.2.2:<port>") never
-	// has a trailing slash; gitgateway.PathPrefix ("/j/") already supplies
-	// the leading one, matching the route gitgateway.parsePath expects.
-	return gatewayURL + gitgateway.PathPrefix + gatewayToken + "/" + string(key) + ".git"
-}
-
-// buildPeerAdvertise resolves the {name, clone URL, reference path, clone
-// dir} view of workspacePeers. Feeds SandboxRuntimeInfo.WorkspacePeerAdvertise
-// (see that field's own doc comment). Returns nil when the gateway isn't
-// wired (gatewayURL/gatewayToken empty) or Projects is unset; an individual
-// peer with no resolvable upstream_url is skipped (with a warning) rather
-// than aborting the whole map — same fail-soft posture as buildGatewayRepos.
-//
-// CloneDir's meta.name resolution: r.Projects (orchestrator.DBProjectCatalog)
-// is a bare `SELECT ... FROM projects` that never reads project.yaml, so
-// proj.Meta is always the zero value — resolving the name from proj alone
-// would always degrade to projectDirName's filepath.Base(WorkDir) fallback.
-// When r.Hydrator is set, it is consulted instead (GetWithWorkspace parses
-// project.yaml and merges workspace.yaml). r.Hydrator == nil, or a hydration
-// error for a given peer, fails soft to the basename fallback with a
-// warning — advertise is best-effort and the job must still be able to
-// dispatch on the self project alone.
+// buildPeerAdvertise advertises gateway URLs and the directories boid checkout creates.
 func (r *Runner) buildPeerAdvertise(workspacePeers map[string]string, gatewayURL, gatewayToken string) map[string]PeerAdvertise {
 	if len(workspacePeers) == 0 || gatewayURL == "" || gatewayToken == "" || r.Projects == nil {
 		return nil
@@ -180,20 +146,10 @@ func (r *Runner) buildPeerAdvertise(workspacePeers map[string]string, gatewayURL
 		if parts := strings.Split(name, "/"); len(parts) == 3 {
 			name = parts[2]
 		}
-		metaName := proj.Meta.Name
-		if r.Hydrator != nil {
-			if hydrated, hErr := r.Hydrator.GetWithWorkspace(context.Background(), peerID); hErr != nil {
-				slog.Warn("git gateway: peer meta hydration failed, falling back to basename for clone dir",
-					"peer_project_id", peerID, "error", hErr)
-			} else if hydrated != nil {
-				metaName = hydrated.Name
-			}
-		}
 		out[peerID] = PeerAdvertise{
-			Name:          name,
-			CloneURL:      gatewayURL + gitgateway.PathPrefix + gatewayToken + "/" + string(key) + ".git",
-			ReferencePath: fmt.Sprintf(sandboxClonePeerReferenceDirFmt, peerID),
-			CloneDir:      sandboxCloneDir(projectDirName(metaName, proj.WorkDir)),
+			Name:     name,
+			CloneURL: gatewayURL + gitgateway.PathPrefix + gatewayToken + "/" + string(key) + ".git",
+			CloneDir: sandboxCloneDir(name),
 		}
 	}
 	if len(out) == 0 {
@@ -235,9 +191,6 @@ func (r *Runner) checkoutInputs(spec *orchestrator.JobSpec, workspaceID string) 
 		}
 	}
 	forkPoint = spec.Env["BOID_FORK_POINT"]
-	if forkPoint == "" && spec.Visibility.Clone != nil {
-		forkPoint = spec.Visibility.Clone.BaseBranchForkPoint
-	}
 	if forkPoint == "" && r.Hydrator != nil && spec.ProjectID != "" {
 		if meta, err := r.Hydrator.GetWithWorkspace(context.Background(), spec.ProjectID); err == nil && meta != nil {
 			forkPoint = meta.ForkPoint

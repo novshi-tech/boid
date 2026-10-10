@@ -120,5 +120,5 @@ likewise not part of this schema — they are either fixed per adapter (not
 per-job data worth a round trip) or discoverable by simply trying the
 command. Workspace peer projects (other projects in the same workspace) are
 discovered via `boid project list` (see `builtins.md`), not this command —
-its entries carry `clone_url`/`reference_path`/`clone_dir` for peers when
+its entries carry `clone_url`/`clone_dir` for peers when
 available.

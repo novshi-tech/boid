@@ -2068,10 +2068,10 @@ func TestBoidBuiltinExecutor_ProjectList_MergesPeerCloneInfo(t *testing.T) {
 		jobContexts: &stubJobContextProvider{contexts: map[string]dispatcher.JobContextSnapshot{
 			"job-1": {WorkspacePeerAdvertise: map[string]dispatcher.PeerAdvertise{
 				"peer-1": {
-					Name:          "peer", // deliberately different from proj.Meta.Name, to prove it does NOT overwrite Name
-					CloneURL:      "http://10.0.2.2:9/j/tok/example.com/owner/peer.git",
-					ReferencePath: "/mnt/refs/peers/peer-1.git",
-					CloneDir:      "/workspace/peer-name",
+					Name:     "peer", // deliberately different from proj.Meta.Name, to prove it does NOT overwrite Name
+					CloneURL: "http://10.0.2.2:9/j/tok/example.com/owner/peer.git",
+
+					CloneDir: "/workspace/peer-name",
 				},
 			}},
 		}},
@@ -2098,15 +2098,12 @@ func TestBoidBuiltinExecutor_ProjectList_MergesPeerCloneInfo(t *testing.T) {
 	if peer.CloneURL != "http://10.0.2.2:9/j/tok/example.com/owner/peer.git" {
 		t.Errorf("peer-1 CloneURL = %q, want the advertised clone URL", peer.CloneURL)
 	}
-	if peer.ReferencePath != "/mnt/refs/peers/peer-1.git" {
-		t.Errorf("peer-1 ReferencePath = %q", peer.ReferencePath)
-	}
 	if peer.CloneDir != "/workspace/peer-name" {
 		t.Errorf("peer-1 CloneDir = %q", peer.CloneDir)
 	}
 
 	self := byID["proj-1"]
-	if self.CloneURL != "" || self.ReferencePath != "" || self.CloneDir != "" {
+	if self.CloneURL != "" || self.CloneDir != "" {
 		t.Errorf("self entry must not carry any peer clone fields, got %+v", self)
 	}
 }

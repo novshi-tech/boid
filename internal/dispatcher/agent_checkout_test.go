@@ -86,7 +86,7 @@ func TestCheckoutInputsForkPoint(t *testing.T) {
 		want string
 	}{
 		{&orchestrator.JobSpec{ProjectID: "self"}, "origin/workspace"},
-		{&orchestrator.JobSpec{ProjectID: "self", Visibility: orchestrator.Visibility{Clone: &orchestrator.CloneDeclaration{BaseBranchForkPoint: "origin/project"}}}, "origin/project"},
+		{&orchestrator.JobSpec{ProjectID: "self", Env: map[string]string{"BOID_FORK_POINT": "origin/project"}}, "origin/project"},
 		{&orchestrator.JobSpec{ProjectID: "self", Env: map[string]string{"BOID_FORK_POINT": "origin/hook"}}, "origin/hook"},
 	} {
 		repo, fork := r.checkoutInputs(tc.spec, "team")

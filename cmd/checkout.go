@@ -67,7 +67,11 @@ func checkoutNamedRepo(name string, data []byte) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		repo = u.Hostname() + "/" + strings.TrimPrefix(u.Path, "/")
+		host := u.Host
+		if u.Scheme == "ssh" {
+			host = u.Hostname()
+		}
+		repo = host + "/" + strings.TrimPrefix(u.Path, "/")
 	} else {
 		_, rest, _ := strings.Cut(upstream, "@")
 		if rest == "" {

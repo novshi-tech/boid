@@ -97,12 +97,6 @@ type Spec struct {
 	// workspace-configure generation scripts that need to read the full host FS.
 	Profile Profile
 
-	// Clone declares the opt-in sandbox-internal clone + branch resolution
-	// sequence runner-inner-child performs before handing off to the
-	// harness. Zero value (Clone.Enabled == false) is a no-op — see
-	// CloneSpec's doc comment.
-	Clone CloneSpec
-
 	// ContainerImage is the container backend's image-selection input: the
 	// workspace-level `orchestrator.WorkspaceMeta.ContainerImage` override,
 	// threaded through unchanged from SandboxRuntimeInfo.ContainerImage by

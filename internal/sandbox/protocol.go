@@ -414,11 +414,7 @@ type TokenContext struct {
 	// registration populates them.
 	Service   string
 	Connector string
-	// SandboxRoot is the sandbox-internal (not host-side) root directory a
-	// clone-mode job's filesystem lives under, set by dispatcher when
-	// spec.Visibility.Clone != nil. Unlike ProjectDir this is never a host
-	// path, so cwd-based authorization must compare against this
-	// sandbox-side path instead. Empty for every non-clone job.
+	// SandboxRoot is the checkout directory used for cwd authorization.
 	SandboxRoot string
 	// CardID / CardRequestID identify the card_requests row a card-command
 	// launcher job was dispatched to service — the ONLY fields

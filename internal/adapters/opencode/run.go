@@ -154,6 +154,13 @@ func buildArgs(interactive bool, workspace, model, prompt string) []string {
 // Session persistence and payload-patch application are deliberately NOT
 // wired here — interactive sessions are run-and-done, no resume yet.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
+	var checkoutErr error
+	rc, checkoutErr = adapters.PrepareWorkspace(ctx, rc)
+	if checkoutErr != nil {
+		return adapters.Result{}, checkoutErr
+	}
+	defer adapters.ReportWorkspace(rc, "exit")
+
 	// Fail fast when opencode is not on PATH. See missingCLIError.
 	if _, err := lookPath(harnessCLI); err != nil {
 		return adapters.Result{}, missingCLIError(rc.Env["BOID_WORKSPACE_SLUG"], err)

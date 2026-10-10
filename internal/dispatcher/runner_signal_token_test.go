@@ -150,7 +150,6 @@ func TestDispatch_ConnectorPolicy_EndToEnd_HostCommandsNeverReachBroker(t *testi
 		Broker:     broker,
 	}
 
-	stubSessionBaseBranch(t, "main")
 	input := SessionJobInput{
 		ProjectID:      "proj-1",
 		ProjectWorkDir: "", // no clone declaration needed for this dispatch-level test

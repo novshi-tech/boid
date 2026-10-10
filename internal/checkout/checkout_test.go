@@ -375,3 +375,16 @@ func TestCacheLooseRefsOverridePackedRefs(t *testing.T) {
 		t.Fatalf("refs = %v", refs)
 	}
 }
+
+func TestRepoPortValidation(t *testing.T) {
+	for _, repo := range []string{"host:443/owner/repo", "host.docker.internal:42369/owner/repo"} {
+		if err := ValidateRepo(repo); err != nil {
+			t.Errorf("%s: %v", repo, err)
+		}
+	}
+	for _, repo := range []string{"host:/owner/repo", "host:0/owner/repo", "host:65536/owner/repo", "host:+443/owner/repo", "host:443:80/owner/repo", "host:443/owner:80/repo", "host:443/owner/repo:80"} {
+		if err := ValidateRepo(repo); err == nil {
+			t.Errorf("accepted %q", repo)
+		}
+	}
+}

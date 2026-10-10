@@ -241,21 +241,6 @@ type Runner struct {
 	// certificate is not also needed). nil disables CA propagation.
 	GatewayCAPEM *[]byte
 
-	// GatewayCredentials resolves forge auth for the daemon's OWN direct
-	// git operations against a bare repo — the same gitgateway.CredentialProvider
-	// bare_repo.go's CloneBareRepo/FetchBareRepo already consume (see those
-	// functions' own doc comments for why this is a direct
-	// CredentialProvider.Resolve call, not a round trip through the HTTP
-	// reverse proxy: there is no job token or sandbox involved for this
-	// specific use — Dispatch calls FetchBareRepo itself, from the daemon
-	// process, before staging a per-job checkout via PrepareJobCheckout).
-	// nil (any test wiring that doesn't need per-job clone) skips the
-	// FetchBareRepo refresh step entirely — matches CloneBareRepo/
-	// FetchBareRepo's own "creds nil -> proceed unauthenticated" fail-open
-	// convention, appropriate here too since a project's bare repo may
-	// simply be public.
-	GatewayCredentials *gitgateway.CredentialProvider
-
 	// APIGateway is the API gateway's job-token registry. nil disables API
 	// gateway token registration entirely — Dispatch and UnregisterJob
 	// treat that as a no-op rather than panicking, mirroring GitGateway's
@@ -269,36 +254,7 @@ type Runner struct {
 	// orchestrator.ResolveEnabledServices.
 	APIGatewayServicesFloor []string
 
-	// WithProjectLock, when set, runs a function while holding the daemon's
-	// project lifecycle mutex — api.ProjectAppService.projectMu, via that
-	// service's own exported WithProjectLock method — the same lock
-	// CreateProject/CreateProjectFromGitURL/DeleteProject/FetchProject
-	// already serialize their own create/delete/fetch critical sections
-	// against each other. The entire project-registry-guarded dispatch
-	// section below — gateway-token registration, the selfProject lookup,
-	// the gatewayCloneURL/peerAdvertise snapshot, managed-bare-repo
-	// classification, AND the FetchBareRepo + PrepareJobCheckout pair
-	// against selfProject.WorkDir — runs as one closure inside this lock
-	// (see Dispatch's own "project-registry-guarded dispatch section"
-	// comment), so a concurrent `project rm` + re-add at the identical
-	// managed path cannot land ANYWHERE in that sequence and produce a
-	// mixed checkout (this project's gateway URL/credentials cloned
-	// against a DIFFERENT, just-re-registered project's bare-repo content).
-	//
-	// internal/dispatcher cannot import internal/api directly to call
-	// ProjectAppService.WithProjectLock itself — internal/api already
-	// imports internal/dispatcher for wiring, so the reverse direction would
-	// be an import cycle — so internal/server/wire.go closes over the same
-	// ProjectAppService instance's WithProjectLock method and hands it here
-	// as a plain function value instead (see wire.go's assignment, right
-	// next to GatewayCredentials above, which is wired from the identical
-	// gwCreds for the identical reason: no cross-package type dependency,
-	// just a shared instance closed over once at startup).
-	//
-	// nil (any dispatcher unit test that does not wire an
-	// api.ProjectAppService at all) means "no serialization" — the
-	// per-job-clone step below runs unguarded exactly as it did before this
-	// field existed. Production wiring always sets it.
+	// WithProjectLock keeps gateway registration consistent with project lifecycle changes.
 	WithProjectLock func(fn func() error) error
 
 	// ConfirmWorkspaceExists reports whether a workspace row still exists,
@@ -354,8 +310,6 @@ type Runner struct {
 	apiGatewayTokens map[string]string // jobID -> API gateway job token
 	jobContextMu     sync.Mutex
 	jobContexts      map[string]JobContextSnapshot // jobID -> task-context RPC data
-	checkoutMu       sync.Mutex
-	checkoutDirs     map[string]string // jobID -> per-job clone staging dir
 	// homeInFlight excludes a workspace HOME volume's destructive replacement
 	// (ImportWorkspaceHome) against the dispatches that are about to mount it,
 	// for the interval between resolveWorkspaceHome's fast path and
@@ -557,64 +511,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 	}
 
-	var brokerSocket, brokerToken string
-	// ProfileInit sandboxes scan the host filesystem for tool detection; they
-	// do not call back into boid host-commands, so broker registration and the
-	// broker socket mount are both skipped.
-	if r.Broker != nil && sandbox.Profile(spec.SandboxProfile) != sandbox.ProfileInit &&
-		(len(spec.BuiltinPolicies) > 0 || len(resolvedHostCommandsByName) > 0) {
-		tokenCtx := sandbox.TokenContext{
-			JobID:             j.ID,
-			TaskID:            spec.TaskID,
-			ProjectID:         spec.ProjectID,
-			WorkspaceID:       workspaceID,
-			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
-			Role:              j.Role,
-			ProjectDir:        projectWorkDir,
-			// The ONLY place TokenContext.Service/Connector are ever
-			// populated — empty for every job except a signal-derived
-			// trigger's connector exec (spec.SignalService/SignalConnector,
-			// set by BuildSessionJobSpec from SessionJobInput). See that
-			// field's own doc comment (internal/sandbox/protocol.go) for the
-			// broker-side enforcement this feeds.
-			Service:       spec.SignalService,
-			Connector:     spec.SignalConnector,
-			CardID:        spec.CardID,
-			CardRequestID: spec.CardRequestID,
-		}
-		// SandboxRoot: clone-mode jobs have no host ProjectDir the sandbox's
-		// own filesystem corresponds to — their cwd is always the
-		// name-scoped subdirectory of the sandbox-internal
-		// sandboxCloneTargetDir ("/workspace/<name>", see sandboxCloneDir /
-		// cloneDirNameForVisibility). See broker.entryRoot.
-		if spec.Visibility.Clone != nil {
-			tokenCtx.SandboxRoot = sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility))
-		}
-		var resolve SecretResolver
-		if r.SecretStore != nil {
-			ns := spec.SecretNamespace
-			if ns == "" {
-				ns = "default"
-			}
-			resolve = func(key string) (string, error) {
-				return r.SecretStore.Get(ns, key)
-			}
-		}
-		// Registered under short-name keys (the "policy" view — see
-		// ResolveHostCommands): the shim's bind-mount basename == its
-		// declared short name by construction (sandboxShimBinDir +
-		// hostCommandSymlinks), so the shim's ExecRequest.Command hits this
-		// map by direct key on every call. There is no other lookup path.
-		brokerToken = r.Broker.RegisterCommands(
-			resolvedHostCommandsByName,
-			PoliciesToSandbox(spec.BuiltinPolicies),
-			tokenCtx,
-			resolve,
-		)
-		brokerSocket = r.Broker.SocketPath()
-		r.trackToken(j.ID, brokerToken)
-	}
-
 	// Validate host_commands when docker proxy is enabled: full docker access
 	// via host_commands bypasses the proxy and is therefore forbidden.
 	if spec.Visibility.DockerEnabled {
@@ -650,69 +546,19 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// gatewayCAPEM above.
 	apiGatewayBaseURL, apiGatewayToken := r.registerAPIGatewayToken(j.ID, spec, workspaceID)
 
-	// --- project-registry-guarded dispatch section -------------------------
-	// An earlier fix wrapped only the final fetch+clone call
-	// (FetchBareRepo/PrepareJobCheckout) in r.WithProjectLock. Everything
-	// that FEEDS that call still ran BEFORE the lock was acquired:
-	// gateway-token registration (registerGatewayToken -> buildGatewayRepos,
-	// which reads THIS project's own upstream_url to build its self-repo
-	// permission entry), the selfProject lookup (WorkDir/UpstreamURL), the
-	// gatewayCloneURL/peerAdvertise snapshot (buildGatewayCloneURL/
-	// buildPeerAdvertise each independently re-read r.Projects too), and the
-	// managed-bare-repo classification
-	// (orchestrator.IsBareRepoDir(selfProject.WorkDir)).
-	//
-	// A concurrent `project rm` + re-add at the identical (workspace, name)
-	// path can land in that pre-lock window — SafeBareRepoPath is
-	// deterministic on those two inputs alone, not on project id or
-	// content, so "remove and re-add at the same slot" is an ordinary
-	// operator flow, not just an adversarial one. selfProject.WorkDir is
-	// just a path string captured before the race; by the time an earlier
-	// fix's lock finally ran the fetch+clone, that path could already hold a
-	// DIFFERENT repository's content while gatewayCloneURL/gatewayToken
-	// were still built from the OLD project's upstream_url — exactly the
-	// "clone repository B using project A's gateway route/credentials"
-	// mismatch this closes. Wrapping the entire read-then-clone sequence in
-	// one r.WithProjectLock closure means it now either observes
-	// spec.ProjectID's project consistently from lookup through clone, or
-	// (WithProjectLock unset — dispatcher unit tests that don't wire an
-	// api.ProjectAppService) runs unguarded exactly as it did before this
-	// fix existed.
 	var (
-		gatewayURL, gatewayToken           string
-		gatewayCloneURL, cloneWorkspaceDir string
-		peerAdvertise                      map[string]PeerAdvertise
-		cloneHostBacked                    bool
+		gatewayURL, gatewayToken string
+		peerAdvertise            map[string]PeerAdvertise
+		primaryRepo, forkPoint   string
 	)
-	// selfProject is hoisted to this scope (mirrors the pre-fix code) purely
-	// for readability; nothing outside the closure reads it.
-	var selfProject *orchestrator.Project
 	dispatchProjectSection := func() error {
+		primaryRepo, forkPoint = r.checkoutInputs(spec, workspaceID)
 		gatewayURL, gatewayToken = r.registerGatewayToken(j.ID, spec, workspaceID)
 
-		// gatewayCloneURL is only worth resolving (an extra Projects lookup)
-		// when the opt-in sandbox-clone path is actually declared. planner.go
-		// / session_job.go set Visibility.Clone for every project-visible
-		// job, so this now runs on the main dispatch path.
-		if spec.Visibility.Clone == nil {
+		if !spec.Visibility.Checkout {
 			return nil
 		}
 
-		// Dispatch-time upstream_url requirement: a project with no captured
-		// upstream_url would otherwise silently produce an empty
-		// GatewayCloneURL and fail deep inside the sandbox with an opaque
-		// "git clone ''" error; failing fast here surfaces a clear,
-		// actionable message to the dispatch caller instead.
-		//
-		// Every branch below must either succeed or hard-error — a silent
-		// skip (`if err == nil && proj != nil` optimism) would let a torn
-		// Projects registry (project row missing / GetProject errored) fall
-		// through to a runtime "git clone ''" failure inside the sandbox. The only
-		// tolerated case is r.Projects == nil, which corresponds to
-		// dispatcher unit tests that don't wire a Projects lookup at all
-		// (the tests exercise argv/cleanup/spec plumbing, not gateway
-		// resolution) — those specs also leave Visibility.Clone nil, so in
-		// production this branch always runs with r.Projects non-nil.
 		if r.Projects != nil {
 			proj, perr := r.Projects.GetProject(spec.ProjectID)
 			switch {
@@ -724,79 +570,12 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 				if err := orchestrator.RequireUpstreamURL(proj); err != nil {
 					return err
 				}
-				selfProject = proj
 			}
 		}
-		gatewayCloneURL = r.buildGatewayCloneURL(spec, gatewayURL, gatewayToken)
 		peerAdvertise = r.buildPeerAdvertise(workspacePeers, gatewayURL, gatewayToken)
 
-		// /workspace host-backed runtime dir: clone lands on a runtime-dir
-		// bind mount by default, not tmpfs. Keyed by
-		// j.ID (already a fresh UUID unique to this dispatch) rather than
-		// sharing the docker-proxy's separate runtimeID/desiredRuntimeID —
-		// the two concerns don't need to share a directory, and job.ID is
-		// already at hand here with no extra allocation. Rides the existing
-		// runtimes/ GC (24h loop, 30 day threshold) like every other
-		// runtime-dir artifact; no bespoke cleanup is added.
-		if r.RuntimesDir != "" {
-			cloneWorkspaceDir = filepath.Join(r.RuntimesDir, j.ID, "workspace")
-			if err := os.MkdirAll(cloneWorkspaceDir, 0o755); err != nil {
-				slog.Warn("git gateway: failed to create clone workspace dir; falling back to sandbox-local tmpfs",
-					"job_id", j.ID, "dir", cloneWorkspaceDir, "error", err)
-				cloneWorkspaceDir = ""
-			}
-		}
-
-		// Per-job clone at dispatch time: a git-URL-registered project
-		// (orchestrator.IsBareRepoDir(selfProject.WorkDir)) dispatched under
-		// the container backend gets its /workspace/<name> pre-populated by
-		// the DAEMON, straight from its own bare repo cache, instead of
-		// leaving the sandbox's own in-container clone sequence
-		// (buildCloneSpec/performCloneSteps) to fetch it via the git
-		// gateway's HTTP reverse proxy at container start: a per-job
-		// `git clone file://<bare-repo>` into a staging dir under
-		// r.RuntimesDir (host-visible under container backend — see
-		// hostVisibleRuntimesDirFor's own doc comment), bind-mounted into
-		// the job container directly.
-		//
-		// Every OTHER combination (a legacy host-dir-registered project, or
-		// cloneWorkspaceDir empty because r.RuntimesDir itself is unset)
-		// leaves cloneHostBacked false and falls through to the in-sandbox
-		// clone path unchanged — this is additive, not a replacement of
-		// that path.
-		if IsContainerBackend(r.Backend) && cloneWorkspaceDir != "" && selfProject != nil && orchestrator.IsBareRepoDir(selfProject.WorkDir) {
-			// Bring the bare repo cache up to date before staging off of
-			// it. Best-effort — a transient fetch failure degrades to
-			// dispatching against whatever the cache already has: a
-			// stale-but-present cache must not block dispatch outright.
-			if r.GatewayCredentials != nil {
-				if ferr := FetchBareRepo(ctx, selfProject.WorkDir, r.GatewayCredentials, spec.SecretNamespace); ferr != nil {
-					slog.Warn("per-job clone: refresh bare repo failed; dispatching against the existing cache",
-						"job_id", j.ID, "project_id", spec.ProjectID, "error", ferr)
-				}
-			}
-			// Steps 2-3 (plan doc): stage the per-job checkout directly into
-			// cloneWorkspaceDir — no extra project-name subdirectory needed,
-			// cloneMounts already binds this whole directory at
-			// sandboxCloneDir(name) below. remoteURL rewrites `origin` to
-			// the gateway clone URL so a writable job's own in-sandbox
-			// `git push` still routes through the gateway (token auth,
-			// notify-on-401) instead of a meaningless daemon-local bare
-			// repo path — see PrepareJobCheckout's own doc comment.
-			cd := spec.Visibility.Clone
-			if err := PrepareJobCheckout(ctx, selfProject.WorkDir, cd.Branch, cd.BaseBranch, cd.BaseBranchForkPoint, gatewayCloneURL, cloneWorkspaceDir); err != nil {
-				return fmt.Errorf("per-job clone: %w", err)
-			}
-			r.trackCheckoutDir(j.ID, cloneWorkspaceDir)
-			cloneHostBacked = true
-		}
 		return nil
 	}
-	// The closure above runs as a single r.WithProjectLock critical section
-	// when wired (production — see WithProjectLock's own doc comment); nil
-	// only for dispatcher unit tests that never wire an
-	// api.ProjectAppService, matching every pre-existing nil-safety
-	// convention in this file.
 	var projectSectionErr error
 	if r.WithProjectLock != nil {
 		projectSectionErr = r.WithProjectLock(dispatchProjectSection)
@@ -809,6 +588,59 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			cleanup()
 		}
 		return "", projectSectionErr
+	}
+
+	var brokerSocket, brokerToken string
+	// ProfileInit sandboxes scan the host filesystem for tool detection; they
+	// do not call back into boid host-commands, so broker registration and the
+	// broker socket mount are both skipped.
+	if r.Broker != nil && sandbox.Profile(spec.SandboxProfile) != sandbox.ProfileInit &&
+		(len(spec.BuiltinPolicies) > 0 || len(resolvedHostCommandsByName) > 0) {
+		tokenCtx := sandbox.TokenContext{
+			JobID:             j.ID,
+			TaskID:            spec.TaskID,
+			ProjectID:         spec.ProjectID,
+			WorkspaceID:       workspaceID,
+			AllowedProjectIDs: allowedProjectIDs(spec.ProjectID, workspacePeers),
+			Role:              j.Role,
+			ProjectDir:        projectWorkDir,
+			// The ONLY place TokenContext.Service/Connector are ever
+			// populated — empty for every job except a signal-derived
+			// trigger's connector exec (spec.SignalService/SignalConnector,
+			// set by BuildSessionJobSpec from SessionJobInput). See that
+			// field's own doc comment (internal/sandbox/protocol.go) for the
+			// broker-side enforcement this feeds.
+			Service:       spec.SignalService,
+			Connector:     spec.SignalConnector,
+			CardID:        spec.CardID,
+			CardRequestID: spec.CardRequestID,
+		}
+		if spec.Visibility.Checkout {
+			tokenCtx.SandboxRoot = sandboxCloneDir(filepath.Base(primaryRepo))
+		}
+		var resolve SecretResolver
+		if r.SecretStore != nil {
+			ns := spec.SecretNamespace
+			if ns == "" {
+				ns = "default"
+			}
+			resolve = func(key string) (string, error) {
+				return r.SecretStore.Get(ns, key)
+			}
+		}
+		// Registered under short-name keys (the "policy" view — see
+		// ResolveHostCommands): the shim's bind-mount basename == its
+		// declared short name by construction (sandboxShimBinDir +
+		// hostCommandSymlinks), so the shim's ExecRequest.Command hits this
+		// map by direct key on every call. There is no other lookup path.
+		brokerToken = r.Broker.RegisterCommands(
+			resolvedHostCommandsByName,
+			PoliciesToSandbox(spec.BuiltinPolicies),
+			tokenCtx,
+			resolve,
+		)
+		brokerSocket = r.Broker.SocketPath()
+		r.trackToken(j.ID, brokerToken)
 	}
 
 	// Track this job's routed instruction + reduced environment view +
@@ -885,7 +717,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 	}
 
-	primaryRepo, forkPoint := r.checkoutInputs(spec, workspaceID)
 	rtInfo := SandboxRuntimeInfo{
 		PrimaryRepo:                primaryRepo,
 		ForkPoint:                  forkPoint,
@@ -906,11 +737,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		GatewayURL:                 gatewayURL,
 		GatewayCAPEM:               gatewayCAPEM,
 		GatewayJobToken:            gatewayToken,
-		GatewayCloneURL:            gatewayCloneURL,
 		APIGatewayBaseURL:          apiGatewayBaseURL,
 		APIGatewayJobToken:         apiGatewayToken,
-		CloneWorkspaceDir:          cloneWorkspaceDir,
-		CloneHostBacked:            cloneHostBacked,
 		WorkspaceHomeVolume:        workspaceHomeVolume,
 		WorkspaceSlug:              workspaceSlug,
 		ContainerImage:             r.resolveContainerImage(workspaceID),
@@ -1896,47 +1724,6 @@ func (r *Runner) UnregisterJob(jobID string) {
 	}
 
 	r.untrackJobContext(jobID)
-	r.cleanupCheckoutDir(jobID)
-}
-
-// trackCheckoutDir records jobID's per-job clone staging dir so
-// cleanupCheckoutDir can remove it once the job completes — the same
-// jobID-keyed tracked-resource pattern r.gatewayTokens/r.jobTokens already
-// use for their own per-job cleanup.
-func (r *Runner) trackCheckoutDir(jobID, stagingDir string) {
-	if jobID == "" || stagingDir == "" {
-		return
-	}
-	r.checkoutMu.Lock()
-	defer r.checkoutMu.Unlock()
-	if r.checkoutDirs == nil {
-		r.checkoutDirs = make(map[string]string)
-	}
-	r.checkoutDirs[jobID] = stagingDir
-}
-
-// cleanupCheckoutDir removes jobID's per-job clone staging dir, if any.
-// Called from UnregisterJob so this runs on every job-completion path that
-// already calls it (CompleteJob's normal exit, watchRuntime's "exited
-// without boid job done" path, and Dispatch's own early-failure paths —
-// see UnregisterJob's other call sites). A missing entry (jobID never
-// reached the per-job-clone step, e.g. a legacy host-dir-registered
-// project) is a silent no-op — the common case for every dispatch that
-// never took the per-job-clone path.
-func (r *Runner) cleanupCheckoutDir(jobID string) {
-	r.checkoutMu.Lock()
-	stagingDir, ok := r.checkoutDirs[jobID]
-	if ok {
-		delete(r.checkoutDirs, jobID)
-	}
-	r.checkoutMu.Unlock()
-
-	if !ok {
-		return
-	}
-	if err := CleanupJobCheckout(stagingDir); err != nil {
-		slog.Warn("per-job clone: cleanup staging dir failed", "job_id", jobID, "staging_dir", stagingDir, "error", err)
-	}
 }
 
 func (r *Runner) isJobCompleted(jobID string) bool {

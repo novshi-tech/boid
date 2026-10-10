@@ -73,18 +73,6 @@ type Mount struct {
 	Guard      string   // shell test expression; if non-empty, wrap in if [ $Guard ]; then
 	NeedsDirs  []string // subdirs to create under Target before ro remount
 
-	// HostBacked overrides realization.classifySource's default treatment
-	// of a `/workspace`/`/workspace/<name>` Target as container-local — when
-	// true, Source is classified as a real host-path bind
-	// (MountSourceHostPath) even though Target falls under the
-	// sandbox-internal clone parent dir. Used by dispatcher.cloneMounts:
-	// when the daemon has already pre-populated Source via
-	// dispatcher.PrepareJobCheckout (`git clone file://<bare-repo>` into a
-	// per-job staging dir under a host-visible runtimes root), the
-	// container backend must bind that real directory in — not skip it as
-	// "the in-container clone target, created fresh". Default false
-	// (byte-for-byte unchanged classification) for every other caller.
-	HostBacked bool
 }
 
 // FileWrite describes a file to materialize inside the sandbox. Content is

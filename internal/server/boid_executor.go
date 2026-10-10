@@ -93,32 +93,13 @@ type sessionStarter interface {
 	StartSession(ctx context.Context, req api.StartSessionRequest) (*api.StartSessionResult, error)
 }
 
-// projectSummary is BoidOpProjectList's per-project JSON shape — deliberately
-// leaner than BoidOpProjectBehaviors' output (no task_behaviors): the list op
-// is for discovery ("what projects can I even ask about"), and a caller that
-// needs a given project's behaviors calls BoidOpProjectBehaviors on it by id.
-//
-// CloneURL/ReferencePath/CloneDir (peer-discovery feature) are populated
-// only for a workspace peer whose id appears in this job's
-// JobContextSnapshot.WorkspacePeerAdvertise — never for the caller's own
-// (self) entry, and never overwriting Name (which stays proj.Meta.Name;
-// dispatcher.PeerAdvertise.Name has a different meaning — the upstream_url
-// repo basename). Empty when the job isn't in clone mode, the gateway isn't
-// wired, or the peer has no resolvable upstream_url — a caller must not
-// assume these are always populated; fall back to a plain `git clone
-// <upstream_url>` when empty. ReferencePath in particular may point to a
-// path that was never actually mounted (git-URL-registered / bare-repo
-// projects have no `.git` at their WorkDir for cloneMounts to bind) — check
-// it exists before passing it to `git clone --reference`. CloneDir is a
-// suggestion only and may collide with another peer's or self's directory
-// name; pick a different target if it already exists.
+// projectSummary advertises registered repositories and available checkout paths.
 type projectSummary struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	UpstreamURL   string `json:"upstream_url,omitempty"`
-	CloneURL      string `json:"clone_url,omitempty"`
-	ReferencePath string `json:"reference_path,omitempty"`
-	CloneDir      string `json:"clone_dir,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	UpstreamURL string `json:"upstream_url,omitempty"`
+	CloneURL    string `json:"clone_url,omitempty"`
+	CloneDir    string `json:"clone_dir,omitempty"`
 }
 
 type boidBuiltinExecutor struct {
@@ -755,7 +736,6 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			}
 			if adv, ok := peerAdvertise[pid]; ok {
 				summary.CloneURL = adv.CloneURL
-				summary.ReferencePath = adv.ReferencePath
 				summary.CloneDir = adv.CloneDir
 			}
 			summaries = append(summaries, summary)

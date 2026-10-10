@@ -1,10 +1,8 @@
 id: 40652295-c610-42da-95c4-6c6e8d28b643
 name: boid
 
-# `base_branch` is intentionally omitted so executor tasks branch from the
-# daemon's current HEAD branch. The former project-top `worktree` field was
-# retired in branch-policy-simplification Phase 2 — every project-visible
-# job now runs in a fresh sandbox clone.
+# The task receives base_branch through BOID_BASE_BRANCH. Startup checkout
+# leaves the remote default branch selected; the agent selects its base and PR branch.
 
 # Canonical behavior names: supervisor (formerly "plan") and executor
 # (formerly "dev"). The alias map in spec_loader.go still accepts the old
@@ -19,12 +17,10 @@ task_behaviors:
       agent: claude-code
       model: sonnet
       message: |
-        First, isolate your work on a task-specific branch so that
-        push does not land directly on base_branch. Post branch-policy
-        simplification (docs/plans/branch-policy-simplification.md
-        Phase 1) the in-sandbox clone checks out base_branch itself,
-        so per-task branch creation lives here in the executor
-        instruction rather than in the dispatcher:
+        The startup wrapper has already checked out the primary repository
+        and set cwd to its working tree. Follow boid-task's branch procedure
+        to select BOID_BASE_BRANCH, then isolate your work on a task-specific
+        branch so that push does not land directly on base_branch:
 
             BRANCH="boid/${BOID_TASK_ID:0:8}"
             # Adopt origin/<branch> when it exists so a reopen (fresh

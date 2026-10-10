@@ -75,60 +75,6 @@ func TestRepoKeyFromUpstreamURL_TooManyPathSegmentsReturnsError(t *testing.T) {
 	}
 }
 
-// --- buildGatewayCloneURL ---
-
-func TestBuildGatewayCloneURL_BuildsFullURL(t *testing.T) {
-	r := &Runner{
-		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1", UpstreamURL: "https://github.com/owner/repo.git"},
-		}},
-	}
-	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
-
-	got := r.buildGatewayCloneURL(spec, "http://10.0.2.2:12345", "job-token-abc")
-	want := "http://10.0.2.2:12345/j/job-token-abc/github.com/owner/repo.git"
-	if got != want {
-		t.Errorf("buildGatewayCloneURL = %q, want %q", got, want)
-	}
-}
-
-func TestBuildGatewayCloneURL_EmptyWhenGatewayUnwired(t *testing.T) {
-	r := &Runner{
-		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1", UpstreamURL: "https://github.com/owner/repo.git"},
-		}},
-	}
-	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
-
-	if got := r.buildGatewayCloneURL(spec, "", "job-token-abc"); got != "" {
-		t.Errorf("buildGatewayCloneURL with empty gatewayURL = %q, want empty", got)
-	}
-	if got := r.buildGatewayCloneURL(spec, "http://10.0.2.2:1", ""); got != "" {
-		t.Errorf("buildGatewayCloneURL with empty gatewayToken = %q, want empty", got)
-	}
-}
-
-func TestBuildGatewayCloneURL_EmptyWhenUpstreamURLMissing(t *testing.T) {
-	r := &Runner{
-		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1"}, // no UpstreamURL captured
-		}},
-	}
-	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
-
-	if got := r.buildGatewayCloneURL(spec, "http://10.0.2.2:1", "tok"); got != "" {
-		t.Errorf("buildGatewayCloneURL with no upstream_url = %q, want empty", got)
-	}
-}
-
-func TestBuildGatewayCloneURL_NilProjectsReturnsEmpty(t *testing.T) {
-	r := &Runner{}
-	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
-	if got := r.buildGatewayCloneURL(spec, "http://10.0.2.2:1", "tok"); got != "" {
-		t.Errorf("buildGatewayCloneURL with nil Projects = %q, want empty", got)
-	}
-}
-
 // --- buildGatewayRepos ---
 
 func TestBuildGatewayRepos_SelfProjectWritableGetsFetchPush(t *testing.T) {
@@ -239,7 +185,7 @@ func TestBuildGatewayRepos_NilProjectsReturnsNil(t *testing.T) {
 // --- buildPeerAdvertise (docs/plans/git-gateway-cutover.md PR6 cutover
 // 「5. peer advertise の変更」) ---
 
-func TestBuildPeerAdvertise_ResolvesNameCloneURLAndReferencePath(t *testing.T) {
+func TestBuildPeerAdvertise_ResolvesNameURLAndCheckoutDirectory(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
 			{ID: "peer-1", WorkDir: "/host/peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
@@ -256,15 +202,7 @@ func TestBuildPeerAdvertise_ResolvesNameCloneURLAndReferencePath(t *testing.T) {
 	if want := "http://10.0.2.2:12345/j/job-token-abc/github.com/owner/peer-repo.git"; adv.CloneURL != want {
 		t.Errorf("CloneURL = %q, want %q", adv.CloneURL, want)
 	}
-	if want := "/mnt/refs/peers/peer-1.git"; adv.ReferencePath != want {
-		t.Errorf("ReferencePath = %q, want %q", adv.ReferencePath, want)
-	}
-	// CloneDir (workspace 親化リファクタリング, nose 2026-07-13 decision):
-	// r.Hydrator is unset (nil) here, mirroring a daemon build that hasn't
-	// wired one — fakeProjectLookup never populates Meta either (mirroring
-	// the real DBProjectCatalog gap documented on buildPeerAdvertise), so
-	// this degrades to filepath.Base(WorkDir).
-	if want := "/workspace/peer-1"; adv.CloneDir != want {
+	if want := "/workspace/peer-repo"; adv.CloneDir != want {
 		t.Errorf("CloneDir = %q, want %q", adv.CloneDir, want)
 	}
 }
@@ -284,7 +222,7 @@ func (f fakeMetaHydrator) GetWithWorkspace(_ context.Context, projectID string) 
 	return f.metas[projectID], nil
 }
 
-func TestBuildPeerAdvertise_HydratorResolvesMetaName(t *testing.T) {
+func TestBuildPeerAdvertise_RepoBasenameIgnoresDisplayName(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
 			{ID: "peer-1", WorkDir: "/host/peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
@@ -298,17 +236,15 @@ func TestBuildPeerAdvertise_HydratorResolvesMetaName(t *testing.T) {
 	if !ok {
 		t.Fatalf("buildPeerAdvertise = %#v, want an entry for peer-1", got)
 	}
-	if want := "/workspace/foo"; adv.CloneDir != want {
-		t.Errorf("CloneDir = %q, want %q (hydrator's meta.name must win over basename)", adv.CloneDir, want)
+	if want := "/workspace/peer-repo"; adv.CloneDir != want {
+		t.Errorf("CloneDir = %q, want %q", adv.CloneDir, want)
 	}
-	// Name (repo-slug based) and CloneURL are unaffected by the hydrator —
-	// only CloneDir consults it.
 	if adv.Name != "peer-repo" {
 		t.Errorf("Name = %q, want peer-repo", adv.Name)
 	}
 }
 
-func TestBuildPeerAdvertise_HydratorErrorFallsBackToBasename(t *testing.T) {
+func TestBuildPeerAdvertise_RepoBasenameIgnoresHydratorFailure(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
 			{ID: "peer-1", WorkDir: "/host/peer-1", UpstreamURL: "https://github.com/owner/peer-repo.git"},
@@ -320,8 +256,8 @@ func TestBuildPeerAdvertise_HydratorErrorFallsBackToBasename(t *testing.T) {
 	if !ok {
 		t.Fatalf("buildPeerAdvertise = %#v, want an entry for peer-1 even when hydration fails (fail-soft, not skip)", got)
 	}
-	if want := "/workspace/peer-1"; adv.CloneDir != want {
-		t.Errorf("CloneDir = %q, want %q (hydrator error must fail soft to basename fallback)", adv.CloneDir, want)
+	if want := "/workspace/peer-repo"; adv.CloneDir != want {
+		t.Errorf("CloneDir = %q, want %q", adv.CloneDir, want)
 	}
 }
 
@@ -750,7 +686,7 @@ func TestDispatch_CloneMode_ProjectLookupError_FailsLoud(t *testing.T) {
 		Argv:      []string{"echo", "hi"},
 		Kind:      orchestrator.JobKindHook,
 		Visibility: orchestrator.Visibility{
-			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			Checkout: true,
 		},
 	}
 	_, err := r.Dispatch(context.Background(), spec, nil)
@@ -784,7 +720,7 @@ func TestDispatch_CloneMode_ProjectNotFound_FailsLoud(t *testing.T) {
 		Argv:      []string{"echo", "hi"},
 		Kind:      orchestrator.JobKindHook,
 		Visibility: orchestrator.Visibility{
-			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			Checkout: true,
 		},
 	}
 	_, err := r.Dispatch(context.Background(), spec, nil)
@@ -816,7 +752,7 @@ func TestDispatch_CloneMode_MissingUpstreamURL_FailsLoud(t *testing.T) {
 		Argv:      []string{"echo", "hi"},
 		Kind:      orchestrator.JobKindHook,
 		Visibility: orchestrator.Visibility{
-			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			Checkout: true,
 		},
 	}
 	_, err := r.Dispatch(context.Background(), spec, nil)

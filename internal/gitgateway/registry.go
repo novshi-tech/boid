@@ -31,9 +31,10 @@ func (p Permission) Allows(op Operation) bool {
 // and just carries Namespace alongside Repos for Server.ServeHTTP to pass
 // through to CredentialProvider.Inject.
 type Entry struct {
-	Token     string
-	Namespace string
-	Repos     map[RepoKey]Permission
+	Token       string
+	Namespace   string
+	Repos       map[RepoKey]Permission
+	ObservePush func(RepoKey, string)
 }
 
 // Registry is the job-token → allowed-repo-set store: a sync.RWMutex-guarded
