@@ -77,16 +77,6 @@ func RunContainer(specPath, statePath string) (exitCode int, retErr error) {
 		return 1, err
 	}
 
-	// Sandbox-internal clone + branch resolution. No-op unless
-	// spec.Clone.Enabled.
-	if spec.Clone.Enabled {
-		if err := performClone(spec.Clone, st); err != nil {
-			st.Fail("container", "clone", err)
-			return 1, err
-		}
-		st.OK("container", "clone")
-	}
-
 	// Resolve the agent argv against the sandbox PATH.
 	applyPathEnv(spec)
 

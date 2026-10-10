@@ -1,10 +1,6 @@
 package dispatcher
 
 import (
-	"fmt"
-	"os/exec"
-	"strings"
-
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -103,14 +99,7 @@ type SessionJobInput struct {
 	JobID string
 }
 
-// BuildSessionJobSpec converts a resolved SessionJobInput into a JobSpec
-// (JobKindSession, adapter-bound HarnessType), fed straight to
-// dispatcher.Runner which builds the sandbox and hands the agent process to
-// adapter.Run().
-//
-// Returns an error when the sandbox-internal clone declaration cannot be
-// built for a non-empty ProjectWorkDir (see buildSessionCloneDeclaration) —
-// callers must surface that as a user-visible error, not degrade silently.
+// BuildSessionJobSpec creates a task-less agent job using sandbox startup checkout.
 func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 	pctx := orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir}
 	// A connector job gets the reduced, signal-ops-only policy — see
@@ -151,15 +140,6 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 		displayName = input.HarnessType + " session"
 	}
 
-	// Sessions and exec have no Task, so there is no explicit base_branch to
-	// declare — clone the project's current default branch with no branch
-	// created (CheckoutOnly). A resolution failure is a hard error, not a
-	// silent fallback: see buildSessionCloneDeclaration.
-	cloneDecl, err := buildSessionCloneDeclaration(input.ProjectWorkDir)
-	if err != nil {
-		return nil, err
-	}
-
 	spec := &orchestrator.JobSpec{
 		ID:                 input.JobID,
 		ProjectID:          input.ProjectID,
@@ -174,7 +154,7 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 			AdditionalBindings: input.AdditionalBindings,
 			Writable:           !input.Readonly,
 			DockerEnabled:      input.DockerEnabled,
-			Clone:              cloneDecl,
+			Checkout:           input.ProjectWorkDir != "",
 		},
 		BuiltinPolicies:    builtinPolicies,
 		HostCommands:       hostCommands,
@@ -197,80 +177,6 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 	return spec, nil
 }
 
-// resolveSessionBaseBranchFn is the injection point for
-// buildSessionCloneDeclaration's HEAD resolver. Production points at
-// resolveSessionBaseBranch (which shells out to real git); tests override it
-// with a stub so the field-passthrough contracts don't have to bring up a
-// real git repo per test. Reassigned only from tests, non-parallel — the
-// session_job_test.go stubSessionBaseBranch helper documents the discipline.
-var resolveSessionBaseBranchFn = resolveSessionBaseBranch
-
-// buildSessionCloneDeclaration returns the Clone declaration for a task-less
-// job (`boid agent` / `boid exec`): CheckoutOnly on whatever branch the host
-// project directory's HEAD currently resolves to.
-//
-// Returns (nil, nil) only when projectWorkDir is empty — the "no project
-// visible" state, in which BuildSandboxSpec's own "no project visible"
-// branch takes over cleanly. When projectWorkDir is set but HEAD cannot be
-// resolved (detached HEAD, corrupted repo, git absent), this returns an
-// error rather than silently degrading to nil: detached HEAD is a real
-// state on real repos (mid-rebase, bisect, a checked-out tag or raw SHA),
-// so falling back silently here would bypass the clone-mode contract in
-// exactly the situations it matters most to catch.
-func buildSessionCloneDeclaration(projectWorkDir string) (*orchestrator.CloneDeclaration, error) {
-	if projectWorkDir == "" {
-		return nil, nil
-	}
-	branch := resolveSessionBaseBranchFn(projectWorkDir)
-	if branch == "" {
-		return nil, fmt.Errorf(
-			"cannot resolve default branch of project dir %q for sandbox-internal clone "+
-				"(detached HEAD, not a git repository, or a corrupted checkout); "+
-				"check out a branch (`git checkout <branch>`) or verify the project dir "+
-				"is a valid clone with a default branch before starting a session/exec",
-			projectWorkDir,
-		)
-	}
-	return &orchestrator.CloneDeclaration{
-		Branch:       branch,
-		BaseBranch:   branch,
-		CheckoutOnly: true,
-	}, nil
-}
-
-// resolveSessionBaseBranch resolves the branch a task-less job should clone
-// and check out, since (unlike a hook/task job) there is no Task.BaseBranch
-// to declare. Reads the host project dir's current HEAD. Tolerates both real
-// git's `--short` output ("main") and a detached/prefixed form
-// ("refs/heads/main") defensively, since e2e's fake host git shim
-// (e2e/fixtures/hostbin/git) does not honour --short. Returns "" when HEAD
-// cannot be resolved at all (caller buildSessionCloneDeclaration turns that
-// into a hard error).
-func resolveSessionBaseBranch(projectWorkDir string) string {
-	if projectWorkDir == "" {
-		return ""
-	}
-	out, err := exec.Command("git", "-C", projectWorkDir, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
-	if err != nil {
-		return ""
-	}
-	branch := strings.TrimSpace(string(out))
-	return strings.TrimPrefix(branch, "refs/heads/")
-}
-
-// BuildExecJobSpec is the shell-harness variant of BuildSessionJobSpec used by
-// `boid exec` to run a user-supplied argv inside the project sandbox. It reuses
-// BuildSessionJobSpec for project trait inheritance and overrides the result:
-//
-//   - Kind = JobKindExec (TUI displays an "exec" badge instead of "session")
-//   - Argv = the user's argv (runner-inner-child hands this to the shell adapter)
-//   - Interactive = caller's tty detection (sessions are always PTY-attached;
-//     exec may be piped from a non-TTY stdin)
-//   - DisplayName falls back to argv[0] when the caller leaves it empty
-//
-// HarnessType in input is ignored and forced to "shell"; argv must be non-empty.
-// Propagates any error from BuildSessionJobSpec (in particular a session
-// clone-declaration failure — see buildSessionCloneDeclaration).
 func BuildExecJobSpec(input SessionJobInput, argv []string, interactive bool) (*orchestrator.JobSpec, error) {
 	defaultName := input.DisplayName == ""
 	input.HarnessType = "shell"

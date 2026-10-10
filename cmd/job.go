@@ -66,9 +66,9 @@ HOME volume, which also survives daemon/host restarts. To read it — note
 "boid exec" runs argv directly (no shell), so "~" and "*" need an explicit
 shell to expand:
 
-  boid exec -p <project> -- sh -lc 'cat ~/.claude/projects/-workspace-<project-name>-*/<session-id>.jsonl'
+  boid exec -p <project> -- sh -lc 'cat ~/.claude/projects/-workspace-<repository-name>/<session-id>.jsonl'
 
-(substitute the actual project-name and session-id; session-id comes from
+(substitute the actual repository-name and session-id; session-id comes from
 artifact.claude_code.sessions[].id in "boid task show <task-id>".)`,
 	Args:        cobra.ExactArgs(1),
 	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},

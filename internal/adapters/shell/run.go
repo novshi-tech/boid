@@ -47,6 +47,13 @@ import (
 // observe no behaviour change either way — the daemon never sends SIGUSR1
 // to them so the forwarding loop simply idles until cmd.Wait() returns.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
+	var checkoutErr error
+	rc, checkoutErr = adapters.PrepareWorkspace(ctx, rc)
+	if checkoutErr != nil {
+		return adapters.Result{}, checkoutErr
+	}
+	defer adapters.ReportWorkspace(rc, "exit")
+
 	if len(rc.Argv) == 0 {
 		return adapters.Result{}, errors.New("shell adapter: RunContext.Argv is empty")
 	}

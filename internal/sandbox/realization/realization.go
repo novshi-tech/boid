@@ -1,23 +1,3 @@
-// Package realization translates a backend-neutral sandbox.Spec into the
-// intermediate representation a container backend needs to build a `docker
-// create` call: volumes/binds, tmpfs mounts, environment, working directory
-// and argv.
-//
-// sandbox.Spec is role-neutral but not backend-neutral: Mount.Guard/DetectType
-// are shell-idiom escape hatches, and `/workspace/<name>` is bound to a host
-// runtime directory (`internal/dispatcher/sandbox_builder.go`'s cloneMounts).
-// Realize narrows the translation to what a container backend actually needs
-// and classifies every Mount's Source into one of three kinds (MountSource)
-// so a docker-out-of-docker (DooD) sibling `docker create` call can tell a
-// host bind apart from a container-local directory apart from a named
-// volume.
-//
-// Realize is a pure function (no docker API calls, no filesystem access, no
-// process execution) and this package imports no docker SDK type, but it is
-// not scaffolding: containerBackend.Launch calls it on every dispatch
-// (internal/dispatcher/container_backend.go). The purity is a property worth
-// keeping rather than a sign nothing uses it: it is what lets this package's
-// unit tests pin the whole translation contract without an engine.
 package realization
 
 import (
@@ -192,9 +172,6 @@ type Realization struct {
 //     (internal network + egress proxy), not a per-mount/env translation.
 //   - spec.RootDir / spec.CleanupPaths / spec.Profile: rootfs + cleanup are
 //     the container runtime's job once the container is removed.
-//   - spec.Clone: consumed directly by the container entrypoint's
-//     in-container clone step, not part of the docker create call this
-//     package targets.
 func Realize(spec sandbox.Spec) (Realization, error) {
 	r := Realization{
 		ID:      spec.ID,
@@ -231,21 +208,9 @@ func Realize(spec sandbox.Spec) (Realization, error) {
 	return r, nil
 }
 
-// classifySource implements the 3-way Mount.Source classification:
-// container-local when the mount targets the sandbox-internal
-// `/workspace`/`/workspace/<name>` clone dir or has no Source at all; a host
-// absolute path bind when Source starts with "/" (every host-path Source in
-// the current codebase is already absolute — cloneMounts always builds these
-// from resolved absolute directories); a named volume name otherwise (see
-// MountSourceNamedVolume's doc comment).
-//
-// m.HostBacked overrides the `/workspace` container-local default: the
-// daemon has already materialized a real directory at Source
-// (dispatcher.PrepareJobCheckout's per-job clone staging area) and wants it
-// bound in as-is, exactly like any other host-path mount. See
-// sandbox.Mount.HostBacked's own doc comment.
+// classifySource distinguishes container-local paths, host binds, and named volumes.
 func classifySource(m sandbox.Mount) MountSource {
-	if isWorkspaceLocalTarget(m.Target) && !m.HostBacked {
+	if isWorkspaceLocalTarget(m.Target) {
 		return MountSource{Kind: MountSourceContainerLocal, Value: m.Target}
 	}
 	if m.Source == "" {

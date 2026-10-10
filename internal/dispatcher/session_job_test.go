@@ -2,7 +2,6 @@ package dispatcher
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -17,23 +16,6 @@ import (
 // exec-127 bug both lived at exactly this layer, so each field-level contract
 // is asserted directly.
 
-// stubSessionBaseBranch overrides the package-level resolveSessionBaseBranchFn
-// so the field-passthrough contract tests don't have to `git init` a real
-// repository per test to satisfy buildSessionCloneDeclaration's fail-loud
-// contract (docs/plans/git-gateway-cutover.md PR6 cutover, Opus review #3).
-// Restores the original at test end via t.Cleanup. Tests are non-parallel,
-// so mutating a package var is safe here.
-func stubSessionBaseBranch(t *testing.T, branch string) {
-	t.Helper()
-	orig := resolveSessionBaseBranchFn
-	resolveSessionBaseBranchFn = func(_ string) string { return branch }
-	t.Cleanup(func() { resolveSessionBaseBranchFn = orig })
-}
-
-// mustBuildSessionJobSpec / mustBuildExecJobSpec wrap the builders' new
-// error-returning signatures so the existing field-passthrough tests read
-// like their pre-cutover form. A resolver stub (stubSessionBaseBranch) is
-// installed by the caller, so err is never expected here.
 func mustBuildSessionJobSpec(t *testing.T, input SessionJobInput) *orchestrator.JobSpec {
 	t.Helper()
 	spec, err := BuildSessionJobSpec(input)
@@ -74,7 +56,7 @@ func sampleSessionInput() SessionJobInput {
 // namespace / docker) into Visibility. A drop in any of these silently
 // changes what the agent session sees inside the sandbox.
 func TestBuildSessionJobSpec_FieldContracts(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	spec := mustBuildSessionJobSpec(t, in)
 
@@ -116,7 +98,7 @@ func TestBuildSessionJobSpec_FieldContracts(t *testing.T) {
 // sessions are writable unless the caller opts into read-only. Writable is what
 // gates writes to the project dir inside the sandbox.
 func TestBuildSessionJobSpec_WritableFollowsReadonly(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	for _, tc := range []struct {
 		readonly     bool
 		wantWritable bool
@@ -137,7 +119,7 @@ func TestBuildSessionJobSpec_WritableFollowsReadonly(t *testing.T) {
 // session relies on: --instruction becomes BOID_USER_ANSWER (delivered as the
 // agent's first turn via RunContext.UserAnswer) and --model becomes BOID_MODEL.
 func TestBuildSessionJobSpec_InstructionAndModelToEnv(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	in.Instruction = "do the thing"
 	in.Model = "claude-opus-4-8"
@@ -154,7 +136,7 @@ func TestBuildSessionJobSpec_InstructionAndModelToEnv(t *testing.T) {
 // TestBuildSessionJobSpec_DisplayNameFallback pins the "<harness> session"
 // fallback used when the caller supplies no display name.
 func TestBuildSessionJobSpec_DisplayNameFallback(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	in.DisplayName = ""
 	if got := mustBuildSessionJobSpec(t, in).DisplayName; got != "claude session" {
@@ -178,7 +160,7 @@ func TestBuildSessionJobSpec_DisplayNameFallback(t *testing.T) {
 // A regression to passthrough here would route a plain command through a real
 // agent adapter (the class of bug that produced the Phase 3-d exec-127 guard).
 func TestBuildExecJobSpec_ForcesShellHarness(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	in.HarnessType = "claude" // must be ignored/overridden
 	argv := []string{"/bin/echo", "hi"}
@@ -205,7 +187,7 @@ func TestBuildExecJobSpec_ForcesShellHarness(t *testing.T) {
 // own) is exactly the case that would NOT have caught the 2026-06-29 exclusive-
 // replace regression, so its own guard matters.
 func TestBuildExecJobSpec_KeepsBindings(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	spec := mustBuildExecJobSpec(t, in, []string{"/bin/true"}, true)
 
@@ -220,7 +202,7 @@ func TestBuildExecJobSpec_KeepsBindings(t *testing.T) {
 // TestBuildExecJobSpec_DisplayNameFallsBackToArgv0 pins the exec-specific label
 // fallback (argv[0]) used when the caller leaves DisplayName empty.
 func TestBuildExecJobSpec_DisplayNameFallsBackToArgv0(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	in.DisplayName = ""
 	spec := mustBuildExecJobSpec(t, in, []string{"/usr/bin/make", "build"}, false)
@@ -240,38 +222,10 @@ func TestBuildExecJobSpec_DisplayNameFallsBackToArgv0(t *testing.T) {
 // A silent degrade would drop the job into BuildSandboxSpec's retired
 // projectVisibilityMounts branch (host RW bind + git shim), bypassing
 // RequireUpstreamURL / gateway auth / the whole clone-mode contract.
-func TestBuildSessionJobSpec_FailsWhenBaseBranchUnresolvable(t *testing.T) {
-	stubSessionBaseBranch(t, "") // simulate detached HEAD / not a git repo
-	in := sampleSessionInput()
-	spec, err := BuildSessionJobSpec(in)
-	if err == nil {
-		t.Fatalf("BuildSessionJobSpec: expected error when base branch is unresolvable, got spec=%+v", spec)
-	}
-	if !strings.Contains(err.Error(), "cannot resolve default branch") {
-		t.Errorf("error = %q, want to mention \"cannot resolve default branch\"", err.Error())
-	}
-	if !strings.Contains(err.Error(), in.ProjectWorkDir) {
-		t.Errorf("error = %q, want to name the project dir %q", err.Error(), in.ProjectWorkDir)
-	}
-	if spec != nil {
-		t.Errorf("spec = %+v, want nil on error", spec)
-	}
-}
 
 // TestBuildExecJobSpec_PropagatesBaseBranchError pins the same contract for
 // BuildExecJobSpec — the shell-harness variant used by `boid exec` must not
 // mask the error.
-func TestBuildExecJobSpec_PropagatesBaseBranchError(t *testing.T) {
-	stubSessionBaseBranch(t, "")
-	in := sampleSessionInput()
-	spec, err := BuildExecJobSpec(in, []string{"/bin/true"}, false)
-	if err == nil {
-		t.Fatalf("BuildExecJobSpec: expected error when base branch is unresolvable, got spec=%+v", spec)
-	}
-	if spec != nil {
-		t.Errorf("spec = %+v, want nil on error", spec)
-	}
-}
 
 // --- signal-derived connector trigger pass-through fields (docs/plans/
 // signal-ingest-detailed-design.md §5.2, PR-5) ---
@@ -282,7 +236,7 @@ func TestBuildExecJobSpec_PropagatesBaseBranchError(t *testing.T) {
 // DefaultBuiltinPolicies(RoleHook, []string{"boid","fetch"}, ...) set —
 // this PR must not silently narrow every session/exec job's policy.
 func TestBuildSessionJobSpec_ConnectorPolicyFalse_UsesDefaultPolicy(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	spec := mustBuildSessionJobSpec(t, in)
 
@@ -296,7 +250,7 @@ func TestBuildSessionJobSpec_ConnectorPolicyFalse_UsesDefaultPolicy(t *testing.T
 // SessionJobInput.ConnectorPolicy selects orchestrator.ConnectorBuiltinPolicies
 // (signal_ingest/signal_cursor_get ONLY, no fetch) instead of the general set.
 func TestBuildSessionJobSpec_ConnectorPolicyTrue_UsesReducedPolicy(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	in.ConnectorPolicy = true
 	spec := mustBuildSessionJobSpec(t, in)
@@ -314,7 +268,6 @@ func TestBuildSessionJobSpec_ConnectorPolicyTrue_UsesReducedPolicy(t *testing.T)
 // service-allowlist override: nil by default (existing dispatch-time
 // resolution untouched), verbatim passthrough when the caller sets it.
 func TestBuildSessionJobSpec_APIGatewayServices_Passthrough(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
 
 	in := sampleSessionInput()
 	spec := mustBuildSessionJobSpec(t, in)
@@ -334,7 +287,6 @@ func TestBuildSessionJobSpec_APIGatewayServices_Passthrough(t *testing.T) {
 // signal-ingest-detailed-design.md §3.2/§5.2): verbatim passthrough into
 // JobSpec, empty by default.
 func TestBuildSessionJobSpec_SignalServiceConnector_Passthrough(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
 
 	in := sampleSessionInput()
 	spec := mustBuildSessionJobSpec(t, in)
@@ -356,7 +308,6 @@ func TestBuildSessionJobSpec_SignalServiceConnector_Passthrough(t *testing.T) {
 // so a daemon-restart recovery scan can reverse-link the session back to
 // its card_requests row. Empty by default for every ordinary session.
 func TestBuildSessionJobSpec_CardIDCardRequestID_Passthrough(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
 
 	in := sampleSessionInput()
 	spec := mustBuildSessionJobSpec(t, in)
@@ -384,7 +335,7 @@ func TestBuildSessionJobSpec_CardIDCardRequestID_Passthrough(t *testing.T) {
 // hostCommands empty regardless of what the caller passed, mirroring how it
 // already forces no "fetch" entry into BuiltinPolicies.
 func TestBuildSessionJobSpec_ConnectorPolicyTrue_ForcesHostCommandsEmpty(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	in.ConnectorPolicy = true
 	in.HostCommands = map[string]orchestrator.HostCommandSpec{
@@ -401,7 +352,7 @@ func TestBuildSessionJobSpec_ConnectorPolicyTrue_ForcesHostCommandsEmpty(t *test
 // negative-space check for the fix above: every ordinary (non-connector)
 // caller's host_commands must still flow through unaffected.
 func TestBuildSessionJobSpec_ConnectorPolicyFalse_KeepsHostCommands(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	in.HostCommands = map[string]orchestrator.HostCommandSpec{
 		"gh": {Path: "/usr/bin/gh"},
@@ -420,7 +371,7 @@ func TestBuildSessionJobSpec_ConnectorPolicyFalse_KeepsHostCommands(t *testing.T
 // (the `boid exec` / trigger-fire variant) carries the same 3 new fields
 // through unchanged — it wraps BuildSessionJobSpec and must not drop them.
 func TestBuildExecJobSpec_ConnectorFields_Passthrough(t *testing.T) {
-	stubSessionBaseBranch(t, "main")
+
 	in := sampleSessionInput()
 	in.ConnectorPolicy = true
 	in.APIGatewayServices = []string{"slack-api"}
@@ -446,15 +397,13 @@ func TestBuildExecJobSpec_ConnectorFields_Passthrough(t *testing.T) {
 // project visible" branch takes over cleanly. This is different from
 // "ProjectWorkDir set but HEAD unresolvable", which is fail-loud above.
 func TestBuildSessionJobSpec_EmptyProjectWorkDirYieldsNoClone(t *testing.T) {
-	// resolveSessionBaseBranchFn is not consulted when ProjectWorkDir=="",
-	// so no stub is needed.
 	in := sampleSessionInput()
 	in.ProjectWorkDir = ""
 	spec, err := BuildSessionJobSpec(in)
 	if err != nil {
 		t.Fatalf("BuildSessionJobSpec: unexpected error for empty ProjectWorkDir: %v", err)
 	}
-	if spec.Visibility.Clone != nil {
-		t.Errorf("Visibility.Clone = %+v, want nil for empty ProjectWorkDir", spec.Visibility.Clone)
+	if spec.Visibility.Checkout {
+		t.Errorf("Visibility.Clone = %+v, want nil for empty ProjectWorkDir", spec.Visibility.Checkout)
 	}
 }

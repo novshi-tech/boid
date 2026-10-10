@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -121,19 +120,7 @@ type SandboxRuntimeInfo struct {
 	// gateway listener. Empty when the gateway isn't wired.
 	GatewayURL string
 
-	// GatewayCAPEM is the daemon's internal CA's own certificate
-	// (mtls.CA.CertPEM), PEM-encoded, set by Runner from Server's
-	// gatewayCAPEM. Non-secret — the CA's public half, not a key — so it
-	// needs no per-job scoping or rotation, unlike a client certificate
-	// would.
-	//
-	// Only meaningful for the container backend, whose gateway is
-	// TLS-secured (https://boid-gateway:<port>). BuildSandboxSpec only
-	// writes this into the sandbox (as a file, with GIT_SSL_CAINFO pointed
-	// at it) when UsingContainerBackend is true AND spec.Visibility.Clone
-	// is set — see its own call site. Without it, every sandbox-internal
-	// clone against the gateway fails outright: "server certificate
-	// verification failed. CAfile: none CRLfile: none".
+	// GatewayCAPEM provides TLS trust for sandbox checkout and API calls.
 	GatewayCAPEM []byte
 
 	// GatewayJobToken is this job's git gateway token, registered against
@@ -142,14 +129,6 @@ type SandboxRuntimeInfo struct {
 	// when the job completes (see Runner.registerGatewayToken /
 	// Runner.UnregisterJob). Empty when the gateway isn't wired.
 	GatewayJobToken string
-
-	// GatewayCloneURL is the full gateway clone URL for spec's own project
-	// (GatewayURL + "/j/" + GatewayJobToken + "/<host>/<owner>/<repo>.git"),
-	// built by Runner.buildGatewayCloneURL. Empty unless spec.Visibility.Clone
-	// is non-nil (the opt-in sandbox-clone path) — computing it is otherwise
-	// wasted work, since nothing would consume it. BuildSandboxSpec only
-	// reads this when spec.Visibility.Clone != nil.
-	GatewayCloneURL string
 
 	// APIGatewayBaseURL is the shared gateway listener's sandbox-facing base
 	// URL. Byte-identical to GatewayURL above in every real deployment
@@ -181,17 +160,6 @@ type SandboxRuntimeInfo struct {
 	// entirely rather than keep two independent holders of the same
 	// buildPeerAdvertise result.
 	WorkspacePeerAdvertise map[string]PeerAdvertise
-
-	// CloneWorkspaceDir is the host-side runtime dir path
-	// (`<RuntimesDir>/<runtime_id>/workspace`) that BuildSandboxSpec bind-
-	// mounts at the sandbox-internal clone target (/workspace/<name>) when
-	// spec.Visibility.Clone is set. Allocated and mkdir'd by Runner.Dispatch
-	// before BuildSandboxSpec runs, the same way
-	// startDockerProxy pre-creates its runtime dir. Empty when RuntimesDir is
-	// unset (e.g. minimal test wiring) — cloneMounts then skips the bind and
-	// the clone lands on the sandbox's own tmpfs root instead, a safe but
-	// non-default degrade (working tree + build artifacts in RAM).
-	CloneWorkspaceDir string
 
 	// WorkspaceHomeVolume is the NAME of the docker named volume holding this
 	// workspace's persistent home, as resolved by
@@ -244,30 +212,6 @@ type SandboxRuntimeInfo struct {
 	// literals) — the env var is simply omitted in that case.
 	WorkspaceSlug string
 
-	// CloneHostBacked signals that Runner.Dispatch has already materialized
-	// CloneWorkspaceDir via dispatcher.PrepareJobCheckout (`git clone
-	// file://<bare-repo>` from the project's daemon-managed bare repository
-	// into a per-job staging dir under a host-visible runtimes root),
-	// rather than leaving CloneWorkspaceDir as an empty scratch directory
-	// for the SANDBOX's own in-container clone sequence
-	// (buildCloneSpec/performCloneSteps) to populate at job start.
-	//
-	// Only ever true for a git-URL-registered project (orchestrator.
-	// IsBareRepoDir(proj.WorkDir)) dispatched under the container backend
-	// with a resolvable host-visible runtimes root — every other caller
-	// (a legacy host-dir-registered project, r.RuntimesDir unset test
-	// wiring) leaves this false: cloneMounts' /workspace bind stays
-	// container-local and buildCloneSpec keeps declaring the in-sandbox
-	// clone exactly as before.
-	//
-	// When true: cloneMounts sets sandbox.Mount.HostBacked on the
-	// /workspace bind (realization.classifySource then treats it as a real
-	// host-path bind, not container-local — see that field's own doc
-	// comment) and buildCloneSpec returns CloneSpec{} (Enabled == false):
-	// the sandbox has nothing left to clone, its /workspace/<name> already
-	// IS the daemon-prepared checkout.
-	CloneHostBacked bool
-
 	// ContainerImage is the workspace's container image override
 	// (`orchestrator.WorkspaceMeta.ContainerImage`), resolved by
 	// Runner.resolveContainerImage the same way resolveWorkspaceProxy
@@ -293,6 +237,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	homeDir := hostHomeDir()
 	workDir := resolveWorkDir(spec)
+	if rt.PrimaryRepo != "" {
+		workDir = sandboxCloneDir(filepath.Base(rt.PrimaryRepo))
+	}
 	expandedBindings := expandWorktreeBindings(
 		spec.Visibility.AdditionalBindings,
 		workDir,
@@ -304,6 +251,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		env = map[string]string{}
 	}
 	env["BOID_PRIMARY_REPO"] = rt.PrimaryRepo
+	if _, exists := env["BOID_BASE_BRANCH"]; !exists {
+		env["BOID_BASE_BRANCH"] = ""
+	}
 	env["BOID_FORK_POINT"] = rt.ForkPoint
 	env["BOID_GIT_CACHE"] = "/var/cache/boid/git"
 	env["BOID_GIT_BASE"] = ""
@@ -449,14 +399,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			Target: homeDir + "/.boid",
 			Type:   sandbox.MountTmpfs,
 		})
-	case spec.Visibility.Clone != nil:
-		// Sandbox-clone path: skip projectVisibilityMounts entirely.
-		// cloneMounts (below) mounts the reference `.git` dirs and the clone
-		// target at the neutral /workspace path; there is no host ProjectDir
-		// bind for this job at all, so binding projectDir here too would
-		// double-mount the same host path at two sandbox targets for no
-		// reason. HOME still gets the workspace home bind or a private tmpfs
-		// fallback, exactly like the "no project visible" case below.
+	case spec.Visibility.Checkout:
 		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeVolume)...)
 	case projectDir != "":
 		mounts = append(mounts, projectVisibilityMounts(
@@ -474,14 +417,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeVolume)...)
 	}
 
-	// Sandbox-internal clone mounts: RO bind of the host project `.git`
-	// (for `git clone --reference`) and
-	// the workspace peers' `.git` dirs, plus a real (non-shimmed) git binary
-	// the runner's own clone/branch-resolution invocations use. Entirely
-	// opt-in: nil unless spec.Visibility.Clone is set, so the existing
-	// worktree/project mount layout above is completely unaffected.
-	mounts = append(mounts, cloneMounts(spec, rt)...)
-
 	// Git gateway / API gateway TLS trust: only the container backend's
 	// gateway URL is TLS-secured (see SandboxRuntimeInfo.GatewayCAPEM's own
 	// doc comment) — a job with no clone declared AND no API gateway token
@@ -491,14 +426,14 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// entries, not a per-job artifact that needs its own mount/cleanup
 	// lifecycle.
 	needsGatewayCA := rt.UsingContainerBackend && len(rt.GatewayCAPEM) > 0 &&
-		(spec.Visibility.Clone != nil || rt.APIGatewayJobToken != "")
+		(spec.Visibility.Checkout || rt.APIGatewayJobToken != "")
 	if needsGatewayCA {
 		files = append(files, sandbox.FileWrite{
 			Path:    containerGitGatewayCAPath,
 			Content: string(rt.GatewayCAPEM),
 		})
 	}
-	if spec.Visibility.Clone != nil && rt.UsingContainerBackend && len(rt.GatewayCAPEM) > 0 {
+	if spec.Visibility.Checkout && rt.UsingContainerBackend && len(rt.GatewayCAPEM) > 0 {
 		env["GIT_SSL_CAINFO"] = containerGitGatewayCAPath
 	}
 
@@ -724,7 +659,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		HarnessType:    harness,
 		UserAnswer:     userAnswer,
 		Profile:        sandbox.Profile(spec.SandboxProfile),
-		Clone:          buildCloneSpec(spec, rt),
 		ContainerImage: rt.ContainerImage,
 		// The bind-target skeleton the job's own runner verifies before
 		// starting the harness — see sandbox.Spec.HomeSkeletonDirs and
@@ -793,14 +727,9 @@ func homeSkeleton(homeDir string, rt SandboxRuntimeInfo, mounts []sandbox.Mount)
 	return homeDir, dirs
 }
 
-// resolveWorkDir returns the initial cd target inside the sandbox. The
-// sandbox-clone opt-in path (spec.Visibility.Clone != nil) takes priority
-// over the plain project-dir path since its bind mount above never exposes
-// ProjectDir at all — the only filesystem the clone-mode sandbox has is the name-scoped
-// subdirectory of sandboxCloneTargetDir (see sandboxCloneDir). Otherwise
-// prefer the project dir, then home.
+// resolveWorkDir chooses the checkout directory, visible project directory, or HOME.
 func resolveWorkDir(spec *orchestrator.JobSpec) string {
-	if spec.Visibility.Clone != nil {
+	if spec.Visibility.Checkout {
 		return sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility))
 	}
 	if spec.Visibility.ProjectDir != "" {
@@ -809,11 +738,6 @@ func resolveWorkDir(spec *orchestrator.JobSpec) string {
 	return hostHomeDir()
 }
 
-// sandbox-internal neutral paths used by the opt-in clone sequence.
-// Fixed rather than derived so the
-// runner (which reads sandbox.CloneSpec back out of the JSON spec file) and
-// dispatcher (which generates the matching mounts) always agree without
-// having to thread the values through some other channel.
 const (
 	// sandboxCloneTargetDir is the neutral clone destination's *parent*
 	// directory: every job actually clones into a per-project subdirectory
@@ -830,16 +754,6 @@ const (
 	// `cd`s the agent there, so `pwd` is the only source of truth for its
 	// own project's directory.
 	sandboxCloneTargetDir = "/workspace"
-
-	// sandboxCloneReferenceDir is where the host project's `.git` is RO
-	// bind-mounted for use as `git clone --reference`.
-	sandboxCloneReferenceDir = "/mnt/refs/self.git"
-
-	// sandboxClonePeerReferenceDirFmt is the Sprintf pattern (keyed by peer
-	// project ID) for RO bind-mounting workspace peers' `.git` dirs.
-	// Dynamic peer clone is later work; this only makes the mounts
-	// constructible today.
-	sandboxClonePeerReferenceDirFmt = "/mnt/refs/peers/%s.git"
 
 	// containerGitGatewayCAPath is the fixed sandbox-internal path SandboxRuntimeInfo.GatewayCAPEM
 	// is written to (as a plain spec.Files entry, container backend +
@@ -950,131 +864,6 @@ func projectDirName(name, workDir string) string {
 // used everywhere else in this file.
 func cloneDirNameForVisibility(v orchestrator.Visibility) string {
 	return projectDirName(v.ProjectName, v.ProjectDir)
-}
-
-// cloneMounts returns the mounts for the opt-in sandbox-clone path: the RO
-// reference-repo binds (self + workspace peers) used for `git clone
-// --reference`, plus the host-backed /workspace bind the clone actually
-// lands on. Returns nil (no mounts) unless spec.Visibility.Clone is set, so
-// the default dispatch path's mount list is completely unaffected.
-//
-// There is no separate real-git-binary bind: the git-shim overlay (/usr/bin/git,
-// /bin/git bound to the boid binary) is retired (see the "boid binary bind
-// + host command mounts" section below), so the sandbox's own
-// /usr/bin/git — visible via the base rbind of /usr — is already the real
-// binary; performClone's bare "git" $PATH lookup resolves correctly with no
-// extra mount needed.
-func cloneMounts(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) []sandbox.Mount {
-	if spec == nil || spec.Visibility.Clone == nil {
-		return nil
-	}
-	var out []sandbox.Mount
-
-	if projectDir := spec.Visibility.ProjectDir; projectDir != "" {
-		gitDir := projectDir + "/.git"
-		out = append(out, sandbox.Mount{
-			Source:     gitDir,
-			Target:     sandboxCloneReferenceDir,
-			Type:       sandbox.MountBind,
-			ReadOnly:   true,
-			DetectType: true,
-			Guard:      existsGuardExpr(gitDir),
-		})
-	}
-
-	peerIDs := make([]string, 0, len(rt.WorkspacePeers))
-	for id := range rt.WorkspacePeers {
-		peerIDs = append(peerIDs, id)
-	}
-	sort.Strings(peerIDs)
-	for _, id := range peerIDs {
-		gitDir := rt.WorkspacePeers[id] + "/.git"
-		out = append(out, sandbox.Mount{
-			Source:     gitDir,
-			Target:     fmt.Sprintf(sandboxClonePeerReferenceDirFmt, id),
-			Type:       sandbox.MountBind,
-			ReadOnly:   true,
-			DetectType: true,
-			Guard:      existsGuardExpr(gitDir),
-		})
-	}
-
-	// /workspace bind: the temp area's substance is a bind mount of the host
-	// runtime dir by default. rt.CloneWorkspaceDir is a fresh, job-scoped
-	// `<RuntimesDir>/<runtime_id>/workspace` directory Runner.Dispatch
-	// pre-creates, so it already exists on the host before the mount is
-	// applied — no DetectType/Guard needed, unlike the reference-dir binds
-	// above (whose host source may legitimately be absent, e.g. a project
-	// with no peers). Always read-write: under the clone model readonly is
-	// enforced by the gateway (transport-RO), not the local filesystem.
-	// Empty CloneWorkspaceDir (e.g. RuntimesDir unset in minimal test
-	// wiring) skips the bind — the clone then simply lands on the sandbox's
-	// own tmpfs root, a safe non-default degrade.
-	if rt.CloneWorkspaceDir != "" {
-		out = append(out, sandbox.Mount{
-			Source: rt.CloneWorkspaceDir,
-			Target: sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility)),
-			Type:   sandbox.MountBind,
-			// HostBacked: see SandboxRuntimeInfo.CloneHostBacked's own doc
-			// comment. False keeps the container backend's existing
-			// container-local classification for this target unchanged —
-			// only a daemon-pre-populated staging area opts into a real
-			// host-path bind.
-			HostBacked: rt.CloneHostBacked,
-		})
-	}
-
-	return out
-}
-
-// realGitBinPath resolves the host's real git binary path via $PATH. Kept
-// as a dispatch-time diagnostic: git is a hard dependency for every
-// sandbox-internal clone (the sandbox's own /usr/bin/git is an rbind of the
-// daemon host's), so a LookPath failure here — meaning the daemon host has
-// no git on PATH at all — is surfaced loudly rather than silently papered
-// over. Nothing binds the
-// returned path anywhere anymore; buildCloneSpec calls this purely for the
-// warning side effect.
-func realGitBinPath() string {
-	if p, err := exec.LookPath("git"); err == nil {
-		return p
-	}
-	slog.Warn("realGitBinPath: git not found on daemon host PATH; sandbox-internal clone will fail once dispatched")
-	return "/usr/bin/git"
-}
-
-// buildCloneSpec translates spec.Visibility.Clone (the orchestrator-level
-// declaration) plus dispatcher-resolved runtime facts (rt.GatewayCloneURL)
-// into the sandbox.CloneSpec the runner consumes. Returns the zero value
-// (Enabled == false) when spec.Visibility.Clone is nil — see CloneSpec's own
-// doc comment for why that is a complete no-op for the runner.
-//
-// Also returns the zero value when rt.CloneHostBacked is true:
-// Runner.Dispatch has already cloned
-// and checked out the right branch into CloneWorkspaceDir via
-// dispatcher.PrepareJobCheckout BEFORE the job container ever starts, and
-// cloneMounts' matching HostBacked bind makes that staging dir /workspace/
-// <name> itself — the sandbox has nothing left to clone. Leaving
-// Enabled == true here for a host-backed job would make
-// internal/sandbox/runner/clone.go's performCloneSteps wipe and re-clone
-// the daemon's own pre-populated checkout via the git-gateway HTTP reverse
-// proxy on every dispatch, defeating the entire point of pre-cloning.
-func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.CloneSpec {
-	if spec == nil || spec.Visibility.Clone == nil || rt.CloneHostBacked {
-		return sandbox.CloneSpec{}
-	}
-	realGitBinPath() // dispatch-time warning only; see doc comment above.
-	cd := spec.Visibility.Clone
-	return sandbox.CloneSpec{
-		Enabled:             true,
-		URL:                 rt.GatewayCloneURL,
-		ReferenceDir:        sandboxCloneReferenceDir,
-		TargetDir:           sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility)),
-		Branch:              cd.Branch,
-		BaseBranch:          cd.BaseBranch,
-		CheckoutOnly:        cd.CheckoutOnly,
-		BaseBranchForkPoint: cd.BaseBranchForkPoint,
-	}
 }
 
 // homeMounts returns the HOME mount(s) for a sandbox. When workspaceHomeVolume
@@ -1577,41 +1366,10 @@ func applyDockerProxyEnv(env map[string]string) {
 	env["TESTCONTAINERS_RYUK_DISABLED"] = "true"
 }
 
-// PeerAdvertise is the {name, clone URL, reference path} view of a workspace
-// peer project. Built by Runner.buildPeerAdvertise from the peer's
-// captured upstream_url + this job's gateway token; it intentionally carries
-// no host filesystem path — clone-mode jobs have no host path visible for a
-// peer project any more, only the sandbox-internal RO reference dir
-// (ReferencePath) and the gateway clone URL an agent would `git clone` from
-// if it wants to see the peer's working tree.
-//
-// Exposed to the agent via `boid project list`'s clone_url/reference_path/
-// clone_dir fields, carried through JobContextSnapshot.WorkspacePeerAdvertise
-// (job_context.go), tracked by
-// Runner.Dispatch and read by BoidOpProjectList
-// (internal/server/boid_executor.go) — NOT through
-// SandboxRuntimeInfo.WorkspacePeerAdvertise, which stays unused; see that
-// field's own doc comment.
+// PeerAdvertise describes a registered peer's checkout URL and destination.
 type PeerAdvertise struct {
-	// Name is the peer's repo name (the last segment of its upstream_url's
-	// host/owner/repo form), used purely for display/discoverability.
-	Name string
-	// CloneURL is the full gateway clone URL for this peer, scoped fetch-only
-	// to this job's gateway token (docs/plans/container-based-boid.md
-	// 「workspace peer プロジェクト」: peers are fetch-only; writing to a peer
-	// means a cross-project child task instead).
+	Name     string
 	CloneURL string
-	// ReferencePath is the sandbox-internal RO bind-mount path of the peer's
-	// `.git` (sandboxClonePeerReferenceDirFmt), usable as `git clone
-	// --reference` when an agent does clone the peer.
-	ReferencePath string
-	// CloneDir is the suggested absolute sandbox-internal directory for this
-	// peer, e.g. "/workspace/bm-next-lp". It is only a suggestion — nothing enforces
-	// an agent actually clones the peer here — but using the same leaf name
-	// projectDirName would resolve for the peer's own project (were it
-	// dispatching as self) keeps the directory name stable regardless of
-	// which project happens to be the one dispatching, and keeps it off
-	// $HOME/tmp (both tmpfs, RAM-backed).
 	CloneDir string
 }
 

@@ -50,10 +50,6 @@ func TestRealize(t *testing.T) {
 				ID: "job-clone",
 				Mounts: []sandbox.Mount{
 					{
-						// Mirrors cloneMounts' /workspace bind
-						// (internal/dispatcher/sandbox_builder.go): host
-						// runtime dir Source, but the container backend
-						// must NOT treat this as a host bind (決定 4).
 						Source: "/home/boid-user/.local/share/boid/runtimes/job-clone/workspace",
 						Target: "/workspace/bm-next",
 						Type:   sandbox.MountBind,
@@ -65,36 +61,6 @@ func TestRealize(t *testing.T) {
 				Volumes: []VolumeMount{
 					{
 						Source: MountSource{Kind: MountSourceContainerLocal, Value: "/workspace/bm-next"},
-						Target: "/workspace/bm-next",
-					},
-				},
-			},
-		},
-		{
-			name: "HostBacked workspace clone target is classified as a real host bind (PR-2b per-job clone)",
-			spec: sandbox.Spec{
-				ID: "job-preclone",
-				Mounts: []sandbox.Mount{
-					{
-						// Mirrors cloneMounts' /workspace bind when
-						// dispatcher.PrepareJobCheckout has already staged a
-						// per-job checkout there (docs/plans/
-						// volume-only-daemon.md §論点b, PR-2b) — unlike the
-						// "workspace clone target... lands container-local"
-						// case above, HostBacked must override the
-						// /workspace-target default.
-						Source:     "/home/boid-user/.local/share/boid/runtimes/job-preclone/workspace",
-						Target:     "/workspace/bm-next",
-						Type:       sandbox.MountBind,
-						HostBacked: true,
-					},
-				},
-			},
-			want: Realization{
-				ID: "job-preclone",
-				Volumes: []VolumeMount{
-					{
-						Source: MountSource{Kind: MountSourceHostPath, Value: "/home/boid-user/.local/share/boid/runtimes/job-preclone/workspace"},
 						Target: "/workspace/bm-next",
 					},
 				},
@@ -122,7 +88,6 @@ func TestRealize(t *testing.T) {
 			spec: sandbox.Spec{
 				Mounts: []sandbox.Mount{
 					{
-						// Mirrors cloneMounts' self-project reference bind.
 						Source:     "/home/nose/src/bm-next/.git",
 						Target:     "/mnt/refs/self.git",
 						Type:       sandbox.MountBind,

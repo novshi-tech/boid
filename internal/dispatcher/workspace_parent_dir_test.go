@@ -2,6 +2,9 @@ package dispatcher_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
@@ -68,20 +71,15 @@ func findMountTarget(mounts []sandbox.Mount, target string) *sandbox.Mount {
 	return nil
 }
 
-// TestDispatch_CloneMode_NameScopedWorkspaceDir is the end-to-end regression
-// guard for the workspace 親化リファクタリング (nose 2026-07-13 decision): a
-// clone-mode dispatch for a project with project.yaml's `name: bm-next` must
-// land the sandbox's clone mount, WorkDir, and CloneSpec.TargetDir all at
-// "/workspace/bm-next" — not the flat "/workspace" every project used to
-// share (the root cause of the Claude Code `~/.claude/projects/-workspace/`
-// session-log collision this refactor exists to fix).
-//
-// spec.Visibility.ProjectName is set directly here, mirroring what
-// orchestrator.PlanHook / dispatcher.BuildSessionJobSpec already do at
-// JobSpec-build time in production (see orchestrator.Visibility.ProjectName's
-// doc comment) — Runner.Dispatch itself never re-derives the name from a
-// Projects lookup.
 func TestDispatch_CloneMode_NameScopedWorkspaceDir(t *testing.T) {
+	bin := t.TempDir()
+	gitCalls := filepath.Join(bin, "git-calls")
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nprintf x >> \"$GIT_CALLS\"\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CALLS", gitCalls)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+
 	d := testutil.NewTestDB(t)
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{
 		ID: "proj-1", WorkDir: "/host/bm-next", UpstreamURL: "https://github.com/owner/bm-next.git",
@@ -109,7 +107,7 @@ func TestDispatch_CloneMode_NameScopedWorkspaceDir(t *testing.T) {
 			ProjectDir:  "/host/bm-next",
 			ProjectName: "bm-next",
 			Writable:    true,
-			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			Checkout:    true,
 		},
 	}
 
@@ -121,17 +119,16 @@ func TestDispatch_CloneMode_NameScopedWorkspaceDir(t *testing.T) {
 	if prep.spec.WorkDir != wantDir {
 		t.Errorf("WorkDir = %q, want %q", prep.spec.WorkDir, wantDir)
 	}
-	if !prep.spec.Clone.Enabled {
-		t.Fatal("Clone.Enabled = false, want true")
+	if _, err := os.Stat(gitCalls); !os.IsNotExist(err) {
+		t.Fatalf("daemon invoked git: %v", err)
 	}
-	if prep.spec.Clone.TargetDir != wantDir {
-		t.Errorf("Clone.TargetDir = %q, want %q", prep.spec.Clone.TargetDir, wantDir)
+	if prep.spec.Env["BOID_PRIMARY_REPO"] != "github.com/owner/bm-next" {
+		t.Fatalf("checkout identity = %q", prep.spec.Env["BOID_PRIMARY_REPO"])
 	}
-	if m := findMountTarget(prep.spec.Mounts, wantDir); m == nil {
-		t.Errorf("no mount with Target %q found among %#v", wantDir, prep.spec.Mounts)
-	}
-	if m := findMountTarget(prep.spec.Mounts, "/workspace"); m != nil {
-		t.Errorf("unexpected bare /workspace mount (should be name-scoped): %+v", m)
+	for _, m := range prep.spec.Mounts {
+		if strings.HasPrefix(m.Target, "/mnt/refs") || strings.HasPrefix(m.Target, "/workspace/") {
+			t.Errorf("unexpected repository mount: %+v", m)
+		}
 	}
 }
 
@@ -167,7 +164,7 @@ func TestDispatch_CloneMode_FallsBackToProjectDirBasenameWhenNameUnset(t *testin
 		Visibility: orchestrator.Visibility{
 			ProjectDir: "/host/sumiron-project", // no ProjectName
 			Writable:   true,
-			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			Checkout:   true,
 		},
 	}
 

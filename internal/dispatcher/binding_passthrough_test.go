@@ -81,7 +81,7 @@ func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 	// session base-branch resolver — the fail-loud contract added by the
 	// PR6 Opus review otherwise turns this into a hard error, unrelated to
 	// the binding-passthrough seam this test is about.
-	stubSessionBaseBranch(t, "main")
+
 	spec, err := BuildSessionJobSpec(SessionJobInput{
 		ProjectID:          "proj-thru",
 		ProjectWorkDir:     projectDir,

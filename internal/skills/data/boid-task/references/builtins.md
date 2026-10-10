@@ -45,7 +45,7 @@ Reads YAML/JSON from stdin (or `-f <file>`). Prints `task created: <id> (<status
 | `description` | Delivered to the child as the active instruction. |
 | `auto_start` | `true` to start immediately. |
 | `parent_id` | Auto-filled from `BOID_TASK_ID`. Set explicitly only to attach under a different parent. |
-| `base_branch` | Branch the task's own project clone checks out directly (no separate per-task branch is created). Inherits the parent's `base_branch` verbatim when omitted on a child; falls back to the project-top `base_branch`, else the daemon's current HEAD, for a root task. |
+| `base_branch` | Base branch passed as BOID_BASE_BRANCH. The agent selects it after startup checkout and may create the PR branch required by its instruction. Inherits the parent base when omitted on a child; root defaults are resolved at task creation. |
 | `project_id` | Project to create in. Defaults to the same project as the parent. |
 | `behavior_spec` | Inline behavior definition. Not normally needed — prefer named behaviors from `project.yaml`. |
 | `ref` | Child ref name within the parent scope. |
@@ -289,20 +289,16 @@ boid project list
 
 Prints, as a JSON array, every project (`{"id", "name", "upstream_url"}`) within the caller's own workspace — the same scope `boid task list` falls back to when called with no `--project`/`--workspace`. Takes no arguments: there is no way to widen this to every project on the daemon (that's the host-only `boid project list`, a different scope). Use this to discover which project refs exist before calling `boid project behaviors <ref>` on each one — e.g. a supervisor that coordinates work across multiple projects in the same workspace.
 
-For a workspace peer (any entry that isn't the calling job's own project), the entry may also carry `clone_url`, `reference_path`, and `clone_dir` — enough to actually fetch the peer, not just discover its id:
+For a workspace peer, entries may also carry `clone_url` and `clone_dir`. The
+URL is fetch-only and scoped to the job token; the directory is the repository
+basename under `/workspace`. These fields may be absent when the gateway is
+unwired or the peer has no usable upstream URL. There are no host reference
+mounts or `reference_path` fields.
 
-```json
-{"id": "peer-1", "name": "bm-next", "upstream_url": "https://github.com/owner/bm-next.git",
- "clone_url": "http://10.0.2.2:9/j/<token>/github.com/owner/bm-next.git",
- "reference_path": "/mnt/refs/peers/peer-1.git",
- "clone_dir": "/workspace/bm-next"}
-```
-
-These three fields are **best-effort and may be absent** — the calling job wasn't dispatched in clone mode, the gateway isn't wired, or the peer has no resolvable `upstream_url`. When present:
-
-- `clone_url` is a fetch-only URL scoped to this job's own gateway token (writing to a peer isn't supported — open a cross-project child task instead). Use it directly: `git clone <clone_url> <clone_dir>`.
-- `reference_path`, if you want a faster `git clone --reference <reference_path> <clone_url> <clone_dir>`, **may not actually exist** (git-URL-registered peers can be a bare repo with no local `.git` to mount) — check with `test -d <reference_path>` first; don't use `--reference` unconditionally.
-- `clone_dir` is only a suggestion and can collide with another peer's or your own directory name — pick a different target if it's already in use.
+Use `boid checkout <name>` to fetch another registered repository through the
+shared workspace object cache. Use the returned path as cwd. An existing target
+is an error, including a peer whose repository basename collides with an existing
+checkout.
 
 Peers are always fetch-only, regardless of `readonly`/writable state on either side.
 

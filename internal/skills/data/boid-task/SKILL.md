@@ -85,6 +85,40 @@ The `readonly` flag is auto-set by the daemon from the behavior name during the
 compatibility period. Reading it from `boid task current` is always safe and will
 remain the sole ground truth after Track A2 (free naming) ships.
 
+### Checkout and branch selection
+
+For a job with `BOID_PRIMARY_REPO` set, the sandbox startup wrapper has already
+run `boid checkout` once and started the agent in the returned working tree
+(`/workspace/<repository-name>`). Do not run primary checkout again: its
+existing destination is an error. Jobs without a primary repository keep their
+existing workspace HOME cwd. To read another registered repository, run
+`boid checkout <name>` and use the returned path.
+
+Checkout leaves the remote default branch selected. Before working in the primary
+repository, select `BOID_BASE_BRANCH` yourself (an empty value keeps the default).
+The wrapper, runner, and daemon never select a branch:
+
+```sh
+BASE=${BOID_BASE_BRANCH#origin/}
+if [ -n "$BASE" ]; then
+  if git show-ref --verify --quiet "refs/remotes/origin/$BASE"; then
+    git switch "$BASE"
+  else
+    git switch -c "$BASE" "${BOID_FORK_POINT:-origin/HEAD}"
+  fi
+fi
+```
+
+If the active instruction requires an executor PR branch, create or adopt that
+branch after selecting the base above. For example, `boid/<task-id8>` is a valid
+PR branch; it need not equal `BOID_BASE_BRANCH`. A fresh checkout is the isolation
+unit. On reopen, adopt the existing remote PR branch to continue its history.
+Startup checkout cwd and current branch are printed in the job transcript, with
+another branch snapshot when the adapter exits normally. Gateway push requests
+record the job, repository, requested ref, and configured base branch in the task
+timeline (or daemon log for task-less jobs). These are observations, not branch
+policy violations or confirmation that the forge accepted the push.
+
 ### Workspace workflow delegation (checked before either mode's default flow)
 
 Both modes above describe a **default** flow — Supervisor's plan→create-children
@@ -344,14 +378,12 @@ Key fields:
 - `instructions` — 1-entry array for dynamic instruction generation (see above);
   2+ entries = complete replacement.
 - `auto_start: true` — start immediately.
-- `base_branch` — the branch the child checks out **directly** inside its own
-  sandbox clone. There is no separate per-task branch anymore (no `boid/<id8>`)
-  — the child's clone is its own isolation unit, and it works on `base_branch`
-  itself. When omitted, the child inherits the parent's `base_branch` verbatim,
-  so by default parent and every child check out the **same** branch.
-  **Children you dispatch in parallel must get distinct `base_branch` values**
-  (e.g. `feature/BGO-214-a`, `feature/BGO-214-b`) — otherwise they push to the
-  same branch and collide. Sequential children sharing the default inherited
+- `base_branch` — the branch the child selects through the branch procedure above inside its own sandbox checkout.
+  An executor may then create the PR branch required by its active instruction. When omitted, the child inherits the parent's `base_branch` verbatim,
+  so by default parent and every child receive the **same** base branch.
+  **Children you dispatch in parallel must push to distinct branches**
+  (e.g. their task-specific PR branches), or use distinct `base_branch` values
+  when their instructions require pushing directly to base. Sequential children sharing the default inherited
   branch is fine (each pushes and finishes before the next starts).
 
 Full reference: [references/builtins.md](references/builtins.md).
@@ -455,10 +487,8 @@ Full status semantics: [references/state-machine.md](references/state-machine.md
 # Layer A: child's structured self-report
 boid task show "$child" --field payload.artifact.report
 
-# Layer B: independent git check. There is no separate per-task branch
-# anymore — the child worked directly on its own base_branch (which, by
-# default, is the same branch you are on unless you gave it a distinct one).
-child_branch=$(boid task show "$child" --field base_branch)
+# Layer B: independently check the pushed branch from the child's report.
+child_branch=$(boid task show "$child" --field payload.artifact.report.evidence.branch)
 git fetch origin "$child_branch" 2>/dev/null || true
 git log --oneline -10 "origin/$child_branch"
 if [ "$child_branch" != "$BOID_BASE_BRANCH" ]; then
@@ -524,7 +554,7 @@ last_action=$(boid task show "$child" --field 'actions[-1].type')
 Note: a child can no longer abort at dispatch with a "resolve fork point ... not
 found in clone" error — the per-task branch and fork-point machinery that used
 to produce that class of failure is retired (every task, including a readonly
-supervisor's child, just checks out its own `base_branch` directly). If a
+supervisor's child, runs startup checkout and selects its branch via the skill). If a
 child still fails within seconds of dispatch, look elsewhere (missing
 `base_branch`, sandbox/network setup, hook script errors).
 

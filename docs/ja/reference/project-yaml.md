@@ -29,7 +29,7 @@ task_behaviors:
 |---|---|---|---|
 | `id` | string | git-URL 登録 (`boid project add <git-url>`) では省略可 | `boid` 内でプロジェクトを一意に識別する文字列。省略時は daemon が origin URL から安定した id を導出する。`file://` URL は slug 化できないため、id 省略時は拒否される。 |
 | `name` | string | はい | UI で表示するプロジェクト名 |
-| `worktree` | bool | `false` | 以前は `true` で executor / supervisor タスクに専用の isolated branch (`boid/<id8>`) を割り当てていた。 **docs/plans/branch-policy-simplification.md Phase 1 (v0.0.11) で per-task branch と fork point 概念が廃止**され、 root / child を問わず全タスクが sandbox 内 clone 上で `base_branch` を直接 checkout するようになったため、 このフィールドは現在 checkout 挙動に影響しない (スキーマ上は引き続き受理される)。 詳細は [タスク種別と HEAD branch](#タスク種別と-head-branch) を参照 |
+| `worktree` | — | 撤去 | branch は agent が `BOID_BASE_BRANCH` と executor 指示から選ぶ。詳細は [タスク種別と HEAD branch](#タスク種別と-head-branch) を参照。 |
 | `base_branch` | string | (省略時は後述) | PR ターゲットとなるベースブランチ。 タスク作成時に解決して row に保存される。 **省略時**: root task は daemon の現 HEAD branch (`${current_branch}` 相当) に展開; child task は親の `base_branch` を継承。 detached HEAD で root task 作成時に省略すると 400 エラー。 `${TASK_REMOTE_ID}` / `${current_branch}` の展開をサポート (後述 [動的 base_branch](#動的-base_branch)) |
 | `fork_point` | string | (省略時 `origin/HEAD` フォールバック) | `base_branch` がまだローカル / origin のどちらにも存在しない状態 (case 3) で branch を作るときの fork 起点。 任意の `git rev-parse --verify` で解決可能な ref を指定 (branch / tag / SHA / `origin/main` など)。 **未設定時は `refs/remotes/origin/HEAD` にフォールバック**。 origin/HEAD も未設定なら case 3 はエラー (`git remote set-head origin --auto` を実行するか、 `fork_point` を設定する)。 **project root の作業ツリー HEAD は意図的に参照されない** — タスク作成からディスパッチまでの間にユーザが root で別 branch をチェックアウトしていても、 fork 起点が暴れない。 詳細は [`fork_point` と case 3](#fork_point-と-case-3) を参照 |
 | `task_behaviors` | map (string → TaskBehavior) | はい | このプロジェクトで作れる「タスクの種類」一覧 |
@@ -53,7 +53,7 @@ project が可視なジョブ (hook / セッション / `boid exec` を問わず
 - `readonly: true` の behavior では clone 自体はローカルに書き込めるが、 push が gateway 側で拒否される (fetch はできる)。 「何も書けない」ではなく「境界を越えられない」という読み書き対称な適用に変わった
 - reopen は「再 clone + branch checkout」として実行される。 保証されるのは commit (+ push) 済みの内容のみ
 - 同一 project・同一 HEAD branch を対象とする複数タスクも、 それぞれ独立した clone を持つため **並行して dispatch される** (以前あった branch 単位の直列ロックは廃止済み)。 同時に push すると通常の git のとおり non-fast-forward で reject されるので、 fetch + merge/rebase して再 push する
-- workspace peer project は fetch-only でサンドボックス内から clone・reference 可能。 書き込みが必要な場合は peer への cross-project child task を作る。 peer の存在と clone URL / reference path は `boid project list` で発見できる (`internal/skills/data/boid-task/references/builtins.md` 参照)
+- workspace peer project は fetch-only で`boid checkout <name>` で取得可能。 書き込みが必要な場合は peer への cross-project child task を作る。 peer の存在と clone URL / clone directory は `boid project list` で発見できる (`internal/skills/data/boid-task/references/builtins.md` 参照)
 
 ## `task_behaviors.<name>`
 
@@ -100,7 +100,7 @@ behavior 名は完全一致で照合され、daemon が読み替えることは�
 
 ### `fork_point` と case 3
 
-`base_branch` (テンプレート展開後) がローカルにも `origin/<base>` にも存在しない状態を **case 3** と呼びます ([base_branch_classify.go](../../../internal/orchestrator/base_branch_classify.go))。 この場合 runner は sandbox 内 clone の中でそのブランチを **新規ローカル branch として作成** します (host 側の project ディレクトリは一切参照しません)。 問題は「どこから fork するか」で、 host git worktree を使っていた旧実装では project root の HEAD を起点にしていたため、 タスク作成からディスパッチまでの間にユーザが root で別 branch をチェックアウトしていると、 想定外の commit から base が切られる事故がありました。
+`base_branch` が origin に存在しない場合、agent が `boid-task` スキルの手順に従って `BOID_FORK_POINT` (空なら `origin/HEAD`) から新しいローカル branch を作ります。daemon / runner / 起動ラッパーは branch を切り替えません。
 
 新しい解決順:
 
@@ -117,18 +117,9 @@ behavior 名は完全一致で照合され、daemon が読み替えることは�
 
 ### タスク種別と HEAD branch
 
-**docs/plans/branch-policy-simplification.md Phase 1 (v0.0.11) で per-task branch (`boid/<id8>`) と fork point 概念は廃止されました。** タスク種別 (root / child、 supervisor / executor) に関わらず、 sandbox 内 clone は常に `task.BaseBranch` を直接 checkout します。 worktree 時代に必要だった「child は隔離用の専用 branch を切る」という仕組みは、 clone 自体が isolation 単位になったことで不要になりました — 同じ branch 名を別々の sandbox 内 clone で checkout しても衝突しません。
+主リポジトリがある job は、sandbox 内の起動ラッパーが `boid checkout` を呼び、出力された `/workspace/<repo名>` を cwd にして起動します。checkout は origin の default branch を選びます。agent は `boid-task` スキルに従って `BOID_BASE_BRANCH` を選び、必要なら executor 指示に従って `boid/<task-id8>` 等の PR branch を作ります。root / child とも同じ手順です。主リポジトリなしの job の cwd は従来どおり workspace HOME です。
 
-| タスク種別 | HEAD branch | readonly |
-|---|---|---|
-| **root sup / root exec** | `task.BaseBranch` | sup=true / exec=false |
-| **child sup / child exec** | `task.BaseBranch` | sup=true / exec=false |
-
-- **root タスク** (`parent_id == ""`): sandbox 内 clone した上で `base_branch` を直接 checkout する (新規 branch は作らない)。 `base_branch` が origin にまだ存在しない場合 (case 3) は [`fork_point` と case 3](#fork_point-と-case-3) の解決結果からローカル作成する
-- **child タスク** (親あり): root タスクと全く同じ扱いで `base_branch` を直接 checkout する。 `base_branch` を省略すると親タスクの `base_branch` をそのまま継承する (template 展開なし、 [動的 base_branch](#動的-base_branch) 参照) ため、 明示指定がない限り親子は同じ branch 名を checkout する
-- `task.BaseBranch` は PR target として全子タスクに継承され、 `BOID_BASE_BRANCH` env で executor に渡る
-
-**並列に走る兄弟 executor が同じ base_branch へ同時に push すると衝突します**。 これは isolation の欠如ではなく、 従来から変わらない executor 側の rebase/retry 契約です (下記「同一 HEAD branch を対象とする複数タスクの並行実行」参照)。 真に isolate したい場合は、 supervisor が子ごとに異なる `base_branch` を明示指定してください (例: `feature/BGO-214`, `feature/BGO-215`, `feature/BGO-216`)。
+`base_branch` は子にそのまま継承されます。並列 executor は各自の PR branch に push するか、base に直接 push する場合は異なる `base_branch` を使ってください。作業ツリーは job ごとに独立していますが、同じリモート branch への同時 push は競合します。
 
 ### 同一 HEAD branch を対象とする複数タスクの並行実行
 
@@ -136,7 +127,7 @@ behavior 名は完全一致で照合され、daemon が読み替えることは�
 
 ### 依存子の最新化とマージ責務
 
-boid コアは子タスクの dispatch 順序や base 同期には関与しません。 sub-sup (子 supervisor) が子タスクの dispatch 順序を制御しますが、 clone モデルでは sub-sup 自身が更新すべき「自分の working branch」はもう存在しません — sub-sup 自身も毎回 `base_branch` を直接 checkout するだけの読み取り専用 clone です:
+boid コアは子タスクの dispatch 順序や base 同期には関与しません。 sub-sup (子 supervisor) が子タスクの dispatch 順序を制御しますが、 clone モデルでは sub-sup 自身が更新すべき「自分の working branch」はもう存在しません — sub-sup 自身も起動時 checkout 後にスキルの手順で branch を選ぶ読み取り専用 clone です:
 
 ```
 A (executor) が done → A の PR を base_branch へ merge (origin 上)

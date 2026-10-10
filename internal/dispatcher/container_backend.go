@@ -247,23 +247,6 @@ type ContainerBackendOptions struct {
 	// own fallback.
 	TranscriptDir string
 
-	// SelfContainerID, when non-empty, is this daemon's OWN docker container
-	// ID (or name) — typically `os.Getenv("HOSTNAME")`, which docker sets to
-	// a container's own short ID unless overridden, inside the compose
-	// daemon service itself (see sandboxBackendForConfig's wiring). A job
-	// launched with a non-empty LaunchOptions.Workspace is confined to an
-	// `Internal: true` per-workspace network with no route out — the ONLY
-	// way it can still reach the git gateway (mandatory: every
-	// project-visible dispatch clones, see runner.go's Visibility.Clone
-	// comment), the egress proxy, or the broker (all three hosted
-	// in-process in this same daemon container) is if the daemon container
-	// ALSO joins that network, under the same
-	// "boid-gateway"/"boid-egress"/"boid-broker" DNS aliases a job resolves
-	// on the static `boid_internal` compose network. Empty (any non-compose
-	// test/DI usage) skips the self-connect step entirely —
-	// ensureWorkspaceNetwork still creates the isolated network and
-	// attaches the job container to it, just without also connecting the
-	// daemon.
 	SelfContainerID string
 
 	// BrokerTLSCA, when non-nil, is the mTLS CA (internal/mtls.CA) Launch

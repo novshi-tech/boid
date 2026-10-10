@@ -779,62 +779,7 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 	return s.hydrateProjectWithWorkspace(ctx, project), nil
 }
 
-// isManagedBareRepoPath reports whether workDir falls under this daemon's
-// bare-repo storage root (<DataDir>/repos) — i.e. it is (or was, before
-// possibly going corrupt) a git-URL-registered project's daemon-managed
-// bare repo, as opposed to a legacy host-filesystem checkout registered via
-// `boid project init` / the dir-based form of `boid project add`. This is
-// a structural (path-prefix) check, independent of whether the directory
-// currently looks like a valid bare repo — orchestrator.IsBareRepoDir
-// answers a DIFFERENT question ("is this readable right now") that
-// FetchProject also needs, but must not use for THIS classification (see
-// FetchProject's own call-site comment for the misclassification that
-// produces).
-//
-// Falls back to the plain orchestrator.IsBareRepoDir structural check when
-// s.DataDir is unset (some tests never wire it) — weaker (misses a
-// corrupt/missing bare repo) but still correct for a healthy one, and
-// DataDir is always wired in production (internal/server/wire.go).
-//
-// Routes through orchestrator.PathIsUnderResolved, not a plain
-// (lexical-only) prefix check — this is the ONE classification both
-// FetchProject (fetch-time) and DeleteProject (rm-time, which follows this
-// answer straight into an os.RemoveAll) share, so fixing it here closes the
-// symlinked-ancestor escape for both call sites at once. A resolution
-// error (as opposed to "not under root") fails CLOSED: refuse to classify
-// workDir as daemon-managed rather than risk a write or delete against a
-// path that could not be safely verified. FetchProject then falls through
-// to the ordinary legacy-rejection message; DeleteProject skips the
-// RemoveAll and only removes the DB row, exactly as it already does for any
-// WorkDir that was never daemon-managed at all.
-// WithProjectLock runs fn while holding projectMu — the exact same lock
-// CreateProject/CreateProjectFromGitURL/DeleteProject/FetchProject already
-// serialize their own create/delete/fetch critical sections against (see
-// projectMu's own doc comment). Exported so a caller OUTSIDE this package
-// can share the identical serialization contract without duplicating it —
-// specifically, dispatcher.Runner.Dispatch's own project-registry-guarded
-// dispatch section: gateway-token registration, the selfProject lookup,
-// the gatewayCloneURL/peerAdvertise snapshot, managed-bare-repo
-// classification, and the FetchBareRepo + PrepareJobCheckout pair all
-// read/derive from a project snapshot and then clone straight off its
-// WorkDir. This whole sequence must be covered, not just the final
-// FetchBareRepo + PrepareJobCheckout call, because a concurrent
-// `project rm` + re-add at the identical managed path could otherwise
-// land in the window between dispatch's snapshot and the (locked) clone,
-// producing a mixed checkout (one project's gateway URL/credentials
-// against a DIFFERENT, just-re-registered project's bare-repo content) —
-// see Dispatch's own "project-registry-guarded dispatch section" comment
-// for the full rationale. internal/dispatcher cannot import this package
-// directly (internal/api already imports internal/dispatcher for wiring —
-// the reverse would be an import cycle), so internal/server/wire.go closes over
-// this exact method and hands it to Runner.WithProjectLock as a plain
-// function value instead — see that field's own doc comment and wire.go's
-// assignment (next to runner.GatewayCredentials, which shares the same
-// gwCreds this package's own FetchBareRepo closure was wired from).
-//
-// A caller with no error path of its own can ignore the returned error by
-// wrapping a niladic function; every current caller already threads one
-// through.
+// WithProjectLock serializes project registry reads with lifecycle mutations.
 func (s *ProjectAppService) WithProjectLock(fn func() error) error {
 	s.projectMu.Lock()
 	defer s.projectMu.Unlock()

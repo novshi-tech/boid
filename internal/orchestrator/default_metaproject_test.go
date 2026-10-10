@@ -105,7 +105,7 @@ func TestDefaultMetaproject_PlansWithoutClone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Visibility.Clone != nil || spec.Visibility.ProjectDir != "" {
+	if spec.Visibility.Checkout || spec.Visibility.ProjectDir != "" {
 		t.Fatalf("repository-free judge got clone: %+v", spec.Visibility)
 	}
 }

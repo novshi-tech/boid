@@ -200,47 +200,8 @@ type Visibility struct {
 	// project.yaml. Dispatcher uses this to start a per-sandbox docker proxy.
 	DockerEnabled bool
 
-	// Clone declares the sandbox-internal-clone branch state for real
-	// dispatch. nil leaves dispatch unaffected (test-only JobSpecs that
-	// don't exercise clone-mode). When non-nil, dispatcher does not resolve
-	// the branch itself against a host repo — it carries this declaration
-	// through to the sandbox so the runner resolves it (rev-parse /
-	// merge-base / checkout -B) after cloning inside the sandbox.
-	Clone *CloneDeclaration
-}
-
-// CloneDeclaration declares the working-branch state a sandbox-internal
-// clone should end up in, without resolving it — resolution (rev-parse /
-// merge-base / checkout -B) is deferred to the runner, which performs it
-// against the freshly cloned repo: dispatcher only places a declaration in
-// JobSpec, and the runner resolves it once the clone completes.
-//
-// Every task, root or child, checks out BaseBranch directly (CheckoutOnly is
-// always true now) — see BuildCloneDeclaration's doc comment for the
-// rationale.
-type CloneDeclaration struct {
-	// Branch is the branch the runner ends up on inside the clone. Always
-	// equal to BaseBranch — every task occupies its own BaseBranch directly.
-	Branch string
-
-	// BaseBranch is the upstream branch this task's work is based on
-	// (task.BaseBranch). Always required.
-	BaseBranch string
-
-	// CheckoutOnly is always true (Branch is checked out directly rather than
-	// created fresh from a fork point). Kept as an explicit field — rather
-	// than collapsed away — so CloneSpec / runner-state.json's declaration
-	// shape stays self-describing.
-	CheckoutOnly bool
-
-	// BaseBranchForkPoint (ClassifyBaseBranch case 3): the start point used
-	// to create BaseBranch locally when it exists on neither the clone's
-	// origin nor locally. Empty falls back to refs/remotes/origin/HEAD,
-	// resolved by the runner after clone (no extra fetch needed: `git clone`
-	// already brings every remote branch's ref). This is independent of the
-	// retired per-task fork point: it addresses BaseBranch not existing yet
-	// anywhere, not task-to-task isolation.
-	BaseBranchForkPoint string
+	// Checkout starts the sandbox command in a fresh primary-repository checkout.
+	Checkout bool
 }
 
 // TaskSnapshot is the business metadata `boid task current` returns over the

@@ -401,274 +401,11 @@ func TestProjectVisibilityMounts_BoidBind(t *testing.T) {
 	}
 }
 
-// --- opt-in sandbox-clone path (docs/plans/git-gateway-cutover.md PR5) ---
-
-func TestCloneMounts_NilWhenNoCloneDeclaration(t *testing.T) {
-	spec := &orchestrator.JobSpec{
-		ProjectID:  "proj-1",
-		Visibility: orchestrator.Visibility{ProjectDir: "/home/user/project"},
-	}
-	if mounts := cloneMounts(spec, SandboxRuntimeInfo{}); mounts != nil {
-		t.Fatalf("cloneMounts = %#v, want nil when Visibility.Clone is unset", mounts)
-	}
-}
-
-func TestCloneMounts_IncludesSelfReferenceAndPeers(t *testing.T) {
-	spec := &orchestrator.JobSpec{
-		ProjectID: "proj-1",
-		Visibility: orchestrator.Visibility{
-			ProjectDir: "/home/user/project",
-			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
-		},
-	}
-	rt := SandboxRuntimeInfo{
-		WorkspacePeers: map[string]string{"peer-1": "/home/user/peer"},
-	}
-	mounts := cloneMounts(spec, rt)
-
-	findTarget := func(target string) *sandbox.Mount {
-		for i := range mounts {
-			if mounts[i].Target == target {
-				return &mounts[i]
-			}
-		}
-		return nil
-	}
-
-	self := findTarget(sandboxCloneReferenceDir)
-	if self == nil {
-		t.Fatal("self project .git reference mount not found")
-	}
-	if self.Source != "/home/user/project/.git" {
-		t.Errorf("self reference source = %q, want %q", self.Source, "/home/user/project/.git")
-	}
-	if !self.ReadOnly {
-		t.Error("self reference mount must be read-only")
-	}
-	if self.Guard == "" {
-		t.Error("self reference mount must have a Guard (graceful degradation when .git is missing)")
-	}
-
-	peerTarget := fmt.Sprintf(sandboxClonePeerReferenceDirFmt, "peer-1")
-	peer := findTarget(peerTarget)
-	if peer == nil {
-		t.Fatal("workspace peer .git reference mount not found")
-	}
-	if peer.Source != "/home/user/peer/.git" {
-		t.Errorf("peer reference source = %q, want %q", peer.Source, "/home/user/peer/.git")
-	}
-	if !peer.ReadOnly {
-		t.Error("peer reference mount must be read-only")
-	}
-
-	// PR6 cutover removed the separate real-git-binary mount: the git shim
-	// overlay it existed to route around (/usr/bin/git, /bin/git bound to
-	// the boid binary) is itself retired, so the sandbox's own /usr/bin/git
-	// (visible via the base rbind) is already the real binary. Assert its
-	// absence explicitly so a future regression that re-introduces it here
-	// is caught.
-	if m := findTarget("/run/boid/real-git"); m != nil {
-		t.Errorf("unexpected real-git-binary mount present post-cutover: %+v", m)
-	}
-}
-
-// TestCloneMounts_IncludesWorkspaceBindWhenCloneWorkspaceDirSet is also the
-// regression guard for the workspace 親化リファクタリング (nose 2026-07-13
-// decision): the /workspace bind mount must land at the name-scoped
-// subdirectory (sandboxCloneDir(spec.Visibility.ProjectName)), not the bare
-// /workspace parent, so two different projects never collide on the exact
-// same sandbox-internal path.
-func TestCloneMounts_IncludesWorkspaceBindWhenCloneWorkspaceDirSet(t *testing.T) {
-	spec := &orchestrator.JobSpec{
-		ProjectID: "proj-1",
-		Visibility: orchestrator.Visibility{
-			ProjectDir:  "/home/user/project",
-			ProjectName: "bm-next",
-			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
-		},
-	}
-	rt := SandboxRuntimeInfo{CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace"}
-	mounts := cloneMounts(spec, rt)
-
-	const wantTarget = "/workspace/bm-next"
-	var workspace *sandbox.Mount
-	for i := range mounts {
-		if mounts[i].Target == wantTarget {
-			workspace = &mounts[i]
-		}
-	}
-	if workspace == nil {
-		t.Fatalf("mount with Target %q not found among %#v", wantTarget, mounts)
-	}
-	if workspace.Source != rt.CloneWorkspaceDir {
-		t.Errorf("workspace bind source = %q, want %q", workspace.Source, rt.CloneWorkspaceDir)
-	}
-	if workspace.ReadOnly {
-		t.Error("workspace bind must be read-write (readonly is enforced by the gateway, not the local filesystem)")
-	}
-}
-
-// TestCloneMounts_WorkspaceBindHostBackedFlag pins docs/plans/
-// volume-only-daemon.md §論点b's PR-2b wiring: cloneMounts must propagate
-// rt.CloneHostBacked onto the /workspace bind's own sandbox.Mount.HostBacked
-// field so realization.classifySource treats a daemon-pre-populated
-// per-job clone staging dir as a real host bind instead of the default
-// container-local classification (决定 4/10).
-func TestCloneMounts_WorkspaceBindHostBackedFlag(t *testing.T) {
-	spec := &orchestrator.JobSpec{
-		ProjectID: "proj-1",
-		Visibility: orchestrator.Visibility{
-			ProjectDir:  "/home/user/project",
-			ProjectName: "bm-next",
-			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
-		},
-	}
-
-	for _, hostBacked := range []bool{false, true} {
-		rt := SandboxRuntimeInfo{
-			CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace",
-			CloneHostBacked:   hostBacked,
-		}
-		mounts := cloneMounts(spec, rt)
-
-		const wantTarget = "/workspace/bm-next"
-		var workspace *sandbox.Mount
-		for i := range mounts {
-			if mounts[i].Target == wantTarget {
-				workspace = &mounts[i]
-			}
-		}
-		if workspace == nil {
-			t.Fatalf("CloneHostBacked=%v: mount with Target %q not found among %#v", hostBacked, wantTarget, mounts)
-		}
-		if workspace.HostBacked != hostBacked {
-			t.Errorf("CloneHostBacked=%v: workspace bind HostBacked = %v, want %v", hostBacked, workspace.HostBacked, hostBacked)
-		}
-	}
-}
-
-// TestCloneMounts_WorkspaceBindFallsBackToProjectDirBasenameWhenNameEmpty
-// pins the fallback half of the workspace 親化リファクタリング decision: a
-// project with no `name:` in project.yaml still gets a distinct, deterministic
-// leaf directory — filepath.Base(ProjectDir) — instead of colliding on the
-// bare /workspace parent.
-func TestCloneMounts_WorkspaceBindFallsBackToProjectDirBasenameWhenNameEmpty(t *testing.T) {
-	spec := &orchestrator.JobSpec{
-		ProjectID: "proj-1",
-		Visibility: orchestrator.Visibility{
-			ProjectDir: "/home/user/sumiron-project", // no ProjectName set
-			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
-		},
-	}
-	rt := SandboxRuntimeInfo{CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace"}
-	mounts := cloneMounts(spec, rt)
-
-	const wantTarget = "/workspace/sumiron-project"
-	found := false
-	for _, m := range mounts {
-		if m.Target == wantTarget {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("mount with Target %q not found among %#v", wantTarget, mounts)
-	}
-}
-
-func TestCloneMounts_OmitsWorkspaceBindWhenCloneWorkspaceDirUnset(t *testing.T) {
-	spec := &orchestrator.JobSpec{
-		ProjectID: "proj-1",
-		Visibility: orchestrator.Visibility{
-			ProjectDir:  "/home/user/project",
-			ProjectName: "bm-next",
-			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
-		},
-	}
-	mounts := cloneMounts(spec, SandboxRuntimeInfo{})
-	for _, m := range mounts {
-		if m.Target == "/workspace/bm-next" || m.Target == sandboxCloneTargetDir {
-			t.Errorf("unexpected /workspace bind when rt.CloneWorkspaceDir is empty: %+v", m)
-		}
-	}
-}
-
-func TestBuildCloneSpec_NilWhenNoCloneDeclaration(t *testing.T) {
-	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
-	got := buildCloneSpec(spec, SandboxRuntimeInfo{GatewayCloneURL: "http://10.0.2.2:9/j/tok/github.com/o/r.git"})
-	if got.Enabled {
-		t.Fatalf("buildCloneSpec = %+v, want Enabled=false when Visibility.Clone is unset", got)
-	}
-}
-
-// TestBuildCloneSpec_HostBackedDisablesInSandboxClone pins docs/plans/
-// volume-only-daemon.md §論点b's PR-2b contract: when Runner.Dispatch has
-// already staged a per-job clone (rt.CloneHostBacked), buildCloneSpec must
-// return the zero value (Enabled == false) even though spec.Visibility.
-// Clone is set — otherwise internal/sandbox/runner/clone.go's
-// performCloneSteps would wipe and re-clone the daemon's own pre-populated
-// checkout via the git gateway on every dispatch, defeating the whole
-// point of pre-cloning.
-func TestBuildCloneSpec_HostBackedDisablesInSandboxClone(t *testing.T) {
-	spec := &orchestrator.JobSpec{
-		ProjectID: "proj-1",
-		Visibility: orchestrator.Visibility{
-			ProjectDir:  "/home/user/project",
-			ProjectName: "bm-next",
-			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
-		},
-	}
-	rt := SandboxRuntimeInfo{
-		GatewayCloneURL: "http://10.0.2.2:9/j/tok/github.com/o/r.git",
-		CloneHostBacked: true,
-	}
-	got := buildCloneSpec(spec, rt)
-	if got.Enabled {
-		t.Fatalf("buildCloneSpec = %+v, want Enabled=false when rt.CloneHostBacked is true", got)
-	}
-}
-
-func TestBuildCloneSpec_PopulatesFromDeclarationAndRuntimeInfo(t *testing.T) {
-	spec := &orchestrator.JobSpec{
-		ProjectID: "proj-1",
-		Visibility: orchestrator.Visibility{
-			ProjectDir:  "/home/user/project",
-			ProjectName: "bm-next",
-			Clone: &orchestrator.CloneDeclaration{
-				Branch:              "boid/abcd1234",
-				BaseBranch:          "main",
-				BaseBranchForkPoint: "origin/main",
-			},
-		},
-	}
-	rt := SandboxRuntimeInfo{GatewayCloneURL: "http://10.0.2.2:9/j/tok/github.com/o/r.git"}
-	got := buildCloneSpec(spec, rt)
-
-	// TargetDir is name-scoped under the /workspace parent dir (workspace 親化
-	// リファクタリング, nose 2026-07-13 decision) — see cloneDirNameForVisibility.
-	want := sandbox.CloneSpec{
-		Enabled:             true,
-		URL:                 rt.GatewayCloneURL,
-		ReferenceDir:        sandboxCloneReferenceDir,
-		TargetDir:           "/workspace/bm-next",
-		Branch:              "boid/abcd1234",
-		BaseBranch:          "main",
-		BaseBranchForkPoint: "origin/main",
-	}
-	if got != want {
-		t.Errorf("buildCloneSpec = %+v, want %+v", got, want)
-	}
-}
-
-// TestResolveWorkDir_CloneEnabled_ReturnsCloneTargetDir pins both that the
-// clone path takes priority over the plain-project-dir path, and (workspace
-// 親化リファクタリング, nose 2026-07-13 decision) that the returned WorkDir
-// is name-scoped — here via the ProjectDir-basename fallback, since no
-// ProjectName is set.
 func TestResolveWorkDir_CloneEnabled_ReturnsCloneTargetDir(t *testing.T) {
 	spec := &orchestrator.JobSpec{
 		Visibility: orchestrator.Visibility{
 			ProjectDir: "/home/user/project",
-			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
+			Checkout:   true,
 		},
 	}
 	const want = "/workspace/project"
@@ -687,7 +424,7 @@ func TestResolveWorkDir_CloneEnabled_PrefersProjectNameOverBasename(t *testing.T
 		Visibility: orchestrator.Visibility{
 			ProjectDir:  "/home/user/some-other-basename",
 			ProjectName: "bm-next",
-			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
+			Checkout:    true,
 		},
 	}
 	const want = "/workspace/bm-next"
@@ -712,14 +449,11 @@ func TestBuildSandboxSpec_CloneNil_UnaffectedByPR5(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
-	if out.Clone.Enabled {
-		t.Errorf("Clone.Enabled = true, want false when Visibility.Clone is nil")
-	}
 	if out.WorkDir != "/home/user/project" {
 		t.Errorf("WorkDir = %q, want project dir unchanged", out.WorkDir)
 	}
 	for _, m := range out.Mounts {
-		if m.Target == sandboxCloneReferenceDir || m.Target == sandboxCloneTargetDir {
+		if strings.HasPrefix(m.Target, "/mnt/refs") || m.Target == sandboxCloneTargetDir {
 			t.Errorf("unexpected clone mount present when Visibility.Clone is nil: %+v", m)
 		}
 	}
@@ -741,10 +475,10 @@ func TestBuildSandboxSpec_CloneEnabled_SkipsProjectVisibilityMounts(t *testing.T
 		Visibility: orchestrator.Visibility{
 			ProjectDir: projectDir,
 			Writable:   true,
-			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			Checkout:   true,
 		},
 	}
-	rt := SandboxRuntimeInfo{JobID: "job-1", CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace"}
+	rt := SandboxRuntimeInfo{JobID: "job-1"}
 	out, err := BuildSandboxSpec(spec, rt)
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
@@ -760,9 +494,6 @@ func TestBuildSandboxSpec_CloneEnabled_SkipsProjectVisibilityMounts(t *testing.T
 	const wantWorkDir = "/workspace/project"
 	if out.WorkDir != wantWorkDir {
 		t.Errorf("WorkDir = %q, want %q (clone target, name-scoped)", out.WorkDir, wantWorkDir)
-	}
-	if !out.Clone.Enabled {
-		t.Error("Clone.Enabled = false, want true")
 	}
 }
 
@@ -782,12 +513,12 @@ func TestBuildSandboxSpec_ContainerBackendClone_WritesGatewayCAAndSetsEnv(t *tes
 		Visibility: orchestrator.Visibility{
 			ProjectDir: "/home/user/project",
 			Writable:   true,
-			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			Checkout:   true,
 		},
 	}
 	rt := SandboxRuntimeInfo{
-		JobID:                 "job-1",
-		CloneWorkspaceDir:     "/data/boid/runtimes/job-1/workspace",
+		JobID: "job-1",
+
 		UsingContainerBackend: true,
 		GatewayCAPEM:          []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
 	}
@@ -826,12 +557,12 @@ func TestBuildSandboxSpec_UsernsBackendClone_OmitsGatewayCA(t *testing.T) {
 		Visibility: orchestrator.Visibility{
 			ProjectDir: "/home/user/project",
 			Writable:   true,
-			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			Checkout:   true,
 		},
 	}
 	rt := SandboxRuntimeInfo{
-		JobID:                 "job-1",
-		CloneWorkspaceDir:     "/data/boid/runtimes/job-1/workspace",
+		JobID: "job-1",
+
 		UsingContainerBackend: false,
 		GatewayCAPEM:          []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
 	}
@@ -1595,7 +1326,7 @@ func TestBuildSandboxSpec_WorktreeBindingExpansion(t *testing.T) {
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         projectDir,
 			AdditionalBindings: []orchestrator.BindMount{binding},
-			Clone:              &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
+			Checkout:           true,
 		},
 	}
 	resClone, err := BuildSandboxSpec(specClone, SandboxRuntimeInfo{})
@@ -2325,11 +2056,11 @@ func TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind(t *testing.T) {
 		Visibility: orchestrator.Visibility{
 			ProjectDir: "/home/user/project",
 			Writable:   true,
-			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
+			Checkout:   true,
 		},
 	}
 	const wsHome = "boid-ws-home-01234567-default"
-	rt := SandboxRuntimeInfo{JobID: "job-1", CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace", WorkspaceHomeVolume: wsHome}
+	rt := SandboxRuntimeInfo{JobID: "job-1", WorkspaceHomeVolume: wsHome}
 	out, err := BuildSandboxSpec(spec, rt)
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
@@ -2361,10 +2092,10 @@ func TestBuildSandboxSpec_CloneEnabled_NoWorkspaceHome_FallsBackToTmpfs(t *testi
 		Visibility: orchestrator.Visibility{
 			ProjectDir: "/home/user/project",
 			Writable:   true,
-			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
+			Checkout:   true,
 		},
 	}
-	rt := SandboxRuntimeInfo{JobID: "job-1", CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace"}
+	rt := SandboxRuntimeInfo{JobID: "job-1"}
 	out, err := BuildSandboxSpec(spec, rt)
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
@@ -2579,7 +2310,7 @@ func TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeVolume_UnderEveryVisib
 			name: "sandbox clone declared",
 			visibility: orchestrator.Visibility{
 				ProjectName: "demo",
-				Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+				Checkout:    true,
 			},
 		},
 	}

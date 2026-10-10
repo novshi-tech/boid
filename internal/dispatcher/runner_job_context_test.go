@@ -301,7 +301,7 @@ func TestDispatch_TracksJobContext_WorkspacePeerAdvertise(t *testing.T) {
 		Kind:      orchestrator.JobKindHook,
 		Visibility: orchestrator.Visibility{
 			ProjectDir: "/host/self",
-			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			Checkout:   true,
 		},
 	}
 
@@ -406,7 +406,7 @@ func TestDispatch_CloneMode_MissingUpstreamURL_NoJobContextTracked(t *testing.T)
 		Argv:      []string{"echo", "hi"},
 		Kind:      orchestrator.JobKindHook,
 		Visibility: orchestrator.Visibility{
-			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			Checkout: true,
 		},
 	}
 

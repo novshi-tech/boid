@@ -669,58 +669,6 @@ func runtimesDirFor(cfg Config) string {
 	return filepath.Join(filepath.Dir(cfg.SocketPath), "runtimes")
 }
 
-// hostVisibleRuntimesDirFor returns a runtimes root a docker-out-of-docker
-// (DooD) sibling container's bind-mount SOURCE can actually resolve on the
-// HOST filesystem. Under the volume-only compose deploy, runtimesDirFor(cfg)
-// above prefers filepath.Dir(cfg.DBPath) — BOID_DATA_DIR, now the
-// `boid_state` NAMED VOLUME, invisible to the daemon container's OWN
-// filesystem view from the perspective of the HOST docker engine a sibling
-// container's bind source must resolve against.
-//
-// cfg.SocketPath, by contrast, resolves under BOID_RUNTIME_DIR — a HOST
-// BIND mount, source == target, deliberately left untouched by the
-// volume-only pivot. filepath.Dir(cfg.SocketPath) is therefore exactly the
-// host-visible root every DooD sibling-mount-source construction site
-// needs: containerBackend's per-job dockerTLSDir/brokerTLSDir/spec.json/
-// state.json/transcript-spool material (ContainerBackendOptions.RuntimeDir
-// — sandboxBackendForConfig's own call site below), Runner.RuntimesDir's
-// own downstream uses (workspace HOME — dispatcher.WorkspaceHomesDir — and
-// the per-job clone staging area, dispatcher.PrepareJobCheckout), and the
-// matching job-log read paths (transcriptLogReader) that must agree with
-// wherever those writes actually landed.
-//
-// Falls back to runtimesDirFor(cfg) when cfg.SocketPath is itself empty (an
-// exotic config with neither a real DB path nor a socket path — matches
-// runtimesDirFor's own last-resort fallback rather than returning "").
-//
-// Trade-off: BOID_RUNTIME_DIR is host XDG_RUNTIME_DIR, typically
-// `/run/user/<uid>` — tmpfs, cleared on host reboot (not on container
-// restart). Every surface listed above therefore does NOT survive a host
-// reboot under container backend:
-//   - workspace HOME content (dispatcher.WorkspaceHomesDir).
-//   - job transcripts (containerBackend's transcript-spool material) and
-//     runner-state.json diagnostics (spec.json/state.json) — `boid job log`
-//     and post-mortem failure diagnosis both lose their on-disk backing the
-//     moment the host reboots, for every job that ever ran under container
-//     backend, not merely ones still in flight.
-//   - the per-job dockerTLSDir/brokerTLSDir TLS material — inert after a
-//     reboot regardless (per-job, reissued on the next dispatch), so this
-//     one is harmless, but named here for completeness since it shares the
-//     same root.
-//   - the per-job clone staging area (dispatcher.PrepareJobCheckout) — also
-//     harmless by the same reasoning (re-cloned fresh per dispatch, never
-//     expected to survive between jobs let alone a reboot).
-//
-// This is strictly better than a container CREATE failing outright (the
-// bind source not existing on the host at all), not the final answer; a
-// docker-managed named volume (with per-workspace Subpath mounts) is the
-// likely follow-up.
-//
-// Every call site of this function is conditional on the container backend
-// actually being selected (see each call site's own comment) — a userns
-// deployment never calls this function at all, so its own
-// runtimesDirFor(cfg)-based persistence contract (CLAUDE.md's documented
-// 30-day daemon GC) is completely unaffected.
 func hostVisibleRuntimesDirFor(cfg Config) string {
 	if cfg.SocketPath == "" {
 		return runtimesDirFor(cfg)
@@ -1368,48 +1316,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	if err != nil {
 		return nil, fmt.Errorf("daemon startup refused: load integration packs: %w", err)
 	}
-	// Third consumer of packs, alongside apiGwCreds' service registry and
-	// sessionDispatcherAdapter's connector-trigger resolution mentioned
-	// above: resolveWorkspaceHome symlinks each Pack's skills[] into every
-	// skill discovery root of every workspace home, since a harness's
-	// skill discovery scans its own directories and not
-	// /opt/boid/integrations. See skillLinks' own doc comment
-	// (internal/dispatcher/skills_overlay.go). Set directly on the
-	// already-built runner rather than threaded through WireConfig, since
-	// packs itself is not available until this point (it depends on
-	// boidCfg, loaded further down, well after dispatcher.Wire ran above).
-	//
-	// KNOWN RACE: the daemon_shutdown auto-reopen sweep runs earlier in
-	// this function, and its reopen goroutine
-	// (workflow.ApplyAction("reopen") spawning runner.Dispatch via
-	// internal/api/workflow_action.go, with no synchronization against
-	// this line) can read runner.Packs concurrently with this assignment
-	// on any restart that has a daemon_shutdown-aborted task — the
-	// ordinary path, not an edge case. runner.Packs is a slice header
-	// (ptr+len+cap, 3 words), so an unsynchronized concurrent write is a
-	// real data race, not merely "non-catastrophic" — a torn read on some
-	// platforms/optimizations could observe a non-nil ptr with a stale
-	// (too-large) len, and skillLinks' `for _, pack := range packs` would
-	// then dereference garbage. `go test -race` does not exercise this
-	// path (no test drives an auto-reopen concurrently with buildRuntime).
-	//
-	// The fix is to move integrationpack.LoadPacks(cfg.Integrations.Dir)
-	// plus `runner.Packs = packs` up to right after `runner.Backend =
-	// sandboxBackend` above — LoadPacks needs a *config.Config, which
-	// buildRuntime's early config.Load() call already produces and could
-	// keep instead of discarding. Left undone here: buildRuntime is a
-	// long, carefully-sequenced function, and reordering statements
-	// within it deserves its own change and its own test. Shared by the
-	// same pattern in runner.GatewayCredentials/WithProjectLock/
-	// ConfirmWorkspaceExists below, each of which is assigned after the
-	// same sweep for the same underlying reason.
-	//
-	// What DOES bound the damage if the race is lost without a torn read:
-	// workspaceHomeInitialized's SkillLinks comparison detects a nil-Packs
-	// init against a marker (or a subsequent real dispatch) recording the
-	// Packs' entries too, and re-inits once to add the missing symlinks —
-	// self-healing, at the cost of one extra init run for
-	// whichever workspace's reopen happened to race it.
 	runner.Packs = packs
 
 	// Daemon-side config-editing surface (`boid config get/set/unset/apply/edit`).
@@ -1594,7 +1500,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// already wire into ProjectAppService, for the identical reason their
 	// own doc comment gives (no job token or sandbox involved; this runs
 	// in the daemon process itself).
-	runner.GatewayCredentials = gwCreds
 	// WithProjectLock shares projectSvc's own projectMu with the
 	// per-job-clone dispatch step above, so it serializes against a
 	// concurrent `project rm` + re-add at the same managed path — see
@@ -1915,20 +1820,6 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 	}, nil
 }
 
-// StartExec implements api.ExecDispatcher: it builds an exec JobSpec
-// (dispatcher.BuildExecJobSpec — HarnessType forced to "shell", Argv the
-// caller's literal argv) and hands it to the same Runner.Dispatch() every
-// session goes through. Routing exec through Dispatch means
-// registerGatewayToken / buildGatewayCloneURL / RequireUpstreamURL all run
-// automatically, exactly as they do for a session — no separate wiring
-// for exec to fall out of sync with.
-//
-// Unlike StartSession, no host_commands / broker registration happens
-// client-side here — Dispatch() handles broker registration internally, so
-// the old cmd/exec.go's manual POST /api/broker/register call (and the
-// project-fixed, non-unique "exec-<project-id>" job id that leaked broker
-// tokens across invocations) is gone: every exec now gets Dispatch()'s
-// normal fresh UUID job id and its normal UnregisterJob cleanup.
 func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartExecRequest) (*api.StartExecResult, error) {
 	project, err := a.service.GetProject(req.ProjectID)
 	if err != nil {

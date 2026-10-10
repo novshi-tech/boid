@@ -354,6 +354,13 @@ var sendTaskUpdatePayloadPatch = func(ctx context.Context, env map[string]string
 // artifact.claude_code.sessions[] entries it merges the fresh session id
 // into (see readSessionsFromRPC below).
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
+	var checkoutErr error
+	rc, checkoutErr = adapters.PrepareWorkspace(ctx, rc)
+	if checkoutErr != nil {
+		return adapters.Result{}, checkoutErr
+	}
+	defer adapters.ReportWorkspace(rc, "exit")
+
 	// Fail fast when claude is not on PATH, before touching any state
 	// (session id generation, payload-patch RPC). See missingCLIError.
 	if _, err := lookPath(harnessCLI); err != nil {

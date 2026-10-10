@@ -32,11 +32,8 @@ set -euo pipefail
 # #      into the repo, then registers via `boid project add <url>
 # #      --workspace=<slug>` (docs/plans/volume-only-daemon.md §論点a) —
 # #      the daemon clones it itself into a daemon-managed bare repo
-# #      (§論点b), and PR-2b's own per-job clone (dispatcher.
-# #      PrepareJobCheckout) stages a fresh per-job checkout from that bare
-# #      repo straight into the job container, mirroring project.yaml's own
-# #      committed .boid/hooks/*.sh into the sandbox exactly where task
-# #      dispatch expects to find them.
+# #      for project.yaml loading. At job startup, the sandbox adapter runs
+# #      boid checkout through the gateway and starts the hook in that checkout.
 # #
 # # A THIRD gap this same pivot introduced (not covered by the previous
 # # revision's notice, since it never got far enough to hit it):
@@ -512,20 +509,8 @@ YAML
 # ("broker TCP wire completion") itself, distinct from proj-a/proj-b's own
 # sibling-connectivity requirements 1/2. See verify-broker-tls.sh below.
 #
-# git-push (codex round-1, PR834 Minor 3): a second, independent behavior on
-# the SAME project — exercises `git push` from inside a job container,
-# something neither the verify-broker-tls task above nor proj-a/proj-b's own
-# sibling-reachability tasks ever touch. Covers two gaps together:
-#   1. remote.origin.url was actually rewritten to the gateway clone URL
-#      (dispatcher.PrepareJobCheckout's own remoteURL step), not left
-#      pointing at the daemon-local bare-repo filesystem path a job
-#      container cannot even see.
-#   2. the per-job clone's own object store is a genuine, standalone
-#      COPY, not a `--reference` alternates pointer back at the daemon's
-#      bare repo (codex round-1 Blocker 1, internal/dispatcher/checkout.go)
-#      — `git commit` (a HEAD-touching operation exactly like the alternates
-#      failure mode described in that fix) must succeed for this task's
-#      own commit-then-push sequence to get anywhere at all.
+# The git-push behavior verifies the startup checkout has a gateway origin
+# and can commit and push without depending on the shared object cache.
 cat > "$PROJ_C/.boid/project.yaml" <<'YAML'
 id: container-e2e-ws-c
 name: Container E2E - workspace C (broker TLS)
@@ -547,6 +532,13 @@ task_behaviors:
         command: |
           bash ".boid/hooks/verify-git-push.sh"
     name: git-push
+  git-readonly:
+    readonly: true
+    hooks:
+      - id: verify-git-readonly
+        command: |
+          bash ".boid/hooks/verify-git-readonly.sh"
+    name: git-readonly
 YAML
 
 # Shared helpers both hook scripts below inline (kept duplicated rather than
@@ -788,20 +780,8 @@ printf '{"artifact":{"result":"pass","broker_transport":"tls","broker_tls_addr":
 BASH
 chmod +x "$PROJ_C/.boid/hooks/verify-broker-tls.sh"
 
-# verify-git-push.sh (codex round-1, PR834 Minor 3): the job's own cwd is
-# already the PR-2b per-job clone staging checkout (dispatcher.
-# PrepareJobCheckout) — no separate clone/setup needed here. Two things are
-# pinned, both load-bearing preconditions the rest of this project.yaml's
-# tasks never happen to exercise:
-#   1. remote.origin.url actually got rewritten to the gateway clone URL
-#      ("/j/<token>/..." — dispatcher.buildGatewayCloneURL's own shape),
-#      not left pointing at the daemon-local bare-repo path.
-#   2. `git commit` + `git push origin HEAD` both succeed standalone — the
-#      concrete, load-bearing consequence of codex round-1 Blocker 1's fix
-#      (checkout.go's `--reference` alternates dependency): a job container
-#      never mounts the daemon's own bare-repo path, so an alternates-based
-#      clone's `git commit` (which touches HEAD's object graph) would have
-#      failed resolving objects through a path this container cannot see.
+# The startup wrapper checks out the primary repository before this command hook.
+# Verify a gateway origin and an independent object store through commit and push.
 # The runner script itself (below, after this task completes) verifies the
 # push landed by reading the fixture upstream's bare repo directly off the
 # HOST filesystem (the strongest possible check — independent of this job's
@@ -817,6 +797,10 @@ fail_with_diag() {
   exit 1
 }
 
+expected_cwd="/workspace/${BOID_PRIMARY_REPO##*/}"
+[[ "$PWD" == "$expected_cwd" ]] || fail_with_diag "cwd=$PWD expected=$expected_cwd"
+[[ ! -e .git/objects/info/alternates ]] || fail_with_diag "checkout still depends on cache alternates"
+
 origin_url="$(git remote get-url origin 2>&1)" || fail_with_diag "git remote get-url origin failed: ${origin_url:-<no output>}"
 case "$origin_url" in
   */j/*) ;;
@@ -827,20 +811,30 @@ marker="e2e-container git push probe ${BOID_TASK_ID:-unknown}"
 printf '%s\n' "$marker" >> push-probe.txt
 git add push-probe.txt
 git -c user.email="e2e-container-job@boid.test" -c user.name="E2E Container Job" commit -q -m "$marker" \
-  || fail_with_diag "git commit failed (per-job clone's object store may still be alternates-dependent — see checkout.go's own doc comment)"
+  || fail_with_diag "git commit failed (checkout must have an independent object store)"
 git push -q origin HEAD || fail_with_diag "git push origin HEAD failed"
 
 printf '{"artifact":{"result":"pass","remote_origin_url":"%s","push_marker":"%s"}}\n' "$origin_url" "$marker" | boid task update --payload-patch @-
 BASH
 chmod +x "$PROJ_C/.boid/hooks/verify-git-push.sh"
 
-# --- seed fixture git upstream: commit .boid/project.yaml + hooks INTO the
-# repo (PR-2b) and push, so the daemon's own `boid project add <url>`
-# clone (below) carries them straight into its bare repo's HEAD tree —
-# ReadProjectMetaFromBareRepo (internal/orchestrator/project_bare_repo.go)
-# reads project.yaml via `git show HEAD:.boid/project.yaml`, and PR-2b's
-# per-job clone (dispatcher.PrepareJobCheckout) carries .boid/hooks/*.sh
-# into each job's own staging area the same way a real `git clone` would.
+cat > "$PROJ_C/.boid/hooks/verify-git-readonly.sh" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$PWD" == "/workspace/${BOID_PRIMARY_REPO##*/}" ]]
+[[ ! -e .git/objects/info/alternates ]]
+git switch -c boid/readonly-probe
+git -c user.email="e2e-container-job@boid.test" -c user.name="E2E Container Job" commit --allow-empty -q -m "readonly probe"
+if push_output=$(git push origin HEAD 2>&1); then
+  echo "readonly push unexpectedly succeeded" >&2
+  exit 1
+fi
+[[ "$push_output" == *403* ]] || { echo "$push_output" >&2; exit 1; }
+printf '{"artifact":{"result":"pass","push_denied":true}}\n' | boid task update --payload-patch @-
+BASH
+chmod +x "$PROJ_C/.boid/hooks/verify-git-readonly.sh"
+
+# Commit fixture metadata and hooks for both project registration and startup checkout.
 seed_project() {
   local dir="$1" repo="$2"
   local origin_url="https://${UPSTREAM_HOST}/e2e-fixture/${repo}.git"
@@ -1083,7 +1077,7 @@ fi
 # git-push (workspace C, codex round-1, PR834 Minor 3): a SECOND, independent
 # task on the same project — see .boid/hooks/verify-git-push.sh's own header
 # comment for what it pins (remote.origin.url rewrite + git commit/push both
-# succeeding from inside the per-job clone). Placed here, alongside task C's
+# succeeding from inside the sandbox checkout). Placed here, alongside task C's
 # own broker-tls check and before the sibling A/B dance, for the same reason
 # that check is dispatched first: no dependency on (and nothing here should
 # block) the docker-sibling machinery task A/B exercise below.
@@ -1098,7 +1092,7 @@ wait_for_done "$task_c2_id" "$ROOT/task_c2.json"
 task_c2_json="$(cat "$ROOT/task_c2.json")"
 e2e_assert_contains "$task_c2_json" '"status":"done"'
 e2e_assert_contains "$task_c2_json" '"result":"pass"'
-e2e_log "per-job clone git push (job -> gateway -> fixture upstream) reported OK"
+e2e_log "sandbox checkout git push (job -> gateway -> fixture upstream) reported OK"
 
 # Strongest available check: read the push back directly off the fixture
 # upstream's bare repo on the HOST filesystem — boid-e2e upstream-serve runs
@@ -1113,6 +1107,18 @@ upstream_c_log="$(git -C "$UPSTREAM_DIR/e2e-fixture/proj-c.git" log --oneline -1
   e2e_fail "reading fixture upstream proj-c.git log failed: $upstream_c_log"
 e2e_assert_contains "$upstream_c_log" "e2e-container git push probe ${task_c2_id}"
 e2e_log "fixture upstream proj-c.git HEAD carries the job's own push: ${upstream_c_log}"
+
+e2e_log "dispatching readonly checkout push denial (workspace C)"
+task_c3_out="$(create_task container-e2e-ws-c "verify readonly push" git-readonly)"
+task_c3_id="$(printf '%s\n' "$task_c3_out" | parse_task_id)"
+[[ -n "$task_c3_id" ]] || e2e_fail "failed to parse readonly task id"
+e2e_run "$BUILD_DIR/boid" action send --task "$task_c3_id" --type start
+wait_for_done "$task_c3_id" "$ROOT/task_c3.json"
+e2e_assert_contains "$(cat "$ROOT/task_c3.json")" '"push_denied":true'
+if git -C "$UPSTREAM_DIR/e2e-fixture/proj-c.git" show-ref --verify --quiet refs/heads/boid/readonly-probe; then
+  e2e_fail "readonly branch reached the fixture upstream"
+fi
+e2e_log "readonly checkout push rejected with 403; upstream ref absent"
 
 e2e_log "dispatching setup-sibling (workspace B) in the background"
 task_b_out="$(create_task container-e2e-ws-b "setup sibling B" setup)"
@@ -1135,7 +1141,7 @@ e2e_run "$BUILD_DIR/boid" action send --task "$task_a_id" --type start
 wait_for_done "$task_a_id" "$ROOT/task_a.json"
 dispatch_end=$(date +%s%N)
 dispatch_ms=$(( (dispatch_end - dispatch_start) / 1000000 ))
-printf '[e2e-container][latency] task A dispatch-to-done: %sms (docker, real DooD full cycle + PR-2b per-job clone — see docs/plans/phase6-container-backend.md §PR9 podman comparison ~150-165ms)\n' "$dispatch_ms"
+printf '[e2e-container][latency] task A dispatch-to-done: %sms (docker, real DooD full cycle + PR-2b sandbox checkout — see docs/plans/phase6-container-backend.md §PR9 podman comparison ~150-165ms)\n' "$dispatch_ms"
 
 task_a_json="$(cat "$ROOT/task_a.json")"
 e2e_assert_contains "$task_a_json" '"status":"done"'
