@@ -60,17 +60,6 @@ func (b *capturingSandboxBackend) ReapOrphans(context.Context) (backend.ReapRepo
 	return backend.ReapReport{}, nil
 }
 
-// findMountTarget returns the first mount in mounts whose Target matches, or
-// nil.
-func findMountTarget(mounts []sandbox.Mount, target string) *sandbox.Mount {
-	for i := range mounts {
-		if mounts[i].Target == target {
-			return &mounts[i]
-		}
-	}
-	return nil
-}
-
 func TestDispatch_CloneMode_NameScopedWorkspaceDir(t *testing.T) {
 	bin := t.TempDir()
 	gitCalls := filepath.Join(bin, "git-calls")

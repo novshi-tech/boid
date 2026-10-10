@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -20,6 +21,14 @@ func ValidateRepo(repo string) error {
 	parts := strings.Split(repo, "/")
 	if len(parts) != 3 {
 		return fmt.Errorf("repository must be host/owner/repo")
+	}
+	// HTTP upstream authorities retain their port in the gateway repository key.
+	if host, port, ok := strings.Cut(parts[0], ":"); ok {
+		number, err := strconv.Atoi(port)
+		if err != nil || number < 1 || number > 65535 || strings.Trim(port, "0123456789") != "" {
+			return fmt.Errorf("invalid repository port %q", port)
+		}
+		parts[0] = host
 	}
 	for _, part := range parts {
 		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, "-") {
