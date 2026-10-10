@@ -147,7 +147,7 @@ type SandboxRuntimeInfo struct {
 	// with APIGatewayBaseURL to set BOID_API_BASE.
 	APIGatewayJobToken string
 
-	// WorkspacePeerAdvertise is the {name, clone URL, reference path} view of
+	// WorkspacePeerAdvertise is the {name, clone URL, clone directory} view of
 	// WorkspacePeers, built by Runner.buildPeerAdvertise and keyed by peer
 	// project ID; nil when the gateway isn't wired or no peer has a
 	// resolvable upstream_url.
@@ -174,7 +174,7 @@ type SandboxRuntimeInfo struct {
 	// (tmpfs), so a host reboot destroyed every workspace's harness
 	// credentials and its ~1.5GB toolchain.
 	//
-	// The Clone / projectVisible / default HOME branches below (via homeMounts)
+	// The Checkout / projectVisible / default HOME branches below (via homeMounts)
 	// mount it read-write at HOME's sandbox-internal path instead of a plain
 	// tmpfs. env["HOME"] itself is unchanged — it still comes from
 	// hostHomeDir(), the *target* path inside the sandbox; only the
@@ -376,9 +376,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// describes what the job DOES (scan the
 		// host) while Visibility is assembled independently by whoever builds
 		// the JobSpec, so nothing structurally keeps a ProfileInit job from
-		// also carrying a ProjectDir or a Clone declaration. Ordered the other
+		// also carrying a ProjectDir or a checkout request. Ordered the other
 		// way round, either of those took HOME back — through
-		// projectVisibilityMounts' own homeMounts step, or the Clone arm's —
+		// projectVisibilityMounts' own homeMounts step, or the Checkout arm's —
 		// and the contract this branch and homeSkeleton both state ("ProfileInit
 		// never mounts the workspace home; $HOME there is the host's own")
 		// held only for the profile in isolation. Nothing is lost by winning
@@ -412,14 +412,14 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		)...)
 	default:
 		// No project visible: HOME gets the workspace home bind (+ the
-		// embedded-skill binds) or a fresh tmpfs fallback, same as the Clone
+		// embedded-skill binds) or a fresh tmpfs fallback, same as the Checkout
 		// case above.
 		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeVolume)...)
 	}
 
 	// Git gateway / API gateway TLS trust: only the container backend's
 	// gateway URL is TLS-secured (see SandboxRuntimeInfo.GatewayCAPEM's own
-	// doc comment) — a job with no clone declared AND no API gateway token
+	// doc comment) — a job with no checkout requested AND no API gateway token
 	// needs nothing here (it never talks to the gateway at all). Written as a
 	// plain sandbox file (not a mount): the CA cert is non-secret,
 	// daemon-lifetime-static content, exactly like other spec.Files
@@ -787,23 +787,8 @@ const (
 	containerGitGatewayCAPath = "/run/boid/bin/gitgateway-ca.crt"
 )
 
-// sandboxCloneDir returns the absolute sandbox-internal directory a project
-// actually clones into: sandboxCloneTargetDir ("/workspace") plus the
-// resolved leaf name, e.g. "/workspace/bm-next". name is expected to come from
-// projectDirName, which never returns empty for a project with a non-empty
-// WorkDir — but an empty name here (Projects unwired, or some other
-// resolution failure upstream) degrades gracefully to the bare parent dir
-// itself, reproducing the flat "/workspace" layout instead of
-// producing a malformed path like "/workspace/" or panicking.
-//
-// Defensive filter: a name that is empty, ".", or contains
-// a path separator / NUL byte / ".." prefix is treated as unusable and
-// falls back to the bare parent dir. project.yaml's `meta.name` is
-// user-authored so the trust boundary is loose, but an accidental "../" or
-// "/" would escape /workspace entirely — the defensive branch turns any
-// such name into the same graceful degrade as an empty name (no
-// /workspace/.. clone escape, no /workspace/. no-op subdir). See also
-// `isSafeCloneDirName`.
+// sandboxCloneDir joins a validated repository leaf to the workspace root.
+// Invalid or unresolved names fall back to the workspace root.
 func sandboxCloneDir(name string) string {
 	if !isSafeCloneDirName(name) {
 		return sandboxCloneTargetDir
@@ -832,17 +817,7 @@ func isSafeCloneDirName(name string) bool {
 	return true
 }
 
-// projectDirName resolves the leaf directory name a project's sandbox clone
-// lands under (workspace 親化リファクタリング, nose 2026-07-13 decision):
-// project.Name when set (expected kebab-case by convention, not enforced
-// here), falling back to filepath.Base(workDir) when the project has no
-// name. Shared by the self-project resolution (cloneDirNameForVisibility)
-// and the workspace-peer resolution (Runner.buildPeerAdvertise).
-//
-// filepath.Base("") returns ".", so an empty workDir would leak "." here;
-// projectDirName intentionally returns "" in that case instead so the
-// downstream sandboxCloneDir defensive filter degrades cleanly to the bare
-// parent dir rather than emitting "/workspace/.".
+// projectDirName resolves a fallback leaf when no gateway repository is wired.
 func projectDirName(name, workDir string) string {
 	if name != "" {
 		return name
@@ -853,15 +828,8 @@ func projectDirName(name, workDir string) string {
 	return filepath.Base(workDir)
 }
 
-// cloneDirNameForVisibility resolves the leaf directory name spec's own
-// project clones into under the sandbox's /workspace parent dir. v.
-// ProjectName is business data threaded through JobSpec.Visibility by
-// orchestrator.PlanHook / dispatcher.BuildSessionJobSpec — both already read
-// the workspace-hydrated ProjectMeta.Name at JobSpec-build time (see
-// orchestrator.Visibility.ProjectName's doc comment for why that is the
-// correct place to resolve it, rather than a second, dispatcher-side
-// Projects.GetProject lookup). v.ProjectDir is the same host path already
-// used everywhere else in this file.
+// cloneDirNameForVisibility supplies the cwd fallback for minimal test wiring.
+// Production dispatch overrides it with the upstream repository basename.
 func cloneDirNameForVisibility(v orchestrator.Visibility) string {
 	return projectDirName(v.ProjectName, v.ProjectDir)
 }
@@ -887,7 +855,7 @@ func cloneDirNameForVisibility(v orchestrator.Visibility) string {
 // by the init container's prelude (skills_overlay.go) rather than by a bind
 // mount here.
 //
-// Shared by the Clone branch, the default (no-project) branch and
+// Shared by the Checkout branch, the default (no-project) branch and
 // projectVisibilityMounts's HOME step below so all three switch over
 // identically.
 func homeMounts(homeDir, workspaceHomeVolume string) []sandbox.Mount {

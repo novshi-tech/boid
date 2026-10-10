@@ -373,11 +373,9 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 		}
 	}
 	if baseBranch == "" {
-		// A task with no base_branch expands ${current_branch}; detached
-		// HEAD is surfaced as a 400. Every project-visible dispatch needs a
-		// resolvable base_branch to build its sandbox-internal
-		// CloneDeclaration, so this applies regardless of behavior name, not
-		// just to the canonical supervisor/executor behaviors.
+		// A task with no base_branch expands ${current_branch}; detached HEAD
+		// is surfaced as a 400. The resolved branch reaches the agent through
+		// BOID_BASE_BRANCH regardless of the behavior name.
 		if s.Projects != nil {
 			proj, projErr := s.Projects.GetProject(req.ProjectID)
 			if projErr != nil {

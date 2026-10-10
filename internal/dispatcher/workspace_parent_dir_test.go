@@ -17,7 +17,7 @@ import (
 
 // capturingSandboxBackend is a minimal backend.SandboxBackend that records
 // the last sandbox.Spec passed to Launch, so Dispatch-level tests can
-// assert on the fully-resolved mounts/WorkDir/Clone fields — the same shape
+// assert on the fully-resolved mounts/WorkDir/Checkout fields — the same shape
 // BuildSandboxSpec produces internally, but reachable only through the real
 // Dispatch() call path (see .claude/skills/boid-review's wiring-seam
 // doctrine: a unit test of BuildSandboxSpec alone would not catch a dropped
