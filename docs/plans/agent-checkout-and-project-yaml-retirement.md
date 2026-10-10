@@ -380,7 +380,7 @@ sandbox の `project list` は job の許可 project 集合だけを列挙し、
 | 現 job の許可範囲 | freee-cli | [2321c9404a9f](https://github.com/novshi-tech/freee-cli/commit/2321c9404a9f94767e9d6e1833b0b5c71fe677c6) | なし | drive, implement |
 | 現 job の許可範囲 | ubs-bo | — | 取得不可 (403) | drive, implement |
 
-`ubs-bo` の upstream は `github.com/nosen-nvt/bo`。advertised clone URL は 403 を返したため raw 定義は取得できなかった。ほかの 16 リポジトリは HEAD を取得した。raw に behavior を持つのは 7 リポジトリ、持たないのは 9 リポジトリ。`atl-cli` は raw に executor/supervisor があるが runtime にはない。boid の raw executor は PR-2 の起動時 checkout 指示を持つが、RPC は旧指示を返す。project.yaml refresh は PR-5 の範囲であり、今回これを実行して揃えない。
+`ubs-bo` の upstream は `github.com/nosen-nvt/bo`。advertised clone URL は 403 を返した。github-api service の repository 情報と `.boid/project.yaml` の contents も 404 を返したため、raw 定義は未取得。404 を「定義なし」の根拠にはしない。ほかの 16 リポジトリは HEAD を取得した。raw に behavior を持つのは 7 リポジトリ、持たないのは 9 リポジトリ。`atl-cli` は raw に executor/supervisor があるが runtime にはない。boid の raw executor は PR-2 の起動時 checkout 指示を持つが、RPC は旧指示を返す。project.yaml refresh は PR-5 の範囲であり、今回これを実行して揃えない。
 
 ### C.3 衝突の数え方と観測値
 
