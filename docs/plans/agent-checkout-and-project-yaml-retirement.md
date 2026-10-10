@@ -180,10 +180,16 @@ branch は agent が自分で切り替える。dispatcher は `BOID_BASE_BRANCH`
 
 どちらでも戻せるのは PR-5 の前まで。PR-5 で bare mirror を消したら、旧バイナリは project.yaml を読めない。
 
-## 6. 先に決めること
+## 6. 決定と PR-3 の範囲
 
-- **D1 workspace スキルの入れ方。** 第一候補は、既存の Integration Pack のスキル配線 (`skills_overlay.go:139-168`、HOME に symlink を張る) に乗せること。pack は daemon のローカルディレクトリなので、daemon は forge に触らなくて済む。実装の前に、pack の仕組みで workspace ごとにスキルを出し分けられるかを確かめる
-- **D2 behavior 名の衝突。** 今は project ごとに `task_behaviors` を持っている。1 つの workspace に、同じ名前で中身の違う behavior を持つ project が複数あったら、workspace に移すときに衝突する。PR-3 の前に、実際の workspace ごとに数えて、どう解消するかを決める
+- **D1 workspace スキルの入れ方。** workspace 固有スキルは、既存の envelope の `spec.init_script` で workspace HOME に配置する。実体は HOME 内の専用ディレクトリに置き、`~/.claude/skills` と `~/.agents/skills` の両方にリンクする。組み込み・Pack の名前は使わない。現行 Pack 配線は全 workspace 共通で、workspace 別の選択機構を持たない (`internal/dispatcher/skills_overlay.go:128-168`)。Pack の選択機構や新しい skill DB 列は PR-3 に足さない。成立条件と比較は付録 B
+- **D2 behavior 名の衝突。** PR-3 は現行の project.yaml 優先を維持する。workspace に同名異定義を上書きして集約しない。異なる用途を残す定義は workspace 内で改名し、同じ用途は owner が選んだ workspace 定義へ揃える。既存 task と呼び出し元を調べてから移す。取得済みの合成結果には `executor` / `supervisor` の異定義がある。全 workspace の DB 生定義との衝突件数は未確定で、0 件とは扱わない。取得範囲・件数・移行条件は付録 C
+
+**PR-3 に入れるもの:** C2 の 4 フィールド (`triggers` / `signals` / `card_commands` / `card_events`) の保存・読み込み、workspace envelope の apply/export、project.yaml 優先の和集合読み、workspace の `signals.sources` からの trigger 導出、workspace 定義だけで動く経路と衝突優先順位のテスト (Q13〜Q15)。behavior の既存の名前単位の合成は維持する (`internal/orchestrator/project_store.go:435-455`)。project/project の定義を workspace に自動集約しない。
+
+**PR-3 に入れないもの:** Pack の workspace フィルタ、新しい skill 配布 API、既存定義の改名・移行、task の behavior 書き換え、project.yaml の refresh/読み込み撤去、default metaproject 撤去、C1/C3/C6、API gateway の変更。schema の実装は PR-3 本体で行い、この決定記録 PR では行わない。
+
+**未解決事項:** 全 workspace の所属と DB 生定義の監査、daemon のロード済み定義と forge HEAD の差分、運用移行時の改名表と既存 task の扱い。監査を完成し、衝突を解消して Q16 の一致を確認するまでは PR-5 に進まない。衝突検出の専用 API/CLI は PR-3 の必須範囲にしない。運用監査で raw 定義と合成結果を別々に保存し、欠測を未確定として扱う。
 
 ## 7. 採点表 — レビュワー用 yes/no 判定リスト
 
@@ -229,6 +235,8 @@ branch は agent が自分で切り替える。dispatcher は `BOID_BASE_BRANCH`
 | Q24 | `extra_repos` を持っていた workspace で、そのリポジトリが `perm=fetch` の行として読めるか |
 
 ## 付録 A. 現行の事実
+
+A.1〜A.5 は設計時点 (PR-1 / PR-2 前) の基準。D1/D2 の調査基準は main `a09940e00ef60c735ddfcc375721ecbd55393bea` (PR-2 後)。A.6 はこの基準で確認した。
 
 ### A.1 clone の経路は 2 本ある
 
@@ -292,6 +300,118 @@ readonly は gateway だけで強制していて、`/workspace` の bind は常�
 
 ### A.6 スキルの届き方
 
-- 組み込みスキルは image の `/opt/boid/skills` に焼き込んであって、HOME の `~/.claude/skills` と `~/.agents/skills` に symlink を張る。Integration Pack のスキルも同じ仕組みで張る (`skills_overlay.go:139-168`)
-- リポジトリの中のスキル (nvt-tasks の `.claude/skills/nvt-intake` など) は、cwd がリポジトリなので Claude Code が見つけている。boid はこれを配線していない
-- nvt-tasks の card command `discuss` は、`.agents/skills/nvt-judge/SKILL.md` を相対パスで参照している
+- 組み込みスキルは image の `/opt/boid/skills` にある (`build/container/Dockerfile:300-301`)。HOME の `~/.claude/skills` と `~/.agents/skills` にリンクする。Integration Pack のスキルも同じ経路でリンクする (`internal/dispatcher/skills_overlay.go:75-78,139-168`)
+- Pack は全 workspace に同じものが届く。HOME volume が workspace 別でも、リンクの選択集合は変わらない (`internal/dispatcher/workspace_home.go:374,391-405`)
+- nvt-tasks の HEAD `ecb3a9e9a257` には `.claude/skills/nvt-intake/SKILL.md`、`.agents/skills/nvt-judge/SKILL.md`、`.claude/skills/nvt-judge/SKILL.md` がある。boid の HOME 配線はこれらを列挙しない
+- 同 HEAD の `.boid/project.yaml:145,209` は、card command `discuss` と behavior `judge` から `.agents/skills/nvt-judge/SKILL.md` を cwd 相対で参照する。`sweep` は `/nvt-intake` を呼ぶ (`:177,183`)
+- PR-2 後も主リポジトリのある job は起動ラッパーの checkout 先を cwd にする (§4.4)。主リポジトリなしの workspace task へ移すと、この発見と相対参照を前提にできない。運用移行で 2 スキルを HOME へ配置し、`discuss` / `judge` の参照を `~/.agents/skills/nvt-judge/SKILL.md` に変える。両 discovery root に置いてから workspace 定義を有効にする
+- nvt-judge は `workspace.md` / `projects/` / `company/themes.md` も参照する (同 HEAD `.agents/skills/nvt-judge/SKILL.md:68-70`)。スキルを HOME に置くだけでは資料は届かない。資料を使う job は `boid checkout nvt-tasks` して出力パスから読むか、運用者が HOME へ別途配布する。資料まで envelope が自動配布するとは扱わない
+
+## 付録 B. D1 の根拠と成立条件
+
+### B.1 Pack のモデルとロード経路
+
+| 項目 | 事実と根拠 (main `a09940e0`) |
+|---|---|
+| 設定 | `IntegrationsConfig` は daemon 共通の `dir` だけを持つ。既定は `/opt/boid/integrations` (`internal/config/config.go:54-72`) |
+| Pack の単位 | `<dir>/<pack>/<version>/integration.yaml`。`Pack` は name/version/dir/manifest を持ち、workspace ID を持たない (`internal/integrationpack/pack.go:9-26,41-62`) |
+| manifest | `Manifest` は metadata/serviceProfiles/connectors/skills、`Skill` は name/path/requiresServiceProfile。workspace 選択フィールドはない (`internal/integrationpack/manifest.go:78-91,172-179`) |
+| daemon のロード | startup に `LoadPacks` を 1 回呼び、同じ集合を `runner.Packs` に渡す (`internal/server/wire.go:1304-1319`) |
+| HOME の選択 | `resolveWorkspaceHome(workspaceID)` は installID + slug の volume を選ぶ。一方、`skillLinks("", r.Packs)` に workspace 引数はない (`internal/dispatcher/workspace_home.go:335,374,392`) |
+| リンク | 組み込みの後に全 Pack の全 skill を追加。`requiresServiceProfile` はフィルタにならない (`internal/dispatcher/skills_overlay.go:128-168`) |
+| init → job | init container が各 root に rm + ln を行い、その HOME volume を job が mount する (`internal/dispatcher/workspace_init.go:549-565`、`internal/dispatcher/sandbox_builder.go:837-880`) |
+| 内容の可視性 | リンク先は image 内の絶対パス。現行 image は Pack を build 時にコピーする (`build/container/Dockerfile:253-260`、`internal/dispatcher/workspace_init.go:205-242`)。daemon ローカルに置くだけでは sibling container に見えない |
+
+**現行 Pack をそのまま workspace 固有スキルの配布には使えない。** daemon が forge に接続しないという条件は満たすが、workspace 別の選択と非公開スキルの分離は満たさない。新しいフィルタだけでも image 内の他 workspace 向け内容は隠せない。
+
+### B.2 制約と更新
+
+- Pack の追加・版変更は配置と daemon 再起動が必要。init と job の image に同じ絶対パスの内容を用意する。workspace の `container_image` override でもリンク先を用意する (init は backend の既定 image を使う: `internal/dispatcher/container_backend_workspace_init.go:138-148`)
+- リンクの name/target 集合が変わると HOME を再初期化する。同じパスの内容だけの変更はこの比較では検知しない (`internal/dispatcher/skills_overlay.go:170-189`、`internal/dispatcher/workspace_home.go:118-149,403-406`)
+- 組み込みと同名の Pack skill は除外する。Pack 同士の同名は最後のリンクが勝つ。版・pack の列挙順に依存するので、運用では同名を禁止する (`internal/dispatcher/skills_overlay.go:115-138,153-165`)
+- prep は同名の HOME ディレクトリも消してリンクを張る。HOME 固有スキルは組み込み・全 Pack と名前を共有しない。user init は prep の後なので上書きは技術的に可能だが、推奨運用では禁止する (`internal/dispatcher/workspace_init.go:521-527,558-571`)
+- Pack を外しても旧名のリンクは自動削除されない。管理していた旧名を運用で削除する (`internal/dispatcher/workspace_home.go:133-142`)
+
+### B.3 選択肢
+
+| 方式 | workspace 分離・再現性 | 追加実装 | 判断 |
+|---|---|---|---|
+| 現行 Pack をそのまま使う | HOME は別だが全 workspace に同じ名前・image の内容が届く | なし | 固有スキルには不採用。共通 API スキルには継続 |
+| workspace 設定に Pack/skill 選択を足す | 選択は表せる。配布・削除・版・内容の分離を別途設計する | DB/envelope/dispatcher と image の契約 | PR-3 には入れない |
+| job で HOME に手置きする | workspace 内で永続するが、初回準備・復元・更新の根拠が残らない | なし | 一時確認に限定 |
+| 既存 envelope の `init_script` で HOME に配置する | script は workspace 別、export/apply で復元できる。実体も workspace HOME 内 | スキル専用の新規実装なし | **採用** |
+
+### B.4 採用方式の契約
+
+- `spec.init_script` を git 管理し、`boid workspace apply` する。実体を `$HOME/.local/share/boid/workspace-skills/<name>` に配置し、両 discovery root にリンクする。内容と必要な references/scripts も一緒に配置する。リポジトリの `/workspace/...` や init container の `/tmp/...` へリンクしない
+- script を変えると次の dispatch で hash の変化により再実行する。再実行しても成功する配置にする。更新・削除対象は script が管理する名前に限定する。HOME は workspace 別だが、同じ workspace の全 job は同じ実体を見る。稼働 job が読み込む版を変える場合は、その workspace の job を止めて更新する (`internal/dispatcher/workspace_home.go:295-316,374,381-405`)
+- 小さいスキルは script 内に内容を持たせる。外部配布物を使うなら運用者が用意した version/hash 固定の artifact を init container が取得する。init は job token / broker / git gateway を持たない。private repo の clone をこの経路の前提にしない。daemon 自身は forge に触れない (`internal/dispatcher/container_backend_workspace_init.go:119-136`)
+- init_script は 128 KiB が上限 (`internal/api/workspace_init_script.go:56`)。大きい配布物は外部 artifact に分ける。envelope は script を運ぶのであって、任意の別ファイルを自動配布しない (`internal/orchestrator/workspace_envelope.go:75-81`)
+- 組み込み/Pack と同名の配置、二重の nvt-judge 実体、旧名の放置を避ける。移行前に両 root から同じ `SKILL.md` を読めること、主リポジトリなしの job で呼べることを確認する。Q16 の運用確認に併記する。今回の調査でその移行が済んだとは扱わない
+
+## 付録 C. D2 の実データと移行方針
+
+### C.1 取得範囲
+
+2026-10-10 の sandbox RPC (`boid project list`、各行の ID を指定した `boid project behaviors <id>`) と、git gateway で取得した default branch HEAD を使う。合成後の runtime 定義と forge の raw YAML は別の観測値として扱う。HEAD が daemon の mirror/cache と一致するとは限らない。合成後の behavior から workspace DB の生定義を逆算しない。
+
+sandbox の `project list` は job の許可 project 集合だけを列挙し、workspace フィールドを返さない (`internal/server/boid_executor.go:696-747`)。behavior RPC も workspace 境界で制限する (`internal/sandbox/broker.go:477-487`)。全 workspace の DB と所属一覧はこの RPC では取得できない。取得した `Default (default)` は組み込み receiver で、`judge` は workspace DB の一覧ではない。receiver には workspace behaviors を合成しない (`internal/orchestrator/project_store.go:446`、`internal/orchestrator/default_metaproject.go:31`)。
+
+### C.2 一覧
+
+| 観測範囲 | project | forge HEAD | raw `.boid/project.yaml` の behavior | RPC の合成後 behavior |
+|---|---|---|---|---|
+| 現 job の許可範囲 | boid | [a09940e00ef6](https://github.com/novshi-tech/boid/commit/a09940e00ef60c735ddfcc375721ecbd55393bea) | executor, supervisor | drive, executor, implement, supervisor |
+| 現 job の許可範囲 | Default (default) | — | 該当なし (組み込み) | judge |
+| 現 job の許可範囲 | sumiron-procurement-tracker | [51b638ccc8ed](https://github.com/novshi-tech/sumiron-procurement-tracker/commit/51b638ccc8ed690a5caa7d98ac224908ae4e832c) | executor, supervisor | drive, executor, implement, supervisor |
+| 現 job の許可範囲 | ubs-apps | [94e30db90db7](https://github.com/novshi-tech/ubs-apps/commit/94e30db90db7bfa2ad0e0a24449514a7c00c1de8) | executor, supervisor | drive, executor, implement, supervisor |
+| 現 job の許可範囲 | bm-next | [c016fb3cc80c](https://github.com/novshi-tech/bm-next/commit/c016fb3cc80c3bcdee18863ce20f0ea2cf09d5ef) | executor, supervisor | drive, executor, implement, supervisor |
+| 現 job の許可範囲 | bm-next-lp | [50a3fcc263c0](https://github.com/novshi-tech/bm-next-lp/commit/50a3fcc263c0447bdfaff260b702c47457c62582) | executor, supervisor | drive, executor, implement, supervisor |
+| 現 job の許可範囲 | nvt-tasks | [ecb3a9e9a257](https://github.com/novshi-tech/nvt-tasks/commit/ecb3a9e9a25761ac73e929517a4d1f391b00d3d7) | sweep, judge | drive, implement, judge, sweep |
+| 現 job の許可範囲 | harness-dojo | [b65b601c94ef](https://github.com/novshi-tech/harness-dojo/commit/b65b601c94ef4f1d96c2c5a6030eb54bfc3d58f8) | なし | drive, implement |
+| 現 job の許可範囲 | kite | [446e32834169](https://github.com/novshi-tech/kite/commit/446e32834169d7ac49f44e83dc4cc1305bc1e15f) | なし | drive, implement |
+| 現 job の許可範囲 | boid-api-skills | [f141b4c4a14f](https://github.com/novshi-tech/boid-api-skills/commit/f141b4c4a14f770fd3bf5d813b7b5ad8c6ccec50) | なし | drive, implement |
+| 現 job の許可範囲 | api-gateway-mcp | [be6c8b462e51](https://github.com/novshi-tech/api-gateway-mcp/commit/be6c8b462e5107146f92fe01647ae4bc11457081) | なし | drive, implement |
+| 現 job の許可範囲 | google-cli | [700d857d113f](https://github.com/novshi-tech/google-cli/commit/700d857d113fd4e241aa517fcbf6311c47f3b837) | なし | drive, implement |
+| 現 job の許可範囲 | ms-graph-cli | [d33597be68de](https://github.com/novshi-tech/ms-graph-cli/commit/d33597be68de82b4c30c73128bae70df5c13ffa6) | なし | drive, implement |
+| 現 job の許可範囲 | atl-cli | [f2cd9b5d60dd](https://github.com/novshi-tech/atl-cli/commit/f2cd9b5d60dd884d9267ee8cb09a77a81a125010) | executor, supervisor | drive, implement |
+| 現 job の許可範囲 | board-cli | [b0bbb92fe0d5](https://github.com/novshi-tech/board-cli/commit/b0bbb92fe0d5289a00281747d893ad9eb775041b) | なし | drive, implement |
+| 現 job の許可範囲 | novshi-tech-site | [ee89fc586bb9](https://github.com/novshi-tech/novshi-tech-site/commit/ee89fc586bb9cb72673da1e4586656578979626c) | なし | drive, implement |
+| 現 job の許可範囲 | freee-cli | [2321c9404a9f](https://github.com/novshi-tech/freee-cli/commit/2321c9404a9f94767e9d6e1833b0b5c71fe677c6) | なし | drive, implement |
+| 現 job の許可範囲 | ubs-bo | — | 取得不可 (403) | drive, implement |
+
+`ubs-bo` の upstream は `github.com/nosen-nvt/bo`。advertised clone URL は 403 を返したため raw 定義は取得できなかった。ほかの 16 リポジトリは HEAD を取得した。raw に behavior を持つのは 7 リポジトリ、持たないのは 9 リポジトリ。`atl-cli` は raw に executor/supervisor があるが runtime にはない。boid の raw executor は PR-2 の起動時 checkout 指示を持つが、RPC は旧指示を返す。project.yaml refresh は PR-5 の範囲であり、今回これを実行して揃えない。
+
+### C.3 衝突の数え方と観測値
+
+同じ workspace の同名を 1 件と数える。異なる定義の project 対の数ではない。raw YAML はコメント・key 順を除いて比較し、明示フィールドの差は保持する。runtime は daemon の正規化結果を比較する。workspace が注入する env/host_commands/network は behavior 固有の差として数えない。DB と project の比較は同じ parser/normalizer を通した定義で行う。
+
+| データ | 名前 | 定義を持つ project 数 | 異なる定義の数 | 衝突の意味 |
+|---|---|---|---|---|
+| 取得済み forge raw | executor | 6 | 5 | project/project の同名異定義候補 |
+| 取得済み forge raw | supervisor | 6 | 5 | project/project の同名異定義候補 |
+| RPC runtime | executor | 5 | 4 | 許可範囲内の同名異定義 |
+| RPC runtime | supervisor | 5 | 4 | 許可範囲内の同名異定義 |
+| RPC runtime | drive / implement | 各 17 | 各 1 | 取得範囲では異定義なし。DB 定義の確認ではない |
+| RPC runtime | judge | 2 | 2 | nvt-tasks と組み込み receiver の違い。project.yaml 間の衝突には数えない |
+| 全 workspace DB vs project | 全名 | 未取得 | 未確定 | 全 workspace の衝突件数は未確定 |
+
+取得済み raw の同名異定義候補は 2 名 (executor / supervisor)。runtime も project 間は 2 名で、組み込み receiver を含めると judge が加わり 3 名になる。workspace 別の確定件数と DB/project 衝突件数ではない。
+
+raw executor/supervisor の同一定義は bm-next-lp と atl-cli。sumiron-procurement-tracker は同じ本文だが `type: execution` が明示されているため raw では別定義。runtime では sumiron-procurement-tracker と bm-next-lp が同じになり、boid / ubs-apps / bm-next がそれぞれ別定義になる。raw と runtime の件数差を同一性の証明に使わない。
+
+主な意味の違い:
+
+- boid: executor は task branch + PR、supervisor はレビュー後に統合する
+- sumiron-procurement-tracker / bm-next-lp / atl-cli の raw: executor は push/PR を禁止し、supervisor はローカルの子 branch を統合する。使い捨て clone の現在の契約とは一致しない
+- ubs-apps: executor は PR と CI、supervisor は統合後の deploy まで追う
+- bm-next: executor は PR と CI/CD、supervisor は PR merge。ubs-apps の統合後 deploy 確認とは異なる
+- nvt-tasks judge: codex、model 指定、nvt-judge の固有判断。組み込み receiver judge は boid-card-judge。receiver 撤去時に同じ名前だからと置換しない
+
+### C.4 解消と移行の条件
+
+1. PR-3 では project.yaml の同名を丸ごと優先する。behavior 内の部分 merge はしない。workspace と異定義でも既存の実行を拒否せず、運用監査に残す
+2. 運用で workspace の raw DB 定義と所属 project を一度に取得する。ホストの `boid workspace export --all` は atomic snapshot を返す (`cmd/workspace_export.go:17-42`)。共有に必要なのは metadata.name / spec.projects / spec.task_behaviors だけで、env や資格情報は不要。別 workspace の project は、その workspace の job またはホストから raw 定義・ロード済み合成結果を取得する
+3. 同じ用途は owner が選んだ workspace 定義に揃える。違う用途は `<project>-<role>` など一意な名前に改名する。`executor`/`supervisor` の名前から readonly を暗黙に得ていた定義は、改名時に readonly を明示する (`internal/orchestrator/spec_loader.go:399-425`)。alias に依存しない
+4. default_task_behavior、trigger の run、card command、card event、子 task 作成指示、保存済み task の behavior を対応表で照合する。既存の queued/awaiting task をどの定義で再開するか決めてから旧名を外す。本文の obsolete な push 禁止はそのまま canonical に採用しない
+5. Q16 は名前だけでなく意味と呼び出し先を比較する。改名がある場合は対応表で同じ挙動になることを確認する。PR-5 は全 workspace の監査が揃い、未解消衝突が 0 件、HOME 固有スキルが使える状態になってから行う。今の取得範囲だけで Q16 を yes にしない
