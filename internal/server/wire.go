@@ -248,7 +248,7 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 	}
 
 	if err := orchestrator.EnsureDefaultMetaprojects(conn, store); err != nil {
-		return nil, nil, fmt.Errorf("ensure default metaprojects: %w", err)
+		slog.Warn("ensure default metaprojects failed; continuing startup", "error", err)
 	}
 	projects, err := projectRepo.ListProjects()
 	if err != nil {

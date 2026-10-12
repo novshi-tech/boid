@@ -515,7 +515,7 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
 	if s.EnsureTriggerProjects != nil {
 		if err := s.EnsureTriggerProjects(); err != nil {
-			return result, fmt.Errorf("sweep triggers: ensure receivers: %w", err)
+			slog.Warn("trigger sweep: ensure receivers failed; continuing sweep", "error", err)
 		}
 	}
 

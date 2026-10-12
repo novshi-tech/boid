@@ -168,6 +168,23 @@ func TestWorkspaceAutomationValidation(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSignalValidationErrorContext(t *testing.T) {
+	for _, sources := range []string{
+		"[{connector: invalid, service: test, every: 1m}]",
+		"[{connector: pack/connector, every: 1m}]",
+		"[{connector: pack/connector, service: test}]",
+		"[{connector: pack/connector, service: test, every: 1m}, {connector: pack/connector, service: test, every: 1m}]",
+	} {
+		t.Run(sources, func(t *testing.T) {
+			var meta WorkspaceMeta
+			err := yaml.Unmarshal([]byte("signals: {sources: "+sources+"}"), &meta)
+			if err == nil || !strings.Contains(err.Error(), "workspace: signals.sources[") || strings.Contains(err.Error(), "project.yaml") {
+				t.Fatalf("workspace signals validation error = %v, want workspace context", err)
+			}
+		})
+	}
+}
+
 func TestWorkspaceAutomationEmptyPreservesMeta(t *testing.T) {
 	ws := NewWorkspaceStore(t.TempDir())
 	if err := ws.Save("team", &WorkspaceMeta{}); err != nil {

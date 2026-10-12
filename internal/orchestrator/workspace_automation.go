@@ -13,7 +13,7 @@ import (
 // workspaceTriggers validates explicit and derived triggers without storing derived entries.
 func workspaceTriggers(ws *WorkspaceMeta) ([]Trigger, error) {
 	triggers := append([]Trigger(nil), ws.Triggers...)
-	derived, err := deriveSignalTriggers(ws.Signals.Sources)
+	derived, err := deriveSignalTriggersForConfig(ws.Signals.Sources, "workspace")
 	if err != nil {
 		return nil, err
 	}
