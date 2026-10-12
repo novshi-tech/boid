@@ -108,9 +108,9 @@ func TestTaskAPI_PrimaryProjectPermission(t *testing.T) {
 
 }
 
-func TestTaskAPI_PermissionChangePreservesCreateRetries(t *testing.T) {
+func TestTaskAPI_PermRetry(t *testing.T) {
 	for _, kind := range []string{"execution", "card"} {
-		for _, key := range []string{"ref", "idempotency_key", "ref_miss_with_key"} {
+		for _, key := range []string{"ref", "key", "ref-miss"} {
 			t.Run(kind+"/"+key, func(t *testing.T) {
 				ts := testutil.NewTestServer(t)
 				p := createProject(t, ts, "project", "Project")
@@ -131,7 +131,7 @@ func TestTaskAPI_PermissionChangePreservesCreateRetries(t *testing.T) {
 					t.Fatal(err)
 				}
 				req.Title = "retry"
-				if key == "ref_miss_with_key" {
+				if key == "ref-miss" {
 					req.Ref = "new-ref"
 				}
 				var retry orchestrator.Task
