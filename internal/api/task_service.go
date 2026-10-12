@@ -262,10 +262,8 @@ func (s *TaskAppService) UpdateTask(ctx context.Context, id string, req UpdateTa
 				Message: fmt.Sprintf("cannot edit project while task is not pending/pre-dispatch (status: %s)", task.Status),
 			}
 		}
-		if s.Projects != nil {
-			if _, err := s.Projects.GetProject(req.ProjectID); err != nil {
-				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project %q not found", req.ProjectID)}
-			}
+		if err := s.validatePrimaryProject(req.ProjectID); err != nil {
+			return nil, err
 		}
 		task.ProjectID = req.ProjectID
 	}

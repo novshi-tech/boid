@@ -29,10 +29,10 @@ type fakeWorkspaceService struct {
 	setInitScriptFn   func(slug string, content []byte, ifMatch string, force bool) (*WorkspaceInitScriptResult, error)
 }
 
-func (s *fakeWorkspaceService) CreateProject(string) (*orchestrator.Project, error) {
+func (s *fakeWorkspaceService) CreateProject(string, ...string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
-func (s *fakeWorkspaceService) CreateProjectFromGitURL(context.Context, string, string, string) (*orchestrator.Project, error) {
+func (s *fakeWorkspaceService) CreateProjectFromGitURL(context.Context, string, string, string, ...string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
 func (s *fakeWorkspaceService) FetchProject(context.Context, string) (*orchestrator.Project, error) {
@@ -1126,4 +1126,8 @@ func TestWorkspaceHandler_ExportEnvelope_UnknownSlugIs404(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
 	}
+}
+
+func (s *fakeWorkspaceService) SetProjectPerm(string, string) (*orchestrator.Project, error) {
+	return nil, nil
 }

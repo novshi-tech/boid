@@ -22,10 +22,10 @@ type stubProjectServiceForExec struct {
 	err     error
 }
 
-func (s *stubProjectServiceForExec) CreateProject(string) (*orchestrator.Project, error) {
+func (s *stubProjectServiceForExec) CreateProject(string, ...string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
-func (s *stubProjectServiceForExec) CreateProjectFromGitURL(context.Context, string, string, string) (*orchestrator.Project, error) {
+func (s *stubProjectServiceForExec) CreateProjectFromGitURL(context.Context, string, string, string, ...string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
 func (s *stubProjectServiceForExec) FetchProject(context.Context, string) (*orchestrator.Project, error) {
@@ -203,4 +203,8 @@ func TestProjectHandlerStartExec_DispatchErrorPropagates(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d: body=%s", w.Code, http.StatusBadRequest, w.Body.String())
 	}
+}
+
+func (s *stubProjectServiceForExec) SetProjectPerm(string, string) (*orchestrator.Project, error) {
+	return nil, nil
 }

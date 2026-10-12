@@ -472,6 +472,10 @@ func (r *ProjectRepository) CreateProject(project *Project) error {
 	return CreateProject(r.db, project)
 }
 
+func (r *ProjectRepository) SetProjectPerm(id, perm string) error {
+	return SetProjectPerm(r.db, id, perm)
+}
+
 func (r *ProjectRepository) GetProject(id string) (*Project, error) {
 	return GetProject(r.db, id)
 }

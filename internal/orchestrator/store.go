@@ -219,6 +219,9 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		t.Ref = ref
 	}
 
+	if err := validateTaskPrimaryProject(dbtx, t.ProjectID); err != nil {
+		return err
+	}
 	workspaceID, err := ProjectWorkspaceID(dbtx, t.ProjectID)
 	if err != nil {
 		return err
@@ -578,6 +581,9 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 		return fmt.Errorf("read task ownership: %w", err)
 	}
 	if previousProjectID != t.ProjectID {
+		if err := validateTaskPrimaryProject(dbtx, t.ProjectID); err != nil {
+			return err
+		}
 		workspaceID, err := ProjectWorkspaceID(dbtx, t.ProjectID)
 		if err != nil {
 			return err

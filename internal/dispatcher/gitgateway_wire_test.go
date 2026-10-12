@@ -80,7 +80,7 @@ func TestRepoKeyFromUpstreamURL_TooManyPathSegmentsReturnsError(t *testing.T) {
 func TestBuildGatewayRepos_SelfProjectWritableGetsFetchPush(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
+			{ID: "proj-1", Perm: "push", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
 		}},
 	}
 	spec := &orchestrator.JobSpec{ProjectID: "proj-1", Visibility: orchestrator.Visibility{Writable: true}}
@@ -95,7 +95,7 @@ func TestBuildGatewayRepos_SelfProjectWritableGetsFetchPush(t *testing.T) {
 func TestBuildGatewayRepos_SelfProjectReadonlyGetsFetchOnly(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
+			{ID: "proj-1", Perm: "push", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
 		}},
 	}
 	spec := &orchestrator.JobSpec{ProjectID: "proj-1", Visibility: orchestrator.Visibility{Writable: false}}
@@ -110,7 +110,7 @@ func TestBuildGatewayRepos_SelfProjectReadonlyGetsFetchOnly(t *testing.T) {
 func TestBuildGatewayRepos_WorkspacePeerIsFetchOnly(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
+			{ID: "proj-1", Perm: "push", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
 			{ID: "proj-2", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/peer.git"},
 		}},
 	}
@@ -130,7 +130,7 @@ func TestBuildGatewayRepos_WorkspacePeerIsFetchOnly(t *testing.T) {
 func TestBuildGatewayRepos_OtherWorkspaceProjectExcluded(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
+			{ID: "proj-1", Perm: "push", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
 			{ID: "proj-3", WorkspaceID: "ws-2", UpstreamURL: "https://github.com/owner/other-ws.git"},
 		}},
 	}
@@ -146,7 +146,7 @@ func TestBuildGatewayRepos_OtherWorkspaceProjectExcluded(t *testing.T) {
 func TestBuildGatewayRepos_WorkspaceExtraReposIsFetchOnly(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
+			{ID: "proj-1", Perm: "push", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
 		}},
 		Workspaces: fakeWorkspaceLookup{metas: map[string]*orchestrator.WorkspaceMeta{
 			"ws-1": {ExtraRepos: []string{"https://github.com/other-org/private-lib.git"}},
@@ -164,7 +164,7 @@ func TestBuildGatewayRepos_WorkspaceExtraReposIsFetchOnly(t *testing.T) {
 func TestBuildGatewayRepos_MissingUpstreamURLSkipsSelfProjectSilently(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1", WorkspaceID: "ws-1"}, // no UpstreamURL captured yet
+			{ID: "proj-1", Perm: "push", WorkspaceID: "ws-1"}, // no UpstreamURL captured yet
 		}},
 	}
 	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}

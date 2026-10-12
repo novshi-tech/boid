@@ -23,6 +23,7 @@ var projectInitWorkspace string
 // --name flag for project add: overrides the project name otherwise derived
 // from the git URL's last path component.
 var projectAddName string
+var projectAddPerm string
 
 // --agent flag value for project init; empty falls back to initwizard.DefaultAgent.
 var projectInitAgent string
@@ -49,7 +50,7 @@ var projectAddCmd = &cobra.Command{
 	Short: "Register a project from a git remote URL",
 	Long: `Register a project from a git remote URL:
 
-  boid project add <git-url> --workspace=<name> [--name=<project-name>]
+  boid project add <git-url> --workspace=<name> [--name=<project-name>] [--perm=fetch|push]
 
 Has the daemon clone the URL itself into a daemon-managed bare repository
 (docs/plans/volume-only-daemon.md §論点a/b). --workspace is required;
@@ -186,7 +187,35 @@ var projectFetchCmd = &cobra.Command{
 	RunE:              runProjectFetch,
 }
 
+var projectSetPermCmd = &cobra.Command{
+	Use:         "set-perm <project-ref> <fetch|push>",
+	Short:       "Set a registered repository's permission",
+	Args:        cobra.ExactArgs(2),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runProjectSetPerm,
+}
+
+func runProjectSetPerm(cmd *cobra.Command, args []string) error {
+	if err := projectspec.ValidateProjectPerm(args[1]); err != nil {
+		return err
+	}
+	c := client.FromContext(cmd.Context())
+	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
+	if err != nil {
+		return fmt.Errorf("resolve project: %w", err)
+	}
+	var updated projectspec.Project
+	if err := c.Do("PUT", "/api/projects/"+p.ID+"/perm", map[string]string{"perm": args[1]}, &updated); err != nil {
+		return err
+	}
+	return renderOutput(cmd, &updated, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "project permission updated: %s perm=%s\n", updated.ID, updated.Perm)
+		return nil
+	})
+}
+
 func init() {
+	projectAddCmd.Flags().StringVar(&projectAddPerm, "perm", "push", "Repository permission: fetch or push")
 	projectAddCmd.Flags().StringVar(&projectAddWorkspace, "workspace", "", "Workspace to register the project into (required for a git-URL <git-url>; optional, get-or-create, for a legacy <dir>)")
 	projectAddCmd.Flags().StringVar(&projectAddName, "name", "", "Project name override, git-URL form only (default: derived from the URL's last path component)")
 	projectInitSubCmd.Flags().StringVar(&projectInitWorkspace, "workspace", "", "Workspace name to bake into the printed `boid project add` guidance (no daemon call is made by project init itself)")
@@ -198,7 +227,7 @@ func init() {
 	// this alias.
 	projectRemoveCmd.Aliases = []string{"rm"}
 
-	projectCmd.AddCommand(projectAddCmd, projectInitSubCmd, projectListCmd, projectRemoveCmd, projectReloadCmd, projectFetchCmd, projectShowCmd, projectBehaviorsCmd)
+	projectCmd.AddCommand(projectSetPermCmd, projectAddCmd, projectInitSubCmd, projectListCmd, projectRemoveCmd, projectReloadCmd, projectFetchCmd, projectShowCmd, projectBehaviorsCmd)
 	rootCmd.AddCommand(projectCmd)
 }
 
@@ -248,6 +277,13 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 }
 
 func runProjectAddGitURL(cmd *cobra.Command, gitURL string) error {
+	perm := projectAddPerm
+	if perm == "" {
+		perm = "push"
+	}
+	if err := projectspec.ValidateProjectPerm(perm); err != nil {
+		return err
+	}
 	if projectAddWorkspace == "" {
 		return fmt.Errorf("--workspace is required: boid project add <git-url> --workspace=<name>")
 	}
@@ -269,7 +305,7 @@ func runProjectAddGitURL(cmd *cobra.Command, gitURL string) error {
 		return fmt.Errorf("get-or-create workspace %q: %w", projectAddWorkspace, err)
 	}
 
-	body := map[string]string{"url": gitURL, "workspace": projectAddWorkspace}
+	body := map[string]string{"url": gitURL, "workspace": projectAddWorkspace, "perm": perm}
 	if projectAddName != "" {
 		body["name"] = projectAddName
 	}
@@ -282,6 +318,7 @@ func runProjectAddGitURL(cmd *cobra.Command, gitURL string) error {
 	return renderOutput(cmd, &p, func() error {
 		fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
 		fmt.Fprintf(cmd.OutOrStdout(), "  workspace: %s\n", p.WorkspaceID)
+		fmt.Fprintf(cmd.OutOrStdout(), "  perm: %s\n", p.Perm)
 		fmt.Fprintf(cmd.OutOrStdout(), "  bare repo: %s\n", p.WorkDir)
 		// Check hook requires
 		for _, b := range p.Meta.TaskBehaviors {
@@ -661,7 +698,7 @@ func runProjectList(cmd *cobra.Command, args []string) error {
 			if status == "" {
 				status = "ready"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-9s %s  (%s)", p.ID, status, p.Meta.Name, p.WorkDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-9s %s  (%s)  perm=%s", p.ID, status, p.Meta.Name, p.WorkDir, p.Perm)
 			if p.UpstreamURL != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "  upstream=%s", p.UpstreamURL)
 			}
@@ -875,6 +912,7 @@ func runProjectBehaviors(cmd *cobra.Command, args []string) error {
 func renderProjectDetail(p *projectspec.Project) {
 	fmt.Printf("ID:          %s\n", p.ID)
 	fmt.Printf("Name:        %s\n", p.Meta.Name)
+	fmt.Printf("Perm:        %s\n", p.Perm)
 	fmt.Printf("WorkDir:     %s\n", p.WorkDir)
 	fmt.Printf("WorkspaceID: %s\n", p.WorkspaceID)
 	if p.UpstreamURL != "" {

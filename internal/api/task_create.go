@@ -112,6 +112,9 @@ func idempotencyKeyTypeMismatchErr(wantType orchestrator.TaskType, existing *orc
 }
 
 func (s *TaskAppService) CreateTask(ctx context.Context, req CreateTaskRequest) (*orchestrator.Task, error) {
+	if err := s.validatePrimaryProject(req.ProjectID); err != nil {
+		return nil, err
+	}
 	initialStatus, err := resolveInitialStatus(req)
 	if err != nil {
 		return nil, err
@@ -630,4 +633,18 @@ func (s *TaskAppService) ImportTasks(ctx context.Context, reqs []CreateTaskReque
 		result.Created++
 	}
 	return result, nil
+}
+
+func (s *TaskAppService) validatePrimaryProject(id string) error {
+	if id == "" || s.Projects == nil {
+		return nil
+	}
+	project, err := s.Projects.GetProject(id)
+	if err != nil {
+		return &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project %q not found", id)}
+	}
+	if err := orchestrator.RequireTaskPrimaryProject(project); err != nil {
+		return &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	return nil
 }

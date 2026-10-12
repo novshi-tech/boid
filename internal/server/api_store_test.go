@@ -487,3 +487,5 @@ func TestJobWorkspaceIDRoundTrip(t *testing.T) {
 		t.Fatalf("dispatcher workspace = %q", got.WorkspaceID)
 	}
 }
+
+func (r stubProjectRepo) SetProjectPerm(id, perm string) error { return nil }

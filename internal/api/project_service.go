@@ -275,7 +275,11 @@ func (s *ProjectAppService) hydrateProjectWithWorkspace(ctx context.Context, pro
 	return s.hydrateProject(project)
 }
 
-func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project, error) {
+func (s *ProjectAppService) CreateProject(workDir string, perms ...string) (*orchestrator.Project, error) {
+	perm, err := registrationPerm(perms)
+	if err != nil {
+		return nil, err
+	}
 	// Serialize this whole
 	// load -> DB-insert -> default-workspace-assign pipeline against
 	// CreateProjectFromGitURL and DeleteProject's own critical sections —
@@ -291,6 +295,7 @@ func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project
 
 	project := &orchestrator.Project{
 		ID:      meta.ID,
+		Perm:    perm,
 		WorkDir: workDir,
 	}
 
@@ -364,7 +369,11 @@ func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project
 // already-registered projects going degraded later (FetchProject, daemon
 // startup) — a project that never successfully finished registering has
 // no DB row to preserve in the first place.
-func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string) (*orchestrator.Project, error) {
+func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string, perms ...string) (*orchestrator.Project, error) {
+	perm, err := registrationPerm(perms)
+	if err != nil {
+		return nil, err
+	}
 	gitURL = strings.TrimSpace(gitURL)
 	if gitURL == "" {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: "url is required"}
@@ -527,6 +536,7 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 
 	project := &orchestrator.Project{
 		ID:          meta.ID,
+		Perm:        perm,
 		WorkDir:     bareRepoPath,
 		UpstreamURL: gitURL,
 	}
@@ -1884,4 +1894,37 @@ func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {
 		Status: "partial",
 		Errors: messages,
 	}, nil
+}
+
+// registrationPerm defaults omitted permissions to push and validates explicit values.
+func registrationPerm(perms []string) (string, error) {
+	perm := "push"
+	if len(perms) > 0 && perms[0] != "" {
+		perm = perms[0]
+	}
+	if err := orchestrator.ValidateProjectPerm(perm); err != nil {
+		return "", &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	return perm, nil
+}
+
+// SetProjectPerm changes a repository's permission for subsequent task creation and dispatch.
+func (s *ProjectAppService) SetProjectPerm(id, perm string) (*orchestrator.Project, error) {
+	if err := orchestrator.ValidateProjectPerm(perm); err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	s.projectMu.Lock()
+	defer s.projectMu.Unlock()
+	_, err := s.Projects.GetProject(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	if err := s.Projects.SetProjectPerm(id, perm); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	updated, err := s.Projects.GetProject(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return s.hydrateProject(updated), nil
 }
