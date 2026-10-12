@@ -671,10 +671,6 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
-	if orchestrator.IsDefaultMetaproject(project) {
-		s.Meta.SetSynthesizedMeta(id, orchestrator.DefaultMetaprojectMeta(project.WorkspaceID))
-		return s.hydrateProjectWithWorkspace(ctx, project), nil
-	}
 
 	if s.FetchBareRepo == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "git fetch not wired"}
@@ -869,10 +865,6 @@ func (s *ProjectAppService) SetProjectWorkspace(id, workspaceID string) (*orches
 	project, err := s.Projects.GetProject(id)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
-	}
-
-	if orchestrator.IsDefaultMetaproject(project) && workspaceID != project.WorkspaceID {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: "the default metaproject belongs to its workspace and cannot be reassigned"}
 	}
 
 	// Serialize the assign+cache-sync critical
@@ -1174,6 +1166,9 @@ func (s *ProjectAppService) RemoveWorkspace(slug string) (*WorkspaceRemoval, err
 	}
 
 	if err := s.Workspaces.Remove(slug); err != nil {
+		if errors.Is(err, orchestrator.ErrWorkspaceHasTasks) {
+			return nil, &StatusError{Code: http.StatusConflict, Message: err.Error()}
+		}
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("workspace %q not found", slug)}
 		}
@@ -1578,9 +1573,6 @@ func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, er
 			if !ok || p == nil {
 				return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("workspace %q: project %q is assigned but missing from the export snapshot (data inconsistency)", snap.Slug, id)}
 			}
-			if orchestrator.IsDefaultMetaproject(p) {
-				continue
-			} // generated on the destination; not user configuration
 
 			name := effectiveNames[id]
 			// Refuse rather than fall back to
@@ -1866,9 +1858,6 @@ func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {
 	// and surfaced as reload warnings, never fatal to the reload as a whole.
 	if s.CaptureUpstreamURL != nil {
 		for _, p := range projects {
-			if orchestrator.IsDefaultMetaproject(p) {
-				continue
-			}
 			upstreamURL, err := s.CaptureUpstreamURL(p.WorkDir)
 			if err != nil {
 				slog.Warn("project reload: could not capture upstream_url; add a git remote and reload again",
@@ -1927,4 +1916,15 @@ func (s *ProjectAppService) SetProjectPerm(id, perm string) (*orchestrator.Proje
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	return s.hydrateProject(updated), nil
+}
+
+// GetWorkspaceRuntimeMeta resolves repository-free exec configuration.
+func (s *ProjectAppService) GetWorkspaceRuntimeMeta(ctx context.Context, workspaceID string) (*orchestrator.ProjectMeta, error) {
+	source, ok := s.Meta.(interface {
+		GetWorkspaceMeta(context.Context, string) (*orchestrator.ProjectMeta, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("workspace meta unavailable")
+	}
+	return source.GetWorkspaceMeta(ctx, workspaceID)
 }

@@ -20,29 +20,12 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// ResolveOrCaptureRequest is BoidOpTaskResolveOrCapture's input: project +
-// identity (always) plus title/description used ONLY when no task is
-// currently bound to Identity (a fresh `captured` task is created).
-type ResolveOrCaptureRequest struct {
-	ProjectID   string
-	Identity    string
-	Title       string
-	Description string
-	URL         *string
-	DisplayName *string
-}
-
-// ResolveOrCaptureResult is the op's return contract: the resolved task's
-// id, and whether it was freshly created by this call (true) or already
-// existed (false — the caller should follow up with action_send to record
-// attrs_set, since resolution and recording are deliberately separate ops).
-type ResolveOrCaptureResult struct {
-	TaskID  string
-	Created bool
-}
+type ResolveOrCaptureRequest = apiwire.ResolveOrCaptureRequest
+type ResolveOrCaptureResult = apiwire.ResolveOrCaptureResult
 
 // ResolveOrCapture resolves Identity (scoped to ProjectID) to an existing
 // task, or — when unresolved — atomically creates a new `parked` card
@@ -63,8 +46,14 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 	if req.Identity == "" {
 		return nil, fmt.Errorf("resolve or capture: identity must not be empty")
 	}
+	scope := orchestrator.IdentityScope{ProjectID: req.ProjectID, WorkspaceID: req.WorkspaceID}
 	if req.ProjectID == "" {
-		return nil, fmt.Errorf("resolve or capture: project id must not be empty")
+		if req.WorkspaceID == "" {
+			return nil, fmt.Errorf("resolve or capture: workspace id must not be empty")
+		}
+		if err := orchestrator.ValidWorkspaceSlug(req.WorkspaceID); err != nil {
+			return nil, err
+		}
 	}
 	if req.URL != nil {
 		if err := orchestrator.ValidateIdentityURL(*req.URL); err != nil {
@@ -80,15 +69,21 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 
 	var result ResolveOrCaptureResult
 	txErr := s.Tx.WithinTx(func(tx TxStore) error {
+		writer := scopedIdentityWriter{tx, scope}
 		var metadata identityMetadataWriter
 		if req.URL != nil || req.DisplayName != nil {
 			var ok bool
-			metadata, ok = tx.(identityMetadataWriter)
+			if scope.ProjectID == "" {
+				_, ok = tx.(workspaceIdentityWriter)
+			} else {
+				_, ok = tx.(identityMetadataWriter)
+			}
+			metadata = writer
 			if !ok {
 				return errIdentityMetadataUnavailable
 			}
 		}
-		if existing, rerr := tx.ResolveIdentity(req.ProjectID, req.Identity); rerr == nil {
+		if existing, rerr := writer.ResolveIdentity(req.ProjectID, req.Identity); rerr == nil {
 			if metadata != nil {
 				if err := metadata.UpdateIdentityMetadata(req.ProjectID, req.Identity, existing.ID, req.URL, req.DisplayName); err != nil {
 					return err
@@ -106,6 +101,7 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 		// payload/instructions into.
 		task := &orchestrator.Task{
 			ProjectID:   req.ProjectID,
+			WorkspaceID: req.WorkspaceID,
 			Title:       req.Title,
 			Description: req.Description,
 			Status:      orchestrator.TaskStatusParked,
@@ -118,7 +114,7 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 		// The task above is already type='card' from the CreateTask call
 		// itself, so there is no separate "seed the sidecar" step left to
 		// perform — a card cannot be born rowless.
-		if err := tx.LinkIdentity(req.ProjectID, req.Identity, task.ID); err != nil {
+		if err := writer.LinkIdentity(req.ProjectID, req.Identity, task.ID); err != nil {
 			// Deliberately unwrapped (not %w'd into a StatusError) so
 			// errors.Is(err, orchestrator.ErrIdentityConflict) survives to
 			// boid_executor.go, matching api/task_identity.go's own

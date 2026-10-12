@@ -937,10 +937,10 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// Without this, a caller could bind proj-1's identity to a task
 		// that actually lives in proj-2 (same workspace, so AllowsProject
 		// alone never objects).
-		if existing.ProjectID != req.ProjectID {
+		if existing.ProjectID != req.ProjectID || (req.ProjectID == "" && existing.WorkspaceID != req.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link: task belongs to a different project"}
 		}
-		if err := e.tasks.LinkIdentityWithMetadata(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.ProjectID, req.Identity, existing.ID, optionalIdentityValue(req.IdentityURL, req.IdentityURLSet), optionalIdentityValue(req.IdentityDisplayName, req.IdentityDisplayNameSet)); err != nil {
+		if err := e.tasks.LinkIdentityInScope(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), identityRequestScope(req), req.Identity, existing.ID, optionalIdentityValue(req.IdentityURL, req.IdentityURLSet), optionalIdentityValue(req.IdentityDisplayName, req.IdentityDisplayNameSet)); err != nil {
 			if errors.Is(err, orchestrator.ErrIdentityConflict) {
 				return &sandbox.ExecResponse{ExitCode: sandbox.IdentityConflictExitCode, Stderr: err.Error()}
 			}
@@ -954,7 +954,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink unavailable"}
 		}
-		if err := e.tasks.UnlinkIdentity(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.ProjectID, req.Identity); err != nil {
+		if err := e.tasks.UnlinkIdentityInScope(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), identityRequestScope(req), req.Identity); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: fmt.Sprintf("unlinked: %s\n", req.Identity)}
@@ -971,7 +971,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve unavailable"}
 		}
-		resolved, err := e.tasks.ResolveIdentity(req.ProjectID, req.Identity)
+		resolved, err := e.tasks.ResolveIdentityInScope(identityRequestScope(req), req.Identity)
 		if err != nil {
 			if errors.Is(err, orchestrator.ErrTaskNotFound) {
 				return &sandbox.ExecResponse{ExitCode: sandbox.IdentityNotFoundExitCode}
@@ -984,7 +984,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// all do this). Resolve is no different — the broker
 		// only validated req.ProjectID itself; verify the task ResolveIdentity
 		// actually returned still belongs to it.
-		if !ctx.AllowsProject(resolved.ProjectID) {
+		if !ctx.AllowsTask(resolved.ProjectID, resolved.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve is restricted to the current workspace"}
 		}
 		// Only the task's own ID and status — never the full task (the
@@ -1014,6 +1014,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		result, err := e.resolveOrCapture.ResolveOrCapture(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), api.ResolveOrCaptureRequest{
 			ProjectID:   req.ProjectID,
+			WorkspaceID: req.WorkspaceID,
 			Identity:    req.Identity,
 			Title:       req.Title,
 			Description: req.Description,
@@ -1633,4 +1634,8 @@ func resolveTaskContextField(v any, path string) (string, error) {
 		return "", fmt.Errorf("marshal response: %w", err)
 	}
 	return api.ResolveJSONField(raw, path)
+}
+
+func identityRequestScope(req *sandbox.BoidRequest) orchestrator.IdentityScope {
+	return orchestrator.IdentityScope{ProjectID: req.ProjectID, WorkspaceID: req.WorkspaceID}
 }

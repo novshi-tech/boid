@@ -77,8 +77,8 @@ var ErrTriggerRunInFlight = errors.New("trigger run: already in flight (single-f
 // idx_trigger_runs_inflight_unique rejects the insert — i.e. some other
 // row for the same (project_id, trigger_name) is already in flight.
 func CreateTriggerRun(dbtx db.DBTX, run *TriggerRun) error {
-	if run.ProjectID == "" {
-		return fmt.Errorf("create trigger run: project id must not be empty")
+	if run.ProjectID == "" && run.WorkspaceID == "" {
+		return fmt.Errorf("create trigger run: workspace id must not be empty")
 	}
 	if run.TriggerName == "" {
 		return fmt.Errorf("create trigger run: trigger name must not be empty")
@@ -95,15 +95,22 @@ func CreateTriggerRun(dbtx db.DBTX, run *TriggerRun) error {
 		run.StartedAt = time.Now()
 	}
 	run.StartedAt = run.StartedAt.UTC()
-	workspaceID, err := ProjectWorkspaceID(dbtx, run.ProjectID)
-	if err != nil {
-		return err
+	if run.ProjectID != "" {
+		workspaceID, err := ProjectWorkspaceID(dbtx, run.ProjectID)
+		if err != nil {
+			return err
+		}
+		run.WorkspaceID = workspaceID
 	}
-	run.WorkspaceID = workspaceID
-	_, err = dbtx.Exec(
+	if run.ProjectID == "" {
+		if _, err := loadWorkspaceMeta(dbtx, run.WorkspaceID); err != nil {
+			return err
+		}
+	}
+	_, err := dbtx.Exec(
 		`INSERT INTO trigger_runs (id, project_id, workspace_id, trigger_name, job_id, started_at, finished_at, exit_code)
 		 VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
-		run.ID, run.ProjectID, run.WorkspaceID, run.TriggerName, run.JobID, run.StartedAt,
+		run.ID, nullableIdentityString(run.ProjectID), run.WorkspaceID, run.TriggerName, run.JobID, run.StartedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -255,6 +262,19 @@ func LatestTriggerRun(dbtx db.DBTX, projectID, triggerName string) (*TriggerRun,
 		return nil, fmt.Errorf("latest trigger run: %w", err)
 	}
 	return run, nil
+}
+
+// LatestWorkspaceTriggerRun reads only repository-free runs in this workspace.
+func LatestWorkspaceTriggerRun(dbtx db.DBTX, workspaceID, triggerName string) (*TriggerRun, error) {
+	if workspaceID == "" || triggerName == "" {
+		return nil, fmt.Errorf("latest workspace trigger run requires workspace and trigger")
+	}
+	row := dbtx.QueryRow(`SELECT id, COALESCE(project_id,''), workspace_id, trigger_name, job_id, started_at, finished_at, exit_code FROM trigger_runs WHERE project_id IS NULL AND workspace_id = ? AND trigger_name = ? ORDER BY started_at DESC, id DESC LIMIT 1`, workspaceID, triggerName)
+	run, err := scanTriggerRunRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrTriggerRunNotFound
+	}
+	return run, err
 }
 
 // triggerRunRowScanner is satisfied by both *sql.Row and *sql.Rows (their

@@ -408,7 +408,10 @@ func (s *ProjectStore) GetWorkspaceMeta(ctx context.Context, workspaceID string)
 	if s.workspaceStore == nil {
 		return nil, fmt.Errorf("workspace store not configured")
 	}
-	return s.hydrateWorkspace(&ProjectMeta{Name: workspaceID}, "", workspaceID)
+	meta := WorkspaceDefaults()
+	meta.Name = workspaceID
+	meta.DefaultTaskBehavior = ""
+	return s.hydrateWorkspace(meta, "", workspaceID)
 }
 
 func (s *ProjectStore) hydrateWorkspace(meta *ProjectMeta, projectID, workspaceID string) (*ProjectMeta, error) {
@@ -458,12 +461,12 @@ func (s *ProjectStore) hydrateWorkspace(meta *ProjectMeta, projectID, workspaceI
 	// supplied behavior needs that same per-behavior injection a
 	// project.yaml-defined one gets — running this merge afterward would
 	// leave a workspace-only behavior's HostCommands/Env unpopulated.
-	if len(ws.TaskBehaviors) > 0 && projectID != DefaultMetaprojectID(workspaceID) {
+	if len(ws.TaskBehaviors) > 0 {
 		if out.TaskBehaviors == nil {
 			out.TaskBehaviors = make(map[string]TaskBehavior)
 		}
 		for name, behavior := range ws.TaskBehaviors {
-			if _, exists := out.TaskBehaviors[name]; exists {
+			if _, exists := out.TaskBehaviors[name]; exists && projectID != "" {
 				continue
 			}
 			out.TaskBehaviors[name] = behavior
@@ -529,17 +532,17 @@ func (s *ProjectStore) hydrateWorkspace(meta *ProjectMeta, projectID, workspaceI
 	// gated on out.X being empty first so ws.X never clobbers an
 	// already-set project.yaml value. There is deliberately no way to
 	// explicitly un-set an inherited value back to empty.
-	if out.BaseBranch == "" && projectID != DefaultMetaprojectID(workspaceID) {
+	if out.BaseBranch == "" {
 		out.BaseBranch = ws.BaseBranch
 	}
-	if out.ForkPoint == "" && projectID != DefaultMetaprojectID(workspaceID) {
+	if out.ForkPoint == "" {
 		out.ForkPoint = ws.ForkPoint
 	}
 	if out.DefaultTaskBehavior == "" {
 		out.DefaultTaskBehavior = ws.DefaultTaskBehavior
 	}
 
-	if projectID == DefaultMetaprojectID(workspaceID) {
+	if projectID == "" {
 		if err := s.mergeWorkspaceAutomation(out, ws, workspaceID); err != nil {
 			return nil, err
 		}
@@ -662,19 +665,8 @@ func (s *ProjectStore) synthesizeMetaForReload(candidate *Project) *ProjectMeta 
 // "" (ok=false) when the project is not cached or declares none. Satisfies
 // CardEventResolver (card_event_ingest.go).
 func (s *ProjectStore) CardEventCommand(projectID string) (string, bool) {
-	s.mu.RLock()
-	workspaceID := s.workspaceIDs[projectID]
-	s.mu.RUnlock()
-	if projectID != DefaultMetaprojectID(workspaceID) {
-		meta, ok := s.Get(projectID)
-		if !ok {
-			return "", false
-		}
-		return meta.CardEvents.Command, meta.CardEvents.Command != ""
-	}
-	meta, err := s.GetWithWorkspace(context.Background(), projectID)
-	if err != nil {
-		slog.Warn("card event meta lookup failed", "project_id", projectID, "error", err)
+	meta, ok := s.Get(projectID)
+	if !ok {
 		return "", false
 	}
 	return meta.CardEvents.Command, meta.CardEvents.Command != ""
@@ -727,11 +719,6 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 
 	var errs []error
 	for _, candidate := range projects {
-		if IsDefaultMetaproject(candidate) {
-			s.SetSynthesizedMeta(candidate.ID, DefaultMetaprojectMeta(candidate.WorkspaceID))
-			s.SetWorkspaceID(candidate.ID, candidate.WorkspaceID)
-			continue
-		}
 		var meta *ProjectMeta
 		var loadErr error
 		if IsBareRepoDir(candidate.WorkDir) {

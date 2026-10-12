@@ -553,3 +553,16 @@ func (s cardTimelineStore) BuildCardTimeline(cardID, cursor string, limit int) (
 func (s cardTimelineStore) CardPinnedItems(cardID string) ([]timeline.CardItem, error) {
 	return timeline.CardPinnedItems(s.db, cardID)
 }
+
+func (s apiTxStore) LinkIdentityInScope(scope orchestrator.IdentityScope, identity, taskID string) error {
+	return s.tasks.LinkIdentityInScope(scope, identity, taskID)
+}
+func (s apiTxStore) UnlinkIdentityInScope(scope orchestrator.IdentityScope, identity string) error {
+	return s.tasks.UnlinkIdentityInScope(scope, identity)
+}
+func (s apiTxStore) ResolveIdentityInScope(scope orchestrator.IdentityScope, identity string) (*orchestrator.Task, error) {
+	return s.tasks.ResolveIdentityInScope(scope, identity)
+}
+func (s apiTxStore) UpdateIdentityMetadataInScope(scope orchestrator.IdentityScope, identity, taskID string, url, displayName *string) error {
+	return s.tasks.UpdateIdentityMetadataInScope(scope, identity, taskID, url, displayName)
+}

@@ -83,21 +83,18 @@ func TestWorkspaceAutomationPersistenceAndEnvelopeRoundTrip(t *testing.T) {
 	}
 }
 
-func TestWorkspaceAutomationReceiverOnlyAndProjectPriority(t *testing.T) {
+func TestWorkspaceAutomationWorkspaceOnlyAndProjectPriority(t *testing.T) {
 	ws := NewWorkspaceStore(t.TempDir())
 	if err := ws.Save("team", automationMeta(t)); err != nil {
 		t.Fatal(err)
 	}
 	store := NewProjectStore()
 	store.SetWorkspaceStore(ws)
-	receiver := DefaultMetaprojectID("team")
-	store.SetSynthesizedMeta(receiver, DefaultMetaprojectMeta("team"))
-	store.SetWorkspaceID(receiver, "team")
 	for _, id := range []string{"a", "b"} {
 		store.SetSynthesizedMeta(id, &ProjectMeta{Name: id})
 		store.SetWorkspaceID(id, "team")
 	}
-	got, err := store.GetWithWorkspace(context.Background(), receiver)
+	got, err := store.GetWorkspaceMeta(context.Background(), "team")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +126,7 @@ card_commands:
 		t.Fatal(err)
 	}
 	store.SetSynthesizedMeta("a", projectMeta)
-	got, err = store.GetWithWorkspace(context.Background(), receiver)
+	got, err = store.GetWorkspaceMeta(context.Background(), "team")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +141,7 @@ card_commands:
 		t.Fatalf("project priority: %+v", project)
 	}
 	store.SetWorkspaceID("a", "other")
-	got, err = store.GetWithWorkspace(context.Background(), receiver)
+	got, err = store.GetWorkspaceMeta(context.Background(), "team")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,8 +189,8 @@ func TestWorkspaceAutomationEmptyPreservesMeta(t *testing.T) {
 	}
 	store := NewProjectStore()
 	store.SetWorkspaceStore(ws)
-	for _, id := range []string{DefaultMetaprojectID("team"), "project"} {
-		original := DefaultMetaprojectMeta("team")
+	for _, id := range []string{"project"} {
+		original := WorkspaceDefaults()
 		original.ID = id
 		store.SetSynthesizedMeta(id, original)
 		store.SetWorkspaceID(id, "team")
@@ -265,16 +262,12 @@ func TestWorkspaceAutomationCardEventsInTransaction(t *testing.T) {
 	}
 	store := NewProjectStore()
 	store.SetWorkspaceStore(NewWorkspaceStoreWithRepo(t.TempDir(), repo))
-	if err := EnsureDefaultMetaprojects(repo.conn, store); err != nil {
-		t.Fatal(err)
-	}
-	receiver := DefaultMetaprojectID("team")
 	tx, err := repo.conn.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`INSERT INTO tasks (id,type,project_id,title,status,kind,urgency,wake_task_id,suggestion_verb,detail) VALUES ('card','card',?,'Card','parked','','','','','{}')`, receiver)
+	_, err = tx.Exec(`INSERT INTO tasks (id,type,project_id,workspace_id,title,status,kind,urgency,wake_task_id,suggestion_verb,detail) VALUES ('card','card',NULL,'team','Card','parked','','','','','{}')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,12 +297,9 @@ func TestWorkspaceAutomationShadowedEventKeepsBuiltinJudge(t *testing.T) {
 	}
 	store := NewProjectStore()
 	store.SetWorkspaceStore(ws)
-	receiver := DefaultMetaprojectID("team")
-	store.SetSynthesizedMeta(receiver, DefaultMetaprojectMeta("team"))
-	store.SetWorkspaceID(receiver, "team")
 	store.SetSynthesizedMeta("project", &ProjectMeta{CardCommands: map[string]CardCommand{"z-last": {Label: "Project", Run: "echo project"}}})
 	store.SetWorkspaceID("project", "team")
-	got, err := store.GetWithWorkspace(context.Background(), receiver)
+	got, err := store.GetWorkspaceMeta(context.Background(), "team")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +309,7 @@ func TestWorkspaceAutomationShadowedEventKeepsBuiltinJudge(t *testing.T) {
 	if _, ok := got.CardCommands["z-last"]; ok {
 		t.Fatal("shadowed command remains")
 	}
-	if got.CardCommands["judge"] != DefaultMetaprojectMeta("team").CardCommands["judge"] {
+	if got.CardCommands["judge"] != WorkspaceDefaults().CardCommands["judge"] {
 		t.Fatal("built-in judge changed")
 	}
 	if got.CardCommands["other"].Run != "echo other" {
@@ -337,17 +327,14 @@ func TestWorkspaceAutomationShadowedEventKeepsBuiltinJudge(t *testing.T) {
 	}
 }
 
-func TestWorkspaceAutomationCommandOrderOnReceiver(t *testing.T) {
+func TestWorkspaceAutomationCommandOrderOnWorkspace(t *testing.T) {
 	ws := NewWorkspaceStore(t.TempDir())
 	if err := ws.Save("team", automationMeta(t)); err != nil {
 		t.Fatal(err)
 	}
 	store := NewProjectStore()
 	store.SetWorkspaceStore(ws)
-	receiver := DefaultMetaprojectID("team")
-	store.SetSynthesizedMeta(receiver, DefaultMetaprojectMeta("team"))
-	store.SetWorkspaceID(receiver, "team")
-	got, err := store.GetWithWorkspace(context.Background(), receiver)
+	got, err := store.GetWorkspaceMeta(context.Background(), "team")
 	if err != nil {
 		t.Fatal(err)
 	}

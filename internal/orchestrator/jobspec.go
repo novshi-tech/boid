@@ -37,6 +37,7 @@ type JobSpec struct {
 	// notification. TaskID and HandlerID are empty for boid-exec jobs.
 	TaskID             string
 	ProjectID          string
+	WorkspaceID        string
 	HandlerID          string
 	DisplayNameDefault bool   // true when DisplayName is generated, rather than explicitly supplied
 	DisplayName        string // human-readable label (hook name or command-session name); persisted to jobs.display_name

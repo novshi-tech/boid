@@ -187,9 +187,8 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if projectID == "__workspace__" {
 		projectID = ""
-	} else {
-		projectID, err = h.resolveCardProject(workspaceID, projectID)
 	}
+	projectID, err = h.resolveCardProject(workspaceID, projectID)
 	if err != nil {
 		h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
 		return
@@ -771,7 +770,7 @@ func (h *WebHandler) renderTaskDetailPage(w http.ResponseWriter, r *http.Request
 			errorMsg = strings.TrimSpace(errorMsg + " Unable to load current activity. Refresh status to retry.")
 			cardTL = &templates.CardTimelineView{}
 		}
-		cmdOptions = toTemplateCardCommandOptions(h.Service.CardCommandOptionsForProject(r.Context(), detail.Task.ProjectID))
+		cmdOptions = toTemplateCardCommandOptions(h.cardCommandOptions(r.Context(), detail.Task))
 	} else {
 		var childErr error
 		childTree, childErr = h.execChildTree(detail.Task)
@@ -921,7 +920,7 @@ func (h *WebHandler) renderCardCommandState(w http.ResponseWriter, r *http.Reque
 func (h *WebHandler) operationLabelForCommand(ctx context.Context, taskID, key string) string {
 	detail, err := h.Service.GetTaskDetail(taskID)
 	if err == nil && detail != nil && detail.Task != nil {
-		for _, option := range h.Service.CardCommandOptionsForProject(ctx, detail.Task.ProjectID) {
+		for _, option := range h.cardCommandOptions(ctx, detail.Task) {
 			if option.Key == key && option.Label != "" {
 				return option.Label
 			}
@@ -2177,4 +2176,16 @@ func remoteIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func (h *WebHandler) cardCommandOptions(ctx context.Context, card *orchestrator.Task) []CardCommandOption {
+	if card.ProjectID == "" {
+		if source, ok := h.Service.(interface {
+			CardCommandOptionsForWorkspace(context.Context, string) []CardCommandOption
+		}); ok {
+			return source.CardCommandOptionsForWorkspace(ctx, card.WorkspaceID)
+		}
+		return nil
+	}
+	return h.Service.CardCommandOptionsForProject(ctx, card.ProjectID)
 }

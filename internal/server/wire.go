@@ -247,9 +247,6 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 			"workspace_id", orchestrator.DefaultWorkspaceSlug, "count", n)
 	}
 
-	if err := orchestrator.EnsureDefaultMetaprojects(conn, store); err != nil {
-		slog.Warn("ensure default metaprojects failed; continuing startup", "error", err)
-	}
 	projects, err := projectRepo.ListProjects()
 	if err != nil {
 		return nil, nil, fmt.Errorf("list projects: %w", err)
@@ -309,7 +306,7 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 // project reload` (or the next startup) captures it.
 func backfillUpstreamURLs(projectRepo *orchestrator.ProjectRepository, projects []*orchestrator.Project) {
 	for _, p := range projects {
-		if p.UpstreamURL != "" || orchestrator.IsDefaultMetaproject(p) {
+		if p.UpstreamURL != "" {
 			continue
 		}
 		url, err := dispatcher.CaptureUpstreamURL(p.WorkDir)
@@ -1118,17 +1115,16 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	taskWaits := api.NewTaskWaitRegistry()
 
 	workflow := &api.TaskWorkflowService{
-		EnsureTriggerProjects: func() error { return orchestrator.EnsureDefaultMetaprojects(srv.db, store) },
-		TaskWaits:             taskWaits,
-		Tasks:                 taskRepo,
-		Jobs:                  jobStore,
-		Projects:              projectRepo,
-		Tx:                    tx,
-		Meta:                  store,
-		Coordinator:           &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, Waiter: adapter, MaxDepth: 5, LifecycleStore: taskRepo},
-		Lifecycle:             lifecycle,
-		Hub:                   hub,
-		Adapter:               claudeAdapter,
+		TaskWaits:   taskWaits,
+		Tasks:       taskRepo,
+		Jobs:        jobStore,
+		Projects:    projectRepo,
+		Tx:          tx,
+		Meta:        store,
+		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, Waiter: adapter, MaxDepth: 5, LifecycleStore: taskRepo},
+		Lifecycle:   lifecycle,
+		Hub:         hub,
+		Adapter:     claudeAdapter,
 		// TaskTriage: taskRepo already implements CardStore (see
 		// internal/orchestrator/repository.go) — same object as Tasks
 		// above, viewed through a narrower interface for
@@ -1630,11 +1626,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		projects: projectRepo,
 	}
 	webSvc := &api.WebAppService{
-		EnsureCardProjects: func() error {
-			return projectSvc.WithProjectLock(func() error {
-				return orchestrator.EnsureDefaultMetaprojects(srv.db, store)
-			})
-		},
 		Tasks:      taskRepo,
 		Actions:    taskRepo,
 		Jobs:       jobStore,
@@ -1796,6 +1787,7 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 	// conventions and ignore the field entirely — see the field's doc).
 	spec, err := dispatcher.BuildSessionJobSpec(dispatcher.SessionJobInput{
 		ProjectID:          project.ID,
+		WorkspaceID:        project.WorkspaceID,
 		ProjectWorkDir:     project.WorkDir,
 		ProjectName:        meta.Name,
 		HarnessType:        req.HarnessType,
@@ -1825,14 +1817,25 @@ func (a *sessionDispatcherAdapter) StartSession(ctx context.Context, req api.Sta
 }
 
 func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartExecRequest) (*api.StartExecResult, error) {
-	project, err := a.service.GetProject(req.ProjectID)
-	if err != nil {
-		return nil, err
+	var project *orchestrator.Project
+	var err error
+	if req.ProjectID == "" {
+		meta, e := a.service.GetWorkspaceRuntimeMeta(ctx, req.WorkspaceID)
+		if e != nil {
+			return nil, e
+		}
+		project = &orchestrator.Project{WorkspaceID: req.WorkspaceID, Meta: *meta}
+	} else {
+		project, err = a.service.GetProject(req.ProjectID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	meta := project.Meta
 
 	input := dispatcher.SessionJobInput{
 		ProjectID:          project.ID,
+		WorkspaceID:        project.WorkspaceID,
 		ProjectWorkDir:     project.WorkDir,
 		ProjectName:        meta.Name,
 		Readonly:           req.Readonly,
@@ -2063,7 +2066,8 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Mount("/api/sessions", sessionHandler.Routes())
 
 	workspaceHandler := &api.WorkspaceHandler{
-		Service: runtime.projectSvc,
+		Service:       runtime.projectSvc,
+		TriggerRunner: runtime.workflow,
 		// Workspace HOME size reporting (Show) + deletion (Remove), rewired
 		// onto the engine's volume API. This deliberately no longer takes
 		// runtimesRoot: the home is a named volume
@@ -2103,7 +2107,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	configHandler := &api.ConfigHandler{Service: srv}
 	r.Mount("/api/config", configHandler.Routes())
 
-	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc}
+	taskHandler := &api.TaskHandler{Identities: runtime.taskSvc, Capture: runtime.workflow, Service: runtime.taskSvc, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())
 
 	gcStore := orchestrator.NewTaskGCStore(srv.db).

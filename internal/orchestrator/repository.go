@@ -818,3 +818,20 @@ func (s *TaskGCStore) cleanTaskAttachments(olderThan time.Duration) {
 func (r *TaskRepository) FindWorkspaceTask(workspaceID, parentID, ref, key string) (*Task, error) {
 	return FindWorkspaceTask(r.db, workspaceID, parentID, ref, key)
 }
+
+func (r *TaskRepository) LatestWorkspaceTriggerRun(workspaceID, triggerName string) (*TriggerRun, error) {
+	return LatestWorkspaceTriggerRun(r.db, workspaceID, triggerName)
+}
+
+func (r *TaskRepository) LinkIdentityInScope(scope IdentityScope, identity, taskID string) error {
+	return LinkIdentityInScope(r.db, scope, identity, taskID)
+}
+func (r *TaskRepository) UnlinkIdentityInScope(scope IdentityScope, identity string) error {
+	return UnlinkIdentityInScope(r.db, scope, identity)
+}
+func (r *TaskRepository) ResolveIdentityInScope(scope IdentityScope, identity string) (*Task, error) {
+	return ResolveIdentityInScope(r.db, scope, identity)
+}
+func (r *TaskRepository) UpdateIdentityMetadataInScope(scope IdentityScope, identity, taskID string, url, displayName *string) error {
+	return UpdateIdentityMetadataInScope(r.db, scope, identity, taskID, url, displayName)
+}

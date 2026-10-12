@@ -1,12 +1,11 @@
 package orchestrator
 
 import (
-	"context"
 	"fmt"
-	"github.com/novshi-tech/boid/internal/db"
 	"log/slog"
 	"sort"
 
+	"github.com/novshi-tech/boid/internal/db"
 	"gopkg.in/yaml.v3"
 )
 
@@ -99,7 +98,7 @@ func (ws *WorkspaceMeta) UnmarshalYAML(n *yaml.Node) error {
 	return hydrateWorkspaceAutomation(ws, data)
 }
 
-// mergeWorkspaceAutomation anchors workspace definitions to its receiver.
+// mergeWorkspaceAutomation resolves workspace definitions with project.yaml precedence.
 func (s *ProjectStore) mergeWorkspaceAutomation(out *ProjectMeta, ws *WorkspaceMeta, workspaceID string) error {
 	triggers, err := workspaceTriggers(ws)
 	if err != nil {
@@ -113,7 +112,7 @@ func (s *ProjectStore) mergeWorkspaceAutomation(out *ProjectMeta, ws *WorkspaceM
 	accepted := make(map[string]bool)
 	s.mu.RLock()
 	for id, meta := range s.metas {
-		if s.workspaceIDs[id] != workspaceID || id == DefaultMetaprojectID(workspaceID) {
+		if s.workspaceIDs[id] != workspaceID {
 			continue
 		}
 		for _, trig := range meta.Triggers {
@@ -184,7 +183,7 @@ func (s *ProjectStore) mergeWorkspaceAutomation(out *ProjectMeta, ws *WorkspaceM
 		}
 	}
 	if err := ValidateCardCommands(out.CardCommands, out.CardEvents); err != nil {
-		return fmt.Errorf("workspace %q receiver: %w", workspaceID, err)
+		return fmt.Errorf("workspace %q: %w", workspaceID, err)
 	}
 	return nil
 }
@@ -199,30 +198,22 @@ func hydrateWorkspaceAutomation(ws *WorkspaceMeta, data []byte) error {
 	return validateWorkspaceAutomation(ws)
 }
 
-// CardEventCommandInTx resolves receiver events using the caller's database transaction.
-func (s *ProjectStore) CardEventCommandInTx(dbtx db.DBTX, projectID string) (string, bool, error) {
-	s.mu.RLock()
-	meta := s.metas[projectID]
-	workspaceID := s.workspaceIDs[projectID]
-	s.mu.RUnlock()
-	if meta == nil {
-		return "", false, nil
+// WorkspaceCardEventCommandInTx reads events inside the caller's transaction.
+func (s *ProjectStore) WorkspaceCardEventCommandInTx(dbtx db.DBTX, workspaceID string) (string, bool, error) {
+	var ws *WorkspaceMeta
+	var err error
+	if s.workspaceStore == nil {
+		return "", false, fmt.Errorf("workspace store not configured")
 	}
-	if workspaceID == "" || projectID != DefaultMetaprojectID(workspaceID) {
-		return meta.CardEvents.Command, meta.CardEvents.Command != "", nil
+	if s.workspaceStore.repo != nil {
+		ws, err = loadWorkspaceMeta(dbtx, workspaceID)
+	} else {
+		ws, err = s.workspaceStore.Load(workspaceID)
 	}
-	if s.workspaceStore == nil || s.workspaceStore.repo == nil {
-		hydrated, err := s.GetWithWorkspace(context.Background(), projectID)
-		if err != nil {
-			return "", false, err
-		}
-		return hydrated.CardEvents.Command, hydrated.CardEvents.Command != "", nil
-	}
-	ws, err := loadWorkspaceMeta(dbtx, workspaceID)
 	if err != nil {
 		return "", false, err
 	}
-	out := cloneProjectMeta(meta)
+	out := WorkspaceDefaults()
 	if err := s.mergeWorkspaceAutomation(out, ws, workspaceID); err != nil {
 		return "", false, err
 	}

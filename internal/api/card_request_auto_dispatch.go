@@ -45,7 +45,7 @@ func (s *TaskWorkflowService) dispatchQueuedCardRequest(ctx context.Context, car
 		return false, fmt.Errorf("dispatch queued card request: get card: %w", err)
 	}
 
-	meta := s.hydrateMetaForTriggers(ctx, card.ProjectID)
+	meta := s.hydrateAutomationMeta(ctx, card.ProjectID, card.WorkspaceID)
 	if meta == nil {
 		// The project's meta is transiently unavailable (no ProjectStore
 		// entry yet, a fetch/parse failure, startup ordering) — not the
@@ -77,6 +77,7 @@ func (s *TaskWorkflowService) dispatchQueuedCardRequest(ctx context.Context, car
 
 	if _, err := s.Exec.StartExec(ctx, StartExecRequest{
 		ProjectID:     card.ProjectID,
+		WorkspaceID:   card.WorkspaceID,
 		JobID:         launcherJobID,
 		Argv:          triggerRunArgv(cmd.Run),
 		Readonly:      true,

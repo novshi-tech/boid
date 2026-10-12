@@ -70,7 +70,20 @@ func IngestCardEventRequest(ctx context.Context, dbtx db.DBTX, a *Action, resolv
 
 	var commandKey string
 	var ok bool
-	if txResolver, supportsTx := resolver.(interface {
+	if projectID == "" {
+		var workspaceID string
+		if err := dbtx.QueryRow(`SELECT workspace_id FROM tasks WHERE id=?`, a.TaskID).Scan(&workspaceID); err != nil {
+			return err
+		}
+		if wsResolver, supported := resolver.(interface {
+			WorkspaceCardEventCommandInTx(db.DBTX, string) (string, bool, error)
+		}); supported {
+			commandKey, ok, err = wsResolver.WorkspaceCardEventCommandInTx(dbtx, workspaceID)
+			if err != nil {
+				return err
+			}
+		}
+	} else if txResolver, supportsTx := resolver.(interface {
 		CardEventCommandInTx(db.DBTX, string) (string, bool, error)
 	}); supportsTx {
 		commandKey, ok, err = txResolver.CardEventCommandInTx(dbtx, projectID)

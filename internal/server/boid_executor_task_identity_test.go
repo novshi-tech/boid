@@ -298,7 +298,7 @@ func TestBoidBuiltinExecutor_TaskIdentityResolve_Found(t *testing.T) {
 	// TaskStatusParked by card machine v2) — substituting TaskStatusParked
 	// keeps this test's actual intent (stdout mentions the task id and its
 	// status) intact.
-	identities := &fakeIdentityStore{resolved: &orchestrator.Task{ID: "t1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}}
+	identities := &fakeIdentityStore{resolved: &orchestrator.Task{ID: "t1", ProjectID: "proj-1", Type: orchestrator.TaskTypeCard, Status: orchestrator.TaskStatusParked, Card: &orchestrator.CardAttrs{}}}
 	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Identities: identities}}
 	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
 

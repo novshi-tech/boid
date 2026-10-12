@@ -312,3 +312,9 @@ data: <json>
 - [`project.yaml` リファレンス](project-yaml.md) — タスク作成時に必要な project / behavior の構造
 - [Hook スクリプトプロトコル](hook-contract.md) — `POST /api/jobs/{id}/done` を呼ぶ EXIT trap の挙動
 - [Web UI 内部実装](../architecture/web-internals.md) — 認証ミドルウェア、 SSE、 ルートマウント全体図
+
+### Task identity と workspace 直属の capture
+
+`POST /api/tasks/identity/link` / `unlink` / `resolve` は JSON の `identity` と、`project_id` または `workspace_id` を受け取る。scope を省略すると default workspace 直属。link には `task_id` が必須で、任意の `url` / `display_name` を関連付けと同じ transaction で保存する。resolve は `task_id` / `status` を返し、未登録なら 404、別 task との衝突なら 409。
+
+`POST /api/tasks/resolve-or-capture` は同じ scope と `identity`、新規 card 用の `title` / `description`、任意の `url` / `display_name` を受け取り、`task_id` / `created` を返す。workspace 直属では `project_id` が NULL の card と identity を作り、同じ workspace の同じ identity に再度呼ぶと既存 card を返す。通常 project の identity 一意性は従来どおり project 単位。

@@ -1064,3 +1064,17 @@ func TestCreateProject_InsertFails_StillRollsBackItsOwnCacheWrite(t *testing.T) 
 		t.Errorf("a failed registration did not roll back its own cache write; Remove calls = %v", meta.removed)
 	}
 }
+
+func TestProjectAppService_RemoveWorkspace_WithTasksReturnsConflict(t *testing.T) {
+	ws := newStubWorkspaceStore()
+	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{}
+	ws.removeErr = fmt.Errorf("workspace team-a: %w", orchestrator.ErrWorkspaceHasTasks)
+	svc := newWorkspaceTestService(ws, nil, nil)
+	_, err := svc.RemoveWorkspace("team-a")
+	if se, ok := err.(*StatusError); !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+	if _, ok := ws.metas["team-a"]; !ok {
+		t.Fatal("workspace removed despite tasks")
+	}
+}

@@ -8,11 +8,6 @@ import (
 )
 
 func (s *WebAppService) ListCardProjects() ([]*orchestrator.Project, error) {
-	if s.EnsureCardProjects != nil {
-		if err := s.EnsureCardProjects(); err != nil {
-			return nil, err
-		}
-	}
 	projects, err := s.ListProjects()
 	if err != nil {
 		return nil, err
@@ -23,7 +18,8 @@ func (s *WebAppService) ListCardProjects() ([]*orchestrator.Project, error) {
 func cardProjects(projects []*orchestrator.Project) []*orchestrator.Project {
 	var result []*orchestrator.Project
 	for _, p := range projects {
-		if p.Perm != "fetch" && p.Status != orchestrator.StatusDegraded && orchestrator.IsCardProject(&p.Meta) {
+		_, hasCommand := p.Meta.CardCommands[p.Meta.CardEvents.Command]
+		if p.Perm != "fetch" && p.Status != orchestrator.StatusDegraded && p.Meta.CardEvents.Command != "" && hasCommand {
 			result = append(result, p)
 		}
 	}
@@ -31,7 +27,7 @@ func cardProjects(projects []*orchestrator.Project) []*orchestrator.Project {
 		if result[i].WorkspaceID != result[j].WorkspaceID {
 			return result[i].WorkspaceID < result[j].WorkspaceID
 		}
-		return orchestrator.IsDefaultMetaproject(result[i]) && !orchestrator.IsDefaultMetaproject(result[j])
+		return result[i].ID < result[j].ID
 	})
 	return result
 }
@@ -51,7 +47,16 @@ func (h *WebHandler) resolveCardProject(workspace, projectID string) (string, er
 		workspace = orchestrator.DefaultWorkspaceSlug
 	}
 	if projectID == "" {
-		projectID = orchestrator.DefaultMetaprojectID(workspace)
+		workspaces, err := h.Service.ListWorkspaces()
+		if err != nil {
+			return "", err
+		}
+		for _, ws := range workspaces {
+			if ws.ID == workspace {
+				return "", nil
+			}
+		}
+		return "", &StatusError{Code: http.StatusBadRequest, Message: "このワークスペースは存在しません"}
 	}
 	projects, err := h.listCardProjects()
 	if err != nil {

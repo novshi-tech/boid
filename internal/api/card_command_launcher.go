@@ -220,7 +220,7 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 	// inside that same transaction and is the sole enforcement point — a
 	// duplicate check here would just be dead weight racing its own staleness.
 
-	meta := s.hydrateMetaForTriggers(ctx, card.ProjectID)
+	meta := s.hydrateAutomationMeta(ctx, card.ProjectID, card.WorkspaceID)
 	if meta == nil || len(meta.CardCommands) == 0 {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: "card command: project declares no card_commands"}
 	}
@@ -302,6 +302,7 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 
 	result, err := s.Exec.StartExec(ctx, StartExecRequest{
 		ProjectID:     card.ProjectID,
+		WorkspaceID:   card.WorkspaceID,
 		JobID:         launcherJobID,
 		Argv:          triggerRunArgv(cmd.Run),
 		Readonly:      true,
@@ -329,7 +330,14 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 // project declares none — the Web UI's signal to render no command section
 // at all.
 func (s *TaskWorkflowService) CardCommandOptionsForProject(ctx context.Context, projectID string) []CardCommandOption {
-	meta := s.hydrateMetaForTriggers(ctx, projectID)
+	return cardCommandOptions(s.hydrateMetaForTriggers(ctx, projectID))
+}
+
+func (s *TaskWorkflowService) CardCommandOptionsForWorkspace(ctx context.Context, workspaceID string) []CardCommandOption {
+	return cardCommandOptions(s.hydrateAutomationMeta(ctx, "", workspaceID))
+}
+
+func cardCommandOptions(meta *orchestrator.ProjectMeta) []CardCommandOption {
 	if meta == nil || len(meta.CardCommands) == 0 {
 		return nil
 	}

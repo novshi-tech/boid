@@ -1226,7 +1226,7 @@ func TestWebHandler_PostTaskCreate_ValidationError(t *testing.T) {
 	if !strings.Contains(respBody, "残しておきたい説明文") {
 		t.Errorf("response should preserve description value, got: %s", respBody)
 	}
-	if !strings.Contains(respBody, `data-default="false" selected`) {
+	if !strings.Contains(respBody, `data-workspace="default" selected`) {
 		t.Errorf("response should mark project_id selected, got: %s", respBody)
 	}
 	if strings.Contains(respBody, `name="auto_start"`) {

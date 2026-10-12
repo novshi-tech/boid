@@ -173,14 +173,9 @@ branch は agent が自分で切り替える。dispatcher は `BOID_BASE_BRANCH`
 | 2 | PR-4 | C1 + C3 + C6: `perm` 列、`tasks` / `jobs` の `workspace_id`、`project_id` を nullable に、`trigger_runs` の付け替え、default metaproject の撤去、git gateway の権限の決め方の変更 | Q17-Q22 |
 | 2 | PR-5 | project.yaml の読み込み、bare mirror、`project fetch` / `reload` を消す | Q23-Q24 |
 
-**PR-4 のロールバック:** デプロイの前に DB をバックアップする。戻すときは、次のどちらかをやる。
+**PR-4 のロールバック:** デプロイ前 DB backup の復元のみ。旧バイナリは `checkSchemaCeiling` で未知 migration の DB を拒否するため、プレースホルダ project を入れる手順は成立しない。デプロイ後に作った task と更新は失われる。
 
-- バックアップから戻す。デプロイ後に作った task は失われる
-- `project_id` が NULL の行に、旧バイナリが読めるプレースホルダの project を入れてから、旧バイナリに戻す
-
-注意: 現行の `checkSchemaCeiling` は未知 version の DB を拒否するため、プレースホルダ project を投入しても旧バイナリは起動できない。旧バイナリへ戻すにはデプロイ前の DB backup 復元が必要。
-
-どちらでも戻せるのは PR-5 の前まで。PR-5 で bare mirror を消したら、旧バイナリは project.yaml を読めない。
+復元は daemon 停止 → DB ファイルと必要な sidecar の差し替え → 旧バイナリ起動の順で行う。[具体的なデプロイ・復元手順](workspace-receiver-rollback.md) に停止条件と対処も記載する。実 DB コピーでの通し確認 (Q22) は owner の残作業。PR-5 で bare mirror を消した後は、旧バイナリが project.yaml を読むための mirror も復元する必要がある。
 
 ## 6. 決定と PR-3 の範囲
 

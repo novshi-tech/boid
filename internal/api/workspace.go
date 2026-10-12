@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,8 +14,13 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+type WorkspaceTriggerRunner interface {
+	RunWorkspaceTriggerNow(context.Context, string, string) (*TriggerRunNowResult, error)
+}
+
 type WorkspaceHandler struct {
-	Service ProjectService
+	TriggerRunner WorkspaceTriggerRunner
+	Service       ProjectService
 	// Homes, when non-nil, is the engine-backed view of workspace HOME
 	// volumes used for Show's size reporting and Remove's home deletion.
 	// Left nil, both features degrade gracefully: Show omits
@@ -51,6 +57,7 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	// Nested under the slug rather than a top-level "/import-home" so the
 	// target is a path parameter like every other per-workspace operation.
 	r.Post("/{slug}/home/import", h.ImportHome)
+	r.Post("/{slug}/triggers/{name}/run", h.RunTrigger)
 	// The workspace's init.sh, read and written through the daemon because
 	// the file lives in the daemon's own volume. See workspace_init_script.go.
 	r.Get("/{slug}/init-script", h.GetInitScript)
@@ -386,4 +393,28 @@ func (h *WorkspaceHandler) ExportEnvelope(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/yaml")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+// RunTrigger handles POST /api/workspaces/{slug}/triggers/{name}/run.
+func (h *WorkspaceHandler) RunTrigger(w http.ResponseWriter, r *http.Request) {
+	if h.TriggerRunner == nil {
+		writeError(w, http.StatusNotImplemented, "trigger runner not wired")
+		return
+	}
+	slug := chi.URLParam(r, "slug")
+	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	name, err := url.PathUnescape(chi.URLParam(r, "name"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid trigger name")
+		return
+	}
+	result, err := h.TriggerRunner.RunWorkspaceTriggerNow(r.Context(), slug, name)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }

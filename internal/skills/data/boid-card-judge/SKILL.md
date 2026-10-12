@@ -1,6 +1,6 @@
 ---
 name: boid-card-judge
-description: Judge a manually created boid Card from its description, history, and work results. Use as the default metaproject's card-command judgment task, including asking the owner for missing requirements. Does not collect external signals.
+description: Judge a manually created boid Card from its description, history, and work results. Use as the workspace's built-in card-command judgment task, including asking the owner for missing requirements. Does not collect external signals.
 ---
 
 # Advance the Card

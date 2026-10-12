@@ -18,9 +18,10 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// TriggerKey identifies one trigger within one project — the single-flight
+// TriggerKey identifies a trigger within a project or a repository-free workspace — the single-flight
 // and elapsed-time scoping unit.
 type TriggerKey struct {
+	WorkspaceID string
 	ProjectID   string
 	TriggerName string
 }
@@ -148,7 +149,7 @@ func (s *TaskWorkflowService) selfHealStaleTriggerRun(now time.Time, run *orches
 		"run_id", run.ID, "project_id", run.ProjectID, "trigger", run.TriggerName, "job_id", run.JobID, "grace", TriggerRunSelfHealGrace)
 	if completed != nil {
 		*completed = append(*completed, TriggerCompletionResult{
-			TriggerKey: TriggerKey{ProjectID: run.ProjectID, TriggerName: run.TriggerName},
+			TriggerKey: triggerRunKey(run),
 			ExitCode:   TriggerRunSelfHealExitCode,
 		})
 	}
@@ -167,7 +168,7 @@ func (s *TaskWorkflowService) reconcileInFlight(now time.Time, completed *[]Trig
 	}
 	stillInFlight := make(map[TriggerKey]*orchestrator.TriggerRun, len(runs))
 	for _, run := range runs {
-		key := TriggerKey{ProjectID: run.ProjectID, TriggerName: run.TriggerName}
+		key := triggerRunKey(run)
 
 		// A row with JobID=="" is either mid-dispatch (SetTriggerRunJobID
 		// hasn't landed yet) or that update itself failed — both look
@@ -382,7 +383,19 @@ func timeoutAbortPayload(message string) json.RawMessage {
 // triggerIsDue reports whether every has elapsed since key's last recorded
 // start — true unconditionally when the trigger has never run.
 func (s *TaskWorkflowService) triggerIsDue(now time.Time, key TriggerKey, every time.Duration) (bool, error) {
-	latest, err := s.Triggers.LatestTriggerRun(key.ProjectID, key.TriggerName)
+	var latest *orchestrator.TriggerRun
+	var err error
+	if key.ProjectID == "" {
+		source, ok := s.Triggers.(interface {
+			LatestWorkspaceTriggerRun(string, string) (*orchestrator.TriggerRun, error)
+		})
+		if !ok {
+			return false, fmt.Errorf("workspace trigger ledger unavailable")
+		}
+		latest, err = source.LatestWorkspaceTriggerRun(key.WorkspaceID, key.TriggerName)
+	} else {
+		latest, err = s.Triggers.LatestTriggerRun(key.ProjectID, key.TriggerName)
+	}
 	if errors.Is(err, orchestrator.ErrTriggerRunNotFound) {
 		return true, nil
 	}
@@ -449,17 +462,19 @@ func triggerRunArgv(run string) []string {
 // in once dispatch succeeds. If StartExec itself fails, the claimed row is
 // deleted (not closed — see DeleteTriggerRun's own doc comment) so the
 // existing fail-open "retry next tick" behavior isn't delayed a full `every`.
-func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, projectID string, trig orchestrator.Trigger) (jobID string, err error) {
+func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, key TriggerKey, trig orchestrator.Trigger) (jobID string, err error) {
 	if s.Exec == nil {
 		return "", fmt.Errorf("exec dispatcher not configured")
 	}
-	run := &orchestrator.TriggerRun{ProjectID: projectID, TriggerName: trig.Name, StartedAt: now}
+	projectID := key.ProjectID
+	run := &orchestrator.TriggerRun{ProjectID: key.ProjectID, WorkspaceID: key.WorkspaceID, TriggerName: trig.Name, StartedAt: now}
 	if err := s.Triggers.CreateTriggerRun(run); err != nil {
 		return "", err
 	}
 
 	req := StartExecRequest{
 		ProjectID:   projectID,
+		WorkspaceID: run.WorkspaceID,
 		Argv:        triggerRunArgv(trig.Run),
 		Readonly:    true,
 		DisplayName: "trigger:" + trig.Name,
@@ -513,11 +528,6 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 		return result, nil
 	}
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
-	if s.EnsureTriggerProjects != nil {
-		if err := s.EnsureTriggerProjects(); err != nil {
-			slog.Warn("trigger sweep: ensure receivers failed; continuing sweep", "error", err)
-		}
-	}
 
 	inFlight, err := s.reconcileInFlight(now, &result.Completed)
 	if err != nil {
@@ -529,22 +539,41 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 		return result, fmt.Errorf("sweep triggers: list projects: %w", err)
 	}
 
+	type automationScope struct{ projectID, workspaceID string }
+	scopes := make([]automationScope, 0, len(projects))
+	for _, p := range projects {
+		scopes = append(scopes, automationScope{projectID: p.ID, workspaceID: p.WorkspaceID})
+	}
+	if source, ok := s.Meta.(interface {
+		WorkspaceStore() *orchestrator.WorkspaceStore
+	}); ok && source.WorkspaceStore() != nil {
+		slugs, err := source.WorkspaceStore().List()
+		if err != nil {
+			return result, fmt.Errorf("sweep triggers: list workspaces: %w", err)
+		}
+		for _, slug := range slugs {
+			scopes = append(scopes, automationScope{workspaceID: slug})
+		}
+	}
 	// Completions recorded off-thread by a previous tick's timeout handling,
 	// reported here so trackFailStreak counts them like any other
 	// completion. Drained after the two early returns above: draining
 	// empties pendingTimeouts, and an early return would discard them along
 	// with the rest of result.
 	result.Completed = append(result.Completed, s.drainTimeoutCompletions()...)
-	for _, p := range projects {
-		meta := s.hydrateMetaForTriggers(ctx, p.ID)
+	for _, scope := range scopes {
+		meta := s.hydrateAutomationMeta(ctx, scope.projectID, scope.workspaceID)
 		if meta == nil || len(meta.Triggers) == 0 {
 			continue
 		}
 		for _, trig := range meta.Triggers {
-			key := TriggerKey{ProjectID: p.ID, TriggerName: trig.Name}
+			key := TriggerKey{ProjectID: scope.projectID, TriggerName: trig.Name}
+			if scope.projectID == "" {
+				key.WorkspaceID = scope.workspaceID
+			}
 			every, everr := time.ParseDuration(trig.Every)
 			if everr != nil {
-				slog.Warn("trigger sweep: invalid every (should have been rejected at project.yaml load time)", "project_id", p.ID, "trigger", trig.Name, "every", trig.Every, "error", everr)
+				slog.Warn("trigger sweep: invalid every (should have been rejected at project.yaml load time)", "project_id", scope.projectID, "trigger", trig.Name, "every", trig.Every, "error", everr)
 				continue
 			}
 
@@ -579,7 +608,7 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 
 			everyDue, derr := s.triggerIsDue(now, key, every)
 			if derr != nil {
-				slog.Warn("trigger sweep: evaluate due failed", "project_id", p.ID, "trigger", trig.Name, "error", derr)
+				slog.Warn("trigger sweep: evaluate due failed", "project_id", scope.projectID, "trigger", trig.Name, "error", derr)
 				continue
 			}
 			if !everyDue {
@@ -603,7 +632,7 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 				continue
 			}
 
-			jobID, ferr := s.fireTrigger(ctx, now, p.ID, trig)
+			jobID, ferr := s.fireTrigger(ctx, now, key, trig)
 			if ferr != nil {
 				if errors.Is(ferr, orchestrator.ErrTriggerRunInFlight) {
 					// The in-memory inFlight snapshot missed a concurrently-
@@ -616,7 +645,7 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 				}
 				// Fail-open: no trigger_runs row exists for this attempt, so
 				// the next tick's triggerIsDue retries automatically.
-				slog.Warn("trigger sweep: dispatch failed (fail-open, will retry next tick)", "project_id", p.ID, "trigger", trig.Name, "error", ferr)
+				slog.Warn("trigger sweep: dispatch failed (fail-open, will retry next tick)", "project_id", scope.projectID, "trigger", trig.Name, "error", ferr)
 				// Reported to trackFailStreak too, alongside the fail-open
 				// retry above — see TriggerDispatchFailureExitCode's doc.
 				result.Completed = append(result.Completed, TriggerCompletionResult{TriggerKey: key, ExitCode: TriggerDispatchFailureExitCode})
@@ -628,20 +657,19 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 	return result, nil
 }
 
-// lookupTrigger resolves projectID's hydrated meta and finds the Trigger
-// named triggerName within it, for RunTriggerNow. Returns a *StatusError
-// (404) for an unknown project or trigger name.
-func (s *TaskWorkflowService) lookupTrigger(ctx context.Context, projectID, triggerName string) (*orchestrator.Trigger, error) {
-	meta := s.hydrateMetaForTriggers(ctx, projectID)
+// lookupTrigger resolves the hydrated automation scope and finds the named trigger.
+// Returns a *StatusError (404) for an unknown scope or trigger name.
+func (s *TaskWorkflowService) lookupTrigger(ctx context.Context, key TriggerKey) (*orchestrator.Trigger, error) {
+	meta := s.hydrateAutomationMeta(ctx, key.ProjectID, key.WorkspaceID)
 	if meta == nil {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("trigger run: project %q meta not loaded", projectID)}
+		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("trigger run: scope %q meta not loaded", key.scopeLabel())}
 	}
 	for i := range meta.Triggers {
-		if meta.Triggers[i].Name == triggerName {
+		if meta.Triggers[i].Name == key.TriggerName {
 			return &meta.Triggers[i], nil
 		}
 	}
-	return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("trigger run: no trigger named %q in project.yaml", triggerName)}
+	return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("trigger run: no trigger named %q in scope %q", key.TriggerName, key.scopeLabel())}
 }
 
 // TriggerRunNowResult is RunTriggerNow's / `boid trigger run`'s response
@@ -659,20 +687,28 @@ type TriggerRunNowResult struct {
 // the `every` elapsed check but not single-flight — the manual debugging
 // entry point behind `boid trigger run <name>`.
 func (s *TaskWorkflowService) RunTriggerNow(ctx context.Context, projectID, triggerName string) (*TriggerRunNowResult, error) {
+	return s.runTriggerNow(ctx, TriggerKey{ProjectID: projectID, TriggerName: triggerName})
+}
+
+// RunWorkspaceTriggerNow manually fires a repository-free workspace trigger.
+func (s *TaskWorkflowService) RunWorkspaceTriggerNow(ctx context.Context, workspaceID, triggerName string) (*TriggerRunNowResult, error) {
+	return s.runTriggerNow(ctx, TriggerKey{WorkspaceID: workspaceID, TriggerName: triggerName})
+}
+
+func (s *TaskWorkflowService) runTriggerNow(ctx context.Context, key TriggerKey) (*TriggerRunNowResult, error) {
 	if s.Triggers == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "trigger run: TriggerRunStore not configured"}
 	}
 	if s.Exec == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "trigger run: ExecDispatcher not configured"}
 	}
-	trig, err := s.lookupTrigger(ctx, projectID, triggerName)
+	trig, err := s.lookupTrigger(ctx, key)
 	if err != nil {
 		return nil, err
 	}
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
 	now := time.Now().UTC()
 
-	key := TriggerKey{ProjectID: projectID, TriggerName: triggerName}
 	inFlight, err := s.reconcileInFlight(now, nil)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("trigger run: %s", err.Error())}
@@ -681,7 +717,7 @@ func (s *TaskWorkflowService) RunTriggerNow(ctx context.Context, projectID, trig
 		return &TriggerRunNowResult{Skipped: true, Reason: "single-flight: a run for this trigger is already in flight"}, nil
 	}
 
-	jobID, err := s.fireTrigger(ctx, now, projectID, *trig)
+	jobID, err := s.fireTrigger(ctx, now, key, *trig)
 	if err != nil {
 		if errors.Is(err, orchestrator.ErrTriggerRunInFlight) {
 			// Same DB-level race the in-memory inFlight busy-check above can
@@ -784,7 +820,7 @@ func (l *TriggerLoop) runOnce(ctx context.Context) {
 	if len(result.Fired) > 0 {
 		keys := make([]string, 0, len(result.Fired))
 		for _, f := range result.Fired {
-			keys = append(keys, f.ProjectID+"/"+f.TriggerName)
+			keys = append(keys, f.TriggerKey.String())
 		}
 		slog.Info("trigger sweep fired", "count", len(result.Fired), "triggers", keys)
 	}
@@ -836,11 +872,11 @@ func (l *TriggerLoop) trackSkipStreak(ctx context.Context, now time.Time, skippe
 			// round — say so rather than reading as "nothing is happening".
 			l.notify(ctx, skip.TriggerKey, fmt.Sprintf(
 				"trigger %s/%s: 1 巡が %s 走って timeout (%s) を超えました。daemon が打ち切ります (超過 %d 回目)",
-				skip.ProjectID, skip.TriggerName, overrun.Round(time.Second), skip.Timeout, multiple))
+				skip.TriggerKey.scopeLabel(), skip.TriggerName, overrun.Round(time.Second), skip.Timeout, multiple))
 		} else {
 			l.notify(ctx, skip.TriggerKey, fmt.Sprintf(
 				"trigger %s/%s: single-flight で %s 詰まっています (`every` %s、詰まり閾値 %s の %d 倍以上)",
-				skip.ProjectID, skip.TriggerName, overrun.Round(time.Second), skip.Every, threshold, multiple))
+				skip.TriggerKey.scopeLabel(), skip.TriggerName, overrun.Round(time.Second), skip.Every, threshold, multiple))
 		}
 	}
 	for key := range l.skipStreak {
@@ -869,7 +905,7 @@ func (l *TriggerLoop) trackFailStreak(ctx context.Context, completed []TriggerCo
 		if l.failStreak[c.TriggerKey]%TriggerStuckFailStreakThreshold == 0 {
 			l.notify(ctx, c.TriggerKey, fmt.Sprintf(
 				"trigger %s/%s: %d 回連続で失敗しました (直近 exit code %d)",
-				c.ProjectID, c.TriggerName, l.failStreak[c.TriggerKey], c.ExitCode))
+				c.TriggerKey.scopeLabel(), c.TriggerName, l.failStreak[c.TriggerKey], c.ExitCode))
 		}
 	}
 }
@@ -885,6 +921,40 @@ func (l *TriggerLoop) notify(ctx context.Context, key TriggerKey, message string
 	notifyCtx, cancel := context.WithTimeout(ctx, notifyTimeout)
 	defer cancel()
 	if err := l.Notifier.Notify(notifyCtx, notify.Event{ProjectID: key.ProjectID, Message: message}); err != nil {
-		slog.Warn("trigger loop notify failed", "trigger", key.ProjectID+"/"+key.TriggerName, "error", err)
+		slog.Warn("trigger loop notify failed", "trigger", key.String(), "error", err)
 	}
 }
+
+func triggerRunKey(run *orchestrator.TriggerRun) TriggerKey {
+	key := TriggerKey{ProjectID: run.ProjectID, TriggerName: run.TriggerName}
+	if run.ProjectID == "" {
+		key.WorkspaceID = run.WorkspaceID
+	}
+	return key
+}
+
+func (s *TaskWorkflowService) hydrateAutomationMeta(ctx context.Context, projectID, workspaceID string) *orchestrator.ProjectMeta {
+	if projectID != "" {
+		return s.hydrateMetaForTriggers(ctx, projectID)
+	}
+	source, ok := s.Meta.(interface {
+		GetWorkspaceMeta(context.Context, string) (*orchestrator.ProjectMeta, error)
+	})
+	if !ok {
+		return nil
+	}
+	meta, err := source.GetWorkspaceMeta(ctx, workspaceID)
+	if err != nil {
+		slog.Warn("workspace automation lookup failed", "workspace_id", workspaceID, "error", err)
+		return nil
+	}
+	return meta
+}
+
+func (key TriggerKey) scopeLabel() string {
+	if key.ProjectID != "" {
+		return key.ProjectID
+	}
+	return "workspace:" + key.WorkspaceID
+}
+func (key TriggerKey) String() string { return key.scopeLabel() + "/" + key.TriggerName }
