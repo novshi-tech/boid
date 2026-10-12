@@ -1,7 +1,6 @@
 package dispatcher
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -211,15 +210,5 @@ func TestSanitizeURLForLogging(t *testing.T) {
 				t.Errorf("SanitizeURLForLogging(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
-	}
-}
-
-// runGitForTest runs `git <args...>` with cwd=dir, failing the test on error.
-func runGitForTest(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }

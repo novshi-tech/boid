@@ -734,51 +734,6 @@ func TestCreateWorkspace_BlocksMidRemove(t *testing.T) {
 // ReloadProjects / CreateProject cache race (MAJOR 1, codex review round 3)
 // ---------------------------------------------------------------------------
 
-// createProjectMetaStore is a minimal ProjectAppService.Meta stub for
-// TestCreateProject_BlockedByAssign below: Load returns a fixed meta (
-// CreateProject dereferences meta.ID immediately, so a nil return — what the
-// shared stubProjectMetaStore.Load always returns — would panic), and
-// SetWorkspaceID calls are recorded so the test can assert the final cached
-// value once both goroutines finish.
-type createProjectMetaStore struct {
-	meta                *orchestrator.ProjectMeta
-	setWorkspaceIDCalls map[string]string
-	// removed records every Remove call, so a test can assert that a failed
-	// registration did NOT evict an ESTABLISHED project's cached meta
-	// (removeCachedMetaUnlessRegistered — the id comes from project.yaml, so
-	// two registrations of the same repo collide on it).
-	removed []string
-}
-
-func (s *createProjectMetaStore) Load(_ string) (*orchestrator.ProjectMeta, error) {
-	return s.meta, nil
-}
-func (s *createProjectMetaStore) LoadBareRepo(_ string) (*orchestrator.ProjectMeta, error) {
-	return s.meta, nil
-}
-func (s *createProjectMetaStore) LoadBareRepoExpectingID(_, _, _ string) (*orchestrator.ProjectMeta, error) {
-	return s.meta, nil
-}
-func (s *createProjectMetaStore) Get(_ string) (*orchestrator.ProjectMeta, bool) { return nil, false }
-func (s *createProjectMetaStore) Remove(id string)                               { s.removed = append(s.removed, id) }
-func (s *createProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error      { return nil }
-func (s *createProjectMetaStore) Status(_ string) orchestrator.ProjectStatus {
-	return orchestrator.ProjectStatus{State: orchestrator.StatusReady}
-}
-func (s *createProjectMetaStore) MarkDegraded(_, _ string) {}
-func (s *createProjectMetaStore) SetSynthesizedMeta(_ string, meta *orchestrator.ProjectMeta) {
-	s.meta = meta
-}
-func (s *createProjectMetaStore) Explain(id string) (*orchestrator.ProjectExplain, error) {
-	return orchestrator.ComputeProjectExplain(id, "", s.meta, nil, false), nil
-}
-func (s *createProjectMetaStore) SetWorkspaceID(projectID, workspaceID string) {
-	if s.setWorkspaceIDCalls == nil {
-		s.setWorkspaceIDCalls = map[string]string{}
-	}
-	s.setWorkspaceIDCalls[projectID] = workspaceID
-}
-
 func equalStringSliceForTest(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
