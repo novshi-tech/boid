@@ -258,7 +258,7 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		defs,
 		project.WorkDir,
 		exec.LookPath,
-		dispatcher.GitOriginURL,
+		func(string) (string, error) { return project.UpstreamURL, nil },
 	)
 	if err != nil {
 		return nil, err

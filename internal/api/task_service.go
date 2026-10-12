@@ -15,14 +15,15 @@ import (
 )
 
 type TaskAppService struct {
-	Tasks       TaskStore
-	Actions     ActionStore
-	Jobs        JobStore
-	Meta        MetaStore
-	Workflow    WorkflowService
-	Projects    ProjectWorkDirLookup
-	RuntimesDir string
-	Notify      Notifier
+	VerifyRelease func(context.Context, *orchestrator.Project, string, string) (bool, error)
+	Tasks         TaskStore
+	Actions       ActionStore
+	Jobs          JobStore
+	Meta          MetaStore
+	Workflow      WorkflowService
+	Projects      ProjectWorkDirLookup
+	RuntimesDir   string
+	Notify        Notifier
 	// BlockingAsk coordinates harness-independent blocking Q&A (boid task ask).
 	// Shared with the sandbox boid builtin executor (which calls AskTaskBlocking)
 	// and the answer path (AnswerTask), so both halves of a blocking ask use the

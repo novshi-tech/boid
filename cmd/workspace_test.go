@@ -1180,7 +1180,7 @@ func TestRunWorkspaceExport_RefusesAnEmptyResponse(t *testing.T) {
 func preInitScriptExportDocument(slug string) string {
 	return "apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: " + slug +
 		"\nspec:\n  host_commands:\n    - gh\n  env: {}\n  allowed_domains: []\n" +
-		"  extra_repos: []\n  container_image: \"\"\n  capabilities: {}\n  projects: []\n"
+		"  container_image: \"\"\n  capabilities: {}\n  projects: []\n"
 }
 
 // TestRunWorkspaceExport_RefusesADocumentWithoutInitScript is PR9 codex round 4

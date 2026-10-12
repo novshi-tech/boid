@@ -15,6 +15,6 @@ boid workspace export dev
 
 設定は dispatch 時に解決します。`base_branch` は task 作成時に保存し、空なら agent の checkout が origin の default branch を使います。
 
-`project init` と `project migrate` は撤去済みです。旧定義は workspace envelope の `spec` に移し、`boid workspace apply` で反映します。`project fetch` / `project reload` は設定を読みません。
+`project init` と `project migrate` は撤去済みです。旧定義は workspace envelope の `spec` に移し、`boid workspace apply` で反映します。`project fetch` / `project reload` も撤去済みです。登録は URL の保存のみで、clone は job が git gateway 経由で行います。
 
 ツールのインストールと認証は workspace の永続 HOME に保存します。[workspace home](workspace-home.md) を参照してください。

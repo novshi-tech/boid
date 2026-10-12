@@ -28,13 +28,7 @@ type WorkspaceMeta struct {
 	//   - ".cosmos.azure.com"     suffix match (matches "<sub>.cosmos.azure.com")
 	AllowedDomains []string `yaml:"allowed_domains,omitempty" json:"allowed_domains,omitempty"`
 
-	// ExtraRepos is the workspace-scoped, read-only allowlist of additional
-	// git repositories outside this workspace's own projects that jobs may
-	// fetch (never push) via the git gateway. Entries are upstream URLs in
-	// any form dispatcher.NormalizeOriginURL accepts (HTTPS or SSH);
-	// dispatcher resolves each into a gitgateway.RepoKey at dispatch time and
-	// grants it PermFetch alongside this workspace's own projects and peers.
-	ExtraRepos []string `yaml:"extra_repos,omitempty" json:"extra_repos,omitempty"`
+	legacyExtraRepos []string `yaml:"-" json:"-"`
 
 	// Services is the workspace-scoped list of API gateway logical service
 	// names enabled for this workspace, on top of config.yaml's

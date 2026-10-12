@@ -1586,36 +1586,15 @@ func TestCreateTask_SupervisorCase3_BaseBranchPersisted(t *testing.T) {
 	}
 }
 
-// TestCreateTask_ExecutorCase3_NoParent_Errors verifies that a parent-less
-// executor pointed at a non-existent base_branch is rejected at creation time
-// instead of waiting for the dispatcher to fail.
-func TestCreateTask_ExecutorCase3_NoParent_Errors(t *testing.T) {
-	dir := initServiceTestRepo(t, "main")
-	meta := &orchestrator.ProjectMeta{
-		BaseBranch: "release-2026",
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {},
-		},
+func TestCreateTaskExecutorCreatesBaseWithoutMirror(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{BaseBranch: "release-2026", TaskBehaviors: map[string]orchestrator.TaskBehavior{"executor": {}}}
+	svc := &TaskAppService{Tasks: &stubTaskStore{}, Meta: stubMetaStore{meta: meta}, Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: "/missing/legacy-mirror"}}}
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{ProjectID: "proj-1", Title: "new branch", Behavior: "executor"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	svc := &TaskAppService{
-		Tasks:    &stubTaskStore{},
-		Meta:     stubMetaStore{meta: meta},
-		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
-	}
-	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "case3 executor no parent",
-		Behavior:  "executor",
-	})
-	if err == nil {
-		t.Fatal("expected error for case 3 executor with no parent, got nil")
-	}
-	se, ok := err.(*StatusError)
-	if !ok {
-		t.Fatalf("error type = %T, want *StatusError", err)
-	}
-	if se.Code != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want 400", se.Code)
+	if task.Exec.BaseBranch != "release-2026" {
+		t.Fatalf("base_branch = %q", task.Exec.BaseBranch)
 	}
 }
 

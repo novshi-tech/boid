@@ -46,66 +46,6 @@ func TestAllCommandsHaveScopeAnnotation(t *testing.T) {
 	walk(rootCmd)
 }
 
-// expectedScopeAnnotations pins MAJOR 6 (codex review round 1) / MAJOR 3
-// (codex review round 2, docs/plans/workspace-db-consolidation.md): the
-// scope classification of every leaf command in the tree, cross-checked
-// against docs/plans/cli-remote-connection.md's "分類一覧 (全 leaf command)"
-// table (Phase 3 CLI リモート pre-requisite). Unlike round 1's hand-picked
-// subset, this table is exhaustive — TestScopeAnnotations_MatchExpectedTable
-// below asserts the set of keys here equals the set of live leaf commands
-// exactly, in both directions, so neither a missing entry nor a stray extra
-// one can go unnoticed. Adding a brand-new leaf command therefore now DOES
-// fail this test until its scope is added here — that is deliberate
-// (fail-closed): round 1's "only listed commands are checked" contract let
-// `host-commands reload` and a dozen others silently drift out of this
-// table without anything catching it.
-//
-// A few entries deliberately diverge from what the mechanism alone would
-// suggest, reconciled against the plan doc during codex review round 2:
-//   - `gc` / `project reload`: RECLASSIFIED to scopeRemote by
-//     docs/plans/release-onboarding.md 決定2/scope 再分類表 (PR5). Both were
-//     scopeLocal ("daemon lifecycle machinery" / "境界越えで壊れる"
-//     groupings) even though their actual work (POST /api/gc,
-//     POST /api/projects/reload) was always dispatched entirely through
-//     the daemon's HTTP API — under the bare-metal daemon this reached it
-//     via an implicit channel (the runtime-dir bind happens to make the
-//     same unix socket path resolve on both sides). Now that host mode
-//     (cmd/host.go) is the CLI's unconditional default resolution path
-//     for scope=remote commands, both go through the same explicit,
-//     authenticated CLI listener as every other daemon API call instead
-//     of relying on that bind-mount coincidence.
-//   - `check`: pinned to scopeLocal — its exec.LookPath/unshare probes
-//     inspect the machine the CLI process runs on, which only coincides
-//     with the daemon's host under today's UNIX-socket-only transport.
-//   - `project init`: RECLASSIFIED to scopeNeutral by docs/plans/
-//     release-onboarding.md 穴 7/PR6 (codex round-21 review) — it used to
-//     be scopeLocal for the identical "resolves [dir] against the
-//     daemon's own host" reason as `project reload` above, back when it
-//     also registered the scaffolded project with the daemon
-//     (POST /api/projects, work_dir-based). That registration call is
-//     gone: `project init` now only scaffolds [dir] locally (on whatever
-//     host the CLI process itself runs on) and prints git-URL
-//     registration guidance — it never calls client.FromContext or
-//     resolves a profile at all. scopeLocal's contract is stricter than
-//     that: root.go's PersistentPreRunE hard-rejects the command
-//     outright whenever the active profile is a remote (https-scheme)
-//     one, appropriate for genuine "this daemon, this host" commands
-//     (start/stop/gc) but wrong for one that has no opinion on daemons or
-//     profiles at all — a user on a remote profile could no longer reach
-//     the wizard under scopeLocal. scopeNeutral (same as login/logout,
-//     cmd/login.go) is the correct fit now.
-//   - `project add`: RECLASSIFIED to scopeRemote by docs/plans/
-//     volume-only-daemon.md §論点a — this is the exact cutover the comment
-//     above used to predict ("Phase 6 is expected to move this to
-//     scopeRemote"). `boid project add <git-url>` no longer resolves any
-//     local filesystem path at all; the daemon clones the URL itself into a
-//     bare repository it manages, so this is now an ordinary HTTP API
-//     operation like `project show`/`project list`. `project fetch` (new in
-//     the same PR — `boid project fetch <id>`, runs `git fetch --all`
-//     inside the bare repo) is scopeRemote for the identical reason.
-//
-// See cmd/check.go, cmd/gc.go, and cmd/project.go's own annotation comments
-// for the full reasoning behind each.
 var expectedScopeAnnotations = map[string]string{
 	// remote — the command's actual work happens through the daemon's HTTP
 	// API (today always the local UNIX socket).
@@ -133,9 +73,7 @@ var expectedScopeAnnotations = map[string]string{
 	"boid job watch":            scopeRemote,
 	"boid project add":          scopeRemote,
 	"boid project behaviors":    scopeRemote,
-	"boid project fetch":        scopeRemote,
 	"boid project list":         scopeRemote,
-	"boid project reload":       scopeRemote,
 	"boid project remove":       scopeRemote,
 	"boid project set-perm":     scopeRemote,
 	"boid project show":         scopeRemote,
@@ -181,31 +119,19 @@ var expectedScopeAnnotations = map[string]string{
 	// POST /api/projects/{id}/triggers/{name}/run — same axis as `boid
 	// exec`/`boid action send` above, the daemon's HTTP API is the entire
 	// mechanism.
-	"boid trigger run":      scopeRemote,
-	"boid web devices":      scopeRemote,
-	"boid web pair":         scopeRemote,
-	"boid web revoke":       scopeRemote,
-	"boid web revoke-all":   scopeRemote,
-	"boid web set-addr":     scopeRemote,
-	"boid web set-url":      scopeRemote,
-	"boid workspace apply":  scopeRemote,
-	"boid workspace assign": scopeRemote,
-	"boid workspace clear":  scopeRemote,
-	"boid workspace create": scopeRemote,
-	"boid workspace edit":   scopeRemote,
-	"boid workspace export": scopeRemote,
-	// import-home reads a LOCAL directory to build its payload and is still
-	// scopeRemote, unlike `project reload`, which also reads a local path
-	// (a project's stored WorkDir) and is scopeLocal. The axis is whose
-	// filesystem the path has to be on: `project reload` hands the DAEMON
-	// a path it opens itself (so it only works while CLI and daemon share
-	// a host), while import-home opens it in this process and streams the
-	// BYTES — which is exactly why PR8's payload is a tar stream rather
-	// than a bind mount (docs/plans/workspace-home-volume-persistence.md
-	// 論点 f). (`project init` used to be the scopeLocal comparison point
-	// here too, but docs/plans/release-onboarding.md 穴 7/PR6 reclassified
-	// it to scopeNeutral — see cmd/project.go's own annotation comment —
-	// since it no longer hands the daemon anything at all.)
+	"boid trigger run":           scopeRemote,
+	"boid web devices":           scopeRemote,
+	"boid web pair":              scopeRemote,
+	"boid web revoke":            scopeRemote,
+	"boid web revoke-all":        scopeRemote,
+	"boid web set-addr":          scopeRemote,
+	"boid web set-url":           scopeRemote,
+	"boid workspace apply":       scopeRemote,
+	"boid workspace assign":      scopeRemote,
+	"boid workspace clear":       scopeRemote,
+	"boid workspace create":      scopeRemote,
+	"boid workspace edit":        scopeRemote,
+	"boid workspace export":      scopeRemote,
 	"boid workspace import-home": scopeRemote,
 	// The init-script quartet (PR9 of
 	// docs/plans/workspace-home-volume-persistence.md, 論点 d). scopeRemote on

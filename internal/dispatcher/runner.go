@@ -505,7 +505,19 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			spec.HostCommands,
 			projectWorkDir,
 			exec.LookPath,
-			GitOriginURL,
+			func(string) (string, error) {
+				if r.Projects == nil || spec.ProjectID == "" {
+					return "", fmt.Errorf("no primary repository")
+				}
+				project, err := r.Projects.GetProject(spec.ProjectID)
+				if err != nil {
+					return "", err
+				}
+				if project == nil {
+					return "", fmt.Errorf("project %q not found", spec.ProjectID)
+				}
+				return project.UpstreamURL, nil
+			},
 		)
 		if err != nil {
 			r.failJob(j, err)

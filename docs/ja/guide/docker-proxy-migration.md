@@ -42,7 +42,6 @@ spec:
   host_commands: []
   env: {}
   allowed_domains: []
-  extra_repos: []
   container_image: ""
   capabilities: {}
   projects: []
@@ -59,7 +58,6 @@ spec:
   host_commands: []
   env: {}
   allowed_domains: []
-  extra_repos: []
   container_image: ""
   capabilities:
     docker: {}   # ← 追加

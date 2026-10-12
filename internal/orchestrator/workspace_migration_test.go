@@ -1216,7 +1216,7 @@ func TestMigrateWorkspaceYAMLToDB_UpgradeFromPR7WithBindingsStagingHash_RollsFor
 	if teamA.Env["FOO"] != "bar" {
 		t.Errorf("team-a.Env[FOO] after upgrade roll-forward = %q, want bar", teamA.Env["FOO"])
 	}
-	if len(teamA.AllowedDomains) != 0 || len(teamA.ExtraRepos) != 0 {
+	if len(teamA.AllowedDomains) != 0 {
 		// Sanity: no unrelated field leaked a value in from the discarded
 		// additional_bindings: parse.
 		t.Errorf("team-a unexpected non-empty fields after roll-forward: %+v", teamA)

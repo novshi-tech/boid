@@ -263,7 +263,6 @@ func printWorkspaceApplyDiff(out io.Writer, slug string, exists bool, current, p
 	diffField(out, color, "host_commands", formatStringSlice(current.HostCommands), formatStringSlice(proposed.HostCommands))
 	diffField(out, color, "env", formatEnvMapForDiff(current.Env), formatEnvMapForDiff(proposed.Env))
 	diffField(out, color, "allowed_domains", formatStringSlice(current.AllowedDomains), formatStringSlice(proposed.AllowedDomains))
-	diffField(out, color, "extra_repos", formatStringSlice(current.ExtraRepos), formatStringSlice(proposed.ExtraRepos))
 	diffField(out, color, "services", formatStringSlice(current.Services), formatStringSlice(proposed.Services))
 	diffField(out, color, "container_image", current.ContainerImage, proposed.ContainerImage)
 	if !reflect.DeepEqual(current.Capabilities, proposed.Capabilities) {

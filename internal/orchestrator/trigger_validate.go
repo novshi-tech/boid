@@ -17,12 +17,6 @@ import (
 // rather than let that surprise happen silently at runtime.
 const TriggerSweepResolution = time.Minute
 
-// ValidateTriggers checks a workspace configuration `triggers[]` list at LOAD time
-// (called from parseProjectMetaBytes, spec_loader.go) — the same place
-// validateHookKind validates task_behaviors.*.hooks. A malformed trigger
-// must fail `boid project add`/`boid project fetch` loudly; the trigger
-// sweep loop (internal/api/trigger_loop.go) trusts that every Trigger it
-// reads off a hydrated ProjectMeta already passed this check.
 func ValidateTriggers(triggers []Trigger) error {
 	seen := make(map[string]bool, len(triggers))
 	for i, trig := range triggers {

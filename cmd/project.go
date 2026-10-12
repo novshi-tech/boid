@@ -13,15 +13,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// --workspace flag values for project add / project init.
+// --workspace flag value for project add.
 var projectAddWorkspace string
 
 // --name flag for project add: overrides the project name otherwise derived
 // from the git URL's last path component.
 var projectAddName string
 var projectAddPerm string
-
-// --agent flag value for project init; empty falls back to initwizard.DefaultAgent.
 
 var projectCmd = &cobra.Command{
 	Use:   "project",
@@ -35,8 +33,7 @@ var projectAddCmd = &cobra.Command{
 
   boid project add <git-url> --workspace=<name> [--name=<project-name>] [--perm=fetch|push]
 
-Has the daemon clone the URL itself into a daemon-managed bare repository
-(docs/plans/volume-only-daemon.md §論点a/b). --workspace is required;
+Registers the URL in the database without cloning. --workspace is required;
 --name overrides the project name otherwise derived from the URL's last
 path component.
 
@@ -68,13 +65,6 @@ var projectRemoveCmd = &cobra.Command{
 	RunE:              runProjectRemove,
 }
 
-var projectReloadCmd = &cobra.Command{
-	Use:         "reload",
-	Short:       "Refresh registered repository identities",
-	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
-	RunE:        runProjectReload,
-}
-
 var projectShowExplain bool
 
 var projectShowCmd = &cobra.Command{
@@ -93,15 +83,6 @@ var projectBehaviorsCmd = &cobra.Command{
 	ValidArgsFunction: completeProjectRefs,
 	Annotations:       map[string]string{scopeAnnotationKey: scopeRemote},
 	RunE:              runProjectBehaviors,
-}
-
-var projectFetchCmd = &cobra.Command{
-	Use:               "fetch <project-ref>",
-	Short:             "Fetch the latest git refs for a git-URL registered project and refresh the repository identity",
-	Args:              cobra.ExactArgs(1),
-	ValidArgsFunction: completeProjectRefs,
-	Annotations:       map[string]string{scopeAnnotationKey: scopeRemote},
-	RunE:              runProjectFetch,
 }
 
 var projectSetPermCmd = &cobra.Command{
@@ -133,13 +114,13 @@ func runProjectSetPerm(cmd *cobra.Command, args []string) error {
 
 func init() {
 	projectAddCmd.Flags().StringVar(&projectAddPerm, "perm", "push", "Repository permission: fetch or push")
-	projectAddCmd.Flags().StringVar(&projectAddWorkspace, "workspace", "", "Workspace to register the project into (required for a git-URL <git-url>; optional, get-or-create, for a legacy <dir>)")
+	projectAddCmd.Flags().StringVar(&projectAddWorkspace, "workspace", "", "Workspace to register the project into (required)")
 	projectAddCmd.Flags().StringVar(&projectAddName, "name", "", "Project name override, git-URL form only (default: derived from the URL's last path component)")
 	projectShowCmd.Flags().BoolVar(&projectShowExplain, "explain", false, "Show field-by-field provenance (workspace default vs unset)")
 
 	projectRemoveCmd.Aliases = []string{"rm"}
 
-	projectCmd.AddCommand(projectSetPermCmd, projectAddCmd, projectListCmd, projectRemoveCmd, projectReloadCmd, projectFetchCmd, projectShowCmd, projectBehaviorsCmd)
+	projectCmd.AddCommand(projectSetPermCmd, projectAddCmd, projectListCmd, projectRemoveCmd, projectShowCmd, projectBehaviorsCmd)
 	rootCmd.AddCommand(projectCmd)
 }
 
@@ -197,7 +178,7 @@ func runProjectAddGitURL(cmd *cobra.Command, gitURL string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
 		fmt.Fprintf(cmd.OutOrStdout(), "  workspace: %s\n", p.WorkspaceID)
 		fmt.Fprintf(cmd.OutOrStdout(), "  perm: %s\n", p.Perm)
-		fmt.Fprintf(cmd.OutOrStdout(), "  bare repo: %s\n", p.WorkDir)
+		fmt.Fprintf(cmd.OutOrStdout(), "  upstream: %s\n", p.UpstreamURL)
 		// Check hook requires
 		for _, b := range p.Meta.TaskBehaviors {
 			for _, h := range b.Hooks {
@@ -208,26 +189,6 @@ func runProjectAddGitURL(cmd *cobra.Command, gitURL string) error {
 				}
 			}
 		}
-		return nil
-	})
-}
-
-// runProjectFetch handles `boid project fetch <project-ref>`.
-func runProjectFetch(cmd *cobra.Command, args []string) error {
-	c := client.FromContext(cmd.Context())
-
-	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
-	if err != nil {
-		return fmt.Errorf("resolve project: %w", err)
-	}
-
-	var updated projectspec.Project
-	if err := c.Do("POST", "/api/projects/"+p.ID+"/fetch", nil, &updated); err != nil {
-		return fmt.Errorf("fetch project: %w", err)
-	}
-
-	return renderOutput(cmd, &updated, func() error {
-		fmt.Fprintf(cmd.OutOrStdout(), "project fetched: %s (%s)\n", updated.ID, updated.Meta.Name)
 		return nil
 	})
 }
@@ -282,26 +243,6 @@ func runProjectRemove(cmd *cobra.Command, args []string) error {
 
 	return renderOutput(cmd, map[string]any{"id": p.ID, "removed": true}, func() error {
 		fmt.Fprintf(cmd.OutOrStdout(), "project removed: %s\n", p.ID)
-		return nil
-	})
-}
-
-func runProjectReload(cmd *cobra.Command, args []string) error {
-	c := client.FromContext(cmd.Context())
-
-	var result map[string]any
-	if err := c.Do("POST", "/api/projects/reload", nil, &result); err != nil {
-		return fmt.Errorf("reload: %w", err)
-	}
-
-	return renderOutput(cmd, result, func() error {
-		status := result["status"]
-		fmt.Fprintf(cmd.OutOrStdout(), "reload: %s\n", status)
-		if errs, ok := result["errors"]; ok {
-			for _, e := range errs.([]any) {
-				fmt.Fprintf(cmd.OutOrStdout(), "  error: %s\n", e)
-			}
-		}
 		return nil
 	})
 }
@@ -422,7 +363,7 @@ func renderProjectDetail(p *projectspec.Project) {
 	if p.UpstreamURL != "" {
 		fmt.Printf("UpstreamURL: %s\n", p.UpstreamURL)
 	} else {
-		fmt.Printf("UpstreamURL: (none — add a git remote and run `boid project reload`)\n")
+		fmt.Printf("UpstreamURL: (none — remove and re-add the project with a git URL)\n")
 	}
 	fmt.Printf("CreatedAt:   %s\n", formatTime(p.CreatedAt))
 	fmt.Printf("UpdatedAt:   %s\n", formatTime(p.UpdatedAt))

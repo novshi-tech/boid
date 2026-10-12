@@ -703,11 +703,10 @@ func TestNewWorkspaceEnvelopeFromMeta_ExplicitEmptyFieldsSurviveExport(t *testin
 // projects but MISSED extra_repos/container_image/capabilities, so exporting
 // a workspace with no extra repos and Docker disabled silently omitted those
 // three keys instead of emitting an explicit empty value — see
-// TestApplyWorkspaceEnvelope_ClearsStaleExtraReposAndCapabilities below for
+// TestApplyWorkspaceEnvelope_ClearsStaleCapabilities below for
 // the full export -> apply round trip this enables.
 func TestNewWorkspaceEnvelopeFromMeta_ExtraFieldsSurviveExport(t *testing.T) {
 	meta := &WorkspaceMeta{
-		ExtraRepos:     []string{},
 		ContainerImage: "",
 		Capabilities:   Capabilities{},
 	}
@@ -717,7 +716,7 @@ func TestNewWorkspaceEnvelopeFromMeta_ExtraFieldsSurviveExport(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	for _, want := range []string{"extra_repos: []", `container_image: ""`, "capabilities: {}"} {
+	for _, want := range []string{`container_image: ""`, "capabilities: {}"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("exported yaml = %q, want it to contain %q", string(data), want)
 		}
@@ -728,22 +727,22 @@ func TestNewWorkspaceEnvelopeFromMeta_ExtraFieldsSurviveExport(t *testing.T) {
 		t.Fatalf("DecodeWorkspaceEnvelopeDocuments round trip: %v", err)
 	}
 	doc := docs[0]
-	for _, field := range []string{"extra_repos", "container_image", "capabilities"} {
+	for _, field := range []string{"container_image", "capabilities"} {
 		if !doc.FieldsPresent[field] {
 			t.Errorf("FieldsPresent[%q] = false, want true (explicit empty value must round-trip as present)", field)
 		}
 	}
 }
 
-// TestApplyWorkspaceEnvelope_ClearsStaleExtraReposAndCapabilities pins
+// TestApplyWorkspaceEnvelope_ClearsStaleCapabilities pins
 // Blocker 1's extension (PR-1d codex round-2): exporting a workspace with
 // `extra_repos: []` and `capabilities: {}` and then applying that export
 // over a DIFFERENT workspace that still has a stale extra_repos entry and
 // capabilities.docker enabled must clear both — not silently leave them, as
 // it did before the omitempty tags were dropped from these three fields.
-func TestApplyWorkspaceEnvelope_ClearsStaleExtraReposAndCapabilities(t *testing.T) {
+func TestApplyWorkspaceEnvelope_ClearsStaleCapabilities(t *testing.T) {
 	// Export side: a workspace with both fields explicitly empty.
-	cleanMeta := &WorkspaceMeta{ExtraRepos: []string{}, Capabilities: Capabilities{}}
+	cleanMeta := &WorkspaceMeta{Capabilities: Capabilities{}}
 	envelope := NewWorkspaceEnvelopeFromMeta("team-a", cleanMeta, nil, "")
 	data, err := yaml.Marshal(envelope)
 	if err != nil {
@@ -759,13 +758,9 @@ func TestApplyWorkspaceEnvelope_ClearsStaleExtraReposAndCapabilities(t *testing.
 	// Apply side: an existing workspace with stale extra_repos + Docker
 	// capability enabled.
 	stale := &WorkspaceMeta{
-		ExtraRepos:   []string{"git@example.com:private/leftover.git"},
 		Capabilities: Capabilities{Docker: &DockerCapability{}},
 	}
 	merged := apply.MergeInto(stale)
-	if len(merged.ExtraRepos) != 0 {
-		t.Errorf("ExtraRepos = %v, want cleared", merged.ExtraRepos)
-	}
 	if merged.Capabilities.Docker != nil {
 		t.Errorf("Capabilities.Docker = %+v, want cleared (nil)", merged.Capabilities.Docker)
 	}

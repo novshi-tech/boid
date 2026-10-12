@@ -27,7 +27,11 @@ func SeedProjectFixture(t *testing.T, ts *TestServer, dir string, output any) er
 	if err = yaml.Unmarshal(data, &meta); err != nil {
 		return err
 	}
-	url, err := dispatcher.CaptureUpstreamURL(dir)
+	origin, err := exec.Command("git", "-C", dir, "config", "--get", "remote.origin.url").Output()
+	if err != nil {
+		return err
+	}
+	url, err := dispatcher.NormalizeOriginURL(string(origin))
 	if err != nil {
 		return err
 	}

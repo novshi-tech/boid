@@ -35,9 +35,6 @@ func (s *fakeWorkspaceService) CreateProject(string, string) (*orchestrator.Proj
 func (s *fakeWorkspaceService) CreateProjectFromGitURL(context.Context, string, string, string, string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
-func (s *fakeWorkspaceService) FetchProject(context.Context, string) (*orchestrator.Project, error) {
-	panic("not implemented")
-}
 func (s *fakeWorkspaceService) ListProjects(string) ([]*orchestrator.Project, error) {
 	panic("not implemented")
 }
@@ -55,9 +52,6 @@ func (s *fakeWorkspaceService) SetProjectWorkspace(string, string) (*orchestrato
 }
 func (s *fakeWorkspaceService) DeleteProject(string) error { panic("not implemented") }
 func (s *fakeWorkspaceService) ExplainProject(string) (*orchestrator.ProjectExplain, error) {
-	panic("not implemented")
-}
-func (s *fakeWorkspaceService) ReloadProjects() (*ProjectReloadResult, error) {
 	panic("not implemented")
 }
 func (s *fakeWorkspaceService) ResolveProjectRef(string) ([]*orchestrator.Project, error) {

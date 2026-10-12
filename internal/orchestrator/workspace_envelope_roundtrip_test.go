@@ -15,7 +15,7 @@ import (
 // implemented it for spec.init_script alone. The defect it works around is a
 // property of gopkg.in/yaml.v3's EMITTER, not of that one field, so it holds
 // for every string the envelope carries — an env value, an env KEY, a
-// host_commands entry, an extra_repos entry, container_image, a project name or
+// host_commands entry, container_image, a project name or
 // url. These tests are the field-independent version of round 2's exhaustive
 // leading-blank sweep.
 
@@ -66,7 +66,7 @@ func envelopeWithProbeEverywhere(probe string) *WorkspaceEnvelope {
 		HostCommands:   []string{probe},
 		Env:            map[string]string{"PROBE": probe, probe: "probe-key"},
 		AllowedDomains: []string{probe},
-		ExtraRepos:     []string{probe},
+
 		Services:       []string{probe},
 		ContainerImage: probe,
 		// TaskBehaviors carries probe inside a Traits value (the map KEY is
@@ -172,7 +172,7 @@ func TestWorkspaceEnvelope_OrdinaryValuesAreEmittedUnchanged(t *testing.T) {
 			"TRAIL":  "x   \ny\n",
 		},
 		AllowedDomains: []string{"proxy.golang.org", ".cosmos.azure.com"},
-		ExtraRepos:     []string{"https://github.com/novshi-tech/boid-kits.git"},
+
 		ContainerImage: "ghcr.io/novshi-tech/boid:latest",
 		Capabilities:   Capabilities{Docker: &DockerCapability{}},
 	}, []WorkspaceEnvelopeProject{
@@ -205,8 +205,6 @@ spec:
     allowed_domains:
         - proxy.golang.org
         - .cosmos.azure.com
-    extra_repos:
-        - https://github.com/novshi-tech/boid-kits.git
     services: []
     container_image: ghcr.io/novshi-tech/boid:latest
     capabilities:

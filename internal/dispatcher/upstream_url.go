@@ -125,16 +125,3 @@ func hasHTTPUserinfo(rawURL string) bool {
 	hostPart, _, _ := strings.Cut(rest, "/")
 	return strings.Contains(hostPart, "@")
 }
-
-// CaptureUpstreamURL reads dir's `git config --get remote.origin.url` and
-// normalizes it to an HTTPS URL suitable for a project's upstream_url.
-// Returns an error if dir has no git repository, no origin remote is
-// configured, or the origin URL is in an unrecognized form — the caller
-// (project registration / reload / startup backfill) decides how to react.
-func CaptureUpstreamURL(dir string) (string, error) {
-	raw, err := GitOriginURL(dir)
-	if err != nil {
-		return "", err
-	}
-	return NormalizeOriginURL(raw)
-}

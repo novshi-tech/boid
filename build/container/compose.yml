@@ -346,70 +346,8 @@ services:
       # to reach this daemon's socket by setting its own XDG_RUNTIME_DIR to
       # the same BOID_RUNTIME_DIR value.
       XDG_RUNTIME_DIR: "${BOID_RUNTIME_DIR}"
-      # SSL_CERT_FILE (PR9): empty by default (every non-CI deploy — the
-      # bare `${VAR:-}` passthrough is a no-op unless the launching shell
-      # actually exports it), inert exactly like every other optional
-      # passthrough in this file. e2e/run-container.sh (§PR9's
-      # e2e-container job) sets it to a self-signed CA cert path under
-      # BOID_RUNTIME_DIR (already bind-mounted above, so no extra volume
-      # entry is needed) so the daemon's own outbound git-gateway fetch —
-      # Go's net/http, which honors SSL_CERT_FILE via
-      # crypto/x509.SystemCertPool on Linux — trusts the e2e fixture
-      # upstream's self-signed TLS cert (e2e/lib/common.sh's
-      # e2e_setup_fixture_upstream, shared with the userns e2e suite). A
-      # real production deploy has no reason to ever set this: its git
-      # remotes carry real, publicly-trusted certificates.
-      #
-      # This covers ONLY the daemon's Go-level outbound HTTP(S) calls (the
-      # git-gateway reverse proxy a SANDBOXED job's clone goes through) —
-      # NOT the `git` subprocess CloneBareRepo/FetchBareRepo (internal/
-      # dispatcher/bare_repo.go) shell out to directly for `boid project add
-      # <url>` / `project fetch` / PR-2b's own per-job bare-repo refresh.
-      # git's libcurl TLS stack does not read SSL_CERT_FILE at all — see
-      # GIT_SSL_CAINFO immediately below for that half.
-      #
-      # PASSTHROUGH FORM, not "${SSL_CERT_FILE:-}" (2026-07-26 dogfood): the
-      # interpolated form's claim above — "a no-op unless the launching shell
-      # actually exports it" — is FALSE, and was disproven the first time a
-      # real deploy tried to clone anything. `${VAR:-}` always SETS the
-      # variable, to the empty string when the host has none; it never omits
-      # it. An empty SSL_CERT_FILE/GIT_SSL_CAINFO is NOT equivalent to an
-      # unset one: git's libcurl reads the empty value as an explicit "use
-      # THIS CA file" instruction, finds nothing at path "", and fails every
-      # HTTPS remote with `Problem with the SSL CA cert (path? access
-      # rights?)` — reproduced directly in the container (`git ls-remote`
-      # fails with the empty value exported, succeeds after `unset`), and
-      # first surfaced as `boid project add https://github.com/...` failing
-      # on a stock host with publicly-trusted certificates, precisely the
-      # deploy shape the comment claimed was unaffected. The bare
-      # `KEY:`/null form below is compose's actual passthrough: the variable
-      # is forwarded when the launching shell exports it (e2e/
-      # run-container.sh's fixture-CA case, unchanged) and OMITTED entirely
-      # otherwise, leaving the image's own /etc/ssl/certs default in force.
+      # Optional CA bundle for the git gateway's outbound HTTPS relay.
       SSL_CERT_FILE:
-      # GIT_SSL_CAINFO (PR834 PR-2b round-2 codex review CRITICAL fix): the
-      # `git` subprocess half SSL_CERT_FILE's own comment above flags —
-      # `git clone`/`git fetch` (dispatcher.CloneBareRepo/FetchBareRepo,
-      # invoked directly from the daemon process, not through the
-      # git-gateway reverse proxy at all) resolve TLS trust via git's own
-      # GIT_SSL_CAINFO env var (or the equivalent http.sslCAInfo git-config
-      # key), completely independent of Go's crypto/x509.SystemCertPool.
-      # e2e/run-container.sh already exports this pointing at the identical
-      # BOID_RUNTIME_DIR-backed fixture cert path SSL_CERT_FILE uses (same
-      # file, both env vars) — it was simply missing from this service's own
-      # environment: block, so the value never reached the daemon container
-      # even though the launching host shell already had it exported. This
-      # was the actual root cause of the e2e-container CI failure: `boid
-      # project add https://host.docker.internal:.../...` failing with
-      # "server certificate verification failed. CAfile: none CRLfile:
-      # none" — the container's own git subprocess never saw ANY CA file,
-      # self-signed or otherwise. Empty by default, exactly like
-      # SSL_CERT_FILE above; a real production deploy has no reason to ever
-      # set this either.
-      # Passthrough form for the same reason as SSL_CERT_FILE above — this
-      # is in fact the variable whose empty value git's libcurl reads
-      # directly (see that comment's reproduction notes).
-      GIT_SSL_CAINFO:
       # BOID_CLI_TOKEN (PR-3 Option 4 host-mode redesign, docs/plans/
       # volume-only-daemon.md §論点c, nose directive 2026-07-25): the
       # shared secret internal/api/auth.NewCLITokenAuthMiddleware requires

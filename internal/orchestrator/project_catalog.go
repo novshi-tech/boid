@@ -81,9 +81,7 @@ func validateTaskPrimaryProject(dbtx db.DBTX, projectID string) error {
 	return RequireTaskPrimaryProject(project)
 }
 
-// SetProjectUpstreamURL updates a project's captured upstream_url. Used by
-// `project add` / `project reload` capture and the daemon-startup backfill
-// for projects registered before this column existed.
+// SetProjectUpstreamURL updates a registered repository URL.
 func SetProjectUpstreamURL(dbtx db.DBTX, id, upstreamURL string) error {
 	now := time.Now().UTC()
 	res, err := dbtx.Exec(
@@ -408,17 +406,13 @@ func scanProjects(rows *sql.Rows) ([]*Project, error) {
 	return projects, rows.Err()
 }
 
-// RequireUpstreamURL returns an error when project has no upstream_url
-// captured. Intentionally NOT wired into any dispatch path yet — exposed
-// and tested here as a ready-made building block for the future cutover
-// where dispatch starts needing upstream_url to build the gateway clone
-// URL.
+// RequireUpstreamURL rejects repository jobs without a registered upstream URL.
 func RequireUpstreamURL(project *Project) error {
 	if project == nil {
 		return fmt.Errorf("require upstream_url: project is nil")
 	}
 	if project.UpstreamURL == "" {
-		return fmt.Errorf("project %q has no upstream_url configured; add a git remote (git remote add origin <url>) and run `boid project reload`", project.ID)
+		return fmt.Errorf("project %q has no upstream_url configured; remove and re-add the registration with `boid project add <git-url> --workspace=<name>`", project.ID)
 	}
 	return nil
 }

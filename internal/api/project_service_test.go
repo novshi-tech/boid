@@ -58,10 +58,6 @@ func TestProjectAppService_WithProjectLock_SerializesConcurrentCallers(t *testin
 	}
 }
 
-// TestProjectAppService_WithProjectLock_PropagatesFnError confirms
-// WithProjectLock is a transparent wrapper: fn's error (dispatcher's own
-// FetchBareRepo/PrepareJobCheckout failure) comes back unchanged, not
-// swallowed or replaced.
 func TestProjectAppService_WithProjectLock_PropagatesFnError(t *testing.T) {
 	s := &ProjectAppService{}
 	wantErr := &StatusError{Code: http.StatusBadGateway, Message: "boom"}

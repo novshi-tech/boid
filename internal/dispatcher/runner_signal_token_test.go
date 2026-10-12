@@ -45,7 +45,7 @@ func (b *recordingBroker) UnregisterCommandToken(token string) {
 
 func TestDispatch_SignalServiceConnector_ThreadedIntoTokenContext(t *testing.T) {
 	d := newGatewayTestDB(t)
-	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp", UpstreamURL: "https://example.test/org/repo.git"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -92,7 +92,7 @@ func TestDispatch_SignalServiceConnector_ThreadedIntoTokenContext(t *testing.T) 
 // job that doesn't explicitly opt in.
 func TestDispatch_NoSignalFields_TokenContextServiceConnectorStayEmpty(t *testing.T) {
 	d := newGatewayTestDB(t)
-	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp", UpstreamURL: "https://example.test/org/repo.git"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestDispatch_NoSignalFields_TokenContextServiceConnectorStayEmpty(t *testin
 // entry.BuiltinPolicies — this is the seam a policy-only fix cannot close.
 func TestDispatch_ConnectorPolicy_EndToEnd_HostCommandsNeverReachBroker(t *testing.T) {
 	d := newGatewayTestDB(t)
-	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp", UpstreamURL: "https://example.test/org/repo.git"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 

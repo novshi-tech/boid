@@ -7,10 +7,14 @@ daemon は実行時設定として project 設定ファイルを読みません�
 3. workspace 内で名前が重複する定義を整理します。repository 側の優先順位や fallback はありません。
 4. `boid workspace apply -f workspace.yaml` で適用し、`boid project show <ref> --explain` で確認します。
 
-既存 project ID と名前は維持します。schema migration 0062 は旧 `.boid/project.yaml` の name のみを checkout または mirror HEAD から一度だけ読み、DB に保存します。以後の起動・reload・fetch は DB の名前を使います。そのファイルがない登録は mirror の basename を維持します。既存ファイルが読み取れない・不正な YAML の場合は、意図せず名前を変えないよう migration を停止します。ファイルを修正して再起動してください。新規登録は明示した `--name` または URL 由来の名前を保存します。
+既存 project ID は維持します。migration 0062 は旧 `.boid/project.yaml` の名前を checkout または mirror HEAD から一度だけ読み、DB に保存します。ファイルがない・読み取れない・不正な場合は、必要に応じて warning を出して mirror の basename を使います。このフォールバック名は固定され、改名コマンドはありません。旧名を参照する envelope の `projects:` は一致しなくなるため、保存された新名に更新するか、登録を remove して `add --name=<旧名>` してください。再登録の URL 由来 ID は legacy ID と異なる場合があり、remove 前に関連 task を export・保全してください。新規登録は `--name` または URL 由来の名前を保存します。
+
+daemon は migration 0062 の後は mirror を作成・fetch・読み込みしません。`project add` は必須の `upstream_url` と空の `work_dir` を DB に保存するだけです。`project fetch` / `project reload` は撤去済みです。既存 mirror と `work_dir` の値は rollback のため維持します。migration 0062 完了後、旧バイナリへの rollback が不要になったら `<data-home>/repos/` の mirror を手動削除できます。削除前に DB と mirror をバックアップしてください。job は git gateway 経由で自身の checkout を作成します。
 
 repository に所属する card にも組み込み `judge` command と card event の既定値が付きます。workspace の定義で上書きできます。
 
 新規登録の ID は URL から導出します。`base_branch` は `${TASK_REMOTE_ID}` に対応し、`${current_branch}` は撤去済みです。空の branch は agent の checkout 時に origin default branch を使います。既存 task に保存した branch は変えません。
 
-`project fetch` / `project reload` は設定を取り込みません。workspace 設定は dispatch 時に解決します。[設定リファレンス](../reference/project-yaml.md) と [オンボーディング](onboarding.md) を参照してください。
+workspace 設定は dispatch 時に解決します。[設定リファレンス](../reference/project-yaml.md) と [オンボーディング](onboarding.md) を参照してください。
+
+migration 0063 は旧 `extra_repos` を、空の `work_dir` を持つ `perm=fetch` の登録に移します。同 workspace または未所属の既存登録は権限を下げず再利用します。別 workspace 所属の登録は付け替えず、この workspace 用の fetch 登録を作ります。名前衝突は決定的な suffix と warning で解決し、不正なエントリは warning を出してスキップします。更新後に workspace を export し、実際の名前を `spec.projects` に保存してください。新しい envelope の `extra_repos` は移行案内付きエラーになります。schema version ceiling により旧バイナリは更新済み DB を開けず、rollback には更新前の DB バックアップが必要です。

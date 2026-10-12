@@ -28,9 +28,6 @@ func (s *stubProjectServiceForExec) CreateProject(string, string) (*orchestrator
 func (s *stubProjectServiceForExec) CreateProjectFromGitURL(context.Context, string, string, string, string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
-func (s *stubProjectServiceForExec) FetchProject(context.Context, string) (*orchestrator.Project, error) {
-	panic("not implemented")
-}
 func (s *stubProjectServiceForExec) ListProjects(string) ([]*orchestrator.Project, error) {
 	panic("not implemented")
 }
@@ -45,9 +42,6 @@ func (s *stubProjectServiceForExec) SetProjectWorkspace(string, string) (*orches
 }
 func (s *stubProjectServiceForExec) DeleteProject(string) error { panic("not implemented") }
 func (s *stubProjectServiceForExec) ExplainProject(string) (*orchestrator.ProjectExplain, error) {
-	panic("not implemented")
-}
-func (s *stubProjectServiceForExec) ReloadProjects() (*ProjectReloadResult, error) {
 	panic("not implemented")
 }
 func (s *stubProjectServiceForExec) ResolveProjectRef(string) ([]*orchestrator.Project, error) {

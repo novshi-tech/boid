@@ -81,39 +81,13 @@ func newNoYAMLTestService(t *testing.T, repo *stubProjectRepository, ws *stubWor
 	return svc, dataDir
 }
 
-// fakeHTTPSGitURL is a syntactically valid https:// git URL (unique per test
-// via t.Name()) used in place of a real forge URL. 決定3 requires the id
-// derivation's hash input to be a slugifiable URL — unlike the rest of this
-// package's git-URL tests, which clone from a real local "file://" source
-// repo (a file:// URL cannot be slugified, by design — see
-// TestDeriveProjectIDFromURL_FileURL_Errors), the no-project.yaml success
-// path needs an https:// argument. CloneBareRepo/FetchBareRepo are overridden
-// below to actually clone/fetch from the real local source directory,
-// ignoring this URL string entirely — it only needs to look like a valid
-// git URL for NormalizeOriginURL/deriveProjectIDFromURL's sake.
 func fakeHTTPSGitURL(t *testing.T) string {
 	return "https://example-forge.test/org/" + t.Name()
 }
 
-// newNoYAMLTestServiceFakeClone is newNoYAMLTestService with CloneBareRepo/
-// FetchBareRepo overridden to clone/fetch from sourceDir (a real local git
-// repo) regardless of the URL argument passed in — see fakeHTTPSGitURL's doc
-// comment for why this indirection is needed.
-func newNoYAMLTestServiceFakeClone(t *testing.T, repo *stubProjectRepository, ws *stubWorkspaceStore, sourceDir string) (*ProjectAppService, string) {
+func newNoYAMLRegistrationTestService(t *testing.T, repo *stubProjectRepository, ws *stubWorkspaceStore, sourceDir string) (*ProjectAppService, string) {
 	t.Helper()
 	svc, dataDir := newNoYAMLTestService(t, repo, ws)
-	svc.CloneBareRepo = func(ctx context.Context, url, dest, namespace string) error {
-		runGitCmd(t, "", "clone", "-q", "--bare", sourceDir, dest)
-		return nil
-	}
-	svc.FetchBareRepo = func(ctx context.Context, bareRepoPath, namespace string) error {
-		cmd := exec.Command("git", "-C", bareRepoPath, "fetch", "--all")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git fetch --all: %v\n%s", err, out)
-		}
-		return nil
-	}
 	return svc, dataDir
 }
 
@@ -131,7 +105,7 @@ func TestCreateProjectFromGitURL_NoYAML_FallsBackToWorkspaceDefault_Succeeds(t *
 			"supervisor": {Traits: []string{"careful"}},
 		},
 	}
-	svc, dataDir := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
+	svc, _ := newNoYAMLRegistrationTestService(t, repo, ws, src)
 
 	gitURL := fakeHTTPSGitURL(t)
 	project, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "", "")
@@ -165,9 +139,8 @@ func TestCreateProjectFromGitURL_NoYAML_FallsBackToWorkspaceDefault_Succeeds(t *
 		t.Errorf("cached meta.TaskBehaviors = %v, want empty (workspace default merges dynamically at hydrate time)", cached.TaskBehaviors)
 	}
 
-	wantBarePath := orchestrator.BareRepoPath(dataDir, "team-a", wantName)
-	if project.WorkDir != wantBarePath {
-		t.Errorf("WorkDir = %q, want %q", project.WorkDir, wantBarePath)
+	if project.WorkDir != "" {
+		t.Errorf("WorkDir = %q, want empty", project.WorkDir)
 	}
 }
 
@@ -195,7 +168,7 @@ func TestCreateProjectFromGitURL_NoYAML_NameCollision_DerivedName_Rejects(t *tes
 			"supervisor": {},
 		},
 	}
-	svc, _ := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
+	svc, _ := newNoYAMLRegistrationTestService(t, repo, ws, src)
 	svc.Meta.SetSynthesizedMeta(existingID, &orchestrator.ProjectMeta{ID: existingID, Name: existingName})
 
 	_, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "", "")
@@ -226,7 +199,7 @@ func TestCreateProjectFromGitURL_NoYAML_NameCollision_ExplicitNameWarnsButSuccee
 			"supervisor": {},
 		},
 	}
-	svc, _ := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
+	svc, _ := newNoYAMLRegistrationTestService(t, repo, ws, src)
 	svc.Meta.SetSynthesizedMeta(existingID, &orchestrator.ProjectMeta{ID: existingID, Name: collidingName})
 
 	project, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", collidingName, "")
@@ -274,7 +247,7 @@ func TestCreateProjectFromGitURL_NoYAML_InsertConflict_DoesNotClobberEstablished
 			"supervisor": {},
 		},
 	}
-	svc, _ := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
+	svc, _ := newNoYAMLRegistrationTestService(t, repo, ws, src)
 	establishedMeta := &orchestrator.ProjectMeta{ID: wantID, Name: "established-project"}
 	svc.Meta.SetSynthesizedMeta(wantID, establishedMeta)
 
@@ -289,41 +262,5 @@ func TestCreateProjectFromGitURL_NoYAML_InsertConflict_DoesNotClobberEstablished
 	}
 	if cached.Name != "established-project" {
 		t.Errorf("cached meta.Name = %q, want %q (established project's cache must survive the failed registration attempt unclobbered)", cached.Name, "established-project")
-	}
-}
-
-// TestFetchProject_NoYAML_SurvivesReload pins §現状の実測5's FetchProject
-// half: `boid project fetch` on a project.yaml-less project must not
-// MarkDegraded when the reason project.yaml can't be read is simply "it was
-// never committed" — it falls back to a synthesized meta instead, same as
-// LoadAll.
-func TestFetchProject_NoYAML_SurvivesReload(t *testing.T) {
-	src := setupNoYAMLSourceRepo(t)
-	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
-	ws := newStubWorkspaceStore()
-	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{
-		DefaultTaskBehavior: "supervisor",
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"supervisor": {},
-		},
-	}
-	svc, _ := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
-
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", "", "")
-	if err != nil {
-		t.Fatalf("CreateProjectFromGitURL: %v", err)
-	}
-	repo.projects = append(repo.projects, created)
-
-	fetched, err := svc.FetchProject(context.Background(), created.ID)
-	if err != nil {
-		t.Fatalf("FetchProject: %v", err)
-	}
-	if fetched.Meta.Name != created.Meta.Name {
-		t.Errorf("Meta.Name after fetch = %q, want %q (preserved across reload)", fetched.Meta.Name, created.Meta.Name)
-	}
-	st := svc.Meta.Status(created.ID)
-	if st.State != orchestrator.StatusReady {
-		t.Errorf("Status after fetch = %q, want %q (not degraded)", st.State, orchestrator.StatusReady)
 	}
 }

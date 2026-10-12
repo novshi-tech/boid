@@ -50,7 +50,7 @@ func TestWorkspaceRepository_SaveLoad_RoundTrip(t *testing.T) {
 		HostCommands:   []string{"gh", "aws"},
 		Env:            map[string]string{"FOO": "bar"},
 		AllowedDomains: []string{"example.com"},
-		ExtraRepos:     []string{"https://github.com/example/lib.git"},
+
 		Services:       []string{"myapp", "bitbucket-api"},
 		Capabilities:   Capabilities{Docker: &DockerCapability{}},
 		ContainerImage: "ghcr.io/example/image:latest",
@@ -71,9 +71,6 @@ func TestWorkspaceRepository_SaveLoad_RoundTrip(t *testing.T) {
 	}
 	if !equalStringSlice(got.AllowedDomains, meta.AllowedDomains) {
 		t.Errorf("AllowedDomains: got %v, want %v", got.AllowedDomains, meta.AllowedDomains)
-	}
-	if !equalStringSlice(got.ExtraRepos, meta.ExtraRepos) {
-		t.Errorf("ExtraRepos: got %v, want %v", got.ExtraRepos, meta.ExtraRepos)
 	}
 	if !equalStringSlice(got.Services, meta.Services) {
 		t.Errorf("Services: got %v, want %v", got.Services, meta.Services)
@@ -156,9 +153,6 @@ func TestWorkspaceRepository_Save_EmptyMetaRoundTripsToEmptyJSONColumns(t *testi
 	}
 	if len(got.AllowedDomains) != 0 {
 		t.Errorf("AllowedDomains: got %v, want empty", got.AllowedDomains)
-	}
-	if len(got.ExtraRepos) != 0 {
-		t.Errorf("ExtraRepos: got %v, want empty", got.ExtraRepos)
 	}
 	if len(got.Services) != 0 {
 		t.Errorf("Services: got %v, want empty", got.Services)

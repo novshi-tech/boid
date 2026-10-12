@@ -471,3 +471,14 @@ Q16 の運用移行は owner 判断で完了扱いとし、project.yaml fallback
 Q13 は `TestWorkspaceTriggersSweepOnceWithoutProjectYAML`、Q14 は workspace validation / hydration が呼ぶ `workspaceTriggers` と同テストで検証する。旧 Q15 (project.yaml 優先) は廃止し、`TestWorkspaceResolutionIgnoresCachedProjectDefinitions` で workspace 単独解決を検証する。`TestProjectStoreLoadAllIgnoresRepositoryConfiguration` と `TestProjectRegistrationIgnoresCommittedConfiguration` は、不正 / ID が異なる committed YAML でも startup / add / fetch が影響を受けないことを示す。
 
 Q23 全体の完了は PR-5b に残る。PR-5a は読み込み撤去の前提を満たすが、bare mirror の clone / fetch と CLI/API の fetch / reload は残す。API gateway と DB backup/Q22 は変更しない。
+
+
+### PR-5b: mirror と registry 外の repository 定義の撤去
+
+- `project add` は URL / name / perm を保存し、`work_dir=''` とする。clone / fetch / mirror の資格情報経路、project fetch / reload の CLI/API、startup の mirror URL backfill、base_branch classifier は撤去する。旧 mirror は自動削除しない。migration 0062 の一度だけの名前読み込みは維持する。
+- host command の repo_slug は DB の upstream_url から展開する。session / exec の checkout は project ID で決め、work_dir の有無に依存しない。
+- release の `pushed:true` / branch / commit は git gateway で upload-pack の ref advertisement を取得し、remote tip と照合する。直接の git subprocess・資格情報注入・mirror fetch は使わない。未 push の object 存在は mirror が無いため daemon で検証しない。gateway / network error は従来同様 best-effort とする。
+- PR-4 には extra_repos の行移行が無かったため、0063 で補う。新規行は同 workspace の fetch / 空 work_dir、同 workspace または未所属の既存 upstream は perm を下げず再利用する。別 workspace の同 upstream は、その workspace の所有を維持して別の fetch 行を作る。ID は workspace + upstream の hash を持つ extra- namespace とし、URL 登録の url- namespace と衝突させない。既存 ID / name の衝突も決定的な suffix と warning で解決する。不正な URL / JSON は warning でスキップして起動を妨げない。
+- runtime / gateway / envelope から ExtraRepos を除く。旧 DB の extra_repos 列は空の互換列として残し、旧 workspace YAML は移行専用の snapshot と hash 型で読む。新 envelope の extra_repos は移行案内付きエラーとする。checkout と project ref は移行後の行の名前で解決する。
+- owner 確認: Q23 は daemon 自身の repository 管理接続を対象とする。明示的に依頼される boid fetch、host command、sandbox の egress proxy、API gateway は対象外。Q23 の到達可能性を PR description に列挙する。Q24 は TestExtraRepositoriesMigrationCreatesFetchRows / TestMigratedExtraRepositoryGatewayFetchPermission / TestMigratedFetchRepositoriesResolveByWorkspaceName で確認する。
+- 0063 は project / workspace / task の既存所有や legacy work_dir を変えないが、schema version ceiling により旧バイナリは更新済み DB を開けない。rollback は更新前の DB backup を使い、mirror の手動削除は migration 0062 完了後・rollback 不要になった後に行う。DB backup の実装 (Q22) は範囲外。

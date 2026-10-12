@@ -86,22 +86,6 @@ func (r *Runner) buildGatewayRepos(spec *orchestrator.JobSpec, workspaceID strin
 		}
 	}
 
-	if r.Workspaces != nil {
-		if wsMeta, err := r.Workspaces.Load(workspaceID); err == nil && wsMeta != nil {
-			for _, url := range wsMeta.ExtraRepos {
-				key, err := repoKeyFromUpstreamURL(url)
-				if err != nil {
-					slog.Warn("git gateway: could not parse workspace extra_repos entry",
-						"workspace_id", workspaceID, "url", url, "error", err)
-					continue
-				}
-				if _, exists := repos[key]; !exists {
-					repos[key] = gitgateway.PermFetch
-				}
-			}
-		}
-	}
-
 	return repos
 }
 
