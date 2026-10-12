@@ -46,7 +46,10 @@ func hasPayload(raw json.RawMessage) bool {
 func renderTaskDetail(detail *apiwire.TaskDetailView) error {
 	task := detail.Task
 	fmt.Printf("ID:          %s\n", task.ID)
-	fmt.Printf("Project:     %s\n", task.ProjectID)
+	if task.ProjectID != "" {
+		fmt.Printf("Project:     %s\n", task.ProjectID)
+	}
+	fmt.Printf("Workspace:   %s\n", task.WorkspaceID)
 	fmt.Printf("Title:       %s\n", task.Title)
 	if task.Description != "" {
 		fmt.Printf("Description: %s\n", task.Description)

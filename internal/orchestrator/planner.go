@@ -78,7 +78,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	}
 
 	checkout := true
-	if IsDefaultMetaproject(proj) {
+	if task.ProjectID == "" || IsDefaultMetaproject(proj) {
 		checkout = false
 	}
 
@@ -237,6 +237,20 @@ func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *
 		return nil, nil, nil, fmt.Errorf("dispatch planner is not fully configured")
 	}
 
+	task, err := p.Tasks.GetTask(taskID)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("get task: %w", err)
+	}
+	if projectID != task.ProjectID {
+		return nil, nil, nil, fmt.Errorf("hook project does not match task")
+	}
+	if projectID == "" {
+		meta, err := TaskMeta(context.Background(), p.Meta, task)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return meta, &Project{}, task, nil
+	}
 	var meta *ProjectMeta
 	if p.Hydrator != nil {
 		var err error
@@ -254,10 +268,6 @@ func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *
 	proj, err := p.Projects.GetProject(projectID)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("get project: %w", err)
-	}
-	task, err := p.Tasks.GetTask(taskID)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("get task: %w", err)
 	}
 	return meta, proj, task, nil
 }
@@ -320,4 +330,22 @@ func SnapshotTask(task *Task) *TaskSnapshot {
 		Description: task.Description,
 		Readonly:    task.Exec.Readonly,
 	}
+}
+
+// TaskMeta loads runtime definitions from the task's workspace or primary project.
+func TaskMeta(ctx context.Context, cache MetaCache, task *Task) (*ProjectMeta, error) {
+	if task.ProjectID == "" {
+		source, ok := cache.(interface {
+			GetWorkspaceMeta(context.Context, string) (*ProjectMeta, error)
+		})
+		if !ok {
+			return nil, fmt.Errorf("workspace metadata unavailable")
+		}
+		return source.GetWorkspaceMeta(ctx, task.WorkspaceID)
+	}
+	source, ok := cache.(MetaHydrator)
+	if !ok {
+		return nil, fmt.Errorf("project metadata hydration unavailable")
+	}
+	return source.GetWithWorkspace(ctx, task.ProjectID)
 }

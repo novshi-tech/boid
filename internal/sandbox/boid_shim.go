@@ -389,6 +389,8 @@ func parseBoidJobDone(args []string) (*BoidRequest, error) {
 
 func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	filePath := ""
+	workspaceID := ""
+	noProject := false
 	idempotencyKey := ""
 	idempotencyKeySet := false
 	for i := 0; i < len(args); i++ {
@@ -415,6 +417,15 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 			i = next
 			idempotencyKey = value
 			idempotencyKeySet = true
+		case arg == "--no-project":
+			noProject = true
+		case arg == "--workspace" || strings.HasPrefix(arg, "--workspace="):
+			value, next, err := takeStringFlagValue(args, i, "--workspace")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			workspaceID = value
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task create", arg)
 		}
@@ -445,6 +456,13 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 		v["idempotency_key"] = idempotencyKey
 	}
 
+	if workspaceID != "" {
+		v["workspace_id"] = workspaceID
+	}
+	if noProject {
+		v["no_project"] = true
+	}
+	workspaceID, _ = v["workspace_id"].(string)
 	title, _ := v["title"].(string)
 	if title == "" {
 		return nil, fmt.Errorf("boid shim: task spec must include title")
@@ -466,6 +484,7 @@ func parseBoidTaskCreate(args []string) (*BoidRequest, error) {
 	return &BoidRequest{
 		Op:          BoidOpTaskCreate,
 		ProjectID:   projectID,
+		WorkspaceID: workspaceID,
 		CreatePatch: patchJSON,
 	}, nil
 }

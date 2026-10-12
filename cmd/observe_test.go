@@ -197,3 +197,15 @@ func TestIsTerminalTaskStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderWorkspaceTaskDetail(t *testing.T) {
+	detail := &apiwire.TaskDetailView{Task: &orchestrator.Task{ID: "workspace-task", WorkspaceID: "team", Title: "Workspace task", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusPending, Exec: &orchestrator.ExecAttrs{}}}
+	got := captureStdout(t, func() {
+		if err := renderTaskDetail(detail); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(got, "Project:") || !strings.Contains(got, "Workspace:   team") {
+		t.Fatalf("detail: %s", got)
+	}
+}

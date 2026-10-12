@@ -25,7 +25,7 @@ import (
 // (workdir lookup), and orchestrator primitives, and orchestrator may not
 // import api's ProjectWorkDirLookup interface back.
 func (s *TaskAppService) validateParentlessExecutorBase(req CreateTaskRequest, behaviorName, baseBranch string) error {
-	if behaviorName != "executor" {
+	if req.ProjectID == "" || behaviorName != "executor" {
 		// Only parent-less executor with a case-3 base is a creation-time
 		// error; every other combination is either fine or handled downstream.
 		return nil
@@ -112,6 +112,38 @@ func idempotencyKeyTypeMismatchErr(wantType orchestrator.TaskType, existing *orc
 }
 
 func (s *TaskAppService) CreateTask(ctx context.Context, req CreateTaskRequest) (*orchestrator.Task, error) {
+	if req.NoProject && req.ProjectID != "" {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "no_project conflicts with project_id"}
+	}
+	if req.ProjectID == "" && req.WorkspaceID == "" {
+		req.WorkspaceID = orchestrator.DefaultWorkspaceSlug
+	}
+	if req.WorkspaceID != "" {
+		if err := orchestrator.ValidWorkspaceSlug(req.WorkspaceID); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
+	}
+	if req.ProjectID == "" && req.InitialStatus == "parked" && hasWorkspaceMeta(s.Meta) {
+		if _, err := orchestrator.TaskMeta(ctx, s.Meta, &orchestrator.Task{WorkspaceID: req.WorkspaceID}); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
+	}
+	if req.ProjectID != "" && req.WorkspaceID != "" && s.Projects != nil {
+		project, err := s.Projects.GetProject(req.ProjectID)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
+		if project == nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "project not found"}
+		}
+		ws := project.WorkspaceID
+		if ws == "" {
+			ws = orchestrator.DefaultWorkspaceSlug
+		}
+		if ws != req.WorkspaceID {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "project belongs to another workspace"}
+		}
+	}
 	initialStatus, err := resolveInitialStatus(req)
 	if err != nil {
 		return nil, err
@@ -148,7 +180,7 @@ func (s *TaskAppService) createCardTask(ctx context.Context, req CreateTaskReque
 	}
 
 	if req.Ref != "" {
-		existing, err := s.Tasks.FindTaskByRef(req.Ref, req.ParentID, req.ProjectID)
+		existing, err := s.findCreateKey(req, req.Ref, "")
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
@@ -157,7 +189,7 @@ func (s *TaskAppService) createCardTask(ctx context.Context, req CreateTaskReque
 		}
 	}
 	if req.IdempotencyKey != "" {
-		existing, err := s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, req.IdempotencyKey)
+		existing, err := s.findCreateKey(req, "", req.IdempotencyKey)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
@@ -194,6 +226,7 @@ func (s *TaskAppService) createCardTask(ctx context.Context, req CreateTaskReque
 		ID:             req.ID,
 		Type:           orchestrator.TaskTypeCard,
 		ProjectID:      req.ProjectID,
+		WorkspaceID:    req.WorkspaceID,
 		Title:          req.Title,
 		Description:    req.Description,
 		Status:         initialStatus,
@@ -333,7 +366,7 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 	// SQL NULL), treating every root task's ref as unique among root tasks
 	// the same way it already does for a given parent's children.
 	if req.Ref != "" {
-		existing, err := s.Tasks.FindTaskByRef(req.Ref, req.ParentID, req.ProjectID)
+		existing, err := s.findCreateKey(req, req.Ref, "")
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
@@ -352,7 +385,7 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 	// itself, since a hit here returns before ever reaching the ordinary
 	// auto_start block below.
 	if req.IdempotencyKey != "" {
-		existing, err := s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, req.IdempotencyKey)
+		existing, err := s.findCreateKey(req, "", req.IdempotencyKey)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
@@ -377,7 +410,13 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 	}
 
 	var meta *orchestrator.ProjectMeta
-	if s.Meta != nil {
+	if req.ProjectID == "" {
+		var err error
+		meta, err = orchestrator.TaskMeta(ctx, s.Meta, &orchestrator.Task{WorkspaceID: req.WorkspaceID})
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
+	} else if s.Meta != nil {
 		// Hydrate with workspace.yaml so a workspace-level default project
 		// definition's task_behaviors are visible to ResolveBehavior, not
 		// just project.yaml's own. Falls back to bare Get on any hydration
@@ -438,7 +477,7 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 		// A task with no base_branch expands ${current_branch}; detached HEAD
 		// is surfaced as a 400. The resolved branch reaches the agent through
 		// BOID_BASE_BRANCH regardless of the behavior name.
-		if s.Projects != nil {
+		if s.Projects != nil && req.ProjectID != "" {
 			proj, projErr := s.Projects.GetProject(req.ProjectID)
 			if projErr != nil {
 				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
@@ -461,7 +500,7 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 		}
 		baseBranch = expanded
 
-		if s.Projects != nil {
+		if s.Projects != nil && req.ProjectID != "" {
 			proj, projErr := s.Projects.GetProject(req.ProjectID)
 			if projErr != nil {
 				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
@@ -522,6 +561,7 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 		ID:             req.ID,
 		Type:           orchestrator.TaskTypeExecution,
 		ProjectID:      req.ProjectID,
+		WorkspaceID:    req.WorkspaceID,
 		Title:          req.Title,
 		Description:    req.Description,
 		Status:         initialStatus,
@@ -652,4 +692,27 @@ func (s *TaskAppService) validatePrimaryProject(id string) error {
 		return &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
 	return nil
+}
+
+func (s *TaskAppService) findCreateKey(req CreateTaskRequest, ref, key string) (*orchestrator.Task, error) {
+	if req.ProjectID == "" {
+		source, ok := s.Tasks.(interface {
+			FindWorkspaceTask(string, string, string, string) (*orchestrator.Task, error)
+		})
+		if !ok {
+			return nil, fmt.Errorf("workspace task key lookup unavailable")
+		}
+		return source.FindWorkspaceTask(req.WorkspaceID, req.ParentID, ref, key)
+	}
+	if ref != "" {
+		return s.Tasks.FindTaskByRef(ref, req.ParentID, req.ProjectID)
+	}
+	return s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, key)
+}
+
+func hasWorkspaceMeta(meta MetaStore) bool {
+	_, ok := meta.(interface {
+		GetWorkspaceMeta(context.Context, string) (*orchestrator.ProjectMeta, error)
+	})
+	return ok
 }

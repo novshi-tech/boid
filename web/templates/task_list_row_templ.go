@@ -50,6 +50,9 @@ func (r ListRow) ProjectLabel() string {
 	if r.ProjectName != "" {
 		return r.ProjectName
 	}
+	if r.Task.ProjectID == "" {
+		return r.Task.WorkspaceID
+	}
 	return r.Task.ProjectID
 }
 
@@ -245,7 +248,7 @@ func taskListRow(row ListRow) templ.Component {
 		var templ_7745c5c3_Var4 templ.SafeURL
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + row.Task.ID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 178, Col: 47}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 179, Col: 47}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -271,7 +274,7 @@ func taskListRow(row ListRow) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(row.Task.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 180, Col: 28}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 181, Col: 28}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -284,7 +287,7 @@ func taskListRow(row ListRow) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(row.Task.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 185, Col: 55}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 186, Col: 55}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -297,7 +300,7 @@ func taskListRow(row ListRow) templ.Component {
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(row.Task.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 185, Col: 74}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 186, Col: 74}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
@@ -310,7 +313,7 @@ func taskListRow(row ListRow) templ.Component {
 		var templ_7745c5c3_Var9 string
 		templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(relativeTimeLabel(row.Task.UpdatedAt))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 186, Col: 71}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 187, Col: 71}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 		if templ_7745c5c3_Err != nil {
@@ -323,7 +326,7 @@ func taskListRow(row ListRow) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(rowIdentityLabel(row.Task, row.ProjectName))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 189, Col: 80}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 190, Col: 80}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -409,7 +412,7 @@ func taskListRowMovement(row ListRow) templ.Component {
 			var templ_7745c5c3_Var14 string
 			templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(string(row.Task.Status))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 210, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 211, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 			if templ_7745c5c3_Err != nil {
@@ -427,7 +430,7 @@ func taskListRowMovement(row ListRow) templ.Component {
 				var templ_7745c5c3_Var15 string
 				templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(row.Suggestion.Verb)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 212, Col: 57}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 213, Col: 57}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 				if templ_7745c5c3_Err != nil {
@@ -462,7 +465,7 @@ func taskListRowMovement(row ListRow) templ.Component {
 				var templ_7745c5c3_Var18 string
 				templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs(target)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 213, Col: 51}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 214, Col: 51}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 				if templ_7745c5c3_Err != nil {
@@ -485,7 +488,7 @@ func taskListRowMovement(row ListRow) templ.Component {
 				var templ_7745c5c3_Var19 string
 				templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(row.Suggestion.Reason)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 216, Col: 63}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 217, Col: 63}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 				if templ_7745c5c3_Err != nil {
@@ -522,7 +525,7 @@ func taskListRowMovement(row ListRow) templ.Component {
 			var templ_7745c5c3_Var22 string
 			templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(string(row.Task.Status))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 219, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 220, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 			if templ_7745c5c3_Err != nil {
@@ -535,7 +538,7 @@ func taskListRowMovement(row ListRow) templ.Component {
 			var templ_7745c5c3_Var23 string
 			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(timeline.FormatElapsed(row.Task.UpdatedAt))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 220, Col: 83}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 221, Col: 83}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 			if templ_7745c5c3_Err != nil {
@@ -571,7 +574,7 @@ func taskListRowMovement(row ListRow) templ.Component {
 			var templ_7745c5c3_Var26 string
 			templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(string(row.Task.Status))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 222, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 223, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 			if templ_7745c5c3_Err != nil {
@@ -611,7 +614,7 @@ func taskListRowMovement(row ListRow) templ.Component {
 			var templ_7745c5c3_Var29 string
 			templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.JoinStringErrs(string(row.Task.Status))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 228, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 229, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var29))
 			if templ_7745c5c3_Err != nil {
@@ -624,7 +627,7 @@ func taskListRowMovement(row ListRow) templ.Component {
 			var templ_7745c5c3_Var30 string
 			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.JoinStringErrs(row.Summary)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 229, Col: 52}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 230, Col: 52}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var30))
 			if templ_7745c5c3_Err != nil {
@@ -660,7 +663,7 @@ func taskListRowMovement(row ListRow) templ.Component {
 			var templ_7745c5c3_Var33 string
 			templ_7745c5c3_Var33, templ_7745c5c3_Err = templ.JoinStringErrs(string(row.Task.Status))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 231, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 232, Col: 84}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var33))
 			if templ_7745c5c3_Err != nil {
@@ -720,7 +723,7 @@ func cardListExecutionBadge(row ListRow) templ.Component {
 				var templ_7745c5c3_Var35 string
 				templ_7745c5c3_Var35, templ_7745c5c3_Err = templ.JoinStringErrs(row.Activity.CommandLabel)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 244, Col: 37}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 245, Col: 37}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var35))
 				if templ_7745c5c3_Err != nil {
@@ -774,7 +777,7 @@ func cardActivityBadges(a CardActivityState) templ.Component {
 			var templ_7745c5c3_Var37 string
 			templ_7745c5c3_Var37, templ_7745c5c3_Err = templ.JoinStringErrs(a.DecisionLabel)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 258, Col: 78}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 259, Col: 78}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var37))
 			if templ_7745c5c3_Err != nil {
@@ -793,7 +796,7 @@ func cardActivityBadges(a CardActivityState) templ.Component {
 			var templ_7745c5c3_Var38 string
 			templ_7745c5c3_Var38, templ_7745c5c3_Err = templ.JoinStringErrs(a.WorkLabel)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 261, Col: 70}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 262, Col: 70}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var38))
 			if templ_7745c5c3_Err != nil {
@@ -812,7 +815,7 @@ func cardActivityBadges(a CardActivityState) templ.Component {
 			var templ_7745c5c3_Var39 string
 			templ_7745c5c3_Var39, templ_7745c5c3_Err = templ.JoinStringErrs(a.CommandLabel)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 264, Col: 76}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_list_row.templ`, Line: 265, Col: 76}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var39))
 			if templ_7745c5c3_Err != nil {

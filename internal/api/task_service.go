@@ -491,6 +491,7 @@ func (s *TaskAppService) DuplicateTask(ctx context.Context, sourceID string, aut
 	}
 	req := CreateTaskRequest{
 		ProjectID:   source.ProjectID,
+		WorkspaceID: source.WorkspaceID,
 		Title:       source.Title,
 		Description: source.Description,
 		RemoteID:    source.RemoteID,

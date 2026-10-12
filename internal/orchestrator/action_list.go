@@ -65,8 +65,8 @@ type ActionListFilter struct {
 	// queries would need a real N-way merge, which a single IN(...) query
 	// avoids entirely.
 	ProjectIDs []string
-	// WorkspaceID scopes via project_workspaces, matching ListTasks' own
-	// WorkspaceID join (store.go). In practice mutually exclusive with
+	// WorkspaceID scopes by task ownership, including tasks without a project.
+	// In practice mutually exclusive with
 	// ProjectIDs, but nothing here forbids combining them (both apply as an AND).
 	WorkspaceID string
 	// TaskID additionally narrows to one task's actions. Safe to combine
@@ -149,12 +149,11 @@ func ListActionsSince(dbtx db.DBTX, filter ActionListFilter) ([]*Action, string,
 	}
 	limit := ClampActionListLimit(filter.Limit)
 
-	var joins []string
 	var conditions []string
 	var args []any
 
 	if filter.WorkspaceID != "" {
-		joins = append(joins, "INNER JOIN project_workspaces pw ON pw.project_id = t.project_id AND pw.workspace_id = ?")
+		conditions = append(conditions, "t.workspace_id = ?")
 		args = append(args, filter.WorkspaceID)
 	}
 	if len(filter.ProjectIDs) > 0 {
@@ -187,9 +186,6 @@ func ListActionsSince(dbtx db.DBTX, filter ActionListFilter) ([]*Action, string,
 	query := `SELECT a.id, a.task_id, a.type, a.payload, a.from_status, a.to_status, a.created_at, a.actor
 		FROM actions a
 		JOIN tasks t ON t.id = a.task_id`
-	for _, j := range joins {
-		query += " " + j
-	}
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}

@@ -375,16 +375,42 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			return &ExecResponse{ExitCode: 1, Stderr: "boid agent stop is restricted to the current job"}
 		}
 	case BoidOpTaskCreate:
-		if boidReq.ProjectID == "" {
+		var peek struct {
+			NoProject   bool   `json:"no_project"`
+			ProjectID   string `json:"project_id"`
+			WorkspaceID string `json:"workspace_id"`
+		}
+		if len(boidReq.CreatePatch) > 0 {
+			if err := json.Unmarshal(boidReq.CreatePatch, &peek); err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: "invalid task create patch"}
+			}
+		}
+		if peek.NoProject && (boidReq.ProjectID != "" || peek.ProjectID != "") {
+			return &ExecResponse{ExitCode: 1, Stderr: "no_project conflicts with project_id"}
+		}
+		if boidReq.WorkspaceID == "" {
+			boidReq.WorkspaceID = peek.WorkspaceID
+		}
+		if boidReq.WorkspaceID != "" && boidReq.WorkspaceID != entry.Context.WorkspaceID {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
+		}
+		if boidReq.ProjectID == "" && !peek.NoProject {
 			boidReq.ProjectID = entry.Context.ProjectID
 		}
-		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
-		if err != nil {
-			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task create: resolve project %q: %s", boidReq.ProjectID, err)}
-		}
-		boidReq.ProjectID = resolved
-		if !entry.Context.AllowsProject(boidReq.ProjectID) {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
+		if boidReq.ProjectID != "" {
+			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+			if err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task create: resolve project %q: %s", boidReq.ProjectID, err)}
+			}
+			boidReq.ProjectID = resolved
+			if !entry.Context.AllowsProject(resolved) {
+				return &ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
+			}
+		} else {
+			if entry.Context.WorkspaceID == "" {
+				return &ExecResponse{ExitCode: 1, Stderr: "boid task create requires a workspace"}
+			}
+			boidReq.WorkspaceID = entry.Context.WorkspaceID
 		}
 	case BoidOpTaskGet:
 		if boidReq.TaskID == "" {

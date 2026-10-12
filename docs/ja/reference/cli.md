@@ -103,7 +103,7 @@ boid start --cli-port 9442 --web-port 9080
 | コマンド | 役割 |
 |---|---|
 | `boid task list [--status STATUS] [--workspace ID] [--behavior NAME]` | タスク一覧 |
-| `boid task create [-f FILE] [--idempotency-key KEY]` | YAML を stdin (または `-f`) で渡してタスクを作成。`--idempotency-key` (または YAML の `idempotency_key`) を指定すると、同一 `(project_id, key)` での再実行は新規作成せず既存タスクの id を返す (exit 0) |
+| `boid task create [-f FILE] [--workspace SLUG] [--no-project] [--idempotency-key KEY]` | YAML を stdin (または `-f`) で渡してタスクを作成。`--idempotency-key` (または YAML の `idempotency_key`) を指定すると、同一 `(project_id, key)` での再実行は新規作成せず既存タスクの id を返す (exit 0) |
 | `boid task show <id> [--field PATH]` | タスク詳細 (status と payload)。 `--field` 指定時は dotted path で 1 フィールドのみ plain text 出力 (例: `--field status`, `--field payload.artifact.report`, `--field awaiting.question`, `--field lifecycle.abort.message`) |
 | `boid task watch <id> [--interval DURATION]` | status と payload の変化をライブ表示 |
 | `boid task update <id> [-f FILE \| --patch-file FILE] [--payload-file FILE] [--instructions-file FILE]` | タスクを更新。 ファイルパス `-` で stdin。`-f` は `--patch-file` のショートハンド |
@@ -184,7 +184,9 @@ boid task answer \
 YAML schema:
 
 ```yaml
-project_id: <id>
+project_id: <id>           # 省略可 (主リポジトリ)
+workspace_id: <slug>       # 省略時は project の workspace、project も無ければ default
+no_project: false          # true は sandbox 内の親 project 継承を抑止
 title: <string>
 behavior: <name>            # または behavior_spec
 auto_start: false
@@ -194,9 +196,23 @@ instructions: { ... }
 idempotency_key: <string>   # 省略可 (--idempotency-key と等価)
 ```
 
+主リポジトリなしの task は workspace に直接所属し、checkout せず HOME で起動します。behavior と default_task_behavior はその workspace の定義から解決し、git gateway は workspace の全リポジトリに fetch のみを許可します。`workspace_id` は API/YAML のフィールドで、CLI の `--workspace` はこれを上書きします。project を指定した場合、異なる workspace の指定は拒否します。
+
+sandbox 内では project_id の省略は従来どおり親 job の主リポジトリを継承します。明示的に workspace 直属の子を作るには `--no-project` または YAML の `no_project: true` を指定します (project_id との併用はエラー)。主リポジトリなしの job では、省略時も親の workspace に所属します。
+
+```bash
+boid task create --workspace team --no-project <<'YAML'
+title: workspace の調査
+behavior: research
+ref: workspace-research
+YAML
+```
+
+Web の New Card フォームでも workspace を選び、Primary repository の `Workspace only` で主リポジトリなしの card を作成できます。既存の default metaproject による判断経路は別途移行するため、この選択だけで自動 judge を設定するものではありません。
+
 `behavior_spec` を渡すと `project.yaml` の task_behaviors を参照せず、 inline でタスクの設定を指定できます。
 
-`idempotency_key` は project 内部の安定キー (例: 親 card id + 子の世代キー) で、外部 identity ではありません。 同一 `(project_id, idempotency_key)` の task が既に存在する場合、新規作成せず既存タスクを返します (子タスクの重複生成防止)。 外部世界の identity から task を引き当てる用途には `task_identities` (`task_resolve_or_capture`) を使ってください — 挙動が異なります (詳細は `docs/plans/signal-ingest-detailed-design.md` §8)。
+`idempotency_key` は project 内部の安定キー (例: 親 card id + 子の世代キー) で、外部 identity ではありません。 同一 `(project_id, parent_id, idempotency_key)` (主リポジトリなしでは `(workspace_id, parent_id, idempotency_key)`) の task が既に存在する場合、新規作成せず既存タスクを返します (子タスクの重複生成防止)。 外部世界の identity から task を引き当てる用途には `task_identities` (`task_resolve_or_capture`) を使ってください — 挙動が異なります (詳細は `docs/plans/signal-ingest-detailed-design.md` §8)。
 
 ### `task hook` (タスク単位の hook 操作)
 

@@ -156,11 +156,13 @@ var taskChildCountCols = `` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status = 'awaiting')`
 
 func CreateTask(dbtx db.DBTX, t *Task) error {
+	if t.ProjectID == "" && t.WorkspaceID == "" {
+		t.WorkspaceID = DefaultWorkspaceSlug
+	}
 	// Get-or-create: when ref is set, return the existing task (scoped by
-	// ParentID and ProjectID) instead of inserting a duplicate — makes
-	// create idempotent across replays. See FindTaskByRef for scope details.
+	// parent and project, or parent and workspace for projectless tasks).
 	if t.Ref != "" {
-		existing, err := FindTaskByRef(dbtx, t.Ref, t.ParentID, t.ProjectID)
+		existing, err := findTaskCreateKey(dbtx, t, t.Ref, "")
 		if err != nil {
 			return fmt.Errorf("find existing ref: %w", err)
 		}
@@ -172,9 +174,9 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 
 	// Get-or-create: idempotency_key-based, independent of the Ref check
 	// above (a task may carry either, both, or neither). Scoped by
-	// (ProjectID, ParentID) — see Task.IdempotencyKey's doc comment.
+	// parent and project, or parent and workspace for projectless tasks.
 	if t.IdempotencyKey != "" {
-		existing, err := FindTaskByIdempotencyKey(dbtx, t.ProjectID, t.ParentID, t.IdempotencyKey)
+		existing, err := findTaskCreateKey(dbtx, t, "", t.IdempotencyKey)
 		if err != nil {
 			return fmt.Errorf("find existing idempotency key: %w", err)
 		}
@@ -222,9 +224,27 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	if err := validateTaskPrimaryProject(dbtx, t.ProjectID); err != nil {
 		return err
 	}
-	workspaceID, err := ProjectWorkspaceID(dbtx, t.ProjectID)
-	if err != nil {
+	workspaceID := t.WorkspaceID
+	if t.ProjectID != "" {
+		resolved, err := ProjectWorkspaceID(dbtx, t.ProjectID)
+		if err != nil {
+			return err
+		}
+		workspaceID = resolved
+	} else if workspaceID == "" {
+		workspaceID = DefaultWorkspaceSlug
+	}
+	if err := ValidWorkspaceSlug(workspaceID); err != nil {
 		return err
+	}
+	if t.ProjectID == "" {
+		exists, err := WorkspaceExists(dbtx, workspaceID)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("workspace %q not found", workspaceID)
+		}
 	}
 	t.WorkspaceID = workspaceID
 
@@ -248,7 +268,7 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 			kind, urgency, wake_at, wake_task_id, suggestion_verb, detail,
 			ref, parent_id, idempotency_key, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, string(t.Type), t.ProjectID, t.WorkspaceID, t.RemoteID, t.Title, t.Description, string(t.Status),
+		t.ID, string(t.Type), nullableProjectID(t.ProjectID), t.WorkspaceID, t.RemoteID, t.Title, t.Description, string(t.Status),
 		execCols.behavior, execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart,
 		cardCols.kind, cardCols.urgency, cardCols.wakeAt, cardCols.wakeTaskID, cardCols.suggestionVerb, cardCols.detail,
 		t.Ref, t.ParentID, idempotencyKey, t.CreatedAt, t.UpdatedAt,
@@ -257,7 +277,7 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		// Concurrent create: if another goroutine just inserted the same (ref, parent_id),
 		// fall back to the existing task rather than returning an error.
 		if t.Ref != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			existing, findErr := FindTaskByRef(dbtx, t.Ref, t.ParentID, t.ProjectID)
+			existing, findErr := findTaskCreateKey(dbtx, t, t.Ref, "")
 			if findErr == nil && existing != nil {
 				*t = *existing
 				return nil
@@ -266,7 +286,7 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		// Concurrent create: same race, for idempotency_key's own partial
 		// unique index instead of ref's.
 		if t.IdempotencyKey != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			existing, findErr := FindTaskByIdempotencyKey(dbtx, t.ProjectID, t.ParentID, t.IdempotencyKey)
+			existing, findErr := findTaskCreateKey(dbtx, t, "", t.IdempotencyKey)
 			if findErr == nil && existing != nil {
 				if mismatchErr := rejectIdempotencyKeyTypeMismatch(t, existing); mismatchErr != nil {
 					return mismatchErr
@@ -469,7 +489,6 @@ func GetTaskStatus(dbtx db.DBTX, id string) (TaskStatus, error) {
 func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	var conditions []string
 	var args []any
-	var joins []string
 
 	// "open": self is open (not terminal, not parked), OR has a direct child
 	// that is not terminal.
@@ -505,8 +524,8 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		args = append(args, filter.Behavior)
 	}
 	if filter.WorkspaceID != "" {
-		joins = append(joins, "INNER JOIN project_workspaces pw ON pw.project_id = t.project_id AND pw.workspace_id = ?")
-		args = append([]any{filter.WorkspaceID}, args...)
+		conditions = append(conditions, "t.workspace_id = ?")
+		args = append(args, filter.WorkspaceID)
 	}
 	if filter.Title != "" {
 		conditions = append(conditions, "LOWER(t.title) LIKE ?")
@@ -517,9 +536,6 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		args = append(args, *filter.ParentID)
 	}
 	query := `SELECT ` + taskSelectCols + `, ` + taskChildCountCols + ` FROM tasks t`
-	for _, j := range joins {
-		query += " " + j
-	}
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -592,7 +608,7 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 	}
 	_, err = dbtx.Exec(
 		`UPDATE tasks SET project_id = ?, workspace_id = ?, remote_id = ?, title = ?, description = ?, status = ?, traits = ?, readonly = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, auto_start = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
-		t.ProjectID, t.WorkspaceID, t.RemoteID, t.Title, t.Description, string(t.Status), execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart, t.ParentID, t.UpdatedAt, t.ID,
+		nullableProjectID(t.ProjectID), t.WorkspaceID, t.RemoteID, t.Title, t.Description, string(t.Status), execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart, t.ParentID, t.UpdatedAt, t.ID,
 	)
 	if err != nil {
 		return err
@@ -905,7 +921,11 @@ func FindTaskByRemote(dbtx db.DBTX, remoteID string) (*Task, error) {
 // is a UUID, the task is looked up by id directly (backward compatibility),
 // but the result is still validated against BOTH parentID and projectID
 // before being returned — a scope mismatch is treated as "not found", not an error.
+// An empty projectID returns nil; use FindWorkspaceTask for workspace scope.
 func FindTaskByRef(dbtx db.DBTX, ref, parentID, projectID string) (*Task, error) {
+	if projectID == "" {
+		return nil, nil
+	}
 	if ref == "" {
 		return nil, nil
 	}
@@ -943,7 +963,11 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID, projectID string) (*Task, error)
 // task is found. See Task.IdempotencyKey's doc comment for the field's
 // contract. Unlike FindTaskByRef, there is no UUID-shaped-string special
 // case: idempotency_key is never treated as a stand-in for a task ID.
+// An empty projectID returns nil; use FindWorkspaceTask for workspace scope.
 func FindTaskByIdempotencyKey(dbtx db.DBTX, projectID, parentID, idempotencyKey string) (*Task, error) {
+	if projectID == "" {
+		return nil, nil
+	}
 	if idempotencyKey == "" {
 		return nil, nil
 	}
@@ -1189,4 +1213,47 @@ func randomAlpha(rng *rand.Rand, n int) string {
 		b[i] = chars[rng.IntN(len(chars))]
 	}
 	return string(b)
+}
+
+// nullableProjectID binds an absent primary repository as SQL NULL.
+func nullableProjectID(id string) any {
+	if id == "" {
+		return nil
+	}
+	return id
+}
+
+func findTaskCreateKey(dbtx db.DBTX, task *Task, ref, key string) (*Task, error) {
+	if task.ProjectID == "" {
+		return FindWorkspaceTask(dbtx, task.WorkspaceID, task.ParentID, ref, key)
+	}
+	if ref != "" {
+		return FindTaskByRef(dbtx, ref, task.ParentID, task.ProjectID)
+	}
+	return FindTaskByIdempotencyKey(dbtx, task.ProjectID, task.ParentID, key)
+}
+
+// FindWorkspaceTask finds a repository-free task by its workspace-scoped create key.
+func FindWorkspaceTask(dbtx db.DBTX, workspaceID, parentID, ref, key string) (*Task, error) {
+	if ref == "" && key == "" {
+		return nil, nil
+	}
+	if isUUID(ref) {
+		task, err := GetTask(dbtx, ref)
+		if err == nil && task.ProjectID == "" && task.WorkspaceID == workspaceID && task.ParentID == parentID {
+			return task, nil
+		}
+		if err != nil && !errors.Is(err, ErrTaskNotFound) {
+			return nil, err
+		}
+	}
+	column, value := "ref", ref
+	if ref == "" {
+		column, value = "idempotency_key", key
+	}
+	task, err := scanTask(dbtx.QueryRow(`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.project_id IS NULL AND t.workspace_id = ? AND t.parent_id = ? AND t.`+column+` = ?`, workspaceID, parentID, value))
+	if errors.Is(err, ErrTaskNotFound) {
+		return nil, nil
+	}
+	return task, err
 }
