@@ -539,6 +539,9 @@ Two daemon-enforced rules:
    boid task notify "$BOID_TASK_ID" --done "Released $merged to $BRANCH."
    ```
 
+   `release.branch` must be the bare branch name (e.g. `main`), without
+   `origin/`, `refs/heads/`, or `refs/remotes/origin/`.
+
    For a structured `release` with `pushed: true` and a branch, the daemon
    checks the advertised remote tip through the git gateway. It never fetches
    a mirror. Verify the push in the sandbox and record evidence before reporting done.

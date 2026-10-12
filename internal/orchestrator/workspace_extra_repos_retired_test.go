@@ -11,7 +11,7 @@ import (
 )
 
 func TestWorkspaceEnvelopeRejectsRetiredExtraRepos(t *testing.T) {
-	_, err := DecodeWorkspaceEnvelopeDocuments([]byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team\nspec:\n  extra_repos: []\n"))
+	_, err := DecodeWorkspaceEnvelopeDocuments([]byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team\nspec:\n  extra_repos: [https://github.com/org/lib.git]\n"))
 	if err == nil || !strings.Contains(err.Error(), "extra_repos has retired") {
 		t.Fatalf("error=%v", err)
 	}

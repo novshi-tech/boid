@@ -777,3 +777,23 @@ func equalStrSlice(a, b []string) bool {
 	}
 	return true
 }
+
+func TestWorkspaceEnvelopeAcceptsOnlyEmptyLegacyExtraRepos(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		wantErr bool
+	}{{"[]", false}, {"null", false}, {"[https://github.com/org/lib.git]", true}, {"{}", true}} {
+		t.Run(tc.value, func(t *testing.T) {
+			docs, err := DecodeWorkspaceEnvelopeDocuments([]byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team\nspec:\n  extra_repos: " + tc.value + "\n"))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v", err)
+			}
+			if err == nil && docs[0].FieldsPresent["extra_repos"] {
+				t.Fatal("legacy empty list must be ignored")
+			}
+			if tc.value[0] == '[' && tc.wantErr && !strings.Contains(err.Error(), "boid project add") {
+				t.Fatalf("missing migration guidance: %v", err)
+			}
+		})
+	}
+}

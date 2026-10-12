@@ -13,9 +13,7 @@ import (
 // `https://`, reusing the same host/path extraction). Returns an error for
 // an empty or unrecognized URL form.
 //
-// This is a pure function so it can be unit tested without a real git
-// repository; CaptureUpstreamURL below composes it with the actual
-// `git config` read.
+// This is a pure function; registration does not read a git repository.
 func NormalizeOriginURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

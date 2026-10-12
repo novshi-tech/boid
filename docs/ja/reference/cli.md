@@ -82,7 +82,7 @@ boid start --cli-port 9442 --web-port 9080
 | コマンド | 役割 |
 |---|---|
 | `boid project add <git-url> --workspace=<name> [--name=<project-name>] [--perm=fetch\|push]` | git remote URL を DB に登録する。daemon は clone しない。`--workspace` は必須、`--name` を省略すると URL の最後のパス要素から project 名を derive する。旧来のホストディレクトリ登録フォーム (`boid project add <dir>`) は PR-4 で撤去済み — git URL の形 (明示スキームまたは scp-like `user@host:path`) に一致しない引数はクライアント側で拒否される。 `--perm` は省略時 `push`。`fetch` は読み取り専用で task の主リポジトリには指定できない。 |
-| `boid project list` | 登録済みプロジェクト一覧 (status `ready`/`degraded` も表示)。サンドボックス内の boid shim からも同名で呼べるが、こちらは daemon 全体ではなく**同一 workspace 内**のプロジェクトのみ (id/name/upstream_url/perm の JSON) を返す — スコープは呼び出し元トークンの `AllowedProjectIDs` で決まり、指定はできない `perm` も表示する。 |
+| `boid project list` | 登録済みプロジェクト一覧 (status `ready` も表示)。サンドボックス内の boid shim からも同名で呼べるが、こちらは daemon 全体ではなく**同一 workspace 内**のプロジェクトのみ (id/name/upstream_url/perm の JSON) を返す — スコープは呼び出し元トークンの `AllowedProjectIDs` で決まり、指定はできない `perm` も表示する。 |
 | `boid project set-perm <ref> <fetch\|push>` | 既存 project の権限を変更する。新規 task 作成と以後の job token に適用される。 |
 | `boid project show <ref> [--explain]` | Show repository identity and workspace setting provenance. |
 | `boid project remove <ref>` (alias: `rm`) | プロジェクトを登録解除。project の DB row を削除する唯一の入口 — `boid` は filesystem / remote の観測結果を根拠に自動削除しない。既存 mirror は削除せず維持する。再登録に mirror は不要。 |

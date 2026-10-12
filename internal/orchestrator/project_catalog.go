@@ -81,26 +81,6 @@ func validateTaskPrimaryProject(dbtx db.DBTX, projectID string) error {
 	return RequireTaskPrimaryProject(project)
 }
 
-// SetProjectUpstreamURL updates a registered repository URL.
-func SetProjectUpstreamURL(dbtx db.DBTX, id, upstreamURL string) error {
-	now := time.Now().UTC()
-	res, err := dbtx.Exec(
-		`UPDATE projects SET upstream_url = ?, updated_at = ? WHERE id = ?`,
-		nullableString(upstreamURL), now, id,
-	)
-	if err != nil {
-		return fmt.Errorf("set project upstream_url: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("set project upstream_url: rows affected: %w", err)
-	}
-	if n == 0 {
-		return fmt.Errorf("set project upstream_url: project %q not found", id)
-	}
-	return nil
-}
-
 // nullableString maps an empty string to SQL NULL so upstream_url reads back
 // as "" (via scanProject's sql.NullString handling) rather than storing an
 // empty string literal that would be indistinguishable from NULL in intent.

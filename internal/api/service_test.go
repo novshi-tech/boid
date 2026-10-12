@@ -2439,10 +2439,6 @@ func TestGetTaskDetail_JobsIncludeWorkspacePath(t *testing.T) {
 type stubProjectRepository struct {
 	projects []*orchestrator.Project
 	listErr  error
-	// setUpstreamURLCalls counts SetProjectUpstreamURL invocations, so tests
-	// can assert the "already up to date, skip the write" idempotency path
-	// (docs/plans/git-gateway-cutover.md PR2 reload recapture).
-	setUpstreamURLCalls int
 	// existingWorkspaces backs WorkspaceExists (MAJOR 5, docs/plans/
 	// workspace-db-consolidation.md): a slug is reported as existing only
 	// when this map has a true entry for it. nil/zero-value defaults every
@@ -2570,17 +2566,6 @@ func (s *stubProjectRepository) GetWorkspaceSummary(slug string) (*orchestrator.
 		return nil, fmt.Errorf("workspace %q: %w", slug, os.ErrNotExist)
 	}
 	return ws, nil
-}
-
-func (s *stubProjectRepository) SetProjectUpstreamURL(projectID, upstreamURL string) error {
-	s.setUpstreamURLCalls++
-	for _, p := range s.projects {
-		if p.ID == projectID {
-			p.UpstreamURL = upstreamURL
-			return nil
-		}
-	}
-	return fmt.Errorf("project not found: %s", projectID)
 }
 
 type stubProjectMetaStore struct {

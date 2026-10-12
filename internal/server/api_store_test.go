@@ -98,8 +98,6 @@ func (r stubProjectRepo) GetWorkspaceSummary(slug string) (*orchestrator.Workspa
 
 func (r stubProjectRepo) DeleteProject(id string) error { return nil }
 
-func (r stubProjectRepo) SetProjectUpstreamURL(projectID, upstreamURL string) error { return nil }
-
 // stubMetaResolver returns a hydrated ProjectMeta whose SecretNamespace mirrors
 // the project's workspace id — same contract as orchestrator.ProjectStore's
 // GetWithWorkspace, simplified for the broker register tests.
@@ -489,3 +487,22 @@ func TestJobWorkspaceIDRoundTrip(t *testing.T) {
 }
 
 func (r stubProjectRepo) SetProjectPerm(id, perm string) error { return nil }
+
+func TestGlobalJobStoreUsesRegisteredProjectName(t *testing.T) {
+	d := newSecretTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "named", Name: "registered-name"}); err != nil {
+		t.Fatal(err)
+	}
+	job := &dispatcher.Job{ProjectID: "named", HandlerID: "handler", Status: dispatcher.JobStatusCompleted}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatal(err)
+	}
+	store := &globalJobStore{jobs: dispatcher.NewJobRepository(d.Conn), tasks: orchestrator.NewTaskRepository(d.Conn), projects: orchestrator.NewProjectRepository(d.Conn)}
+	rows, err := store.ListJobsWithContext(api.JobListFilter{TasklessOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ProjectName != "registered-name" {
+		t.Fatalf("jobs=%+v", rows)
+	}
+}

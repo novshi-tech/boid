@@ -43,7 +43,7 @@ func RegisterExtraRepositories(tx *sql.Tx) error {
 				slog.Warn("extra_repos migration: invalid entry skipped", "workspace", ws.slug)
 				continue
 			}
-			upstream, err := legacyRepositoryURL(raw)
+			upstream, err := NormalizeRepositoryURL(raw)
 			if err != nil {
 				slog.Warn("extra_repos migration: invalid URL skipped", "workspace", ws.slug, "error", err)
 				continue
@@ -59,7 +59,8 @@ func RegisterExtraRepositories(tx *sql.Tx) error {
 	return nil
 }
 
-func legacyRepositoryURL(raw string) (string, error) {
+// NormalizeRepositoryURL canonicalizes a legacy forge URL without preserving credentials.
+func NormalizeRepositoryURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if !strings.Contains(raw, "://") {
 		if at := strings.Index(raw, "@"); at >= 0 {
@@ -104,7 +105,7 @@ func legacyRepositoryURL(raw string) (string, error) {
 }
 
 func registerLegacyRepository(tx *sql.Tx, workspace, upstream string) error {
-	rows, err := tx.Query(`SELECT p.id,COALESCE(p.upstream_url,''),COALESCE(pw.workspace_id,'') FROM projects p LEFT JOIN project_workspaces pw ON pw.project_id=p.id ORDER BY p.id`)
+	rows, err := tx.Query(`SELECT p.id,COALESCE(p.upstream_url,''),COALESCE(pw.workspace_id,'') FROM projects p LEFT JOIN project_workspaces pw ON pw.project_id=p.id ORDER BY CASE WHEN pw.workspace_id=? THEN 0 ELSE 1 END,p.id`, workspace)
 	if err != nil {
 		return err
 	}
@@ -115,7 +116,7 @@ func registerLegacyRepository(tx *sql.Tx, workspace, upstream string) error {
 			rows.Close()
 			return err
 		}
-		normalized, err := legacyRepositoryURL(raw)
+		normalized, err := NormalizeRepositoryURL(raw)
 		if err == nil && normalized == upstream && (owner == workspace || owner == "") {
 			id = candidate
 			break
@@ -131,7 +132,16 @@ func registerLegacyRepository(tx *sql.Tx, workspace, upstream string) error {
 		suffix := hex.EncodeToString(sum[:])[:16]
 		id = "extra-" + suffix
 		parts := strings.Split(strings.TrimSuffix(upstream, ".git"), "/")
-		name := parts[len(parts)-1]
+		name := strings.TrimLeft(parts[len(parts)-1], ".")
+		for strings.Contains(name, "..") {
+			name = strings.ReplaceAll(name, "..", "-")
+		}
+		if name == "" {
+			name = "repository"
+		}
+		if len(name) > 109 {
+			name = name[:109]
+		}
 		baseName := name
 		for attempt := 0; ; attempt++ {
 			var collisions int

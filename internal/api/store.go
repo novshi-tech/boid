@@ -442,9 +442,6 @@ type ProjectRepository interface {
 	SetProjectPerm(id, perm string) error
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	DeleteProject(id string) error
-	// SetProjectUpstreamURL persists a project's captured upstream_url. Used
-	// by ReloadProjects' recapture and by the daemon-startup backfill.
-	SetProjectUpstreamURL(projectID, upstreamURL string) error
 	// WorkspaceExists reports whether workspaceID refers to an existing
 	// workspaces table row. Used by ProjectAppService.SetProjectWorkspace to
 	// reject assignment to a nonexistent slug.

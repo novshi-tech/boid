@@ -424,9 +424,6 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 		baseBranch = expanded
 	}
 
-	// Creation-time guard: reject a parent-less executor whose base_branch
-	// does not exist on origin.
-
 	// The card's slot invariants apply to this write port too. Ordinary direct
 	// children and Go work must not exceed one open/specced/dispatched child;
 	// an owned non-Go card-command continuation may coexist with a spec.

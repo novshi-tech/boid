@@ -321,7 +321,7 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 		} else {
 			fmt.Fprintf(out, "projects (%d):\n", len(projects))
 			for _, p := range projects {
-				fmt.Fprintf(out, "  %-36s  %s\n", p.ID, filepath.Base(p.WorkDir))
+				fmt.Fprintf(out, "  %-36s  %s\n", p.ID, p.Name)
 			}
 		}
 		return nil

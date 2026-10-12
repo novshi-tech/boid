@@ -2111,3 +2111,24 @@ func TestRunWorkspaceAssign_AutoCreate_SnapshotAvoidsTOCTOU(t *testing.T) {
 		t.Errorf("localWorkspaceYAMLReadFile called %d times, want exactly 1 (a second read reintroduces the TOCTOU this fix closes)", readCount)
 	}
 }
+
+func TestRunWorkspaceShowUsesRegisteredProjectName(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	testutil.SeedWorkspace(t, ts, "team-a")
+	if err := orchestrator.CreateProject(ts.Server.DB(), &orchestrator.Project{ID: "named", Name: "registered-name", UpstreamURL: "https://github.com/org/repo.git"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := orchestrator.SetProjectWorkspace(ts.Server.DB(), "named", "team-a"); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd := workspaceShowCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceShow(cmd, []string{"team-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "registered-name") {
+		t.Fatalf("project name missing: %s", out.String())
+	}
+}

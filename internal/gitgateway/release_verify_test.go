@@ -17,6 +17,9 @@ func TestVerifyReleaseUsesGatewayCredentials(t *testing.T) {
 		if r.URL.Query().Get("service") != "git-upload-pack" {
 			t.Errorf("unexpected gateway operation: %s", r.URL)
 		}
+		if r.UserAgent() != "git/boid" {
+			t.Errorf("User-Agent=%q", r.UserAgent())
+		}
 		line := commit + " refs/heads/main\x00multi_ack\n"
 		fmt.Fprintf(w, "%04x%s0000", len(line)+4, line)
 	})
@@ -33,7 +36,7 @@ func TestVerifyReleaseUsesGatewayCredentials(t *testing.T) {
 	for _, tc := range []struct {
 		branch, hash string
 		want         bool
-	}{{"main", commit, true}, {"main", strings.Repeat("b", 40), false}, {"missing", commit, false}} {
+	}{{"main", commit, true}, {"origin/main", commit, true}, {"refs/heads/main", commit, true}, {"refs/remotes/origin/main", commit, true}, {"main", strings.Repeat("b", 40), false}, {"missing", commit, false}} {
 		matches, err := gateway.VerifyRelease(context.Background(), key, "team", tc.branch, tc.hash)
 		if err != nil || matches != tc.want {
 			t.Errorf("%s %s: matches=%v err=%v", tc.branch, tc.hash, matches, err)

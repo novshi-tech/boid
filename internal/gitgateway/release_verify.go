@@ -22,6 +22,13 @@ func (s *Server) VerifyRelease(ctx context.Context, repo RepoKey, namespace, bra
 	if err != nil {
 		return false, err
 	}
+	req.Header.Set("User-Agent", "git/boid")
+	for _, prefix := range []string{"refs/remotes/origin/", "refs/heads/", "origin/"} {
+		if strings.HasPrefix(branch, prefix) {
+			branch = strings.TrimPrefix(branch, prefix)
+			break
+		}
+	}
 	response := &releaseResponse{header: make(http.Header)}
 	s.ServeHTTP(response, req)
 	if response.code != http.StatusOK || response.overflow {
@@ -55,7 +62,7 @@ func (s *Server) VerifyRelease(ctx context.Context, repo RepoKey, namespace, bra
 			return false, err
 		}
 		validRefs = true
-		if fields[1] == "refs/heads/"+strings.TrimPrefix(branch, "refs/heads/") {
+		if fields[1] == "refs/heads/"+branch {
 			matches = strings.HasPrefix(fields[0], commit)
 		}
 	}

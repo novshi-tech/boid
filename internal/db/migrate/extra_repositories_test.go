@@ -137,3 +137,41 @@ func TestExtraRepositoriesMigrationResolvesIDAndNameCollisions(t *testing.T) {
 		t.Fatalf("collision result: %s %s", id, name)
 	}
 }
+
+func TestExtraRepositoriesMigrationPrefersWorkspaceOwnedRow(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	applyThrough(t, d.Conn, "0062_persist_project_names")
+	if _, err := d.Conn.Exec(`INSERT INTO workspaces(slug,extra_repos) VALUES ('team','["https://github.com/org/lib.git"]'); INSERT INTO projects(id,name,work_dir,upstream_url,perm) VALUES ('a-unassigned','unassigned','','https://github.com/org/lib.git','push'),('z-owned','owned','','https://github.com/org/lib.git','push'); INSERT INTO project_workspaces(project_id,workspace_id) VALUES ('z-owned','team')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(d.Conn); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := d.Conn.QueryRow(`SELECT count(*) FROM project_workspaces WHERE workspace_id='team'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("workspace rows=%d err=%v", count, err)
+	}
+}
+
+func TestExtraRepositoriesMigrationNormalizesProjectNames(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	applyThrough(t, d.Conn, "0062_persist_project_names")
+	if _, err := d.Conn.Exec(`INSERT INTO workspaces(slug,extra_repos) VALUES ('team','["https://github.com/org/.github.git","https://github.com/org/a..b.git"]')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(d.Conn); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := d.Conn.QueryRow(`SELECT count(*) FROM projects WHERE name IN ('github','a-b')`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("normalized names=%d err=%v", count, err)
+	}
+}

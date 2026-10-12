@@ -54,37 +54,6 @@ func TestCreateProject_UpstreamURL_PersistsAndReloads(t *testing.T) {
 	}
 }
 
-// TestSetProjectUpstreamURL_UpdatesExistingProject covers the backfill /
-// reload-recapture write path.
-func TestSetProjectUpstreamURL_UpdatesExistingProject(t *testing.T) {
-	d := testutil.NewTestDB(t)
-
-	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "p1", WorkDir: "/tmp/p1"}); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	want := "https://bitbucket.org/owner/repo.git"
-	if err := orchestrator.SetProjectUpstreamURL(d.Conn, "p1", want); err != nil {
-		t.Fatalf("set upstream_url: %v", err)
-	}
-
-	got, err := orchestrator.GetProject(d.Conn, "p1")
-	if err != nil {
-		t.Fatalf("get project: %v", err)
-	}
-	if got.UpstreamURL != want {
-		t.Errorf("UpstreamURL after SetProjectUpstreamURL = %q, want %q", got.UpstreamURL, want)
-	}
-}
-
-func TestSetProjectUpstreamURL_UnknownProjectErrors(t *testing.T) {
-	d := testutil.NewTestDB(t)
-
-	if err := orchestrator.SetProjectUpstreamURL(d.Conn, "nonexistent", "https://github.com/o/r.git"); err == nil {
-		t.Fatal("expected error for nonexistent project, got nil")
-	}
-}
-
 // TestRequireUpstreamURL is the PR2 building block described in
 // project_catalog.go's doc comment — not yet wired into dispatch (deferred to
 // PR6 per docs/plans/git-gateway-cutover.md), but covered here so PR6 has a

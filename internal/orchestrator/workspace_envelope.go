@@ -482,8 +482,14 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 			return spec, nil, false, fmt.Errorf("spec.allowed_domains: %w", err)
 		}
 	}
-	if _, ok := raw["extra_repos"]; ok {
-		return spec, nil, false, fmt.Errorf("spec.extra_repos has retired; register each URL with boid project add <url> --workspace=<name> --perm=fetch and list it in spec.projects")
+	if n, ok := raw["extra_repos"]; ok {
+		var legacy []string
+		if err := n.Decode(&legacy); err != nil {
+			return spec, nil, false, fmt.Errorf("spec.extra_repos: %w", err)
+		}
+		if len(legacy) != 0 {
+			return spec, nil, false, fmt.Errorf("spec.extra_repos has retired; register each URL with boid project add <url> --workspace=<name> --perm=fetch and list it in spec.projects")
+		}
 	}
 	if n, ok := raw["services"]; ok {
 		fieldsPresent["services"] = true
