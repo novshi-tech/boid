@@ -16,8 +16,7 @@ import (
 func TestBuildGatewayRepos_NoPrimaryNeverGrantsPush(t *testing.T) {
 	r := &Runner{Projects: fakeProjectLookup{projects: []*orchestrator.Project{
 		{ID: "peer", WorkspaceID: "ws", Perm: "push", UpstreamURL: "https://github.com/org/peer.git"},
-	}}, Workspaces: fakeWorkspaceLookup{metas: map[string]*orchestrator.WorkspaceMeta{
-		"ws": {ExtraRepos: []string{"https://github.com/org/extra.git"}},
+		{ID: "extra", WorkspaceID: "ws", Perm: "fetch", UpstreamURL: "https://github.com/org/extra.git"},
 	}}}
 	repos := r.buildGatewayRepos(&orchestrator.JobSpec{Visibility: orchestrator.Visibility{Writable: true}}, "ws")
 	if len(repos) != 2 {
@@ -49,9 +48,8 @@ func TestBuildGatewayRepos_ReceivePackPermissions(t *testing.T) {
 			r := &Runner{Projects: fakeProjectLookup{projects: []*orchestrator.Project{
 				{ID: "primary", WorkspaceID: "ws", Perm: tc.perm, UpstreamURL: upstream.URL + "/org/primary.git"},
 				{ID: "peer", WorkspaceID: "ws", Perm: "push", UpstreamURL: upstream.URL + "/org/peer.git"},
+				{ID: "extra", WorkspaceID: "ws", Perm: "fetch", UpstreamURL: upstream.URL + "/org/extra.git"},
 				{ID: "outside", WorkspaceID: "other", Perm: "push", UpstreamURL: upstream.URL + "/org/outside.git"},
-			}}, Workspaces: fakeWorkspaceLookup{metas: map[string]*orchestrator.WorkspaceMeta{
-				"ws": {ExtraRepos: []string{upstream.URL + "/org/extra.git"}},
 			}}}
 			spec := &orchestrator.JobSpec{ProjectID: tc.primary, Visibility: orchestrator.Visibility{Writable: tc.writable}}
 			reg := gitgateway.NewRegistry()

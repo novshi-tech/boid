@@ -283,7 +283,7 @@ class FlagsTest(unittest.TestCase):
         self.assertIn("/nvt-intake", description)
 
     def test_the_deprecated_judge_skill_alias_still_works(self):
-        """runner image のデプロイと `boid project fetch` は別手順で、同時には
+        """runner image のデプロイと job の checkout は別手順で、同時には
         切り替えられない。旧フラグ名は移行窓のあいだ受け続ける。"""
         cli = FakeCLI(signals=[slack_envelope()], own_task_id="sweep-1")
         main(["--judge-skill", "/nvt-sweep"], cli=cli, stdout=io.StringIO())

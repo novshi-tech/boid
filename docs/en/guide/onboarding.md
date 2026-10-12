@@ -12,6 +12,6 @@ boid workspace export dev
 
 `--workspace` is required; the CLI creates an empty workspace if the slug is new. Apply task behaviors to it before task dispatch. `--name` supplies a repository name override. Existing project IDs remain stable; new IDs derive from the URL. Workspace settings apply at dispatch; `base_branch` is saved on each task at creation. An empty branch lets agent checkout use the origin default branch.
 
-`project init` and `project migrate` have retired. Migrate any old repository definitions into `spec` of a workspace envelope and apply it. `project fetch` still refreshes mirror refs and `project reload` refreshes identities; neither reads project configuration.
+`project init` and `project migrate` have retired. Migrate any old repository definitions into `spec` of a workspace envelope and apply it. `project fetch` and `project reload` have retired. Registration stores the URL; jobs clone through the git gateway.
 
 Tool installation and authentication use the workspace's persistent HOME. See [workspace home](workspace-home.md).

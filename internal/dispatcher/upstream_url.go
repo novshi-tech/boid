@@ -13,9 +13,7 @@ import (
 // `https://`, reusing the same host/path extraction). Returns an error for
 // an empty or unrecognized URL form.
 //
-// This is a pure function so it can be unit tested without a real git
-// repository; CaptureUpstreamURL below composes it with the actual
-// `git config` read.
+// This is a pure function; registration does not read a git repository.
 func NormalizeOriginURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -124,17 +122,4 @@ func hasHTTPUserinfo(rawURL string) bool {
 	}
 	hostPart, _, _ := strings.Cut(rest, "/")
 	return strings.Contains(hostPart, "@")
-}
-
-// CaptureUpstreamURL reads dir's `git config --get remote.origin.url` and
-// normalizes it to an HTTPS URL suitable for a project's upstream_url.
-// Returns an error if dir has no git repository, no origin remote is
-// configured, or the origin URL is in an unrecognized form — the caller
-// (project registration / reload / startup backfill) decides how to react.
-func CaptureUpstreamURL(dir string) (string, error) {
-	raw, err := GitOriginURL(dir)
-	if err != nil {
-		return "", err
-	}
-	return NormalizeOriginURL(raw)
 }

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,10 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os/exec"
-	"regexp"
 	"strings"
-	"time"
 
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -213,8 +209,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		}
 		// Action payload size cap (same reasoning as the progress-mode check
 		// above: this call bypasses ApplyAction). Checked before
-		// verifyDoneClaim's git-heavy gate so an oversized message fails
-		// fast without paying that cost.
+		// recording the completion request.
 		if err := orchestrator.ValidateContentSize("action payload", []byte(msg)); err != nil {
 			return &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
@@ -307,24 +302,7 @@ func notifyModeName(ask, done, fail string) string {
 	}
 }
 
-// releaseCommitRe matches a bare git object name (7–40 hex chars). It validates
-// the structured release.commit field only — it is deliberately NOT used to
-// scan free-form prose, where session ids, UUIDs and issue numbers would
-// false-match.
-var releaseCommitRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
-
-// verifyDoneClaim guards `notify --done` against two confabulation patterns:
-// (1) reporting done while child tasks are still open — a parent owns its
-// children's lifecycle and a premature done orphans them; and (2) citing a
-// release commit that does not exist in the repository. A rejected claim
-// returns a StatusError so the agent must actually wait / re-verify. All
-// git checks are best-effort: any inconclusive result skips the check so
-// infrastructure hiccups never block a real done.
-//
-// Before checking, a `git fetch origin` runs in the project work_dir (see
-// gitFetchOrigin): sandbox-internal clones don't share an object database
-// with the project work_dir, so a commit made inside the sandbox is only
-// visible here once pushed to origin and fetched back.
+// verifyDoneClaim rejects open children and verifies pushed branch tips through the gateway.
 func (s *TaskAppService) verifyDoneClaim(ctx context.Context, task *orchestrator.Task) *StatusError {
 	if task.OpenChildCount > 0 {
 		return &StatusError{
@@ -337,127 +315,24 @@ func (s *TaskAppService) verifyDoneClaim(ctx context.Context, task *orchestrator
 		}
 	}
 
-	// Payload is execution-only (design doc §3.2); verifyDoneClaim only ever
-	// runs against a task reporting "done" via `boid task notify --done`
-	// from inside a running agent session, which only an execution task has
-	// — a card never runs a session to call notify from.
-	var taskPayload json.RawMessage
-	if task.Exec != nil {
-		taskPayload = task.Exec.Payload
-	}
-	commit, branch, pushed := releaseClaim(taskPayload)
-	if commit == "" || s.Projects == nil {
+	commit, branch, pushed := releaseClaim(taskPayloadForNotify(task))
+	if !pushed || commit == "" || branch == "" || s.VerifyRelease == nil || s.Projects == nil || task.ProjectID == "" {
 		return nil
 	}
-	proj, err := s.Projects.GetProject(task.ProjectID)
-	if err != nil || proj == nil || proj.WorkDir == "" {
+	project, err := s.Projects.GetProject(task.ProjectID)
+	if err != nil || project == nil {
 		return nil
 	}
-	gitFetchOrigin(ctx, proj.WorkDir)
-	if exists, conclusive := gitObjectExists(ctx, proj.WorkDir, commit); conclusive && !exists {
-		return &StatusError{
-			Code: http.StatusConflict,
-			Message: fmt.Sprintf(
-				"reported release commit %q does not exist in the repository. Do not write a "+
-					"commit hash you have not seen in actual git output this session. Run the "+
-					"real merge, capture the true hash (git rev-parse HEAD), and report again.",
-				commit),
-		}
+	matches, err := s.VerifyRelease(ctx, project, branch, commit)
+	if err != nil {
+		slog.Warn("notify: release verification unavailable", "project_id", project.ID, "error", err)
+		return nil
 	}
-	if pushed && branch != "" {
-		if tip, ok := gitRemoteTip(ctx, proj.WorkDir, branch); ok && tip != "" &&
-			!strings.HasPrefix(tip, commit) && !strings.HasPrefix(commit, tip) {
-			return &StatusError{
-				Code: http.StatusConflict,
-				Message: fmt.Sprintf(
-					"reported a push of %q to %s, but origin/%s is at %s. Re-run the real push "+
-						"and report the actually-pushed commit.", commit, branch, branch, tip),
-			}
-		}
+	if !matches {
+		return &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf("reported release commit %q is not the remote tip of %s; verify the push and report again", commit, branch)}
 	}
+
 	return nil
-}
-
-// releaseClaim extracts the structured release report
-// (payload.artifact.report.release) the boid-task skill (Supervisor Mode) asks
-// agents to populate from real git output before `notify --done`. Missing or
-// malformed fields yield zero values, which callers treat as "nothing to verify".
-func releaseClaim(payload json.RawMessage) (commit, branch string, pushed bool) {
-	if len(payload) == 0 {
-		return "", "", false
-	}
-	var p struct {
-		Artifact struct {
-			Report struct {
-				Release struct {
-					Commit string `json:"commit"`
-					Branch string `json:"branch"`
-					Pushed bool   `json:"pushed"`
-				} `json:"release"`
-			} `json:"report"`
-		} `json:"artifact"`
-	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return "", "", false
-	}
-	commit = strings.TrimSpace(p.Artifact.Report.Release.Commit)
-	if !releaseCommitRe.MatchString(commit) {
-		commit = "" // only verify well-formed object names
-	}
-	return commit, strings.TrimSpace(p.Artifact.Report.Release.Branch), p.Artifact.Report.Release.Pushed
-}
-
-// gitFetchOrigin best-effort runs `git fetch origin` in workdir before the
-// cat-file / ls-remote checks below. It never blocks the caller: any failure
-// is logged and swallowed, and the subsequent checks run against whatever
-// is already in the local object database.
-func gitFetchOrigin(ctx context.Context, workdir string) {
-	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(cctx, "git", "-C", workdir, "fetch", "--quiet", "origin")
-	var errb bytes.Buffer
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		slog.Warn("notify: git fetch origin failed before release verification; falling back to local git data",
-			"workdir", workdir, "error", err, "stderr", strings.TrimSpace(errb.String()))
-	}
-}
-
-// gitObjectExists reports whether hash resolves to an object in the repo at
-// workdir. conclusive is false when git cannot give a definitive answer (binary
-// missing, not a repo, timeout) so the caller can skip rather than block.
-func gitObjectExists(ctx context.Context, workdir, hash string) (exists, conclusive bool) {
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(cctx, "git", "-C", workdir, "cat-file", "-t", hash)
-	var errb bytes.Buffer
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err == nil {
-		return true, true
-	}
-	es := errb.String()
-	if strings.Contains(es, "Not a valid object name") || strings.Contains(es, "could not get object info") {
-		return false, true
-	}
-	return false, false
-}
-
-// gitRemoteTip returns the origin tip of branch (best-effort: ok is false on any
-// exec/network error so the caller skips the push check rather than blocking).
-func gitRemoteTip(ctx context.Context, workdir, branch string) (tip string, ok bool) {
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(cctx, "git", "-C", workdir, "ls-remote", "origin", branch)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return "", false
-	}
-	fields := strings.Fields(out.String())
-	if len(fields) == 0 {
-		return "", true // ran cleanly; branch absent on origin
-	}
-	return fields[0], true
 }
 
 // AnswerTask saves the user's reply and transitions the task awaiting → executing.
@@ -492,4 +367,39 @@ func newQuestionID() string {
 		panic("newQuestionID: crypto/rand: " + err.Error())
 	}
 	return hex.EncodeToString(b)
+}
+
+func taskPayloadForNotify(task *orchestrator.Task) json.RawMessage {
+	if task.Exec == nil {
+		return nil
+	}
+	return task.Exec.Payload
+}
+
+func releaseClaim(payload json.RawMessage) (commit, branch string, pushed bool) {
+	var report struct {
+		Artifact struct {
+			Report struct {
+				Release struct {
+					Commit string
+					Branch string
+					Pushed bool
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(payload, &report); err != nil {
+		return "", "", false
+	}
+	release := report.Artifact.Report.Release
+	commit = strings.TrimSpace(release.Commit)
+	if len(commit) < 7 || len(commit) > 40 {
+		return "", "", false
+	}
+	for _, r := range commit {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			return "", "", false
+		}
+	}
+	return commit, strings.TrimSpace(release.Branch), release.Pushed
 }

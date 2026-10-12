@@ -237,35 +237,7 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 	}
 	store.LoadAll(projects)
 
-	backfillUpstreamURLs(projectRepo, projects)
-
 	return store, hostCommands, nil
-}
-
-// backfillUpstreamURLs captures upstream_url for any project registered
-// before the column existed. Idempotent — projects that already have a
-// value are skipped — so it is safe to run on every daemon startup.
-// Capture failures (no git repo / no origin remote) are logged as
-// warnings, never fatal to startup: the project keeps dispatching exactly
-// as it did before this column existed until a remote is added and `boid
-// project reload` (or the next startup) captures it.
-func backfillUpstreamURLs(projectRepo *orchestrator.ProjectRepository, projects []*orchestrator.Project) {
-	for _, p := range projects {
-		if p.UpstreamURL != "" {
-			continue
-		}
-		url, err := dispatcher.CaptureUpstreamURL(p.WorkDir)
-		if err != nil {
-			slog.Warn("project has no upstream_url and none could be captured; add a git remote and run `boid project reload`",
-				"project_id", p.ID, "work_dir", p.WorkDir, "error", err)
-			continue
-		}
-		if err := projectRepo.SetProjectUpstreamURL(p.ID, url); err != nil {
-			slog.Warn("failed to persist backfilled upstream_url", "project_id", p.ID, "error", err)
-			continue
-		}
-		slog.Info("backfilled project upstream_url", "project_id", p.ID, "upstream_url", url)
-	}
 }
 
 func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir, transcriptDir string, brokerTLSCA *mtls.CA, brokerTLSAddr *string) backend.SandboxBackend {
@@ -1095,9 +1067,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Projects: projectRepo,
 		Meta:     store,
 		Hydrator: store, // workspace-aware hydration for GET /api/projects/{id}
-		// upstream_url capture: `project add` rejects projects with no git
-		// origin remote, and `project reload` re-captures on every call.
-		CaptureUpstreamURL: dispatcher.CaptureUpstreamURL,
 		// Workspace CRUD: store.WorkspaceStore() is the same DB-backed
 		// *orchestrator.WorkspaceStore buildProjectStore wired via
 		// SetRepository above, so create/show/update/remove operate on
@@ -1315,38 +1284,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	srv.gatewayHTTPServer = &http.Server{Handler: combined}
 	srv.combinedGatewayHandler = combined
 
-	// `boid project add <git-url>` / `boid project fetch <id>` need an
-	// authenticated bare clone/fetch — wired here (rather than inline in
-	// the projectSvc literal above) because both need gwCreds, which is
-	// only built once boidCfg is loaded a few lines up. Reuses the exact
-	// same CredentialProvider the sandbox git gateway reverse proxy
-	// authenticates job clones with — see
-	// dispatcher.CloneBareRepo/FetchBareRepo's own doc comments for why
-	// this is a direct CredentialProvider.Resolve call rather than a
-	// round trip through the HTTP reverse proxy (there is no job token /
-	// sandbox involved; this runs in the daemon process itself).
-	projectSvc.CloneBareRepo = func(ctx context.Context, url, dest, namespace string) error {
-		return dispatcher.CloneBareRepo(ctx, url, dest, gwCreds, namespace)
-	}
-	projectSvc.FetchBareRepo = func(ctx context.Context, bareRepoPath, namespace string) error {
-		return dispatcher.FetchBareRepo(ctx, bareRepoPath, gwCreds, namespace)
-	}
-	projectSvc.DataDir = dataHomeFor(cfg)
-
-	// Runner.Dispatch's own per-job-clone step (runner.go) calls
-	// dispatcher.FetchBareRepo directly against a git-URL-registered
-	// project's bare repo before staging a per-job checkout off of it —
-	// reusing this exact same gwCreds the two closures immediately above
-	// already wire into ProjectAppService, for the identical reason their
-	// own doc comment gives (no job token or sandbox involved; this runs
-	// in the daemon process itself).
-	// WithProjectLock shares projectSvc's own projectMu with the
-	// per-job-clone dispatch step above, so it serializes against a
-	// concurrent `project rm` + re-add at the same managed path — see
-	// ProjectAppService.WithProjectLock's own doc comment for why this is
-	// a plain function value rather than a direct import
-	// (internal/dispatcher cannot import internal/api — this package
-	// already imports internal/dispatcher for wiring).
 	runner.WithProjectLock = projectSvc.WithProjectLock
 	// ConfirmWorkspaceExists closes over the same projectSvc so
 	// Runner.ImportWorkspaceHome can re-check the workspace ROW while
@@ -1429,6 +1366,18 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// The trigger sweep loop dispatches a due trigger's exec job through
 	// the SAME api.ExecDispatcher.StartExec `boid exec` uses.
 	workflow.Exec = sessionAdapter
+
+	taskSvc.VerifyRelease = func(ctx context.Context, project *orchestrator.Project, branch, commit string) (bool, error) {
+		slug, err := dispatcher.RepoSlugFromOriginURL(project.UpstreamURL)
+		if err != nil {
+			return false, err
+		}
+		parts := strings.Split(slug, "/")
+		if len(parts) != 3 {
+			return false, fmt.Errorf("release upstream must identify host/owner/repository")
+		}
+		return gwHandler.VerifyRelease(ctx, gitgateway.NewRepoKey(parts[0], parts[1], parts[2]), project.WorkspaceID, branch, commit)
+	}
 
 	if srv.broker != nil {
 		// runner (*dispatcher.Runner) satisfies jobContextProvider

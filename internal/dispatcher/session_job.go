@@ -13,8 +13,7 @@ import (
 // deliberately ignored — sessions are not driven by the task state machine
 // and have no behavior context to resolve.
 type SessionJobInput struct {
-	// ProjectID and ProjectWorkDir locate the host filesystem the sandbox
-	// will expose; ProjectWorkDir is the cwd seen by the agent.
+	// ProjectID identifies the repository to checkout in the sandbox.
 	WorkspaceID    string
 	ProjectID      string
 	ProjectWorkDir string
@@ -152,7 +151,7 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 			AdditionalBindings: input.AdditionalBindings,
 			Writable:           !input.Readonly,
 			DockerEnabled:      input.DockerEnabled,
-			Checkout:           input.ProjectWorkDir != "",
+			Checkout:           input.ProjectID != "",
 		},
 		BuiltinPolicies:    builtinPolicies,
 		HostCommands:       hostCommands,

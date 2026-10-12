@@ -65,7 +65,6 @@ type WorkspaceEnvelopeSpec struct {
 	HostCommands   []string          `yaml:"host_commands"`
 	Env            map[string]string `yaml:"env"`
 	AllowedDomains []string          `yaml:"allowed_domains"`
-	ExtraRepos     []string          `yaml:"extra_repos"`
 	// Services is the workspace-scoped API gateway service allowlist.
 	Services       []string                   `yaml:"services"`
 	ContainerImage string                     `yaml:"container_image"`
@@ -161,7 +160,6 @@ func NewWorkspaceEnvelopeFromMeta(name string, meta *WorkspaceMeta, projects []W
 		spec.HostCommands = meta.HostCommands
 		spec.Env = meta.Env
 		spec.AllowedDomains = meta.AllowedDomains
-		spec.ExtraRepos = meta.ExtraRepos
 		spec.Services = meta.Services
 		spec.ContainerImage = meta.ContainerImage
 		spec.Capabilities = meta.Capabilities
@@ -214,9 +212,6 @@ func (a *WorkspaceEnvelopeApply) MergeInto(current *WorkspaceMeta) *WorkspaceMet
 	}
 	if a.FieldsPresent["allowed_domains"] {
 		merged.AllowedDomains = spec.AllowedDomains
-	}
-	if a.FieldsPresent["extra_repos"] {
-		merged.ExtraRepos = spec.ExtraRepos
 	}
 	if a.FieldsPresent["services"] {
 		merged.Services = spec.Services
@@ -488,9 +483,12 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 		}
 	}
 	if n, ok := raw["extra_repos"]; ok {
-		fieldsPresent["extra_repos"] = true
-		if err := n.Decode(&spec.ExtraRepos); err != nil {
+		var legacy []string
+		if err := n.Decode(&legacy); err != nil {
 			return spec, nil, false, fmt.Errorf("spec.extra_repos: %w", err)
+		}
+		if len(legacy) != 0 {
+			return spec, nil, false, fmt.Errorf("spec.extra_repos has retired; register each URL with boid project add <url> --workspace=<name> --perm=fetch and list it in spec.projects")
 		}
 	}
 	if n, ok := raw["services"]; ok {

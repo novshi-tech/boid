@@ -1180,7 +1180,7 @@ func TestRunWorkspaceExport_RefusesAnEmptyResponse(t *testing.T) {
 func preInitScriptExportDocument(slug string) string {
 	return "apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: " + slug +
 		"\nspec:\n  host_commands:\n    - gh\n  env: {}\n  allowed_domains: []\n" +
-		"  extra_repos: []\n  container_image: \"\"\n  capabilities: {}\n  projects: []\n"
+		"  container_image: \"\"\n  capabilities: {}\n  projects: []\n"
 }
 
 // TestRunWorkspaceExport_RefusesADocumentWithoutInitScript is PR9 codex round 4
@@ -2109,5 +2109,26 @@ func TestRunWorkspaceAssign_AutoCreate_SnapshotAvoidsTOCTOU(t *testing.T) {
 
 	if readCount != 1 {
 		t.Errorf("localWorkspaceYAMLReadFile called %d times, want exactly 1 (a second read reintroduces the TOCTOU this fix closes)", readCount)
+	}
+}
+
+func TestRunWorkspaceShowUsesRegisteredProjectName(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	testutil.SeedWorkspace(t, ts, "team-a")
+	if err := orchestrator.CreateProject(ts.Server.DB(), &orchestrator.Project{ID: "named", Name: "registered-name", UpstreamURL: "https://github.com/org/repo.git"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := orchestrator.SetProjectWorkspace(ts.Server.DB(), "named", "team-a"); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd := workspaceShowCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceShow(cmd, []string{"team-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "registered-name") {
+		t.Fatalf("project name missing: %s", out.String())
 	}
 }

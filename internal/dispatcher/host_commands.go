@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -17,25 +16,6 @@ import (
 // commands run with a neutral cwd (no repo checkout), so repo context for
 // tools like `gh` is instead injected via env at token-registration time.
 const repoSlugPlaceholder = "${boid:repo_slug}"
-
-// GitOriginURL returns the `git config --get remote.origin.url` value for
-// dir, or an error if git is missing, dir is not a repo, or no origin is
-// configured. It deliberately uses cmd.Dir rather than `git -C dir`: this
-// repo's sandbox git wrapper rejects `-C`, and cmd.Dir works everywhere
-// (production and sandboxed callers alike).
-//
-// This is the production getOriginURL implementation passed to
-// ResolveHostCommands; it is exported so callers outside this package
-// (internal/server/api_store.go) can pass it too.
-func GitOriginURL(dir string) (string, error) {
-	cmd := exec.Command("git", "config", "--get", "remote.origin.url")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git config --get remote.origin.url: %w", err)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
 
 // repoSlugFromOriginURL normalizes a git remote origin URL into a
 // `host/owner/repo` slug. Supported forms:
@@ -208,45 +188,6 @@ func warnUnknownBoidVars(name string, env map[string]string) {
 	}
 }
 
-// ResolveHostCommands turns the orchestrator-side host command map (keyed by
-// the user-declared name) into two views over the same resolved command data:
-//
-//   - byPath is keyed by the absolute host path each host command was
-//     resolved to (also written back into each entry's Path). It is
-//     returned as an inert byproduct of the dedup pass — no production
-//     caller reads it any more (shims are symlinks under a fixed
-//     sandbox-internal directory, dispatcher.sandboxShimBinDir, so nothing
-//     keys off the absolute host path).
-//   - byName is keyed by the short (user-declared) command name — the
-//     canonical view. Consumed by the broker's policy table
-//     (CommandBroker.RegisterCommands, BOID_HOST_COMMAND_RULES via
-//     buildHostCommandRulesEnv) and by the sandbox layout
-//     (hostCommandSymlinks, buildPATH); it is also the shape the shim sends
-//     as ExecRequest.Command (sandbox.CommandFromArgv0 → the shim's
-//     bind-mount basename, which equals the declared short name by
-//     construction under sandboxShimBinDir).
-//
-// Every entry appears in both maps under its own key with identical field
-// values (byName[def.Name] == byPath[absPath]).
-//
-// The names "boid", "git", and "fetch" are excluded, each for a different
-// reason: "boid" has a dedicated bind mount + builtin policy elsewhere;
-// "fetch" is a broker builtin (`FetchRequest`) without a host binary at all;
-// "git" is neither a broker builtin nor a shim — it's a real binary reached
-// via the base rbind of /usr, but the name is reserved here so a user
-// `host_commands.git:` entry doesn't try to overlay a shim onto that path
-// and break the sandbox-side git that the git gateway clone flow depends on.
-// Neither map ever contains an entry for these three names.
-//
-// `projectDir` is used to resolve relative paths declared in
-// host_commands.<name>.path, and as the working directory for the origin URL
-// lookup that expands `${boid:repo_slug}` in Env values (see
-// docs/plans/host-command-contract.md item 3). `lookPath` and `getOriginURL`
-// are parameterized for tests; production callers pass exec.LookPath and
-// GitOriginURL. There are only two production call sites (runner.go,
-// api_store.go), which is few enough that threading a parameter through them
-// (matching the existing lookPath convention) is simpler than a
-// package-level var seam.
 func ResolveHostCommands(
 	builtins []string,
 	hostCommands map[string]orchestrator.CommandDef,

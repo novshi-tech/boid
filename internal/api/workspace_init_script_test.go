@@ -1024,8 +1024,8 @@ func TestExportWorkspaceEnvelopes_MetadataStringsSurviveExportAndApply(t *testin
 				// The value slot, the KEY slot (a mapping key is emitted by a
 				// different branch of the emitter than a mapping value), a
 				// sequence entry, and a plain scalar.
-				Env:            map[string]string{"PROBE": probe, probe: "probe-key"},
-				ExtraRepos:     []string{probe},
+				Env: map[string]string{"PROBE": probe, probe: "probe-key"},
+
 				AllowedDomains: []string{probe},
 				ContainerImage: probe,
 			}
@@ -1061,9 +1061,6 @@ func TestExportWorkspaceEnvelopes_MetadataStringsSurviveExportAndApply(t *testin
 			}
 			if got := restored.Env[probe]; got != "probe-key" {
 				t.Errorf("env KEY did not survive: restored keys %q\ndocument:\n%s", keysOfEnv(restored.Env), raws[0])
-			}
-			if len(restored.ExtraRepos) != 1 || restored.ExtraRepos[0] != probe {
-				t.Errorf("extra_repos restored as %q, want [%q]\ndocument:\n%s", restored.ExtraRepos, probe, raws[0])
 			}
 			if len(restored.AllowedDomains) != 1 || restored.AllowedDomains[0] != probe {
 				t.Errorf("allowed_domains restored as %q, want [%q]\ndocument:\n%s", restored.AllowedDomains, probe, raws[0])
@@ -1283,7 +1280,7 @@ func allowanceSizedWorkspaceMeta(t *testing.T) *orchestrator.WorkspaceMeta {
 		Env:            map[string]string{"TOOLCHAIN_MANIFEST": strings.Repeat("x", 60<<10)},
 		HostCommands:   []string{"gh", "docker"},
 		AllowedDomains: []string{"proxy.golang.org", ".pypi.org"},
-		ExtraRepos:     []string{"https://github.com/novshi-tech/boid-kits"},
+
 		ContainerImage: "ghcr.io/novshi-tech/boid-sandbox:latest",
 		Capabilities:   orchestrator.Capabilities{Docker: &orchestrator.DockerCapability{}},
 	}

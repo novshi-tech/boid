@@ -81,13 +81,11 @@ boid start --cli-port 9442 --web-port 9080
 
 | コマンド | 役割 |
 |---|---|
-| `boid project add <git-url> --workspace=<name> [--name=<project-name>] [--perm=fetch\|push]` | git remote URL を登録し、daemon が bare repository として clone する (docs/plans/volume-only-daemon.md §論点a/b)。`--workspace` は必須、`--name` を省略すると URL の最後のパス要素から project 名を derive する。旧来のホストディレクトリ登録フォーム (`boid project add <dir>`) は PR-4 で撤去済み — git URL の形 (明示スキームまたは scp-like `user@host:path`) に一致しない引数はクライアント側で拒否される。 `--perm` は省略時 `push`。`fetch` は読み取り専用で task の主リポジトリには指定できない。 |
-| `boid project list` | 登録済みプロジェクト一覧 (status `ready`/`degraded` も表示 — `project fetch` 参照)。サンドボックス内の boid shim からも同名で呼べるが、こちらは daemon 全体ではなく**同一 workspace 内**のプロジェクトのみ (id/name/upstream_url/perm の JSON) を返す — スコープは呼び出し元トークンの `AllowedProjectIDs` で決まり、指定はできない `perm` も表示する。 |
+| `boid project add <git-url> --workspace=<name> [--name=<project-name>] [--perm=fetch\|push]` | git remote URL を DB に登録する。daemon は clone しない。`--workspace` は必須、`--name` を省略すると URL の最後のパス要素から project 名を derive する。旧来のホストディレクトリ登録フォーム (`boid project add <dir>`) は PR-4 で撤去済み — git URL の形 (明示スキームまたは scp-like `user@host:path`) に一致しない引数はクライアント側で拒否される。 `--perm` は省略時 `push`。`fetch` は読み取り専用で task の主リポジトリには指定できない。 |
+| `boid project list` | 登録済みプロジェクト一覧 (status `ready` も表示)。サンドボックス内の boid shim からも同名で呼べるが、こちらは daemon 全体ではなく**同一 workspace 内**のプロジェクトのみ (id/name/upstream_url/perm の JSON) を返す — スコープは呼び出し元トークンの `AllowedProjectIDs` で決まり、指定はできない `perm` も表示する。 |
 | `boid project set-perm <ref> <fetch\|push>` | 既存 project の権限を変更する。新規 task 作成と以後の job token に適用される。 |
 | `boid project show <ref> [--explain]` | Show repository identity and workspace setting provenance. |
-| `boid project remove <ref>` (alias: `rm`) | プロジェクトを登録解除。project の DB row を削除する唯一の入口 — `boid` は filesystem / remote の観測結果を根拠に自動削除しない (下記 `project fetch` 参照)。git-URL 登録した project の場合は daemon 管理下の bare repository も削除するため、同じ URL/名前で再度 add しても成功する。 |
-| `boid project reload` | Refresh registered repository identities from the DB. Configuration resolves from the workspace. |
-| `boid project fetch <ref>` | Refresh mirror refs and the DB-backed identity cache. Does not load repository configuration. Fetch failure marks the project degraded and preserves its DB row. |
+| `boid project remove <ref>` (alias: `rm`) | プロジェクトを登録解除。project の DB row を削除する唯一の入口 — `boid` は filesystem / remote の観測結果を根拠に自動削除しない。既存 mirror は削除せず維持する。再登録に mirror は不要。 |
 | `boid project behaviors <ref>` | そのプロジェクトの task_behaviors 一覧。サンドボックス内の boid shim からも同名で呼べる (`boid project behaviors <ref>`) — 出力は JSON 固定、`ref` は同一 workspace 内のプロジェクトのみ解決可能 (`AllowedProjectIDs` でスコープされる) |
 
 ### `project local` — 廃止

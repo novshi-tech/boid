@@ -11,55 +11,6 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// validateParentlessExecutorBase surfaces the "parent-less executor pointed
-// at a non-existent base" error at task creation time, catching a
-// user-visible config bug (a top-level executor whose base_branch does not
-// exist on origin) before it fails deep inside the sandbox clone.
-//
-// The function is conservative: when classification itself fails (e.g.
-// detached HEAD, project lookup unwired) the error is surfaced so callers
-// cannot silently fall through to a broken sandbox run.
-//
-// Lives on the service (rather than the orchestrator package) because the
-// decision combines task-row metadata (behaviorName, parent), project meta
-// (workdir lookup), and orchestrator primitives, and orchestrator may not
-// import api's ProjectWorkDirLookup interface back.
-func (s *TaskAppService) validateParentlessExecutorBase(req CreateTaskRequest, behaviorName, baseBranch string) error {
-	if req.ProjectID == "" || behaviorName != "executor" || baseBranch == "" {
-		// Only parent-less executor with a case-3 base is a creation-time
-		// error; every other combination is either fine or handled downstream.
-		return nil
-	}
-	if req.ParentID != "" {
-		// Child executor inherits its parent's base_branch responsibility.
-		return nil
-	}
-	if s.Projects == nil {
-		// No project workdir lookup available (e.g. test wiring without a
-		// Projects stub). Without it we cannot classify; skip the check.
-		return nil
-	}
-	proj, projErr := s.Projects.GetProject(req.ProjectID)
-	if projErr != nil {
-		return &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
-	}
-	if proj == nil || proj.WorkDir == "" {
-		return nil
-	}
-
-	state, err := orchestrator.ClassifyBaseBranch(proj.WorkDir, baseBranch)
-	if err != nil {
-		return &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("classify base_branch %q: %v", baseBranch, err)}
-	}
-	if state == orchestrator.Case3NotFound {
-		return &StatusError{
-			Code:    http.StatusBadRequest,
-			Message: fmt.Sprintf("executor base_branch %q does not exist locally or on origin, and the task has no parent supervisor to create it", baseBranch),
-		}
-	}
-	return nil
-}
-
 // allowedCreateInitialStatuses is the allowlist for CreateTaskRequest.InitialStatus.
 // Deliberately does NOT include every orchestrator.TaskStatus value — a
 // caller must not be able to fabricate a task that's already
@@ -471,12 +422,6 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
 		baseBranch = expanded
-	}
-
-	// Creation-time guard: reject a parent-less executor whose base_branch
-	// does not exist on origin.
-	if err := s.validateParentlessExecutorBase(req, res.BehaviorName, baseBranch); err != nil {
-		return nil, err
 	}
 
 	// The card's slot invariants apply to this write port too. Ordinary direct

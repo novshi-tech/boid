@@ -61,13 +61,11 @@ func (h *ProjectHandler) Routes() chi.Router {
 	r.Post("/", h.Create)
 	r.Post("/git", h.CreateFromGitURL)
 	r.Get("/", h.List)
-	r.Post("/reload", h.Reload)
 	r.Put("/{id}/workspace", h.SetWorkspace)
 	r.Put("/{id}/perm", h.SetPerm)
 	r.Post("/{id}/sessions", h.StartSession)
 	r.Post("/{id}/exec", h.StartExec)
 	r.Post("/{id}/triggers/{name}/run", h.RunTrigger)
-	r.Post("/{id}/fetch", h.Fetch)
 	r.Get("/{id}/explain", h.Explain)
 	r.Get("/{id}", h.Get)
 	r.Delete("/{id}", h.Delete)
@@ -136,21 +134,6 @@ func (h *ProjectHandler) CreateFromGitURL(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusCreated, project)
-}
-
-// Fetch handles POST /api/projects/{id}/fetch (`boid project fetch <id>`).
-func (h *ProjectHandler) Fetch(w http.ResponseWriter, r *http.Request) {
-	ref := chi.URLParam(r, "id")
-	project := h.resolveRef(w, ref)
-	if project == nil {
-		return
-	}
-	updated, err := h.Service.FetchProject(r.Context(), project.ID)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, updated)
 }
 
 func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -322,15 +305,6 @@ func (h *ProjectHandler) RunTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.TriggerRunner.RunTriggerNow(r.Context(), project.ID, name)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
-}
-
-func (h *ProjectHandler) Reload(w http.ResponseWriter, r *http.Request) {
-	result, err := h.Service.ReloadProjects()
 	if err != nil {
 		writeServiceError(w, err)
 		return

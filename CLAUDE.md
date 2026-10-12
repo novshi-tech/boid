@@ -85,6 +85,8 @@ Hook と Exec はサンドボックス実行。Gate 機構は廃止済みで、�
 
 hook の定義経路は `hooks[].command`（inline shell command、`sh -c` 経由で実行）または `kind: agent`（virtual agent hook 合成）の 2 つのみ。`.boid/hooks/*.sh` のような外部 script ファイルを参照する経路（旧 `ScriptPath`）は 2026-07 に撤廃済み（`docs/plans/script-hook-removal.md`）。理由は dead code 化に加え、sandbox 内 clone は tracked file しか持ってこないため `.boid/` を gitignore している project で script hook が silent に ENOENT 落ちする契約問題があり、外部 script 参照経路自体を無くすことで根絶した。詳細は `docs/ja/reference/project-yaml.md` の `hooks` 節を参照。
 
+Repository registration stores `upstream_url` in the DB with an empty `work_dir`. The daemon does not clone, fetch, or read mirrors (except migrations 0062/0063's one-time local identity and upstream reads). `boid project fetch` / `boid project reload` have retired. Jobs checkout through the git gateway; agents choose branches from `BOID_BASE_BRANCH` / `BOID_FORK_POINT`. Existing mirrors remain on disk for rollback and may be removed manually after migration (see `docs/ja/guide/migration.md`).
+
 ## サンドボックス実行バックエンド
 
 サンドボックスの実装は `SandboxBackend` interface (`internal/sandbox/backend/`) で抽象化されている。 **container backend が唯一の backend**（Phase 6 `docs/plans/phase6-container-backend.md` で実装、PR-4 `docs/plans/volume-only-daemon.md` §論点e で userns backend を完全撤去し単一化、2026-07-25）: docker コンテナを job ごとに使い捨てで生成する docker-out-of-docker 方式。job は workspace 単位で分離された docker network に閉じ込められる。daemon 自体は `docker compose`（`build/container/compose.yml`、`scripts/deploy-container.sh`）でコンテナ化して運用するのが推奨だが、bare `boid start`（host process 直接起動）から動かす場合も同じ container backend で dispatch する（docker/podman socket へのアクセスが必須）。

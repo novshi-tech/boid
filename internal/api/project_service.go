@@ -31,17 +31,13 @@ type ProjectAppService struct {
 		// orchestrator.ProjectStore.Explain's own doc comment.
 		Explain(id string) (*orchestrator.ProjectExplain, error)
 	}
-	CloneBareRepo      func(ctx context.Context, url, destPath, namespace string) error
-	FetchBareRepo      func(ctx context.Context, bareRepoPath, namespace string) error
-	DataDir            string
-	Hydrator           orchestrator.MetaHydrator
-	CaptureUpstreamURL func(workDir string) (string, error)
-	Workspaces         WorkspaceStore
-	HostCommands       func() map[string]orchestrator.HostCommandSpec
-	WorkspacesConn     *sql.DB
-	InitScripts        WorkspaceInitScriptStore
-	mu                 sync.Mutex
-	projectMu          sync.Mutex
+	Hydrator       orchestrator.MetaHydrator
+	Workspaces     WorkspaceStore
+	HostCommands   func() map[string]orchestrator.HostCommandSpec
+	WorkspacesConn *sql.DB
+	InitScripts    WorkspaceInitScriptStore
+	mu             sync.Mutex
+	projectMu      sync.Mutex
 }
 
 func (s *ProjectAppService) hydrateProject(project *orchestrator.Project) *orchestrator.Project {
@@ -113,16 +109,10 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 	}
 	gitURL = normalizedURL
 	if strings.TrimSpace(workspaceSlug) == "" {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: "workspace is required (git-URL registration has no host directory to eagerly default a workspace assignment from — unlike the now-removed legacy dir-based CreateProject; `boid project init` itself no longer registers a project at all, docs/plans/release-onboarding.md 穴 7)"}
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "workspace is required"}
 	}
 	if err := orchestrator.ValidWorkspaceSlug(workspaceSlug); err != nil {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
-	}
-	if s.CloneBareRepo == nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "git clone not wired"}
-	}
-	if s.DataDir == "" {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "daemon data directory not wired"}
 	}
 
 	name := strings.TrimSpace(nameOverride)
@@ -143,27 +133,14 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("workspace %q not found; create it first with `boid workspace create %s`", workspaceSlug, workspaceSlug)}
 	}
 
-	bareRepoPath, err := orchestrator.SafeBareRepoPath(s.DataDir, workspaceSlug, name)
-	if err != nil {
+	if err := orchestrator.ValidProjectName(name); err != nil {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
-
 	s.projectMu.Lock()
 	defer s.projectMu.Unlock()
 
-	if _, statErr := os.Stat(bareRepoPath); statErr == nil {
-		return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf("a project is already registered at %s; remove it first (`boid project rm`) or choose a different --name", bareRepoPath)}
-	}
-
-	if err := s.CloneBareRepo(ctx, gitURL, bareRepoPath, workspaceSlug); err != nil {
-		return nil, &StatusError{Code: http.StatusBadGateway, Message: fmt.Sprintf("clone %q: %v", gitURL, err)}
-	}
-
 	meta, err := s.synthesizeProjectMeta(gitURL, name, workspaceSlug, nameWasExplicit)
 	if err != nil {
-		if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
-			slog.Warn("failed to roll back bare repo", "error", rmErr)
-		}
 		return nil, err
 	}
 
@@ -171,16 +148,11 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 		ID:          meta.ID,
 		Name:        meta.Name,
 		Perm:        perm,
-		WorkDir:     bareRepoPath,
 		UpstreamURL: gitURL,
 	}
 
 	if err := s.Projects.CreateProject(project); err != nil {
 		s.removeCachedMetaUnlessRegistered(meta.ID)
-		if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
-			slog.Warn("CreateProjectFromGitURL: failed to roll back bare repo after DB insert failure",
-				"path", bareRepoPath, "error", rmErr)
-		}
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
@@ -189,19 +161,11 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 	s.mu.Lock()
 	if err := s.Projects.AssignWorkspaceIfExists(project.ID, workspaceSlug); err != nil {
 		s.mu.Unlock()
-		if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
-			slog.Error("CreateProjectFromGitURL: workspace assignment failed AND bare-repo rollback removal also failed; leaving the project row and its cached meta in place so the bare repo can still be removed on retry",
-				"project_id", project.ID, "workspace", workspaceSlug, "path", bareRepoPath, "assign_error", err, "remove_error", rmErr)
-			return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf(
-				"assign workspace %q failed (%v) and automatic bare-repo rollback also failed (%v); project %q was left registered — fix the underlying issue and retry `boid project rm %s` to finish cleanup, or `boid project show %s` to inspect its state",
-				workspaceSlug, err, rmErr, project.ID, project.ID, project.ID,
-			)}
-		}
 		if delErr := s.Projects.DeleteProject(project.ID); delErr != nil {
-			slog.Error("CreateProjectFromGitURL: workspace assignment failed; bare repo was rolled back but DB row deletion also failed; retry `boid project rm` to finish removing the dangling row",
+			slog.Error("CreateProjectFromGitURL: workspace assignment failed and DB row deletion also failed; retry `boid project rm` to finish removing the dangling row",
 				"project_id", project.ID, "workspace", workspaceSlug, "assign_error", err, "delete_error", delErr)
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf(
-				"assign workspace %q failed (%v) and DB row cleanup also failed (%v); the bare repo has already been removed — retry `boid project rm %s` to finish removing the dangling row",
+				"assign workspace %q failed (%v) and DB row cleanup also failed (%v); retry `boid project rm %s` to finish removing the dangling row",
 				workspaceSlug, err, delErr, project.ID,
 			)}
 		}
@@ -221,53 +185,11 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 	return s.applyStatus(project), nil
 }
 
-func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orchestrator.Project, error) {
-	s.projectMu.Lock()
-	defer s.projectMu.Unlock()
-
-	project, err := s.Projects.GetProject(id)
-	if err != nil {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
-	}
-
-	if s.FetchBareRepo == nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "git fetch not wired"}
-	}
-	if !s.isManagedBareRepoPath(project.WorkDir) {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project %q is not a git-URL registered project (legacy host-dir project; re-add via `boid project add <git-url> --workspace=<name>`)", id)}
-	}
-
-	if err := s.FetchBareRepo(ctx, project.WorkDir, project.WorkspaceID); err != nil {
-		msg := fmt.Sprintf("fetch failed: %v", err)
-		s.Meta.MarkDegraded(id, msg)
-		return nil, &StatusError{Code: http.StatusBadGateway, Message: msg}
-	}
-
-	if errs := s.Meta.LoadAll([]*orchestrator.Project{project}); len(errs) > 0 {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: errs[0].Error()}
-	}
-
-	return s.hydrateProjectWithWorkspace(ctx, project), nil
-}
-
 // WithProjectLock serializes project registry reads with lifecycle mutations.
 func (s *ProjectAppService) WithProjectLock(fn func() error) error {
 	s.projectMu.Lock()
 	defer s.projectMu.Unlock()
 	return fn()
-}
-
-func (s *ProjectAppService) isManagedBareRepoPath(workDir string) bool {
-	if s.DataDir == "" {
-		return orchestrator.IsBareRepoDir(workDir)
-	}
-	underRoot, err := orchestrator.PathIsUnderResolved(orchestrator.ReposRoot(s.DataDir), workDir)
-	if err != nil {
-		slog.Warn("isManagedBareRepoPath: symlink resolution failed; treating as NOT daemon-managed (fail closed)",
-			"work_dir", workDir, "error", err)
-		return false
-	}
-	return underRoot
 }
 
 func (s *ProjectAppService) ListProjects(workspaceID string) ([]*orchestrator.Project, error) {
@@ -757,18 +679,9 @@ func (s *ProjectAppService) DeleteProject(id string) error {
 	s.projectMu.Lock()
 	defer s.projectMu.Unlock()
 
-	project, getErr := s.Projects.GetProject(id)
+	_, getErr := s.Projects.GetProject(id)
 	if getErr != nil {
 		return &StatusError{Code: http.StatusNotFound, Message: getErr.Error()}
-	}
-
-	if s.isManagedBareRepoPath(project.WorkDir) {
-		if rmErr := os.RemoveAll(project.WorkDir); rmErr != nil {
-			return &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf(
-				"remove daemon-managed bare repo at %s: %v; project %q was NOT removed — fix the underlying issue and retry `boid project rm`",
-				project.WorkDir, rmErr, id,
-			)}
-		}
 	}
 
 	if err := s.Projects.DeleteProject(id); err != nil {
@@ -820,50 +733,6 @@ func (s *ProjectAppService) ResolveProjectRef(ref string) ([]*orchestrator.Proje
 	}
 
 	return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("no project matches ref %q", ref)}
-}
-
-func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {
-	s.mu.Lock()
-	projects, err := s.Projects.ListProjects()
-	if err != nil {
-		s.mu.Unlock()
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-	}
-	errs := s.Meta.LoadAll(projects)
-	s.mu.Unlock()
-
-	var messages []string
-	for _, err := range errs {
-		messages = append(messages, err.Error())
-	}
-
-	if s.CaptureUpstreamURL != nil {
-		for _, p := range projects {
-			upstreamURL, err := s.CaptureUpstreamURL(p.WorkDir)
-			if err != nil {
-				slog.Warn("project reload: could not capture upstream_url; add a git remote and reload again",
-					"project_id", p.ID, "work_dir", p.WorkDir, "error", err)
-				messages = append(messages, fmt.Sprintf("project %q: upstream_url not captured: %v", p.ID, err))
-				continue
-			}
-			if upstreamURL == p.UpstreamURL {
-				continue
-			}
-			if err := s.Projects.SetProjectUpstreamURL(p.ID, upstreamURL); err != nil {
-				slog.Warn("project reload: failed to persist captured upstream_url",
-					"project_id", p.ID, "error", err)
-				messages = append(messages, fmt.Sprintf("project %q: failed to persist upstream_url: %v", p.ID, err))
-			}
-		}
-	}
-
-	if len(messages) == 0 {
-		return &ProjectReloadResult{Status: "ok"}, nil
-	}
-	return &ProjectReloadResult{
-		Status: "partial",
-		Errors: messages,
-	}, nil
 }
 
 // registrationPerm defaults omitted permissions to push and validates explicit values.

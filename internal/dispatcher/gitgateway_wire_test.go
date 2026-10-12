@@ -143,24 +143,6 @@ func TestBuildGatewayRepos_OtherWorkspaceProjectExcluded(t *testing.T) {
 	}
 }
 
-func TestBuildGatewayRepos_WorkspaceExtraReposIsFetchOnly(t *testing.T) {
-	r := &Runner{
-		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1", Perm: "push", WorkspaceID: "ws-1", UpstreamURL: "https://github.com/owner/repo.git"},
-		}},
-		Workspaces: fakeWorkspaceLookup{metas: map[string]*orchestrator.WorkspaceMeta{
-			"ws-1": {ExtraRepos: []string{"https://github.com/other-org/private-lib.git"}},
-		}},
-	}
-	spec := &orchestrator.JobSpec{ProjectID: "proj-1"}
-
-	repos := r.buildGatewayRepos(spec, "ws-1")
-	extraKey := gitgateway.NewRepoKey("github.com", "other-org", "private-lib")
-	if perm, ok := repos[extraKey]; !ok || perm != gitgateway.PermFetch {
-		t.Fatalf("extra_repos perm = %v, %v; want PermFetch, true", perm, ok)
-	}
-}
-
 func TestBuildGatewayRepos_MissingUpstreamURLSkipsSelfProjectSilently(t *testing.T) {
 	r := &Runner{
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{

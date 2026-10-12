@@ -33,12 +33,10 @@ scope 分類 (remote/local/neutral) とは別軸）。
 
 | コマンド | 役割 |
 |---|---|
-| `boid project add <git-url> --workspace=<name> [--name=<project-name>]` | git remote URL を登録して daemon 管理下に clone |
+| `boid project add <git-url> --workspace=<name> [--name=<project-name>]` | git remote URL を DB に登録 (clone は job が実行) |
 | `boid project list` | 登録済みプロジェクト一覧 (status: ready / degraded) |
 | `boid project show <ref> [--explain]` | プロジェクト詳細。`--explain` でフィールド単位の由来 (workspace / unset) |
-| `boid project remove <ref>` (alias `rm`) | 登録解除 (DB row 削除の唯一の入口。git-URL 登録なら bare repo も削除) |
-| `boid project reload` | DB から project identity cache を更新 (設定は workspace から解決) |
-| `boid project fetch <ref>` | bare repo で `git fetch --all` して identity cache を更新 (設定は読み込まない) |
+| `boid project remove <ref>` (alias `rm`) | 登録解除 (DB row 削除の唯一の入口。既存 mirror は維持) |
 | `boid project behaviors <ref>` | そのプロジェクトの task_behaviors 一覧 |
 
 ### Workspace

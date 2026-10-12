@@ -253,9 +253,6 @@ func decodeWorkspaceMetaColumns(slug string, containerImage sql.NullString, host
 	if err := json.Unmarshal([]byte(allowedDomainsJSON), &meta.AllowedDomains); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode allowed_domains: %w", slug, err)
 	}
-	if err := json.Unmarshal([]byte(extraReposJSON), &meta.ExtraRepos); err != nil {
-		return nil, fmt.Errorf("workspace %q: decode extra_repos: %w", slug, err)
-	}
 	if err := json.Unmarshal([]byte(servicesJSON), &meta.Services); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode services: %w", slug, err)
 	}
@@ -466,10 +463,7 @@ func marshalWorkspaceMetaColumns(slug string, meta *WorkspaceMeta) (hostCommands
 	if err != nil {
 		return "", "", "", "", "", "", "", nil, "", "", "", "", "", "", "", "", fmt.Errorf("workspace %q: encode allowed_domains: %w", slug, err)
 	}
-	extraReposJSON, err = marshalJSONOrDefault(meta.ExtraRepos, len(meta.ExtraRepos) == 0, "[]")
-	if err != nil {
-		return "", "", "", "", "", "", "", nil, "", "", "", "", "", "", "", "", fmt.Errorf("workspace %q: encode extra_repos: %w", slug, err)
-	}
+	extraReposJSON = "[]"
 	servicesJSON, err = marshalJSONOrDefault(meta.Services, len(meta.Services) == 0, "[]")
 	if err != nil {
 		return "", "", "", "", "", "", "", nil, "", "", "", "", "", "", "", "", fmt.Errorf("workspace %q: encode services: %w", slug, err)

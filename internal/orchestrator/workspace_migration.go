@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/novshi-tech/boid/internal/db/legacyrepos"
 	"gopkg.in/yaml.v3"
 )
 
@@ -113,12 +114,26 @@ func MigrateWorkspaceYAMLToDB(conn *sql.DB, workspaceDir, kitsDir string, projec
 		if err := saveWorkspaceRow(tx2, slug, pre.workspaces[slug]); err != nil {
 			return fmt.Errorf("workspace_db_consolidation: save workspace %q: %w", slug, err)
 		}
+		if len(pre.workspaces[slug].legacyExtraRepos) > 0 {
+			data, err := json.Marshal(pre.workspaces[slug].legacyExtraRepos)
+			if err != nil {
+				return err
+			}
+			if _, err := tx2.Exec(`UPDATE workspaces SET extra_repos=? WHERE slug=?`, string(data), slug); err != nil {
+				return err
+			}
+		}
+
 	}
 	if err := ensureDefaultWorkspaceRow(tx2); err != nil {
 		return fmt.Errorf("workspace_db_consolidation: ensure default workspace: %w", err)
 	}
 	if err := verifyProjectWorkspaceRefsResolvable(tx2); err != nil {
 		return fmt.Errorf("workspace_db_consolidation: %w", err)
+	}
+
+	if err := legacyrepos.RegisterExtraRepositories(tx2); err != nil {
+		return err
 	}
 
 	hostCommandsPath, err := DefaultHostCommandsPath()
@@ -390,6 +405,14 @@ func readWorkspaceYAMLSnapshot(workspaceDir, slug string) (meta *WorkspaceMeta, 
 		slog.Warn("workspace: additional_bindings is no longer supported (retired in docs/plans/home-workspace-volume.md Phase 4 PR4); ignoring",
 			"workspace", slug, "path", path)
 	}
+	var legacyRepos struct {
+		Repos []string `yaml:"extra_repos"`
+	}
+	if err := yaml.Unmarshal(raw, &legacyRepos); err != nil {
+		slog.Warn("legacy workspace extra_repos ignored", "workspace", slug, "error", err)
+	}
+	meta.legacyExtraRepos = legacyRepos.Repos
+
 	return meta, kitsDoc.Kits, bindingsDoc.AdditionalBindings, nil
 }
 
@@ -619,9 +642,9 @@ func unionStringsSorted(a, b []string) []string {
 // json.Marshal of this struct is deterministic across runs regardless of Go
 // map iteration order — no manual key-sorting is needed beyond that.
 type workspaceMigrationHashInput struct {
-	Workspaces           map[string]*WorkspaceMeta  `json:"workspaces"`
-	HostCommands         map[string]HostCommandSpec `json:"host_commands"`
-	ProjectWorkspaceRefs []*WorkspaceSummary        `json:"project_workspace_refs"`
+	Workspaces           map[string]*legacyWorkspaceMeta `json:"workspaces"`
+	HostCommands         map[string]HostCommandSpec      `json:"host_commands"`
+	ProjectWorkspaceRefs []*WorkspaceSummary             `json:"project_workspace_refs"`
 	// KitRuntime is every installed kit's raw host_commands/env/
 	// additional_bindings snapshot (kitYAMLSnapshot.byKit), keyed by kit dir
 	// name — included so a kit.yaml edit that changes only its env/
@@ -648,8 +671,12 @@ func computeWorkspaceMigrationInputHash(
 	kitRuntime map[string]kitRuntimeRaw,
 	workspaceKitRefs map[string][]string,
 ) (string, error) {
+	legacyWorkspaces, err := legacyWorkspaceHashMetas(workspaces)
+	if err != nil {
+		return "", err
+	}
 	b, err := json.Marshal(workspaceMigrationHashInput{
-		Workspaces:           workspaces,
+		Workspaces:           legacyWorkspaces,
 		HostCommands:         hostCommands,
 		ProjectWorkspaceRefs: sortedWorkspaceRefsForHash(projectRefs),
 		KitRuntime:           kitRuntime,
@@ -744,7 +771,7 @@ func computeWorkspaceMigrationInputHashPR6Shape(
 			Env:                meta.Env,
 			Capabilities:       meta.Capabilities,
 			AllowedDomains:     meta.AllowedDomains,
-			ExtraRepos:         meta.ExtraRepos,
+			ExtraRepos:         meta.legacyExtraRepos,
 			HostCommands:       meta.HostCommands,
 			ContainerImage:     meta.ContainerImage,
 			AdditionalBindings: workspaceAdditionalBindings[slug],
@@ -832,7 +859,7 @@ func computeWorkspaceMigrationInputHashPR7WithBindingsShape(
 			Env:                meta.Env,
 			Capabilities:       meta.Capabilities,
 			AllowedDomains:     meta.AllowedDomains,
-			ExtraRepos:         meta.ExtraRepos,
+			ExtraRepos:         meta.legacyExtraRepos,
 			HostCommands:       meta.HostCommands,
 			ContainerImage:     meta.ContainerImage,
 			AdditionalBindings: workspaceAdditionalBindings[slug],
@@ -925,4 +952,52 @@ func upsertMigrationRow(tx *sql.Tx, version, state, inputHash string) error {
 		return fmt.Errorf("record migration %s: %w", version, err)
 	}
 	return nil
+}
+
+type legacyWorkspaceMeta struct {
+	Triggers          []Trigger              `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+	Signals           SignalsConfig          `yaml:"signals,omitempty" json:"signals,omitempty"`
+	CardCommands      map[string]CardCommand `yaml:"card_commands,omitempty" json:"card_commands,omitempty"`
+	CardCommandsOrder []string               `yaml:"-" json:"-"`
+	CardEvents        CardEventsConfig       `yaml:"card_events,omitempty" json:"card_events,omitempty"`
+
+	Env map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+
+	Capabilities Capabilities `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+
+	AllowedDomains []string `yaml:"allowed_domains,omitempty" json:"allowed_domains,omitempty"`
+
+	ExtraRepos []string `yaml:"extra_repos,omitempty" json:"extra_repos,omitempty"`
+
+	Services []string `yaml:"services,omitempty" json:"services,omitempty"`
+
+	HostCommands []string `yaml:"host_commands,omitempty" json:"host_commands,omitempty"`
+
+	ContainerImage string `yaml:"container_image,omitempty" json:"container_image,omitempty"`
+
+	TaskBehaviors       map[string]TaskBehavior `yaml:"task_behaviors,omitempty" json:"task_behaviors,omitempty"`
+	BaseBranch          string                  `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
+	ForkPoint           string                  `yaml:"fork_point,omitempty" json:"fork_point,omitempty"`
+	DefaultTaskBehavior string                  `yaml:"default_task_behavior,omitempty" json:"default_task_behavior,omitempty"`
+}
+
+func legacyWorkspaceHashMetas(workspaces map[string]*WorkspaceMeta) (map[string]*legacyWorkspaceMeta, error) {
+	out := make(map[string]*legacyWorkspaceMeta, len(workspaces))
+	for slug, meta := range workspaces {
+		if meta == nil {
+			out[slug] = nil
+			continue
+		}
+		data, err := json.Marshal(meta)
+		if err != nil {
+			return nil, err
+		}
+		legacy := &legacyWorkspaceMeta{}
+		if err := json.Unmarshal(data, legacy); err != nil {
+			return nil, err
+		}
+		legacy.ExtraRepos = meta.legacyExtraRepos
+		out[slug] = legacy
+	}
+	return out, nil
 }

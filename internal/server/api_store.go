@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"syscall"
 	"time"
@@ -258,7 +257,7 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		defs,
 		project.WorkDir,
 		exec.LookPath,
-		dispatcher.GitOriginURL,
+		func(string) (string, error) { return project.UpstreamURL, nil },
 	)
 	if err != nil {
 		return nil, err
@@ -435,7 +434,7 @@ func (s *globalJobStore) ListJobsWithContext(filter api.JobListFilter) ([]api.Jo
 			jwc.TaskTitle = task.Title
 		}
 		if project, err := s.projects.GetProject(job.ProjectID); err == nil {
-			jwc.ProjectName = filepath.Base(project.WorkDir)
+			jwc.ProjectName = project.Name
 		}
 		result = append(result, jwc)
 	}

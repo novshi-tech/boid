@@ -108,13 +108,6 @@ already-populated home.
 }
 
 func init() {
-	// scopeRemote: the work happens through the daemon's HTTP API. It reads a
-	// local directory to build the payload — but unlike `project reload`
-	// (scopeLocal: resolves a project's stored WorkDir path that the DAEMON
-	// then opens, so it only works when the two share a filesystem), this
-	// one resolves a path THIS process opens and sends the bytes, which is
-	// exactly why the payload is a tar stream. Against a remote daemon it
-	// does the right thing.
 	workspaceImportHomeCmd.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
 
 	workspaceImportHomeCmd.Flags().StringVar(&workspaceImportHomeFrom, "from", "",

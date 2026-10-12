@@ -1586,36 +1586,15 @@ func TestCreateTask_SupervisorCase3_BaseBranchPersisted(t *testing.T) {
 	}
 }
 
-// TestCreateTask_ExecutorCase3_NoParent_Errors verifies that a parent-less
-// executor pointed at a non-existent base_branch is rejected at creation time
-// instead of waiting for the dispatcher to fail.
-func TestCreateTask_ExecutorCase3_NoParent_Errors(t *testing.T) {
-	dir := initServiceTestRepo(t, "main")
-	meta := &orchestrator.ProjectMeta{
-		BaseBranch: "release-2026",
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {},
-		},
+func TestCreateTaskExecutorCreatesBaseWithoutMirror(t *testing.T) {
+	meta := &orchestrator.ProjectMeta{BaseBranch: "release-2026", TaskBehaviors: map[string]orchestrator.TaskBehavior{"executor": {}}}
+	svc := &TaskAppService{Tasks: &stubTaskStore{}, Meta: stubMetaStore{meta: meta}, Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: "/missing/legacy-mirror"}}}
+	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{ProjectID: "proj-1", Title: "new branch", Behavior: "executor"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	svc := &TaskAppService{
-		Tasks:    &stubTaskStore{},
-		Meta:     stubMetaStore{meta: meta},
-		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
-	}
-	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "case3 executor no parent",
-		Behavior:  "executor",
-	})
-	if err == nil {
-		t.Fatal("expected error for case 3 executor with no parent, got nil")
-	}
-	se, ok := err.(*StatusError)
-	if !ok {
-		t.Fatalf("error type = %T, want *StatusError", err)
-	}
-	if se.Code != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want 400", se.Code)
+	if task.Exec.BaseBranch != "release-2026" {
+		t.Fatalf("base_branch = %q", task.Exec.BaseBranch)
 	}
 }
 
@@ -2460,10 +2439,6 @@ func TestGetTaskDetail_JobsIncludeWorkspacePath(t *testing.T) {
 type stubProjectRepository struct {
 	projects []*orchestrator.Project
 	listErr  error
-	// setUpstreamURLCalls counts SetProjectUpstreamURL invocations, so tests
-	// can assert the "already up to date, skip the write" idempotency path
-	// (docs/plans/git-gateway-cutover.md PR2 reload recapture).
-	setUpstreamURLCalls int
 	// existingWorkspaces backs WorkspaceExists (MAJOR 5, docs/plans/
 	// workspace-db-consolidation.md): a slug is reported as existing only
 	// when this map has a true entry for it. nil/zero-value defaults every
@@ -2591,17 +2566,6 @@ func (s *stubProjectRepository) GetWorkspaceSummary(slug string) (*orchestrator.
 		return nil, fmt.Errorf("workspace %q: %w", slug, os.ErrNotExist)
 	}
 	return ws, nil
-}
-
-func (s *stubProjectRepository) SetProjectUpstreamURL(projectID, upstreamURL string) error {
-	s.setUpstreamURLCalls++
-	for _, p := range s.projects {
-		if p.ID == projectID {
-			p.UpstreamURL = upstreamURL
-			return nil
-		}
-	}
-	return fmt.Errorf("project not found: %s", projectID)
 }
 
 type stubProjectMetaStore struct {

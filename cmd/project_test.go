@@ -457,53 +457,8 @@ func TestProjectAdd_NameOverride(t *testing.T) {
 		t.Fatalf("runProjectAdd: %v", err)
 	}
 
-	if !strings.Contains(out.String(), "custom-name.git") {
-		t.Errorf("expected output to reference the overridden bare-repo name, got:\n%s", out.String())
-	}
-}
-
-// TestProjectFetchIgnoresRepositoryConfiguration exercises `boid project fetch` end to
-// end against a real daemon: register via a git URL, change the source
-// repo's project.yaml and commit, fetch, and verify the change landed.
-func TestProjectFetchIgnoresRepositoryConfiguration(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	withProjectAddWorkspaceFlag(t, "default")
-
-	src := writeGitURLTestProject(t, "project-fetch-test", "Before Fetch")
-	remoteURL := testutil.ServeGitRepository(t, src)
-
-	var addOut bytes.Buffer
-	addCmd := projectAddCmd
-	addCmd.SetOut(&addOut)
-	if err := runProjectAdd(addCmd, []string{remoteURL}); err != nil {
-		t.Fatalf("runProjectAdd: %v", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(src, ".boid", "project.yaml"), []byte("id: project-fetch-test\nname: After Fetch\n"), 0o644); err != nil {
-		t.Fatalf("rewrite project.yaml: %v", err)
-	}
-	runGitTestCmd(t, src, "add", ".")
-	runGitTestCmd(t, src, "commit", "-q", "-m", "rename")
-	runGitTestCmd(t, src, "update-server-info")
-
-	var fetchOut bytes.Buffer
-	fetchCmd := projectFetchCmd
-	fetchCmd.SetOut(&fetchOut)
-	if err := runProjectFetch(fetchCmd, []string{"repository"}); err != nil {
-		t.Fatalf("runProjectFetch: %v", err)
-	}
-	if strings.Contains(fetchOut.String(), "After Fetch") {
-		t.Errorf("expected fetch output to reflect the updated name, got:\n%s", fetchOut.String())
-	}
-
-	var projects []projectspec.Project
-	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
-		t.Fatalf("list projects: %v", err)
-	}
-	projects = registeredRepositories(projects)
-	if len(projects) != 1 || projects[0].Meta.Name != "repository" {
-		t.Fatalf("expected the registered project's name to be updated after fetch, got: %+v", projects)
+	if !strings.Contains(out.String(), "custom-name") {
+		t.Errorf("expected output to reference the overridden registration name, got:\n%s", out.String())
 	}
 }
 

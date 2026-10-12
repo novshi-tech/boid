@@ -31,8 +31,7 @@ set -euo pipefail
 # #      fixture section) with `.boid/project.yaml` + hook scripts COMMITTED
 # #      into the repo, then registers via `boid project add <url>
 # #      --workspace=<slug>` (docs/plans/volume-only-daemon.md §論点a) —
-# #      the daemon clones it itself into a daemon-managed bare repo
-# #      for project.yaml loading. At job startup, the sandbox adapter runs
+# #      registration stores the URL in the DB. At job startup, the sandbox adapter runs
 # #      boid checkout through the gateway and starts the hook in that checkout.
 # #
 # # A THIRD gap this same pivot introduced (not covered by the previous
@@ -102,7 +101,7 @@ mkdir -p "$BUILD_DIR"
 # magic reaches it) and the compose daemon's container (build/container/
 # compose.yml's own `extra_hosts: host.docker.internal:host-gateway`
 # entry, PR9) — the daemon container is ALSO where project registration's
-# own `git clone` now runs (PR-2b: the daemon clones a project's git-URL
+# git gateway HTTPS relay reaches the fixture upstream (repository registration
 # itself, docs/plans/volume-only-daemon.md §論点a/b), so this reachability
 # requirement is unchanged from the previous revision, just serving one
 # more caller.
@@ -473,7 +472,7 @@ export GIT_SSL_CAINFO="$UPSTREAM_CERT"
 # $XDG_DATA_HOME/boid/... (that constraint was specific to the retired
 # host-directory registration path, whose comment explained the daemon
 # reads work_dir off ITS OWN filesystem view — irrelevant now that the
-# daemon does its own git clone instead).
+# jobs clone through the git gateway).
 FIXTURE_ROOT="$ROOT/fixture-src"
 PROJ_A="$FIXTURE_ROOT/proj-a"
 PROJ_B="$FIXTURE_ROOT/proj-b"

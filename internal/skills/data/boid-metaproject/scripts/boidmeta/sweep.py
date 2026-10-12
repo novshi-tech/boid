@@ -262,7 +262,7 @@ def main(argv: Sequence[str] | None = None, *, cli=None, stdout=None) -> int:
         "--intake-skill",
         help="1 対象を仕分けるスキル (例: /nvt-intake)。description に埋める",
     )
-    # runner image のデプロイと `boid project fetch` は別手順で、同時には
+    # runner image のデプロイと job の checkout は別手順で、同時には
     # 切り替えられない。移行窓のあいだ旧名も受ける。
     parser.add_argument("--judge-skill", help=argparse.SUPPRESS)
     parser.add_argument(

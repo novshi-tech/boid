@@ -1,7 +1,6 @@
 package dispatcher
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -211,44 +210,5 @@ func TestSanitizeURLForLogging(t *testing.T) {
 				t.Errorf("SanitizeURLForLogging(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestCaptureUpstreamURL_NoGitRepo(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := CaptureUpstreamURL(dir); err == nil {
-		t.Fatal("expected error for a directory with no git repository")
-	}
-}
-
-func TestCaptureUpstreamURL_NoOriginRemote(t *testing.T) {
-	dir := t.TempDir()
-	runGitForTest(t, dir, "init", "-q")
-	if _, err := CaptureUpstreamURL(dir); err == nil {
-		t.Fatal("expected error for a git repo with no origin remote")
-	}
-}
-
-func TestCaptureUpstreamURL_SSHOriginNormalizedToHTTPS(t *testing.T) {
-	dir := t.TempDir()
-	runGitForTest(t, dir, "init", "-q")
-	runGitForTest(t, dir, "remote", "add", "origin", "git@github.com:owner/repo.git")
-
-	got, err := CaptureUpstreamURL(dir)
-	if err != nil {
-		t.Fatalf("CaptureUpstreamURL: %v", err)
-	}
-	if want := "https://github.com/owner/repo.git"; got != want {
-		t.Errorf("CaptureUpstreamURL = %q, want %q", got, want)
-	}
-}
-
-// runGitForTest runs `git <args...>` with cwd=dir, failing the test on error.
-func runGitForTest(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }

@@ -57,12 +57,10 @@ curl --unix-socket "$XDG_RUNTIME_DIR/boid.sock" http://localhost/api/health
 | POST | `/api/projects` | Register a project (`{"work_dir": "<path>"}`). |
 | GET | `/api/projects/{id}` | Project detail. |
 | DELETE | `/api/projects/{id}` | Unregister a project. |
-| POST | `/api/projects/reload` | Re-read every project's `project.yaml`. |
 | PUT | `/api/projects/{id}/workspace` | Update workspace assignment. |
 | POST | `/api/projects/{id}/exec` | Start an arbitrary sandbox command. |
 | POST | `/api/projects/{id}/sessions` | Start an agent session. |
 | POST | `/api/projects/{id}/triggers/{name}/run` | Run a project trigger once. |
-| POST | `/api/projects/{id}/fetch` | Fetch a git-URL project and reload its metadata. |
 
 For the schema, see [`project.yaml` reference](project-yaml.md). For the CLI, see [CLI / Project](cli.md#project).
 

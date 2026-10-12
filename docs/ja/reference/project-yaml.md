@@ -55,14 +55,13 @@ spec:
 | `capabilities` | Optional sandbox capabilities such as Docker. |
 | `allowed_domains` | Additional proxy egress domains. |
 | `services` | Enabled API gateway services, added to the daemon floor. |
-| `extra_repos` | Additional repositories allowed for fetch. |
 | `projects` | Registered project assignments by name; use `boid project add <git-url> --workspace=<slug>` to register a repository. |
 
 Omitted fields preserve current settings on apply. Explicit empty values clear them. Workspace definitions are the sole configuration source; repository files cannot override behaviors, triggers, signals, commands, or card events. Duplicate explicit/derived trigger names are rejected within a workspace.
 
 A hook uses either `command` (shell) or `kind: agent` plus `agent`. Agent hooks cannot also set `command`. `default_instruction` supplies the agent, model, type and bootstrap message for task jobs. Runtime definitions are resolved at dispatch; changing workspace settings needs no repository fetch.
 
-`boid project fetch` still refreshes the bare mirror and `boid project reload` refreshes the repository identity cache. Neither loads configuration. Mirror and command removal belong to the subsequent retirement step. `boid project init` and `boid project migrate` have retired; write and apply a workspace envelope instead.
+The daemon no longer maintains mirrors. `boid project fetch` and `boid project reload` have retired. Repository registration stores a URL and jobs clone through the git gateway. `boid project init` and `boid project migrate` have retired; write and apply a workspace envelope instead.
 
 ## task_behaviors
 
@@ -87,3 +86,5 @@ Declare ordered command keys with `label` and `run`. `card_write: true` permits 
 ## card_events
 
 `card_events.command` must name a declared command. If unspecified, workspace cards use the built-in judge.
+
+`extra_repos` has retired. Register read-only repositories with `boid project add <git-url> --workspace=<name> --perm=fetch` and include their names in `spec.projects`. Migration 0064 converts existing entries into registry rows.

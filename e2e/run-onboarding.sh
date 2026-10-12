@@ -354,7 +354,7 @@ echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 # fixture upstream (and exporting these) any later leaves the already-
 # running daemon container with no trust anchor for the fixture's
 # self-signed cert, and its own `git clone` (project registration below;
-# PR-2b, the daemon clones a project's git URL itself) fails with "server
+# jobs clone through the git gateway) fails with "server
 # certificate verification failed" (exactly what an earlier revision of
 # this script hit — see git history / this PR's own review notes). -------
 UPSTREAM_DIR="$ROOT/upstream-repos"

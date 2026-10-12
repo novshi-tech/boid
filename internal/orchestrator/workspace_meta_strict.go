@@ -40,7 +40,6 @@ type workspaceMetaStrict struct {
 	Env            map[string]string `yaml:"env,omitempty"`
 	Capabilities   Capabilities      `yaml:"capabilities,omitempty"`
 	AllowedDomains []string          `yaml:"allowed_domains,omitempty"`
-	ExtraRepos     []string          `yaml:"extra_repos,omitempty"`
 	Services       []string          `yaml:"services,omitempty"`
 	HostCommands   []string          `yaml:"host_commands,omitempty"`
 	ContainerImage string            `yaml:"container_image,omitempty"`
@@ -70,7 +69,6 @@ func (s workspaceMetaStrict) toWorkspaceMeta() *WorkspaceMeta {
 		Env:            s.Env,
 		Capabilities:   s.Capabilities,
 		AllowedDomains: s.AllowedDomains,
-		ExtraRepos:     s.ExtraRepos,
 		Services:       s.Services,
 		HostCommands:   s.HostCommands,
 		ContainerImage: s.ContainerImage,

@@ -36,6 +36,11 @@ func (s *ProjectAppService) synthesizeProjectMeta(gitURL, name, workspaceSlug st
 	if err != nil {
 		return nil, err
 	}
+	for _, project := range snapshot {
+		if project.ID == id {
+			return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf("project %q is already registered; remove it before re-adding", id)}
+		}
+	}
 	if matches := resolveProjectByNameExact(snapshot, name); len(matches) > 0 {
 		matchIDs := make([]string, len(matches))
 		for i, m := range matches {

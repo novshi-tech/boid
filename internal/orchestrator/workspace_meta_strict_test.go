@@ -31,8 +31,7 @@ capabilities:
   docker: {}
 allowed_domains:
   - example.com
-extra_repos:
-  - https://github.com/example/lib.git
+
 host_commands:
   - gh
   - aws
@@ -50,9 +49,6 @@ container_image: ghcr.io/example/image:latest
 	}
 	if !equalStringSlice(meta.AllowedDomains, []string{"example.com"}) {
 		t.Errorf("AllowedDomains = %v", meta.AllowedDomains)
-	}
-	if !equalStringSlice(meta.ExtraRepos, []string{"https://github.com/example/lib.git"}) {
-		t.Errorf("ExtraRepos = %v", meta.ExtraRepos)
 	}
 	if !equalStringSlice(meta.HostCommands, []string{"gh", "aws"}) {
 		t.Errorf("HostCommands = %v", meta.HostCommands)

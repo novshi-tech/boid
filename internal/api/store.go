@@ -55,27 +55,14 @@ type BrokerRegistry interface {
 
 type ProjectService interface {
 	CreateProject(workDir string, perm string) (*orchestrator.Project, error)
-	// CreateProjectFromGitURL registers a project from a git remote URL
-	// (POST /api/projects/git — `boid project add <git-url> --workspace=<name>`).
-	// workspaceSlug is required (unlike CreateProject's eager default-workspace assign);
-	// nameOverride empty derives the project name from the URL's last path
-	// component. *StatusError{400} for a missing url/workspace or an
-	// unparseable URL, {404} for an unknown workspace, {409} if a project is
-	// already registered at the computed bare-repo path, {502} for a clone
-	// failure, {500} if the daemon has no git-clone/data-dir wiring.
+	// CreateProjectFromGitURL registers a remote URL without accessing the repository.
 	CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string, perm string) (*orchestrator.Project, error)
-	// FetchProject runs `git fetch --all` inside id's bare repo and refreshes
-	// its cached registry identity (POST /api/projects/{id}/fetch).
-	// *StatusError{404} unknown id, {400} for a legacy non-bare project,
-	// {502} for a fetch failure. Never deletes id's row on failure.
-	FetchProject(ctx context.Context, id string) (*orchestrator.Project, error)
 	ListProjects(workspaceID string) ([]*orchestrator.Project, error)
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	GetProject(id string) (*orchestrator.Project, error)
 	SetProjectWorkspace(id, workspaceID string) (*orchestrator.Project, error)
 	SetProjectPerm(id, perm string) (*orchestrator.Project, error)
 	DeleteProject(id string) error
-	ReloadProjects() (*ProjectReloadResult, error)
 	// ResolveProjectRef resolves a ref string to one or more matching projects.
 	// Priority: id exact match > name exact match > name substring match (case-insensitive).
 	// Returns 1 project on unambiguous match, multiple on ambiguous match, StatusError{404} on no match.
@@ -455,9 +442,6 @@ type ProjectRepository interface {
 	SetProjectPerm(id, perm string) error
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	DeleteProject(id string) error
-	// SetProjectUpstreamURL persists a project's captured upstream_url. Used
-	// by ReloadProjects' recapture and by the daemon-startup backfill.
-	SetProjectUpstreamURL(projectID, upstreamURL string) error
 	// WorkspaceExists reports whether workspaceID refers to an existing
 	// workspaces table row. Used by ProjectAppService.SetProjectWorkspace to
 	// reject assignment to a nonexistent slug.

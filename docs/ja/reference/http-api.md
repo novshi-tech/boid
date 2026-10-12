@@ -56,7 +56,6 @@ curl --unix-socket "$XDG_RUNTIME_DIR/boid.sock" http://localhost/api/health
 | POST | `/api/projects` | プロジェクト登録 (`{"work_dir": "<path>"}`) |
 | GET | `/api/projects/{id}` | プロジェクト詳細 |
 | DELETE | `/api/projects/{id}` | プロジェクトの登録を解除 |
-| POST | `/api/projects/reload` | 全プロジェクトの `project.yaml` を再読み込み |
 | GET | `/api/projects/{id}/commands` | このプロジェクトの `commands` 一覧 |
 | GET | `/api/projects/{id}/commands/{name}` | 特定 command の詳細 |
 | POST | `/api/projects/{id}/commands/{name}/execute` | 名前付きコマンドを実行 |

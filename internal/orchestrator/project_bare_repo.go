@@ -1,11 +1,7 @@
 package orchestrator
 
 import (
-	"bytes"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -13,39 +9,6 @@ const URLDerivedProjectIDPrefix = "url-"
 
 func IsURLDerivedProjectID(id string) bool {
 	return strings.HasPrefix(id, URLDerivedProjectIDPrefix)
-}
-
-func IsBareRepoDir(dir string) bool {
-	headInfo, err := os.Stat(filepath.Join(dir, "HEAD"))
-	if err != nil || headInfo.IsDir() {
-		return false
-	}
-	objInfo, err := os.Stat(filepath.Join(dir, "objects"))
-	if err != nil || !objInfo.IsDir() {
-		return false
-	}
-	return true
-}
-
-// DefaultBranch returns a bare repo's default branch — its HEAD symbolic
-// ref, short form (`git symbolic-ref --short HEAD`).
-func DefaultBranch(bareRepoPath string) (string, error) {
-	cmd := exec.Command("git", "-C", bareRepoPath, "symbolic-ref", "--short", "HEAD")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg != "" {
-			return "", fmt.Errorf("%s: git symbolic-ref --short HEAD: %w: %s", bareRepoPath, err, msg)
-		}
-		return "", fmt.Errorf("%s: git symbolic-ref --short HEAD: %w", bareRepoPath, err)
-	}
-	return strings.TrimSpace(stdout.String()), nil
-}
-
-func BareRepoPath(dataDir, workspaceSlug, projectName string) string {
-	return filepath.Join(dataDir, "repos", workspaceSlug, projectName+".git")
 }
 
 func ValidProjectName(name string) error {
@@ -70,26 +33,6 @@ func ValidProjectName(name string) error {
 		}
 	}
 	return nil
-}
-
-func SafeBareRepoPath(dataDir, workspaceSlug, projectName string) (string, error) {
-	if err := ValidProjectName(projectName); err != nil {
-		return "", err
-	}
-	root := ReposRoot(dataDir)
-	path := BareRepoPath(dataDir, workspaceSlug, projectName)
-	underRoot, err := PathIsUnderResolved(root, path)
-	if err != nil {
-		return "", fmt.Errorf("verify project name %q does not escape the workspace's repo directory: %w", projectName, err)
-	}
-	if !underRoot {
-		return "", fmt.Errorf("project name %q resolves outside the workspace's repo directory", projectName)
-	}
-	return path, nil
-}
-
-func ReposRoot(dataDir string) string {
-	return filepath.Join(dataDir, "repos")
 }
 
 func DeriveProjectNameFromURL(rawURL string) (string, error) {

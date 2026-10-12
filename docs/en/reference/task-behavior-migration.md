@@ -25,10 +25,7 @@ Additionally:
 
 ## `supervisor` / `executor` are now deprecated
 
-These names continue to work, but are **deprecated**. A single WARN log entry is
-emitted when `ReadProjectMetaWithKits` runs (daemon start or project reload).
-
-To suppress the warning, set `BOID_NO_DEPRECATION_WARN=1`.
+These names continue to work. Define their behavior explicitly in the workspace envelope; repository configuration is no longer read.
 
 ---
 
