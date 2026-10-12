@@ -277,11 +277,26 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// CreatePatch.project_id は元の名前のまま (未上書き) のため使用しない。
 		if req.ProjectID != "" {
 			createReq.ProjectID = req.ProjectID
-		} else if createReq.ProjectID == "" {
+		} else if createReq.ProjectID == "" && !createReq.NoProject {
 			createReq.ProjectID = ctx.ProjectID
 		}
+		if createReq.NoProject && createReq.ProjectID != "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "no_project conflicts with project_id"}
+		}
+		if createReq.WorkspaceID != "" && createReq.WorkspaceID != ctx.WorkspaceID {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
+		}
+		if req.WorkspaceID != "" {
+			if req.WorkspaceID != ctx.WorkspaceID {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
+			}
+			createReq.WorkspaceID = req.WorkspaceID
+		}
 		if createReq.ProjectID == "" {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create requires a project"}
+			if ctx.WorkspaceID == "" {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create requires a workspace"}
+			}
+			createReq.WorkspaceID = ctx.WorkspaceID
 		}
 		// A card-command launcher has no TaskID of its own.  Its first
 		// execution task is nevertheless a real child of the card, so the
@@ -330,7 +345,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if createReq.ParentID != "" && createReq.Ref == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "child create requires a stable ref; pass ref: <slug> in the task spec"}
 		}
-		if !ctx.AllowsProject(createReq.ProjectID) {
+		if (createReq.ProjectID != "" && !ctx.AllowsProject(createReq.ProjectID)) || (createReq.ProjectID == "" && createReq.WorkspaceID != ctx.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create is restricted to the current workspace"}
 		}
 		// A continuation task may be created directly under its card only by
@@ -412,7 +427,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if !ctx.AllowsProject(existing.ProjectID) {
+		if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task show is restricted to the current workspace"}
 		}
 		value, err := e.tasks.GetTaskField(req.TaskID, req.TaskField)
@@ -431,7 +446,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if !ctx.AllowsProject(existing.ProjectID) {
+		if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update is restricted to the current workspace"}
 		}
 		var updateReq api.UpdateTaskRequest
@@ -463,7 +478,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if !ctx.AllowsProject(existing.ProjectID) {
+		if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task reopen is restricted to the current workspace"}
 		}
 		applyReq := api.ApplyActionRequest{Type: "reopen"}
@@ -495,7 +510,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if !ctx.AllowsProject(existing.ProjectID) {
+		if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task notify is restricted to the current workspace"}
 		}
 		if err := e.tasks.NotifyTask(goCtx, req.TaskID, req.Message, req.Ask, req.QuestionID, req.Progress, req.Done, req.Fail); err != nil {
@@ -515,7 +530,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if !ctx.AllowsProject(existing.ProjectID) {
+		if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task answer is restricted to the current workspace"}
 		}
 		if err := e.tasks.AnswerTask(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.TaskID, req.QuestionID, req.Answer); err != nil {
@@ -543,7 +558,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if !ctx.AllowsProject(existing.ProjectID) {
+		if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task ask is restricted to the current workspace"}
 		}
 		answer, err := e.tasks.AskTaskBlocking(goCtx, taskID, req.Question)
@@ -573,7 +588,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if !ctx.AllowsProject(existing.ProjectID) {
+		if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wait is restricted to the current workspace"}
 		}
 		// Compare the RESOLVED id, never the raw one the caller typed: GetTask
@@ -756,7 +771,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			if err != nil {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 			}
-			if !ctx.AllowsProject(existing.ProjectID) {
+			if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send is restricted to the current workspace"}
 			}
 		}
@@ -807,7 +822,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if !ctx.AllowsProject(existing.ProjectID) {
+		if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid card get is restricted to the current workspace"}
 		}
 		view, err := e.workflow.GetCard(req.TaskID)
@@ -909,7 +924,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if !ctx.AllowsProject(existing.ProjectID) {
+		if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link is restricted to the current workspace"}
 		}
 		// identity is scoped to a single project: AllowsProject above only
@@ -1252,7 +1267,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			if err != nil {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 			}
-			if !ctx.AllowsProject(existing.ProjectID) {
+			if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list is restricted to the current workspace"}
 			}
 		}
@@ -1357,7 +1372,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
-		if !ctx.AllowsProject(existing.ProjectID) {
+		if !ctx.AllowsTask(existing.ProjectID, existing.WorkspaceID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task delete is restricted to the current workspace"}
 		}
 		if err := e.tasks.DeleteTask(req.TaskID, req.Force); err != nil {

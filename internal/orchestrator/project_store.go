@@ -397,6 +397,21 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		return meta, nil
 	}
 
+	return s.hydrateWorkspace(meta, projectID, workspaceID)
+}
+
+// GetWorkspaceMeta resolves runtime definitions without a primary repository.
+func (s *ProjectStore) GetWorkspaceMeta(ctx context.Context, workspaceID string) (*ProjectMeta, error) {
+	if err := ValidWorkspaceSlug(workspaceID); err != nil {
+		return nil, err
+	}
+	if s.workspaceStore == nil {
+		return nil, fmt.Errorf("workspace store not configured")
+	}
+	return s.hydrateWorkspace(&ProjectMeta{Name: workspaceID}, "", workspaceID)
+}
+
+func (s *ProjectStore) hydrateWorkspace(meta *ProjectMeta, projectID, workspaceID string) (*ProjectMeta, error) {
 	// Shallow-clone meta so we can mutate runtime-only fields without
 	// corrupting the shared cached copy.
 	out := cloneProjectMeta(meta)
@@ -413,7 +428,7 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 
 	ws, err := s.workspaceStore.Load(workspaceID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if projectID != "" && errors.Is(err, os.ErrNotExist) {
 			slog.Warn("workspace.yaml not found; running in degraded mode (capabilities/kits/env not injected)",
 				"project_id", projectID, "workspace_id", workspaceID)
 			return out, nil

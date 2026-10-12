@@ -163,7 +163,7 @@ func repoKeyFromUpstreamURL(upstreamURL string) (gitgateway.RepoKey, error) {
 
 // checkoutInputs resolves checkout identity and the task or workspace fork point for every job kind.
 func (r *Runner) checkoutInputs(spec *orchestrator.JobSpec, workspaceID string) (primaryRepo, forkPoint string) {
-	if r.Projects != nil {
+	if r.Projects != nil && spec.ProjectID != "" {
 		if project, err := r.Projects.GetProject(spec.ProjectID); err == nil && project != nil && project.UpstreamURL != "" {
 			if key, err := repoKeyFromUpstreamURL(project.UpstreamURL); err == nil {
 				primaryRepo = string(key)

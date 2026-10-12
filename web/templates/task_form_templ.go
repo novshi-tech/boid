@@ -45,7 +45,7 @@ func cardFormProject(form url.Values) string {
 	return orchestrator.DefaultMetaprojectID(cardFormWorkspace(form))
 }
 
-func cardFormWorkspaces(projects []*orchestrator.Project) []string {
+func cardFormWorkspaces(projects []*orchestrator.Project, workspaces []string) []string {
 	seen := map[string]bool{}
 	var result []string
 	for _, p := range projects {
@@ -54,11 +54,20 @@ func cardFormWorkspaces(projects []*orchestrator.Project) []string {
 			result = append(result, p.WorkspaceID)
 		}
 	}
+	for _, ws := range workspaces {
+		if !seen[ws] {
+			seen[ws] = true
+			result = append(result, ws)
+		}
+	}
+	if len(result) == 0 {
+		result = append(result, orchestrator.DefaultWorkspaceSlug)
+	}
 	sort.Strings(result)
 	return result
 }
 
-func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values) templ.Component {
+func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values, workspaces ...string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -99,7 +108,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(errorMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 47, Col: 48}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 49, Col: 48}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -117,7 +126,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("title"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 53, Col: 145}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 55, Col: 145}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
@@ -127,7 +136,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			for _, ws := range cardFormWorkspaces(projects) {
+			for _, ws := range cardFormWorkspaces(projects, workspaces) {
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<option value=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
@@ -135,7 +144,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 				var templ_7745c5c3_Var5 string
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(ws)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 59, Col: 46}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 61, Col: 46}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 				if templ_7745c5c3_Err != nil {
@@ -158,7 +167,7 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 				var templ_7745c5c3_Var6 string
 				templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(ws)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 59, Col: 97}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 61, Col: 97}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 				if templ_7745c5c3_Err != nil {
@@ -169,114 +178,114 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</select></div><div class=\"form-group\"><label for=\"project_id\" class=\"form-label\">Metaproject</label> <select id=\"project_id\" name=\"project_id\" class=\"form-input\" required>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</select></div><div class=\"form-group\"><label for=\"project_id\" class=\"form-label\">Primary repository</label> <select id=\"project_id\" name=\"project_id\" class=\"form-input\" required><option value=\"__workspace__\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if form.Get("project_id") == "__workspace__" {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " selected")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, ">Workspace only</option> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, p := range projects {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<option value=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "<option value=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var7 string
 				templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 67, Col: 48}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 70, Col: 48}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "\" data-workspace=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "\" data-workspace=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var8 string
 				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(p.WorkspaceID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 67, Col: 81}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 70, Col: 81}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "\" data-default=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\" data-default=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var9 string
 				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprint(orchestrator.IsDefaultMetaproject(p)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 67, Col: 147}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 70, Col: 147}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				if cardFormProject(form) == p.ID {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, " selected")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, " selected")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
 				if p.WorkspaceID != cardFormWorkspace(form) {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, " disabled")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, " disabled")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
 				if p.WorkspaceID != cardFormWorkspace(form) {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, " hidden")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, " hidden")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, ">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, ">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var10 string
 				templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(taskNewProjectLabel(p))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 67, Col: 326}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 70, Col: 326}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "</option>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "</option>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "</select></div><div class=\"form-group\"><label for=\"description\" class=\"form-label\">Description</label> <textarea id=\"description\" name=\"description\" class=\"form-input\" rows=\"6\" data-paste-attach>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, "</select></div><div class=\"form-group\"><label for=\"description\" class=\"form-label\">Description</label> <textarea id=\"description\" name=\"description\" class=\"form-input\" rows=\"6\" data-paste-attach>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var11 string
 			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("description"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 73, Col: 137}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 76, Col: 137}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "</textarea><div class=\"form-hint\">Paste images or text files from the clipboard (Ctrl+V).</div><ul class=\"paste-attach-list\" data-paste-attach-list></ul></div></form></div><div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"task-new-form\" class=\"btn btn-primary action-bar-primary-form\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			if len(projects) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, " disabled")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, ">Create</button> <span class=\"action-bar-spacer\"></span></div></div><script>\n            (function () {\n                var workspace = document.getElementById(\"workspace\");\n                var project = document.getElementById(\"project_id\");\n                function update(reset) {\n                    var preferred = null;\n                    Array.from(project.options).forEach(function (option) {\n                        var matches = option.dataset.workspace === workspace.value;\n                        option.disabled = !matches;\n                        option.hidden = !matches;\n                        if (matches && (!preferred || option.dataset.default === \"true\")) preferred = option;\n                    });\n                    var current = project.selectedOptions[0];\n                    if (preferred && (reset || !current || current.disabled)) project.value = preferred.value;\n                }\n                workspace.addEventListener(\"change\", function () { update(true); });\n                update(false);\n            })();\n        </script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, "</textarea><div class=\"form-hint\">Paste images or text files from the clipboard (Ctrl+V).</div><ul class=\"paste-attach-list\" data-paste-attach-list></ul></div></form></div><div class=\"action-bar\"><div class=\"action-bar-inner\"><button type=\"submit\" form=\"task-new-form\" class=\"btn btn-primary action-bar-primary-form\">Create</button> <span class=\"action-bar-spacer\"></span></div></div><script>\n            (function () {\n                var workspace = document.getElementById(\"workspace\");\n                var project = document.getElementById(\"project_id\");\n                function update(reset) {\n                    var preferred = null;\n                    Array.from(project.options).forEach(function (option) {\n                        var matches = option.value === \"__workspace__\" || option.dataset.workspace === workspace.value;\n                        option.disabled = !matches;\n                        option.hidden = !matches;\n                        if (matches && (!preferred || option.dataset.default === \"true\")) preferred = option;\n                    });\n                    var current = project.selectedOptions[0];\n                    if (preferred && (reset || !current || current.disabled)) project.value = preferred.value;\n                }\n                workspace.addEventListener(\"change\", function () { update(true); });\n                update(false);\n            })();\n        </script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

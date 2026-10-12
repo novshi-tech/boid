@@ -50,7 +50,7 @@ func TestWorkspaceOwnershipMigration(t *testing.T) {
 	if err := Apply(d.Conn); err != nil {
 		t.Fatal(err)
 	}
-	if got := migrationRows(t, d.Conn, "sqlite_master WHERE type = 'index' AND sql IS NOT NULL", "name, sql"); !reflect.DeepEqual(got, indexes) {
+	if got := migrationRows(t, d.Conn, "sqlite_master WHERE type = 'index' AND sql IS NOT NULL AND name NOT IN ('idx_tasks_workspace_ref', 'idx_tasks_workspace_idempotency_key')", "name, sql"); !reflect.DeepEqual(got, indexes) {
 		t.Errorf("indexes changed: got %v want %v", got, indexes)
 	}
 	for _, table := range tables {

@@ -42,6 +42,7 @@ func (r ListRow) ProjectLabel() string {
 	if r.ProjectName != "" {
 		return r.ProjectName
 	}
+ if r.Task.ProjectID == "" { return r.Task.WorkspaceID }
 	return r.Task.ProjectID
 }
 

@@ -147,8 +147,8 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.ProjectID == "" || req.Title == "" {
-		writeError(w, http.StatusBadRequest, "project_id and title are required")
+	if req.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
 		return
 	}
 	if req.ParentID == orchestrator.ParentIDSentinelRoot {

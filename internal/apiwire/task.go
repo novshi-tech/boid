@@ -32,6 +32,8 @@ type UpdateTaskRequest struct {
 }
 
 type CreateTaskRequest struct {
+	WorkspaceID  string                     `json:"workspace_id,omitempty"`
+	NoProject    bool                       `json:"no_project,omitempty"`
 	ID           string                     `json:"id,omitempty"`
 	ProjectID    string                     `json:"project_id"`
 	Title        string                     `json:"title"`

@@ -813,3 +813,8 @@ func (s *TaskGCStore) cleanTaskAttachments(olderThan time.Duration) {
 		slog.Info("gc attachments removed", "task_id", id)
 	}
 }
+
+// FindWorkspaceTask finds a task by its workspace-scoped create key.
+func (r *TaskRepository) FindWorkspaceTask(workspaceID, parentID, ref, key string) (*Task, error) {
+	return FindWorkspaceTask(r.db, workspaceID, parentID, ref, key)
+}

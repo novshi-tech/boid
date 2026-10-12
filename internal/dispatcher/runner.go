@@ -333,8 +333,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	if spec == nil {
 		return "", fmt.Errorf("job spec is required")
 	}
-	if spec.ProjectID == "" {
-		return "", fmt.Errorf("job spec is missing project id")
+	if spec.ProjectID == "" && spec.TaskID == "" {
+		return "", fmt.Errorf("job spec without project requires a task")
 	}
 	// Argv is irrelevant when a HarnessAdapter takes over the agent process
 	// (the runner-inner-child invokes adapter.Run() and ignores Argv); only
@@ -425,6 +425,10 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// and mount the wrong workspace's home instead of failing the dispatch
 	// outright.
 	workspaceID, projectWorkDir, err := r.resolveProjectRuntime(spec.ProjectID)
+	if spec.ProjectID == "" {
+		workspaceID = j.WorkspaceID
+		spec.Visibility.Checkout = false
+	}
 	if err != nil {
 		err = fmt.Errorf("resolve project runtime: look up project %q: %w", spec.ProjectID, err)
 		r.failJob(j, err)
@@ -559,6 +563,9 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		gatewayURL, gatewayToken = r.registerGatewayToken(j.ID, spec, gatewayWorkspaceID)
 
+		if spec.Visibility.Checkout || spec.ProjectID == "" {
+			peerAdvertise = r.buildPeerAdvertise(workspacePeers, gatewayURL, gatewayToken)
+		}
 		if !spec.Visibility.Checkout {
 			return nil
 		}
@@ -576,8 +583,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 				}
 			}
 		}
-		peerAdvertise = r.buildPeerAdvertise(workspacePeers, gatewayURL, gatewayToken)
-
 		return nil
 	}
 	var projectSectionErr error

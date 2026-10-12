@@ -157,3 +157,25 @@ func TestWebTaskNew_ExcludesFetchProjects(t *testing.T) {
 		t.Fatalf("project choices do not respect permissions: %s", body)
 	}
 }
+
+func TestWebWorkspaceOnlyCard(t *testing.T) {
+	svc := &stubWebService{workspaces: []*orchestrator.WorkspaceSummary{{ID: "team"}}, createTaskResult: &orchestrator.Task{ID: "created"}}
+	handler := &WebHandler{Service: svc}
+	w := httptest.NewRecorder()
+	handler.TaskNew(w, httptest.NewRequest(http.MethodGet, "/tasks/new?workspace=team", nil))
+	if !strings.Contains(w.Body.String(), `value="team"`) || !strings.Contains(w.Body.String(), "Workspace only") {
+		t.Fatal(w.Body.String())
+	}
+	form := url.Values{"title": {"work"}, "workspace": {"team"}, "project_id": {"__workspace__"}}
+	request := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	handler.PostTaskCreate(w, request)
+	if w.Code != http.StatusSeeOther || len(svc.createTaskCalls) != 1 {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	req := svc.createTaskCalls[0]
+	if req.ProjectID != "" || req.WorkspaceID != "team" {
+		t.Fatalf("request: %+v", req)
+	}
+}

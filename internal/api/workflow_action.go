@@ -200,11 +200,11 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 	}
 
 	var meta *orchestrator.ProjectMeta
-	hydrated, hydrateErr := s.Meta.GetWithWorkspace(ctx, task.ProjectID)
+	hydrated, hydrateErr := orchestrator.TaskMeta(ctx, s.Meta, task)
 	switch {
 	case hydrateErr == nil && hydrated != nil && !isNoYAMLProjectWithNoBehaviors(hydrated):
 		meta = hydrated
-	case orchestrator.IsURLDerivedProjectID(task.ProjectID):
+	case task.ProjectID == "" || orchestrator.IsURLDerivedProjectID(task.ProjectID):
 		detail := hydrateErr
 		if detail == nil {
 			detail = errors.New("workspace hydration reported success but produced no task_behaviors (no workspace linked, workspace store not configured, or workspace.yaml not found)")

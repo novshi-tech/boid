@@ -2187,3 +2187,68 @@ func TestRunBoidShim_TaskDelete_UnknownFlag(t *testing.T) {
 		t.Fatalf("expected unsupported flag error, got: %v", err)
 	}
 }
+
+func TestRunBoidShim_TaskCreate_WorkspaceFlags(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	specPath := filepath.Join(dir, "task.yaml")
+	specYAML := "title: child task\ninitial_status: parked\n"
+	if err := os.WriteFile(specPath, []byte(specYAML), 0o644); err != nil {
+		t.Fatalf("write task spec: %v", err)
+	}
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-456")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"task", "create",
+		"-f", specPath,
+		"--no-project", "--workspace", "team",
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr = %q, want 0 (workspace flags must be accepted)", resp.ExitCode, resp.Stderr)
+	}
+
+	req := recvReq(t, reqCh)
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	var patch struct {
+		NoProject   bool   `json:"no_project"`
+		WorkspaceID string `json:"workspace_id"`
+	}
+	if err := json.Unmarshal(req.Boid.CreatePatch, &patch); err != nil {
+		t.Fatal(err)
+	}
+	if !patch.NoProject || patch.WorkspaceID != "team" || req.Boid.WorkspaceID != "team" || req.Boid.ProjectID != "" {
+		t.Fatalf("request: %+v patch: %+v", req.Boid, patch)
+	}
+}

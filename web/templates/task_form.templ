@@ -31,17 +31,19 @@ func cardFormProject(form url.Values) string {
     return orchestrator.DefaultMetaprojectID(cardFormWorkspace(form))
 }
 
-func cardFormWorkspaces(projects []*orchestrator.Project) []string {
+func cardFormWorkspaces(projects []*orchestrator.Project, workspaces []string) []string {
     seen := map[string]bool{}
     var result []string
     for _, p := range projects {
         if !seen[p.WorkspaceID] { seen[p.WorkspaceID] = true; result = append(result, p.WorkspaceID) }
     }
+    for _, ws := range workspaces { if !seen[ws] { seen[ws] = true; result = append(result, ws) } }
+    if len(result) == 0 { result = append(result, orchestrator.DefaultWorkspaceSlug) }
     sort.Strings(result)
     return result
 }
 
-templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values) {
+templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values, workspaces ...string) {
     @Layout("New Card", "/") {
         if errorMsg != "" {
             <div class="action-error">{ errorMsg }</div>
@@ -55,14 +57,15 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values
                 <div class="form-group">
                     <label for="workspace" class="form-label">Workspace</label>
                     <select id="workspace" name="workspace" class="form-input" required>
-                        for _, ws := range cardFormWorkspaces(projects) {
+                        for _, ws := range cardFormWorkspaces(projects, workspaces) {
                             <option value={ ws } selected?={ cardFormWorkspace(form) == ws }>{ ws }</option>
                         }
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="project_id" class="form-label">Metaproject</label>
+                    <label for="project_id" class="form-label">Primary repository</label>
                     <select id="project_id" name="project_id" class="form-input" required>
+                        <option value="__workspace__" selected?={ form.Get("project_id") == "__workspace__" }>Workspace only</option>
                         for _, p := range projects {
                             <option value={ p.ID } data-workspace={ p.WorkspaceID } data-default={ fmt.Sprint(orchestrator.IsDefaultMetaproject(p)) } selected?={ cardFormProject(form) == p.ID } disabled?={ p.WorkspaceID != cardFormWorkspace(form) } hidden?={ p.WorkspaceID != cardFormWorkspace(form) }>{ taskNewProjectLabel(p) }</option>
                         }
@@ -78,7 +81,7 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values
         </div>
         <div class="action-bar">
             <div class="action-bar-inner">
-                <button type="submit" form="task-new-form" class="btn btn-primary action-bar-primary-form" disabled?={ len(projects) == 0 }>Create</button>
+                <button type="submit" form="task-new-form" class="btn btn-primary action-bar-primary-form">Create</button>
                 <span class="action-bar-spacer"></span>
             </div>
         </div>
@@ -89,7 +92,7 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values
                 function update(reset) {
                     var preferred = null;
                     Array.from(project.options).forEach(function (option) {
-                        var matches = option.dataset.workspace === workspace.value;
+                        var matches = option.value === "__workspace__" || option.dataset.workspace === workspace.value;
                         option.disabled = !matches;
                         option.hidden = !matches;
                         if (matches && (!preferred || option.dataset.default === "true")) preferred = option;

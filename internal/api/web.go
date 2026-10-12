@@ -154,7 +154,7 @@ func (h *WebHandler) renderTaskNewErr(w http.ResponseWriter, r *http.Request, ms
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
-	templates.TaskNew(projects, msg, form).Render(r.Context(), w)
+	templates.TaskNew(projects, msg, form, h.cardWorkspaceSlugs()...).Render(r.Context(), w)
 }
 
 func (h *WebHandler) TaskNew(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +164,7 @@ func (h *WebHandler) TaskNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.TaskNew(projects, "", r.URL.Query()).Render(r.Context(), w)
+	templates.TaskNew(projects, "", r.URL.Query(), h.cardWorkspaceSlugs()...).Render(r.Context(), w)
 }
 
 func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
@@ -179,13 +179,24 @@ func (h *WebHandler) PostTaskCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projectID, err := h.resolveCardProject(r.FormValue("workspace"), r.FormValue("project_id"))
+	workspaceID := r.FormValue("workspace")
+	if workspaceID == "" {
+		workspaceID = orchestrator.DefaultWorkspaceSlug
+	}
+	projectID := r.FormValue("project_id")
+	var err error
+	if projectID == "__workspace__" {
+		projectID = ""
+	} else {
+		projectID, err = h.resolveCardProject(workspaceID, projectID)
+	}
 	if err != nil {
 		h.renderTaskNewErr(w, r, err.Error(), r.PostForm)
 		return
 	}
 	req := CreateTaskRequest{
 		ProjectID:     projectID,
+		WorkspaceID:   workspaceID,
 		Title:         title,
 		Description:   r.FormValue("description"),
 		InitialStatus: "parked",

@@ -484,3 +484,11 @@ func (p BuiltinPolicy) AllowsCwd(cwd string) bool {
 	}
 	return false
 }
+
+// AllowsTask checks workspace ownership for tasks without a primary repository.
+func (c TokenContext) AllowsTask(projectID, workspaceID string) bool {
+	if projectID == "" {
+		return c.WorkspaceID != "" && workspaceID == c.WorkspaceID
+	}
+	return c.AllowsProject(projectID)
+}

@@ -50,6 +50,14 @@ CREATE UNIQUE INDEX idx_tasks_ref_parent_project ON tasks(ref, parent_id, projec
 -- index: idx_tasks_wake_at
 CREATE INDEX idx_tasks_wake_at ON tasks(wake_at) WHERE wake_at IS NOT NULL;
 
+-- index: idx_tasks_workspace_idempotency_key
+CREATE UNIQUE INDEX idx_tasks_workspace_idempotency_key
+    ON tasks(workspace_id, parent_id, idempotency_key) WHERE project_id IS NULL AND idempotency_key IS NOT NULL;
+
+-- index: idx_tasks_workspace_ref
+CREATE UNIQUE INDEX idx_tasks_workspace_ref
+    ON tasks(workspace_id, parent_id, ref) WHERE project_id IS NULL AND ref != '';
+
 -- index: idx_trigger_runs_inflight_started
 CREATE INDEX idx_trigger_runs_inflight_started
     ON trigger_runs(started_at, id) WHERE finished_at IS NULL;

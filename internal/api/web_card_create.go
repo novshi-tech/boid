@@ -64,3 +64,15 @@ func (h *WebHandler) resolveCardProject(workspace, projectID string) (string, er
 	}
 	return "", &StatusError{Code: http.StatusBadRequest, Message: "このワークスペースのメタプロジェクトを選択してください"}
 }
+
+func (h *WebHandler) cardWorkspaceSlugs() []string {
+	workspaces, err := h.Service.ListWorkspaces()
+	if err != nil {
+		return nil
+	}
+	slugs := make([]string, 0, len(workspaces))
+	for _, ws := range workspaces {
+		slugs = append(slugs, ws.ID)
+	}
+	return slugs
+}

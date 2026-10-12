@@ -230,3 +230,45 @@ parent_id: foo
 		t.Errorf("ParentID = %q, want %q", task.ParentID, "foo")
 	}
 }
+
+func TestRunTaskCreateWorkspaceOwnership(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	dir := writeImportTestProject(t, "workspace-child-project", "Child Project")
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	t.Setenv("BOID_TASK_ID", "")
+	for _, tc := range []struct {
+		parentProject string
+		noProject     bool
+		wantProject   string
+	}{
+		{"workspace-child-project", false, "workspace-child-project"},
+		{"workspace-child-project", true, ""},
+		{"", false, ""},
+	} {
+		t.Setenv("BOID_PROJECT_ID", tc.parentProject)
+		t.Setenv("BOID_WORKSPACE_SLUG", "default")
+		cmd := newTaskCreateCmd(t)
+		cmd.Flags().Bool("no-project", tc.noProject, "")
+		cmd.Flags().String("workspace", "", "")
+		cmd.SetIn(strings.NewReader("title: workspace child\ninitial_status: parked\n"))
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		if err := runTaskCreate(cmd, nil); err != nil {
+			t.Fatal(err)
+		}
+		fields := strings.Fields(out.String())
+		if len(fields) < 3 {
+			t.Fatal(out.String())
+		}
+		var task orchestrator.Task
+		if err := ts.Client.Do("GET", "/api/tasks/"+fields[2], nil, &task); err != nil {
+			t.Fatal(err)
+		}
+		if task.ProjectID != tc.wantProject || task.WorkspaceID != "default" {
+			t.Fatalf("%+v: %+v", tc, task)
+		}
+	}
+}

@@ -277,6 +277,7 @@ func detailProjectLabel(task *orchestrator.Task, projectName string) string {
 	if projectName != "" {
 		return projectName
 	}
+ if task.ProjectID == "" { return task.WorkspaceID }
 	return task.ProjectID
 }
 
@@ -293,7 +294,7 @@ func cardIdentityLabel(task *orchestrator.Task, projectName string) string {
 	if task.Card != nil {
 		kind = task.Card.Kind
 	}
-	if task.ProjectID == "" {
+	if task.ProjectID == "" && task.WorkspaceID == "" {
 		return kind
 	}
 	return detailProjectLabel(task, projectName) + " / " + kind
@@ -306,7 +307,7 @@ func execIdentityLabel(task *orchestrator.Task, projectName string) string {
 	if task.Exec != nil {
 		behavior = task.Exec.Behavior
 	}
-	if task.ProjectID == "" {
+	if task.ProjectID == "" && task.WorkspaceID == "" {
 		return behavior
 	}
 	return detailProjectLabel(task, projectName) + " / " + behavior

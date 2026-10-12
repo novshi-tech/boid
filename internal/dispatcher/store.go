@@ -53,7 +53,11 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 	}
 	j.WorkspaceID = workspaceID
 	columns := []string{"id", "task_id", "project_id"}
-	args := []any{j.ID, taskID, j.ProjectID}
+	var projectID any
+	if j.ProjectID != "" {
+		projectID = j.ProjectID
+	}
+	args := []any{j.ID, taskID, projectID}
 
 	if cols.hasWorkspaceID {
 		columns = append(columns, "workspace_id")

@@ -21,7 +21,7 @@ func (s *TaskWorkflowService) ReplayHook(ctx context.Context, taskID string, req
 	// No fallback to bare Get here (unlike CreateTask): a bare-Get miss
 	// already 500'd before this switch, so GetWithWorkspace erroring for ANY
 	// reason keeps landing on the exact same 500.
-	meta, err := s.Meta.GetWithWorkspace(ctx, task.ProjectID)
+	meta, err := orchestrator.TaskMeta(ctx, s.Meta, task)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
 	}
@@ -107,7 +107,7 @@ func (s *TaskWorkflowService) ListHooksForStatus(taskID, status string) ([]orche
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 	// Same switch (and same "no fallback" rationale) as ReplayHook above.
-	meta, err := s.Meta.GetWithWorkspace(context.Background(), task.ProjectID)
+	meta, err := orchestrator.TaskMeta(context.Background(), s.Meta, task)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
 	}

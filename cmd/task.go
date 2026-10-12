@@ -132,6 +132,8 @@ func init() {
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskListCmd.Flags().String("workspace", "", "Filter by workspace ID")
 	taskListCmd.Flags().String("behavior", "", "Filter by behavior name")
+	taskCreateCmd.Flags().String("workspace", "", "Workspace slug for the task")
+	taskCreateCmd.Flags().Bool("no-project", false, "Create without a primary repository, overriding parent inheritance")
 	taskCreateCmd.Flags().StringP("file", "f", "", "YAML file to read task spec from (default: stdin)")
 	taskCreateCmd.Flags().String("idempotency-key", "", "Stable key (scoped by project_id) so a repeated create with the same key returns the existing task instead of creating a duplicate; overrides idempotency_key in the spec if both are given")
 	taskWatchCmd.Flags().Duration("interval", time.Second, "Polling interval")
@@ -342,16 +344,28 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		req.IdempotencyKey = key
 	}
 
-	if req.ProjectID == "" {
+	if ws, _ := cmd.Flags().GetString("workspace"); ws != "" {
+		req.WorkspaceID = ws
+	}
+	if noProject, _ := cmd.Flags().GetBool("no-project"); noProject {
+		req.NoProject = true
+	}
+	if req.NoProject && req.ProjectID != "" {
+		return fmt.Errorf("no_project conflicts with project_id")
+	}
+	if req.ProjectID == "" && !req.NoProject {
 		req.ProjectID = os.Getenv("BOID_PROJECT_ID")
+	}
+	if req.WorkspaceID == "" && req.ProjectID == "" {
+		req.WorkspaceID = os.Getenv("BOID_WORKSPACE_SLUG")
 	}
 	if req.ParentID == orchestrator.ParentIDSentinelRoot {
 		req.ParentID = ""
 	} else if req.ParentID == "" {
 		req.ParentID = os.Getenv("BOID_TASK_ID")
 	}
-	if req.ProjectID == "" || req.Title == "" {
-		return fmt.Errorf("YAML must include project_id and title")
+	if req.Title == "" {
+		return fmt.Errorf("YAML must include title")
 	}
 
 	c := client.FromContext(cmd.Context())

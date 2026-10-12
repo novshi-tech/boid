@@ -88,7 +88,7 @@ func (s *TaskWorkflowService) CompleteJob(ctx context.Context, jobID string, req
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "task not found: " + err.Error()}
 	}
 
-	if _, ok := s.Meta.Get(job.ProjectID); !ok {
+	if _, ok := s.Meta.Get(job.ProjectID); job.ProjectID != "" && !ok {
 		slog.Error("job done: project meta not loaded", "project_id", job.ProjectID)
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + job.ProjectID}
 	}
