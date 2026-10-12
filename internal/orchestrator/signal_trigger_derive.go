@@ -41,6 +41,10 @@ const signalTriggerNamePrefix = "signal:"
 // declaration — one trigger per source cannot hold for two sources naming
 // the identical connector).
 func deriveSignalTriggers(sources []SignalSource) ([]Trigger, error) {
+	return deriveSignalTriggersForConfig(sources, "project.yaml")
+}
+
+func deriveSignalTriggersForConfig(sources []SignalSource, configName string) ([]Trigger, error) {
 	if len(sources) == 0 {
 		return nil, nil
 	}
@@ -49,17 +53,17 @@ func deriveSignalTriggers(sources []SignalSource) ([]Trigger, error) {
 	for i, src := range sources {
 		pack, connectorName, err := splitConnectorRef(src.Connector)
 		if err != nil {
-			return nil, fmt.Errorf("project.yaml: signals.sources[%d]: %w", i, err)
+			return nil, fmt.Errorf("%s: signals.sources[%d]: %w", configName, i, err)
 		}
 		if src.Service == "" {
-			return nil, fmt.Errorf("project.yaml: signals.sources[%d] (%s): service must not be empty", i, src.Connector)
+			return nil, fmt.Errorf("%s: signals.sources[%d] (%s): service must not be empty", configName, i, src.Connector)
 		}
 		if src.Every == "" {
-			return nil, fmt.Errorf("project.yaml: signals.sources[%d] (%s): every must not be empty", i, src.Connector)
+			return nil, fmt.Errorf("%s: signals.sources[%d] (%s): every must not be empty", configName, i, src.Connector)
 		}
 		name := signalTriggerNamePrefix + src.Connector
 		if seen[name] {
-			return nil, fmt.Errorf("project.yaml: signals.sources[%d]: duplicate source %q (would derive trigger name %q twice)", i, src.Connector, name)
+			return nil, fmt.Errorf("%s: signals.sources[%d]: duplicate source %q (would derive trigger name %q twice)", configName, i, src.Connector, name)
 		}
 		seen[name] = true
 

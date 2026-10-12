@@ -513,6 +513,11 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 		return result, nil
 	}
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
+	if s.EnsureTriggerProjects != nil {
+		if err := s.EnsureTriggerProjects(); err != nil {
+			slog.Warn("trigger sweep: ensure receivers failed; continuing sweep", "error", err)
+		}
+	}
 
 	inFlight, err := s.reconcileInFlight(now, &result.Completed)
 	if err != nil {

@@ -11,6 +11,9 @@ import (
 )
 
 type TaskWorkflowService struct {
+	// EnsureTriggerProjects creates workspace receivers before each sweep.
+	EnsureTriggerProjects func() error
+
 	Tasks       TaskStore
 	Jobs        JobStore
 	Projects    ProjectRepository

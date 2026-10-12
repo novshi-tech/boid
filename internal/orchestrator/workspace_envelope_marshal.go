@@ -50,6 +50,11 @@ func (e WorkspaceEnvelope) marshalNode() (*yaml.Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode workspace envelope: %w", err)
 	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "spec" {
+			reorderCardCommands(node.Content[i+1], e.Spec.CardCommandsOrder)
+		}
+	}
 	return node, nil
 }
 

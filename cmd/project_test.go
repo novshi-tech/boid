@@ -1137,8 +1137,9 @@ func TestProjectAdd_WithUnknownWorkspace_CreatesAndAssigns(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
 		t.Fatalf("list projects: %v", err)
 	}
+	projects = registeredRepositories(projects)
 	if len(projects) != 1 {
-		t.Fatalf("expected exactly one registered project, got %d", len(projects))
+		t.Fatalf("expected exactly one registered repository, got %d", len(projects))
 	}
 	if projects[0].WorkspaceID != "brand-new-ws" {
 		t.Errorf("WorkspaceID = %q, want brand-new-ws", projects[0].WorkspaceID)
@@ -1171,8 +1172,9 @@ func TestProjectAdd_WithExistingWorkspace_JustAssigns(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
 		t.Fatalf("list projects: %v", err)
 	}
+	projects = registeredRepositories(projects)
 	if len(projects) != 1 {
-		t.Fatalf("expected exactly one registered project, got %d", len(projects))
+		t.Fatalf("expected exactly one registered repository, got %d", len(projects))
 	}
 	if projects[0].WorkspaceID != "existing-ws" {
 		t.Errorf("WorkspaceID = %q, want existing-ws", projects[0].WorkspaceID)
@@ -1240,7 +1242,18 @@ func TestProjectFetch_UpdatesProjectYAML(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
 		t.Fatalf("list projects: %v", err)
 	}
+	projects = registeredRepositories(projects)
 	if len(projects) != 1 || projects[0].Meta.Name != "After Fetch" {
 		t.Fatalf("expected the registered project's name to be updated after fetch, got: %+v", projects)
 	}
+}
+
+func registeredRepositories(projects []projectspec.Project) []projectspec.Project {
+	var repositories []projectspec.Project
+	for _, p := range projects {
+		if !projectspec.IsDefaultMetaproject(&p) {
+			repositories = append(repositories, p)
+		}
+	}
+	return repositories
 }

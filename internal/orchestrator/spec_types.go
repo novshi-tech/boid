@@ -506,23 +506,9 @@ type ProjectMeta struct {
 	// json:"-" because CardEventsConfig is a non-pointer struct, so
 	// omitempty can't omit it.
 	CardEvents CardEventsConfig `yaml:"card_events,omitempty" json:"-"`
-	// Triggers is a TOP-LEVEL project.yaml field — deliberately NOT nested
-	// under any TaskBehavior: "when it starts" is a different concern from
-	// task_behaviors' "how it runs". Not part of the workspace envelope
-	// spec.* allowlist (workspace_envelope.go's workspaceEnvelopeSpecFields)
-	// — a workspace-level default `run:` would point at a script path that
-	// only exists in one project's tracked tree, unlike
-	// task_behaviors/base_branch/fork_point which generalize across a
-	// workspace's projects. `triggers:` can only be written in
-	// project.yaml.
+	// Triggers schedules commands for this project.
 	Triggers []Trigger `yaml:"triggers,omitempty" json:"triggers,omitempty"`
-	// Signals declares this (meta)project's signal sources. Only meaningful
-	// on a metaproject — a project whose sandbox is where Integration Pack
-	// connectors run — but nothing here enforces that; any project.yaml may
-	// declare it. Same top-level, project.yaml-only placement as Triggers
-	// above, for the identical reason: a bind-mounted Pack directory is a
-	// property of ONE tracked-tree project, not something that generalizes
-	// across a workspace's projects.
+	// Signals declares connector sources that derive polling triggers.
 	Signals SignalsConfig `yaml:"signals,omitempty" json:"signals,omitempty"`
 	// BaseBranch is the default git base branch for worktrees created by
 	// tasks in this project. It is resolved at task creation time (with

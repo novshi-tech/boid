@@ -138,6 +138,11 @@ func (s *WorkspaceStore) Save(slug string, meta *WorkspaceMeta) error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return fmt.Errorf("workspace store: mkdir %q: %w", s.dir, err)
 	}
+	if meta != nil {
+		if err := validateWorkspaceAutomation(meta); err != nil {
+			return err
+		}
+	}
 	data, err := yaml.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("workspace %q: marshal: %w", slug, err)

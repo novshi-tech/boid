@@ -62,6 +62,7 @@ func forEachRoundTripProbe(maxLen int, fn func(probe string)) {
 // exactly as probe has it.
 func envelopeWithProbeEverywhere(probe string) *WorkspaceEnvelope {
 	meta := &WorkspaceMeta{
+		Triggers: []Trigger{}, CardCommands: map[string]CardCommand{},
 		HostCommands:   []string{probe},
 		Env:            map[string]string{"PROBE": probe, probe: "probe-key"},
 		AllowedDomains: []string{probe},
@@ -184,6 +185,10 @@ kind: Workspace
 metadata:
     name: team-a
 spec:
+    triggers: []
+    signals: {}
+    card_commands: {}
+    card_events: {}
     host_commands:
         - gh
         - docker
