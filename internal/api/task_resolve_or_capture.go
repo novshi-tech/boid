@@ -20,30 +20,12 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// ResolveOrCaptureRequest is BoidOpTaskResolveOrCapture's input: project +
-// identity (always) plus title/description used ONLY when no task is
-// currently bound to Identity (a fresh `captured` task is created).
-type ResolveOrCaptureRequest struct {
-	ProjectID   string  `json:"project_id,omitempty"`
-	WorkspaceID string  `json:"workspace_id,omitempty"`
-	Identity    string  `json:"identity,omitempty"`
-	Title       string  `json:"title,omitempty"`
-	Description string  `json:"description,omitempty"`
-	URL         *string `json:"url,omitempty"`
-	DisplayName *string `json:"display_name,omitempty"`
-}
-
-// ResolveOrCaptureResult is the op's return contract: the resolved task's
-// id, and whether it was freshly created by this call (true) or already
-// existed (false — the caller should follow up with action_send to record
-// attrs_set, since resolution and recording are deliberately separate ops).
-type ResolveOrCaptureResult struct {
-	TaskID  string `json:"task_id"`
-	Created bool   `json:"created"`
-}
+type ResolveOrCaptureRequest = apiwire.ResolveOrCaptureRequest
+type ResolveOrCaptureResult = apiwire.ResolveOrCaptureResult
 
 // ResolveOrCapture resolves Identity (scoped to ProjectID) to an existing
 // task, or — when unresolved — atomically creates a new `parked` card

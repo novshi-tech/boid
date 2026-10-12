@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/spf13/cobra"
 )
@@ -76,10 +76,10 @@ func runIdentityCommand(cmd *cobra.Command, args []string, operation string) err
 			}
 			description = string(data)
 		}
-		request = api.ResolveOrCaptureRequest{ProjectID: projectID, WorkspaceID: workspaceID, Identity: args[0], Title: title, Description: description, URL: url, DisplayName: displayName}
+		request = apiwire.ResolveOrCaptureRequest{ProjectID: projectID, WorkspaceID: workspaceID, Identity: args[0], Title: title, Description: description, URL: url, DisplayName: displayName}
 		path = "/api/tasks/resolve-or-capture"
 	} else {
-		req := api.TaskIdentityRequest{ProjectID: projectID, WorkspaceID: workspaceID, Identity: args[0], URL: url, DisplayName: displayName}
+		req := apiwire.TaskIdentityRequest{ProjectID: projectID, WorkspaceID: workspaceID, Identity: args[0], URL: url, DisplayName: displayName}
 		if operation == "link" {
 			req.TaskID = args[1]
 		}

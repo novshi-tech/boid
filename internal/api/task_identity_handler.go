@@ -6,18 +6,11 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// TaskIdentityRequest selects a repository scope or a repository-free workspace scope.
-type TaskIdentityRequest struct {
-	ProjectID   string  `json:"project_id,omitempty"`
-	WorkspaceID string  `json:"workspace_id,omitempty"`
-	Identity    string  `json:"identity"`
-	TaskID      string  `json:"task_id,omitempty"`
-	URL         *string `json:"url,omitempty"`
-	DisplayName *string `json:"display_name,omitempty"`
-}
+type TaskIdentityRequest = apiwire.TaskIdentityRequest
 
 func (h *TaskHandler) Identity(w http.ResponseWriter, r *http.Request) {
 	var req TaskIdentityRequest
