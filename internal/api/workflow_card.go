@@ -942,7 +942,7 @@ func (s *TaskWorkflowService) releaseCardRequestForTerminalTask(ctx context.Cont
 // arbitrates between two concurrent commands.
 //
 // CommandKey=CardRequestCommandKeyGo marks this as a work-execution
-// reservation, not a project.yaml command. Go has no real launcher job
+// reservation, not a workspace configuration command. Go has no real launcher job
 // (task creation happens synchronously in the caller), but
 // CreateCardRequest's launching fast path requires a non-empty
 // LauncherJobID — a synthetic, never-a-real-job marker satisfies that.

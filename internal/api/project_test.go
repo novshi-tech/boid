@@ -41,7 +41,7 @@ func createProject(t *testing.T, ts *testutil.TestServer, id, name string) orche
 
 	dir := setupTestProject(t, id, name, false)
 	var project orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	return project
@@ -73,7 +73,7 @@ func TestProjectAPI_CreateAndGet(t *testing.T) {
 	}
 }
 
-func TestProjectAPI_CreateRejectsDeprecatedWorkspaceID(t *testing.T) {
+func TestProjectAPIRejectsRetiredFilesystemRegistration(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	dir := setupTestProject(t, "deprecated-project", "Deprecated Project", true)
 

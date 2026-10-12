@@ -13,16 +13,11 @@
 
 タスクは `boid task create` で作成し、 `boid task list` / `boid task show` / `boid task watch`、Web UI で観察します。
 
-## プロジェクト (project)
+## プロジェクト
 
-`.boid/project.yaml` を持つディレクトリのこと。 ポータブルで git 管理される「作業パターン」の定義であり、 machine-local な実行環境設定は一切含みません (それは後述の **workspace** の役割)。 `project.yaml` には次を書きます。
+projects テーブルに登録した Git repository です。`boid project add <git-url> --workspace <slug>` で workspace に所属させます。既存 ID は維持し、新規 ID は URL から導出します。名前は `--name` で指定できます。task は primary repository を持つことも、repository を持たず workspace に直接所属することもできます。
 
-- `id` (この `boid` 内でプロジェクトを一意に識別する文字列) と `name` (表示名)
-- 1 つ以上の **task_behaviors** — behavior 名をキーにして `hooks` / `default_instruction` 雛形を束ねたもの。 名前は自由 (free naming)。 `readonly` は behavior ごとに設定でき、 省略時は `true` (fail-safe)
-
-プロジェクトは Git remote から `boid project add <git-url> --workspace <slug>` で登録します。ローカルで雛形を作る場合は、先に `boid project init [dir]` を実行して commit・push してください。プロジェクトは何個でも登録でき、各タスクはいずれか 1 つに属します。登録時に指定した workspace（省略可能な直接登録経路では `default`）に割り当てられます。
-
-> **歴史的経緯**: 以前は project 自身が `kits:` / `host_commands` / `env` / `additional_bindings` / `secret_namespace` / `capabilities` を直接持っていました (`project.yaml` トップレベル、 または `.boid/project.local.yaml`)。 Phase 2.5 (workspace DB 一元化) でこれらは `project.yaml` からは reject されるようになり、 machine-local な実行環境は全て workspace 側に集約されました。 旧スキーマの `project.yaml` は `boid project migrate <dir>` で変換できます。詳細は [移行ガイド](migration.md) を参照してください。
+daemon は `.boid/project.yaml` と `project.local.yaml` を読みません。behavior、hook、trigger、signals.sources、card_commands、card_events、実行環境はすべて workspace から解決します。`boid workspace apply -f workspace.yaml` で適用してください。
 
 ## ワークスペース (workspace)
 
@@ -31,7 +26,7 @@
 - `boid workspace list` で登録済み workspace 一覧
 - `boid workspace show <slug>` でその workspace の設定内容 (`host_commands`/`env`/`capabilities` 等) と割り当て済みプロジェクト・最近のタスクを表示
 - `boid workspace create <slug>` / `edit <slug>` / `apply -f <yaml>` で中身を作成・変更
-- `boid workspace assign <project> <slug>` で割り当て (`boid workspace clear <project>` で `default` に戻す)。 `boid project init/add --workspace <slug>` は get-or-create (存在しない slug は空の workspace を自動作成してから割り当てる)
+- `boid workspace assign <project> <slug>` で割り当て (`boid workspace clear <project>` で `default` に戻す)。 `boid project add --workspace <slug>` は get-or-create (存在しない slug は空の workspace を自動作成してから割り当てる)
 
 `host_commands` は二層構造です — workspace が持つのは参照 **名前** の `[]string` だけで、 実際の定義 (`path`/`allow`/`deny`/`env`) は daemon 側の `~/.config/boid/host_commands.yaml` に集約管理されます。 詳細は [オンボーディング](onboarding.md) を参照してください。
 
@@ -69,13 +64,13 @@ hook と `boid` 本体は、 stdin にタスクの payload、 stdout に payload
 
 ## kit
 
-サンドボックスの実行環境の一部をまとめて配布するための単位が **kit** です。 **hook や task behavior は kit の役割ではありません** — hook は常に `project.yaml` の `task_behaviors.<name>.hooks` が権威です (kit が hook を提供したことは一度もありません)。 kit が実際に同梱できるのは次の要素だけです:
+サンドボックスの実行環境の一部をまとめて配布するための単位が **kit** です。 **hook や task behavior は kit の役割ではありません** — hook は workspace の `task_behaviors.<name>.hooks` が権威です (kit が hook を提供したことは一度もありません)。 kit が実際に同梱できるのは次の要素だけです:
 
 - **host_commands** — サンドボックスから host に流せるコマンドの許可リスト
 - **additional_bindings** — 撤去済みの legacy フィールド。永続的なツールチェーンは workspace home の `init.sh` に置きます
 - **env** — サンドボックス内に設定する環境変数
 
-ディスク上は `kit.yaml` と関連ファイルを並べたディレクトリです。 **Phase 2.5 PR7 (2026-07) で `WorkspaceMeta.Kits` フィールド (workspace の `kits:`) はコードから完全撤去されました** — `project.yaml` に `kits:` を書く経路も既に撤去済みです。 kit ディレクトリ自体 (`~/.local/share/boid/kits/<name>/kit.yaml`) は残っていますが、 参照して読み込む経路は `boid project migrate` が生成する legacy kit (host_commands 定義を daemon 側の集約レジストリに登録する用途のみ) と `boid workspace assign` の auto-create 補助経路に限られます。 公式パッケージは [boid-kits](https://github.com/novshi-tech/boid-kits) リポジトリにあり、 ファイル構造や各フィールドの詳細は [Kit 作者向け 概要](../kit-authoring/overview.md) を参照してください。 kit 機構自体の退役の経緯は [オンボーディング / kit 機構の退役について](onboarding.md#kit-機構の退役について) と [移行ガイド / kit 機構の最終撤去](migration.md#kit-機構の最終撤去-phase-25-pr7) を参照してください。
+ディスク上は `kit.yaml` と関連ファイルを並べたディレクトリです。 **Phase 2.5 PR7 (2026-07) で `WorkspaceMeta.Kits` フィールド (workspace の `kits:`) はコードから完全撤去されました** — `project.yaml` に `kits:` を書く経路も既に撤去済みです。 kit ディレクトリ自体 (`~/.local/share/boid/kits/<name>/kit.yaml`) は残っていますが、 参照して読み込む経路は daemon の host command 定義 (host_commands 定義を daemon 側の集約レジストリに登録する用途のみ) と `boid workspace assign` の auto-create 補助経路に限られます。 公式パッケージは [boid-kits](https://github.com/novshi-tech/boid-kits) リポジトリにあり、 ファイル構造や各フィールドの詳細は [Kit 作者向け 概要](../kit-authoring/overview.md) を参照してください。 kit 機構自体の退役の経緯は [オンボーディング / kit 機構の退役について](onboarding.md#kit-機構の退役について) と [移行ガイド / kit 機構の最終撤去](migration.md#kit-機構の最終撤去-phase-25-pr7) を参照してください。
 
 ## ジョブ (job)
 
@@ -124,7 +119,7 @@ hook を実行する隔離環境です。 実装としては Linux の mount nam
 
 > **歴史的経緯**: 以前は `project.yaml` の project トップ boolean フィールド `worktree: true` で child タスクに専用の isolated branch (`boid/<id8>`) を割り当てていました。 [git gateway cutover (2026-07)](../../plans/git-gateway-cutover.md) で名前上の `git worktree` は既に不要になっており、 [branch-policy-simplification Phase 1 (v0.0.11)](../../plans/branch-policy-simplification.md) で per-task branch と fork point 概念を廃止、 続く **Phase 2 (v0.0.12)** で `worktree` フィールド自体を撤去しました。
 
-現行の挙動: project が可視なジョブは毎回 sandbox 内に project を新規 clone し、 タスク種別に関わらず `task.BaseBranch` を直接 checkout します。 host 側にはジョブ専用の worktree ディレクトリは一切作られず、 host repo の `.git` にも書き込みません — 成果は commit → push して初めて他セッションに共有されます。 既存 `project.yaml` の `worktree:` 行は BC のため silent ignore されます。
+現行の挙動: project が可視なジョブは毎回 sandbox 内に project を新規 clone し、 タスク種別に関わらず `task.BaseBranch` を直接 checkout します。 host 側にはジョブ専用の worktree ディレクトリは一切作られず、 host repo の `.git` にも書き込みません — 成果は commit → push して初めて他セッションに共有されます。 project.yaml は読み込み自体を撤去しています。
 
 per-task `boid/<id8>` branch と fork point の概念は、 同一 `.git` を共有する worktree 時代に「child が親の未完了の作業を引き継ぐ」ために存在していました。 各 job が独立した fresh clone を持つようになったことで (clone 自体が isolation 単位)、 この仕組みは不可能 (fresh clone は origin の pushed ref しか見えないため未 push の親の変更は見えない) かつ不要 (別々の clone なら同じ branch 名を checkout しても衝突しない) になり、 廃止されました。 詳細な経緯は docs/plans/branch-policy-simplification.md を参照してください。
 

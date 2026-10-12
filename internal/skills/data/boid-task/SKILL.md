@@ -309,7 +309,7 @@ files. Implementation always happens in child executor tasks.
 
 ### Dynamic instruction generation (default pattern)
 
-- **Root task**: boots from `project.yaml`'s `default_instruction` (set by the
+- **Root task**: boots from `workspace envelope`'s `default_instruction` (set by the
   project owner). Do not override unless the active instruction or user reply
   explicitly says to.
 - **Child tasks**: the supervisor generates each child's instruction dynamically
@@ -491,7 +491,7 @@ boid task show "$child" --field payload.artifact.report
 child_branch=$(boid task show "$child" --field payload.artifact.report.evidence.branch)
 git fetch origin "$child_branch" 2>/dev/null || true
 git log --oneline -10 "origin/$child_branch"
-if [ "$child_branch" != "$BOID_BASE_BRANCH" ]; then
+if [ -n "$BOID_BASE_BRANCH" ] && [ "$child_branch" != "$BOID_BASE_BRANCH" ]; then
   git diff "origin/$BOID_BASE_BRANCH..origin/$child_branch"
 fi
 gh pr view --head "$child_branch" 2>/dev/null || true

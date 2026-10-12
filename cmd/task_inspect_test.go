@@ -16,7 +16,7 @@ import (
 func createInspectProject(t *testing.T, ts *testutil.TestServer) {
 	t.Helper()
 	dir := writeInspectTestProject(t, "inspect-proj", "Inspect Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 }

@@ -525,9 +525,7 @@ templ cardNoteItemBody(item timeline.CardItem) {
 	</div>
 }
 
-// CardCommandOption is one project.yaml card_commands entry rendered as a
-// button — the Web UI's own display copy of api.CardCommandOption (this
-// package cannot import internal/api).
+// CardCommandOption describes a workspace command button.
 type CardCommandOption struct {
 	Key   string
 	Label string
@@ -562,21 +560,7 @@ func cardCommandTerminalStatus(cardStatus orchestrator.TaskStatus) bool {
 	return cardStatus == orchestrator.TaskStatusDone || cardStatus == orchestrator.TaskStatusDropped
 }
 
-// CardCommandSection renders the shared instruction textarea and the
-// project's card_commands buttons, in project.yaml declaration order
-// (options is already ordered — see api.CardCommandOptionsForProject).
-// Renders nothing when the project declares no card_commands (options is
-// empty) or the card is in a terminal status (cardCommandTerminalStatus).
-//
-// This section is a sibling of #task-status and #task-pinned, never a child
-// of either — see TaskDetailCardStatusSection's own doc comment (tasks.templ)
-// for why an in-progress instruction must live outside both SSE-swapped
-// blocks.
-//
-// form is non-nil only right after a same-request Occupied response
-// (WebHandler.PostCardCommand renders this same page directly, rather than
-// redirecting, so the textarea keeps what the caller typed). A plain GET (or
-// a successful launch, which redirects) always passes form == nil.
+// CardCommandSection renders workspace command buttons outside the live-swapped status blocks.
 templ CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, options []CardCommandOption, form *CardCommandFormState) {
 	if (len(options) > 0 && !cardCommandTerminalStatus(cardStatus)) || form != nil {
 		<div id="card-command-section" class="card-command-section">

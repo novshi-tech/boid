@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -303,10 +302,10 @@ func TestTaskAppServiceCreateTask_BehaviorNotFound(t *testing.T) {
 	}
 }
 
-func TestTaskAppServiceCreateTask_ProjectNotInMeta_Skips(t *testing.T) {
+func TestTaskAppServiceCreateTaskWithoutResolverUsesInlineDefaults(t *testing.T) {
 	svc := &TaskAppService{
 		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: nil}, // Get returns false → skip validation
+		Meta:  nil, // Get returns false → skip validation
 	}
 
 	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
@@ -424,7 +423,7 @@ func TestTaskWorkflowServiceCompleteJobFailedProjectMetaMissing(t *testing.T) {
 	svc := &TaskWorkflowService{
 		Tasks:     &stubTaskStore{task: task},
 		Jobs:      jobs,
-		Meta:      stubMetaStore{meta: nil}, // meta not loaded → error on failed job
+		Meta:      stubMetaStore{}, // meta not loaded → error on failed job
 		Lifecycle: lifecycle,
 	}
 
@@ -976,7 +975,7 @@ func TestTaskAppServiceImportTasks_SkipsDuplicate(t *testing.T) {
 	}
 	svc := &TaskAppService{
 		Tasks: store,
-		Meta:  stubMetaStore{meta: nil},
+		Meta:  nil,
 	}
 
 	reqs := []CreateTaskRequest{
@@ -999,7 +998,7 @@ func TestTaskAppServiceImportTasks_ValidationError_BothEmpty(t *testing.T) {
 	store := &stubTaskStore{}
 	svc := &TaskAppService{
 		Tasks: store,
-		Meta:  stubMetaStore{meta: nil},
+		Meta:  nil,
 	}
 
 	reqs := []CreateTaskRequest{
@@ -1174,7 +1173,7 @@ func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
 func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 	svc := &TaskAppService{
 		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: nil},
+		Meta:  nil,
 	}
 
 	// Phase 3-1: BehaviorSpec.Worktree was removed; branch-policy-simplification
@@ -1204,7 +1203,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultInstructionsMerged(t *testing.T) {
 	svc := &TaskAppService{
 		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: nil},
+		Meta:  nil,
 	}
 
 	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
@@ -1231,7 +1230,7 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_DefaultInstructionsMerged(t *test
 func TestTaskAppServiceCreateTask_BehaviorAndSpecMutuallyExclusive(t *testing.T) {
 	svc := &TaskAppService{
 		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: nil},
+		Meta:  nil,
 	}
 
 	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
@@ -1261,7 +1260,7 @@ func TestTaskAppServiceCreateTask_NeitherBehaviorNorSpec_DefaultsToPlan(t *testi
 	store := &stubTaskStore{}
 	svc := &TaskAppService{
 		Tasks: store,
-		Meta:  stubMetaStore{meta: nil},
+		Meta:  nil,
 	}
 
 	task, err := svc.CreateTask(context.Background(), CreateTaskRequest{
@@ -1309,7 +1308,7 @@ func TestTaskAppServiceCreateTask_DefaultPlan_InheritsTemplate(t *testing.T) {
 func TestTaskAppServiceCreateTask_BehaviorSpec_NameRequired(t *testing.T) {
 	svc := &TaskAppService{
 		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: nil},
+		Meta:  nil,
 	}
 
 	_, err := svc.CreateTask(context.Background(), CreateTaskRequest{
@@ -1336,7 +1335,7 @@ func TestTaskAppServiceImportTasks_BehaviorSpec_Success(t *testing.T) {
 	store := &stubTaskStore{}
 	svc := &TaskAppService{
 		Tasks: store,
-		Meta:  stubMetaStore{meta: nil},
+		Meta:  nil,
 	}
 
 	reqs := []CreateTaskRequest{
@@ -1662,11 +1661,11 @@ func TestCreateTask_ExecutorCase3_WithParent_OK(t *testing.T) {
 
 // ---- P1: empty base_branch resolution ----
 
-// TestCreateTask_EmptyBaseBranch_ExpandsCurrentBranch reproduces the mera-ui
+// TestCreateTaskEmptyBaseBranchUsesAgentDefault reproduces the mera-ui
 // failure mode: project HEAD is on a feature branch and base_branch is left
 // empty. P1 must resolve "" to the current branch so the supervisor ends up on
 // the correct HEAD (case 1 → worktree=false when HEAD matches).
-func TestCreateTask_EmptyBaseBranch_ExpandsCurrentBranch(t *testing.T) {
+func TestCreateTaskEmptyBaseBranchUsesAgentDefault(t *testing.T) {
 	dir := initServiceTestRepo(t, "feature/BGO-170")
 	meta := &orchestrator.ProjectMeta{
 		// BaseBranch intentionally empty → P1 must expand to current branch.
@@ -1687,51 +1686,8 @@ func TestCreateTask_EmptyBaseBranch_ExpandsCurrentBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if task.Exec.BaseBranch != "feature/BGO-170" {
-		t.Errorf("BaseBranch = %q, want %q (expanded from current HEAD)", task.Exec.BaseBranch, "feature/BGO-170")
-	}
-}
-
-// TestCreateTask_EmptyBaseBranch_DetachedHead_Returns400 verifies that a root
-// task with no explicit base_branch created against a detached-HEAD project
-// is rejected at creation time with a 400.
-func TestCreateTask_EmptyBaseBranch_DetachedHead_Returns400(t *testing.T) {
-	const bin = "/usr/bin/git"
-	dir := initServiceTestRepo(t, "main")
-	// Detach HEAD.
-	out, err := newCmd(bin, "-C", dir, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Skipf("git rev-parse HEAD: %v", err)
-	}
-	hash := strings.TrimSpace(string(out))
-	if cmd := newCmd(bin, "-C", dir, "checkout", "-q", "--detach", hash); cmd.Run() != nil {
-		t.Skip("git checkout --detach: failed")
-	}
-
-	meta := &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks:    &stubTaskStore{},
-		Meta:     stubMetaStore{meta: meta},
-		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
-	}
-	_, createErr := svc.CreateTask(context.Background(), CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "detached root task",
-		Behavior:  "executor",
-	})
-	if createErr == nil {
-		t.Fatal("expected error for detached HEAD + empty base_branch, got nil")
-	}
-	se, ok := createErr.(*StatusError)
-	if !ok {
-		t.Fatalf("error type = %T, want *StatusError", createErr)
-	}
-	if se.Code != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want 400", se.Code)
+	if task.Exec.BaseBranch != "" {
+		t.Errorf("BaseBranch = %q, want %q (expanded from current HEAD)", task.Exec.BaseBranch, "")
 	}
 }
 

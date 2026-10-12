@@ -322,56 +322,29 @@ type HookFireEvent struct {
 // migration aids, not lookups.
 
 type TaskBehavior struct {
-	// Readonly controls whether the sandbox working directory is mounted read-only
-	// for tasks using this behavior. When nil (unset), the daemon applies a
-	// fail-safe default: readonly=true for all behaviors except the canonical
-	// "executor" (which retains readonly=false during the compat period).
-	// Set explicitly to override: readonly: false in project.yaml.
 	Readonly           *bool        `yaml:"readonly,omitempty" json:"readonly,omitempty"`
 	Traits             []string     `yaml:"traits" json:"traits"`
 	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
 
-	// Hooks is parsed from project.yaml task_behaviors.<name>.hooks at load
-	// time. Env, HostCommands, and AdditionalBindings are runtime-overlay
-	// fields populated by ReadProjectMetaWithKits after merging kit data and
-	// project-level overlays. These are not serialized to YAML.
 	Hooks              []Hook            `yaml:"hooks,omitempty" json:"-"`
 	Env                map[string]string `yaml:"-" json:"-"`
 	HostCommands       HostCommands      `yaml:"-" json:"-"`
 	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
 }
 
-// BehaviorSpec is an inline behavior specification that can be used instead of
-// referencing a named behavior from project.yaml task_behaviors. This allows
-// kits to self-describe the behavior they need without depending on project config.
 type BehaviorSpec struct {
 	Name               string       `yaml:"name" json:"name"`
 	Traits             []string     `yaml:"traits,omitempty" json:"traits,omitempty"`
 	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
 }
 
-type KitRef struct {
-	Ref string `yaml:"ref" json:"ref"`
-}
-
-func (k *KitRef) UnmarshalYAML(value *yaml.Node) error {
-	if value.Kind == yaml.ScalarNode {
-		k.Ref = value.Value
-		return nil
-	}
-	type kitRefAlias KitRef
-	return value.Decode((*kitRefAlias)(k))
-}
-
-// DockerCapability is the opt-in marker for the native docker proxy.
-// Presence (non-nil pointer in Capabilities) enables the proxy; the empty
-// struct is a placeholder for future per-project policy fields.
+// DockerCapability enables the native Docker proxy.
 type DockerCapability struct{}
 
-// Capabilities declares optional sandbox capabilities declared in project.yaml.
+// Capabilities declares optional sandbox capabilities declared in workspace configuration.
 type Capabilities struct {
 	// Docker, when non-nil, enables the per-sandbox native docker proxy.
-	// Declared as capabilities.docker: {} in project.yaml.
+	// Declared as capabilities.docker: {} in workspace configuration.
 	Docker *DockerCapability `yaml:"docker,omitempty" json:"docker,omitempty"`
 }
 
@@ -388,24 +361,13 @@ const (
 	TriggerOnSignals  TriggerOn = "signals"
 )
 
-// Trigger is one project.yaml `triggers[]` entry. It declares WHEN a
-// command runs (Every, and also On) and WHAT command runs (Run) — nothing
-// else. The daemon reads only these fields; it never interprets Run's
-// contents.
 type Trigger struct {
 	// Name identifies this trigger within its project (single-flight and
 	// trigger_runs history are scoped by (project_id, trigger_name)). Must
 	// be non-empty and unique within a project's Triggers slice — see
 	// ValidateTriggers.
-	Name string `yaml:"name" json:"name"`
-	// On selects this trigger's activation predicate. "" and
-	// TriggerOnSchedule ("schedule") are equivalent: due purely once Every
-	// has elapsed since the trigger's last recorded start. TriggerOnSignals
-	// ("signals") ADDITIONALLY requires the trigger's project to have a
-	// linked workspace with at least one pending (unacked) Signal — see
-	// SweepTriggers' due predicate (internal/api/trigger_loop.go).
-	// ValidateTriggers rejects any other value at project.yaml load time.
-	On TriggerOn `yaml:"on,omitempty" json:"on,omitempty"`
+	Name string    `yaml:"name" json:"name"`
+	On   TriggerOn `yaml:"on,omitempty" json:"on,omitempty"`
 	// Every is a Go time.ParseDuration string (e.g. "10m", "1h") — the
 	// minimum wall-clock gap between two starts of this trigger. There is
 	// deliberately no time-of-day window — that is a script's own concern,
@@ -428,26 +390,9 @@ type Trigger struct {
 	// trackFailStreak like any other.
 	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 
-	// Connector, when non-nil, marks this Trigger as one hydrate-DERIVED
-	// from a project.yaml `signals.sources[]` entry — never set by a
-	// user-authored `triggers:` entry. yaml:"-": this is a runtime-only
-	// field computed by deriveSignalTriggers (signal_trigger_derive.go) from
-	// ProjectMeta.Signals, never itself read back out of project.yaml.
-	// fireTrigger (internal/api/trigger_loop.go) reads it to attach the
-	// connector job's extra env/bind/policy/service-allowlist — every
-	// trigger with a nil Connector dispatches exactly as before.
 	Connector *TriggerConnector `yaml:"-" json:"connector,omitempty"`
 }
 
-// TriggerConnector is the resolved connector identity carried by a
-// hydrate-derived Trigger (Trigger.Connector). It holds only the RAW
-// declaration from project.yaml `signals.sources[]` — no Pack-registry
-// lookup happens at hydrate time (internal/orchestrator has no notion of an
-// Integration Pack registry; that lives in internal/integrationpack, which
-// only internal/server's daemon-startup wiring and dispatch-time connector
-// resolution ever import). Resolving Pack/version/executable path against
-// the loaded registry happens downstream, at StartExec time
-// (internal/server/wire.go's sessionDispatcherAdapter).
 type TriggerConnector struct {
 	// Pack is the "<pack>" half of signals.sources[].connector
 	// ("<pack>/<connector>").
@@ -469,7 +414,7 @@ type TriggerConnector struct {
 	Config map[string]any
 }
 
-// CardCommand is one project.yaml `card_commands.<key>` entry: a label and
+// CardCommand is one workspace configuration `card_commands.<key>` entry: a label and
 // a run command. Label and Run are required (ValidateCardCommands).
 type CardCommand struct {
 	// Label is the UI button text for this command, workspace-defined.
@@ -482,7 +427,7 @@ type CardCommand struct {
 	CardWrite bool `yaml:"card_write,omitempty" json:"card_write,omitempty"`
 }
 
-// CardEventsConfig is ProjectMeta.CardEvents — project.yaml's
+// CardEventsConfig is ProjectMeta.CardEvents — workspace configuration's
 // `card_events:` block.
 type CardEventsConfig struct {
 	// Command must name an existing CardCommands key when non-empty
@@ -497,7 +442,7 @@ type ProjectMeta struct {
 	// CardCommands is a free-naming dictionary from a workspace-chosen key
 	// to a label and a run command; ValidateCardCommands checks shape only.
 	CardCommands map[string]CardCommand `yaml:"card_commands,omitempty" json:"card_commands,omitempty"`
-	// CardCommandsOrder is CardCommands' project.yaml declaration order,
+	// CardCommandsOrder is CardCommands' workspace configuration declaration order,
 	// filled separately since a Go map cannot carry it itself.
 	CardCommandsOrder []string `yaml:"-" json:"-"`
 	// CardEvents names the CardCommands key that auto-starts for internal
@@ -528,8 +473,9 @@ type ProjectMeta struct {
 	AdditionalBindings []BindMount       `yaml:"additional_bindings" json:"additional_bindings"`
 	Env                map[string]string `yaml:"env" json:"env"`
 	// SecretNamespace is a runtime-only field injected at hydration time from the
-	// linked workspace ID. It is intentionally not read from project.yaml (yaml:"-").
+	// linked workspace ID. It is intentionally not read from workspace configuration (yaml:"-").
 	SecretNamespace string `yaml:"-" json:"secret_namespace,omitempty"`
+
 	// Capabilities declares optional sandbox capabilities. This is a runtime-only
 	// field injected from workspace.yaml at hydration time (yaml:"-").
 	Capabilities Capabilities `yaml:"-" json:"capabilities,omitempty"`
@@ -538,18 +484,10 @@ type ProjectMeta struct {
 	// to "supervisor" if that behavior exists (with a deprecation warning);
 	// if neither is set, CreateTask returns an error.
 	DefaultTaskBehavior string `yaml:"default_task_behavior,omitempty" json:"default_task_behavior,omitempty"`
-	// NameSource records how Name was determined for a project.yaml-less
-	// (URL-derived id) registration — "explicit" (--name given), "url"
-	// (derived from the git URL), "cached" (recovered from a
-	// previously-cached Name on reload), or "basename" (recovered from the
-	// bare-repo WorkDir's directory name on reload). Runtime-only
-	// (yaml:"-"): never read from project.yaml — a project.yaml-bearing
-	// project always leaves this empty, since Name there has an
-	// unambiguous single source. Surfaced by `project show --explain`.
-	NameSource string `yaml:"-" json:"name_source,omitempty"`
+	NameSource          string `yaml:"-" json:"name_source,omitempty"`
 }
 
-// SignalsConfig is ProjectMeta.Signals — project.yaml's `signals:` block
+// SignalsConfig is ProjectMeta.Signals — workspace configuration's `signals:` block
 // (docs/plans/signal-ingest-detailed-design.md §5.1, PR-5).
 type SignalsConfig struct {
 	// Sources declares this project's signal sources — each entry hydrates
@@ -580,19 +518,15 @@ type SignalSource struct {
 }
 
 type Project struct {
+	Name        string      `json:"name,omitempty"`
 	ID          string      `json:"id"`
 	Perm        string      `json:"perm"`
 	WorkspaceID string      `json:"workspace_id"`
 	WorkDir     string      `json:"work_dir"`
 	Meta        ProjectMeta `json:"meta"`
-	// UpstreamURL is the project's git remote origin, captured and normalized
-	// to HTTPS (SSH → HTTPS) at `project add` / `project reload` time. Empty
-	// until captured; daemon startup backfills it for projects registered
-	// before this field existed. Not read from project.yaml — this is
-	// DB-only, machine-local state.
-	UpstreamURL string    `json:"upstream_url,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	UpstreamURL string      `json:"upstream_url,omitempty"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
 	// Status / StatusMessage reflect the daemon's in-memory ProjectStore
 	// view of this project's health (StatusReady / StatusDegraded). Not a
 	// DB column — populated at hydrate time

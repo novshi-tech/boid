@@ -21,7 +21,7 @@ boid <command> --help       # per-command help
 
 ### Auto-start
 
-If the daemon is not running when you invoke any other command, `boid` starts the compose stack automatically (host mode, below). The exceptions (commands that skip auto-start) are: `start`, `stop`, `gc`, `check`, `init`, `fetch`, `reap`, `project migrate`, `login`, `logout`, and `version`. You rarely need to call `boid start` by hand.
+If the daemon is not running when you invoke any other command, `boid` starts the compose stack automatically (host mode, below). The exceptions (commands that skip auto-start) are: `start`, `stop`, `gc`, `check`, `init`, `fetch`, `reap`, `login`, `logout`, and `version`. You rarely need to call `boid start` by hand.
 
 `boid web set-url` / `boid web set-addr` were folded into `boid config set web.public_url|web.http_addr` (穴8, `docs/plans/release-onboarding.md`) and are auto-start targets just like any other scope=`remote` command now — they are no longer the "skip while the daemon is down" exceptions they used to be.
 
@@ -71,7 +71,7 @@ The values are saved to `~/.config/boid/host-ports.json`; every later command (a
 | `boid stop` | Bring the compose stack down (`docker/podman compose down` equivalent). |
 | `boid gc [--older-than DURATION] [--dry-run]` | Garbage collect old completed/aborted tasks (the daemon also runs this on its own at startup). `--dry-run` prints what would be deleted without removing anything. Output also lists every workspace home's on-disk size (display only, never deletes — see the [workspace home guide](../guide/workspace-home.md#boid-gcs-workspace-home-listing)). |
 | `boid check` | Check host prerequisites for the container backend and hook dependencies. |
-| `boid init [DIR]` | **(Deprecated)** Prints a deprecation guide. Use `boid project init\|add` (plus, optionally, `boid workspace create/edit`) instead. See [Onboarding](../guide/onboarding.md). |
+| `boid init [DIR]` | **(Deprecated)** Prints a deprecation guide. Use `boid project add` (plus, optionally, `boid workspace create/edit`) instead. See [Onboarding](../guide/onboarding.md). |
 
 See [Getting started / Install](../getting-started/01-install.md) for context.
 
@@ -84,17 +84,17 @@ Manage projects ([`project.yaml` reference](project-yaml.md)).
 | `boid project add <git-url> --workspace=<name> [--name=<project-name>] [--perm=fetch\|push]` | Register a project by having the daemon clone `<git-url>` into a daemon-managed bare repository (docs/plans/volume-only-daemon.md §論点a/b). `--workspace` is required; `--name` overrides the project name otherwise derived from the URL's last path component. The legacy host-directory form (`boid project add <dir>`) was removed in PR-4 — an argument that does not look like a git URL (explicit scheme or scp-like `user@host:path`) is rejected client-side. `--perm` defaults to `push`; `fetch` permits reading only and cannot be a task primary repository. |
 | `boid project list` | List registered projects, including their status (`ready`/`degraded` — see `project fetch` below). Also callable from inside the sandbox via the boid shim (`boid project list`) — there it returns only projects in the caller's own workspace (JSON: id/name/upstream_url/perm), scoped by the token's `AllowedProjectIDs` with no way to widen it, rather than every project on the daemon. Includes `perm`. |
 | `boid project set-perm <ref> <fetch\|push>` | Change the permission of an existing project. Applies to new task creation and subsequent job tokens. |
-| `boid project show <ref>` | Show details (id exact-match or name partial-match). Prints a one-line indicator whenever any field (task_behaviors / base_branch / fork_point / default_task_behavior) is inherited from the workspace default, and — for a project.yaml-less project (`url-` derived id) — where its id/name came from. `--explain` prints the full per-field provenance (project.yaml / workspace default / unset; docs/plans/workspace-default-project.md 論点e). |
+| `boid project show <ref> [--explain]` | Show repository identity and workspace setting provenance. |
 | `boid project remove <ref>` (alias: `rm`) | Unregister a project. The only entry point that deletes a project's row — `boid` never auto-deletes one based on what it observes on disk or over the network (see `project fetch` below). For a git-URL registered project, also removes the daemon-managed bare repository, so re-adding the same URL/name afterward succeeds. |
-| `boid project reload` | Re-read every registered project's `project.yaml`. |
-| `boid project fetch <ref>` | Run `git fetch --all` inside a git-URL registered project's bare repository and reload `project.yaml`. A fetch or reload failure marks the project `degraded` (visible in `project list`/`show`) instead of deleting it — recovery is `boid project rm` + `boid project add` once the remote is reachable again. |
+| `boid project reload` | Refresh registered repository identities from the DB. Configuration resolves from the workspace. |
+| `boid project fetch <ref>` | Refresh mirror refs and the DB-backed identity cache. Does not load repository configuration. Fetch failure marks the project degraded and preserves its DB row. |
 | `boid project behaviors <ref>` | List `task_behaviors` defined in the project. Also callable from inside the sandbox via the boid shim (`boid project behaviors <ref>`) — output is fixed JSON, and `ref` only resolves to a project within the caller's own workspace (scoped by `AllowedProjectIDs`). |
 
 ### `project local` — Deprecated
 
 `boid project local ...` commands have been removed.
 The `host_commands` / `env` / `secret_namespace` overrides that `project.local.yaml` used to provide are now part of the workspace (DB-backed, machine-local). `additional_bindings` was retired in Phase 4 PR4 — persist a toolchain via the [workspace home `init.sh`](../guide/workspace-home.md) instead.
-Run `boid project migrate <dir>` to convert automatically. See the [Migration guide](../guide/migration.md).
+Apply migrated settings with `boid workspace apply -f workspace.yaml`; repository configuration is no longer loaded.
 
 ## Task
 
@@ -190,7 +190,7 @@ instructions: { ... }
 idempotency_key: <string>   # optional, equivalent to --idempotency-key
 ```
 
-Pass `behavior_spec` to specify the behavior inline instead of referencing a name in `project.yaml`'s `task_behaviors`.
+Pass `behavior_spec` to specify the behavior inline instead of referencing a name in the workspace's `task_behaviors`.
 
 `idempotency_key` is a project-internal stable key (e.g. parent card id + child generation key), not an external identity. If a task with the same `(project_id, idempotency_key)` already exists, it is returned instead of creating a duplicate (prevents duplicate child-task creation). To look tasks up by an external-world identity, use `task_identities` (`task_resolve_or_capture`) instead — its semantics differ (see `docs/plans/signal-ingest-detailed-design.md` §8).
 
@@ -228,7 +228,7 @@ Common `<action-type>` values: `start`, `done`, `reopen`, `abort`. See [State ma
 | `boid card requests <card-id>` | Inspect card command requests. |
 | `boid signal list [--workspace <slug>]` | List signals in the inbox. |
 | `boid signal ack <id> [--workspace <slug>]` | Acknowledge a signal. |
-| `boid trigger run -p <project-ref> <name>` | Run a named `project.yaml` trigger once, subject to single-flight rules. |
+| `boid trigger run -p <project-ref> <name>` | Run a named workspace trigger once, subject to single-flight rules. |
 
 Card commands, signal sources, and triggers are defined in the current
 [`project.yaml` reference](project-yaml.md). Cards use the separate
@@ -252,7 +252,7 @@ Inspect hook execution records.
 
 `boid kit init` / `boid kit list` / `boid kit remove`, and `boid workspace configure`, were removed in Phase 2.5 PR6 (2026-07). `env` is now set directly on a workspace via the [Workspace](#workspace) CLI (`additional_bindings` was retired in Phase 4 PR4 — use the [workspace home `init.sh`](../guide/workspace-home.md) instead). `host_commands` is different: a workspace only holds a `[]string` list of *reference names* (`host_commands: [gh, aws]`); the actual command definitions (`path` / `allow` / `deny` / `env`) live in the daemon-wide `~/.config/boid/host_commands.yaml`, managed separately — see [Host Commands](#host-commands) below (or [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry)) for how to populate it now that `kit init` no longer does it automatically.
 
-The `kit.yaml` file format itself hasn't gone away (hand-writing one and pointing a workspace at it still works). Phase 2.5 PR7 removed the `WorkspaceMeta.Kits` field from the code outright, so passing `kits:` directly to `boid workspace create/edit` is now rejected. What's left is `boid workspace assign`'s auto-create convenience path (resolving a legacy shadow yaml's `kits:` client-side, once) and the legacy kit `boid project migrate` generates (its `host_commands` is folded directly into the workspace, no kit-directory round trip; any legacy `additional_bindings` is ignored per Phase 4 PR4's retirement). For the file format see [Kit authoring overview](../kit-authoring/overview.md); for the retirement's background see [Onboarding / On the retirement of the kit mechanism](../guide/onboarding.md#on-the-retirement-of-the-kit-mechanism).
+Workspace runtime settings and task definitions are applied using `boid workspace apply`. The old project migration command has retired.
 
 ## Web
 
@@ -281,7 +281,7 @@ Encrypted storage for tokens and similar values. The encryption key is `~/.local
 
 ## Workspace
 
-Groups a project's runtime environment (`host_commands` / `env` / `capabilities` / `allowed_domains`) at the machine level. Backed by the `workspaces` table (Phase 2.5); the `default` workspace is always created automatically at daemon startup. Registering a project assigns it to `default` automatically, and `boid project init/add --workspace <slug>` is get-or-create (an unknown slug gets an empty workspace created for it before assignment). Every workspace has a persistent `$HOME` (workspace home); install a toolchain into it via [`init.sh`](../guide/workspace-home.md), not `additional_bindings` (retired).
+Groups a project's runtime environment (`host_commands` / `env` / `capabilities` / `allowed_domains`) at the machine level. Backed by the `workspaces` table (Phase 2.5); the `default` workspace is always created automatically at daemon startup. Registering a project assigns it to `default` automatically, and `boid project add --workspace <slug>` is get-or-create (an unknown slug gets an empty workspace created for it before assignment). Every workspace has a persistent `$HOME` (workspace home); install a toolchain into it via [`init.sh`](../guide/workspace-home.md), not `additional_bindings` (retired).
 
 | Command | Role |
 |---|---|

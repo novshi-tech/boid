@@ -1,119 +1,12 @@
 package api
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
-
-// upstreamURLMetaStore is a minimal ProjectAppService.Meta stub with a
-// configurable Load result/error and a record of Remove calls, used to test
-// the upstream_url capture wiring in CreateProject without needing a real
-// project.yaml on disk.
-type upstreamURLMetaStore struct {
-	meta    *orchestrator.ProjectMeta
-	loadErr error
-	removed []string
-}
-
-func (s *upstreamURLMetaStore) Load(_ string) (*orchestrator.ProjectMeta, error) {
-	if s.loadErr != nil {
-		return nil, s.loadErr
-	}
-	return s.meta, nil
-}
-func (s *upstreamURLMetaStore) LoadBareRepo(_ string) (*orchestrator.ProjectMeta, error) {
-	return s.meta, s.loadErr
-}
-func (s *upstreamURLMetaStore) LoadBareRepoExpectingID(_, _, _ string) (*orchestrator.ProjectMeta, error) {
-	return s.meta, s.loadErr
-}
-func (s *upstreamURLMetaStore) Get(_ string) (*orchestrator.ProjectMeta, bool) { return nil, false }
-func (s *upstreamURLMetaStore) Remove(id string)                               { s.removed = append(s.removed, id) }
-func (s *upstreamURLMetaStore) LoadAll(_ []*orchestrator.Project) []error      { return nil }
-func (s *upstreamURLMetaStore) SetWorkspaceID(_, _ string)                     {}
-func (s *upstreamURLMetaStore) Explain(id string) (*orchestrator.ProjectExplain, error) {
-	return orchestrator.ComputeProjectExplain(id, "", s.meta, nil, false), nil
-}
-func (s *upstreamURLMetaStore) Status(_ string) orchestrator.ProjectStatus {
-	return orchestrator.ProjectStatus{State: orchestrator.StatusReady}
-}
-func (s *upstreamURLMetaStore) MarkDegraded(_, _ string) {}
-func (s *upstreamURLMetaStore) SetSynthesizedMeta(_ string, meta *orchestrator.ProjectMeta) {
-	s.meta = meta
-}
-
-// TestProjectAppService_CreateProject_CapturesUpstreamURL verifies that a
-// successful capture is normalized onto the created project (PR2 of
-// docs/plans/git-gateway-cutover.md).
-func TestProjectAppService_CreateProject_CapturesUpstreamURL(t *testing.T) {
-	svc := &ProjectAppService{
-		Projects: &stubProjectRepository{},
-		Meta:     &upstreamURLMetaStore{meta: &orchestrator.ProjectMeta{ID: "proj-1", Name: "Proj 1"}},
-		CaptureUpstreamURL: func(workDir string) (string, error) {
-			return "https://github.com/owner/repo.git", nil
-		},
-	}
-
-	project, err := svc.CreateProject("/some/work/dir", "")
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	if want := "https://github.com/owner/repo.git"; project.UpstreamURL != want {
-		t.Errorf("UpstreamURL = %q, want %q", project.UpstreamURL, want)
-	}
-}
-
-// TestProjectAppService_CreateProject_RejectsMissingUpstreamURL verifies the
-// "origin の無い project は登録拒否" semantics: a capture failure rejects
-// registration with a 400 and rolls back the cached meta (so a retry after
-// adding a remote does not see a stale meta.Get hit).
-func TestProjectAppService_CreateProject_RejectsMissingUpstreamURL(t *testing.T) {
-	meta := &upstreamURLMetaStore{meta: &orchestrator.ProjectMeta{ID: "proj-1", Name: "Proj 1"}}
-	svc := &ProjectAppService{
-		Projects: &stubProjectRepository{},
-		Meta:     meta,
-		CaptureUpstreamURL: func(workDir string) (string, error) {
-			return "", errors.New("no origin configured")
-		},
-	}
-
-	_, err := svc.CreateProject("/some/work/dir", "")
-	if err == nil {
-		t.Fatal("expected CreateProject to reject a project with no origin remote")
-	}
-	var statusErr *StatusError
-	if !errors.As(err, &statusErr) {
-		t.Fatalf("expected *StatusError, got %T: %v", err, err)
-	}
-	if statusErr.Code != 400 {
-		t.Errorf("status code = %d, want 400", statusErr.Code)
-	}
-	if len(meta.removed) != 1 || meta.removed[0] != "proj-1" {
-		t.Errorf("expected meta.Remove(%q) to be called, got removed=%v", "proj-1", meta.removed)
-	}
-}
-
-// TestProjectAppService_CreateProject_NoCaptureFuncSkipsUpstreamURL verifies
-// the nil-CaptureUpstreamURL escape hatch used by tests/wiring that do not
-// exercise this path: no panic, no rejection, upstream_url stays empty.
-func TestProjectAppService_CreateProject_NoCaptureFuncSkipsUpstreamURL(t *testing.T) {
-	svc := &ProjectAppService{
-		Projects: &stubProjectRepository{},
-		Meta:     &upstreamURLMetaStore{meta: &orchestrator.ProjectMeta{ID: "proj-1", Name: "Proj 1"}},
-	}
-
-	project, err := svc.CreateProject("/some/work/dir", "")
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	if project.UpstreamURL != "" {
-		t.Errorf("UpstreamURL = %q, want empty when CaptureUpstreamURL is nil", project.UpstreamURL)
-	}
-}
 
 // TestProjectAppService_ReloadProjects_RecapturesChangedUpstreamURL verifies
 // reload persists a newly-captured upstream_url that differs from what is

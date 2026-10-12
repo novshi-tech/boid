@@ -17,7 +17,7 @@ func TestResolveProjectRefIO_SingleMatch(t *testing.T) {
 	var proj struct {
 		ID string `json:"id"`
 	}
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &proj); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &proj); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -39,10 +39,10 @@ func TestResolveProjectRefIO_MultiMatch_TTY(t *testing.T) {
 	var p1, p2 struct {
 		ID string `json:"id"`
 	}
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir1}, &p1); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir1, &p1); err != nil {
 		t.Fatalf("create project 1: %v", err)
 	}
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir2}, &p2); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir2, &p2); err != nil {
 		t.Fatalf("create project 2: %v", err)
 	}
 
@@ -70,7 +70,7 @@ func TestResolveProjectRefIO_MultiMatch_NonTTY(t *testing.T) {
 	dir2 := writeProjectRefTestProject(t, "boid-delta")
 
 	for _, dir := range []string{dir1, dir2} {
-		if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+		if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 			t.Fatalf("create project: %v", err)
 		}
 	}

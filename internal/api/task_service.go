@@ -420,7 +420,7 @@ func (s *TaskAppService) UpdateTask(ctx context.Context, id string, req UpdateTa
 // TIME (dispatcher.JobContextSnapshot.PayloadPatchAllowedTraits), never
 // re-derived here from a live project-meta lookup: a live lookup done inside
 // this call would apply the WRONG (post-edit) trait list, or fall back to
-// unrestricted, if project.yaml changed between dispatch and this call.
+// unrestricted, if workspace configuration changed between dispatch and this call.
 // Accepting the dispatch-time value as a parameter makes that staleness
 // structurally impossible. nil means unrestricted — see
 // JobSpec.HookTraitsProduces's own doc comment for when that applies.

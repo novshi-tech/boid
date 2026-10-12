@@ -106,7 +106,7 @@ type SandboxRuntimeInfo struct {
 	// at the fixed sandbox path (see dockerProxySandboxSocket) and injects
 	// DOCKER_HOST / CONTAINER_HOST / TESTCONTAINERS_* env vars.
 	// Set by the runner before BuildSandboxSpec when capabilities.docker is
-	// declared in project.yaml.
+	// declared in workspace configuration.
 	ProxySocketPath string
 
 	// AllowedDomains is the proxy egress allowlist. It is purely informational
@@ -478,7 +478,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			// reasons: unlike BOID_API_CA_FILE
 			// (a name boid invents — nothing could have set it before),
 			// NODE_EXTRA_CA_CERTS is a real, pre-existing Node.js variable a
-			// project.yaml/workspace `env:` block may already point at a
+			// workspace configuration/workspace `env:` block may already point at a
 			// DIFFERENT CA bundle (e.g. a corporate proxy or internal
 			// registry Node itself talks to, unrelated to this gateway).
 			// Env already carries spec.Env's fully-merged value by this point
@@ -500,7 +500,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	//   * The harness adapter (claude / codex / opencode) declares the
 	//     agent-CLI bindings it needs (~/.claude, ~/.local/bin, ...). Those
 	//     go in directly.
-	//   * On top, project.yaml-declared additional_bindings carry
+	//   * On top, workspace configuration-declared additional_bindings carry
 	//     environment-specific tooling paths (~/.volta, ~/.nuget, /opt/google/
 	//     chrome, /usr/lib/dotnet, ...). The original Phase 3-c "kit-free
 	//     dispatch path" used to drop these on the assumption that kits only
@@ -799,7 +799,7 @@ func sandboxCloneDir(name string) string {
 // isSafeCloneDirName reports whether name is a usable single-segment leaf
 // directory name under sandboxCloneTargetDir. It rejects empty / "." / ".."
 // / any name containing a path separator or NUL, and any name starting with
-// "..". `project.yaml`'s `meta.name` is trusted (user-authored config,
+// "..". The registered project name is trusted (user-selected,
 // convention: kebab-case) so this is a defense-in-depth filter rather than
 // a security boundary — its job is to keep an accidental typo or a stray
 // filepath.Base call ("." for an empty path) from producing a malformed
@@ -929,7 +929,7 @@ func projectVisibilityMounts(
 	// 5) .boid bind-mount from the live project dir, so kit hooks / skills
 	// are visible even though the tmpfs HOME above shadows the rest of the
 	// host tree. Writable when the task is writable so agents can edit
-	// project.yaml etc.; read-only otherwise so the hooks/skills an agent
+	// repository files; read-only otherwise so the hooks/skills an agent
 	// runs under cannot be tampered with.
 	boidSource := origProjectDir + "/.boid"
 	if boidSource != "/.boid" { // ignore when origProjectDir is empty
@@ -1099,7 +1099,7 @@ const sandboxShimBinDir = "/run/boid/bin"
 //
 // Names are validated as safe single-segment basenames before being
 // concatenated into LinkPath: a host_commands map key of "../etc/passwd"
-// (project.yaml is user-authored — the trust boundary is loose) would
+// (workspace configuration is user-authored — the trust boundary is loose) would
 // otherwise let a rogue project's dispatch place a symlink outside
 // sandboxShimBinDir, potentially on the persistent workspace home volume,
 // which would then be dereferenced/replaced by later dispatches. Invalid

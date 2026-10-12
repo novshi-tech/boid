@@ -13,6 +13,7 @@ package server_test
 
 import (
 	"context"
+	"github.com/novshi-tech/boid/testutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -83,9 +84,7 @@ func TestServer_New_WiresPacksIntoWorkspaceHomeSkillSymlinks(t *testing.T) {
 	var project struct {
 		ID string `json:"id"`
 	}
-	if err := ts.Client.Do("POST", "/api/projects", map[string]any{
-		"work_dir": projectDir,
-	}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, projectDir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 

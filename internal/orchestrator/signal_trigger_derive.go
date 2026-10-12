@@ -19,32 +19,7 @@ const signalTriggerRun = `exec "$BOID_CONNECTOR_EXEC"`
 // source).
 const signalTriggerNamePrefix = "signal:"
 
-// deriveSignalTriggers turns a project.yaml `signals.sources[]` list into
-// the Trigger entries hydrate appends to meta.Triggers. Called from
-// parseProjectMetaBytes (spec_loader.go) BEFORE ValidateTriggers runs over
-// the combined (user + derived) Triggers slice — collision detection
-// (a derived trigger colliding with a user-authored one, or two sources
-// deriving the same name) is deliberately NOT duplicated here beyond the
-// within-signals.sources duplicate check below; ValidateTriggers' existing
-// "duplicate trigger name" check catches the user-vs-derived case for free
-// once the two lists are concatenated.
-//
-// Each returned Trigger has On=="" (schedule, the default — a connector
-// trigger polls on its own schedule; it is not "on: signals", which is the
-// UNRELATED judgment-side predicate for a workspace's OWN triggers[]
-// entries that scan the inbox).
-//
-// Returns an error (surfaces as a project.yaml load-time rejection, exactly
-// like ValidateTriggers) for: a malformed `connector:` (not exactly
-// "<pack>/<connector>"), an empty `service:`, an empty `every:`, or two
-// sources that derive the SAME trigger name (duplicate connector
-// declaration — one trigger per source cannot hold for two sources naming
-// the identical connector).
 func deriveSignalTriggers(sources []SignalSource) ([]Trigger, error) {
-	return deriveSignalTriggersForConfig(sources, "project.yaml")
-}
-
-func deriveSignalTriggersForConfig(sources []SignalSource, configName string) ([]Trigger, error) {
 	if len(sources) == 0 {
 		return nil, nil
 	}
@@ -53,17 +28,17 @@ func deriveSignalTriggersForConfig(sources []SignalSource, configName string) ([
 	for i, src := range sources {
 		pack, connectorName, err := splitConnectorRef(src.Connector)
 		if err != nil {
-			return nil, fmt.Errorf("%s: signals.sources[%d]: %w", configName, i, err)
+			return nil, fmt.Errorf("%s: signals.sources[%d]: %w", "workspace", i, err)
 		}
 		if src.Service == "" {
-			return nil, fmt.Errorf("%s: signals.sources[%d] (%s): service must not be empty", configName, i, src.Connector)
+			return nil, fmt.Errorf("%s: signals.sources[%d] (%s): service must not be empty", "workspace", i, src.Connector)
 		}
 		if src.Every == "" {
-			return nil, fmt.Errorf("%s: signals.sources[%d] (%s): every must not be empty", configName, i, src.Connector)
+			return nil, fmt.Errorf("%s: signals.sources[%d] (%s): every must not be empty", "workspace", i, src.Connector)
 		}
 		name := signalTriggerNamePrefix + src.Connector
 		if seen[name] {
-			return nil, fmt.Errorf("%s: signals.sources[%d]: duplicate source %q (would derive trigger name %q twice)", configName, i, src.Connector, name)
+			return nil, fmt.Errorf("%s: signals.sources[%d]: duplicate source %q (would derive trigger name %q twice)", "workspace", i, src.Connector, name)
 		}
 		seen[name] = true
 
@@ -91,7 +66,7 @@ func deriveSignalTriggersForConfig(sources []SignalSource, configName string) ([
 // validation here is warning-only) for each derived (Connector != nil)
 // trigger whose declared service is not in the workspace's OWN
 // enabled-services list. Called from ProjectStore.GetWithWorkspace — NOT
-// project.yaml parse/load time: GetWithWorkspace hydrates on every call,
+// workspace configuration parse/load time: GetWithWorkspace hydrates on every call,
 // and the trigger sweep loop calls it roughly once per project per sweep
 // tick (1 minute, TriggerSweepResolution) via hydrateMetaForTriggers, so a
 // persistent misconfiguration logs THIS warning roughly once a minute for

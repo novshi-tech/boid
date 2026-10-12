@@ -272,7 +272,7 @@ func (p *DispatchPlanner) loadContext(projectID, taskID string) (*ProjectMeta, *
 	return meta, proj, task, nil
 }
 
-// harnessTypeForAgent maps a hook's agent declaration (project.yaml
+// harnessTypeForAgent maps a hook's agent declaration (workspace configuration
 // `hooks: agent: ...`) to the HarnessType the runner should hand it off to.
 // The resolver is total: anything that does not match a known agent
 // (including an empty string when no `agent:` is set) resolves to "shell"

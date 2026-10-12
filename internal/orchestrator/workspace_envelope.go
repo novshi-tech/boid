@@ -549,7 +549,7 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 		if err := decodeStrictNode(n, &spec.TaskBehaviors); err != nil {
 			return spec, nil, false, fmt.Errorf("spec.task_behaviors: %w", err)
 		}
-		// Same validation pipeline project.yaml's own task_behaviors go
+		// Same validation pipeline workspace configuration's own task_behaviors go
 		// through: reject a malformed hook shape at decode time.
 		normalized, err := validateWorkspaceDefaultTaskBehaviors("spec.task_behaviors", spec.TaskBehaviors)
 		if err != nil {

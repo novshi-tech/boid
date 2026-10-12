@@ -329,7 +329,7 @@ func TestRunWorkspaceAssign_AutoCreatesFromLocalYAML(t *testing.T) {
 
 	dir := writeImportTestProject(t, "assign-proj", "Assign Proj")
 	var project orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -367,7 +367,7 @@ func TestRunWorkspaceAssign_UnknownSlugNoYAMLStill404s(t *testing.T) {
 
 	dir := writeImportTestProject(t, "assign-proj-2", "Assign Proj 2")
 	var project orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -408,7 +408,7 @@ func TestRunWorkspaceAssign_LocalYAMLParseErrorSurfaces(t *testing.T) {
 
 	dir := writeImportTestProject(t, "assign-proj-3", "Assign Proj 3")
 	var project orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -521,7 +521,7 @@ func TestRunWorkspaceAssign_AutoCreate_RejectsMultipleDocuments(t *testing.T) {
 
 	dir := writeImportTestProject(t, "assign-proj-4", "Assign Proj 4")
 	var project orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -676,7 +676,7 @@ func TestRunWorkspaceAssign_AutoCreate_FailsOnUnresolvedKit(t *testing.T) {
 
 	dir := writeImportTestProject(t, "assign-proj-ghost", "Assign Proj Ghost")
 	var project orchestrator.Project
-	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, &testutil.TestServer{Server: srv, Client: c}, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -771,7 +771,7 @@ func TestRunWorkspaceAssign_AutoCreate_HonorsCustomKitsDir(t *testing.T) {
 
 	dir := writeImportTestProject(t, "assign-proj-customkits", "Assign Proj CustomKits")
 	var project orchestrator.Project
-	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, &testutil.TestServer{Server: srv, Client: c}, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -1000,7 +1000,7 @@ func TestRunWorkspaceExport_IncludesProjectURL(t *testing.T) {
 
 	dir := writeImportTestProject(t, "rook-server", "Rook Server")
 	var project orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	if err := ts.Client.Do("PUT", "/api/projects/"+project.ID+"/workspace", map[string]string{"workspace_id": "team-a"}, &project); err != nil {
@@ -2045,7 +2045,7 @@ func TestRunWorkspaceAssign_AutoCreate_ReadFailure_HardError(t *testing.T) {
 
 	dir := writeImportTestProject(t, "assign-proj-unreadable", "Assign Proj Unreadable")
 	var project orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -2096,7 +2096,7 @@ func TestRunWorkspaceAssign_AutoCreate_SnapshotAvoidsTOCTOU(t *testing.T) {
 
 	dir := writeImportTestProject(t, "assign-proj-toctou", "Assign Proj TOCTOU")
 	var project orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 

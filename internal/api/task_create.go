@@ -25,7 +25,7 @@ import (
 // (workdir lookup), and orchestrator primitives, and orchestrator may not
 // import api's ProjectWorkDirLookup interface back.
 func (s *TaskAppService) validateParentlessExecutorBase(req CreateTaskRequest, behaviorName, baseBranch string) error {
-	if req.ProjectID == "" || behaviorName != "executor" {
+	if req.ProjectID == "" || behaviorName != "executor" || baseBranch == "" {
 		// Only parent-less executor with a case-3 base is a creation-time
 		// error; every other combination is either fine or handled downstream.
 		return nil
@@ -417,20 +417,12 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
 	} else if s.Meta != nil {
-		// Hydrate with workspace.yaml so a workspace-level default project
-		// definition's task_behaviors are visible to ResolveBehavior, not
-		// just project.yaml's own. Falls back to bare Get on any hydration
-		// failure (same idiom as ProjectAppService.hydrateProjectWithWorkspace
-		// and TaskWorkflowService.ApplyAction) — this preserves CreateTask's
-		// "meta not loaded → nil meta, continue" tolerance and additionally
-		// degrades gracefully, rather than failing task creation outright,
-		// for the failure modes GetWithWorkspace can produce that bare Get
-		// never could (a corrupt workspace.yaml, a host_commands conflict).
-		if hydrated, err := s.Meta.GetWithWorkspace(ctx, req.ProjectID); err == nil && hydrated != nil {
-			meta = hydrated
-		} else if m, ok := s.Meta.Get(req.ProjectID); ok {
-			meta = m
+		var err error
+		meta, err = s.Meta.GetWithWorkspace(ctx, req.ProjectID)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("workspace hydration failed: %v", err)}
 		}
+
 	}
 
 	res, err := orchestrator.ResolveBehavior(meta, orchestrator.BehaviorResolveRequest{
@@ -473,44 +465,12 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 			req.RemoteID = parent.RemoteID
 		}
 	}
-	if baseBranch == "" {
-		// A task with no base_branch expands ${current_branch}; detached HEAD
-		// is surfaced as a 400. The resolved branch reaches the agent through
-		// BOID_BASE_BRANCH regardless of the behavior name.
-		if s.Projects != nil && req.ProjectID != "" {
-			proj, projErr := s.Projects.GetProject(req.ProjectID)
-			if projErr != nil {
-				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
-			}
-			if proj != nil && proj.WorkDir != "" {
-				expanded, err := orchestrator.ExpandBaseBranch("${current_branch}", proj.WorkDir)
-				if err != nil {
-					return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("base_branch: %v", err)}
-				}
-				baseBranch = expanded
-			}
-		}
-	} else if baseBranch != "" {
-		// Explicit base: expand ${TASK_REMOTE_ID} first so a missing
-		// remote_id errors out before we touch the project working
-		// directory, then expand ${current_branch}.
+	if baseBranch != "" {
 		expanded, err := orchestrator.ExpandTaskBaseBranch(baseBranch, req.RemoteID)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
 		baseBranch = expanded
-
-		if s.Projects != nil && req.ProjectID != "" {
-			proj, projErr := s.Projects.GetProject(req.ProjectID)
-			if projErr != nil {
-				return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
-			}
-			expanded, err := orchestrator.ExpandBaseBranch(baseBranch, proj.WorkDir)
-			if err != nil {
-				return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
-			}
-			baseBranch = expanded
-		}
 	}
 
 	// Creation-time guard: reject a parent-less executor whose base_branch

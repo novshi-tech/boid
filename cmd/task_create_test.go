@@ -26,7 +26,7 @@ func TestRunTaskCreate_DropsDeprecatedBaseBranchFromStdin(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "create-base-branch-proj", "Create Base Branch Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestRunTaskCreate_DropsDeprecatedBaseBranchFromJSONStdin(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "create-base-branch-json-proj", "Create Base Branch JSON Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -113,7 +113,7 @@ func TestRunTaskCreate_DefaultsParentIDFromBoidTaskIDEnv(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "parent-id-default-proj", "Parent ID Default Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestRunTaskCreate_SentinelRootParentID(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "sentinel-parent-proj", "Sentinel Parent Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -195,7 +195,7 @@ func TestRunTaskCreate_ExplicitParentIDOverridesEnv(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "parent-id-override-proj", "Parent ID Override Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -234,7 +234,7 @@ parent_id: foo
 func TestRunTaskCreateWorkspaceOwnership(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	dir := writeImportTestProject(t, "workspace-child-project", "Child Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())

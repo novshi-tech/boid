@@ -64,13 +64,10 @@ type ProjectService interface {
 	// already registered at the computed bare-repo path, {502} for a clone
 	// failure, {500} if the daemon has no git-clone/data-dir wiring.
 	CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string, perm string) (*orchestrator.Project, error)
-	// FetchProject runs `git fetch --all` inside id's bare repo and reloads
-	// its project.yaml (POST /api/projects/{id}/fetch — `boid project fetch
-	// <id>`). *StatusError{404} unknown id, {400} for a legacy (non-bare,
-	// pre-cutover) project or a project.yaml that fails to parse after
-	// fetch, {502} for a fetch failure. Never deletes id's row on failure —
-	// see the method's own doc comment for the on-startup-auto-prune-
-	// retirement invariant this preserves.
+	// FetchProject runs `git fetch --all` inside id's bare repo and refreshes
+	// its cached registry identity (POST /api/projects/{id}/fetch).
+	// *StatusError{404} unknown id, {400} for a legacy non-bare project,
+	// {502} for a fetch failure. Never deletes id's row on failure.
 	FetchProject(ctx context.Context, id string) (*orchestrator.Project, error)
 	ListProjects(workspaceID string) ([]*orchestrator.Project, error)
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
@@ -86,8 +83,7 @@ type ProjectService interface {
 	// ExplainProject returns id's field-provenance view (GET
 	// /api/projects/{id}/explain — `boid project show --explain`): for each of the 4
 	// workspace-default-mergeable fields, whether the effective value came
-	// from project.yaml or the linked workspace's default project
-	// definition. *StatusError{404} for an unknown id.
+	// from the linked workspace or built-in defaults. *StatusError{404} for an unknown id.
 	ExplainProject(id string) (*orchestrator.ProjectExplain, error)
 
 	// CreateWorkspace inserts a brand-new workspace (POST /api/workspaces).

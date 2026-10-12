@@ -34,13 +34,13 @@ func TestRenderProjectExplainSummary_SilentWhenNotApplied(t *testing.T) {
 }
 
 func TestRenderProjectExplainSummary_NoYAMLProjectIndicator(t *testing.T) {
-	e := &projectspec.ProjectExplain{IsNoYAMLProject: true, NameSource: "cached"}
+	e := &projectspec.ProjectExplain{IDSource: "derived from git URL", NameSource: "cached"}
 
 	got := captureStdout(t, func() {
 		renderProjectExplainSummary(e)
 	})
 
-	if !strings.Contains(got, "no project.yaml") {
+	if !strings.Contains(got, "repository id") {
 		t.Errorf("output missing no-project.yaml indicator\n%s", got)
 	}
 	// Minor (Codex review round 1): the doc says `project show` — even
@@ -60,7 +60,7 @@ func TestRenderProjectExplainSummary_NoYAMLProjectIndicator(t *testing.T) {
 // WorkspaceDefaultApplied/NoYAMLProject are still set (the always-on tier).
 func TestProjectShowOutput_JSONIncludesFullExplainOnlyWhenSet(t *testing.T) {
 	p := &projectspec.Project{ID: "proj-abc", Meta: projectspec.ProjectMeta{Name: "My Project"}}
-	out := &projectShowOutput{Project: p, WorkspaceDefaultApplied: true, NoYAMLProject: false}
+	out := &projectShowOutput{Project: p, WorkspaceDefaultApplied: true}
 
 	b, err := json.Marshal(out)
 	if err != nil {
@@ -123,12 +123,12 @@ func TestProjectShowOutput_YAMLInlinesProjectFields(t *testing.T) {
 
 func TestRenderProjectExplainDetail_PerFieldProvenance(t *testing.T) {
 	e := &projectspec.ProjectExplain{
-		BaseBranch:             projectspec.ProvenanceProjectYAML,
+		BaseBranch:             projectspec.ProvenanceWorkspaceDefault,
 		ForkPoint:              projectspec.ProvenanceWorkspaceDefault,
 		DefaultTaskBehavior:    projectspec.ProvenanceUnset,
 		BaseBranchSnapshotNote: "some snapshot note",
 		TaskBehaviors: map[string]projectspec.FieldProvenance{
-			"supervisor": projectspec.ProvenanceProjectYAML,
+			"supervisor": projectspec.ProvenanceWorkspaceDefault,
 			"executor":   projectspec.ProvenanceWorkspaceDefault,
 		},
 	}
@@ -138,7 +138,7 @@ func TestRenderProjectExplainDetail_PerFieldProvenance(t *testing.T) {
 	})
 
 	checks := []string{
-		"base_branch:", "project.yaml",
+		"base_branch:", "workspace default",
 		"fork_point:", "workspace default",
 		"default_task_behavior:", "unset",
 		"supervisor", "executor",
@@ -182,7 +182,7 @@ func TestRenderProjectExplainDetail_WorkspaceUnavailableIsVisible(t *testing.T) 
 
 func TestRenderProjectExplainDetail_NoYAMLProjectShowsIDAndNameSource(t *testing.T) {
 	e := &projectspec.ProjectExplain{
-		IsNoYAMLProject:        true,
+		IDSource:               "derived from git URL",
 		NameSource:             "cached",
 		BaseBranchSnapshotNote: "note",
 	}

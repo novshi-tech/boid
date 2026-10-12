@@ -19,10 +19,6 @@ type SessionJobInput struct {
 	ProjectID      string
 	ProjectWorkDir string
 
-	// ProjectName is project.yaml's `meta.name` (see
-	// orchestrator.Visibility.ProjectName's doc comment). The caller fills
-	// this from the same workspace-hydrated ProjectMeta it already reads
-	// Env/HostCommands/AdditionalBindings from.
 	ProjectName string
 
 	// HarnessType selects the agent adapter the runner-inner-child will

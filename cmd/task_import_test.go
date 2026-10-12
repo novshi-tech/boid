@@ -106,7 +106,7 @@ func TestRunTaskImport_FileInput(t *testing.T) {
 
 	// プロジェクトを作成
 	dir := writeImportTestProject(t, "import-proj", "Import Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -150,7 +150,7 @@ func TestRunTaskImport_ProjectFlag(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "flag-proj", "Flag Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 

@@ -305,6 +305,10 @@ func decodeWorkspaceMetaColumns(slug string, containerImage sql.NullString, host
 	meta.CardCommands = automation.CardCommands
 	meta.CardCommandsOrder = automation.CardCommandsOrder
 	meta.CardEvents = automation.CardEvents
+	// Keep legacy DB values readable so the workspace can be repaired.
+	if err := validateWorkspaceBaseBranch(meta); err != nil {
+		slog.Warn("workspace: stored base_branch needs repair", "slug", slug, "error", err)
+	}
 	return meta, nil
 }
 

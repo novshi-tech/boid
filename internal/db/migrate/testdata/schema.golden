@@ -165,7 +165,7 @@ CREATE TABLE projects (
     work_dir   TEXT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
-, upstream_url TEXT, perm TEXT NOT NULL DEFAULT 'push' CHECK (perm IN ('fetch', 'push')));
+, upstream_url TEXT, perm TEXT NOT NULL DEFAULT 'push' CHECK (perm IN ('fetch', 'push')), name TEXT NOT NULL DEFAULT '');
 
 -- table: schema_migrations
 CREATE TABLE schema_migrations (

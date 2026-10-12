@@ -3,7 +3,7 @@ name: boid-cli-workspace
 description: >
   boid の workspace / project / secret / login をホスト側 (boid CLI を直接叩ける
   マシン上、job サンドボックスの外) から操作する。「boid でプロジェクトを登録して」
-  「workspace を作って」「project.yaml を反映して」「secret を設定して」
+  「workspace を作って」「workspace envelope を反映して」「secret を設定して」
   「host_commands を workspace に足して」など、boid 自身のワークスペース/
   プロジェクト構成を CLI で操作するときに使用。サンドボックス内の boid-task /
   boid-orchestrate とは別物 — こちらはタスクの外、boid デーモンの外部管理者として
@@ -35,10 +35,10 @@ scope 分類 (remote/local/neutral) とは別軸）。
 |---|---|
 | `boid project add <git-url> --workspace=<name> [--name=<project-name>]` | git remote URL を登録して daemon 管理下に clone |
 | `boid project list` | 登録済みプロジェクト一覧 (status: ready / degraded) |
-| `boid project show <ref> [--explain]` | プロジェクト詳細。`--explain` でフィールド単位の由来 (project.yaml / workspace default / unset) |
+| `boid project show <ref> [--explain]` | プロジェクト詳細。`--explain` でフィールド単位の由来 (workspace / unset) |
 | `boid project remove <ref>` (alias `rm`) | 登録解除 (DB row 削除の唯一の入口。git-URL 登録なら bare repo も削除) |
-| `boid project reload` | 全プロジェクトの `project.yaml` を再読込 |
-| `boid project fetch <ref>` | bare repo で `git fetch --all` してから `project.yaml` を再読込 |
+| `boid project reload` | DB から project identity cache を更新 (設定は workspace から解決) |
+| `boid project fetch <ref>` | bare repo で `git fetch --all` して identity cache を更新 (設定は読み込まない) |
 | `boid project behaviors <ref>` | そのプロジェクトの task_behaviors 一覧 |
 
 ### Workspace
@@ -83,18 +83,12 @@ scope 分類 (remote/local/neutral) とは別軸）。
 
 ```bash
 boid project add git@github.com:org/repo.git --workspace dev
-# project.yaml が repo 側にあれば自動で読まれる。無ければ作る (docs/ja/getting-started/02-init-project.md)
+# 設定は workspace envelope を boid workspace apply で適用する
 ```
 
-### `project.yaml` を編集したら反映を忘れずに
+### 設定変更の反映
 
-boid 自身は project.yaml の変更を自動検知しない。編集後は必ず:
-
-```bash
-boid project fetch <ref>   # git-URL 登録の場合: fetch + reload
-# または
-boid project reload        # 全プロジェクト一括 reload のみ (fetch はしない)
-```
+workspace envelope を編集し、`boid workspace apply -f workspace.yaml` で反映する。repository の fetch/reload は設定を読み込まない。
 
 ### workspace の唯一の正式バックアップ経路
 

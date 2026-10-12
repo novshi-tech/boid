@@ -1,6 +1,6 @@
 # 4. Your first task
 
-This page hands a small question to the Claude Code agent and walks through `boid`'s core use case in the shortest possible loop: file a task, the AI runs it inside a sandbox, the result lands on the task. It takes about five minutes.
+This page hands a small question to the Codex agent and walks through `boid`'s core use case in the shortest possible loop: file a task, the AI runs it inside a sandbox, the result lands on the task. It takes about five minutes.
 
 This page assumes you have completed [3. Set up the Web UI](03-web-ui.md).
 
@@ -10,14 +10,14 @@ This page assumes you have completed [3. Set up the Web UI](03-web-ui.md).
 - Observing progress from both the CLI (`boid task watch`) and the Web UI.
 - Inspecting the result written to `payload.artifact`.
 
-## Confirm claude is signed in
+## Confirm the workspace harness is signed in
 
 This assumes you already registered an `init.sh` for the workspace in Step 4 of [2. Initialize a project](02-init-project.md) (skip that and the command below fails with `CLI not found`).
 
 The claude harness running inside the sandbox does not see your host's `~/.claude` credentials directly — each workspace has its own `$HOME` on its own volume. If you have not signed in yet for the workspace your project is assigned to (`default` unless you set `--workspace`), do that once first:
 
 ```bash
-boid agent claude -p boid-demo
+boid agent codex -p boid-demo
 ```
 
 (If this is the workspace's first-ever dispatch, this same command also triggers `init.sh` to install claude before opening the session — it may take a little longer than usual.) Sign in with `/login` (or however your session prompts) once the interactive session opens, then exit (`Ctrl-D` or end the session). This is the same step as "Next steps" item 4 in [1. Install](01-install.md) — sign in once per workspace, and later tasks against that same workspace skip this step.
@@ -40,7 +40,7 @@ Create a task and have it start automatically:
 boid task create <<YAML
 project_id: <project-id>
 title: What is Linux, in one sentence?
-behavior: supervisor
+behavior: implement
 auto_start: true
 YAML
 ```
@@ -55,7 +55,7 @@ In another terminal, follow the task:
 boid task watch <task-id>
 ```
 
-After a moment the hook job runs Claude. Following the template instruction `boid project init` wrote into `.boid/project.yaml`, the agent calls `boid task update` to write `artifact`, and once the hook exits cleanly the auto-transition moves the task `executing → done`.
+After a moment the hook job runs Claude. Following the workspace behavior applied in the previous tutorial, the agent calls `boid task update` to write `artifact`, and the agent reports completion through `boid task notify --done` and moves the task `executing → done`.
 
 ### Watch from the Web UI
 

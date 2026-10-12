@@ -60,7 +60,7 @@ func TestRunTaskHookList_ReturnsMatchingHooks(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	workDir := writeHookProject(t, "hook-list-proj", "Hook List Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": workDir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, workDir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	var task orchestrator.Task
@@ -100,7 +100,7 @@ func TestRunTaskHookList_NoMatchingHooks(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "hook-empty-proj", "Hook Empty Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	var task orchestrator.Task
@@ -131,7 +131,7 @@ func TestRunTaskHookReplay_HookNotFound(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "hook-replay-proj", "Hook Replay Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	var task orchestrator.Task

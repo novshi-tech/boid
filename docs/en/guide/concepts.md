@@ -15,14 +15,9 @@ Tasks are created with `boid task create` and observed with `boid task list`, `b
 
 ## Project
 
-A directory that contains a `.boid/project.yaml` file — a portable, git-checked-in definition of "work patterns," with no machine-local runtime configuration in it at all (that is the **workspace**'s job, below). The project file declares:
+A registered Git repository in the projects table, linked to a workspace. Register it with `boid project add <git-url> --workspace <slug>`. Its ID remains stable; new IDs derive from the URL, and `--name` overrides the URL-derived display name. A task may name a primary repository or belong directly to a workspace without one.
 
-- An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
-- One or more **task_behaviors** — a map of behavior names to `hooks` / `default_instruction` templates. Names are free-form (free naming). Each behavior can set `readonly`; the default when omitted is `true` (fail-safe).
-
-You register a project from a Git remote with `boid project add <git-url> --workspace <slug>`. Use `boid project init [dir]` to scaffold a project locally before committing and pushing it. Any number of projects can coexist; each task belongs to exactly one of them. Registering a project assigns it to the selected workspace (or `default` when using the daemon's direct registration paths).
-
-> **History**: A project used to carry `kits:` / `host_commands` / `env` / `additional_bindings` / `secret_namespace` / `capabilities` directly (top-level `project.yaml`, or `.boid/project.local.yaml`). Phase 2.5 (workspace DB consolidation) made `project.yaml` reject all of these; every machine-local runtime setting now lives on a workspace instead. An old-schema `project.yaml` can be converted with `boid project migrate <dir>` — see the [Migration guide](migration.md).
+The daemon does not read `.boid/project.yaml` or `project.local.yaml`. Task behaviors, hooks, triggers, signal sources, card commands, card events, and runtime settings all come from the workspace. Apply them with `boid workspace apply -f workspace.yaml`.
 
 ## Workspace
 
@@ -31,7 +26,7 @@ A project's **runtime environment**. Not just a classification label — it hold
 - `boid workspace list` lists the configured workspaces.
 - `boid workspace show <slug>` shows that workspace's settings (`host_commands`/`env`/`capabilities`, etc.), its assigned projects, and their recent tasks.
 - `boid workspace create <slug>` / `edit <slug>` / `apply -f <yaml>` create or change its contents.
-- `boid workspace assign <project> <slug>` assigns a project (`boid workspace clear <project>` resets it to `default`). `boid project init/add --workspace <slug>` is get-or-create (an unknown slug is auto-created as an empty workspace before assignment).
+- `boid workspace assign <project> <slug>` assigns a project (`boid workspace clear <project>` resets it to `default`). `boid project add --workspace <slug>` is get-or-create (an unknown slug is auto-created as an empty workspace before assignment).
 
 `host_commands` is a two-tier structure: a workspace only carries a `[]string` of reference **names** — the actual definitions (`path`/`allow`/`deny`/`env`) live in the daemon-wide `~/.config/boid/host_commands.yaml`. See [Onboarding](onboarding.md) for details.
 
@@ -69,7 +64,7 @@ Hooks communicate with `boid` over a fixed protocol: the task payload arrives on
 
 ## Kit
 
-A **kit** is a distribution unit for bundling part of the sandbox's runtime environment. **Hooks and task behaviors are not a kit's job** — hooks are always authoritative in `project.yaml`'s `task_behaviors.<name>.hooks` (a kit has never provided hooks). What a kit can actually package is limited to:
+A **kit** is a distribution unit for bundling part of the sandbox's runtime environment. **Hooks and task behaviors are not a kit's job** — hooks are defined in the workspace’s `task_behaviors.<name>.hooks` (a kit has never provided hooks). What a kit can actually package is limited to:
 
 - **host_commands** — the allow-list of commands the sandbox may forward to the host.
 - **additional_bindings** — a retired legacy field; persistent toolchains now belong in the workspace home `init.sh`.

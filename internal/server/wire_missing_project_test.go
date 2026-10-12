@@ -8,7 +8,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// TestBuildProjectStore_DegradesMissingProjectDir_NeverDeletes pins the
+// TestBuildProjectStoreIgnoresMissingRepositoryConfiguration pins the
 // docs/plans/volume-only-daemon.md §論点a on-startup-auto-prune-retirement
 // invariant, replacing this file's former
 // TestBuildProjectStore_AutoPrunesMissingProjectDir (which pinned the
@@ -31,7 +31,7 @@ import (
 // ProjectStore.MarkDegraded) and its DB row is left completely alone.
 // Recovery is still available (`boid project rm` once the daemon is up),
 // it's just no longer automatic or silent.
-func TestBuildProjectStore_DegradesMissingProjectDir_NeverDeletes(t *testing.T) {
+func TestBuildProjectStoreIgnoresMissingRepositoryConfiguration(t *testing.T) {
 	// Isolate the host: workspace store defaults to XDG_CONFIG_HOME/boid/workspaces
 	// and EnsureDefault writes a file there. Without this t.Setenv the test would
 	// scribble onto the developer's ~/.config/boid.
@@ -78,11 +78,11 @@ func TestBuildProjectStore_DegradesMissingProjectDir_NeverDeletes(t *testing.T) 
 		t.Errorf("stale-proj DB row must be preserved (never auto-deleted), got: %v", err)
 	}
 	st := store.Status("stale-proj")
-	if st.State != orchestrator.StatusDegraded {
-		t.Errorf("stale-proj Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
+	if st.State != orchestrator.StatusReady {
+		t.Errorf("stale-proj Status.State = %q, want %q", st.State, orchestrator.StatusReady)
 	}
-	if st.Message == "" {
-		t.Error("expected a non-empty degraded status message for stale-proj")
+	if st.Message != "" {
+		t.Error("configuration depends on repository existence")
 	}
 
 	if _, ok := store.Get("healthy-proj"); !ok {

@@ -17,7 +17,7 @@
 sandbox 内で動く claude は、あなたの host 側の `~/.claude` 認証情報を直接は見ません — workspace ごとに独立した volume 上の `$HOME` を持つためです。project を割り当てた workspace (省略時は `default`) でまだ一度もサインインしていない場合は、先に 1 回対話セッションでサインインしてください:
 
 ```bash
-boid agent claude -p boid-demo
+boid agent codex -p boid-demo
 ```
 
 (workspace への最初の dispatch が今回であれば、このコマンド自体が `init.sh` を初回実行し claude をインストールしてからセッションを開きます — 少し時間がかかることがあります。) 対話セッションが開いたら `/login` 等で claude にサインインし、抜けます (`Ctrl-D` またはセッションを終了)。 これは [1. インストール](01-install.md) の「次にやること」4 番と同じ手順です — 一度サインインすれば、同じ workspace の以降のタスクではこのステップは不要になります。
@@ -40,7 +40,7 @@ boid project list
 boid task create <<YAML
 project_id: <project-id>
 title: Linux って一言でいうと？
-behavior: supervisor
+behavior: implement
 auto_start: true
 YAML
 ```
@@ -55,7 +55,7 @@ YAML
 boid task watch <task-id>
 ```
 
-しばらくすると hook ジョブの中で claude が動き、 `boid project init` が `.boid/project.yaml` に書いた雛形の指示に従って `boid task update` で artifact が書き込まれ、 hook が正常終了すると自動遷移で `executing → done` に進むはずです。
+しばらくすると hook ジョブの中で claude が動き、 workspace envelope の behavior に設定した指示に従って `boid task update` で artifact が書き込まれ、 hook が正常終了すると自動遷移で `executing → done` に進むはずです。
 
 ### Web UI で観察する
 

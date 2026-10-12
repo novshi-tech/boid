@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// ValidateCardCommands checks a project.yaml card_commands: / card_events:
+// ValidateCardCommands checks a workspace configuration card_commands: / card_events:
 // declaration at load time, mirroring ValidateTriggers for triggers[].
 func ValidateCardCommands(commands map[string]CardCommand, events CardEventsConfig) error {
 	keys := make([]string, 0, len(commands))
@@ -18,21 +18,21 @@ func ValidateCardCommands(commands map[string]CardCommand, events CardEventsConf
 	for _, key := range keys {
 		cmd := commands[key]
 		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("project.yaml: card_commands: key must not be empty")
+			return fmt.Errorf("workspace configuration: card_commands: key must not be empty")
 		}
 		if key == CardRequestCommandKeyGo {
-			return fmt.Errorf("project.yaml: card_commands: key %q is reserved for Go", key)
+			return fmt.Errorf("workspace configuration: card_commands: key %q is reserved for Go", key)
 		}
 		if strings.TrimSpace(cmd.Label) == "" {
-			return fmt.Errorf("project.yaml: card_commands.%s: label must not be empty", key)
+			return fmt.Errorf("workspace configuration: card_commands.%s: label must not be empty", key)
 		}
 		if strings.TrimSpace(cmd.Run) == "" {
-			return fmt.Errorf("project.yaml: card_commands.%s: run must not be empty", key)
+			return fmt.Errorf("workspace configuration: card_commands.%s: run must not be empty", key)
 		}
 	}
 	if events.Command != "" {
 		if _, ok := commands[events.Command]; !ok {
-			return fmt.Errorf("project.yaml: card_events.command: %q is not declared in card_commands", events.Command)
+			return fmt.Errorf("workspace configuration: card_events.command: %q is not declared in card_commands", events.Command)
 		}
 	}
 	return nil

@@ -82,7 +82,7 @@ manually fed metaproject needs the judgment behavior, command and skill.
 
 
 A metaproject is an ordinary boid project. What makes it a metaproject is five
-declarations in its `.boid/project.yaml` plus the two skills that hold the
+declarations in its workspace envelope (`boid workspace apply`) plus the two skills that hold the
 judgment.
 
 ### 1. Declare where signals come from
@@ -191,7 +191,7 @@ read-only sweep work.
 **This `readonly`-forces-report check only applies to `write.py` invocations
 with no card context** — a plain Sweep task, or any other job `boid card
 context` reports nothing for. A card-command continuation (a task or session
-`boid task create` / `boid agent start` dispatched for a project.yaml
+`boid task create` / `boid agent start` dispatched for a workspace envelope
 `card_commands.<key>` entry, docs/plans/card-next-step-and-timeline.md §4.5)
 is gated by that entry's own `card_write: true/false` instead — an
 independent axis from this behavior's `readonly`, since it has no
@@ -294,9 +294,8 @@ what both skills should point at rather than restate.
 
 ## Adding a source to an existing metaproject
 
-Add the `signals.sources[]` entry, `git push`, then — **from the host** —
-`boid project fetch <project>`. `reload` does not pick up project.yaml, and
-`fetch` does not exist in the sandbox shim. Then watch one round: `boid signal
+Add the `signals.sources[]` entry to the workspace envelope and apply it with
+`boid workspace apply -f workspace.yaml`. Then watch one round: `boid signal
 list --workspace <ws>` (host-side; inside a job the workspace is fixed by the
 job's own token and there is no `--workspace` flag) should show the new pack's
 rows, and the sweep's own report line says how many it read, claimed, acked, and

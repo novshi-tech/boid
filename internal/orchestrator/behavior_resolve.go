@@ -44,13 +44,7 @@ type BehaviorResolveRequest struct {
 	Instructions json.RawMessage
 }
 
-// LookupBehavior finds a TaskBehavior in meta.TaskBehaviors by name. The name
-// is matched verbatim — there is no alias or canonicalization step, so what a
-// project.yaml (or workspace default) writes is exactly what callers must ask
-// for.
-//
-// A nil meta reports not-found rather than panicking: ResolveBehavior's
-// nil-meta paths and DefaultBehaviorResolvable both rely on that.
+// LookupBehavior finds a named workspace behavior.
 func LookupBehavior(meta *ProjectMeta, name string) (TaskBehavior, bool) {
 	if meta == nil {
 		return TaskBehavior{}, false
@@ -59,21 +53,7 @@ func LookupBehavior(meta *ProjectMeta, name string) (TaskBehavior, bool) {
 	return b, ok
 }
 
-// DefaultBehaviorResolvable reports whether ResolveBehavior would succeed for
-// a task creation request that specifies neither behavior nor behavior_spec,
-// given meta — mirroring the exact resolution order ResolveBehavior's own
-// default-resolution branch below uses: meta.DefaultTaskBehavior must be
-// both set AND actually resolve via LookupBehavior, else a behavior
-// literally named "supervisor" must exist in meta.TaskBehaviors, else it is
-// not resolvable.
-//
-// Used at project-registration time (CreateProjectFromGitURL's
-// project.yaml-less path) to decide whether the workspace default alone is
-// sufficient before allowing registration to succeed. Deliberately NOT "does
-// a default project definition exist" — a workspace default that defines
-// task_behaviors but sets neither default_task_behavior nor a "supervisor"
-// entry must still be rejected here, exactly as a behavior-unspecified task
-// creation against it would 400 later.
+// DefaultBehaviorResolvable reports whether the default behavior can be resolved.
 func DefaultBehaviorResolvable(meta *ProjectMeta) bool {
 	if meta == nil {
 		return false
@@ -104,7 +84,7 @@ func ResolveBehavior(meta *ProjectMeta, req BehaviorResolveRequest) (*BehaviorRe
 			req.Behavior = meta.DefaultTaskBehavior
 		} else if _, hasSupervisor := meta.TaskBehaviors["supervisor"]; hasSupervisor {
 			if shouldWarnDeprecation() {
-				slog.Warn("no default_task_behavior set; falling back to 'supervisor'. Set default_task_behavior in project.yaml to silence this warning.",
+				slog.Warn("no default_task_behavior set; falling back to 'supervisor'. Set default_task_behavior in workspace configuration to silence this warning.",
 					"project_id", meta.ID)
 			}
 			req.Behavior = "supervisor"

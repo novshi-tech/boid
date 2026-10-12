@@ -160,9 +160,7 @@ func TestServer_ExecDispatch_ConnectorReference_ResolvesEnv(t *testing.T) {
 	var project struct {
 		ID string `json:"id"`
 	}
-	if err := ts.Client.Do("POST", "/api/projects", map[string]any{
-		"work_dir": projectDir,
-	}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, projectDir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -216,9 +214,7 @@ func TestServer_ExecDispatch_ConnectorReference_UnknownPack_Rejected(t *testing.
 	var project struct {
 		ID string `json:"id"`
 	}
-	if err := ts.Client.Do("POST", "/api/projects", map[string]any{
-		"work_dir": projectDir,
-	}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, projectDir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 

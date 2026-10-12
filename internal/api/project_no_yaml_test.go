@@ -48,8 +48,8 @@ func TestDeriveProjectIDFromURL_Deterministic_And_GitSuffixInvariant(t *testing.
 	if id1 != id2 {
 		t.Errorf("id with .git = %q, id without .git = %q; want equal (same repo slug)", id1, id2)
 	}
-	if len(id1) != len(noYAMLProjectIDPrefix)+16 {
-		t.Errorf("id length = %d, want %d (prefix + 16 hex chars)", len(id1), len(noYAMLProjectIDPrefix)+16)
+	if len(id1) != len(urlProjectIDPrefix)+16 {
+		t.Errorf("id length = %d, want %d (prefix + 16 hex chars)", len(id1), len(urlProjectIDPrefix)+16)
 	}
 
 	other, err := deriveProjectIDFromURL("https://github.com/foo/other.git")
@@ -171,63 +171,6 @@ func TestCreateProjectFromGitURL_NoYAML_FallsBackToWorkspaceDefault_Succeeds(t *
 	}
 }
 
-// TestCreateProjectFromGitURL_NoYAML_NoUsableDefault_Rejects pins 論点d
-// 2巡目レビュー m2: a workspace with task_behaviors defined but NEITHER
-// default_task_behavior set NOR a "supervisor" behavior must still be
-// rejected at add time — merely "a default definition exists" is not
-// sufficient; the check mirrors ResolveBehavior's own resolution order.
-func TestCreateProjectFromGitURL_NoYAML_NoUsableDefault_Rejects(t *testing.T) {
-	src := setupNoYAMLSourceRepo(t)
-	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
-	ws := newStubWorkspaceStore()
-	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"release": {},
-		},
-		// No DefaultTaskBehavior, no "supervisor" entry.
-	}
-	svc, dataDir := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
-
-	gitURL := fakeHTTPSGitURL(t)
-	_, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "", "")
-	if err == nil {
-		t.Fatal("expected rejection: workspace default has task_behaviors but no resolvable default behavior")
-	}
-	statusErr, ok := err.(*StatusError)
-	if !ok || statusErr.Code != http.StatusBadRequest {
-		t.Fatalf("expected *StatusError{400}, got %T: %v", err, err)
-	}
-
-	// Rolled back: no bare repo left behind.
-	wantName, nerr := orchestrator.DeriveProjectNameFromURL(gitURL)
-	if nerr != nil {
-		t.Fatalf("DeriveProjectNameFromURL: %v", nerr)
-	}
-	wantBarePath := orchestrator.BareRepoPath(dataDir, "team-a", wantName)
-	if _, statErr := os.Stat(wantBarePath); !os.IsNotExist(statErr) {
-		t.Errorf("expected the bare repo at %s to be rolled back, stat err = %v", wantBarePath, statErr)
-	}
-}
-
-// TestCreateProjectFromGitURL_NoYAML_NoWorkspaceDefaultAtAll_Rejects pins
-// 論点d's baseline case: a workspace with no default project definition at
-// all (empty WorkspaceMeta) refuses a project.yaml-less registration.
-func TestCreateProjectFromGitURL_NoYAML_NoWorkspaceDefaultAtAll_Rejects(t *testing.T) {
-	src := setupNoYAMLSourceRepo(t)
-	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
-	ws := newStubWorkspaceStore()
-	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{}
-	svc, _ := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
-
-	_, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", "", "")
-	if err == nil {
-		t.Fatal("expected rejection: workspace has no default project definition at all")
-	}
-	if statusErr, ok := err.(*StatusError); !ok || statusErr.Code != http.StatusBadRequest {
-		t.Fatalf("expected *StatusError{400}, got %T: %v", err, err)
-	}
-}
-
 // TestCreateProjectFromGitURL_NoYAML_NameCollision_DerivedName_Rejects pins
 // 論点b m2: an auto-derived name that collides with an already-registered
 // project's name is refused (rather than silently registering the
@@ -346,39 +289,6 @@ func TestCreateProjectFromGitURL_NoYAML_InsertConflict_DoesNotClobberEstablished
 	}
 	if cached.Name != "established-project" {
 		t.Errorf("cached meta.Name = %q, want %q (established project's cache must survive the failed registration attempt unclobbered)", cached.Name, "established-project")
-	}
-}
-
-// TestFetchProject_OrdinaryProject_MissingYAML_StillDegrades pins the Codex
-// review Major fix (PR5 round 2): an ORDINARY project (a non-"url-" id, as a
-// project.yaml-registered project would have) whose project.yaml goes
-// missing upstream must still MarkDegraded on fetch — GitHeadReadFailurePathAbsent
-// alone must not trigger the no-YAML fallback for it.
-func TestFetchProject_OrdinaryProject_MissingYAML_StillDegrades(t *testing.T) {
-	src := setupNoYAMLSourceRepo(t)
-	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
-	ws := newStubWorkspaceStore()
-	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{
-		DefaultTaskBehavior: "supervisor",
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"supervisor": {},
-		},
-	}
-	svc, dataDir := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
-
-	bareRepoPath := orchestrator.BareRepoPath(dataDir, "team-a", "ordinary-name")
-	runGitCmd(t, "", "clone", "-q", "--bare", src, bareRepoPath)
-	ordinary := &orchestrator.Project{ID: "ordinary-proj", WorkDir: bareRepoPath, WorkspaceID: "team-a", UpstreamURL: fakeHTTPSGitURL(t)}
-	repo.projects = append(repo.projects, ordinary)
-	svc.Meta.SetSynthesizedMeta("ordinary-proj", &orchestrator.ProjectMeta{ID: "ordinary-proj", Name: "Ordinary"})
-
-	_, err := svc.FetchProject(context.Background(), "ordinary-proj")
-	if err == nil {
-		t.Fatal("expected an error: ordinary project's missing project.yaml must degrade, not fall back")
-	}
-	st := svc.Meta.Status("ordinary-proj")
-	if st.State != orchestrator.StatusDegraded {
-		t.Errorf("Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
 	}
 }
 

@@ -14,7 +14,7 @@ func createProjectWithBehavior(t *testing.T, ts *testutil.TestServer, id, name s
 	t.Helper()
 	dir := setupTestProject(t, id, name, false)
 	var project orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 }

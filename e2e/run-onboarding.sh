@@ -448,16 +448,19 @@ e2e_log "install_id=$INSTALL_ID"
 # connectivity/workspace-isolation requirements. -----------------------
 PROJ="$ROOT/fixture-src/proj-onboarding"
 mkdir -p "$PROJ/.boid/hooks"
-cat > "$PROJ/.boid/project.yaml" <<'YAML'
-id: onboarding-e2e-proj
-name: Onboarding E2E project
-task_behaviors:
-  verify:
-    hooks:
-      - id: verify-onboarding
-        command: |
-          printf '{"artifact":{"result":"pass"}}\n' | boid task update --payload-patch @-
-    name: verify
+printf 'onboarding fixture\n' > "$PROJ/README.md"
+cat > "$ROOT/ws-onboarding.yaml" <<'YAML'
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: default
+spec:
+  task_behaviors:
+    verify:
+      hooks:
+        - id: verify-onboarding
+          command: |
+            printf '{"artifact":{"result":"pass"}}\n' | boid task update --payload-patch @-
 YAML
 
 (
@@ -477,10 +480,11 @@ YAML
 # (internal/orchestrator/workspace_slug.go's DefaultWorkspaceSlug) — no
 # separate `boid workspace create` needed. -------------------------------
 e2e_log "registering the fixture project (git URL, --workspace=default)"
-e2e_run "$BUILD_DIR/boid" project add "https://${UPSTREAM_HOST}/e2e-fixture/proj-onboarding.git" --workspace=default
+e2e_run "$BUILD_DIR/boid" workspace apply -f "$ROOT/ws-onboarding.yaml"
+PROJECT_ID="$("$BUILD_DIR/boid" project add "https://${UPSTREAM_HOST}/e2e-fixture/proj-onboarding.git" --workspace=default -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 
 task_out="$("$BUILD_DIR/boid" task create <<YAML
-project_id: onboarding-e2e-proj
+project_id: ${PROJECT_ID}
 title: verify onboarding dispatch
 behavior: verify
 YAML

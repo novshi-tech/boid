@@ -2,8 +2,8 @@ package orchestrator
 
 import (
 	"fmt"
-	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/db"
 	"gopkg.in/yaml.v3"
@@ -12,7 +12,7 @@ import (
 // workspaceTriggers validates explicit and derived triggers without storing derived entries.
 func workspaceTriggers(ws *WorkspaceMeta) ([]Trigger, error) {
 	triggers := append([]Trigger(nil), ws.Triggers...)
-	derived, err := deriveSignalTriggersForConfig(ws.Signals.Sources, "workspace")
+	derived, err := deriveSignalTriggers(ws.Signals.Sources)
 	if err != nil {
 		return nil, err
 	}
@@ -20,7 +20,17 @@ func workspaceTriggers(ws *WorkspaceMeta) ([]Trigger, error) {
 	return triggers, ValidateTriggers(triggers)
 }
 
+func validateWorkspaceBaseBranch(ws *WorkspaceMeta) error {
+	if strings.Contains(ws.BaseBranch, "${current_branch}") || strings.Contains(ws.BaseBranch, "$current_branch") {
+		return fmt.Errorf("base_branch: current_branch expansion is no longer supported; use a literal branch or omit base_branch to let the agent select it")
+	}
+	return nil
+}
+
 func validateWorkspaceAutomation(ws *WorkspaceMeta) error {
+	if err := validateWorkspaceBaseBranch(ws); err != nil {
+		return err
+	}
 	if _, err := workspaceTriggers(ws); err != nil {
 		return err
 	}
@@ -98,38 +108,15 @@ func (ws *WorkspaceMeta) UnmarshalYAML(n *yaml.Node) error {
 	return hydrateWorkspaceAutomation(ws, data)
 }
 
-// mergeWorkspaceAutomation resolves workspace definitions with project.yaml precedence.
+// mergeWorkspaceAutomation applies workspace automation over built-in defaults.
 func (s *ProjectStore) mergeWorkspaceAutomation(out *ProjectMeta, ws *WorkspaceMeta, workspaceID string) error {
 	triggers, err := workspaceTriggers(ws)
 	if err != nil {
 		return err
 	}
-	occupiedTriggers := make(map[string]string)
-	occupiedCommands := make(map[string]string)
-	builtinJudge := out.CardCommands["judge"]
-	builtinEvents := out.CardEvents
 	builtinOrder := append([]string(nil), out.CardCommandsOrder...)
 	accepted := make(map[string]bool)
-	s.mu.RLock()
-	for id, meta := range s.metas {
-		if s.workspaceIDs[id] != workspaceID {
-			continue
-		}
-		for _, trig := range meta.Triggers {
-			occupiedTriggers[trig.Name] = id
-		}
-		for name := range meta.CardCommands {
-			occupiedCommands[name] = id
-		}
-	}
-	s.mu.RUnlock()
-	for _, trig := range triggers {
-		if id, ok := occupiedTriggers[trig.Name]; ok {
-			slog.Warn("workspace trigger shadowed by project.yaml", "workspace_id", workspaceID, "project_id", id, "name", trig.Name)
-			continue
-		}
-		out.Triggers = append(out.Triggers, trig)
-	}
+	out.Triggers = triggers
 	out.Signals = ws.Signals
 	order := append([]string(nil), ws.CardCommandsOrder...)
 	seen := make(map[string]bool, len(order))
@@ -145,10 +132,6 @@ func (s *ProjectStore) mergeWorkspaceAutomation(out *ProjectMeta, ws *WorkspaceM
 	sort.Strings(missing)
 	order = append(order, missing...)
 	for _, name := range order {
-		if id, ok := occupiedCommands[name]; ok {
-			slog.Warn("workspace card command shadowed by project.yaml", "workspace_id", workspaceID, "project_id", id, "name", name)
-			continue
-		}
 		if out.CardCommands == nil {
 			out.CardCommands = make(map[string]CardCommand)
 		}
@@ -156,19 +139,7 @@ func (s *ProjectStore) mergeWorkspaceAutomation(out *ProjectMeta, ws *WorkspaceM
 		out.CardCommands[name] = ws.CardCommands[name]
 	}
 	if ws.CardEvents.Command != "" {
-		if _, ok := occupiedCommands[ws.CardEvents.Command]; ok {
-			delete(accepted, "judge")
-			out.CardCommands["judge"] = builtinJudge
-			out.CardEvents = builtinEvents
-			slog.Warn("workspace card events command shadowed by project.yaml; keeping built-in judge", "workspace_id", workspaceID, "name", ws.CardEvents.Command)
-		} else if _, ok := out.CardCommands[ws.CardEvents.Command]; !ok {
-			delete(accepted, "judge")
-			out.CardCommands["judge"] = builtinJudge
-			out.CardEvents = builtinEvents
-			slog.Warn("workspace card events command unavailable; keeping built-in judge", "workspace_id", workspaceID, "name", ws.CardEvents.Command)
-		} else {
-			out.CardEvents = ws.CardEvents
-		}
+		out.CardEvents = ws.CardEvents
 	}
 	out.CardCommandsOrder = nil
 	for _, name := range builtinOrder {
@@ -218,4 +189,16 @@ func (s *ProjectStore) WorkspaceCardEventCommandInTx(dbtx db.DBTX, workspaceID s
 		return "", false, err
 	}
 	return out.CardEvents.Command, out.CardEvents.Command != "", nil
+}
+
+// CardEventCommandInTx resolves a repository card's workspace without leaving the transaction.
+func (s *ProjectStore) CardEventCommandInTx(dbtx db.DBTX, projectID string) (string, bool, error) {
+	project, err := GetProject(dbtx, projectID)
+	if err != nil {
+		return "", false, err
+	}
+	if project.WorkspaceID == "" {
+		return "", false, nil
+	}
+	return s.WorkspaceCardEventCommandInTx(dbtx, project.WorkspaceID)
 }

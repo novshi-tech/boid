@@ -120,8 +120,6 @@ templ SessionList(sessions []SessionView, projectFilter string) {
 }
 
 // SessionNew renders the /sessions/new page.
-// Phase 3-d PR2: project.yaml の commands: schema を廃止し、 セッション起動の唯一の
-// 入口を harness 直選択フォームに統合した。
 templ SessionNew(projects []*orchestrator.Project, selectedProjectID string, errorMsg string) {
 	@Layout("New Session", "/sessions") {
 		if errorMsg != "" {

@@ -49,17 +49,17 @@ func (s *TaskWorkflowService) dispatchQueuedCardRequest(ctx context.Context, car
 	if meta == nil {
 		// The project's meta is transiently unavailable (no ProjectStore
 		// entry yet, a fetch/parse failure, startup ordering) — not the
-		// same claim as "the command was deleted from project.yaml". Leave
+		// same claim as "the command was deleted from workspace configuration". Leave
 		// the row queued for a later attempt to retry.
 		return false, nil
 	}
 	cmd, ok := meta.CardCommands[commandKey]
 	if !ok {
-		// The command definition vanished from project.yaml while this
+		// The command definition vanished from workspace configuration while this
 		// request waited — an explicit failure, never silent abandonment.
-		slog.Warn("card request: queued command_key is no longer declared in project.yaml; failing the row",
+		slog.Warn("card request: queued command_key is no longer declared in workspace configuration; failing the row",
 			"card_id", cardID, "request_id", headID, "command_key", commandKey)
-		if ferr := s.CardRequests.FailCardRequest(headID, fmt.Sprintf("card command %q is no longer declared in project.yaml", commandKey)); ferr != nil {
+		if ferr := s.CardRequests.FailCardRequest(headID, fmt.Sprintf("card command %q is no longer declared in workspace configuration", commandKey)); ferr != nil {
 			return false, fmt.Errorf("dispatch queued card request: fail undeclared command: %w", ferr)
 		}
 		return false, nil

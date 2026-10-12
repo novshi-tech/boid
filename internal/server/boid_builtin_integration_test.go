@@ -25,7 +25,7 @@ func TestBoidBuiltinIntegration_RegisterAndCreateAcrossWorkspace(t *testing.T) {
 		"proj-3": project3Dir,
 	} {
 		var project orchestrator.Project
-		if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 			t.Fatalf("create project %s: %v", id, err)
 		}
 		if project.ID != id {
@@ -33,8 +33,8 @@ func TestBoidBuiltinIntegration_RegisterAndCreateAcrossWorkspace(t *testing.T) {
 		}
 	}
 
-	testutil.SeedWorkspace(t, ts, "ws-1")
-	testutil.SeedWorkspace(t, ts, "ws-2")
+	seedRuntimeWorkspace(t, ts, "ws-1")
+	seedRuntimeWorkspace(t, ts, "ws-2")
 
 	for _, id := range []string{"proj-1", "proj-2"} {
 		var updated orchestrator.Project
@@ -161,7 +161,7 @@ func TestBoidBuiltinIntegration_NameBasedPeerProjectCreate(t *testing.T) {
 		peerUUID:    peerDir,
 	} {
 		var project orchestrator.Project
-		if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 			t.Fatalf("create project %s: %v", id, err)
 		}
 		if project.ID != id {
@@ -169,7 +169,7 @@ func TestBoidBuiltinIntegration_NameBasedPeerProjectCreate(t *testing.T) {
 		}
 	}
 
-	testutil.SeedWorkspace(t, ts, "ws-boid")
+	seedRuntimeWorkspace(t, ts, "ws-boid")
 
 	for _, id := range []string{"boid-main", peerUUID} {
 		var updated orchestrator.Project
@@ -256,4 +256,16 @@ func writeBoidProjectWithID(t *testing.T, id, name string) string {
 	}
 
 	return dir
+}
+
+func seedRuntimeWorkspace(t *testing.T, ts *testutil.TestServer, slug string) {
+	t.Helper()
+	repo := orchestrator.NewWorkspaceRepository(ts.Server.DB())
+	meta, err := repo.Load(orchestrator.DefaultWorkspaceSlug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repo.Save(slug, meta); err != nil {
+		t.Fatal(err)
+	}
 }
