@@ -49,3 +49,28 @@ func TestSandboxCreateWorkspaceChild(t *testing.T) {
 		}
 	}
 }
+
+func TestSandboxUpdateProjectScope(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		ctx     sandbox.TokenContext
+		project string
+		want    int
+	}{
+		{"foreign", sandbox.TokenContext{WorkspaceID: "team", AllowedProjectIDs: []string{"local"}}, "foreign", 1},
+		{"workspace job", sandbox.TokenContext{WorkspaceID: "team", AllowedProjectIDs: []string{"local"}}, "local", 0},
+		{"project job", sandbox.TokenContext{ProjectID: "local", WorkspaceID: "team"}, "local", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &capturingTaskStore{created: []*orchestrator.Task{{ID: "task", WorkspaceID: "team", Type: orchestrator.TaskTypeExecution, Status: orchestrator.TaskStatusPending, Exec: &orchestrator.ExecAttrs{}}}}
+			executor := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store, Meta: executorMetaStub{meta: &orchestrator.ProjectMeta{}}}}
+			response := executor.ExecuteBoidBuiltin(context.Background(), tc.ctx, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskUpdate, TaskID: "task", UpdatePatch: []byte(`{"project_id":"` + tc.project + `"}`)})
+			if response.ExitCode != tc.want {
+				t.Fatalf("response: %+v", response)
+			}
+			if tc.want != 0 && len(store.updated) != 0 {
+				t.Fatal("forbidden update reached store")
+			}
+		})
+	}
+}

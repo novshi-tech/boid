@@ -64,3 +64,24 @@ func TestWorkspaceTaskKeysAreUniqueInWorkspace(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectKeyLookupRequiresProject(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if _, err := d.Conn.Exec(`INSERT OR IGNORE INTO workspaces(slug) VALUES ('default')`); err != nil {
+		t.Fatal(err)
+	}
+	task := &orchestrator.Task{Title: "workspace task", Ref: "stable", IdempotencyKey: "stable", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{}}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"stable", task.ID} {
+		got, err := orchestrator.FindTaskByRef(d.Conn, ref, "", "")
+		if err != nil || got != nil {
+			t.Fatalf("unscoped ref: %+v %v", got, err)
+		}
+	}
+	got, err := orchestrator.FindTaskByIdempotencyKey(d.Conn, "", "", "stable")
+	if err != nil || got != nil {
+		t.Fatalf("unscoped key: %+v %v", got, err)
+	}
+}

@@ -99,3 +99,20 @@ func TestCreateTaskWorkspaceConflict(t *testing.T) {
 		t.Fatalf("created rows: %v %v", listed, err)
 	}
 }
+
+func TestWorkspaceHookDisplayName(t *testing.T) {
+	_, _, conn := newSeamService(t)
+	repo := orchestrator.NewWorkspaceRepository(conn)
+	if err := repo.Save("team", &orchestrator.WorkspaceMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"work": {Hooks: []orchestrator.Hook{{ID: "run", Name: "Workspace worker", Command: "echo hi"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	ws := orchestrator.NewWorkspaceStore("")
+	ws.SetRepository(repo)
+	meta := orchestrator.NewProjectStore()
+	meta.SetWorkspaceStore(ws)
+	job := &Job{WorkspaceID: "team", Role: "hook", HandlerID: "run"}
+	enrichJobDisplayName(job, "work", meta)
+	if job.DisplayName != "Workspace worker" {
+		t.Fatalf("display name: %q", job.DisplayName)
+	}
+}

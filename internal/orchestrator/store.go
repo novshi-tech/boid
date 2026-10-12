@@ -160,8 +160,7 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		t.WorkspaceID = DefaultWorkspaceSlug
 	}
 	// Get-or-create: when ref is set, return the existing task (scoped by
-	// ParentID and ProjectID) instead of inserting a duplicate — makes
-	// create idempotent across replays. See FindTaskByRef for scope details.
+	// parent and project, or parent and workspace for projectless tasks).
 	if t.Ref != "" {
 		existing, err := findTaskCreateKey(dbtx, t, t.Ref, "")
 		if err != nil {
@@ -175,7 +174,7 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 
 	// Get-or-create: idempotency_key-based, independent of the Ref check
 	// above (a task may carry either, both, or neither). Scoped by
-	// (ProjectID, ParentID) — see Task.IdempotencyKey's doc comment.
+	// parent and project, or parent and workspace for projectless tasks.
 	if t.IdempotencyKey != "" {
 		existing, err := findTaskCreateKey(dbtx, t, "", t.IdempotencyKey)
 		if err != nil {
@@ -922,9 +921,10 @@ func FindTaskByRemote(dbtx db.DBTX, remoteID string) (*Task, error) {
 // is a UUID, the task is looked up by id directly (backward compatibility),
 // but the result is still validated against BOTH parentID and projectID
 // before being returned — a scope mismatch is treated as "not found", not an error.
+// An empty projectID returns nil; use FindWorkspaceTask for workspace scope.
 func FindTaskByRef(dbtx db.DBTX, ref, parentID, projectID string) (*Task, error) {
 	if projectID == "" {
-		return FindWorkspaceTask(dbtx, DefaultWorkspaceSlug, parentID, ref, "")
+		return nil, nil
 	}
 	if ref == "" {
 		return nil, nil
@@ -963,9 +963,10 @@ func FindTaskByRef(dbtx db.DBTX, ref, parentID, projectID string) (*Task, error)
 // task is found. See Task.IdempotencyKey's doc comment for the field's
 // contract. Unlike FindTaskByRef, there is no UUID-shaped-string special
 // case: idempotency_key is never treated as a stand-in for a task ID.
+// An empty projectID returns nil; use FindWorkspaceTask for workspace scope.
 func FindTaskByIdempotencyKey(dbtx db.DBTX, projectID, parentID, idempotencyKey string) (*Task, error) {
 	if projectID == "" {
-		return FindWorkspaceTask(dbtx, DefaultWorkspaceSlug, parentID, "", idempotencyKey)
+		return nil, nil
 	}
 	if idempotencyKey == "" {
 		return nil, nil

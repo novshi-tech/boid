@@ -150,16 +150,24 @@ func taskBehaviorOrEmpty(task *orchestrator.Task) string {
 	return task.Exec.Behavior
 }
 
-// enrichJobDisplayName sets job.DisplayName from the project meta's hook definitions
-// when the job is a hook job and DisplayName is not yet set. This resolves the
-// display name in-memory from the project meta store (no DB read needed).
+// enrichJobDisplayName resolves a hook job's name from its project or workspace.
 func enrichJobDisplayName(job *Job, behavior string, meta MetaStore) {
 	if job.DisplayName != "" || job.Role != "hook" || behavior == "" || meta == nil {
 		return
 	}
-	projectMeta, ok := meta.Get(job.ProjectID)
-	if !ok {
-		return
+	var projectMeta *orchestrator.ProjectMeta
+	if job.ProjectID == "" {
+		var err error
+		projectMeta, err = orchestrator.TaskMeta(context.Background(), meta, &orchestrator.Task{WorkspaceID: job.WorkspaceID})
+		if err != nil {
+			return
+		}
+	} else {
+		var ok bool
+		projectMeta, ok = meta.Get(job.ProjectID)
+		if !ok {
+			return
+		}
 	}
 	tb, ok := projectMeta.TaskBehaviors[behavior]
 	if !ok {

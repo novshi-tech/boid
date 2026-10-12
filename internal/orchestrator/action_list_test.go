@@ -345,3 +345,36 @@ func TestListActionsSince_TiedCreatedAt_PageBoundary_NoDuplicatesNoGaps(t *testi
 		t.Fatalf("total distinct actions seen across all pages = %d, want 7", len(seen))
 	}
 }
+
+func TestListActionsSinceWorkspaceTasks(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	for _, ws := range []string{"default", "other"} {
+		if _, err := d.Conn.Exec(`INSERT OR IGNORE INTO workspaces(slug) VALUES (?)`, ws); err != nil {
+			t.Fatal(err)
+		}
+		task := &orchestrator.Task{WorkspaceID: ws, Title: "workspace task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{}}
+		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+			t.Fatal(err)
+		}
+		for _, kind := range []string{"ask", "done_request"} {
+			if err := orchestrator.CreateAction(context.Background(), d.Conn, &orchestrator.Action{TaskID: task.ID, Type: kind}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	cursor := ""
+	for _, kind := range []string{"ask", "done_request"} {
+		actions, next, err := orchestrator.ListActionsSince(d.Conn, orchestrator.ActionListFilter{WorkspaceID: "default", Since: cursor, Limit: 1})
+		if err != nil || len(actions) != 1 {
+			t.Fatalf("actions: %+v, err: %v", actions, err)
+		}
+		if actions[0].Type != kind || next == cursor {
+			t.Fatalf("action: %+v cursor: %q", actions[0], next)
+		}
+		cursor = next
+	}
+	actions, next, err := orchestrator.ListActionsSince(d.Conn, orchestrator.ActionListFilter{WorkspaceID: "default", Since: cursor})
+	if err != nil || len(actions) != 0 || next != cursor {
+		t.Fatalf("end: %+v %q %v", actions, next, err)
+	}
+}

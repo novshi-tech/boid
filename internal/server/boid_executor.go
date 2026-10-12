@@ -455,6 +455,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update: invalid update_patch: " + err.Error()}
 			}
 		}
+		if updateReq.ProjectID != "" && !ctx.AllowsProject(updateReq.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update project is restricted to the current workspace"}
+		}
 		task, err := e.tasks.UpdateTask(orchestrator.WithActor(goCtx, orchestrator.ActorTask(ctx.TaskID)), req.TaskID, updateReq)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
@@ -863,7 +866,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			views = listed
 		case req.WorkspaceID != "":
 			// Defense in depth behind the broker's own equality check: the
-			// WorkspaceID filter INNER JOINs project_workspaces, so an
+			// WorkspaceID filter scopes by task ownership, so an
 			// unchecked value here would leak titles/summaries across
 			// workspaces.
 			if ctx.WorkspaceID != "" && req.WorkspaceID != ctx.WorkspaceID {
