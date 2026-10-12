@@ -66,16 +66,9 @@ func TestExpandTaskBaseBranch_UnknownVariable_Errors(t *testing.T) {
 	}
 }
 
-func TestExpandTaskBaseBranch_CurrentBranchPreserved(t *testing.T) {
-	// ${current_branch} is handled by ExpandBaseBranch, not ExpandTaskBaseBranch.
-	// ExpandTaskBaseBranch should leave it untouched so the other expander can
-	// process it. (The two expanders are composed in CreateTask.)
-	got, err := ExpandTaskBaseBranch("${current_branch}", "PROJ-123")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "${current_branch}" {
-		t.Errorf("got %q, want %q", got, "${current_branch}")
+func TestExpandTaskBaseBranch_CurrentBranchRejected(t *testing.T) {
+	if _, err := ExpandTaskBaseBranch("${current_branch}", "PROJ-123"); err == nil {
+		t.Fatal("retired mirror branch variable accepted")
 	}
 }
 

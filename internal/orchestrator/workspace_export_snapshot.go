@@ -39,7 +39,7 @@ type WorkspaceExportSnapshot struct {
 // Every assigned project's full row (WorkspaceExportSnapshot.Projects) is
 // also read from this same transaction. Only the project's display name
 // (WorkspaceEnvelopeProject.Name) is deliberately not part of this
-// snapshot: it comes from the in-memory ProjectMeta cache (project.yaml's
+// snapshot: it comes from the in-memory ProjectMeta cache (workspace configuration's
 // name: field), not a DB column — see ProjectAppService.
 // ExportWorkspaceEnvelopes, which resolves that name afterward; doing so
 // outside this transaction cannot reintroduce cross-workspace
@@ -49,7 +49,7 @@ type WorkspaceExportSnapshot struct {
 // allProjects is EVERY registered project row — not just ones assigned to
 // a slug in slugs — read from the exact same transaction, keyed by ID.
 // ExportWorkspaceEnvelopes needs the full, tx-consistent project set to
-// detect a project.yaml name colliding with another project's name or ID
+// detect a workspace configuration name colliding with another project's name or ID
 // before emitting a spec.projects[] entry a later apply could misresolve.
 func SnapshotWorkspacesForExport(conn *sql.DB, slugs []string) (snapshots []*WorkspaceExportSnapshot, allProjects map[string]*Project, err error) {
 	tx, err := conn.Begin()

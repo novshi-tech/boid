@@ -165,7 +165,7 @@ boid project list
 
 #### 2. 使える behavior を `boid project behaviors` で確認する
 
-**behavior 名は project.yaml の `task_behaviors` で自由に定義される** ので、
+**behavior 名は workspace envelope の `task_behaviors` で自由に定義される** ので、
 `supervisor` / `executor` のような固定名を決め打ちしてはいけない。委譲先プロジェクトに
 実在する behavior を必ず問い合わせてから選ぶ。
 

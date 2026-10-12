@@ -36,7 +36,7 @@ E2E テスト（`e2e/run-container.sh`、real docker/podman engine が必要）�
   - `logrotate/` — ログローテーション
   - `mtls/` — broker/git-gateway/dockerproxy TCP リスナー向けの自己署名 CA
   - `notify/` — 通知サービス
-  - `orchestrator/` — 状態機械・遷移モデル・project.yaml パース・hook 評価
+  - `orchestrator/` — 状態機械・遷移モデル・workspace 設定の解決・hook 評価
   - `qrterm/` — ターミナル QR コード表示
   - `sandbox/` — サンドボックス実行環境
   - `server/` — UNIX ソケット + TCP サーバ・ルーティング

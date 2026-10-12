@@ -133,7 +133,8 @@ func (f *fakeTriggerJobStore) UpdateJob(job *Job) error {
 // meta regardless of project id — SweepTriggers needs different Triggers
 // per project in the same test).
 type fakeTriggerMetaStore struct {
-	byProject map[string]*orchestrator.ProjectMeta
+	byProject      map[string]*orchestrator.ProjectMeta
+	workspaceStore *orchestrator.WorkspaceStore
 }
 
 func (f fakeTriggerMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
@@ -163,6 +164,9 @@ func newTriggerSweepTestService(t *testing.T, projects map[string]*orchestrator.
 		t.Fatalf("migrate: %v", err)
 	}
 	for id := range projects {
+		if err := orchestrator.NewWorkspaceRepository(d.Conn).Save(id, &orchestrator.WorkspaceMeta{}); err != nil {
+			t.Fatal(err)
+		}
 		if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: id, WorkDir: "/tmp/" + id}); err != nil {
 			t.Fatalf("create project %s: %v", id, err)
 		}
@@ -175,7 +179,7 @@ func newTriggerSweepTestService(t *testing.T, projects map[string]*orchestrator.
 	svc := &TaskWorkflowService{
 		Triggers: repo,
 		Projects: orchestrator.NewProjectRepository(d.Conn),
-		Meta:     fakeTriggerMetaStore{byProject: projects},
+		Meta:     fakeTriggerMetaStore{byProject: projects, workspaceStore: triggerFixtureWorkspaceStore(t, projects)},
 		Jobs:     jobs,
 		Exec:     exec,
 	}
@@ -204,6 +208,9 @@ func newTriggerSweepTestServiceOnFile(t *testing.T, dbPath string, migrateSchema
 			t.Fatalf("migrate: %v", err)
 		}
 		for id := range projects {
+			if err := orchestrator.NewWorkspaceRepository(d.Conn).Save(id, &orchestrator.WorkspaceMeta{}); err != nil {
+				t.Fatal(err)
+			}
 			if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: id, WorkDir: "/tmp/" + id}); err != nil {
 				t.Fatalf("create project %s: %v", id, err)
 			}
@@ -217,7 +224,7 @@ func newTriggerSweepTestServiceOnFile(t *testing.T, dbPath string, migrateSchema
 	svc := &TaskWorkflowService{
 		Triggers: repo,
 		Projects: orchestrator.NewProjectRepository(d.Conn),
-		Meta:     fakeTriggerMetaStore{byProject: projects},
+		Meta:     fakeTriggerMetaStore{byProject: projects, workspaceStore: triggerFixtureWorkspaceStore(t, projects)},
 		Jobs:     jobs,
 		Exec:     exec,
 	}
@@ -237,15 +244,15 @@ func TestSweepTriggers_NeverRunBefore_FiresExactlyOnce(t *testing.T) {
 	if len(result.Fired) != 1 {
 		t.Fatalf("Fired = %+v, want exactly 1", result.Fired)
 	}
-	if result.Fired[0].ProjectID != "proj-1" || result.Fired[0].TriggerName != "intake" {
+	if result.Fired[0].WorkspaceID != "proj-1" || result.Fired[0].TriggerName != "intake" {
 		t.Errorf("Fired[0] = %+v, unexpected", result.Fired[0])
 	}
 	if len(exec.calls) != 1 {
 		t.Fatalf("StartExec calls = %d, want 1", len(exec.calls))
 	}
 	got := exec.calls[0]
-	if got.ProjectID != "proj-1" {
-		t.Errorf("ProjectID = %q, want proj-1", got.ProjectID)
+	if got.WorkspaceID != "proj-1" {
+		t.Errorf("ProjectID = %q, want proj-1", got.WorkspaceID)
 	}
 	// N-4 (Opus review): the command is wrapped with a stdin-closing prefix
 	// (triggerRunArgv) — verified empirically that container_backend.go's
@@ -289,7 +296,7 @@ func TestSweepTriggers_NeverRunBefore_FiresExactlyOnce(t *testing.T) {
 	if len(result3.Fired) != 0 {
 		t.Errorf("third sweep (due, still busy) Fired = %+v, want empty (single-flight)", result3.Fired)
 	}
-	if len(result3.Skipped) != 1 || result3.Skipped[0].TriggerKey != (TriggerKey{ProjectID: "proj-1", TriggerName: "intake"}) {
+	if len(result3.Skipped) != 1 || result3.Skipped[0].TriggerKey != (TriggerKey{WorkspaceID: "proj-1", TriggerName: "intake"}) {
 		t.Errorf("third sweep (due, still busy) Skipped = %+v, want exactly [proj-1/intake]", result3.Skipped)
 	}
 	if len(exec.calls) != 1 {
@@ -504,7 +511,7 @@ func TestSweepTriggers_DispatchFailure_RecordedInCompletedForFailStreak(t *testi
 		t.Fatalf("Completed = %+v, want exactly 1 entry (the dispatch failure)", result.Completed)
 	}
 	got := result.Completed[0]
-	wantKey := TriggerKey{ProjectID: "proj-1", TriggerName: "intake"}
+	wantKey := TriggerKey{WorkspaceID: "proj-1", TriggerName: "intake"}
 	if got.TriggerKey != wantKey || got.ExitCode != TriggerDispatchFailureExitCode {
 		t.Errorf("Completed[0] = %+v, want {%+v, %d}", got, wantKey, TriggerDispatchFailureExitCode)
 	}
@@ -542,7 +549,7 @@ func TestSweepTriggers_DispatchFailure_RecordedInCompletedForFailStreak(t *testi
 // ordinary non-zero-exit-code job would, after TriggerStuckFailStreakThreshold
 // consecutive occurrences.
 func TestTriggerLoop_DispatchFailure_NotifiesAfterConsecutiveFailures(t *testing.T) {
-	key := TriggerKey{ProjectID: "proj-1", TriggerName: "signal:slack/mentions"}
+	key := TriggerKey{WorkspaceID: "proj-1", TriggerName: "signal:slack/mentions"}
 	dispatchFailure := TriggerSweepResult{
 		Completed: []TriggerCompletionResult{{TriggerKey: key, ExitCode: TriggerDispatchFailureExitCode}},
 	}
@@ -580,7 +587,7 @@ func TestSweepTriggers_JobRowMissing_SelfHealsAfterGracePeriod(t *testing.T) {
 	// Simulate a trigger_runs row left behind by a job whose jobs row has
 	// since vanished (GC) — created directly, bypassing fireTrigger/StartExec
 	// entirely, exactly like a row that survived a GC sweep would look.
-	ghost := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", JobID: "ghost-job-gone", StartedAt: t0}
+	ghost := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "intake", JobID: "ghost-job-gone", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(ghost); err != nil {
 		t.Fatalf("seed ghost trigger_runs row: %v", err)
 	}
@@ -768,7 +775,7 @@ func TestSweepTriggers_ConcurrentSweepAndRunNow_OnlyOneFires(t *testing.T) {
 	var runNowErr error
 	runConcurrently(
 		func() { sweepResult, sweepErr = svc.SweepTriggers(context.Background(), now) },
-		func() { runNowResult, runNowErr = svc.RunTriggerNow(context.Background(), "proj-1", "intake") },
+		func() { runNowResult, runNowErr = svc.RunWorkspaceTriggerNow(context.Background(), "proj-1", "intake") },
 	)
 
 	if sweepErr != nil {
@@ -808,8 +815,8 @@ func TestRunTriggerNow_ConcurrentDoubleCall_OnlyOneFires(t *testing.T) {
 	var r1, r2 *TriggerRunNowResult
 	var e1, e2 error
 	runConcurrently(
-		func() { r1, e1 = svc.RunTriggerNow(context.Background(), "proj-1", "intake") },
-		func() { r2, e2 = svc.RunTriggerNow(context.Background(), "proj-1", "intake") },
+		func() { r1, e1 = svc.RunWorkspaceTriggerNow(context.Background(), "proj-1", "intake") },
+		func() { r2, e2 = svc.RunWorkspaceTriggerNow(context.Background(), "proj-1", "intake") },
 	)
 
 	if e1 != nil {
@@ -897,7 +904,7 @@ func TestRunTriggerNow_FiresImmediately_IgnoringEveryElapsed(t *testing.T) {
 		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "intake", Every: "24h", Run: "true"}}},
 	})
 
-	result, err := svc.RunTriggerNow(context.Background(), "proj-1", "intake")
+	result, err := svc.RunWorkspaceTriggerNow(context.Background(), "proj-1", "intake")
 	if err != nil {
 		t.Fatalf("RunTriggerNow: %v", err)
 	}
@@ -917,7 +924,7 @@ func TestRunTriggerNow_SingleFlightBlocksASecondManualRun(t *testing.T) {
 		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "intake", Every: "1m", Run: "true"}}},
 	})
 
-	first, err := svc.RunTriggerNow(context.Background(), "proj-1", "intake")
+	first, err := svc.RunWorkspaceTriggerNow(context.Background(), "proj-1", "intake")
 	if err != nil {
 		t.Fatalf("first RunTriggerNow: %v", err)
 	}
@@ -925,7 +932,7 @@ func TestRunTriggerNow_SingleFlightBlocksASecondManualRun(t *testing.T) {
 		t.Fatal("first RunTriggerNow was skipped, want it to have fired")
 	}
 
-	second, err := svc.RunTriggerNow(context.Background(), "proj-1", "intake")
+	second, err := svc.RunWorkspaceTriggerNow(context.Background(), "proj-1", "intake")
 	if err != nil {
 		t.Fatalf("second RunTriggerNow: %v", err)
 	}
@@ -944,7 +951,7 @@ func TestRunTriggerNow_UnknownTrigger_404(t *testing.T) {
 	svc, _, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
 		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "intake", Every: "1m", Run: "true"}}},
 	})
-	_, err := svc.RunTriggerNow(context.Background(), "proj-1", "does-not-exist")
+	_, err := svc.RunWorkspaceTriggerNow(context.Background(), "proj-1", "does-not-exist")
 	if err == nil {
 		t.Fatal("RunTriggerNow for an unknown trigger name = nil error, want a rejection")
 	}
@@ -956,7 +963,7 @@ func TestRunTriggerNow_UnknownTrigger_404(t *testing.T) {
 
 func TestRunTriggerNow_UnknownProject_404(t *testing.T) {
 	svc, _, _ := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{})
-	_, err := svc.RunTriggerNow(context.Background(), "no-such-project", "intake")
+	_, err := svc.RunWorkspaceTriggerNow(context.Background(), "no-such-project", "intake")
 	if err == nil {
 		t.Fatal("RunTriggerNow for an unknown project = nil error, want a rejection")
 	}
@@ -1048,7 +1055,7 @@ func TestTriggerLoop_CtxCancelExits(t *testing.T) {
 // tick count — so it scales correctly regardless of how the sweep interval
 // relates to `every` (see TriggerStuckOverrunMultiplier's own doc comment).
 func TestTriggerLoop_SkipStreak_NotifiesWhenOverrunExceedsMultipleOfEvery(t *testing.T) {
-	key := TriggerKey{ProjectID: "proj-1", TriggerName: "intake"}
+	key := TriggerKey{WorkspaceID: "proj-1", TriggerName: "intake"}
 	notifier := &fakeTriggerNotifier{}
 	loop := &TriggerLoop{Notifier: notifier}
 
@@ -1116,7 +1123,7 @@ func TestTriggerLoop_SkipStreak_ThresholdScalesWithEvery(t *testing.T) {
 // threshold was 30m and a human noticed first both times. At 1.5× the same
 // stalls cross the line at 15m.
 func TestTriggerLoop_SkipStreak_FifteenMinuteStallNotifies(t *testing.T) {
-	key := TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"}
+	key := TriggerKey{WorkspaceID: "proj-1", TriggerName: "sweep"}
 	notifier := &fakeTriggerNotifier{}
 	loop := &TriggerLoop{Notifier: notifier}
 
@@ -1211,7 +1218,7 @@ func TestTriggerLoop_SkipStreak_NoFalsePositive_ExecutionShorterThanEvery(t *tes
 }
 
 func TestTriggerLoop_FailStreak_NotifiesAndResetsOnSuccess(t *testing.T) {
-	key := TriggerKey{ProjectID: "proj-1", TriggerName: "intake"}
+	key := TriggerKey{WorkspaceID: "proj-1", TriggerName: "intake"}
 	notifier := &fakeTriggerNotifier{}
 	loop := &TriggerLoop{Notifier: notifier}
 
@@ -1242,7 +1249,7 @@ func TestTriggerLoop_FailStreak_NotifiesAndResetsOnSuccess(t *testing.T) {
 // context.WithTimeout(ctx, notifyTimeout); this pins trigger_loop.go's
 // notify matching that.
 func TestTriggerLoop_Notify_WrapsCtxWithNotifyTimeout(t *testing.T) {
-	key := TriggerKey{ProjectID: "proj-1", TriggerName: "intake"}
+	key := TriggerKey{WorkspaceID: "proj-1", TriggerName: "intake"}
 	notifier := &fakeTriggerNotifier{}
 	loop := &TriggerLoop{Notifier: notifier}
 
@@ -1371,7 +1378,7 @@ func TestSweepTriggers_OnSignals_PendingSignals_EveryElapsed_Fires(t *testing.T)
 	if len(result.Fired) != 1 {
 		t.Fatalf("Fired = %+v, want exactly 1", result.Fired)
 	}
-	if result.Fired[0].TriggerKey != (TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"}) {
+	if result.Fired[0].TriggerKey != (TriggerKey{WorkspaceID: "proj-1", TriggerName: "sweep"}) {
 		t.Errorf("Fired[0] = %+v, unexpected", result.Fired[0])
 	}
 	if len(exec.calls) != 1 {
@@ -1580,7 +1587,7 @@ func TestSweepTriggers_OnSignals_WedgedInFlight_StaysInSkipped(t *testing.T) {
 	signals := &fakeSignalStore{pending: map[string]bool{"ws-1": true}}
 	svc.Signals = signals
 	now := time.Now()
-	key := TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"}
+	key := TriggerKey{WorkspaceID: "proj-1", TriggerName: "sweep"}
 
 	// First sweep fires the job — its scan script starts working through
 	// the inbox.
@@ -1680,4 +1687,19 @@ func TestSweepTriggers_OnScheduleExplicit_RegressionUnaffectedBySignals(t *testi
 	if signals.callCount() != 0 {
 		t.Errorf("HasPendingSignals was called %d time(s) for an on:schedule trigger, want 0", signals.callCount())
 	}
+}
+
+func (f fakeTriggerMetaStore) WorkspaceStore() *orchestrator.WorkspaceStore { return f.workspaceStore }
+func (f fakeTriggerMetaStore) GetWorkspaceMeta(ctx context.Context, id string) (*orchestrator.ProjectMeta, error) {
+	return f.GetWithWorkspace(ctx, id)
+}
+func triggerFixtureWorkspaceStore(t *testing.T, metas map[string]*orchestrator.ProjectMeta) *orchestrator.WorkspaceStore {
+	t.Helper()
+	store := orchestrator.NewWorkspaceStore(t.TempDir())
+	for id := range metas {
+		if err := store.Save(id, &orchestrator.WorkspaceMeta{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return store
 }

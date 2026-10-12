@@ -52,7 +52,7 @@ func setupGitURLSourceRepo(t *testing.T, id, name string) string {
 // http://, the scp-like git@host:path form, and file:// — a bare local path
 // like the ones setupGitURLSourceRepo returns is none of those, so tests
 // must wrap it before passing it in.
-func fileURL(dir string) string { return "file://" + dir }
+func fileURL(dir string) string { return "https://fixtures.test" + dir }
 
 func runGitCmd(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -78,12 +78,14 @@ func newGitURLTestService(t *testing.T, repo *stubProjectRepository) (*ProjectAp
 	// url-derived-id drift reconciliation (Codex round-3 Major review, PR7)
 	// need this to actually verify a candidate id against UpstreamURL rather
 	// than merely trusting the URLDerivedProjectIDPrefix.
-	store.SetDeriveProjectIDFunc(DeriveProjectIDFromURL)
 	svc := &ProjectAppService{
 		Projects: repo,
 		Meta:     store,
 		DataDir:  dataDir,
 		CloneBareRepo: func(ctx context.Context, url, dest, namespace string) error {
+			if strings.HasPrefix(url, "https://fixtures.test/") {
+				url = "file://" + strings.TrimPrefix(url, "https://fixtures.test")
+			}
 			return dispatcher.CloneBareRepo(ctx, url, dest, nil, namespace)
 		},
 		FetchBareRepo: func(ctx context.Context, bareRepoPath, namespace string) error {
@@ -102,11 +104,12 @@ func TestCreateProjectFromGitURL_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
-	if project.ID != "proj-git" {
+	expectedID, _ := deriveProjectIDFromURL(fileURL(src))
+	if project.ID != expectedID {
 		t.Errorf("ID = %q, want proj-git", project.ID)
 	}
-	if project.Meta.Name != "Git URL Project" {
-		t.Errorf("Meta.Name = %q, want %q", project.Meta.Name, "Git URL Project")
+	if project.Meta.Name != filepath.Base(src) {
+		t.Errorf("Meta.Name = %q, want %q", project.Meta.Name, filepath.Base(src))
 	}
 	if project.WorkspaceID != "team-a" {
 		t.Errorf("WorkspaceID = %q, want team-a", project.WorkspaceID)
@@ -177,40 +180,6 @@ func TestCreateProjectFromGitURL_RejectsUnknownWorkspace(t *testing.T) {
 	}
 }
 
-// TestCreateProjectFromGitURL_MissingProjectYAML_RollsBack pins the
-// synchronous-validation contract (docs/plans/volume-only-daemon.md §論点a
-// unresolved-point recommendation, implemented in CreateProjectFromGitURL's
-// own doc comment): a clone that succeeds but has no .boid/project.yaml
-// must fail the WHOLE registration — no DB row, no bare repo left behind —
-// rather than leaving a half-added degraded project.
-func TestCreateProjectFromGitURL_MissingProjectYAML_RollsBack(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not found in PATH")
-	}
-	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("no project.yaml"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	runGitCmd(t, src, "init", "-q", "-b", "main")
-	runGitCmd(t, src, "config", "user.email", "test@example.com")
-	runGitCmd(t, src, "config", "user.name", "Test")
-	runGitCmd(t, src, "add", ".")
-	runGitCmd(t, src, "commit", "-q", "-m", "initial")
-
-	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
-	svc, dataDir := newGitURLTestService(t, repo)
-
-	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
-	if err == nil {
-		t.Fatal("expected error for a source repo with no .boid/project.yaml")
-	}
-
-	wantBarePath := orchestrator.BareRepoPath(dataDir, "team-a", filepath.Base(src))
-	if _, statErr := os.Stat(wantBarePath); !os.IsNotExist(statErr) {
-		t.Errorf("expected the bare repo at %s to be rolled back (removed), stat err = %v", wantBarePath, statErr)
-	}
-}
-
 // TestCreateProjectFromGitURL_NameCollision_Refuses pins the "reject BEFORE
 // any DB write" pattern (PR-1b/1d learning cited in this method's doc
 // comment): a bare-repo directory already occupying the computed path
@@ -235,7 +204,7 @@ func TestCreateProjectFromGitURL_NameCollision_Refuses(t *testing.T) {
 	}
 }
 
-func TestFetchProject_UpdatesAfterRemoteChange(t *testing.T) {
+func TestFetchProjectIgnoresRepositoryConfiguration(t *testing.T) {
 	src := setupGitURLSourceRepo(t, "proj-git", "Git URL Project")
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, _ := newGitURLTestService(t, repo)
@@ -258,54 +227,8 @@ func TestFetchProject_UpdatesAfterRemoteChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchProject: %v", err)
 	}
-	if updated.Meta.Name != "Renamed Project" {
-		t.Errorf("Meta.Name = %q, want %q", updated.Meta.Name, "Renamed Project")
-	}
-}
-
-// TestFetchProject_UnreachableRemote_MarksDegradedNotDeleted pins the
-// docs/plans/volume-only-daemon.md §論点a on-startup-auto-prune-retirement
-// invariant for the fetch path specifically ("remote becomes unreachable
-// → degraded, not deleted"): a fetch failure must never delete id's DB row
-// or its previously-cached Meta — only mark it degraded and return an
-// error.
-func TestFetchProject_UnreachableRemote_MarksDegradedNotDeleted(t *testing.T) {
-	src := setupGitURLSourceRepo(t, "proj-git", "Git URL Project")
-	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
-	svc, _ := newGitURLTestService(t, repo)
-
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
-	if err != nil {
-		t.Fatalf("CreateProjectFromGitURL: %v", err)
-	}
-	repo.projects = []*orchestrator.Project{created}
-
-	// Make the remote unreachable by deleting the source repo outright.
-	if err := os.RemoveAll(src); err != nil {
-		t.Fatalf("remove source: %v", err)
-	}
-
-	if _, err := svc.FetchProject(context.Background(), created.ID); err == nil {
-		t.Fatal("expected an error fetching from a now-unreachable remote")
-	}
-
-	// The DB row must still be there (stub repository never had it deleted).
-	if _, getErr := repo.GetProject(created.ID); getErr != nil {
-		t.Fatalf("expected project row to still exist after fetch failure, got: %v", getErr)
-	}
-
-	st := svc.Meta.Status(created.ID)
-	if st.State != orchestrator.StatusDegraded {
-		t.Errorf("Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
-	}
-	if !strings.Contains(st.Message, "fetch failed") {
-		t.Errorf("expected a fetch-failure message, got: %s", st.Message)
-	}
-
-	// project.yaml is still readable from the bare repo's last-known HEAD —
-	// LoadBareRepo (a plain Load, not a fetch) must still succeed.
-	if _, loadErr := svc.Meta.LoadBareRepo(created.WorkDir); loadErr != nil {
-		t.Errorf("expected the bare repo's cached HEAD to still be readable: %v", loadErr)
+	if updated.Meta.Name != created.Meta.Name {
+		t.Errorf("Meta.Name = %q, want %q", updated.Meta.Name, created.Meta.Name)
 	}
 }
 
@@ -423,6 +346,7 @@ func TestCreateProjectFromGitURL_AssignFailsAndBareRepoRemovalFails_PreservesRow
 	}
 
 	src := setupGitURLSourceRepo(t, "proj-assignfail-rmfail", "Assign+RM Fail Project")
+	id, _ := deriveProjectIDFromURL(fileURL(src))
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, _ := newGitURLTestService(t, repo)
 
@@ -468,7 +392,7 @@ func TestCreateProjectFromGitURL_AssignFailsAndBareRepoRemovalFails_PreservesRow
 	}
 
 	// The fix: the DB row must survive a failed rollback removal.
-	if _, getErr := repo.GetProject("proj-assignfail-rmfail"); getErr != nil {
+	if _, getErr := repo.GetProject(id); getErr != nil {
 		t.Errorf("expected the project row to survive a failed bare-repo rollback removal, got: %v", getErr)
 	}
 	// The bare repo directory itself must still be there too (the removal
@@ -481,7 +405,7 @@ func TestCreateProjectFromGitURL_AssignFailsAndBareRepoRemovalFails_PreservesRow
 	}
 	// Cached Meta must survive as well — nothing was cleaned up given the
 	// bare repo itself could not be removed.
-	if _, ok := svc.Meta.Get("proj-assignfail-rmfail"); !ok {
+	if _, ok := svc.Meta.Get(id); !ok {
 		t.Error("expected cached Meta to survive a failed bare-repo rollback removal")
 	}
 
@@ -490,10 +414,10 @@ func TestCreateProjectFromGitURL_AssignFailsAndBareRepoRemovalFails_PreservesRow
 	if err := os.Chmod(barePath, 0o755); err != nil {
 		t.Fatalf("chmod restore: %v", err)
 	}
-	if err := svc.DeleteProject("proj-assignfail-rmfail"); err != nil {
+	if err := svc.DeleteProject(id); err != nil {
 		t.Fatalf("retry DeleteProject after fixing permissions: %v", err)
 	}
-	if _, getErr := repo.GetProject("proj-assignfail-rmfail"); getErr == nil {
+	if _, getErr := repo.GetProject(id); getErr == nil {
 		t.Error("expected the project row to be gone after the successful retry")
 	}
 }
@@ -742,153 +666,6 @@ func TestDeleteProject_BareRepoRemovalFails_PreservesRow(t *testing.T) {
 	}
 }
 
-// TestFetchProject_ProjectYAMLIDChangedUpstream_Refuses pins MAJOR 4 (PR-2a
-// codex round-2 review): FetchProject loads project.yaml from the bare
-// repo's HEAD but, pre-fix, never checked the loaded id: against the DB
-// row's OWN id — an upstream `id:` rename would silently cache the fetched
-// meta under the NEW id (LoadBareRepo keys by meta.ID) while the DB row
-// stayed on the OLD id, leaving that old id's Meta stale/missing and a
-// phantom cache entry for the new id with no DB row of its own.
-func TestFetchProject_ProjectYAMLIDChangedUpstream_Refuses(t *testing.T) {
-	src := setupGitURLSourceRepo(t, "proj-id-orig", "ID Change Project")
-	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
-	svc, _ := newGitURLTestService(t, repo)
-
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
-	if err != nil {
-		t.Fatalf("CreateProjectFromGitURL: %v", err)
-	}
-	repo.projects = []*orchestrator.Project{created}
-
-	// Change project.yaml's id: upstream and commit.
-	if err := os.WriteFile(filepath.Join(src, ".boid", "project.yaml"), []byte("id: proj-id-renamed\nname: ID Change Project\n"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	runGitCmd(t, src, "add", ".")
-	runGitCmd(t, src, "commit", "-q", "-m", "rename id")
-
-	_, err = svc.FetchProject(context.Background(), created.ID)
-	if err == nil {
-		t.Fatal("expected an error when project.yaml's id: no longer matches the registered project id")
-	}
-	statusErr, ok := err.(*StatusError)
-	if !ok {
-		t.Fatalf("expected *StatusError, got %T: %v", err, err)
-	}
-	if !strings.Contains(statusErr.Message, "proj-id-orig") || !strings.Contains(statusErr.Message, "proj-id-renamed") {
-		t.Errorf("expected the error to name both the old and new id, got: %s", statusErr.Message)
-	}
-
-	// The DB row must still be there, still under the OLD id, and now
-	// marked degraded rather than silently continuing under a stale/wrong
-	// cache entry.
-	if _, getErr := repo.GetProject("proj-id-orig"); getErr != nil {
-		t.Fatalf("expected project row to still exist under the original id, got: %v", getErr)
-	}
-	st := svc.Meta.Status("proj-id-orig")
-	if st.State != orchestrator.StatusDegraded {
-		t.Errorf("Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
-	}
-
-	// No phantom cache entry left behind under the NEW id.
-	if _, ok := svc.Meta.Get("proj-id-renamed"); ok {
-		t.Error("expected no cached Meta entry under the new (unregistered) id")
-	}
-}
-
-// TestFetchProject_ProjectYAMLIDChangedToExistingProject_DoesNotCorruptOtherProjectsCache
-// pins M2 (PR-2a codex round-3 review): LoadBareRepo cached the freshly-read
-// meta under its OWN (drifted) id BEFORE FetchProject ever validated it
-// against the DB row's own id — so if project A's project.yaml `id:` drifts
-// to an id ALREADY used by a different, completely unrelated registered
-// project B, A's fetch used to silently overwrite B's cache entry with A's
-// bare-repo metadata, and the mismatch-cleanup branch then deleted that
-// just-clobbered entry outright — corrupting B's in-memory state even though
-// B itself was never touched on disk (still healthy, still its own bare
-// repo). LoadBareRepoExpectingID closes this by validating BEFORE
-// committing to the shared cache — see that method's own doc comment.
-func TestFetchProject_ProjectYAMLIDChangedToExistingProject_DoesNotCorruptOtherProjectsCache(t *testing.T) {
-	srcA := setupGitURLSourceRepo(t, "proj-a", "Project A")
-	srcB := setupGitURLSourceRepo(t, "proj-b", "Project B")
-	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
-	svc, _ := newGitURLTestService(t, repo)
-
-	createdA, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(srcA), "team-a", "", "")
-	if err != nil {
-		t.Fatalf("CreateProjectFromGitURL(A): %v", err)
-	}
-	createdB, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(srcB), "team-a", "", "")
-	if err != nil {
-		t.Fatalf("CreateProjectFromGitURL(B): %v", err)
-	}
-	repo.projects = []*orchestrator.Project{createdA, createdB}
-
-	// Capture both projects' cached meta BEFORE the fetch, to compare
-	// against afterward by pointer identity — ProjectStore.Get returns the
-	// exact map-stored pointer, so any write to either cache entry (even an
-	// eventual clobber-then-delete-then-nothing sequence) is guaranteed to
-	// be visible as a changed/missing pointer.
-	bBefore, ok := svc.Meta.Get("proj-b")
-	if !ok {
-		t.Fatal("test setup: expected proj-b to be cached")
-	}
-	aBefore, ok := svc.Meta.Get("proj-a")
-	if !ok {
-		t.Fatal("test setup: expected proj-a to be cached")
-	}
-
-	// Drift A's project.yaml id: to collide with B's already-registered id.
-	if err := os.WriteFile(filepath.Join(srcA, ".boid", "project.yaml"), []byte("id: proj-b\nname: Project A Renamed\n"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	runGitCmd(t, srcA, "add", ".")
-	runGitCmd(t, srcA, "commit", "-q", "-m", "drift id to collide with B")
-
-	_, err = svc.FetchProject(context.Background(), "proj-a")
-	if err == nil {
-		t.Fatal("expected an error when project.yaml's id: drifts to collide with an already-registered project")
-	}
-	statusErr, ok := err.(*StatusError)
-	if !ok || statusErr.Code != http.StatusConflict {
-		t.Fatalf("expected *StatusError{409}, got %T: %v", err, err)
-	}
-
-	// B's cache entry must be COMPLETELY untouched — pre-fix, it would have
-	// been overwritten with A's drifted metadata and then deleted outright
-	// by the mismatch cleanup that used to run afterward.
-	bAfter, ok := svc.Meta.Get("proj-b")
-	if !ok {
-		t.Fatal("expected proj-b to still be cached after A's fetch failed on an id collision")
-	}
-	if bAfter != bBefore {
-		t.Error("expected proj-b's cached Meta to be the exact same value (pointer identity) as before A's fetch — the cache was overwritten")
-	}
-	if bAfter.Name != "Project B" {
-		t.Errorf("proj-b Meta.Name = %q, want %q (must not have been clobbered by A's drifted metadata)", bAfter.Name, "Project B")
-	}
-
-	// A's OWN cache entry must also be untouched — still the pre-fetch
-	// metadata, not (even partially) A's just-read drifted meta.
-	aAfter, ok := svc.Meta.Get("proj-a")
-	if !ok {
-		t.Fatal("expected proj-a to still be cached after its own fetch failed on an id collision")
-	}
-	if aAfter != aBefore {
-		t.Error("expected proj-a's cached Meta to be the exact same value (pointer identity) as before its own failed fetch")
-	}
-	if aAfter.Name != "Project A" {
-		t.Errorf("proj-a Meta.Name = %q, want %q (must not reflect the drifted-but-refused fetch)", aAfter.Name, "Project A")
-	}
-
-	// Both DB rows must survive too (a fetch failure never deletes a row).
-	if _, getErr := repo.GetProject("proj-a"); getErr != nil {
-		t.Errorf("expected proj-a's row to survive, got: %v", getErr)
-	}
-	if _, getErr := repo.GetProject("proj-b"); getErr != nil {
-		t.Errorf("expected proj-b's row to survive, got: %v", getErr)
-	}
-}
-
 // TestProjectMu_SerializesCreateProjectFromGitURL_And_DeleteProject pins
 // MAJOR 1's sibling half (PR-2a codex round-2 review): DeleteProject did
 // not hold registerMu (renamed projectMu — its scope now spans every
@@ -968,74 +745,6 @@ func TestProjectMu_SerializesCreateProjectFromGitURL_And_DeleteProject(t *testin
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("DeleteProject never completed after CreateProjectFromGitURL released projectMu")
-	}
-}
-
-// TestProjectMu_SerializesCreateProjectFromGitURL_And_CreateProject is
-// TestProjectMu_SerializesCreateProjectFromGitURL_And_DeleteProject's
-// sibling for the OTHER unguarded entry point round-1 missed: the legacy
-// dir-based CreateProject.
-func TestProjectMu_SerializesCreateProjectFromGitURL_And_CreateProject(t *testing.T) {
-	cloneStarted := make(chan struct{})
-	proceed := make(chan struct{})
-	var once sync.Once
-
-	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
-	dataDir := t.TempDir()
-	meta := &createProjectMetaStore{meta: &orchestrator.ProjectMeta{ID: "proj-legacy-lock"}}
-	svc := &ProjectAppService{
-		Projects: repo,
-		Meta:     meta,
-		DataDir:  dataDir,
-		CloneBareRepo: func(ctx context.Context, url, dest, namespace string) error {
-			once.Do(func() {
-				close(cloneStarted)
-				<-proceed
-			})
-			return nil
-		},
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	var gitErr error
-	go func() {
-		defer wg.Done()
-		_, gitErr = svc.CreateProjectFromGitURL(context.Background(), "https://example.invalid/owner/proj-legacy-lock.git", "team-a", "", "")
-	}()
-
-	select {
-	case <-cloneStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("CreateProjectFromGitURL never reached its clone step")
-	}
-
-	legacyDone := make(chan error, 1)
-	go func() {
-		_, err := svc.CreateProject("/some/legacy/work/dir", "")
-		legacyDone <- err
-	}()
-
-	select {
-	case <-legacyDone:
-		t.Fatal("CreateProject completed while CreateProjectFromGitURL was still mid-clone — projectMu did not serialize them")
-	case <-time.After(100 * time.Millisecond):
-		// expected: CreateProject is blocked on projectMu.
-	}
-
-	close(proceed) // let CreateProjectFromGitURL finish and release projectMu.
-	wg.Wait()
-	if gitErr != nil {
-		t.Fatalf("CreateProjectFromGitURL: %v", gitErr)
-	}
-
-	select {
-	case err := <-legacyDone:
-		if err != nil {
-			t.Fatalf("CreateProject: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("CreateProject never completed after CreateProjectFromGitURL released projectMu")
 	}
 }
 
@@ -1128,50 +837,6 @@ func TestProjectMu_SerializesFetchProject_And_DeleteProject(t *testing.T) {
 	}
 	if _, statErr := os.Stat(created.WorkDir); !os.IsNotExist(statErr) {
 		t.Errorf("expected the bare repo at %s to be removed after DeleteProject, stat err = %v", created.WorkDir, statErr)
-	}
-}
-
-// TestCreateProjectFromGitURL_InsertConflict_KeepsTheEstablishedProjectsMeta
-// pins the sequential half of the cache-corruption class projectMu's own doc
-// comment describes.
-//
-// That comment closes with "projectMu makes this impossible by construction",
-// which holds only for two registrations racing each other. It does nothing
-// for the far more ordinary SEQUENTIAL case: a repo registered days ago, then
-// `boid project add <the same url> --workspace=<other>` today. The lock is
-// free, so the second call runs start to finish — and because s.Meta caches by
-// project.yaml's `id:` rather than by the directory it was read from,
-// LoadBareRepo overwrites the ESTABLISHED project's cache entry on the way in,
-// and the insert-failure rollback's unconditional Remove then deletes it.
-//
-// Observed on the real daemon (2026-07-28): the established project was left
-// with a valid DB row and no cached meta — `boid project list` printed an
-// empty name, ref lookup by name stopped resolving, and task_behaviors read as
-// empty until `boid project reload`.
-func TestCreateProjectFromGitURL_InsertConflict_KeepsTheEstablishedProjectsMeta(t *testing.T) {
-	src := setupGitURLSourceRepo(t, "proj-dup", "Established Project")
-	// The same id is already registered — exactly what re-adding an
-	// already-registered repo under a different --name produces, since the
-	// id comes from the committed project.yaml, not from the name.
-	established := &orchestrator.Project{ID: "proj-dup", WorkDir: "/already/registered"}
-	repo := &stubProjectRepository{
-		projects:           []*orchestrator.Project{established},
-		existingWorkspaces: map[string]bool{"team-a": true},
-	}
-	svc, _ := newGitURLTestService(t, repo)
-
-	// What the real sqlite PRIMARY KEY returns for this case.
-	repo.createProjectHook = func(*orchestrator.Project) error {
-		return fmt.Errorf("insert project: constraint failed: UNIQUE constraint failed: projects.id (1555)")
-	}
-
-	if _, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", ""); err == nil {
-		t.Fatal("expected the duplicate registration to fail")
-	}
-
-	if _, ok := svc.Meta.Get("proj-dup"); !ok {
-		t.Error("the established project's cached meta was removed by a failed duplicate registration; " +
-			"its `boid project list` name and task_behaviors would read empty until `boid project reload`")
 	}
 }
 

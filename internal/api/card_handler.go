@@ -47,7 +47,7 @@ type runCardCommandBody struct {
 }
 
 // RunCommand handles POST /api/cards/{id}/commands/{key}: fires a
-// project.yaml-declared card_commands entry as a human command launcher. A
+// workspace configuration-declared card_commands entry as a human command launcher. A
 // missing/malformed body is treated as an empty instruction, not a 400 —
 // an empty instruction is allowed.
 func (h *CardHandler) RunCommand(w http.ResponseWriter, r *http.Request) {

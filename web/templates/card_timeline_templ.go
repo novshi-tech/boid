@@ -1752,9 +1752,7 @@ func cardNoteItemBody(item timeline.CardItem) templ.Component {
 	})
 }
 
-// CardCommandOption is one project.yaml card_commands entry rendered as a
-// button — the Web UI's own display copy of api.CardCommandOption (this
-// package cannot import internal/api).
+// CardCommandOption describes a workspace command button.
 type CardCommandOption struct {
 	Key   string
 	Label string
@@ -1789,21 +1787,7 @@ func cardCommandTerminalStatus(cardStatus orchestrator.TaskStatus) bool {
 	return cardStatus == orchestrator.TaskStatusDone || cardStatus == orchestrator.TaskStatusDropped
 }
 
-// CardCommandSection renders the shared instruction textarea and the
-// project's card_commands buttons, in project.yaml declaration order
-// (options is already ordered — see api.CardCommandOptionsForProject).
-// Renders nothing when the project declares no card_commands (options is
-// empty) or the card is in a terminal status (cardCommandTerminalStatus).
-//
-// This section is a sibling of #task-status and #task-pinned, never a child
-// of either — see TaskDetailCardStatusSection's own doc comment (tasks.templ)
-// for why an in-progress instruction must live outside both SSE-swapped
-// blocks.
-//
-// form is non-nil only right after a same-request Occupied response
-// (WebHandler.PostCardCommand renders this same page directly, rather than
-// redirecting, so the textarea keeps what the caller typed). A plain GET (or
-// a successful launch, which redirects) always passes form == nil.
+// CardCommandSection renders workspace command buttons outside the live-swapped status blocks.
 func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, options []CardCommandOption, form *CardCommandFormState) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1843,7 +1827,7 @@ func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, optio
 					var templ_7745c5c3_Var74 templ.SafeURL
 					templ_7745c5c3_Var74, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + form.TargetID))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 587, Col: 56}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 571, Col: 56}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var74))
 					if templ_7745c5c3_Err != nil {
@@ -1866,7 +1850,7 @@ func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, optio
 			var templ_7745c5c3_Var75 templ.SafeURL
 			templ_7745c5c3_Var75, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + cardID + "/commands"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 591, Col: 79}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 575, Col: 79}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var75))
 			if templ_7745c5c3_Err != nil {
@@ -1879,7 +1863,7 @@ func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, optio
 			var templ_7745c5c3_Var76 string
 			templ_7745c5c3_Var76, templ_7745c5c3_Err = templ.JoinStringErrs(cardCommandFormInstruction(form))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 592, Col: 157}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 576, Col: 157}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var76))
 			if templ_7745c5c3_Err != nil {
@@ -1902,7 +1886,7 @@ func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, optio
 					var templ_7745c5c3_Var77 string
 					templ_7745c5c3_Var77, templ_7745c5c3_Err = templ.JoinStringErrs(opt.Key)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 596, Col: 55}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 580, Col: 55}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var77))
 					if templ_7745c5c3_Err != nil {
@@ -1915,7 +1899,7 @@ func CardCommandSection(cardID string, cardStatus orchestrator.TaskStatus, optio
 					var templ_7745c5c3_Var78 string
 					templ_7745c5c3_Var78, templ_7745c5c3_Err = templ.JoinStringErrs("Run " + opt.Label)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 596, Col: 104}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 580, Col: 104}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var78))
 					if templ_7745c5c3_Err != nil {
@@ -1971,7 +1955,7 @@ func TaskDetailCardSummary(summary string, description string) templ.Component {
 			var templ_7745c5c3_Var80 string
 			templ_7745c5c3_Var80, templ_7745c5c3_Err = templ.JoinStringErrs(summary)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 610, Col: 42}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 594, Col: 42}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var80))
 			if templ_7745c5c3_Err != nil {
@@ -1997,7 +1981,7 @@ func TaskDetailCardSummary(summary string, description string) templ.Component {
 			var templ_7745c5c3_Var81 string
 			templ_7745c5c3_Var81, templ_7745c5c3_Err = templ.JoinStringErrs(summary)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 616, Col: 37}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/card_timeline.templ`, Line: 600, Col: 37}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var81))
 			if templ_7745c5c3_Err != nil {

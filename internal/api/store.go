@@ -65,9 +65,9 @@ type ProjectService interface {
 	// failure, {500} if the daemon has no git-clone/data-dir wiring.
 	CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string, perm string) (*orchestrator.Project, error)
 	// FetchProject runs `git fetch --all` inside id's bare repo and reloads
-	// its project.yaml (POST /api/projects/{id}/fetch — `boid project fetch
+	// its workspace configuration (POST /api/projects/{id}/fetch — `boid project fetch
 	// <id>`). *StatusError{404} unknown id, {400} for a legacy (non-bare,
-	// pre-cutover) project or a project.yaml that fails to parse after
+	// pre-cutover) project or a workspace configuration that fails to parse after
 	// fetch, {502} for a fetch failure. Never deletes id's row on failure —
 	// see the method's own doc comment for the on-startup-auto-prune-
 	// retirement invariant this preserves.
@@ -86,7 +86,7 @@ type ProjectService interface {
 	// ExplainProject returns id's field-provenance view (GET
 	// /api/projects/{id}/explain — `boid project show --explain`): for each of the 4
 	// workspace-default-mergeable fields, whether the effective value came
-	// from project.yaml or the linked workspace's default project
+	// from workspace configuration or the linked workspace's default project
 	// definition. *StatusError{404} for an unknown id.
 	ExplainProject(id string) (*orchestrator.ProjectExplain, error)
 

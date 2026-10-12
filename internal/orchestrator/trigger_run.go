@@ -28,7 +28,7 @@ import (
 )
 
 // TriggerRun is one row of the trigger_runs table — one attempted (or
-// in-flight) execution of a project.yaml trigger.
+// in-flight) execution of a workspace configuration trigger.
 type TriggerRun struct {
 	ID          string
 	ProjectID   string

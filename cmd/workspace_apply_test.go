@@ -236,7 +236,7 @@ func TestRunWorkspaceApply_AttachesExistingProject(t *testing.T) {
 
 	dir := writeImportTestProject(t, "rook-server", "Rook Server")
 	var project orchestrator.Project
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	name := "Rook Server" // project.yaml's "name:" field — see projectExportName's doc comment.
@@ -545,7 +545,7 @@ func TestRunWorkspaceExportApply_EmptyFieldsRoundTripClearsAndDetaches(t *testin
 	for _, name := range []string{"proj-1", "proj-2"} {
 		dir := writeImportTestProject(t, name, name)
 		var project orchestrator.Project
-		if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		if err := testutil.SeedProjectFixture(t, ts, dir, &project); err != nil {
 			t.Fatalf("create project %s: %v", name, err)
 		}
 		if err := ts.Client.Do("PUT", "/api/projects/"+project.ID+"/workspace", map[string]string{"workspace_id": "team-populated"}, &orchestrator.Project{}); err != nil {

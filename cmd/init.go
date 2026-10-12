@@ -13,15 +13,10 @@ var initCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		msg := `boid init は廃止されました。 次の手順で初期化してください:
 
-  1) boid project init [dir]                    (新規プロジェクト雛形を生成し、次の手順を案内)
-     git push した URL を                         (既存プロジェクトは自分で push 済みの
-     boid project add <git-url> --workspace=...   git URL を直接登録)
+  1) boid workspace apply -f workspace.yaml    (behavior と実行環境を設定)
+  2) boid project add <git-url> --workspace=<slug>  (repository を登録)
 
-  2) 必要なら workspace を用意 (default で足りるなら省略可):
-     boid workspace create <slug> --from-file <yaml>    (新規作成)
-     boid workspace edit   <slug> --from-file <yaml>    (更新)
-     boid workspace apply -f <yaml>                     (export した envelope 文書を適用)
-     boid workspace assign <project> <slug>             (project に紐付け)
+project.yaml は読み込まれません。workspace envelope に設定をまとめてください。
 
 詳細は docs/ja/guide/onboarding.md を参照
 `

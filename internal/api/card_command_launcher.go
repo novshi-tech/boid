@@ -1,7 +1,7 @@
 package api
 
 // Manual card-command launch: claims a card's single execution slot and
-// dispatches its project.yaml `run:` command as a readonly exec job
+// dispatches its workspace configuration `run:` command as a readonly exec job
 // carrying card/request context, mirroring fireTrigger's shape
 // (trigger_loop.go) with the single-flight unit swapped from
 // (project, trigger) to the card's own card_requests row.
@@ -41,7 +41,7 @@ type CardCommandLauncherStore interface {
 	ClearCardForceReleaseBarrier(cardID string) error
 }
 
-// CardCommandOption is one project.yaml card_commands entry resolved to its
+// CardCommandOption is one workspace configuration card_commands entry resolved to its
 // declared label, for the Web UI's command button row. Key is the wire
 // command_key a button posts back; Label is exactly what the workspace
 // wrote — the daemon never invents a gloss for it.
@@ -189,7 +189,7 @@ func cardWorkChildOccupantTx(tx TxStore, cardID string) (occupantTaskID string, 
 
 // RunCardCommandAsHuman fires cardID's commandKey card_commands entry as a human
 // (cause_id empty) command launcher: a short-lived readonly exec job that
-// runs the project.yaml `run:` command with card/request context in its
+// runs the workspace configuration `run:` command with card/request context in its
 // broker token, expected to call `boid task create` or `boid agent start`
 // exactly once to produce this request's continuation.
 //
@@ -326,7 +326,7 @@ func (s *TaskWorkflowService) RunCardCommandAsHuman(ctx context.Context, cardID,
 }
 
 // CardCommandOptionsForProject lists projectID's card_commands in
-// project.yaml declaration order (meta.CardCommandsOrder), or nil when the
+// workspace configuration declaration order (meta.CardCommandsOrder), or nil when the
 // project declares none — the Web UI's signal to render no command section
 // at all.
 func (s *TaskWorkflowService) CardCommandOptionsForProject(ctx context.Context, projectID string) []CardCommandOption {

@@ -20,7 +20,7 @@ type ProjectHandler struct {
 	TriggerRunner TriggerRunner
 }
 
-// TriggerRunner fires one project.yaml trigger immediately, bypassing the
+// TriggerRunner fires one workspace configuration trigger immediately, bypassing the
 // `every` elapsed check but NOT single-flight. Implemented by
 // *api.TaskWorkflowService.RunTriggerNow (trigger_loop.go).
 type TriggerRunner interface {
@@ -297,7 +297,7 @@ func (h *ProjectHandler) StartExec(w http.ResponseWriter, r *http.Request) {
 
 // RunTrigger handles POST /api/projects/{id}/triggers/{name}/run. The
 // project is resolved from the URL ref the same way every other project
-// route does; {name} is the trigger's project.yaml `name:`.
+// route does; {name} is the trigger's workspace configuration `name:`.
 //
 // {name} can contain a "/" — a signal-derived trigger is named
 // "signal:<pack>/<connector>" (signal_trigger_derive.go) — so cmd/trigger.go

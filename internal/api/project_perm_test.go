@@ -15,7 +15,8 @@ func TestProjectAPI_PermissionRegistrationUpdateAndDisplay(t *testing.T) {
 			ts := testutil.NewTestServer(t)
 			dir := setupTestProject(t, "project", "Project", false)
 			var p orchestrator.Project
-			err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir, "perm": perm}, &p)
+			remoteURL := testutil.ServeGitRepository(t, dir)
+			err := ts.Client.Do("POST", "/api/projects/git", api.CreateProjectFromGitURLRequest{URL: remoteURL, Workspace: "default", Perm: perm}, &p)
 			if perm == "invalid" {
 				if err == nil {
 					t.Fatal("invalid permission accepted")
@@ -32,7 +33,7 @@ func TestProjectAPI_PermissionRegistrationUpdateAndDisplay(t *testing.T) {
 			if p.Perm != want {
 				t.Fatalf("perm %q, want %q", p.Perm, want)
 			}
-			if err := ts.Client.Do("PUT", "/api/projects/project/perm", map[string]string{"perm": "fetch"}, &p); err != nil {
+			if err := ts.Client.Do("PUT", "/api/projects/"+p.ID+"/perm", map[string]string{"perm": "fetch"}, &p); err != nil {
 				t.Fatal(err)
 			}
 			if p.Perm != "fetch" {
@@ -54,13 +55,13 @@ func TestProjectAPI_PermissionRegistrationUpdateAndDisplay(t *testing.T) {
 			if !found {
 				t.Fatal("project absent from list")
 			}
-			if err := ts.Client.Do("GET", "/api/projects/project", nil, &p); err != nil {
+			if err := ts.Client.Do("GET", "/api/projects/"+p.ID, nil, &p); err != nil {
 				t.Fatal(err)
 			}
 			if p.Perm != "fetch" {
 				t.Fatal(p.Perm)
 			}
-			if err := ts.Client.Do("PUT", "/api/projects/project/perm", map[string]string{"perm": "invalid"}, nil); err == nil {
+			if err := ts.Client.Do("PUT", "/api/projects/"+p.ID+"/perm", map[string]string{"perm": "invalid"}, nil); err == nil {
 				t.Fatal("invalid update accepted")
 			}
 		})
@@ -75,7 +76,7 @@ func TestTaskAPI_PrimaryProjectPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Existing tasks remain editable after their project's permission changes.
-	if err := ts.Client.Do("PUT", "/api/projects/project/perm", map[string]string{"perm": "fetch"}, nil); err != nil {
+	if err := ts.Client.Do("PUT", "/api/projects/"+p.ID+"/perm", map[string]string{"perm": "fetch"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := ts.Client.Do("PATCH", "/api/tasks/"+task.ID, api.UpdateTaskRequest{Title: "existing task remains editable", ProjectID: p.ID}, nil); err != nil {
@@ -127,7 +128,7 @@ func TestTaskAPI_PermRetry(t *testing.T) {
 				if err := ts.Client.Do("POST", "/api/tasks", req, &original); err != nil {
 					t.Fatal(err)
 				}
-				if err := ts.Client.Do("PUT", "/api/projects/project/perm", map[string]string{"perm": "fetch"}, nil); err != nil {
+				if err := ts.Client.Do("PUT", "/api/projects/"+p.ID+"/perm", map[string]string{"perm": "fetch"}, nil); err != nil {
 					t.Fatal(err)
 				}
 				req.Title = "retry"

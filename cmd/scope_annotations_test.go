@@ -231,11 +231,10 @@ var expectedScopeAnnotations = map[string]string{
 	// local — daemon lifecycle machinery itself, sandbox-launch plumbing,
 	// commands that never talk to a daemon, or (see the doc comment above)
 	// a deliberate judgment call reconciling mechanism against the plan doc.
-	"boid check":           scopeLocal,
-	"boid checkout":        scopeLocal,
-	"boid fetch":           scopeLocal,
-	"boid init":            scopeLocal,
-	"boid project migrate": scopeLocal,
+	"boid check":    scopeLocal,
+	"boid checkout": scopeLocal,
+	"boid fetch":    scopeLocal,
+	"boid init":     scopeLocal,
 	// workspace import is a retired, always-failing stub (2026-07-28) — it no
 	// longer talks to a daemon at all, so it is scopeLocal like `boid init`
 	// (also a deprecated stub pointing elsewhere), NOT scopeRemote. This also
@@ -267,7 +266,6 @@ var expectedScopeAnnotations = map[string]string{
 	// above for the full reasoning. It never calls client.FromContext or
 	// resolves a profile, so it must work regardless of which profile
 	// (including a remote https one) happens to be active.
-	"boid project init": scopeNeutral,
 	// docs/plans/release-onboarding.md PR1 (codex review round 1 of this
 	// PR): reads internal/version only (ldflags override or
 	// debug.ReadBuildInfo()), never the daemon's HTTP API, and its result

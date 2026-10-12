@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
@@ -17,14 +18,19 @@ func TestProjectCLI_PermissionAddUpdateAndDisplay(t *testing.T) {
 	projectAddPerm = "fetch"
 	t.Cleanup(func() { projectAddPerm = previous })
 	src := writeGitURLTestProject(t, "perm-project", "Permission Project")
+	remoteURL := testutil.ServeGitRepository(t, src)
 	var out bytes.Buffer
 	projectAddCmd.SetOut(&out)
 	t.Cleanup(func() { projectAddCmd.SetOut(nil); projectListCmd.SetOut(nil); projectSetPermCmd.SetOut(nil) })
-	if err := runProjectAdd(projectAddCmd, []string{gitFileURL(src)}); err != nil {
+	if err := runProjectAdd(projectAddCmd, []string{remoteURL}); err != nil {
 		t.Fatal(err)
 	}
-	var p orchestrator.Project
-	if err := ts.Client.Do("GET", "/api/projects/perm-project", nil, &p); err != nil {
+	id, err := api.DeriveProjectIDFromURL(remoteURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := orchestrator.Project{ID: id}
+	if err := ts.Client.Do("GET", "/api/projects/"+p.ID, nil, &p); err != nil {
 		t.Fatal(err)
 	}
 	if p.Perm != "fetch" {
@@ -45,7 +51,7 @@ func TestProjectCLI_PermissionAddUpdateAndDisplay(t *testing.T) {
 	if err := runProjectSetPerm(projectSetPermCmd, []string{p.ID, "push"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ts.Client.Do("GET", "/api/projects/perm-project", nil, &p); err != nil {
+	if err := ts.Client.Do("GET", "/api/projects/"+p.ID, nil, &p); err != nil {
 		t.Fatal(err)
 	}
 	if p.Perm != "push" {

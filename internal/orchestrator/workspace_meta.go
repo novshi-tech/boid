@@ -2,21 +2,7 @@ package orchestrator
 
 import "strings"
 
-// WorkspaceMeta holds the machine-local workspace configuration that is
-// stored in ~/.config/boid/workspaces/<slug>.yaml.
-//
-// A workspace defines host_command references, environment variable
-// overrides, and optional capability flags for sandboxes. Fields that are
-// project-specific (secret_namespace, host_commands, additional_bindings,
-// name, description, version) are intentionally absent; they remain in
-// project.yaml.
-//
-// A Kits field used to live here (an ordered list of kit slugs, resolved and
-// merged in at hydration time); the kit mechanism itself was retired and the
-// field removed. Two client-side call sites still resolve a legacy `kits:`
-// reference list against MaterializeWorkspaceKitsForPersist, but source it
-// from outside this type now — see cmd/workspace.go's
-// ensureWorkspaceExistsForAssign and cmd/project_migrate.go.
+// WorkspaceMeta holds workspace runtime configuration stored in the workspace DB.
 type WorkspaceMeta struct {
 	Triggers          []Trigger              `yaml:"triggers,omitempty" json:"triggers,omitempty"`
 	Signals           SignalsConfig          `yaml:"signals,omitempty" json:"signals,omitempty"`
@@ -24,9 +10,7 @@ type WorkspaceMeta struct {
 	CardCommandsOrder []string               `yaml:"-" json:"-"`
 	CardEvents        CardEventsConfig       `yaml:"card_events,omitempty" json:"card_events,omitempty"`
 
-	// Env holds environment variable overrides applied to every sandbox
-	// launched under this workspace. Values here take precedence over
-	// kit-supplied env but are overridden by project.yaml env.
+	// Env supplies defaults for every job in this workspace.
 	Env map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 
 	// Capabilities declares optional sandbox capability flags for this
@@ -80,14 +64,7 @@ type WorkspaceMeta struct {
 	// struct, silently ignored) but its value is discarded rather than
 	// materialized into a sandbox mount.
 
-	// TaskBehaviors / BaseBranch / ForkPoint / DefaultTaskBehavior are the
-	// workspace's "default project" definition — a project.yaml-less or
-	// partial project.yaml inherits these. Mirrors the identically-named
-	// ProjectMeta fields field-for-field, both in shape and in the
-	// validation/normalization pipeline they go through
-	// (normalizeWorkspaceDefaultTaskBehaviors, spec_loader.go). See
-	// docs/plans/workspace-default-project.md for the hydration-merge rules
-	// (project.yaml wins per-field over these workspace defaults).
+	// TaskBehaviors defines the named task workflows available in this workspace.
 	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors,omitempty" json:"task_behaviors,omitempty"`
 	// BaseBranch is the workspace default's base_branch. Empty means
 	// "unspecified" — there is deliberately no way to explicitly un-set an

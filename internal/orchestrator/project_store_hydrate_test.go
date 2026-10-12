@@ -283,7 +283,7 @@ card_commands:
 	}
 
 	wsDir := t.TempDir()
-	setupWorkspaceDir(t, wsDir, "ccws", "")
+	setupWorkspaceDir(t, wsDir, "ccws", "card_commands:\n  review: {label: Run, run: python3 scripts/card_review.py}\n")
 
 	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
@@ -302,7 +302,8 @@ card_commands:
 
 	hydrated.CardCommands["review"] = orchestrator.CardCommand{Label: "mutated", Run: "mutated"}
 
-	cached, ok := s.Get("proj-cc")
+	cached, err := s.GetWithWorkspace(context.Background(), "proj-cc")
+	ok = err == nil
 	if !ok {
 		t.Fatal("expected cached meta to exist")
 	}
@@ -375,7 +376,7 @@ func TestGetWithWorkspace_HostCommandsResolved(t *testing.T) {
 	setupProjectWithBehavior(t, projectDir, "proj-hc", "build")
 
 	wsDir := t.TempDir()
-	setupWorkspaceDir(t, wsDir, "hcws", "host_commands:\n  - gh\n")
+	setupWorkspaceDir(t, wsDir, "hcws", "host_commands:\n  - gh\ntask_behaviors:\n  build: {}\n")
 
 	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))

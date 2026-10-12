@@ -2,7 +2,7 @@
 name: dev-pr-flow
 description: >
   Unified workflow for shipping implementation changes: run unit tests → commit → push → create/reuse PR → watch until CI passes.
-  A skill that reproduces the same steps as .boid/project.yaml task_behaviors.dev.default_instruction.message so the same flow can be used outside a boid task (manual dev / regular interactive sessions).
+  A skill that reproduces the same steps as workspace task_behaviors.dev.default_instruction.message so the same flow can be used outside a boid task (manual dev / regular interactive sessions).
   Use when shipping a change in the boid repo requires the full local verify → commit → push → PR → CI cycle (e.g. "open a PR and watch it until CI goes green", "ship this with the same flow as a dev task", "handle commit + push + PR + watch all at once").
 ---
 

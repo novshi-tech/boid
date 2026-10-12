@@ -206,8 +206,6 @@ func SessionList(sessions []SessionView, projectFilter string) templ.Component {
 }
 
 // SessionNew renders the /sessions/new page.
-// Phase 3-d PR2: project.yaml の commands: schema を廃止し、 セッション起動の唯一の
-// 入口を harness 直選択フォームに統合した。
 func SessionNew(projects []*orchestrator.Project, selectedProjectID string, errorMsg string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -249,7 +247,7 @@ func SessionNew(projects []*orchestrator.Project, selectedProjectID string, erro
 				var templ_7745c5c3_Var10 string
 				templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(errorMsg)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 128, Col: 39}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 126, Col: 39}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 				if templ_7745c5c3_Err != nil {
@@ -272,7 +270,7 @@ func SessionNew(projects []*orchestrator.Project, selectedProjectID string, erro
 				var templ_7745c5c3_Var11 string
 				templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(p.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 137, Col: 27}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 135, Col: 27}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 				if templ_7745c5c3_Err != nil {
@@ -295,7 +293,7 @@ func SessionNew(projects []*orchestrator.Project, selectedProjectID string, erro
 				var templ_7745c5c3_Var12 string
 				templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(taskNewProjectLabel(p))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 137, Col: 94}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 135, Col: 94}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 				if templ_7745c5c3_Err != nil {
@@ -318,7 +316,7 @@ func SessionNew(projects []*orchestrator.Project, selectedProjectID string, erro
 				var templ_7745c5c3_Var13 templ.SafeURL
 				templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/projects/" + selectedProjectID + "/sessions/start"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 145, Col: 81}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/sessions.templ`, Line: 143, Col: 81}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 				if templ_7745c5c3_Err != nil {

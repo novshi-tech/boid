@@ -38,7 +38,7 @@ const (
 
 // CardRequestCommandKeyGo is the reserved command_key value for a request
 // whose origin is the shared work-execution slot (Go) rather than a
-// project.yaml card_commands entry. ValidateCardCommands rejects an empty
+// workspace configuration card_commands entry. ValidateCardCommands rejects an empty
 // card_commands key at load time, so this sentinel never collides with a
 // real one; ReconcileLaunchingCardRequests uses it as its skip predicate.
 const CardRequestCommandKeyGo = "__go__"
@@ -79,7 +79,7 @@ const (
 
 // CardRequestDefinition is the command definition snapshotted onto a
 // request the instant it transitions queued → launching, so a later
-// project.yaml edit cannot retroactively change what this request ran.
+// workspace configuration edit cannot retroactively change what this request ran.
 type CardRequestDefinition struct {
 	CommandKey string
 	Label      string

@@ -11,13 +11,8 @@ import "encoding/json"
 type JobKind string
 
 const (
-	JobKindHook JobKind = "hook"
-	JobKindExec JobKind = "exec"
-	// JobKindSession is the Phase 3-d label for a user-initiated agent
-	// session not tied to a task lifecycle (WebUI [New Session] / `boid
-	// agent` CLI). It is distinct from JobKindHook (state-machine driven)
-	// and JobKindExec (sandboxed argv with no harness), so the TUI / Web UI
-	// can present it as a separate top-level concept.
+	JobKindHook    JobKind = "hook"
+	JobKindExec    JobKind = "exec"
 	JobKindSession JobKind = "session"
 )
 
@@ -96,19 +91,6 @@ type JobSpec struct {
 	// SecretNamespace scopes the broker's secret resolver.
 	SecretNamespace string
 
-	// APIGatewayServices, when non-nil, OVERRIDES the dispatcher-resolved
-	// (floor ∪ workspace) API gateway service allowlist for this job's
-	// token: a signal-derived trigger's connector exec job is restricted to
-	// exactly the ONE service instance its signals.sources[] declaration
-	// named, never the workspace's full enabled set. Runner.
-	// registerAPIGatewayToken (internal/dispatcher/apigateway_wire.go)
-	// intersects this with the normally-resolved set rather than trusting
-	// it outright — defense in depth against a stale declaration naming a
-	// service the workspace no longer enables (project.yaml load only
-	// WARNS about that mismatch, never blocks — see
-	// ProjectStore.GetWithWorkspace). nil (every job but a connector
-	// trigger) leaves the existing resolveEnabledAPIServices behavior
-	// completely unchanged.
 	APIGatewayServices []string
 
 	// SignalService / SignalConnector set sandbox.TokenContext.Service/
@@ -147,15 +129,6 @@ type JobSpec struct {
 	// where the caller always expects a PTY-backed terminal.
 	Interactive bool
 
-	// HarnessType identifies which HarnessAdapter implementation the runner
-	// hands the agent process off to. Phase 3-d made this invariant
-	// non-empty for every dispatched job:
-	//   - "shell" for hooks without an `agent:` declaration, every `boid
-	//     exec`, and the fall-through for unknown agents
-	//   - "claude" / "codex" / "opencode" for the corresponding agent hooks
-	//     and user-initiated sessions
-	// dispatcher bridges this into sandbox.Spec.HarnessType and the
-	// runner-inner-child resolves the adapter via the registry.
 	HarnessType string
 
 	// SandboxProfile selects the filesystem layout strategy for the sandbox.
@@ -175,18 +148,6 @@ type Visibility struct {
 	// Empty means the project filesystem is not visible.
 	ProjectDir string
 
-	// ProjectName is project.yaml's `meta.name` (kebab-case by convention,
-	// not enforced), threaded through from the workspace-hydrated
-	// ProjectMeta at JobSpec-build time (PlanHook / BuildSessionJobSpec).
-	// dispatcher uses it — falling back to filepath.Base(ProjectDir) when
-	// empty — to name the sandbox-internal clone directory under the
-	// /workspace parent dir: every project previously shared the exact
-	// same sandbox cwd ("/workspace"), which collided Claude Code's
-	// `~/.claude/projects/-workspace/` session-log slug across every boid
-	// project. Empty is a legitimate value (a project with no `name:` in
-	// project.yaml, or a dispatch path — e.g. gate/hook jobs with no
-	// project visible at all — that never resolves one); dispatcher's
-	// fallback degrades gracefully rather than erroring.
 	ProjectName string
 
 	// AdditionalBindings lists extra host bind-mounts (e.g. kit-provided CLIs
@@ -198,7 +159,7 @@ type Visibility struct {
 	Writable bool
 
 	// DockerEnabled, when true, indicates capabilities.docker was declared in
-	// project.yaml. Dispatcher uses this to start a per-sandbox docker proxy.
+	// workspace configuration. Dispatcher uses this to start a per-sandbox docker proxy.
 	DockerEnabled bool
 
 	// Checkout starts the sandbox command in a fresh primary-repository checkout.

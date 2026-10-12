@@ -1,9 +1,7 @@
 package orchestrator
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -83,74 +81,6 @@ func TestWorkspaceAutomationPersistenceAndEnvelopeRoundTrip(t *testing.T) {
 	}
 }
 
-func TestWorkspaceAutomationWorkspaceOnlyAndProjectPriority(t *testing.T) {
-	ws := NewWorkspaceStore(t.TempDir())
-	if err := ws.Save("team", automationMeta(t)); err != nil {
-		t.Fatal(err)
-	}
-	store := NewProjectStore()
-	store.SetWorkspaceStore(ws)
-	for _, id := range []string{"a", "b"} {
-		store.SetSynthesizedMeta(id, &ProjectMeta{Name: id})
-		store.SetWorkspaceID(id, "team")
-	}
-	got, err := store.GetWorkspaceMeta(context.Background(), "team")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Triggers) != 2 || got.CardCommands["judge"].Run != "echo custom" || got.CardEvents.Command != "judge" {
-		t.Fatalf("receiver: %+v", got)
-	}
-	for _, id := range []string{"a", "b"} {
-		m, err := store.GetWithWorkspace(context.Background(), id)
-		if err != nil || len(m.Triggers) != 0 || len(m.CardCommands) != 0 {
-			t.Fatalf("ordinary %s: %+v %v", id, m, err)
-		}
-	}
-	projectMeta, err := parseProjectMetaBytes("a", false, []byte(`name: A
-triggers:
- - name: sweep
-   every: 3m
-   run: echo project sweep
-signals:
- sources:
-  - connector: demo/poll
-    service: demo
-    every: 4m
-card_commands:
- judge:
-  label: Project
-  run: echo project
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	store.SetSynthesizedMeta("a", projectMeta)
-	got, err = store.GetWorkspaceMeta(context.Background(), "team")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Triggers) != 0 || got.CardCommands["judge"].Run == "echo custom" || got.CardCommands["z-last"].Run != "echo last" {
-		t.Fatalf("priority: %+v", got)
-	}
-	project, err := store.GetWithWorkspace(context.Background(), "a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(project.Triggers) != 2 || project.Triggers[0].Run != "echo project sweep" || project.CardCommands["judge"].Run != "echo project" {
-		t.Fatalf("project priority: %+v", project)
-	}
-	store.SetWorkspaceID("a", "other")
-	got, err = store.GetWorkspaceMeta(context.Background(), "team")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Triggers) != 2 || got.CardCommands["judge"].Run != "echo custom" {
-		t.Fatal("foreign workspace suppressed definitions")
-	}
-
-}
-
 func TestWorkspaceAutomationValidation(t *testing.T) {
 	for _, data := range []string{
 		"triggers: [{name: bad, every: 1s, run: echo}]",
@@ -200,6 +130,7 @@ func TestWorkspaceAutomationEmptyPreservesMeta(t *testing.T) {
 		}
 		want := cloneProjectMeta(original)
 		want.SecretNamespace = "team"
+		want.DefaultTaskBehavior = ""
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("empty workspace changed %s: got %+v want %+v", id, got, want)
 		}
@@ -283,50 +214,6 @@ func TestWorkspaceAutomationCardEventsInTransaction(t *testing.T) {
 	}
 }
 
-func TestWorkspaceAutomationShadowedEventKeepsBuiltinJudge(t *testing.T) {
-	ws := NewWorkspaceStore(t.TempDir())
-	meta := automationMeta(t)
-	meta.CardEvents.Command = "z-last"
-	meta.CardCommands["other"] = CardCommand{Label: "Other", Run: "echo other"}
-	var warnings bytes.Buffer
-	logger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&warnings, nil)))
-	defer slog.SetDefault(logger)
-	if err := ws.Save("team", meta); err != nil {
-		t.Fatal(err)
-	}
-	store := NewProjectStore()
-	store.SetWorkspaceStore(ws)
-	store.SetSynthesizedMeta("project", &ProjectMeta{CardCommands: map[string]CardCommand{"z-last": {Label: "Project", Run: "echo project"}}})
-	store.SetWorkspaceID("project", "team")
-	got, err := store.GetWorkspaceMeta(context.Background(), "team")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.CardEvents.Command != "judge" {
-		t.Fatalf("event: %+v", got.CardEvents)
-	}
-	if _, ok := got.CardCommands["z-last"]; ok {
-		t.Fatal("shadowed command remains")
-	}
-	if got.CardCommands["judge"] != WorkspaceDefaults().CardCommands["judge"] {
-		t.Fatal("built-in judge changed")
-	}
-	if got.CardCommands["other"].Run != "echo other" {
-		t.Fatal("independent command was lost")
-	}
-	if !strings.Contains(warnings.String(), "workspace card events command shadowed") {
-		t.Fatal("missing warning")
-	}
-	project, err := store.GetWithWorkspace(context.Background(), "project")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if project.CardCommands["z-last"].Run != "echo project" {
-		t.Fatal("project command changed")
-	}
-}
-
 func TestWorkspaceAutomationCommandOrderOnWorkspace(t *testing.T) {
 	ws := NewWorkspaceStore(t.TempDir())
 	if err := ws.Save("team", automationMeta(t)); err != nil {
@@ -374,5 +261,41 @@ func TestWorkspaceAutomationMultilineValuesRoundTrip(t *testing.T) {
 		if restored.CardCommands["z-last"].Run != cmd.Run || restored.Triggers[0].Run != meta.Triggers[0].Run || !reflect.DeepEqual(restored.Signals, meta.Signals) {
 			t.Fatalf("envelope lost %q", value)
 		}
+	}
+}
+
+func TestProjectCardEventsResolveWorkspaceInTransaction(t *testing.T) {
+	repo := newTestWorkspaceRepo(t)
+	meta := automationMeta(t)
+	meta.CardEvents.Command = "z-last"
+	if err := repo.Save("team", meta); err != nil {
+		t.Fatal(err)
+	}
+	store := NewProjectStore()
+	store.SetWorkspaceStore(NewWorkspaceStoreWithRepo(t.TempDir(), repo))
+	tx, err := repo.conn.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO projects(id,work_dir) VALUES ('p','/missing')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetProjectWorkspace(tx, "p", "team"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Exec(`INSERT INTO tasks (id,type,project_id,workspace_id,title,status,kind,urgency,wake_task_id,suggestion_verb,detail) VALUES ('card','card','p','team','Card','parked','','','','','{}')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := IngestCardEventRequest(context.Background(), tx, &Action{ID: "event", TaskID: "card", Type: ActionTypeCardEdited}, store); err != nil {
+		t.Fatal(err)
+	}
+	requests, err := ListCardRequestsByCard(tx, "card")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 || requests[0].CommandKey != "z-last" {
+		t.Fatalf("requests: %+v", requests)
 	}
 }

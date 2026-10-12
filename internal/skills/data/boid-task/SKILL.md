@@ -309,7 +309,7 @@ files. Implementation always happens in child executor tasks.
 
 ### Dynamic instruction generation (default pattern)
 
-- **Root task**: boots from `project.yaml`'s `default_instruction` (set by the
+- **Root task**: boots from `workspace envelope`'s `default_instruction` (set by the
   project owner). Do not override unless the active instruction or user reply
   explicitly says to.
 - **Child tasks**: the supervisor generates each child's instruction dynamically

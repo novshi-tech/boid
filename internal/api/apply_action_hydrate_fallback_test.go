@@ -9,15 +9,6 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// TestApplyAction_URLDerivedProjectHydrateFailureIsHardError pins the 論点e
-// (PR6) decision: a project.yaml-less project (docs/plans/
-// workspace-default-project.md PR5, id carrying
-// orchestrator.URLDerivedProjectIDPrefix) has NO task_behaviors of its own —
-// every one comes from the workspace default merge GetWithWorkspace
-// performs. Falling back to the bare cached meta on hydration failure would
-// silently proceed with zero task_behaviors, producing a dispatch failure
-// with no visible link to the real cause. ApplyAction must instead fail
-// loudly right here.
 func TestApplyAction_URLDerivedProjectHydrateFailureIsHardError(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
@@ -55,16 +46,6 @@ func TestApplyAction_URLDerivedProjectHydrateFailureIsHardError(t *testing.T) {
 	}
 }
 
-// TestApplyAction_URLDerivedProjectDegradedSuccessIsAlsoHardError pins the
-// other half of the 論点e (PR6) decision (Codex review round 1 Major): a
-// no-YAML project's GetWithWorkspace call can return (meta, nil error) —
-// success — while still being degraded (no workspace linked / workspace
-// store not configured / workspace.yaml simply absent, os.ErrNotExist) — see
-// GetWithWorkspace's own doc comment. None of those merge the workspace
-// default in, so the returned meta has the same zero task_behaviors its bare
-// cached meta always carries. A hydrateErr == nil check alone is not enough
-// to tell this apart from a genuine successful merge; ApplyAction must treat
-// it the same as an outright hydrate error for a no-YAML project.
 func TestApplyAction_URLDerivedProjectDegradedSuccessIsAlsoHardError(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
@@ -138,13 +119,7 @@ func TestApplyAction_URLDerivedProjectSuccessfulMergeDispatches(t *testing.T) {
 	}
 }
 
-// TestApplyAction_OrdinaryProjectHydrateFailureStillFallsBack pins the other
-// half of the 論点e decision: an ordinary project.yaml-bearing project (an
-// id with no orchestrator.URLDerivedProjectIDPrefix) keeps the existing
-// silent-fallback-to-bare-Get behavior unchanged when workspace hydration
-// fails — only its workspace-supplied extras degrade, not its own
-// task_behaviors, so dispatch can still proceed.
-func TestApplyAction_OrdinaryProjectHydrateFailureStillFallsBack(t *testing.T) {
+func TestApplyActionRegistryProjectHydrationFailureRejectsDispatch(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
 		Type:      orchestrator.TaskTypeExecution,
@@ -167,11 +142,9 @@ func TestApplyAction_OrdinaryProjectHydrateFailureStillFallsBack(t *testing.T) {
 		Coordinator: probe,
 	}
 
-	result, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
-	if err != nil {
-		t.Fatalf("ApplyAction() error = %v, want nil (ordinary project must still fall back to bare meta)", err)
+	_, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
+	if err == nil || !strings.Contains(err.Error(), "workspace.yaml: corrupt") {
+		t.Fatalf("missing workspace must reject dispatch: %v", err)
 	}
-	if result.Task.Status != orchestrator.TaskStatusExecuting {
-		t.Fatalf("task status = %q, want %q", result.Task.Status, orchestrator.TaskStatusExecuting)
-	}
+
 }

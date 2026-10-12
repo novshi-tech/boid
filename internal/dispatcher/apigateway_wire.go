@@ -27,7 +27,7 @@ func (r *Runner) registerAPIGatewayToken(jobID string, spec *orchestrator.JobSpe
 	// A signal-derived connector job restricts its token to the one service
 	// it declared (spec.APIGatewayServices), but we INTERSECT rather than
 	// trust it outright: the declaration is only warned about (never
-	// blocked) at project.yaml load time, so a stale declaration must not
+	// blocked) at workspace configuration load time, so a stale declaration must not
 	// grant reach the workspace no longer actually enables.
 	if spec.APIGatewayServices != nil {
 		services = intersectServiceNames(services, spec.APIGatewayServices)

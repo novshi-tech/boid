@@ -12,8 +12,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-
-	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 // The fd-3 tests below run the code under test in a SUBPROCESS, with a real
@@ -222,34 +220,6 @@ func TestSpawnEnv_MarksStatusPipe(t *testing.T) {
 	}
 }
 
-// TestBuildStartupStatus_Migration verifies that a
-// *orchestrator.ProjectMigrationError (even wrapped multiple times) is
-// recovered and serialised into Kind=migration with every issue preserved
-// in order.
-func TestBuildStartupStatus_Migration(t *testing.T) {
-	mig := &orchestrator.ProjectMigrationError{
-		Projects: []orchestrator.ProjectMigrationIssue{
-			{ProjectID: "id1", Dir: "/a", Messages: []string{"m1"}},
-			{ProjectID: "id2", Dir: "/b", Messages: []string{"m2a", "m2b"}},
-		},
-	}
-	wrapped := fmt.Errorf("create server: %w", mig)
-
-	got := buildStartupStatus(wrapped)
-	if got.Kind != StartupKindMigration {
-		t.Fatalf("Kind = %q, want %q", got.Kind, StartupKindMigration)
-	}
-	if len(got.Projects) != 2 {
-		t.Fatalf("Projects len = %d, want 2", len(got.Projects))
-	}
-	if got.Projects[0].ID != "id1" || got.Projects[0].Dir != "/a" {
-		t.Fatalf("project[0] = %+v", got.Projects[0])
-	}
-	if got.Projects[1].Messages[1] != "m2b" {
-		t.Fatalf("project[1].Messages[1] = %q, want %q", got.Projects[1].Messages[1], "m2b")
-	}
-}
-
 // TestBuildStartupStatus_Other captures the fallback path for non-migration
 // startup errors. The message must echo err.Error() verbatim so the parent
 // can pass it through unchanged.
@@ -281,12 +251,8 @@ func TestReadStartupStatus_EOFIsOK(t *testing.T) {
 // asserts the structured shape survives. Mirrors what the parent sees
 // when the child writes via WriteStartupStatusOnFD3.
 func TestReadStartupStatus_RoundTrip(t *testing.T) {
-	want := StartupStatus{
-		Kind: StartupKindMigration,
-		Projects: []StartupMigrationProject{
-			{ID: "id1", Dir: "/x/y", Messages: []string{"m1"}},
-		},
-	}
+	want := StartupStatus{Kind: StartupKindOther, Message: "startup error"}
+
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(want); err != nil {
 		t.Fatalf("encode: %v", err)
@@ -295,7 +261,7 @@ func TestReadStartupStatus_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadStartupStatus: %v", err)
 	}
-	if got.Kind != want.Kind || got.Projects[0].ID != "id1" || got.Projects[0].Messages[0] != "m1" {
+	if got.Kind != want.Kind || got.Message != want.Message {
 		t.Fatalf("got = %+v, want = %+v", got, want)
 	}
 }

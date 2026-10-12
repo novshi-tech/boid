@@ -37,7 +37,7 @@ func TestRunTaskUpdate_UpdatesTitleViaPatch(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-title-proj", "Update Title Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestRunTaskUpdate_UpdatesPayloadFromFile(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-payload-proj", "Update Payload Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestRunTaskUpdate_UpdatesInstructionsFromFile(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-instr-proj", "Update Instructions Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -184,7 +184,7 @@ func TestRunTaskUpdate_InstructionsFromStdin(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-instr-stdin-proj", "Update Instructions Stdin Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -224,7 +224,7 @@ func TestRunTaskUpdate_NoFlagsReturnsError(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-noflag-proj", "Update NoFlag Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -273,7 +273,7 @@ func TestRunTaskUpdate_PatchFileDropsDeprecatedTaskRowOverrides(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-patch-proj", "Update Patch Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -327,7 +327,7 @@ func TestRunTaskUpdate_PatchFileFromStdin(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-patch-stdin-proj", "Update Patch Stdin Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 
@@ -377,7 +377,7 @@ func TestRunTaskUpdate_UpdatesRemoteIDOnlyViaPatch_FromStdin(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "update-remote-id-proj", "Update RemoteID Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 

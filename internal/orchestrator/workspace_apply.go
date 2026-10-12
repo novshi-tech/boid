@@ -83,7 +83,7 @@ type WorkspaceApplyResult struct {
 // not-yet-registered project must never fail apply. Resolving names to IDs
 // is deliberately done by the caller, OUTSIDE this transaction: a
 // project's display name lives in the in-memory ProjectMeta cache
-// (hydrated from project.yaml on disk), not a DB column this transaction
+// (hydrated from workspace configuration on disk), not a DB column this transaction
 // could query — see ProjectAppService.resolveWorkspaceApplyProjectNames.
 //
 // dryRun runs every read and write statement below — including the

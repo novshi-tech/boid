@@ -1,7 +1,7 @@
 package api
 
 // Trigger execution: scheduling, single-flight, and result recording for
-// project.yaml `triggers[]`. TriggerLoop (below) mirrors QueueSweepLoop
+// workspace configuration `triggers[]`. TriggerLoop (below) mirrors QueueSweepLoop
 // (queue_sweep.go): Run(ctx) ticks and runOnce delegates to SweepTriggers,
 // TaskWorkflowService's per-tick work.
 
@@ -524,7 +524,7 @@ func (s *TaskWorkflowService) fireTrigger(ctx context.Context, now time.Time, ke
 // out already-in-flight rows) even when nothing new can be dispatched.
 func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) (TriggerSweepResult, error) {
 	var result TriggerSweepResult
-	if s.Triggers == nil || s.Projects == nil || s.Meta == nil || s.Jobs == nil {
+	if s.Triggers == nil || s.Meta == nil || s.Jobs == nil {
 		return result, nil
 	}
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
@@ -534,27 +534,22 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 		return result, fmt.Errorf("sweep triggers: %w", err)
 	}
 
-	projects, err := s.Projects.ListProjects()
+	type automationScope struct{ projectID, workspaceID string }
+	source, ok := s.Meta.(interface {
+		WorkspaceStore() *orchestrator.WorkspaceStore
+	})
+	if !ok || source.WorkspaceStore() == nil {
+		return result, nil
+	}
+	slugs, err := source.WorkspaceStore().List()
 	if err != nil {
-		return result, fmt.Errorf("sweep triggers: list projects: %w", err)
+		return result, fmt.Errorf("sweep triggers: list workspaces: %w", err)
+	}
+	scopes := make([]automationScope, 0, len(slugs))
+	for _, slug := range slugs {
+		scopes = append(scopes, automationScope{workspaceID: slug})
 	}
 
-	type automationScope struct{ projectID, workspaceID string }
-	scopes := make([]automationScope, 0, len(projects))
-	for _, p := range projects {
-		scopes = append(scopes, automationScope{projectID: p.ID, workspaceID: p.WorkspaceID})
-	}
-	if source, ok := s.Meta.(interface {
-		WorkspaceStore() *orchestrator.WorkspaceStore
-	}); ok && source.WorkspaceStore() != nil {
-		slugs, err := source.WorkspaceStore().List()
-		if err != nil {
-			return result, fmt.Errorf("sweep triggers: list workspaces: %w", err)
-		}
-		for _, slug := range slugs {
-			scopes = append(scopes, automationScope{workspaceID: slug})
-		}
-	}
 	// Completions recorded off-thread by a previous tick's timeout handling,
 	// reported here so trackFailStreak counts them like any other
 	// completion. Drained after the two early returns above: draining
@@ -573,7 +568,7 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 			}
 			every, everr := time.ParseDuration(trig.Every)
 			if everr != nil {
-				slog.Warn("trigger sweep: invalid every (should have been rejected at project.yaml load time)", "project_id", scope.projectID, "trigger", trig.Name, "every", trig.Every, "error", everr)
+				slog.Warn("trigger sweep: invalid every (should have been rejected at workspace configuration load time)", "project_id", scope.projectID, "trigger", trig.Name, "every", trig.Every, "error", everr)
 				continue
 			}
 
@@ -687,7 +682,14 @@ type TriggerRunNowResult struct {
 // the `every` elapsed check but not single-flight — the manual debugging
 // entry point behind `boid trigger run <name>`.
 func (s *TaskWorkflowService) RunTriggerNow(ctx context.Context, projectID, triggerName string) (*TriggerRunNowResult, error) {
-	return s.runTriggerNow(ctx, TriggerKey{ProjectID: projectID, TriggerName: triggerName})
+	if s.Projects == nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: "trigger run: project lookup not configured"}
+	}
+	project, err := s.Projects.GetProject(projectID)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	return s.RunWorkspaceTriggerNow(ctx, project.WorkspaceID, triggerName)
 }
 
 // RunWorkspaceTriggerNow manually fires a repository-free workspace trigger.

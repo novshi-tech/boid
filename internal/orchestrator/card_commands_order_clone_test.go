@@ -31,7 +31,7 @@ card_commands:
 `)
 
 	wsDir := t.TempDir()
-	setupWorkspaceDir(t, wsDir, "cmd-order-ws", "")
+	setupWorkspaceDir(t, wsDir, "cmd-order-ws", "card_commands:\n  discuss: {label: Discuss, run: echo discuss}\n  review: {label: Review, run: echo review}\n")
 
 	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
@@ -39,7 +39,7 @@ card_commands:
 		{ID: "proj-cmd-order", WorkDir: projectDir, WorkspaceID: "cmd-order-ws"},
 	})
 
-	want := []string{"discuss", "review"}
+	want := []string{"judge", "discuss", "review"}
 
 	first, err := s.GetWithWorkspace(context.Background(), "proj-cmd-order")
 	if err != nil {

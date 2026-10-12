@@ -76,35 +76,7 @@ func FetchBareRepo(ctx context.Context, bareRepoPath string, creds *gitgateway.C
 	return refreshBareRepoHEAD(ctx, bareRepoPath, extraArgs)
 }
 
-// refreshBareRepoHEAD points bareRepoPath's symbolic HEAD at origin's
-// current default branch. A `--mirror` clone's fetch refspec
-// (`+refs/*:refs/*`, see CloneBareRepo's doc comment)
-// updates every refs/heads/* ref in place but never touches HEAD itself —
-// so when a forge's default branch changes (e.g. main -> master), `boid
-// project fetch` silently keeps reading project.yaml from the OLD branch
-// forever; if that old branch is later deleted upstream (`--prune` removes
-// the local ref too), the project permanently degrades ("HEAD: not a valid
-// object name") even though the repository is otherwise perfectly healthy.
-//
-// `git remote set-head origin --auto` — the usual fix for this — does NOT
-// work here: it resolves the remote's HEAD from the LOCAL
-// refs/remotes/origin/* tracking namespace, which a --mirror clone's
-// `+refs/*:refs/*` refspec never populates (refs land directly at
-// refs/heads/*, with no "origin/" prefix at all — confirmed empirically:
-// `git remote set-head origin --auto` against a --mirror clone whose remote
-// renamed its default branch left the local HEAD pointing at the
-// now-deleted old branch name). `git ls-remote --symref origin HEAD`
-// instead asks the remote SERVER directly which branch its HEAD currently
-// points at — no local tracking-ref dependency — and the result is applied
-// locally via `git symbolic-ref`.
-//
-// Failure to determine or apply the new HEAD is intentionally non-fatal:
-// the fetch itself already succeeded (every ref is up to date), so this is
-// purely an improvement on top when it works, never a regression when it
-// can't (e.g. a remote that reports no symref for HEAD at all, or a
-// transient failure right after a successful fetch) — the project simply
-// keeps reading from whatever HEAD already pointed at, exactly like before
-// this refresh step existed.
+// refreshBareRepoHEAD keeps the mirror's symbolic HEAD aligned with the origin default branch.
 func refreshBareRepoHEAD(ctx context.Context, bareRepoPath string, extraArgs []string) error {
 	args := append(append([]string{}, extraArgs...), "-C", bareRepoPath, "ls-remote", "--symref", "origin", "HEAD")
 	cmd := exec.CommandContext(ctx, "git", args...)

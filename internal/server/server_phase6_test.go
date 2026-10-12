@@ -122,9 +122,7 @@ func TestServer_Smoke_StartDispatchJobDoneAndAutoAdvance(t *testing.T) {
 	var project struct {
 		ID string `json:"id"`
 	}
-	if err := ts.Client.Do("POST", "/api/projects", map[string]any{
-		"work_dir": projectDir,
-	}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, projectDir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	if project.ID != "smoke-proj" {
@@ -190,9 +188,7 @@ func TestServer_TaskDetailIncludesActionsAndJobs(t *testing.T) {
 	var project struct {
 		ID string `json:"id"`
 	}
-	if err := ts.Client.Do("POST", "/api/projects", map[string]any{
-		"work_dir": projectDir,
-	}, &project); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, projectDir, &project); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 

@@ -44,6 +44,11 @@ func TestGetWithWorkspace_SignalConnector_ServiceNotEnabled_Warns(t *testing.T) 
 	setupWorkspaceDir(t, wsDir, "myworkspace", `
 services:
   - some-other-service
+signals:
+  sources:
+    - connector: slack/mentions
+      service: slack-api
+      every: 10m
 `)
 
 	s := orchestrator.NewProjectStore()
@@ -73,6 +78,11 @@ func TestGetWithWorkspace_SignalConnector_ServiceEnabled_NoWarning(t *testing.T)
 	setupWorkspaceDir(t, wsDir, "myworkspace", `
 services:
   - slack-api
+signals:
+  sources:
+    - connector: slack/mentions
+      service: slack-api
+      every: 10m
 `)
 
 	s := orchestrator.NewProjectStore()

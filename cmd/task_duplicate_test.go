@@ -13,7 +13,7 @@ func TestRunTaskDuplicate_OutputsNewTaskID(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 
 	dir := writeImportTestProject(t, "dup-cmd-proj", "Dup Cmd Project")
-	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+	if err := testutil.SeedProjectFixture(t, ts, dir, nil); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 

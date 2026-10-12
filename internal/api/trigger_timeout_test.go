@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -23,7 +25,7 @@ func TestSweepTriggers_NoTimeout_RunStaysInFlight(t *testing.T) {
 	// after its 3-minute grace, and the test would be measuring that instead.
 	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -48,7 +50,7 @@ func TestSweepTriggers_WithinTimeout_IsStillJustASkip(t *testing.T) {
 	})
 	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -77,7 +79,7 @@ func TestSweepTriggers_PastTimeout_EndsTheRunAsAFailure(t *testing.T) {
 	})
 	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -143,11 +145,11 @@ func TestSweepTriggers_PastTimeout_AbortsTheTaskTheRoundWasWaitingOn(t *testing.
 	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
 	tx := &stubTx{}
 	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
-		ID:        "round-task",
-		ProjectID: "proj-1",
-		Type:      orchestrator.TaskTypeExecution,
-		Status:    orchestrator.TaskStatusExecuting,
-		Exec:      &orchestrator.ExecAttrs{Behavior: "sweep"},
+		ID:          "round-task",
+		WorkspaceID: "proj-1",
+		Type:        orchestrator.TaskTypeExecution,
+		Status:      orchestrator.TaskStatusExecuting,
+		Exec:        &orchestrator.ExecAttrs{Behavior: "sweep"},
 	}}
 	svc.Tx = tx
 	svc.Lifecycle = &stubLifecycle{}
@@ -155,7 +157,7 @@ func TestSweepTriggers_PastTimeout_AbortsTheTaskTheRoundWasWaitingOn(t *testing.
 	svc.TaskWaits.Register("job-1", "round-task")
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -196,7 +198,7 @@ func TestSweepTriggers_PastTimeout_NoRegisteredWaitStillEndsTheRun(t *testing.T)
 	svc.TaskWaits = NewTaskWaitRegistry()
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -287,11 +289,11 @@ func TestSweepTriggers_PastTimeout_AbortsBeforeStoppingTheJob(t *testing.T) {
 	order := &orderRecordingLifecycle{}
 	tx := &orderRecordingTx{order: order}
 	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
-		ID:        "round-task",
-		ProjectID: "proj-1",
-		Type:      orchestrator.TaskTypeExecution,
-		Status:    orchestrator.TaskStatusExecuting,
-		Exec:      &orchestrator.ExecAttrs{Behavior: "sweep"},
+		ID:          "round-task",
+		WorkspaceID: "proj-1",
+		Type:        orchestrator.TaskTypeExecution,
+		Status:      orchestrator.TaskStatusExecuting,
+		Exec:        &orchestrator.ExecAttrs{Behavior: "sweep"},
 	}}
 	svc.Tx = tx
 	svc.Lifecycle = order
@@ -299,7 +301,7 @@ func TestSweepTriggers_PastTimeout_AbortsBeforeStoppingTheJob(t *testing.T) {
 	svc.TaskWaits.Register("job-1", "round-task")
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -406,11 +408,11 @@ func TestSweepTriggers_PastTimeout_TransientAbortFailureKeepsTheRunInFlight(t *t
 	// ("this task will never accept an abort") ends the round without the
 	// abort.
 	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
-		ID:        "round-task",
-		ProjectID: "proj-1",
-		Type:      orchestrator.TaskTypeExecution,
-		Status:    orchestrator.TaskStatusExecuting,
-		Exec:      &orchestrator.ExecAttrs{Behavior: "sweep"},
+		ID:          "round-task",
+		WorkspaceID: "proj-1",
+		Type:        orchestrator.TaskTypeExecution,
+		Status:      orchestrator.TaskStatusExecuting,
+		Exec:        &orchestrator.ExecAttrs{Behavior: "sweep"},
 	}}
 	svc.Tx = &failingTx{err: errors.New("database is locked")}
 	svc.Lifecycle = &stubLifecycle{}
@@ -418,7 +420,7 @@ func TestSweepTriggers_PastTimeout_TransientAbortFailureKeepsTheRunInFlight(t *t
 	svc.TaskWaits.Register("job-1", "round-task")
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -471,11 +473,11 @@ func TestSweepTriggers_PastTimeout_PermanentAbortRefusalStillEndsTheRun(t *testi
 	// A card: the card machine registers no `abort` rule, so ApplyAction
 	// rejects it with a 400 that will never become a success.
 	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
-		ID:        "a-card",
-		ProjectID: "proj-1",
-		Type:      orchestrator.TaskTypeCard,
-		Status:    orchestrator.TaskStatusParked,
-		Card:      &orchestrator.CardAttrs{},
+		ID:          "a-card",
+		WorkspaceID: "proj-1",
+		Type:        orchestrator.TaskTypeCard,
+		Status:      orchestrator.TaskStatusParked,
+		Card:        &orchestrator.CardAttrs{},
 	}}
 	svc.Tx = &stubTx{}
 	svc.Lifecycle = &stubLifecycle{}
@@ -483,7 +485,7 @@ func TestSweepTriggers_PastTimeout_PermanentAbortRefusalStillEndsTheRun(t *testi
 	svc.TaskWaits.Register("job-1", "a-card")
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -507,11 +509,11 @@ func TestSweepTriggers_PastTimeout_EndingThatKeepsFailingStaysSkipped(t *testing
 	})
 	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
 	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
-		ID:        "round-task",
-		ProjectID: "proj-1",
-		Type:      orchestrator.TaskTypeExecution,
-		Status:    orchestrator.TaskStatusExecuting,
-		Exec:      &orchestrator.ExecAttrs{Behavior: "sweep"},
+		ID:          "round-task",
+		WorkspaceID: "proj-1",
+		Type:        orchestrator.TaskTypeExecution,
+		Status:      orchestrator.TaskStatusExecuting,
+		Exec:        &orchestrator.ExecAttrs{Behavior: "sweep"},
 	}}
 	svc.Tx = &failingTx{err: errors.New("database is locked")}
 	svc.Lifecycle = &stubLifecycle{}
@@ -519,7 +521,7 @@ func TestSweepTriggers_PastTimeout_EndingThatKeepsFailingStaysSkipped(t *testing
 	svc.TaskWaits.Register("job-1", "round-task")
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -560,7 +562,7 @@ func TestSweepTriggers_PastTimeout_FailingTaskReadIsTransientNotPermanent(t *tes
 	svc.TaskWaits.Register("job-1", "round-task")
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -598,7 +600,7 @@ func TestSweepTriggers_PastTimeout_MissingTaskIsPermanent(t *testing.T) {
 	svc.TaskWaits.Register("job-1", "gone-task")
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -630,10 +632,10 @@ func TestSweepTriggers_PastTimeout_AbortReasonDoesNotOverwriteTheTaskPayload(t *
 	jobs.set(&Job{ID: "job-1", Status: JobStatusRunning, RuntimeID: "rt-1"})
 	tx := &stubTx{}
 	svc.Tasks = &stubTaskStore{task: &orchestrator.Task{
-		ID:        "round-task",
-		ProjectID: "proj-1",
-		Type:      orchestrator.TaskTypeExecution,
-		Status:    orchestrator.TaskStatusExecuting,
+		ID:          "round-task",
+		WorkspaceID: "proj-1",
+		Type:        orchestrator.TaskTypeExecution,
+		Status:      orchestrator.TaskStatusExecuting,
 		Exec: &orchestrator.ExecAttrs{
 			Behavior: "sweep",
 			Payload:  []byte(`{"message":"the real work item","other":1}`),
@@ -645,7 +647,7 @@ func TestSweepTriggers_PastTimeout_AbortReasonDoesNotOverwriteTheTaskPayload(t *
 	svc.TaskWaits.Register("job-1", "round-task")
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -707,7 +709,7 @@ func TestSweepTriggers_PastTimeout_LosingTheCloseRaceReportsNothing(t *testing.T
 	svc.TaskWaits = NewTaskWaitRegistry()
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -719,7 +721,7 @@ func TestSweepTriggers_PastTimeout_LosingTheCloseRaceReportsNothing(t *testing.T
 
 	// Drive the timeout path directly: with the row already closed it is no
 	// longer in flight, so a full sweep would not reach the branch at all.
-	svc.beginTimeOutTriggerRun(context.Background(), TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"},
+	svc.beginTimeOutTriggerRun(context.Background(), TriggerKey{WorkspaceID: "proj-1", TriggerName: "sweep"},
 		run, 30*time.Minute)
 	waitForTimeoutGoroutine(t, svc, run.ID)
 
@@ -739,10 +741,16 @@ func TestSweepTriggers_StashedCompletionSurvivesASweepError(t *testing.T) {
 		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "sweep", Every: "2m", Timeout: "30m", Run: "true"}}},
 	})
 	svc.stashTimeoutCompletion(TriggerCompletionResult{
-		TriggerKey: TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"},
+		TriggerKey: TriggerKey{WorkspaceID: "proj-1", TriggerName: "sweep"},
 		ExitCode:   TriggerTimeoutExitCode,
 	})
-	svc.Projects = failingProjectRepository{ProjectRepository: svc.Projects}
+	invalidPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(invalidPath, []byte("file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	meta := svc.Meta.(fakeTriggerMetaStore)
+	meta.workspaceStore = orchestrator.NewWorkspaceStore(invalidPath)
+	svc.Meta = meta
 
 	if _, err := svc.SweepTriggers(context.Background(), time.Now()); err == nil {
 		t.Fatal("expected the sweep to fail")
@@ -750,14 +758,6 @@ func TestSweepTriggers_StashedCompletionSurvivesASweepError(t *testing.T) {
 	if drained := svc.drainTimeoutCompletions(); len(drained) != 1 {
 		t.Fatalf("stashed completions after a failed sweep = %+v, want the entry still there", drained)
 	}
-}
-
-type failingProjectRepository struct {
-	ProjectRepository
-}
-
-func (failingProjectRepository) ListProjects() ([]*orchestrator.Project, error) {
-	return nil, errors.New("database is locked")
 }
 
 // When the timeout path wins the close race, the reconcile pass must not report
@@ -777,7 +777,7 @@ func TestSweepTriggers_ReconcileLosingTheCloseRaceDoesNotHoldTheSlot(t *testing.
 	// The job has exited, so reconcileInFlight tries to close the row...
 	jobs.set(&Job{ID: "job-1", Status: JobStatusCompleted, ExitCode: 1})
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -821,13 +821,13 @@ func TestSweepTriggers_PastTimeout_CloseFailureReportsNothing(t *testing.T) {
 	svc.TaskWaits = NewTaskWaitRegistry()
 
 	t0 := time.Now()
-	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
+	run := &orchestrator.TriggerRun{WorkspaceID: "proj-1", TriggerName: "sweep", JobID: "job-1", StartedAt: t0}
 	if err := svc.Triggers.CreateTriggerRun(run); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
 	svc.Triggers = failingCloseTriggerStore{TriggerRunStore: svc.Triggers, err: errors.New("database is locked")}
 
-	svc.beginTimeOutTriggerRun(context.Background(), TriggerKey{ProjectID: "proj-1", TriggerName: "sweep"},
+	svc.beginTimeOutTriggerRun(context.Background(), TriggerKey{WorkspaceID: "proj-1", TriggerName: "sweep"},
 		run, 30*time.Minute)
 	waitForTimeoutGoroutine(t, svc, run.ID)
 

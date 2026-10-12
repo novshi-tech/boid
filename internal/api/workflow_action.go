@@ -163,67 +163,12 @@ func (s *TaskWorkflowService) applyAction(ctx context.Context, taskID string, re
 		return s.applyAnswered(ctx, taskID, req.Payload)
 	}
 
-	// Hydrate with workspace.yaml so kit-supplied hooks / env / capabilities
-	// — and the workspace's default project definition (task_behaviors /
-	// base_branch / fork_point / default_task_behavior) — are visible to the
-	// dispatch loop.
-	//
-	// On hydration failure the two registration shapes diverge:
-	//
-	//   - a project.yaml-less project (task.ProjectID carries
-	//     orchestrator.URLDerivedProjectIDPrefix) has NO task_behaviors of
-	//     its own — every one of them comes from the workspace default
-	//     merge this hydrate step performs. Falling back to the bare cached
-	//     meta here would silently proceed with a meta that has ZERO
-	//     behaviors defined, producing a dispatch failure with no visible
-	//     connection to "workspace hydration failed", so it is treated as a
-	//     hard error instead of a silent degrade.
-	//   - an ordinary project.yaml-bearing project only loses the
-	//     workspace-supplied extras (kit env / host_commands / the
-	//     workspace-default merge, if any) — its own task_behaviors are
-	//     unaffected, so the existing silent-fallback-to-bare-Get behavior
-	//     is kept, with a logged warning so there is at least a paper trail
-	//     when debugging a dispatch that looks like it's missing kit-level
-	//     config.
-	//
-	// isNoYAMLProjectWithNoBehaviors additionally catches the "hydration
-	// technically succeeded but degraded" window: GetWithWorkspace returns
-	// (meta, nil error) — success — when the project has no linked
-	// workspace, the workspace store is not configured, or workspace.yaml is
-	// simply absent. None of those merge the workspace default in, so a
-	// no-YAML project's meta comes back with the same ZERO task_behaviors
-	// its bare cached meta always has. A (meta, nil) check alone would let
-	// that degraded-but-"successful" case silently through to the exact
-	// zero-behavior dispatch this whole guard exists to prevent.
-	isNoYAMLProjectWithNoBehaviors := func(m *orchestrator.ProjectMeta) bool {
-		return orchestrator.IsURLDerivedProjectID(task.ProjectID) && (m == nil || len(m.TaskBehaviors) == 0)
-	}
-
-	var meta *orchestrator.ProjectMeta
-	hydrated, hydrateErr := orchestrator.TaskMeta(ctx, s.Meta, task)
-	switch {
-	case hydrateErr == nil && hydrated != nil && !isNoYAMLProjectWithNoBehaviors(hydrated):
-		meta = hydrated
-	case task.ProjectID == "" || orchestrator.IsURLDerivedProjectID(task.ProjectID):
-		detail := hydrateErr
-		if detail == nil {
-			detail = errors.New("workspace hydration reported success but produced no task_behaviors (no workspace linked, workspace store not configured, or workspace.yaml not found)")
+	meta, hydrateErr := orchestrator.TaskMeta(ctx, s.Meta, task)
+	if hydrateErr != nil || meta == nil || (task.Type == orchestrator.TaskTypeExecution && (req.Type == "start" || req.Type == "reopen") && len(meta.TaskBehaviors) == 0) {
+		if hydrateErr == nil {
+			hydrateErr = errors.New("workspace hydration produced no task_behaviors")
 		}
-		return nil, &StatusError{
-			Code: http.StatusInternalServerError,
-			Message: fmt.Sprintf(
-				"project %q has no project.yaml (its task_behaviors come entirely from the workspace default definition) and workspace hydration did not supply any, so dispatch cannot proceed: %v",
-				task.ProjectID, detail,
-			),
-		}
-	default:
-		var ok bool
-		meta, ok = s.Meta.Get(task.ProjectID)
-		if !ok {
-			return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
-		}
-		slog.Warn("workspace hydration failed; dispatching with bare project meta (workspace-supplied env/host_commands/default project definition not applied)",
-			"project_id", task.ProjectID, "task_id", taskID, "error", hydrateErr)
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("project %q: workspace hydration failed: %v", task.ProjectID, hydrateErr)}
 	}
 
 	fromStatus := task.Status

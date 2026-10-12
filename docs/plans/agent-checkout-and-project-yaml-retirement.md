@@ -456,3 +456,18 @@ raw executor/supervisor の同一定義は bm-next-lp と atl-cli。sumiron-proc
 3. 同じ用途は owner が選んだ workspace 定義に揃える。違う用途は `<project>-<role>` など一意な名前に改名する。名前から暗黙に `readonly=false` を得るのは `executor` だけで、改名時は readonly を明示する (`internal/orchestrator/spec_loader.go:421`)。`supervisor` の名前による暗黙動作は readonly ではなく、既定 behavior のフォールバックである (`internal/orchestrator/behavior_resolve.go`)。alias に依存しない
 4. default_task_behavior、trigger の run、card command、card event、子 task 作成指示、保存済み task の behavior を対応表で照合する。既存の queued/awaiting task をどの定義で再開するか決めてから旧名を外す。本文の obsolete な push 禁止はそのまま canonical に採用しない
 5. Q16 は名前だけでなく意味と呼び出し先を比較する。改名がある場合は対応表で同じ挙動になることを確認する。PR-5 は全 workspace の監査が揃い、未解消衝突が 0 件、HOME 固有スキルが使える状態になってから行う。今の取得範囲だけで Q16 を yes にしない
+
+### PR-5a: workspace 単独解決への切り替え
+
+Q16 の運用移行は owner 判断で完了扱いとし、project.yaml fallback を撤去する。PR-5 は読み込み撤去 (5a) と mirror / fetch / reload 撤去 (5b) に分ける。
+
+- startup / reload は `ProjectStore.LoadAll` が projects 行の ID / work_dir / upstream_url / workspace_id から identity cache を作る。mirror や checkout の project.yaml は開かない。名前は登録時のキャッシュ、登録パスの basename、URL の順で復元する。
+- git URL 登録は URL 由来 ID と `--name` / URL 由来の名前を使う。既存 DB ID は変えない。fetch は mirror refs を更新後、DB identity を再構築するだけである。
+- behavior、triggers、signals、card_commands、card_events は workspace から解決する。built-in judge は維持する。sweep は workspace を列挙し、project 数によらず 1 回だけ起動する。project を指定した手動 trigger も同じ workspace の single-flight に参加する。
+- card event の transaction 内解決は同じ DB transaction で workspace を読む。外側の connection を再取得しない。
+- session の checkout は mirror HEAD を参照しない。task の空 base_branch も空のまま agent に渡し、clone 時点の origin default branch を使う。`${current_branch}` は撤去し、`${TASK_REMOTE_ID}` は維持する。
+- project.yaml parser / legacy loader / migration 専用型と `project init` / `project migrate` は撤去する。設定手順は `boid workspace apply` の envelope に統一する。
+
+Q13 は `TestWorkspaceTriggersSweepOnceWithoutProjectYAML`、Q14 は workspace validation / hydration が呼ぶ `workspaceTriggers` と同テストで検証する。旧 Q15 (project.yaml 優先) は廃止し、`TestWorkspaceResolutionIgnoresCachedProjectDefinitions` で workspace 単独解決を検証する。`TestProjectStoreLoadAllIgnoresRepositoryConfiguration` と `TestProjectRegistrationIgnoresCommittedConfiguration` は、不正 / ID が異なる committed YAML でも startup / add / fetch が影響を受けないことを示す。
+
+Q23 全体の完了は PR-5b に残る。PR-5a は読み込み撤去の前提を満たすが、bare mirror の clone / fetch と CLI/API の fetch / reload は残す。API gateway と DB backup/Q22 は変更しない。

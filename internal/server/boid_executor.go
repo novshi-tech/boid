@@ -1511,7 +1511,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// allowedTraits comes from the JobContextSnapshot captured at
 		// dispatch time (JobSpec.HookTraitsProduces), never a live
 		// re-lookup against current project meta — a live lookup could
-		// silently apply a post-dispatch-edit trait list if project.yaml
+		// silently apply a post-dispatch-edit trait list if workspace configuration
 		// changed between dispatch and this call.
 		if e.jobContexts == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch unavailable"}

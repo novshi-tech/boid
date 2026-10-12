@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -82,21 +81,6 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 	// The kit mechanism (orchestrator.KitRegistry / the KitResolver-driven
 	// ws.Kits merge path) was retired; WorkspaceMeta.Kits is gone too.
 	store := orchestrator.NewProjectStore()
-
-	// The daemon-managed bare-repo storage root
-	// (<data_dir>/repos/<workspace>/<project>.git). Wired here (not just at
-	// CreateProjectFromGitURL's DataDir field below) so LoadAll's
-	// degraded-status message can recognize a project whose WorkDir falls
-	// outside this root as a pre-cutover, host-filesystem registration —
-	// see ProjectStore.SetReposRoot's own doc comment.
-	store.SetReposRoot(orchestrator.ReposRoot(dataHomeFor(cfg)))
-
-	// reconcileExpectedProjectID needs to verify that a url-derived
-	// expectedID was ACTUALLY derived from the project's current
-	// UpstreamURL (not merely sharing URLDerivedProjectIDPrefix with one) —
-	// see ProjectStore.SetDeriveProjectIDFunc's doc comment for why this is
-	// wired in from here rather than called directly.
-	store.SetDeriveProjectIDFunc(api.DeriveProjectIDFromURL)
 
 	// Workspace DB cutover: migrate any yaml-authority workspaces
 	// (DefaultWorkspaceDir()/*.yaml) and kit host_commands (cfg.KitsDir)
@@ -251,46 +235,7 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 	if err != nil {
 		return nil, nil, fmt.Errorf("list projects: %w", err)
 	}
-	errs := store.LoadAll(projects)
-
-	// INVARIANT: filesystem/remote observations never justify a hard
-	// delete of a project's DB row, at any point — not at startup, not at
-	// dispatch, not at `boid project fetch`, not at GC. A transient
-	// "container can't see the host filesystem" observation must never be
-	// treated as "the dir was physically removed, safe to delete" — a
-	// perfectly healthy DB row is indistinguishable from a genuinely stale
-	// one from inside that shortcut.
-	//
-	// store.LoadAll (project_store.go) implements the safe alternative:
-	// every per-project load failure — missing dir, YAML parse error,
-	// corrupt or unreachable bare repo, project.yaml missing from a bare
-	// repo's HEAD — is recorded via ProjectStore.MarkDegraded (StatusDegraded)
-	// and the DB row is left completely untouched. Nothing below this
-	// point deletes anything. The one remaining fail-fast case is a schema
-	// migration requirement (*ProjectMigrationError, resolved via
-	// `boid project migrate <dir>` + `boid workspace create/edit
-	// --from-file`): unlike the conditions above, that signals a config
-	// SHAPE the daemon has no safe default interpretation for, not an
-	// observational/transient failure, so refusing to start is still the
-	// right call.
-	//
-	// The only two entry points that remove a project's DB row are now
-	// `boid project rm <id>` and `boid workspace delete <name>` — both
-	// explicit operator actions, never an inference from what the daemon
-	// happened to observe on disk or over the network at some point in time.
-	var migrationErrs []error
-	for _, e := range errs {
-		var migErr *orchestrator.ProjectMigrationError
-		if errors.As(e, &migErr) {
-			migrationErrs = append(migrationErrs, e)
-			continue
-		}
-		slog.Warn("project failed to load; marked degraded, DB row preserved (docs/plans/volume-only-daemon.md §論点a)",
-			"error", e)
-	}
-	if len(migrationErrs) > 0 {
-		return nil, nil, buildProjectLoadStartupError(migrationErrs)
-	}
+	store.LoadAll(projects)
 
 	backfillUpstreamURLs(projectRepo, projects)
 
@@ -323,111 +268,6 @@ func backfillUpstreamURLs(projectRepo *orchestrator.ProjectRepository, projects 
 	}
 }
 
-// startupError holds the human-readable aggregate startup error text while
-// also exposing its causes via Unwrap() []error so that callers (e.g. the
-// boid start parent) can errors.As a *orchestrator.ProjectMigrationError
-// out of it and drive auto-migration without parsing strings.
-type startupError struct {
-	aggregate string
-	causes    []error
-}
-
-func (e *startupError) Error() string   { return e.aggregate }
-func (e *startupError) Unwrap() []error { return e.causes }
-
-// buildProjectLoadStartupError renders the legacy multi-line error message
-// (byte-identical to the pre-typed-error version) while attaching the
-// per-project causes so callers can errors.As the typed migration error.
-//
-// Per-project text lines retain the historical `  - <err.Error()>\n` shape;
-// because *ProjectMigrationError formats with the `project "<id>": ...`
-// prefix when ProjectID is set (via FormatMigrationIssue), the rendered
-// output matches what users have been seeing in boid.log.
-func buildProjectLoadStartupError(errs []error) error {
-	var msg strings.Builder
-	msg.WriteString("daemon startup refused: failed to load project metadata\n")
-	migAgg := &orchestrator.ProjectMigrationError{}
-	causes := make([]error, 0, len(errs)+1)
-	for _, e := range errs {
-		msg.WriteString("  - ")
-		msg.WriteString(e.Error())
-		msg.WriteString("\n")
-
-		var migErr *orchestrator.ProjectMigrationError
-		if errors.As(e, &migErr) {
-			migAgg.Projects = append(migAgg.Projects, migErr.Projects...)
-		} else {
-			causes = append(causes, e)
-		}
-	}
-	// Each `e.Error()` written into msg above (for an `e` that IS a
-	// *ProjectMigrationError) is FormatMigrationIssue's own per-project
-	// text, which already embeds migrationGuidance(p.Dir, p.IsBareRepo) —
-	// the real path (or, for a git-URL-registered project, the correct
-	// "this is a bare-repo path, use your own clone instead" guidance).
-	// Nothing more to add here; only the errors.As wiring (causes) is
-	// still needed.
-	if len(migAgg.Projects) > 0 {
-		// Put migration error first so errors.As walks find it quickly.
-		causes = append([]error{migAgg}, causes...)
-	}
-	return &startupError{aggregate: msg.String(), causes: causes}
-}
-
-// sandboxBackendForConfig unconditionally constructs the containerBackend
-// Runner.Backend is wired to: container is the only sandbox backend, so
-// there is no branch here, only construction.
-//
-// dockerClient is passed IN rather than built here: the daemon-state-volume
-// self-inspection (dispatcher.DetectDaemonStateVolumes) needs a docker
-// client too, and building two separate clients on the startup path risks
-// a self-inspect failure on an otherwise-healthy deployment plus a second
-// SYNCHRONOUS read of DOCKER_CERT_PATH's ca.pem/cert.pem/key.pem (which
-// client.New(client.FromEnv) performs eagerly and cannot be interrupted by
-// any context — a wedged filesystem there would hang `boid start` inside a
-// feature whose entire design is "warn and continue"). buildRuntime makes
-// exactly one client and hands it to both.
-//
-// The client is real (github.com/moby/moby/client — client.New(client.FromEnv)
-// does not dial the docker daemon eagerly; it only resolves DOCKER_HOST/
-// DOCKER_* env and builds the HTTP client config, so constructing it never
-// fails just because docker is unreachable at daemon-boot time — the same
-// lazy-connect behavior cmd/reap.go's runReap already relies on). It
-// carries this installation's install_id (resource labeling) and the
-// host-visible runtimes directory (so `boid job log`'s transcript spool
-// and the per-job dockerproxy TLS materialize dir land under the same
-// bind-mounted path a sibling docker daemon can actually reach, matching
-// ContainerBackendOptions.RuntimeDir's own doc comment).
-//
-// installID and runtimeDir are threaded as plain values (not read from cfg
-// itself) so this stays independently unit-testable without a live
-// Server/DB — see wire_backend_test.go.
-//
-// DiagnosticsCollector is wired to
-// dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir), so
-// an OOM-killed or setup-failure job container gets diagnostic capture
-// beyond whatever the attach-stream transcript spool caught.
-// NewDefaultDiagnosticsCollector runs only on an abnormal exit
-// (ExitCode != 0) and degrades gracefully on its own inspect/logs failures
-// — see its own doc comment for the full contract.
-//
-// brokerTLSCA/brokerTLSAddr thread the broker's mTLS trust material into
-// the containerBackend this function may construct: brokerTLSCA is the
-// daemon's already-loaded internal CA (srv.daemonCA, hoisted to New()
-// specifically so it exists before buildRuntime calls this function — see
-// Server.daemonCA's own doc comment for why that hoist was needed), passed
-// by value since the CA itself never changes for the life of the process.
-// brokerTLSAddr is a pointer (srv's own &srv.brokerTLSSandboxAddr field)
-// rather than a resolved string: the broker's TLS listener binds an
-// OS-assigned ephemeral port only known once Start has run — strictly
-// after this function returns — so the pointer is handed to
-// ContainerBackendOptions.BrokerTLSAddr and dereferenced fresh by
-// containerBackend.Launch on every call, the same late-binding-via-pointer
-// pattern WireConfig.GatewayURL already uses one layer up. Both are nil for
-// every caller that does not thread them — ContainerBackendOptions.BrokerTLSCA
-// nil is the existing "feature disabled" contract (see its own doc
-// comment), so this is a pure additive parameter, not a behavior change
-// for anyone who leaves it nil.
 func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir, transcriptDir string, brokerTLSCA *mtls.CA, brokerTLSAddr *string) backend.SandboxBackend {
 	// Job container runs as `--user <daemon uid>:<gid>`, non-root:
 	// os.Getuid()/os.Getgid() are the DAEMON's own actual runtime uid/gid
@@ -939,7 +779,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// CreateAction's card-event ingest step needs the card_events.command
 	// lookup, and store (*orchestrator.ProjectStore, built above by
 	// buildProjectStore) already hydrates CardCommands/CardEvents off the
-	// same project.yaml read as everything else, so this reuses it.
+	// same workspace configuration read as everything else, so this reuses it.
 	taskRepo.SetCardEventResolver(store)
 	jobRepo := dispatcher.NewJobRepository(srv.db)
 	jobStore := jobStoreAdapter{repo: jobRepo}
@@ -1867,7 +1707,7 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 			return nil, &api.StatusError{Code: http.StatusBadRequest, Message: rerr.Error()}
 		}
 		// env: merged on top of the project's own Env — a connector job
-		// still inherits ordinary project.yaml env, but the signal vars
+		// still inherits ordinary workspace configuration env, but the signal vars
 		// always win on a name collision (there should never be one in
 		// practice, but "the connector's own identity wins" is the safer
 		// direction if there is).
@@ -2050,7 +1890,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		Store: runtime.workflow,
 		// Tied to orchestrator.TriggerSweepResolution, not a separate
 		// literal — ValidateTriggers rejects any `every` below that same
-		// constant at project.yaml load time specifically because it
+		// constant at workspace configuration load time specifically because it
 		// assumes this IS the sweep loop's actual Interval. If the two
 		// drifted apart, ValidateTriggers' floor would stop describing
 		// reality.

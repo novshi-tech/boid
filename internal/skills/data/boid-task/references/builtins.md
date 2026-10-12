@@ -47,7 +47,7 @@ Reads YAML/JSON from stdin (or `-f <file>`). Prints `task created: <id> (<status
 | `parent_id` | Auto-filled from `BOID_TASK_ID`. Set explicitly only to attach under a different parent. |
 | `base_branch` | Base branch passed as BOID_BASE_BRANCH. The agent selects it after startup checkout and may create the PR branch required by its instruction. Inherits the parent base when omitted on a child; root defaults are resolved at task creation. |
 | `project_id` | Project to create in. Defaults to the same project as the parent. |
-| `behavior_spec` | Inline behavior definition. Not normally needed — prefer named behaviors from `project.yaml`. |
+| `behavior_spec` | Inline behavior definition. Not normally needed — prefer named behaviors from `workspace envelope`. |
 | `ref` | Child ref name within the parent scope. |
 | `idempotency_key` | Stable key, scoped by `(project_id, parent_id)`, that makes a retried create converge instead of duplicating: a second call with the same key under the same parent returns the FIRST call's task id (exit 0), not an error. Use this — not `ref` — when a judgment task mints a child and needs the retry to be safe (e.g. key = `<parent card id>:<child generation key>`). No external-identity semantics ride on it (unlike `task_resolve_or_capture`'s identity-based lookup) — it is purely an internal dedup key. |
 
@@ -209,7 +209,7 @@ boid task wait "$id"
 - Takes no flags. How long a round may run is the trigger's business, not the
   agent's: a per-call timeout would be a limit the daemon that launched you knows
   nothing about. The trigger declares it instead, with `timeout:` in
-  project.yaml — an overrunning round is ended by the daemon, which aborts the
+  workspace envelope — an overrunning round is ended by the daemon, which aborts the
   task this call is waiting on (`lifecycle.abort.code` = `trigger_timeout`).
 - The wait ends only on a terminal status or when the daemon cancels it (shutdown
   or sandbox disconnect). **It is not a timeout** — a task parked in a

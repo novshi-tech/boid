@@ -21,7 +21,7 @@ boid <command> --help       # 個別ヘルプ
 
 ### 自動起動
 
-daemon が止まっているときに以下のコマンドを呼ぶと、自動で compose スタックが起動します（host mode、下記）。自動起動をスキップする例外コマンドは `start` / `stop` / `gc` / `check` / `init` / `fetch` / `reap` / `project migrate` / `login` / `logout` / `version` / `install-skills` です。手動で起動・停止する必要はありません。
+daemon が止まっているときに以下のコマンドを呼ぶと、自動で compose スタックが起動します（host mode、下記）。自動起動をスキップする例外コマンドは `start` / `stop` / `gc` / `check` / `init` / `fetch` / `reap` / `login` / `logout` / `version` / `install-skills` です。手動で起動・停止する必要はありません。
 
 `boid web set-url` / `boid web set-addr` は `boid config set web.public_url|web.http_addr` に統合され（穴8, `docs/plans/release-onboarding.md`）、他の scope=`remote` コマンドと同様に自動起動の対象です（従来の「daemon 停止中はスキップ」という例外ではなくなりました）。
 
@@ -71,7 +71,7 @@ boid start --cli-port 9442 --web-port 9080
 | `boid stop` | compose スタックを停止 (`docker/podman compose down` 相当) |
 | `boid gc [--older-than DURATION] [--dry-run]` | 古い完了 / abort タスクを GC (daemon が起動時から自動でも回している)。`--dry-run` を付けると削除せずに対象一覧を表示する。出力には workspace home のサイズ一覧も表示される (表示のみ、削除はしない。詳細は [workspace home ガイド](../guide/workspace-home.md#boid-gc-の-workspace-home-表示)) |
 | `boid check` | host の前提コマンドや hook の依存をチェック |
-| `boid init [DIR]` | **(廃止)** 廃止ガイダンスを表示。`boid project init\|add` (+ 任意で `boid workspace create/edit`) を使ってください。詳細は [オンボーディング](../guide/onboarding.md) を参照 |
+| `boid init [DIR]` | **(廃止)** 廃止ガイダンスを表示。`boid project add` (+ 任意で `boid workspace create/edit`) を使ってください。詳細は [オンボーディング](../guide/onboarding.md) を参照 |
 
 詳細は [Getting started / インストール](../getting-started/01-install.md) を参照。
 
@@ -84,17 +84,17 @@ boid start --cli-port 9442 --web-port 9080
 | `boid project add <git-url> --workspace=<name> [--name=<project-name>] [--perm=fetch\|push]` | git remote URL を登録し、daemon が bare repository として clone する (docs/plans/volume-only-daemon.md §論点a/b)。`--workspace` は必須、`--name` を省略すると URL の最後のパス要素から project 名を derive する。旧来のホストディレクトリ登録フォーム (`boid project add <dir>`) は PR-4 で撤去済み — git URL の形 (明示スキームまたは scp-like `user@host:path`) に一致しない引数はクライアント側で拒否される。 `--perm` は省略時 `push`。`fetch` は読み取り専用で task の主リポジトリには指定できない。 |
 | `boid project list` | 登録済みプロジェクト一覧 (status `ready`/`degraded` も表示 — `project fetch` 参照)。サンドボックス内の boid shim からも同名で呼べるが、こちらは daemon 全体ではなく**同一 workspace 内**のプロジェクトのみ (id/name/upstream_url/perm の JSON) を返す — スコープは呼び出し元トークンの `AllowedProjectIDs` で決まり、指定はできない `perm` も表示する。 |
 | `boid project set-perm <ref> <fetch\|push>` | 既存 project の権限を変更する。新規 task 作成と以後の job token に適用される。 |
-| `boid project show <ref>` | プロジェクト詳細 (id 完全一致 / 名前部分一致のいずれも可)。workspace default (task_behaviors / base_branch / fork_point / default_task_behavior) が 1 つでも適用されている場合は 1 行インジケータを表示する。project.yaml 無し project (`url-` 由来 id) では id/name の由来も表示する。`--explain` を付けるとフィールド単位の由来 (project.yaml / workspace default / unset) を表示する (docs/plans/workspace-default-project.md 論点e) |
+| `boid project show <ref> [--explain]` | Show repository identity and workspace setting provenance. |
 | `boid project remove <ref>` (alias: `rm`) | プロジェクトを登録解除。project の DB row を削除する唯一の入口 — `boid` は filesystem / remote の観測結果を根拠に自動削除しない (下記 `project fetch` 参照)。git-URL 登録した project の場合は daemon 管理下の bare repository も削除するため、同じ URL/名前で再度 add しても成功する。 |
-| `boid project reload` | すべてのプロジェクトの `project.yaml` を再読み込み |
-| `boid project fetch <ref>` | git-URL 登録した project の bare repository で `git fetch --all` を実行し project.yaml を再読み込みする。fetch/reload に失敗しても削除はせず `degraded` 状態にする (`project list`/`show` で確認可能) — 復旧は remote に再度到達可能になってから `boid project rm` + `boid project add` |
+| `boid project reload` | Refresh registered repository identities from the DB. Configuration resolves from the workspace. |
+| `boid project fetch <ref>` | Refresh mirror refs and the DB-backed identity cache. Does not load repository configuration. Fetch failure marks the project degraded and preserves its DB row. |
 | `boid project behaviors <ref>` | そのプロジェクトの task_behaviors 一覧。サンドボックス内の boid shim からも同名で呼べる (`boid project behaviors <ref>`) — 出力は JSON 固定、`ref` は同一 workspace 内のプロジェクトのみ解決可能 (`AllowedProjectIDs` でスコープされる) |
 
 ### `project local` — 廃止
 
 `boid project local ...` コマンドは廃止されました。
 `project.local.yaml` が担っていた `host_commands` / `env` は、workspace (DB 側) に集約されます (`additional_bindings` は Phase 4 PR4 で撤去済み、[workspace home `init.sh`](../guide/workspace-home.md) に移行)。
-`boid project migrate <dir>` で自動変換できます。詳細は [移行ガイド](../guide/migration.md) を参照してください。
+Apply migrated settings with `boid workspace apply -f workspace.yaml`; repository configuration is no longer loaded.
 
 ## タスク
 
@@ -258,7 +258,7 @@ hook の実行記録を扱います。
 
 `boid kit init` / `boid kit list` / `boid kit remove` および `boid workspace configure` は Phase 2.5 PR6 (2026-07) で撤去されました。`env` は現在 [Workspace](#workspace) の CLI で workspace に直接設定します (`additional_bindings` は Phase 4 PR4 で撤去済み — [workspace home `init.sh`](../guide/workspace-home.md) を使う)。`host_commands` はこれらとは違う二層構造です — workspace が持つのは参照名の `[]string` (`host_commands: [gh, aws]`) だけで、実際の定義 (`path` / `allow` / `deny` / `env`) は daemon 側の `~/.config/boid/host_commands.yaml` に集約管理されています。`kit init` が無くなった今どうやってこのファイルを埋めるかは、下記の [Host Commands](#host-commands)（または [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ)）を参照してください。
 
-`kit.yaml` 自体のフォーマットは無くなっていません (手で `kit.yaml` を書いて配置する運用は引き続き可能)。 ただし Phase 2.5 PR7 で `WorkspaceMeta.Kits` フィールドがコードから完全撤去され、 `boid workspace create/edit` に `kits:` を直接渡す経路は reject されるようになりました。 残っているのは `boid workspace assign` の auto-create 補助 (legacy shadow yaml の `kits:` をクライアント側で一度だけ解決) と、 `boid project migrate` が生成する legacy kit (host_commands を workspace に直接畳み込み。 legacy kit の `additional_bindings` は Phase 4 PR4 で撤去済みなので無視される) の 2 経路のみです。フォーマットの詳細は [Kit 作者向け概要](../kit-authoring/overview.md) を、退役の経緯は [オンボーディング / kit 機構の退役について](../guide/onboarding.md#kit-機構の退役について) を参照してください。
+Workspace runtime settings and task definitions are applied using `boid workspace apply`. The old project migration command has retired.
 
 ## Web
 
@@ -287,7 +287,7 @@ API トークン等を暗号化して保存します。鍵は `~/.local/share/bo
 
 ## Workspace
 
-project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_domains`) を machine 単位でまとめる機能です。`workspaces` テーブルで DB 管理され (Phase 2.5)、`default` workspace は daemon 起動時に常に自動生成されます。project を登録すると自動的に `default` に割り当てられ、`boid project init/add --workspace <slug>` は get-or-create (未知の slug でも空の workspace を自動作成してから紐付け)。各 workspace は永続的な `$HOME` (workspace home) を持ち、ツールチェーンの設置は `additional_bindings` (撤去済み) ではなく [`init.sh`](../guide/workspace-home.md) で行う。
+project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_domains`) を machine 単位でまとめる機能です。`workspaces` テーブルで DB 管理され (Phase 2.5)、`default` workspace は daemon 起動時に常に自動生成されます。project を登録すると自動的に `default` に割り当てられ、`boid project add --workspace <slug>` は get-or-create (未知の slug でも空の workspace を自動作成してから紐付け)。各 workspace は永続的な `$HOME` (workspace home) を持ち、ツールチェーンの設置は `additional_bindings` (撤去済み) ではなく [`init.sh`](../guide/workspace-home.md) で行う。
 
 > **slug に `export` / `apply` は使わないこと。** この 2 つは HTTP API 側で workspace 名と同じ階層の静的ルートになっているため、その名前の workspace は `boid workspace show` / `edit` / `remove` から到達できなくなる (`exactly one of ?all=true or ?name=<slug> is required` という、指定した覚えのないクエリパラメータの話をするエラーになる)。作成自体はできてしまう。予約語として弾いていないのは意図的な判断 (2026-07-28)。
 >
@@ -299,7 +299,7 @@ project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_dom
 >
 > `create` / `list` / `apply` / `export` と `<slug>` 配下のサブコマンド (`get-init-script` など) は影響を受けない。
 
-workspace envelope の `spec` は `triggers` / `signals` / `card_commands` / `card_events` も受け付けます。型と検証は [project.yaml](project-yaml.md) の同名フィールドと同じです。これらは workspace 直属の task / job として評価され、複数 project が所属していても workspace trigger は 1 回だけ起動します。`signals.sources` から polling trigger を導出します。所属 project.yaml に同名の trigger（導出名を含む）/ card_command があれば workspace 側を省き、警告を出します。card command の宣言順は export/apply と DB 保存で保持します。workspace の card_events が指定されなければ workspace の組み込み judge を維持し、指定した command が衝突で省かれた場合も警告とともに judge を維持します。apply はキー省略で現状維持、空値の明示でそのフィールドを削除します。
+workspace envelope の `spec` は `triggers` / `signals` / `card_commands` / `card_events` を受け付けます。これらは workspace 直属の task / job として評価し、project 数によらず trigger を 1 回だけ起動します。`signals.sources` から polling trigger を導出します。設定は workspace だけから解決します。card command の宣言順は DB / export / apply で保持します。apply はキー省略で現状維持、空値の明示で削除します。
 
 旧 default metaproject から移行した judge が behavior を省略して子 task を作る場合も、workspace の `default_task_behavior` を使用します。workspace の `task_behaviors.judge` は組み込み judge behavior を上書きします。
 
@@ -340,7 +340,7 @@ daemon が集約する `~/.config/boid/host_commands.yaml` (workspace 群の `ho
 | コマンド | 役割 |
 |---|---|
 | `boid exec -p <project-ref> [--name NAME] [--readonly] -- <argv...>` | サンドボックス内で任意の argv を実行。 project の `host_commands` / `env` を継承する (`additional_bindings` は Phase 4 PR4 で撤去済み、workspace home に依存)。 `--` 以降が sandbox 内の argv (旧 `commands:` 名前指定は Phase 3-d で廃止)。 `--name` でジョブの表示名、 `--readonly` でワークスペースを read-only に |
-| `boid trigger run -p <project-ref> <name>` | project.yaml の `triggers[]` (`docs/ja/reference/project-yaml.md#triggers` 参照) に定義したトリガを 1 回だけ即座に起動するデバッグ用の手動口。`every` の経過チェックは無視するが single-flight は無視しない — 実行中の run があれば `skipped: <reason>` を返す (強制二重起動の口ではない) |
+| `boid trigger run -p <project-ref> <name>` | workspace の `triggers[]` (`docs/ja/reference/project-yaml.md#triggers` 参照) に定義したトリガを 1 回だけ即座に起動するデバッグ用の手動口。`every` の経過チェックは無視するが single-flight は無視しない — 実行中の run があれば `skipped: <reason>` を返す (強制二重起動の口ではない) |
 | `boid trigger run --workspace <slug> <name>` | workspace の trigger（signal connector の導出 trigger を含む）を手動実行。project 指定とは併用不可。`every` / `on: signals` の判定を省略し、workspace ごとの single-flight は維持する |
 | `boid attach <job-id>` | 実行中のジョブの runtime に attach (interactive ジョブ向け)。 Ctrl-] で detach。 通信が切れた場合は自動で再接続する ([接続断と再接続](#接続断と再接続)) |
 | `boid fetch <url>` | URL のコンテンツをホスト側で取得して出力する (直接 HTTP アクセスが制限されているサンドボックス内から使用可) |

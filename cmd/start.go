@@ -534,7 +534,7 @@ func runComposeUp(ctx context.Context, ports hostPorts, out io.Writer) error {
 func printNextStepsGuidance(out io.Writer) {
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. boid web pair                                      # pair this browser with the Web UI (required -- the loopback no-pairing exception does not apply inside the compose daemon's own container)")
-	fmt.Fprintln(out, "  2. boid project add <git-url> --workspace=<name>      # register a project (new project? run `boid project init` first -- it scaffolds .boid/project.yaml and prints the push+register commands)")
+	fmt.Fprintln(out, "  2. boid project add <git-url> --workspace=<name>      # register a repository; configure workflows with `boid workspace apply -f workspace.yaml`")
 	fmt.Fprintln(out, "  3. boid workspace set-init-script <name> -f init.sh   # register an init script so toolchain install (npm/claude/codex CLI, ...) runs automatically on the workspace's first dispatch")
 	fmt.Fprintln(out, "  4. boid agent claude -p <project>                     # open an interactive session and sign in -- claude/codex login needs a human, so this step cannot run unattended")
 }

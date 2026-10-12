@@ -127,7 +127,7 @@ type Runner struct {
 	// unset-InstallID default.
 	InstallID string
 	// Hydrator optionally resolves a project's workspace-hydrated
-	// ProjectMeta (project.yaml `meta.name` plus workspace merge) by project
+	// ProjectMeta (workspace configuration `meta.name` plus workspace merge) by project
 	// ID. It is used only for workspace-peer name resolution in
 	// buildPeerAdvertise — the self project's name is already resolved at
 	// JobSpec-build time via Visibility.ProjectName and does not need this.
@@ -673,7 +673,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	//     one job's agent's instruction to the other job's RPC caller — see
 	//     JobContextSnapshot's own doc comment and wiring-seams.md #13.
 	//   - Env uses spec.HostCommands (short-name keyed as authored in
-	//     project.yaml) — the identical key space to
+	//     workspace configuration) — the identical key space to
 	//     resolvedHostCommandsByName below, no absolute-path detour after
 	//     the 5a-3 cutover.
 	//   - WorkspacePeerAdvertise is deliberately tracked HERE, after the
