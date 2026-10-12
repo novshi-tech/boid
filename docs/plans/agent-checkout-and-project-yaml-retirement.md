@@ -183,13 +183,13 @@ branch は agent が自分で切り替える。dispatcher は `BOID_BASE_BRANCH`
 ## 6. 決定と PR-3 の範囲
 
 - **D1 workspace スキルの入れ方。** workspace 固有スキルは、既存の envelope の `spec.init_script` で workspace HOME に配置する。実体は HOME 内の専用ディレクトリに置き、`~/.claude/skills` と `~/.agents/skills` の両方にリンクする。組み込み・Pack の名前は使わない。現行 Pack 配線は全 workspace 共通で、workspace 別の選択機構を持たない (`internal/dispatcher/skills_overlay.go:128-168`)。Pack の選択機構や新しい skill DB 列は PR-3 に足さない。成立条件と比較は付録 B
-- **D2 behavior 名の衝突。** PR-3 は現行の project.yaml 優先を維持する。workspace に同名異定義を上書きして集約しない。異なる用途を残す定義は workspace 内で改名し、同じ用途は owner が選んだ workspace 定義へ揃える。既存 task と呼び出し元を調べてから移す。取得済みの合成結果には `executor` / `supervisor` の異定義がある。全 workspace の DB 生定義との衝突件数は未確定で、0 件とは扱わない。取得範囲・件数・移行条件は付録 C
+- **D2 behavior 名の衝突。** PR-3 は現行の project.yaml 優先を維持する。workspace に同名異定義を上書きして集約しない。異なる用途を残す定義は workspace 内で改名し、同じ用途は owner が選んだ workspace 定義へ揃える。既存 task と呼び出し元を調べてから移す。owner の export で default / khi の所属と DB 生定義を確認した。default の取得済み project 間には `executor` / `supervisor` の 2 名で異定義がある。ubs-bo と khi の 11 project の raw は未取得で、全体の DB/project 衝突件数は未確定。0 件とは扱わない。取得範囲・件数・移行条件は付録 C
 
 **PR-3 に入れるもの:** C2 の 4 フィールド (`triggers` / `signals` / `card_commands` / `card_events`) の保存・読み込み、workspace envelope の apply/export、project.yaml 優先の和集合読み、workspace の `signals.sources` からの trigger 導出、workspace 定義だけで動く経路と衝突優先順位のテスト (Q13〜Q15)。behavior の既存の名前単位の合成は維持する (`internal/orchestrator/project_store.go:435-455`)。project/project の定義を workspace に自動集約しない。
 
 **PR-3 に入れないもの:** Pack の workspace フィルタ、新しい skill 配布 API、既存定義の改名・移行、task の behavior 書き換え、project.yaml の refresh/読み込み撤去、default metaproject 撤去、C1/C3/C6、API gateway の変更。schema の実装は PR-3 本体で行い、この決定記録 PR では行わない。
 
-**未解決事項:** 全 workspace の所属と DB 生定義の監査、daemon のロード済み定義と forge HEAD の差分、運用移行時の改名表と既存 task の扱い。監査を完成し、衝突を解消して Q16 の一致を確認するまでは PR-5 に進まない。衝突検出の専用 API/CLI は PR-3 の必須範囲にしない。運用監査で raw 定義と合成結果を別々に保存し、欠測を未確定として扱う。
+**未解決事項:** ubs-bo の raw と khi の 11 project の raw/合成結果の監査、daemon のロード済み定義と forge HEAD の差分、運用移行時の改名表と既存 task の扱い。監査を完成し、衝突を解消して Q16 の一致を確認するまでは PR-5 に進まない。衝突検出の専用 API/CLI は PR-3 の必須範囲にしない。運用監査で raw 定義と合成結果を別々に保存し、欠測を未確定として扱う。
 
 ## 7. 採点表 — レビュワー用 yes/no 判定リスト
 
@@ -355,32 +355,68 @@ readonly は gateway だけで強制していて、`/workspace` の bind は常�
 
 2026-10-10 の sandbox RPC (`boid project list`、各行の ID を指定した `boid project behaviors <id>`) と、git gateway で取得した default branch HEAD を使う。合成後の runtime 定義と forge の raw YAML は別の観測値として扱う。HEAD が daemon の mirror/cache と一致するとは限らない。合成後の behavior から workspace DB の生定義を逆算しない。
 
-sandbox の `project list` は job の許可 project 集合だけを列挙し、workspace フィールドを返さない (`internal/server/boid_executor.go:696-747`)。behavior RPC も workspace 境界で制限する (`internal/sandbox/broker.go:477-487`)。全 workspace の DB と所属一覧はこの RPC では取得できない。取得した `Default (default)` は組み込み receiver で、`judge` は workspace DB の一覧ではない。receiver には workspace behaviors を合成しない (`internal/orchestrator/project_store.go:446`、`internal/orchestrator/default_metaproject.go:31`)。
+sandbox の `project list` は job の許可 project 集合だけを列挙し、workspace フィールドを返さない (`internal/server/boid_executor.go:696-747`)。behavior RPC も workspace 境界で制限する (`internal/sandbox/broker.go:477-487`)。全 workspace の DB と所属一覧はこの RPC では取得できない。2026-10-12 に owner が `boid task ask` への回答として workspace export の 2 document (default / khi) を提供した。metadata.name / spec.projects / spec.task_behaviors を使用し、env・init_script・service 設定はこの記録に転記しない。default は 17 project、khi は 11 project。export の所属により以下の workspace を確定した。取得した `Default (default)` は組み込み receiver で、`judge` は workspace DB の一覧ではない。receiver には workspace behaviors を合成しない (`internal/orchestrator/project_store.go:446`、`internal/orchestrator/default_metaproject.go:31`)。
 
 ### C.2 一覧
 
 | 観測範囲 | project | forge HEAD | raw `.boid/project.yaml` の behavior | RPC の合成後 behavior |
 |---|---|---|---|---|
-| 現 job の許可範囲 | boid | [a09940e00ef6](https://github.com/novshi-tech/boid/commit/a09940e00ef60c735ddfcc375721ecbd55393bea) | executor, supervisor | drive, executor, implement, supervisor |
-| 現 job の許可範囲 | Default (default) | — | 該当なし (組み込み) | judge |
-| 現 job の許可範囲 | sumiron-procurement-tracker | [51b638ccc8ed](https://github.com/novshi-tech/sumiron-procurement-tracker/commit/51b638ccc8ed690a5caa7d98ac224908ae4e832c) | executor, supervisor | drive, executor, implement, supervisor |
-| 現 job の許可範囲 | ubs-apps | [94e30db90db7](https://github.com/novshi-tech/ubs-apps/commit/94e30db90db7bfa2ad0e0a24449514a7c00c1de8) | executor, supervisor | drive, executor, implement, supervisor |
-| 現 job の許可範囲 | bm-next | [c016fb3cc80c](https://github.com/novshi-tech/bm-next/commit/c016fb3cc80c3bcdee18863ce20f0ea2cf09d5ef) | executor, supervisor | drive, executor, implement, supervisor |
-| 現 job の許可範囲 | bm-next-lp | [50a3fcc263c0](https://github.com/novshi-tech/bm-next-lp/commit/50a3fcc263c0447bdfaff260b702c47457c62582) | executor, supervisor | drive, executor, implement, supervisor |
-| 現 job の許可範囲 | nvt-tasks | [ecb3a9e9a257](https://github.com/novshi-tech/nvt-tasks/commit/ecb3a9e9a25761ac73e929517a4d1f391b00d3d7) | sweep, judge | drive, implement, judge, sweep |
-| 現 job の許可範囲 | harness-dojo | [b65b601c94ef](https://github.com/novshi-tech/harness-dojo/commit/b65b601c94ef4f1d96c2c5a6030eb54bfc3d58f8) | なし | drive, implement |
-| 現 job の許可範囲 | kite | [446e32834169](https://github.com/novshi-tech/kite/commit/446e32834169d7ac49f44e83dc4cc1305bc1e15f) | なし | drive, implement |
-| 現 job の許可範囲 | boid-api-skills | [f141b4c4a14f](https://github.com/novshi-tech/boid-api-skills/commit/f141b4c4a14f770fd3bf5d813b7b5ad8c6ccec50) | なし | drive, implement |
-| 現 job の許可範囲 | api-gateway-mcp | [be6c8b462e51](https://github.com/novshi-tech/api-gateway-mcp/commit/be6c8b462e5107146f92fe01647ae4bc11457081) | なし | drive, implement |
-| 現 job の許可範囲 | google-cli | [700d857d113f](https://github.com/novshi-tech/google-cli/commit/700d857d113fd4e241aa517fcbf6311c47f3b837) | なし | drive, implement |
-| 現 job の許可範囲 | ms-graph-cli | [d33597be68de](https://github.com/novshi-tech/ms-graph-cli/commit/d33597be68de82b4c30c73128bae70df5c13ffa6) | なし | drive, implement |
-| 現 job の許可範囲 | atl-cli | [f2cd9b5d60dd](https://github.com/novshi-tech/atl-cli/commit/f2cd9b5d60dd884d9267ee8cb09a77a81a125010) | executor, supervisor | drive, implement |
-| 現 job の許可範囲 | board-cli | [b0bbb92fe0d5](https://github.com/novshi-tech/board-cli/commit/b0bbb92fe0d5289a00281747d893ad9eb775041b) | なし | drive, implement |
-| 現 job の許可範囲 | novshi-tech-site | [ee89fc586bb9](https://github.com/novshi-tech/novshi-tech-site/commit/ee89fc586bb9cb72673da1e4586656578979626c) | なし | drive, implement |
-| 現 job の許可範囲 | freee-cli | [2321c9404a9f](https://github.com/novshi-tech/freee-cli/commit/2321c9404a9f94767e9d6e1833b0b5c71fe677c6) | なし | drive, implement |
-| 現 job の許可範囲 | ubs-bo | — | 取得不可 (403) | drive, implement |
+| default | boid | [a09940e00ef6](https://github.com/novshi-tech/boid/commit/a09940e00ef60c735ddfcc375721ecbd55393bea) | executor, supervisor | drive, executor, implement, supervisor |
+| default の組み込み receiver | Default (default) | — | 該当なし (組み込み) | judge |
+| default | sumiron-procurement-tracker | [51b638ccc8ed](https://github.com/novshi-tech/sumiron-procurement-tracker/commit/51b638ccc8ed690a5caa7d98ac224908ae4e832c) | executor, supervisor | drive, executor, implement, supervisor |
+| default | ubs-apps | [94e30db90db7](https://github.com/novshi-tech/ubs-apps/commit/94e30db90db7bfa2ad0e0a24449514a7c00c1de8) | executor, supervisor | drive, executor, implement, supervisor |
+| default | bm-next | [c016fb3cc80c](https://github.com/novshi-tech/bm-next/commit/c016fb3cc80c3bcdee18863ce20f0ea2cf09d5ef) | executor, supervisor | drive, executor, implement, supervisor |
+| default | bm-next-lp | [50a3fcc263c0](https://github.com/novshi-tech/bm-next-lp/commit/50a3fcc263c0447bdfaff260b702c47457c62582) | executor, supervisor | drive, executor, implement, supervisor |
+| default | nvt-tasks | [ecb3a9e9a257](https://github.com/novshi-tech/nvt-tasks/commit/ecb3a9e9a25761ac73e929517a4d1f391b00d3d7) | sweep, judge | drive, implement, judge, sweep |
+| default | harness-dojo | [b65b601c94ef](https://github.com/novshi-tech/harness-dojo/commit/b65b601c94ef4f1d96c2c5a6030eb54bfc3d58f8) | なし | drive, implement |
+| default | kite | [446e32834169](https://github.com/novshi-tech/kite/commit/446e32834169d7ac49f44e83dc4cc1305bc1e15f) | なし | drive, implement |
+| default | boid-api-skills | [f141b4c4a14f](https://github.com/novshi-tech/boid-api-skills/commit/f141b4c4a14f770fd3bf5d813b7b5ad8c6ccec50) | なし | drive, implement |
+| default | api-gateway-mcp | [be6c8b462e51](https://github.com/novshi-tech/api-gateway-mcp/commit/be6c8b462e5107146f92fe01647ae4bc11457081) | なし | drive, implement |
+| default | google-cli | [700d857d113f](https://github.com/novshi-tech/google-cli/commit/700d857d113fd4e241aa517fcbf6311c47f3b837) | なし | drive, implement |
+| default | ms-graph-cli | [d33597be68de](https://github.com/novshi-tech/ms-graph-cli/commit/d33597be68de82b4c30c73128bae70df5c13ffa6) | なし | drive, implement |
+| default | atl-cli | [f2cd9b5d60dd](https://github.com/novshi-tech/atl-cli/commit/f2cd9b5d60dd884d9267ee8cb09a77a81a125010) | executor, supervisor | drive, implement |
+| default | board-cli | [b0bbb92fe0d5](https://github.com/novshi-tech/board-cli/commit/b0bbb92fe0d5289a00281747d893ad9eb775041b) | なし | drive, implement |
+| default | novshi-tech-site | [ee89fc586bb9](https://github.com/novshi-tech/novshi-tech-site/commit/ee89fc586bb9cb72673da1e4586656578979626c) | なし | drive, implement |
+| default | freee-cli | [2321c9404a9f](https://github.com/novshi-tech/freee-cli/commit/2321c9404a9f94767e9d6e1833b0b5c71fe677c6) | なし | drive, implement |
+| default | ubs-bo | — | 取得不可 (403) | drive, implement |
 
 `ubs-bo` の upstream は `github.com/nosen-nvt/bo`。advertised clone URL は 403 を返した。github-api service の repository 情報と `.boid/project.yaml` の contents も 404 を返したため、raw 定義は未取得。404 を「定義なし」の根拠にはしない。ほかの 16 リポジトリは HEAD を取得した。raw に behavior を持つのは 7 リポジトリ、持たないのは 9 リポジトリ。`atl-cli` は raw に executor/supervisor があるが runtime にはない。boid の raw executor は PR-2 の起動時 checkout 指示を持つが、RPC は旧指示を返す。project.yaml refresh は PR-5 の範囲であり、今回これを実行して揃えない。
+
+### C.2a khi の所属 project
+
+| workspace | project | export の repo slug | raw behavior | 合成後 behavior |
+|---|---|---|---|---|
+| khi | hsp-show-seed | AoLani-ondemand/hsp-show-seed | 未取得 | RPC 拒否 |
+| khi | blanc-db2-skill | AoLani-ondemand/blanc-db-skills | 未取得 | RPC 拒否 |
+| khi | khi-task-collector | AoLani-ondemand/khi-task-collector | 未取得 | RPC 拒否 |
+| khi | blanc-db-if | AoLani-ondemand/blanc-db-if | 未取得 | RPC 拒否 |
+| khi | mera-ui | AoLani-ondemand/mera-ui | 未取得 | RPC 拒否 |
+| khi | rook-table-backup | AoLani-ondemand/rook-table-backup | 未取得 | RPC 拒否 |
+| khi | rook-local-infra | AoLani-ondemand/rook-local-infra | 未取得 | RPC 拒否 |
+| khi | rook-server | AoLani-ondemand/rook-server | 未取得 | RPC 拒否 |
+| khi | rook-tools | AoLani-ondemand/rook-tools | 未取得 | RPC 拒否 |
+| khi | blanc-rook-if | AoLani-ondemand/blanc-rook-if | 未取得 | RPC 拒否 |
+| khi | rook-deployment-files | AoLani-ondemand/rook-deployment-files | 未取得 | RPC 拒否 |
+
+khi の 11 件は現 job の project 広告にない。各 `boid project behaviors <name>` は `project is outside the current workspace` を返した。現 workspace の token で別 workspace の gateway 権限を広げない。khi の job またはホストで raw project.yaml と合成結果を採取するまで、定義なし・衝突なしとは扱わない。
+
+### C.2b workspace DB の生定義
+
+owner の export にある behavior 全 9 行。hash は各 behavior を UTF-8 の JSON (key 昇順、空白なし、非 ASCII を保持) にした SHA-256 の先頭 12 桁。本文と全フィールドを含む。profile は本文の要約で、同一性判定は hash の元の定義で行う。traits は全行 `[]`、readonly は全行明示されている。
+
+| workspace | behavior | readonly | agent / model | 定義 hash | profile |
+|---|---|---|---|---|---|
+| default | drive | false | claude-code / opus | `13c136ee47bd` | 参照情報から PR 単位に分解し、子 implement の PR をレビュー・統合する |
+| default | implement | false | codex / gpt-6.1-sol | `32a4278faff0` | 単一セッションで branch/push、レビュー、GitHub PR を作る |
+| khi | drive | false | claude-code / opus | `e7019df01758` | plan doc を PR 単位に分解し、Bitbucket の PR をレビュー・統合する |
+| khi | executor | false | claude-code / 指定なし | `34321e61ef46` | deprecated。branch を push し、PR は作らず親が branch を統合する |
+| khi | implement | false | claude-code / sonnet | `3dacb1d332d4` | 単一セッションで branch/push、レビュー、Bitbucket PR を作る |
+| khi | plan | false | claude-code / opus | `e1514d2802b2` | 設計文書だけを branch/push し、Bitbucket PR を作る |
+| khi | research | true | claude-code / opus | `cb2b652d71a7` | 読み取り調査。変更・commit・push は行わず通知を成果とする |
+| khi | review | false | claude-code / opus | `5dc895981d64` | コードを変更せず Bitbucket PR にレビューコメントを書く |
+| khi | supervisor | false | claude-code / 指定なし | `8cb12f21fba7` | deprecated。子 executor の branch をローカル統合・push する |
+
+default の DB drive/implement は、2026-10-10 の 17 project の RPC 定義から注入 env/host_commands/network を除いたものと一致する。これら 2 名は取得済みの raw project.yaml にはない。khi と default に共通する DB 名は drive/implement の 2 名で、両方とも異定義。workspace が別なので workspace 内衝突には数えない。default の implement は codex / gpt-6.1-sol / GitHub、khi は claude-code / sonnet / Bitbucket。全 workspace を一つの canonical 定義に揃えない。
 
 ### C.3 衝突の数え方と観測値
 
@@ -388,15 +424,21 @@ sandbox の `project list` は job の許可 project 集合だけを列挙し、
 
 | データ | 名前 | 定義を持つ project 数 | 異なる定義の数 | 衝突の意味 |
 |---|---|---|---|---|
-| 取得済み forge raw | executor | 6 | 5 | project/project の同名異定義候補 |
-| 取得済み forge raw | supervisor | 6 | 5 | project/project の同名異定義候補 |
+| default の取得済み forge raw | executor | 6 | 5 | workspace 内 project/project の同名異定義 |
+| default の取得済み forge raw | supervisor | 6 | 5 | workspace 内 project/project の同名異定義 |
 | RPC runtime | executor | 5 | 4 | 許可範囲内の同名異定義 |
 | RPC runtime | supervisor | 5 | 4 | 許可範囲内の同名異定義 |
-| RPC runtime | drive / implement | 各 17 | 各 1 | 取得範囲では異定義なし。DB 定義の確認ではない |
+| RPC runtime | drive / implement | 各 17 | 各 1 | default の export DB と一致。取得済み raw には同名なし |
 | RPC runtime | judge | 2 | 2 | nvt-tasks と組み込み receiver の違い。project.yaml 間の衝突には数えない |
-| 全 workspace DB vs project | 全名 | 未取得 | 未確定 | 全 workspace の衝突件数は未確定 |
+| default DB vs 取得済み raw project | drive / implement | 同名 project 0 | 該当なし | 16 raw の範囲では重複なし。ubs-bo 未取得 |
+| khi DB vs project / project 間 | 全名 | raw 11 件未取得 | 未確定 | DB 7 名は取得済み、project 側は欠測 |
 
-取得済み raw の同名異定義候補は 2 名 (executor / supervisor)。runtime も project 間は 2 名で、組み込み receiver を含めると judge が加わり 3 名になる。workspace 別の確定件数と DB/project 衝突件数ではない。
+default の取得済み raw と runtime の project 間衝突はともに 2 名 (executor / supervisor)。組み込み receiver と nvt-tasks の judge も異定義だが、receiver は所属 project の raw 一覧に含めない。default の全体件数は ubs-bo 分が未確定、khi の project 間・DB/project 件数は 11 raw の欠測により未確定。全体の確定値は出さない。
+
+| workspace | DB 生定義 | 所属 project | raw 取得済み | project 間の異定義名 | DB/project の異定義名 |
+|---|---|---|---|---|---|
+| default | 2 名取得済み | 17 件確定 | 16 件 | 取得済みで 2 名、残り 1 project 未確定 | 取得済みの同名は 0、残り 1 project 未確定 |
+| khi | 7 名取得済み | 11 件確定 | 0 件 | 未確定 | 未確定 |
 
 raw executor/supervisor の同一定義は bm-next-lp と atl-cli。sumiron-procurement-tracker は同じ本文だが `type: execution` が明示されているため raw では別定義。runtime では sumiron-procurement-tracker と bm-next-lp が同じになり、boid / ubs-apps / bm-next がそれぞれ別定義になる。raw と runtime の件数差を同一性の証明に使わない。
 
@@ -411,7 +453,7 @@ raw executor/supervisor の同一定義は bm-next-lp と atl-cli。sumiron-proc
 ### C.4 解消と移行の条件
 
 1. PR-3 では project.yaml の同名を丸ごと優先する。behavior 内の部分 merge はしない。workspace と異定義でも既存の実行を拒否せず、運用監査に残す
-2. 運用で workspace の raw DB 定義と所属 project を一度に取得する。ホストの `boid workspace export --all` は atomic snapshot を返す (`cmd/workspace_export.go:17-42`)。共有に必要なのは metadata.name / spec.projects / spec.task_behaviors だけで、env や資格情報は不要。別 workspace の project は、その workspace の job またはホストから raw 定義・ロード済み合成結果を取得する
+2. 運用で workspace の raw DB 定義と所属 project を一度に取得する。今回の owner export は default / khi の所属と DB 定義を満たすが、ubs-bo の raw と khi 11 件の project raw/合成結果は残る。ホストの `boid workspace export --all` は atomic snapshot を返す (`cmd/workspace_export.go:17-42`)。共有に必要なのは metadata.name / spec.projects / spec.task_behaviors だけで、env や資格情報は不要。別 workspace の project は、その workspace の job またはホストから raw 定義・ロード済み合成結果を取得する
 3. 同じ用途は owner が選んだ workspace 定義に揃える。違う用途は `<project>-<role>` など一意な名前に改名する。`executor`/`supervisor` の名前から readonly を暗黙に得ていた定義は、改名時に readonly を明示する (`internal/orchestrator/spec_loader.go:399-425`)。alias に依存しない
 4. default_task_behavior、trigger の run、card command、card event、子 task 作成指示、保存済み task の behavior を対応表で照合する。既存の queued/awaiting task をどの定義で再開するか決めてから旧名を外す。本文の obsolete な push 禁止はそのまま canonical に採用しない
 5. Q16 は名前だけでなく意味と呼び出し先を比較する。改名がある場合は対応表で同じ挙動になることを確認する。PR-5 は全 workspace の監査が揃い、未解消衝突が 0 件、HOME 固有スキルが使える状態になってから行う。今の取得範囲だけで Q16 を yes にしない
