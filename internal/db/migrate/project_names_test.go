@@ -92,6 +92,11 @@ func TestProjectNamesMigrationFallsBackForUnavailableLegacyIdentity(t *testing.T
 				if scenario == "renamed-default-branch" {
 					git("-C", upstream, "branch", "-m", "main")
 					git("--git-dir="+work, "fetch", "--prune")
+					// Newer Git may refresh HEAD on fetch; model the legacy stale mirror explicitly.
+					git("--git-dir="+work, "symbolic-ref", "HEAD", "refs/heads/master")
+				}
+				if err := exec.Command("git", "--git-dir="+work, "rev-parse", "--verify", "HEAD").Run(); err == nil {
+					t.Fatal("fixture must have an unresolved HEAD")
 				}
 			default:
 				if err := os.MkdirAll(filepath.Join(work, ".boid"), 0755); err != nil {
