@@ -87,4 +87,4 @@ Declare ordered command keys with `label` and `run`. `card_write: true` permits 
 
 `card_events.command` must name a declared command. If unspecified, workspace cards use the built-in judge.
 
-`extra_repos` has retired. Register read-only repositories with `boid project add <git-url> --workspace=<name> --perm=fetch` and include their names in `spec.projects`. Migration 0063 converts existing entries into registry rows.
+`extra_repos` has retired. Register read-only repositories with `boid project add <git-url> --workspace=<name> --perm=fetch` and include their names in `spec.projects`. Migration 0064 converts existing entries into registry rows.

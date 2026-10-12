@@ -14,9 +14,7 @@ type WireConfig struct {
 	SecretStore *SecretStore
 
 	Projects ProjectLookup
-	// Hydrator is optional workspace-hydrated ProjectMeta lookup, threaded
-	// straight to Runner.Hydrator. nil disables workspace-peer meta.name
-	// resolution; buildPeerAdvertise falls back to filepath.Base(WorkDir).
+	// Hydrator optionally supplies the workspace's legacy fork point to Runner.
 	Hydrator orchestrator.MetaHydrator
 
 	// BoidBinary is the host path to the boid executable that should be

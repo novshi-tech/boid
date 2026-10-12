@@ -126,14 +126,7 @@ type Runner struct {
 	// treats it as "noinst", matching NewContainerBackend's own
 	// unset-InstallID default.
 	InstallID string
-	// Hydrator optionally resolves a project's workspace-hydrated
-	// ProjectMeta (workspace configuration `meta.name` plus workspace merge) by project
-	// ID. It is used only for workspace-peer name resolution in
-	// buildPeerAdvertise — the self project's name is already resolved at
-	// JobSpec-build time via Visibility.ProjectName and does not need this.
-	// nil (test wiring, or a daemon build that doesn't wire it) makes
-	// buildPeerAdvertise degrade to the pre-existing basename fallback, same
-	// as orchestrator.DispatchPlanner.Hydrator's nil behavior.
+	// Hydrator optionally resolves the project's legacy workspace fork point.
 	Hydrator orchestrator.MetaHydrator
 	// Workspaces resolves WorkspaceMeta at dispatch time for the workspace
 	// the dispatched project is linked to. When nil (test wiring, missing

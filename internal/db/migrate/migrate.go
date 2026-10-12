@@ -499,8 +499,8 @@ func allMigrations() []migration {
 		{version: "0060_workspace_task_dedup", path: "migrations/0060_workspace_task_dedup.sql"},
 		{version: "0061_workspace_receivers", path: "migrations/0061_workspace_receivers.sql", run: retireWorkspaceReceivers, before: validateReceiverIdentities},
 		{version: "0062_persist_project_names", path: "migrations/0062_persist_project_names.sql", run: preserveProjectNames},
-		{version: "0063_register_extra_repositories", path: "migrations/0063_register_extra_repositories.sql", run: legacyrepos.RegisterExtraRepositories},
-		{version: "0064_recover_project_upstreams", path: "migrations/0064_recover_project_upstreams.sql", run: recoverProjectUpstreams},
+		{version: "0063_recover_project_upstreams", path: "migrations/0063_recover_project_upstreams.sql", run: recoverProjectUpstreams},
+		{version: "0064_register_extra_repositories", path: "migrations/0064_register_extra_repositories.sql", run: legacyrepos.RegisterExtraRepositories},
 	}
 }
 

@@ -19,7 +19,7 @@ func TestMigratedFetchRepositoriesResolveByWorkspaceName(t *testing.T) {
 	if err := migrate.Apply(d.Conn); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Conn.Exec(`DELETE FROM schema_migrations WHERE version='0063_register_extra_repositories'; INSERT INTO workspaces(slug,extra_repos) VALUES ('owner','[]'),('team','["git@github.com:org/lib.git"]'); INSERT INTO projects(id,name,work_dir,upstream_url,perm) VALUES ('existing','lib','','https://github.com/org/lib.git','push'); INSERT INTO project_workspaces(project_id,workspace_id) VALUES ('existing','owner')`); err != nil {
+	if _, err := d.Conn.Exec(`DELETE FROM schema_migrations WHERE version='0064_register_extra_repositories'; INSERT INTO workspaces(slug,extra_repos) VALUES ('owner','[]'),('team','["git@github.com:org/lib.git"]'); INSERT INTO projects(id,name,work_dir,upstream_url,perm) VALUES ('existing','lib','','https://github.com/org/lib.git','push'); INSERT INTO project_workspaces(project_id,workspace_id) VALUES ('existing','owner')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate.Apply(d.Conn); err != nil {

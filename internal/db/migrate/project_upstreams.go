@@ -37,10 +37,12 @@ func recoverProjectUpstreams(tx *sql.Tx) error {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		raw, err := exec.CommandContext(ctx, "git", "--git-dir="+p.dir, "config", "--local", "--get", "remote.origin.url").Output()
+		cmd := exec.CommandContext(ctx, "git", "config", "--local", "--get", "remote.origin.url")
+		cmd.Dir = p.dir
+		raw, err := cmd.Output()
 		cancel()
 		if err != nil {
-			slog.Warn("upstream migration: unable to read local origin; skipping", "project", p.id)
+			slog.Warn("upstream migration: unable to read local origin; skipping", "project", p.id, "error", err)
 			continue
 		}
 		upstream, err := legacyrepos.NormalizeRepositoryURL(string(raw))

@@ -65,7 +65,7 @@ func TestLegacyMirrorRowsDispatchWithoutRepositoryAccess(t *testing.T) {
 
 func TestMigratedExtraRepositoryGatewayFetchPermission(t *testing.T) {
 	d := newGatewayTestDB(t)
-	if _, err := d.Conn.Exec(`DELETE FROM schema_migrations WHERE version='0063_register_extra_repositories'; INSERT INTO workspaces(slug,extra_repos) VALUES ('default','["https://github.com/org/lib.git"]') ON CONFLICT(slug) DO UPDATE SET extra_repos=excluded.extra_repos`); err != nil {
+	if _, err := d.Conn.Exec(`DELETE FROM schema_migrations WHERE version='0064_register_extra_repositories'; INSERT INTO workspaces(slug,extra_repos) VALUES ('default','["https://github.com/org/lib.git"]') ON CONFLICT(slug) DO UPDATE SET extra_repos=excluded.extra_repos`); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate.Apply(d.Conn); err != nil {
