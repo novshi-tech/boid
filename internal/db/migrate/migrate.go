@@ -492,6 +492,7 @@ func allMigrations() []migration {
 			},
 		},
 		{version: "0057_add_jobs_terminal_title", path: "migrations/0057_add_jobs_terminal_title.sql"},
+		{version: "0058_add_workspace_automation", path: "migrations/0058_add_workspace_automation.sql", skip: func(tx *sql.Tx) (bool, error) { return columnExists(tx, "workspaces", "triggers") }},
 	}
 }
 

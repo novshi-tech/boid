@@ -92,11 +92,19 @@ func TestProjectAPI_List(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
 		t.Fatalf("list projects: %v", err)
 	}
-	if len(projects) != 1 {
-		t.Fatalf("expected 1 project, got %d", len(projects))
+	if len(projects) != 2 {
+		t.Fatalf("expected project and workspace receiver, got %d", len(projects))
 	}
-	if projects[0].ID != "test-project" {
-		t.Errorf("project ID = %q, want %q", projects[0].ID, "test-project")
+	found := false
+	for _, p := range projects {
+		if p.ID == "test-project" {
+			found = true
+		} else if !orchestrator.IsDefaultMetaproject(p) {
+			t.Fatalf("unexpected project: %+v", p)
+		}
+	}
+	if !found {
+		t.Fatal("registered project is missing")
 	}
 }
 
@@ -217,7 +225,7 @@ func TestProjectAPI_ListWorkspaces(t *testing.T) {
 	for _, ws := range workspaces {
 		byID[ws.ID] = ws
 	}
-	if ws := byID[orchestrator.DefaultWorkspaceSlug]; ws == nil || ws.ProjectCount != 0 {
+	if ws := byID[orchestrator.DefaultWorkspaceSlug]; ws == nil || ws.ProjectCount != 1 {
 		t.Errorf("unexpected default workspace: %+v", ws)
 	}
 	if ws := byID["ws-1"]; ws == nil || ws.ProjectCount != 2 {

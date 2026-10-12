@@ -18,6 +18,12 @@ import "strings"
 // from outside this type now — see cmd/workspace.go's
 // ensureWorkspaceExistsForAssign and cmd/project_migrate.go.
 type WorkspaceMeta struct {
+	Triggers          []Trigger              `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+	Signals           SignalsConfig          `yaml:"signals,omitempty" json:"signals,omitempty"`
+	CardCommands      map[string]CardCommand `yaml:"card_commands,omitempty" json:"card_commands,omitempty"`
+	CardCommandsOrder []string               `yaml:"-" json:"-"`
+	CardEvents        CardEventsConfig       `yaml:"card_events,omitempty" json:"card_events,omitempty"`
+
 	// Env holds environment variable overrides applied to every sandbox
 	// launched under this workspace. Values here take precedence over
 	// kit-supplied env but are overridden by project.yaml env.

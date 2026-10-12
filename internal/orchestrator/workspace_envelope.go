@@ -56,6 +56,12 @@ type WorkspaceEnvelopeMetadata struct {
 // "field absent, leave untouched", breaking export→apply round trips that
 // are meant to clear a field.
 type WorkspaceEnvelopeSpec struct {
+	Triggers          []Trigger              `yaml:"triggers" json:"triggers"`
+	Signals           SignalsConfig          `yaml:"signals" json:"signals"`
+	CardCommands      map[string]CardCommand `yaml:"card_commands" json:"card_commands"`
+	CardCommandsOrder []string               `yaml:"-" json:"-"`
+	CardEvents        CardEventsConfig       `yaml:"card_events" json:"card_events"`
+
 	HostCommands   []string          `yaml:"host_commands"`
 	Env            map[string]string `yaml:"env"`
 	AllowedDomains []string          `yaml:"allowed_domains"`
@@ -94,6 +100,10 @@ type WorkspaceEnvelopeProject struct {
 // AdditionalBindingsDropped, then discarded) rather than rejected outright.
 // Anything else is rejected with "unknown field" (typo guard).
 var workspaceEnvelopeSpecFields = map[string]bool{
+	"triggers":              true,
+	"signals":               true,
+	"card_commands":         true,
+	"card_events":           true,
 	"host_commands":         true,
 	"env":                   true,
 	"allowed_domains":       true,
@@ -143,6 +153,11 @@ type WorkspaceEnvelopeApply struct {
 func NewWorkspaceEnvelopeFromMeta(name string, meta *WorkspaceMeta, projects []WorkspaceEnvelopeProject, initScript string) *WorkspaceEnvelope {
 	spec := WorkspaceEnvelopeSpec{Projects: projects, InitScript: initScript}
 	if meta != nil {
+		spec.Triggers = meta.Triggers
+		spec.Signals = meta.Signals
+		spec.CardCommands = meta.CardCommands
+		spec.CardCommandsOrder = meta.CardCommandsOrder
+		spec.CardEvents = meta.CardEvents
 		spec.HostCommands = meta.HostCommands
 		spec.Env = meta.Env
 		spec.AllowedDomains = meta.AllowedDomains
@@ -178,6 +193,19 @@ func (a *WorkspaceEnvelopeApply) MergeInto(current *WorkspaceMeta) *WorkspaceMet
 		*merged = *current
 	}
 	spec := a.Envelope.Spec
+	if a.FieldsPresent["triggers"] {
+		merged.Triggers = spec.Triggers
+	}
+	if a.FieldsPresent["signals"] {
+		merged.Signals = spec.Signals
+	}
+	if a.FieldsPresent["card_commands"] {
+		merged.CardCommands = spec.CardCommands
+		merged.CardCommandsOrder = spec.CardCommandsOrder
+	}
+	if a.FieldsPresent["card_events"] {
+		merged.CardEvents = spec.CardEvents
+	}
 	if a.FieldsPresent["host_commands"] {
 		merged.HostCommands = spec.HostCommands
 	}
@@ -274,6 +302,10 @@ var bareMetaKnownFieldNames = map[string]bool{
 	"allowed_domains":       true,
 	"extra_repos":           true,
 	"services":              true,
+	"triggers":              true,
+	"signals":               true,
+	"card_commands":         true,
+	"card_events":           true,
 	"host_commands":         true,
 	"container_image":       true,
 	"additional_bindings":   true,
@@ -544,6 +576,24 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 		}
 	}
 
+	for key, target := range map[string]any{"triggers": &spec.Triggers, "signals": &spec.Signals, "card_commands": &spec.CardCommands, "card_events": &spec.CardEvents} {
+		if n, ok := raw[key]; ok {
+			fieldsPresent[key] = true
+			if err := decodeStrictNode(n, target); err != nil {
+				return spec, nil, false, fmt.Errorf("spec.%s: %w", key, err)
+			}
+		}
+	}
+	if n, ok := raw["card_commands"]; ok {
+		spec.CardCommandsOrder = mappingOrder(&n)
+	}
+	spec.CardEvents.Command = strings.TrimSpace(spec.CardEvents.Command)
+	if _, err := workspaceTriggers(&WorkspaceMeta{Triggers: spec.Triggers, Signals: spec.Signals}); err != nil {
+		return spec, nil, false, err
+	}
+	if err := ValidateCardCommands(spec.CardCommands, CardEventsConfig{}); err != nil {
+		return spec, nil, false, err
+	}
 	return spec, fieldsPresent, additionalBindingsDropped, nil
 }
 

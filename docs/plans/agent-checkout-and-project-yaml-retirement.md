@@ -187,6 +187,8 @@ branch は agent が自分で切り替える。dispatcher は `BOID_BASE_BRANCH`
 
 **PR-3 に入れるもの:** C2 の 4 フィールド (`triggers` / `signals` / `card_commands` / `card_events`) の保存・読み込み、workspace envelope の apply/export、project.yaml 優先の和集合読み、workspace の `signals.sources` からの trigger 導出、workspace 定義だけで動く経路と衝突優先順位のテスト (Q13〜Q15)。behavior の既存の名前単位の合成は維持する (`internal/orchestrator/project_store.go:435-455`)。project/project の定義を workspace に自動集約しない。
 
+PR-3 の合成は方式 A とする。workspace の 4 フィールドは repo なしの default metaproject (`DefaultMetaprojectID(ws)`) だけに載せ、daemon 起動時と trigger sweep 前に receiver を保証する。workspace あたり trigger は 1 回だけ発火し、signals の導出 trigger もこの経路で生成する。同じ workspace の所属 project.yaml に同名の trigger（signals 由来を含む）または card_command があれば workspace 側は receiver に載せず warn を出す。定義内の部分 merge はしない。workspace の card_commands/card_events は receiver の組み込みより優先し、card_events が無ければ組み込みを維持する。workspace の card_events が指す command が衝突で receiver から落ちる場合も warn を出して組み込み judge の event を維持し、依存しない command は通常どおり合成する。behavior の既存の名前単位合成は変更しない。
+
 **PR-3 に入れないもの:** Pack の workspace フィルタ、新しい skill 配布 API、既存定義の改名・移行、task の behavior 書き換え、project.yaml の refresh/読み込み撤去、default metaproject 撤去、C1/C3/C6、API gateway の変更。schema の実装は PR-3 本体で行い、この決定記録 PR では行わない。
 
 **未解決事項:** ubs-bo の raw と khi の 11 project の raw/合成結果の監査、daemon のロード済み定義と forge HEAD の差分、運用移行時の改名表と既存 task の扱い。監査を完成し、衝突を解消して Q16 の一致を確認するまでは PR-5 に進まない。衝突検出の専用 API/CLI は PR-3 の必須範囲にしない。運用監査で raw 定義と合成結果を別々に保存し、欠測を未確定として扱う。
@@ -454,6 +456,6 @@ raw executor/supervisor の同一定義は bm-next-lp と atl-cli。sumiron-proc
 
 1. PR-3 では project.yaml の同名を丸ごと優先する。behavior 内の部分 merge はしない。workspace と異定義でも既存の実行を拒否せず、運用監査に残す
 2. 運用で workspace の raw DB 定義と所属 project を一度に取得する。今回の owner export は default / khi の所属と DB 定義を満たすが、ubs-bo の raw と khi 11 件の project raw/合成結果は残る。ホストの `boid workspace export --all` は atomic snapshot を返す (`cmd/workspace_export.go:17-42`)。共有に必要なのは metadata.name / spec.projects / spec.task_behaviors だけで、env や資格情報は不要。別 workspace の project は、その workspace の job またはホストから raw 定義・ロード済み合成結果を取得する
-3. 同じ用途は owner が選んだ workspace 定義に揃える。違う用途は `<project>-<role>` など一意な名前に改名する。`executor`/`supervisor` の名前から readonly を暗黙に得ていた定義は、改名時に readonly を明示する (`internal/orchestrator/spec_loader.go:399-425`)。alias に依存しない
+3. 同じ用途は owner が選んだ workspace 定義に揃える。違う用途は `<project>-<role>` など一意な名前に改名する。名前から暗黙に `readonly=false` を得るのは `executor` だけで、改名時は readonly を明示する (`internal/orchestrator/spec_loader.go:421`)。`supervisor` の名前による暗黙動作は readonly ではなく、既定 behavior のフォールバックである (`internal/orchestrator/behavior_resolve.go`)。alias に依存しない
 4. default_task_behavior、trigger の run、card command、card event、子 task 作成指示、保存済み task の behavior を対応表で照合する。既存の queued/awaiting task をどの定義で再開するか決めてから旧名を外す。本文の obsolete な push 禁止はそのまま canonical に採用しない
 5. Q16 は名前だけでなく意味と呼び出し先を比較する。改名がある場合は対応表で同じ挙動になることを確認する。PR-5 は全 workspace の監査が揃い、未解消衝突が 0 件、HOME 固有スキルが使える状態になってから行う。今の取得範囲だけで Q16 を yes にしない

@@ -282,6 +282,8 @@ project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_dom
 >
 > `create` / `list` / `apply` / `export` と `<slug>` 配下のサブコマンド (`get-init-script` など) は影響を受けない。
 
+workspace envelope の `spec` は `triggers` / `signals` / `card_commands` / `card_events` も受け付けます。型と検証は [project.yaml](project-yaml.md) の同名フィールドと同じです。これらは workspace の repo なし default metaproject にだけ合成され、複数 project が所属していても workspace trigger は 1 回だけ起動します。`signals.sources` から polling trigger を導出します。所属 project.yaml に同名の trigger（導出名を含む）/ card_command があれば workspace 側を省き、警告を出します。card command の宣言順は export/apply と DB 保存で保持します。workspace の card_events が指定されなければ receiver の組み込み judge を維持し、指定した command が衝突で省かれた場合も警告とともに judge を維持します。apply はキー省略で現状維持、空値の明示でそのフィールドを削除します。
+
 | コマンド | 役割 |
 |---|---|
 | `boid workspace list` | ワークスペース一覧 |

@@ -32,6 +32,11 @@ import (
 // already-materialized (kits-free) body — see
 // cmd/workspace.go's ensureWorkspaceExistsForAssign.
 type workspaceMetaStrict struct {
+	Triggers     []Trigger              `yaml:"triggers,omitempty"`
+	Signals      SignalsConfig          `yaml:"signals,omitempty"`
+	CardCommands map[string]CardCommand `yaml:"card_commands,omitempty"`
+	CardEvents   CardEventsConfig       `yaml:"card_events,omitempty"`
+
 	Env            map[string]string `yaml:"env,omitempty"`
 	Capabilities   Capabilities      `yaml:"capabilities,omitempty"`
 	AllowedDomains []string          `yaml:"allowed_domains,omitempty"`
@@ -61,6 +66,7 @@ func (s workspaceMetaStrict) toWorkspaceMeta() *WorkspaceMeta {
 		slog.Warn("workspace meta: additional_bindings is no longer supported (retired in docs/plans/home-workspace-volume.md Phase 4 PR4); the field is parsed but ignored")
 	}
 	return &WorkspaceMeta{
+		Triggers: s.Triggers, Signals: s.Signals, CardCommands: s.CardCommands, CardEvents: s.CardEvents,
 		Env:            s.Env,
 		Capabilities:   s.Capabilities,
 		AllowedDomains: s.AllowedDomains,
@@ -144,7 +150,11 @@ func DecodeWorkspaceMetaStrict(data []byte) (*WorkspaceMeta, error) {
 	if err := RejectTrailingYAMLDocument(dec); err != nil {
 		return nil, fmt.Errorf("decode workspace meta: %w", err)
 	}
-	return strict.toWorkspaceMeta(), nil
+	meta := strict.toWorkspaceMeta()
+	if err := hydrateWorkspaceAutomation(meta, data); err != nil {
+		return nil, err
+	}
+	return meta, nil
 }
 
 // envelopeSentToTheWrongDoor returns the error to report when data is an
@@ -223,5 +233,9 @@ func DecodeWorkspaceCreateStrict(data []byte) (slug string, meta *WorkspaceMeta,
 	if err := RejectTrailingYAMLDocument(dec); err != nil {
 		return "", nil, fmt.Errorf("decode workspace create body: %w", err)
 	}
-	return strict.Slug, strict.workspaceMetaStrict.toWorkspaceMeta(), nil
+	meta = strict.workspaceMetaStrict.toWorkspaceMeta()
+	if err := hydrateWorkspaceAutomation(meta, data); err != nil {
+		return "", nil, err
+	}
+	return strict.Slug, meta, nil
 }

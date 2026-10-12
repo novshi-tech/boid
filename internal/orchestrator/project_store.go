@@ -524,6 +524,11 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		out.DefaultTaskBehavior = ws.DefaultTaskBehavior
 	}
 
+	if projectID == DefaultMetaprojectID(workspaceID) {
+		if err := s.mergeWorkspaceAutomation(out, ws, workspaceID); err != nil {
+			return nil, err
+		}
+	}
 	warnSignalConnectorServicesNotEnabled(projectID, workspaceID, out.Triggers, ws.Services)
 
 	return out, nil
@@ -642,11 +647,22 @@ func (s *ProjectStore) synthesizeMetaForReload(candidate *Project) *ProjectMeta 
 // "" (ok=false) when the project is not cached or declares none. Satisfies
 // CardEventResolver (card_event_ingest.go).
 func (s *ProjectStore) CardEventCommand(projectID string) (string, bool) {
-	meta, ok := s.Get(projectID)
-	if !ok || meta.CardEvents.Command == "" {
+	s.mu.RLock()
+	workspaceID := s.workspaceIDs[projectID]
+	s.mu.RUnlock()
+	if projectID != DefaultMetaprojectID(workspaceID) {
+		meta, ok := s.Get(projectID)
+		if !ok {
+			return "", false
+		}
+		return meta.CardEvents.Command, meta.CardEvents.Command != ""
+	}
+	meta, err := s.GetWithWorkspace(context.Background(), projectID)
+	if err != nil {
+		slog.Warn("card event meta lookup failed", "project_id", projectID, "error", err)
 		return "", false
 	}
-	return meta.CardEvents.Command, true
+	return meta.CardEvents.Command, meta.CardEvents.Command != ""
 }
 
 // SetWorkspaceID updates the cached workspace association for a project.

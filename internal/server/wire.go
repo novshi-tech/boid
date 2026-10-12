@@ -247,6 +247,9 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 			"workspace_id", orchestrator.DefaultWorkspaceSlug, "count", n)
 	}
 
+	if err := orchestrator.EnsureDefaultMetaprojects(conn, store); err != nil {
+		return nil, nil, fmt.Errorf("ensure default metaprojects: %w", err)
+	}
 	projects, err := projectRepo.ListProjects()
 	if err != nil {
 		return nil, nil, fmt.Errorf("list projects: %w", err)
@@ -1115,16 +1118,17 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	taskWaits := api.NewTaskWaitRegistry()
 
 	workflow := &api.TaskWorkflowService{
-		TaskWaits:   taskWaits,
-		Tasks:       taskRepo,
-		Jobs:        jobStore,
-		Projects:    projectRepo,
-		Tx:          tx,
-		Meta:        store,
-		Coordinator: &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, Waiter: adapter, MaxDepth: 5, LifecycleStore: taskRepo},
-		Lifecycle:   lifecycle,
-		Hub:         hub,
-		Adapter:     claudeAdapter,
+		EnsureTriggerProjects: func() error { return orchestrator.EnsureDefaultMetaprojects(srv.db, store) },
+		TaskWaits:             taskWaits,
+		Tasks:                 taskRepo,
+		Jobs:                  jobStore,
+		Projects:              projectRepo,
+		Tx:                    tx,
+		Meta:                  store,
+		Coordinator:           &orchestrator.Coordinator{Evaluator: &orchestrator.Evaluator{}, HookExecutor: adapter, Waiter: adapter, MaxDepth: 5, LifecycleStore: taskRepo},
+		Lifecycle:             lifecycle,
+		Hub:                   hub,
+		Adapter:               claudeAdapter,
 		// TaskTriage: taskRepo already implements CardStore (see
 		// internal/orchestrator/repository.go) — same object as Tasks
 		// above, viewed through a narrower interface for

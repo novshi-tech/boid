@@ -68,7 +68,18 @@ func IngestCardEventRequest(ctx context.Context, dbtx db.DBTX, a *Action, resolv
 		return nil
 	}
 
-	commandKey, ok := resolver.CardEventCommand(projectID)
+	var commandKey string
+	var ok bool
+	if txResolver, supportsTx := resolver.(interface {
+		CardEventCommandInTx(db.DBTX, string) (string, bool, error)
+	}); supportsTx {
+		commandKey, ok, err = txResolver.CardEventCommandInTx(dbtx, projectID)
+		if err != nil {
+			return fmt.Errorf("card event ingest: resolve command: %w", err)
+		}
+	} else {
+		commandKey, ok = resolver.CardEventCommand(projectID)
+	}
 	if !ok || commandKey == "" {
 		return nil
 	}

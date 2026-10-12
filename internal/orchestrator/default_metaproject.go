@@ -49,7 +49,7 @@ func DefaultMetaprojectMeta(workspace string) *ProjectMeta {
 
 // EnsureDefaultMetaprojects creates repository-free receivers atomically. The
 // workspace list is read inside the same transaction as membership creation.
-// Called before presenting the Web creation form, including for new workspaces.
+// Called at startup, before trigger sweeps, and before the Web creation form.
 func EnsureDefaultMetaprojects(conn *sql.DB, store *ProjectStore) error {
 	var defaults []*Project
 	err := db.InTxDB(conn, func(tx db.DBTX) error {

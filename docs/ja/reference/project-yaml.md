@@ -190,7 +190,7 @@ hook が宣言を持たない behavior では、 `default_instruction` から vi
 
 ## `triggers[]`
 
-daemon が project.yaml から読み取り、周期的に readonly exec job として起こすコマンドの一覧です (docs/plans/ingestion-identity.md PR-4/B-5)。`task_behaviors` とは独立した**トップレベル**のフィールドで、workspace envelope 側 (`boid workspace apply` の `spec:`) には意図的に対応していません — `run:` は特定 1 project の tracked tree にしか存在しないスクリプトパスを指すことが普通で、workspace 内の複数 project へ機械的に共有できる保証が無いためです。
+daemon が project.yaml から読み取り、周期的に readonly exec job として起こすコマンドの一覧です。`task_behaviors` とは独立したトップレベルのフィールドです。workspace envelope の `spec.triggers` にも同じ型で宣言できます。workspace 定義は repo なし default metaproject にだけ合成され、所属 project.yaml の同名定義が優先されます。workspace の `run` は receiver 上で動くため、個別リポジトリの tracked tree にあるスクリプトを前提にしないでください。
 
 ```yaml
 triggers:

@@ -190,18 +190,9 @@ spec:
 	}
 }
 
-// TestDecodeWorkspaceEnvelopeDocuments_RejectsTriggersField pins a deliberate
-// decision made in docs/plans/ingestion-identity.md PR-4 (B-5): `triggers:`
-// is a project.yaml-only field (J-1's "project.yaml のトップレベル"). It is
-// NOT added to workspaceEnvelopeSpecFields/WorkspaceEnvelopeSpec — a
-// workspace-level default `run:` command would point at a script path that
-// only exists inside ONE specific project's tracked tree, unlike
-// task_behaviors/base_branch/fork_point which generalize across every
-// project a workspace default applies to. A workspace envelope document
-// that tries to set spec.triggers must be rejected the same way any other
-// unknown spec field is (TestDecodeWorkspaceEnvelopeDocuments_
-// RejectsUnknownSpecField above) — not silently ignored.
-func TestDecodeWorkspaceEnvelopeDocuments_RejectsTriggersField(t *testing.T) {
+// TestDecodeWorkspaceEnvelopeDocuments_AcceptsTriggersField accepts workspace scheduling.
+
+func TestDecodeWorkspaceEnvelopeDocuments_AcceptsTriggersField(t *testing.T) {
 	data := []byte(`
 apiVersion: boid.dev/v1
 kind: Workspace
@@ -214,8 +205,8 @@ spec:
       run: python3 scripts/intake_tick.py
 `)
 	_, err := DecodeWorkspaceEnvelopeDocuments(data)
-	if err == nil || !strings.Contains(err.Error(), "triggers") {
-		t.Fatalf("expected an unknown field error mentioning triggers, got %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -511,6 +502,9 @@ func TestBareMetaKnownFieldNames_CoversEveryWorkspaceMetaField(t *testing.T) {
 		}
 		// Strip yaml tag options (e.g. "host_commands,omitempty" -> "host_commands").
 		name := strings.SplitN(tag, ",", 2)[0]
+		if name == "-" {
+			continue
+		}
 		if !bareMetaKnownFieldNames[name] {
 			t.Errorf("WorkspaceMeta field %s (yaml key %q) is missing from bareMetaKnownFieldNames — "+
 				"add it there so bareMetaSentToTheWrongDoor still recognizes a bare-meta document that only sets this field",
