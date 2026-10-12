@@ -32,6 +32,7 @@ import (
 type TriggerRun struct {
 	ID          string
 	ProjectID   string
+	WorkspaceID string
 	TriggerName string
 	JobID       string
 	StartedAt   time.Time
@@ -94,10 +95,15 @@ func CreateTriggerRun(dbtx db.DBTX, run *TriggerRun) error {
 		run.StartedAt = time.Now()
 	}
 	run.StartedAt = run.StartedAt.UTC()
-	_, err := dbtx.Exec(
-		`INSERT INTO trigger_runs (id, project_id, trigger_name, job_id, started_at, finished_at, exit_code)
-		 VALUES (?, ?, ?, ?, ?, NULL, NULL)`,
-		run.ID, run.ProjectID, run.TriggerName, run.JobID, run.StartedAt,
+	workspaceID, err := ProjectWorkspaceID(dbtx, run.ProjectID)
+	if err != nil {
+		return err
+	}
+	run.WorkspaceID = workspaceID
+	_, err = dbtx.Exec(
+		`INSERT INTO trigger_runs (id, project_id, workspace_id, trigger_name, job_id, started_at, finished_at, exit_code)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
+		run.ID, run.ProjectID, run.WorkspaceID, run.TriggerName, run.JobID, run.StartedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -212,7 +218,7 @@ var ErrTriggerRunAlreadyFinished = errors.New("trigger run is already finished")
 // definition, same "single batch read" posture as PR-3's ListActionsSince).
 func ListInFlightTriggerRuns(dbtx db.DBTX) ([]*TriggerRun, error) {
 	rows, err := dbtx.Query(
-		`SELECT id, project_id, trigger_name, job_id, started_at, finished_at, exit_code
+		`SELECT id, COALESCE(project_id, ''), workspace_id, trigger_name, job_id, started_at, finished_at, exit_code
 		 FROM trigger_runs WHERE finished_at IS NULL ORDER BY started_at ASC, id ASC`,
 	)
 	if err != nil {
@@ -236,7 +242,7 @@ func LatestTriggerRun(dbtx db.DBTX, projectID, triggerName string) (*TriggerRun,
 		return nil, fmt.Errorf("latest trigger run: trigger name must not be empty")
 	}
 	row := dbtx.QueryRow(
-		`SELECT id, project_id, trigger_name, job_id, started_at, finished_at, exit_code
+		`SELECT id, COALESCE(project_id, ''), workspace_id, trigger_name, job_id, started_at, finished_at, exit_code
 		 FROM trigger_runs WHERE project_id = ? AND trigger_name = ?
 		 ORDER BY started_at DESC, id DESC LIMIT 1`,
 		projectID, triggerName,
@@ -263,7 +269,7 @@ func scanTriggerRunRow(row triggerRunRowScanner) (*TriggerRun, error) {
 	var run TriggerRun
 	var finishedAt sql.NullTime
 	var exitCode sql.NullInt64
-	if err := row.Scan(&run.ID, &run.ProjectID, &run.TriggerName, &run.JobID, &run.StartedAt, &finishedAt, &exitCode); err != nil {
+	if err := row.Scan(&run.ID, &run.ProjectID, &run.WorkspaceID, &run.TriggerName, &run.JobID, &run.StartedAt, &finishedAt, &exitCode); err != nil {
 		return nil, err
 	}
 	if finishedAt.Valid {

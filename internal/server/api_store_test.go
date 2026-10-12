@@ -475,3 +475,15 @@ func TestTranscriptLogReader_NotFoundInEitherRoot(t *testing.T) {
 		t.Errorf("StatJobLog() error = %v, want os.ErrNotExist", err)
 	}
 }
+
+func TestJobWorkspaceIDRoundTrip(t *testing.T) {
+	src := &dispatcher.Job{ID: "job", ProjectID: "repo", WorkspaceID: "team"}
+	wire := toAPIJob(src)
+	if wire.WorkspaceID != src.WorkspaceID {
+		t.Fatalf("API workspace = %q", wire.WorkspaceID)
+	}
+	got := toDispatcherJob(wire)
+	if got.WorkspaceID != src.WorkspaceID {
+		t.Fatalf("dispatcher workspace = %q", got.WorkspaceID)
+	}
+}

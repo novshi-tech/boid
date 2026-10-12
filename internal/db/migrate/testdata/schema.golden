@@ -106,7 +106,8 @@ CREATE TABLE card_requests (
 CREATE TABLE "jobs" (
     id              TEXT PRIMARY KEY,
     task_id         TEXT REFERENCES tasks(id),
-    project_id      TEXT NOT NULL REFERENCES projects(id),
+    workspace_id TEXT NOT NULL DEFAULT 'default' CHECK (workspace_id != ''),
+    project_id      TEXT REFERENCES projects(id),
     handler_id      TEXT NOT NULL DEFAULT '',
     role            TEXT NOT NULL DEFAULT 'hook',
     runtime_id      TEXT NOT NULL DEFAULT '',
@@ -147,7 +148,7 @@ CREATE TABLE projects (
     work_dir   TEXT NOT NULL,
     created_at DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
-, upstream_url TEXT);
+, upstream_url TEXT, perm TEXT NOT NULL DEFAULT 'push' CHECK (perm IN ('fetch', 'push')));
 
 -- table: schema_migrations
 CREATE TABLE schema_migrations (
@@ -206,7 +207,8 @@ CREATE TABLE task_identities (
 CREATE TABLE "tasks" (
     id            TEXT PRIMARY KEY,
     type          TEXT NOT NULL,
-    project_id    TEXT NOT NULL REFERENCES projects(id),
+    workspace_id TEXT NOT NULL DEFAULT 'default' CHECK (workspace_id != ''),
+    project_id    TEXT REFERENCES projects(id),
     remote_id     TEXT NOT NULL DEFAULT '',
     title         TEXT NOT NULL,
     description   TEXT NOT NULL DEFAULT '',
@@ -217,10 +219,6 @@ CREATE TABLE "tasks" (
     updated_at    DATETIME NOT NULL DEFAULT (datetime('now')),
     worktree      BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- ExecAttrs (design doc §3.2/§3.5). NULL on every card row. behavior is
-    -- allowed to be '' (a no-yaml project's resolved behavior name) but NOT
-    -- NULL on an execution row — NULL means "not an execution task" here,
-    -- not "no behavior" (§3.4's note on this exact distinction).
     behavior      TEXT,
     traits        TEXT,
     readonly      BOOLEAN,
@@ -230,10 +228,6 @@ CREATE TABLE "tasks" (
     instructions  TEXT,
     auto_start    BOOLEAN,
 
-    -- CardAttrs (design doc §3.2/§3.5). NULL on every execution row.
-    -- wake_at is the one card column that may legitimately be NULL even on
-    -- a live card row (nil = no date-based wake condition) — it does not
-    -- get an "IS NOT NULL for card rows" CHECK below, unlike its siblings.
     kind             TEXT,
     urgency          TEXT,
     wake_at          DATETIME,
@@ -243,11 +237,9 @@ CREATE TABLE "tasks" (
 
     CHECK (type IN ('card', 'execution')),
 
-    -- 型ごとの status 語彙 (§3.4).
     CHECK (type != 'card'      OR status IN ('parked', 'working', 'done', 'dropped')),
     CHECK (type != 'execution' OR status IN ('pending', 'executing', 'awaiting', 'done', 'aborted')),
 
-    -- 相手型のフィールドは NULL (§3.4, 実列全部に張る).
     CHECK (type != 'card' OR (
         behavior IS NULL AND traits IS NULL AND readonly IS NULL AND
         branch_prefix IS NULL AND base_branch IS NULL AND payload IS NULL AND
@@ -258,9 +250,6 @@ CREATE TABLE "tasks" (
         wake_task_id IS NULL AND suggestion_verb IS NULL AND detail IS NULL
     )),
 
-    -- 自分の型のフィールドは（wake_at を除いて）NULL であってはならない —
-    -- 上の CHECK の裏面。behavior だけ空文字が正当 (上のコメント参照) なので
-    -- IS NOT NULL のみを課し、値の中身は問わない。
     CHECK (type != 'execution' OR (
         behavior IS NOT NULL AND traits IS NOT NULL AND readonly IS NOT NULL AND
         branch_prefix IS NOT NULL AND base_branch IS NOT NULL AND payload IS NOT NULL AND
@@ -273,9 +262,10 @@ CREATE TABLE "tasks" (
 );
 
 -- table: trigger_runs
-CREATE TABLE trigger_runs (
+CREATE TABLE "trigger_runs" (
     id           TEXT PRIMARY KEY,
-    project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL DEFAULT 'default' CHECK (workspace_id != ''),
+    project_id   TEXT REFERENCES projects(id) ON DELETE CASCADE,
     trigger_name TEXT NOT NULL,
     job_id       TEXT NOT NULL DEFAULT '',
     started_at   DATETIME NOT NULL,

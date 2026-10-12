@@ -16,12 +16,15 @@ type projectScanner interface {
 
 // CreateProject inserts a new project record.
 func CreateProject(dbtx db.DBTX, project *Project) error {
+	if project.Perm == "" {
+		project.Perm = "push"
+	}
 	now := time.Now().UTC()
 	project.CreatedAt = now
 	project.UpdatedAt = now
 	_, err := dbtx.Exec(
-		`INSERT INTO projects (id, work_dir, upstream_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		project.ID, project.WorkDir, nullableString(project.UpstreamURL), project.CreatedAt, project.UpdatedAt,
+		`INSERT INTO projects (id, work_dir, upstream_url, perm, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		project.ID, project.WorkDir, nullableString(project.UpstreamURL), project.Perm, project.CreatedAt, project.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert project: %w", err)
@@ -64,7 +67,7 @@ func nullableString(s string) any {
 // GetProject retrieves a project by ID.
 func GetProject(dbtx db.DBTX, id string) (*Project, error) {
 	row := dbtx.QueryRow(
-		`SELECT p.id, p.work_dir, pw.workspace_id, p.upstream_url, p.created_at, p.updated_at
+		`SELECT p.id, p.work_dir, pw.workspace_id, p.upstream_url, p.perm, p.created_at, p.updated_at
 		 FROM projects p
 		 LEFT JOIN project_workspaces pw ON pw.project_id = p.id
 		 WHERE p.id = ?`, id,
@@ -75,7 +78,7 @@ func GetProject(dbtx db.DBTX, id string) (*Project, error) {
 // ListProjects returns all projects ordered by creation time.
 func ListProjects(dbtx db.DBTX) ([]*Project, error) {
 	rows, err := dbtx.Query(
-		`SELECT p.id, p.work_dir, pw.workspace_id, p.upstream_url, p.created_at, p.updated_at
+		`SELECT p.id, p.work_dir, pw.workspace_id, p.upstream_url, p.perm, p.created_at, p.updated_at
 		 FROM projects p
 		 LEFT JOIN project_workspaces pw ON pw.project_id = p.id
 		 ORDER BY p.created_at`,
@@ -332,7 +335,7 @@ func scanProject(scanner projectScanner) (*Project, error) {
 	var project Project
 	var workspaceID sql.NullString
 	var upstreamURL sql.NullString
-	if err := scanner.Scan(&project.ID, &project.WorkDir, &workspaceID, &upstreamURL, &project.CreatedAt, &project.UpdatedAt); err != nil {
+	if err := scanner.Scan(&project.ID, &project.WorkDir, &workspaceID, &upstreamURL, &project.Perm, &project.CreatedAt, &project.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("project not found")
 		}

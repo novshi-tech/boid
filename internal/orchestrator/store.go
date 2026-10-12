@@ -102,7 +102,7 @@ type TaskFilter struct {
 // taskSelectCols is the full tasks column list (alias t). tasks is a single
 // table for both card and execution rows (the unused type's columns are
 // NULL); scanTask depends on this exact column order — keep both in sync.
-const taskSelectCols = `t.id, t.type, t.project_id, t.remote_id, t.title, t.description, t.status,` +
+const taskSelectCols = `t.id, t.type, COALESCE(t.project_id, ''), t.workspace_id, t.remote_id, t.title, t.description, t.status,` +
 	` t.behavior, t.traits, t.readonly, t.branch_prefix, t.base_branch, t.payload, t.instructions, t.auto_start,` +
 	` t.kind, t.urgency, t.wake_at, t.wake_task_id, t.suggestion_verb, t.detail,` +
 	` t.ref, t.parent_id, t.idempotency_key, t.created_at, t.updated_at`
@@ -219,6 +219,12 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 		t.Ref = ref
 	}
 
+	workspaceID, err := ProjectWorkspaceID(dbtx, t.ProjectID)
+	if err != nil {
+		return err
+	}
+	t.WorkspaceID = workspaceID
+
 	execCols, err := execInsertValues(t.Exec)
 	if err != nil {
 		return fmt.Errorf("marshal exec attrs: %w", err)
@@ -234,12 +240,12 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 
 	_, err = dbtx.Exec(
 		`INSERT INTO tasks (
-			id, type, project_id, remote_id, title, description, status,
+			id, type, project_id, workspace_id, remote_id, title, description, status,
 			behavior, traits, readonly, branch_prefix, base_branch, payload, instructions, auto_start,
 			kind, urgency, wake_at, wake_task_id, suggestion_verb, detail,
 			ref, parent_id, idempotency_key, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, string(t.Type), t.ProjectID, t.RemoteID, t.Title, t.Description, string(t.Status),
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, string(t.Type), t.ProjectID, t.WorkspaceID, t.RemoteID, t.Title, t.Description, string(t.Status),
 		execCols.behavior, execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart,
 		cardCols.kind, cardCols.urgency, cardCols.wakeAt, cardCols.wakeTaskID, cardCols.suggestionVerb, cardCols.detail,
 		t.Ref, t.ParentID, idempotencyKey, t.CreatedAt, t.UpdatedAt,
@@ -567,9 +573,20 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal exec attrs: %w", err)
 	}
+	var previousProjectID string
+	if err := dbtx.QueryRow(`SELECT COALESCE(project_id, ''), workspace_id FROM tasks WHERE id = ?`, t.ID).Scan(&previousProjectID, &t.WorkspaceID); err != nil {
+		return fmt.Errorf("read task ownership: %w", err)
+	}
+	if previousProjectID != t.ProjectID {
+		workspaceID, err := ProjectWorkspaceID(dbtx, t.ProjectID)
+		if err != nil {
+			return err
+		}
+		t.WorkspaceID = workspaceID
+	}
 	_, err = dbtx.Exec(
-		`UPDATE tasks SET project_id = ?, remote_id = ?, title = ?, description = ?, status = ?, traits = ?, readonly = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, auto_start = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
-		t.ProjectID, t.RemoteID, t.Title, t.Description, string(t.Status), execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart, t.ParentID, t.UpdatedAt, t.ID,
+		`UPDATE tasks SET project_id = ?, workspace_id = ?, remote_id = ?, title = ?, description = ?, status = ?, traits = ?, readonly = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, auto_start = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
+		t.ProjectID, t.WorkspaceID, t.RemoteID, t.Title, t.Description, string(t.Status), execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart, t.ParentID, t.UpdatedAt, t.ID,
 	)
 	if err != nil {
 		return err
@@ -1006,7 +1023,7 @@ func scanTask(s taskScanner) (*Task, error) {
 	var idempotencyKey sql.NullString
 
 	if err := s.Scan(
-		&t.ID, &taskType, &t.ProjectID, &t.RemoteID, &t.Title, &t.Description, &status,
+		&t.ID, &taskType, &t.ProjectID, &t.WorkspaceID, &t.RemoteID, &t.Title, &t.Description, &status,
 		&behavior, &traitsJSON, &readonly, &branchPrefix, &baseBranch, &payload, &instructionsJSON, &autoStart,
 		&kind, &urgency, &wakeAt, &wakeTaskID, &suggestionVerb, &detail,
 		&t.Ref, &t.ParentID, &idempotencyKey, &t.CreatedAt, &t.UpdatedAt,
