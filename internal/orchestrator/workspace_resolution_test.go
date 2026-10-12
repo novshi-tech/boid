@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/db/migrate"
 	"os"
 	"path/filepath"
 	"testing"
@@ -69,5 +71,44 @@ func TestWorkspaceResolutionIgnoresCachedProjectDefinitions(t *testing.T) {
 		if len(got.Triggers) != 2 || got.Triggers[0].Run != "echo sweep" || got.CardCommands["judge"].Run != "echo custom" {
 			t.Fatalf("automation: %+v", got)
 		}
+	}
+}
+
+func TestWorkspaceRejectsRetiredCurrentBranchExpansion(t *testing.T) {
+	for _, branch := range []string{"${current_branch}", "$current_branch"} {
+		store := NewWorkspaceStore(t.TempDir())
+		if err := store.Save("team", &WorkspaceMeta{BaseBranch: branch}); err == nil {
+			t.Fatalf("Save accepted %q", branch)
+		}
+		if err := os.WriteFile(filepath.Join(store.dir, "team.yaml"), []byte("base_branch: "+branch+"\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Load("team"); err == nil {
+			t.Fatalf("startup Load accepted %q", branch)
+		}
+	}
+}
+
+func TestWorkspaceDBRejectsStoredCurrentBranchExpansion(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("team", &WorkspaceMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Save("team", &WorkspaceMeta{BaseBranch: "${current_branch}"}); err == nil {
+		t.Fatal("DB save accepted retired variable")
+	}
+	if _, err := d.Conn.Exec(`UPDATE workspaces SET base_branch='${current_branch}' WHERE slug='team'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Load("team"); err == nil {
+		t.Fatal("DB startup load accepted retired variable")
 	}
 }

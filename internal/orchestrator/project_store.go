@@ -272,6 +272,9 @@ func (s *ProjectStore) synthesizeMetaForReload(candidate *Project) *ProjectMeta 
 	name := ""
 	nameSource := ""
 	switch {
+	case candidate.Name != "":
+		name = candidate.Name
+		nameSource = "database"
 	case hadPrev && prev.Name != "":
 		name = prev.Name
 		nameSource = "cached"

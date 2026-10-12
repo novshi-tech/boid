@@ -491,7 +491,7 @@ boid task show "$child" --field payload.artifact.report
 child_branch=$(boid task show "$child" --field payload.artifact.report.evidence.branch)
 git fetch origin "$child_branch" 2>/dev/null || true
 git log --oneline -10 "origin/$child_branch"
-if [ "$child_branch" != "$BOID_BASE_BRANCH" ]; then
+if [ -n "$BOID_BASE_BRANCH" ] && [ "$child_branch" != "$BOID_BASE_BRANCH" ]; then
   git diff "origin/$BOID_BASE_BRANCH..origin/$child_branch"
 fi
 gh pr view --head "$child_branch" 2>/dev/null || true

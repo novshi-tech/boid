@@ -518,6 +518,7 @@ type SignalSource struct {
 }
 
 type Project struct {
+	Name        string      `json:"name,omitempty"`
 	ID          string      `json:"id"`
 	Perm        string      `json:"perm"`
 	WorkspaceID string      `json:"workspace_id"`

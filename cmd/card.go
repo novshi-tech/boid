@@ -38,8 +38,8 @@ var cardRunInstruction string
 
 var cardRunCmd = &cobra.Command{
 	Use:   "run <card-id> <key>",
-	Short: "Run a project.yaml card_commands entry as a human command launcher",
-	Long: "card 直下の project.yaml `card_commands.<key>` を人発コマンドとして起動する\n" +
+	Short: "Run a workspace card_commands entry as a human command launcher",
+	Long: "card が所属する workspace の `card_commands.<key>` を人発コマンドとして起動する\n" +
 		"(POST /api/cards/{id}/commands/{key} の薄いラッパー)。\n" +
 		"card の単一実行枠が既に占有中なら起動せず、現在の実行 (target_kind/target_id)\n" +
 		"へのリンクを返す — 入力した --instruction はそのまま応答に含まれるので\n" +

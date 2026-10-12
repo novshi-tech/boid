@@ -169,6 +169,7 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 
 	project := &orchestrator.Project{
 		ID:          meta.ID,
+		Name:        meta.Name,
 		Perm:        perm,
 		WorkDir:     bareRepoPath,
 		UpstreamURL: gitURL,
@@ -605,7 +606,7 @@ func (s *ProjectAppService) resolveWorkspaceApplyProjectNames(projects []orchest
 			return nil, nil, &StatusError{
 				Code: http.StatusConflict,
 				Message: fmt.Sprintf(
-					"project name %q is ambiguous: it matches %d registered projects (%s) — apply refused to avoid detaching the wrong one(s); give these projects distinct workspace configuration name: values, or drop spec.projects from this document and manage the assignment via `boid project assign` directly",
+					"project name %q is ambiguous: it matches %d registered projects (%s) — apply refused to avoid detaching the wrong one(s); re-register these projects with distinct `boid project add --name` values, or drop spec.projects from this document and manage the assignment via `boid project assign` directly",
 					ep.Name, len(matches), strings.Join(matchIDs, ", "),
 				),
 			}
@@ -632,7 +633,7 @@ func refuseIfAnyRegisteredProjectNameUnavailable(snapshot []*orchestrator.Projec
 			return &StatusError{
 				Code: http.StatusConflict,
 				Message: fmt.Sprintf(
-					"project %q in the workspace's target has no authoritative name; cannot resolve safely — its workspace configuration is unavailable, fix or unregister it before applying",
+					"project %q in the workspace's target has no authoritative name; cannot resolve safely — its registered name is unavailable, re-register it with `boid project add --name` before applying",
 					p.ID,
 				),
 			}
@@ -678,19 +679,19 @@ func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, er
 			name := effectiveNames[id]
 			if strings.TrimSpace(name) == "" {
 				return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(
-					"project %q has no authoritative name (workspace configuration unavailable or whitespace-only); fix or unregister the project before exporting",
+					"project %q has no authoritative name (registered name unavailable or whitespace-only); re-register it with `boid project add --name` before exporting",
 					id,
 				)}
 			}
 			if collidingIDs, dup := duplicateNames[name]; dup {
 				return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(
-					"workspace %q: project name %q is ambiguous across %d registered projects (%s) — export refused because a later `apply` could not unambiguously resolve it back; give these projects distinct workspace configuration name: values",
+					"workspace %q: project name %q is ambiguous across %d registered projects (%s) — export refused because a later `apply` could not unambiguously resolve it back; re-register these projects with distinct `boid project add --name` values",
 					snap.Slug, name, len(collidingIDs), strings.Join(collidingIDs, ", "),
 				)}
 			}
 			if collidingIDs, dup := nameCollidesWithOtherID[name]; dup {
 				return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(
-					"workspace %q: project %q's name %q collides with another registered project's id (%s) — export refused because applying this document could attach/detach the wrong project; give %q a workspace configuration name: value that does not equal another project's id",
+					"workspace %q: project %q's name %q collides with another registered project's id (%s) — export refused because applying this document could attach/detach the wrong project; re-register %q using `boid project add --name` with a name that does not equal another project's id",
 					snap.Slug, id, name, strings.Join(collidingIDs, ", "), id,
 				)}
 			}

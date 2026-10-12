@@ -45,7 +45,7 @@ Reads YAML/JSON from stdin (or `-f <file>`). Prints `task created: <id> (<status
 | `description` | Delivered to the child as the active instruction. |
 | `auto_start` | `true` to start immediately. |
 | `parent_id` | Auto-filled from `BOID_TASK_ID`. Set explicitly only to attach under a different parent. |
-| `base_branch` | Base branch passed as BOID_BASE_BRANCH. The agent selects it after startup checkout and may create the PR branch required by its instruction. Inherits the parent base when omitted on a child; root defaults are resolved at task creation. |
+| `base_branch` | Base branch passed as BOID_BASE_BRANCH. The agent selects it after startup checkout and may create the PR branch required by its instruction. Inherits the parent base when omitted on a child; roots use an explicit value or the workspace default; when both are empty, branch selection is deferred to the agent after startup checkout. |
 | `project_id` | Project to create in. Defaults to the same project as the parent. |
 | `behavior_spec` | Inline behavior definition. Not normally needed — prefer named behaviors from `workspace envelope`. |
 | `ref` | Child ref name within the parent scope. |

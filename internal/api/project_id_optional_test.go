@@ -28,7 +28,7 @@ func TestProjectRegistrationIgnoresCommittedConfiguration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if project.ID != id || project.Meta.Name != "registered-name" || len(project.Meta.TaskBehaviors) != 0 {
+			if project.ID != id || project.Name != "registered-name" || project.Meta.Name != "registered-name" || len(project.Meta.TaskBehaviors) != 0 {
 				t.Fatalf("registration: %+v", project)
 			}
 			repo.projects = []*orchestrator.Project{project}

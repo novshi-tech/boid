@@ -799,7 +799,7 @@ func sandboxCloneDir(name string) string {
 // isSafeCloneDirName reports whether name is a usable single-segment leaf
 // directory name under sandboxCloneTargetDir. It rejects empty / "." / ".."
 // / any name containing a path separator or NUL, and any name starting with
-// "..". `workspace configuration`'s `meta.name` is trusted (user-authored config,
+// "..". The registered project name is trusted (user-selected,
 // convention: kebab-case) so this is a defense-in-depth filter rather than
 // a security boundary — its job is to keep an accidental typo or a stray
 // filepath.Base call ("." for an empty path) from producing a malformed
@@ -929,7 +929,7 @@ func projectVisibilityMounts(
 	// 5) .boid bind-mount from the live project dir, so kit hooks / skills
 	// are visible even though the tmpfs HOME above shadows the rest of the
 	// host tree. Writable when the task is writable so agents can edit
-	// workspace configuration etc.; read-only otherwise so the hooks/skills an agent
+	// repository files; read-only otherwise so the hooks/skills an agent
 	// runs under cannot be tampered with.
 	boidSource := origProjectDir + "/.boid"
 	if boidSource != "/.boid" { // ignore when origProjectDir is empty

@@ -816,3 +816,66 @@ func TestApplyWorkspace_ConcurrentReloadBetweenCheckAndResolutionDoesNotDetach(t
 		t.Errorf("ListProjects called %d times, want exactly 1 (PR-1d codex round-5 Major: single-snapshot discipline)", repo.listProjectsCalls)
 	}
 }
+
+// The old exported name must still resolve after a cold-start upgrade, even
+// when the mirror basename differs and the legacy configuration disappears.
+func TestApplyWorkspacePreservesLegacyProjectNameAfterUpgrade(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	dir := t.TempDir() + "/my-service"
+	if err := os.MkdirAll(dir+"/.boid", 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/.boid/project.yaml", []byte("id: p\nname: svc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Restore the pre-0062 schema to exercise the production upgrade path.
+	if _, err := d.Conn.Exec(`ALTER TABLE projects DROP COLUMN name`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Conn.Exec(`DELETE FROM schema_migrations WHERE version='0062_persist_project_names'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Conn.Exec(`INSERT INTO projects(id,work_dir) VALUES ('p',?)`, dir); err != nil {
+		t.Fatal(err)
+	}
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("team-a", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "p", "team-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		projects, err := orchestrator.ListProjects(d.Conn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := orchestrator.NewProjectStore()
+		store.SetWorkspaceStore(orchestrator.NewWorkspaceStoreWithRepo("", repo))
+		if errs := store.LoadAll(projects); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		svc := &ProjectAppService{Projects: orchestrator.NewProjectRepository(d.Conn), Meta: store, WorkspacesConn: d.Conn}
+		found, err := svc.ResolveProjectRef("svc")
+		if err != nil || len(found) != 1 || found[0].ID != "p" {
+			t.Fatalf("short name lost: %v %v", found, err)
+		}
+		result, err := svc.ApplyWorkspace(envelopeApplyDoc("team-a", map[string]bool{"projects": true}, orchestrator.WorkspaceEnvelopeSpec{Projects: []orchestrator.WorkspaceEnvelopeProject{{Name: "svc"}}}), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.DetachedProjects) != 0 {
+			t.Fatalf("legacy export detached project: %+v", result)
+		}
+		project, err := orchestrator.GetProject(d.Conn, "p")
+		if err != nil || project.WorkspaceID != "team-a" || project.Name != "svc" {
+			t.Fatalf("identity or membership changed: %+v %v", project, err)
+		}
+	}
+}

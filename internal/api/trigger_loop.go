@@ -534,7 +534,7 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 		return result, fmt.Errorf("sweep triggers: %w", err)
 	}
 
-	type automationScope struct{ projectID, workspaceID string }
+	type automationScope struct{ workspaceID string }
 	source, ok := s.Meta.(interface {
 		WorkspaceStore() *orchestrator.WorkspaceStore
 	})
@@ -557,18 +557,15 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 	// with the rest of result.
 	result.Completed = append(result.Completed, s.drainTimeoutCompletions()...)
 	for _, scope := range scopes {
-		meta := s.hydrateAutomationMeta(ctx, scope.projectID, scope.workspaceID)
+		meta := s.hydrateAutomationMeta(ctx, "", scope.workspaceID)
 		if meta == nil || len(meta.Triggers) == 0 {
 			continue
 		}
 		for _, trig := range meta.Triggers {
-			key := TriggerKey{ProjectID: scope.projectID, TriggerName: trig.Name}
-			if scope.projectID == "" {
-				key.WorkspaceID = scope.workspaceID
-			}
+			key := TriggerKey{WorkspaceID: scope.workspaceID, TriggerName: trig.Name}
 			every, everr := time.ParseDuration(trig.Every)
 			if everr != nil {
-				slog.Warn("trigger sweep: invalid every (should have been rejected at workspace configuration load time)", "project_id", scope.projectID, "trigger", trig.Name, "every", trig.Every, "error", everr)
+				slog.Warn("trigger sweep: invalid every (should have been rejected at workspace configuration load time)", "workspace_id", scope.workspaceID, "trigger", trig.Name, "every", trig.Every, "error", everr)
 				continue
 			}
 
@@ -603,7 +600,7 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 
 			everyDue, derr := s.triggerIsDue(now, key, every)
 			if derr != nil {
-				slog.Warn("trigger sweep: evaluate due failed", "project_id", scope.projectID, "trigger", trig.Name, "error", derr)
+				slog.Warn("trigger sweep: evaluate due failed", "workspace_id", scope.workspaceID, "trigger", trig.Name, "error", derr)
 				continue
 			}
 			if !everyDue {
@@ -640,7 +637,7 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 				}
 				// Fail-open: no trigger_runs row exists for this attempt, so
 				// the next tick's triggerIsDue retries automatically.
-				slog.Warn("trigger sweep: dispatch failed (fail-open, will retry next tick)", "project_id", scope.projectID, "trigger", trig.Name, "error", ferr)
+				slog.Warn("trigger sweep: dispatch failed (fail-open, will retry next tick)", "workspace_id", scope.workspaceID, "trigger", trig.Name, "error", ferr)
 				// Reported to trackFailStreak too, alongside the fail-open
 				// retry above — see TriggerDispatchFailureExitCode's doc.
 				result.Completed = append(result.Completed, TriggerCompletionResult{TriggerKey: key, ExitCode: TriggerDispatchFailureExitCode})

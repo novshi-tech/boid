@@ -496,6 +496,7 @@ func allMigrations() []migration {
 		{version: "0059_add_workspace_ownership", path: "migrations/0059_add_workspace_ownership.sql", disableForeignKeys: true},
 		{version: "0060_workspace_task_dedup", path: "migrations/0060_workspace_task_dedup.sql"},
 		{version: "0061_workspace_receivers", path: "migrations/0061_workspace_receivers.sql", run: retireWorkspaceReceivers, before: validateReceiverIdentities},
+		{version: "0062_persist_project_names", path: "migrations/0062_persist_project_names.sql", run: preserveProjectNames},
 	}
 }
 
