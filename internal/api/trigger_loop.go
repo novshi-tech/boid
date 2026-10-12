@@ -657,20 +657,19 @@ func (s *TaskWorkflowService) SweepTriggers(ctx context.Context, now time.Time) 
 	return result, nil
 }
 
-// lookupTrigger resolves projectID's hydrated meta and finds the Trigger
-// named triggerName within it, for RunTriggerNow. Returns a *StatusError
-// (404) for an unknown project or trigger name.
-func (s *TaskWorkflowService) lookupTrigger(ctx context.Context, projectID, triggerName string) (*orchestrator.Trigger, error) {
-	meta := s.hydrateMetaForTriggers(ctx, projectID)
+// lookupTrigger resolves the hydrated automation scope and finds the named trigger.
+// Returns a *StatusError (404) for an unknown scope or trigger name.
+func (s *TaskWorkflowService) lookupTrigger(ctx context.Context, key TriggerKey) (*orchestrator.Trigger, error) {
+	meta := s.hydrateAutomationMeta(ctx, key.ProjectID, key.WorkspaceID)
 	if meta == nil {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("trigger run: project %q meta not loaded", projectID)}
+		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("trigger run: scope %q meta not loaded", key.scopeLabel())}
 	}
 	for i := range meta.Triggers {
-		if meta.Triggers[i].Name == triggerName {
+		if meta.Triggers[i].Name == key.TriggerName {
 			return &meta.Triggers[i], nil
 		}
 	}
-	return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("trigger run: no trigger named %q in project.yaml", triggerName)}
+	return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("trigger run: no trigger named %q in scope %q", key.TriggerName, key.scopeLabel())}
 }
 
 // TriggerRunNowResult is RunTriggerNow's / `boid trigger run`'s response
@@ -688,20 +687,28 @@ type TriggerRunNowResult struct {
 // the `every` elapsed check but not single-flight — the manual debugging
 // entry point behind `boid trigger run <name>`.
 func (s *TaskWorkflowService) RunTriggerNow(ctx context.Context, projectID, triggerName string) (*TriggerRunNowResult, error) {
+	return s.runTriggerNow(ctx, TriggerKey{ProjectID: projectID, TriggerName: triggerName})
+}
+
+// RunWorkspaceTriggerNow manually fires a repository-free workspace trigger.
+func (s *TaskWorkflowService) RunWorkspaceTriggerNow(ctx context.Context, workspaceID, triggerName string) (*TriggerRunNowResult, error) {
+	return s.runTriggerNow(ctx, TriggerKey{WorkspaceID: workspaceID, TriggerName: triggerName})
+}
+
+func (s *TaskWorkflowService) runTriggerNow(ctx context.Context, key TriggerKey) (*TriggerRunNowResult, error) {
 	if s.Triggers == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "trigger run: TriggerRunStore not configured"}
 	}
 	if s.Exec == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "trigger run: ExecDispatcher not configured"}
 	}
-	trig, err := s.lookupTrigger(ctx, projectID, triggerName)
+	trig, err := s.lookupTrigger(ctx, key)
 	if err != nil {
 		return nil, err
 	}
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
 	now := time.Now().UTC()
 
-	key := TriggerKey{ProjectID: projectID, TriggerName: triggerName}
 	inFlight, err := s.reconcileInFlight(now, nil)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("trigger run: %s", err.Error())}

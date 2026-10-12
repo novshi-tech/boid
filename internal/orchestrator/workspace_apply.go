@@ -196,7 +196,7 @@ func applyWorkspaceProjectAssignments(tx *sql.Tx, slug string, targetIDsByName m
 
 	for _, id := range current {
 		if targetSet[id] {
-			continue // the built-in receiver is not part of user-managed assignments
+			continue // this project remains assigned to the workspace
 		}
 		if err := SetProjectWorkspace(tx, id, DefaultWorkspaceSlug); err != nil {
 			return nil, nil, nil, fmt.Errorf("detach project %q: %w", id, err)

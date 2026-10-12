@@ -190,7 +190,7 @@ hook が宣言を持たない behavior では、 `default_instruction` から vi
 
 ## `triggers[]`
 
-daemon が project.yaml から読み取り、周期的に readonly exec job として起こすコマンドの一覧です。`task_behaviors` とは独立したトップレベルのフィールドです。workspace envelope の `spec.triggers` にも同じ型で宣言できます。workspace 定義は repo なし default metaproject にだけ合成され、所属 project.yaml の同名定義が優先されます。workspace の `run` は receiver 上で動くため、個別リポジトリの tracked tree にあるスクリプトを前提にしないでください。
+daemon が project.yaml から読み取り、周期的に readonly exec job として起こすコマンドの一覧です。`task_behaviors` とは独立したトップレベルのフィールドです。workspace envelope の `spec.triggers` にも同じ型で宣言できます。workspace 定義は workspace 直属の task / job として評価され、所属 project.yaml の同名定義が優先されます。workspace の `run` は主リポジトリなしで動くため、個別リポジトリの tracked tree にあるスクリプトを前提にしないでください。
 
 ```yaml
 triggers:
@@ -236,7 +236,7 @@ triggers:
 - **workspace 未所属の project**: プロジェクトがどの workspace にも紐づいていない場合、`on: signals` トリガは常に発火しない (エラーにはならず、daemon ログに debug レベルで記録されるのみ)
 - **「未 ack」の定義**: attempts が上限 (`MaxSignalAttempts`) に達し dead-letter 化した Signal はここで言う「未 ack」に含まれない — dead-letter だけが残る workspace で `on: signals` トリガが永久に発火し続けることはない
 
-デバッグ用の手動起動口は `boid trigger run -p <project-ref> <name>` (`every` の経過に加えて `on: signals` の Signal 有無判定もバイパスするが、single-flight は尊重する) — 詳細は [CLI リファレンス](cli.md#サンドボックス操作) を参照。
+デバッグ用の手動起動口は `boid trigger run -p <project-ref> <name>`、workspace 定義には `boid trigger run --workspace <slug> <name>` (`every` の経過に加えて `on: signals` の Signal 有無判定もバイパスするが、single-flight は尊重する) — 詳細は [CLI リファレンス](cli.md#サンドボックス操作) を参照。
 
 ## `card_commands` / `card_events`
 

@@ -2066,7 +2066,8 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Mount("/api/sessions", sessionHandler.Routes())
 
 	workspaceHandler := &api.WorkspaceHandler{
-		Service: runtime.projectSvc,
+		Service:       runtime.projectSvc,
+		TriggerRunner: runtime.workflow,
 		// Workspace HOME size reporting (Show) + deletion (Remove), rewired
 		// onto the engine's volume API. This deliberately no longer takes
 		// runtimesRoot: the home is a named volume

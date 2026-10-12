@@ -1166,6 +1166,9 @@ func (s *ProjectAppService) RemoveWorkspace(slug string) (*WorkspaceRemoval, err
 	}
 
 	if err := s.Workspaces.Remove(slug); err != nil {
+		if errors.Is(err, orchestrator.ErrWorkspaceHasTasks) {
+			return nil, &StatusError{Code: http.StatusConflict, Message: err.Error()}
+		}
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("workspace %q not found", slug)}
 		}

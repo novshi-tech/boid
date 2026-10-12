@@ -71,9 +71,9 @@ you need is here, or it belongs here.
 
 ## Standing up a new metaproject
 
-The Web UI includes a built-in Default metaproject in every workspace. It uses
-`/boid-card-judge`, asks for missing requirements with `boid task ask`, and needs
-no external signals. Create a separate metaproject when you need a specialized
+The Web UI creates repository-free Cards directly in each workspace. The
+workspace supplies a built-in judge using `/boid-card-judge`, asks for missing
+requirements with `boid task ask`, and needs no external signals. Create a separate metaproject when you need a specialized
 judgment policy or intake sources. Multiple metaprojects may share a workspace.
 Projects with a configured `card_events.command` and its matching `card_commands`
 entry appear as Card creation destinations in that workspace. No extra marker

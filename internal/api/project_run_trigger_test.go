@@ -148,3 +148,36 @@ func TestProjectHandlerRunTrigger_RunnerErrorPropagates(t *testing.T) {
 		t.Fatalf("status = %d, want 404, body=%s", w.Code, w.Body.String())
 	}
 }
+
+type stubWorkspaceTriggerRunner struct{ stubTriggerRunner }
+
+func (s *stubWorkspaceTriggerRunner) RunWorkspaceTriggerNow(ctx context.Context, workspaceID, triggerName string) (*TriggerRunNowResult, error) {
+	return s.RunTriggerNow(ctx, workspaceID, triggerName)
+}
+
+func TestWorkspaceHandlerRunTrigger_EscapedNameAndErrors(t *testing.T) {
+	const name = "signal:demo/poll"
+	runner := &stubWorkspaceTriggerRunner{stubTriggerRunner{result: &TriggerRunNowResult{JobID: "job-1"}}}
+	h := &WorkspaceHandler{TriggerRunner: runner}
+	srv := httptest.NewServer(h.Routes())
+	defer srv.Close()
+	for _, status := range []int{http.StatusOK, http.StatusNotFound, http.StatusNotImplemented} {
+		if status == http.StatusNotFound {
+			runner.err = &StatusError{Code: status, Message: "missing workspace"}
+		}
+		if status == http.StatusNotImplemented {
+			h.TriggerRunner = nil
+		}
+		resp, err := http.Post(srv.URL+"/team/triggers/"+url.PathEscape(name)+"/run", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != status {
+			t.Fatalf("status=%d want=%d", resp.StatusCode, status)
+		}
+		if status == http.StatusOK && (runner.gotProject != "team" || runner.gotTrigger != name) {
+			t.Fatalf("scope/name: %+v", runner)
+		}
+	}
+}

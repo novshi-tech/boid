@@ -208,7 +208,7 @@ ref: workspace-research
 YAML
 ```
 
-Web の New Card フォームでも workspace を選び、Primary repository の `Workspace only` で主リポジトリなしの card を作成できます。既存の default metaproject による判断経路は別途移行するため、この選択だけで自動 judge を設定するものではありません。
+Web の New Card フォームでも workspace を選び、Primary repository の `Workspace only` で主リポジトリなしの card を作成できます。workspace 直属の card は workspace の commands / events を使い、既定では組み込み judge が判断します。
 
 `behavior_spec` を渡すと `project.yaml` の task_behaviors を参照せず、 inline でタスクの設定を指定できます。
 
@@ -299,7 +299,11 @@ project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_dom
 >
 > `create` / `list` / `apply` / `export` と `<slug>` 配下のサブコマンド (`get-init-script` など) は影響を受けない。
 
-workspace envelope の `spec` は `triggers` / `signals` / `card_commands` / `card_events` も受け付けます。型と検証は [project.yaml](project-yaml.md) の同名フィールドと同じです。これらは workspace の repo なし default metaproject にだけ合成され、複数 project が所属していても workspace trigger は 1 回だけ起動します。`signals.sources` から polling trigger を導出します。所属 project.yaml に同名の trigger（導出名を含む）/ card_command があれば workspace 側を省き、警告を出します。card command の宣言順は export/apply と DB 保存で保持します。workspace の card_events が指定されなければ receiver の組み込み judge を維持し、指定した command が衝突で省かれた場合も警告とともに judge を維持します。apply はキー省略で現状維持、空値の明示でそのフィールドを削除します。
+workspace envelope の `spec` は `triggers` / `signals` / `card_commands` / `card_events` も受け付けます。型と検証は [project.yaml](project-yaml.md) の同名フィールドと同じです。これらは workspace 直属の task / job として評価され、複数 project が所属していても workspace trigger は 1 回だけ起動します。`signals.sources` から polling trigger を導出します。所属 project.yaml に同名の trigger（導出名を含む）/ card_command があれば workspace 側を省き、警告を出します。card command の宣言順は export/apply と DB 保存で保持します。workspace の card_events が指定されなければ workspace の組み込み judge を維持し、指定した command が衝突で省かれた場合も警告とともに judge を維持します。apply はキー省略で現状維持、空値の明示でそのフィールドを削除します。
+
+旧 default metaproject から移行した judge が behavior を省略して子 task を作る場合も、workspace の `default_task_behavior` を使用します。workspace の `task_behaviors.judge` は組み込み judge behavior を上書きします。
+
+workspace 直属の task / card (`project_id IS NULL`) が残る workspace は削除できません。project に所属する task は削除を妨げず、所属 project は default workspace に再割り当てされます。
 
 | コマンド | 役割 |
 |---|---|
@@ -317,7 +321,7 @@ workspace envelope の `spec` は `triggers` / `signals` / `card_commands` / `ca
 | `boid workspace set-init-script <slug> -f FILE [--force]` | ローカルのファイル (`-` で stdin) を workspace の `init.sh` として登録。 書き込み前に現在のリビジョンを If-Match で確認する (`--force` で無効化)。 **空のファイルは「init.sh 無し」として削除扱い** になる (空のスクリプトと未設定は dispatch から見て同じ状態)。 上限 **128 KiB** — 「受理した script は `export` → `apply` で必ず戻せる」から逆算した値。 apply する文書の `spec.init_script` にも同じ上限が効くので、どちらの経路からもこれを超える script は保存できない |
 | `boid workspace edit-init-script <slug> [--force]` | `init.sh` を `$EDITOR` (既定 vi) で編集し、保存時に適用。 未設定なら空バッファで始まる。 適用に失敗した場合は編集内容を temp file に残してその path を報告する |
 | `boid workspace unset-init-script <slug> [--force]` | workspace の `init.sh` を削除し、script 実行なしの状態に戻す。 HOME volume とその中身には触れない |
-| `boid workspace remove <slug> [--force\|--yes]` (alias: `delete`) | ワークスペースを削除 (割り当て済み project は `default` へ再割当。`default` 自体は削除不可)。home volume と **workspace の `init.sh`** も削除する (どちらも best-effort — 失敗しても remove 自体は成功し、warning で報告する)。home のサイズ表示付き確認プロンプトが出る (`--force`/`--yes` でスキップ)。詳細は [workspace home ガイド](../guide/workspace-home.md#workspace-の削除) |
+| `boid workspace remove <slug> [--force\|--yes]` (alias: `delete`) | ワークスペースを削除 (workspace 直属 task / card が残る場合は拒否。割り当て済み project は `default` へ再割当。`default` 自体は削除不可)。home volume と **workspace の `init.sh`** も削除する (どちらも best-effort — 失敗しても remove 自体は成功し、warning で報告する)。home のサイズ表示付き確認プロンプトが出る (`--force`/`--yes` でスキップ)。詳細は [workspace home ガイド](../guide/workspace-home.md#workspace-の削除) |
 | `boid workspace services add <slug> <service> [service...]` | workspace 単位で API gateway service を有効化 (docs/plans/api-gateway.md §3)。GET で現在の `Services` を取得 → 追記 (重複は無視) → `spec.services` のみを持つ最小 envelope を `POST /api/workspaces/apply` — `task_behaviors`/`host_commands` など他フィールドは一切触らない (`edit` の PUT 経路は `workspaceMetaStrict` に `task_behaviors` 等の field が無いため使えない — 使うと 400 になるか、対応していたとしても他フィールドを空に巻き戻してしまう) |
 | `boid workspace services remove <slug> <service> [service...]` | 有効化済み API gateway service を無効化。存在しない名前を指定してもエラーにならない (no-op) |
 | `boid workspace services list <slug>` | workspace 自身が追加した API gateway service 一覧を表示 (config.yaml `services_floor` 側は含まない — `allowed_domains` の `show` が floor を表示しないのと同じ設計) |
@@ -337,6 +341,7 @@ daemon が集約する `~/.config/boid/host_commands.yaml` (workspace 群の `ho
 |---|---|
 | `boid exec -p <project-ref> [--name NAME] [--readonly] -- <argv...>` | サンドボックス内で任意の argv を実行。 project の `host_commands` / `env` を継承する (`additional_bindings` は Phase 4 PR4 で撤去済み、workspace home に依存)。 `--` 以降が sandbox 内の argv (旧 `commands:` 名前指定は Phase 3-d で廃止)。 `--name` でジョブの表示名、 `--readonly` でワークスペースを read-only に |
 | `boid trigger run -p <project-ref> <name>` | project.yaml の `triggers[]` (`docs/ja/reference/project-yaml.md#triggers` 参照) に定義したトリガを 1 回だけ即座に起動するデバッグ用の手動口。`every` の経過チェックは無視するが single-flight は無視しない — 実行中の run があれば `skipped: <reason>` を返す (強制二重起動の口ではない) |
+| `boid trigger run --workspace <slug> <name>` | workspace の trigger（signal connector の導出 trigger を含む）を手動実行。project 指定とは併用不可。`every` / `on: signals` の判定を省略し、workspace ごとの single-flight は維持する |
 | `boid attach <job-id>` | 実行中のジョブの runtime に attach (interactive ジョブ向け)。 Ctrl-] で detach。 通信が切れた場合は自動で再接続する ([接続断と再接続](#接続断と再接続)) |
 | `boid fetch <url>` | URL のコンテンツをホスト側で取得して出力する (直接 HTTP アクセスが制限されているサンドボックス内から使用可) |
 

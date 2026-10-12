@@ -14,6 +14,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ErrWorkspaceHasTasks prevents removal from orphaning workspace-owned tasks or cards.
+var ErrWorkspaceHasTasks = errors.New("workspace has tasks or cards")
+
 // WorkspaceRepository provides DB-backed CRUD for WorkspaceMeta against the
 // `workspaces` table. It is the authority WorkspaceStore delegates to once
 // MigrateWorkspaceYAMLToDB has cut over: the yaml files under
@@ -520,7 +523,8 @@ func marshalWorkspaceMetaColumns(slug string, meta *WorkspaceMeta) (hostCommands
 // cannot be removed. Any project currently assigned to slug is re-pointed at
 // DefaultWorkspaceSlug in the same transaction as the delete, so a project
 // never ends up referencing a workspace that no longer exists. Returns an
-// error wrapping os.ErrNotExist when no row exists for slug.
+// error wrapping os.ErrNotExist when no row exists for slug, or
+// ErrWorkspaceHasTasks when repository-free tasks or cards still belong to it.
 func (r *WorkspaceRepository) Remove(slug string) error {
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return err
@@ -534,6 +538,14 @@ func (r *WorkspaceRepository) Remove(slug string) error {
 		return fmt.Errorf("workspace %q: begin remove tx: %w", slug, err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	var taskCount int
+	if err := tx.QueryRow(`SELECT count(*) FROM tasks WHERE workspace_id = ? AND project_id IS NULL`, slug).Scan(&taskCount); err != nil {
+		return fmt.Errorf("workspace %q: count workspace-owned tasks: %w", slug, err)
+	}
+	if taskCount != 0 {
+		return fmt.Errorf("workspace %q cannot be removed: %w (%d); remove them first", slug, ErrWorkspaceHasTasks, taskCount)
+	}
 
 	if _, err := tx.Exec(
 		`UPDATE project_workspaces SET workspace_id = ? WHERE workspace_id = ?`,

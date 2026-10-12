@@ -596,3 +596,59 @@ func TestWorkspaceRepository_UpdateIfRevisionMatches_ConcurrentPUTsOnlyOneWins(t
 		t.Errorf("matchedCount = %d, want exactly 1 (only one of %d concurrent CAS updates should win)", matchedCount, n)
 	}
 }
+
+func TestWorkspaceRepository_Remove_RejectsWorkspaceOwnedTasks(t *testing.T) {
+	for _, kind := range []string{"card", "execution"} {
+		t.Run(kind, func(t *testing.T) {
+			repo := newTestWorkspaceRepo(t)
+			if err := repo.EnsureDefault(); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.Save("team", &WorkspaceMeta{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := CreateProject(repo.conn, &Project{ID: "proj", WorkDir: "/tmp/proj"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := SetProjectWorkspace(repo.conn, "proj", "team"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.conn.Exec(`INSERT INTO workspace_egress_port(proxy_key,port,updated_at) VALUES ('team', 45001, CURRENT_TIMESTAMP)`); err != nil {
+				t.Fatal(err)
+			}
+			task := &Task{ID: "owned", Type: TaskType(kind), WorkspaceID: "team", Title: "owned", Status: TaskStatusDone}
+			if kind == "card" {
+				task.Card = &CardAttrs{}
+			} else {
+				task.Exec = &ExecAttrs{}
+			}
+			if err := CreateTask(repo.conn, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.Remove("team"); !errors.Is(err, ErrWorkspaceHasTasks) || !strings.Contains(err.Error(), "cannot be removed") {
+				t.Fatalf("Remove: %v", err)
+			}
+			if _, err := repo.Load("team"); err != nil {
+				t.Fatalf("workspace lost: %v", err)
+			}
+			project, err := GetProject(repo.conn, "proj")
+			if err != nil || project.WorkspaceID != "team" {
+				t.Fatalf("assignment changed: %+v %v", project, err)
+			}
+			var count int
+			if err := repo.conn.QueryRow(`SELECT count(*) FROM workspace_egress_port WHERE proxy_key='team'`).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("reservation changed: %d %v", count, err)
+			}
+			// Project-owned tasks and tasks in another workspace do not block removal.
+			if _, err := repo.conn.Exec(`UPDATE tasks SET project_id='proj' WHERE id='owned'`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.conn.Exec(`INSERT INTO tasks(id,type,workspace_id,title,status,kind,urgency,wake_task_id,suggestion_verb,detail) VALUES ('other', 'card', 'default', 'other', 'parked', '', '', '', '', '{}')`); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.Remove("team"); err != nil {
+				t.Fatalf("Remove with project-owned tasks: %v", err)
+			}
+		})
+	}
+}

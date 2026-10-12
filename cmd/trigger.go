@@ -2,7 +2,7 @@ package cmd
 
 // `boid trigger run` はデバッグ用の手動 1 巡の口。daemon 内の
 // TaskWorkflowService.RunTriggerNow を POST
-// /api/projects/{id}/triggers/{name}/run 経由で叩く。
+// project または workspace の triggers/{name}/run 経由で叩く。
 //
 // every の経過チェックは無視するが single-flight は無視しない — 実行中の
 // run がある場合は Skipped: true が返る。
@@ -18,10 +18,11 @@ import (
 
 var triggerCmd = &cobra.Command{
 	Use:   "trigger",
-	Short: "Manage project.yaml triggers",
+	Short: "Manage project and workspace triggers",
 }
 
 var triggerRunProjectRef string
+var triggerRunWorkspace string
 
 var triggerRunCmd = &cobra.Command{
 	Use:           "run <name>",
@@ -35,25 +36,31 @@ var triggerRunCmd = &cobra.Command{
 
 func init() {
 	triggerRunCmd.Flags().StringVarP(&triggerRunProjectRef, "project", "p", "", "project ref (id or name, partial match supported)")
+	triggerRunCmd.Flags().StringVar(&triggerRunWorkspace, "workspace", "", "workspace slug (repository-free triggers)")
 	_ = triggerRunCmd.RegisterFlagCompletionFunc("project", completeProjectRefs)
 	triggerCmd.AddCommand(triggerRunCmd)
 	rootCmd.AddCommand(triggerCmd)
 }
 
 func runTriggerRun(cobraCmd *cobra.Command, args []string) error {
-	if triggerRunProjectRef == "" {
-		return fmt.Errorf("-p/--project is required")
+	if (triggerRunProjectRef == "") == (triggerRunWorkspace == "") {
+		return fmt.Errorf("exactly one of -p/--project or --workspace is required")
 	}
 	name := args[0]
 
 	c := client.FromContext(cobraCmd.Context())
-	project, err := resolveProjectRef(c, os.Stdin, os.Stderr, triggerRunProjectRef)
-	if err != nil {
-		return fmt.Errorf("resolve project ref %q: %w", triggerRunProjectRef, err)
+	var path string
+	if triggerRunWorkspace != "" {
+		path = "/api/workspaces/" + url.PathEscape(triggerRunWorkspace) + "/triggers/" + url.PathEscape(name) + "/run"
+	} else {
+		project, err := resolveProjectRef(c, os.Stdin, os.Stderr, triggerRunProjectRef)
+		if err != nil {
+			return fmt.Errorf("resolve project ref %q: %w", triggerRunProjectRef, err)
+		}
+		path = "/api/projects/" + project.ID + "/triggers/" + url.PathEscape(name) + "/run"
 	}
 
 	var result map[string]any
-	path := "/api/projects/" + project.ID + "/triggers/" + url.PathEscape(name) + "/run"
 	if err := c.Do("POST", path, nil, &result); err != nil {
 		return fmt.Errorf("run trigger: %w", err)
 	}

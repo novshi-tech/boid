@@ -138,3 +138,49 @@ func TestWorkspaceSignalTriggerLedgerIsScopedAndDebounced(t *testing.T) {
 		}
 	}
 }
+
+func TestRunWorkspaceTriggerNow_ScopeAndSingleFlight(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatal(err)
+	}
+	ws := orchestrator.NewWorkspaceRepository(d.Conn)
+	for _, slug := range []string{"team", "other"} {
+		if err := ws.Save(slug, &orchestrator.WorkspaceMeta{Signals: orchestrator.SignalsConfig{Sources: []orchestrator.SignalSource{{Connector: "demo/poll", Service: "demo", Every: "1m"}}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	meta := orchestrator.NewProjectStore()
+	meta.SetWorkspaceStore(orchestrator.NewWorkspaceStoreWithRepo(t.TempDir(), ws))
+	jobs := newFakeTriggerJobStore()
+	exec := &fakeTriggerExecDispatcher{jobs: jobs}
+	svc := &TaskWorkflowService{Triggers: orchestrator.NewTaskRepository(d.Conn), Meta: meta, Jobs: jobs, Exec: exec}
+	for _, slug := range []string{"team", "other"} {
+		first, err := svc.RunWorkspaceTriggerNow(context.Background(), slug, "signal:demo/poll")
+		if err != nil || first.Skipped || first.JobID == "" {
+			t.Fatalf("first %s: %+v %v", slug, first, err)
+		}
+		second, err := svc.RunWorkspaceTriggerNow(context.Background(), slug, "signal:demo/poll")
+		if err != nil || !second.Skipped {
+			t.Fatalf("second %s: %+v %v", slug, second, err)
+		}
+	}
+	if exec.callCount() != 2 {
+		t.Fatalf("dispatches: %d", exec.callCount())
+	}
+	for i, slug := range []string{"team", "other"} {
+		if req := exec.calls[i]; req.ProjectID != "" || req.WorkspaceID != slug || req.Connector == nil {
+			t.Fatalf("dispatch scope: %+v", req)
+		}
+	}
+	for _, tc := range []struct{ workspace, trigger string }{{"missing", "signal:demo/poll"}, {"team", "missing"}} {
+		_, err := svc.RunWorkspaceTriggerNow(context.Background(), tc.workspace, tc.trigger)
+		if e, ok := err.(*StatusError); !ok || e.Code != 404 {
+			t.Fatalf("unknown scope/trigger: %v", err)
+		}
+	}
+}

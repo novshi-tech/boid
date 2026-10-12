@@ -245,7 +245,6 @@ func LatestTriggerRun(dbtx db.DBTX, projectID, triggerName string) (*TriggerRun,
 	if projectID == "" {
 		return nil, fmt.Errorf("latest trigger run: project id must not be empty")
 	}
-
 	if triggerName == "" {
 		return nil, fmt.Errorf("latest trigger run: trigger name must not be empty")
 	}
