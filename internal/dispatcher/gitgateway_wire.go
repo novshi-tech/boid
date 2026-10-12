@@ -11,14 +11,8 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// registerGatewayToken registers this job's git gateway job token (self
-// project fetch or fetch+push per Visibility.Writable, workspace peers and
-// workspace extra_repos fetch-only), scoped to spec.SecretNamespace, and
-// returns the gateway's sandbox-facing base URL alongside the token,
-// tracking the token so UnregisterJob can revoke it when the job completes.
-//
-// Both return values are empty when the gateway isn't wired (r.GitGateway ==
-// nil).
+// registerGatewayToken registers this job's repository permissions and tracks its token for revocation.
+// It returns empty values when the gateway is not wired.
 func (r *Runner) registerGatewayToken(jobID string, spec *orchestrator.JobSpec, workspaceID string) (gatewayURL, token string) {
 	if r.GitGateway == nil {
 		return "", ""
@@ -50,35 +44,21 @@ func (r *Runner) registerGatewayToken(jobID string, spec *orchestrator.JobSpec, 
 	return gatewayURL, token
 }
 
-// buildGatewayRepos builds the job-token-scoped repo permission set for the
-// git gateway registry:
-//
-//   - self project: PermFetchPush when spec.Visibility.Writable (task.readonly
-//     / command.readonly determined this upstream — dispatcher only reads the
-//     already-resolved flag), PermFetch otherwise.
-//   - workspace peers: every other project sharing workspaceID, PermFetch
-//     only (writing to a peer means a cross-project child task instead).
-//   - workspace extra_repos: the read-only allowlist declared in
-//     workspace.yaml (WorkspaceMeta.ExtraRepos), PermFetch only.
-//
-// Projects/peers/extra_repos entries without a resolvable upstream_url (or
-// whose upstream_url doesn't parse into host/owner/repo) are skipped with a
-// warning rather than erroring (see orchestrator.RequireUpstreamURL's own
-// doc comment for where upstream_url becomes required).
+// buildGatewayRepos grants workspace repositories fetch access and the writable push-enabled primary push access.
 func (r *Runner) buildGatewayRepos(spec *orchestrator.JobSpec, workspaceID string) map[gitgateway.RepoKey]gitgateway.Permission {
 	if r.Projects == nil || spec == nil {
 		return nil
 	}
 	repos := make(map[gitgateway.RepoKey]gitgateway.Permission)
 
-	if self, err := r.Projects.GetProject(spec.ProjectID); err == nil && self != nil && self.UpstreamURL != "" {
+	if self, err := r.Projects.GetProject(spec.ProjectID); spec.ProjectID != "" && err == nil && self != nil && self.UpstreamURL != "" {
 		key, err := repoKeyFromUpstreamURL(self.UpstreamURL)
 		if err != nil {
 			slog.Warn("git gateway: could not parse project upstream_url",
 				"project_id", spec.ProjectID, "upstream_url", self.UpstreamURL, "error", err)
 		} else {
 			perm := gitgateway.PermFetch
-			if spec.Visibility.Writable {
+			if self.Perm == "push" && spec.Visibility.Writable {
 				perm = gitgateway.PermFetchPush
 			}
 			repos[key] = perm

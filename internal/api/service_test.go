@@ -3394,3 +3394,12 @@ func TestProjectAppService_GetProject_NoHydratorUsesRaw(t *testing.T) {
 		t.Errorf("Name = %q, want %q", got.Meta.Name, "Alpha")
 	}
 }
+
+func (s *stubProjectRepository) SetProjectPerm(id, perm string) error {
+	p, err := s.GetProject(id)
+	if err != nil {
+		return err
+	}
+	p.Perm = perm
+	return nil
+}

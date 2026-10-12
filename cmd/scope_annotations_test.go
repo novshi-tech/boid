@@ -137,6 +137,7 @@ var expectedScopeAnnotations = map[string]string{
 	"boid project list":         scopeRemote,
 	"boid project reload":       scopeRemote,
 	"boid project remove":       scopeRemote,
+	"boid project set-perm":     scopeRemote,
 	"boid project show":         scopeRemote,
 	"boid secret delete":        scopeRemote,
 	"boid secret get":           scopeRemote,

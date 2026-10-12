@@ -1961,7 +1961,7 @@ func TestBoidBuiltinExecutor_ProjectList_HappyPath_ScopedToAllowedProjectIDs(t *
 	exec := &boidBuiltinExecutor{
 		projects: &stubProjectLookup{
 			projects: map[string]*orchestrator.Project{
-				"proj-1": {ID: "proj-1", Meta: orchestrator.ProjectMeta{Name: "alpha"}, UpstreamURL: "https://example.com/alpha.git"},
+				"proj-1": {ID: "proj-1", Perm: "fetch", Meta: orchestrator.ProjectMeta{Name: "alpha"}, UpstreamURL: "https://example.com/alpha.git"},
 				"proj-2": {ID: "proj-2", Meta: orchestrator.ProjectMeta{Name: "beta"}},
 				// proj-3 exists in the lookup but is deliberately NOT in
 				// AllowedProjectIDs below — it must never appear in the result,
@@ -1986,6 +1986,9 @@ func TestBoidBuiltinExecutor_ProjectList_HappyPath_ScopedToAllowedProjectIDs(t *
 		t.Fatalf("got %d projects, want 2: %+v", len(got), got)
 	}
 	byID := map[string]projectSummary{got[0].ID: got[0], got[1].ID: got[1]}
+	if byID["proj-1"].Perm != "fetch" {
+		t.Fatalf("perm = %q", byID["proj-1"].Perm)
+	}
 	if byID["proj-1"].Name != "alpha" || byID["proj-1"].UpstreamURL != "https://example.com/alpha.git" {
 		t.Errorf("proj-1 summary = %+v", byID["proj-1"])
 	}

@@ -63,6 +63,7 @@ func (h *ProjectHandler) Routes() chi.Router {
 	r.Get("/", h.List)
 	r.Post("/reload", h.Reload)
 	r.Put("/{id}/workspace", h.SetWorkspace)
+	r.Put("/{id}/perm", h.SetPerm)
 	r.Post("/{id}/sessions", h.StartSession)
 	r.Post("/{id}/exec", h.StartExec)
 	r.Post("/{id}/triggers/{name}/run", h.RunTrigger)
@@ -74,6 +75,7 @@ func (h *ProjectHandler) Routes() chi.Router {
 }
 
 type CreateProjectRequest struct {
+	Perm    string `json:"perm,omitempty"`
 	WorkDir string `json:"work_dir"`
 }
 
@@ -82,6 +84,7 @@ type CreateProjectRequest struct {
 // Workspace is required; Name empty derives the project name from URL's
 // last path component.
 type CreateProjectFromGitURLRequest struct {
+	Perm      string `json:"perm,omitempty"`
 	URL       string `json:"url"`
 	Workspace string `json:"workspace"`
 	Name      string `json:"name,omitempty"`
@@ -102,7 +105,7 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	project, err := h.Service.CreateProject(req.WorkDir)
+	project, err := h.Service.CreateProject(req.WorkDir, req.Perm)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -127,7 +130,7 @@ func (h *ProjectHandler) CreateFromGitURL(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	project, err := h.Service.CreateProjectFromGitURL(r.Context(), req.URL, req.Workspace, req.Name)
+	project, err := h.Service.CreateProjectFromGitURL(r.Context(), req.URL, req.Workspace, req.Name, req.Perm)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -333,4 +336,25 @@ func (h *ProjectHandler) Reload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// SetPerm updates the permission of a resolved project reference.
+func (h *ProjectHandler) SetPerm(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Perm string `json:"perm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	project := h.resolveRef(w, chi.URLParam(r, "id"))
+	if project == nil {
+		return
+	}
+	updated, err := h.Service.SetProjectPerm(project.ID, req.Perm)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }

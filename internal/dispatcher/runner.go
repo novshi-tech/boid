@@ -553,7 +553,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	)
 	dispatchProjectSection := func() error {
 		primaryRepo, forkPoint = r.checkoutInputs(spec, workspaceID)
-		gatewayURL, gatewayToken = r.registerGatewayToken(j.ID, spec, workspaceID)
+		gatewayWorkspaceID := j.WorkspaceID
+		if gatewayWorkspaceID == "" {
+			gatewayWorkspaceID = workspaceID
+		}
+		gatewayURL, gatewayToken = r.registerGatewayToken(j.ID, spec, gatewayWorkspaceID)
 
 		if !spec.Visibility.Checkout {
 			return nil

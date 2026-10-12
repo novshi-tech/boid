@@ -50,7 +50,7 @@ func TestCreateProjectFromGitURL_IDLessYAML_DerivesURLBasedID(t *testing.T) {
 	svc, _ := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
 
 	gitURL := fakeHTTPSGitURL(t)
-	project, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "")
+	project, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestFetchProject_URLDerivedProject_LaterGetsIDInYAML_IgnoresDrift(t *testin
 		return nil
 	}
 
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", "")
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}

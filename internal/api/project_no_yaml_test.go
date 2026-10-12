@@ -134,7 +134,7 @@ func TestCreateProjectFromGitURL_NoYAML_FallsBackToWorkspaceDefault_Succeeds(t *
 	svc, dataDir := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
 
 	gitURL := fakeHTTPSGitURL(t)
-	project, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "")
+	project, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestCreateProjectFromGitURL_NoYAML_NoUsableDefault_Rejects(t *testing.T) {
 	svc, dataDir := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
 
 	gitURL := fakeHTTPSGitURL(t)
-	_, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "")
+	_, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "", "")
 	if err == nil {
 		t.Fatal("expected rejection: workspace default has task_behaviors but no resolvable default behavior")
 	}
@@ -219,7 +219,7 @@ func TestCreateProjectFromGitURL_NoYAML_NoWorkspaceDefaultAtAll_Rejects(t *testi
 	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{}
 	svc, _ := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
 
-	_, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", "")
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", "", "")
 	if err == nil {
 		t.Fatal("expected rejection: workspace has no default project definition at all")
 	}
@@ -255,7 +255,7 @@ func TestCreateProjectFromGitURL_NoYAML_NameCollision_DerivedName_Rejects(t *tes
 	svc, _ := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
 	svc.Meta.SetSynthesizedMeta(existingID, &orchestrator.ProjectMeta{ID: existingID, Name: existingName})
 
-	_, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "")
+	_, err := svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "", "")
 	if err == nil {
 		t.Fatal("expected rejection: derived name collides with an already-registered project")
 	}
@@ -286,7 +286,7 @@ func TestCreateProjectFromGitURL_NoYAML_NameCollision_ExplicitNameWarnsButSuccee
 	svc, _ := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
 	svc.Meta.SetSynthesizedMeta(existingID, &orchestrator.ProjectMeta{ID: existingID, Name: collidingName})
 
-	project, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", collidingName)
+	project, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", collidingName, "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL with explicit colliding --name: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestCreateProjectFromGitURL_NoYAML_InsertConflict_DoesNotClobberEstablished
 	establishedMeta := &orchestrator.ProjectMeta{ID: wantID, Name: "established-project"}
 	svc.Meta.SetSynthesizedMeta(wantID, establishedMeta)
 
-	_, err = svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "")
+	_, err = svc.CreateProjectFromGitURL(context.Background(), gitURL, "team-a", "", "")
 	if err == nil {
 		t.Fatal("expected the DB insert conflict to surface as an error")
 	}
@@ -399,7 +399,7 @@ func TestFetchProject_NoYAML_SurvivesReload(t *testing.T) {
 	}
 	svc, _ := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
 
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", "")
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fakeHTTPSGitURL(t), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}

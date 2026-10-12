@@ -19,6 +19,9 @@ func CreateProject(dbtx db.DBTX, project *Project) error {
 	if project.Perm == "" {
 		project.Perm = "push"
 	}
+	if err := ValidateProjectPerm(project.Perm); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	project.CreatedAt = now
 	project.UpdatedAt = now
@@ -30,6 +33,52 @@ func CreateProject(dbtx db.DBTX, project *Project) error {
 		return fmt.Errorf("insert project: %w", err)
 	}
 	return nil
+}
+
+// ValidateProjectPerm accepts the two repository permission values.
+func ValidateProjectPerm(perm string) error {
+	if perm != "fetch" && perm != "push" {
+		return fmt.Errorf("invalid project perm %q (allowed: fetch, push)", perm)
+	}
+	return nil
+}
+
+// SetProjectPerm updates the registered repository's permission.
+func SetProjectPerm(dbtx db.DBTX, id, perm string) error {
+	if err := ValidateProjectPerm(perm); err != nil {
+		return err
+	}
+	result, err := dbtx.Exec(`UPDATE projects SET perm = ?, updated_at = ? WHERE id = ?`, perm, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("set project perm: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("project %q not found", id)
+	}
+	return nil
+}
+
+// RequireTaskPrimaryProject rejects read-only repositories as task primaries.
+func RequireTaskPrimaryProject(project *Project) error {
+	if project != nil && project.Perm == "fetch" {
+		return fmt.Errorf("project %q has perm=fetch and cannot be a task's primary repository", project.ID)
+	}
+	return nil
+}
+
+func validateTaskPrimaryProject(dbtx db.DBTX, projectID string) error {
+	if projectID == "" {
+		return nil
+	}
+	project, err := GetProject(dbtx, projectID)
+	if err != nil {
+		return fmt.Errorf("task primary project: %w", err)
+	}
+	return RequireTaskPrimaryProject(project)
 }
 
 // SetProjectUpstreamURL updates a project's captured upstream_url. Used by

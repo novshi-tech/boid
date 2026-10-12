@@ -98,7 +98,7 @@ func TestCreateProjectFromGitURL_Success(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, dataDir := newGitURLTestService(t, repo)
 
-	project, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	project, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestCreateProjectFromGitURL_NameOverride(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, dataDir := newGitURLTestService(t, repo)
 
-	project, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "custom-name")
+	project, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "custom-name", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestCreateProjectFromGitURL_RequiresWorkspace(t *testing.T) {
 	repo := &stubProjectRepository{}
 	svc, _ := newGitURLTestService(t, repo)
 
-	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "", "")
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "", "", "")
 	if err == nil {
 		t.Fatal("expected error for empty workspace")
 	}
@@ -167,7 +167,7 @@ func TestCreateProjectFromGitURL_RejectsUnknownWorkspace(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{}}
 	svc, _ := newGitURLTestService(t, repo)
 
-	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "ghost-ws", "")
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "ghost-ws", "", "")
 	if err == nil {
 		t.Fatal("expected error for a workspace that does not exist")
 	}
@@ -200,7 +200,7 @@ func TestCreateProjectFromGitURL_MissingProjectYAML_RollsBack(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, dataDir := newGitURLTestService(t, repo)
 
-	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err == nil {
 		t.Fatal("expected error for a source repo with no .boid/project.yaml")
 	}
@@ -225,7 +225,7 @@ func TestCreateProjectFromGitURL_NameCollision_Refuses(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "taken")
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "taken", "")
 	if err == nil {
 		t.Fatal("expected error for a bare-repo path collision")
 	}
@@ -240,7 +240,7 @@ func TestFetchProject_UpdatesAfterRemoteChange(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, _ := newGitURLTestService(t, repo)
 
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestFetchProject_UnreachableRemote_MarksDegradedNotDeleted(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, _ := newGitURLTestService(t, repo)
 
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestCreateProjectFromGitURL_RejectsPathTraversalName(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, dataDir := newGitURLTestService(t, repo)
 
-	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "../../../../tmp/owned")
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "../../../../tmp/owned", "")
 	if err == nil {
 		t.Fatal("expected error for a traversal --name")
 	}
@@ -361,7 +361,7 @@ func TestCreateProjectFromGitURL_ConcurrentSameURL_ExactlyOneSucceeds(t *testing
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			p, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+			p, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 			results[i] = err
 			projects[i] = p
 		}(i)
@@ -462,7 +462,7 @@ func TestCreateProjectFromGitURL_AssignFailsAndBareRepoRemovalFails_PreservesRow
 		}
 	})
 
-	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err == nil {
 		t.Fatal("expected an error when both workspace assignment and bare-repo rollback fail")
 	}
@@ -509,7 +509,7 @@ func TestDeleteProject_RemovesBareRepo_AllowsReRegistration(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, _ := newGitURLTestService(t, repo)
 
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestDeleteProject_RemovesBareRepo_AllowsReRegistration(t *testing.T) {
 	// Re-add the SAME url/name — must succeed. Pre-fix, this always 409'd
 	// because the old bare repo directory was left occupying the computed
 	// path.
-	recreated, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	recreated, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("re-CreateProjectFromGitURL after rm: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestFetchProject_CorruptManagedRepo_DegradesNotLegacyRejected(t *testing.T)
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, _ := newGitURLTestService(t, repo)
 
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -657,7 +657,7 @@ func TestCreateProjectFromGitURL_WorkspaceDeletedDuringClone_NoDanglingAssignmen
 		return nil
 	}
 
-	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err == nil {
 		t.Fatal("expected an error when the workspace is removed during clone")
 	}
@@ -705,7 +705,7 @@ func TestDeleteProject_BareRepoRemovalFails_PreservesRow(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, _ := newGitURLTestService(t, repo)
 
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -754,7 +754,7 @@ func TestFetchProject_ProjectYAMLIDChangedUpstream_Refuses(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, _ := newGitURLTestService(t, repo)
 
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -813,11 +813,11 @@ func TestFetchProject_ProjectYAMLIDChangedToExistingProject_DoesNotCorruptOtherP
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, _ := newGitURLTestService(t, repo)
 
-	createdA, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(srcA), "team-a", "")
+	createdA, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(srcA), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL(A): %v", err)
 	}
-	createdB, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(srcB), "team-a", "")
+	createdB, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(srcB), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL(B): %v", err)
 	}
@@ -928,7 +928,7 @@ func TestProjectMu_SerializesCreateProjectFromGitURL_And_DeleteProject(t *testin
 	var createErr error
 	go func() {
 		defer wg.Done()
-		_, createErr = svc.CreateProjectFromGitURL(context.Background(), "https://example.invalid/owner/proj-race-lock.git", "team-a", "")
+		_, createErr = svc.CreateProjectFromGitURL(context.Background(), "https://example.invalid/owner/proj-race-lock.git", "team-a", "", "")
 	}()
 
 	select {
@@ -1001,7 +1001,7 @@ func TestProjectMu_SerializesCreateProjectFromGitURL_And_CreateProject(t *testin
 	var gitErr error
 	go func() {
 		defer wg.Done()
-		_, gitErr = svc.CreateProjectFromGitURL(context.Background(), "https://example.invalid/owner/proj-legacy-lock.git", "team-a", "")
+		_, gitErr = svc.CreateProjectFromGitURL(context.Background(), "https://example.invalid/owner/proj-legacy-lock.git", "team-a", "", "")
 	}()
 
 	select {
@@ -1012,7 +1012,7 @@ func TestProjectMu_SerializesCreateProjectFromGitURL_And_CreateProject(t *testin
 
 	legacyDone := make(chan error, 1)
 	go func() {
-		_, err := svc.CreateProject("/some/legacy/work/dir")
+		_, err := svc.CreateProject("/some/legacy/work/dir", "")
 		legacyDone <- err
 	}()
 
@@ -1057,7 +1057,7 @@ func TestProjectMu_SerializesFetchProject_And_DeleteProject(t *testing.T) {
 	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
 	svc, _ := newGitURLTestService(t, repo)
 
-	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", "")
 	if err != nil {
 		t.Fatalf("CreateProjectFromGitURL: %v", err)
 	}
@@ -1165,7 +1165,7 @@ func TestCreateProjectFromGitURL_InsertConflict_KeepsTheEstablishedProjectsMeta(
 		return fmt.Errorf("insert project: constraint failed: UNIQUE constraint failed: projects.id (1555)")
 	}
 
-	if _, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", ""); err == nil {
+	if _, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", ""); err == nil {
 		t.Fatal("expected the duplicate registration to fail")
 	}
 
@@ -1190,7 +1190,7 @@ func TestCreateProjectFromGitURL_InsertFails_StillRollsBackItsOwnCacheWrite(t *t
 		return fmt.Errorf("simulated DB failure unrelated to any id conflict")
 	}
 
-	if _, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", ""); err == nil {
+	if _, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "", ""); err == nil {
 		t.Fatal("expected the registration to fail")
 	}
 

@@ -98,6 +98,7 @@ type projectSummary struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	UpstreamURL string `json:"upstream_url,omitempty"`
+	Perm        string `json:"perm"`
 	CloneURL    string `json:"clone_url,omitempty"`
 	CloneDir    string `json:"clone_dir,omitempty"`
 }
@@ -733,6 +734,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				ID:          proj.ID,
 				Name:        proj.Meta.Name,
 				UpstreamURL: proj.UpstreamURL,
+				Perm:        proj.Perm,
 			}
 			if adv, ok := peerAdvertise[pid]; ok {
 				summary.CloneURL = adv.CloneURL

@@ -140,3 +140,20 @@ func TestWebCardCreate_DefaultPersistsAndQueuesJudge(t *testing.T) {
 		t.Fatalf("judge = %+v", judge)
 	}
 }
+
+func TestWebTaskNew_ExcludesFetchProjects(t *testing.T) {
+	push := testCardProject("push-project", "default")
+	push.Perm = "push"
+	fetch := testCardProject("fetch-project", "default")
+	fetch.Perm = "fetch"
+	svc := &stubWebService{projects: []*orchestrator.Project{push, fetch}}
+	w := httptest.NewRecorder()
+	(&WebHandler{Service: svc}).TaskNew(w, httptest.NewRequest(http.MethodGet, "/tasks/new", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `value="push-project"`) || strings.Contains(body, `value="fetch-project"`) {
+		t.Fatalf("project choices do not respect permissions: %s", body)
+	}
+}
