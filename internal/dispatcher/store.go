@@ -40,9 +40,16 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 	if j.TaskID != "" {
 		taskID = j.TaskID
 	}
-	workspaceID, err := orchestrator.ProjectWorkspaceID(dbtx, j.ProjectID)
+	var workspaceID string
+	if cols.hasWorkspaceID && j.TaskID != "" {
+		// Task ownership is authoritative even if its project has moved since
+		// the task was created. Taskless sessions resolve current membership.
+		err = dbtx.QueryRow(`SELECT workspace_id FROM tasks WHERE id = ?`, j.TaskID).Scan(&workspaceID)
+	} else {
+		workspaceID, err = orchestrator.ProjectWorkspaceID(dbtx, j.ProjectID)
+	}
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve job workspace: %w", err)
 	}
 	j.WorkspaceID = workspaceID
 	columns := []string{"id", "task_id", "project_id"}

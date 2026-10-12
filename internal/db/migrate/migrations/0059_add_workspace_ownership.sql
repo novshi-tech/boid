@@ -1,10 +1,4 @@
 -- Add workspace ownership while preserving existing data and repository constraints.
-CREATE TABLE IF NOT EXISTS project_workspaces (
-    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-    workspace_id TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_project_workspaces_workspace_id ON project_workspaces(workspace_id);
-
 ALTER TABLE projects ADD COLUMN perm TEXT NOT NULL DEFAULT 'push' CHECK (perm IN ('fetch', 'push'));
 
 CREATE TABLE tasks_new (

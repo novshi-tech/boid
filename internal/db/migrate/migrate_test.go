@@ -82,6 +82,11 @@ func TestApplyLegacyDatabaseAddsHandlerID(t *testing.T) {
 			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
 			updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
 		);
+		CREATE TABLE project_workspaces (
+			project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+			workspace_id TEXT NOT NULL
+		);
+		CREATE INDEX idx_project_workspaces_workspace_id ON project_workspaces(workspace_id);
 		CREATE TABLE tasks (
 			id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL REFERENCES projects(id),
@@ -471,6 +476,11 @@ func TestMigration0032_LegacyDatabasePreservesExistingCookieDevice(t *testing.T)
 			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
 			updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
 		);
+		CREATE TABLE project_workspaces (
+			project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+			workspace_id TEXT NOT NULL
+		);
+		CREATE INDEX idx_project_workspaces_workspace_id ON project_workspaces(workspace_id);
 		CREATE TABLE tasks (
 			id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL REFERENCES projects(id),

@@ -1,10 +1,11 @@
 package dispatcher_test
 
 import (
+	"testing"
+
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
-	"testing"
 )
 
 func TestCreateRowsWorkspaceOwnership(t *testing.T) {
@@ -108,5 +109,103 @@ func TestCreateRowsWorkspaceOwnership(t *testing.T) {
 				t.Fatalf("read permission: %q", p.Perm)
 			}
 		})
+	}
+}
+
+func TestUpdateTaskReassignsWorkspaceOnProjectChange(t *testing.T) {
+	for _, taskType := range []orchestrator.TaskType{orchestrator.TaskTypeExecution, orchestrator.TaskTypeCard} {
+		t.Run(string(taskType), func(t *testing.T) {
+			d := testutil.NewTestDB(t)
+			for _, id := range []string{"first", "second", "unassigned"} {
+				if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: id, WorkDir: "/" + id}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := d.Conn.Exec(`INSERT INTO workspaces(slug) VALUES ('one'), ('two')`); err != nil {
+				t.Fatal(err)
+			}
+			for project, workspace := range map[string]string{"first": "one", "second": "two"} {
+				if err := orchestrator.SetProjectWorkspace(d.Conn, project, workspace); err != nil {
+					t.Fatal(err)
+				}
+			}
+			task := &orchestrator.Task{ProjectID: "first", Title: "task", Type: taskType}
+			if taskType == orchestrator.TaskTypeExecution {
+				task.Exec = &orchestrator.ExecAttrs{Behavior: "implement"}
+			} else {
+				task.Card = &orchestrator.CardAttrs{}
+			}
+			if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+				t.Fatal(err)
+			}
+			for _, change := range []struct{ project, workspace string }{{"second", "two"}, {"unassigned", orchestrator.DefaultWorkspaceSlug}, {"first", "one"}} {
+				task.ProjectID, task.WorkspaceID = change.project, "wrong"
+				if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
+					t.Fatal(err)
+				}
+				got, err := orchestrator.GetTask(d.Conn, task.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if task.WorkspaceID != change.workspace || got.WorkspaceID != change.workspace || got.ProjectID != change.project {
+					t.Fatalf("reassigned ownership: %+v, model workspace %q", got, task.WorkspaceID)
+				}
+			}
+			if err := orchestrator.SetProjectWorkspace(d.Conn, "first", "two"); err != nil {
+				t.Fatal(err)
+			}
+			task.Title = "renamed"
+			if err := orchestrator.UpdateTask(d.Conn, task); err != nil {
+				t.Fatal(err)
+			}
+			got, err := orchestrator.GetTask(d.Conn, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.WorkspaceID != "one" || task.WorkspaceID != "one" || got.Title != "renamed" {
+				t.Fatalf("same-project update changed ownership: %+v", got)
+			}
+		})
+	}
+}
+
+func TestCreateJobCopiesTaskWorkspace(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "repo", WorkDir: "/repo"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Conn.Exec(`INSERT INTO workspaces(slug) VALUES ('team')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "repo", "team"); err != nil {
+		t.Fatal(err)
+	}
+	task := &orchestrator.Task{ProjectID: "repo", Title: "task", Type: orchestrator.TaskTypeExecution, Exec: &orchestrator.ExecAttrs{Behavior: "implement"}}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatal(err)
+	}
+	// Persisted task ownership can differ from current repository membership.
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "repo", orchestrator.DefaultWorkspaceSlug); err != nil {
+		t.Fatal(err)
+	}
+	for _, nullableTask := range []bool{false, true} {
+		if nullableTask {
+			if _, err := d.Conn.Exec(`UPDATE tasks SET project_id=NULL WHERE id=?`, task.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, tc := range []struct{ taskID, want string }{{task.ID, "team"}, {"", orchestrator.DefaultWorkspaceSlug}} {
+			job := &dispatcher.Job{ProjectID: "repo", TaskID: tc.taskID, WorkspaceID: "wrong"}
+			if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+				t.Fatal(err)
+			}
+			got, err := dispatcher.GetJob(d.Conn, job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job.WorkspaceID != tc.want || got.WorkspaceID != tc.want || got.ProjectID != "repo" {
+				t.Fatalf("nullableTask=%v taskID=%q: job ownership %+v, want %q", nullableTask, tc.taskID, got, tc.want)
+			}
+		}
 	}
 }

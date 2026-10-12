@@ -573,9 +573,20 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 	if err != nil {
 		return fmt.Errorf("marshal exec attrs: %w", err)
 	}
+	var previousProjectID string
+	if err := dbtx.QueryRow(`SELECT COALESCE(project_id, ''), workspace_id FROM tasks WHERE id = ?`, t.ID).Scan(&previousProjectID, &t.WorkspaceID); err != nil {
+		return fmt.Errorf("read task ownership: %w", err)
+	}
+	if previousProjectID != t.ProjectID {
+		workspaceID, err := ProjectWorkspaceID(dbtx, t.ProjectID)
+		if err != nil {
+			return err
+		}
+		t.WorkspaceID = workspaceID
+	}
 	_, err = dbtx.Exec(
-		`UPDATE tasks SET project_id = ?, remote_id = ?, title = ?, description = ?, status = ?, traits = ?, readonly = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, auto_start = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
-		t.ProjectID, t.RemoteID, t.Title, t.Description, string(t.Status), execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart, t.ParentID, t.UpdatedAt, t.ID,
+		`UPDATE tasks SET project_id = ?, workspace_id = ?, remote_id = ?, title = ?, description = ?, status = ?, traits = ?, readonly = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, auto_start = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
+		t.ProjectID, t.WorkspaceID, t.RemoteID, t.Title, t.Description, string(t.Status), execCols.traits, execCols.readonly, execCols.branchPrefix, execCols.baseBranch, execCols.payload, execCols.instructions, execCols.autoStart, t.ParentID, t.UpdatedAt, t.ID,
 	)
 	if err != nil {
 		return err

@@ -32,6 +32,11 @@ func TestWorkspaceOwnershipMigration(t *testing.T) {
 		exec(`INSERT INTO trigger_runs(id,project_id,trigger_name,job_id,started_at,finished_at,exit_code) VALUES (?, ?, 'sweep', ?, '2026-10-01', '2026-10-02', 7)`, p, p, p)
 	}
 	exec(`INSERT INTO actions(id,task_id,type) VALUES ('action','linked','start')`)
+	// Legacy databases can contain dangling or empty repository references.
+	exec(`PRAGMA foreign_keys=OFF`)
+	exec(`INSERT INTO tasks(id,type,project_id,title,status,behavior,traits,readonly,branch_prefix,base_branch,payload,instructions,auto_start) VALUES ('dangling-task','execution','missing','legacy','pending','implement','[]',0,'feature','main','{}','[]',0)`)
+	exec(`INSERT INTO jobs(id,project_id) VALUES ('empty-project-job','')`)
+	exec(`PRAGMA foreign_keys=ON`)
 	exec(`INSERT INTO task_identities(identity,project_id,task_id,created_at) VALUES ('identity','linked','linked','2026-10-01')`)
 	exec(`INSERT INTO card_force_release_barriers(card_id,created_at) VALUES ('linked-card','2026-10-01')`)
 	tables := []string{"projects", "tasks", "jobs", "trigger_runs", "actions", "task_identities", "card_force_release_barriers", "project_workspaces", "workspaces"}
@@ -108,6 +113,9 @@ func TestWorkspaceOwnershipMigration(t *testing.T) {
 	if _, err := d.Conn.Exec(`UPDATE projects SET perm='invalid'`); err == nil {
 		t.Fatal("invalid permission accepted")
 	}
+	// Remove the two pre-existing FK violations before checking new violations.
+	exec(`DELETE FROM tasks WHERE id='dangling-task'`)
+	exec(`DELETE FROM jobs WHERE id='empty-project-job'`)
 	rows, err := d.Conn.Query(`PRAGMA foreign_key_check`)
 	if err != nil {
 		t.Fatal(err)
