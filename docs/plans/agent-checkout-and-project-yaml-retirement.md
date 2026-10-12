@@ -178,6 +178,8 @@ branch は agent が自分で切り替える。dispatcher は `BOID_BASE_BRANCH`
 - バックアップから戻す。デプロイ後に作った task は失われる
 - `project_id` が NULL の行に、旧バイナリが読めるプレースホルダの project を入れてから、旧バイナリに戻す
 
+注意: 現行の `checkSchemaCeiling` は未知 version の DB を拒否するため、プレースホルダ project を投入しても旧バイナリは起動できない。旧バイナリへ戻すにはデプロイ前の DB backup 復元が必要。
+
 どちらでも戻せるのは PR-5 の前まで。PR-5 で bare mirror を消したら、旧バイナリは project.yaml を読めない。
 
 ## 6. 決定と PR-3 の範囲

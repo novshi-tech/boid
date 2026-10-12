@@ -14,6 +14,7 @@ type Job struct {
 	ID                 string    `json:"id"`
 	TaskID             string    `json:"task_id"`
 	ProjectID          string    `json:"project_id"`
+	WorkspaceID        string    `json:"workspace_id"`
 	HandlerID          string    `json:"handler_id"`
 	DisplayName        string    `json:"display_name,omitempty"` // persisted via the jobs.display_name column (migration 0027)
 	TerminalTitle      string    `json:"terminal_title,omitempty"`

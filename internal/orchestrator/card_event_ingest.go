@@ -127,6 +127,6 @@ func writerHoldsCardsLiveRequest(dbtx db.DBTX, ctx context.Context, cardID strin
 // status only), avoiding GetTask's extra child-count rollup cost.
 func cardEventTaskContext(dbtx db.DBTX, taskID string) (taskType TaskType, projectID string, status TaskStatus, err error) {
 	var t, s string
-	err = dbtx.QueryRow(`SELECT type, project_id, status FROM tasks WHERE id = ?`, taskID).Scan(&t, &projectID, &s)
+	err = dbtx.QueryRow(`SELECT type, COALESCE(project_id, ''), status FROM tasks WHERE id = ?`, taskID).Scan(&t, &projectID, &s)
 	return TaskType(t), projectID, TaskStatus(s), err
 }

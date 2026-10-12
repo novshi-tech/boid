@@ -40,8 +40,18 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 	if j.TaskID != "" {
 		taskID = j.TaskID
 	}
+	workspaceID, err := orchestrator.ProjectWorkspaceID(dbtx, j.ProjectID)
+	if err != nil {
+		return err
+	}
+	j.WorkspaceID = workspaceID
 	columns := []string{"id", "task_id", "project_id"}
 	args := []any{j.ID, taskID, j.ProjectID}
+
+	if cols.hasWorkspaceID {
+		columns = append(columns, "workspace_id")
+		args = append(args, j.WorkspaceID)
+	}
 
 	if cols.hasHookID {
 		columns = append(columns, "hook_id")
@@ -370,7 +380,7 @@ func scanJob(s jobScanner) (*Job, error) {
 	var interactive, tty, displayNameDefault sql.NullInt64
 	var terminalTitle sql.NullString
 	var executionState, displayName, cardID, cardRequestID sql.NullString
-	if err := s.Scan(&j.ID, &taskID, &j.ProjectID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &executionState, &displayName, &cardID, &cardRequestID, &terminalTitle, &displayNameDefault, &j.CreatedAt, &j.UpdatedAt); err != nil {
+	if err := s.Scan(&j.ID, &taskID, &j.ProjectID, &j.WorkspaceID, &j.HandlerID, &j.Role, &j.RuntimeID, &interactive, &tty, &j.Status, &exitCode, &j.Output, &executionState, &displayName, &cardID, &cardRequestID, &terminalTitle, &displayNameDefault, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("job not found")
 		}
@@ -401,6 +411,10 @@ func jobSelectSQL(dbtx db.DBTX, suffix string) (string, error) {
 		return "", err
 	}
 
+	workspaceExpr := "'default'"
+	if cols.hasWorkspaceID {
+		workspaceExpr = "workspace_id"
+	}
 	handlerExpr := "handler_id"
 	if cols.hasHookID {
 		handlerExpr = "COALESCE(NULLIF(handler_id, ''), hook_id)"
@@ -439,7 +453,8 @@ func jobSelectSQL(dbtx db.DBTX, suffix string) (string, error) {
 		terminalTitleExpr = "terminal_title, display_name_default"
 	}
 	return fmt.Sprintf(
-		`SELECT id, task_id, project_id, %s AS handler_id, role, %s, %s, %s, status, exit_code, output, %s, %s, %s, %s, %s, created_at, updated_at FROM jobs %s`,
+		`SELECT id, task_id, COALESCE(project_id, ''), %s AS workspace_id, %s AS handler_id, role, %s, %s, %s, status, exit_code, output, %s, %s, %s, %s, %s, created_at, updated_at FROM jobs %s`,
+		workspaceExpr,
 		handlerExpr,
 		runtimeExpr,
 		interactiveExpr,
@@ -454,6 +469,7 @@ func jobSelectSQL(dbtx db.DBTX, suffix string) (string, error) {
 }
 
 type jobColumns struct {
+	hasWorkspaceID    bool
 	hasTerminalTitle  bool
 	hasHookID         bool
 	hasRuntimeID      bool
@@ -475,6 +491,7 @@ func inspectJobColumns(dbtx db.DBTX) (jobColumns, error) {
 		return jobColumns{}, fmt.Errorf("detect jobs columns: %w", err)
 	}
 	return jobColumns{
+		hasWorkspaceID:    present["workspace_id"],
 		hasHookID:         present["hook_id"],
 		hasTerminalTitle:  present["terminal_title"] && present["display_name_default"],
 		hasRuntimeID:      present["runtime_id"],

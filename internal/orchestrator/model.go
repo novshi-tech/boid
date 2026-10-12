@@ -119,6 +119,7 @@ type Task struct {
 	ID          string     `json:"id"`
 	Type        TaskType   `json:"type"`
 	ProjectID   string     `json:"project_id"`
+	WorkspaceID string     `json:"workspace_id"`
 	RemoteID    string     `json:"remote_id,omitempty"`
 	Title       string     `json:"title"`
 	Description string     `json:"description,omitempty"`
