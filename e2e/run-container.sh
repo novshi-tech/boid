@@ -480,28 +480,36 @@ PROJ_B="$FIXTURE_ROOT/proj-b"
 PROJ_C="$FIXTURE_ROOT/proj-c"
 mkdir -p "$PROJ_A/.boid/hooks" "$PROJ_B/.boid/hooks" "$PROJ_C/.boid/hooks"
 
-cat > "$PROJ_A/.boid/project.yaml" <<'YAML'
-id: container-e2e-ws-a
-name: Container E2E - workspace A
-task_behaviors:
-  verify:
-    hooks:
-      - id: verify-sibling
-        command: |
-          bash ".boid/hooks/verify-sibling.sh"
-    name: verify
+cat > "$ROOT/ws-a.yaml" <<'YAML'
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: ws-a
+spec:
+  capabilities:
+    docker: {}
+  task_behaviors:
+    verify:
+      hooks:
+        - id: verify-sibling
+          command: |
+            bash ".boid/hooks/verify-sibling.sh"
 YAML
 
-cat > "$PROJ_B/.boid/project.yaml" <<'YAML'
-id: container-e2e-ws-b
-name: Container E2E - workspace B
-task_behaviors:
-  setup:
-    hooks:
-      - id: setup-sibling
-        command: |
-          bash ".boid/hooks/setup-sibling.sh"
-    name: setup
+cat > "$ROOT/ws-b.yaml" <<'YAML'
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: ws-b
+spec:
+  capabilities:
+    docker: {}
+  task_behaviors:
+    setup:
+      hooks:
+        - id: setup-sibling
+          command: |
+            bash ".boid/hooks/setup-sibling.sh"
 YAML
 
 # Third fixture project — no capabilities.docker, no sibling containers:
@@ -511,34 +519,34 @@ YAML
 #
 # The git-push behavior verifies the startup checkout has a gateway origin
 # and can commit and push without depending on the shared object cache.
-cat > "$PROJ_C/.boid/project.yaml" <<'YAML'
-id: container-e2e-ws-c
-name: Container E2E - workspace C (broker TLS)
-task_behaviors:
-  verify:
-    hooks:
-      - id: verify-broker-tls
-        command: |
-          bash ".boid/hooks/verify-broker-tls.sh"
-    name: verify
-  git-push:
-    # readonly: false (orchestrator's own TaskBehavior.Readonly doc comment:
-    # fail-safe default is readonly=true for every behavior except the
-    # canonical "executor") — this task's own hook needs a writable sandbox
-    # to add push-probe.txt, `git commit`, and `git push`.
-    readonly: false
-    hooks:
-      - id: verify-git-push
-        command: |
-          bash ".boid/hooks/verify-git-push.sh"
-    name: git-push
-  git-readonly:
-    readonly: true
-    hooks:
-      - id: verify-git-readonly
-        command: |
-          bash ".boid/hooks/verify-git-readonly.sh"
-    name: git-readonly
+cat > "$ROOT/ws-c.yaml" <<'YAML'
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: ws-c
+spec:
+  task_behaviors:
+    verify:
+      hooks:
+        - id: verify-broker-tls
+          command: |
+            bash ".boid/hooks/verify-broker-tls.sh"
+    git-push:
+      # readonly: false (orchestrator's own TaskBehavior.Readonly doc comment:
+      # fail-safe default is readonly=true for every behavior except the
+      # canonical "executor") — this task's own hook needs a writable sandbox
+      # to add push-probe.txt, `git commit`, and `git push`.
+      readonly: false
+      hooks:
+        - id: verify-git-push
+          command: |
+            bash ".boid/hooks/verify-git-push.sh"
+    git-readonly:
+      readonly: true
+      hooks:
+        - id: verify-git-readonly
+          command: |
+            bash ".boid/hooks/verify-git-readonly.sh"
 YAML
 
 # Shared helpers both hook scripts below inline (kept duplicated rather than
@@ -834,7 +842,7 @@ printf '{"artifact":{"result":"pass","push_denied":true}}\n' | boid task update 
 BASH
 chmod +x "$PROJ_C/.boid/hooks/verify-git-readonly.sh"
 
-# Commit fixture metadata and hooks for both project registration and startup checkout.
+# Commit hook scripts for startup checkout; runtime definitions are applied to workspaces.
 seed_project() {
   local dir="$1" repo="$2"
   local origin_url="https://${UPSTREAM_HOST}/e2e-fixture/${repo}.git"
@@ -850,7 +858,7 @@ seed_project() {
   )
 }
 
-e2e_log "seeding fixture git upstream for all three projects (.boid/project.yaml + hooks committed)"
+e2e_log "seeding fixture git upstream with hook scripts for all three projects"
 seed_project "$PROJ_A" "proj-a"
 seed_project "$PROJ_B" "proj-b"
 seed_project "$PROJ_C" "proj-c"
@@ -961,19 +969,14 @@ INSTALL_ID="$(cd "$REPO_ROOT" && docker compose -f build/container/compose.yml e
 e2e_log "install_id=$INSTALL_ID"
 
 e2e_log "creating workspaces (ws-a/ws-b: capabilities.docker; ws-c: none)"
-WS_DOCKER_YAML="$ROOT/ws-docker-capability.yaml"
-cat > "$WS_DOCKER_YAML" <<'YAML'
-capabilities:
-  docker: {}
-YAML
-e2e_run "$BUILD_DIR/boid" workspace create ws-a --from-file "$WS_DOCKER_YAML"
-e2e_run "$BUILD_DIR/boid" workspace create ws-b --from-file "$WS_DOCKER_YAML"
-e2e_run "$BUILD_DIR/boid" workspace create ws-c
+for scope in a b c; do
+  e2e_run "$BUILD_DIR/boid" workspace apply -f "$ROOT/ws-${scope}.yaml"
+done
 
-e2e_log "registering projects from the git fixture upstream (docs/plans/volume-only-daemon.md §論点a)"
-e2e_run "$BUILD_DIR/boid" project add "https://${UPSTREAM_HOST}/e2e-fixture/proj-a.git" --workspace=ws-a
-e2e_run "$BUILD_DIR/boid" project add "https://${UPSTREAM_HOST}/e2e-fixture/proj-b.git" --workspace=ws-b
-e2e_run "$BUILD_DIR/boid" project add "https://${UPSTREAM_HOST}/e2e-fixture/proj-c.git" --workspace=ws-c
+e2e_log "registering projects from the git fixture upstream"
+PROJ_A_ID="$("$BUILD_DIR/boid" project add "https://${UPSTREAM_HOST}/e2e-fixture/proj-a.git" --workspace=ws-a -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+PROJ_B_ID="$("$BUILD_DIR/boid" project add "https://${UPSTREAM_HOST}/e2e-fixture/proj-b.git" --workspace=ws-b -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+PROJ_C_ID="$("$BUILD_DIR/boid" project add "https://${UPSTREAM_HOST}/e2e-fixture/proj-c.git" --workspace=ws-c -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 
 create_task() {
   local project_id="$1" title="$2" behavior="$3"
@@ -1034,7 +1037,7 @@ wait_for_done() {
 # git log if task A/B's own requirement 2 ever regresses again: running
 # this check first keeps it validated independently either way.
 e2e_log "dispatching verify-broker-tls (workspace C)"
-task_c_out="$(create_task container-e2e-ws-c "verify broker TLS RPC" verify)"
+task_c_out="$(create_task "$PROJ_C_ID" "verify broker TLS RPC" verify)"
 printf '%s\n' "$task_c_out"
 task_c_id="$(printf '%s\n' "$task_c_out" | parse_task_id)"
 [[ -n "$task_c_id" ]] || e2e_fail "failed to parse task C id from: $task_c_out"
@@ -1082,7 +1085,7 @@ fi
 # that check is dispatched first: no dependency on (and nothing here should
 # block) the docker-sibling machinery task A/B exercise below.
 e2e_log "dispatching verify-git-push (workspace C)"
-task_c2_out="$(create_task container-e2e-ws-c "verify git push" git-push)"
+task_c2_out="$(create_task "$PROJ_C_ID" "verify git push" git-push)"
 printf '%s\n' "$task_c2_out"
 task_c2_id="$(printf '%s\n' "$task_c2_out" | parse_task_id)"
 [[ -n "$task_c2_id" ]] || e2e_fail "failed to parse task C2 (git-push) id from: $task_c2_out"
@@ -1109,7 +1112,7 @@ e2e_assert_contains "$upstream_c_log" "e2e-container git push probe ${task_c2_id
 e2e_log "fixture upstream proj-c.git HEAD carries the job's own push: ${upstream_c_log}"
 
 e2e_log "dispatching readonly checkout push denial (workspace C)"
-task_c3_out="$(create_task container-e2e-ws-c "verify readonly push" git-readonly)"
+task_c3_out="$(create_task "$PROJ_C_ID" "verify readonly push" git-readonly)"
 task_c3_id="$(printf '%s\n' "$task_c3_out" | parse_task_id)"
 [[ -n "$task_c3_id" ]] || e2e_fail "failed to parse readonly task id"
 e2e_run "$BUILD_DIR/boid" action send --task "$task_c3_id" --type start
@@ -1121,7 +1124,7 @@ fi
 e2e_log "readonly checkout push rejected with 403; upstream ref absent"
 
 e2e_log "dispatching setup-sibling (workspace B) in the background"
-task_b_out="$(create_task container-e2e-ws-b "setup sibling B" setup)"
+task_b_out="$(create_task "$PROJ_B_ID" "setup sibling B" setup)"
 printf '%s\n' "$task_b_out"
 task_b_id="$(printf '%s\n' "$task_b_out" | parse_task_id)"
 [[ -n "$task_b_id" ]] || e2e_fail "failed to parse task B id from: $task_b_out"
@@ -1133,7 +1136,7 @@ e2e_log "sib-b is ready"
 
 e2e_log "dispatching verify-sibling (workspace A), measuring dispatch latency"
 dispatch_start=$(date +%s%N)
-task_a_out="$(create_task container-e2e-ws-a "verify sibling connectivity" verify)"
+task_a_out="$(create_task "$PROJ_A_ID" "verify sibling connectivity" verify)"
 printf '%s\n' "$task_a_out"
 task_a_id="$(printf '%s\n' "$task_a_out" | parse_task_id)"
 [[ -n "$task_a_id" ]] || e2e_fail "failed to parse task A id from: $task_a_out"
