@@ -113,6 +113,7 @@ type StartSessionResult struct {
 // arbitrary user-supplied argv with no HarnessAdapter agent — see
 // dispatcher.BuildExecJobSpec, which forces HarnessType="shell" underneath.
 type StartExecRequest struct {
+	WorkspaceID string `json:"workspace_id,omitempty"`
 	// ProjectID is taken from the URL for the project-scoped route; there is
 	// no top-level /api/exec (every exec is inherently project-scoped —
 	// `boid exec -p <ref> -- argv...`), so the handler always fills this in

@@ -40,6 +40,9 @@ CREATE INDEX idx_signals_pending
 -- index: idx_task_identities_task_id
 CREATE INDEX idx_task_identities_task_id ON task_identities(task_id);
 
+-- index: idx_task_identities_workspace
+CREATE UNIQUE INDEX idx_task_identities_workspace ON task_identities(workspace_id,identity) WHERE project_id IS NULL;
+
 -- index: idx_tasks_project_parent_idempotency_key
 CREATE UNIQUE INDEX idx_tasks_project_parent_idempotency_key
   ON tasks(project_id, parent_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
@@ -69,6 +72,12 @@ CREATE UNIQUE INDEX idx_trigger_runs_inflight_unique
 -- index: idx_trigger_runs_project_trigger_started
 CREATE INDEX idx_trigger_runs_project_trigger_started
     ON trigger_runs(project_id, trigger_name, started_at);
+
+-- index: idx_trigger_runs_workspace_inflight
+CREATE UNIQUE INDEX idx_trigger_runs_workspace_inflight ON trigger_runs(workspace_id,trigger_name) WHERE project_id IS NULL AND finished_at IS NULL;
+
+-- index: idx_trigger_runs_workspace_started
+CREATE INDEX idx_trigger_runs_workspace_started ON trigger_runs(workspace_id,trigger_name,started_at) WHERE project_id IS NULL;
 
 -- index: idx_web_devices_token_hash
 CREATE UNIQUE INDEX idx_web_devices_token_hash ON web_devices(token_hash) WHERE token_hash IS NOT NULL;
@@ -203,11 +212,14 @@ CREATE TABLE signals (
 );
 
 -- table: task_identities
-CREATE TABLE task_identities (
-    identity   TEXT NOT NULL,
-    project_id TEXT NOT NULL,
-    task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    created_at DATETIME NOT NULL, url TEXT, display_name TEXT,
+CREATE TABLE "task_identities" (
+    identity TEXT NOT NULL,
+    project_id TEXT,
+    workspace_id TEXT NOT NULL CHECK (workspace_id != ''),
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    created_at DATETIME NOT NULL,
+    url TEXT,
+    display_name TEXT,
     UNIQUE (project_id, identity)
 );
 

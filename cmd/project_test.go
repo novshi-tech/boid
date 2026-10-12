@@ -1249,11 +1249,5 @@ func TestProjectFetch_UpdatesProjectYAML(t *testing.T) {
 }
 
 func registeredRepositories(projects []projectspec.Project) []projectspec.Project {
-	var repositories []projectspec.Project
-	for _, p := range projects {
-		if !projectspec.IsDefaultMetaproject(&p) {
-			repositories = append(repositories, p)
-		}
-	}
-	return repositories
+	return projects
 }

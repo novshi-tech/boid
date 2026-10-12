@@ -333,8 +333,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	if spec == nil {
 		return "", fmt.Errorf("job spec is required")
 	}
-	if spec.ProjectID == "" && spec.TaskID == "" {
-		return "", fmt.Errorf("job spec without project requires a task")
+	if spec.ProjectID == "" && spec.TaskID == "" && spec.WorkspaceID == "" {
+		return "", fmt.Errorf("job spec without project requires a task or workspace")
 	}
 	// Argv is irrelevant when a HarnessAdapter takes over the agent process
 	// (the runner-inner-child invokes adapter.Run() and ignores Argv); only
@@ -346,6 +346,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	j := &Job{
 		TaskID:             spec.TaskID,
 		ProjectID:          spec.ProjectID,
+		WorkspaceID:        spec.WorkspaceID,
 		HandlerID:          spec.HandlerID,
 		DisplayName:        spec.DisplayName,
 		DisplayNameDefault: spec.DisplayNameDefault,

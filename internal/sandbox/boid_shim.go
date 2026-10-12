@@ -1056,6 +1056,13 @@ func parseBoidTaskIdentityLink(args []string) (*BoidRequest, error) {
 			i = next
 			req.IdentityDisplayName = value
 			req.IdentityDisplayNameSet = true
+		case arg == "--workspace" || strings.HasPrefix(arg, "--workspace="):
+			value, next, err := takeStringFlagValue(args, i, "--workspace")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.WorkspaceID = value
 		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
 			value, next, err := takeStringFlagValue(args, i, "--project-id")
 			if err != nil {
@@ -1090,6 +1097,13 @@ func parseBoidTaskIdentityUnlink(args []string) (*BoidRequest, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "--workspace" || strings.HasPrefix(arg, "--workspace="):
+			value, next, err := takeStringFlagValue(args, i, "--workspace")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.WorkspaceID = value
 		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
 			value, next, err := takeStringFlagValue(args, i, "--project-id")
 			if err != nil {
@@ -1125,6 +1139,13 @@ func parseBoidTaskIdentityResolve(args []string) (*BoidRequest, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "--workspace" || strings.HasPrefix(arg, "--workspace="):
+			value, next, err := takeStringFlagValue(args, i, "--workspace")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.WorkspaceID = value
 		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
 			value, next, err := takeStringFlagValue(args, i, "--project-id")
 			if err != nil {
@@ -1179,6 +1200,13 @@ func parseBoidTaskResolveOrCapture(args []string) (*BoidRequest, error) {
 			i = next
 			req.IdentityDisplayName = value
 			req.IdentityDisplayNameSet = true
+		case arg == "--workspace" || strings.HasPrefix(arg, "--workspace="):
+			value, next, err := takeStringFlagValue(args, i, "--workspace")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.WorkspaceID = value
 		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
 			value, next, err := takeStringFlagValue(args, i, "--project-id")
 			if err != nil {

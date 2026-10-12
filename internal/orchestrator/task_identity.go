@@ -45,8 +45,14 @@ func ValidateIdentityURL(raw string) error {
 }
 
 func UpdateIdentityMetadata(dbtx db.DBTX, projectID, identity, taskID string, urlValue, displayName *string) error {
-	if projectID == "" || identity == "" {
-		return fmt.Errorf("identity metadata requires project and identity")
+	return UpdateIdentityMetadataInScope(dbtx, IdentityScope{ProjectID: projectID}, identity, taskID, urlValue, displayName)
+}
+func UpdateIdentityMetadataInScope(dbtx db.DBTX, scope IdentityScope, identity, taskID string, urlValue, displayName *string) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	if identity == "" {
+		return fmt.Errorf("identity metadata requires an identity")
 	}
 	if taskID == "" {
 		return fmt.Errorf("identity metadata requires an expected task")
@@ -68,8 +74,9 @@ func UpdateIdentityMetadata(dbtx db.DBTX, projectID, identity, taskID string, ur
 	if len(sets) == 0 {
 		return nil
 	}
-	args = append(args, projectID, identity, taskID)
-	result, err := dbtx.Exec("UPDATE task_identities SET "+strings.Join(sets, ", ")+" WHERE project_id = ? AND identity = ? AND task_id = ?", args...)
+	predicate, scopeValue := scope.predicate()
+	args = append(args, scopeValue, identity, taskID)
+	result, err := dbtx.Exec("UPDATE task_identities SET "+strings.Join(sets, ", ")+" WHERE "+predicate+" AND identity = ? AND task_id = ?", args...)
 	if err != nil {
 		return err
 	}
@@ -118,17 +125,31 @@ var ErrIdentityConflict = errors.New("identity already linked to a different tas
 // existing binding is left untouched (this store never does silent
 // newest-wins).
 func LinkIdentity(dbtx db.DBTX, projectID, identity, taskID string) error {
+	return LinkIdentityInScope(dbtx, IdentityScope{ProjectID: projectID}, identity, taskID)
+}
+func LinkIdentityInScope(dbtx db.DBTX, scope IdentityScope, identity, taskID string) error {
 	if identity == "" {
 		return fmt.Errorf("link identity: identity must not be empty")
 	}
-	if projectID == "" {
-		return fmt.Errorf("link identity: project id must not be empty")
+	if err := scope.validate(); err != nil {
+		return err
 	}
 	if taskID == "" {
 		return fmt.Errorf("link identity: task id must not be empty")
 	}
 
-	existingTaskID, err := queryIdentityTaskID(dbtx, projectID, identity)
+	task, err := GetTask(dbtx, taskID)
+	if err != nil {
+		return err
+	}
+	if scope.ProjectID == "" {
+		if task.ProjectID != "" || task.WorkspaceID != scope.WorkspaceID {
+			return fmt.Errorf("link identity: task belongs to a different workspace scope")
+		}
+	} else if task.ProjectID != scope.ProjectID {
+		return fmt.Errorf("link identity: task belongs to a different project")
+	}
+	existingTaskID, err := queryIdentityTaskID(dbtx, scope, identity)
 	if err != nil {
 		return fmt.Errorf("link identity: query existing: %w", err)
 	}
@@ -140,8 +161,8 @@ func LinkIdentity(dbtx db.DBTX, projectID, identity, taskID string) error {
 	}
 
 	_, err = dbtx.Exec(
-		`INSERT INTO task_identities (identity, project_id, task_id, created_at) VALUES (?, ?, ?, ?)`,
-		identity, projectID, taskID, time.Now().UTC(),
+		`INSERT INTO task_identities (identity, project_id, workspace_id, task_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+		identity, nullableIdentityString(scope.ProjectID), task.WorkspaceID, taskID, time.Now().UTC(),
 	)
 	if err == nil {
 		return nil
@@ -152,7 +173,7 @@ func LinkIdentity(dbtx db.DBTX, projectID, identity, taskID string) error {
 	// (project_id, identity) between the SELECT above and this INSERT.
 	// Re-check rather than surfacing the raw constraint error.
 	if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-		raceTaskID, qerr := queryIdentityTaskID(dbtx, projectID, identity)
+		raceTaskID, qerr := queryIdentityTaskID(dbtx, scope, identity)
 		if qerr == nil && raceTaskID != "" {
 			if raceTaskID == taskID {
 				return nil
@@ -166,15 +187,19 @@ func LinkIdentity(dbtx db.DBTX, projectID, identity, taskID string) error {
 // UnlinkIdentity removes the binding for (projectID, identity), if any. Not
 // finding one is not an error (idempotent, matching UnlinkAllForTask).
 func UnlinkIdentity(dbtx db.DBTX, projectID, identity string) error {
+	return UnlinkIdentityInScope(dbtx, IdentityScope{ProjectID: projectID}, identity)
+}
+func UnlinkIdentityInScope(dbtx db.DBTX, scope IdentityScope, identity string) error {
 	if identity == "" {
 		return fmt.Errorf("unlink identity: identity must not be empty")
 	}
-	if projectID == "" {
-		return fmt.Errorf("unlink identity: project id must not be empty")
+	if err := scope.validate(); err != nil {
+		return err
 	}
+	predicate, scopeValue := scope.predicate()
 	if _, err := dbtx.Exec(
-		`DELETE FROM task_identities WHERE project_id = ? AND identity = ?`,
-		projectID, identity,
+		"DELETE FROM task_identities WHERE "+predicate+" AND identity = ?",
+		scopeValue, identity,
 	); err != nil {
 		return fmt.Errorf("unlink identity: %w", err)
 	}
@@ -197,13 +222,16 @@ func UnlinkAllForTask(dbtx db.DBTX, taskID string) error {
 // binding exists — callers that need to distinguish "not found" from other
 // errors should use errors.Is, matching this package's existing convention.
 func ResolveIdentity(dbtx db.DBTX, projectID, identity string) (*Task, error) {
+	return ResolveIdentityInScope(dbtx, IdentityScope{ProjectID: projectID}, identity)
+}
+func ResolveIdentityInScope(dbtx db.DBTX, scope IdentityScope, identity string) (*Task, error) {
 	if identity == "" {
 		return nil, fmt.Errorf("resolve identity: identity must not be empty")
 	}
-	if projectID == "" {
-		return nil, fmt.Errorf("resolve identity: project id must not be empty")
+	if err := scope.validate(); err != nil {
+		return nil, err
 	}
-	taskID, err := queryIdentityTaskID(dbtx, projectID, identity)
+	taskID, err := queryIdentityTaskID(dbtx, scope, identity)
 	if err != nil {
 		return nil, fmt.Errorf("resolve identity: %w", err)
 	}
@@ -241,11 +269,12 @@ func ListIdentitiesByTask(dbtx db.DBTX, taskID string) ([]string, error) {
 
 // queryIdentityTaskID returns the task_id bound to (projectID, identity), or
 // "" if no binding exists.
-func queryIdentityTaskID(dbtx db.DBTX, projectID, identity string) (string, error) {
+func queryIdentityTaskID(dbtx db.DBTX, scope IdentityScope, identity string) (string, error) {
 	var taskID string
+	predicate, scopeValue := scope.predicate()
 	err := dbtx.QueryRow(
-		`SELECT task_id FROM task_identities WHERE project_id = ? AND identity = ?`,
-		projectID, identity,
+		"SELECT task_id FROM task_identities WHERE "+predicate+" AND identity = ?",
+		scopeValue, identity,
 	).Scan(&taskID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -254,4 +283,23 @@ func queryIdentityTaskID(dbtx db.DBTX, projectID, identity string) (string, erro
 		return "", err
 	}
 	return taskID, nil
+}
+
+// IdentityScope separates repository identities from repository-free workspace identities.
+type IdentityScope struct{ ProjectID, WorkspaceID string }
+
+func (scope IdentityScope) validate() error {
+	if scope.ProjectID != "" {
+		return nil
+	}
+	if scope.WorkspaceID == "" {
+		return fmt.Errorf("identity scope requires a project or workspace")
+	}
+	return ValidWorkspaceSlug(scope.WorkspaceID)
+}
+func (scope IdentityScope) predicate() (string, string) {
+	if scope.ProjectID == "" {
+		return "project_id IS NULL AND workspace_id = ?", scope.WorkspaceID
+	}
+	return "project_id = ?", scope.ProjectID
 }

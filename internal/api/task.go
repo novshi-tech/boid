@@ -76,6 +76,10 @@ type TaskAnswerService interface {
 }
 
 type TaskHandler struct {
+	Identities *TaskAppService
+	Capture    interface {
+		ResolveOrCapture(context.Context, ResolveOrCaptureRequest) (*ResolveOrCaptureResult, error)
+	}
 	Service  TaskService
 	Hooks    HookService       // optional: enables hook replay/list when set
 	Notifier TaskNotifyService // optional: enables POST /{id}/notify when set
@@ -86,6 +90,12 @@ func (h *TaskHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.Create)
 	r.Post("/import", h.Import)
+	if h.Identities != nil {
+		r.Post("/identity/{operation}", h.Identity)
+	}
+	if h.Capture != nil {
+		r.Post("/resolve-or-capture", h.ResolveOrCapture)
+	}
 	r.Get("/", h.List)
 	r.Get("/{id}/detail", h.Detail)
 	r.Get("/{id}/field", h.Field)

@@ -195,7 +195,7 @@ func applyWorkspaceProjectAssignments(tx *sql.Tx, slug string, targetIDsByName m
 	}
 
 	for _, id := range current {
-		if targetSet[id] || id == DefaultMetaprojectID(slug) {
+		if targetSet[id] {
 			continue // the built-in receiver is not part of user-managed assignments
 		}
 		if err := SetProjectWorkspace(tx, id, DefaultWorkspaceSlug); err != nil {

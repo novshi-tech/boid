@@ -495,6 +495,7 @@ func allMigrations() []migration {
 		{version: "0058_add_workspace_automation", path: "migrations/0058_add_workspace_automation.sql", skip: func(tx *sql.Tx) (bool, error) { return columnExists(tx, "workspaces", "triggers") }},
 		{version: "0059_add_workspace_ownership", path: "migrations/0059_add_workspace_ownership.sql", disableForeignKeys: true},
 		{version: "0060_workspace_task_dedup", path: "migrations/0060_workspace_task_dedup.sql"},
+		{version: "0061_workspace_receivers", path: "migrations/0061_workspace_receivers.sql", run: retireWorkspaceReceivers, before: validateReceiverIdentities},
 	}
 }
 
@@ -502,6 +503,8 @@ type migration struct {
 	version string
 	path    string
 	skip    func(*sql.Tx) (bool, error)
+	run     func(*sql.Tx) error
+	before  func(*sql.Tx) error
 	// disableForeignKeys, when true, toggles `PRAGMA foreign_keys` OFF then
 	// back ON around this migration's transaction (see applyMigration).
 	// Needed when a migration DROPs a table still referenced by a live FK
@@ -637,12 +640,22 @@ func applyMigration(conn *sql.DB, m migration) error {
 		}
 	}
 
+	if m.before != nil {
+		if err := m.before(tx); err != nil {
+			return fmt.Errorf("migration %s preflight: %w", m.version, err)
+		}
+	}
 	sqlBytes, err := schemaFS.ReadFile(m.path)
 	if err != nil {
 		return fmt.Errorf("read migration %s: %w", m.version, err)
 	}
 	if _, err := tx.Exec(string(sqlBytes)); err != nil {
 		return fmt.Errorf("exec migration %s: %w", m.version, err)
+	}
+	if m.run != nil {
+		if err := m.run(tx); err != nil {
+			return fmt.Errorf("migration %s: %w", m.version, err)
+		}
 	}
 	if err := recordMigration(tx, m.version); err != nil {
 		return err

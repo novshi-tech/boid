@@ -45,6 +45,8 @@ func CreateJob(dbtx db.DBTX, j *Job) error {
 		// Task ownership is authoritative even if its project has moved since
 		// the task was created. Taskless sessions resolve current membership.
 		err = dbtx.QueryRow(`SELECT workspace_id FROM tasks WHERE id = ?`, j.TaskID).Scan(&workspaceID)
+	} else if j.ProjectID == "" && j.WorkspaceID != "" {
+		workspaceID = j.WorkspaceID
 	} else {
 		workspaceID, err = orchestrator.ProjectWorkspaceID(dbtx, j.ProjectID)
 	}

@@ -224,33 +224,6 @@ func newTriggerSweepTestServiceOnFile(t *testing.T, dbPath string, migrateSchema
 	return svc, jobs, exec
 }
 
-func TestSweepTriggers_EnsureReceiversFailureContinuesSweep(t *testing.T) {
-	svc, jobs, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
-		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "intake", Every: "1m", Run: "echo tick"}}},
-	})
-	ensureCalls := 0
-	svc.EnsureTriggerProjects = func() error {
-		ensureCalls++
-		return errors.New("forced receiver setup failure")
-	}
-	now := time.Now()
-	first, err := svc.SweepTriggers(context.Background(), now)
-	if err != nil {
-		t.Fatalf("first sweep: %v", err)
-	}
-	if len(first.Fired) != 1 || first.Fired[0].ProjectID != "proj-1" || exec.callCount() != 1 {
-		t.Fatalf("receiver failure prevented project trigger: %+v", first)
-	}
-	jobs.complete("job-1", 0)
-	second, err := svc.SweepTriggers(context.Background(), now.Add(2*time.Minute))
-	if err != nil {
-		t.Fatalf("second sweep: %v", err)
-	}
-	if len(second.Completed) != 1 || len(second.Fired) != 1 || exec.callCount() != 2 || ensureCalls != 2 {
-		t.Fatalf("receiver failure prevented reconciliation or next trigger: %+v (ensure calls %d)", second, ensureCalls)
-	}
-}
-
 func TestSweepTriggers_NeverRunBefore_FiresExactlyOnce(t *testing.T) {
 	svc, _, exec := newTriggerSweepTestService(t, map[string]*orchestrator.ProjectMeta{
 		"proj-1": {Triggers: []orchestrator.Trigger{{Name: "intake", Every: "10m", Run: "python3 tick.py"}}},

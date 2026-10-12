@@ -10,8 +10,6 @@ import (
 )
 
 type WebAppService struct {
-	EnsureCardProjects func() error // prepares built-in receivers before Web creation
-
 	Tasks      TaskStore
 	Actions    ActionStore
 	Jobs       JobStore
@@ -309,4 +307,13 @@ func (s *WebAppService) AnswerSuggestionWithResult(taskID string, req AnswerSugg
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "payload encode: " + err.Error()}
 	}
 	return s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), taskID, ApplyActionRequest{Type: "answered", Payload: payload})
+}
+
+func (s *WebAppService) CardCommandOptionsForWorkspace(ctx context.Context, workspaceID string) []CardCommandOption {
+	if source, ok := s.Commands.(interface {
+		CardCommandOptionsForWorkspace(context.Context, string) []CardCommandOption
+	}); ok {
+		return source.CardCommandOptionsForWorkspace(ctx, workspaceID)
+	}
+	return nil
 }

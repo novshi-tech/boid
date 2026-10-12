@@ -78,7 +78,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	}
 
 	checkout := true
-	if task.ProjectID == "" || IsDefaultMetaproject(proj) {
+	if task.ProjectID == "" {
 		checkout = false
 	}
 

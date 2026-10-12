@@ -48,7 +48,7 @@ func TestWebCardCreate_AttachmentsReadyBeforeEventAndCleanedOnFailure(t *testing
 }
 
 func testCardProject(id, workspace string) *orchestrator.Project {
-	meta := orchestrator.DefaultMetaprojectMeta(workspace)
+	meta := orchestrator.WorkspaceDefaults()
 	meta.ID = id
 	return &orchestrator.Project{ID: id, WorkspaceID: workspace, Meta: *meta}
 }
@@ -66,9 +66,7 @@ func TestWebCardCreate_ValidatesWorkspaceAndDestination(t *testing.T) {
 		{"missing", "", http.StatusBadRequest},
 	} {
 		t.Run(tc.workspace+"/"+tc.project, func(t *testing.T) {
-			svc := &stubWebService{createTaskResult: &orchestrator.Task{ID: "created"}, projects: []*orchestrator.Project{
-				testCardProject(orchestrator.DefaultMetaprojectID("default"), "default"),
-				testCardProject(orchestrator.DefaultMetaprojectID("team"), "team"),
+			svc := &stubWebService{createTaskResult: &orchestrator.Task{ID: "created"}, workspaces: []*orchestrator.WorkspaceSummary{{ID: "default"}, {ID: "team"}}, projects: []*orchestrator.Project{
 				testCardProject("custom", "team"),
 				{ID: "ordinary", WorkspaceID: "team"},
 			}}
@@ -99,13 +97,13 @@ func TestWebCardCreate_DefaultPersistsAndQueuesJudge(t *testing.T) {
 	}
 	meta := orchestrator.NewProjectStore()
 	projects := orchestrator.NewProjectRepository(conn)
+	meta.SetWorkspaceStore(orchestrator.NewWorkspaceStoreWithRepo(t.TempDir(), ws))
 	tasks.SetCardEventResolver(meta)
 	taskSvc.Tx = seamTransactor{conn: conn, resolver: meta}
 	taskSvc.Projects = projects
 	taskSvc.Meta = meta
 	service := &WebAppService{
 		Tasks: tasks, Projects: projects, Meta: meta, TaskSvc: taskSvc,
-		EnsureCardProjects: func() error { return orchestrator.EnsureDefaultMetaprojects(conn, meta) },
 	}
 	h := &WebHandler{Service: service}
 	form := url.Values{"title": {"Clarify the next step"}, "description": {"Only a human description"}}
@@ -121,7 +119,7 @@ func TestWebCardCreate_DefaultPersistsAndQueuesJudge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if card.Type != orchestrator.TaskTypeCard || card.Exec != nil || card.ProjectID != orchestrator.DefaultMetaprojectID("default") || card.Description != form.Get("description") {
+	if card.Type != orchestrator.TaskTypeCard || card.Exec != nil || card.ProjectID != "" || card.WorkspaceID != "default" || card.Description != form.Get("description") {
 		t.Fatalf("card = %+v", card)
 	}
 	requests, err := tasks.ListCardRequestsByCard(id)
@@ -132,7 +130,7 @@ func TestWebCardCreate_DefaultPersistsAndQueuesJudge(t *testing.T) {
 		t.Fatalf("request = %+v", requests[0])
 	}
 	// The judgment task itself needs neither a repository nor a branch.
-	judge, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{ProjectID: card.ProjectID, Title: "[judge]", Behavior: "judge"})
+	judge, err := taskSvc.CreateTask(context.Background(), CreateTaskRequest{WorkspaceID: card.WorkspaceID, Title: "[judge]", Behavior: "judge"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -573,16 +573,25 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity link requires a task id"}
 		}
-		if boidReq.ProjectID == "" {
+		if boidReq.ProjectID == "" && boidReq.WorkspaceID == "" {
 			boidReq.ProjectID = entry.Context.ProjectID
 		}
-		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
-		if err != nil {
-			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task identity link: resolve project %q: %s", boidReq.ProjectID, err)}
-		}
-		boidReq.ProjectID = resolved
-		if !entry.Context.AllowsProject(boidReq.ProjectID) {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity link is restricted to the current workspace"}
+		if boidReq.ProjectID == "" {
+			if boidReq.WorkspaceID == "" {
+				boidReq.WorkspaceID = entry.Context.WorkspaceID
+			}
+			if boidReq.WorkspaceID == "" || boidReq.WorkspaceID != entry.Context.WorkspaceID {
+				return &ExecResponse{ExitCode: 1, Stderr: "identity operation is restricted to the current workspace"}
+			}
+		} else {
+			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+			if err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task identity link: resolve project %q: %s", boidReq.ProjectID, err)}
+			}
+			boidReq.ProjectID = resolved
+			if !entry.Context.AllowsProject(boidReq.ProjectID) {
+				return &ExecResponse{ExitCode: 1, Stderr: "boid task identity link is restricted to the current workspace"}
+			}
 		}
 		// task_id が実際にこの workspace に属するかの検証は boid_executor 側で
 		// 行う (action_send と同じパターン — broker には TaskStore が
@@ -591,31 +600,49 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.Identity == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink requires an identity"}
 		}
-		if boidReq.ProjectID == "" {
+		if boidReq.ProjectID == "" && boidReq.WorkspaceID == "" {
 			boidReq.ProjectID = entry.Context.ProjectID
 		}
-		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
-		if err != nil {
-			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task identity unlink: resolve project %q: %s", boidReq.ProjectID, err)}
-		}
-		boidReq.ProjectID = resolved
-		if !entry.Context.AllowsProject(boidReq.ProjectID) {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink is restricted to the current workspace"}
+		if boidReq.ProjectID == "" {
+			if boidReq.WorkspaceID == "" {
+				boidReq.WorkspaceID = entry.Context.WorkspaceID
+			}
+			if boidReq.WorkspaceID == "" || boidReq.WorkspaceID != entry.Context.WorkspaceID {
+				return &ExecResponse{ExitCode: 1, Stderr: "identity operation is restricted to the current workspace"}
+			}
+		} else {
+			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+			if err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task identity unlink: resolve project %q: %s", boidReq.ProjectID, err)}
+			}
+			boidReq.ProjectID = resolved
+			if !entry.Context.AllowsProject(boidReq.ProjectID) {
+				return &ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink is restricted to the current workspace"}
+			}
 		}
 	case BoidOpTaskIdentityResolve:
 		if boidReq.Identity == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve requires an identity"}
 		}
-		if boidReq.ProjectID == "" {
+		if boidReq.ProjectID == "" && boidReq.WorkspaceID == "" {
 			boidReq.ProjectID = entry.Context.ProjectID
 		}
-		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
-		if err != nil {
-			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task identity resolve: resolve project %q: %s", boidReq.ProjectID, err)}
-		}
-		boidReq.ProjectID = resolved
-		if !entry.Context.AllowsProject(boidReq.ProjectID) {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve is restricted to the current workspace"}
+		if boidReq.ProjectID == "" {
+			if boidReq.WorkspaceID == "" {
+				boidReq.WorkspaceID = entry.Context.WorkspaceID
+			}
+			if boidReq.WorkspaceID == "" || boidReq.WorkspaceID != entry.Context.WorkspaceID {
+				return &ExecResponse{ExitCode: 1, Stderr: "identity operation is restricted to the current workspace"}
+			}
+		} else {
+			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+			if err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task identity resolve: resolve project %q: %s", boidReq.ProjectID, err)}
+			}
+			boidReq.ProjectID = resolved
+			if !entry.Context.AllowsProject(boidReq.ProjectID) {
+				return &ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve is restricted to the current workspace"}
+			}
 		}
 	case BoidOpTaskResolveOrCapture:
 		// Scoping is broker-authoritative, matching
@@ -624,16 +651,25 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.Identity == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture requires an identity"}
 		}
-		if boidReq.ProjectID == "" {
+		if boidReq.ProjectID == "" && boidReq.WorkspaceID == "" {
 			boidReq.ProjectID = entry.Context.ProjectID
 		}
-		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
-		if err != nil {
-			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task resolve-or-capture: resolve project %q: %s", boidReq.ProjectID, err)}
-		}
-		boidReq.ProjectID = resolved
-		if !entry.Context.AllowsProject(boidReq.ProjectID) {
-			return &ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture is restricted to the current workspace"}
+		if boidReq.ProjectID == "" {
+			if boidReq.WorkspaceID == "" {
+				boidReq.WorkspaceID = entry.Context.WorkspaceID
+			}
+			if boidReq.WorkspaceID == "" || boidReq.WorkspaceID != entry.Context.WorkspaceID {
+				return &ExecResponse{ExitCode: 1, Stderr: "identity operation is restricted to the current workspace"}
+			}
+		} else {
+			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+			if err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task resolve-or-capture: resolve project %q: %s", boidReq.ProjectID, err)}
+			}
+			boidReq.ProjectID = resolved
+			if !entry.Context.AllowsProject(boidReq.ProjectID) {
+				return &ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture is restricted to the current workspace"}
+			}
 		}
 	case BoidOpActionList:
 		// Scoping mirrors BoidOpCardList exactly — same three branches

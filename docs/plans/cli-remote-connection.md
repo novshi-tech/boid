@@ -504,3 +504,5 @@ Phase 6 は enforcement 差し替えに集中できる。副産物として Mac/
 新しい CLI コマンドを追加する時は cobra Annotations の local_only 分類を必ず
 検討する (デフォルトはリモート可)。ローカルパス引数を daemon に渡す設計は避け、
 CLI プロセス側で読み書きしてバイト列を body に載せる (既存全コマンド準拠)。
+
+workspace 直属 identity 用の `task identity link` / `unlink` / `resolve` と `task resolve-or-capture` は daemon API を使う remote コマンド。`--workspace <slug>` で選択し、通常 project のスコープには `--project-id <ref>` を使う。

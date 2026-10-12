@@ -15,6 +15,7 @@ import (
 type SessionJobInput struct {
 	// ProjectID and ProjectWorkDir locate the host filesystem the sandbox
 	// will expose; ProjectWorkDir is the cwd seen by the agent.
+	WorkspaceID    string
 	ProjectID      string
 	ProjectWorkDir string
 
@@ -143,6 +144,7 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 	spec := &orchestrator.JobSpec{
 		ID:                 input.JobID,
 		ProjectID:          input.ProjectID,
+		WorkspaceID:        input.WorkspaceID,
 		DisplayName:        displayName,
 		DisplayNameDefault: input.DisplayName == "",
 		Kind:               orchestrator.JobKindSession,
