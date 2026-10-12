@@ -29,10 +29,10 @@ type fakeWorkspaceService struct {
 	setInitScriptFn   func(slug string, content []byte, ifMatch string, force bool) (*WorkspaceInitScriptResult, error)
 }
 
-func (s *fakeWorkspaceService) CreateProject(string, ...string) (*orchestrator.Project, error) {
+func (s *fakeWorkspaceService) CreateProject(string, string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
-func (s *fakeWorkspaceService) CreateProjectFromGitURL(context.Context, string, string, string, ...string) (*orchestrator.Project, error) {
+func (s *fakeWorkspaceService) CreateProjectFromGitURL(context.Context, string, string, string, string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
 func (s *fakeWorkspaceService) FetchProject(context.Context, string) (*orchestrator.Project, error) {

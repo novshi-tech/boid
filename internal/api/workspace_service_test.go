@@ -958,7 +958,7 @@ func TestCreateProject_BlockedByAssign(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if _, err := svc.CreateProject("/some/work/dir"); err != nil {
+		if _, err := svc.CreateProject("/some/work/dir", ""); err != nil {
 			t.Errorf("CreateProject: %v", err)
 		}
 	}()
@@ -1037,7 +1037,7 @@ func TestCreateProject_InsertConflict_KeepsTheEstablishedProjectsMeta(t *testing
 	meta := &createProjectMetaStore{meta: &orchestrator.ProjectMeta{ID: "dup-dir"}}
 	svc := &ProjectAppService{Projects: repo, Meta: meta}
 
-	if _, err := svc.CreateProject("/some/other/work/dir"); err == nil {
+	if _, err := svc.CreateProject("/some/other/work/dir", ""); err == nil {
 		t.Fatal("expected the duplicate registration to fail")
 	}
 	if len(meta.removed) != 0 {
@@ -1057,7 +1057,7 @@ func TestCreateProject_InsertFails_StillRollsBackItsOwnCacheWrite(t *testing.T) 
 	meta := &createProjectMetaStore{meta: &orchestrator.ProjectMeta{ID: "fresh-dir"}}
 	svc := &ProjectAppService{Projects: repo, Meta: meta}
 
-	if _, err := svc.CreateProject("/some/work/dir"); err == nil {
+	if _, err := svc.CreateProject("/some/work/dir", ""); err == nil {
 		t.Fatal("expected the registration to fail")
 	}
 	if len(meta.removed) != 1 || meta.removed[0] != "fresh-dir" {

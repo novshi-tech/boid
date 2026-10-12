@@ -22,10 +22,10 @@ type stubProjectServiceForExec struct {
 	err     error
 }
 
-func (s *stubProjectServiceForExec) CreateProject(string, ...string) (*orchestrator.Project, error) {
+func (s *stubProjectServiceForExec) CreateProject(string, string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
-func (s *stubProjectServiceForExec) CreateProjectFromGitURL(context.Context, string, string, string, ...string) (*orchestrator.Project, error) {
+func (s *stubProjectServiceForExec) CreateProjectFromGitURL(context.Context, string, string, string, string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
 func (s *stubProjectServiceForExec) FetchProject(context.Context, string) (*orchestrator.Project, error) {

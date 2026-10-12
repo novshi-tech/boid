@@ -275,8 +275,8 @@ func (s *ProjectAppService) hydrateProjectWithWorkspace(ctx context.Context, pro
 	return s.hydrateProject(project)
 }
 
-func (s *ProjectAppService) CreateProject(workDir string, perms ...string) (*orchestrator.Project, error) {
-	perm, err := registrationPerm(perms)
+func (s *ProjectAppService) CreateProject(workDir string, requestedPerm string) (*orchestrator.Project, error) {
+	perm, err := registrationPerm(requestedPerm)
 	if err != nil {
 		return nil, err
 	}
@@ -369,8 +369,8 @@ func (s *ProjectAppService) CreateProject(workDir string, perms ...string) (*orc
 // already-registered projects going degraded later (FetchProject, daemon
 // startup) — a project that never successfully finished registering has
 // no DB row to preserve in the first place.
-func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string, perms ...string) (*orchestrator.Project, error) {
-	perm, err := registrationPerm(perms)
+func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string, requestedPerm string) (*orchestrator.Project, error) {
+	perm, err := registrationPerm(requestedPerm)
 	if err != nil {
 		return nil, err
 	}
@@ -1897,10 +1897,10 @@ func (s *ProjectAppService) ReloadProjects() (*ProjectReloadResult, error) {
 }
 
 // registrationPerm defaults omitted permissions to push and validates explicit values.
-func registrationPerm(perms []string) (string, error) {
+func registrationPerm(requestedPerm string) (string, error) {
 	perm := "push"
-	if len(perms) > 0 && perms[0] != "" {
-		perm = perms[0]
+	if requestedPerm != "" {
+		perm = requestedPerm
 	}
 	if err := orchestrator.ValidateProjectPerm(perm); err != nil {
 		return "", &StatusError{Code: http.StatusBadRequest, Message: err.Error()}

@@ -58,7 +58,7 @@ func TestProjectAppService_CreateProject_CapturesUpstreamURL(t *testing.T) {
 		},
 	}
 
-	project, err := svc.CreateProject("/some/work/dir")
+	project, err := svc.CreateProject("/some/work/dir", "")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestProjectAppService_CreateProject_RejectsMissingUpstreamURL(t *testing.T)
 		},
 	}
 
-	_, err := svc.CreateProject("/some/work/dir")
+	_, err := svc.CreateProject("/some/work/dir", "")
 	if err == nil {
 		t.Fatal("expected CreateProject to reject a project with no origin remote")
 	}
@@ -106,7 +106,7 @@ func TestProjectAppService_CreateProject_NoCaptureFuncSkipsUpstreamURL(t *testin
 		Meta:     &upstreamURLMetaStore{meta: &orchestrator.ProjectMeta{ID: "proj-1", Name: "Proj 1"}},
 	}
 
-	project, err := svc.CreateProject("/some/work/dir")
+	project, err := svc.CreateProject("/some/work/dir", "")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}

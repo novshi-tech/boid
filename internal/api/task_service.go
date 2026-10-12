@@ -262,8 +262,10 @@ func (s *TaskAppService) UpdateTask(ctx context.Context, id string, req UpdateTa
 				Message: fmt.Sprintf("cannot edit project while task is not pending/pre-dispatch (status: %s)", task.Status),
 			}
 		}
-		if err := s.validatePrimaryProject(req.ProjectID); err != nil {
-			return nil, err
+		if req.ProjectID != task.ProjectID {
+			if err := s.validatePrimaryProject(req.ProjectID); err != nil {
+				return nil, err
+			}
 		}
 		task.ProjectID = req.ProjectID
 	}

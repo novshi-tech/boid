@@ -23,7 +23,7 @@ func (s *WebAppService) ListCardProjects() ([]*orchestrator.Project, error) {
 func cardProjects(projects []*orchestrator.Project) []*orchestrator.Project {
 	var result []*orchestrator.Project
 	for _, p := range projects {
-		if p.Status != orchestrator.StatusDegraded && orchestrator.IsCardProject(&p.Meta) {
+		if p.Perm != "fetch" && p.Status != orchestrator.StatusDegraded && orchestrator.IsCardProject(&p.Meta) {
 			result = append(result, p)
 		}
 	}

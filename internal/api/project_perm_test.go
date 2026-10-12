@@ -78,7 +78,7 @@ func TestTaskAPI_PrimaryProjectPermission(t *testing.T) {
 	if err := ts.Client.Do("PUT", "/api/projects/project/perm", map[string]string{"perm": "fetch"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := ts.Client.Do("PATCH", "/api/tasks/"+task.ID, api.UpdateTaskRequest{Title: "existing task remains editable"}, nil); err != nil {
+	if err := ts.Client.Do("PATCH", "/api/tasks/"+task.ID, api.UpdateTaskRequest{Title: "existing task remains editable", ProjectID: p.ID}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,4 +106,42 @@ func TestTaskAPI_PrimaryProjectPermission(t *testing.T) {
 		t.Fatalf("failed update changed project to %q", pending.ProjectID)
 	}
 
+}
+
+func TestTaskAPI_PermissionChangePreservesCreateRetries(t *testing.T) {
+	for _, kind := range []string{"execution", "card"} {
+		for _, key := range []string{"ref", "idempotency_key", "ref_miss_with_key"} {
+			t.Run(kind+"/"+key, func(t *testing.T) {
+				ts := testutil.NewTestServer(t)
+				p := createProject(t, ts, "project", "Project")
+				req := api.CreateTaskRequest{ProjectID: p.ID, Title: "original", Behavior: "planning"}
+				if kind == "card" {
+					req.InitialStatus = "parked"
+				}
+				if key == "ref" {
+					req.Ref = "stable-ref"
+				} else {
+					req.IdempotencyKey = "stable-key"
+				}
+				var original orchestrator.Task
+				if err := ts.Client.Do("POST", "/api/tasks", req, &original); err != nil {
+					t.Fatal(err)
+				}
+				if err := ts.Client.Do("PUT", "/api/projects/project/perm", map[string]string{"perm": "fetch"}, nil); err != nil {
+					t.Fatal(err)
+				}
+				req.Title = "retry"
+				if key == "ref_miss_with_key" {
+					req.Ref = "new-ref"
+				}
+				var retry orchestrator.Task
+				if err := ts.Client.Do("POST", "/api/tasks", req, &retry); err != nil {
+					t.Fatal(err)
+				}
+				if retry.ID != original.ID || retry.Title != original.Title {
+					t.Fatalf("retry = %+v, want original %s", retry, original.ID)
+				}
+			})
+		}
+	}
 }

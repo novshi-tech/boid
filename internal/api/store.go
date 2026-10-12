@@ -54,7 +54,7 @@ type BrokerRegistry interface {
 }
 
 type ProjectService interface {
-	CreateProject(workDir string, perm ...string) (*orchestrator.Project, error)
+	CreateProject(workDir string, perm string) (*orchestrator.Project, error)
 	// CreateProjectFromGitURL registers a project from a git remote URL
 	// (POST /api/projects/git — `boid project add <git-url> --workspace=<name>`).
 	// workspaceSlug is required (unlike CreateProject's eager default-workspace assign);
@@ -63,7 +63,7 @@ type ProjectService interface {
 	// unparseable URL, {404} for an unknown workspace, {409} if a project is
 	// already registered at the computed bare-repo path, {502} for a clone
 	// failure, {500} if the daemon has no git-clone/data-dir wiring.
-	CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string, perm ...string) (*orchestrator.Project, error)
+	CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string, perm string) (*orchestrator.Project, error)
 	// FetchProject runs `git fetch --all` inside id's bare repo and reloads
 	// its project.yaml (POST /api/projects/{id}/fetch — `boid project fetch
 	// <id>`). *StatusError{404} unknown id, {400} for a legacy (non-bare,

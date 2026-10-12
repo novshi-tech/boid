@@ -112,9 +112,6 @@ func idempotencyKeyTypeMismatchErr(wantType orchestrator.TaskType, existing *orc
 }
 
 func (s *TaskAppService) CreateTask(ctx context.Context, req CreateTaskRequest) (*orchestrator.Task, error) {
-	if err := s.validatePrimaryProject(req.ProjectID); err != nil {
-		return nil, err
-	}
 	initialStatus, err := resolveInitialStatus(req)
 	if err != nil {
 		return nil, err
@@ -159,7 +156,7 @@ func (s *TaskAppService) createCardTask(ctx context.Context, req CreateTaskReque
 			return existing, nil
 		}
 	}
-	if req.Ref == "" && req.IdempotencyKey != "" {
+	if req.IdempotencyKey != "" {
 		existing, err := s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, req.IdempotencyKey)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -170,6 +167,10 @@ func (s *TaskAppService) createCardTask(ctx context.Context, req CreateTaskReque
 			}
 			return existing, nil
 		}
+	}
+
+	if err := s.validatePrimaryProject(req.ProjectID); err != nil {
+		return nil, err
 	}
 
 	// A card-type child has no legitimate "fulfilling a specced reservation"
@@ -317,6 +318,64 @@ func cardChildSlotConflict(parent *orchestrator.Task, ref, projectID, behavior s
 }
 
 func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTaskRequest, initialStatus orchestrator.TaskStatus) (*orchestrator.Task, error) {
+	// Get-or-create: when ref is present, check for an existing task (scoped
+	// by parent_id, which is "" for a root task) before building and
+	// inserting a new one. This is the service-level dedup guard; the store
+	// has an identical check for the concurrent-create race. Returning early
+	// here avoids a redundant INSERT round-trip.
+	//
+	// This applies to root tasks too, not just children, which is what makes
+	// ingestion push idempotent: a caller creates a task with
+	// Ref=<source_ref> (jira issue_key / slack thread_ts / mail message-id),
+	// and a resend after a crash returns the SAME existing task instead of a
+	// duplicate. The unique index on (ref, parent_id) already covers
+	// parent_id="" rows uniquely (parent_id is `NOT NULL DEFAULT ''`, never
+	// SQL NULL), treating every root task's ref as unique among root tasks
+	// the same way it already does for a given parent's children.
+	if req.Ref != "" {
+		existing, err := s.Tasks.FindTaskByRef(req.Ref, req.ParentID, req.ProjectID)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if existing != nil {
+			// First-write-wins: return the existing task. Do not fire auto_start
+			// because the task may already be executing or terminal.
+			return s.attachCardRequestIfNeeded(existing, req.CardRequestID, req.CardRequestOwnerJobID)
+		}
+	}
+
+	// Get-or-create by IdempotencyKey, independent of Ref (a Ref-miss must
+	// not fall through to the card slot check below, which would otherwise
+	// see this same idempotency key's already-created live row as a
+	// competing occupant). Runs before the card slot check for the same
+	// reason. A pending hit with req.AutoStart set is rescued into "start"
+	// itself, since a hit here returns before ever reaching the ordinary
+	// auto_start block below.
+	if req.IdempotencyKey != "" {
+		existing, err := s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, req.IdempotencyKey)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		if existing != nil {
+			if merr := idempotencyKeyTypeMismatchErr(orchestrator.TaskTypeExecution, existing, req.IdempotencyKey, req.ProjectID, req.ParentID); merr != nil {
+				return nil, merr
+			}
+			if req.AutoStart && s.Workflow != nil && existing.Status == orchestrator.TaskStatusPending {
+				result, err := s.Workflow.ApplyAction(orchestrator.WithActor(ctx, updateActor(ctx)), existing.ID, ApplyActionRequest{Type: "start"})
+				if err != nil {
+					slog.Error("auto_start: failed to apply start action on idempotency-key hit", "task_id", existing.ID, "error", err)
+				} else {
+					existing = result.Task
+				}
+			}
+			return s.attachCardRequestIfNeeded(existing, req.CardRequestID, req.CardRequestOwnerJobID)
+		}
+	}
+
+	if err := s.validatePrimaryProject(req.ProjectID); err != nil {
+		return nil, err
+	}
+
 	var meta *orchestrator.ProjectMeta
 	if s.Meta != nil {
 		// Hydrate with workspace.yaml so a workspace-level default project
@@ -419,60 +478,6 @@ func (s *TaskAppService) createExecutionTask(ctx context.Context, req CreateTask
 	// does not exist on origin.
 	if err := s.validateParentlessExecutorBase(req, res.BehaviorName, baseBranch); err != nil {
 		return nil, err
-	}
-
-	// Get-or-create: when ref is present, check for an existing task (scoped
-	// by parent_id, which is "" for a root task) before building and
-	// inserting a new one. This is the service-level dedup guard; the store
-	// has an identical check for the concurrent-create race. Returning early
-	// here avoids a redundant INSERT round-trip.
-	//
-	// This applies to root tasks too, not just children, which is what makes
-	// ingestion push idempotent: a caller creates a task with
-	// Ref=<source_ref> (jira issue_key / slack thread_ts / mail message-id),
-	// and a resend after a crash returns the SAME existing task instead of a
-	// duplicate. The unique index on (ref, parent_id) already covers
-	// parent_id="" rows uniquely (parent_id is `NOT NULL DEFAULT ''`, never
-	// SQL NULL), treating every root task's ref as unique among root tasks
-	// the same way it already does for a given parent's children.
-	if req.Ref != "" {
-		existing, err := s.Tasks.FindTaskByRef(req.Ref, req.ParentID, req.ProjectID)
-		if err != nil {
-			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-		}
-		if existing != nil {
-			// First-write-wins: return the existing task. Do not fire auto_start
-			// because the task may already be executing or terminal.
-			return s.attachCardRequestIfNeeded(existing, req.CardRequestID, req.CardRequestOwnerJobID)
-		}
-	}
-
-	// Get-or-create by IdempotencyKey, independent of Ref (a Ref-miss must
-	// not fall through to the card slot check below, which would otherwise
-	// see this same idempotency key's already-created live row as a
-	// competing occupant). Runs before the card slot check for the same
-	// reason. A pending hit with req.AutoStart set is rescued into "start"
-	// itself, since a hit here returns before ever reaching the ordinary
-	// auto_start block below.
-	if req.IdempotencyKey != "" {
-		existing, err := s.Tasks.FindTaskByIdempotencyKey(req.ProjectID, req.ParentID, req.IdempotencyKey)
-		if err != nil {
-			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-		}
-		if existing != nil {
-			if merr := idempotencyKeyTypeMismatchErr(orchestrator.TaskTypeExecution, existing, req.IdempotencyKey, req.ProjectID, req.ParentID); merr != nil {
-				return nil, merr
-			}
-			if req.AutoStart && s.Workflow != nil && existing.Status == orchestrator.TaskStatusPending {
-				result, err := s.Workflow.ApplyAction(orchestrator.WithActor(ctx, updateActor(ctx)), existing.ID, ApplyActionRequest{Type: "start"})
-				if err != nil {
-					slog.Error("auto_start: failed to apply start action on idempotency-key hit", "task_id", existing.ID, "error", err)
-				} else {
-					existing = result.Task
-				}
-			}
-			return s.attachCardRequestIfNeeded(existing, req.CardRequestID, req.CardRequestOwnerJobID)
-		}
 	}
 
 	// The card's slot invariants apply to this write port too. Ordinary direct
