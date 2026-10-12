@@ -2,11 +2,12 @@ package orchestrator
 
 import (
 	"context"
-	"github.com/novshi-tech/boid/internal/db"
-	"github.com/novshi-tech/boid/internal/db/migrate"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/db/migrate"
 )
 
 func TestProjectStoreLoadAllIgnoresRepositoryConfiguration(t *testing.T) {
@@ -89,7 +90,7 @@ func TestWorkspaceRejectsRetiredCurrentBranchExpansion(t *testing.T) {
 	}
 }
 
-func TestWorkspaceDBRejectsStoredCurrentBranchExpansion(t *testing.T) {
+func TestWorkspaceDBLoadsAndRepairsStoredCurrentBranchExpansion(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +109,28 @@ func TestWorkspaceDBRejectsStoredCurrentBranchExpansion(t *testing.T) {
 	if _, err := d.Conn.Exec(`UPDATE workspaces SET base_branch='${current_branch}' WHERE slug='team'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.Load("team"); err == nil {
-		t.Fatal("DB startup load accepted retired variable")
+	store := NewWorkspaceStore(t.TempDir())
+	store.SetRepository(repo)
+	slugs, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Match daemon startup's DB-backed list/load validation.
+	for _, slug := range slugs {
+		if _, err := store.Load(slug); err != nil {
+			t.Fatalf("startup load: %v", err)
+		}
+	}
+	meta, err := repo.Load("team")
+	if err != nil || meta.BaseBranch != "${current_branch}" {
+		t.Fatalf("legacy load: %+v %v", meta, err)
+	}
+	meta.BaseBranch = "main"
+	if err := repo.Save("team", meta); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	repaired, err := store.Load("team")
+	if err != nil || repaired.BaseBranch != "main" {
+		t.Fatalf("repaired load: %+v %v", repaired, err)
 	}
 }

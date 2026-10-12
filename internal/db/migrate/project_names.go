@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,10 +14,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// preserveProjectNames is the only remaining reader of repository project.yaml.
-// It captures legacy identity once, inside the schema migration transaction;
-// runtime configuration always comes from the workspace. A malformed or unreadable
-// existing file aborts the migration rather than silently renaming the project.
+// preserveProjectNames captures legacy identity once during migration.
+// Unavailable legacy names fall back to the repository basename.
 func preserveProjectNames(tx *sql.Tx) error {
 	rows, err := tx.Query(`SELECT id, work_dir FROM projects`)
 	if err != nil {
@@ -40,8 +39,10 @@ func preserveProjectNames(tx *sql.Tx) error {
 	for _, p := range projects {
 		name, err := legacyProjectName(p.dir)
 		if err != nil {
-			return fmt.Errorf("preserve project %q name: %w", p.id, err)
+			slog.Warn("project name migration: unable to read legacy name; using repository basename", "project", p.id, "work_dir", p.dir, "error", err)
+			name = ""
 		}
+		name = strings.TrimSpace(name)
 		if name == "" && p.dir != "" {
 			name = strings.TrimSuffix(filepath.Base(p.dir), ".git")
 		}
@@ -70,12 +71,15 @@ func legacyProjectName(dir string) (string, error) {
 		defer cancel()
 		listing, listErr := exec.CommandContext(ctx, "git", "--git-dir="+dir, "ls-tree", "HEAD", "--", ".boid/project.yaml").Output()
 		if listErr != nil {
-			return "", fmt.Errorf("read mirror HEAD: %w", listErr)
+			return "", mirrorReadError("read mirror HEAD", listErr)
 		}
 		if len(listing) == 0 {
 			return "", nil
 		}
 		data, err = exec.CommandContext(ctx, "git", "--git-dir="+dir, "show", "HEAD:.boid/project.yaml").Output()
+		if err != nil {
+			return "", mirrorReadError("read mirror project.yaml", err)
+		}
 	}
 	if err != nil {
 		return "", err
@@ -87,4 +91,11 @@ func legacyProjectName(dir string) (string, error) {
 		return "", fmt.Errorf("decode legacy name: %w", err)
 	}
 	return identity.Name, nil
+}
+
+func mirrorReadError(operation string, err error) error {
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return fmt.Errorf("%s: %w: %s", operation, err, strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }

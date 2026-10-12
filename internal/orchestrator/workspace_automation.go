@@ -20,9 +20,16 @@ func workspaceTriggers(ws *WorkspaceMeta) ([]Trigger, error) {
 	return triggers, ValidateTriggers(triggers)
 }
 
-func validateWorkspaceAutomation(ws *WorkspaceMeta) error {
+func validateWorkspaceBaseBranch(ws *WorkspaceMeta) error {
 	if strings.Contains(ws.BaseBranch, "${current_branch}") || strings.Contains(ws.BaseBranch, "$current_branch") {
 		return fmt.Errorf("base_branch: current_branch expansion is no longer supported; use a literal branch or omit base_branch to let the agent select it")
+	}
+	return nil
+}
+
+func validateWorkspaceAutomation(ws *WorkspaceMeta) error {
+	if err := validateWorkspaceBaseBranch(ws); err != nil {
+		return err
 	}
 	if _, err := workspaceTriggers(ws); err != nil {
 		return err

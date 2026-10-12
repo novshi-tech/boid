@@ -168,3 +168,39 @@ func TestBuildProjectStore_SecondStartupSkipsMigrationAndDispatchStillWorks(t *t
 // along with the WorkspaceMeta.AdditionalBindings field they fed. See
 // workspace_migration.go's materializeKitRuntimeIntoWorkspace and
 // project_store.go's GetWithWorkspace doc comments.
+
+func TestBuildProjectStoreStoredCurrentBranchDoesNotBlockStartup(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	d := openTestDB(t)
+	repo := orchestrator.NewProjectRepository(d.Conn)
+	cfg := Config{DBPath: ":memory:"}
+	if _, _, err := buildProjectStore(cfg, d.Conn, repo); err != nil {
+		t.Fatal(err)
+	}
+	wsRepo := orchestrator.NewWorkspaceRepository(d.Conn)
+	for _, branch := range []string{"${current_branch}", "$current_branch"} {
+		t.Run(branch, func(t *testing.T) {
+			if err := wsRepo.Save("team", &orchestrator.WorkspaceMeta{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.Conn.Exec(`UPDATE workspaces SET base_branch=? WHERE slug='team'`, branch); err != nil {
+				t.Fatal(err)
+			}
+			store, _, err := buildProjectStore(cfg, d.Conn, repo)
+			if err != nil {
+				t.Fatalf("upgrade startup: %v", err)
+			}
+			meta, err := store.WorkspaceStore().Load("team")
+			if err != nil || meta.BaseBranch != branch {
+				t.Fatalf("load legacy workspace: %+v %v", meta, err)
+			}
+			meta.BaseBranch = "main"
+			if err := store.WorkspaceStore().Save("team", meta); err != nil {
+				t.Fatalf("repair workspace: %v", err)
+			}
+			if _, _, err := buildProjectStore(cfg, d.Conn, repo); err != nil {
+				t.Fatalf("restart after repair: %v", err)
+			}
+		})
+	}
+}
