@@ -26,6 +26,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/atomicfile"
@@ -43,10 +44,8 @@ const (
 	caValidity = 10 * 365 * 24 * time.Hour
 
 	// leafValidity bounds every per-listener server cert and test-only
-	// client cert issued from the CA. Leaves are never persisted — a
-	// fresh one is issued each time IssueServerCert/IssueClientCert runs
-	// (typically once per daemon start) — so a short validity window
-	// costs nothing operationally.
+	// client cert issued from the CA. Leaves are never persisted; listener
+	// configs reissue theirs in-process before expiry.
 	leafValidity = 30 * 24 * time.Hour
 )
 
@@ -139,8 +138,8 @@ func generateCA() (*CA, []byte, []byte, error) {
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "boid internal CA", Organization: []string{"boid"}},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(caValidity),
+		NotBefore:             now().Add(-time.Hour),
+		NotAfter:              now().Add(caValidity),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -247,8 +246,8 @@ func (ca *CA) issueLeaf(cn string, hosts []string, eku []x509.ExtKeyUsage, valid
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: cn, Organization: []string{"boid"}},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(validity),
+		NotBefore:    now().Add(-time.Hour),
+		NotAfter:     now().Add(validity),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  eku,
 	}
@@ -307,21 +306,21 @@ func (ca *CA) IssueShortLivedClientCert(cn string, validity time.Duration) (tls.
 	return ca.issueLeaf(cn, nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, validity)
 }
 
-// ServerTLSConfig builds a tls.Config for a TCP listener: presents a fresh
-// server cert for hosts and requires (and verifies) a client certificate
+// ServerTLSConfig builds a tls.Config for a TCP listener: presents a
+// self-renewing server cert for hosts and requires (and verifies) a client certificate
 // signed by this CA — mutual TLS. Any connection without a CA-signed client
 // cert is rejected at the handshake; the server does not inspect *which*
 // identity the client cert names.
 func (ca *CA) ServerTLSConfig(hosts ...string) (*tls.Config, error) {
-	cert, err := ca.IssueServerCert(hosts...)
+	r, err := ca.newServerCertRotator(hosts)
 	if err != nil {
 		return nil, err
 	}
 	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientCAs:    ca.CertPool(),
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   tls.VersionTLS12,
+		GetCertificate: r.getCertificate,
+		ClientCAs:      ca.CertPool(),
+		ClientAuth:     tls.RequireAndVerifyClientCert,
+		MinVersion:     tls.VersionTLS12,
 	}, nil
 }
 
@@ -337,14 +336,56 @@ func (ca *CA) ServerTLSConfig(hosts ...string) (*tls.Config, error) {
 // tls.RequireAndVerifyClientCert) would make the listener unusable by any
 // real client.
 func (ca *CA) ServerOnlyTLSConfig(hosts ...string) (*tls.Config, error) {
-	cert, err := ca.IssueServerCert(hosts...)
+	r, err := ca.newServerCertRotator(hosts)
 	if err != nil {
 		return nil, err
 	}
 	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+		GetCertificate: r.getCertificate,
+		MinVersion:     tls.VersionTLS12,
 	}, nil
+}
+
+// serverCertRotator serves a listener's leaf cert and reissues it once
+// half of its validity has elapsed, so a long-running daemon never
+// presents an expired cert.
+type serverCertRotator struct {
+	ca    *CA
+	hosts []string
+
+	mu      sync.Mutex
+	cert    tls.Certificate
+	renewAt time.Time
+}
+
+func (ca *CA) newServerCertRotator(hosts []string) (*serverCertRotator, error) {
+	r := &serverCertRotator{ca: ca, hosts: hosts}
+	if err := r.renew(); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (r *serverCertRotator) renew() error {
+	cert, err := r.ca.IssueServerCert(r.hosts...)
+	if err != nil {
+		return err
+	}
+	r.cert = cert
+	r.renewAt = now().Add(leafValidity / 2)
+	return nil
+}
+
+func (r *serverCertRotator) getCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !now().Before(r.renewAt) {
+		if err := r.renew(); err != nil {
+			return nil, err
+		}
+	}
+	cert := r.cert
+	return &cert, nil
 }
 
 // ClientTLSConfig builds a tls.Config for connecting to a listener secured
@@ -385,3 +426,6 @@ func EncodeCertPEM(cert tls.Certificate) (certPEM, keyPEM []byte, err error) {
 	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM, nil
 }
+
+// now is the clock used for certificate validity windows; tests replace it.
+var now = time.Now
