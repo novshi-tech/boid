@@ -240,7 +240,7 @@ func TestBuildSessionJobSpec_ConnectorPolicyFalse_UsesDefaultPolicy(t *testing.T
 	in := sampleSessionInput()
 	spec := mustBuildSessionJobSpec(t, in)
 
-	want := orchestrator.DefaultBuiltinPolicies(orchestrator.RoleHook, []string{"boid", "fetch"}, orchestrator.PolicyContext{ProjectDir: in.ProjectWorkDir})
+	want := orchestrator.DefaultBuiltinPolicies(orchestrator.RoleHook, []string{"boid", "fetch"}, orchestrator.PolicyContext{ProjectDir: in.ProjectWorkDir, HomeDir: hostHomeDir()})
 	if !reflect.DeepEqual(spec.BuiltinPolicies, want) {
 		t.Errorf("BuiltinPolicies = %+v, want the unchanged default %+v", spec.BuiltinPolicies, want)
 	}
@@ -255,7 +255,7 @@ func TestBuildSessionJobSpec_ConnectorPolicyTrue_UsesReducedPolicy(t *testing.T)
 	in.ConnectorPolicy = true
 	spec := mustBuildSessionJobSpec(t, in)
 
-	want := orchestrator.ConnectorBuiltinPolicies(orchestrator.PolicyContext{ProjectDir: in.ProjectWorkDir})
+	want := orchestrator.ConnectorBuiltinPolicies(orchestrator.PolicyContext{ProjectDir: in.ProjectWorkDir, HomeDir: hostHomeDir()})
 	if !reflect.DeepEqual(spec.BuiltinPolicies, want) {
 		t.Errorf("BuiltinPolicies = %+v, want the connector-reduced policy %+v", spec.BuiltinPolicies, want)
 	}
@@ -405,5 +405,23 @@ func TestBuildSessionJobSpec_EmptyProjectWorkDirStillChecksOut(t *testing.T) {
 	}
 	if !spec.Visibility.Checkout {
 		t.Error("repository session must checkout with an empty legacy work_dir")
+	}
+}
+
+// A session without a repository starts in $HOME, so the boid builtin must accept that cwd.
+func TestBuildSessionJobSpec_WorkspaceSessionCwdAllowsBoidBuiltin(t *testing.T) {
+	t.Setenv("HOME", "/home/boid")
+	for _, connector := range []bool{false, true} {
+		in := sampleSessionInput()
+		in.ProjectID = ""
+		in.ProjectWorkDir = ""
+		in.ConnectorPolicy = connector
+		spec := mustBuildSessionJobSpec(t, in)
+
+		cwd := resolveWorkDir(spec)
+		if !spec.BuiltinPolicies["boid"].AllowsCwd(cwd) {
+			t.Errorf("connector=%v: boid builtin rejects the session's own cwd %q (roots %v)",
+				connector, cwd, spec.BuiltinPolicies["boid"].AllowedCwdRoots)
+		}
 	}
 }
