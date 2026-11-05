@@ -97,7 +97,7 @@ type SessionJobInput struct {
 
 // BuildSessionJobSpec creates a task-less agent job using sandbox startup checkout.
 func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
-	pctx := orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir}
+	pctx := orchestrator.PolicyContext{ProjectDir: input.ProjectWorkDir, HomeDir: hostHomeDir()}
 	// A connector job gets the reduced, signal-ops-only policy — see
 	// ConnectorPolicy's own doc comment. ConnectorBuiltinPolicies deliberately
 	// returns no "fetch" entry at all.
