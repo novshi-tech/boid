@@ -803,9 +803,9 @@ tunnel:
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `tunnel.callback_workspaces` | string 配列 | `[]` | job から Heddleway のゲートウェイを所有者として呼び返してよい workspace の ID。ここにある workspace の job にだけ `BOID_HEDDLEWAY_BASE` を出し、中継口もほかの workspace のトークンを断る。顧客の workspace は入れない。**再起動が必要** |
+| `tunnel.callback_workspaces` | string 配列 | `[]` | job から Heddleway のゲートウェイを所有者として呼び返してよい workspace の ID。ここにある workspace の job にだけ `BOID_HEDDLEWAY_BASE` を出し、中継口もほかの workspace のトークンを断る。呼び返しは job の workspace のトンネルを通る。**再起動が必要** |
 
-トンネルそのものは `boid tunnel pair <ゲートウェイの URL>` でつなぐ。鍵は data home の `tunnel.json` (0600) に置き、daemon が起動のたびにつなぎ直す。呼び返せるサービスは、所有者がゲートウェイの画面 (ローカルサービスの「呼び返しの設定」) で選ぶ。job からは次のように呼ぶ。
+トンネルは workspace ごとに `boid tunnel pair <ゲートウェイの URL> --workspace <id>` でつなぐ (省略すると `default`)。ゲートウェイからはその workspace の project と job しか見えないので、顧客の workspace は顧客のゲートウェイにつなぐ。鍵は data home の `tunnels/<workspace>.json` (0600) に置き、daemon が起動のたびにつなぎ直す。呼び返せるサービスは、所有者がゲートウェイの画面 (ローカルサービスの「呼び返しの設定」) で選ぶ。job からは次のように呼ぶ。
 
 ```sh
 curl --cacert "$BOID_API_CA_FILE" "$BOID_HEDDLEWAY_BASE/freee/api/1/companies"

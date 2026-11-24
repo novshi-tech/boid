@@ -13,7 +13,7 @@ import (
 	"sync"
 )
 
-// Manager owns the daemon's tunnel: the identity file, the running client
+// Manager owns one workspace's tunnel: the identity file, the running client
 // and an in-progress pairing.
 type Manager struct {
 	IdentityPath string
@@ -163,41 +163,6 @@ func (m *Manager) Forget() error {
 		return err
 	}
 	return nil
-}
-
-// MountPath is where the daemon serves the management API.
-const MountPath = "/api/tunnel"
-
-// ServeHTTP serves the management API under MountPath.
-func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	tail := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, MountPath), "/")
-	switch {
-	case tail == "" && r.Method == http.MethodGet:
-		writeJSON(w, http.StatusOK, m.Status())
-	case tail == "" && r.Method == http.MethodDelete:
-		if err := m.Forget(); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	case tail == "/pair" && r.Method == http.MethodPost:
-		var in struct {
-			Gateway string `json:"gateway"`
-			Name    string `json:"name"`
-		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": `send {"gateway": "https://..."}`})
-			return
-		}
-		p, err := m.Pair(in.Gateway, in.Name)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusCreated, p)
-	default:
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

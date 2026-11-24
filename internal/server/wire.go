@@ -1282,7 +1282,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// own *http.Server, since neither gateway's ListenTLS-style helper can
 	// serve a handler it didn't construct itself.
 	combined := &combinedGatewayHandler{git: gwHandler, api: apiGwHandler}
-	srv.tunnel = newTunnelManager(cfg)
+	srv.tunnel = newTunnelSet(cfg)
 	if srv.tunnel != nil {
 		combined.tunnel = newTunnelRelay(srv.tunnel, srv.apiGatewayRegistry, boidCfg.Tunnel.CallbackWorkspaces)
 		runner.TunnelCallbackWorkspaces = make(map[string]bool, len(boidCfg.Tunnel.CallbackWorkspaces))
@@ -1995,7 +1995,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	}
 	r.Mount("/api/jobs", jobHandler.Routes())
 	if srv.tunnel != nil {
-		srv.tunnel.Handler = tunnelSurface(tunnelDeps{Jobs: jobHandler, Projects: runtime.projectSvc, Sessions: runtime.sessionAdapter})
+		deps := tunnelDeps{Jobs: jobHandler, Projects: runtime.projectSvc, Sessions: runtime.sessionAdapter}
+		srv.tunnel.Handler = func(ws string) http.Handler { return tunnelSurface(deps, ws) }
+		srv.tunnel.CheckWorkspace = func(ws string) error {
+			_, err := runtime.projectSvc.GetWorkspace(ws)
+			return err
+		}
 		r.Handle(tunnel.MountPath, srv.tunnel)
 		r.Handle(tunnel.MountPath+"/*", srv.tunnel)
 	}

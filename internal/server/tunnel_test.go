@@ -15,7 +15,7 @@ import (
 )
 
 func TestTunnelSurfaceExposesOnlyJobReads(t *testing.T) {
-	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{}})
+	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{}}, "dev")
 	for _, tc := range []struct{ method, path string }{
 		{"POST", "/jobs/j1/done"},
 		{"PATCH", "/jobs/j1"},
@@ -45,8 +45,7 @@ func TestTunnelRelayUsesAPIGatewayJobToken(t *testing.T) {
 	reg := apigateway.NewRegistry()
 	allowedTok := reg.Register(nil, "dev", "task-1", false)
 	otherTok := reg.Register(nil, "customer", "task-2", false)
-	m := &tunnel.Manager{}
-	combined := &combinedGatewayHandler{tunnel: newTunnelRelay(m, reg, []string{"dev"})}
+	combined := &combinedGatewayHandler{tunnel: newTunnelRelay(&tunnel.Set{}, reg, []string{"dev"})}
 
 	for _, tc := range []struct {
 		path string
@@ -73,7 +72,7 @@ func (f fakeGlobalJobs) ListJobsWithContext(api.JobListFilter) ([]api.JobWithCon
 func TestTunnelJobListIsNewestFirstAndLimited(t *testing.T) {
 	base := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
 	var jobs fakeGlobalJobs
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 60; i++ {
 		ws := "dev"
 		if i%2 == 1 {
 			ws = "khi"
@@ -85,7 +84,7 @@ func TestTunnelJobListIsNewestFirstAndLimited(t *testing.T) {
 		j.Output = strings.Repeat("x", 2000)
 		jobs = append(jobs, j)
 	}
-	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{Global: jobs}})
+	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{Global: jobs}}, "dev")
 
 	get := func(path string) []api.JobWithContext {
 		t.Helper()
@@ -102,15 +101,20 @@ func TestTunnelJobListIsNewestFirstAndLimited(t *testing.T) {
 	}
 
 	out := get("/jobs")
-	if len(out) != tunnelJobsDefaultLimit || out[0].ID != "j29" || out[1].ID != "j28" {
+	if len(out) != tunnelJobsDefaultLimit || out[0].ID != "j58" || out[1].ID != "j56" {
 		t.Fatalf("default list: %d jobs, first %q %q", len(out), out[0].ID, out[1].ID)
 	}
 	if n := len([]rune(out[0].Output)); n > tunnelJobOutputChars+1 {
 		t.Fatalf("output not shortened: %d chars", n)
 	}
-	out = get("/jobs?workspace=dev&limit=3")
-	if len(out) != 3 || out[0].ID != "j28" || out[2].ID != "j24" {
-		t.Fatalf("workspace list = %+v", out)
+	out = get("/jobs?workspace=khi&limit=3")
+	if len(out) != 3 || out[0].ID != "j58" || out[2].ID != "j54" {
+		t.Fatalf("the dev tunnel listed %+v", out)
+	}
+	for _, j := range get("/jobs?limit=1000") {
+		if j.WorkspaceID != "dev" {
+			t.Fatalf("the dev tunnel listed a %s job", j.WorkspaceID)
+		}
 	}
 	if out := get("/jobs?limit=1000"); len(out) != 30 {
 		t.Fatalf("limit is capped at %d, got %d", tunnelJobsMaxLimit, len(out))
