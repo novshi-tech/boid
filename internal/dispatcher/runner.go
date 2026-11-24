@@ -247,7 +247,7 @@ type Runner struct {
 	// orchestrator.ResolveEnabledServices.
 	APIGatewayServicesFloor []string
 	// TunnelCallbackWorkspaces are the workspace IDs whose jobs get
-	// BOID_HEDDLEWAY_BASE (config.yaml tunnel.callback_workspaces).
+	// BOID_HEDDLEWAY_BASE (config.yaml tunnel.workspaces.<id>.callback).
 	TunnelCallbackWorkspaces map[string]bool
 
 	// WithProjectLock keeps gateway registration consistent with project lifecycle changes.

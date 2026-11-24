@@ -3,6 +3,7 @@ package server
 import (
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -190,5 +191,15 @@ func TestChangedServiceLeaves_RedirectHosts(t *testing.T) {
 	}
 	if got := changedServiceLeaves(updated, updated); len(got) != 0 {
 		t.Fatalf("unchanged leaves: %v", got)
+	}
+}
+
+func TestChangedTunnelLeaves(t *testing.T) {
+	got := changedTunnelLeaves(
+		map[string]config.TunnelWorkspaceConfig{"default": {Callback: true}, "khi": {}, "old": {Callback: true}},
+		map[string]config.TunnelWorkspaceConfig{"default": {Callback: true}, "khi": {Callback: true}, "dev": {}, "new": {Callback: true}},
+	)
+	if want := []string{"khi.callback", "new.callback", "old.callback"}; !slices.Equal(got, want) {
+		t.Fatalf("changed = %v, want %v", got, want)
 	}
 }
