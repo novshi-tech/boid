@@ -1,10 +1,13 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/apigateway"
@@ -55,5 +58,76 @@ func TestTunnelRelayUsesAPIGatewayJobToken(t *testing.T) {
 		if rec.Code != tc.want {
 			t.Errorf("GET %s = %d (%s), want %d", tc.path, rec.Code, rec.Body.String(), tc.want)
 		}
+	}
+}
+
+type fakeGlobalJobs []api.JobWithContext
+
+func (f fakeGlobalJobs) ListJobsWithContext(api.JobListFilter) ([]api.JobWithContext, error) {
+	return append([]api.JobWithContext(nil), f...), nil
+}
+
+func TestTunnelJobListIsNewestFirstAndLimited(t *testing.T) {
+	base := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+	var jobs fakeGlobalJobs
+	for i := 0; i < 30; i++ {
+		ws := "dev"
+		if i%2 == 1 {
+			ws = "khi"
+		}
+		j := api.JobWithContext{}
+		j.ID = fmt.Sprintf("j%02d", i)
+		j.WorkspaceID = ws
+		j.CreatedAt = base.Add(time.Duration(i) * time.Minute)
+		j.Output = strings.Repeat("x", 2000)
+		jobs = append(jobs, j)
+	}
+	h := tunnelSurface(&api.JobHandler{Global: jobs})
+
+	get := func(path string) []api.JobWithContext {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d %s", path, rec.Code, rec.Body.String())
+		}
+		var out []api.JobWithContext
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	out := get("/jobs")
+	if len(out) != tunnelJobsDefaultLimit || out[0].ID != "j29" || out[1].ID != "j28" {
+		t.Fatalf("default list: %d jobs, first %q %q", len(out), out[0].ID, out[1].ID)
+	}
+	if n := len([]rune(out[0].Output)); n > tunnelJobOutputChars+1 {
+		t.Fatalf("output not shortened: %d chars", n)
+	}
+	out = get("/jobs?workspace=dev&limit=3")
+	if len(out) != 3 || out[0].ID != "j28" || out[2].ID != "j24" {
+		t.Fatalf("workspace list = %+v", out)
+	}
+	if out := get("/jobs?limit=1000"); len(out) != 30 {
+		t.Fatalf("limit is capped at %d, got %d", tunnelJobsMaxLimit, len(out))
+	}
+}
+
+func TestTailJobLogKeepsTheEnd(t *testing.T) {
+	full := strings.Repeat("a", 1000) + "THE END"
+	log := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(full))
+	}
+	rec := httptest.NewRecorder()
+	tailJobLog(rec, httptest.NewRequest("GET", "/jobs/j1/log?tail=10", nil), log)
+	if rec.Code != http.StatusOK || rec.Body.String() != "aaaTHE END" || rec.Header().Get("X-Boid-Log-Truncated") != "997" {
+		t.Fatalf("tail = %d %q %v", rec.Code, rec.Body.String(), rec.Header())
+	}
+	rec = httptest.NewRecorder()
+	tailJobLog(rec, httptest.NewRequest("GET", "/jobs/j1/log", nil), log)
+	if rec.Body.String() != full || rec.Header().Get("X-Boid-Log-Truncated") != "" {
+		t.Fatalf("short log was cut: %q", rec.Body.String())
 	}
 }
