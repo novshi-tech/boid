@@ -903,6 +903,38 @@ func TestDeployContainerScript_Up_RecordsEngineForDown(t *testing.T) {
 	}
 }
 
+// TestDeployContainerScript_Up_PodmanDockerShim_UsesPodman: podman-docker's
+// `docker` passes `docker version`/`docker compose version`, but up must
+// still pick podman.
+func TestDeployContainerScript_Up_PodmanDockerShim_UsesPodman(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "docker", `
+if [ "$1" = "--version" ]; then echo "podman version 4.9.3"; fi
+exit 0
+`)
+	writeFakeExecutable(t, dir, "podman", "exit 0")
+	writeFakeExecutable(t, dir, "podman-compose", "exit 0")
+	writeFakeExecutable(t, dir, "systemctl", "exit 0")
+
+	cmd := exec.Command(scriptPath)
+	cmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + t.TempDir(),
+		"BOID_UID=1000",
+		"BOID_GID=1000",
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, _ := cmd.CombinedOutput()
+	if !strings.Contains(string(out), "using engine=podman") {
+		t.Errorf("want engine=podman with the podman-docker shim on PATH; output:\n%s", out)
+	}
+}
+
 // TestDeployContainerScript_Down_FindsRecordedEngineFromDifferentRoot is
 // the codex round-11 review of PR5, Major regression test: the state file
 // must be readable by a `--down` invocation running the script out of a

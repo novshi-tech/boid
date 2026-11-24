@@ -425,6 +425,14 @@ func dockerComposeUsable(ctx context.Context) bool {
 	return exec.CommandContext(checkCtx, "docker", "compose", "version").Run() == nil
 }
 
+// dockerIsPodmanShim reports whether `docker` is podman-docker's wrapper around podman.
+func dockerIsPodmanShim(ctx context.Context) bool {
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(checkCtx, "docker", "--version").Output()
+	return err == nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(string(out))), "podman")
+}
+
 // detectComposeEngine picks a usable engine + compose invocation, the same
 // preference order as scripts/deploy-container.sh's own engine selection
 // (docker first, podman via podman-compose second) — kept independent of
@@ -434,7 +442,7 @@ func dockerComposeUsable(ctx context.Context) bool {
 // build/podman-socket-preflight/config-seed responsibilities at all, only
 // "is there an engine that can plausibly run `compose up -d`".
 func detectComposeEngine(ctx context.Context) (engine string, composeCmd []string, err error) {
-	if usableEngine(ctx, "docker") && dockerComposeUsable(ctx) {
+	if usableEngine(ctx, "docker") && !dockerIsPodmanShim(ctx) && dockerComposeUsable(ctx) {
 		return "docker", []string{"docker", "compose"}, nil
 	}
 	if usableEngine(ctx, "podman") {

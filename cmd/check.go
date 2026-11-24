@@ -74,7 +74,9 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	dockerOK := usableEngine(ctx, "docker")
 	podmanOK := usableEngine(ctx, "podman")
 	reportAvailability(out, "docker engine reachable (`docker version`)", dockerOK)
-	if dockerOK {
+	if dockerOK && dockerIsPodmanShim(ctx) {
+		fmt.Fprintln(out, "  NOTE: `docker` is podman-docker's wrapper around podman; treating it as podman")
+	} else if dockerOK {
 		reportAvailability(out, "docker compose plugin (`docker compose version`)", dockerComposeUsable(ctx))
 	}
 	reportAvailability(out, "podman engine reachable (`podman version`)", podmanOK)
