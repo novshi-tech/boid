@@ -1,8 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"sort"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
@@ -12,14 +15,27 @@ import (
 )
 
 // tunnelDescription is the agent-facing description boid sends in hello.
-const tunnelDescription = `boid: the owner's personal sandbox runner on their own machine.
-Read-only for now. All responses are JSON.
+const tunnelDescription = `boid: the owner's personal sandbox runner on their own machine. All responses are JSON.
 
-- GET /jobs?status=<running|completed|failed>  list recent jobs (newest first)
-- GET /jobs/<id>                             one job (status, workspace, task, timestamps)
-- GET /jobs/<id>/log                         the job's terminal transcript (raw text with ANSI escapes)
+Start a job (an agent working in a project's repository, in its own sandbox) and read its result:
+- GET  /projects?workspace=<id>              projects a job can run in (id, name, workspace, repository)
+- POST /jobs                                 {"project": "<id or name>", "instruction": "...",
+                                              "harness": "claude|codex|opencode" (default claude),
+                                              "readonly": false, "model": "", "name": ""}
+                                             answers 202 {"id", "result_url"} at once; the job runs on
+- GET  /jobs/<id>/result                     status (running|completed|failed) and, once done, the result
+                                             {"summary", "questions", "artifacts"} the agent wrote
+- POST /jobs/<id>/stop                       stop a running job
 
-Starting jobs over the tunnel is not available yet.`
+A job does not wait for answers: questions come back in the result, and a follow-up is a new job
+with the answer in its instruction. Poll the result every minute or so; jobs take minutes.
+
+Look around:
+- GET /jobs?status=<running|completed|failed>&workspace=<id>&limit=<n>
+                                             recent jobs, newest first (limit 20 by default, at most 100)
+- GET /jobs/<id>                             one job (status, workspace, timestamps, output)
+- GET /jobs/<id>/log?tail=<bytes>            the end of the job's terminal transcript (raw text with
+                                             ANSI escapes; 256 KiB by default, at most 4 MiB)`
 
 // newTunnelManager returns the daemon's tunnel, or nil when there is no
 // data home to keep the key in.
@@ -55,19 +71,139 @@ func newTunnelRelay(m *tunnel.Manager, registry *apigateway.Registry, callbackWo
 	}
 }
 
-// tunnelSurface is everything the owner reaches through the tunnel: a
-// read-only view of jobs. The rest of the daemon API (secrets, config,
-// workspaces) is deliberately absent.
-func tunnelSurface(jobs *api.JobHandler) http.Handler {
+// tunnelDeps is what the tunnel surface reaches inside the daemon.
+type tunnelDeps struct {
+	Jobs     *api.JobHandler
+	Projects tunnelProjects
+	Sessions tunnelSessions
+}
+
+// tunnelSurface is everything the owner reaches through the tunnel: jobs and
+// the projects they run in. The rest of the daemon API (secrets, config,
+// workspaces, tasks) is deliberately absent.
+func tunnelSurface(d tunnelDeps) http.Handler {
+	jobs := d.Jobs
 	r := chi.NewRouter()
 	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(tunnelDescription + "\n"))
 	})
-	r.Get("/jobs", jobs.List)
+	r.Get("/jobs", func(w http.ResponseWriter, req *http.Request) { listRecentJobs(w, req, jobs.Global) })
 	r.Get("/jobs/{id}", jobs.Get)
 	if jobs.LogReader != nil {
-		r.Get("/jobs/{id}/log", jobs.Log)
+		r.Get("/jobs/{id}/log", func(w http.ResponseWriter, req *http.Request) { tailJobLog(w, req, jobs.Log) })
+	}
+	r.Get("/jobs/{id}/result", func(w http.ResponseWriter, req *http.Request) { tunnelJobResult(w, req, jobs.Jobs) })
+	if jobs.Service != nil {
+		r.Post("/jobs/{id}/stop", jobs.AgentStop)
+	}
+	if d.Projects != nil {
+		r.Get("/projects", func(w http.ResponseWriter, req *http.Request) { listTunnelProjects(w, req, d.Projects) })
+		if d.Sessions != nil {
+			r.Post("/jobs", func(w http.ResponseWriter, req *http.Request) { startTunnelJob(w, req, d.Projects, d.Sessions) })
+		}
 	}
 	return r
+}
+
+const (
+	tunnelJobsDefaultLimit = 20
+	tunnelJobsMaxLimit     = 100
+	tunnelJobOutputChars   = 500
+)
+
+// listRecentJobs returns the newest jobs, small enough for a tunnel frame.
+func listRecentJobs(w http.ResponseWriter, r *http.Request, store api.GlobalJobStore) {
+	w.Header().Set("Content-Type", "application/json")
+	if store == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"job listing is not available"}`))
+		return
+	}
+	q := r.URL.Query()
+	limit := tunnelJobsDefaultLimit
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"limit must be a positive number"}`))
+			return
+		}
+		limit = min(n, tunnelJobsMaxLimit)
+	}
+	all, err := store.ListJobsWithContext(api.JobListFilter{Status: q.Get("status")})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	workspace := q.Get("workspace")
+	out := make([]api.JobWithContext, 0, limit)
+	for _, j := range all {
+		if workspace == "" || j.WorkspaceID == workspace {
+			out = append(out, j)
+		}
+	}
+	sort.SliceStable(out, func(a, b int) bool { return out[a].CreatedAt.After(out[b].CreatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	for i := range out {
+		if r := []rune(out[i].Output); len(r) > tunnelJobOutputChars {
+			out[i].Output = string(r[:tunnelJobOutputChars]) + "…"
+		}
+	}
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+const (
+	tunnelLogDefaultTail = 256 << 10
+	tunnelLogMaxTail     = 4 << 20
+)
+
+// logCapture buffers a handler's response so the log can be cut to its tail.
+type logCapture struct {
+	header http.Header
+	status int
+	body   []byte
+}
+
+func (c *logCapture) Header() http.Header { return c.header }
+func (c *logCapture) WriteHeader(code int) {
+	if c.status == 0 {
+		c.status = code
+	}
+}
+func (c *logCapture) Write(p []byte) (int, error) {
+	c.WriteHeader(http.StatusOK)
+	c.body = append(c.body, p...)
+	return len(p), nil
+}
+
+// tailJobLog serves only the last bytes of a transcript, so a long log fits a tunnel frame.
+func tailJobLog(w http.ResponseWriter, r *http.Request, log http.HandlerFunc) {
+	tail := tunnelLogDefaultTail
+	if v := r.URL.Query().Get("tail"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			http.Error(w, "tail must be a positive number of bytes", http.StatusBadRequest)
+			return
+		}
+		tail = min(n, tunnelLogMaxTail)
+	}
+	c := &logCapture{header: http.Header{}}
+	log(c, r)
+	for k, v := range c.header {
+		w.Header()[k] = v
+	}
+	body := c.body
+	if c.status == http.StatusOK && len(body) > tail {
+		w.Header().Set("X-Boid-Log-Truncated", strconv.Itoa(len(body)-tail))
+		body = body[len(body)-tail:]
+	}
+	if c.status == 0 {
+		c.status = http.StatusOK
+	}
+	w.WriteHeader(c.status)
+	_, _ = w.Write(body)
 }
