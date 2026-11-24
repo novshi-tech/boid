@@ -42,6 +42,7 @@ E2E テスト（`e2e/run-container.sh`、real docker/podman engine が必要）�
   - `server/` — UNIX ソケット + TCP サーバ・ルーティング
   - `skills/` — 組み込みスキル管理
   - `timeline/` — タイムライン記録
+  - `tunnel/` — Heddleway のトンネルクライアント（ペアリング・接続・サンドボックスからの呼び返しの中継口、`docs/plans/tunnel.md`）
   - `vtsnapshot/` — 録画済み PTY バイト列を「今の画面」へ解決（attach 時のスナップショット）
 - `web/` — Templ テンプレート + 静的ファイル
 - `testutil/` — テストヘルパー

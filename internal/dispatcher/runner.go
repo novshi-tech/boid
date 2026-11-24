@@ -246,6 +246,9 @@ type Runner struct {
 	// WorkspaceMeta.Services list adds to this floor at dispatch time via
 	// orchestrator.ResolveEnabledServices.
 	APIGatewayServicesFloor []string
+	// TunnelCallbackWorkspaces are the workspace IDs whose jobs get
+	// BOID_HEDDLEWAY_BASE (config.yaml tunnel.callback_workspaces).
+	TunnelCallbackWorkspaces map[string]bool
 
 	// WithProjectLock keeps gateway registration consistent with project lifecycle changes.
 	WithProjectLock func(fn func() error) error
@@ -754,6 +757,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		GatewayJobToken:            gatewayToken,
 		APIGatewayBaseURL:          apiGatewayBaseURL,
 		APIGatewayJobToken:         apiGatewayToken,
+		TunnelCallback:             r.TunnelCallbackWorkspaces[workspaceID],
 		WorkspaceHomeVolume:        workspaceHomeVolume,
 		WorkspaceSlug:              workspaceSlug,
 		ContainerImage:             r.resolveContainerImage(workspaceID),

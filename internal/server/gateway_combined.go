@@ -6,6 +6,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/gitgateway"
+	"github.com/novshi-tech/boid/internal/tunnel"
 )
 
 // combinedGatewayHandler dispatches a single shared listener's requests to
@@ -14,6 +15,8 @@ import (
 type combinedGatewayHandler struct {
 	git *gitgateway.Server
 	api *apigateway.Server
+	// tunnel relays sandbox calls back to the Heddleway gateway; nil disables.
+	tunnel http.Handler
 }
 
 // ServeHTTP implements http.Handler, routing by path prefix and 404ing
@@ -32,6 +35,8 @@ func (h *combinedGatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		h.api.ServeHTTP(w, r)
+	case strings.HasPrefix(r.URL.Path, tunnel.RelayPathPrefix) && h.tunnel != nil:
+		h.tunnel.ServeHTTP(w, r)
 	default:
 		http.NotFound(w, r)
 	}

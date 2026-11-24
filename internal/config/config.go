@@ -49,6 +49,14 @@ type Config struct {
 	// internal/integrationpack (not this package), while services.*.uses
 	// just references it.
 	Integrations IntegrationsConfig `yaml:"integrations,omitempty"`
+	Tunnel       TunnelConfig       `yaml:"tunnel,omitempty"`
+}
+
+// TunnelConfig configures the Heddleway tunnel (`boid tunnel pair`).
+type TunnelConfig struct {
+	// CallbackWorkspaces lists the workspace IDs whose jobs may call the
+	// gateway back as the owner. Empty allows none.
+	CallbackWorkspaces []string `yaml:"callback_workspaces,omitempty"`
 }
 
 // IntegrationsConfig configures the Integration Pack loader
@@ -446,6 +454,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		Integrations   struct {
 			Dir string `yaml:"dir"`
 		} `yaml:"integrations"`
+		Tunnel struct {
+			CallbackWorkspaces []string `yaml:"callback_workspaces"`
+		} `yaml:"tunnel"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -484,6 +495,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	c.Web.HTTPAddr = raw.Web.HTTPAddr
 
 	c.Notify.Command = raw.Notify.Command
+	c.Tunnel.CallbackWorkspaces = raw.Tunnel.CallbackWorkspaces
 
 	c.Sandbox.AllowedDomains = raw.Sandbox.AllowedDomains
 	c.Sandbox.EgressProxyPortLow = raw.Sandbox.EgressProxyPortLow
