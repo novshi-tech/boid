@@ -1284,9 +1284,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	combined := &combinedGatewayHandler{git: gwHandler, api: apiGwHandler}
 	srv.tunnel = newTunnelSet(cfg)
 	if srv.tunnel != nil {
-		combined.tunnel = newTunnelRelay(srv.tunnel, srv.apiGatewayRegistry, boidCfg.Tunnel.CallbackWorkspaces)
-		runner.TunnelCallbackWorkspaces = make(map[string]bool, len(boidCfg.Tunnel.CallbackWorkspaces))
-		for _, ws := range boidCfg.Tunnel.CallbackWorkspaces {
+		callbacks := boidCfg.Tunnel.CallbackWorkspaces()
+		combined.tunnel = newTunnelRelay(srv.tunnel, srv.apiGatewayRegistry, callbacks)
+		runner.TunnelCallbackWorkspaces = make(map[string]bool, len(callbacks))
+		for _, ws := range callbacks {
 			runner.TunnelCallbackWorkspaces[ws] = true
 		}
 	}

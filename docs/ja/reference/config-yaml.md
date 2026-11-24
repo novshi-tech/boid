@@ -798,12 +798,14 @@ task_ask:
 
 ```yaml
 tunnel:
-  callback_workspaces: [dev]   # 既定は空 (どの workspace も呼び返せない)
+  workspaces:
+    dev:
+      callback: true   # 既定は false (どの workspace も呼び返せない)
 ```
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `tunnel.callback_workspaces` | string 配列 | `[]` | job から Heddleway のゲートウェイを所有者として呼び返してよい workspace の ID。ここにある workspace の job にだけ `BOID_HEDDLEWAY_BASE` を出し、中継口もほかの workspace のトークンを断る。呼び返しは job の workspace のトンネルを通る。**再起動が必要** |
+| `tunnel.workspaces.<id>.callback` | bool | `false` | その workspace の job から、その workspace のトンネルのゲートウェイを所有者として呼び返してよいか。true の workspace の job にだけ `BOID_HEDDLEWAY_BASE` を出し、中継口もほかの workspace のトークンを断る。`boid config set tunnel.workspaces.dev.callback true` でも書ける。**再起動が必要** |
 
 トンネルは workspace ごとに `boid tunnel pair <ゲートウェイの URL> --workspace <id>` でつなぐ (省略すると `default`)。ゲートウェイからはその workspace の project と job しか見えないので、顧客の workspace は顧客のゲートウェイにつなぐ。鍵は data home の `tunnels/<workspace>.json` (0600) に置き、daemon が起動のたびにつなぎ直す。呼び返せるサービスは、所有者がゲートウェイの画面 (ローカルサービスの「呼び返しの設定」) で選ぶ。job からは次のように呼ぶ。
 

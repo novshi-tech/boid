@@ -78,7 +78,7 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rl.AllowWorkspace == nil || !rl.AllowWorkspace(grant.WorkspaceID) {
-		relayError(w, http.StatusForbidden, "this workspace may not call the gateway back (tunnel.callback_workspaces)")
+		relayError(w, http.StatusForbidden, "this workspace may not call the gateway back (tunnel.workspaces.<id>.callback)")
 		return
 	}
 	if grant.ReadOnly && r.Method != http.MethodGet && r.Method != http.MethodHead {

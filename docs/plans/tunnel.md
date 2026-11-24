@@ -10,7 +10,7 @@
 - 鍵は data home の `tunnels/<workspace>.json` (0600、下の「workspace ごとのトンネル」)。形は Heddleway の `tools/tunnel-client.mjs` と同じなので、どちらで作った鍵も読める
 - CLI: `boid tunnel pair <URL> [--workspace <id>] [--name]`・`status`・`forget [--workspace <id>]`。ペアリングは daemon が行う (鍵が daemon の volume から出ない)。管理の API は `/api/tunnel` (一覧)・`/api/tunnel/<workspace>` (状態・削除)・`/api/tunnel/<workspace>/pair`
 - **トンネルに出す口は job の読み取りだけ** (`GET /jobs`・`/jobs/{id}`・`/jobs/{id}/log`)。今の daemon の API は secret の値・config・workspace まで触れるので、丸ごとは出さない。トンネルからの要求はゲートウェイが所有者のものに限っているので、boid の側ではそれ以上の認証をしない
-- **呼び返しの中継口**: API gateway と同じ listener・同じ job トークンで `/heddleway/<token>/<service>/...`。`tunnel.callback_workspaces` の workspace だけ通し (初期は空)、readonly の job は GET / HEAD だけ。`Authorization`・`Cookie`・`Origin` は流さず、`Origin` 付きの要求は断る。job の識別に `x-boid-job` (task ID) を付ける。env は `BOID_HEDDLEWAY_BASE`
+- **呼び返しの中継口**: API gateway と同じ listener・同じ job トークンで `/heddleway/<token>/<service>/...`。`tunnel.workspaces.<id>.callback: true` の workspace だけ通し (初期は全部 false)、readonly の job は GET / HEAD だけ。`Authorization`・`Cookie`・`Origin` は流さず、`Origin` 付きの要求は断る。job の識別に `x-boid-job` (task ID) を付ける。env は `BOID_HEDDLEWAY_BASE`
 - 厳しめのモードは入れていない。boid は所有者の PC で動き、鍵を daemon の volume に置く前提 (ADR 0003 決定 4 の標準)
 
 - 実ゲートウェイでの疎通 (2026-11-24): `GET /jobs` が全件を古い順に返し 7 MB あったので、新しい順・既定 20 件・`output` 500 文字、ログは末尾 256 KiB にした
@@ -33,7 +33,7 @@ split-and-shrink §3.2 の job を、今ある session job の上に作る。
 
 - ペアリング・鍵・接続は workspace ごと (`tunnel.Set` が workspace → `Manager`)。鍵は `tunnels/<workspace>.json`。前の `tunnel.json` は起動時に `default` の workspace へ移す
 - トンネルから見えるのはその workspace だけ: `/projects`・`/jobs` の一覧は絞り込み、`/jobs/{id}` 以下 (取得・ログ・結果・停止) はほかの workspace の job を 404 にする、`POST /jobs` はその workspace の project しか解決しない。`?workspace=` は受けない
-- 呼び返しは job の workspace のトンネルを通る。呼び返してよい workspace は今までどおり `tunnel.callback_workspaces`
+- 呼び返しは job の workspace のトンネルを通る。設定も workspace ごとに `tunnel.workspaces.<id>.callback` (前の `tunnel.callback_workspaces` は置き換えた。同じ日に入れたばかりで使っている人がいないので互換は残さない)
 - ペアリングするサービス名の既定は `boid` (default) / `boid-<workspace>`。存在しない workspace はペアリングできない
 
 ## 次の段階 (予定)

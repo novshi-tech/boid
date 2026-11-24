@@ -52,11 +52,28 @@ type Config struct {
 	Tunnel       TunnelConfig       `yaml:"tunnel,omitempty"`
 }
 
-// TunnelConfig configures the Heddleway tunnel (`boid tunnel pair`).
+// TunnelConfig configures the Heddleway tunnels (`boid tunnel pair`).
 type TunnelConfig struct {
-	// CallbackWorkspaces lists the workspace IDs whose jobs may call the
-	// gateway back as the owner. Empty allows none.
-	CallbackWorkspaces []string `yaml:"callback_workspaces,omitempty"`
+	// Workspaces holds per-workspace tunnel settings, keyed by workspace ID.
+	Workspaces map[string]TunnelWorkspaceConfig `yaml:"workspaces,omitempty"`
+}
+
+// TunnelWorkspaceConfig configures one workspace's tunnel.
+type TunnelWorkspaceConfig struct {
+	// Callback lets the workspace's jobs call its gateway back as the owner.
+	Callback bool `yaml:"callback,omitempty"`
+}
+
+// CallbackWorkspaces returns the workspace IDs whose jobs may call back, sorted.
+func (t TunnelConfig) CallbackWorkspaces() []string {
+	var out []string
+	for ws, c := range t.Workspaces {
+		if c.Callback {
+			out = append(out, ws)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // IntegrationsConfig configures the Integration Pack loader
@@ -455,7 +472,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			Dir string `yaml:"dir"`
 		} `yaml:"integrations"`
 		Tunnel struct {
-			CallbackWorkspaces []string `yaml:"callback_workspaces"`
+			Workspaces map[string]TunnelWorkspaceConfig `yaml:"workspaces"`
 		} `yaml:"tunnel"`
 	}
 	if err := value.Decode(&raw); err != nil {
@@ -495,7 +512,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	c.Web.HTTPAddr = raw.Web.HTTPAddr
 
 	c.Notify.Command = raw.Notify.Command
-	c.Tunnel.CallbackWorkspaces = raw.Tunnel.CallbackWorkspaces
+	c.Tunnel.Workspaces = raw.Tunnel.Workspaces
 
 	c.Sandbox.AllowedDomains = raw.Sandbox.AllowedDomains
 	c.Sandbox.EgressProxyPortLow = raw.Sandbox.EgressProxyPortLow

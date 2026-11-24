@@ -326,6 +326,10 @@ func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []strin
 		warnings = append(warnings, restartWarning("services."+leaf))
 	}
 
+	for _, leaf := range changedTunnelLeaves(oldCfgSafe.Tunnel.Workspaces, newCfg.Tunnel.Workspaces) {
+		warnings = append(warnings, restartWarning("tunnel.workspaces."+leaf))
+	}
+
 	// oauth_providers.* — same restart-required, per-leaf-diff treatment
 	// as services.*/gateway.forges.* above (a mid-flight OAuth2 provider
 	// change would need the API gateway's OAuth2TokenSource rebuilt, same
@@ -403,16 +407,15 @@ func restartWarning(path string) string {
 // ReloadDynamic's own doc comment (schema.go) for why these are
 // ReloadRestartRequired rather than hot-swapped.
 var restartFieldExtractors = map[string]func(*config.Config) string{
-	"gc.enabled":                 func(c *config.Config) string { return strconv.FormatBool(c.GC.Enabled) },
-	"gc.interval":                func(c *config.Config) string { return c.GC.Interval.String() },
-	"gc.older_than":              func(c *config.Config) string { return c.GC.OlderThan.String() },
-	"log.level":                  func(c *config.Config) string { return c.Log.Level },
-	"web.http_addr":              func(c *config.Config) string { return c.Web.HTTPAddr },
-	"web.public_url":             func(c *config.Config) string { return c.Web.PublicURL },
-	"task_ask.disconnect_grace":  func(c *config.Config) string { return c.TaskAsk.DisconnectGrace.String() },
-	"notify.command":             func(c *config.Config) string { return strings.Join(c.Notify.Command, "\x00") },
-	"tunnel.callback_workspaces": func(c *config.Config) string { return strings.Join(c.Tunnel.CallbackWorkspaces, "\x00") },
-	"sandbox.allowed_domains":    func(c *config.Config) string { return strings.Join(c.Sandbox.AllowedDomains, "\x00") },
+	"gc.enabled":                func(c *config.Config) string { return strconv.FormatBool(c.GC.Enabled) },
+	"gc.interval":               func(c *config.Config) string { return c.GC.Interval.String() },
+	"gc.older_than":             func(c *config.Config) string { return c.GC.OlderThan.String() },
+	"log.level":                 func(c *config.Config) string { return c.Log.Level },
+	"web.http_addr":             func(c *config.Config) string { return c.Web.HTTPAddr },
+	"web.public_url":            func(c *config.Config) string { return c.Web.PublicURL },
+	"task_ask.disconnect_grace": func(c *config.Config) string { return c.TaskAsk.DisconnectGrace.String() },
+	"notify.command":            func(c *config.Config) string { return strings.Join(c.Notify.Command, "\x00") },
+	"sandbox.allowed_domains":   func(c *config.Config) string { return strings.Join(c.Sandbox.AllowedDomains, "\x00") },
 	"sandbox.egress_proxy_port_low": func(c *config.Config) string {
 		return strconv.Itoa(c.Sandbox.EgressProxyPortLow)
 	},
@@ -437,6 +440,7 @@ var restartFieldExtractors = map[string]func(*config.Config) string{
 // (config_edit_internal_test.go) pins that every current Schema leaf
 // satisfies this at `go test` time, not just at runtime.
 var restartFieldExtractorExemptions = map[string]string{
+	"tunnel.workspaces.*.callback": "covered by changedTunnelLeaves' per-workspace diff",
 	// changedForgeLeaves's per-id, per-field diff (called separately, just
 	// above the generic loop) already gives finer-grained warnings than
 	// comparing a single wildcard schema entry ever could — it names
@@ -590,6 +594,23 @@ func changedForgeLeaves(oldForges, newForges map[string]config.ForgeConfig) []st
 // added or removed wholesale reports just "<name>" (no single leaf is more
 // "the" changed one than another when the whole entry appeared/vanished) —
 // same convention as changedForgeLeaves.
+// changedTunnelLeaves names each "<workspace>.callback" whose value changed.
+func changedTunnelLeaves(oldWS, newWS map[string]config.TunnelWorkspaceConfig) []string {
+	var changed []string
+	for ws := range oldWS {
+		if oldWS[ws].Callback != newWS[ws].Callback {
+			changed = append(changed, ws+".callback")
+		}
+	}
+	for ws, n := range newWS {
+		if _, ok := oldWS[ws]; !ok && n.Callback {
+			changed = append(changed, ws+".callback")
+		}
+	}
+	sort.Strings(changed)
+	return changed
+}
+
 func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConfig) []string {
 	names := make(map[string]struct{}, len(oldServices)+len(newServices))
 	for name := range oldServices {
