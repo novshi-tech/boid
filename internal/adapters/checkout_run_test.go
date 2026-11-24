@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -56,6 +57,12 @@ func TestAdapterCheckoutBeforeCommand(t *testing.T) {
 				}
 				if strings.TrimSpace(stdout.String()) != want+"\nfeature" {
 					t.Fatalf("output=%q", stdout.String())
+				}
+				if tc.name == "claude session" {
+					raw, err := os.ReadFile(filepath.Join(home, ".claude.json"))
+					if err != nil || !strings.Contains(string(raw), strconv.Quote(want)) {
+						t.Fatalf("claude did not get the checked-out dir trusted: %s %v", raw, err)
+					}
 				}
 				calls, err := os.ReadFile(count)
 				if primary && (err != nil || string(calls) != "x") {
