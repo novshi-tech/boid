@@ -367,6 +367,14 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		return adapters.Result{}, missingCLIError(rc.Env["BOID_WORKSPACE_SLUG"], err)
 	}
 
+	// No one answers claude's folder-trust prompt inside a job, so a
+	// workspace claude has not opened before would hang there.
+	if home := claudeHome(rc.Env); home != "" && rc.Workspace != "" {
+		if err := trustWorkspace(home, rc.Workspace); err != nil && rc.Stderr != nil {
+			fmt.Fprintf(rc.Stderr, "[boid] could not mark %s as trusted for claude: %v\n", rc.Workspace, err)
+		}
+	}
+
 	// isSession is the JobKindSession discriminator (BuildSessionJobSpec,
 	// internal/dispatcher/session_job.go, sets rc.TaskID = ""); it decides
 	// whether the session-tracking payload-patch RPC below applies at all.
