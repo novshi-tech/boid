@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,5 +134,3 @@ func (id *Identity) assertion(challenge string, now time.Time) string {
 	input := header + "." + b64.EncodeToString(claims)
 	return input + "." + b64.EncodeToString(ed25519.Sign(id.PrivateKey, []byte(input)))
 }
-
-var errNoIdentity = errors.New("tunnel: not paired")
