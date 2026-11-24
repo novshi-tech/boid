@@ -15,11 +15,14 @@ import (
 )
 
 func TestTunnelSurfaceExposesOnlyJobReads(t *testing.T) {
-	h := tunnelSurface(&api.JobHandler{})
+	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{}})
 	for _, tc := range []struct{ method, path string }{
 		{"POST", "/jobs/j1/done"},
 		{"PATCH", "/jobs/j1"},
 		{"POST", "/jobs/j1/agent-stop"},
+		{"POST", "/jobs"},
+		{"POST", "/jobs/j1/stop"},
+		{"GET", "/tasks"},
 		{"GET", "/secrets/x/value"},
 		{"GET", "/api/secrets/x/value"},
 		{"GET", "/workspaces"},
@@ -82,7 +85,7 @@ func TestTunnelJobListIsNewestFirstAndLimited(t *testing.T) {
 		j.Output = strings.Repeat("x", 2000)
 		jobs = append(jobs, j)
 	}
-	h := tunnelSurface(&api.JobHandler{Global: jobs})
+	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{Global: jobs}})
 
 	get := func(path string) []api.JobWithContext {
 		t.Helper()

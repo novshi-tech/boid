@@ -1995,7 +1995,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	}
 	r.Mount("/api/jobs", jobHandler.Routes())
 	if srv.tunnel != nil {
-		srv.tunnel.Handler = tunnelSurface(jobHandler)
+		srv.tunnel.Handler = tunnelSurface(tunnelDeps{Jobs: jobHandler, Projects: runtime.projectSvc, Sessions: runtime.sessionAdapter})
 		r.Handle(tunnel.MountPath, srv.tunnel)
 		r.Handle(tunnel.MountPath+"/*", srv.tunnel)
 	}

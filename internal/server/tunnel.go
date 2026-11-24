@@ -15,16 +15,27 @@ import (
 )
 
 // tunnelDescription is the agent-facing description boid sends in hello.
-const tunnelDescription = `boid: the owner's personal sandbox runner on their own machine.
-Read-only for now. All responses are JSON.
+const tunnelDescription = `boid: the owner's personal sandbox runner on their own machine. All responses are JSON.
 
+Start a job (an agent working in a project's repository, in its own sandbox) and read its result:
+- GET  /projects?workspace=<id>              projects a job can run in (id, name, workspace, repository)
+- POST /jobs                                 {"project": "<id or name>", "instruction": "...",
+                                              "harness": "claude|codex|opencode" (default claude),
+                                              "readonly": false, "model": "", "name": ""}
+                                             answers 202 {"id", "result_url"} at once; the job runs on
+- GET  /jobs/<id>/result                     status (running|completed|failed) and, once done, the result
+                                             {"summary", "questions", "artifacts"} the agent wrote
+- POST /jobs/<id>/stop                       stop a running job
+
+A job does not wait for answers: questions come back in the result, and a follow-up is a new job
+with the answer in its instruction. Poll the result every minute or so; jobs take minutes.
+
+Look around:
 - GET /jobs?status=<running|completed|failed>&workspace=<id>&limit=<n>
                                              recent jobs, newest first (limit 20 by default, at most 100)
-- GET /jobs/<id>                             one job (status, workspace, task, timestamps)
+- GET /jobs/<id>                             one job (status, workspace, timestamps, output)
 - GET /jobs/<id>/log?tail=<bytes>            the end of the job's terminal transcript (raw text with
-                                             ANSI escapes; 256 KiB by default, at most 4 MiB)
-
-Starting jobs over the tunnel is not available yet.`
+                                             ANSI escapes; 256 KiB by default, at most 4 MiB)`
 
 // newTunnelManager returns the daemon's tunnel, or nil when there is no
 // data home to keep the key in.
@@ -60,10 +71,18 @@ func newTunnelRelay(m *tunnel.Manager, registry *apigateway.Registry, callbackWo
 	}
 }
 
-// tunnelSurface is everything the owner reaches through the tunnel: a
-// read-only view of jobs. The rest of the daemon API (secrets, config,
-// workspaces) is deliberately absent.
-func tunnelSurface(jobs *api.JobHandler) http.Handler {
+// tunnelDeps is what the tunnel surface reaches inside the daemon.
+type tunnelDeps struct {
+	Jobs     *api.JobHandler
+	Projects tunnelProjects
+	Sessions tunnelSessions
+}
+
+// tunnelSurface is everything the owner reaches through the tunnel: jobs and
+// the projects they run in. The rest of the daemon API (secrets, config,
+// workspaces, tasks) is deliberately absent.
+func tunnelSurface(d tunnelDeps) http.Handler {
+	jobs := d.Jobs
 	r := chi.NewRouter()
 	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -73,6 +92,16 @@ func tunnelSurface(jobs *api.JobHandler) http.Handler {
 	r.Get("/jobs/{id}", jobs.Get)
 	if jobs.LogReader != nil {
 		r.Get("/jobs/{id}/log", func(w http.ResponseWriter, req *http.Request) { tailJobLog(w, req, jobs.Log) })
+	}
+	r.Get("/jobs/{id}/result", func(w http.ResponseWriter, req *http.Request) { tunnelJobResult(w, req, jobs.Jobs) })
+	if jobs.Service != nil {
+		r.Post("/jobs/{id}/stop", jobs.AgentStop)
+	}
+	if d.Projects != nil {
+		r.Get("/projects", func(w http.ResponseWriter, req *http.Request) { listTunnelProjects(w, req, d.Projects) })
+		if d.Sessions != nil {
+			r.Post("/jobs", func(w http.ResponseWriter, req *http.Request) { startTunnelJob(w, req, d.Projects, d.Sessions) })
+		}
 	}
 	return r
 }
