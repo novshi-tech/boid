@@ -38,6 +38,7 @@ current_allowed=(
   skills
   terminaltitle
   timeline
+  tunnel
   version
   vtsnapshot
   yamlutil
@@ -75,6 +76,7 @@ target_allowed=(
   skills
   terminaltitle
   timeline
+  tunnel
   version
   vtsnapshot
   yamlutil
