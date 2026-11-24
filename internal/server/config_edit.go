@@ -403,15 +403,16 @@ func restartWarning(path string) string {
 // ReloadDynamic's own doc comment (schema.go) for why these are
 // ReloadRestartRequired rather than hot-swapped.
 var restartFieldExtractors = map[string]func(*config.Config) string{
-	"gc.enabled":                func(c *config.Config) string { return strconv.FormatBool(c.GC.Enabled) },
-	"gc.interval":               func(c *config.Config) string { return c.GC.Interval.String() },
-	"gc.older_than":             func(c *config.Config) string { return c.GC.OlderThan.String() },
-	"log.level":                 func(c *config.Config) string { return c.Log.Level },
-	"web.http_addr":             func(c *config.Config) string { return c.Web.HTTPAddr },
-	"web.public_url":            func(c *config.Config) string { return c.Web.PublicURL },
-	"task_ask.disconnect_grace": func(c *config.Config) string { return c.TaskAsk.DisconnectGrace.String() },
-	"notify.command":            func(c *config.Config) string { return strings.Join(c.Notify.Command, "\x00") },
-	"sandbox.allowed_domains":   func(c *config.Config) string { return strings.Join(c.Sandbox.AllowedDomains, "\x00") },
+	"gc.enabled":                 func(c *config.Config) string { return strconv.FormatBool(c.GC.Enabled) },
+	"gc.interval":                func(c *config.Config) string { return c.GC.Interval.String() },
+	"gc.older_than":              func(c *config.Config) string { return c.GC.OlderThan.String() },
+	"log.level":                  func(c *config.Config) string { return c.Log.Level },
+	"web.http_addr":              func(c *config.Config) string { return c.Web.HTTPAddr },
+	"web.public_url":             func(c *config.Config) string { return c.Web.PublicURL },
+	"task_ask.disconnect_grace":  func(c *config.Config) string { return c.TaskAsk.DisconnectGrace.String() },
+	"notify.command":             func(c *config.Config) string { return strings.Join(c.Notify.Command, "\x00") },
+	"tunnel.callback_workspaces": func(c *config.Config) string { return strings.Join(c.Tunnel.CallbackWorkspaces, "\x00") },
+	"sandbox.allowed_domains":    func(c *config.Config) string { return strings.Join(c.Sandbox.AllowedDomains, "\x00") },
 	"sandbox.egress_proxy_port_low": func(c *config.Config) string {
 		return strconv.Itoa(c.Sandbox.EgressProxyPortLow)
 	},

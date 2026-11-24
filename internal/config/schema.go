@@ -116,6 +116,8 @@ var Schema = []FieldSpec{
 
 	{Path: "task_ask.disconnect_grace", Kind: KindDuration, Reload: ReloadRestartRequired},
 
+	{Path: "tunnel.callback_workspaces", Kind: KindStringArray, Reload: ReloadRestartRequired},
+
 	{Path: "gateway.forges.*.host", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "gateway.forges.*.forge", Kind: KindEnum, Reload: ReloadRestartRequired, EnumValues: []string{"github", "bitbucket"}},
 	{Path: "gateway.forges.*.secret_key", Kind: KindString, Reload: ReloadRestartRequired},

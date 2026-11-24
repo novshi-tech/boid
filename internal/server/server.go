@@ -28,6 +28,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
+	"github.com/novshi-tech/boid/internal/tunnel"
 )
 
 // gatewayTLSShutdownTimeout bounds how long Stop waits for the git
@@ -250,6 +251,8 @@ type Server struct {
 	// (that method hardcodes its OWN ServeHTTP as the Handler, not this
 	// combined one). nil until wire.go constructs it.
 	combinedGatewayHandler *combinedGatewayHandler
+	// tunnel is the Heddleway tunnel (`boid tunnel pair`); nil without a data home.
+	tunnel *tunnel.Manager
 	// gatewayTLSLn is the git/API gateway shared TCP(mTLS) listener, bound in
 	// Start only when cfg.TLSDir is set. nil otherwise.
 	gatewayTLSLn net.Listener
@@ -616,6 +619,12 @@ func (s *Server) Router() chi.Router {
 func (s *Server) Start(ctx context.Context) error {
 	if s.installID != "" {
 		slog.Info("install id", "id", s.installID)
+	}
+
+	if s.tunnel != nil {
+		if err := s.tunnel.Start(ctx); err != nil {
+			slog.Warn("tunnel: not started", "err", err)
+		}
 	}
 
 	// Start GC loop goroutine if configured.

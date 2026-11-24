@@ -15,6 +15,7 @@ import (
 	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/tunnel"
 )
 
 // SandboxRuntimeInfo carries the dispatcher-internal facts that are required
@@ -146,6 +147,10 @@ type SandboxRuntimeInfo struct {
 	// Empty when the API gateway isn't wired. BuildSandboxSpec combines this
 	// with APIGatewayBaseURL to set BOID_API_BASE.
 	APIGatewayJobToken string
+	// TunnelCallback advertises BOID_HEDDLEWAY_BASE, the relay that calls
+	// the Heddleway gateway back over the daemon's tunnel with the same
+	// job token.
+	TunnelCallback bool
 
 	// WorkspacePeerAdvertise is the {name, clone URL, clone directory} view of
 	// WorkspacePeers, built by Runner.buildPeerAdvertise and keyed by peer
@@ -455,6 +460,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// var's own comment for why it is or isn't included.
 	if rt.APIGatewayJobToken != "" && rt.APIGatewayBaseURL != "" {
 		env["BOID_API_BASE"] = rt.APIGatewayBaseURL + apigateway.PathPrefix + rt.APIGatewayJobToken
+		if rt.TunnelCallback {
+			env["BOID_HEDDLEWAY_BASE"] = rt.APIGatewayBaseURL + tunnel.RelayPathPrefix + rt.APIGatewayJobToken
+		}
 		if needsGatewayCA {
 			// BOID_API_CA_FILE: an explicit, OPT-IN CA path for tools that
 			// accept one directly (curl --cacert "$BOID_API_CA_FILE", Python

@@ -2468,3 +2468,26 @@ func TestBuildSandboxSpec_HomeSkeletonDirs_EmptyForProfileInit(t *testing.T) {
 			out.HomeSkeletonRoot, out.HomeSkeletonDirs)
 	}
 }
+
+func TestBuildSandboxSpec_TunnelCallback_SetsBOIDHeddlewayBase(t *testing.T) {
+	spec := &orchestrator.JobSpec{ProjectID: "proj-1", Argv: []string{"/bin/true"}}
+	for _, callback := range []bool{false, true} {
+		rt := SandboxRuntimeInfo{
+			JobID:              "job-1",
+			APIGatewayBaseURL:  "https://boid-gateway:9443",
+			APIGatewayJobToken: "abc123",
+			TunnelCallback:     callback,
+		}
+		out, err := BuildSandboxSpec(spec, rt)
+		if err != nil {
+			t.Fatalf("BuildSandboxSpec: %v", err)
+		}
+		got, ok := out.Env["BOID_HEDDLEWAY_BASE"]
+		if callback && got != "https://boid-gateway:9443/heddleway/abc123" {
+			t.Errorf("Env[BOID_HEDDLEWAY_BASE] = %q", got)
+		}
+		if !callback && ok {
+			t.Errorf("Env[BOID_HEDDLEWAY_BASE] set without tunnel callback: %q", got)
+		}
+	}
+}

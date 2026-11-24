@@ -30,6 +30,7 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
+	"github.com/novshi-tech/boid/internal/tunnel"
 	"github.com/novshi-tech/boid/web"
 )
 
@@ -1281,6 +1282,14 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// own *http.Server, since neither gateway's ListenTLS-style helper can
 	// serve a handler it didn't construct itself.
 	combined := &combinedGatewayHandler{git: gwHandler, api: apiGwHandler}
+	srv.tunnel = newTunnelManager(cfg)
+	if srv.tunnel != nil {
+		combined.tunnel = newTunnelRelay(srv.tunnel, srv.apiGatewayRegistry, boidCfg.Tunnel.CallbackWorkspaces)
+		runner.TunnelCallbackWorkspaces = make(map[string]bool, len(boidCfg.Tunnel.CallbackWorkspaces))
+		for _, ws := range boidCfg.Tunnel.CallbackWorkspaces {
+			runner.TunnelCallbackWorkspaces[ws] = true
+		}
+	}
 	srv.gatewayHTTPServer = &http.Server{Handler: combined}
 	srv.combinedGatewayHandler = combined
 
@@ -1985,6 +1994,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		},
 	}
 	r.Mount("/api/jobs", jobHandler.Routes())
+	if srv.tunnel != nil {
+		srv.tunnel.Handler = tunnelSurface(jobHandler)
+		r.Handle(tunnel.MountPath, srv.tunnel)
+		r.Handle(tunnel.MountPath+"/*", srv.tunnel)
+	}
 	mountJobRuntimeRoutes(r, runtime)
 
 	// WebSocket attach. Deliberately mounted at the top level of r — NOT
