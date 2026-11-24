@@ -28,12 +28,12 @@ type Caller interface {
 }
 
 // Relay lets sandboxed jobs call the gateway as the owner without holding
-// the tunnel key: the job token picks the workspace, and only workspaces in
-// AllowWorkspace may call back.
+// the tunnel key: the job token picks the workspace, only workspaces in
+// AllowWorkspace may call back, and each goes through its own tunnel.
 type Relay struct {
 	Lookup         func(token string) (JobGrant, bool)
 	AllowWorkspace func(workspaceID string) bool
-	Caller         func() Caller
+	Caller         func(workspaceID string) Caller
 }
 
 var serviceName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -87,10 +87,10 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var caller Caller
 	if rl.Caller != nil {
-		caller = rl.Caller()
+		caller = rl.Caller(grant.WorkspaceID)
 	}
 	if caller == nil {
-		relayError(w, http.StatusServiceUnavailable, "boid is not connected to the gateway (boid tunnel status)")
+		relayError(w, http.StatusServiceUnavailable, "this workspace is not paired with a gateway (boid tunnel status)")
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))

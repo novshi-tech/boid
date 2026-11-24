@@ -251,8 +251,8 @@ type Server struct {
 	// (that method hardcodes its OWN ServeHTTP as the Handler, not this
 	// combined one). nil until wire.go constructs it.
 	combinedGatewayHandler *combinedGatewayHandler
-	// tunnel is the Heddleway tunnel (`boid tunnel pair`); nil without a data home.
-	tunnel *tunnel.Manager
+	// tunnel holds the per-workspace Heddleway tunnels (`boid tunnel pair`); nil without a data home.
+	tunnel *tunnel.Set
 	// gatewayTLSLn is the git/API gateway shared TCP(mTLS) listener, bound in
 	// Start only when cfg.TLSDir is set. nil otherwise.
 	gatewayTLSLn net.Listener

@@ -73,7 +73,7 @@ func serve(h http.Handler, method, path, body string) *httptest.ResponseRecorder
 
 func TestTunnelStartJob(t *testing.T) {
 	sessions := &fakeTunnelSessions{}
-	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{}, Projects: tunnelProjectsFixture(), Sessions: sessions})
+	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{}, Projects: tunnelProjectsFixture(), Sessions: sessions}, "dev")
 
 	rec := serve(h, "POST", "/jobs", `{"project":"boid","instruction":"  PR #1 をレビューして  ","readonly":true}`)
 	if rec.Code != http.StatusAccepted || rec.Header().Get("Location") != "/jobs/job-9" {
@@ -101,6 +101,8 @@ func TestTunnelStartJob(t *testing.T) {
 		{`{"project":"boid","instruction":"x","harness":"shell"}`, http.StatusBadRequest},
 		{`{"project":"heddleway","instruction":"x"}`, http.StatusConflict},
 		{`{"project":"nope","instruction":"x"}`, http.StatusNotFound},
+		{`{"project":"rook","instruction":"x"}`, http.StatusNotFound},
+		{`{"project":"p4","instruction":"x"}`, http.StatusNotFound},
 		{`not json`, http.StatusBadRequest},
 	} {
 		sessions.got = nil
@@ -111,10 +113,11 @@ func TestTunnelStartJob(t *testing.T) {
 }
 
 func TestTunnelJobResult(t *testing.T) {
-	done := &api.Job{ID: "a", Status: api.JobStatusCompleted, Output: `{"summary":"ok","questions":[],"artifacts":["https://example/pr/1"]}`}
-	text := &api.Job{ID: "b", Status: api.JobStatusFailed, ExitCode: 1, Output: "job runtime exited without boid job done"}
-	running := &api.Job{ID: "c", Status: api.JobStatusRunning, Output: "partial"}
-	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{Jobs: fakeJobStore{"a": done, "b": text, "c": running}}})
+	done := &api.Job{ID: "a", WorkspaceID: "dev", Status: api.JobStatusCompleted, Output: `{"summary":"ok","questions":[],"artifacts":["https://example/pr/1"]}`}
+	text := &api.Job{ID: "b", WorkspaceID: "dev", Status: api.JobStatusFailed, ExitCode: 1, Output: "job runtime exited without boid job done"}
+	running := &api.Job{ID: "c", WorkspaceID: "dev", Status: api.JobStatusRunning, Output: "partial"}
+	other := &api.Job{ID: "k", WorkspaceID: "khi", Status: api.JobStatusCompleted, Output: `{"summary":"customer"}`}
+	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{Jobs: fakeJobStore{"a": done, "b": text, "c": running, "k": other}}}, "dev")
 
 	var got map[string]any
 	rec := serve(h, "GET", "/jobs/a/result", "")
@@ -132,20 +135,34 @@ func TestTunnelJobResult(t *testing.T) {
 	if got["status"] != "running" || got["result"] != nil || got["result_text"] != nil {
 		t.Fatalf("result c = %v", got)
 	}
-	if rec := serve(h, "GET", "/jobs/zzz/result", ""); rec.Code != http.StatusNotFound {
-		t.Fatalf("unknown job = %d", rec.Code)
+	for _, path := range []string{"/jobs/zzz/result", "/jobs/k/result", "/jobs/k", "/jobs/k/log"} {
+		if rec := serve(h, "GET", path, ""); rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "customer") {
+			t.Fatalf("GET %s = %d %s, want 404", path, rec.Code, rec.Body.String())
+		}
 	}
 }
 
 func TestTunnelListProjects(t *testing.T) {
-	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{}, Projects: tunnelProjectsFixture()})
+	h := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{}, Projects: tunnelProjectsFixture()}, "khi")
 	var got []map[string]any
-	rec := serve(h, "GET", "/projects?workspace=khi", "")
+	rec := serve(h, "GET", "/projects", "")
 	_ = json.Unmarshal(rec.Body.Bytes(), &got)
 	if rec.Code != 200 || len(got) != 1 || got[0]["id"] != "p4" || got[0]["name"] != "rook" {
 		t.Fatalf("projects = %d %s", rec.Code, rec.Body.String())
 	}
 	if _, leaked := got[0]["meta"]; leaked {
 		t.Fatalf("project meta leaked: %v", got[0])
+	}
+
+	dev := tunnelSurface(tunnelDeps{Jobs: &api.JobHandler{}, Projects: tunnelProjectsFixture()}, "dev")
+	got = nil
+	_ = json.Unmarshal(serve(dev, "GET", "/projects?workspace=khi", "").Body.Bytes(), &got)
+	for _, p := range got {
+		if p["id"] == "p4" {
+			t.Fatalf("dev tunnel listed a khi project: %v", got)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("dev projects = %v", got)
 	}
 }

@@ -244,7 +244,7 @@ func TestRelayCallsBackAsOwner(t *testing.T) {
 			return JobGrant{WorkspaceID: "dev", JobRef: "task-1"}, token == "tok"
 		},
 		AllowWorkspace: func(ws string) bool { return ws == "dev" },
-		Caller:         m.Caller,
+		Caller:         func(string) Caller { return m.Caller() },
 	}
 
 	done := make(chan *httptest.ResponseRecorder)
@@ -310,7 +310,7 @@ func TestRelayRefusals(t *testing.T) {
 	relay := &Relay{
 		Lookup:         func(token string) (JobGrant, bool) { g, ok := grants[token]; return g, ok },
 		AllowWorkspace: func(ws string) bool { return ws == "dev" },
-		Caller:         func() Caller { return connected },
+		Caller:         func(string) Caller { return connected },
 	}
 	cases := []struct {
 		name, method, path string

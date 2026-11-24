@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -63,7 +64,7 @@ func writeTunnelJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // startTunnelJob starts an agent job and answers 202 with its ID.
-func startTunnelJob(w http.ResponseWriter, r *http.Request, projects tunnelProjects, sessions tunnelSessions) {
+func startTunnelJob(w http.ResponseWriter, r *http.Request, projects tunnelProjects, sessions tunnelSessions, workspace string) {
 	var req tunnelJobRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeTunnelError(w, http.StatusBadRequest, `send {"project": "<id or name>", "harness": "claude", "instruction": "..."}`)
@@ -89,9 +90,19 @@ func startTunnelJob(w http.ResponseWriter, r *http.Request, projects tunnelProje
 		writeTunnelError(w, http.StatusBadRequest, "project is required (GET /projects lists them)")
 		return
 	}
-	matches, err := projects.ResolveProjectRef(req.Project)
+	all, err := projects.ResolveProjectRef(req.Project)
 	if err != nil {
 		writeTunnelError(w, statusOf(err, http.StatusNotFound), err.Error())
+		return
+	}
+	var matches []*orchestrator.Project
+	for _, p := range all {
+		if p.WorkspaceID == workspace {
+			matches = append(matches, p)
+		}
+	}
+	if len(matches) == 0 {
+		writeTunnelError(w, http.StatusNotFound, "no project "+strconv.Quote(req.Project)+" (GET /projects lists them)")
 		return
 	}
 	if len(matches) != 1 {
@@ -154,8 +165,8 @@ func tunnelJobResult(w http.ResponseWriter, r *http.Request, jobs api.JobStore) 
 }
 
 // listTunnelProjects lists the projects a job can be started in.
-func listTunnelProjects(w http.ResponseWriter, r *http.Request, projects tunnelProjects) {
-	ps, err := projects.ListProjects(r.URL.Query().Get("workspace"))
+func listTunnelProjects(w http.ResponseWriter, _ *http.Request, projects tunnelProjects, workspace string) {
+	ps, err := projects.ListProjects(workspace)
 	if err != nil {
 		writeTunnelError(w, statusOf(err, http.StatusInternalServerError), err.Error())
 		return
@@ -163,12 +174,14 @@ func listTunnelProjects(w http.ResponseWriter, r *http.Request, projects tunnelP
 	type entry struct {
 		ID          string `json:"id"`
 		Name        string `json:"name"`
-		WorkspaceID string `json:"workspace_id"`
 		UpstreamURL string `json:"upstream_url,omitempty"`
 	}
 	out := make([]entry, 0, len(ps))
 	for _, p := range ps {
-		out = append(out, entry{ID: p.ID, Name: p.Meta.Name, WorkspaceID: p.WorkspaceID, UpstreamURL: p.UpstreamURL})
+		if p.WorkspaceID != workspace {
+			continue
+		}
+		out = append(out, entry{ID: p.ID, Name: p.Meta.Name, UpstreamURL: p.UpstreamURL})
 	}
 	writeTunnelJSON(w, http.StatusOK, out)
 }

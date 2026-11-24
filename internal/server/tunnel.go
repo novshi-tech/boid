@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -14,11 +15,13 @@ import (
 	"github.com/novshi-tech/boid/internal/version"
 )
 
-// tunnelDescription is the agent-facing description boid sends in hello.
-const tunnelDescription = `boid: the owner's personal sandbox runner on their own machine. All responses are JSON.
+// tunnelDescription is the agent-facing description boid sends in hello;
+// the %q is the workspace the tunnel reaches.
+const tunnelDescription = `boid: the owner's personal sandbox runner on their own machine. This connection
+reaches only the boid workspace %q: its projects and its jobs. All responses are JSON.
 
 Start a job (an agent working in a project's repository, in its own sandbox) and read its result:
-- GET  /projects?workspace=<id>              projects a job can run in (id, name, workspace, repository)
+- GET  /projects                             projects a job can run in (id, name, repository)
 - POST /jobs                                 {"project": "<id or name>", "instruction": "...",
                                               "harness": "claude|codex|opencode" (default claude),
                                               "readonly": false, "model": "", "name": ""}
@@ -31,29 +34,34 @@ A job does not wait for answers: questions come back in the result, and a follow
 with the answer in its instruction. Poll the result every minute or so; jobs take minutes.
 
 Look around:
-- GET /jobs?status=<running|completed|failed>&workspace=<id>&limit=<n>
+- GET /jobs?status=<running|completed|failed>&limit=<n>
                                              recent jobs, newest first (limit 20 by default, at most 100)
-- GET /jobs/<id>                             one job (status, workspace, timestamps, output)
+- GET /jobs/<id>                             one job (status, timestamps, output)
 - GET /jobs/<id>/log?tail=<bytes>            the end of the job's terminal transcript (raw text with
                                              ANSI escapes; 256 KiB by default, at most 4 MiB)`
 
-// newTunnelManager returns the daemon's tunnel, or nil when there is no
-// data home to keep the key in.
-func newTunnelManager(cfg Config) *tunnel.Manager {
+func tunnelDescriptionFor(workspace string) string {
+	return fmt.Sprintf(tunnelDescription, workspace)
+}
+
+// newTunnelSet returns the daemon's per-workspace tunnels, or nil when there
+// is no data home to keep the keys in.
+func newTunnelSet(cfg Config) *tunnel.Set {
 	home := dataHomeFor(cfg)
 	if home == "" {
 		return nil
 	}
-	return &tunnel.Manager{
-		IdentityPath: filepath.Join(home, "tunnel.json"),
-		Description:  tunnelDescription,
-		Version:      "boid " + version.Version(),
+	return &tunnel.Set{
+		Dir:         filepath.Join(home, "tunnels"),
+		LegacyPath:  filepath.Join(home, "tunnel.json"),
+		Description: tunnelDescriptionFor,
+		Version:     "boid " + version.Version(),
 	}
 }
 
-// newTunnelRelay lets jobs in callbackWorkspaces call the gateway back with
-// their API gateway job token.
-func newTunnelRelay(m *tunnel.Manager, registry *apigateway.Registry, callbackWorkspaces []string) *tunnel.Relay {
+// newTunnelRelay lets jobs in callbackWorkspaces call their own workspace's
+// gateway back with their API gateway job token.
+func newTunnelRelay(s *tunnel.Set, registry *apigateway.Registry, callbackWorkspaces []string) *tunnel.Relay {
 	allowed := make(map[string]bool, len(callbackWorkspaces))
 	for _, ws := range callbackWorkspaces {
 		allowed[ws] = true
@@ -67,7 +75,7 @@ func newTunnelRelay(m *tunnel.Manager, registry *apigateway.Registry, callbackWo
 			return tunnel.JobGrant{WorkspaceID: e.Namespace, JobRef: e.TaskID, ReadOnly: e.ReadOnly}, true
 		},
 		AllowWorkspace: func(ws string) bool { return ws != "" && allowed[ws] },
-		Caller:         m.Caller,
+		Caller:         s.Caller,
 	}
 }
 
@@ -78,32 +86,55 @@ type tunnelDeps struct {
 	Sessions tunnelSessions
 }
 
-// tunnelSurface is everything the owner reaches through the tunnel: jobs and
-// the projects they run in. The rest of the daemon API (secrets, config,
-// workspaces, tasks) is deliberately absent.
-func tunnelSurface(d tunnelDeps) http.Handler {
+// tunnelSurface is everything the owner reaches through one workspace's
+// tunnel: that workspace's jobs and projects. Other workspaces and the rest
+// of the daemon API (secrets, config, tasks) are deliberately absent.
+func tunnelSurface(d tunnelDeps, workspace string) http.Handler {
 	jobs := d.Jobs
 	r := chi.NewRouter()
 	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte(tunnelDescription + "\n"))
+		_, _ = w.Write([]byte(tunnelDescriptionFor(workspace) + "\n"))
 	})
-	r.Get("/jobs", func(w http.ResponseWriter, req *http.Request) { listRecentJobs(w, req, jobs.Global) })
-	r.Get("/jobs/{id}", jobs.Get)
-	if jobs.LogReader != nil {
-		r.Get("/jobs/{id}/log", func(w http.ResponseWriter, req *http.Request) { tailJobLog(w, req, jobs.Log) })
-	}
-	r.Get("/jobs/{id}/result", func(w http.ResponseWriter, req *http.Request) { tunnelJobResult(w, req, jobs.Jobs) })
-	if jobs.Service != nil {
-		r.Post("/jobs/{id}/stop", jobs.AgentStop)
-	}
+	r.Get("/jobs", func(w http.ResponseWriter, req *http.Request) { listRecentJobs(w, req, jobs.Global, workspace) })
+	r.Route("/jobs/{id}", func(r chi.Router) {
+		r.Use(jobInWorkspace(jobs.Jobs, workspace))
+		r.Get("/", jobs.Get)
+		if jobs.LogReader != nil {
+			r.Get("/log", func(w http.ResponseWriter, req *http.Request) { tailJobLog(w, req, jobs.Log) })
+		}
+		r.Get("/result", func(w http.ResponseWriter, req *http.Request) { tunnelJobResult(w, req, jobs.Jobs) })
+		if jobs.Service != nil {
+			r.Post("/stop", jobs.AgentStop)
+		}
+	})
 	if d.Projects != nil {
-		r.Get("/projects", func(w http.ResponseWriter, req *http.Request) { listTunnelProjects(w, req, d.Projects) })
+		r.Get("/projects", func(w http.ResponseWriter, req *http.Request) { listTunnelProjects(w, req, d.Projects, workspace) })
 		if d.Sessions != nil {
-			r.Post("/jobs", func(w http.ResponseWriter, req *http.Request) { startTunnelJob(w, req, d.Projects, d.Sessions) })
+			r.Post("/jobs", func(w http.ResponseWriter, req *http.Request) {
+				startTunnelJob(w, req, d.Projects, d.Sessions, workspace)
+			})
 		}
 	}
 	return r
+}
+
+// jobInWorkspace answers 404 for a job of another workspace, as if it did not exist.
+func jobInWorkspace(store api.JobStore, workspace string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if store == nil {
+				writeTunnelError(w, http.StatusNotFound, "job not found")
+				return
+			}
+			j, err := store.GetJob(chi.URLParam(r, "id"))
+			if err != nil || j.WorkspaceID != workspace {
+				writeTunnelError(w, http.StatusNotFound, "job not found")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 const (
@@ -113,7 +144,7 @@ const (
 )
 
 // listRecentJobs returns the newest jobs, small enough for a tunnel frame.
-func listRecentJobs(w http.ResponseWriter, r *http.Request, store api.GlobalJobStore) {
+func listRecentJobs(w http.ResponseWriter, r *http.Request, store api.GlobalJobStore, workspace string) {
 	w.Header().Set("Content-Type", "application/json")
 	if store == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -137,10 +168,9 @@ func listRecentJobs(w http.ResponseWriter, r *http.Request, store api.GlobalJobS
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	workspace := q.Get("workspace")
 	out := make([]api.JobWithContext, 0, limit)
 	for _, j := range all {
-		if workspace == "" || j.WorkspaceID == workspace {
+		if j.WorkspaceID == workspace {
 			out = append(out, j)
 		}
 	}
