@@ -612,6 +612,54 @@ esac
 	}
 }
 
+// TestDetectComposeEngine_PodmanDockerShim_PicksPodman: podman-docker's
+// /usr/bin/docker answers `docker version` and `docker compose version`
+// (through podman's external compose provider), but it is podman.
+func TestDetectComposeEngine_PodmanDockerShim_PicksPodman(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "docker", `
+case "$1" in
+  --version) echo "podman version 4.9.3" ;;
+esac
+exit 0
+`)
+	writeFakeExecutable(t, dir, "podman", "exit 0")
+	writeFakeExecutable(t, dir, "podman-compose", "exit 0")
+	t.Setenv("PATH", dir)
+
+	engine, composeCmd, err := detectComposeEngine(context.Background())
+	if err != nil {
+		t.Fatalf("detectComposeEngine: %v", err)
+	}
+	if engine != "podman" {
+		t.Errorf("engine = %q, want podman (docker is the podman-docker shim)", engine)
+	}
+	if len(composeCmd) != 1 || composeCmd[0] != "podman-compose" {
+		t.Errorf("composeCmd = %v, want [podman-compose]", composeCmd)
+	}
+}
+
+func TestDetectComposeEngine_RealDockerVersionString_PicksDocker(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "docker", `
+case "$1" in
+  --version) echo "Docker version 27.3.1, build ce12230" ;;
+esac
+exit 0
+`)
+	writeFakeExecutable(t, dir, "podman", "exit 0")
+	writeFakeExecutable(t, dir, "podman-compose", "exit 0")
+	t.Setenv("PATH", dir)
+
+	engine, _, err := detectComposeEngine(context.Background())
+	if err != nil {
+		t.Fatalf("detectComposeEngine: %v", err)
+	}
+	if engine != "docker" {
+		t.Errorf("engine = %q, want docker", engine)
+	}
+}
+
 // TestDetectComposeEngine_DockerWithoutComposePlugin_NoPodman_Errors is the
 // companion dead-end case: docker usable but no compose plugin, AND no
 // podman at all — must error rather than silently picking a docker

@@ -149,6 +149,13 @@ docker_compose_usable() {
 	command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1
 }
 
+# docker_is_podman_shim: podman-docker's /usr/bin/docker is podman itself,
+# and its `docker compose` may resolve to the legacy python docker-compose
+# v1, which rejects compose.yml's top-level `name:`.
+docker_is_podman_shim() {
+	command -v docker >/dev/null 2>&1 && docker --version 2>/dev/null | head -n1 | grep -qi '^podman'
+}
+
 # context_fingerprint (codex round-13 review of PR5, Major): the
 # engine-state mechanism below records docker-vs-podman only, which
 # cannot tell two DIFFERENT daemons of the SAME engine kind apart — an
@@ -301,7 +308,7 @@ if [[ -z "$RECORDED_ENGINE" ]]; then
 	if [[ "$DOWN" == "1" ]]; then
 		echo "warning: no recorded engine at $COMPOSE_ENGINE_STATE_FILE (never written by a matching \`up\`, or predates this check) — falling back to best-effort detection, which cannot fully rule out downing the wrong engine's empty project while the real stack keeps running" >&2
 	fi
-	if usable docker && docker_compose_usable; then
+	if usable docker && ! docker_is_podman_shim && docker_compose_usable; then
 		ENGINE=docker
 		BUILD_CMD=(docker build)
 		COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
