@@ -307,8 +307,8 @@ const (
 	// actually works against this image regardless of which uid 1000
 	// happens to belong to.
 	defaultContainerGID = 0
-	// defaultPidsLimit is the fork-bomb-safety default.
-	defaultPidsLimit int64 = 512
+	// defaultPidsLimit bounds a fork bomb; it counts threads, so it must fit a parallel build beside the agent.
+	defaultPidsLimit int64 = 4096
 
 	// attachDrainGracePeriod bounds how long containerSession.waitLoop
 	// waits for readLoop to drain the attach connection naturally (the
